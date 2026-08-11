@@ -37,14 +37,10 @@ subjects:
     name: {{ .Release.Name }}-operator
     namespace: {{ .Release.Namespace }}
 ---
-# Cluster-scoped permissions for the org envelopes this install owns.
-# TODO(operator/chart): enumerate the envelope verbs per the operator design doc —
-# namespaces (create/adopt), serviceaccounts, roles/rolebindings,
-# networkpolicies, resourcequotas/limitranges, sandboxtemplates/sandboxwarmpools,
-# persistentvolumeclaims, deployments, services, pods (get/list/watch only),
-# sandboxes (get/list/watch/patch), plus `bind` pinned by resourceNames to the
-# install's tokenreview ClusterRole. Every write is admission-fenced to the
-# install's namespace prefix; no Secret verbs, ever.
+# Cluster-scoped permissions for the org envelopes this install owns. Every
+# write is admission-fenced to the install's namespace prefix (TODO: VAPs);
+# no Secret verbs, ever. Server-side apply needs create+patch on everything
+# the operator stamps; delete covers the finalizer teardown.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -52,7 +48,46 @@ metadata:
   labels:
     app.kubernetes.io/name: agentconnect-operator
     app.kubernetes.io/instance: {{ .Release.Name }}
-rules: []
+rules:
+  - apiGroups: ['']
+    resources:
+      - namespaces
+      - serviceaccounts
+      - services
+      - persistentvolumeclaims
+      - resourcequotas
+      - limitranges
+    verbs: ['get', 'list', 'watch', 'create', 'patch', 'delete']
+  # Read-only: pod state drives CredentialReady and the org-labeled secondary watch.
+  - apiGroups: ['']
+    resources: ['pods']
+    verbs: ['get', 'list', 'watch']
+  - apiGroups: ['apps']
+    resources: ['deployments']
+    verbs: ['get', 'list', 'watch', 'create', 'patch', 'delete']
+  - apiGroups: ['networking.k8s.io']
+    resources: ['networkpolicies']
+    verbs: ['get', 'list', 'watch', 'create', 'patch', 'delete']
+  - apiGroups: ['rbac.authorization.k8s.io']
+    resources: ['roles', 'rolebindings', 'clusterrolebindings']
+    verbs: ['get', 'list', 'watch', 'create', 'patch', 'delete']
+  # The daemon Role's own verbs: granting them requires holding them (no escalate),
+  # and teardown deletes claims directly.
+  - apiGroups: ['extensions.agents.x-k8s.io']
+    resources: ['sandboxclaims']
+    verbs: ['get', 'list', 'watch', 'create', 'delete', 'deletecollection']
+  - apiGroups: ['extensions.agents.x-k8s.io']
+    resources: ['sandboxtemplates', 'sandboxwarmpools']
+    verbs: ['get', 'list', 'watch', 'create', 'patch', 'delete', 'deletecollection']
+  # patch on sandboxes is the rollout drain handshake plus the teardown quiesce.
+  - apiGroups: ['agents.x-k8s.io']
+    resources: ['sandboxes']
+    verbs: ['get', 'list', 'watch', 'patch']
+  # bind is pinned to the install's tokenreview ClusterRole — the one CRB the envelope grants.
+  - apiGroups: ['rbac.authorization.k8s.io']
+    resources: ['clusterroles']
+    verbs: ['bind']
+    resourceNames: ['{{ .Release.Name }}-ac-tokenreview']
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

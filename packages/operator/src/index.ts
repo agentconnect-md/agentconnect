@@ -17,7 +17,7 @@ export async function main(): Promise<void> {
     debug: (message: string) => console.log(message),
     warn: (message: string) => console.warn(message)
   }
-  const ctx: ReconcileContext = { http, orgApi, config, log }
+  const ctx: ReconcileContext = { http, orgApi, config, controlNamespace: cluster.namespace, log }
   const controller = new Controller({
     http,
     orgApi,

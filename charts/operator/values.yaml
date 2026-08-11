@@ -8,6 +8,10 @@ installCRD: true
 # any other install's prefix or control namespace on the same cluster.
 orgNamespacePrefix: ac-org-
 
+# Master SandboxTemplates in the control namespace are named `<prefix><tier>`;
+# the operator stamps a per-org copy for every tier in spec.runtime.tiers.
+masterTemplatePrefix: ac-runtime-
+
 operator:
   image:
     repository: ghcr.io/agentconnect-md/operator

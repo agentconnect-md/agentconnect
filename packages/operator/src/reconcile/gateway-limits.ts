@@ -1,5 +1,5 @@
-import type { AgentConnectOrg } from '../crd/types.js'
-import type { ReconcileContext } from './context.js'
+import type { Observations, ReconcileContext } from './context.js'
+import type { EnvelopeInputs } from './envelope.js'
 
 /**
  * Render spec.llmLimits / spec.llmDeny / spec.suspend into the egress gateway's
@@ -7,8 +7,13 @@ import type { ReconcileContext } from './context.js'
  * pinned by the gateway-selection spike; status.appliedLimits records only what
  * the policy API acknowledges (Unknown when it acknowledges nothing).
  */
-export async function renderGatewayPolicies(ctx: ReconcileContext, org: AgentConnectOrg): Promise<void> {
+export async function renderGatewayPolicies(
+  ctx: ReconcileContext,
+  input: EnvelopeInputs,
+  obs: Observations
+): Promise<void> {
   // TODO(operator): render the three limit tiers and deny rules once the gateway kinds are final.
   void ctx
-  void org
+  void input
+  void obs
 }

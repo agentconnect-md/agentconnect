@@ -26,6 +26,10 @@ spec:
           env:
             - name: AC_ORG_NAMESPACE_PREFIX
               value: {{ .Values.orgNamespacePrefix | quote }}
+            - name: AC_TOKENREVIEW_CLUSTERROLE
+              value: {{ .Release.Name }}-ac-tokenreview
+            - name: AC_MASTER_TEMPLATE_PREFIX
+              value: {{ .Values.masterTemplatePrefix | quote }}
             - name: AC_RESYNC_INTERVAL_SECONDS
               value: {{ .Values.operator.resyncIntervalSeconds | quote }}
             - name: AC_LEASE_NAME

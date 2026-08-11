@@ -92,7 +92,10 @@ check('missing configuration fails fast instead of starting half-configured', ()
 })
 
 check('outside a cluster the operator refuses to start', () => {
-  const { code, output } = runEntrypoint({ AC_ORG_NAMESPACE_PREFIX: 'ci-org-' })
+  const { code, output } = runEntrypoint({
+    AC_ORG_NAMESPACE_PREFIX: 'ci-org-',
+    AC_TOKENREVIEW_CLUSTERROLE: 'ci-ac-tokenreview'
+  })
   if (code === 0) throw new Error('started without in-cluster credentials')
   if (!/service account|KUBERNETES_SERVICE|InClusterConfig/i.test(output)) {
     throw new Error(`failure output does not point at in-cluster config: ${output.slice(0, 200)}`)
