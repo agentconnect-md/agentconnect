@@ -20,8 +20,17 @@ if [ -z "$NS" ]; then
 fi
 
 # Read-modify-write, not a presence check: if the ConfigMap exists with other domains, ours has to
-# be appended to them. `|| true` because a missing ConfigMap is the ordinary first-run case.
-CURRENT="$(kubectl -n "$NS" get cm agent-sandbox-config -o jsonpath='{.data.allowed-label-domains}' 2> /dev/null || true)"
+# be appended to them.
+#
+# `--ignore-not-found` rather than `|| true`, deliberately. `|| true` swallows EVERY read failure —
+# an API timeout, a denied RBAC check — as "absent", and the write that follows would then replace a
+# shared allowlist with just these two domains, revoking every other tenant's. Only a genuine
+# NotFound may be quiet here; anything else must abort before any write, which `set -e` now does.
+EXISTS=$(kubectl -n "$NS" get cm agent-sandbox-config --ignore-not-found -o name)
+CURRENT=""
+if [ -n "$EXISTS" ]; then
+  CURRENT="$(kubectl -n "$NS" get cm agent-sandbox-config -o jsonpath='{.data.allowed-label-domains}')"
+fi
 [ -n "$CURRENT" ] || CURRENT="$FALLBACK"
 case ",${CURRENT}," in
   *",${DOMAIN},"*)
@@ -31,9 +40,17 @@ case ",${CURRENT}," in
 esac
 MERGED="${CURRENT},${DOMAIN}"
 
-kubectl -n "$NS" create configmap agent-sandbox-config \
-  --from-literal=allowed-label-domains="$MERGED" \
-  --dry-run=client -o yaml | kubectl -n "$NS" apply -f -
+if [ -n "$EXISTS" ]; then
+  # A merge patch on the ONE key. Applying a whole generated ConfigMap would take the rest of its
+  # data with it — this ConfigMap is the controller's, and it may hold keys that are none of our
+  # business. Still last-writer-wins against a concurrent edit of this same key; the read above is
+  # seconds old, and the alternative is a resourceVersion CAS loop for a step run by hand.
+  kubectl -n "$NS" patch cm agent-sandbox-config --type merge \
+    -p "{\"data\":{\"allowed-label-domains\":\"${MERGED}\"}}"
+else
+  kubectl -n "$NS" create configmap agent-sandbox-config \
+    --from-literal=allowed-label-domains="$MERGED"
+fi
 
 # The controller reads this file once at startup. It is shared infrastructure: a restart interrupts
 # reconciliation for every tenant, so check first.

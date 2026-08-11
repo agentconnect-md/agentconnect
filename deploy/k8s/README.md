@@ -73,6 +73,11 @@ shred -u /tmp/config.json
 # controller is shared and a restart interrupts reconciliation for every tenant.
 ./deploy/k8s/allow-label-domain.sh
 
+# STOP HERE and run the restart the script printed. The controller holds the
+# allowlist in memory from its own startup, so until it restarts it still rejects
+# our claims — and the daemon's probe below would launch against that stale state
+# and report no runtimes.
+
 kubectl apply -f deploy/k8s/00-rbac.yaml
 kubectl apply -f deploy/k8s/20-service.yaml
 kubectl apply -f deploy/k8s/40-sandbox-pool.yaml
