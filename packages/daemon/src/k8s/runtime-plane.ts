@@ -1,6 +1,6 @@
 import { loadInClusterConfig } from './config.js'
 import { K8sHttp } from './http.js'
-import { K8sDriver } from './driver.js'
+import { K8sDriver, PROBE_GRANTS } from './driver.js'
 import { SandboxApi } from './sandbox-api.js'
 import { clusterMetrics } from './cluster-metrics.js'
 import { ShimListener } from '../shim/listener.js'
@@ -185,7 +185,7 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
       // A sandbox of its own, under a reserved id, so a probe never adopts or disturbs an
       // agent's instance — and is torn down afterwards rather than left holding a pod.
       try {
-        await driver.ensureBoundChannel(PROBE_AGENT_ID)
+        await driver.ensureBoundChannel(PROBE_AGENT_ID, undefined, PROBE_GRANTS)
         const session = driver.sessionFor(PROBE_AGENT_ID)
         if (!session) throw new Error('probe sandbox bound no session')
         const raw = await session.request('probe', {}, { timeoutMs: PROBE_TIMEOUT_MS })

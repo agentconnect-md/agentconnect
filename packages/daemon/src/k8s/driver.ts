@@ -41,7 +41,12 @@ export function resolvePodName(sandbox: Sandbox): string | undefined {
 
 /** Capabilities a runtime launch receives. Narrow by construction: a launch gets exactly
  *  what the channels it uses require, so a future capability is an explicit decision. */
-export const RUNTIME_GRANTS: ShimCapability[] = ['acp', 'materialize', 'exec', 'read', 'tunnel', 'probe']
+export const RUNTIME_GRANTS: ShimCapability[] = ['acp', 'materialize', 'exec', 'read', 'tunnel']
+
+/** A probe sandbox runs no runtime and touches no workspace, so it gets the one channel it uses
+ *  and nothing else. Granting `probe` to every launch instead would hand each agent's runtime an
+ *  authority it never exercises — which the direct-connect grant test exists to catch. */
+export const PROBE_GRANTS: ShimCapability[] = ['probe']
 
 export interface K8sDriverDeps {
   api: SandboxApi
@@ -327,7 +332,11 @@ export class K8sDriver implements SpawnDriver {
    * prepared first and launched afterwards would clone on the daemon's disk and hand the runtime
    * an empty workspace.
    */
-  async ensureBoundChannel(agentId: string, timer?: LaunchTimer): Promise<ShimConnection> {
+  async ensureBoundChannel(
+    agentId: string,
+    timer?: LaunchTimer,
+    grants: ShimCapability[] = RUNTIME_GRANTS
+  ): Promise<ShimConnection> {
     if (this.draining.has(agentId)) {
       throw new Error(`agent ${agentId} is draining for an image rollout — retry once it clears`)
     }
@@ -349,7 +358,7 @@ export class K8sDriver implements SpawnDriver {
         agentId,
         sandboxUid: launch.sandboxUid,
         generation: launch.generation,
-        grants: [...RUNTIME_GRANTS],
+        grants: [...grants],
         podName
       })
     })

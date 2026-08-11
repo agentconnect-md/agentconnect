@@ -37,10 +37,34 @@ spec:
         runAsUser: 10002
         runAsGroup: 10002
         fsGroup: 10002
+      initContainers:
+        # The daemon enforces owner-only permissions on a config that carries a secret, and repairs
+        # the mode if it is looser. A Secret volume is read-only, so that repair fails and the
+        # daemon refuses to start; and a Secret file is root-owned, so a mode it would accept
+        # (0400) is one this uid cannot read. Copying it onto the writable state volume satisfies
+        # both — and keeps the key out of the argument list, which is the point of not passing it
+        # as a flag.
+        - name: install-config
+          image: ghcr.io/agentconnect-md/daemon:v1.41.0-rc.45
+          command:
+            - sh
+            - -c
+            - install -m 0600 /etc/agentconnect-secret/config.json /var/lib/agentconnect/config.json
+          volumeMounts:
+            - name: config
+              mountPath: /etc/agentconnect-secret
+              readOnly: true
+            - name: state
+              mountPath: /var/lib/agentconnect
       containers:
         - name: daemon
           image: ghcr.io/agentconnect-md/daemon:v1.41.0-rc.45
+          # ENTRYPOINT is `tini --`, and `args` replaces CMD without replacing it — so these are
+          # tini's arguments and must name the interpreter. Dropping `node dist/index.js` here
+          # makes tini try to exec `run`.
           args:
+            - node
+            - dist/index.js
             - run
             - --k8s
             - --root
@@ -48,7 +72,7 @@ spec:
             # The API key is NOT passed as an argument: arguments are visible in `kubectl describe
             # pod` and in the container's own process list. It travels in the Secret-mounted config.
             - --config
-            - /etc/agentconnect/config.json
+            - /var/lib/agentconnect/config.json
           env:
             # Refused rather than defaulted by the daemon: a guessed org labels another tenant's
             # claims, and a guessed pool yields sandboxes that never bind with nothing saying why.
@@ -62,10 +86,6 @@ spec:
             - name: shim
               containerPort: 8085
           volumeMounts:
-            - name: config
-              mountPath: /etc/agentconnect/config.json
-              subPath: config.json
-              readOnly: true
             - name: state
               mountPath: /var/lib/agentconnect
           resources:

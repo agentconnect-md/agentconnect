@@ -152,6 +152,9 @@ describe('k8s runtime plane assembly', () => {
     })
     const table = await probing
     expect(table.runtimes.map((entry) => `${entry.id}@${entry.version}`)).toEqual(['claude-acp@0.66.0'])
+    // The probe sandbox runs no runtime and touches no workspace, so it gets ONE channel. Granting
+    // it the runtime set would hand a throwaway pod exec, materialize and tunnel for no reason.
+    expect(plane.listener.connectionsFor('ac-runtime-probe')[0]?.binding.grants ?? []).toEqual(['probe'])
     // And the probe sandbox is gone: one leaked pod per daemon restart would be a slow leak that
     // nothing else cleans up.
     expect(deleted).toContain('agent-ac-runtime-probe')

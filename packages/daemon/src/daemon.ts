@@ -2605,9 +2605,6 @@ export class Daemon {
       // not launched into a sandbox keeps its local behaviour.
       setWorkspaceGitRunnerResolver((agentId, cwd, abort) => this.k8sPlane?.gitRunnerFor(agentId, cwd, abort))
       this.log.info(`k8s: execution plane ready — shim endpoint on :${this.k8sPlane.listener.listeningPort()}`)
-      // Background: a probe needs a pod, and blocking boot on one would make a slow cluster look
-      // like a hung daemon. The result supersedes what was advertised at register.
-      void this.probeK8sRuntimes()
     }
     // Sandbox-optional principle (#36): skills are NOT force-sandboxed fleet-wide.
     // A skill runs sandboxed only when its agent does (agentRunsInSandbox), so the
@@ -2810,6 +2807,12 @@ export class Daemon {
     // The image's declared models are the fresher truth than any cached row, and stay
     // `cached` provenance: no live probe confirmed them, so model gates remain permissive.
     this.applyK8sDeclaredFacts()
+    // Started HERE, not when the plane comes up: the probe projects onto the resolved catalog, and
+    // that is only assembled further down start(). Kicking it off earlier meant it returned
+    // immediately every time — a probe that never ran, and a daemon that silently advertised
+    // nothing. Background because it needs a pod, and blocking boot on one would make a slow
+    // cluster look like a hung daemon; `facts/daemon-runtimes` replaces, so the probed set wins.
+    if (this.k8sPlane) void this.probeK8sRuntimes()
     this.modelCatalogSvc = new ModelCatalogService({
       store: this.store,
       log: this.log,
@@ -19537,6 +19540,14 @@ export class Daemon {
       const table = await plane.probeRuntimes()
       const catalog = this.projectDeclaredRuntimes(resolved, table)
       this.runtimeCatalog = catalog
+      // The profile reports these, and they come from the catalog entry rather than the table —
+      // so without this refresh the version the image just told us about would be reported as the
+      // registry's, or as an empty string.
+      for (const [id, entry] of Object.entries(catalog.entries)) {
+        this.runtimeNames[id] = entry.name
+        if (entry.version) this.runtimeVersions[id] = entry.version
+        this.runtimeProbedVersions.set(id, entry.version || (this.runtimeProbedVersions.get(id) ?? ''))
+      }
       this.applyK8sDeclaredFacts()
       this.log.info(
         `runtimes ready (probed): ${table.runtimes.map((entry) => `${entry.id}@${entry.version}`).join(', ') || '(none)'}`

@@ -11,6 +11,28 @@ metadata:
   namespace: agentconnect
 spec:
   volumeClaimTemplatesPolicy: Disallowed
+  # The controller manages a NetworkPolicy for this template by default, and an empty egress list
+  # is default-DENY — which would block the one direction this design depends on: the shim dialling
+  # the daemon. Stated explicitly rather than left to the default, and narrow: the daemon, DNS, and
+  # provider egress (direct-connect for now; this is the rule an egress proxy would replace).
+  # Ingress stays empty, so the sandbox accepts nothing — the daemon never dials in.
+  networkPolicy:
+    egress:
+      - to:
+          - podSelector:
+              matchLabels:
+                app: agentconnect-daemon
+        ports:
+          - protocol: TCP
+            port: 8085
+      - ports:
+          - protocol: UDP
+            port: 53
+          - protocol: TCP
+            port: 53
+      - ports:
+          - protocol: TCP
+            port: 443
   podTemplate:
     spec:
       # No ServiceAccount token is auto-mounted: the ONLY identity this pod gets is the projected
