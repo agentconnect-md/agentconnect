@@ -15,7 +15,11 @@ import {
   MAX_WORKSPACE_COMMIT_AUTHOR,
   MAX_WORKSPACE_COMMIT_SUBJECT,
   MAX_WORKSPACE_LOG_COMMITS,
+  MAX_WORKSPACE_COMMIT_MESSAGE,
+  MAX_WORKSPACE_STAGE_PATHS,
+  MAX_WORKSPACE_STAGE_PATH_BYTES,
   WorkspaceErrorReason,
+  WorkspaceGitWriteReason,
   FRAME_SCHEMAS,
   FRAME_TYPES
 } from './index.js'
@@ -1474,6 +1478,264 @@ describe('workspace git review frames (status counts, diff, log)', () => {
     expect(decoded.ok).toBe(true)
     if (!decoded.ok || !isFrame('workspace/gitlog/result')(decoded.frame)) throw new Error('expected gitlog result')
     expect(decoded.frame.payload.commits).toHaveLength(MAX_WORKSPACE_LOG_COMMITS)
+  })
+
+  it('workspace/gitstage REQ round-trips paths, accepts an empty list, and bounds count + bytes', () => {
+    const req = decodeEnvelope(
+      envelope(
+        'workspace/gitstage',
+        { agentId: 'local-agent-1', sessionId: 'session-a', paths: ['src/a.ts', 'src/b.ts'] },
+        { epoch: 3 }
+      )
+    )
+    expect(req.ok).toBe(true)
+    if (!req.ok || !isFrame('workspace/gitstage')(req.frame)) throw new Error('expected workspace/gitstage')
+    expect(req.frame.payload.paths).toEqual(['src/a.ts', 'src/b.ts'])
+    expect(req.ext).toEqual({ epoch: 3 })
+
+    // Staging nothing is DATA, so an empty selection must DECODE — the daemon answers with the
+    // fresh status rather than a BAD_PAYLOAD.
+    const empty = decodeEnvelope(envelope('workspace/gitstage', { agentId: 'local-agent-1', paths: [] }))
+    expect(empty.ok).toBe(true)
+    if (!empty.ok || !isFrame('workspace/gitstage')(empty.frame)) throw new Error('expected workspace/gitstage')
+    expect(empty.frame.payload.paths).toEqual([])
+    expect(empty.frame.payload.sessionId).toBeUndefined() // primary checkout
+
+    const overCount = decodeEnvelope(
+      envelope('workspace/gitstage', {
+        agentId: 'local-agent-1',
+        paths: Array.from({ length: MAX_WORKSPACE_STAGE_PATHS + 1 }, (_, index) => `f${index}.ts`)
+      })
+    )
+    expect(overCount.ok).toBe(false)
+
+    // Under the count cap but over the byte total — the bound that keeps the REQ frame-safe.
+    const overBytes = decodeEnvelope(
+      envelope('workspace/gitstage', {
+        agentId: 'local-agent-1',
+        paths: Array.from({ length: 20 }, () => 'x'.repeat(Math.ceil(MAX_WORKSPACE_STAGE_PATH_BYTES / 20) + 1))
+      })
+    )
+    expect(overBytes.ok).toBe(false)
+
+    const overPath = decodeEnvelope(
+      envelope('workspace/gitstage', { agentId: 'local-agent-1', paths: ['x'.repeat(4097)] })
+    )
+    expect(overPath.ok).toBe(false) // per-path cap is 4096, as on write/delete
+  })
+
+  it('workspace/gitunstage shares the stage REQ shape and answers with a status', () => {
+    const req = decodeEnvelope(envelope('workspace/gitunstage', { agentId: 'local-agent-1', paths: ['src/a.ts'] }))
+    expect(req.ok).toBe(true)
+    if (!req.ok || !isFrame('workspace/gitunstage')(req.frame)) throw new Error('expected workspace/gitunstage')
+    expect(req.frame.payload.paths).toEqual(['src/a.ts'])
+
+    // Both write REPs are the FRESH status, so the panel never re-polls for its own action.
+    for (const type of ['workspace/gitstage/result', 'workspace/gitunstage/result'] as const) {
+      const rep = decodeEnvelope(
+        envelope(
+          type,
+          {
+            agentId: 'local-agent-1',
+            isRepo: true,
+            clean: false,
+            branch: 'main',
+            files: [{ path: 'src/a.ts', index: 'M', workingDir: ' ', additions: 4, deletions: 1 }]
+          },
+          { corr: ID }
+        )
+      )
+      expect(rep.ok).toBe(true)
+      if (!rep.ok || !isFrame(type)(rep.frame)) throw new Error(`expected ${type}`)
+      expect(rep.frame.corr).toBe(ID)
+      expect(rep.frame.payload.files?.[0]).toEqual({
+        path: 'src/a.ts',
+        index: 'M',
+        workingDir: ' ',
+        additions: 4,
+        deletions: 1
+      })
+    }
+  })
+
+  it('keeps a worst-case escaped gitstage REQ below the wire cap', () => {
+    // NUL is the largest ordinary JSON string expansion (six wire bytes per input character) and
+    // a path may legally contain one, so the byte cap has to hold at that expansion.
+    const escaped = '\u0000'
+    const perPath = Math.floor(MAX_WORKSPACE_STAGE_PATH_BYTES / MAX_WORKSPACE_STAGE_PATHS)
+    const encoded = encode(
+      buildEnvelope('workspace/gitstage', {
+        agentId: escaped.repeat(255),
+        sessionId: escaped.repeat(255),
+        paths: Array.from({ length: MAX_WORKSPACE_STAGE_PATHS }, () => escaped.repeat(perPath))
+      })
+    )
+    expect(Buffer.byteLength(encoded)).toBeLessThanOrEqual(MAX_FRAME_BYTES)
+    const decoded = decodeEnvelope(encoded)
+    expect(decoded.ok).toBe(true)
+    if (!decoded.ok || !isFrame('workspace/gitstage')(decoded.frame)) throw new Error('expected workspace/gitstage')
+    expect(decoded.frame.payload.paths).toHaveLength(MAX_WORKSPACE_STAGE_PATHS)
+  })
+
+  it('workspace/gitcommit round-trips the message, bounds it, and carries a refusal as DATA', () => {
+    const req = decodeEnvelope(
+      envelope(
+        'workspace/gitcommit',
+        { agentId: 'local-agent-1', sessionId: 'session-a', message: 'feat: add the dock\n\nBody line.' },
+        { epoch: 3 }
+      )
+    )
+    expect(req.ok).toBe(true)
+    if (!req.ok || !isFrame('workspace/gitcommit')(req.frame)) throw new Error('expected workspace/gitcommit')
+    expect(req.frame.payload.message).toBe('feat: add the dock\n\nBody line.')
+
+    expect(decodeEnvelope(envelope('workspace/gitcommit', { agentId: 'local-agent-1', message: '' })).ok).toBe(false)
+    expect(
+      decodeEnvelope(
+        envelope('workspace/gitcommit', {
+          agentId: 'local-agent-1',
+          message: 'x'.repeat(MAX_WORKSPACE_COMMIT_MESSAGE + 1)
+        })
+      ).ok
+    ).toBe(false)
+
+    const made = decodeEnvelope(
+      envelope(
+        'workspace/gitcommit/result',
+        {
+          agentId: 'local-agent-1',
+          isRepo: true,
+          ok: true,
+          sha: 'a3f9c21deadbeef0000000000000000000000000',
+          detail: 'Committed a3f9c21 — 2 files.'
+        },
+        { corr: ID }
+      )
+    )
+    expect(made.ok).toBe(true)
+    if (!made.ok || !isFrame('workspace/gitcommit/result')(made.frame)) throw new Error('expected gitcommit result')
+    expect(made.frame.payload.sha).toBe('a3f9c21deadbeef0000000000000000000000000')
+    expect(made.frame.payload.reason).toBeUndefined() // `reason` rides along only with ok:false
+
+    // Nothing staged, and a daemon with no registered identity, are both ordinary REPs.
+    for (const reason of ['nothing-staged', 'no-identity'] as const) {
+      const refused = decodeEnvelope(
+        envelope('workspace/gitcommit/result', {
+          agentId: 'local-agent-1',
+          isRepo: true,
+          ok: false,
+          reason,
+          detail: 'refused'
+        })
+      )
+      expect(refused.ok).toBe(true)
+      if (!refused.ok || !isFrame('workspace/gitcommit/result')(refused.frame)) throw new Error('expected result')
+      expect(refused.frame.payload.reason).toBe(reason)
+      expect(refused.frame.payload.sha).toBeUndefined()
+    }
+
+    const scratch = decodeEnvelope(
+      envelope('workspace/gitcommit/result', {
+        agentId: 'local-agent-1',
+        isRepo: false,
+        ok: false,
+        reason: 'not-a-repo'
+      })
+    )
+    expect(scratch.ok).toBe(true)
+  })
+
+  it('workspace/gitpush round-trips a push, and diverged / no-upstream / detached HEAD as DATA', () => {
+    const req = decodeEnvelope(
+      envelope('workspace/gitpush', { agentId: 'local-agent-1', sessionId: 'session-a' }, { epoch: 3 })
+    )
+    expect(req.ok).toBe(true)
+    if (!req.ok || !isFrame('workspace/gitpush')(req.frame)) throw new Error('expected workspace/gitpush')
+    expect(req.frame.payload.sessionId).toBe('session-a')
+
+    const pushed = decodeEnvelope(
+      envelope(
+        'workspace/gitpush/result',
+        { agentId: 'local-agent-1', isRepo: true, ok: true, ahead: 0, detail: 'Pushed 2 commits to main.' },
+        { corr: ID }
+      )
+    )
+    expect(pushed.ok).toBe(true)
+    if (!pushed.ok || !isFrame('workspace/gitpush/result')(pushed.frame)) throw new Error('expected gitpush result')
+    expect(pushed.frame.payload.ahead).toBe(0)
+    expect(pushed.frame.payload.reason).toBeUndefined()
+
+    // The three refusals the console offers a different next action for.
+    for (const reason of ['diverged', 'no-upstream', 'detached-head'] as const) {
+      const refused = decodeEnvelope(
+        envelope('workspace/gitpush/result', {
+          agentId: 'local-agent-1',
+          isRepo: true,
+          ok: false,
+          ahead: 2,
+          reason,
+          detail: 'refused'
+        })
+      )
+      expect(refused.ok).toBe(true)
+      if (!refused.ok || !isFrame('workspace/gitpush/result')(refused.frame)) throw new Error('expected result')
+      expect(refused.frame.payload.reason).toBe(reason)
+      expect(refused.frame.payload.ahead).toBe(2) // what did NOT land
+    }
+
+    expect(
+      decodeEnvelope(
+        envelope('workspace/gitpush/result', { agentId: 'local-agent-1', isRepo: true, ok: false, ahead: -1 })
+      ).ok
+    ).toBe(false)
+  })
+
+  it('workspace/gitmessage round-trips a drafted message and carries a refusal as DATA', () => {
+    const req = decodeEnvelope(
+      envelope('workspace/gitmessage', { agentId: 'local-agent-1', sessionId: 'session-a' }, { epoch: 3 })
+    )
+    expect(req.ok).toBe(true)
+    if (!req.ok || !isFrame('workspace/gitmessage')(req.frame)) throw new Error('expected workspace/gitmessage')
+    expect(req.frame.payload.sessionId).toBe('session-a')
+
+    const drafted = decodeEnvelope(
+      envelope(
+        'workspace/gitmessage/result',
+        { agentId: 'local-agent-1', ok: true, message: 'feat(dock): stage files from the git panel\n\nWhy.' },
+        { corr: ID }
+      )
+    )
+    expect(drafted.ok).toBe(true)
+    if (!drafted.ok || !isFrame('workspace/gitmessage/result')(drafted.frame)) throw new Error('expected result')
+    expect(drafted.frame.payload.message).toContain('feat(dock):')
+    expect(drafted.frame.payload.detail).toBeUndefined()
+
+    // A runtime that declines is a RESULT, so the console shows the reason instead of an error.
+    const declined = decodeEnvelope(
+      envelope('workspace/gitmessage/result', {
+        agentId: 'local-agent-1',
+        ok: false,
+        detail: 'Nothing is staged, so there is nothing to describe.'
+      })
+    )
+    expect(declined.ok).toBe(true)
+
+    // The drafted message must fit the commit REQ that will carry it back.
+    expect(
+      decodeEnvelope(
+        envelope('workspace/gitmessage/result', {
+          agentId: 'local-agent-1',
+          ok: true,
+          message: 'x'.repeat(MAX_WORKSPACE_COMMIT_MESSAGE + 1)
+        })
+      ).ok
+    ).toBe(false)
+  })
+
+  it('the git write-reason vocabulary is closed', () => {
+    expect(WorkspaceGitWriteReason.options).toContain('diverged')
+    expect(WorkspaceGitWriteReason.safeParse('no-identity').success).toBe(true)
+    expect(WorkspaceGitWriteReason.safeParse('offline').success).toBe(false)
   })
 
   it('the workspace error-reason vocabulary is closed', () => {

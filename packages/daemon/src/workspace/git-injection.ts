@@ -252,6 +252,43 @@ export function workspaceGitPullTarget(repository: string): {
   return { remote, env: { ...env, ...gitConfigEnv(pairs) } }
 }
 
+/**
+ * Bind a validated PUSH URL to an unguessable daemon-owned remote name, like
+ * {@link workspaceGitPullTarget}, plus the credential channel a push actually needs.
+ *
+ * The helper pairs must come AFTER `workspaceGitConfigPairs`: its `credential.helper=''` is a
+ * command-scope reset of the whole helper list, so a helper pinned earlier — including the
+ * repo-local `credential.https://github.com.helper` written post-clone — never runs. `cloneGitEnv`
+ * survives for exactly this reason; a push has to re-add the pointer the same way or it reaches
+ * the remote with no credentials at all. `credentialAgentId` is omitted for a workspace with no
+ * github-app credential, which then pushes on whatever ambient (ssh) auth the host provides.
+ */
+export function workspaceGitPushTarget(
+  repository: string,
+  credentialAgentId?: string
+): { remote: string; env: Record<string, string> } {
+  const normalized = normalizeGitCloneUrl(repository)
+  const remote = `agentconnect-${randomUUID()}`
+  const pairs = [
+    ...workspaceGitConfigPairs(normalized),
+    ...(credentialAgentId ? credentialConfigPairs(credentialAgentId) : []),
+    [`remote.${remote}.url`, normalized] as const,
+    [`remote.${remote}.proxy`, ''] as const
+  ]
+  const env = workspaceGitProcessEnv()
+  env.GIT_ALLOW_PROTOCOL = 'https:ssh'
+  return {
+    remote,
+    env: {
+      ...env,
+      ...gitConfigEnv(pairs),
+      ...(credentialAgentId ? gitCredentialEnv(credentialAgentId) : {}),
+      // A missing credential must fail immediately rather than block on a prompt nobody answers.
+      GIT_TERMINAL_PROMPT: '0'
+    }
+  }
+}
+
 /** Environment for workspace Git operations that must never contact a remote. */
 export function workspaceGitLocalEnv(): Record<string, string> {
   return {
@@ -392,14 +429,20 @@ export function sessionGitEnv(agentId: string, commitIdentity?: GitCommitIdentit
     ...sessionGitPolicyEnv(),
     GIT_CONFIG_GLOBAL: file,
     GIT_TERMINAL_PROMPT: '0',
-    ...(commitIdentity
-      ? {
-          GIT_AUTHOR_NAME: commitIdentity.name,
-          GIT_AUTHOR_EMAIL: commitIdentity.email,
-          GIT_COMMITTER_NAME: commitIdentity.name,
-          GIT_COMMITTER_EMAIL: commitIdentity.email
-        }
-      : {})
+    ...(commitIdentity ? gitCommitIdentityEnv(commitIdentity) : {})
+  }
+}
+
+/** The four env vars that make a commit's attribution explicit. The ONLY channel a daemon-run
+ *  commit has: every workspace git env pins `GIT_CONFIG_GLOBAL=/dev/null` and
+ *  `GIT_CONFIG_NOSYSTEM=1`, so no config file can supply `user.name`/`user.email` — and git would
+ *  otherwise guess an identity from the host's passwd entry and commit as the operator. */
+export function gitCommitIdentityEnv(identity: GitCommitIdentity): Record<string, string> {
+  return {
+    GIT_AUTHOR_NAME: identity.name,
+    GIT_AUTHOR_EMAIL: identity.email,
+    GIT_COMMITTER_NAME: identity.name,
+    GIT_COMMITTER_EMAIL: identity.email
   }
 }
 

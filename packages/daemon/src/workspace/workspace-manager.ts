@@ -165,6 +165,13 @@ function runnerFor(agentId: string, cwd?: string, abort?: AbortSignal): GitRunne
   return resolveWorkspaceGitRunner?.(agentId, cwd, abort) ?? new LocalGitRunner(gitFor(cwd, abort), cwd)
 }
 
+/** The same resolution for git run OUTSIDE this module — the console's workspace git seam. Exported
+ *  rather than re-derived, so a second local-runner construction cannot reappear elsewhere and
+ *  quietly run a cluster agent's write on this daemon's own disk. */
+export function workspaceGitRunnerFor(agentId: string, cwd?: string, abort?: AbortSignal): GitRunner {
+  return runnerFor(agentId, cwd, abort)
+}
+
 async function convergeWorkspaceOrigin(agent: Agent, cwd = agent.workspace.path): Promise<void> {
   const clone = cloneInFlight.get(cloneKey(agent.id, cwd))
   if (clone) await clone

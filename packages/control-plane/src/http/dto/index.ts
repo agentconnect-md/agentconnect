@@ -21,8 +21,12 @@ import {
   GitCloneUrlError,
   RepoSubdirError,
   SessionImageAttachment,
+  MAX_WORKSPACE_COMMIT_MESSAGE,
   MAX_WORKSPACE_EDIT_BYTES,
   MAX_WORKSPACE_LOG_COMMITS,
+  MAX_WORKSPACE_STAGE_PATHS,
+  MAX_WORKSPACE_STAGE_PATH_BYTES,
+  WorkspaceGitWriteReason,
   MAX_GIT_REPO_LENGTH,
   MAX_ENVIRONMENT_VALUE_LENGTH,
   normalizeGitHubSkillSource,
@@ -3015,6 +3019,62 @@ export const WorkspaceGitPullDto = z.object({
   deletions: z.number().nullable()
 })
 
+// ── workspace git writes (executed only on the owning daemon; the CP stores nothing) ──
+/** `POST /agents/:id/workspace/gitstage|gitunstage` body — the paths to move across the
+ *  index. An empty list is accepted and answers with the fresh status, because staging
+ *  nothing is data, not a bad request. The byte total is rechecked because zod counts
+ *  characters while the wire cap counts encoded bytes. */
+export const WorkspaceGitStageBody = z
+  .object({
+    paths: z
+      .array(z.string().min(1).max(4096))
+      .max(MAX_WORKSPACE_STAGE_PATHS)
+      .refine(
+        (paths) =>
+          paths.reduce((total, path) => total + Buffer.byteLength(path, 'utf8'), 0) <= MAX_WORKSPACE_STAGE_PATH_BYTES,
+        { message: `paths exceed ${MAX_WORKSPACE_STAGE_PATH_BYTES} bytes in total` }
+      )
+  })
+  .strict()
+
+/** `POST /agents/:id/workspace/gitcommit` body — the message git receives verbatim. */
+export const WorkspaceGitCommitBody = z
+  .object({
+    message: z.string().min(1).max(MAX_WORKSPACE_COMMIT_MESSAGE) // subject + optional body
+  })
+  .strict()
+
+/** `POST /agents/:id/workspace/gitcommit` — outcome of one commit. Nothing staged, a
+ *  blank message, a daemon with no registered commit identity and a git refusal are all
+ *  `ok:false` + `reason` (data), not HTTP errors. */
+export const WorkspaceGitCommitResultDto = z.object({
+  isRepo: z.boolean(), // false ⇒ from-scratch workspace (no .git); nothing to commit
+  ok: z.boolean(), // true ⇒ a commit was created
+  sha: z.string().nullable(), // full hash of the new commit; null unless ok
+  detail: z.string().nullable(), // human summary or refusal reason (daemon-scrubbed)
+  reason: WorkspaceGitWriteReason.nullable() // machine reason; null when ok
+})
+
+/** `POST /agents/:id/workspace/gitpush` — outcome of one push. A diverged branch, a
+ *  detached HEAD, a branch with no upstream and a remote rejection are all `ok:false` +
+ *  `reason` (data); a push with nothing to send is `ok:true` with `ahead:0`. */
+export const WorkspaceGitPushResultDto = z.object({
+  isRepo: z.boolean(), // false ⇒ from-scratch workspace (no .git); nothing to push
+  ok: z.boolean(), // true ⇒ the remote now has every local commit on this branch
+  detail: z.string().nullable(), // human summary or refusal reason (daemon-scrubbed)
+  ahead: z.number().nullable(), // commits STILL ahead of the upstream (0 once pushed)
+  reason: WorkspaceGitWriteReason.nullable() // machine reason; null when ok
+})
+
+/** `POST /agents/:id/workspace/gitmessage` — a commit message drafted on the AGENT's own
+ *  runtime (the CP never calls a model provider). Every way the draft can fail to appear
+ *  is data (`ok:false` + `detail`): nothing staged, a runtime that declines, a timeout. */
+export const WorkspaceGitMessageResultDto = z.object({
+  ok: z.boolean(), // true ⇒ `message` is present and usable
+  message: z.string().nullable(), // conventional-commit subject + optional body
+  detail: z.string().nullable() // human explanation of a refusal
+})
+
 // ── usage dashboard (aggregated from the persisted per-session usage store) ──
 export const UsageRange = z.enum(['d1', 'd7', 'd30', 'd90'])
 export const UsageQueryDto = z.object({
@@ -3135,4 +3195,7 @@ export type WorkspaceGitStatusDtoT = z.infer<typeof WorkspaceGitStatusDto>
 export type WorkspaceGitDiffDtoT = z.infer<typeof WorkspaceGitDiffDto>
 export type WorkspaceGitLogDtoT = z.infer<typeof WorkspaceGitLogDto>
 export type WorkspaceGitPullDtoT = z.infer<typeof WorkspaceGitPullDto>
+export type WorkspaceGitCommitResultDtoT = z.infer<typeof WorkspaceGitCommitResultDto>
+export type WorkspaceGitPushResultDtoT = z.infer<typeof WorkspaceGitPushResultDto>
+export type WorkspaceGitMessageResultDtoT = z.infer<typeof WorkspaceGitMessageResultDto>
 export type ErrorDtoT = z.infer<typeof ErrorDto>

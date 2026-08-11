@@ -1,15 +1,25 @@
 'use client'
 
-// The dock's Git tab (§3.3): the open session's worktree as a REVIEW surface — branch and ahead/behind, the staged and unstaged file lists with their `+`/`−` counts, and the newest commits with unpushed markers. A row opens that file's diff in the left-pane viewer, which this panel does not own.
-// M2 ships the read half only. Stage toggles, Stage all / Unstage all and the commit box are ABSENT rather than disabled: a control that cannot work is worse than a surface that does not claim to have one, and §9's M3 is where the write frames arrive.
-// Status, diff and log all come live from the owning daemon through the CP (body-locality), so an offline daemon, a from-scratch workspace, a clean tree, a capped status list and a daemon too old for the log are all expected answers, each drawn as data.
+// The dock's Git tab (§3.3): the open session's worktree as a WORKING surface — branch and ahead/behind, the staged and unstaged file lists with their `+`/`−` counts and a per-row stage toggle, Stage all / Unstage all, the commit box, and the newest commits with unpushed markers. A row opens that file's diff in the left-pane viewer, which this panel does not own.
+// M3 adds the write half. Every write runs on the OWNING DAEMON in the session's own worktree (§2) and answers with the fresh status, so the panel draws the result of its own action without a second read.
+// Status, diff, log and every write come live from that daemon through the CP (body-locality), so an offline daemon, a from-scratch workspace, a clean tree, a capped status list, a daemon too old for the log or for git writes, and a busy agent that refuses the write are all expected answers, each drawn as data.
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Spinner } from '@/components/marks'
 import { Icon } from '@/components/ui'
 import { formatFileMtime } from '@/components/console/FileBrowser'
+import { CommitBox } from '@/components/console/dock/CommitBox'
+import { gitWriteRequestFailureText } from '@/components/console/dock/git-write'
 import { StatusBadge, useWorkspaceGitStatus } from '@/components/console/workspace-tree'
-import { ApiError, fetchWorkspaceGitLog, type WorkspaceGitFileDto, type WorkspaceGitLogDto } from '@/lib/api'
+import {
+  ApiError,
+  fetchWorkspaceGitLog,
+  stageWorkspacePaths,
+  unstageWorkspacePaths,
+  type WorkspaceGitFileDto,
+  type WorkspaceGitLogDto,
+  type WorkspaceGitStatusDto
+} from '@/lib/api'
 import type { DockTabStatus } from './SessionDock'
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
@@ -105,8 +115,10 @@ export function GitPanel({
   refreshTick = 0,
   openPath,
   openStaged = false,
+  canWrite = false,
   onOpenDiff,
-  onVerdictChange
+  onVerdictChange,
+  onWrote
 }: {
   agentId: string
   /** ACP session id selecting that session's isolated worktree; omit for the agent's primary checkout. Pass it only when the session's `workspaceIsolation` is `'session'` — the daemon answers a shared-workspace sessionId with BAD_PAYLOAD, which the CP maps to a 503 that reads as "the daemon may be offline". */
@@ -117,15 +129,52 @@ export function GitPanel({
   openPath?: string | null
   /** Whether that open path is the STAGED diff, so the mark lands in the right section. */
   openStaged?: boolean
+  /** Whether the reader's role may mutate this agent's checkout. The write routes 403 a viewer, so its controls are WITHHELD rather than drawn to fail — the same rule that kept them absent in M2. Defaults closed: a caller that has not resolved a role has not established one. */
+  canWrite?: boolean
   /** A file row was pressed: open this path's diff, on this side of the index. The viewer is the caller's (§4). */
   /** A row was pressed. `untracked` rows have no diff to show — git prints nothing for a path it has never seen — so the caller opens the FILE instead. */
   onOpenDiff: (path: string, staged: boolean, untracked: boolean) => void
   /** The inputs to {@link gitTabStatus} and the tab's badge. */
   onVerdictChange?: (verdict: GitPanelVerdict) => void
+  /** This panel changed the checkout, so every OTHER reader of it is stale — the Files tree's status badges and any diff the viewer holds open. The panel's own status and log it refreshes itself. */
+  onWrote?: () => void
 }) {
-  const { git, outcome, primaryBranch } = useWorkspaceGitStatus(agentId, sessionId, refreshTick)
-  const log = useWorkspaceGitLog(agentId, sessionId, refreshTick)
+  // The panel's own re-read, summed with the tab action's: a commit empties the index and adds a commit, so status AND log have to come again — a stage does not, because its reply carries the fresh status. Both counters only ever increase, so their sum names a distinct read.
+  const [writeTick, setWriteTick] = useState(0)
+  const statusTick = refreshTick + writeTick
+  const { git: readGit, outcome, primaryBranch } = useWorkspaceGitStatus(agentId, sessionId, statusTick)
+  const log = useWorkspaceGitLog(agentId, sessionId, statusTick)
   const scope = `${agentId}:${sessionId ?? 'primary'}`
+  // The fresh status a stage/unstage answered with (§6: "the fresh `WorkspaceGitStatus`, so the panel never re-polls"). Keyed by the READ it replaces, so a refresh landing meanwhile wins and this is simply ignored rather than painting a pre-refresh tree over a newer one.
+  const [applied, setApplied] = useState<{ key: string; git: WorkspaceGitStatusDto } | null>(null)
+  const appliedKey = `${scope}:${statusTick}`
+  const git = applied?.key === appliedKey ? applied.git : readGit
+  // Which staging write is in flight, by its own key, so the pressed control alone shows the spinner. One at a time: the daemon serialises workspace mutations anyway, and two replies would race to be the applied status.
+  const [staging, setStaging] = useState<string | null>(null)
+  const [stageErr, setStageErr] = useState<string | null>(null)
+  // The re-entry latch is a REF, not `staging`: two clicks dispatched in one task both read the same pre-update state and the same not-yet-disabled button, so a double-click would send two writes. Measured on the commit box, which has the same shape.
+  const writing = useRef(false)
+
+  // Move paths across the index on the daemon. Only paths the checkout reports as changed on the relevant side are ever passed in, so an empty selection is the one no-op this refuses locally.
+  const moveIndex = async (kind: 'stage' | 'unstage', paths: string[], busyKey: string) => {
+    if (writing.current || paths.length === 0) return
+    writing.current = true
+    const key = appliedKey
+    setStaging(busyKey)
+    setStageErr(null)
+    try {
+      const write = kind === 'stage' ? stageWorkspacePaths : unstageWorkspacePaths
+      const fresh = await write(agentId, { paths, ...(sessionId ? { sessionId } : {}) })
+      // A from-scratch workspace answers `isRepo:false`; there are no sections to draw from it, so the read's own answer stands.
+      if (fresh.isRepo) setApplied({ key, git: fresh })
+      onWrote?.()
+    } catch (e) {
+      setStageErr(gitWriteRequestFailureText(statusOf(e), codeOf(e)))
+    } finally {
+      writing.current = false
+      setStaging(null)
+    }
+  }
   // The last answer, latched per scope like the Files panel's settle flag — and carrying the badge's count with it, so the tab reports `ready` once and a refresh keeps both the panel and its count on screen instead of blinking them off and back on behind an in-tree read.
   const [answer, setAnswer] = useState<{ scope: string; changed: number | null } | null>(null)
   useEffect(() => {
@@ -149,6 +198,14 @@ export function GitPanel({
 
   if (!settled) return null
 
+  // Why a push cannot work here, from the status the panel already holds. `branch:null` is exactly a detached HEAD, and a session worktree is created detached — those are the same two conditions the daemon answers with `detached-head` and `no-upstream`, so asking is a round trip whose answer is already on screen.
+  const pushHint =
+    git?.branch == null
+      ? 'This worktree has no branch checked out, so there is nothing to push. Commit here, then push from the agent’s primary checkout — or ask the agent to.'
+      : git.tracking == null
+        ? `Branch ${git.branch} tracks no remote branch, so the daemon has no ref to push it to.`
+        : null
+
   const branch = sessionId ? primaryBranch : (git?.branch ?? null)
   // A session worktree is detached, so the branch on screen is the primary checkout's — say so rather than implying the worktree sits on it.
   const branchTitle = sessionId
@@ -161,33 +218,53 @@ export function GitPanel({
     const selected = openPath === file.path && openStaged === staged
     // `??` on either half: git has never seen this path, so `git diff` prints nothing for it and a Diff view would say "no unstaged changes" about a file whose whole content is the change. Its content IS the diff, so the row opens the file.
     const untracked = file.index === '?' || file.workingDir === '?'
+    const busyKey = `${staged ? 'staged' : 'changes'}:${file.path}`
     return (
-      <button
-        key={`${staged ? 'staged' : 'changes'}:${file.path}`}
-        type="button"
-        data-git-row={file.path}
+      // A row with two targets, so it is a div with two buttons rather than a button inside a button: the path opens the diff, the trailing toggle moves it across the index.
+      <div
+        key={busyKey}
         // The Files tree's own row affordance, so a path hovers and marks itself the same way in both tabs.
-        className={`file-browser-item flex w-full cursor-pointer items-center gap-2 border-0 border-r-2 py-[5px] pr-[10px] pl-3 text-left [font:inherit] ${selected ? 'border-r-(--brand) bg-(--brand-soft)' : 'border-r-transparent bg-transparent'}`}
-        title={`${file.path}\n${untracked ? 'Untracked — open the file' : staged ? 'Staged — open its diff' : 'Not staged — open its diff'}`}
-        onClick={() => onOpenDiff(file.path, staged, untracked)}
+        className={`file-browser-item group flex w-full items-center border-0 border-r-2 pr-[6px] ${selected ? 'border-r-(--brand) bg-(--brand-soft)' : 'border-r-transparent bg-transparent'}`}
       >
-        <StatusBadge ch={staged ? (file.index ?? 'M') : (file.workingDir ?? 'M')} />
-        <span className="mono flex min-w-0 flex-1 items-baseline text-[12px] leading-normal">
-          {dir ? <span className="min-w-0 truncate font-normal text-(--text-tertiary)">{`${dir}/`}</span> : null}
-          <span className="flex-none truncate font-normal text-(--text-primary)">{name}</span>
-        </span>
-        {/* Counted by `git diff HEAD --numstat`, so they describe the file's WHOLE change against HEAD rather than this section's half — absent for an untracked file, a binary change, and a daemon too old to count. */}
-        {file.additions != null || file.deletions != null ? (
-          <span
-            className="mono flex-none text-[11px] font-medium leading-normal"
-            title="Lines added and removed against the last commit (staged and unstaged together)"
-          >
-            {file.additions != null ? <span className="text-(--status-online)">{`+${file.additions}`}</span> : null}
-            {file.additions != null && file.deletions != null ? ' ' : null}
-            {file.deletions != null ? <span className="text-(--status-error)">{`−${file.deletions}`}</span> : null}
+        <button
+          type="button"
+          data-git-row={file.path}
+          className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 border-0 bg-transparent py-[5px] pr-1 pl-3 text-left [font:inherit]"
+          title={`${file.path}\n${untracked ? 'Untracked — open the file' : staged ? 'Staged — open its diff' : 'Not staged — open its diff'}`}
+          onClick={() => onOpenDiff(file.path, staged, untracked)}
+        >
+          <StatusBadge ch={staged ? (file.index ?? 'M') : (file.workingDir ?? 'M')} />
+          <span className="mono flex min-w-0 flex-1 items-baseline text-[12px] leading-normal">
+            {dir ? <span className="min-w-0 truncate font-normal text-(--text-tertiary)">{`${dir}/`}</span> : null}
+            <span className="flex-none truncate font-normal text-(--text-primary)">{name}</span>
           </span>
+          {/* Counted by `git diff HEAD --numstat`, so they describe the file's WHOLE change against HEAD rather than this section's half — absent for an untracked file, a binary change, and a daemon too old to count. */}
+          {file.additions != null || file.deletions != null ? (
+            <span
+              className="mono flex-none text-[11px] font-medium leading-normal"
+              title="Lines added and removed against the last commit (staged and unstaged together)"
+            >
+              {file.additions != null ? <span className="text-(--status-online)">{`+${file.additions}`}</span> : null}
+              {file.additions != null && file.deletions != null ? ' ' : null}
+              {file.deletions != null ? <span className="text-(--status-error)">{`−${file.deletions}`}</span> : null}
+            </span>
+          ) : null}
+        </button>
+        {/* Revealed on hover (§11), and on keyboard focus — an invisible control in the tab order is one a keyboard reader cannot see they have reached. Always visible at ≤768px, where there is no hover to reveal it with. */}
+        {canWrite ? (
+          <button
+            type="button"
+            data-git-toggle={file.path}
+            className="iconbtn h-[22px] w-[22px] flex-none rounded-xs opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 disabled:pointer-events-none max-desktop:opacity-100"
+            disabled={staging !== null}
+            aria-label={staged ? `Unstage ${file.path}` : `Stage ${file.path}`}
+            title={staged ? 'Unstage this file' : 'Stage this file'}
+            onClick={() => void moveIndex(staged ? 'unstage' : 'stage', [file.path], busyKey)}
+          >
+            {staging === busyKey ? <Spinner size={11} /> : <Icon name={staged ? 'minus' : 'plus'} size={13} />}
+          </button>
         ) : null}
-      </button>
+      </div>
     )
   }
 
@@ -197,6 +274,29 @@ export function GitPanel({
         <div className="flex items-center gap-2 px-3 pt-[10px] pb-[5px] font-sans text-[10.5px] font-semibold tracking-[0.04em] uppercase leading-normal text-(--text-disabled)">
           <span>{title}</span>
           <span className="mono font-medium normal-case tracking-normal">{files.length}</span>
+          {/* One REQ for the whole section: the wire carries 500 paths and a status page is capped at 500, so a section can never overflow it. */}
+          {canWrite ? (
+            <button
+              type="button"
+              data-git-stage-all={staged ? 'staged' : 'changes'}
+              className="lnk ml-auto font-sans text-[11px] font-medium normal-case tracking-normal disabled:pointer-events-none disabled:opacity-50"
+              disabled={staging !== null}
+              title={
+                staged
+                  ? 'Take every file here out of the index; nothing in the working tree is touched'
+                  : 'Add every changed file here to the index'
+              }
+              onClick={() =>
+                void moveIndex(
+                  staged ? 'unstage' : 'stage',
+                  files.map((file) => file.path),
+                  `all:${staged ? 'staged' : 'changes'}`
+                )
+              }
+            >
+              {staging === `all:${staged ? 'staged' : 'changes'}` ? 'Working…' : staged ? 'Unstage all' : 'Stage all'}
+            </button>
+          ) : null}
         </div>
         {files.map((file) => fileRow(file, staged))}
       </div>
@@ -341,11 +441,39 @@ export function GitPanel({
           </div>
         ) : null}
       </div>
-      {/* Staging, Stage all / Unstage all and the commit box are M3 (§9). The tab says what it is instead of showing controls that cannot work yet. */}
-      <div className="flex flex-none items-center gap-2 border-t border-(--border-subtle) px-3 py-[7px] font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
-        <Icon name="eye" size={12} color="var(--text-tertiary)" className="flex-none" />
-        <span>Review only — staging and committing are not available here yet.</span>
-      </div>
+      {/* A staging write that never got an answer — a busy agent, a daemon too old for git writes, a disconnected one. It sits above the commit box because it belongs to the lists, not to the message. */}
+      {stageErr ? (
+        <div
+          data-git-stage-error=""
+          className="flex flex-none items-start gap-[6px] border-t border-(--border-subtle) px-3 py-[7px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--red-600)"
+        >
+          <Icon name="triangle-alert" size={13} color="var(--red-600)" className="mt-[2px] flex-none" />
+          <span>{stageErr}</span>
+        </div>
+      ) : null}
+      {/* The commit box only over a checkout: a from-scratch workspace has nothing to commit, and an unreadable one cannot be told what state it is in. A reader whose role cannot write gets the same sentence M2 gave everyone, because for them nothing changed.
+          Gated on the LATCHED verdict rather than the live `outcome`, unlike the Commits section above it: a refresh puts the read back to `pending` for a round trip, and unmounting this box would throw away a message the reader had typed — or paid a model to write. `changed !== null` is exactly "the last settled read found a checkout". */}
+      {changed !== null ? (
+        canWrite ? (
+          <CommitBox
+            agentId={agentId}
+            {...(sessionId ? { sessionId } : {})}
+            stagedCount={sections.staged.length}
+            {...(pushHint ? { pushHint } : {})}
+            onWrote={() => {
+              // A commit empties the index and adds a commit; a push moves the pushed markers and the ahead count. Neither reply carries a status, so both are re-read here — and the caller's own readers are stale too.
+              setApplied(null)
+              setWriteTick((tick) => tick + 1)
+              onWrote?.()
+            }}
+          />
+        ) : (
+          <div className="flex flex-none items-center gap-2 border-t border-(--border-subtle) px-3 py-[7px] font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
+            <Icon name="eye" size={12} color="var(--text-tertiary)" className="flex-none" />
+            <span>Review only — your role in this organization cannot change this checkout.</span>
+          </div>
+        )
+      ) : null}
     </div>
   )
 }

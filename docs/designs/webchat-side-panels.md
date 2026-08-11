@@ -701,6 +701,25 @@ the commit box with the wand button, and the viewer's Stage file / Unstage file
 action. _Exit:_ an operator can stage, commit and push an agent's work from the
 console.
 
+Known M3 follow-ups:
+
+- The **busy predicate is unpinned**: dropping both turn terms of `workspaceMutationBusy` leaves 162
+  tests green, so the half of serialisation that stops a console commit landing mid-turn has no
+  coverage for either coordinator. This predates M3 but M3 is what made it load-bearing.
+- `git add` / `git commit` hold the turn-admission fence without a ceiling, and a push holds it for
+  60s while cold-host turns fail hard.
+- A staged RENAME cannot be partially unstaged — it needs a `from` field on `GitStatusSummary` and
+  `WorkspaceGitFile` first.
+- The subject truncation can split a surrogate pair.
+- No concurrency cap on the wand across tabs or users, and each press rewrites the warm host's
+  selector caches (harmless today: only the prober and the extraction passes read them).
+- No audit record for a surface that commits and pushes as the agent.
+- The commit identity is GitHub-App-only, so M3's exit criterion is unmet for a deployment without
+  one. The refusal is correct and says so, but the capability is missing rather than degraded.
+- The write wiring in `SessionDetailView` was reconstructed after being lost to a stray
+  `git checkout` during review; two of its three parts were caught by existing tests and the third
+  (keeping header focus when the viewer closes) is still **unpinned**.
+
 **M4 — Tasks.** `task/list` + `task/cancel` frames over the existing lease
 bookkeeping, `GET /agents/:id/tasks` + cancel route, panel with state, elapsed
 and step. _Exit:_ background tasks are visible and cancellable.

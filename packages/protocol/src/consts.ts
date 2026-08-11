@@ -61,6 +61,27 @@ export const WORKSPACE_SESSION_READ_FEATURE = 'workspace-session-read-v1'
  * then surface as an offline daemon. */
 export const WORKSPACE_GIT_REVIEW_FEATURE = 'workspace-git-review-v1'
 
+/** Daemon serves the console's git WRITES — `workspace/gitstage`, `workspace/gitunstage`,
+ * `workspace/gitcommit` and `workspace/gitpush`. Checked before sending, for the same reason
+ * as the review feature: an older daemon ignores an unknown frame silently, so the REQ would
+ * burn its retransmit budget and then read as an offline daemon. The console renders the write
+ * controls as ABSENT (not inert) on a daemon without it. */
+export const WORKSPACE_GIT_WRITE_FEATURE = 'workspace-git-write-v1'
+
+/** Daemon serves `workspace/gitmessage` — the AI commit-message draft, run on the AGENT's own
+ * runtime. Separate from the write feature on purpose: it is not a write, and the console hides one
+ * button (the wand) on a daemon without it while keeping stage/commit/push. Checked before sending,
+ * like every other new frame: an older daemon ignores it silently and the REQ would burn its
+ * retransmit budget before reading as an offline daemon. */
+export const WORKSPACE_GIT_MESSAGE_FEATURE = 'workspace-git-message-v1'
+
+/** How long the CP must let ONE `workspace/gitmessage` REQ run before giving up, and it must send it
+ * single-shot (`{ ackTimeoutMs: WORKSPACE_GIT_MESSAGE_BUDGET_MS, maxTries: 1 }`). The default 5s ack
+ * timeout would retransmit an in-flight model pass four times: identical frame ids, so the daemon
+ * joins them into one pass, but the CP would still fail the request while the answer was coming.
+ * The daemon's own budget is strictly smaller, so the REP always wins this race. */
+export const WORKSPACE_GIT_MESSAGE_BUDGET_MS = 75_000
+
 /**
  * CP accepts the `event/session-purged` retention-GC receipt (#485) and marks the
  * session's stored metadata content-purged. Advertised by the CP in

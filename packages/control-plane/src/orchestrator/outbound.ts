@@ -56,6 +56,13 @@ import type {
   WorkspaceGitLog,
   WorkspaceGitPullReq,
   WorkspaceGitPullResult,
+  WorkspaceGitStageReq,
+  WorkspaceGitCommitReq,
+  WorkspaceGitCommitResult,
+  WorkspaceGitPushReq,
+  WorkspaceGitPushResult,
+  WorkspaceGitMessageReq,
+  WorkspaceGitMessageResult,
   MemoryChannelsReq,
   MemoryChannelsPage,
   MemoryListReq,
@@ -115,6 +122,7 @@ import {
   MAX_ORGANIZATION_SUGGESTION_BODY_BYTES,
   ORGANIZATION_SUGGESTION_CHUNK_BYTES,
   OrganizationSuggestionContentBody,
+  WORKSPACE_GIT_MESSAGE_BUDGET_MS,
   organizationSuggestionCanonical
 } from '@agentconnect.md/protocol'
 import type { LaunchRepo } from '../persistence/ports.js'
@@ -810,5 +818,64 @@ export class ControlSender {
   async workspaceGitPull(daemonId: string, req: WorkspaceGitPullReq): Promise<WorkspaceGitPullResult> {
     const c = this.must(daemonId)
     return c.conn.request<WorkspaceGitPullResult>('workspace/gitpull', req, { epoch: c.sessionEpoch })
+  }
+
+  /**
+   * Stage exactly these paths in an agent's checkout (or an authorized session
+   * worktree) on the owning daemon (REQ → `workspace/gitstage/result`). The REP is
+   * the FRESH `WorkspaceGitStatus`, so the console never re-polls for the result of
+   * its own action. An empty list, a path that is not currently changed and a
+   * non-repo workspace are all DATA.
+   */
+  async workspaceGitStage(daemonId: string, req: WorkspaceGitStageReq): Promise<WorkspaceGitStatus> {
+    const c = this.must(daemonId)
+    return c.conn.request<WorkspaceGitStatus>('workspace/gitstage', req, { epoch: c.sessionEpoch })
+  }
+
+  /** Unstage exactly these paths (REQ → `workspace/gitunstage/result`), answering with
+   *  the fresh status like {@link workspaceGitStage}. */
+  async workspaceGitUnstage(daemonId: string, req: WorkspaceGitStageReq): Promise<WorkspaceGitStatus> {
+    const c = this.must(daemonId)
+    return c.conn.request<WorkspaceGitStatus>('workspace/gitunstage', req, { epoch: c.sessionEpoch })
+  }
+
+  /**
+   * Commit the staged changes of an agent's checkout on the owning daemon (REQ →
+   * `workspace/gitcommit/result`), attributed to the daemon's registered
+   * `gitCommitIdentity`. Nothing staged, a blank message, no registered identity and
+   * a git refusal all come back as `ok:false` + `reason` (DATA), not an error frame.
+   * The CP forwards the message and stores none of it.
+   */
+  async workspaceGitCommit(daemonId: string, req: WorkspaceGitCommitReq): Promise<WorkspaceGitCommitResult> {
+    const c = this.must(daemonId)
+    return c.conn.request<WorkspaceGitCommitResult>('workspace/gitcommit', req, { epoch: c.sessionEpoch })
+  }
+
+  /**
+   * Push the checked-out branch to the daemon-authorized remote (REQ →
+   * `workspace/gitpush/result`). The daemon derives the refspec and never forces, so
+   * a diverged branch, a detached HEAD, a branch with no upstream and a remote
+   * rejection are all `ok:false` + `reason` (DATA), not error frames.
+   */
+  async workspaceGitPush(daemonId: string, req: WorkspaceGitPushReq): Promise<WorkspaceGitPushResult> {
+    const c = this.must(daemonId)
+    return c.conn.request<WorkspaceGitPushResult>('workspace/gitpush', req, { epoch: c.sessionEpoch })
+  }
+
+  /**
+   * Draft a commit message from the staged diff on the owning daemon, using the AGENT's own
+   * runtime (REQ → `workspace/gitmessage/result`). The CP is never on the inference path
+   * (webchat-side-panels.md §2) — it forwards a press and proxies the answer, storing nothing.
+   * Single-shot with a long ack window, unlike every other workspace REQ: the default 5s/5-tries
+   * budget would retransmit an in-flight model pass and then fail a request whose answer was coming.
+   */
+  async workspaceGitMessage(daemonId: string, req: WorkspaceGitMessageReq): Promise<WorkspaceGitMessageResult> {
+    const c = this.must(daemonId)
+    return c.conn.request<WorkspaceGitMessageResult>(
+      'workspace/gitmessage',
+      req,
+      { epoch: c.sessionEpoch },
+      { ackTimeoutMs: WORKSPACE_GIT_MESSAGE_BUDGET_MS, maxTries: 1 }
+    )
   }
 }

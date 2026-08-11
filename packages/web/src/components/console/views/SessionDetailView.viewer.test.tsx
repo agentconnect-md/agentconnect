@@ -19,10 +19,18 @@ const wire = vi.hoisted(() => ({
   git: { isRepo: false } as unknown,
   log: { isRepo: false, commits: [], truncated: false, tracking: null } as unknown,
   diffCalls: [] as Array<{ path: string; scope?: string; sessionId?: string }>,
+  /** Every git read and every git write the page issued, so the coherence of the panel and the viewer after a write is observable rather than assumed. */
+  gitCalls: 0,
+  // The commit log is the ONLY read the Git panel alone issues — FilesPanel reads the same git status, so a status counter cannot tell the two panels' re-reads apart.
+  logCalls: 0,
+  stageCalls: [] as Array<{ kind: 'stage' | 'unstage'; paths: string[]; sessionId?: string }>,
   /** A session with no agent behind it at all — there is no checkout to offer a workspace tab for. */
   agentless: false,
   rail: [] as unknown[]
 }))
+
+// The reader's role in the org. `viewer` is what the CP 403s on every git-write route, so the console withholds those controls.
+const org = vi.hoisted(() => ({ role: 'collaborator' as 'collaborator' | 'viewer' }))
 
 const NASTY_DIR = 'my dir+x'
 const NASTY_FILE = 'ノート a+b (1).md'
@@ -68,8 +76,22 @@ vi.mock('@/lib/api', async (importOriginal) => {
         nextCursor: null
       })
     }),
-    fetchWorkspaceGitStatus: vi.fn(() => Promise.resolve(wire.git)),
-    fetchWorkspaceGitLog: vi.fn(() => Promise.resolve(wire.log)),
+    fetchWorkspaceGitStatus: vi.fn(() => {
+      wire.gitCalls += 1
+      return Promise.resolve(wire.git)
+    }),
+    stageWorkspacePaths: vi.fn((_agentId: string, opts: { paths: string[]; sessionId?: string }) => {
+      wire.stageCalls.push({ kind: 'stage', ...opts })
+      return Promise.resolve(wire.git)
+    }),
+    unstageWorkspacePaths: vi.fn((_agentId: string, opts: { paths: string[]; sessionId?: string }) => {
+      wire.stageCalls.push({ kind: 'unstage', ...opts })
+      return Promise.resolve(wire.git)
+    }),
+    fetchWorkspaceGitLog: vi.fn(() => {
+      wire.logCalls += 1
+      return Promise.resolve(wire.log)
+    }),
     fetchWorkspaceGitDiff: vi.fn((_agentId: string, opts: { path: string; scope?: string; sessionId?: string }) => {
       wire.diffCalls.push(opts)
       return Promise.resolve({
@@ -154,7 +176,11 @@ vi.mock('@/lib/data-context', () => ({
 }))
 
 vi.mock('@/lib/org-context', () => ({
-  useOrgs: () => ({ activeOrg: { id: 'org-1', slug: 'acme' }, orgPath: (path: string) => `/acme${path}` })
+  useOrgs: () => ({
+    activeOrg: { id: 'org-1', slug: 'acme' },
+    myRole: org.role,
+    orgPath: (path: string) => `/acme${path}`
+  })
 }))
 
 vi.mock('@/lib/profile', () => ({ useProfile: () => ({ user: { name: 'Sam' }, me: null }) }))
@@ -256,6 +282,10 @@ beforeEach(() => {
   wire.git = { isRepo: false }
   wire.log = { isRepo: false, commits: [], truncated: false, tracking: null }
   wire.diffCalls = []
+  wire.gitCalls = 0
+  wire.logCalls = 0
+  wire.stageCalls = []
+  org.role = 'collaborator'
   wire.agentless = false
   wire.rail = []
   window.localStorage.clear()
@@ -657,6 +687,63 @@ describe('the Git tab', () => {
     expect(container?.querySelector('[data-viewer-diff]')).toBeNull()
     expect(wire.diffCalls).toEqual([])
     expect(container?.querySelector('[data-viewer-stale-link]')).not.toBeNull()
+  })
+
+  it('keeps the panel and the open diff in step after a stage from the Git panel', async () => {
+    wire.git = dirtyRepo
+    // A diff of that same path is on screen, which is the disagreement M2 recorded: the tab's refresh re-read status and log, never the viewer.
+    nav.search = 'file=src%2Fedited.ts&agent=agent-1&mode=diff'
+    await render()
+    await openTab('git')
+    const diffReads = wire.diffCalls.length
+    const listReads = wire.listCalls.length
+    const logReads = wire.logCalls
+
+    await act(async () => {
+      container?.querySelector<HTMLElement>('[data-git-toggle="src/edited.ts"]')?.click()
+      await Promise.resolve()
+    })
+    await render()
+
+    expect(wire.stageCalls).toEqual([{ kind: 'stage', paths: ['src/edited.ts'], sessionId: 'session-1' }])
+    // The viewer re-reads the diff it is showing, and the Files tree re-lists so its status badges are not left describing the tree before the write.
+    expect(wire.diffCalls.length).toBeGreaterThan(diffReads)
+    expect(wire.listCalls.length).toBeGreaterThan(listReads)
+    // The panel itself does NOT re-read: the write's reply carried the fresh status, which is the whole reason the REP has that shape (§6).
+    expect(wire.logCalls).toBe(logReads)
+  })
+
+  it('makes the panel re-read its lists after a stage from the VIEWER, which holds no fresh status', async () => {
+    wire.git = dirtyRepo
+    nav.search = 'file=src%2Fedited.ts&agent=agent-1&mode=diff'
+    await render()
+    await openTab('git')
+    const logReads = wire.logCalls
+
+    await act(async () => {
+      container?.querySelector<HTMLElement>('[data-viewer-stage]')?.click()
+      await Promise.resolve()
+    })
+    await render()
+
+    expect(wire.stageCalls).toEqual([{ kind: 'stage', paths: ['src/edited.ts'], sessionId: 'session-1' }])
+    // The panel made no write, so nothing handed it a fresh status: it has to ask again — status and log both.
+    expect(wire.logCalls).toBeGreaterThan(logReads)
+  })
+
+  it('withholds every write control from a viewer-role reader, in the panel and in the pane', async () => {
+    org.role = 'viewer'
+    wire.git = dirtyRepo
+    nav.search = 'file=src%2Fedited.ts&agent=agent-1&mode=diff'
+    await render()
+    await openTab('git')
+
+    expect(container?.querySelector('[data-git-toggle="src/edited.ts"]')).toBeNull()
+    expect(container?.querySelector('[data-commit-box]')).toBeNull()
+    expect(container?.querySelector('[data-viewer-stage]')).toBeNull()
+    // The diff is still readable — a viewer reviews, and is told why there is nothing to press.
+    expect(container?.querySelector('[data-viewer-diff]')).not.toBeNull()
+    expect(container?.querySelector('[data-git-panel]')?.textContent).toContain('Review only')
   })
 })
 

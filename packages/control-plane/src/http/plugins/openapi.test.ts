@@ -112,6 +112,46 @@ describe('openapi plane', () => {
     }
   })
 
+  it('names every git write route and documents its body and session scope', async () => {
+    const app = await buildReady()
+    try {
+      const doc = (await app.inject({ method: 'GET', url: '/api/v1/openapi.json' })).json() as Record<string, any>
+      const base = '/api/v1/orgs/{orgId}/agents/{id}/workspace'
+      const expected: Record<string, string> = {
+        gitstage: 'stageAgentWorkspacePaths',
+        gitunstage: 'unstageAgentWorkspacePaths',
+        gitcommit: 'commitAgentWorkspace',
+        gitpush: 'pushAgentWorkspace',
+        gitmessage: 'draftAgentWorkspaceCommitMessage'
+      }
+      for (const [path, operationId] of Object.entries(expected)) {
+        const op = doc.paths?.[`${base}/${path}`]?.post
+        expect(op, path).toMatchObject({ tags: ['Agent workspace'], operationId })
+        expect(op?.summary, path).toBeTruthy()
+        expect(op?.description, path).toBeTruthy()
+        // Every write is addressable at a session worktree, and every write can be
+        // refused by role (403), by staleness (409) or by an offline daemon (503).
+        expect(
+          (op?.parameters ?? []).map((p: any) => p.name),
+          path
+        ).toContain('sessionId')
+        expect(Object.keys(op?.responses ?? {}), path).toEqual(
+          expect.arrayContaining(['200', '400', '403', '404', '409', '503'])
+        )
+      }
+
+      // The two body-bearing writes document their payload; the other three take none.
+      const stageBody = doc.paths?.[`${base}/gitstage`]?.post?.requestBody
+      expect(stageBody?.content?.['application/json']?.schema?.properties?.paths?.type).toBe('array')
+      const commitBody = doc.paths?.[`${base}/gitcommit`]?.post?.requestBody
+      expect(commitBody?.content?.['application/json']?.schema?.properties?.message?.type).toBe('string')
+      expect(doc.paths?.[`${base}/gitpush`]?.post?.requestBody).toBeUndefined()
+      expect(doc.paths?.[`${base}/gitmessage`]?.post?.requestBody).toBeUndefined()
+    } finally {
+      await app.close()
+    }
+  })
+
   it('excludes non-public surfaces (/health) from the spec', async () => {
     const app = await buildReady()
     try {

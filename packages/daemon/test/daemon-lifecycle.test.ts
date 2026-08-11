@@ -426,6 +426,65 @@ describe('Daemon session lifecycle (#118)', () => {
     await daemon.stop()
   }, 20_000)
 
+  it('coordinates a console git write like a file write, minus the host stop', async () => {
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as any })
+    await daemon.start()
+    const agent = (daemon as any).agents.get('bot-a')
+    const stopHost = vi.spyOn(daemon as any, 'stopHost')
+
+    // Same per-agent serial tail: a preparation in flight holds the git write out.
+    let releasePreparation!: () => void
+    const preparationBlocked = new Promise<void>((resolve) => (releasePreparation = resolve))
+    let markPreparationEntered!: () => void
+    const preparationEntered = new Promise<void>((resolve) => (markPreparationEntered = resolve))
+    const preparing = (daemon as any).enqueueAgentWorkspacePreparation(agent, async () => {
+      markPreparationEntered()
+      await preparationBlocked
+    }) as Promise<void>
+    await preparationEntered
+
+    let wrote = false
+    const writing = (daemon as any).withWorkspaceIndexWrite('bot-a', async () => {
+      wrote = true
+    }) as Promise<void>
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    expect(wrote).toBe(false)
+    releasePreparation()
+    await preparing
+    await writing
+    expect(wrote).toBe(true)
+    // The distinguishing property: a stage toggle must not evict the warm ACP host, while a file
+    // write still does — the two coordinators differ in exactly this.
+    expect(stopHost).not.toHaveBeenCalled()
+    await (daemon as any).withWorkspaceFileWrite('bot-a', async () => undefined)
+    expect(stopHost).toHaveBeenCalledWith('bot-a')
+
+    // The turn-admission fence a dispatch waits on is published for a git write too.
+    let releaseWrite!: () => void
+    const writeBlocked = new Promise<void>((resolve) => (releaseWrite = resolve))
+    let markWriting!: () => void
+    const writeEntered = new Promise<void>((resolve) => (markWriting = resolve))
+    const fenced = (daemon as any).withWorkspaceIndexWrite('bot-a', async () => {
+      markWriting()
+      await writeBlocked
+    }) as Promise<void>
+    await writeEntered
+    expect((daemon as any).workspaceDispatchFences.has('bot-a')).toBe(true)
+    releaseWrite()
+    await fenced
+    // The fence is dropped in its own continuation, so let that microtask land before reading it.
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    expect((daemon as any).workspaceDispatchFences.has('bot-a')).toBe(false)
+
+    // And "busy" is the same predicate both coordinators refuse on.
+    ;(daemon as any).drainingAgents.add('bot-a')
+    await expect((daemon as any).withWorkspaceIndexWrite('bot-a', async () => 'ran')).rejects.toThrow(
+      /agent is working in this workspace/
+    )
+    ;(daemon as any).drainingAgents.delete('bot-a')
+    await daemon.stop()
+  }, 20_000)
+
   it('serializes workspace preparation and file publication in both admission orders', async () => {
     const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as any })
     await daemon.start()
