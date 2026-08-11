@@ -719,6 +719,11 @@ Known M3 follow-ups:
 - The write wiring in `SessionDetailView` was reconstructed after being lost to a stray
   `git checkout` during review; two of its three parts were caught by existing tests and the third
   (keeping header focus when the viewer closes) is still **unpinned**.
+- The commit draft has ONE source of truth: a module-level store the box reads through
+  `useSyncExternalStore`, with no copy in component state. Three earlier attempts coordinated the two
+  and each left a window open, the last being `A → B → A → resolve` — the remounted box read the store
+  before the answer landed and the completion then called an unmounted instance's setter. If a future
+  change reintroduces component state here, that class of bug comes back with it.
 - The `isUnbornHead` guard's remaining purpose — telling a read timeout or a spawn failure apart from
   an empty history — has **no constructible fixture**. Measured: every filesystem corruption git can
   be handed (a missing or unreadable `.git/objects`) makes git itself answer "not a git repository",

@@ -605,12 +605,14 @@ describe('GitPanel — staging', () => {
     await render({ canWrite: true })
     await click(container?.querySelector<HTMLElement>('[data-commit-draft]') ?? undefined, 'wand')
     await rerender({ canWrite: true, agentId: 'agent-b' })
+    // BACK to A before the answer lands: the remounted box has already read the store, so a
+    // completion that only writes the map and calls the old instance's setter never reaches it.
+    await rerender({ canWrite: true, agentId: 'agent-a' })
     await act(async () => {
       release?.()
       await Promise.resolve()
     })
 
-    await rerender({ canWrite: true, agentId: 'agent-a' })
     expect(container?.querySelector<HTMLTextAreaElement>('[data-commit-message]')?.value).toBe('fix: the paid answer')
   })
 
@@ -635,12 +637,14 @@ describe('GitPanel — staging', () => {
     })
     await click(container?.querySelector<HTMLElement>('[data-commit-submit]') ?? undefined, 'commit')
     await rerender({ canWrite: true, agentId: 'agent-b' })
+    // BACK to A before the commit lands, so the live box is the one that has to stop offering a
+    // message which is by then already in the history.
+    await rerender({ canWrite: true, agentId: 'agent-a' })
     await act(async () => {
       release?.()
       await Promise.resolve()
     })
 
-    await rerender({ canWrite: true, agentId: 'agent-a' })
     expect(box()?.value ?? '').toBe('')
   })
 
