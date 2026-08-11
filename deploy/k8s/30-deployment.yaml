@@ -45,7 +45,7 @@ spec:
         # both — and keeps the key out of the argument list, which is the point of not passing it
         # as a flag.
         - name: install-config
-          image: ghcr.io/agentconnect-md/daemon:<IMAGE_TAG>
+          image: ghcr.io/agentconnect-md/daemon:v1.41.0-rc.47
           command:
             - sh
             - -c
@@ -58,7 +58,7 @@ spec:
               mountPath: /var/lib/agentconnect
       containers:
         - name: daemon
-          image: ghcr.io/agentconnect-md/daemon:<IMAGE_TAG>
+          image: ghcr.io/agentconnect-md/daemon:v1.41.0-rc.47
           # ENTRYPOINT is `tini --`, and `args` replaces CMD without replacing it — so these are
           # tini's arguments and must name the interpreter. Dropping `node dist/index.js` here
           # makes tini try to exec `run`.

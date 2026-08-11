@@ -24,22 +24,26 @@ Control Plane never assigns it an agent, and nothing looks broken.
 
 ## Pinning the images
 
-Both manifests carry `<IMAGE_TAG>` rather than a version, deliberately: the tag
-has to be one built from a commit that contains the probe protocol, and no such
-release existed when these files were written. Pinning an older tag produces a
-daemon that starts, connects, and advertises nothing forever — which looks
-healthy.
+Both manifests pin `v1.41.0-rc.47`, the first tag whose daemon and runtime-sandbox
+images both carry the live-probe protocol. Use the same tag for both: a daemon
+that probes paired with a shim that cannot serve `probe` advertises nothing, and a
+shim that can paired with a daemon that reads a file finds no file.
 
-Use the same tag for both, and check it before applying:
+If you move the tag, check the shim actually serves the capability first:
 
 ```bash
 TAG=v1.41.0-rc.NN
 docker run --rm --entrypoint sh ghcr.io/agentconnect-md/runtime-sandbox:$TAG \
-  -c "grep -c \"'probe'\" /opt/agentconnect/shim/index.js"
+  -c "grep -c generate-runtime-table /opt/agentconnect/shim/index.js"
 ```
 
-A count of `0` means that image's shim predates the probe capability and will
-reject the daemon's request. The daemon says so explicitly if it happens.
+`1` means the probe handler is bundled in; `0` means that image predates it and
+the daemon will say so rather than failing vaguely.
+
+Grep for the string `probe` instead and you will mislead yourself — the bundler
+emits capability names with double quotes, so a single-quoted pattern reports `0`
+for an image that is perfectly fine. That mistake is why this command matches the
+generator path the handler references rather than the capability name.
 
 ## Apply
 
