@@ -73,7 +73,7 @@ RUN apt-get update \
   && apt-get install --no-install-recommends -y ca-certificates git openssh-client tini \
   && rm -rf /var/lib/apt/lists/*
 
-# Installed globally so the shim resolves a real executable on PATH. `--cloud` deliberately
+# Installed globally so the shim resolves a real executable on PATH. `--k8s` deliberately
 # refuses package-launcher (npx/uvx) entries: fetching a runtime at spawn time would mean the
 # image pin says nothing about what actually runs, and would need registry egress from a
 # sandbox that should have none.
@@ -125,7 +125,7 @@ RUN mkdir -p /run/agentconnect \
 # would describe an image that does not exist yet.
 #
 # Published as an image artifact rather than compiled into the daemon package: the daemon consumes
-# it in --cloud mode (a ConfigMap projection may override the path), and compiling it in would tie
+# it by PROBING a sandbox for it (the shim's probe channel), and compiling it in would tie
 # the image pin to the daemon version, which is the coupling this seam exists to avoid.
 COPY docker/runtime-sandbox/generate-runtime-table.mjs /opt/agentconnect/bin/generate-runtime-table.mjs
 # Probed AS THE RUNTIME USER, in a throwaway HOME and cwd that are deleted afterwards. Two reasons,

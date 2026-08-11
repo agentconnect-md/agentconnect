@@ -110,6 +110,22 @@ stale until a network fetch succeeds.
 
 ### Trust Model
 
+0. **Where "the daemon host" is depends on the mode.** Everything below describes
+   the self-hosted shape, where the daemon, the helper it writes and the git that
+   runs it share a filesystem and an OS user. Under `--k8s` they do not: the agent's
+   git runs in a sandbox pod, and the helper socket exists only on the daemon's
+   filesystem. The socket is reached through the shim's `gitcred` tunnel, the helper
+   is the runtime image's own root-owned executable, and every pointer the daemon
+   writes — the `credential.helper` line, `GIT_CONFIG_GLOBAL`, the socket path in
+   `AC_GITCRED_SOCKET` — is in the POD's coordinates, resolved from the same
+   predicate that decides where git executes. What does NOT change is this
+   section's substance: the capability is still per-agent and runtime-only, still
+   never written to disk, and the pod holds nothing longer-lived than one launch's
+   pair. What the pod adds is that the runtime is the untrusted party on the same
+   host as the socket's local end, which is why the tunnel names a closed set of
+   servers and the helper is unwritable by the runtime. See
+   [cluster-spawn-and-shim.md](cluster-spawn-and-shim.md) §6.
+
 1. **A daemon host running under one OS user is ultimately a single trust
    domain, but it must not expose an unrestricted token-vending interface.**
    In addition to `agentId`, the helper socket requires a temporary,

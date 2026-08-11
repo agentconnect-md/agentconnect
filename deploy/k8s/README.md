@@ -149,9 +149,18 @@ launch that started it.
 
 ## Known gaps in this stage
 
-- **GitHub-App git will not work in a sandbox yet.** The credential helper path
-  is still derived from a daemon-local shim path that does not exist in the pod.
-  Agents on public repos or without git are unaffected.
+- **`gh` is not in the runtime image.** Git authenticates through the shim's
+  `gitcred` tunnel, but the `gh` wrapper's per-repo `GH_TOKEN` path needs the
+  `gh` CLI in the sandbox and is not wired; an agent that shells out to `gh`
+  gets whatever `gh` it does not find.
+- **Skills are not installed for a cluster agent.** Acquisition, the ledger and
+  stale-executable removal are local-filesystem work, so pointing them at a pod
+  path would write onto the daemon's own disk.
+- **Session-isolated workspaces are refused** under `--k8s`, loudly: a logical
+  session worktree needs `worktree add` in the sandbox and a retention GC that
+  reads the pod's tree.
+- **The MCP bridge is not tunnelled.** The tunnel supports it, but the in-pod
+  `agentconnect mcp-bridge` that would dial it is not in the image.
 - **Direct provider egress.** No egress proxy: sandboxes reach providers
   directly, and provider keys are handed to the runtime rather than held by a
   proxy.

@@ -3,7 +3,7 @@
 How a daemon runs an agent's ACP runtime in a Kubernetes sandbox pod instead of as a
 local child process, and how the two halves talk. Companion to
 [cli-daemon-split.md](cli-daemon-split.md) §7 (trust boundaries) and
-[daemon-detailed-design.md](daemon-detailed-design.md) §2.6 (`--cloud`).
+[daemon-detailed-design.md](daemon-detailed-design.md) §2.6 (`--k8s`).
 
 Staged scope: this describes the mechanism. The hardened security model — an isolating
 runtimeClass, admission policy, egress control, and a managed egress proxy so a provider
@@ -48,9 +48,15 @@ driver performs the lookup where it applies.
 
 Once the runtime is in another pod, everything the daemon used to do by sharing a
 filesystem and a set of unix sockets needs an explicit protocol: materializing secrets and
-config files, proxying the git-credential and `gh` helper sockets, the MCP bridge, and the
-whole workspace git orchestration. The **shim** is the thin arm inside the sandbox that
-performs those, and it holds no policy — every decision stays in the daemon.
+config files, proxying the git-credential socket, the MCP bridge, and the whole workspace
+git orchestration. The **shim** is the thin arm inside the sandbox that performs those, and
+it holds no policy — every decision stays in the daemon.
+
+The tunnel names a **closed set** of daemon-side servers (`gitcred`, `mcp`) at paths the
+runtime image fixes. `gh`'s token helper is not among them because it shares `gitcred.sock`
+with the credential helper: a second name would be a second in-pod path onto one server.
+`mcp` is declared but not yet opened — the in-pod bridge that would dial it is not in the
+image, so a listener for it would be a socket nothing can use.
 
 **The shim dials out; the daemon listens.** The sandbox therefore needs zero inbound: its
 NetworkPolicy keeps an empty ingress list and no per-sandbox Service exists. The reverse
@@ -128,4 +134,35 @@ would actually be a trust-boundary move: the shim is the half-trusted side.
 
 `exec` takes an argv array and never composes a shell string, and path containment is
 re-checked on the shim side — a daemon-side check cannot assume anything about the shim's
-environment.
+environment. That re-check covers the `cwd` **and** a clone's target, which is a path in
+argv the cwd fence never looks at.
+
+## 6. The credential tunnel, and which way it runs
+
+A tunnel exists because a process **inside** the pod wants a daemon-side server, while shim
+requests only ever flow daemon → shim. So the pod announces each accepted connection as a
+`connect` event on a stream id it mints, and the daemon answers by dialling its own socket;
+bytes then travel as events one way and `data` requests the other.
+
+Its listeners belong to the **pod**, not to a channel. The shim re-dials at half the
+credential TTL, and a socket torn down on every renewal would break any client mid-request —
+so `listen` is idempotent and the socket lives as long as the pod does.
+
+A frame that was travelling when the socket was replaced is a different matter, and the
+resolution is deliberate: the renewal aborts requests in flight, and that abort says a
+_reply_ was lost, not whether the request landed. Re-sending is therefore unsafe — these
+tunnels carry request/response protocols where a duplicated fragment is a corrupt request
+rather than a retry — so the stream is **terminated** and the in-pod client sees EOF at once.
+For git that is an authentication failure it can be retried, where leaving the stream open
+would be git waiting out an idle timeout. Streams that were idle across the renewal are
+untouched.
+
+This is why a bound channel is announced only after its `shim/bound` frame is on the wire:
+the peer refuses anything that arrives ahead of its own binding, so an earlier notification
+made that cleanup unserviceable. Ordering on the socket is what makes the fix sufficient
+rather than merely likely.
+
+The helper git runs in the pod is the runtime image's own executable, root-owned and
+unwritable by the runtime — one it could rewrite is one it could replace with a helper that
+asks the daemon for credentials in its name. It shares its implementation with the daemon's
+CLI helper and differs only in which socket it dials.
