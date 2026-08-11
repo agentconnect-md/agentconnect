@@ -396,7 +396,7 @@ SessionsPanel.tsx      the ex-SessionRail row / pin / filter body, re-hosted
 FilesPanel.tsx         narrow single-column tree over WorkspaceFiles' read model
 GitPanel.tsx           status + numstat + staging + commit box + log
 PullRequestPanel.tsx   the /sessions/:id/pull-request projection + Auto-fix / auto-merge actions
-TasksPanel.tsx         task list (read-only — §3.5); polls only while visible and something runs
+TasksPanel.tsx         task list (read-only — §3.5); polls while visible, backed off when idle
 ```
 
 and `packages/web/src/components/console/viewer/`:
@@ -807,16 +807,24 @@ is not a checkout:
   is checked out into, which is what the CP route says too. What it does need is
   the CANONICAL session id the lease is keyed by, so a playground session the
   daemon has not created yet gets no tab rather than a 404 notice.
-- **Polling is gated on visible-AND-running, plus one read on the tab's own
-  activation edge.** A settled list has no transition left for a read to reveal,
-  and a hidden panel is a request nobody is looking at — but the panel is mounted
-  from the moment the session page opens, so without the activation read a tab
-  opened ten minutes later would draw a ten-minute-old list and no timer would
-  ever correct it (nothing was running when it was read). Elapsed ticks
-  client-side from `startedAt`, so the 1s redraw costs no request. The
-  consequence, accepted: the tab's running badge is only as fresh as the last read
-  while the tab is closed — exactly what the Git tab's changed-count badge already
-  is.
+- **Polling is gated on VISIBILITY alone, backed off when idle, plus one read on
+  the tab's own activation edge.** Visibility is the whole gate because a hidden
+  panel is a request nobody is looking at, while a visible one always has
+  something left to discover. The first version also required a running task, on
+  the reasoning that a settled list has no transition left to reveal — that was
+  wrong about what the panel watches. It watches a **session**, not the rows on
+  screen, and a session starts new background tasks: most directly when the reader
+  leaves this tab open and sends another prompt from the composer beside it.
+  Nothing in that path bumps the panel's revision, so an idle panel that stopped
+  polling never observed the `0 → running` edge and the new task stayed invisible
+  until a manual refresh. Found in review of #854. The idle cadence is backed off
+  (20s vs 5s) rather than equal, because an idle session usually stays idle. The
+  activation read stays for a different reason: the panel is mounted from the
+  moment the session page opens, so a tab opened ten minutes later would otherwise
+  draw a ten-minute-old list until the next interval. Elapsed ticks client-side
+  from `startedAt`, so the 1s redraw costs no request. The consequence, accepted:
+  the tab's running badge is only as fresh as the last read while the tab is
+  closed — exactly what the Git tab's changed-count badge already is.
 
 Known M4 follow-ups, none of which change what the code does today:
 

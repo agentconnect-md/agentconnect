@@ -334,16 +334,54 @@ describe('TasksPanel polling', () => {
     expect(wire.calls).toHaveLength(1)
   })
 
-  it('does NOT poll an idle list, because a settled task has no transition left to find', async () => {
+  // PREMISE CORRECTED (review of #854): this case previously asserted that an idle VISIBLE panel
+  // stops polling, on the reasoning that a settled task has no transition left to find. That was
+  // wrong about what the panel watches. It watches a SESSION, not the rows on screen, and the
+  // session starts new background tasks — most directly when the reader leaves this tab open and
+  // sends another prompt from the composer beside it. Nothing in that path bumps the panel's
+  // revision, so the old behavior meant the 0 -> running edge was never observed and a new task
+  // stayed invisible until a manual refresh. The assertion is re-aimed at the backed-off cadence,
+  // not deleted: the thing worth protecting is that an idle panel polls LESS, not that it stops.
+  it('keeps polling an idle VISIBLE list at the backed-off cadence, so a task starting later shows up', async () => {
     vi.useFakeTimers()
     wire.data = tasks({ tasks: [task({ state: 'done', endedAt: NOW_ISO })] })
     await render({ active: true })
     expect(wire.calls).toHaveLength(1)
 
+    // Slower than the running cadence: the running interval would have fired by now, the idle one
+    // has not. This is what pins the two apart rather than just "it polls sometimes".
     await act(async () => {
-      vi.advanceTimersByTime(30_000)
+      vi.advanceTimersByTime(5_000)
     })
     expect(wire.calls).toHaveLength(1)
+
+    await act(async () => {
+      vi.advanceTimersByTime(15_000)
+    })
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(wire.calls).toHaveLength(2)
+  })
+
+  it('discovers a task that starts while an untracked session sits open, with no refresh press', async () => {
+    // The reviewer's exact scenario: Tasks opened over an empty/untracked lease, then a prompt sent
+    // from the composer starts a background task. `running` is 0 the whole time the panel is
+    // waiting, so a poll gated on `running > 0` would never fire and the badge would stay empty.
+    vi.useFakeTimers()
+    wire.data = tasks({ tracked: false })
+    await render({ active: true })
+    expect(last()).toEqual({ settled: true, running: null })
+
+    wire.data = tasks({ tasks: [task()] })
+    await act(async () => {
+      vi.advanceTimersByTime(20_000)
+    })
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(rows()).toHaveLength(1)
+    expect(last()).toEqual({ settled: true, running: 1 })
   })
 
   it('re-reads on the tab action, without waiting for a poll', async () => {

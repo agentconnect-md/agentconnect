@@ -16,8 +16,17 @@ const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
 const statusOf = (e: unknown) => (e instanceof ApiError ? e.status : null)
 const codeOf = (e: unknown) => (e instanceof ApiError && e.code ? e.code : null)
 
-/** How often a visible panel re-reads while something is running. A state transition is the only thing a read can reveal — elapsed ticks from `startedAt` without one. */
+/** How often a visible panel re-reads while something is running. */
 const POLL_MS = 5_000
+
+/** How often a visible panel re-reads while NOTHING is running. A visible panel must keep reading
+ *  even from an idle snapshot: what it watches is a SESSION, not the rows it happens to be showing,
+ *  and the session starts new background tasks — most directly when the reader leaves this tab open
+ *  and sends another prompt from the composer beside it. Nothing in that path bumps this panel's
+ *  revision, so an idle panel that stopped polling would never observe the 0 -> running edge and
+ *  the new task would stay invisible until a manual refresh. Backed off rather than equal to
+ *  {@link POLL_MS} because an idle session usually stays idle. */
+const IDLE_POLL_MS = 20_000
 
 /** How often a running row's elapsed time redraws. Client-side arithmetic, no request. */
 const TICK_MS = 1_000
@@ -121,10 +130,12 @@ export function TasksPanel({
     wasActive.current = active
   }, [active])
 
-  // Only a VISIBLE panel with something running polls. An idle list has no transition to find, and a hidden one is a request nobody is looking at.
+  // A VISIBLE panel always polls; only the cadence depends on what it is showing. Visibility is the
+  // whole gate because a hidden panel is a request nobody is looking at, whereas an idle VISIBLE one
+  // still has the 0 -> running edge to discover (see {@link IDLE_POLL_MS}).
   useEffect(() => {
-    if (!active || running === 0) return
-    const timer = setInterval(() => setOwnTick((tick) => tick + 1), POLL_MS)
+    if (!active) return
+    const timer = setInterval(() => setOwnTick((tick) => tick + 1), running > 0 ? POLL_MS : IDLE_POLL_MS)
     return () => clearInterval(timer)
   }, [active, running])
 
