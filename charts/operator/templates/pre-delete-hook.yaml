@@ -11,9 +11,12 @@ metadata:
     app.kubernetes.io/instance: {{ .Release.Name }}
   annotations:
     helm.sh/hook: pre-delete
+    # A failed hook Job survives on purpose: `kubectl logs` on it is the diagnosis.
     helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
 spec:
   backoffLimit: 0
+  # An unreachable API server must fail the uninstall, not hang it.
+  activeDeadlineSeconds: 120
   template:
     metadata:
       labels:
@@ -21,10 +24,18 @@ spec:
         app.kubernetes.io/instance: {{ .Release.Name }}
     spec:
       restartPolicy: Never
+      # The operator's own SA: listing the CRs is a permission it already holds.
       serviceAccountName: {{ .Release.Name }}-operator
       containers:
         - name: guard
           image: '{{ .Values.operator.image.repository }}:{{ .Values.operator.image.tag | default .Chart.AppVersion }}'
-          # TODO(chart): replace with a real check — list agentconnectorgs in this
-          # namespace and exit non-zero (failing the uninstall) when any remain.
-          command: ['node', '-e', 'console.log("TODO: fail when AgentConnectOrg resources remain"); process.exit(0)']
+          # tini is ENTRYPOINT, so args must name the interpreter. The subcommand reads
+          # nothing but the in-cluster identity, hence no env from the operator's install.
+          args: ['node', 'dist/index.js', 'preflight-uninstall']
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop:
+                - ALL

@@ -82,3 +82,12 @@ until then install from this directory.)
 Delete every `AgentConnectOrg` first and wait for finalizers to complete — the
 pre-delete hook refuses to uninstall while CRs remain, because removing the
 operator strands their finalizers.
+
+The hook is a Job running the operator image's `preflight-uninstall` subcommand
+under the operator's own ServiceAccount: it lists the CRs in the release
+namespace and exits non-zero, naming them, if any are left. A failed hook Job is
+kept, so its log is the diagnosis:
+
+```bash
+kubectl -n CONTROL_NAMESPACE logs job/RELEASE_NAME-operator-pre-delete
+```

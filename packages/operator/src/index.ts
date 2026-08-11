@@ -5,10 +5,28 @@ import { K8sHttp, LeaseElector, loadInClusterConfig } from '@agentconnect.md/k8s
 import { loadConfig } from './config.js'
 import { Controller } from './controller.js'
 import { AgentConnectOrgApi } from './crd/api.js'
+import { preflightUninstall } from './preflight.js'
 import { reconcile } from './reconcile/reconcile.js'
 import type { ReconcileContext } from './reconcile/context.js'
 
-export async function main(): Promise<void> {
+/** Hidden subcommand: the chart's pre-delete hook runs it, nobody types it. */
+const PREFLIGHT_UNINSTALL = 'preflight-uninstall'
+
+// No loadConfig(): the guard only needs the in-cluster identity, so the hook Job
+// carries none of the operator's install-time env.
+async function runPreflightUninstall(): Promise<void> {
+  const cluster = loadInClusterConfig()
+  const result = await preflightUninstall(new AgentConnectOrgApi(new K8sHttp(cluster), cluster.namespace))
+  if (result.remaining.length === 0) {
+    console.log(result.message)
+    return
+  }
+  console.error(result.message)
+  process.exit(1)
+}
+
+export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
+  if (argv[0] === PREFLIGHT_UNINSTALL) return runPreflightUninstall()
   const config = loadConfig()
   const cluster = loadInClusterConfig()
   const http = new K8sHttp(cluster)

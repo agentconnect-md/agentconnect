@@ -24,4 +24,7 @@ Onboard an org by applying an AgentConnectOrg into {{ .Release.Namespace }}
 together with its daemon credential Secret in the target namespace.
 
 Before uninstalling: delete every AgentConnectOrg and wait for finalizers —
-the pre-delete hook refuses to remove the operator while CRs remain.
+the pre-delete hook refuses to remove the operator while CRs remain. When it
+does, it names them here:
+
+  kubectl -n {{ .Release.Namespace }} logs job/{{ .Release.Name }}-operator-pre-delete
