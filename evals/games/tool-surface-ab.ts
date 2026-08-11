@@ -252,16 +252,16 @@ export const THREAD_COUNT_SCENARIO = {
  *  `mcp.agentconnect.post` the daemon equally supports (daemon.ts FQN
  *  matching) — and the Claude Code runtime's own built-in `SendMessage` (the
  *  #800 name-collision hazard). During the in-thread game every one of them
- *  is the #801 failure mode. Matching is by name SEGMENT, so `compost` or
- *  `postpone` never match while any separator spelling of `post` does. */
+ *  is the #801 failure mode. Matching is by BOUNDED name segment: some ACP
+ *  adapters suffix an opaque invocation id to the flattened FQN (daemon.ts
+ *  `containsBuiltinToolFqn`, e.g. `mcp__agentconnect__post-42`), so `post`
+ *  must match wherever it appears as its own separator-delimited segment —
+ *  while `compost`/`postpone` never do. The gate's bias is deliberate: an
+ *  over-match makes a reviewable FAIL, an under-match a silent false PASS. */
 export function isMessagingToolName(name: string): boolean {
   const normalized = name.toLowerCase()
   if (normalized.includes('sendmessage')) return true
-  const lastSegment = normalized
-    .split(/[^a-z0-9]+/)
-    .filter(Boolean)
-    .at(-1)
-  return lastSegment === 'post'
+  return /(^|[^a-z0-9])post([^a-z0-9]|$)/.test(normalized)
 }
 
 export interface ThreadCountEffect {

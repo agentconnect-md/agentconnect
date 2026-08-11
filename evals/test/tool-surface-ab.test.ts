@@ -234,6 +234,11 @@ describe('messaging-tool name matcher', () => {
     // The daemon supports the dotted ACP identity too (daemon.ts FQN matching):
     // a call under that spelling must not slip past the hard rule.
     expect(isMessagingToolName('mcp.agentconnect.post')).toBe(true)
+    // ...and adapters may suffix an opaque invocation id to the flattened FQN
+    // (daemon.ts containsBuiltinToolFqn) — the suffixed spellings must match.
+    expect(isMessagingToolName('mcp__agentconnect__post-42')).toBe(true)
+    expect(isMessagingToolName('mcp.agentconnect.post-42')).toBe(true)
+    expect(isMessagingToolName('mcp__agentconnect__sendMessage-42')).toBe(true)
     expect(isMessagingToolName('listAgents')).toBe(false)
     expect(isMessagingToolName('setSessionTitle')).toBe(false)
     expect(isMessagingToolName('compost')).toBe(false)
@@ -379,17 +384,22 @@ describe('in-thread turn-taking judge — hard rules', () => {
     expect(verdict.failures[0]).toContain('reached 4 of 6')
   })
 
-  it('fails on the dotted ACP identity of the façade too', () => {
-    const verdict = judgeThreadCount({
-      target: 6,
-      participants: [RUNNER, PEER],
-      channel: CHANNEL,
-      thread: THREAD,
-      effects: cleanReplies(6),
-      events: [...messagingCall(PEER, 't8', 'mcp.agentconnect.post'), ...turns(RUNNER, 3), ...turns(PEER, 3)]
-    })
-    expect(verdict.pass).toBe(false)
-    expect(verdict.messagingToolCalls[0]!.tool).toBe('mcp.agentconnect.post')
+  it('fails on the dotted and invocation-id-suffixed ACP identities of the façade too', () => {
+    // Adapters legitimately spell the same tool `mcp.agentconnect.post` or
+    // suffix an opaque invocation id (`mcp__agentconnect__post-42`); every
+    // spelling must fail the hard rule identically.
+    for (const spelling of ['mcp.agentconnect.post', 'mcp__agentconnect__post-42', 'mcp.agentconnect.post-42']) {
+      const verdict = judgeThreadCount({
+        target: 6,
+        participants: [RUNNER, PEER],
+        channel: CHANNEL,
+        thread: THREAD,
+        effects: cleanReplies(6),
+        events: [...messagingCall(PEER, 't8', spelling), ...turns(RUNNER, 3), ...turns(PEER, 3)]
+      })
+      expect(verdict.pass, `${spelling} must fail the hard rule`).toBe(false)
+      expect(verdict.messagingToolCalls[0]!.tool).toBe(spelling)
+    }
   })
 
   it('does not count numbers posted OUTSIDE the game thread toward the count', () => {
