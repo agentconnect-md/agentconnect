@@ -189,7 +189,10 @@ Three properties this shape buys:
   — is still drained. Keying by agent would have made exactly the idle case unreachable.
 - **In-flight work is held, not raced.** Work leases its Sandbox: the bind, the cold workspace
   preparation that runs in the pod after it (clone, pull, skill materialization — one lease around
-  the whole of it, not around the bind alone), and the runtime until it exits. A request that
+  the whole of it, not around the bind alone), the runtime until it exits, and the runtime probe
+  across its whole request rather than across its bind — a probe can run for minutes with nothing
+  else marking that sandbox as in use, and a daemon whose probe failed advertises no runtimes and
+  does not retry. A request that
   arrives while a lease is held waits for it instead of pulling the pod out from under it.
   Taking a lease on an already-draining instance is refused instead, by type
   (`SandboxDrainingError` → the `draining` launch outcome): nothing has started yet, so the

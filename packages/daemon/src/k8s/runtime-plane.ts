@@ -268,11 +268,18 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
       // A sandbox of its own, under a reserved id, so a probe never adopts or disturbs an
       // agent's instance — and is torn down afterwards rather than left holding a pod.
       try {
-        await driver.ensureBoundChannel(PROBE_AGENT_ID, undefined, PROBE_GRANTS)
-        const session = driver.sessionFor(PROBE_AGENT_ID)
-        if (!session) throw new Error('probe sandbox bound no session')
-        const raw = await session.request('probe', {}, { timeoutMs: PROBE_TIMEOUT_MS })
-        return K8sRuntimeTableSchema.parse(raw)
+        // The lease covers the REQUEST, not just the bind: the probe can run for minutes while
+        // nothing else marks that sandbox as in use, and both suspension paths — a rollout's
+        // drain and the idle sweep — read exactly this lease to decide the pod is spare. Losing
+        // the pod mid-probe fails the probe, and a daemon that failed its probe advertises no
+        // runtimes and does not retry.
+        return await driver.withSandbox(PROBE_AGENT_ID, async () => {
+          await driver.ensureBoundChannel(PROBE_AGENT_ID, undefined, PROBE_GRANTS)
+          const session = driver.sessionFor(PROBE_AGENT_ID)
+          if (!session) throw new Error('probe sandbox bound no session')
+          const raw = await session.request('probe', {}, { timeoutMs: PROBE_TIMEOUT_MS })
+          return K8sRuntimeTableSchema.parse(raw)
+        })
       } finally {
         await driver.removeAgent(PROBE_AGENT_ID).catch((err: unknown) => {
           // A leaked probe sandbox costs a pod and a volume, so say so loudly rather than
