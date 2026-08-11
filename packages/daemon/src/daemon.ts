@@ -17945,19 +17945,7 @@ export class Daemon {
     this.serialQueue.clear()
   }
 
-  /**
-   * §6.9 #353 startup replay: re-admit durably-persisted admitted-but-not-completed inbox rows
-   * through the SAME serial gate (`dispatch`), FIFO-by-sessionKey (rows come back ordered by
-   * (sessionKey, enqueuedAt), so order within a sessionKey is preserved and the gate keeps them
-   * serial). Runs once on start() after the store is open, agents are loaded into `this.agents`,
-   * and platform connections/crons are up (so a re-admitted turn has its reply transport), as
-   * normal inbound begins. Idempotency: a row whose id is already live in the gate (`liveInboxIds`)
-   * is skipped — dispatch re-appends the same id with INSERT OR IGNORE so no double row is written,
-   * and the re-admitted entry adopts the existing row for later removal. Rows for an agent that no
-   * longer exists on this daemon are SKIPPED + logged (the simplest choice — another owner/daemon
-   * may hold that agent; we neither drop the row nor block on it). Webchat turns were never
-   * persisted, so none appear here.
-   */
+  /** Re-admit durable inbox rows through the serial gate at startup while preserving replay ownership and FIFO. */
   private replayInbox(agentIds?: ReadonlySet<string>): void {
     let rows: InboxRow[]
     try {
@@ -18059,7 +18047,7 @@ export class Daemon {
         row.agentId,
         msg,
         row.integrationId ?? undefined,
-        undefined,
+        msg.source === 'agent' ? this.webchatWakeContext(msg.platform, msg.channel) : undefined,
         callMeta,
         {
           ...(row.isQueueCmd ? { isQueueCmd: true } : {}),
