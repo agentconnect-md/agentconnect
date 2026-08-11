@@ -37,6 +37,7 @@
   "dependencies": {
     "@agentconnect.md/connection": "workspace:*",
     "@agentconnect.md/k8s-client": "workspace:*",
+    "@agentconnect.md/observability": "workspace:*",
     "zod": "^4.4.3"
   },
   "devDependencies": {

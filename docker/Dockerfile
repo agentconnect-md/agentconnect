@@ -236,10 +236,11 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
 
 COPY . .
 
-# protocol → connection → k8s-client → operator (topological).
+# protocol → connection → k8s-client → observability → operator (topological).
 RUN pnpm --filter "@agentconnect.md/protocol" \
   --filter "@agentconnect.md/connection" \
   --filter "@agentconnect.md/k8s-client" \
+  --filter "@agentconnect.md/observability" \
   --filter "@agentconnect.md/operator" \
   -r build
 

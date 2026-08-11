@@ -109,6 +109,20 @@ helm install ENV_NAME oci://ghcr.io/agentconnect-md/charts/agentconnect-operator
 (Chart publishing to the OCI registry lands with the release-pipeline wiring;
 until then install from this directory.)
 
+## Telemetry
+
+The operator ships the same OpenTelemetry bootstrap as the other services and
+starts nothing unless the standard `OTEL_*` environment is present, so an
+install that wants traces points it at a collector through
+`operator.extraEnv` (raw container env entries, empty by default):
+
+```yaml
+operator:
+  extraEnv:
+    - name: OTEL_EXPORTER_OTLP_ENDPOINT
+      value: http://<collector-service>.<collector-namespace>:4318
+```
+
 ## Uninstall
 
 Delete every `AgentConnectOrg` first and wait for finalizers to complete — the

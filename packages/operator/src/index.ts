@@ -5,6 +5,7 @@ import { K8sHttp, LeaseElector, loadInClusterConfig } from '@agentconnect.md/k8s
 import { loadConfig } from './config.js'
 import { Controller } from './controller.js'
 import { AgentConnectOrgApi } from './crd/api.js'
+import { startOperatorOpenTelemetry } from './observability.js'
 import { preflightUninstall } from './preflight.js'
 import { reconcile } from './reconcile/reconcile.js'
 import type { ReconcileContext } from './reconcile/context.js'
@@ -27,6 +28,8 @@ async function runPreflightUninstall(): Promise<void> {
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
   if (argv[0] === PREFLIGHT_UNINSTALL) return runPreflightUninstall()
+  // Before the API client exists, so its calls are instrumented. No-op unless OTLP is configured.
+  const telemetry = startOperatorOpenTelemetry()
   const config = loadConfig()
   const cluster = loadInClusterConfig()
   const http = new K8sHttp(cluster)
@@ -56,6 +59,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     void elector
       .stop()
       .then(() => controller.onStoppedLeading())
+      // Last, so spans from the drain above still make it out.
+      .then(() => telemetry.shutdown())
+      .catch((error: unknown) => log.warn(`operator shutdown failed: ${(error as Error).message}`))
       .finally(() => process.exit(0))
   }
   process.on('SIGTERM', () => shutdown('SIGTERM'))

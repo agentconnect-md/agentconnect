@@ -22,3 +22,7 @@ operator:
   resyncIntervalSeconds: 600
   leaseName: agentconnect-operator
   watchTimeoutSeconds: 300
+  # Raw container env entries appended to the operator's own. The operator needs
+  # none of them; this is where an install points OpenTelemetry at its own
+  # collector (see the chart README). Telemetry stays off while this is empty.
+  extraEnv: []
