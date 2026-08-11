@@ -322,8 +322,7 @@ export interface HttpDeps {
   /** github-app workspaces façade; absent ⇒ feature disabled (GITHUB_APP_* unset) and
    *  every github route 404s. */
   github?: GithubService
-  /** The console PR panel's read projection; absent on the same terms as {@link github}, and the
-   *  route 404s then, which is what hides the tab. */
+  /** The PR panel's read projection; absent like {@link github} ⇒ the route 404s, hiding the tab. */
   pullRequestView?: PullRequestViewService
   /** Per-user repo authorization (identity assertion, open question #7); absent ⇒ the
    *  org-level model (installation coverage only) and the permission route 404s. */

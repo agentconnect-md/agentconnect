@@ -111,28 +111,28 @@ export async function githubRequest<T>(path: string, opts: GithubRequestOpts): P
   throw new GithubApiError(`github error (${res.status}): ${detail}`, res.status, 'INTERNAL', res.status >= 500)
 }
 
-/** One GraphQL query/mutation → its `data`, for the handful of facts REST does not carry.
- *  Review-thread RESOLUTION state is the reason this exists: `/pulls/:n/comments` returns the
- *  comments but has no `isResolved` on any REST route, so a panel that names unresolved threads
- *  cannot be built on REST alone. `resolveReviewThread` and `enablePullRequestAutoMerge` are
- *  likewise mutations with no REST equivalent. */
+// One GraphQL query/mutation → its `data` — for facts with no REST equivalent (thread resolution
+// state, `resolveReviewThread`, `enablePullRequestAutoMerge`).
 export async function githubGraphql<T>(
   query: string,
   variables: Record<string, unknown>,
   opts: Omit<GithubRequestOpts, 'method' | 'body'>
 ): Promise<T> {
-  // A GraphQL error is reported inside a 200, so the REST helper's status mapping cannot see it —
-  // hence the `errors` inspection below rather than reusing `githubRequest` wholesale.
-  const res = await githubRequest<{ data?: T; errors?: Array<{ type?: string; message?: string }> }>('/graphql', {
-    ...opts,
-    method: 'POST',
-    body: { query, variables }
-  })
+  // GraphQL failures ride inside a 200, so `errors` decides here — the REST status mapping cannot.
+  const res = await githubRequest<{ data?: T | null; errors?: Array<{ type?: string; message?: string }> }>(
+    '/graphql',
+    { ...opts, method: 'POST', body: { query, variables } }
+  )
+  // Partial data beats a thrown read: a field-level denial degrades that field, not the whole answer.
+  if (res?.data) return res.data
   const errors = res?.errors ?? []
   if (errors.length > 0) {
     const detail = errors.map((e) => e.message ?? e.type ?? 'unknown').join('; ')
-    // GitHub reports authorization and missing-node failures as GraphQL errors inside a 200; both
-    // are the operator-recoverable denial REST would have answered 404/403 with.
+    // GitHub's GraphQL primary rate limit is a 200 with `errors[].type === 'RATE_LIMITED'`.
+    if (errors.some((e) => e.type === 'RATE_LIMITED')) {
+      throw new GithubApiError(`github graphql rate limited: ${detail}`, 200, 'RATE_LIMITED', true)
+    }
+    // Authorization and missing-node failures — the denial REST would have answered 404/403 with.
     const denied = errors.some((e) => e.type === 'FORBIDDEN' || e.type === 'NOT_FOUND')
     throw new GithubApiError(
       `github graphql ${denied ? 'denied' : 'error'}: ${detail}`,
@@ -142,6 +142,5 @@ export async function githubGraphql<T>(
     )
   }
   // `data` absent with no `errors` is a contract violation, not a partial answer.
-  if (!res?.data) throw new GithubApiError('github graphql returned no data', 200, 'INTERNAL', false)
-  return res.data
+  throw new GithubApiError('github graphql returned no data', 200, 'INTERNAL', false)
 }

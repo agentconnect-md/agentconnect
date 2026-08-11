@@ -3097,8 +3097,7 @@ export const AgentTaskDto = z.object({
   detail: z.string().nullable() // the terminal status the runtime reported, when it named one
 })
 
-/** One check on the PR's head commit, over one vocabulary — GitHub spells the same outcome three
- *  ways depending on whether a CheckRun, a StatusContext or a rollup reported it. */
+// One check on the PR's head commit, over one vocabulary regardless of which kind of check reported it.
 export const SessionPullRequestCheckDto = z.object({
   name: z.string(),
   state: z.enum(['success', 'failure', 'pending', 'skipped', 'neutral']),
@@ -3108,15 +3107,14 @@ export const SessionPullRequestCheckDto = z.object({
   url: z.string().nullable()
 })
 
-/** One reviewer's CURRENT review, not one review event. `isBot` is the identity split the console
- *  draws as square-vs-circle: an agent reviewing as a GitHub App is not a person. */
+// One reviewer's CURRENT review, not one review event; `isBot` ⇒ a GitHub App identity, not a person.
 export const SessionPullRequestReviewDto = z.object({
   author: z.string(),
   state: z.enum(['approved', 'changes_requested', 'commented', 'dismissed', 'pending']),
   isBot: z.boolean()
 })
 
-/** One UNRESOLVED review thread. Bodies are user content and are proxied, never persisted. */
+// One UNRESOLVED review thread. Bodies are user content: proxied, never persisted.
 export const SessionPullRequestThreadDto = z.object({
   location: z.string(), // `path:line`, the path alone, or a PR-level thread
   body: z.string(),
@@ -3124,34 +3122,25 @@ export const SessionPullRequestThreadDto = z.object({
   isOutdated: z.boolean()
 })
 
-/** `GET /sessions/:id/pull-request` — the PR this session's work belongs to.
- *
- *  Identity (`repoFullName`, `pullNumber`, `url`) is read from the owning run in Postgres, so it is
- *  present even when GitHub could not be reached; `degraded` then says why and every live list is
- *  empty. That is deliberately not an error: a panel that still names its PR beats an empty tab.
- *  404 when the session has no pull-request run, which is what hides the console's PR tab. */
-/** `?refresh=true` bypasses the projection's short TTL — the panel's own refresh action. It does
- *  NOT bypass in-flight coalescing, so a double press is still one GitHub read.
- *
- *  `z.stringbool()`, NOT `z.coerce.boolean()`: the latter sends `refresh=false` down the refresh
- *  path, because every non-empty string is truthy. That is the same trap `WorkspaceDiffQueryDto`
- *  avoided by using a closed vocabulary instead of a boolean — here the string-aware parser is the
- *  narrower fix, since there are only two states and no third one worth naming. */
+// `?refresh=true` bypasses the projection's TTL but not its in-flight coalescing (a double press is
+// one GitHub read). `z.stringbool()`, NOT `z.coerce.boolean()` — the latter truthy-coerces "false".
 export const SessionPullRequestQueryDto = z.object({
   refresh: z.stringbool().optional()
 })
 
+// `GET /sessions/:id/pull-request` — identity from Postgres survives a GitHub failure (`degraded`
+// says why, the live lists empty, the nullable fields below fall back to what Postgres knows).
 export const SessionPullRequestDto = z.object({
   repoFullName: z.string(),
   pullNumber: z.number().int(),
   title: z.string(),
-  state: z.enum(['open', 'closed', 'merged']),
-  isDraft: z.boolean(),
+  state: z.enum(['open', 'closed', 'merged']).nullable(), // null only degraded with no Postgres fact
+  isDraft: z.boolean().nullable(),
   url: z.string(),
   headRef: z.string(),
   baseRef: z.string(),
-  additions: z.number().int(),
-  deletions: z.number().int(),
+  additions: z.number().int().nullable(), // null while degraded — no stored line counts to fall back on
+  deletions: z.number().int().nullable(),
   reviewDecision: z.enum(['approved', 'changes_requested', 'review_required']).nullable(),
   checks: z.array(SessionPullRequestCheckDto),
   checksTruncated: z.boolean(),
@@ -3160,7 +3149,9 @@ export const SessionPullRequestDto = z.object({
   unresolvedCount: z.number().int(), // a floor when `threadsTruncated`
   threadsTruncated: z.boolean(),
   degraded: z.boolean(),
-  degradedReason: z.enum(['rate_limited', 'denied', 'unreachable']).nullable()
+  degradedReason: z.enum(['rate_limited', 'denied', 'unreachable']).nullable(),
+  // The agent's own recorded review, present ONLY on a degraded answer — GitHub's list is authoritative when it answered.
+  agentReview: z.enum(['approved', 'changes_requested', 'commented']).nullable()
 })
 export type SessionPullRequestDtoT = z.infer<typeof SessionPullRequestDto>
 

@@ -345,8 +345,15 @@ const SessionHistoryQueryDto = z
     message: 'cursor and after are mutually exclusive'
   })
 
-/** Service view -> HTTP body. A pure rename plus explicit nulls for the response schema; every
- *  judgement about what is degraded and why already happened in the service. */
+// HookRun.reviewEvent -> the panel's review vocabulary. An unrecognized event maps to nothing rather than to a guess.
+function agentReviewOf(event: string | null): 'approved' | 'changes_requested' | 'commented' | null {
+  if (event === 'APPROVE') return 'approved'
+  if (event === 'REQUEST_CHANGES') return 'changes_requested'
+  if (event === 'COMMENT') return 'commented'
+  return null
+}
+
+// Service view -> HTTP body, 1:1; every judgement about degradation already happened in the service.
 function toSessionPullRequestDto(view: PullRequestView): SessionPullRequestDtoT {
   return {
     repoFullName: view.repoFullName,
@@ -367,7 +374,8 @@ function toSessionPullRequestDto(view: PullRequestView): SessionPullRequestDtoT 
     unresolvedCount: view.unresolvedCount,
     threadsTruncated: view.threadsTruncated,
     degraded: view.degraded,
-    degradedReason: view.degradedReason
+    degradedReason: view.degradedReason,
+    agentReview: view.agentReview
   }
 }
 
@@ -1012,11 +1020,8 @@ export function sessionRoutes(deps: HttpDeps) {
       }
     )
 
-    // The pull request this session's work belongs to (webchat-side-panels.md §3.4). Two sources by
-    // design: identity from the owning run in Postgres, live state from GitHub in one GraphQL call.
-    // A GitHub failure is therefore DATA (`degraded` + a reason) rather than an error — the panel
-    // still names its PR. 404 only when there is no pull-request run behind the session at all,
-    // which is what hides the tab.
+    // The session's PR (§3.4): identity from the owning run, live state from GitHub; a GitHub
+    // failure is DATA (`degraded`), and only a session with no pull-request run 404s (hides the tab).
     r.get(
       '/sessions/:id/pull-request',
       {
@@ -1034,24 +1039,29 @@ export function sessionRoutes(deps: HttpDeps) {
       async (req, reply) => {
         const absent = () =>
           reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'pull request not found' })
-        // The session's own audience first: a PR title and its review threads are content, and this
-        // route must not become the way to read them for a session the caller cannot open.
+        // Session audience first: thread bodies are content, unreadable for a session the caller cannot open.
         const owned = await getOrgViewableSession(req, req.params.id)
         if (!owned) return absent()
         const view = deps.pullRequestView
         if (!view) return absent()
         const run = await deps.repos.hook.latestPullRequestRunForSession(orgOf(req), owned.session.id)
-        // `repoId` and `sourceInstallationId` are nullable for legacy rows written before they were
-        // captured; without both there is nothing to mint a token against, so the session reads as
-        // having no PR rather than as an error the reader cannot act on.
+        // Legacy rows predate repo/installation capture — nothing to mint against, so the PR reads absent.
         if (!run?.pullNumber || !run.repoId || !run.repoFullName || !run.sourceInstallationId) return absent()
+        // The subject's own open/draft facts feed the degraded arm, so a rate-limited panel still names them.
+        const subject = run.projectionId
+          ? (await deps.repos.hook.listReviewSubjects(run.projectionId)).find((s) => s.pullNumber === run.pullNumber)
+          : undefined
         return toSessionPullRequestDto(
           await view.view(
             {
+              orgId: orgOf(req),
               installationId: run.sourceInstallationId,
               repoId: run.repoId,
               repoFullName: run.repoFullName,
-              pullNumber: run.pullNumber
+              pullNumber: run.pullNumber,
+              ...(subject ? { knownIsOpen: subject.isOpen } : {}),
+              ...(run.isDraft !== null ? { knownIsDraft: run.isDraft } : {}),
+              ...(agentReviewOf(run.reviewEvent) ? { knownAgentReview: agentReviewOf(run.reviewEvent)! } : {})
             },
             req.query.refresh === true
           )

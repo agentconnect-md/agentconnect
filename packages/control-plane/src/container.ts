@@ -709,8 +709,7 @@ export function buildContainer(
         ...(opts.githubFetch ? { fetchImpl: opts.githubFetch } : {})
       })
     : undefined
-  // The console PR panel's read projection. Long-lived because its whole point is the short TTL
-  // cache — building it per request would spend one GitHub call per panel mount.
+  // The console PR panel's read projection — long-lived so its short TTL cache actually absorbs mounts.
   const pullRequestView = github ? new PullRequestViewService(github.tokens, clock, opts.githubFetch) : undefined
   const githubReviewBroker = github
     ? new GithubReviewBrokerService({ hook: repos.hook, agent: repos.agent, github, clock })
@@ -768,6 +767,7 @@ export function buildContainer(
         recompileOrg: (orgId) => hookService.rebroadcastGithubForOrg(orgId),
         onFactsChanged: async (installationId, orgId) => {
           github.tokens.invalidateInstallation(installationId)
+          pullRequestView?.invalidateInstallation(installationId)
           github.invalidateRepositoryRoster(installationId)
           await wakeGithubReviewProjections(installationId, orgId)
           githubRunReporter?.kick()

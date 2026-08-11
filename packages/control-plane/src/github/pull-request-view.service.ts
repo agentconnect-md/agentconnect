@@ -1,39 +1,27 @@
-/**
- * `PullRequestViewService` — the console PR panel's read projection
- * (webchat-side-panels.md §3.4, M5).
- *
- * Two sources, deliberately split by what is durable and what is live:
- *
- * - IDENTITY comes from Postgres. The run that owns the session already carries the repo, the PR
- *   number and the head/base shas, and the review broker's own association pass keeps them
- *   current. So a rate-limited or denied GitHub call still leaves a panel that names its PR
- *   instead of an empty tab.
- * - STATE comes from GitHub, in ONE GraphQL call. Four REST calls (pull, reviews, check-runs,
- *   comments) would answer most of it, but review-thread RESOLUTION exists only in GraphQL — and
- *   spending one request instead of four is what keeps a panel that several open sessions poll
- *   from being the thing that exhausts an installation's rate limit.
- *
- * Nothing here is persisted. Review-thread bodies are user content and fall under body-locality
- * exactly as a transcript does; the short in-memory TTL below exists to absorb repeated opens of
- * the same PR, not to become a store.
- */
+// `PullRequestViewService` — the console PR panel's read projection (webchat-side-panels.md §3.4, M5).
+// Identity is Postgres's (the owning run names the repo/PR even when GitHub is down); live state is
+// GitHub's, in ONE bounded GraphQL call — thread RESOLUTION exists only there, and one request instead
+// of four is what keeps several polling sessions from exhausting an installation's rate limit.
+// Nothing is persisted: thread bodies are user content (body-locality), and the short TTL cache below
+// exists to absorb repeated opens of the same PR, not to become a store.
 import { GithubApiError, githubGraphql, type FetchLike } from './api.js'
 import type { InstallationTokenService } from './installation-token.service.js'
 import type { Clock } from '../domain/clock.js'
+import type { OrgId } from '../domain/ids.js'
 
-/** How long one PR's projection is reused. Long enough that reopening the tab or switching between
- *  sessions on the same PR costs nothing, short enough that a check flipping to green shows up
- *  without a manual refresh. The panel's own refresh action bypasses it. */
+// Reuse window: reopening the tab is free, a check flipping green still shows up; refresh bypasses it.
 export const PR_VIEW_TTL_MS = 20_000
 
-/** Review threads per read. A reviewer who left more than this has made the panel the wrong tool;
- *  `threadsTruncated` says so rather than the list quietly ending. */
+// Hard bound on retained entries — the cache holds thread bodies, so it must never grow into a store.
+export const PR_VIEW_CACHE_MAX = 256
+
+// Review threads per read; `threadsTruncated` says so rather than the list quietly ending.
 const THREAD_LIMIT = 30
 
-/** Check contexts per read, over the head commit's rollup. */
+// Check contexts per read, over the head commit's rollup.
 const CHECK_LIMIT = 50
 
-/** Latest-review rows per read — one per reviewer, not one per review event. */
+// Latest-review rows per read — one per reviewer, not one per review event.
 const REVIEW_LIMIT = 20
 
 export type PrCheckState = 'success' | 'failure' | 'pending' | 'skipped' | 'neutral'
@@ -41,8 +29,7 @@ export type PrCheckState = 'success' | 'failure' | 'pending' | 'skipped' | 'neut
 export interface PrCheck {
   name: string
   state: PrCheckState
-  /** GitHub's own word for it, kept verbatim so the panel never has to invent one. */
-  detail: string | null
+  detail: string | null // GitHub's own word for it, kept verbatim
   startedAt: string | null
   completedAt: string | null
   url: string | null
@@ -53,14 +40,11 @@ export type PrReviewState = 'approved' | 'changes_requested' | 'commented' | 'di
 export interface PrReview {
   author: string
   state: PrReviewState
-  /** True when the review came from an agent acting as a GitHub App rather than a person — the
-   *  identity split the design draws as square-vs-circle. */
-  isBot: boolean
+  isBot: boolean // an agent reviewing as a GitHub App, not a person — the console's square-vs-circle split
 }
 
 export interface PrThread {
-  /** `path:line`, or just the path when GitHub has no line (an outdated or file-level thread). */
-  location: string
+  location: string // `path:line`, or just the path when GitHub has no line (outdated/file-level)
   body: string
   author: string
   isOutdated: boolean
@@ -70,27 +54,28 @@ export interface PullRequestView {
   repoFullName: string
   pullNumber: number
   title: string
-  /** `open` | `closed` | `merged` — merged is reported separately by GitHub and folded in here. */
-  state: 'open' | 'closed' | 'merged'
-  isDraft: boolean
+  // Null only while degraded with no Postgres knowledge; degraded 'closed' cannot distinguish merged.
+  state: 'open' | 'closed' | 'merged' | null
+  isDraft: boolean | null // null only while degraded and the owning run recorded no draft fact
   url: string
   headRef: string
   baseRef: string
-  additions: number
-  deletions: number
-  /** GitHub's aggregate review decision, absent when it has formed none. */
-  reviewDecision: 'approved' | 'changes_requested' | 'review_required' | null
+  additions: number | null // null while degraded — Postgres holds no line counts to fall back on
+  deletions: number | null
+  reviewDecision: 'approved' | 'changes_requested' | 'review_required' | null // absent when GitHub formed none
   checks: PrCheck[]
   checksTruncated: boolean
   reviews: PrReview[]
   threads: PrThread[]
-  /** Unresolved threads GitHub counted, which can exceed the rows carried. */
-  unresolvedCount: number
+  unresolvedCount: number // unresolved threads on the carried page — a floor when `threadsTruncated`
   threadsTruncated: boolean
-  /** True when identity is from Postgres but GitHub could not be reached or refused. Everything
-   *  after `baseRef` is then empty, and the panel says why rather than drawing "no checks". */
+  // Degraded ⇒ identity is Postgres's, the live lists are empty, and the panel says why.
   degraded: boolean
   degradedReason: 'rate_limited' | 'denied' | 'unreachable' | null
+  /** The agent's recorded review from the owning run — populated ONLY on a degraded answer. When
+   *  GitHub answered, its review list is authoritative and already contains this review, so carrying
+   *  a second copy would invite the panel to double-draw it; the precedence lives here, not in the UI. */
+  agentReview: 'approved' | 'changes_requested' | 'commented' | null
 }
 
 const QUERY = `
@@ -100,7 +85,7 @@ query PanelPullRequest($owner:String!,$name:String!,$number:Int!,$threads:Int!,$
       number title state isDraft merged additions deletions url
       baseRefName headRefName reviewDecision
       latestReviews(first:$reviews){nodes{state author{login __typename}}}
-      commits(last:1){nodes{commit{statusCheckRollup{contexts(first:$checks){nodes{
+      commits(last:1){nodes{commit{statusCheckRollup{contexts(first:$checks){pageInfo{hasNextPage} nodes{
         __typename
         ... on CheckRun{name conclusion status startedAt completedAt detailsUrl}
         ... on StatusContext{context state targetUrl createdAt}
@@ -131,7 +116,9 @@ interface GqlAnswer {
       commits: {
         nodes: Array<{
           commit: {
-            statusCheckRollup: { contexts: { nodes: Array<Record<string, unknown>> | null } } | null
+            statusCheckRollup: {
+              contexts: { pageInfo: { hasNextPage: boolean } | null; nodes: Array<Record<string, unknown>> | null }
+            } | null
           }
         }> | null
       }
@@ -149,8 +136,7 @@ interface GqlAnswer {
   } | null
 }
 
-/** A CheckRun's conclusion/status, or a StatusContext's state, onto one vocabulary. GitHub spells
- *  the same outcome three ways depending on which kind of check reported it. */
+// A CheckRun's conclusion/status, or a StatusContext's state, onto one vocabulary.
 function checkState(raw: Record<string, unknown>): PrCheckState {
   const word = String(raw['conclusion'] ?? raw['state'] ?? raw['status'] ?? '').toUpperCase()
   if (word === 'SUCCESS') return 'success'
@@ -169,21 +155,27 @@ function reviewState(raw: string): PrReviewState {
   return 'pending'
 }
 
-/** Why GitHub did not answer, in the panel's vocabulary. A GraphQL denial arrives as a 200 with
- *  `errors`, which is why the code rather than the status decides. */
+// Why GitHub did not answer, in the panel's vocabulary — the typed code decides, not the HTTP status.
 function degradedReasonOf(err: unknown): PullRequestView['degradedReason'] {
   if (!(err instanceof GithubApiError)) return 'unreachable'
   if (err.code === 'RATE_LIMITED') return 'rate_limited'
   if (err.code === 'LEASE_DENIED') return 'denied'
-  return err.status === 0 ? 'unreachable' : 'denied'
+  // A GitHub 5xx is GitHub being down, not the installation being revoked — 'denied' points the
+  // operator at a nonexistent permission problem for the length of an outage.
+  return err.status === 0 || err.status >= 500 ? 'unreachable' : 'denied'
 }
 
-/** The durable half — what the caller has already resolved from the owning run. */
+// The durable half, resolved by the caller from the owning run (plus the subject's open/draft facts).
 export interface PullRequestIdentity {
+  orgId: OrgId
   installationId: bigint
   repoId: bigint
   repoFullName: string
   pullNumber: number
+  knownIsOpen?: boolean // HookReviewSubject.isOpen — the degraded arm's state, never an invented default
+  knownIsDraft?: boolean // HookRun.isDraft — same role
+  // HookRun.reviewEvent, already normalized — the agent's OWN recorded review, for the degraded arm only.
+  knownAgentReview?: 'approved' | 'changes_requested' | 'commented'
 }
 
 interface CacheEntry {
@@ -202,23 +194,27 @@ export class PullRequestViewService {
     private readonly baseUrl?: string
   ) {}
 
-  /** One PR's projection. `force` skips the TTL (the panel's refresh action) but still shares an
-   *  in-flight read, so a double press is one request. */
+  // Org+installation in the key: two orgs pointing at one repo/PR must never share cached thread
+  // bodies or ride each other's token validation (the session-access snapshotKey rule).
+  private keyOf(identity: PullRequestIdentity): string {
+    return `${identity.orgId}#${identity.installationId}#${identity.repoId}#${identity.pullNumber}`
+  }
+
+  // One PR's projection. `force` skips the TTL (the panel's refresh) but still shares an in-flight read.
   async view(identity: PullRequestIdentity, force = false): Promise<PullRequestView> {
-    const key = `${identity.repoId}#${identity.pullNumber}`
+    const key = this.keyOf(identity)
     const now = this.clock.now()
-    if (!force) {
-      const hit = this.cache.get(key)
-      if (hit && now - hit.at < PR_VIEW_TTL_MS) return hit.view
-    }
+    const hit = this.cache.get(key)
+    if (hit && now - hit.at >= PR_VIEW_TTL_MS) this.cache.delete(key)
+    if (!force && hit && now - hit.at < PR_VIEW_TTL_MS) return hit.view
+
     const running = this.inFlight.get(key)
     if (running) return running
 
     const read = this.read(identity)
       .then((view) => {
-        // A degraded answer is cached too, and for the same reason a good one is: a rate-limited
-        // installation must not be hammered once per panel mount.
-        this.cache.set(key, { at: this.clock.now(), view })
+        // Degraded answers cache too: a rate-limited installation must not be hammered per panel mount.
+        this.store(key, view)
         return view
       })
       .finally(() => this.inFlight.delete(key))
@@ -226,9 +222,31 @@ export class PullRequestViewService {
     return read
   }
 
-  /** Drop one PR's cached projection — for a caller that just changed the PR itself (M6). */
+  // Bounded insert: sweep expired entries, then evict oldest-inserted past the cap (20s TTL ⇒ LRU-ish).
+  private store(key: string, view: PullRequestView): void {
+    const at = this.clock.now()
+    this.cache.delete(key)
+    for (const [k, entry] of this.cache) if (at - entry.at >= PR_VIEW_TTL_MS) this.cache.delete(k)
+    this.cache.set(key, { at, view })
+    while (this.cache.size > PR_VIEW_CACHE_MAX) {
+      const oldest = this.cache.keys().next().value
+      if (oldest === undefined) break
+      this.cache.delete(oldest)
+    }
+  }
+
+  // Drop one PR's cached projections (every org) — for a caller that just changed the PR itself (M6).
   invalidate(repoId: bigint, pullNumber: number): void {
-    this.cache.delete(`${repoId}#${pullNumber}`)
+    const suffix = `#${repoId}#${pullNumber}`
+    for (const key of [...this.cache.keys()]) if (key.endsWith(suffix)) this.cache.delete(key)
+  }
+
+  // Mirror of InstallationTokenService.invalidateInstallation: a suspended/revoked installation must
+  // not keep serving its cached views. An already-in-flight read may still repopulate for ≤ one TTL.
+  invalidateInstallation(installationId: bigint): void {
+    const marker = `#${installationId}#`
+    for (const key of [...this.cache.keys()]) if (key.includes(marker)) this.cache.delete(key)
+    for (const key of [...this.inFlight.keys()]) if (key.includes(marker)) this.inFlight.delete(key)
   }
 
   private async read(identity: PullRequestIdentity): Promise<PullRequestView> {
@@ -237,13 +255,14 @@ export class PullRequestViewService {
       repoFullName: identity.repoFullName,
       pullNumber: identity.pullNumber,
       title: '',
-      state: 'open',
-      isDraft: false,
+      // Postgres's own knowledge or null — never a fabricated 'open'/'not draft' claim.
+      state: identity.knownIsOpen === undefined ? null : identity.knownIsOpen ? 'open' : 'closed',
+      isDraft: identity.knownIsDraft ?? null,
       url: `https://github.com/${identity.repoFullName}/pull/${identity.pullNumber}`,
       headRef: '',
       baseRef: '',
-      additions: 0,
-      deletions: 0,
+      additions: null,
+      deletions: null,
       reviewDecision: null,
       checks: [],
       checksTruncated: false,
@@ -252,9 +271,13 @@ export class PullRequestViewService {
       unresolvedCount: 0,
       threadsTruncated: false,
       degraded: false,
-      degradedReason: null
+      degradedReason: null,
+      agentReview: null
     }
-    if (!owner || !name) return { ...base, degraded: true, degradedReason: 'denied' }
+    // Every degraded return carries the run's recorded review, so a panel that cannot reach GitHub
+    // still shows the one review state this deployment KNOWS — its own agent's.
+    const fallback = { agentReview: identity.knownAgentReview ?? null }
+    if (!owner || !name) return { ...base, ...fallback, degraded: true, degradedReason: 'denied' }
 
     let answer: GqlAnswer
     try {
@@ -280,15 +303,15 @@ export class PullRequestViewService {
         }
       )
     } catch (err) {
-      return { ...base, degraded: true, degradedReason: degradedReasonOf(err) }
+      return { ...base, ...fallback, degraded: true, degradedReason: degradedReasonOf(err) }
     }
 
     const pr = answer.repository?.pullRequest
-    // A PR the installation can see but that no longer exists reads as denied rather than as an
-    // empty PR: "0 checks on #764" would be a claim, and we have not got one.
-    if (!pr) return { ...base, degraded: true, degradedReason: 'denied' }
+    // A PR the installation cannot see reads as denied, not as an empty PR — "0 checks" would be a claim.
+    if (!pr) return { ...base, ...fallback, degraded: true, degradedReason: 'denied' }
 
-    const contexts = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? []
+    const rollup = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup
+    const contexts = rollup?.contexts?.nodes ?? []
     const checks: PrCheck[] = contexts.map((raw) => ({
       name: String(raw['name'] ?? raw['context'] ?? 'check'),
       state: checkState(raw),
@@ -306,10 +329,8 @@ export class PullRequestViewService {
         isBot: node.author?.__typename === 'Bot'
       }))
 
-    // Resolved threads are dropped HERE rather than in the query, because GraphQL cannot filter a
-    // connection by `isResolved` — so `totalCount` counts every thread and the unresolved count
-    // has to be derived from the page. That makes it a floor when the page is truncated, which is
-    // what `threadsTruncated` tells the panel.
+    // Resolved threads are dropped HERE — GraphQL cannot filter the connection by `isResolved`, so
+    // the unresolved count is page-derived and is a floor whenever `threadsTruncated`.
     const unresolved = (pr.reviewThreads?.nodes ?? []).filter((node) => !node.isResolved)
     const threads: PrThread[] = unresolved.map((node) => {
       const comment = node.comments?.nodes?.[0]
@@ -340,7 +361,7 @@ export class PullRequestViewService {
               ? 'review_required'
               : null,
       checks,
-      checksTruncated: contexts.length >= CHECK_LIMIT,
+      checksTruncated: rollup?.contexts?.pageInfo?.hasNextPage ?? false,
       reviews,
       threads,
       unresolvedCount: unresolved.length,

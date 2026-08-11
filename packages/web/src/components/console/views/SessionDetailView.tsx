@@ -103,6 +103,11 @@ import { SessionsPanel, sessionsTabStatus } from '@/components/console/dock/Sess
 import { FilesPanel, filesTabStatus } from '@/components/console/dock/FilesPanel'
 import { GitPanel, gitTabStatus, type GitPanelVerdict } from '@/components/console/dock/GitPanel'
 import { TasksPanel, tasksTabStatus, type TasksPanelVerdict } from '@/components/console/dock/TasksPanel'
+import {
+  PullRequestPanel,
+  pullRequestTabStatus,
+  type PullRequestPanelVerdict
+} from '@/components/console/dock/PullRequestPanel'
 import { SessionViewer, viewerModeFromParam, type ViewerMode } from '@/components/console/viewer/SessionViewer'
 import {
   EMPTY_RAIL_AGENT_FILTER,
@@ -1187,6 +1192,8 @@ const DOCK_TABS: DockTab[] = [
     actionIcon: 'refresh-cw',
     actionLabel: 'Refresh git status'
   },
+  // PR's `external-link` action is spliced on below, once a 200 has carried a URL for it to open.
+  { key: 'pr', label: 'PR', icon: 'git-pull-request' },
   {
     key: 'tasks',
     label: 'Tasks',
@@ -1837,6 +1844,11 @@ export default function SessionDetailView() {
   // Which lease the Tasks tab reads. Tasks are NOT a checkout, so this waits on neither the worktree gate `filesSessionId` applies nor the isolation round trip Files and Git hold for — a session's background tasks exist whatever it is checked out into, and the CP says so. What it does need is the CANONICAL session id the lease is keyed by, which is what the focus options already carry. A playground session the daemon has not created yet has no canonical id and no tasks either, so it gets no tab rather than a 404 notice.
   const tasksSessionId =
     headerFocusSessionId && !(syntheticPlayground && headerFocusSessionId === session?.id) ? headerFocusSessionId : null
+  // The PR tab's scope: the OPEN SESSION — in a merged conversation its representative — because the hook run the CP resolves belongs to the session, not to a participant. Header focus deliberately plays NO part here: focusing another agent re-aims Files/Git/Tasks at that agent's checkout or lease, but a focus change must not re-key this read (§3.4). A synthetic playground id names no CP row and was never hook-dispatched, so it gets no probe rather than a manufactured 404.
+  const prSessionId =
+    MOCK_MODE || !session || (syntheticPlayground && !session.realSessionId)
+      ? null
+      : (session.realSessionId ?? session.id)
   const focusedAgentRuntime = focusedSession?.runtime || focusedAgent?.runtime || ''
   const focusedRuntimeMeta = acpRuntime(acpRegistry, focusedAgentRuntime)
 
@@ -1894,6 +1906,12 @@ export default function SessionDetailView() {
   // The Tasks tab's own `refresh-cw` and verdict. Its settle state feeds the tab status, its running count the badge.
   const [tasksRefreshTick, setTasksRefreshTick] = useState(0)
   const [tasksVerdict, setTasksVerdict] = useState<TasksPanelVerdict>({ settled: false, running: null })
+  // The PR tab's verdict, reported by its panel: whether this session HAS a linked run at all (`none` drops the tab), the unresolved-thread badge, and the URL its `external-link` action opens.
+  const [prVerdict, setPrVerdict] = useState<PullRequestPanelVerdict>({
+    answer: 'pending',
+    unresolved: null,
+    url: null
+  })
   // A seed narrowed to the conversation already on screen hides the list AND the picker that could widen it, so re-ask it unfiltered.
   const railSeedKeyNow = railSeedKey(railFilter)
   // Waited on because an in-flight family reads as EMPTY, not `undefined`: latching there widens a list about to grow a Related tree.
@@ -1921,14 +1939,19 @@ export default function SessionDetailView() {
   const gitStatus = filesScopeFailed ? 'ready' : filesScopeReady ? gitTabStatus(gitVerdict.settled) : 'loading'
   // Tasks has no isolation branch to wait on, so its status is only ever "has the read answered".
   const tasksStatus = tasksTabStatus(tasksVerdict.settled)
+  // PR: `loading` until the probe's first answer, `ready` after — and a `none` answer removes the tab below, so `empty` never has a state left to describe.
+  const prStatus = pullRequestTabStatus(prVerdict.answer)
   // Each tab's own verdict, spliced onto the static descriptors. Files is dropped outright rather than left `loading` forever when there is no agent behind it — a tab that can never answer is not a tab — and the demo tour has no daemon to read a checkout from at all, so it does not get one either.
   const dockTabs = useMemo<DockTab[]>(
     () =>
       DOCK_TABS.filter((tab) =>
         tab.key === 'files' || tab.key === 'git'
           ? filesAgentId !== null && !MOCK_MODE
-          : // Dropped on the same terms and for the same reason, but against its OWN scope: no agent to ask, or no canonical session for the lease to be keyed by.
-            tab.key !== 'tasks' || (filesAgentId !== null && tasksSessionId !== null && !MOCK_MODE)
+          : tab.key === 'tasks'
+            ? // Dropped on the same terms and for the same reason, but against its OWN scope: no agent to ask, or no canonical session for the lease to be keyed by.
+              filesAgentId !== null && tasksSessionId !== null && !MOCK_MODE
+            : // PR is a tab only while the session HAS a pull request: the probe's 404 means "no linked run", and that never changes later — the run is what created the session — so the strip changes shape rather than carrying a dead tab (§9 M5).
+              tab.key !== 'pr' || (prSessionId !== null && prVerdict.answer !== 'none')
       ).map((tab) =>
         tab.key === 'sessions'
           ? { ...tab, status: sessionsStatus }
@@ -1941,20 +1964,36 @@ export default function SessionDetailView() {
                   // The badge is the changed-file count, omitted rather than shown as `0`: a clean tree wears no pill, and neither does a workspace whose status could not be read.
                   ...(gitVerdict.changed ? { badge: gitVerdict.changed } : {})
                 }
-              : tab.key === 'tasks'
+              : tab.key === 'pr'
                 ? {
                     ...tab,
-                    status: tasksStatus,
-                    // Running tasks only, and omitted rather than shown as `0`: an idle session wears no pill, and neither does an untracked one, whose count is null rather than zero.
-                    ...(tasksVerdict.running ? { badge: tasksVerdict.running } : {})
+                    status: prStatus,
+                    // Unresolved review threads (§1's table), omitted rather than shown as `0` — and omitted while degraded, where the count is unknown rather than zero.
+                    ...(prVerdict.unresolved ? { badge: prVerdict.unresolved } : {}),
+                    // The design's header action opens the PR's own page; withheld until an answer has carried a URL to open.
+                    ...(prVerdict.url
+                      ? { actionIcon: 'external-link', actionLabel: 'Open the pull request on GitHub' }
+                      : {})
                   }
-                : tab
+                : tab.key === 'tasks'
+                  ? {
+                      ...tab,
+                      status: tasksStatus,
+                      // Running tasks only, and omitted rather than shown as `0`: an idle session wears no pill, and neither does an untracked one, whose count is null rather than zero.
+                      ...(tasksVerdict.running ? { badge: tasksVerdict.running } : {})
+                    }
+                  : tab
       ),
     [
       filesAgentId,
       filesStatus,
       gitStatus,
       gitVerdict.changed,
+      prSessionId,
+      prStatus,
+      prVerdict.answer,
+      prVerdict.unresolved,
+      prVerdict.url,
       sessionsStatus,
       tasksSessionId,
       tasksStatus,
@@ -4518,6 +4557,8 @@ export default function SessionDetailView() {
         onTabAction={(key) => {
           if (key === 'files') setFilesRefreshTick((tick) => tick + 1)
           if (key === 'git') setGitRefreshTick((tick) => tick + 1)
+          // PR's action is the design's `external-link`, not a refresh: it opens the PR's own page (the panel body carries its own refresh).
+          if (key === 'pr' && prVerdict.url) window.open(prVerdict.url, '_blank', 'noopener,noreferrer')
           if (key === 'tasks') setTasksRefreshTick((tick) => tick + 1)
         }}
         overlayKey={`${session.id}:${viewerPath ?? ''}`}
@@ -4590,6 +4631,12 @@ export default function SessionDetailView() {
               }
               onVerdictChange={setGitVerdict}
             />
+          ) : null}
+        </DockPanel>
+        {/* SESSION-keyed, not focus-keyed: the run belongs to the open session, so the header focus menu must not re-key this panel — its props carry no agent at all. Mounted whenever a probe-able id exists, because its verdict is what puts its own tab in the strip: a panel mounted only for a visible tab could never reveal the tab. */}
+        <DockPanel active={dockTabKey === 'pr'}>
+          {prSessionId ? (
+            <PullRequestPanel sessionId={prSessionId} active={dockTabKey === 'pr'} onVerdictChange={setPrVerdict} />
           ) : null}
         </DockPanel>
         {/* No isolation gate and no withheld state: the lease is keyed by the session, not by a checkout, so there is nothing to resolve first. `active` is what keeps a hidden panel from polling. */}

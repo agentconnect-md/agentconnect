@@ -888,6 +888,24 @@ which changes what M5 has to build:
   rate-limited or denied GitHub call degrades to a panel that still names the
   PR, rather than an empty tab.
 
+Two deliberate departures from M5's original sentence, found and settled while
+finishing the inherited wip:
+
+- **"Session DTO exposes its GitHub subject" is descoped.** The console finds
+  the tab by probing `GET /sessions/:id/pull-request` once per session view: the
+  404 arm costs 2–3 indexed DB queries and never reaches GitHub, and a linked
+  session's probe is the same read the panel needs anyway, deduplicated by the
+  service's TTL cache. Putting the subject on the session DTO would burden the
+  session LIST route with a per-row run lookup (or a batched join) to save a
+  probe that is already cheap — the sentence predates the probe design.
+- **Verdict precedence is fallback, not override.** GitHub's review list is
+  authoritative whenever it answered, because it already contains the agent's
+  own review. The run's `reviewEvent` surfaces as `agentReview` only on degraded
+  answers, so a rate-limited panel still shows the one review state the
+  deployment knows without GitHub. A GitHub 5xx reads as `unreachable`, not
+  `denied` — an outage must not point operators at a nonexistent installation
+  problem.
+
 **M6 — PR actions.** The single Auto-fix button over the webchat turn path
 (§5.2), and `Merge when ready` (`enablePullRequestAutoMerge`) gated on the
 clamped token actually carrying write. _Exit:_ the design's headline loop — read
@@ -920,7 +938,10 @@ mutation.
   state; Sessions parity against the rail's own tests, which moved to
   `dock/SessionsPanel*.test.tsx` and must keep passing unchanged.
 - **control-plane `test:unit`** — DTO projections, the PR projection's
-  verdict-vs-GitHub precedence, the "no linked run" 404 path, write-capability
+  verdict-vs-GitHub precedence (GitHub's review list is authoritative when it
+  answered — it already contains the agent's review; the run's recorded
+  `reviewEvent` surfaces as `agentReview` ONLY on a degraded answer, so the
+  panel cannot double-draw it), the "no linked run" 404 path, write-capability
   clamping.
 - **control-plane `test:int`** — the authorization matrix on every new route:
   cross-org agent, restricted agent, session the viewer cannot see, agent with
@@ -947,7 +968,9 @@ a `sessionId` (the pull control was removed).
 **One deliberate departure from revision 2.** The per-thread auto-fix machine is
 not being built; the panel ships one Auto-fix action for the whole unresolved
 set (§5.2). The prototype's thread cards are therefore implemented read-only —
-location, body, and the review state that already comes from `HookRun.verdict`.
+location and body. The review state on thread cards comes from GitHub's own
+list; `HookRun`'s recorded review appears only as the degraded-arm fallback
+(`agentReview`), never beside GitHub's answer.
 
 ## 12. Open questions
 

@@ -145,10 +145,7 @@ export class InstallationTokenService {
     return this.mintPermissionLevels(installationId, repoFullName, { checks: 'write', pull_requests: 'read' }, repoId)
   }
 
-  /** CP-only READ token for the console's PR panel — PR metadata, reviews, review threads and the
-   * head commit's check rollup. There is no tier to clamp against here the way {@link mint} does:
-   * read is the permission floor, so a read-only workspace already gets exactly this. Neither
-   * permission enters a daemon grant or the agent environment. */
+  // CP-only READ token for the console's PR panel; read is the permission floor, so no tier clamp.
   async mintPullRequestRead(installationId: bigint, repoFullName: string, repoId: bigint): Promise<MintedGitCred> {
     return this.mintPermissionLevels(installationId, repoFullName, { checks: 'read', pull_requests: 'read' }, repoId)
   }

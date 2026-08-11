@@ -30,6 +30,12 @@ const wire = vi.hoisted(() => ({
   /** The Tasks tab's read. Scoped by SESSION rather than by worktree, so its calls are recorded with the scope they asked for. */
   tasks: { sessionId: 'session-1', tracked: true, tasks: [] as unknown[], truncated: false } as unknown,
   taskCalls: [] as Array<{ agentId: string; sessionId: string }>,
+  /** The PR tab's probe. `null` is the CP's 404 — the default, because most sessions were not dispatched for a pull request; `prFailStatus` overrides the failure shape. */
+  pr: null as unknown,
+  prFailStatus: 404,
+  prCalls: [] as Array<{ sessionId: string; refresh: boolean }>,
+  /** Non-null holds every PR probe until released, so the strip is observable while the linkage is unknown. */
+  prGate: null as null | Array<() => void>,
   /** A synthetic playground session the daemon has not created yet — its route id names no canonical session the lease could be keyed by. */
   playground: false
 }))
@@ -125,6 +131,12 @@ vi.mock('@/lib/api', async (importOriginal) => {
     fetchAgentTasks: vi.fn((agentId: string, sessionId: string) => {
       wire.taskCalls.push({ agentId, sessionId })
       return Promise.resolve(wire.tasks)
+    }),
+    fetchSessionPullRequest: vi.fn(async (sessionId: string, opts: { refresh?: boolean } = {}) => {
+      wire.prCalls.push({ sessionId, refresh: opts.refresh === true })
+      if (wire.prGate) await new Promise<void>((resolve) => wire.prGate?.push(resolve))
+      if (wire.pr) return wire.pr
+      throw new actual.ApiError('pull request not found', wire.prFailStatus)
     }),
     fetchSessionMessages: vi.fn(() => Promise.resolve({ messages: [], nextCursor: null })),
     fetchSessionDetail: vi.fn(() => Promise.reject(new Error('no detail'))),
@@ -305,6 +317,10 @@ beforeEach(() => {
   wire.rail = []
   wire.tasks = { sessionId: 'session-1', tracked: true, tasks: [], truncated: false }
   wire.taskCalls = []
+  wire.pr = null
+  wire.prFailStatus = 404
+  wire.prCalls = []
+  wire.prGate = null
   window.localStorage.clear()
   window.matchMedia = ((query: string) => ({
     matches: false,
@@ -853,6 +869,137 @@ describe('the Tasks tab', () => {
     expect(container?.querySelector('[data-tasks-panel]')?.textContent).toContain('doesn’t report background tasks')
     expect(container?.querySelector('[data-dock-tab="tasks"]')?.textContent).toBe('Tasks')
     expect(container?.querySelector('[data-dock-empty]')).toBeNull()
+  })
+})
+
+describe('the PR tab', () => {
+  const openTab = async (key: string) => {
+    await act(async () => {
+      container?.querySelector<HTMLElement>(`[data-dock-tab="${key}"]`)?.click()
+      await Promise.resolve()
+    })
+    await render()
+  }
+  // The wire shape of GET /sessions/:id/pull-request, in the small: identity plus the three live lists.
+  const prDto = (overrides: Record<string, unknown> = {}) => ({
+    repoFullName: 'acme/api',
+    pullNumber: 57,
+    title: 'Ship the dock',
+    state: 'open',
+    isDraft: false,
+    url: 'https://github.com/acme/api/pull/57',
+    headRef: 'feat/dock',
+    baseRef: 'main',
+    additions: 120,
+    deletions: 30,
+    reviewDecision: null,
+    checks: [],
+    checksTruncated: false,
+    reviews: [],
+    threads: [
+      { location: 'src/dock.ts:12', body: 'This needs the org.', author: 'sam', isOutdated: false },
+      { location: 'src/dock.ts:40', body: 'And this.', author: 'sam', isOutdated: false }
+    ],
+    unresolvedCount: 2,
+    threadsTruncated: false,
+    degraded: false,
+    degradedReason: null,
+    ...overrides
+  })
+
+  it('is HIDDEN for a session with no linked run, whose 404 is asked exactly once', async () => {
+    // The default wire answer IS the 404: most sessions were not dispatched for a PR, and their strip must not carry a dead tab (§9 M5). One probe decides it — the linkage cannot appear later, so nothing re-asks.
+    await render()
+    expect(container?.querySelector('[data-dock-tab="pr"]')).toBeNull()
+    expect(container?.querySelector('[data-pr-panel]')).toBeNull()
+    expect(wire.prCalls).toEqual([{ sessionId: 'session-1', refresh: false }])
+    await render()
+    await render()
+    expect(wire.prCalls).toHaveLength(1)
+  })
+
+  it('stands in the strip as loading while the linkage is unknown, then leaves it when the 404 lands', async () => {
+    // The strip CHANGES SHAPE on the answer: a session that turns out to have no PR loses the tab rather than keeping a dead one, and a linked one keeps it — the probe's verdict is the only thing that can tell them apart.
+    wire.prGate = []
+    await render()
+    expect(container?.querySelector('[data-dock-tab="pr"]')).not.toBeNull()
+
+    const release = wire.prGate
+    wire.prGate = null
+    await act(async () => {
+      release.forEach((resolve) => resolve())
+      await Promise.resolve()
+    })
+    await render()
+    expect(container?.querySelector('[data-dock-tab="pr"]')).toBeNull()
+  })
+
+  it('shows the tab with the unresolved-thread badge for a linked session, keyed by the SESSION', async () => {
+    wire.pr = prDto()
+    await render()
+    expect(container?.querySelector('[data-dock-tab="pr"]')?.textContent).toContain('2')
+    // Session-keyed, never agent-keyed: the run belongs to the session, so a header-focus change in a merged conversation has nothing to re-key (the probe carries no agent id at all).
+    expect(wire.prCalls).toEqual([{ sessionId: 'session-1', refresh: false }])
+
+    await openTab('pr')
+    expect(container?.querySelector('[data-pr-panel]')?.textContent).toContain('Ship the dock')
+    expect(container?.querySelector('[data-dock-empty]')).toBeNull()
+  })
+
+  it('gives the active tab the design’s external-link action, which opens the PR’s own page', async () => {
+    wire.pr = prDto()
+    const opened: string[] = []
+    window.open = ((url: string) => {
+      opened.push(String(url))
+      return null
+    }) as typeof window.open
+    await render()
+    await openTab('pr')
+    const action = container?.querySelector<HTMLElement>('[data-dock-action="pr"]')
+    expect(action?.getAttribute('aria-label')).toBe('Open the pull request on GitHub')
+    await act(async () => {
+      action?.click()
+      await Promise.resolve()
+    })
+    expect(opened).toEqual(['https://github.com/acme/api/pull/57'])
+  })
+
+  it('keeps the tab when the probe FAILS, because a failed read is not "no PR"', async () => {
+    // 404 means the CP verified there is no linked run; a 503 or a network failure verified nothing, so hiding here would assert an absence nobody read. The tab stays and its panel says why it is empty-handed.
+    wire.prFailStatus = 503
+    await render()
+    expect(container?.querySelector('[data-dock-tab="pr"]')).not.toBeNull()
+    await openTab('pr')
+    expect(container?.querySelector('[data-pr-panel="failed"]')?.textContent).toContain(
+      'Couldn’t read this session’s pull request'
+    )
+  })
+
+  it('wears no badge and still names its PR when GitHub is degraded', async () => {
+    // Degraded is DATA (§2): identity from the CP's own records survives, and the badge is withheld because the thread count is unknown rather than zero.
+    wire.pr = prDto({
+      state: 'closed',
+      isDraft: null,
+      additions: null,
+      deletions: null,
+      threads: [],
+      unresolvedCount: 0,
+      degraded: true,
+      degradedReason: 'rate_limited'
+    })
+    await render()
+    await openTab('pr')
+    // The ACTIVE tab draws its label, so a badge pill would be visible beside it — `PR` alone is the withheld badge.
+    expect(container?.querySelector('[data-dock-tab="pr"]')?.textContent).toBe('PR')
+    expect(container?.querySelector('[data-pr-panel]')?.textContent).toContain('Ship the dock')
+    expect(container?.querySelector('[data-pr-panel]')?.textContent).toContain('rate limiting')
+  })
+
+  it('sends no probe at all for a synthetic playground session, which names no CP row', async () => {
+    wire.playground = true
+    await render()
+    expect(container?.querySelector('[data-dock-tab="pr"]')).toBeNull()
+    expect(wire.prCalls).toEqual([])
   })
 })
 

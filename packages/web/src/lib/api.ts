@@ -3113,6 +3113,69 @@ export async function fetchAgentTasks(agentId: string, sessionId: string): Promi
   return apiGet<AgentTasksDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/tasks?${q.toString()}`)
 }
 
+// ── session pull request (identity from the CP's own records; live state proxied from GitHub, never stored) ──
+// One check on the PR's head commit, over one vocabulary regardless of which kind of check reported it.
+export interface SessionPullRequestCheckDto {
+  name: string
+  state: 'success' | 'failure' | 'pending' | 'skipped' | 'neutral'
+  detail: string | null // GitHub's own word for it, verbatim
+  startedAt: string | null
+  completedAt: string | null
+  url: string | null
+}
+
+// One reviewer's CURRENT review, not one review event; `isBot` ⇒ a GitHub App identity, not a person.
+export interface SessionPullRequestReviewDto {
+  author: string
+  state: 'approved' | 'changes_requested' | 'commented' | 'dismissed' | 'pending'
+  isBot: boolean
+}
+
+// One UNRESOLVED review thread. Bodies are user content: proxied through the CP, never persisted.
+export interface SessionPullRequestThreadDto {
+  location: string // `path:line`, the path alone, or a PR-level thread
+  body: string
+  author: string
+  isOutdated: boolean
+}
+
+// GET /sessions/:id/pull-request — the PR this session was dispatched for. `degraded` makes a GitHub
+// failure DATA: identity survives, the live lists come back empty, and the nullable fields fall back
+// to what the CP already knows (or null). A session with NO linked run 404s, which hides the tab.
+export interface SessionPullRequestDto {
+  repoFullName: string
+  pullNumber: number
+  title: string
+  state: 'open' | 'closed' | 'merged' | null // null only degraded with no stored fact
+  isDraft: boolean | null
+  url: string
+  headRef: string
+  baseRef: string
+  additions: number | null // null while degraded — no stored line counts to fall back on
+  deletions: number | null
+  reviewDecision: 'approved' | 'changes_requested' | 'review_required' | null
+  checks: SessionPullRequestCheckDto[]
+  checksTruncated: boolean
+  reviews: SessionPullRequestReviewDto[]
+  threads: SessionPullRequestThreadDto[]
+  unresolvedCount: number // a floor when `threadsTruncated`
+  threadsTruncated: boolean
+  degraded: boolean
+  degradedReason: 'rate_limited' | 'denied' | 'unreachable' | null
+  /** The agent's own recorded review, present ONLY on a degraded answer — the one review state the deployment knows without GitHub. */
+  agentReview: 'approved' | 'changes_requested' | 'commented' | null
+}
+
+// Read the session's PR projection. `refresh` bypasses the CP's short TTL but not its in-flight
+// coalescing, so a double press is still one GitHub read; plain reads ride the cache.
+export async function fetchSessionPullRequest(
+  sessionId: string,
+  opts: { refresh?: boolean } = {}
+): Promise<SessionPullRequestDto> {
+  const query = opts.refresh ? '?refresh=true' : ''
+  return apiGet<SessionPullRequestDto>(`${orgBase()}/sessions/${encodeURIComponent(sessionId)}/pull-request${query}`)
+}
+
 // ── usage dashboard (GET /usage) — real historical aggregates from the CP's
 // persisted per-session usage store, summed over the selected range. ──
 export type UsageRange = 'd1' | 'd7' | 'd30' | 'd90'
