@@ -12,7 +12,7 @@ import {
   type ClusterExecutionPolicy,
   type ClusterKeyAuthority
 } from './service.js'
-import { NamespaceNotReadyError, type OrgSecretApi } from './secret-api.js'
+import { NamespaceNotReadyError, StaleCredentialWriteError, type OrgSecretApi } from './secret-api.js'
 import type { OrgResourceApi } from './org-api.js'
 import type { AgentConnectOrg, AgentConnectOrgSpec } from './crd.js'
 import { OrgId } from '../domain/ids.js'
@@ -43,6 +43,7 @@ class FakeRepo implements OrgClusterExecutionRepo {
   revocations: PendingDaemonKeyRevocation[] = []
   rotationAt: Date | null = null
   rotationToken: string | null = null
+  rotationSeq = 0
   /** Simulates an upsert whose row is cascaded away before anything reads it. */
   swallowUpsert = false
 
@@ -69,6 +70,8 @@ class FakeRepo implements OrgClusterExecutionRepo {
     if (held && this.rotationToken && held.getTime() > now.getTime() - leaseMs) return null
     this.rotationAt = now
     this.rotationToken = token
+    this.rotationSeq += 1
+    this.row = { ...this.row, credentialRotationSeq: this.rotationSeq }
     const staged = this.row.credentialStagedApiKeyId
     if (staged) {
       await this.enqueueKeyRevocation(this.row.orgId, staged, 'cluster credential rotation abandoned')
@@ -101,7 +104,7 @@ class FakeRepo implements OrgClusterExecutionRepo {
     credential: { daemonId: string; apiKeyId: string; revision: string },
     reason: string
   ): Promise<boolean> {
-    if (this.rotationToken !== token || !this.row) return false
+    if (this.rotationToken !== token || !this.row?.enabled) return false
     const superseded = this.row.credentialApiKeyId
     this.row = {
       ...this.row,
@@ -125,6 +128,7 @@ class FakeRepo implements OrgClusterExecutionRepo {
 
   async retireCredential(_orgId: OrgId, token: string, reason: string): Promise<boolean> {
     if (this.rotationToken !== token || !this.row) return false
+    this.row = { ...this.row, enabled: false }
     for (const apiKeyId of [this.row.credentialApiKeyId, this.row.credentialStagedApiKeyId]) {
       if (apiKeyId) await this.enqueueKeyRevocation(this.row.orgId, apiKeyId, reason)
     }
@@ -162,6 +166,7 @@ class FakeRepo implements OrgClusterExecutionRepo {
       orgId,
       enabled: false,
       specRevision: 0,
+      credentialRotationSeq: 0,
       suspend: false,
       ...defaults,
       createdAt: new Date(0),
@@ -208,15 +213,19 @@ class FakeApi implements OrgResourceApi {
 
 /** Records what the key authority published, so ordering can be asserted. */
 class FakeSecrets implements OrgSecretApi {
-  written: { namespace: string; name: string; configJson: string }[] = []
+  written: { namespace: string; name: string; seq: number; configJson: string }[] = []
   namespaceMissing = false
+  publishedSeq = 0
   /** Runs inside the publish, so a test can steal the claim mid-flight. */
   duringApply?: () => void
 
-  async applyCredential(namespace: string, name: string, configJson: string): Promise<void> {
+  async publishCredential(namespace: string, name: string, seq: number, configJson: string): Promise<void> {
     if (this.namespaceMissing) throw new NamespaceNotReadyError(namespace)
     this.duringApply?.()
-    this.written.push({ namespace, name, configJson })
+    // Same cluster-side ordering guard the real client enforces.
+    if (seq < this.publishedSeq) throw new StaleCredentialWriteError(seq, this.publishedSeq)
+    this.publishedSeq = seq
+    this.written.push({ namespace, name, seq, configJson })
   }
 
   async delete(): Promise<void> {}
@@ -460,6 +469,34 @@ describe('ClusterExecutionService.issueCredential', () => {
     expect(repo.rotationAt).toBeNull()
     secrets.namespaceMissing = false
     await expect(service.issueCredential(ORG)).resolves.toBeDefined()
+  })
+
+  it('refuses to overwrite a Secret a newer rotation already published', async () => {
+    const { service, repo, secrets, keys } = build()
+    await service.configure(ORG, { enabled: true })
+    // This pass stalls past its lease; the successor claims, publishes at a
+    // higher sequence, and only then does the stalled publish reach the cluster.
+    secrets.duringApply = () => {
+      repo.rotationToken = 'successor'
+      secrets.publishedSeq = repo.rotationSeq + 10
+    }
+
+    await expect(service.issueCredential(ORG)).rejects.toThrow(ClusterRotationInProgressError)
+    // The Secret still holds the successor's credential, not this pass's.
+    expect(secrets.written).toEqual([])
+    expect(keys.revoked).toEqual(['key-1'])
+  })
+
+  it('refuses to commit onto an envelope disabled while it was publishing', async () => {
+    const { service, repo, secrets, keys } = build()
+    await service.configure(ORG, { enabled: true })
+    secrets.duringApply = () => {
+      repo.row = { ...repo.row!, enabled: false }
+    }
+
+    await expect(service.issueCredential(ORG)).rejects.toThrow(ClusterRotationInProgressError)
+    expect((await repo.get())?.credentialRevision).toBeUndefined()
+    expect(keys.revoked).toEqual(['key-1'])
   })
 
   it('refuses on a disabled envelope, which disable has already retired', async () => {

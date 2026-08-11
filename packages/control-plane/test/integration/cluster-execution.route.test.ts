@@ -68,16 +68,30 @@ async function clusterApp(
   const applied: { spec?: Record<string, unknown> }[] = []
   const secrets: { path: string; configJson: string }[] = []
   let stored: unknown = null
+  let storedSecret: { metadata: { resourceVersion: string; annotations: Record<string, string> } } | null = null
   const server = await fakeApiServer((req) => {
     calls.push(`${req.method} ${req.url.pathname}`)
-    const isSecret = req.url.pathname.includes('/secrets/')
-    if (req.method === 'PATCH' && isSecret) {
-      if (options.namespaceMissing) {
-        return { status: 404, json: { kind: 'Status', reason: 'NotFound', message: 'namespaces not found' } }
+    // Secrets are a real little store: the provisioner reads before it writes,
+    // and only creates when the read said the Secret is absent.
+    const isSecret = req.url.pathname.includes('/secrets')
+    if (isSecret) {
+      const missing = { status: 404, json: { kind: 'Status', reason: 'NotFound', message: 'not found' } }
+      if (options.namespaceMissing) return missing
+      if (req.method === 'GET') return storedSecret ? { json: storedSecret } : missing
+      if (req.method === 'POST' || req.method === 'PUT') {
+        const body = JSON.parse(req.body) as {
+          metadata?: { annotations?: Record<string, string> }
+          stringData?: Record<string, string>
+        }
+        storedSecret = {
+          metadata: {
+            resourceVersion: String(secrets.length + 1),
+            annotations: body.metadata?.annotations ?? {}
+          }
+        }
+        secrets.push({ path: req.url.pathname, configJson: body.stringData?.['config.json'] ?? '' })
+        return { json: storedSecret }
       }
-      const body = JSON.parse(req.body) as { stringData?: Record<string, string> }
-      secrets.push({ path: req.url.pathname, configJson: body.stringData?.['config.json'] ?? '' })
-      return { json: {} }
     }
     if (req.method === 'PATCH') {
       const body = JSON.parse(req.body) as { spec?: Record<string, unknown> }
@@ -307,7 +321,6 @@ describe('GET /cluster-execution/status', () => {
 
 describe('POST /cluster-execution/credential', () => {
   const CREDENTIAL = `${CLUSTER}/credential`
-  const SECRET_PATH = `/api/v1/namespaces/${TARGET_NAMESPACE}/secrets/ac-daemon-token`
 
   it('publishes the daemon config as the Secret the CRD names and never returns the key', async () => {
     const { http, calls, applied, secrets } = await clusterApp()
@@ -318,7 +331,8 @@ describe('POST /cluster-execution/credential', () => {
     const body = res.json()
     expect(body.secretName).toBe('ac-daemon-token')
     expect(body.rotated).toBe(false)
-    expect(calls).toContain(`PATCH ${SECRET_PATH}`)
+    expect(calls).toContain(`POST /api/v1/namespaces/${TARGET_NAMESPACE}/secrets`)
+    expect(secrets.at(-1)?.path).toContain('/secrets')
 
     const config = JSON.parse(secrets.at(-1)!.configJson)
     expect(config.version).toBe(1)
@@ -402,6 +416,20 @@ describe('POST /cluster-execution/credential', () => {
     expect(res.json().code).toBe('CLUSTER_ROTATION_IN_PROGRESS')
     // The loser minted nothing at all — no daemon, no key.
     expect(await prisma.daemon.count()).toBe(0)
+  })
+
+  it('stamps the rotation sequence on the Secret so a stalled publish cannot win', async () => {
+    const { http, secrets, calls } = await clusterApp()
+    await http.app.inject({ method: 'PUT', url: CLUSTER, payload: { enabled: true } })
+    await http.app.inject({ method: 'POST', url: CREDENTIAL })
+    await http.app.inject({ method: 'POST', url: CREDENTIAL })
+
+    // Read-before-write on every publish, and a create only when the read said absent.
+    expect(calls.filter((call) => call.startsWith('GET /api/v1/namespaces')).length).toBeGreaterThanOrEqual(2)
+    expect(calls.filter((call) => call === `POST /api/v1/namespaces/${TARGET_NAMESPACE}/secrets`)).toHaveLength(1)
+    expect(secrets).toHaveLength(2)
+    const row = await prisma.orgClusterExecution.findUnique({ where: { orgId: DEFAULT_ORG_ID } })
+    expect(row?.credentialRotationSeq).toBe(2)
   })
 
   it('adopts the key a crashed rotation left staged, rather than stranding it', async () => {

@@ -4941,6 +4941,9 @@ export interface ClusterExecutionSettings {
   credentialApiKeyId?: string
   /** A key minted for an in-flight transition and not yet committed. */
   credentialStagedApiKeyId?: string
+  /** Monotonic per credential claim; stamped on the published Secret so a
+   *  stalled publish cannot overwrite its successor's. */
+  credentialRotationSeq: number
   runtimeImage: string
   runtimeTiers: ClusterRuntimeTier[]
   quota: ClusterQuota

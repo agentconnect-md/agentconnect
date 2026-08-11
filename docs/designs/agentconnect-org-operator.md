@@ -270,12 +270,23 @@ undo the retirement disable just performed. Beyond that, three mechanisms:
 
 - **A fencing token, not just a lease.** A transition claims
   `credentialRotationAt` + `credentialRotationToken`, and every subsequent write
-  — staging, committing, retiring, and the release itself — is conditional on
-  that token. The timestamp only decides when a takeover is allowed; the token
-  is what stops an expired holder from committing behind its successor or
-  unlocking it. A takeover ADOPTS whatever the dead holder left in
-  `credentialStagedApiKeyId`, queueing it for revocation in the same
-  transaction.
+  — staging, committing, retiring, and the release itself — carries that token
+  **in its `where` clause**, not in a preceding check: a check-then-write pair
+  leaves a window a takeover can land in, which Prisma's default isolation would
+  not close. The timestamp only decides when a takeover is allowed; the token is
+  what stops an expired holder from committing behind its successor or unlocking
+  it, and `commitCredential` additionally requires `enabled: true` so no
+  rotation can land a live key on an envelope disable already retired. A
+  takeover ADOPTS whatever the dead holder left in `credentialStagedApiKeyId`,
+  queueing it for revocation in the same transaction.
+- **A sequence for the cluster, since the token cannot reach it.** A database
+  token cannot fence a request already in flight to the API server, so
+  `credentialRotationSeq` — monotonic per claim — is stamped on the Secret as
+  `agentconnect.md/credential-seq`, publishing is a `resourceVersion`-guarded
+  read-modify-write, and a publish carrying a lower sequence than the one
+  already there refuses rather than overwrites. Otherwise a request that stalled
+  past its lease could land after its successor's and restore a key the row no
+  longer names.
 - **Staged before published.** The minted key is recorded before the Secret is
   written, so every failure point after that leaves a durable handle rather than
   a live key nobody can name.
@@ -285,12 +296,13 @@ undo the retirement disable just performed. Beyond that, three mechanisms:
   ONE transaction, because a stop in between would overwrite the only handle to
   the predecessor. The maintenance loop retries whatever is still owed.
 
-Disabling takes the same claim and does all of its durable work — dropping the
-credential, queueing both its keys, and recording the resource for teardown —
-in one transaction BEFORE the cluster is touched, so a delete that fails leaves
-state that converges rather than an `enabled: false` row beside a live pod
-holding a live key. Re-enabling cancels a pending teardown, or the drain would
-delete the resource the re-enable just created.
+Disabling takes the same claim BEFORE it writes anything, and the write that
+clears `enabled` is the same transaction that drops the credential, queues both
+its keys, and records the resource for teardown — so there is no moment where
+the row reads disabled but its credential was never retired, and a delete that
+fails leaves state that converges rather than an `enabled: false` row beside a
+live pod holding a live key. Re-enabling cancels a pending teardown, or the
+drain would delete the resource the re-enable just created.
 
 Four orderings carry the rest:
 

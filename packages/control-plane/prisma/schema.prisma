@@ -2792,6 +2792,12 @@ model OrgClusterExecution {
   /// envelope.
   credentialRotationAt    DateTime?        @db.Timestamptz(6)
   credentialRotationToken String?
+  /// Monotonic per claim. The token fences the DATABASE; this fences the
+  /// CLUSTER: it is stamped on the credential Secret, and a publish refuses to
+  /// overwrite a Secret already carrying a higher one. Without it a request that
+  /// stalled past its lease could land its Secret after its successor's and
+  /// restore a key the row no longer names.
+  credentialRotationSeq   Int              @default(0)
   /// A key that has been minted and may already be published, but is not yet the
   /// committed credential. Written BEFORE the Secret is, because every failure
   /// after that point would otherwise leave a live non-expiring key with nothing

@@ -42,6 +42,7 @@ function toRecord(row: OrgClusterExecution): ClusterExecutionSettings {
     orgId: row.orgId,
     enabled: row.enabled,
     specRevision: row.specRevision,
+    credentialRotationSeq: row.credentialRotationSeq,
     targetNamespace: row.targetNamespace,
     suspend: row.suspend,
     daemonImage: row.daemonImage,
@@ -107,7 +108,7 @@ export class PgOrgClusterExecutionRepo implements OrgClusterExecutionRepo {
             { credentialRotationAt: { lt: new Date(now.getTime() - leaseMs) } }
           ]
         },
-        data: { credentialRotationAt: now, credentialRotationToken: token }
+        data: { credentialRotationAt: now, credentialRotationToken: token, credentialRotationSeq: { increment: 1 } }
       })
       if (claimed.count === 0) return null
       const row = await tx.orgClusterExecution.findUnique({ where: { orgId } })
@@ -152,10 +153,14 @@ export class PgOrgClusterExecutionRepo implements OrgClusterExecutionRepo {
     reason: string
   ): Promise<boolean> {
     return withTx(this.prisma, async (tx) => {
-      const current = await tx.orgClusterExecution.findUnique({ where: { orgId } })
-      if (!current || current.credentialRotationToken !== token) return false
-      await tx.orgClusterExecution.update({
-        where: { orgId },
+      // The predicate IS the write: a `findUnique` check followed by an
+      // unconditional update leaves a window in which a successor takes the
+      // claim over, and Prisma's default isolation would let the stale write
+      // land anyway. `enabled` is part of it too — a rotation must never commit
+      // a live key onto an envelope that disable has already retired.
+      const superseded = (await tx.orgClusterExecution.findUnique({ where: { orgId } }))?.credentialApiKeyId
+      const won = await tx.orgClusterExecution.updateMany({
+        where: { orgId, credentialRotationToken: token, enabled: true },
         data: {
           // A credential change IS a spec change (`credentialRevision` is what
           // forces the pod Recreate), so it rides the same fence as every other write.
@@ -166,9 +171,9 @@ export class PgOrgClusterExecutionRepo implements OrgClusterExecutionRepo {
           credentialStagedApiKeyId: null
         }
       })
+      if (won.count === 0) return false
       // Same transaction as the overwrite: queueing the predecessor separately
       // would lose it whenever the process stopped in between.
-      const superseded = current.credentialApiKeyId
       if (superseded && superseded !== credential.apiKeyId) {
         await enqueueRevocation(tx, orgId, superseded, reason)
       }
@@ -178,17 +183,32 @@ export class PgOrgClusterExecutionRepo implements OrgClusterExecutionRepo {
 
   async abandonStagedCredential(orgId: OrgId, token: string, reason: string): Promise<void> {
     await withTx(this.prisma, async (tx) => {
-      const current = await tx.orgClusterExecution.findUnique({ where: { orgId } })
-      if (!current || current.credentialRotationToken !== token || !current.credentialStagedApiKeyId) return
-      await enqueueRevocation(tx, orgId, current.credentialStagedApiKeyId, reason)
-      await tx.orgClusterExecution.update({ where: { orgId }, data: { credentialStagedApiKeyId: null } })
+      const staged = (await tx.orgClusterExecution.findUnique({ where: { orgId } }))?.credentialStagedApiKeyId
+      if (!staged) return
+      const won = await tx.orgClusterExecution.updateMany({
+        where: { orgId, credentialRotationToken: token, credentialStagedApiKeyId: staged },
+        data: { credentialStagedApiKeyId: null }
+      })
+      if (won.count === 0) return
+      await enqueueRevocation(tx, orgId, staged, reason)
     })
   }
 
   async retireCredential(orgId: OrgId, token: string, reason: string): Promise<boolean> {
     return withTx(this.prisma, async (tx) => {
       const current = await tx.orgClusterExecution.findUnique({ where: { orgId } })
-      if (!current || current.credentialRotationToken !== token) return false
+      if (!current) return false
+      const won = await tx.orgClusterExecution.updateMany({
+        where: { orgId, credentialRotationToken: token },
+        data: {
+          specRevision: { increment: 1 },
+          enabled: false,
+          credentialApiKeyId: null,
+          credentialRevision: null,
+          credentialStagedApiKeyId: null
+        }
+      })
+      if (won.count === 0) return false
       for (const apiKeyId of [current.credentialApiKeyId, current.credentialStagedApiKeyId]) {
         if (apiKeyId) await enqueueRevocation(tx, orgId, apiKeyId, reason)
       }
@@ -197,15 +217,6 @@ export class PgOrgClusterExecutionRepo implements OrgClusterExecutionRepo {
       await tx.pendingEnvelopeTeardown.createMany({
         data: [{ orgId, targetNamespace: current.targetNamespace }],
         skipDuplicates: true
-      })
-      await tx.orgClusterExecution.update({
-        where: { orgId },
-        data: {
-          specRevision: { increment: 1 },
-          credentialApiKeyId: null,
-          credentialRevision: null,
-          credentialStagedApiKeyId: null
-        }
       })
       return true
     })

@@ -15,7 +15,7 @@ import { randomUUID } from 'node:crypto'
 import { DaemonId, type OrgId } from '../domain/ids.js'
 import type { Clock } from '../domain/clock.js'
 import { buildDaemonConfigJson } from './credential.js'
-import type { OrgSecretApi } from './secret-api.js'
+import { StaleCredentialWriteError, type OrgSecretApi } from './secret-api.js'
 import type {
   ClusterExecutionDefaults,
   ClusterExecutionPatch,
@@ -155,11 +155,16 @@ export class ClusterExecutionService {
    * collaboration routes, which is the Daemons page's job and not this one's.
    */
   private async disable(orgId: OrgId, patch: ClusterExecutionPatch): Promise<ClusterExecutionSettings> {
-    await this.repo.upsert(orgId, this.defaults(orgId), patch)
+    // The row must not be written before the claim is held: an upsert that flips
+    // `enabled` while an issuer owns the transition would leave a disabled row
+    // whose credential was never retired. `retireCredential` is what flips it,
+    // under the claim, so ownership and the state change are one step.
     const token = randomUUID()
     const claimed = await this.repo.beginCredentialRotation(orgId, token, new Date(this.clock.now()), ROTATION_LEASE_MS)
     if (!claimed) throw new ClusterRotationInProgressError()
     try {
+      const { enabled: _dropped, ...rest } = patch
+      if (Object.keys(rest).length > 0) await this.repo.upsert(orgId, this.defaults(orgId), rest)
       await this.repo.retireCredential(orgId, token, 'cluster execution disabled')
       await this.drainTeardowns()
       await this.drainKeyRevocations()
@@ -287,9 +292,10 @@ export class ClusterExecutionService {
         throw await this.lostClaim(orgId, minted.apiKeyId)
       }
       try {
-        await this.secrets.applyCredential(
+        await this.secrets.publishCredential(
           settings.targetNamespace,
           settings.credentialSecretName,
+          settings.credentialRotationSeq,
           buildDaemonConfigJson({
             controlPlaneUrl: this.policy.controlPlaneUrl,
             apiKey: minted.token,
@@ -297,8 +303,16 @@ export class ClusterExecutionService {
           })
         )
       } catch (error) {
+        // Clear the staged slot when this pass still owns it, and queue the key
+        // either way — if the claim was taken over, the slot belongs to the
+        // successor now, but the key is still this pass's to retire. Enqueueing
+        // is idempotent, so the successor's own adoption cannot double-queue it.
         await this.repo.abandonStagedCredential(orgId, token, 'cluster credential never published')
+        await this.repo.enqueueKeyRevocation(orgId, minted.apiKeyId, 'cluster credential never published')
         await this.drainKeyRevocations()
+        // A newer rotation already published — this pass lost cluster-side, the
+        // same verdict the database fence would have given it.
+        if (error instanceof StaleCredentialWriteError) throw new ClusterRotationInProgressError()
         throw error
       }
 
@@ -400,6 +414,15 @@ export class ClusterExecutionService {
   private unconfigured(orgId: OrgId): ClusterExecutionSettings {
     const defaults = this.defaults(orgId)
     const epoch = new Date(0)
-    return { orgId, enabled: false, specRevision: 0, suspend: false, ...defaults, createdAt: epoch, updatedAt: epoch }
+    return {
+      orgId,
+      enabled: false,
+      specRevision: 0,
+      credentialRotationSeq: 0,
+      suspend: false,
+      ...defaults,
+      createdAt: epoch,
+      updatedAt: epoch
+    }
   }
 }
