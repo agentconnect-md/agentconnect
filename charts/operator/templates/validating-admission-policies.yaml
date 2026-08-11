@@ -40,18 +40,29 @@ spec:
       expression: 'object == null ? oldObject : object'
     - name: labels
       expression: 'has(variables.target.metadata.labels) ? variables.target.metadata.labels : {}'
+    # The labels as they stand in the cluster; empty on CREATE, where nothing stands yet.
+    - name: oldLabels
+      expression: 'oldObject == null ? {} : (has(oldObject.metadata.labels) ? oldObject.metadata.labels : {})'
   validations:
     - expression: request.namespace == '' || request.namespace.startsWith('{{ $prefix }}')
       message: this install's operator may only write into namespaces carrying its org namespace prefix
       reason: Forbidden
     # Cross-install guard: another environment's control namespace is never a write target,
-    # even if a misconfigured prefix would otherwise match it. Namespace objects are checked
-    # by their own labels below, where namespaceObject is not populated.
+    # even if a misconfigured prefix would otherwise match it.
     - expression: >-
         request.namespace == '' || variables.isNamespace ||
         !('agentconnect.md/control-namespace' in (has(namespaceObject.metadata.labels) ?
         namespaceObject.metadata.labels : {}))
       message: this install's operator may not write into a namespace marked as a control namespace
+      reason: Forbidden
+    # The same guard for the Namespace object itself: it is cluster-scoped, so it carries no
+    # namespaceObject and an empty request.namespace, and the check above never sees it. Both
+    # sides are tested — oldObject so a marked namespace can be neither deleted nor stripped of
+    # its marker, object so a marked one cannot be created and later written into.
+    - expression: >-
+        !variables.isNamespace || (!('agentconnect.md/control-namespace' in variables.oldLabels) &&
+        !('agentconnect.md/control-namespace' in variables.labels))
+      message: this install's operator may not create, change or delete a namespace marked as a control namespace
       reason: Forbidden
     - expression: '!variables.isNamespace || variables.target.metadata.name.startsWith(''{{ $prefix }}'')'
       message: this install's operator may only create, change or delete namespaces carrying its org namespace prefix
@@ -61,7 +72,6 @@ spec:
     - expression: >-
         !variables.isNamespace || object == null || ('agentconnect.md/org' in variables.labels &&
         'agentconnect.md/org-namespace' in variables.labels &&
-        !('agentconnect.md/control-namespace' in variables.labels) &&
         ('pod-security.kubernetes.io/enforce' in variables.labels) &&
         variables.labels['pod-security.kubernetes.io/enforce'] in ['baseline', 'restricted'])
       message: an org namespace must carry the envelope org labels and a baseline-or-stricter Pod Security level

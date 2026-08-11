@@ -149,9 +149,11 @@ renders its own release-prefixed copies from its own constants (Kubernetes
   the only exceptions; namespaces it stamps must carry the org/claim labels and
   a `baseline`-or-stricter Pod Security level; the per-org TokenReview binding
   is the only other cluster-scoped object it may write. A control namespace
-  marked `agentconnect.md/control-namespace` is never a write target, which is
-  what protects a _neighbouring_ install from a prefix misconfigured to overlap
-  it.
+  marked `agentconnect.md/control-namespace` is never a write target, and the
+  marked namespace object itself can be neither deleted nor unmarked — that pair
+  is what protects a _neighbouring_ install from a prefix misconfigured to
+  overlap it. The Namespace object needs its own check because it is
+  cluster-scoped: no `namespaceObject`, and an empty `request.namespace`.
 - **sandbox baseline** — pods in an org namespace (claim label, narrowed to the
   install's prefix) may not be privileged, share host namespaces, or mount
   `hostPath`; every pod but the daemon supervisor must set

@@ -36,7 +36,8 @@ expression that cannot be evaluated rejects the request.
 - **`<release>-ac-envelope-fence`** bounds this install's operator ServiceAccount.
   Every write it makes must land in a namespace carrying `orgNamespacePrefix`;
   the only exceptions are its own `AgentConnectOrg` resources and election Lease
-  in the release namespace. Namespaces it creates must carry the envelope org
+  in the release namespace. A namespace marked as a control namespace is neither
+  a write target nor an object it may delete or strip the marker from. Namespaces it creates must carry the envelope org
   labels and a `baseline`-or-stricter Pod Security level, and the only other
   cluster-scoped objects it may write are the per-org TokenReview bindings.
   RBAC already scopes the verbs; this scopes _where_ they may be used.
