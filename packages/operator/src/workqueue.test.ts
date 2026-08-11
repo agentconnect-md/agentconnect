@@ -100,6 +100,70 @@ describe('WorkQueue', () => {
     await queue.shutdown()
   })
 
+  it('runs a key again after the delay its own pass asked for', async () => {
+    const clock = new FakeClock()
+    let runs = 0
+    const queue = new WorkQueue(
+      async () => {
+        runs += 1
+        // Only the first pass reads a provisional state; the follow-up settles it.
+        return runs === 1 ? { requeueAfterMs: 60_000 } : {}
+      },
+      { clock }
+    )
+    queue.add('a')
+    await waitUntil(() => runs === 1)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(runs).toBe(1)
+    expect(queue.size).toBe(1)
+    clock.advance(60_000)
+    await waitUntil(() => runs === 2)
+    // The settled pass asks for nothing, so the key goes idle.
+    await waitUntil(() => queue.size === 0)
+    await queue.shutdown()
+  })
+
+  it('lets a watch event supersede a pending follow-up instead of running twice', async () => {
+    const clock = new FakeClock()
+    let runs = 0
+    const queue = new WorkQueue(
+      async () => {
+        runs += 1
+        return runs === 1 ? { requeueAfterMs: 60_000 } : {}
+      },
+      { clock }
+    )
+    queue.add('a')
+    await waitUntil(() => runs === 1)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    // A pod update arrives first: it runs now and cancels the timer armed for later.
+    queue.add('a')
+    await waitUntil(() => runs === 2)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    clock.advance(60_000)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(runs).toBe(2)
+    await queue.shutdown()
+  })
+
+  it('shutdown drops pending follow-ups and waits for in-flight work', async () => {
+    const clock = new FakeClock()
+    let runs = 0
+    const queue = new WorkQueue(
+      async () => {
+        runs += 1
+        return { requeueAfterMs: 60_000 }
+      },
+      { clock }
+    )
+    queue.add('a')
+    await waitUntil(() => runs === 1)
+    await queue.shutdown()
+    clock.advance(60_000)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(runs).toBe(1)
+  })
+
   it('shutdown drops pending retries and waits for in-flight work', async () => {
     const clock = new FakeClock()
     let attempts = 0

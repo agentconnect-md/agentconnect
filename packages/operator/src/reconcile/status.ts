@@ -35,8 +35,35 @@ interface DeploymentRead {
   status?: { observedGeneration?: number; readyReplicas?: number; updatedReplicas?: number }
 }
 
+interface ContainerStatusRead {
+  ready?: boolean
+  state?: { waiting?: { reason?: string } }
+}
+
+interface PodRead {
+  metadata?: { name?: string }
+  status?: {
+    phase?: string
+    conditions?: Array<{ type?: string; status?: string }>
+    containerStatuses?: ContainerStatusRead[]
+    initContainerStatuses?: ContainerStatusRead[]
+  }
+}
+
 interface PodList {
-  items?: Array<{ status?: { phase?: string; containerStatuses?: Array<{ ready?: boolean }> } }>
+  items?: PodRead[]
+}
+
+interface EventRead {
+  involvedObject?: { name?: string }
+  message?: string
+  lastTimestamp?: string
+  eventTime?: string
+  series?: { lastObservedTime?: string }
+}
+
+interface EventList {
+  items?: EventRead[]
 }
 
 interface SandboxList {
@@ -50,6 +77,126 @@ interface WarmPoolList {
 
 interface ClaimList {
   items?: Array<{ spec?: { warmPoolRef?: { name?: string } }; status?: { sandbox?: { name?: string } } }>
+}
+
+/** Every declared container reported ready — an empty list means the kubelet has not started any yet. */
+function isPodReady(pod: PodRead): boolean {
+  const containers = pod.status?.containerStatuses ?? []
+  return containers.length > 0 && containers.every((status) => status.ready === true)
+}
+
+/** The kubelet cannot build a container config it cannot resolve; the daemon pod's only such reference is the Secret. */
+function hasCredentialConfigError(pod: PodRead): boolean {
+  const containers = [...(pod.status?.initContainerStatuses ?? []), ...(pod.status?.containerStatuses ?? [])]
+  return containers.some((status) => status.state?.waiting?.reason === 'CreateContainerConfigError')
+}
+
+/** Pending with the scheduler refusing to place the pod — nothing has read the Secret yet. */
+function isUnschedulable(pod: PodRead): boolean {
+  return (
+    pod.status?.phase === 'Pending' &&
+    (pod.status.conditions ?? []).some((condition) => condition.type === 'PodScheduled' && condition.status === 'False')
+  )
+}
+
+/** Sized to the recorder, not the kubelet: mounts retry about every two minutes, but once the correlator's
+ *  burst drains it admits one update per five minutes per object, so API-visible ones can be ~6 min apart. */
+const FAILED_MOUNT_FRESH_MS = 15 * 60_000
+
+/** Newest occurrence across both Event shapes: core aggregation and the events.k8s.io series. Absent reads as stale. */
+function lastOccurrenceMs(event: EventRead): number {
+  const stamps = [event.series?.lastObservedTime, event.lastTimestamp, event.eventTime]
+    .map((value) => (value ? Date.parse(value) : Number.NaN))
+    .filter((ms) => !Number.isNaN(ms))
+  return stamps.length > 0 ? Math.max(...stamps) : 0
+}
+
+/** No container has been created yet — the state a blocked mount leaves the pod in, and the corroboration
+ *  that keeps a retained Event from outliving the fault it described. */
+function isAwaitingContainerCreate(pod: PodRead): boolean {
+  const containers = [...(pod.status?.initContainerStatuses ?? []), ...(pod.status?.containerStatuses ?? [])]
+  return containers.length === 0 || containers.some((status) => status.state?.waiting?.reason === 'ContainerCreating')
+}
+
+/** The name has to appear as the Secret the kubelet could not read — the wordings it uses to say so.
+ *  A bare substring would blame the credential for a PVC that merely shares the name. */
+function namesCredentialSecret(message: string, namespace: string, secretName: string): boolean {
+  return [`secret "${secretName}"`, `secrets "${secretName}"`, `secret ${namespace}/${secretName}`].some((form) =>
+    message.includes(form)
+  )
+}
+
+/** A Secret-backed volume the kubelet cannot mount surfaces only as a FailedMount Event; pod.status never names it. */
+async function hasFailedCredentialMount(
+  ctx: ReconcileContext,
+  namespace: string,
+  pods: PodRead[],
+  secretName: string
+): Promise<boolean> {
+  const names = new Set(
+    pods
+      .filter(isAwaitingContainerCreate)
+      .map((pod) => pod.metadata?.name)
+      .filter((name): name is string => Boolean(name))
+  )
+  if (names.size === 0) return false
+  let events: EventList
+  try {
+    events = await ctx.http.json<EventList>({
+      method: 'GET',
+      path: corePath(namespace, 'events'),
+      query: { fieldSelector: 'involvedObject.kind=Pod,reason=FailedMount' }
+    })
+  } catch (error) {
+    // Best-effort: an install whose RBAC predates this read must lose the nuance, not the whole status pass.
+    ctx.log.warn?.(`${namespace}: FailedMount events unreadable: ${(error as Error).message}`)
+    return false
+  }
+  // Matched on how the message names the Secret, so the daemon's own PVC is never read as a credential fault,
+  // and on the newest occurrence so an Event retained past its fix cannot keep describing a resolved mount.
+  const cutoff = Date.now() - FAILED_MOUNT_FRESH_MS
+  return (events.items ?? []).some(
+    (event) =>
+      names.has(event.involvedObject?.name ?? '') &&
+      namesCredentialSecret(event.message ?? '', namespace, secretName) &&
+      lastOccurrenceMs(event) >= cutoff
+  )
+}
+
+/** A FailedMount Event can be written after the pod's last update, which no watch would wake us for. */
+export const CREDENTIAL_RECHECK_MS = 60_000
+
+interface CredentialVerdict {
+  credential: NonNullable<Observations['credential']>
+  /** Set when the verdict is provisional: the pod is up to nothing yet and only an Event can refine it. */
+  recheckAfterMs?: number
+}
+
+/** CredentialReady exists to report the Secret mount, so separate it from ordinary scheduling and startup delay. */
+async function observeCredential(
+  ctx: ReconcileContext,
+  namespace: string,
+  pods: PodRead[],
+  secretName: string
+): Promise<CredentialVerdict> {
+  if (pods.length === 0) return { credential: { status: 'Unknown', reason: 'NoDaemonPod' } }
+  if (pods.some(isPodReady)) return { credential: { status: 'True', reason: 'DaemonRunning' } }
+  const missing = {
+    credential: {
+      status: 'False',
+      reason: 'CredentialSecretMissing',
+      message: `daemon pod cannot mount credential secret ${secretName}`
+    }
+  } as const
+  if (pods.some(hasCredentialConfigError)) return missing
+  // An unplaced pod never reached a kubelet, so no mount was attempted and there is no Event worth reading.
+  // The scheduler keeps updating the PodScheduled condition while it retries, so a watch wakes the next pass.
+  if (pods.every(isUnschedulable))
+    return {
+      credential: { status: 'Unknown', reason: 'DaemonPodUnschedulable', message: 'daemon pod is not scheduled yet' }
+    }
+  if (await hasFailedCredentialMount(ctx, namespace, pods, secretName)) return missing
+  return { credential: { status: 'False', reason: 'DaemonPodNotReady' }, recheckAfterMs: CREDENTIAL_RECHECK_MS }
 }
 
 /** Read the live workload state the status summaries derive from. */
@@ -79,11 +226,11 @@ export async function observeWorkloads(ctx: ReconcileContext, input: EnvelopeInp
   })
   const daemonPods = pods.items ?? []
   // CredentialReady derives from pod state: the required Secret mount is the only startup gate.
-  if (input.spec.suspend) obs.credential = { status: 'Unknown', reason: 'Suspended' }
-  else if (daemonPods.some((pod) => pod.status?.containerStatuses?.every((status) => status.ready)))
-    obs.credential = { status: 'True', reason: 'DaemonRunning' }
-  else if (daemonPods.length > 0) obs.credential = { status: 'False', reason: 'DaemonPodNotReady' }
-  else obs.credential = { status: 'Unknown', reason: 'NoDaemonPod' }
+  const verdict: CredentialVerdict = input.spec.suspend
+    ? { credential: { status: 'Unknown', reason: 'Suspended' } }
+    : await observeCredential(ctx, ns, daemonPods, input.spec.daemon.credentialSecretName)
+  obs.credential = verdict.credential
+  if (verdict.recheckAfterMs !== undefined) obs.recheckAfterMs = verdict.recheckAfterMs
   const sandboxes = await getOrNull<SandboxList>(ctx.http, groupPath(SANDBOX_GROUP, ns, 'sandboxes'))
   const items = sandboxes?.items ?? []
   const suspended = items.filter((sandbox) => sandbox.spec?.operatingMode === 'Suspended').length
@@ -134,7 +281,8 @@ export function buildStatus(org: AgentConnectOrg, obs: Observations, nowIso: str
   put({
     type: CONDITION_CREDENTIAL_READY,
     status: obs.credential?.status ?? 'Unknown',
-    reason: obs.credential?.reason ?? 'NotObserved'
+    reason: obs.credential?.reason ?? 'NotObserved',
+    message: obs.credential?.message
   })
   put({
     type: CONDITION_PROGRESSING,

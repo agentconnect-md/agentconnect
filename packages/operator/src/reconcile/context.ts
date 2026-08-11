@@ -28,7 +28,9 @@ export interface Observations {
   daemon?: { ready: boolean; image?: string }
   /** Deployment has not converged to its desired replica count yet. */
   progressing: boolean
-  credential?: { status: 'True' | 'False' | 'Unknown'; reason: string }
+  credential?: { status: 'True' | 'False' | 'Unknown'; reason: string; message?: string }
+  /** This pass read a provisional state; ask the queue for one more look after this delay. */
+  recheckAfterMs?: number
   sandboxes?: { total: number; running: number; suspended: number }
   pools?: AgentConnectOrgStatus['pools']
   rollout?: AgentConnectOrgStatus['rollout']

@@ -6,19 +6,20 @@ import { daemonPodsGone, reconcileDeletion, suspendAllSandboxes } from './finali
 import { renderGatewayPolicies } from './gateway-limits.js'
 import { reconcileRollout } from './rollout.js'
 import { observeWorkloads, writeStatus } from './status.js'
+import type { WorkResult } from '../workqueue.js'
 
 /** One level-triggered pass for one org: read live state, dispatch, publish status. */
-export async function reconcile(ctx: ReconcileContext, name: string): Promise<void> {
+export async function reconcile(ctx: ReconcileContext, name: string): Promise<WorkResult> {
   let org: AgentConnectOrg
   try {
     org = await ctx.orgApi.get(name)
   } catch (error) {
-    if (error instanceof K8sApiError && error.isNotFound) return
+    if (error instanceof K8sApiError && error.isNotFound) return {}
     throw error
   }
   if (org.metadata?.deletionTimestamp) {
     await reconcileDeletion(ctx, org)
-    return
+    return {}
   }
   if (!(org.metadata?.finalizers ?? []).includes(FINALIZER)) {
     org = await ctx.orgApi.updateFinalizer(name, FINALIZER, 'add')
@@ -29,7 +30,7 @@ export async function reconcile(ctx: ReconcileContext, name: string): Promise<vo
   if (!parsed.success) {
     obs.degraded = { reason: 'InvalidSpec', message: parsed.error.issues.map((issue) => issue.message).join('; ') }
     await writeStatus(ctx, org, obs)
-    return
+    return {}
   }
   const input: EnvelopeInputs = { orgName: name, spec: parsed.data }
   await reconcileEnvelope(ctx, input, obs)
@@ -47,4 +48,6 @@ export async function reconcile(ctx: ReconcileContext, name: string): Promise<vo
   await renderGatewayPolicies(ctx, input, obs)
   if (obs.namespaceReady) await observeWorkloads(ctx, input, obs)
   await writeStatus(ctx, org, obs)
+  // A provisional observation asks for one more look; no watch fires for a state only an Event describes.
+  return obs.recheckAfterMs !== undefined ? { requeueAfterMs: obs.recheckAfterMs } : {}
 }
