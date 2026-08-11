@@ -89,7 +89,21 @@ RUN npm install --global --no-fund --no-audit \
 # Root-owned and read-only: the runtime is the untrusted party in this image, and a shim it can
 # modify is a shim it can replace with one that answers the daemon's requests however it likes.
 COPY --from=shim-builder --chown=0:0 /build/packages/daemon/dist/shim/index.js /opt/agentconnect/shim/index.js
-RUN chmod 0444 /opt/agentconnect/shim/index.js && chmod 0555 /opt/agentconnect/shim
+# The credential helper is its own bundle with a disjoint graph, so it is its own single file. Git
+# spawns it once per operation; loading the channel's WebSocket client for that would be waste.
+COPY --from=shim-builder --chown=0:0 /build/packages/daemon/dist/shim/git-credential.js /opt/agentconnect/shim/git-credential.js
+RUN chmod 0444 /opt/agentconnect/shim/index.js /opt/agentconnect/shim/git-credential.js && chmod 0555 /opt/agentconnect/shim
+
+# The executable git runs as its credential helper. A wrapper because git needs something
+# executable and the bundle is a .js, and root-owned/unwritable for the same reason the shim is: one
+# the runtime could rewrite is one it could replace with a helper that asks the daemon for
+# credentials in its name. Args are `<agentId> <action>`, the action appended by git. Path must match
+# SANDBOX_GIT_CREDENTIAL_HELPER in packages/daemon/src/shim/sandbox-paths.ts.
+RUN mkdir -p /opt/agentconnect/bin \
+  && printf '#!/bin/sh\n# agentconnect git credential helper — see src/shim/git-credential.ts.\nexec node /opt/agentconnect/shim/git-credential.js "$@"\n' \
+    > /opt/agentconnect/bin/git-credential \
+  && chown -R root:root /opt/agentconnect/bin \
+  && chmod 0555 /opt/agentconnect/bin /opt/agentconnect/bin/git-credential
 
 # uid/gid are fixed rather than allocated, so a PersistentVolume written by one image version is
 # still readable by the next.

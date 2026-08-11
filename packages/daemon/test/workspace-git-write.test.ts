@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 import { createWorkspaceGit } from '../src/cp/workspace-git.js'
 import { WorkspaceViolationError } from '../src/cp/workspace-reader.js'
-import { initGitInjection, workspaceGitLocalEnv } from '../src/workspace/git-injection.js'
+import { daemonGitCredentialTarget, initGitInjection, workspaceGitLocalEnv } from '../src/workspace/git-injection.js'
 import type { GitRunner } from '../src/workspace/git-runner.js'
 import { parsePorcelainV2 } from '../src/shim/git-exec.js'
 import { setWorkspaceGitRunnerResolver } from '../src/workspace/workspace-manager.js'
@@ -22,8 +22,7 @@ const IDENTITY = { name: 'acme-bot[bot]', email: '1234+acme-bot[bot]@users.norep
 // are minted from this registration, exactly as the daemon registers them at boot.
 const SHIM = join(mkdtempSync(join(tmpdir(), 'ac-gitwrite-shim-')), 'git-credential-helper.sh')
 initGitInjection({
-  shimPath: SHIM,
-  runDir: join(SHIM, '..'),
+  targetFor: () => daemonGitCredentialTarget({ shimPath: SHIM, runDir: join(SHIM, '..') }),
   preWarm: async () => undefined,
   capabilityFor: (agentId) => `cap-${agentId}`
 })
