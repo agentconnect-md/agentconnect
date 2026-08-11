@@ -26,6 +26,9 @@ describe('startOperatorOpenTelemetry', () => {
       NODE_ENV: 'test'
     })
     expect(handle.enabled).toBe(true)
+    // The whole point: the Kubernetes client dials through this export, so it has to be the wrapper.
+    const { request } = await import('node:https')
+    expect(Boolean((request as { __wrapped?: boolean }).__wrapped)).toBe(true)
     await expect(handle.shutdown()).resolves.not.toThrow()
   })
 })

@@ -1,5 +1,8 @@
 import type { AgentConnectOrgApi } from './crd/api.js'
 
+/** Hidden subcommand: the chart's pre-delete hook runs it, nobody types it. */
+export const PREFLIGHT_UNINSTALL = 'preflight-uninstall'
+
 /** What the uninstall guard found; a non-empty `remaining` must fail the hook. */
 export interface PreflightResult {
   /** Names of the AgentConnectOrgs still living in the control namespace, sorted. */
