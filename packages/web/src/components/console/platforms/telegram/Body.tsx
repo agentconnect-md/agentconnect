@@ -5,6 +5,7 @@ import useSWR from 'swr'
 import { PlatformMark } from '@/components/marks'
 import { Icon } from '@/components/ui'
 import { checkTelegramBot, type TelegramBotCheckDto } from '@/lib/api'
+import { randomUUID } from '@/lib/random-id'
 import type { Agent } from '@/lib/data'
 import type { WizardHost } from '../contract'
 import { usePublishedFooter } from '../publish'
@@ -89,7 +90,7 @@ export function TelegramWizardBody({ agent, host }: { agent: Agent; host: Wizard
   const tokenTrim = botToken.trim()
   const telegramOk = /^\d+:[A-Za-z0-9_-]{20,}$/.test(tokenTrim)
 
-  const [checkScope] = useState(() => crypto.randomUUID())
+  const [checkScope] = useState(() => randomUUID())
   const checkSequence = useRef(0)
   const [checkRequest, setCheckRequest] = useState<{ token: string; sequence: number } | null>(null)
   const checkEnabled = host.mode === 'create' && telegramOk

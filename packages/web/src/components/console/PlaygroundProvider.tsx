@@ -37,6 +37,7 @@ import {
   type SessionMessageDto
 } from '@/lib/api'
 import { useOrgs } from '@/lib/org-context'
+import { randomUUID } from '@/lib/random-id'
 import { resolveRoster, typedMentionIds, wireMentions } from '@/lib/conversation-addressing'
 import { sessionAfterModelSelection } from '@/lib/session-runtime-controls'
 import { reconcilePersistedLiveSteps } from '@/lib/session-transcript'
@@ -176,11 +177,7 @@ function liveActivityStamp(): Pick<Session, 'lastActivityAt' | 'time'> {
 }
 
 function newPlaygroundSessionId(agentId: string): string {
-  const entropy =
-    typeof crypto !== 'undefined' && crypto.randomUUID
-      ? crypto.randomUUID()
-      : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
-  return `${PG_PREFIX}${agentId}_${entropy}`
+  return `${PG_PREFIX}${agentId}_${randomUUID()}`
 }
 
 function stampStep(step: SessionStep, observedAtMs = Date.now()): SessionStep {
@@ -1129,7 +1126,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       conversationId?: string,
       knownParticipants?: Array<{ agentId: string; name: string; primary?: boolean }>
     ): void => {
-      const requestedTurnId = crypto.randomUUID()
+      const requestedTurnId = randomUUID()
       pushStep(id, { kind: 'msg', who: '@you', turnId: requestedTurnId, text, ...(image ? { image } : {}) })
       setBusy(id, true)
       // Targeting (webchat-multi-agents.md §4.2): conversation membership is a
@@ -1242,7 +1239,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       // between a turn's end and the dispatch of the queue head stays FIFO.
       if (busyRef.current[id] || (pgQueueRef.current[id]?.length ?? 0) > 0) {
         const queued: QueuedTurn = {
-          queueId: crypto.randomUUID(),
+          queueId: randomUUID(),
           text,
           ...(image ? { image } : {}),
           agentId: agentForId,
