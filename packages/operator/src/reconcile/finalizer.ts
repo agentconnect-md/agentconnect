@@ -29,12 +29,13 @@ export async function deleteNamespaceAndClusterBindings(ctx: ReconcileContext, o
   void org
 }
 
-/** Drop the finalizer — the API server completes the deletion after this. */
+/** Drop our finalizer — the API server completes the deletion after this. */
 export async function removeFinalizer(ctx: ReconcileContext, org: AgentConnectOrg): Promise<void> {
   const name = org.metadata?.name
   if (!name) return
-  const remaining = (org.metadata?.finalizers ?? []).filter((finalizer) => finalizer !== FINALIZER)
-  await ctx.orgApi.patchMeta(name, { finalizers: remaining })
+  // Conflict-safe: cleanup above took time, and another controller may have added
+  // its own finalizer meanwhile — a blind list replacement would drop it.
+  await ctx.orgApi.updateFinalizer(name, FINALIZER, 'remove')
 }
 
 /** The envelope deletion order; steps must be idempotent — deletion reconciles can repeat. */

@@ -70,6 +70,36 @@ describe('WorkQueue', () => {
     await queue.shutdown()
   })
 
+  it('evicts idle keys so lifetime org churn does not grow the map', async () => {
+    const queue = new WorkQueue(async () => {})
+    // A deleted CR still gets one final (successful, 404) pass — it must not stay resident.
+    for (const key of ['a', 'b', 'c']) queue.add(key)
+    await waitUntil(() => queue.size === 0)
+    expect(queue.size).toBe(0)
+    await queue.shutdown()
+  })
+
+  it('keeps a failing key resident until it succeeds', async () => {
+    const clock = new FakeClock()
+    let attempts = 0
+    const queue = new WorkQueue(
+      async () => {
+        attempts += 1
+        if (attempts < 2) throw new Error('boom')
+      },
+      { clock, newBackoff: () => new Backoff({ baseMs: 1000, jitter: () => 0 }) }
+    )
+    queue.add('a')
+    await waitUntil(() => attempts === 1)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    // Resident while a retry is armed, evicted once the pass finally succeeds.
+    expect(queue.size).toBe(1)
+    clock.advance(1000)
+    await waitUntil(() => attempts === 2)
+    await waitUntil(() => queue.size === 0)
+    await queue.shutdown()
+  })
+
   it('shutdown drops pending retries and waits for in-flight work', async () => {
     const clock = new FakeClock()
     let attempts = 0

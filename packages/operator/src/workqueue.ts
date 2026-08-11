@@ -92,6 +92,15 @@ export class WorkQueue {
     if (state.dirty) {
       state.dirty = false
       this.run(key, state)
+      return
     }
+    // Idle and healthy: drop the entry so lifetime org churn (every deleted CR
+    // still gets one final successful pass) cannot grow this map without bound.
+    this.states.delete(key)
+  }
+
+  /** Live key states — retry timers and in-flight passes only. */
+  get size(): number {
+    return this.states.size
   }
 }

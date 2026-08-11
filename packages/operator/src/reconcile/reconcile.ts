@@ -21,7 +21,7 @@ export async function reconcile(ctx: ReconcileContext, name: string): Promise<vo
     return
   }
   if (!(org.metadata?.finalizers ?? []).includes(FINALIZER)) {
-    org = await ctx.orgApi.patchMeta(name, { finalizers: [...(org.metadata?.finalizers ?? []), FINALIZER] })
+    org = await ctx.orgApi.updateFinalizer(name, FINALIZER, 'add')
   }
   await reconcileEnvelope(ctx, org)
   await reconcileRollout(ctx, org)
