@@ -14,7 +14,7 @@ import {
   resolveBoundedGitSkillSource,
   type GitSkillCredentialRequest
 } from '../src/skills/skill-git-source.js'
-import { initGitInjection } from '../src/workspace/git-injection.js'
+import { daemonGitCredentialTarget, initGitInjection } from '../src/workspace/git-injection.js'
 import { configureWorkspaceGitOrigins } from '../src/workspace/git-origin-policy.js'
 
 const entry = (source: string, githubRepoId = '42') => ({
@@ -732,8 +732,7 @@ describe('Git skill source policy boundary', () => {
 
   it('scopes the daemon credential capability to canonical GitHub HTTPS only', () => {
     initGitInjection({
-      shimPath: '/daemon/git-credential-helper',
-      runDir: '/private/run',
+      targetFor: () => daemonGitCredentialTarget({ shimPath: '/daemon/git-credential-helper', runDir: '/private/run' }),
       preWarm: async () => {},
       capabilityFor: (agentId) => `cap-${agentId}`
     })

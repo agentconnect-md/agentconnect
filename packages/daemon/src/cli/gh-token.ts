@@ -18,7 +18,7 @@
 import { createConnection } from 'node:net'
 import { gitRepoLabel } from '@agentconnect.md/protocol'
 import { resolveRoot } from '../paths.js'
-import { GITCRED_CAPABILITY_ENV, gitcredSocketPath } from '../cp/gitcred-server.js'
+import { GITCRED_CAPABILITY_ENV, gitcredSocketFrom } from '../cp/gitcred-server.js'
 
 export async function runGhToken(agentId: string, repoRaw?: string): Promise<void> {
   const target = normalizeRepoArg(repoRaw)
@@ -80,7 +80,7 @@ interface IpcReply {
 }
 
 function ipc(msg: unknown): Promise<IpcReply> {
-  const path = gitcredSocketPath(resolveRoot())
+  const path = gitcredSocketFrom(process.env, resolveRoot())
   return new Promise((resolve) => {
     const sock = createConnection(path)
     let buf = ''

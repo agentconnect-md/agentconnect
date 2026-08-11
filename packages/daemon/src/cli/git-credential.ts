@@ -22,7 +22,7 @@
  */
 import { createConnection } from 'node:net'
 import { resolveRoot } from '../paths.js'
-import { GITCRED_AGENT_ENV, GITCRED_CAPABILITY_ENV, gitcredSocketPath } from '../cp/gitcred-server.js'
+import { GITCRED_AGENT_ENV, GITCRED_CAPABILITY_ENV, gitcredSocketFrom } from '../cp/gitcred-server.js'
 
 interface HelperInput {
   protocol?: string
@@ -143,7 +143,7 @@ interface IpcReply {
 }
 
 function ipc(msg: unknown): Promise<IpcReply> {
-  const path = gitcredSocketPath(resolveRoot())
+  const path = gitcredSocketFrom(process.env, resolveRoot())
   return new Promise((resolve) => {
     const sock = createConnection(path)
     let buf = ''

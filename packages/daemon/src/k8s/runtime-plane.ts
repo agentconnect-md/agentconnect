@@ -109,6 +109,10 @@ export interface K8sRuntimePlane {
   /** A git runner for an agent whose workspace lives on its sandbox pod, or undefined when this
    *  daemon has no channel for it — the caller then keeps its local behaviour. */
   gitRunnerFor: (agentId: string, cwd?: string, abort?: AbortSignal) => GitRunner | undefined
+  /** Whether this agent's work runs in a pod right now — the SAME condition `gitRunnerFor`
+   *  answers on. Callers that build paths for that work read it here rather than re-deriving it,
+   *  so an environment can never describe one filesystem while the execution happens in another. */
+  runsInSandbox: (agentId: string) => boolean
   /** Where the agent's bound pod mounts its workspace, as its shim reported; undefined before a
    *  bind or from a legacy shim (callers fall back to DEFAULT_SHIM_WORKSPACE_ROOT). */
   workspaceRootFor: (agentId: string) => string | undefined
@@ -154,6 +158,10 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     ...(options.credentialTtlMs === undefined ? {} : { credentialTtlMs: options.credentialTtlMs }),
     log: options.log ?? SILENT
   })
+  // The one condition that means "this agent's work happens in a pod". Defined once because two
+  // callers must agree on it: the git runner, and the credential pointers that git will read.
+  const runsInSandbox = (agentId: string): boolean => driver.sessionFor(agentId)?.isAttached() === true
+
   // One proxy per agent, replaced when a NEW launch binds: its streams belong to a pod, and a
   // proxy kept across incarnations would answer connections for a sandbox that no longer exists.
   const proxies = new Map<string, { generation: number; proxy: TunnelProxy }>()
@@ -251,13 +259,13 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
       }
     },
     gitRunnerFor: (agentId, cwd, abort) => {
-      const session = driver.sessionFor(agentId)
       // No channel means this agent has no sandbox to run git in. Returning undefined keeps the
       // caller on its local runner rather than failing the operation — which is what a
       // self-hosted agent beside a cluster-backed one needs anyway.
-      if (!session?.isAttached()) return undefined
-      return new ShimGitRunner(session, cwd, undefined, abort)
+      if (!runsInSandbox(agentId)) return undefined
+      return new ShimGitRunner(driver.sessionFor(agentId)!, cwd, undefined, abort)
     },
+    runsInSandbox,
     workspaceRootFor: (agentId) => driver.workspaceRootFor(agentId),
     stop: async () => {
       for (const timer of lossTimers.values()) clearTimeout(timer)

@@ -1,26 +1,32 @@
 import { execFileSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { simpleGit } from 'simple-git'
-import { GITCRED_AGENT_ENV, GITCRED_CAPABILITY_ENV } from '../src/cp/gitcred-server.js'
+import { GITCRED_AGENT_ENV, GITCRED_CAPABILITY_ENV, GITCRED_SOCKET_ENV } from '../src/cp/gitcred-server.js'
 import { LocalGitRunner, type GitRunner } from '../src/workspace/git-runner.js'
 import {
   assertSafeWorkspaceGitConfig,
   cloneGitEnv,
   gitEnvBase,
   gitFor,
+  daemonGitCredentialTarget,
   initGitInjection,
   parseGitVersion,
   pullWorkspaceRef,
+  sandboxGitCredentialTarget,
+  sessionGitConfig,
   sessionGitEnv,
   sessionGitPolicyEnv,
   workspaceGitEnvBase,
   workspaceGitLocalEnv,
   workspaceGitPullTarget,
-  workspaceGitPushTarget
+  workspaceGitPushTarget,
+  writeRepoHelperConfig
 } from '../src/workspace/git-injection.js'
+import { SANDBOX_GIT_CONFIG_DIR, SANDBOX_GIT_CREDENTIAL_HELPER } from '../src/shim/sandbox-paths.js'
+import { SANDBOX_TUNNEL_PATHS } from '../src/shim/tunnel.js'
 
 // simple-git ≥3.36 refuses a NAME blocklist of env vars (presence-based, value
 // never read) and requires opt-ins for credential.helper / GIT_CONFIG_COUNT.
@@ -78,8 +84,12 @@ beforeAll(() => {
   }
   tmpRun = mkdtempSync(join(tmpdir(), 'gitcred-test-'))
   initGitInjection({
-    shimPath: join(tmpRun, 'helper.sh'),
-    runDir: tmpRun,
+    // Per agent, as the daemon's own resolver is: an agent whose git runs in a pod gets the
+    // image's paths, and one that runs here gets this daemon's. `pod-` ids pick the former.
+    targetFor: (agentId) =>
+      agentId.startsWith('pod-')
+        ? sandboxGitCredentialTarget()
+        : daemonGitCredentialTarget({ shimPath: join(tmpRun, 'helper.sh'), runDir: tmpRun }),
     preWarm: async () => undefined,
     capabilityFor: (agentId) => `cap-${agentId}`
   })
@@ -665,6 +675,72 @@ describe('sessionGitEnv', () => {
     const env = sessionGitEnv('agent-1')
     expect(env).not.toHaveProperty('GIT_AUTHOR_NAME')
     expect(env).not.toHaveProperty('GIT_COMMITTER_NAME')
+  })
+})
+
+describe('pointers for an agent whose git runs in a sandbox pod', () => {
+  // The bug every case here is about: a path is only meaningful in one filesystem, and a helper
+  // line built from this daemon's root names an executable the pod has never had. What makes it
+  // expensive is the failure mode — git reports an authentication failure, not a missing file.
+  it('names the image helper and the tunnelled socket, never a daemon path', () => {
+    const pairs = configPairs(cloneGitEnv('pod-agent', 'https://github.com/acme/repo.git'))
+    expect(pairs).toContainEqual([
+      'credential.https://github.com.helper',
+      `!'${SANDBOX_GIT_CREDENTIAL_HELPER}' pod-agent`
+    ])
+    // The helper has no daemon root to derive a socket from, so the tunnel's path travels with it.
+    expect(cloneGitEnv('pod-agent')[GITCRED_SOCKET_ENV]).toBe(SANDBOX_TUNNEL_PATHS.gitcred)
+    expect(JSON.stringify(pairs)).not.toContain(tmpRun)
+  })
+
+  it('keeps the daemon-local pointers exactly as they were', () => {
+    // The regression guard for every self-hosted daemon: this path is the one in production today.
+    const pairs = configPairs(cloneGitEnv('agent-1', 'https://github.com/acme/repo.git'))
+    expect(pairs).toContainEqual(['credential.https://github.com.helper', `!'${join(tmpRun, 'helper.sh')}' agent-1`])
+    expect(cloneGitEnv('agent-1')).not.toHaveProperty(GITCRED_SOCKET_ENV)
+  })
+
+  it('puts the session gitconfig in the pod and drops the daemon operator home include', () => {
+    const local = sessionGitConfig('agent-1')
+    expect(local.path).toBe(join(tmpRun, 'gitcred', 'agent-1.gitconfig'))
+    // The host's own config still rides along for a daemon-run git — that is where a self-hosting
+    // operator's non-identity settings live.
+    expect(local.content).toContain(join(homedir(), '.gitconfig'))
+
+    const pod = sessionGitConfig('pod-agent')
+    expect(pod.path).toBe(`${SANDBOX_GIT_CONFIG_DIR}/pod-agent.gitconfig`)
+    expect(pod.env.GIT_CONFIG_GLOBAL).toBe(pod.path)
+    // Including a path from the daemon's home would resolve to nothing in the pod and read as if
+    // the operator simply had no config — a silent difference rather than an error.
+    expect(pod.content).not.toContain('[include]')
+    expect(pod.content).not.toContain(homedir())
+  })
+
+  it('refuses to WRITE a pod gitconfig, rather than writing it here', () => {
+    // The whole class of bug in one assertion: a synchronous write of `/run/agentconnect/...`
+    // lands on the daemon's disk, creating the file a check would look for while the pod has none.
+    expect(() => sessionGitEnv('pod-agent')).toThrow(/materialize its gitconfig/)
+    expect(existsSync(join(SANDBOX_GIT_CONFIG_DIR, 'pod-agent.gitconfig'))).toBe(false)
+  })
+
+  it('writes the repo-local helper in the coordinates of the git that will read it', async () => {
+    const argv: string[][] = []
+    const runner = {
+      withEnv: () => runner,
+      raw: async (args: string[]) => {
+        argv.push(args)
+        return ''
+      }
+    } as unknown as GitRunner
+    await writeRepoHelperConfig(runner, 'pod-agent')
+    // `.git/config` outlives a launch, so this is the pointer a later agent-run git in the pod
+    // finds on disk — it has to name the image's helper too, not just the spawn env.
+    expect(argv).toContainEqual([
+      'config',
+      '--add',
+      'credential.https://github.com.helper',
+      `!'${SANDBOX_GIT_CREDENTIAL_HELPER}' pod-agent`
+    ])
   })
 })
 

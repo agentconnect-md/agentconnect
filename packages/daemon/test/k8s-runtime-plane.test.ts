@@ -174,6 +174,11 @@ describe('k8s runtime plane assembly', () => {
     // A channel, a session behind the workspace seam, and NO runtime started.
     expect(plane.listener.connectionsFor('agent-a')).toHaveLength(1)
     expect(plane.gitRunnerFor('agent-a', '/agent')).toBeDefined()
+    // The same condition, readable on its own: the credential pointers git will read are built
+    // from this, so an answer that disagreed with the runner would describe the wrong filesystem.
+    expect(plane.runsInSandbox('agent-a')).toBe(true)
+    expect(plane.runsInSandbox('agent-b')).toBe(false)
+    expect(plane.gitRunnerFor('agent-b', '/agent')).toBeUndefined()
     // The pod's reported mount arrived with the bind — the fact every pod path is built on.
     expect(plane.workspaceRootFor('agent-a')).toBe('/agent')
   })
