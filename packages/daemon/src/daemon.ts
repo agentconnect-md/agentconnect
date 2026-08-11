@@ -5092,7 +5092,10 @@ export class Daemon {
         explicitEnv: { ...runtimeEnv, ...env },
         sandboxMechanism: this.sandboxMechanism,
         mcpSocketPath: mcpSocketPath(this.root),
-        allowModelToolUnixSockets: githubAppCredentials
+        allowModelToolUnixSockets: githubAppCredentials,
+        // The pod is the isolation boundary AND a different filesystem, so this daemon's env
+        // must not travel with the launch.
+        ...(this.k8s ? { k8s: true as const } : {})
       })
       launch = composed.launch
       launchRuntime = composed.runtime

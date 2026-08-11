@@ -149,6 +149,8 @@ export function prepareRuntimeLaunch(opts: {
    * these separate from their deliberately tiny child environment. */
   stateSourceEnv?: NodeJS.ProcessEnv
   hostEnv?: NodeJS.ProcessEnv
+  /** True when the runtime will run in a sandbox pod rather than on this host. */
+  k8s?: boolean
   /** Trusted daemon root. Required for an enforced sandbox so all daemon-owned
    * state is hidden before current-agent surfaces are carved back. */
   daemonRoot?: string
@@ -178,7 +180,10 @@ export function prepareRuntimeLaunch(opts: {
         (opts.hostEnv ?? process.env).CODEX_CONFIG
       )
     }
-    return { env, inheritProcessEnv: true }
+    // NOT in k8s: the runtime runs in a sandbox pod, so the daemon's own environment describes a
+    // different machine. Inheriting it sent this daemon's HOME across, and the runtime then tried
+    // to open its state under a path that exists only here. The pod supplies its own basics.
+    return { env, inheritProcessEnv: opts.k8s !== true }
   }
   if (opts.runInSandbox && !opts.sandboxMechanism) {
     throw new Error('OS sandbox requested but this host has no supported Linux SRT/bwrap mechanism')
