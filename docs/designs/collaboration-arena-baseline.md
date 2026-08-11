@@ -277,6 +277,29 @@ export AGENTCONNECT_DAEMON_ENTRY="$PWD/packages/daemon/dist/index.js"
 # then call runWerewolf({ subject: { kind: 'real', subjectRoot, templateAgentIds } })
 ```
 
+### 4.2 Prompt-change gate (standing rule, from the #801 incident)
+
+**Any change to the standing collaboration guidance or the parent-report
+append (`collabAppend` / `parentReplyAppend` in
+`packages/daemon/src/session/session-manager.ts`) must be validated against
+BOTH the parent-session scenario AND the in-thread turn-taking scenario
+(`in-thread-count`) of the tool-surface A/B matrix before landing.**
+
+Why this rule exists: PR #801 led the guidance with a tool-precedence bullet
+("AgentConnect's MCP tools are the ONLY channel that reaches other agents
+and humans"), validated only against the parent-session scenario (10/10),
+and then caused a live in-thread regression — an agent in a channel counting
+game started routing every turn through `sendMessage` to "hand off" numbers
+to its peer instead of replying in the thread, posting meta-narration with
+skipped and duplicated numbers. #801 was reverted by #861; issue #800
+records the incident. The two failure modes pull the guidance in opposite
+directions (reach-peers-via-tool vs in-thread-speech-is-the-ordinary-reply),
+so a candidate that scores well on one and is unmeasured on the other is
+unvalidated. Scenario design, judge, and baseline:
+`messaging-primitives-ab.md` §8; runner:
+`evals/test/tool-surface-ab-real.test.ts` with
+`AGENTCONNECT_EVAL_AB_SCENARIOS=parent-session,in-thread-count`.
+
 ## 5. Real-model runs
 
 ### 5.1 Sequential Werewolf, real local Claude Code

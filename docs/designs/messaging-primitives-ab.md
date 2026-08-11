@@ -3,7 +3,10 @@
 Status: **complete.** Apparatus landed and contract-proven; static costs
 measured; the full 24-run behavioral matrix ran on 2026-08-09 (local Claude
 Code over ACP, model `sonnet`) with 24/24 valid trials — results in §6,
-conclusion in §7.
+conclusion in §7. **2026-08-11:** the matrix gained scenario 5 (in-thread
+turn-taking, the #801 regression gate — §8) after a prompt change validated
+only against parent-session caused a live in-thread regression; §8 also
+records the standing prompt-change gate that incident created.
 
 The question under test, verbatim from the request that started this work:
 **how much does the primitives design improve success rate and total token
@@ -72,6 +75,13 @@ already caught the word "conversation" priming arm B once). Scored forms:
 4. **parent-session** — woken by a real parent session (the peer agent is
    instructed to delegate a quoted question with an answer-back obligation),
    reply into that session.
+5. **in-thread-count** — added 2026-08-11 (§8): NOT a send scenario. One
+   plaza thread, BOTH agents on the arm's surface, a human kickoff
+   @-mentioning both; the agents take turns counting to 6 via ordinary
+   replies (each delivered reply echoes back and wakes the peer through the
+   #549 continuation ladder). The correct number of messaging-tool calls is
+   ZERO — in-thread speech is the ordinary turn reply, by product
+   convention. The same banned-vocabulary rule covers its kickoff text.
 
 **Topology**: `briefing` (subject only — instructions arrive here, outside
 every measured room), `plaza` (subject + peer, the target channel),
@@ -124,21 +134,23 @@ never delegates is invalid — it conditioned on the caller, not the subject.
 Measured from the real descriptors and from the guidance text a real daemon
 injected into a session prompt (`evals/test/post-facade.test.ts`,
 `evals/test/tool-surface-ab-fixture.test.ts`; token figures are a chars/4
-approximation and labelled as such). Two revisions matter, because the #800
-tool-precedence bullet landed in BOTH arms' guidance after the behavioral
-runs (production via #801, arm B via this branch's parity commit) — prompt
-parity held at each revision:
+approximation and labelled as such). Revision history: the #800
+tool-precedence bullet briefly landed in BOTH arms' guidance after the
+behavioral runs (production via #801, arm B via this branch's parity
+commit, ~+380 chars per arm) and was then removed from both when production
+reverted it (#861, after the live in-thread regression §8 gates) — prompt
+parity held at every revision, and the current head is back at the 24-run
+revision's guidance:
 
-| Surface component                                            | Arm A (`sendMessage`) | Arm B (`post`) | Ratio    |
-| ------------------------------------------------------------ | --------------------- | -------------- | -------- |
-| Tool description (chars)                                     | 2,617                 | 1,046          | 2.5×     |
-| Tool input schema (chars)                                    | 7,407                 | 1,025          | 7.2×     |
-| Descriptor total (chars)                                     | **10,024**            | **2,071**      | **4.8×** |
-| Descriptor (≈ tokens)                                        | ~2,506                | ~518           |          |
-| Standing guidance, at the 24-run revision (chars)            | 2,718                 | 2,394          | 1.1×     |
-| Standing guidance, current head with the #800 bullet (chars) | 3,099                 | 2,771          | 1.1×     |
-| **Combined per session, current head (chars)**               | **13,123**            | **4,842**      | **2.7×** |
-| Combined, current head (≈ tokens)                            | ~3,281                | ~1,211         |          |
+| Surface component                                | Arm A (`sendMessage`) | Arm B (`post`) | Ratio    |
+| ------------------------------------------------ | --------------------- | -------------- | -------- |
+| Tool description (chars)                         | 2,617                 | 1,046          | 2.5×     |
+| Tool input schema (chars)                        | 7,407                 | 1,025          | 7.2×     |
+| Descriptor total (chars)                         | **10,024**            | **2,071**      | **4.8×** |
+| Descriptor (≈ tokens)                            | ~2,506                | ~518           |          |
+| Standing guidance, current head = 24-run (chars) | 2,718                 | 2,394          | 1.1×     |
+| **Combined per session, current head (chars)**   | **12,742**            | **4,465**      | **2.9×** |
+| Combined, current head (≈ tokens)                | ~3,186                | ~1,116         |          |
 
 The descriptor is carried by **every turn** of every session; the guidance is
 standing session context. On a cache-warm local run most of this cost lands
@@ -273,3 +285,112 @@ combinations manifested as _actionable refusals_ rather than fewer errors.
 The scenario-4 findings — the native-tool name collision and the
 route-shotgunning child — are product problems upstream of either surface
 and worth fixing regardless of which surface ships.
+
+## 8. Scenario 5: in-thread turn-taking — the #801 regression gate
+
+### 8.1 The incident that created it
+
+The #800 name-collision finding (§6) was fixed by a prompt-side precedence
+bullet (#801): "AgentConnect's MCP tools are the ONLY channel that reaches
+other agents and humans here." It was validated against the parent-session
+scenario only — 10/10, up from 4/6 — and merged. It then caused a **live
+in-thread regression**: in a real Slack thread counting game the agent
+stopped replying with numbers and instead routed every turn through
+`sendMessage` to "hand off" the next number to its peer, posting only
+meta-narration into the thread ("Handing off for 5 / 已把 5 交给 test2")
+with skipped and duplicated numbers in the visible count. The bullet's
+"ONLY channel" over-generalized: the product convention is that
+current-thread communication IS the ordinary reply (`sendMessage`
+deliberately has no in-thread form), and the bullet taught the model that
+plain replies reach nobody. #801 was reverted (#861); issue #800 is
+reopened and records the lesson: **the matrix had no in-thread conversation
+scenario, so a prompt change could pass the whole matrix while breaking
+ordinary thread play.** Scenario 5 is that missing coverage.
+
+### 8.2 Shape
+
+One `plaza` thread; **both** agents are subjects running the arm's surface;
+a human kickoff @-mentions both: take turns counting from 1, reply with
+just the next number, stop at 6 (small on purpose — cheap enough to run as
+a routine gate). The kickoff names no tool, field, or form (the
+banned-vocabulary test covers it). The agents then continue via ordinary
+replies: each delivered reply echoes back as real platform ingress and
+wakes the peer through the #549 continuation ladder — the mechanics the
+live counting game used. The topology, seeds, routing, echo, and validity
+rules (any failed/timed-out turn ⇒ invalid trial) are the matrix's own;
+counterbalancing places the scenario at matrix index 4.
+
+### 8.3 Judge (`judgeThreadCount`, contract-tested in the CI gate)
+
+Daemon-judged, same philosophy as the send scenarios — score what the
+system recorded, never what a model claims:
+
+- **Hard pass**: the count reaches the target via delivered ordinary thread
+  replies; **ZERO messaging-tool calls by either participant during the
+  game** — the product surface (`sendMessage`/`post`), the other arm's
+  tool, and the runtime's built-in `SendMessage` all count, delivered or
+  refused, because a messaging call has no legitimate purpose in this
+  scenario (any such call IS the #801 failure mode); and no participant
+  reply rejected by the world (a lost message).
+- **Soft metrics** (reported, never failed on): duplicated and skipped
+  numbers, overshoot past the stop target, meta-narration beyond the bare
+  number (replies carrying a number plus prose; mean reply length vs the
+  expected 1 char), turns per number, tokens per participant and per run.
+
+The judge is pinned by credential-free contract tests in
+`evals/test/tool-surface-ab.test.ts` (the `eval:collab:contracts` gate): a
+scripted trace replaying the #801 handoff pattern must score FAIL, a clean
+reply-only trace must score PASS, the built-in-`SendMessage` and arm-B
+`post` variants must FAIL identically, and soft-metric traces must pass
+while being measured. `evals/test/tool-surface-ab-fixture.test.ts` proves
+the transport end-to-end against a real daemon with scripted hosts: a
+both-mentioned kickoff plus ordinary replies really carries the count
+peer-to-peer through the echo, with both participants contributing, and
+the judge passes it.
+
+### 8.4 Baseline results (2026-08-11, post-revert prompt, 2 arms × 3 trials)
+
+Run: local Claude Code over ACP (`claude-agent-acp` 0.64.0 launched via
+`node`, model `sonnet`, `permissionMode: default`, memory off), 2 arms × 3
+trials, counterbalanced arm order, sequential on one machine, 6/6 valid.
+This baselines the scenario on the CURRENT (post-revert, pre-#801-identical)
+guidance — the expectation was that both arms pass cleanly, since the
+pre-#801 text never caused the in-thread failure, but it was measured
+rather than assumed. Artifacts:
+`.artifacts/evaluation/tool-surface-ab/in-thread-count-<arm>-<trial>/`;
+copies under `~/arena-runs/ab-2026-08-11-in-thread-count/` on the
+measurement host.
+
+| Arm | Trial | Verdict  | Visible count | Messaging calls | Lost | Dup / skip / overshoot | Bare / meta replies | Turns per number | Run tokens (total / in+out) | Wall  |
+| --- | ----- | -------- | ------------- | --------------- | ---- | ---------------------- | ------------------- | ---------------- | --------------------------- | ----- |
+| A   | 1     | **PASS** | 1–6 in order  | 0               | 0    | 0 / 0 / 0              | 6 / 0               | 1.17             | 295,219 / 214               | 46.7s |
+| A   | 2     | **PASS** | 1–6 in order  | 0               | 0    | 0 / 0 / 0              | 6 / 0               | 1.17             | 294,154 / 114               | 42.5s |
+| A   | 3     | **PASS** | 1–6 in order  | 0               | 0    | 0 / 0 / 0              | 6 / 0               | 1.17             | 302,221 / 880               | 60.3s |
+| B   | 1     | **PASS** | 1–6 in order  | 0               | 0    | 0 / 0 / 0              | 6 / 0               | 1.17             | 298,318 / 325               | 44.3s |
+| B   | 2     | **PASS** | 1–6 in order  | 0               | 0    | 0 / 0 / 0              | 6 / 0               | 1.17             | 317,230 / 734               | 51.6s |
+| B   | 3     | **PASS** | 1–6 in order  | 0               | 0    | 0 / 0 / 0              | 6 / 0               | 1.17             | 299,571 / 200               | 66.8s |
+
+**6/6 clean sweep, both arms.** Every trial produced exactly the six bare
+numbers 1–6 in order (mean reply length 1 char — zero meta-narration), via
+7 participant turns (both agents woken by the kickoff, then five
+echo-driven continuation turns), with zero messaging-tool calls of any
+kind — product surface, other arm's tool, or the runtime built-in — zero
+lost replies, and zero duplicates, skips, or overshoot. This is the
+pre-#801 guidance behaving exactly as the live product did before the
+regression, now pinned as the gate's baseline: a future guidance candidate
+that scores below 3/3 per arm here is a regression against this table, no
+matter what it scores on parent-session.
+
+### 8.5 The standing prompt-change gate
+
+**Any change to the standing collaboration guidance or the parent-report
+append (`collabAppend` / `parentReplyAppend` in
+`packages/daemon/src/session/session-manager.ts`) must be validated against
+BOTH the parent-session scenario AND this in-thread scenario before
+landing.** #801 is the incident that created this rule: a prompt fix
+measured only on the report-back path traded a silent parent-report loss
+for a visible conversation regression, because the two failure modes pull
+the guidance in opposite directions ("use the tool to reach peers" vs
+"in-thread speech is the ordinary reply"). A candidate rewrite that scores
+well on one and is unmeasured on the other is unvalidated. The same gate is
+recorded in `collaboration-arena-baseline.md` §4.2.
