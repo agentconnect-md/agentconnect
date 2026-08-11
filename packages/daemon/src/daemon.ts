@@ -19559,7 +19559,16 @@ export class Daemon {
     } catch (err) {
       // Advertising nothing is the honest outcome: the Control Plane then assigns no agent, which
       // is better than assigning one to a daemon that cannot launch it.
-      this.log.warn(`runtimes: sandbox probe failed — advertising none (${(err as Error).message})`)
+      const message = (err as Error).message
+      // The one failure with a specific cause worth naming: an image built before the probe
+      // capability existed rejects the request, and the symptom — a daemon that advertises
+      // nothing — is otherwise indistinguishable from a cluster that is merely slow.
+      const stale = /not granted|not served/.test(message)
+      this.log.warn(
+        stale
+          ? `runtimes: the runtime image does not serve the probe capability — pin one built with it (${message})`
+          : `runtimes: sandbox probe failed — advertising none (${message})`
+      )
     }
   }
 

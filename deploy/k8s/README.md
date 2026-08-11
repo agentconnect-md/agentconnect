@@ -21,6 +21,25 @@ executables the runtime image really ships:
 Without it the daemon starts, connects, and advertises **no runtimes** — so the
 Control Plane never assigns it an agent, and nothing looks broken.
 
+## Pinning the images
+
+Both manifests carry `<IMAGE_TAG>` rather than a version, deliberately: the tag
+has to be one built from a commit that contains the probe protocol, and no such
+release existed when these files were written. Pinning an older tag produces a
+daemon that starts, connects, and advertises nothing forever — which looks
+healthy.
+
+Use the same tag for both, and check it before applying:
+
+```bash
+TAG=v1.41.0-rc.NN
+docker run --rm --entrypoint sh ghcr.io/agentconnect-md/runtime-sandbox:$TAG \
+  -c "grep -c \"'probe'\" /opt/agentconnect/shim/index.js"
+```
+
+A count of `0` means that image's shim predates the probe capability and will
+reject the daemon's request. The daemon says so explicitly if it happens.
+
 ## Apply
 
 ```bash
