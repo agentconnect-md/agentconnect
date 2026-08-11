@@ -1,12 +1,11 @@
 import { createHash } from 'node:crypto'
 import { K8sApiError } from '@agentconnect.md/k8s-client'
-import { DRAIN_REQUESTED_ANNOTATION } from '../crd/types.js'
 import type { Observations, ReconcileContext } from './context.js'
 import type { EnvelopeInputs } from './envelope.js'
 import { SANDBOX_GROUP, getOrNull, groupPath } from './resources.js'
 
 interface SandboxRead {
-  metadata?: { name?: string; annotations?: Record<string, string> }
+  metadata?: { name?: string }
   spec?: {
     operatingMode?: string
     podTemplate?: { spec?: { containers?: Array<{ image?: string }> } }
@@ -17,27 +16,13 @@ function imageOf(sandbox: SandboxRead): string | undefined {
   return sandbox.spec?.podTemplate?.spec?.containers?.[0]?.image
 }
 
-async function patchSandbox(
-  ctx: ReconcileContext,
-  ns: string,
-  name: string,
-  body: unknown,
-  contentType?: string
-): Promise<boolean> {
-  try {
-    await ctx.http.json({ method: 'PATCH', path: groupPath(SANDBOX_GROUP, ns, 'sandboxes', name), body, contentType })
-    return true
-  } catch (error) {
-    // A failed test op or a lost race means the mode moved — the next pass re-decides.
-    if (error instanceof K8sApiError && (error.isUnprocessable || error.isConflict)) return false
-    throw error
-  }
-}
-
 /**
- * Runtime-image rollout over bound Sandboxes: Suspended instances get a
- * conditioned image patch, Running instances go through the drain-requested
- * annotation handshake — never a forced suspend.
+ * Runtime-image rollout over bound Sandboxes. Suspended instances get a
+ * conditioned image patch. Running instances are only reported pending: they
+ * converge when they naturally sleep (the daemon suspends idle sandboxes) and
+ * the next pass patches them. The drain-requested handshake — producer AND
+ * daemon-side consumer — lands together with the daemon milestone, so no
+ * annotation is written that nothing consumes yet.
  */
 export async function reconcileRollout(ctx: ReconcileContext, input: EnvelopeInputs, obs: Observations): Promise<void> {
   if (!obs.namespaceReady || input.spec.suspend) return
@@ -51,30 +36,23 @@ export async function reconcileRollout(ctx: ReconcileContext, input: EnvelopeInp
     if (!name) continue
     const image = imageOf(sandbox)
     // Warm-pool sandboxes without a pod template image inherit it from the template rollout.
-    if (!image || image === target) {
-      if (sandbox.metadata?.annotations?.[DRAIN_REQUESTED_ANNOTATION]) {
-        await patchSandbox(ctx, ns, name, { metadata: { annotations: { [DRAIN_REQUESTED_ANNOTATION]: null } } })
-      }
-      continue
-    }
+    if (!image || image === target) continue
     pending.push(name)
-    if (sandbox.spec?.operatingMode === 'Suspended') {
-      // Conditioned: the test op makes a concurrent wake-up reject the image swap.
-      await patchSandbox(
-        ctx,
-        ns,
-        name,
-        [
+    if (sandbox.spec?.operatingMode !== 'Suspended') continue
+    // Conditioned: the test op makes a concurrent wake-up reject the image swap.
+    try {
+      await ctx.http.json({
+        method: 'PATCH',
+        path: groupPath(SANDBOX_GROUP, ns, 'sandboxes', name),
+        contentType: 'application/json-patch+json',
+        body: [
           { op: 'test', path: '/spec/operatingMode', value: 'Suspended' },
           { op: 'replace', path: '/spec/podTemplate/spec/containers/0/image', value: target }
-        ],
-        'application/json-patch+json'
-      )
-      continue
-    }
-    const want = `${rolloutId}/${target}`
-    if (sandbox.metadata?.annotations?.[DRAIN_REQUESTED_ANNOTATION] !== want) {
-      await patchSandbox(ctx, ns, name, { metadata: { annotations: { [DRAIN_REQUESTED_ANNOTATION]: want } } })
+        ]
+      })
+    } catch (error) {
+      // A failed test op or a lost race means the mode moved — the next pass re-decides.
+      if (!(error instanceof K8sApiError && (error.isUnprocessable || error.isConflict))) throw error
     }
   }
   // TODO(operator): drain timeouts move stuck instances from pending to failed.

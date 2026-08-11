@@ -3,7 +3,7 @@ import { K8sHttp } from '@agentconnect.md/k8s-client'
 import { closeFakeApiServers, fakeApiServer, type FakeRoute } from '@agentconnect.md/k8s-client/testing'
 import { loadConfig } from '../config.js'
 import { AgentConnectOrgApi } from '../crd/api.js'
-import { AgentConnectOrgSpecSchema, DRAIN_REQUESTED_ANNOTATION } from '../crd/types.js'
+import { AgentConnectOrgSpecSchema } from '../crd/types.js'
 import { newObservations, type ReconcileContext } from './context.js'
 import type { EnvelopeInputs } from './envelope.js'
 import { reconcileRollout } from './rollout.js'
@@ -24,9 +24,9 @@ function inputOf(): EnvelopeInputs {
   }
 }
 
-function sandbox(name: string, image: string, mode?: string, annotations?: Record<string, string>) {
+function sandbox(name: string, image: string, mode?: string) {
   return {
-    metadata: { name, ...(annotations ? { annotations } : {}) },
+    metadata: { name },
     spec: { ...(mode ? { operatingMode: mode } : {}), podTemplate: { spec: { containers: [{ image }] } } }
   }
 }
@@ -79,31 +79,11 @@ describe('reconcileRollout', () => {
     expect(obs.rollout?.targetImage).toBe(TARGET)
   })
 
-  it('asks a Running sandbox to drain via the annotation handshake, never a forced suspend', async () => {
+  it('only reports a Running sandbox pending — no write until the daemon drain consumer lands', async () => {
     const { patches, obs } = await run([sandbox('sb-1', 'ghcr.io/example/runtime:v1', 'Running')])
-    expect(patches).toHaveLength(1)
-    const body = patches[0].body as { metadata: { annotations: Record<string, string> } }
-    const value = body.metadata.annotations[DRAIN_REQUESTED_ANNOTATION]
-    expect(value.endsWith(`/${TARGET}`)).toBe(true)
-    expect(obs.rollout?.pending).toEqual(['sb-1'])
-  })
-
-  it('does not repeat an annotation that is already requested', async () => {
-    const first = await run([sandbox('sb-1', 'ghcr.io/example/runtime:v1', 'Running')])
-    const annotated = (first.patches[0].body as { metadata: { annotations: Record<string, string> } }).metadata
-      .annotations
-    const { patches } = await run([sandbox('sb-1', 'ghcr.io/example/runtime:v1', 'Running', annotated)])
+    // It converges when the sandbox naturally sleeps and the next pass patches it.
     expect(patches).toEqual([])
-  })
-
-  it('sweeps a stale annotation once the sandbox reaches the target image', async () => {
-    const { patches, obs } = await run([
-      sandbox('sb-1', TARGET, 'Running', { [DRAIN_REQUESTED_ANNOTATION]: 'old/ghcr.io/example/runtime:v1' })
-    ])
-    expect(patches).toHaveLength(1)
-    const body = patches[0].body as { metadata: { annotations: Record<string, null> } }
-    expect(body.metadata.annotations[DRAIN_REQUESTED_ANNOTATION]).toBeNull()
-    expect(obs.rollout).toBeUndefined()
+    expect(obs.rollout?.pending).toEqual(['sb-1'])
   })
 
   it('reports no rollout when every sandbox is on the target image', async () => {
