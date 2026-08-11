@@ -1,6 +1,6 @@
 name: Build & Push Images
 
-# Builds the control-plane / relay / web / external-memory images for a RELEASE
+# Builds the control-plane / relay / web / external-memory / runtime-sandbox images for a RELEASE
 # and pushes them to GHCR tagged with the semantic-release version (the git tag:
 # `v1.2.3` stable, `v1.2.3-rc.4` prerelease). Stable releases also move `:latest`.
 #
@@ -26,7 +26,7 @@ name: Build & Push Images
 #
 # After pushing, mints a short-lived GitHub App token for the configured
 # workflow repository and fires an `images-pushed` repository_dispatch
-# (payload `{version, sha, components: {controlPlane, web, relay, mem0,
+# (payload `{version, sha, components: {controlPlane, web, relay, mem0, runtimeSandbox,
 # mem0Backend}}` — the per-component tags the downstream workflow should
 # consume; `== version` for components built by this release, whether changed or
 # recovered from a missing source image). It reports artifact facts, not an
@@ -66,6 +66,7 @@ jobs:
       relay: ${{ steps.build-matrix.outputs.relay }}
       mem0: ${{ steps.build-matrix.outputs.mem0 }}
       mem0Backend: ${{ steps.build-matrix.outputs.mem0Backend }}
+      runtimeSandbox: ${{ steps.build-matrix.outputs.runtimeSandbox }}
     steps:
       # Reusable calls receive the tag semantic-release just published. Manual
       # runs still derive it from the selected ref and reject branch refs, which
@@ -146,6 +147,7 @@ jobs:
           RELAY_EFFECTIVE: ${{ steps.components.outputs.relay }}
           MEM0_EFFECTIVE: ${{ steps.components.outputs.mem0 }}
           MEM0_BACKEND_EFFECTIVE: ${{ steps.components.outputs.mem0Backend }}
+          RUNTIME_SANDBOX_EFFECTIVE: ${{ steps.components.outputs.runtimeSandbox }}
           SETUP_VERSION: ${{ steps.components.outputs.setup }}
         run: |
           set -euo pipefail
@@ -179,6 +181,9 @@ jobs:
           resolve_effective relay relay relay "$RELAY_EFFECTIVE"
           resolve_effective mem0 memory-plugin-mem0 mem0 "$MEM0_EFFECTIVE"
           resolve_effective mem0Backend mem0-server mem0-backend "$MEM0_BACKEND_EFFECTIVE"
+          # The runtime sandbox is what agent runtimes execute inside, not a service — but it is
+          # pinned by the cluster manifests the same way, so it needs a tag at every release.
+          resolve_effective runtimeSandbox runtime-sandbox runtime-sandbox "$RUNTIME_SANDBOX_EFFECTIVE"
 
           # Render the existing Bake definition so image-specific configuration
           # stays centralized even though each target builds in its own job.
@@ -308,6 +313,7 @@ jobs:
       relay: ${{ needs.prepare.outputs.relay }}
       mem0: ${{ needs.prepare.outputs.mem0 }}
       mem0Backend: ${{ needs.prepare.outputs.mem0Backend }}
+      runtimeSandbox: ${{ needs.prepare.outputs.runtimeSandbox }}
     steps:
       - name: Log in to GHCR
         uses: docker/login-action@v4
@@ -350,6 +356,7 @@ jobs:
           RELAY_EFFECTIVE: ${{ needs.prepare.outputs.relay }}
           MEM0_EFFECTIVE: ${{ needs.prepare.outputs.mem0 }}
           MEM0_BACKEND_EFFECTIVE: ${{ needs.prepare.outputs.mem0Backend }}
+          RUNTIME_SANDBOX_EFFECTIVE: ${{ needs.prepare.outputs.runtimeSandbox }}
           OWNER: ${{ github.repository_owner }}
         run: |
           set -eu
@@ -370,6 +377,7 @@ jobs:
           alias_unchanged relay "$RELAY_EFFECTIVE"
           alias_unchanged memory-plugin-mem0 "$MEM0_EFFECTIVE"
           alias_unchanged mem0-server "$MEM0_BACKEND_EFFECTIVE"
+          alias_unchanged runtime-sandbox "$RUNTIME_SANDBOX_EFFECTIVE"
 
   notify-workflow:
     name: Notify workflow
@@ -419,10 +427,11 @@ jobs:
           RELAY: ${{ needs.finalize.outputs.relay }}
           MEM0: ${{ needs.finalize.outputs.mem0 }}
           MEM0_BACKEND: ${{ needs.finalize.outputs.mem0Backend }}
+          RUNTIME_SANDBOX: ${{ needs.finalize.outputs.runtimeSandbox }}
         run: |
           curl --fail-with-body -sS -X POST \
             -H "Authorization: Bearer ${DISPATCH_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "https://api.github.com/repos/${WORKFLOW_REPOSITORY}/dispatches" \
-            -d "{\"event_type\":\"images-pushed\",\"client_payload\":{\"version\":\"${VERSION}\",\"sha\":\"${SHA}\",\"components\":{\"controlPlane\":\"${CP}\",\"web\":\"${WEB}\",\"relay\":\"${RELAY}\",\"mem0\":\"${MEM0}\",\"mem0Backend\":\"${MEM0_BACKEND}\"}}}"
+            -d "{\"event_type\":\"images-pushed\",\"client_payload\":{\"version\":\"${VERSION}\",\"sha\":\"${SHA}\",\"components\":{\"controlPlane\":\"${CP}\",\"web\":\"${WEB}\",\"relay\":\"${RELAY}\",\"mem0\":\"${MEM0}\",\"mem0Backend\":\"${MEM0_BACKEND}\",\"runtimeSandbox\":\"${RUNTIME_SANDBOX}\"}}}"

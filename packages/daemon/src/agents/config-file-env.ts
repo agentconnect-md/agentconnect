@@ -29,6 +29,7 @@
  * least-privilege tokens) remains the real permission boundary.
  */
 import { chmodSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import type { FileSink } from '../shim/file-sink.js'
 import { dirname, join, resolve } from 'node:path'
 
 export interface ConfigFileConvention {
@@ -148,6 +149,50 @@ export function materializeConfigFiles(agentDir: string, env: Record<string, str
       } catch {
         /* best-effort */
       }
+    } catch (err) {
+      out.notices.push(
+        `${entry.sourceVar} could not be materialized to a file (${(err as Error).message}) — left as an env var.`
+      )
+      continue
+    }
+    out.env[entry.convention.pointerVar] = entry.convention.pointerTo === 'dir' ? dirname(file) : file
+    // Strip every name that carries this content, not just the winning source —
+    // a legacy alias must not survive alongside the materialized new name.
+    for (const name of [entry.convention.dataVar, ...(entry.convention.aliases ?? [])]) {
+      if (env[name]) out.strip.push(name)
+    }
+  }
+  return out
+}
+
+/**
+ * Materialize the planned config files through a {@link FileSink}, so the same policy runs
+ * whether the files land on this daemon's disk or inside a sandbox pod.
+ *
+ * The plan is identical either way — which secrets become files is the daemon's decision.
+ * Only the writing moves, because only the driver knows whose filesystem the runtime reads.
+ * Failure handling matches the synchronous path: a write failure leaves that convention's
+ * env untouched (the raw data var stays visible — degraded, but strictly more usable than
+ * losing both) and reports a notice.
+ */
+export async function materializeConfigFilesThrough(
+  agentDir: string,
+  env: Record<string, string | undefined>,
+  sink: FileSink
+): Promise<MaterializeResult> {
+  const plan = planConfigFiles(env)
+  const out: MaterializeResult = { env: {}, strip: [], notices: [...plan.notices] }
+  const dir = configFilesDir(agentDir)
+  const clearError = await sink.clear(dir)
+  if (clearError) {
+    if (plan.materialize.length === 0) return out
+    out.notices.push(`${clearError} — secrets left as env vars.`)
+    return out
+  }
+  for (const entry of plan.materialize) {
+    const file = join(dir, ...entry.convention.relPath)
+    try {
+      await sink.write(dir, entry.convention.relPath, entry.value)
     } catch (err) {
       out.notices.push(
         `${entry.sourceVar} could not be materialized to a file (${(err as Error).message}) — left as an env var.`

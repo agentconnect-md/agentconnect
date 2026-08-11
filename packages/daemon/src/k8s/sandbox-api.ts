@@ -28,6 +28,12 @@ export interface TokenReviewResult {
   error?: string
 }
 
+/** An ensure result: the claim, plus whether this call is the one that created it. */
+export interface EnsuredClaim {
+  claim: SandboxClaim
+  created: boolean
+}
+
 const POD_NAME_EXTRA = 'authentication.kubernetes.io/pod-name'
 const POD_UID_EXTRA = 'authentication.kubernetes.io/pod-uid'
 
@@ -75,15 +81,21 @@ export class SandboxApi {
 
   /** Create a claim, treating an existing one as success: names are derived from the
    *  agent id, so a retry after a partial reconcile must converge rather than fail. */
-  async ensureClaim(claim: SandboxClaim & { metadata: { name: string } }): Promise<SandboxClaim> {
+  // Reports whether it CREATED the claim, because that is the only trustworthy cold-start
+  // signal: a first claim is the launch that pays PVC provisioning and an image pull, and the
+  // AlreadyExists branch is exactly the case that does not.
+  async ensureClaim(claim: SandboxClaim & { metadata: { name: string } }): Promise<EnsuredClaim> {
     try {
-      return await this.http.json<SandboxClaim>({
+      const created = await this.http.json<SandboxClaim>({
         method: 'POST',
         path: this.claims(),
         body: { apiVersion: SANDBOX_EXTENSIONS_GROUP, kind: 'SandboxClaim', ...claim }
       })
+      return { claim: created, created: true }
     } catch (err) {
-      if (err instanceof K8sApiError && err.isAlreadyExists) return this.getClaim(claim.metadata.name)
+      if (err instanceof K8sApiError && err.isAlreadyExists) {
+        return { claim: await this.getClaim(claim.metadata.name), created: false }
+      }
       throw err
     }
   }
@@ -119,7 +131,15 @@ export class SandboxApi {
    *  wake an instance we decided to suspend (or the reverse), so every write tests the
    *  value we saw rather than clobbering a newer decision. v1beta1 defaults the field to
    *  `Running`, so an observed value always exists.
-   *  A rejected write raises {@link OperatingModeRejectedError} — re-read and re-decide. */
+   *  A rejected write raises {@link OperatingModeRejectedError} — re-read and re-decide.
+   *
+   *  Measured against a real API server (k3s v1.31.2), so the next reader need not re-derive
+   *  it: a failed JSON Patch `test` returns 422 Invalid, never 409, and a merge patch
+   *  carrying a stale `metadata.resourceVersion` returns 409 Conflict. The field-scoped
+   *  `test` is kept deliberately — a resourceVersion precondition would guard the WHOLE
+   *  object, so any unrelated status write by the vendor controller would conflict, while
+   *  this only conflicts when the mode itself moved. The error means "re-read and
+   *  re-decide" either way, which is the only correct caller action. */
   async setOperatingMode(name: string, mode: OperatingMode, observed: OperatingMode): Promise<Sandbox> {
     try {
       return await this.http.json<Sandbox>({

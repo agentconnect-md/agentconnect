@@ -21,7 +21,6 @@ import { execFile } from 'node:child_process'
 import { existsSync, promises as fs } from 'node:fs'
 import * as path from 'node:path'
 import { join } from 'node:path'
-import type { SimpleGit } from 'simple-git'
 import {
   normalizeGithubRepoUrl,
   type WorkspaceGitStatus,
@@ -40,6 +39,7 @@ import {
   workspaceGitLocalEnv,
   workspaceGitPullTarget
 } from '../workspace/git-injection.js'
+import { LocalGitRunner, type GitRunner } from '../workspace/git-runner.js'
 import { authorizeWorkspaceGitUrl } from '../workspace/git-origin-policy.js'
 import { canonicalWorkspacePath, containedWorkspacePath, WorkspaceViolationError } from './workspace-reader.js'
 import { LOG_FORMAT, numstatByPath, parseLogZ, parseNumstatZ } from './workspace-git-parse.js'
@@ -54,6 +54,13 @@ const PULL_TIMEOUT_MS = 20_000
 const READ_TIMEOUT_MS = 15_000
 
 /** Cap the changed-file list so a huge working tree can't overflow the frame. */
+/** Where this surface gets its git. A cluster-backed workspace substitutes a shim-backed
+ *  runner here; the questions asked, and the answers' shape, do not change. */
+function runnerFor(cwd: string, abort?: AbortSignal): GitRunner {
+  // `cwd` travels alongside the handle so `readBounded`, which spawns its own child, runs in the same directory simple-git was pointed at.
+  return new LocalGitRunner(gitFor(cwd, abort), cwd)
+}
+
 const MAX_STATUS_FILES = 500
 
 /** Ceiling on the bytes one metadata read (numstat, log page, rev-list) may return.
@@ -72,39 +79,6 @@ export interface WorkspaceGit {
   diff(req: WorkspaceGitDiffReq): Promise<WorkspaceGitDiffResult>
   log(req: WorkspaceGitLogReq): Promise<WorkspaceGitLog>
   pull(agentId: string): Promise<WorkspaceGitPullResult>
-}
-
-/**
- * Run one read-only git command with a HARD ceiling on the bytes it returns.
- * `execFile` is used instead of the module's simple-git handle for exactly that
- * reason: simple-git accumulates the whole child stdout, and one `git diff` can be
- * orders of magnitude larger than the wire frame. On overflow Node kills the child
- * and hands back exactly `maxBytes` — the head slice this seam wants anyway — which
- * is reported as `overflow` so the REP can flag `truncated`.
- */
-function gitRead(root: string, args: string[], maxBytes: number): Promise<{ out: Buffer; overflow: boolean }> {
-  return new Promise((resolve, reject) => {
-    execFile(
-      'git',
-      args,
-      {
-        cwd: root,
-        env: { ...workspaceGitLocalEnv(), GIT_OPTIONAL_LOCKS: '0' },
-        encoding: 'buffer',
-        maxBuffer: maxBytes,
-        timeout: READ_TIMEOUT_MS,
-        windowsHide: true
-      },
-      (err, stdout) => {
-        if (!err) return resolve({ out: stdout, overflow: false })
-        // The ceiling was hit: the child is already dead and `stdout` is the head slice.
-        if ((err as NodeJS.ErrnoException).code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
-          return resolve({ out: stdout, overflow: true })
-        }
-        reject(err)
-      }
-    )
-  })
 }
 
 export interface WorkspaceGitTarget {
@@ -153,12 +127,14 @@ export function createWorkspaceGit(
       // Status is read-only and the daemon policy already disables hooks and
       // fsmonitor at command scope. Repository hook/include configuration must
       // not make an otherwise usable workspace disappear from the console.
-      const git = gitFor(root).env({ ...workspaceGitLocalEnv(), GIT_OPTIONAL_LOCKS: '0' })
+      // Through the runner, so a cluster-backed workspace answers the same question by running
+      // git in its own sandbox rather than on a disk this daemon cannot see.
+      const git = runnerFor(root).withEnv({ ...workspaceGitLocalEnv(), GIT_OPTIONAL_LOCKS: '0' })
       const s = await git.status()
       // Join the numstat AFTER the cap: a 10k-file tree must not pay for counts on
       // rows that get dropped anyway.
       const capped = s.files.slice(0, MAX_STATUS_FILES)
-      const counts = capped.length ? await numstatVsHead(root) : new Map()
+      const counts = capped.length ? await numstatVsHead(git) : new Map()
       const files: WorkspaceGitFile[] = capped.map((f) => {
         const n = counts.get(f.path)
         return {
@@ -173,7 +149,7 @@ export function createWorkspaceGit(
       return {
         agentId,
         isRepo: true,
-        clean: s.isClean(),
+        clean: s.clean,
         ...(s.current ? { branch: s.current } : {}),
         ...(s.tracking ? { tracking: s.tracking } : {}),
         ahead: s.ahead,
@@ -188,6 +164,8 @@ export function createWorkspaceGit(
     async diff(req) {
       const root = rootFor(req.agentId, req.sessionId)
       if (!isRepo(root)) return { agentId: req.agentId, path: req.path, isRepo: false, exists: false }
+      // Through the runner, so a cluster-backed workspace answers by running git in its own sandbox rather than on a disk this daemon cannot see.
+      const git = runnerFor(root).withEnv({ ...workspaceGitLocalEnv(), GIT_OPTIONAL_LOCKS: '0' })
 
       // Containment first: an unchecked pathspec would diff (and therefore print) files outside the workspace — the parent dir holds agent.json.
       // CANONICAL, not merely lexical: `lstat` follows intermediate components, so a symlinked directory inside the workspace would otherwise make `exists` below a true/false oracle for arbitrary host paths — the very check `workspace/read` canonicalises to enforce. `null` means absent, which is data: a deleted-but-tracked path still has a diff.
@@ -200,7 +178,7 @@ export function createWorkspaceGit(
       const pathspec = rel === '' ? [] : ['--', `:(literal)${rel}`]
       const scope = req.staged ? ['--cached'] : []
 
-      const counted = await gitRead(root, ['diff', ...scope, '--numstat', '-z', ...pathspec], METADATA_OUTPUT_BUDGET)
+      const counted = await git.readBounded(['diff', ...scope, '--numstat', '-z', ...pathspec], METADATA_OUTPUT_BUDGET)
       const rows = parseNumstatZ(counted.out.toString('utf8'))
       if (rows.length === 0) {
         // No change in this scope: the path either exists (unchanged, or untracked —
@@ -215,8 +193,7 @@ export function createWorkspaceGit(
 
       // --no-ext-diff / --no-textconv: a checkout's own diff driver or textconv
       // filter is a program, and a console read must never run repository code.
-      const text = await gitRead(
-        root,
+      const text = await git.readBounded(
         ['diff', ...scope, '--no-color', '--no-ext-diff', '--no-textconv', ...pathspec],
         DIFF_OUTPUT_BUDGET
       )
@@ -234,12 +211,13 @@ export function createWorkspaceGit(
     async log(req) {
       const root = rootFor(req.agentId, req.sessionId)
       if (!isRepo(root)) return { agentId: req.agentId, isRepo: false, commits: [], truncated: false }
+      // Through the runner, so a cluster-backed workspace answers by running git in its own sandbox rather than on a disk this daemon cannot see.
+      const git = runnerFor(root).withEnv({ ...workspaceGitLocalEnv(), GIT_OPTIONAL_LOCKS: '0' })
 
       // One extra row proves there are more commits than the caller asked for.
       let parsed
       try {
-        const out = await gitRead(
-          root,
+        const out = await git.readBounded(
           ['log', '-z', `--format=${LOG_FORMAT}`, `-n`, String(req.limit + 1), 'HEAD'],
           METADATA_OUTPUT_BUDGET
         )
@@ -249,15 +227,15 @@ export function createWorkspaceGit(
         // read timeout, a permission failure or a corrupt object into a confident
         // "No commits yet", which is a lie the reader cannot act on — those propagate to
         // INTERNAL and the panel says it could not read the history.
-        if (!(await isUnbornHead(root))) throw err
+        if (!(await isUnbornHead(git))) throw err
         return { agentId: req.agentId, isRepo: true, commits: [], truncated: false }
       }
 
       // `pushed` = reachable from the branch's upstream ref. No upstream (or a
       // detached HEAD) ⇒ nothing is known to be on a remote, so every commit reports
       // false and `tracking` is absent to say why.
-      const tracking = await upstreamRef(root)
-      const unpushed = tracking ? await unpushedShas(root, tracking, req.limit + 1) : null
+      const tracking = await upstreamRef(git)
+      const unpushed = tracking ? await unpushedShas(git, tracking, req.limit + 1) : null
       const commits = parsed.slice(0, req.limit).map((c) => ({
         ...c,
         pushed: unpushed === null ? false : !unpushed.has(c.sha)
@@ -281,7 +259,7 @@ export function createWorkspaceGit(
       let timer: ReturnType<typeof setTimeout> | undefined
       const abort = new AbortController()
       try {
-        const git = gitFor(root, abort.signal).env(workspaceGitLocalEnv())
+        const git = runnerFor(root, abort.signal).withEnv(workspaceGitLocalEnv())
         const target = workspaceTargetByAgent(agentId)
         let currentOrigin: string | undefined
         let expectedOrigin: string
@@ -300,12 +278,13 @@ export function createWorkspaceGit(
         ) {
           return { agentId, isRepo: true, ok: false, detail: 'workspace origin is not a safe remote' }
         }
-        await assertSafeWorkspaceGitConfig(root)
+        await assertSafeWorkspaceGitConfig(runnerFor(root))
         const pullBranch = target.branch
         const pullTarget = workspaceGitPullTarget(expectedOrigin)
         timer = setTimeout(() => abort.abort(), PULL_TIMEOUT_MS)
         const res = await pullWorkspaceRef(
-          git.env({
+          git.withEnv({
+            ...workspaceGitLocalEnv(),
             ...pullTarget.env,
             ...credentialEnvByAgent(agentId),
             GIT_TERMINAL_PROMPT: '0'
@@ -319,8 +298,8 @@ export function createWorkspaceGit(
           isRepo: true,
           ok: true,
           changed,
-          insertions: res.summary.insertions,
-          deletions: res.summary.deletions,
+          insertions: res.insertions,
+          deletions: res.deletions,
           detail:
             changed > 0 ? `Fast-forwarded — updated ${changed} file${changed === 1 ? '' : 's'}.` : 'Already up to date.'
         }
@@ -339,13 +318,13 @@ export function createWorkspaceGit(
  *  unborn branch still HAS a symbolic HEAD while a repository git considers unusable does
  *  not. Conservative on purpose: anything else propagates, so an unreadable history reads
  *  as unreadable instead of as empty. */
-async function isUnbornHead(root: string): Promise<boolean> {
+async function isUnbornHead(git: GitRunner): Promise<boolean> {
   try {
-    await gitRead(root, ['rev-parse', '--verify', '--quiet', 'HEAD'], METADATA_OUTPUT_BUDGET)
+    await git.readBounded(['rev-parse', '--verify', '--quiet', 'HEAD'], METADATA_OUTPUT_BUDGET)
     return false // HEAD resolves, so whatever failed was not this
   } catch {
     try {
-      await gitRead(root, ['symbolic-ref', '-q', 'HEAD'], METADATA_OUTPUT_BUDGET)
+      await git.readBounded(['symbolic-ref', '-q', 'HEAD'], METADATA_OUTPUT_BUDGET)
       return true
     } catch {
       return false
@@ -357,10 +336,10 @@ async function isUnbornHead(root: string): Promise<boolean> {
  *  file changed since the last commit, which is what the console's `+128 −12` means.
  *  Renames key on the NEW path, matching what `git status` reports. Swallowed on
  *  failure (an empty repo has no HEAD): counts are optional on the wire. */
-async function numstatVsHead(root: string): Promise<Map<string, { additions?: number; deletions?: number }>> {
+async function numstatVsHead(git: GitRunner): Promise<Map<string, { additions?: number; deletions?: number }>> {
   try {
     // `gitRead`, never simple-git's `raw`: simple-git buffers the whole child stdout with no ceiling and no timeout, and a dirty tree of tens of thousands of files writes megabytes here — on a path `workspace/gitstatus` takes on every session page view. `--no-relative` is belt-and-braces: `isRepo` requires `.git` directly under `root`, so this always runs AT the repo root and `diff.relative` cannot make these paths disagree with `git status --porcelain`'s repo-relative ones — but the flag costs nothing and the join silently empties if that ever stops holding.
-    const counted = await gitRead(root, ['diff', 'HEAD', '--numstat', '-z', '--no-relative'], METADATA_OUTPUT_BUDGET)
+    const counted = await git.readBounded(['diff', 'HEAD', '--numstat', '-z', '--no-relative'], METADATA_OUTPUT_BUDGET)
     return numstatByPath(parseNumstatZ(counted.out.toString('utf8')))
   } catch {
     return new Map()
@@ -369,9 +348,9 @@ async function numstatVsHead(root: string): Promise<Map<string, { additions?: nu
 
 /** The current branch's upstream ref (`origin/main`), or null when the branch
  *  tracks nothing and when HEAD is detached — git fails the same way for both. */
-async function upstreamRef(root: string): Promise<string | null> {
+async function upstreamRef(git: GitRunner): Promise<string | null> {
   try {
-    const out = await gitRead(root, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'], 4096)
+    const out = await git.readBounded(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'], 4096)
     const ref = out.out.toString('utf8').trim()
     return ref === '' ? null : ref
   } catch {
@@ -383,10 +362,9 @@ async function upstreamRef(root: string): Promise<string | null> {
  *  Bounded by the same commit count the log page carries. Null when the set cannot be
  *  computed, which reports every commit as NOT known-pushed rather than claiming a
  *  remote already has work it may not have. */
-async function unpushedShas(root: string, upstream: string, limit: number): Promise<Set<string> | null> {
+async function unpushedShas(git: GitRunner, upstream: string, limit: number): Promise<Set<string> | null> {
   try {
-    const out = await gitRead(
-      root,
+    const out = await git.readBounded(
       ['rev-list', '-n', String(limit), 'HEAD', '--not', upstream],
       METADATA_OUTPUT_BUDGET
     )
@@ -404,12 +382,16 @@ async function unpushedShas(root: string, upstream: string, limit: number): Prom
 
 /** The HEAD commit (sha / short sha / subject / committer date), or null for an
  *  empty repo with no commits yet. `%cI` is git's strict-ISO committer date. */
-async function headCommit(git: SimpleGit): Promise<WorkspaceGitCommit | null> {
+async function headCommit(git: GitRunner): Promise<WorkspaceGitCommit | null> {
   try {
-    const log = await git.log({ maxCount: 1, format: { hash: '%H', date: '%cI', subject: '%s' } })
-    const c = log.latest
-    if (!c?.hash) return null
-    return { sha: c.hash, shortSha: c.hash.slice(0, 7), subject: c.subject ?? '', committedAt: c.date }
+    const [commit] = await git.log({ maxCount: 1 })
+    if (!commit?.hash) return null
+    return {
+      sha: commit.hash,
+      shortSha: commit.hash.slice(0, 7),
+      subject: commit.subject,
+      committedAt: commit.committedAt
+    }
   } catch {
     return null // freshly-init'd repo with no commits ⇒ `git log` errors
   }

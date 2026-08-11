@@ -26,7 +26,7 @@
   "scripts": {
     "agent:chat": "tsx src/index.ts --agents-dir ./test/fixtures/sample-agent chat",
     "agent:run": "tsx src/index.ts --agents-dir ./test/fixtures/sample-agent run",
-    "build": "pnpm --filter '{.}^...' build && tsdown && node scripts/prepare-bundled-skills.mjs && node scripts/assert-self-contained.mjs",
+    "build": "pnpm --filter '{.}^...' build && tsdown && tsdown --config tsdown.shim.config.ts && node scripts/prepare-bundled-skills.mjs && node scripts/assert-self-contained.mjs",
     "clean": "rm -rf dist",
     "dev": "tsx watch src/index.ts run",
     "prepack": "pnpm run build",

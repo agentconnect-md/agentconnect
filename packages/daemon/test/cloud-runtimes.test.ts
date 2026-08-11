@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import {
   CLOUD_RUNTIMES_ENV,
   cloudRuntimesPath,
+  CloudRuntimeTableSchema,
   declaredRuntimeCatalog,
   loadCloudRuntimeTable
 } from '../src/runtimes/cloud-runtimes.js'
@@ -77,6 +78,41 @@ describe('declaredRuntimeCatalog', () => {
     expect(result.catalog.runtimes.claude?.command).toBe('claude-code-acp')
     expect(result.models).toEqual({ claude: ['sonnet', 'opus'] })
     expect(result.unresolved).toEqual([])
+  })
+
+  it('carries the image ACP snapshot through, rather than dropping it on the floor', () => {
+    // The table's whole point in --cloud is reporting what a probe would have found. A schema that
+    // strips this field leaves the daemon publishing ids and versions and nothing else — and it
+    // fails silently, because the artifact is still internally consistent.
+    const result = declaredRuntimeCatalog(catalog(), {
+      runtimes: [
+        {
+          id: 'claude',
+          version: '9.9.9',
+          acp: {
+            protocolVersion: 1,
+            agentName: '@agentclientprotocol/claude-agent-acp',
+            capabilities: { mcpCapabilities: { http: true, sse: true }, loadSession: true },
+            modes: ['default', 'plan'],
+            configOptions: [{ id: 'model', category: 'model', type: 'select', values: ['opus', 'sonnet'] }],
+            sessionProbe: 'ok'
+          }
+        }
+      ]
+    })
+    expect(result.acp.claude?.protocolVersion).toBe(1)
+    expect(result.acp.claude?.capabilities?.mcpCapabilities).toEqual({ http: true, sse: true })
+    expect(result.acp.claude?.configOptions?.[0]?.id).toBe('model')
+    expect(result.acp.claude?.sessionProbe).toBe('ok')
+  })
+
+  it('parses a table whose entries carry an ACP snapshot, keeping the snapshot intact', () => {
+    // Guards the schema itself: zod strips unknown keys, so an `acp` field that is not declared
+    // vanishes between the file and the caller with no error anywhere.
+    const parsed = CloudRuntimeTableSchema.parse({
+      runtimes: [{ id: 'claude', version: '1.0.0', acp: { protocolVersion: 1, modes: ['default'] } }]
+    })
+    expect(parsed.runtimes[0]?.acp).toEqual({ protocolVersion: 1, modes: ['default'] })
   })
 
   it('leaves the catalog-declared version alone when the table omits one', () => {
