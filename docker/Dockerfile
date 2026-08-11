@@ -154,6 +154,65 @@ COPY --from=relay-builder /relay ./
 EXPOSE 8080
 CMD ["node", "dist/index.js"]
 
+# ──────────────────────────── daemon: build ─────────────────────────────────
+# The edge unit (packages/daemon). Distinct from the RUNTIME SANDBOX image
+# (docker/runtime-sandbox.Dockerfile): this runs the daemon, that one is what an
+# agent's ACP runtime executes inside. Under --k8s the daemon starts no runtime
+# locally, so this image carries no ACP runtimes at all.
+FROM manifests AS daemon-builder
+RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
+  pnpm install --frozen-lockfile --filter "@agentconnect.md/daemon..."
+
+COPY . .
+
+# protocol → message / connection / observability → daemon (topological).
+RUN pnpm --filter "@agentconnect.md/protocol" \
+  --filter "@agentconnect.md/message" \
+  --filter "@agentconnect.md/connection" \
+  --filter "@agentconnect.md/observability" \
+  --filter "@agentconnect.md/daemon" \
+  -r build
+
+RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
+  pnpm --config.inject-workspace-packages=true \
+  --filter "@agentconnect.md/daemon" \
+  deploy --prod /daemon
+
+# ─────────────────────────── daemon: runtime ────────────────────────────────
+FROM node:24-bookworm-slim AS daemon
+WORKDIR /app/packages/daemon
+ENV NODE_ENV=production \
+  AC_K8S_SHIM_HOST=0.0.0.0 \
+  AC_K8S_SHIM_PORT=8085 \
+  # The kubelet is the supervisor: it restarts the container, and an in-pod
+  # self-upgrade would exit for a version the cluster never asked for.
+  AGENTCONNECT_SUPERVISOR=k8s
+
+# git is load-bearing even here: a self-hosted agent on this daemon still clones
+# locally, and the workspace seam only moves git into a sandbox for agents that
+# have one. ca-certificates covers outbound TLS to the control plane and to
+# providers (direct-connect, for now).
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates git tini \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY --from=daemon-builder /daemon ./
+
+# Non-root, and a fixed uid so a daemon state volume survives a rollout.
+RUN groupadd --gid 10002 daemon-user \
+  && useradd --uid 10002 --gid 10002 --home-dir /var/lib/agentconnect --create-home daemon-user \
+  && chown -R 10002:10002 /var/lib/agentconnect
+ENV HOME=/var/lib/agentconnect
+USER 10002:10002
+
+# The shim callback endpoint. Sandboxes dial IN to this; the daemon never dials
+# into a sandbox, which is what lets a sandbox keep zero inbound rules.
+EXPOSE 8085
+# tini so a SIGTERM reaches the daemon and its drain actually runs — without it
+# PID 1 ignores the signal and every rollout ends in SIGKILL mid-drain.
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["node", "dist/index.js", "run", "--k8s"]
+
 # ────────────────────────────── web: build ──────────────────────────────────
 FROM manifests AS web-builder
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
