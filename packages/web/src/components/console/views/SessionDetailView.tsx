@@ -4640,6 +4640,9 @@ export default function SessionDetailView() {
               sessionId={prSessionId}
               active={dockTabKey === 'pr'}
               {...(session?.status ? { sessionStatus: session.status } : {})}
+              turnActive={sessionBusy}
+              // Auto-fix rides the LIVE composer path (§5.2, browser→relay→daemon); a hook session with no composer gets no button rather than a dead one.
+              {...(isLive ? { onAutoFix: (text: string) => onPgSend(text) } : {})}
               onVerdictChange={setPrVerdict}
             />
           ) : null}

@@ -1,8 +1,8 @@
 'use client'
 
-// The dock's PR tab (§3.4, M5): the pull request this session was dispatched for — state, head→base, checks, current reviews and unresolved threads — as a READ-ONLY surface. Auto-fix and Merge-when-ready are M6's write loop and are ABSENT rather than disabled.
+// The dock's PR tab (§3.4): the pull request this session was dispatched for — state, head→base, checks, current reviews and unresolved threads — plus M6's two writes: ONE Auto-fix post over the whole unresolved set (§5.2, a webchat turn, no CP route) and the Merge-when-ready auto-merge toggle.
 // Identity comes from the CP's own records and live state from GitHub through the CP's short-TTL projection; thread bodies are proxied, never stored (§2). A rate-limited, denied or unreachable GitHub is DATA: the panel still names its PR and says why the live lists are missing.
-// A session with no linked pull-request run answers 404 ONCE and the tab hides. That linkage never appears later — the run is what CREATED the session — so the 404 is held per scope and nothing re-asks it (the hidden tab has no activation edge and no refresh control to press).
+// A 404 from the probe is PROVISIONAL on a bounded ladder (the session→run link can commit after the status flip, or with no flip at all), then the absence is believed and the tab stays hidden.
 
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Spinner } from '@/components/marks'
@@ -10,6 +10,7 @@ import { Icon } from '@/components/ui'
 import {
   ApiError,
   fetchSessionPullRequest,
+  setSessionPullRequestAutoMerge,
   type SessionPullRequestCheckDto,
   type SessionPullRequestDto,
   type SessionPullRequestReviewDto,
@@ -36,6 +37,20 @@ export interface PullRequestPanelVerdict {
 // Never `empty`: a 200 always carries identity to draw, "no PR" HIDES the tab instead of blanking it, and a failed probe has copy — no state is left for the dock's centred "Nothing to show" to describe.
 export function pullRequestTabStatus(answer: PullRequestPanelAnswer): DockTabStatus {
   return answer === 'pending' ? 'loading' : 'ready'
+}
+
+/** §5.2's one structured instruction: every unresolved thread (location + body), one turn, the agent resolves what it fixes. Exported so the post's exact content is pinned, not approximated. */
+export function autoFixInstruction(view: SessionPullRequestDto): string {
+  const threads = view.threads
+    .map((thread, index) => `${index + 1}. ${thread.location} — ${thread.author}: ${thread.body}`)
+    .join('\n')
+  return [
+    `Fix the unresolved review threads on pull request #${view.pullNumber} (${view.repoFullName}):`,
+    '',
+    threads,
+    '',
+    'Address each thread in this session’s worktree, commit and push the fixes, then resolve the threads you fixed on GitHub.'
+  ].join('\n')
 }
 
 /** A finished check's `startedAt`→`completedAt`, in the elapsed shape the Tasks rows use; empty when either end is missing or unparseable — the design says duration "where present", not invented. */
@@ -150,6 +165,8 @@ export function PullRequestPanel({
   sessionId,
   active = true,
   sessionStatus,
+  turnActive = false,
+  onAutoFix,
   onVerdictChange
 }: {
   /** The OPEN SESSION's id, the scope the CP resolves to its hook run. Deliberately no agentId: the PR belongs to the session, so a merged conversation's header-focus change must not re-key this read — the prop shape makes that unbuildable rather than merely avoided. */
@@ -158,6 +175,10 @@ export function PullRequestPanel({
   active?: boolean
   /** The open session's live status: a transition re-asks a held 404 immediately and refills the bounded retry ladder — a hint that the session→run link may just have committed, though the frames race, which is why the ladder exists at all. */
   sessionStatus?: string
+  /** Whether a turn is streaming right now. After Auto-fix posts one, the FALLING edge is the panel's cue to force one re-read — the agent's GitHub write-back (resolved threads, pushed fixes) lands with the turn, and the CP's short TTL would otherwise hide it. */
+  turnActive?: boolean
+  /** Posts one webchat message into the open session (§5.2's browser→relay→daemon path — no CP route). Absent when the session has no live composer, and the Auto-fix action renders ABSENT with it, not disabled. */
+  onAutoFix?: (text: string) => void
   /** The inputs to {@link pullRequestTabStatus}, the tab's badge and its external-link action. */
   onVerdictChange?: (verdict: PullRequestPanelVerdict) => void
 }) {
@@ -209,6 +230,37 @@ export function PullRequestPanel({
         : 'failed'
   const unresolved = view && !view.degraded ? view.unresolvedCount : null
   const url = view?.url ?? null
+
+  // Auto-fix hands the set to the agent as ONE turn (§5.2): `awaitingTurn` survives until that turn's
+  // falling edge, where the panel forces one re-read past the CP TTL — the write-back it waits for
+  // (resolved threads) happened on GitHub inside the turn. Reset per scope: a session switch mid-fix
+  // must not graft the old session's wait onto the new one's reads.
+  const [awaitingTurn, setAwaitingTurn] = useState(false)
+  useEffect(() => setAwaitingTurn(false), [sessionId])
+  const wasTurnActive = useRef(turnActive)
+  useEffect(() => {
+    const settled = wasTurnActive.current && !turnActive
+    wasTurnActive.current = turnActive
+    if (settled && awaitingTurn) {
+      setAwaitingTurn(false)
+      setReads((r) => ({ tick: r.tick + 1, force: true }))
+    }
+  }, [turnActive, awaitingTurn])
+
+  // The auto-merge toggle's own in-flight/error state; the armed FACT stays on the view, re-read after every write.
+  const [merge, setMerge] = useState<{ busy: boolean; err: string | null }>({ busy: false, err: null })
+  useEffect(() => setMerge({ busy: false, err: null }), [sessionId])
+  const toggleAutoMerge = (enabled: boolean) => {
+    setMerge({ busy: true, err: null })
+    setSessionPullRequestAutoMerge(sessionId, enabled).then(
+      () => {
+        setMerge({ busy: false, err: null })
+        // The CP invalidated its cached view on the write, so a plain re-read already sees the new state.
+        setReads((r) => ({ tick: r.tick + 1, force: false }))
+      },
+      (e) => setMerge({ busy: false, err: msg(e) })
+    )
+  }
 
   // Reported on the EDGE, like every other tab's verdict: the caller's callback is a fresh closure per render, and re-reporting a held verdict would write parent state for nothing.
   const reported = useRef<string | null>(null)
@@ -473,11 +525,68 @@ export function PullRequestPanel({
                     </div>
                   ) : null}
                 </div>
-              )
+              ),
+              // ONE Auto-fix over the whole set (§5.2) — a real agent turn on the webchat path, absent (not disabled) when the session has no live composer to post through.
+              onAutoFix && view.threads.length > 0 ? (
+                <button
+                  type="button"
+                  data-pr-autofix=""
+                  className="dsbtn dsbtn-secondary sm flex-none disabled:pointer-events-none disabled:opacity-50"
+                  disabled={awaitingTurn}
+                  title="Hand every unresolved thread to the agent as one turn; it edits this session’s worktree and resolves the threads it fixes"
+                  onClick={() => {
+                    onAutoFix(autoFixInstruction(view))
+                    setAwaitingTurn(true)
+                  }}
+                >
+                  {awaitingTurn ? <Spinner size={11} /> : <Icon name="wand-sparkles" size={12} />}
+                  Auto-fix
+                </button>
+              ) : undefined
             )}
           </>
         )}
       </div>
+      {/* The merge box (§3.4): the checkbox IS the action — there is no direct-merge route to back a Merge button, so none is drawn. Open PRs only; a degraded read has no armed fact to draw a control over. */}
+      {!view.degraded && view.state === 'open' ? (
+        <div data-pr-merge="" className="flex flex-none flex-col gap-[3px] border-t border-(--border-subtle) px-3 py-2">
+          <label
+            className={`flex items-center gap-[7px] font-sans text-[12px] font-medium leading-normal text-(--text-primary) ${view.canArmAutoMerge ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'}`}
+            title={
+              view.canArmAutoMerge
+                ? 'GitHub merges automatically once checks and approvals pass'
+                : 'The owning agent’s repository access is below write tier, so arming the merge is not available'
+            }
+          >
+            <input
+              type="checkbox"
+              data-pr-automerge=""
+              className="accent-(--brand)"
+              checked={view.autoMergeArmed ?? false}
+              disabled={!view.canArmAutoMerge || merge.busy}
+              onChange={(event) => toggleAutoMerge(event.target.checked)}
+            />
+            Merge when ready
+            {merge.busy ? <Spinner size={11} /> : null}
+            {view.autoMergeArmed ? (
+              <span className="flex-none rounded-full bg-(--brand-soft) px-[7px] py-px font-sans text-[10.5px] font-semibold leading-normal text-(--brand)">
+                Auto-merge armed
+              </span>
+            ) : null}
+          </label>
+          <div className="font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
+            {view.autoMergeArmed ? 'Squash · after checks + approvals' : 'Squash and merge'}
+          </div>
+          {merge.err ? (
+            <div
+              data-pr-merge-error=""
+              className="font-sans text-[11.5px] font-normal leading-[1.5] text-(--status-error)"
+            >
+              {merge.err}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   )
 }

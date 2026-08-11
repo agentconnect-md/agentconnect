@@ -823,6 +823,46 @@ export class GithubService {
     }
   }
 
+  /** Whether the console may arm auto-merge for this agent's PR — the GET projection's per-caller
+   *  capability flag, Postgres-only (no GitHub call): a read/comment tier renders a disabled control. */
+  async canArmAutoMerge(agent: AgentRecord, repoId: bigint, repoFullName: string): Promise<boolean> {
+    try {
+      const resolved = await this.resolveAgentRepoAuthorization(agent, repoId, repoFullName)
+      return resolved.access === 'write' && resolved.installation.permissions?.pull_requests === 'write'
+    } catch {
+      return false
+    }
+  }
+
+  /** Auto-merge arm/disarm capability: arming merges code, so nothing below write tier qualifies —
+   *  the additional-repo comment tier that may COMMENT-review is deliberately excluded here. */
+  async mintAutoMergeForAgent(
+    agent: AgentRecord,
+    repoId: bigint,
+    repoFullName: string
+  ): Promise<MintedGitCred & { installationId: bigint }> {
+    const resolved = await this.resolveAgentRepoAuthorization(agent, repoId, repoFullName)
+    if (resolved.access !== 'write') {
+      throw new GitCredDeniedError('repository authorization does not allow auto-merge', 'SCOPE_DENIED', false)
+    }
+    if (resolved.installation.permissions?.pull_requests !== 'write') {
+      throw new GitCredDeniedError('GitHub installation has not accepted pull_requests:write', 'LEASE_DENIED', false)
+    }
+    try {
+      // contents rides along because GitHub performs the eventual merge under this app's grant.
+      const cred = await this.tokens.mintLevels(
+        resolved.installation.installationId,
+        resolved.repoFullName,
+        { pull_requests: 'write', contents: 'write' },
+        resolved.repoId
+      )
+      return { ...cred, installationId: resolved.installation.installationId }
+    } catch (e) {
+      if (e instanceof GithubApiError) throw new GitCredDeniedError(e.message, e.code, e.retryable)
+      throw e
+    }
+  }
+
   /** CP-only reporter capability. Reporting always requires write-level agent
    * authorization plus exact checks:write and pull_requests:read-or-write
    * installation facts. The latter gates the live commit -> PR barrier. */

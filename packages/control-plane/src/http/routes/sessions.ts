@@ -24,6 +24,8 @@ import { Tag } from '../plugins/openapi.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
 import { visibilityStateOf } from '../../orchestrator/visibilityPush.js'
 import type { PullRequestView } from '../../github/pull-request-view.service.js'
+import { GithubApiError } from '../../github/api.js'
+import { GitCredDeniedError } from '../../github/service.js'
 import {
   SessionListPageDto,
   SessionFacetsDto,
@@ -35,6 +37,8 @@ import {
   IdParam,
   SessionPullRequestDto,
   SessionPullRequestQueryDto,
+  SessionPullRequestAutoMergeBodyDto,
+  SessionPullRequestAutoMergeDto,
   type SessionPullRequestDtoT,
   SetSessionVisibilityBody,
   SessionVisibilityDto,
@@ -353,9 +357,11 @@ function agentReviewOf(event: string | null): 'approved' | 'changes_requested' |
   return null
 }
 
-// Service view -> HTTP body, 1:1; every judgement about degradation already happened in the service.
-function toSessionPullRequestDto(view: PullRequestView): SessionPullRequestDtoT {
+// Service view -> HTTP body, 1:1 plus the caller's write capability; degradation judgements are the service's.
+function toSessionPullRequestDto(view: PullRequestView, canArmAutoMerge: boolean): SessionPullRequestDtoT {
   return {
+    canArmAutoMerge,
+    autoMergeArmed: view.autoMergeArmed,
     repoFullName: view.repoFullName,
     pullNumber: view.pullNumber,
     title: view.title,
@@ -1051,6 +1057,10 @@ export function sessionRoutes(deps: HttpDeps) {
         const subject = run.projectionId
           ? (await deps.repos.hook.listReviewSubjects(run.projectionId)).find((s) => s.pullNumber === run.pullNumber)
           : undefined
+        // The caller's write capability, Postgres-only: per-run like the overlay facts, so never cached.
+        const agent = run.agentId ? await deps.repos.agent.get(orgOf(req), AgentId(run.agentId)) : null
+        const canArm =
+          agent && deps.github ? await deps.github.canArmAutoMerge(agent, run.repoId, run.repoFullName) : false
         return toSessionPullRequestDto(
           await view.view(
             {
@@ -1064,9 +1074,81 @@ export function sessionRoutes(deps: HttpDeps) {
               ...(agentReviewOf(run.reviewEvent) ? { knownAgentReview: agentReviewOf(run.reviewEvent)! } : {})
             },
             req.query.refresh === true
-          )
+          ),
+          canArm
         )
       }
     )
+
+    // ── POST /sessions/:id/pull-request/auto-merge ───────────────────────────
+    // The M6 write: arm/disarm GitHub auto-merge under the owning agent's clamped grant. The token is
+    // minted per call and never stored; the view cache is dropped so the next read shows the new state.
+    r.post(
+      '/sessions/:id/pull-request/auto-merge',
+      {
+        schema: {
+          tags: [Tag.Sessions],
+          summary: 'Arm or disarm auto-merge on the session’s pull request',
+          description:
+            'Enables or disables GitHub auto-merge (squash) for the pull request this session was dispatched for, using an installation token clamped to the owning agent’s repository tier — the write requires that clamp to actually carry `pull_requests: write`, so a read- or comment-tier agent is refused (403) rather than escalated. Idempotent: asking for the state the PR is already in succeeds without a mutation. 404 mirrors the GET; 409 relays GitHub declining the state change (for example a pull request whose checks already pass, which GitHub arms nothing for); 429 is GitHub rate limiting; 502 is GitHub unreachable.',
+          operationId: 'setSessionPullRequestAutoMerge',
+          params: IdParam,
+          body: SessionPullRequestAutoMergeBodyDto,
+          response: {
+            200: SessionPullRequestAutoMergeDto,
+            403: ErrorDto,
+            404: ErrorDto,
+            409: ErrorDto,
+            429: ErrorDto,
+            502: ErrorDto
+          }
+        }
+      },
+      async (req, reply) => {
+        const absent = () =>
+          reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'pull request not found' })
+        const owned = await getOrgViewableSession(req, req.params.id)
+        if (!owned) return absent()
+        const view = deps.pullRequestView
+        const github = deps.github
+        if (!view || !github) return absent()
+        const run = await deps.repos.hook.latestPullRequestRunForSession(orgOf(req), owned.session.id)
+        if (!run?.pullNumber || !run.repoId || !run.repoFullName || !run.sourceInstallationId) return absent()
+        // The capability is the RUN's agent — the write rides that agent's authorization, not the viewer's.
+        const agent = run.agentId ? await deps.repos.agent.get(orgOf(req), AgentId(run.agentId)) : null
+        if (!agent) {
+          return reply
+            .code(403)
+            .send({ error: 'Forbidden', statusCode: 403, message: 'the owning agent no longer exists' })
+        }
+        try {
+          const cred = await github.mintAutoMergeForAgent(agent, run.repoId, run.repoFullName)
+          return await view.setAutoMerge(
+            { repoId: run.repoId, repoFullName: run.repoFullName, pullNumber: run.pullNumber },
+            cred.token,
+            req.body.enabled
+          )
+        } catch (err) {
+          return autoMergeErrorReply(reply, err)
+        }
+      }
+    )
   }
+}
+
+// GitHub/clamp failures onto HTTP: capability and installation denials are 403, rate limits 429, GitHub
+// down 502 — and GitHub declining the state change itself (clean status, closed PR) is a 409, not a 5xx.
+function autoMergeErrorReply(reply: { code: (c: number) => { send: (b: unknown) => unknown } }, err: unknown) {
+  const body = (statusCode: number, error: string, message: string) => ({ error, statusCode, message })
+  if (err instanceof GitCredDeniedError) {
+    if (err.code === 'RATE_LIMITED') return reply.code(429).send(body(429, 'Too Many Requests', err.message))
+    return reply.code(403).send(body(403, 'Forbidden', err.message))
+  }
+  if (err instanceof GithubApiError) {
+    if (err.code === 'RATE_LIMITED') return reply.code(429).send(body(429, 'Too Many Requests', err.message))
+    if (err.code === 'LEASE_DENIED') return reply.code(403).send(body(403, 'Forbidden', err.message))
+    if (err.status === 0 || err.status >= 500) return reply.code(502).send(body(502, 'Bad Gateway', err.message))
+    return reply.code(409).send(body(409, 'Conflict', err.message))
+  }
+  throw err
 }

@@ -11,7 +11,10 @@ const wire = vi.hoisted(() => ({
   failure: null as null | { status: number },
   calls: [] as Array<{ sessionId: string; refresh: boolean }>,
   // Set to hand back a promise the test resolves by hand, so the panel is observable WHILE a read is in flight.
-  hold: null as null | (() => Promise<unknown>)
+  hold: null as null | (() => Promise<unknown>),
+  // The auto-merge write seam: every POST recorded, failing with `mergeFailure` when set.
+  mergeCalls: [] as Array<{ sessionId: string; enabled: boolean }>,
+  mergeFailure: null as null | Error
 }))
 
 vi.mock('@/lib/api', () => {
@@ -31,6 +34,11 @@ vi.mock('@/lib/api', () => {
       if (wire.failure) return Promise.reject(new ApiError('nope', wire.failure.status))
       if (wire.hold) return wire.hold()
       return Promise.resolve(wire.data)
+    }),
+    setSessionPullRequestAutoMerge: vi.fn((sessionId: string, enabled: boolean) => {
+      wire.mergeCalls.push({ sessionId, enabled })
+      if (wire.mergeFailure) return Promise.reject(wire.mergeFailure)
+      return Promise.resolve({ armed: enabled })
     })
   }
 })
@@ -86,6 +94,8 @@ function pr(overrides: Partial<SessionPullRequestDto> = {}): SessionPullRequestD
     ],
     unresolvedCount: 2,
     threadsTruncated: false,
+    autoMergeArmed: false,
+    canArmAutoMerge: true,
     degraded: false,
     degradedReason: null,
     agentReview: null,
@@ -148,6 +158,8 @@ beforeEach(() => {
   wire.failure = null
   wire.calls = []
   wire.hold = null
+  wire.mergeCalls = []
+  wire.mergeFailure = null
   verdicts = []
 })
 
@@ -342,15 +354,86 @@ describe('PullRequestPanel body', () => {
     expect(text()).toContain('No unresolved review threads')
   })
 
-  it('offers NO Auto-fix, NO merge control and NO thread resolution — M6’s writes are absent, not disabled', async () => {
-    // PREMISE (§9 M5): this panel is read-only. If M6 lands its Auto-fix button and Merge-when-ready checkbox, re-aim this assertion at the new controls — do not delete it.
+  it('gates M6’s writes: Auto-fix is ABSENT without a live composer, the merge toggle disabled below write tier', async () => {
+    // Re-aimed from M5's read-only premise (§9), as that test asked: the writes exist now, but each is
+    // earned. No onAutoFix (a hook session with no composer) means NO button — absent, not disabled.
     await render()
-    // The refresh control is the ONLY button, and there is no checkbox for auto-merge to hide in.
-    const buttons = Array.from(container?.querySelectorAll('button') ?? [])
-    expect(buttons.map((button) => button.getAttribute('aria-label'))).toEqual(['Refresh pull request'])
-    expect(container?.querySelectorAll('input')).toHaveLength(0)
-    expect(text().toLowerCase()).not.toContain('auto-fix')
-    expect(text().toLowerCase()).not.toContain('merge when ready')
+    expect(container?.querySelector('[data-pr-autofix]')).toBeNull()
+    // The write-capable fixture's merge toggle is live; a read-tier caller's is disabled, not hidden —
+    // the CP's canArmAutoMerge flag is exactly the "disabled control, not a failed call" contract.
+    expect(container?.querySelector<HTMLInputElement>('[data-pr-automerge]')?.disabled).toBe(false)
+
+    wire.data = pr({ canArmAutoMerge: false })
+    await render()
+    expect(container?.querySelector<HTMLInputElement>('[data-pr-automerge]')?.disabled).toBe(true)
+
+    // No merge box at all where there is nothing to arm: closed/merged PRs and degraded answers.
+    wire.data = pr({ state: 'merged' })
+    await render()
+    expect(container?.querySelector('[data-pr-merge]')).toBeNull()
+    wire.data = degradedPr('rate_limited')
+    await render()
+    expect(container?.querySelector('[data-pr-merge]')).toBeNull()
+  })
+
+  it('Auto-fix posts ONE instruction carrying every unresolved thread, then re-reads once when the turn settles', async () => {
+    // §5.2: one action over the whole set, a real webchat turn — and the panel's ONLY follow-up is a
+    // single forced re-read on the turn's FALLING edge, where the agent's GitHub write-back landed.
+    const posted: string[] = []
+    await render({ onAutoFix: (text) => posted.push(text), turnActive: false })
+    expect(wire.calls).toHaveLength(1)
+
+    await press('[data-pr-autofix]')
+    expect(posted).toHaveLength(1)
+    expect(posted[0]).toContain('#57')
+    expect(posted[0]).toContain('src/dock.ts:12 — sam: This cache key needs the org.')
+    expect(posted[0]).toContain('src/dock.ts:40')
+    expect(posted[0]).toContain('resolve the threads')
+    // Pressed = in flight: the button disables rather than double-posting the same set.
+    expect(container?.querySelector<HTMLButtonElement>('[data-pr-autofix]')?.disabled).toBe(true)
+
+    // The turn starts streaming, then settles: exactly one re-read, forced past the CP's TTL.
+    await rerender({ onAutoFix: (text) => posted.push(text), turnActive: true })
+    expect(wire.calls).toHaveLength(1)
+    wire.data = pr({ threads: [], unresolvedCount: 0 })
+    await rerender({ onAutoFix: (text) => posted.push(text), turnActive: false })
+    expect(wire.calls).toHaveLength(2)
+    expect(wire.calls[1]).toMatchObject({ refresh: true })
+    // A LATER turn settling re-reads nothing — the wait was consumed.
+    await rerender({ onAutoFix: (text) => posted.push(text), turnActive: true })
+    await rerender({ onAutoFix: (text) => posted.push(text), turnActive: false })
+    expect(wire.calls).toHaveLength(2)
+  })
+
+  it('arms auto-merge through the CP and re-reads the view it invalidated', async () => {
+    await render()
+    expect(wire.calls).toHaveLength(1)
+
+    wire.data = pr({ autoMergeArmed: true })
+    await press('[data-pr-automerge]')
+
+    expect(wire.mergeCalls).toEqual([{ sessionId: 'session-1', enabled: true }])
+    expect(wire.calls).toHaveLength(2) // the post-write re-read, riding the CP's own invalidation
+    expect(container?.querySelector<HTMLInputElement>('[data-pr-automerge]')?.checked).toBe(true)
+    expect(text()).toContain('Auto-merge armed')
+    expect(text()).toContain('after checks + approvals')
+
+    // Unchecking disarms with the same round trip.
+    wire.data = pr({ autoMergeArmed: false })
+    await press('[data-pr-automerge]')
+    expect(wire.mergeCalls[1]).toEqual({ sessionId: 'session-1', enabled: false })
+  })
+
+  it('surfaces a refused arm as data in the merge box and keeps the toggle usable', async () => {
+    // GitHub declining the state change (the CP's 409) is an answer the operator acts on, not a crash.
+    wire.mergeFailure = new Error('Pull request is in clean status')
+    await render()
+
+    await press('[data-pr-automerge]')
+
+    expect(container?.querySelector('[data-pr-merge-error]')?.textContent).toContain('clean status')
+    expect(container?.querySelector<HTMLInputElement>('[data-pr-automerge]')?.disabled).toBe(false)
+    expect(wire.calls).toHaveLength(1) // no re-read: nothing changed behind the failed write
   })
 })
 

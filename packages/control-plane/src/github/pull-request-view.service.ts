@@ -69,6 +69,7 @@ export interface PullRequestView {
   threads: PrThread[]
   unresolvedCount: number // unresolved threads on the carried page — a floor when `threadsTruncated`
   threadsTruncated: boolean
+  autoMergeArmed: boolean | null // null while degraded — only GitHub holds the auto-merge fact
   // Degraded ⇒ identity is Postgres's, the live lists are empty, and the panel says why.
   degraded: boolean
   degradedReason: 'rate_limited' | 'denied' | 'unreachable' | null
@@ -84,6 +85,7 @@ query PanelPullRequest($owner:String!,$name:String!,$number:Int!,$threads:Int!,$
     pullRequest(number:$number){
       number title state isDraft merged additions deletions url
       baseRefName headRefName reviewDecision
+      autoMergeRequest{enabledAt}
       latestReviews(first:$reviews){nodes{state author{login __typename}}}
       commits(last:1){nodes{commit{statusCheckRollup{contexts(first:$checks){pageInfo{hasNextPage} nodes{
         __typename
@@ -112,6 +114,7 @@ interface GqlAnswer {
       baseRefName: string
       headRefName: string
       reviewDecision: 'APPROVED' | 'CHANGES_REQUESTED' | 'REVIEW_REQUIRED' | null
+      autoMergeRequest: { enabledAt: string | null } | null
       latestReviews: { nodes: Array<{ state: string; author: { login: string; __typename: string } | null }> | null }
       commits: {
         nodes: Array<{
@@ -291,6 +294,7 @@ export class PullRequestViewService {
       threads: [],
       unresolvedCount: 0,
       threadsTruncated: false,
+      autoMergeArmed: null,
       degraded: false,
       degradedReason: null,
       agentReview: null
@@ -383,7 +387,55 @@ export class PullRequestViewService {
       reviews,
       threads,
       unresolvedCount: unresolved.length,
-      threadsTruncated: (pr.reviewThreads?.totalCount ?? 0) > THREAD_LIMIT
+      threadsTruncated: (pr.reviewThreads?.totalCount ?? 0) > THREAD_LIMIT,
+      autoMergeArmed: pr.autoMergeRequest != null
     }
   }
+
+  /** Arm or disarm GitHub auto-merge, with a token the CALLER minted under the agent's clamp — this
+   *  service's own token facility is the read floor and must never sign a write. Idempotent: the fresh
+   *  node read decides whether the mutation runs at all, and the cached view is dropped either way. */
+  async setAutoMerge(
+    target: { repoId: bigint; repoFullName: string; pullNumber: number },
+    token: string,
+    enabled: boolean
+  ): Promise<{ armed: boolean }> {
+    const [owner, name] = target.repoFullName.split('/')
+    if (!owner || !name) throw new GithubApiError('malformed repository name', 0, 'LEASE_DENIED', false)
+    const opts = {
+      auth: token,
+      ...(this.fetchImpl ? { fetchImpl: this.fetchImpl } : {}),
+      ...(this.baseUrl ? { baseUrl: this.baseUrl } : {})
+    }
+    const node = await githubGraphql<AutoMergeNodeAnswer>(
+      'query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){id autoMergeRequest{enabledAt}}}}',
+      { owner, name, number: target.pullNumber },
+      opts
+    )
+    const pr = node.repository?.pullRequest
+    if (!pr) throw new GithubApiError('pull request not visible to the installation', 200, 'LEASE_DENIED', false)
+    try {
+      if (enabled === (pr.autoMergeRequest != null)) return { armed: enabled }
+      if (enabled) {
+        await githubGraphql(
+          'mutation($id:ID!){enablePullRequestAutoMerge(input:{pullRequestId:$id,mergeMethod:SQUASH}){clientMutationId}}',
+          { id: pr.id },
+          opts
+        )
+      } else {
+        await githubGraphql(
+          'mutation($id:ID!){disablePullRequestAutoMerge(input:{pullRequestId:$id}){clientMutationId}}',
+          { id: pr.id },
+          opts
+        )
+      }
+      return { armed: enabled }
+    } finally {
+      this.invalidate(target.repoId, target.pullNumber)
+    }
+  }
+}
+
+interface AutoMergeNodeAnswer {
+  repository: { pullRequest: { id: string; autoMergeRequest: { enabledAt: string | null } | null } | null } | null
 }
