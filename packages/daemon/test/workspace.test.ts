@@ -299,8 +299,9 @@ describe('prepareSessionWorkspace', () => {
       if (args[0] === 'fetch' && args.some((value) => value.includes('/merge:'))) {
         throw new Error('merge ref unavailable')
       }
+      if (args[0] === 'show-ref') throw new Error('no such ref')
       if (args[0] === 'worktree' && args[1] === 'add') {
-        mkdirSync(join(args[3]!, '.git'), { recursive: true })
+        mkdirSync(join(args[4]!, '.git'), { recursive: true })
       }
       return ''
     })
@@ -317,9 +318,10 @@ describe('prepareSessionWorkspace', () => {
     const addCall = rawMock.mock.calls
       .map((call) => call[0] as string[])
       .find((args) => args[0] === 'worktree' && args[1] === 'add')
-    expect(addCall?.slice(0, 3)).toEqual(['worktree', 'add', '--detach'])
-    expect(realpathSync(addCall![3]!)).toBe(cwd)
-    expect(addCall?.[4]).toBe(head)
+    expect(addCall?.slice(0, 3)).toEqual(['worktree', 'add', '-b'])
+    expect(addCall?.[3]).toMatch(/^dev\/[^/]+\/[a-z]+-[a-z]+$/)
+    expect(realpathSync(addCall![4]!)).toBe(cwd)
+    expect(addCall?.[5]).toBe(head)
     expect(
       rawMock.mock.calls.some(
         ([args, baseDir]) =>
@@ -379,9 +381,10 @@ describe('prepareSessionWorkspace', () => {
     agent.workspace.pullOnNewSession = false
     rawMock.mockImplementation(async (args: string[]) => {
       if (args[0] === 'remote' && args[1] === 'get-url') return 'https://github.com/acme/repo.git\n'
+      if (args[0] === 'show-ref') throw new Error('no such ref')
       if (args[0] === 'worktree' && args[1] === 'add') {
-        mkdirSync(join(args[3]!, '.git'), { recursive: true })
-        mkdirSync(join(args[3]!, 'agents', 'node-operator'), { recursive: true })
+        mkdirSync(join(args[4]!, '.git'), { recursive: true })
+        mkdirSync(join(args[4]!, 'agents', 'node-operator'), { recursive: true })
       }
       return args[0] === 'rev-parse' ? `${'c'.repeat(40)}\n` : ''
     })
@@ -398,6 +401,53 @@ describe('prepareSessionWorkspace', () => {
     expect(additionalWorkspaceDirectories(agent, second, { sessionKey: 'session-b', isolation: 'session' })).toEqual([
       realpathSync(sessionWorktreePath(agent, 'session-b'))
     ])
+  })
+
+  /** A session worktree on `dev/<user>/<words>`, with control over which branch
+   *  names the repository already holds. */
+  function branchFixture(taken: string[] = []) {
+    const root = mkdtempSync(join(tmpdir(), 'ac-session-branch-'))
+    const path = join(root, 'workspace')
+    mkdirSync(join(path, '.git'), { recursive: true })
+    const agent = gitRepoAgent(path)
+    agent.workspace.pullOnNewSession = false
+    rawMock.mockImplementation(async (args: string[]) => {
+      if (args[0] === 'remote' && args[1] === 'get-url') return 'https://github.com/acme/repo.git\n'
+      // `show-ref --verify --quiet` exits non-zero for a ref that does not exist.
+      if (args[0] === 'show-ref') {
+        if (!taken.includes(args.at(-1)!.replace('refs/heads/', ''))) throw new Error('no such ref')
+        return ''
+      }
+      if (args[0] === 'worktree' && args[1] === 'add') mkdirSync(join(args[4]!, '.git'), { recursive: true })
+      return args[0] === 'rev-parse' ? `${'c'.repeat(40)}\n` : ''
+    })
+    const addCall = () =>
+      rawMock.mock.calls.map((call) => call[0] as string[]).find((args) => args[0] === 'worktree' && args[1] === 'add')
+    return { agent, addCall }
+  }
+
+  it('checks the worktree out on its own branch, named for the user who opened the session', async () => {
+    const { agent, addCall } = branchFixture()
+
+    await prepareSessionWorkspace(agent, { sessionKey: 'session-a', isolation: 'session', initiatedBy: 'Yu Long' })
+
+    expect(addCall()?.[2]).toBe('-b')
+    expect(addCall()?.[3]).toMatch(/^dev\/yu-long\/[a-zA-Z]+-[a-zA-Z]+$/)
+  })
+
+  it('draws another name when the repository already holds the one it drew', async () => {
+    // Every word pair is taken, so the draws are exhausted and the random-suffix name ends the search.
+    const { agent, addCall } = branchFixture()
+    rawMock.mockImplementation(async (args: string[]) => {
+      if (args[0] === 'remote' && args[1] === 'get-url') return 'https://github.com/acme/repo.git\n'
+      if (args[0] === 'worktree' && args[1] === 'add') mkdirSync(join(args[4]!, '.git'), { recursive: true })
+      return args[0] === 'rev-parse' ? `${'c'.repeat(40)}\n` : ''
+    })
+
+    await prepareSessionWorkspace(agent, { sessionKey: 'session-a', isolation: 'session', initiatedBy: 'yulong' })
+
+    expect(rawMock.mock.calls.filter(([args]) => (args as string[])[0] === 'show-ref')).toHaveLength(5)
+    expect(addCall()?.[3]).toMatch(/^dev\/yulong\/[a-zA-Z]+-[a-zA-Z]+-[0-9a-f]{6}$/)
   })
 })
 
@@ -447,6 +497,60 @@ describe('removeSessionWorktree (#485 retention GC)', () => {
       '--remotes',
       `--glob=refs/agentconnect/reviews/${id}`
     ])
+  })
+
+  it('deletes the generated branch with the worktree, after the removal that unregisters it', async () => {
+    const { agent, cwd } = fixture()
+    rawMock.mockImplementation(async (args: string[]) => {
+      if (args[0] === 'rev-list') return '0\n'
+      if (args[0] === 'symbolic-ref') return 'dev/yulong/brave-otter\n'
+      return ''
+    })
+
+    expect(await removeSessionWorktree(agent, 'session-a')).toEqual({ outcome: 'removed' })
+
+    const calls = gitCalls()
+    const readAt = calls.findIndex((args) => args[0] === 'symbolic-ref')
+    const removeAt = calls.findIndex((args) => args[0] === 'worktree' && args[1] === 'remove' && args[2] === cwd)
+    // The branch has to be read BEFORE the removal — afterwards there is no worktree to ask.
+    expect(readAt).toBeGreaterThanOrEqual(0)
+    expect(readAt).toBeLessThan(removeAt)
+    expect(calls.findIndex((args) => args[0] === 'branch')).toBeGreaterThan(removeAt)
+    expect(calls).toContainEqual(['branch', '-D', 'dev/yulong/brave-otter'])
+  })
+
+  it('never deletes a branch outside the session namespace, nor one on a retained worktree', async () => {
+    const { agent } = fixture()
+    // A worktree left on a branch of the repository's own — the agent switched to it.
+    rawMock.mockImplementation(async (args: string[]) => {
+      if (args[0] === 'rev-list') return '0\n'
+      if (args[0] === 'symbolic-ref') return 'main\n'
+      return ''
+    })
+    expect(await removeSessionWorktree(agent, 'session-a')).toEqual({ outcome: 'removed' })
+    expect(gitCalls().some((args) => args[0] === 'branch')).toBe(false)
+
+    // Unique commits keep the worktree, so its branch must survive with them.
+    rawMock.mockClear()
+    rawMock.mockImplementation(async (args: string[]) => {
+      if (args[0] === 'rev-list') return '3\n'
+      if (args[0] === 'symbolic-ref') return 'dev/yulong/brave-otter\n'
+      return ''
+    })
+    expect(await removeSessionWorktree(agent, 'session-a')).toEqual({ outcome: 'retained', reason: 'unique-commits' })
+    expect(gitCalls().some((args) => args[0] === 'branch')).toBe(false)
+  })
+
+  it('removes a pre-branch worktree that is still at a detached HEAD', async () => {
+    const { agent } = fixture()
+    rawMock.mockImplementation(async (args: string[]) => {
+      if (args[0] === 'rev-list') return '0\n'
+      if (args[0] === 'symbolic-ref') throw new Error('ref HEAD is not a symbolic ref')
+      return ''
+    })
+
+    expect(await removeSessionWorktree(agent, 'session-a')).toEqual({ outcome: 'removed' })
+    expect(gitCalls().some((args) => args[0] === 'branch')).toBe(false)
   })
 
   it('retains a worktree with dirty/untracked files and never calls worktree remove', async () => {

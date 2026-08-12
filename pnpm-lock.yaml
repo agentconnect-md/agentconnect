@@ -277,7 +277,7 @@ importers:
         version: 0.0.67
       '@larksuiteoapi/node-sdk':
         specifier: ^1.71.1
-        version: 1.71.1
+        version: 1.71.1(debug@4.3.4)
       '@modelcontextprotocol/client':
         specifier: 2.0.0
         version: 2.0.0
@@ -341,6 +341,9 @@ importers:
       undici:
         specifier: ^7.29.0
         version: 7.29.0
+      unique-names-generator:
+        specifier: ^4.7.1
+        version: 4.7.1
       ws:
         specifier: ^8.21.1
         version: 8.21.1
@@ -8490,6 +8493,10 @@ packages:
   unified@11.0.5:
     resolution: {integrity: sha512-xKvGhPWw3k84Qjh8bI3ZeJjqnyadK+GEFtazSfZv/rKeTkTjOJho6mFqh2SM96iIcZokxiOpg78GazTSg8+KHA==}
 
+  unique-names-generator@4.7.1:
+    resolution: {integrity: sha512-lMx9dX+KRmG8sq6gulYYpKWZc9RlGsgBR6aoO8Qsm3qvkSJ+3rAymr+TnV8EDMrIrwuFJ4kruzMWM/OpYzPoow==}
+    engines: {node: '>=8'}
+
   unique-string@3.0.0:
     resolution: {integrity: sha512-VGXBUVwxKMBUznyffQweQABPRRW1vHZAbadFZud4pLFAqRGvv/96vafgjWFqzourzr8YonlQiPgH0YCJfawoGQ==}
     engines: {node: '>=12'}
@@ -10225,9 +10232,9 @@ snapshots:
 
   '@kwsites/promise-deferred@1.1.1': {}
 
-  '@larksuiteoapi/node-sdk@1.71.1':
+  '@larksuiteoapi/node-sdk@1.71.1(debug@4.3.4)':
     dependencies:
-      axios: 1.18.1
+      axios: 1.18.1(debug@4.3.4)
       lodash.identity: 3.0.0
       lodash.merge: 4.6.2
       lodash.pickby: 4.6.0
@@ -11585,7 +11592,7 @@ snapshots:
       '@slack/types': 2.22.0
       '@types/node': 24.13.3
       '@types/retry': 0.12.0
-      axios: 1.18.1
+      axios: 1.18.1(debug@4.3.4)
       eventemitter3: 5.0.4
       form-data: 4.0.6
       is-electron: 2.2.2
@@ -12605,7 +12612,7 @@ snapshots:
       - supports-color
     optional: true
 
-  axios@1.18.1:
+  axios@1.18.1(debug@4.3.4):
     dependencies:
       follow-redirects: 1.16.0(debug@4.3.4)
       form-data: 4.0.6
@@ -17512,6 +17519,8 @@ snapshots:
       is-plain-obj: 4.1.0
       trough: 2.2.0
       vfile: 6.0.3
+
+  unique-names-generator@4.7.1: {}
 
   unique-string@3.0.0:
     dependencies:

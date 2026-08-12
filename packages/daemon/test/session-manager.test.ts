@@ -90,8 +90,34 @@ describe('SessionManager', () => {
 
     expect(prepareWorkspace).toHaveBeenCalledWith(agent, host, {
       sessionKey: 'slack:C1:100.2:bot-a',
-      isolation: 'shared'
+      isolation: 'shared',
+      // Names a session worktree's branch. No display name is cached for this sender, so the platform id stands in.
+      initiatedBy: 'U1'
     })
+    store.close()
+  })
+
+  it('labels workspace preparation with the session OPENER, by display name, on every turn', async () => {
+    const store = newStore()
+    store.setDisplayName('U1', 'Yu Long', Date.now())
+    store.setDisplayName('U2', 'Someone Else', Date.now())
+    const host = fakeHost()
+    const prepareWorkspace = vi.fn(async () => agent.workspace.path)
+    // A cold host prepares on EVERY turn, which is what makes the second turn's label observable.
+    const sm = new SessionManager({
+      store,
+      hostFor: async () => host,
+      isHostRunning: () => false,
+      agentById: () => agent,
+      prepareWorkspace,
+      memory
+    })
+
+    await sm.handle('bot-a', msg({ ts: '200.1', thread: '200.1', text: 'opened by U1' }))
+    // A second user replying in the same thread must not rename the branch the worktree already carries.
+    await sm.handle('bot-a', msg({ ts: '200.2', thread: '200.1', text: 'reply', sender: { id: 'U2', isBot: false } }))
+
+    expect(prepareWorkspace.mock.calls.map((call) => (call as any[])[2].initiatedBy)).toEqual(['Yu Long', 'Yu Long'])
     store.close()
   })
 

@@ -274,6 +274,7 @@ import {
   setWorkspaceGitRunnerResolver,
   setWorkspacePathClearer
 } from './workspace/workspace-manager.js'
+import { initiatorLabel } from './workspace/session-branch.js'
 import { declaredRuntimeCatalog, loadK8sRuntimeTable, type K8sRuntimeAcpSnapshot } from './runtimes/k8s-runtimes.js'
 import { ensureNodeBinOnPath } from './runtimes/exec-path.js'
 import {
@@ -10360,6 +10361,15 @@ export class Daemon {
     }
   }
 
+  /** Display label of the user a session is opened by — it names the session
+   * worktree's branch (`dev/<user>/<words>`). Presentation only. */
+  private sessionInitiatorLabel(msg: NormalizedMessage): string {
+    // The routing identity a session is keyed by, which for a GitHub hook is the hook —
+    // `initiatorLabel` then falls through to the actor who fired it.
+    const initiator = msg.sessionTriggerId ?? msg.sender?.id ?? ''
+    return initiatorLabel(initiator, this.store.getDisplayNames([initiator]).get(initiator), msg.sender)
+  }
+
   /** Prepare an exact, isolated checkout before a formal review generation. A
    * formal review may use GitHub read-only inspection when its configured local
    * repo differs, but it must never silently fall back to a stale checkout.
@@ -10390,6 +10400,7 @@ export class Daemon {
         const preparedWorkspaceCwd = await this.prepareAgentWorkspace(agent, warmHost, {
           sessionKey: key,
           isolation: 'session',
+          initiatedBy: this.sessionInitiatorLabel(entry.msg),
           githubReviewRevisionOnly: true
         })
         return { workspaceIsolation: 'session' as const, forceWorkspaceIsolation: true as const, preparedWorkspaceCwd }
@@ -10412,6 +10423,7 @@ export class Daemon {
       const preparedWorkspaceCwd = await this.prepareAgentWorkspace(agent, warmHost, {
         sessionKey: key,
         isolation: 'session',
+        initiatedBy: this.sessionInitiatorLabel(entry.msg),
         review: {
           pullNumber: github.pullNumber,
           baseSha: github.baseSha,

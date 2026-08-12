@@ -37,6 +37,7 @@ import {
 } from './git-injection.js'
 import { LocalGitRunner, type GitRunner } from './git-runner.js'
 import { authorizeWorkspaceGitUrl } from './git-origin-policy.js'
+import { isSessionBranch, sessionBranchName } from './session-branch.js'
 import { DEFAULT_SHIM_WORKSPACE_ROOT } from '../shim/protocol.js'
 import { SANDBOX_CHECKOUT_DIR } from '../shim/sandbox-paths.js'
 
@@ -68,6 +69,9 @@ export interface GithubReviewWorkspaceRevision {
 export interface PrepareSessionWorkspaceRequest {
   sessionKey: string
   isolation: 'shared' | 'session'
+  /** Display label of the user who OPENED this logical session — it names the
+   * worktree's branch. Presentation only; never an identity or auth input. */
+  initiatedBy?: string
   review?: GithubReviewWorkspaceRevision
   /** Use an empty daemon-owned cwd when an exact local review checkout is
    * unavailable. The model must inspect the trusted revision through GitHub. */
@@ -105,6 +109,8 @@ async function withSkills(agent: Agent, acpCwd: string, opts: PrepareWorkspaceOp
 const PULL_TIMEOUT_MS = 4500
 const REVIEW_FETCH_TIMEOUT_MS = 15_000
 const MATERIALIZATION_FILE = 'workspace-materialization.json'
+/** Word-pair branch names to try before falling back to a random suffix. */
+const SESSION_BRANCH_DRAWS = 5
 const GIT_OBJECT_ID = /^[0-9a-f]{40,64}$/i
 
 // Single-flight clone lock. Two concurrent sessions (especially multiple agents sharing one repo
@@ -570,7 +576,10 @@ export async function removeSessionWorktree(agent: Agent, sessionKey: string): P
     if ((await worktreeGit.raw(['status', '--porcelain'])).trim() !== '') {
       return { outcome: 'retained', reason: 'dirty' }
     }
-    // Session worktrees are detached, so there is no upstream to compare against:
+    // The generated branch this worktree checks out, read BEFORE the removal that
+    // unregisters it. Empty for a worktree created before session branches existed.
+    const branch = (await worktreeGit.raw(['symbolic-ref', '--quiet', '--short', 'HEAD']).catch(() => '')).trim()
+    // A session branch tracks nothing, so there is no upstream to compare against:
     // a commit is "unique" when no remote ref (and no fetched review ref of this
     // worktree) can reach it.
     const unique = (
@@ -588,6 +597,15 @@ export async function removeSessionWorktree(agent: Agent, sessionKey: string): P
     // and the failure keeps the session.
     await primaryGit().raw(['worktree', 'remove', cwd])
     await cleanupRegistrations()
+    // Only a branch this daemon generated for a session worktree, and only after
+    // the check above proved every commit on it is reachable from a remote — so
+    // the forced delete can drop no work. Best-effort: a surviving ref is clutter,
+    // not a reason to report a removed worktree as retained.
+    if (isSessionBranch(branch)) {
+      await primaryGit()
+        .raw(['branch', '-D', branch])
+        .catch(() => undefined)
+    }
     return { outcome: 'removed' }
   } catch (err) {
     return { outcome: 'failed', error: (err as Error).message }
@@ -710,6 +728,26 @@ function prepareGithubRevisionOnlyWorkspace(agent: Agent, id: string): string {
   return realpathSync(cwd)
 }
 
+/** Check out a session worktree on its OWN generated branch rather than at a
+ * detached HEAD, so the work a session produces has a name it can be pushed and
+ * reviewed under. A drawn name can already exist in the repository, which
+ * `worktree add -b` refuses — so ask git first and draw again, then let random
+ * bytes end the search rather than failing the session over a word pair. */
+async function addSessionWorktree(agent: Agent, cwd: string, target: string, initiatedBy?: string): Promise<void> {
+  const git = () => runnerFor(agent.id, agent.workspace.path).withEnv(workspaceGitLocalEnv())
+  let branch = ''
+  for (let attempt = 0; ; attempt++) {
+    branch = sessionBranchName(initiatedBy, attempt >= SESSION_BRANCH_DRAWS)
+    if (attempt >= SESSION_BRANCH_DRAWS) break
+    const taken = await git()
+      .raw(['show-ref', '--verify', '--quiet', `refs/heads/${branch}`])
+      .then(() => true)
+      .catch(() => false)
+    if (!taken) break
+  }
+  await git().raw(['worktree', 'add', '-b', branch, cwd, target])
+}
+
 /** Prepare the stable cwd for one logical session. Ordinary worktrees preserve
  * their working state between turns. Review worktrees are daemon-owned snapshots
  * and are reset on every delivery after an exact remote fetch. */
@@ -751,9 +789,7 @@ export async function prepareSessionWorkspace(
     // checkout runs in the daemon process. Unsafe executable config must gate
     // the worktree operation itself instead of being swallowed as a pull error.
     await assertSafeWorkspaceGitConfig(runnerFor(agent.id, agent.workspace.path))
-    await runnerFor(agent.id, agent.workspace.path)
-      .withEnv(workspaceGitLocalEnv())
-      .raw(['worktree', 'add', '--detach', cwd, target])
+    await addSessionWorktree(agent, cwd, target, request.initiatedBy)
   } else if (review) {
     // Re-audit at the checkout boundary rather than relying on the earlier
     // network fetch audit; repository config may have changed while fetching.
