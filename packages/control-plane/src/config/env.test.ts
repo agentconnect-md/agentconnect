@@ -42,6 +42,33 @@ describe('loadConfig', () => {
   })
 })
 
+describe('cluster execution tier knobs (agentconnect-org-operator.md)', () => {
+  const base = {
+    DATABASE_URL: 'postgresql://agentconnect:agentconnect@localhost:5432/agentconnect',
+    API_KEY_PEPPER: 'a'.repeat(32),
+    CLUSTER_EXECUTION_MODE: 'kubeconfig',
+    CLUSTER_KUBECONFIG_PATH: '/etc/kubeconfig',
+    CLUSTER_DAEMON_IMAGE: 'registry.example.test/daemon:v1',
+    CLUSTER_RUNTIME_IMAGE: 'registry.example.test/runtime-sandbox:v1'
+  }
+
+  it('leaves the runtime tier unset so it can fall back to the daemon tier', () => {
+    const config = loadConfig(base)
+    expect(config.CLUSTER_DEFAULT_TIER).toBe('small')
+    expect(config.CLUSTER_DEFAULT_RUNTIME_TIER).toBeUndefined()
+  })
+
+  // The two names live in unrelated namespaces — the daemon tier in the operator's
+  // built-in table, the runtime tier in the master SandboxTemplates an install defines —
+  // so an install must be able to set them apart. A runtime tier naming no master is the
+  // unsurvivable half: the operator skips it and the org gets no warm pool at all.
+  it('carries a runtime tier that differs from the daemon tier', () => {
+    const config = loadConfig({ ...base, CLUSTER_DEFAULT_TIER: 'medium', CLUSTER_DEFAULT_RUNTIME_TIER: 'std' })
+    expect(config.CLUSTER_DEFAULT_TIER).toBe('medium')
+    expect(config.CLUSTER_DEFAULT_RUNTIME_TIER).toBe('std')
+  })
+})
+
 describe('session-access cache knobs (session-access-cold-visit.md §2.3)', () => {
   const base = {
     DATABASE_URL: 'postgresql://agentconnect:agentconnect@localhost:5432/agentconnect',
