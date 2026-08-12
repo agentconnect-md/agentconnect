@@ -317,6 +317,27 @@ find missing, and whether a daemon registered is a fact only the control plane
 holds. The condition retires rather than being redefined into something the
 operator cannot observe.
 
+#### The two names both sides must agree on
+
+Verification rests on two strings: the audience the operator projects onto the
+daemon pod, and the ServiceAccount name it gives that pod. The control plane
+checks both — the audience is the real gate, since a sandbox's token carries the
+shim audience instead and is refused here, and the ServiceAccount name is the
+cheap second check that keeps a future change from authenticating some other pod
+in the same namespace.
+
+Both live in `@agentconnect.md/protocol`, imported by the operator that stamps
+them and the control plane that checks them, rather than configured on each side.
+A constant kept in two places eventually holds two values: a rename passes every
+build and every test, because each side is self-consistent, and fails only at
+runtime when a daemon's token is rejected. One definition turns that into a
+compile error. It does not solve version skew between a deployed operator and
+control plane, but the release train ships them together, which bounds it.
+
+The shim audience is the precedent and the counter-example: it is a constant in
+the daemon with a comment on the sandbox template asking that they be kept equal.
+That works, and it is exactly the kind of agreement an import should be carrying.
+
 #### Verifying the token
 
 Two ways, and the choice is contained — both check the same token:
