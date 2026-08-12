@@ -1,4 +1,4 @@
-export { ClusterAccessError, loadClusterAccess, loadKubeconfig, type ClusterAccessConfig } from './access.js'
+export { loadClusterAccess, type ClusterAccessConfig } from './access.js'
 export {
   CONDITION_TYPES,
   DEFAULT_CREDENTIAL_SECRET_NAME,

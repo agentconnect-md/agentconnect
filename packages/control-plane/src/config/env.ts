@@ -224,7 +224,10 @@ const CoreConfigShape = {
     .string()
     .default('github,slack,telegram,discord,discordbot,feishu,feishu_app_bot,feishu_custom_bot'),
   // ── managed cluster execution (agentconnect-org-operator.md) — opt-in ──
-  // The switch for the whole feature. 'false' (default) ⇒ no cluster module, no
+  // The switch for the whole feature, and the ONLY access knob: turning it on
+  // asserts that this control plane runs inside the cluster it provisions, so
+  // the pod's ServiceAccount is the credential and the pod's own namespace is
+  // where every AgentConnectOrg lands. 'false' (default) ⇒ no cluster module, no
   // routes, no behavior change for an existing deployment. Explicit rather than
   // sniffed: a control plane that merely happens to run on Kubernetes must not
   // start claiming an operator install. EXPLICIT enum, not z.coerce.boolean().
@@ -232,28 +235,6 @@ const CoreConfigShape = {
     .enum(['true', 'false'])
     .default('false')
     .transform((v) => v === 'true'),
-  // Where the provisioner gets its credentials, derived from what is set below —
-  // API server first, then kubeconfig, then the pod's own ServiceAccount. Setting
-  // none of them means "this control plane runs in the cluster it provisions".
-  //
-  // Direct API access, for a process outside the cluster it provisions. The token
-  // is the ServiceAccount bearer token; _FILE reads it per request, so a mounted
-  // Secret that rotates in place needs no restart. CLUSTER_CONTROL_NAMESPACE is
-  // required with it — there is no pod namespace to fall back on out here.
-  CLUSTER_API_SERVER: z.string().url().optional(),
-  CLUSTER_API_TOKEN: z.string().optional(),
-  CLUSTER_API_TOKEN_FILE: z.string().optional(),
-  // API server CA: inline PEM (or its base64), or a path to the bundle. Unset ⇒
-  // the host's default trust store.
-  CLUSTER_CA_CERT: z.string().optional(),
-  CLUSTER_CA_CERT_FILE: z.string().optional(),
-  // Kubeconfig file, used when no CLUSTER_API_SERVER is set. Its current-context
-  // user must carry a bearer token (`token` or `tokenFile`) — client-certificate
-  // and `exec` users are refused at boot.
-  CLUSTER_KUBECONFIG_PATH: z.string().optional(),
-  // The operator install's control namespace, where every AgentConnectOrg lives.
-  // Unset ⇒ the pod's own namespace (in-cluster) or the kubeconfig context's.
-  CLUSTER_CONTROL_NAMESPACE: z.string().optional(),
   // Install-time constant shared with the operator's AC_ORG_NAMESPACE_PREFIX: every
   // org namespace this install owns starts with it, and admission refuses the rest.
   // A mismatch means the operator will not adopt what the control plane asks for.
@@ -346,39 +327,18 @@ function validateSessionAccess(
 }
 
 // Cluster execution is opt-in and all-or-nothing: a deployment that switched it
-// on but left the credential source or the images unset would mount a surface
-// whose every write fails at the API server. Fail at boot instead.
+// on but left the images unset would mount a surface whose every write fails at
+// the API server. Fail at boot instead. Credentials need no check — they are the
+// pod's ServiceAccount, and `loadClusterAccess` refuses to boot without one.
 function validateClusterExecution(
   config: {
     CLUSTER_EXECUTION_ENABLED: boolean
-    CLUSTER_API_SERVER?: string
-    CLUSTER_API_TOKEN?: string
-    CLUSTER_API_TOKEN_FILE?: string
-    CLUSTER_CONTROL_NAMESPACE?: string
     CLUSTER_DAEMON_IMAGE?: string
     CLUSTER_RUNTIME_IMAGE?: string
   },
   ctx: z.RefinementCtx
 ): void {
   if (!config.CLUSTER_EXECUTION_ENABLED) return
-  if (config.CLUSTER_API_SERVER) {
-    if (!config.CLUSTER_API_TOKEN && !config.CLUSTER_API_TOKEN_FILE) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['CLUSTER_API_TOKEN'],
-        message: 'CLUSTER_API_SERVER requires CLUSTER_API_TOKEN or CLUSTER_API_TOKEN_FILE'
-      })
-    }
-    // Out-of-cluster there is no pod namespace to derive the control namespace
-    // from, and guessing one would provision every envelope into the wrong place.
-    if (!config.CLUSTER_CONTROL_NAMESPACE) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['CLUSTER_CONTROL_NAMESPACE'],
-        message: 'CLUSTER_API_SERVER requires CLUSTER_CONTROL_NAMESPACE'
-      })
-    }
-  }
   for (const key of ['CLUSTER_DAEMON_IMAGE', 'CLUSTER_RUNTIME_IMAGE'] as const) {
     if (!config[key]) {
       ctx.addIssue({

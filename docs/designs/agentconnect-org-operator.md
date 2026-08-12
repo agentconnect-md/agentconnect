@@ -240,19 +240,19 @@ a hosted deployment — only the policy inputs differ
 (`CLUSTER_ORG_NAMESPACE_PREFIX`, which must equal the operator install's
 `AC_ORG_NAMESPACE_PREFIX`, plus the default images and tier).
 
-**One switch, a derived credential source.** The switch is explicit — a control
-plane that merely happens to run on Kubernetes must not start claiming an
-operator install — but what it connects _with_ is derived from what the
-deployment set, most explicit first: `CLUSTER_API_SERVER` plus
-`CLUSTER_API_TOKEN`/`_FILE` (and `CLUSTER_CA_CERT`/`_FILE`) for a process
-outside the cluster, else `CLUSTER_KUBECONFIG_PATH`, else the pod's own
-projected ServiceAccount. Setting nothing but the switch is therefore the
-in-cluster case, and `CLUSTER_CONTROL_NAMESPACE` defaults to the pod's own
-namespace — the zero-config shape for a control plane deployed beside its
-operator. It is required with `CLUSTER_API_SERVER`, where there is no pod
-namespace to derive and guessing one would provision every envelope into the
-wrong place. A token read from a file is re-read per request, so a mounted
-Secret that rotates in place needs no restart.
+**One switch, and no credentials to configure.** The switch is explicit — a
+control plane that merely happens to run on Kubernetes must not start claiming
+an operator install — but nothing beyond it is a knob: turning it on _asserts_
+that this control plane runs inside the cluster it provisions, so the credential
+is the pod's projected ServiceAccount and the control namespace is the pod's own.
+A process that is not in a pod fails at boot rather than at its first write.
+
+There is deliberately no out-of-cluster mode. An API server plus a token, or a
+kubeconfig, would each be a second deployment shape to keep correct — and since
+the control plane and the operator are installed together, a control plane that
+cannot reach its own ServiceAccount is misconfigured rather than differently
+configured. It also removes the one way the two halves could disagree about
+_where_ the CRs live.
 
 - `org_cluster_execution` (one row per org) holds only the spec fields the
   control plane owns. Status is never mirrored there: the console reads it live
