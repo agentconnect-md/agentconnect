@@ -77,6 +77,9 @@ describe('ClusterMaintenanceLoop', () => {
     // and it stays stuck — on whatever spec it has — until someone acts.
     expect(log.error).toHaveBeenCalledTimes(2)
     expect(log.error.mock.calls.map((call) => (call[0] as { orgId: string }).orgId)).toEqual(['org-a', 'org-b'])
+    // With the pass totals, so "one bad envelope" and "the API server is down"
+    // do not read identically.
+    expect(log.error.mock.calls[0]?.[0]).toMatchObject({ converged: 1, failed: 2 })
     loop.stop()
   })
 

@@ -92,9 +92,14 @@ export class ClusterMaintenanceLoop {
    */
   private async resync(): Promise<void> {
     try {
-      const { failures } = await this.work!.resyncEnvelopes()
+      const { converged, failures } = await this.work!.resyncEnvelopes()
       for (const failure of failures) {
-        this.log?.error({ orgId: failure.orgId, err: failure.error }, 'cluster-execution: envelope re-apply failed')
+        // The pass totals ride along, so one bad envelope reads differently from
+        // an API server that is refusing everything.
+        this.log?.error(
+          { orgId: failure.orgId, converged, failed: failures.length, err: failure.error },
+          'cluster-execution: envelope re-apply failed'
+        )
       }
     } catch (err) {
       // The listing itself failed, so no envelope was even selected: one line.
