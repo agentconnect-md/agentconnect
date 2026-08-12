@@ -737,6 +737,16 @@ describe('SessionManager', () => {
       expect(metaArg).toContain('{"sessionId":"origin-sess-9","message":"..."}')
       expect(metaArg).toContain('after the tool reports successful delivery, end your turn immediately')
       expect(metaArg).toContain('without repeating the message')
+      // #800 collision warning, scoped to THIS directive (niche: only needsParentReply
+      // sessions carry it — never the session-wide guidance, per the #801/#861 lesson):
+      // the full tool name, and the runtime's similarly-named built-in reaches nothing.
+      expect(metaArg).toContain('`mcp__agentconnect__sendMessage` — by its full name')
+      expect(metaArg).toContain('a bare `SendMessage`')
+      expect(metaArg).toContain('anything sent through it is lost')
+      // Dual-identity clarification: the parent session IS the delegating agent, and the
+      // one sessionId call is the complete delivery — no redundant direct wake or DM.
+      expect(metaArg).toContain('this one call is the complete delivery')
+      expect(metaArg).toContain('do not also message that agent directly')
       // Persisted, so later turns and resumes keep it.
       expect(store.getSession(sessionKey('slack', 'C1', '100.1', 'bot-a'))?.needsParentReply).toBe(1)
       store.close()

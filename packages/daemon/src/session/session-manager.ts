@@ -858,12 +858,26 @@ export class SessionManager {
     // guidance rather than in the delivered text (which the model may summarize away). Deliberately
     // scoped to a terminal report: nothing here asks for progress narration, which would turn every
     // delegated task into channel chatter.
+    //
+    // The full-name/built-in warning and the this-call-is-complete sentence live HERE, not in the
+    // standing collaboration guidance, on purpose (issue #800): on the Claude Code runtime the
+    // session also carries the runtime's own built-in `SendMessage` — a literal name match for a
+    // report-back instruction — and a child that picks it loses its parent report silently; children
+    // also tended to shotgun a redundant direct `toAgent` wake around the correct parent reply.
+    // Both hazards exist exactly (and only) in needsParentReply sessions, so the directive is the
+    // niche injection point: in-thread conversations never see this text, which is what makes the
+    // #801 regression class ("plain replies reach nobody" taught session-wide, reverted by #861)
+    // structurally impossible here.
     const parentReplyAppend = needsReplyToParent
       ? `# Reporting back to your parent session\n` +
         `Another session delegated this work to you and is waiting on the outcome. When you finish — or when you ` +
         `cannot finish — reply to it with ` +
         `\`sendMessage\` \`{"sessionId":"${effectiveOriginSessionId}","message":"..."}\`, saying whether you ` +
-        `succeeded or failed and what the result was (on failure, what went wrong). Send it exactly once, at the ` +
+        `succeeded or failed and what the result was (on failure, what went wrong). Use exactly this tool — ` +
+        `\`mcp__agentconnect__sendMessage\` — by its full name: your runtime may offer a similarly-named ` +
+        `built-in (a bare \`SendMessage\`) that does NOT reach AgentConnect, and anything sent through it is ` +
+        `lost. The parent session IS the agent that delegated this to you, and this one call is the complete ` +
+        `delivery — do not also message that agent directly (no \`toAgent\` wake, no DM). Send it exactly once, at the ` +
         `end; do not report progress along the way, and do not skip it because the task was small or unsuccessful. ` +
         `Your ordinary assistant response in this child session is not delivered to the parent. Do not write the ` +
         `result before or after the tool call; after the tool reports successful delivery, end your turn immediately ` +
