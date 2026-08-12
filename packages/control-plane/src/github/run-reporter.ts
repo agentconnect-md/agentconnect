@@ -55,6 +55,15 @@ const CHECK_OUTPUT_TITLE: Record<ProjectionDesiredState, string> = {
   timed_out: 'Review exceeded its time limit'
 }
 
+const TERMINAL_CHECK_STATES = new Set<string>([
+  'success',
+  'action_required',
+  'neutral',
+  'skipped',
+  'failure',
+  'timed_out'
+])
+
 interface PendingProjectionIntent {
   desiredState: string
   currentHookRunId?: string | null
@@ -643,10 +652,7 @@ export class GithubRunReporter {
     const skippedLabel = hookSkippedCheckLabel(run?.reason, this.deps.appSlug) ?? undefined
     const skippedGuidance = hookSkippedCheckGuidance(run?.reason, this.deps.appSlug) ?? undefined
     const requestReviewAction =
-      projection.tombstonedAt === null &&
-      (projection.desiredState === 'skipped' || projection.desiredState === 'failure')
-        ? true
-        : undefined
+      projection.tombstonedAt === null && TERMINAL_CHECK_STATES.has(projection.desiredState) ? true : undefined
     const publication = run ? checkPublication(projection.repoFullName, run) : undefined
     const fallback = {
       ...(publication ? { publication } : {}),
@@ -1057,7 +1063,7 @@ function checkPayload(
     summary: normalizedSummary
   }
   const actions: CheckAction[] =
-    presentation.requestReviewAction && (state === 'skipped' || state === 'failure')
+    presentation.requestReviewAction && TERMINAL_CHECK_STATES.has(state)
       ? [
           {
             label: 'Request review',

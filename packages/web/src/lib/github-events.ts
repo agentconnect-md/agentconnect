@@ -6,10 +6,10 @@ import type { GithubCommentFamily } from './api'
  * commits) plus a per-repo TRIGGER MODE ("when"); the stored `HookDef.events`
  * patterns plus the `mentionOnly` flag encode both:
  *
- *   created  → `family:opened` for the regular cadence; the relay additionally
- *              accepts a later explicit @mention in the selected thread family
- *              (commits have no "first" — a push subscription is inherently
- *              per-push, so `push:*` rides along unchanged)
+ *   created  → `family:opened` for the regular cadence; the relay additionally accepts a later explicit
+ *              @mention in the selected thread family (commits have no "first"
+ *              — a push subscription is inherently per-push, so `push:*` rides
+ *              along unchanged)
  *   updated  → `family:*` + `issue_comment:created` when a thread family is
  *              selected. The relay ignores close/reopen and every issue/PR
  *              `edited` action; supported updates and replies still run.
@@ -70,7 +70,7 @@ export const GH_TRIGGER_PILL: Record<GhTriggerMode, string> = {
 export function githubTriggerTooltip(mode: GhTriggerMode, agentName: string): string {
   switch (mode) {
     case 'first':
-      return `Runs when an issue or PR is opened, plus on later @${agentName} mentions.`
+      return `Runs when an issue or PR opens, plus later @${agentName} mentions.`
     case 'every':
       return 'Runs when an issue or PR is opened and on supported updates and replies (close, reopen and edits are ignored).'
     case 'mention':
@@ -102,7 +102,10 @@ export function commentFamiliesForFamilies(fams: Iterable<GhFamily>): GithubComm
 /** Compile the console's family+mode choice into stored event patterns. */
 export function eventsForFamilies(fams: Iterable<GhFamily>, mode: GhTriggerMode): string[] {
   const families = [...fams]
-  const familyEvents = families.map((fam) => (mode === 'first' && fam !== 'push' ? `${fam}:opened` : `${fam}:*`))
+  const familyEvents = families.flatMap((fam) => {
+    if (mode !== 'first' || fam === 'push') return [`${fam}:*`]
+    return [`${fam}:opened`]
+  })
   const listensForThreadReplies = mode !== 'first' && commentFamiliesForFamilies(families).length > 0
   return listensForThreadReplies ? [...familyEvents, THREAD_COMMENT_EVENT] : familyEvents
 }

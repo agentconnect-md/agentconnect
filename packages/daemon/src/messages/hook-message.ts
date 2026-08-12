@@ -117,7 +117,6 @@ function githubSubjectLine(c: HookContext): string {
 const GITHUB_REVISION_REVIEW_EVENTS = new Set([
   'pull_request:opened',
   'pull_request:synchronize',
-  'pull_request:ready_for_review',
   'pull_request:review_requested',
   'check_run:rerequested',
   'check_suite:rerequested',
@@ -258,6 +257,7 @@ function buildGithubHookText(
     }`,
     ...(github?.baseSha ? [`Base SHA: ${github.baseSha}`] : []),
     ...(github?.headSha ? [`Head SHA: ${github.headSha}`] : []),
+    ...(github?.isDraft !== undefined ? [`Draft: ${github.isDraft}`] : []),
     ...(c.htmlUrl ? [c.htmlUrl] : [])
   ].join('\n')
   // Ordinary replies use the display context's number. Inline replies instead

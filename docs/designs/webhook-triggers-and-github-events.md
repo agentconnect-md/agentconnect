@@ -256,17 +256,22 @@ explicitly mentioning the Agent or App in a comment. An ordinary unmentioned
 comment cannot silently activate an external thread; both its commenter and
 the original subject author must pass the same live write/admin check.
 
-For external PR revision-bearing events such as open, synchronize,
-ready-for-review, and draft conversion, the system records a body-free
+For external PR revision-bearing events such as open and synchronize, the system records a body-free
 `review_request_required` outcome and may project an informational Check with a
 maintainer action. A maintainer can then request execution through:
 
 - the Check action;
 - a comment mention; or
-- GitHub's reviewer request or re-request controls.
+- an explicit native App-reviewer request event. GitHub's normal reviewer picker
+  cannot select a third-party App bot, so its Request/Re-request control is not a
+  general AgentConnect entry point.
 
 Each path revalidates current repository authority before opening a review
 generation.
+
+GitHub Actions' `Approve and run workflows` control is separate from the
+AgentConnect Check action: it releases a fork workflow run, but does not start
+an AgentConnect review.
 
 ### Session Affinity
 

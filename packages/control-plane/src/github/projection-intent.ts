@@ -4,8 +4,6 @@ import type { HookProjectionIntent } from '../persistence/ports.js'
 const REVISION_EVENTS = new Set([
   'pull_request:opened',
   'pull_request:synchronize',
-  'pull_request:ready_for_review',
-  'pull_request:converted_to_draft',
   // A user rerequest is a new review generation on the same revision. It must
   // reopen queued/in_progress before the terminal result replaces the old one.
   'check_run:rerequested',

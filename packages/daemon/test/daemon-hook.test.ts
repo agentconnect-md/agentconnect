@@ -2488,6 +2488,47 @@ describe('buildHookMessage', () => {
       expect(buildHookText(ghFire())).not.toContain('gh issue view')
     })
 
+    it('reviews draft PRs and keeps draft/ready transitions status-only', () => {
+      const github = {
+        repoId: '123',
+        repoFullName: 'acme/infra',
+        sourceInstallationId: '456',
+        subjectKind: 'pull_request' as const,
+        pullNumber: 42,
+        headSha: 'a'.repeat(40),
+        baseSha: 'b'.repeat(40),
+        reportSha: 'a'.repeat(40),
+        isDraft: true
+      }
+      const draftText = buildHookText(
+        ghFire(
+          { event: 'pull_request', action: 'opened', title: 'draft PR', bodyExcerpt: undefined },
+          { reviewPolicy: 'full', github }
+        )
+      )
+      expect(draftText).toContain('Draft: true')
+      expect(draftText).toContain('opens a review generation for the current PR revision')
+      expect(draftText).toContain('use APPROVE + pass when it passes')
+      expect(draftText).toContain('submitGithubReview')
+      expect(draftText).not.toContain('cannot accept a formal review')
+
+      const convertedText = buildHookText(
+        ghFire(
+          { event: 'pull_request', action: 'converted_to_draft', title: 'draft PR', bodyExcerpt: undefined },
+          { reviewPolicy: 'full', github }
+        )
+      )
+      expect(convertedText).not.toContain('opens a review generation for the current PR revision')
+
+      const readyText = buildHookText(
+        ghFire(
+          { event: 'pull_request', action: 'ready_for_review', title: 'ready PR', bodyExcerpt: undefined },
+          { reviewPolicy: 'full', github: { ...github, isDraft: false } }
+        )
+      )
+      expect(readyText).not.toContain('opens a review generation for the current PR revision')
+    })
+
     it('no excerpt ⇒ header only, no fence at all', () => {
       const noBody = ghFire()
       delete (noBody.context as { bodyExcerpt?: string }).bodyExcerpt
