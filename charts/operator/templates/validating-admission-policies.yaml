@@ -29,10 +29,16 @@ spec:
     # Its own control-namespace objects: the CRs it reconciles and its election Lease.
     - name: exclude-own-control-objects
       expression: >-
-        !(request.namespace == '{{ .Release.Namespace }}' && ((request.resource.group == 'agentconnect.md' &&
+        !(has(request.namespace) && request.namespace == '{{ .Release.Namespace }}' &&
+        ((request.resource.group == 'agentconnect.md' &&
         request.resource.resource == 'agentconnectorgs') || (request.resource.group == 'coordination.k8s.io' &&
         request.resource.resource == 'leases')))
   variables:
+    # A cluster-scoped request carries no `namespace` key at all, and reading an absent key is a
+    # CEL error this fail-closed policy turns into a denial — which would hit the per-org
+    # TokenReview binding, the one cluster-scoped write the fence exists to permit.
+    - name: ns
+      expression: "has(request.namespace) ? request.namespace : ''"
     - name: isNamespace
       expression: request.resource.group == '' && request.resource.resource == 'namespaces'
     # DELETE carries the object in oldObject; CREATE/UPDATE in object.
@@ -44,19 +50,19 @@ spec:
     - name: oldLabels
       expression: 'oldObject == null ? {} : (has(oldObject.metadata.labels) ? oldObject.metadata.labels : {})'
   validations:
-    - expression: request.namespace == '' || request.namespace.startsWith('{{ $prefix }}')
+    - expression: variables.ns == '' || variables.ns.startsWith('{{ $prefix }}')
       message: this install's operator may only write into namespaces carrying its org namespace prefix
       reason: Forbidden
     # Cross-install guard: another environment's control namespace is never a write target,
     # even if a misconfigured prefix would otherwise match it.
     - expression: >-
-        request.namespace == '' || variables.isNamespace ||
+        variables.ns == '' || variables.isNamespace ||
         !('agentconnect.md/control-namespace' in (has(namespaceObject.metadata.labels) ?
         namespaceObject.metadata.labels : {}))
       message: this install's operator may not write into a namespace marked as a control namespace
       reason: Forbidden
     # The same guard for the Namespace object itself: it is cluster-scoped, so it carries no
-    # namespaceObject and an empty request.namespace, and the check above never sees it. Both
+    # namespaceObject and an empty variables.ns, and the check above never sees it. Both
     # sides are tested — oldObject so a marked namespace can be neither deleted nor stripped of
     # its marker, object so a marked one cannot be created and later written into.
     - expression: >-
@@ -79,7 +85,7 @@ spec:
     # The only cluster-scoped object the envelope owns besides the namespace is the per-org
     # TokenReview binding (`ac-tokenreview-<targetNamespace>`, packages/operator/src/reconcile/resources.ts).
     - expression: >-
-        request.namespace != '' || variables.isNamespace || (request.resource.group == 'rbac.authorization.k8s.io' &&
+        variables.ns != '' || variables.isNamespace || (request.resource.group == 'rbac.authorization.k8s.io' &&
         request.resource.resource == 'clusterrolebindings' &&
         variables.target.metadata.name.startsWith('ac-tokenreview-{{ $prefix }}'))
       message: the only cluster-scoped objects this install's operator may write are its org namespaces and their TokenReview bindings
