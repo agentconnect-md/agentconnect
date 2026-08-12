@@ -146,6 +146,26 @@ ssh \
   user@agentconnect-host
 ```
 
+If opening either page prints `open failed: administratively prohibited`, the
+host SSH daemon is rejecting TCP forwarding. Enable it on the host, validate
+the configuration, and fully restart the SSH service (a reload can leave
+existing sessions on the old policy):
+
+```text
+AllowTcpForwarding yes
+```
+
+For example, on Debian or Ubuntu:
+
+```bash
+sudo sshd -t
+sudo systemctl restart ssh
+```
+
+Keep an existing administrator session open while restarting SSH. Then close
+the failed tunnel and create a new SSH connection; forwarding permissions are
+fixed when each session is authenticated.
+
 Trust Caddy's root CA before opening Logto, then visit
 `http://localhost:8091` for Setup and `http://localhost:3002` for Logto Admin.
 Complete Logto Management API setup, save OIDC authentication, claim the first
