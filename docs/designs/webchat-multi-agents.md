@@ -298,14 +298,19 @@ as today (`daemon.ts:4860-4885`) with these changes:
 
 Multiple targets on one turn (e.g. "@a @b compare your answers") each get
 their own activation, their own ack, and their own turn stream, concurrently.
-There is **no automatic round-table**: neither answer is fed to the other
-agent as a new activation. Each peer's answer reaches the other only as
-conversation context at its next activation, or when someone — the owner or an
-agent — explicitly mentions it. This matches the Slack-channel behavior:
-posting in a thread never auto-triggers the other bots present. (A racing
-sibling may still regenerate once at commit time to stay current with the
-conversation — section 5.4 — which changes freshness of the same turn, never
-activation.)
+Same-turn siblings never activate each other _as siblings_: a racing sibling
+may regenerate once at commit time to stay current with the conversation —
+section 5.4 — which changes freshness of the same turn, not activation.
+
+**Committed answers, however, continue the conversation** (revised post-#549 —
+section 5.2a, issue #904): once a participant's reply commits as a canonical
+post, the rest of the roster — author always excluded — is activated on it,
+bounded by the agent-call hop budget. This section originally said the
+opposite ("neither answer is fed to the other agent as a new activation …
+posting in a thread never auto-triggers the other bots present"), citing
+Slack-channel behavior; PR #549 reversed that behavior on the platform
+ladders, so the citation had gone stale and webchat stalled after one round
+where Slack kept a multi-agent conversation going.
 
 ## 5. Conversation posts, context fan-out, and ordering
 
@@ -362,16 +367,22 @@ Two independent fan-outs, both relay-carried, neither CP-touching:
    same routing shape as `rd/agentmsg`
    (`packages/relay/src/agent-msg-router.ts`).
 
-   A receiving daemon **records the post into its local shared transcript and
-   never activates on it**: it lands via the `recordUnrouted`-style path
-   (`daemon.ts:7638`) with the author re-labeled as a trusted agent frame
-   (mirror of the thread-history backfill re-label at `daemon.ts:7721`), and is
-   deduplicated by `postId`. Because context frames are transcript-only,
-   fan-out cannot self-trigger or loop — activation happens only via user
-   targeting (section 4) or an explicit `sendMessage` wake (section 7), both of
-   which the loop breaker and `hopCount` already bound. A daemon drops context
-   frames authored by an agent it hosts (self-echo, mirroring
-   `isAgentBotMessage` at `daemon.ts:4640`).
+   A receiving daemon **records every context post into its local shared
+   transcript**, deduplicated by `postId`. What happens next depends on the
+   author (revised post-#549 — issue #904):
+
+   - a **user-authored** copy (a turn targeted elsewhere) is transcript-only —
+     user turns activate exclusively through the pre-addressed `turn` frames
+     of section 4;
+   - an **agent-authored** post is transcript-only **plus a continuation
+     activation** for the pre-addressed participant (section 5.2a), under the
+     same hop budget and exactly-once admission that bound the platform
+     ladders since #549 — so fan-out still cannot loop unboundedly, it now
+     terminates at the cap instead of never starting.
+
+   A daemon drops context frames addressed to the post's own author
+   (self-echo fail-safe; the relay already excludes the author from the
+   fan-out).
 
    At the agent's next activation the existing §8.5 catch-up replay presents
    the accumulated posts as `[<author>] <text>` context lines — participants
@@ -385,6 +396,54 @@ Two independent fan-outs, both relay-carried, neither CP-touching:
    the others drop on lookup miss. A browser that was offline reconstructs the
    gap from persisted sessions on resume (section 8), so browser delivery
    needs no durable queue — unchanged semantics.
+
+### 5.2a Agent posts continue the conversation (post-#549 parity)
+
+Added after the fact (issue #904): the original design predates PR #549 and
+made agent posts pure context, which is why a turn-taking conversation
+("count to 6 together, alternating") produced exactly one round per human
+message on webchat while the same prompt ran to completion on Slack. #549 had
+already reversed the underlying rule on the platform ladders — a verified
+agent-authored message naming nobody continues the conversation with the
+author removed. Webchat now mirrors those semantics at the `context`-frame
+seam, keeping the relay's pre-addressed fan-out as the roster walk:
+
+- **Depth stamp.** The origin daemon stamps the authoring turn's chain depth
+  on the committed post (`WebchatPost.author.hopCount`, minted from the same
+  §4.1 source-depth the platform paths stamp on outbound authorship
+  metadata). Only the reply-commit boundary stamps it; a failed turn's
+  partial post carries none and therefore never continues the conversation.
+- **Hop transition.** The receiving participant's daemon charges ONE `+1`
+  against the same `MAX_AGENT_CALL_HOPS` budget an internal agent call
+  spends, refuses at the cap, and records why (the refusal is logged with the
+  computed depth; the post itself stays in the transcript). A post with no
+  usable depth — an older daemon, or any non-integer/negative value — is
+  transcript-only: a missing depth never coerces to zero.
+- **Author exclusion is absolute.** The relay excludes the author from the
+  context fan-out, the record path drops self copies, and the activation seam
+  re-checks — an author can never wake itself, which would not be a loop the
+  hop cap slows down but an unconditional one.
+- **Exactly-once per (post, target)** through the durable activation
+  rendezvous (§8.6 of send-message-routing-rework.md), so relay retries,
+  doubly-connected relays, and restart replays cannot double-wake.
+- **Final-events-only is structural**: `rd/webchat-post` — and therefore
+  `context` — exists only for a committed reply; streaming rides `rd/chat`.
+- **Call policy** (`admits`) is checked per edge, as on the platform ladder.
+- **Loop accounting mirrors Slack's agent-continuation path**: the exact
+  trusted hop cap is the budget; the coarse loop-guard circuit is not
+  charged (`usesLoopGuard` already excludes agent-sourced and webchat
+  traffic). The woken turn carries the depth on its CallMeta, so the reply it
+  commits advances the chain by one, and an alternating conversation
+  terminates by REACHING A LIMIT rather than by an agent declining to address
+  anyone — the same operator expectation #549 recorded for channels.
+- **The response-choice contract still decides participation.** The wake is
+  presented as a conversation post (`[<author>] <text>`), not as a direct
+  agent call, so a participant whose role is to observe silently answers
+  `AC_NO_RESPONSE`, commits no post, and fans nothing out — its wake still
+  spent the hop like any admitted turn.
+
+Single-agent conversations produce no `context` frames and are untouched, as
+are the platform ladders and playground sessions.
 
 ### 5.3 Per-agent streams to the browser
 
@@ -552,9 +611,12 @@ sendMessage({ toAgent: 'B', channel: '<conversationId>' }, 'please review …')
 - **Visibility**: the visible post form (`toAgent` + `channel`) emits the
   caller's message as a `WebchatPost` through `rd/webchat-post`, so the owner
   sees A asking B in the conversation, and the other participants receive it
-  as context. The double-trigger invariant holds structurally: context frames
-  never activate, so the visible post cannot wake B a second time beside the
-  explicit delivery (the webchat analogue of the `sender.appId` suppression in
+  as context. The double-trigger invariant still holds structurally after the
+  section 5.2a revision: only a turn's committed REPLY post carries the depth
+  stamp that can activate, the ask itself is delivered exclusively through the
+  explicit wake, and the author exclusion plus the per-(post, target)
+  rendezvous ensure B is never woken twice for one send (the webchat analogue
+  of the `sender.appId` suppression in
   [session-concept.md](session-concept.md) §4.1).
 - **B's reply** is an agent-initiated turn: no browser `turnId` exists, so the
   owning daemon mints the turn id and announces the stream with an
@@ -697,7 +759,11 @@ possible is REMOVING an agent from an existing conversation (section 3.1a).
 - Turn concurrency is bounded per agent by the existing per-session
   serialization gate and `serialQueue` (`busy`/`queued` acks unchanged).
 - Agent-initiated posts obey `hopCount` (`MAX_AGENT_CALL_HOPS`) and the loop
-  breaker; context fan-out adds no activation edges, so it adds no cycles.
+  breaker. Context fan-out of an agent post adds continuation activation
+  edges (section 5.2a), each charging one transition against that same
+  budget with exactly-once admission per (post, target) — so a roster-wide
+  agent conversation is bounded: it terminates at the hop cap instead of
+  cycling. User-post context copies still add no activation edges.
 
 ### 10.2 Authorization summary
 
@@ -815,7 +881,8 @@ Questions resolved during design review:
 6. **No automatic round-table** — a multi-target turn produces independent
    answers; peers see each other's output only as context at their next
    activation or via an explicit mention, matching Slack-channel behavior
-   (section 4.3).
+   (section 4.3). _Superseded for committed posts by decision 11 below: the
+   Slack behavior this matched was itself reversed by PR #549._
 7. **Turn-final context refresh applies to multi-agent conversations** — the
    canonical post is staged and committed only after a final context check,
    mirroring the IM answer workflow; the browser stream stays live and a
@@ -833,3 +900,9 @@ Questions resolved during design review:
     Permission pills and per-agent overrides disappear when the roster has two
     or more agents; each participant runs its configured runtime defaults, and
     the `set_*` ops stay single-agent-only (sections 9.1, 9.3).
+11. **Committed agent posts continue the conversation (post-#549 parity,
+    issue #904)** — an agent's committed reply post activates the rest of the
+    roster (author always excluded), bounded by the shared agent-call hop
+    budget with exactly-once admission per (post, target); the pre-#549 rule
+    that context frames never activate survives only for user-authored copies
+    and for posts carrying no depth stamp (section 5.2a).
