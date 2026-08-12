@@ -28,8 +28,29 @@ function originSchema(allowInternalHttp = false) {
     })
 }
 
+function serviceBaseUrlSchema() {
+  return z
+    .string()
+    .url()
+    .superRefine((value, ctx) => {
+      const url = new URL(value)
+      const httpAllowed = url.protocol === 'http:' && isLoopback(url.hostname)
+      if (url.protocol !== 'https:' && !httpAllowed) {
+        ctx.addIssue({ code: 'custom', message: 'must use HTTPS unless it is loopback' })
+      }
+      if (url.username || url.password || url.search || url.hash) {
+        ctx.addIssue({ code: 'custom', message: 'must not contain credentials, query, or fragment' })
+      }
+    })
+    .transform((value) => {
+      const url = new URL(value)
+      return `${url.origin}${url.pathname.replace(/\/+$/, '')}`
+    })
+}
+
 const OriginSchema = originSchema()
 const ServerOriginSchema = originSchema(true)
+const ServiceBaseUrlSchema = serviceBaseUrlSchema()
 
 const IssuerSchema = z
   .string()
@@ -91,10 +112,10 @@ export function loadDeploymentEnvironment(environment: Environment = process.env
       web: OriginSchema.parse(
         serviceUrl(environment, 'AGENTCONNECT_PUBLIC_WEB_URL', 'AGENTCONNECT_WEB_PORT', LOCAL_HOST, 3000)
       ),
-      controlPlane: OriginSchema.parse(
+      controlPlane: ServiceBaseUrlSchema.parse(
         serviceUrl(environment, 'AGENTCONNECT_PUBLIC_CP_URL', 'AGENTCONNECT_CP_PORT', LOCAL_HOST, 8080)
       ),
-      relay: OriginSchema.parse(
+      relay: ServiceBaseUrlSchema.parse(
         serviceUrl(environment, 'AGENTCONNECT_PUBLIC_RELAY_URL', 'AGENTCONNECT_RELAY_PORT', LOCAL_HOST, 8090)
       )
     },

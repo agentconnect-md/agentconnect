@@ -15,8 +15,8 @@ services:
       LOGTO_MGMT_ENDPOINT: 'http://logto:3001'
       OIDC_ISSUER: 'https://${AGENTCONNECT_HTTPS_HOST}:${AGENTCONNECT_LOGTO_HTTPS_PORT}/oidc'
       AGENTCONNECT_PUBLIC_WEB_URL: 'https://${AGENTCONNECT_HTTPS_HOST}:${AGENTCONNECT_HTTPS_PORT}'
-      AGENTCONNECT_PUBLIC_CP_URL: 'https://${AGENTCONNECT_HTTPS_HOST}:${AGENTCONNECT_HTTPS_PORT}'
-      AGENTCONNECT_PUBLIC_RELAY_URL: 'https://${AGENTCONNECT_HTTPS_HOST}:${AGENTCONNECT_HTTPS_PORT}'
+      AGENTCONNECT_PUBLIC_CP_URL: 'https://${AGENTCONNECT_HTTPS_HOST}:${AGENTCONNECT_HTTPS_PORT}/cp'
+      AGENTCONNECT_PUBLIC_RELAY_URL: 'https://${AGENTCONNECT_HTTPS_HOST}:${AGENTCONNECT_HTTPS_PORT}/relay'
 
   control-plane:
     ports: !reset []
@@ -96,25 +96,6 @@ configs:
 
       https://${AGENTCONNECT_HTTPS_HOST} {
           tls internal
-
-          # Setup uses origin-only public service URLs when it builds provider
-          # manifests. Route the exact root callbacks those manifests contain
-          # without exposing the rest of either service at the gateway root.
-          @control_plane_provider_callbacks {
-              method GET
-              path /v1/integrations/slack/platform/callback /v1/github/setup/callback
-          }
-          handle @control_plane_provider_callbacks {
-              reverse_proxy control-plane:8080
-          }
-
-          @relay_provider_webhooks {
-              method POST
-              path /slack/events /slack/interactions /webhooks/github
-          }
-          handle @relay_provider_webhooks {
-              reverse_proxy relay:8080
-          }
 
           handle_path /cp/* {
               reverse_proxy control-plane:8080

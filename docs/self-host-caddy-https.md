@@ -180,12 +180,10 @@ wss://192.0.2.10:1443/cp/daemon/ws
 The Relay daemon dial URL is the Relay base URL; Relay appends `/rd/ws` when it
 connects.
 
-Setup requires origin-only Control Plane and Relay URLs when it generates
-provider manifests. The overlay therefore routes only the generated root paths
-`/v1/integrations/slack/platform/callback` and
-`/v1/github/setup/callback` to the Control Plane, and `/slack/events`,
-`/slack/interactions`, and `/webhooks/github` to the Relay. Other root-level
-`/v1` and webhook paths still fall through to the Web service.
+Setup preserves the `/cp` and `/relay` prefixes when it generates Slack and
+GitHub provider manifests, so their callbacks and webhooks use the same public
+service mounts shown above. No Control Plane or Relay routes are exposed at the
+gateway root.
 
 ## Trust the Caddy internal CA
 
