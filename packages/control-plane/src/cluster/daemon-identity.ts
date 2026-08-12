@@ -94,9 +94,9 @@ export class ClusterDaemonIdentityService implements ClusterDaemonIdentity {
     if (published !== namespace) return null
     const orgId = OrgId(settings.orgId)
     const daemon = await this.daemons.resolveClusterIdentity(orgId, clusterIdentityOf(namespace, serviceAccount), {
-      // An envelope provisioned through the API-key path already has a daemon record; the
-      // first token connect adopts it rather than stranding its placements beside a new one.
-      ...(settings.credentialDaemonId ? { adoptDaemonId: settings.credentialDaemonId } : {})
+      // An envelope provisioned through the retired API-key path already has a daemon record;
+      // the first token connect adopts it rather than stranding its placements beside a new one.
+      ...(settings.legacyKeyDaemonId ? { adoptDaemonId: settings.legacyKeyDaemonId } : {})
     })
     if (!daemon) return null
     return { daemonId: DaemonId(daemon.id), orgId }

@@ -206,6 +206,9 @@ export interface DaemonRepo {
     clusterIdentity: string,
     opts?: { adoptDaemonId?: string }
   ): Promise<DaemonRecord | null>
+  /** Ids of the org's daemons bound to a Kubernetes identity — the ones the control
+   *  plane provisioned for a cluster envelope rather than a human attaching a machine. */
+  clusterBoundIds(orgId: OrgId): Promise<string[]>
   /**
    * Idempotent on `daemonId`. Bumps `sessionEpoch` (the fencing root) in ONE
    * transaction and sets status `authenticating`. Returns the new strictly-
@@ -4957,18 +4960,10 @@ export interface ClusterExecutionSettings {
   suspend: boolean
   daemonImage: string
   daemonTier: string
-  credentialSecretName: string
-  credentialRevision?: string
-  /** The daemon identity the org's supervisor pod authenticates as; created with
-   *  the first credential and reused by every rotation. */
-  credentialDaemonId?: string
-  /** The `api_key` row currently published in the Secret. */
-  credentialApiKeyId?: string
-  /** A key minted for an in-flight transition and not yet committed. */
-  credentialStagedApiKeyId?: string
-  /** Monotonic per credential claim; stamped on the published Secret so a
-   *  stalled publish cannot overwrite its successor's. */
-  credentialRotationSeq: number
+  /** The daemon record the retired API-key path minted this envelope's key for.
+   *  Never written any more; it is how an envelope provisioned before the token
+   *  path is recognized until its daemon binds a cluster identity. */
+  legacyKeyDaemonId?: string
   runtimeImage: string
   runtimeTiers: ClusterRuntimeTier[]
   quota: ClusterQuota
@@ -4994,7 +4989,6 @@ export interface ClusterExecutionDefaults {
   resourceName: string
   daemonImage: string
   daemonTier: string
-  credentialSecretName: string
   runtimeImage: string
   runtimeTiers: ClusterRuntimeTier[]
   quota: ClusterQuota
@@ -5007,13 +5001,6 @@ export interface PendingEnvelopeTeardown {
   resourceName: string
 }
 
-/** A daemon key the provisioner has finished with and must still revoke. */
-export interface PendingDaemonKeyRevocation {
-  apiKeyId: string
-  orgId: string
-  reason: string
-}
-
 export interface OrgClusterExecutionRepo {
   get(orgId: OrgId): Promise<ClusterExecutionSettings | null>
   /** The org that owns a CR name — the reverse lookup an authenticating in-cluster
@@ -5024,77 +5011,29 @@ export interface OrgClusterExecutionRepo {
   /** Drop a tombstone once its resource is confirmed gone. Idempotent. */
   clearPendingTeardown(orgId: string): Promise<void>
   /**
-   * Claim the org's credential transition under a fresh fencing `token`, or
-   * return null when a live claim belongs to someone else. A claim older than
-   * `leaseMs` is taken over; a key the dead holder left staged is deliberately
-   * NOT touched here — it may already be published, so it stays the pod's
-   * working credential until a later publish has definitely replaced it.
+   * Claim the org's envelope transition under a fresh fencing `token`, or return
+   * null when a live claim belongs to someone else. A claim older than `leaseMs`
+   * is taken over, so a process that dies mid-transition cannot wedge the
+   * envelope. Enable, disable and the teardown drain all take it: they create
+   * and destroy one envelope from three directions.
    */
-  beginCredentialRotation(
-    orgId: OrgId,
-    token: string,
-    now: Date,
-    leaseMs: number
-  ): Promise<ClusterExecutionSettings | null>
+  beginTransition(orgId: OrgId, token: string, now: Date, leaseMs: number): Promise<ClusterExecutionSettings | null>
   /** Release the claim, only if `token` still holds it. */
-  endCredentialRotation(orgId: OrgId, token: string): Promise<void>
-  /** Record the daemon identity a first issue just provisioned, before anything
-   *  can fail — otherwise every retry would provision another daemon. Does not
-   *  bump `specRevision`: the CR spec carries no daemon id. False ⇒ claim lost. */
-  stageCredentialDaemon(orgId: OrgId, token: string, daemonId: string): Promise<boolean>
-  /** Record a minted key as staged, BEFORE it is published. A key it displaces
-   *  is queued HELD — named durably, but not revocable until a higher-sequence
-   *  publish supersedes it. False ⇒ claim lost. */
-  stageCredentialKey(orgId: OrgId, token: string, apiKeyId: string): Promise<boolean>
+  endTransition(orgId: OrgId, token: string): Promise<void>
   /**
-   * Promote the staged key to the org's credential in ONE transaction: bump
-   * `specRevision` (so the CR re-applies with the new `credentialRevision`),
-   * clear the staged slot, record the rollout as owed, and queue the superseded
-   * key for revocation HELD — the running pod is still on that key until the CR
-   * actually carries the new revision. Atomic because a commit that queued the
-   * predecessor separately could lose it.
-   * False ⇒ the claim was taken over; nothing was written.
+   * Switch the envelope off and record its resource for teardown, in ONE
+   * transaction and BEFORE the cluster is touched — so a disable whose delete
+   * fails still converges through the maintenance drain. False ⇒ the claim was
+   * taken over; nothing was written.
    */
-  commitCredential(
-    orgId: OrgId,
-    token: string,
-    credential: { daemonId: string; apiKeyId: string; revision: string },
-    reason: string
-  ): Promise<boolean>
-  /** The CR now carries the committed revision, so the rollout has actually been
-   *  requested: drop the obligation and release the keys it superseded, in one
-   *  transaction. Conditional on `token`. */
-  completeCredentialRollout(orgId: OrgId, token: string): Promise<void>
-  /** Oldest-first orgs whose committed credential never reached the CR. */
-  listPendingCredentialRollouts(limit: number): Promise<string[]>
-  /** Queue the staged key for revocation and clear the slot — the unwind path
-   *  when publication fails. Conditional on `token`. */
-  abandonStagedCredential(orgId: OrgId, token: string, reason: string): Promise<void>
-  /**
-   * Retire the envelope's credential in ONE transaction: clear the credential
-   * and staged slots, queue both keys for revocation, release every held key and
-   * drop any owed rollout (the envelope itself is going away, so no pod is left
-   * to strand), and record the resource for teardown. Everything durable BEFORE
-   * the cluster is touched, so a disable whose delete fails still converges
-   * through maintenance. False ⇒ the claim was taken over; nothing was written.
-   */
-  retireCredential(orgId: OrgId, token: string, reason: string): Promise<boolean>
-  /** Record that a key must be revoked, outside any claim — the unwind path for
-   *  a pass that lost its claim mid-flight. `held` ⇒ the key may already be in
-   *  the Secret, so name it now and let a later commit release it. Idempotent. */
-  enqueueKeyRevocation(orgId: string, apiKeyId: string, reason: string, held?: boolean): Promise<void>
-  /** Oldest-first batch of keys eligible for revocation; held keys are excluded. */
-  listPendingKeyRevocations(limit: number): Promise<PendingDaemonKeyRevocation[]>
-  /** Drop the intent once the key is actually revoked. Idempotent. */
-  clearKeyRevocation(apiKeyId: string): Promise<void>
+  disableAndRecordTeardown(orgId: OrgId, token: string): Promise<boolean>
   /** Insert a disabled row from `defaults` if the org has none. Insert-only: a
    *  losing racer must NOT fall through to an update, or its 409 would carry the
    *  winner's row backwards. Idempotent. */
   createIfAbsent(orgId: OrgId, defaults: ClusterExecutionDefaults): Promise<void>
   /** Create from `defaults` merged with `patch`, or apply `patch` to the existing
-   *  row, always bumping `specRevision`. `resourceName` and
-   *  `credentialSecretName` are only ever written by the create branch — the CR
-   *  name addresses a live envelope and the CRD marks the Secret name immutable. */
+   *  row, always bumping `specRevision`. `resourceName` is only ever written by
+   *  the create branch — it addresses a live envelope. */
   upsert(
     orgId: OrgId,
     defaults: ClusterExecutionDefaults,

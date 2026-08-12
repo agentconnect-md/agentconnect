@@ -3,10 +3,8 @@
  * The Daemons page is the convergence point for a managed-execution envelope an
  * org create never produced (a JIT personal org, a waitlist redeem, an org that
  * predates the feature). What matters is not that it fires once, but WHEN it
- * stops firing: the server answers `settled` explicitly, because a populated
- * `credentialRevision` is true both while the operator is still publishing the
- * namespace and all through a rotation recovery a peer owns. Caching on that
- * field would strand the daemon uncredentialed until a full page reload.
+ * stops firing: the endpoint applies one resource and delivers nothing after it,
+ * so any answer is final and only a failure is worth repeating.
  */
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -42,11 +40,8 @@ vi.mock('@/lib/api', async (importOriginal) => ({
 const { ApiError } = await import('@/lib/api')
 const DaemonsView = (await import('./DaemonsView')).default
 
-/** Nothing further owed. */
-const SETTLED = { enabled: true, credentialRevision: 'key-1', settled: true }
-/** Still converging — the namespace is unpublished, or a peer owns the rotation.
- *  Note the revision IS present: that is precisely why it cannot be the signal. */
-const OWED = { enabled: true, credentialRevision: 'key-0', settled: false }
+/** A provisioned envelope: the resource is applied and nothing is owed. */
+const PROVISIONED = { enabled: true }
 
 let orgSeq = 0
 
@@ -80,9 +75,9 @@ beforeEach(() => {
 })
 
 describe('DaemonsView cluster-envelope check', () => {
-  it('checks once per org and refreshes the fleet the credential registered', async () => {
+  it('checks once per org and refreshes the fleet the envelope joins', async () => {
     freshOrg()
-    mocks.ensure.mockResolvedValue(SETTLED)
+    mocks.ensure.mockResolvedValue(PROVISIONED)
     await visit()
     expect(mocks.ensure).toHaveBeenCalledTimes(1)
     expect(mocks.refreshDaemons).toHaveBeenCalled()
@@ -92,27 +87,13 @@ describe('DaemonsView cluster-envelope check', () => {
     expect(mocks.ensure).toHaveBeenCalledTimes(1)
   })
 
-  it('reasks while work is still owed, which is what finishes provisioning', async () => {
-    freshOrg()
-    mocks.ensure.mockResolvedValue(OWED)
-    await visit()
-    expect(mocks.ensure).toHaveBeenCalledTimes(1)
-
-    mocks.ensure.mockResolvedValue(SETTLED)
-    await visit()
-    expect(mocks.ensure).toHaveBeenCalledTimes(2)
-    // And now it is done.
-    await visit()
-    expect(mocks.ensure).toHaveBeenCalledTimes(2)
-  })
-
   it('reasks after a failure rather than swallowing the org forever', async () => {
     freshOrg()
     mocks.ensure.mockRejectedValue(new ApiError('cluster unreachable', 502))
     await visit()
     expect(mocks.ensure).toHaveBeenCalledTimes(1)
 
-    mocks.ensure.mockResolvedValue(SETTLED)
+    mocks.ensure.mockResolvedValue(PROVISIONED)
     await visit()
     expect(mocks.ensure).toHaveBeenCalledTimes(2)
   })
@@ -127,7 +108,7 @@ describe('DaemonsView cluster-envelope check', () => {
 
   it('leaves a disabled envelope alone — an owner switched it off', async () => {
     freshOrg()
-    mocks.ensure.mockResolvedValue({ enabled: false, settled: true })
+    mocks.ensure.mockResolvedValue({ enabled: false })
     await visit()
     await visit()
     expect(mocks.ensure).toHaveBeenCalledTimes(1)
@@ -136,7 +117,7 @@ describe('DaemonsView cluster-envelope check', () => {
   it('does not check for a non-owner, who could not provision anyway', async () => {
     freshOrg()
     mocks.role = 'viewer'
-    mocks.ensure.mockResolvedValue(SETTLED)
+    mocks.ensure.mockResolvedValue(PROVISIONED)
     await visit()
     expect(mocks.ensure).not.toHaveBeenCalled()
   })

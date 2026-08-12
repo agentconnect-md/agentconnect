@@ -2257,9 +2257,6 @@ export interface ClusterExecutionSettingsDto {
   suspend: boolean
   daemonImage: string
   daemonTier: string
-  credentialSecretName: string
-  /** Opaque handle for the published credential; absent until one is issued. */
-  credentialRevision?: string
   runtimeImage: string
   runtimeTiers: ClusterRuntimeTierDto[]
   quota: ClusterQuotaDto
@@ -2298,14 +2295,6 @@ export interface ClusterEnvelopeStatusDto {
   rollout?: { rolloutId: string; targetImage: string; pending: string[]; failed: string[] }
 }
 
-/** What issuing a credential answers with — the key never leaves the cluster. */
-export interface ClusterCredentialDto {
-  daemonId: string
-  secretName: string
-  revision: string
-  rotated: boolean
-}
-
 export function fetchClusterExecution(orgId?: string): Promise<ClusterExecutionSettingsDto> {
   return apiGet<ClusterExecutionSettingsDto>(`${orgBase(orgId)}/cluster-execution`)
 }
@@ -2321,25 +2310,13 @@ export function fetchClusterExecutionStatus(orgId?: string): Promise<ClusterEnve
   return apiGet<ClusterEnvelopeStatusDto>(`${orgBase(orgId)}/cluster-execution/status`)
 }
 
-/** The settings an ensure pass left behind, plus whether anything is still owed.
- *  `settled` is the ONLY completion signal: `credentialRevision` is populated
- *  throughout a rotation that has not finished, so it cannot stand in for one. */
-export interface ClusterEnsureResultDto extends ClusterExecutionSettingsDto {
-  settled: boolean
-}
-
-/** Idempotently provision the org's envelope: creates the AgentConnectOrg when
- *  it has none and issues the credential once the namespace exists. An org whose
- *  owner switched cluster execution off is left as it is. `settled: false` means
- *  work remains and the caller should repeat the call later. */
-export function ensureClusterExecution(orgId?: string): Promise<ClusterEnsureResultDto> {
-  return apiPost<ClusterEnsureResultDto>(`${orgBase(orgId)}/cluster-execution/ensure`, {})
-}
-
-/** Mint or rotate the envelope's daemon credential. The key is published into a
- *  cluster Secret and is never returned, so there is nothing here to display. */
-export function issueClusterExecutionCredential(orgId?: string): Promise<ClusterCredentialDto> {
-  return apiPost<ClusterCredentialDto>(`${orgBase(orgId)}/cluster-execution/credential`, {})
+/** Idempotently provision the org's envelope: creates the AgentConnectOrg when it
+ *  has none, and re-applies the spec when the resource went missing. An org whose
+ *  owner switched cluster execution off is left as it is. Returning means the
+ *  resource is applied — the envelope's daemon carries its own projected token, so
+ *  nothing is delivered after it and there is nothing to come back for. */
+export function ensureClusterExecution(orgId?: string): Promise<ClusterExecutionSettingsDto> {
+  return apiPost<ClusterExecutionSettingsDto>(`${orgBase(orgId)}/cluster-execution/ensure`, {})
 }
 
 // One page of a session's transcript, proxied live from the daemon recorded on

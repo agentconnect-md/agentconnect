@@ -39,7 +39,6 @@ import {
   AgentConnectOrgApi,
   ClusterDaemonIdentityService,
   ClusterExecutionService,
-  ClusterSecretApi,
   ClusterMaintenanceLoop,
   loadClusterAccess
 } from './cluster/index.js'
@@ -496,8 +495,7 @@ export function buildContainer(
             // envelope daemon and a hand-run one dial exactly the same endpoint.
             controlPlaneUrl: daemonWsUrl(httpServerConfigFrom(config, { DEFAULT_OWNER_ID, relayStaleMs }))
           },
-          new ClusterSecretApi(clusterHttp),
-          apiKeys,
+          repos.daemon,
           clock
         )
       : undefined
@@ -1057,11 +1055,11 @@ export function buildContainer(
     http.log
   )
 
-  // Retires deleted organizations' AgentConnectOrgs and superseded daemon keys.
-  // Both intents are recorded durably before the act, so this loop is the
-  // backstop for a cluster that was unreachable, a process that died between the
-  // two, or a deployment that had cluster execution switched off at the time;
-  // the request paths kick their own work inline for latency. Inert when off.
+  // Retires deleted organizations' AgentConnectOrgs. The intent is recorded
+  // durably before the act, so this loop is the backstop for a cluster that was
+  // unreachable, a process that died between the two, or a deployment that had
+  // cluster execution switched off at the time; the delete route kicks the same
+  // work inline for latency. Inert when off.
   const clusterMaintenance = new ClusterMaintenanceLoop(
     clusterExecution,
     clock,

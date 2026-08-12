@@ -304,7 +304,7 @@ describe('DELETE /orgs/:orgId', () => {
     const disabled: string[] = []
     const { app, close } = buildHttpApp(prisma, undefined, undefined, undefined, {
       clusterExecution: {
-        settings: async () => ({ credentialDaemonId: envelopeDaemonId }),
+        envelopeDaemonIds: async () => [envelopeDaemonId],
         configure: async (orgId: string) => void disabled.push(orgId),
         drainTeardowns: async () => 0
       } as never
@@ -326,7 +326,7 @@ describe('DELETE /orgs/:orgId', () => {
     }
     const { app, close } = buildHttpApp(prisma, undefined, undefined, undefined, {
       clusterExecution: {
-        settings: async () => ({ credentialDaemonId: envelopeDaemonId }),
+        envelopeDaemonIds: async () => [envelopeDaemonId],
         configure: async () => {},
         drainTeardowns: async () => 0
       } as never

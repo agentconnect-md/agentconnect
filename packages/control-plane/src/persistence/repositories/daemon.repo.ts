@@ -115,6 +115,14 @@ export class PgDaemonRepo implements DaemonRepo {
     }
   }
 
+  async clusterBoundIds(orgId: OrgId): Promise<string[]> {
+    const rows = await this.db.daemon.findMany({
+      where: { orgId, clusterIdentity: { not: null } },
+      select: { id: true }
+    })
+    return rows.map((row) => row.id)
+  }
+
   /** Bind an envelope's existing daemon record — the one the API-key path pinned — to the
    *  identity now authenticating for it, so an org provisioned before the token path keeps
    *  its placements and history instead of gaining a second record beside them. Conditional
