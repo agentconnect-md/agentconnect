@@ -30,10 +30,11 @@ describe('AgentConnectOrg schemas', () => {
 
   it('fills the documented defaults', () => {
     const parsed = AgentConnectOrgSpecSchema.parse({
-      targetNamespace: 'test-ac-org-acme',
       daemon: { image: 'i', tier: 't' },
       runtime: { image: 'r', tiers: [{ name: 'small' }] }
     })
+    // Unset is the normal path: the operator derives the namespace from the CR name.
+    expect(parsed.targetNamespace).toBeUndefined()
     expect(parsed.suspend).toBe(false)
     expect(parsed.daemon.credentialSecretName).toBe('ac-daemon-token')
     expect(parsed.runtime.tiers[0]?.warmReplicas).toBe(0)

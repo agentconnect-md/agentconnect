@@ -41,11 +41,25 @@ export interface OrgSecretApi {
   delete(namespace: string, name: string): Promise<void>
 }
 
-/** The envelope namespace does not exist yet — the operator creates it from the CR. */
+/** The envelope namespace is not usable yet — the operator creates it, and publishes its name, from the CR. */
 export class NamespaceNotReadyError extends Error {
-  constructor(readonly namespace: string) {
-    super(`namespace ${namespace} does not exist yet — the operator creates it once the resource is applied`)
+  constructor(message: string) {
+    super(message)
     this.name = 'NamespaceNotReadyError'
+  }
+
+  /** The namespace the CR names has not been created yet. */
+  static missing(namespace: string): NamespaceNotReadyError {
+    return new NamespaceNotReadyError(
+      `namespace ${namespace} does not exist yet — the operator creates it once the resource is applied`
+    )
+  }
+
+  /** The operator has not derived and published `status.namespace` yet, so nothing names a namespace. */
+  static unpublished(resourceName: string): NamespaceNotReadyError {
+    return new NamespaceNotReadyError(
+      `AgentConnectOrg ${resourceName} has no status.namespace yet — the operator publishes it once the envelope namespace is claimed`
+    )
   }
 }
 
@@ -107,7 +121,7 @@ export class ClusterSecretApi implements OrgSecretApi {
         return
       } catch (error) {
         if (!(error instanceof K8sApiError)) throw error
-        if (error.isNotFound) throw new NamespaceNotReadyError(namespace)
+        if (error.isNotFound) throw NamespaceNotReadyError.missing(namespace)
         // Lost the race (409 Conflict on the resourceVersion, or AlreadyExists on
         // a create): re-read and re-decide, which is where a newer seq is caught.
         if (error.isConflict && attempt < PUBLISH_ATTEMPTS - 1) continue

@@ -5,6 +5,7 @@ import {
   type AgentConnectOrgSpec
 } from '../crd/types.js'
 import type { Observations, ReconcileContext } from './context.js'
+import { namespaceFault, orgNamespace } from './namespace.js'
 import {
   APP_LABEL_KEY,
   RUNTIME_TIER_PREFIX,
@@ -34,6 +35,13 @@ import {
 export interface EnvelopeInputs {
   orgName: string
   spec: AgentConnectOrgSpec
+  /** Resolved once per pass — see {@link orgNamespace}. Validated by `ensureNamespace`. */
+  namespace: string
+}
+
+/** The one place envelope inputs are built, so the namespace is resolved exactly once per pass. */
+export function envelopeInputs(ctx: ReconcileContext, orgName: string, spec: AgentConnectOrgSpec): EnvelopeInputs {
+  return { orgName, spec, namespace: orgNamespace(ctx.config.orgNamespacePrefix, orgName, spec.targetNamespace) }
 }
 
 /** Daemon supervisor resource tiers; unknown tier names fall back to `small` with a warning. */
@@ -47,14 +55,14 @@ function envelopeLabels(orgName: string, extra: Record<string, string> = {}): Re
   return { [ORG_LABEL]: orgName, ...extra }
 }
 
-/** Create-or-adopt spec.targetNamespace: claim by label, reject a label-mismatched existing namespace as Degraded. */
+/** Create-or-adopt the resolved namespace: claim by label, reject a label-mismatched existing namespace as Degraded. */
 export async function ensureNamespace(ctx: ReconcileContext, input: EnvelopeInputs, obs: Observations): Promise<void> {
-  const name = input.spec.targetNamespace
-  if (!name.startsWith(ctx.config.orgNamespacePrefix)) {
-    obs.degraded = {
-      reason: 'NamespaceOutsidePrefix',
-      message: `targetNamespace ${name} is outside this install's prefix ${ctx.config.orgNamespacePrefix}`
-    }
+  const name = input.namespace
+  // An override can name a namespace this install does not own; a CR name legal for a
+  // Kubernetes object can still make an illegal namespace once prefixed.
+  const fault = namespaceFault(ctx.config.orgNamespacePrefix, name)
+  if (fault) {
+    obs.degraded = fault
     return
   }
   const existing = await getOrNull<K8sResource>(ctx.http, namespacePath(name))
@@ -87,7 +95,7 @@ export async function ensureServiceAccounts(
   input: EnvelopeInputs,
   obs: Observations
 ): Promise<void> {
-  const ns = input.spec.targetNamespace
+  const ns = input.namespace
   await applyObject(ctx.http, corePath(ns, 'serviceaccounts', DAEMON_NAME), {
     apiVersion: 'v1',
     kind: 'ServiceAccount',
@@ -109,7 +117,7 @@ export async function ensureRoleAndBinding(
   input: EnvelopeInputs,
   obs: Observations
 ): Promise<void> {
-  const ns = input.spec.targetNamespace
+  const ns = input.namespace
   const rbac = 'rbac.authorization.k8s.io/v1'
   await applyObject(ctx.http, groupPath(rbac, ns, 'roles', DAEMON_NAME), {
     apiVersion: rbac,
@@ -141,7 +149,7 @@ export async function ensureTokenReviewClusterRoleBinding(
   input: EnvelopeInputs,
   obs: Observations
 ): Promise<void> {
-  const ns = input.spec.targetNamespace
+  const ns = input.namespace
   // Cluster-scoped, so no namespace cascade covers it — the finalizer deletes it explicitly.
   await applyObject(ctx.http, clusterRoleBindingPath(tokenReviewBindingName(ns)), {
     apiVersion: 'rbac.authorization.k8s.io/v1',
@@ -163,7 +171,7 @@ export async function ensureNetworkPolicies(
   input: EnvelopeInputs,
   obs: Observations
 ): Promise<void> {
-  const ns = input.spec.targetNamespace
+  const ns = input.namespace
   const netv1 = 'networking.k8s.io/v1'
   const daemonPods = { podSelector: { matchLabels: { [APP_LABEL_KEY]: DAEMON_NAME } } }
   await applyObject(ctx.http, groupPath(netv1, ns, 'networkpolicies', DAEMON_EGRESS_POLICY_NAME), {
@@ -212,7 +220,7 @@ export async function ensureQuotaAndLimitRange(
   input: EnvelopeInputs,
   obs: Observations
 ): Promise<void> {
-  const ns = input.spec.targetNamespace
+  const ns = input.namespace
   const quota = input.spec.quota
   const hard: Record<string, string> = {}
   if (quota.maxAgents > 0) hard['count/sandboxclaims.extensions.agents.x-k8s.io'] = String(quota.maxAgents)
@@ -287,7 +295,7 @@ export async function ensureSandboxTemplates(
   input: EnvelopeInputs,
   obs: Observations
 ): Promise<void> {
-  const ns = input.spec.targetNamespace
+  const ns = input.namespace
   for (const tier of input.spec.runtime.tiers) {
     const masterName = `${ctx.config.masterTemplatePrefix}${tier.name}`
     const master = await getOrNull<SandboxTemplateResource>(
@@ -333,7 +341,7 @@ export async function ensureSandboxTemplates(
 
 /** The CR is the sole desired-state carrier: tiers removed from spec lose their pool and template. */
 async function pruneRemovedTiers(ctx: ReconcileContext, input: EnvelopeInputs): Promise<void> {
-  const ns = input.spec.targetNamespace
+  const ns = input.namespace
   // A still-desired tier keeps its objects even when its master vanished: they are the
   // last-known-good render, and a control-namespace hiccup must not tear down a live pool.
   const desired = new Set(input.spec.runtime.tiers.map((tier) => runtimeTierName(tier.name)))
@@ -354,7 +362,7 @@ async function pruneRemovedTiers(ctx: ReconcileContext, input: EnvelopeInputs): 
 
 /** The daemon's ReadWriteOncePod PVC (transcripts + state), sized and classed by the install. */
 export async function ensureDaemonPvc(ctx: ReconcileContext, input: EnvelopeInputs, obs: Observations): Promise<void> {
-  const ns = input.spec.targetNamespace
+  const ns = input.namespace
   const storageClass = ctx.config.daemonStorageClass
   // RWOP is load-bearing: the Recreate strategy assumes the volume can never double-attach.
   await applyObject(ctx.http, corePath(ns, 'persistentvolumeclaims', DAEMON_PVC_NAME), {
@@ -377,7 +385,7 @@ export async function ensureDaemonDeployment(
   input: EnvelopeInputs,
   obs: Observations
 ): Promise<void> {
-  const ns = input.spec.targetNamespace
+  const ns = input.namespace
   const daemon = input.spec.daemon
   const tier = DAEMON_TIERS[daemon.tier]
   if (!tier) obs.warnings.push(`unknown daemon tier ${daemon.tier}; using small`)
@@ -465,7 +473,7 @@ export async function ensureDaemonService(
   input: EnvelopeInputs,
   obs: Observations
 ): Promise<void> {
-  const ns = input.spec.targetNamespace
+  const ns = input.namespace
   await applyObject(ctx.http, corePath(ns, 'services', SHIM_SERVICE_NAME), {
     apiVersion: 'v1',
     kind: 'Service',

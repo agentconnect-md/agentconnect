@@ -1,6 +1,7 @@
 import { K8sApiError } from '@agentconnect.md/k8s-client'
 import { NAMESPACE_CLAIM_LABEL, FINALIZER, ORG_LABEL, type AgentConnectOrg } from '../crd/types.js'
 import type { ReconcileContext } from './context.js'
+import { namespaceFault, orgNamespace } from './namespace.js'
 import {
   APP_LABEL_KEY,
   DAEMON_NAME,
@@ -122,9 +123,10 @@ export async function removeFinalizer(ctx: ReconcileContext, org: AgentConnectOr
 
 /** The envelope deletion order; steps must be idempotent — deletion reconciles can repeat. */
 export async function reconcileDeletion(ctx: ReconcileContext, org: AgentConnectOrg): Promise<void> {
-  const ns = org.spec?.targetNamespace
-  // Outside our prefix nothing was ever provisioned: only the finalizer is ours.
-  if (!ns || !ns.startsWith(ctx.config.orgNamespacePrefix)) {
+  const orgName = org.metadata?.name
+  const ns = orgName ? orgNamespace(ctx.config.orgNamespacePrefix, orgName, org.spec?.targetNamespace) : undefined
+  // Outside our prefix, or no legal namespace at all, nothing was ever provisioned: only the finalizer is ours.
+  if (!ns || namespaceFault(ctx.config.orgNamespacePrefix, ns)) {
     await removeFinalizer(ctx, org)
     return
   }

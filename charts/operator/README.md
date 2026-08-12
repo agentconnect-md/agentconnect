@@ -5,6 +5,14 @@ resources in the release namespace (the environment's _control namespace_)
 into per-org execution envelopes: namespace, RBAC, network policies, sandbox
 templates and warm pools, and the org's daemon supervisor.
 
+An envelope's namespace is **derived by default**: `orgNamespacePrefix` plus the
+`AgentConnectOrg`'s own name, which is unique in the control namespace — so two
+CRs cannot collide on one namespace. A deployment that needs a specific namespace
+sets `spec.targetNamespace`, which is immutable and must still start with the
+install's prefix. Either way the operator publishes the result on
+`status.namespace`, which is where every consumer — including the credential
+writer — reads it.
+
 ## Layout
 
 One release per environment. Several environments can share a cluster: each

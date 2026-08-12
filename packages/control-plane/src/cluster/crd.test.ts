@@ -18,7 +18,7 @@ type JsonSchema = { type?: string; properties?: Record<string, JsonSchema>; item
 const SETTINGS: ClusterExecutionSettings = {
   orgId: 'org_example',
   enabled: true,
-  targetNamespace: 'ac-org-example',
+  resourceName: 'example',
   suspend: false,
   daemonImage: 'registry.example.test/daemon:1',
   daemonTier: 'small',
@@ -116,6 +116,13 @@ describe('AgentConnectOrg CRD parity', () => {
     for (const path of valuePaths(body)) {
       expect(declared, `status.${path} is not declared by the CRD`).toContain(path)
     }
+  })
+
+  // The CRD keeps the field as a deployment-level override; the control plane never
+  // writes one, so the operator derives `<prefix><CR name>` for every org it provisions.
+  it('never writes the namespace override the CRD still offers', () => {
+    expect(propertyPaths(crd.spec)).toContain('targetNamespace')
+    expect(valuePaths(buildSpec(SETTINGS, 'Example Org'))).not.toContain('targetNamespace')
   })
 
   it('names the credential secret default the CRD carries', () => {

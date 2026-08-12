@@ -150,8 +150,8 @@ export function ClusterExecutionCard({ orgId, isOwner }: { orgId: string | undef
       <div className="cardhead justify-between">
         <span className="inline-flex min-w-0 items-baseline gap-[7px]">
           <span className="cardtitle">Cluster execution</span>
-          {settings?.enabled && (
-            <span className="mono truncate text-[11px] text-(--text-tertiary)">{settings.targetNamespace}</span>
+          {settings?.enabled && status?.namespace && (
+            <span className="mono truncate text-[11px] text-(--text-tertiary)">{status.namespace}</span>
           )}
         </span>
         {settings?.enabled && (
@@ -374,8 +374,8 @@ function ConditionBadge({ condition }: { condition: ClusterConditionDto }) {
   )
 }
 
-/** The spec fields the control plane owns. `targetNamespace` and the Secret name
- *  are fixed at first enable — the CRD marks both immutable — so neither is here. */
+/** The spec fields the control plane owns. The resource name and the Secret name
+ *  are fixed at first enable, and the namespace is the operator's, so none is here. */
 function ConfigureSheet({
   settings,
   orgId,

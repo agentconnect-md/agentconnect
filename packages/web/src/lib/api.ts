@@ -2250,8 +2250,9 @@ export interface ClusterQuotaDto {
 
 export interface ClusterExecutionSettingsDto {
   enabled: boolean
-  /** Derived once at first enable; immutable afterwards, like the Secret name. */
-  targetNamespace: string
+  /** The org's AgentConnectOrg name, derived once at first enable. The envelope
+   *  namespace is not here — the operator publishes it on the resource status. */
+  resourceName: string
   controlNamespace: string
   suspend: boolean
   daemonImage: string

@@ -18,7 +18,7 @@ export {
 } from './secret-api.js'
 export { buildDaemonConfigJson, type DaemonCredentialInput } from './credential.js'
 export { ClusterMaintenanceLoop, type ClusterMaintenanceWork } from './maintenance-loop.js'
-export { ClusterNamingError, orgNamespace, orgResourceName, type ClusterEnvelopeStatus } from './spec.js'
+export { ClusterNamingError, orgResourceName, type ClusterEnvelopeStatus } from './spec.js'
 export {
   ClusterExecutionService,
   ClusterNotEnabledError,

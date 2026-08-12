@@ -18,8 +18,8 @@ const START = Date.parse('2026-01-01T00:00:00.000Z')
 function inputOf(): EnvelopeInputs {
   return {
     orgName: 'acme',
+    namespace: NS,
     spec: AgentConnectOrgSpecSchema.parse({
-      targetNamespace: NS,
       daemon: { image: 'ghcr.io/example/daemon:v1', tier: 'small' },
       runtime: { image: TARGET, tiers: [{ name: 'std' }] }
     })

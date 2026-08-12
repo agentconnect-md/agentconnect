@@ -16,8 +16,9 @@ agent-sandbox stack it builds on is documented in `deploy/k8s/README.md`.
 
 - **`AgentConnectOrg`** (`agentconnect.md/v1alpha1`, namespaced, short name
   `acorg`) — one CR per org, living in the install's _control namespace_ (the
-  Helm release namespace). `spec.targetNamespace` names the org's envelope
-  namespace. The CR is the sole desired-state carrier for the envelope; who
+  Helm release namespace). The org's envelope namespace is **derived by default**
+  — `<AC_ORG_NAMESPACE_PREFIX><CR name>` — and published on `status.namespace`.
+  The CR is the sole desired-state carrier for the envelope; who
   writes it is deployment policy (an administrator or GitOps statically, a
   control plane programmatically), and the operator does not care.
 - **Operator** (`@agentconnect.md/operator`, container bin
@@ -37,24 +38,42 @@ openAPIV3Schema with per-field descriptions and CEL transition rules). The
 zod schemas in `packages/operator/src/crd/types.ts` are the operator's runtime
 guard; a parity unit test asserts the two field trees stay identical.
 
-| spec field                    | Notes                                                                                                                                                                                |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `targetNamespace`             | DNS label, **immutable** (CEL). Shape-only at CRD level; install ownership (prefix) is enforced by the operator and admission.                                                       |
-| `suspend`                     | Quiesce the org: daemon to zero, sandboxes drained, gateway denies LLM calls.                                                                                                        |
-| `daemon.image`, `daemon.tier` | Supervisor image (change ⇒ Recreate rollout) and resource tier name.                                                                                                                 |
-| `daemon.credentialSecretName` | **Immutable**, default `ac-daemon-token`. A reference only — the Secret is written by the key authority, mounted required so the kubelet gates startup; the operator never reads it. |
-| `daemon.credentialRevision`   | Opaque; bumped after Secret rotation, projected into a pod-template annotation to force a Recreate.                                                                                  |
-| `runtime.image`               | Sandbox image; change starts the drain-based rollout.                                                                                                                                |
-| `runtime.tiers[]`             | `{name, warmReplicas}` referencing cluster master template/pool pairs; 0 keeps a cold pool.                                                                                          |
-| `quota`                       | `maxAgents`/`cpu`/`memory`/`storage`; zero values mean unlimited.                                                                                                                    |
-| `llmLimits`                   | Per-session and per-org token/request rate bounds, rendered into egress-gateway policies.                                                                                            |
-| `egressPolicy`                | `locked \| curated \| open` sandbox egress tier.                                                                                                                                     |
-| `llmDeny`                     | Emergency LLM shutoff (`all` or per-agent).                                                                                                                                          |
-| `deletionPolicy`              | `Delete` only in v1alpha1; `Archive` joins when its semantics exist.                                                                                                                 |
+**The namespace is configurable at two levels** (`reconcile/namespace.ts` resolves
+both, and every reader takes the resolved value):
 
-Status is operator-owned: `observedGeneration`, `namespace` (published
-atomically with `NamespaceReady`, only after create-or-adopt plus label
-validation), conditions (`Ready`, `NamespaceReady`, `CredentialReady`,
+1. _Install_ — `AC_ORG_NAMESPACE_PREFIX` fences every org namespace, always.
+2. _Per org_ — `spec.targetNamespace` is an optional override. **Unset** (the
+   normal path, and what the control plane always writes) derives
+   `<prefix><CR name>`: the name is unique within the control namespace, so two
+   CRs cannot collide on a namespace and none can name one outside its install —
+   by construction rather than by validation. **Set** still has to start with the
+   install's prefix, or the org lands `Degraded/NamespaceOutsidePrefix` with
+   nothing written.
+
+Either way the resolved name must be a DNS label: a CR name legal for a
+Kubernetes object (a DNS _subdomain_) can still derive an illegal namespace, and
+that lands `Degraded/InvalidNamespaceName` and writes no envelope objects. Two
+orgs aimed at one namespace are caught by the claim label
+(`Degraded/NamespaceClaimConflict`) — the operator degrades, never adopts.
+
+| spec field                    | Notes                                                                                                                                                                                 |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `targetNamespace`             | Optional DNS-label override, **immutable** (CEL). Unset ⇒ derived `<prefix><CR name>`. Shape-only at CRD level; install ownership (prefix) is enforced by the operator and admission. |
+| `suspend`                     | Quiesce the org: daemon to zero, sandboxes drained, gateway denies LLM calls.                                                                                                         |
+| `daemon.image`, `daemon.tier` | Supervisor image (change ⇒ Recreate rollout) and resource tier name.                                                                                                                  |
+| `daemon.credentialSecretName` | **Immutable**, default `ac-daemon-token`. A reference only — the Secret is written by the key authority, mounted required so the kubelet gates startup; the operator never reads it.  |
+| `daemon.credentialRevision`   | Opaque; bumped after Secret rotation, projected into a pod-template annotation to force a Recreate.                                                                                   |
+| `runtime.image`               | Sandbox image; change starts the drain-based rollout.                                                                                                                                 |
+| `runtime.tiers[]`             | `{name, warmReplicas}` referencing cluster master template/pool pairs; 0 keeps a cold pool.                                                                                           |
+| `quota`                       | `maxAgents`/`cpu`/`memory`/`storage`; zero values mean unlimited.                                                                                                                     |
+| `llmLimits`                   | Per-session and per-org token/request rate bounds, rendered into egress-gateway policies.                                                                                             |
+| `egressPolicy`                | `locked \| curated \| open` sandbox egress tier.                                                                                                                                      |
+| `llmDeny`                     | Emergency LLM shutoff (`all` or per-agent).                                                                                                                                           |
+| `deletionPolicy`              | `Delete` only in v1alpha1; `Archive` joins when its semantics exist.                                                                                                                  |
+
+Status is operator-owned: `observedGeneration`, `namespace` (the resolved name,
+published atomically with `NamespaceReady`, only after create-or-adopt plus label
+validation — and the only place a consumer learns the namespace), conditions (`Ready`, `NamespaceReady`, `CredentialReady`,
 `LimitsApplied`, `Progressing`, `Degraded`), daemon/sandboxes/pools summaries,
 `appliedLimits` (an _observation record_ of the gateway policy API — possibly
 `Unknown`, never an enforcement proof), and `rollout` progress.
@@ -79,7 +98,7 @@ only if CRD conversion webhooks become necessary.
 | `reconcile/resources.ts`      | Server-side-apply/get/delete primitives, path builders, and the envelope's fixed object names.                                                                                                                           | done          |
 | `reconcile/envelope.ts`       | The ordered inventory implemented over SSA (see §4).                                                                                                                                                                     | done          |
 | `reconcile/status.ts`         | `setCondition`, live workload observation, and the full condition/summary builder.                                                                                                                                       | done          |
-| `reconcile/finalizer.ts`      | Deletion order implemented; only claimed, prefix-owned namespaces are touched.                                                                                                                                           | done          |
+| `reconcile/finalizer.ts`      | Deletion order implemented; only the claimed, prefix-owned namespace is touched.                                                                                                                                         | done          |
 | `reconcile/rollout.ts`        | The runtime-image rollout: conditioned image patch for Suspended instances, drain-requested handshake for Running ones, stale-request sweep, and the drain deadline that moves a stuck instance to `failed` (see below). | done          |
 | `reconcile/gateway-limits.ts` | llmLimits/llmDeny → gateway policy kinds (pinned by the gateway spike).                                                                                                                                                  | **TODO stub** |
 
@@ -129,7 +148,8 @@ resource tiers are a built-in small/medium/large table, unknown names falling
 back to `small` with a warning. Order is policy-before-workload within one
 reconcile pass:
 
-1. `ensureNamespace` — create-or-adopt `targetNamespace` via claim label;
+1. `ensureNamespace` — resolve the namespace (§2), then create-or-adopt it via
+   claim label; an out-of-prefix override, a name that is no DNS label, or a
    label mismatch ⇒ `Degraded`, never adopt.
 2. `ensureServiceAccounts` — daemon SA; runtime SA with
    `automountServiceAccountToken: false` and zero bindings.
@@ -223,8 +243,13 @@ differ (`CLUSTER_ORG_NAMESPACE_PREFIX`, which must equal the operator install's
 - `org_cluster_execution` (one row per org) holds only the spec fields the
   control plane owns. Status is never mirrored there: the console reads it live
   off the CR, so a row can never disagree with the cluster.
-- `targetNamespace` is derived once as `<prefix><org id folded to a DNS label>`
-  and stored, because the CRD marks the field immutable.
+- `resourceName` — the CR's name — is derived once as the org id folded to a DNS
+  label, truncated so the operator's `<prefix><CR name>` still fits in 63
+  characters, and stored: it is the handle every later call addresses the
+  envelope by. The control plane never writes `spec.targetNamespace`, so the
+  namespace is the operator's to derive; anything that needs it (the credential
+  Secret write) reads `status.namespace` off the CR. Server-side apply only
+  prunes fields this manager owns, so an override written by hand survives.
 - Writes are server-side apply under field manager
   `agentconnect-control-plane`, so the operator's own manager is untouched;
   the control plane never writes `/status`, finalizers, or envelope objects.
@@ -238,8 +263,8 @@ differ (`CLUSTER_ORG_NAMESPACE_PREFIX`, which must equal the operator install's
   operator reconciles the CR and nothing here re-reads on a timer.
 - Deleting an organization records its envelope in `pending_envelope_teardown`
   **inside the delete transaction**, because the cascade removes the only copy
-  of the immutable `targetNamespace` and after that nothing could name the
-  namespace and workloads the operator is still keeping alive. Reading the row
+  of its `resourceName` and after that nothing could name the resource, namespace
+  and workloads the operator is still keeping alive. Reading the row
   there is also what serializes the boundary: an enable that committed first is
   visible, and one that has not is blocked by the org row's `FOR UPDATE` and
   then fails its foreign key. The delete route retires the CR immediately, and a
@@ -333,8 +358,9 @@ Four orderings carry the rest:
 
 - **Secret before revision.** A failed write leaves the running pod on its old,
   still-valid key instead of rolling it onto a credential that was never
-  published. The namespace not existing yet is the ordinary "just enabled" state
-  and answers 409 rather than recording anything.
+  published. The namespace not existing yet — or `status.namespace` not being
+  published yet, which is read BEFORE the key is minted — is the ordinary "just
+  enabled" state and answers 409 rather than recording anything.
 - **Identity before publication.** A first issue records the provisioned
   `credentialDaemonId` before anything can fail, and revokes its own key if
   publication does — so a retry re-keys that daemon instead of provisioning

@@ -35,7 +35,8 @@ const DNS_LABEL = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/
 // charts/operator is authoritative for the API server. A parity test keeps
 // the two field sets aligned.
 export const AgentConnectOrgSpecSchema = z.object({
-  targetNamespace: z.string().regex(DNS_LABEL, 'targetNamespace must be a DNS label'),
+  // Optional override; unset means the operator derives `<install prefix><CR name>`.
+  targetNamespace: z.string().regex(DNS_LABEL, 'targetNamespace must be a DNS label').optional(),
   displayName: z.string().optional(),
   suspend: z.boolean().default(false),
   daemon: z.object({

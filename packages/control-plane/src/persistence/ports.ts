@@ -4929,8 +4929,9 @@ export interface ClusterExecutionSettings {
   /** Bumped on every write; the provisioner's fence against a concurrent writer
    *  reverting the resource to an older spec. */
   specRevision: number
-  /** Derived once from the install prefix and the org id; immutable afterwards. */
-  targetNamespace: string
+  /** The org's `AgentConnectOrg` name in the control namespace, derived once from
+   *  the org id; the operator derives the envelope namespace from it. */
+  resourceName: string
   suspend: boolean
   daemonImage: string
   daemonTier: string
@@ -4968,7 +4969,7 @@ export interface ClusterExecutionPatch {
 
 /** The values a first write fills in for anything the caller left unset. */
 export interface ClusterExecutionDefaults {
-  targetNamespace: string
+  resourceName: string
   daemonImage: string
   daemonTier: string
   credentialSecretName: string
@@ -4981,7 +4982,7 @@ export interface ClusterExecutionDefaults {
 /** A deleted org's envelope, still waiting for its resource to be removed. */
 export interface PendingEnvelopeTeardown {
   orgId: string
-  targetNamespace: string
+  resourceName: string
 }
 
 /** A daemon key the provisioner has finished with and must still revoke. */
@@ -5066,9 +5067,9 @@ export interface OrgClusterExecutionRepo {
    *  winner's row backwards. Idempotent. */
   createIfAbsent(orgId: OrgId, defaults: ClusterExecutionDefaults): Promise<void>
   /** Create from `defaults` merged with `patch`, or apply `patch` to the existing
-   *  row, always bumping `specRevision`. `targetNamespace` and
-   *  `credentialSecretName` are only ever written by the create branch — the CRD
-   *  marks both immutable. */
+   *  row, always bumping `specRevision`. `resourceName` and
+   *  `credentialSecretName` are only ever written by the create branch — the CR
+   *  name addresses a live envelope and the CRD marks the Secret name immutable. */
   upsert(
     orgId: OrgId,
     defaults: ClusterExecutionDefaults,

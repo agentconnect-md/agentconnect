@@ -1,8 +1,10 @@
 /**
  * Pure projections between the stored cluster-execution settings and the
  * `AgentConnectOrg` resource (docs/designs/agentconnect-org-operator.md §2):
- * the org namespace name, the spec the control plane applies, and the status
- * shape the console reads back.
+ * the CR name, the spec the control plane applies, and the status shape the
+ * console reads back. The envelope NAMESPACE is deliberately not among them —
+ * the control plane never sets the CRD's override, so the operator derives it
+ * from the CR name and publishes it on `status`.
  */
 import type { ClusterExecutionSettings } from '../persistence/ports.js'
 import { CONDITION_TYPES, type AgentConnectOrgSpec, type AgentConnectOrgStatus, type ConditionType } from './crd.js'
@@ -19,38 +21,33 @@ export class ClusterNamingError extends Error {
 }
 
 /**
- * The org's envelope namespace: the install's prefix plus the org id, folded to
- * a DNS label. The prefix is what an install claims ownership by — the operator
- * and its admission policies refuse a namespace outside it — so it is never
- * derived from the org, and a truncated tail keeps the id's leading (unique)
- * characters. Derived ONCE at enable time and stored, because the CRD marks
- * `targetNamespace` immutable: re-deriving it after a prefix change would
- * produce a name no write could ever apply.
+ * The org's CR name in the control namespace: the org id folded to a DNS label.
+ * The operator derives the envelope namespace as `<install prefix><CR name>`, so
+ * the name is truncated to leave the prefix room and a truncated tail keeps the
+ * id's leading (unique) characters. Derived ONCE at enable time and stored,
+ * because the name is the durable handle everything else addresses the envelope
+ * by — including the tombstone that outlives the organization row.
  */
-export function orgNamespace(prefix: string, orgId: string): string {
+export function orgResourceName(prefix: string, orgId: string): string {
   const slug = orgId
     .toLowerCase()
     .replace(/[^a-z0-9-]/g, '-')
     .replace(/^-+|-+$/g, '')
-  // An empty fold would collapse every such org onto the bare prefix — one
-  // namespace for many orgs is the one outcome worse than refusing the write.
-  if (!slug) throw new ClusterNamingError(`org id "${orgId}" has no characters usable in a namespace`)
-  const name = `${prefix}${slug}`.slice(0, MAX_DNS_LABEL).replace(/-+$/, '')
+  // An empty fold would collapse every such org onto one name — one envelope for
+  // many orgs is the one outcome worse than refusing the write.
+  if (!slug) throw new ClusterNamingError(`org id "${orgId}" has no characters usable in a resource name`)
+  // Clamped: a negative budget would make slice() trim from the END and quietly
+  // return a name whose prefixed namespace is longer than a label allows.
+  const name = slug.slice(0, Math.max(0, MAX_DNS_LABEL - prefix.length)).replace(/-+$/, '')
   if (!DNS_LABEL.test(name)) {
-    throw new ClusterNamingError(`derived namespace "${name}" is not a DNS label`)
+    throw new ClusterNamingError(`derived resource name "${name}" is not a DNS label under prefix "${prefix}"`)
   }
   return name
-}
-
-/** The CR name in the control namespace; one per org, matching its namespace. */
-export function orgResourceName(targetNamespace: string): string {
-  return targetNamespace
 }
 
 /** The desired `spec` for an org — everything the control plane owns, nothing else. */
 export function buildSpec(settings: ClusterExecutionSettings, displayName?: string): AgentConnectOrgSpec {
   return {
-    targetNamespace: settings.targetNamespace,
     ...(displayName ? { displayName } : {}),
     suspend: settings.suspend,
     daemon: {

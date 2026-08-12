@@ -4,9 +4,10 @@
  * One row per organization holding the spec fields the control plane owns. The
  * row is desired state only — envelope status is read live from the
  * `AgentConnectOrg` resource, so nothing here can go stale against the cluster.
- * `targetNamespace` and `credentialSecretName` are written exactly once, by the
- * create branch of {@link PgOrgClusterExecutionRepo.upsert}: the CRD marks both
- * immutable, so a later rewrite could never be applied.
+ * `resourceName` and `credentialSecretName` are written exactly once, by the
+ * create branch of {@link PgOrgClusterExecutionRepo.upsert}: the CR name addresses
+ * a live envelope and the CRD marks the Secret name immutable, so a later rewrite
+ * could never be applied.
  */
 import { Prisma, type OrgClusterExecution, type PrismaClient } from '../../generated/prisma/client.js'
 import type {
@@ -56,7 +57,7 @@ function toRecord(row: OrgClusterExecution): ClusterExecutionSettings {
     enabled: row.enabled,
     specRevision: row.specRevision,
     credentialRotationSeq: row.credentialRotationSeq,
-    targetNamespace: row.targetNamespace,
+    resourceName: row.resourceName,
     suspend: row.suspend,
     daemonImage: row.daemonImage,
     daemonTier: row.daemonTier,
@@ -89,7 +90,7 @@ export class PgOrgClusterExecutionRepo implements OrgClusterExecutionRepo {
 
   async listPendingTeardowns(limit: number): Promise<PendingEnvelopeTeardown[]> {
     return this.prisma.pendingEnvelopeTeardown.findMany({
-      select: { orgId: true, targetNamespace: true },
+      select: { orgId: true, resourceName: true },
       orderBy: { createdAt: 'asc' },
       take: limit
     })
@@ -266,7 +267,7 @@ export class PgOrgClusterExecutionRepo implements OrgClusterExecutionRepo {
       // The resource must go too, and the cluster call can fail — so record the
       // intent here, where it is atomic with the credential being dropped.
       await tx.pendingEnvelopeTeardown.createMany({
-        data: [{ orgId, targetNamespace: current.targetNamespace }],
+        data: [{ orgId, resourceName: current.resourceName }],
         skipDuplicates: true
       })
       return true
@@ -298,7 +299,7 @@ export class PgOrgClusterExecutionRepo implements OrgClusterExecutionRepo {
         {
           orgId,
           enabled: false,
-          targetNamespace: defaults.targetNamespace,
+          resourceName: defaults.resourceName,
           daemonImage: defaults.daemonImage,
           daemonTier: defaults.daemonTier,
           credentialSecretName: defaults.credentialSecretName,
@@ -327,7 +328,7 @@ export class PgOrgClusterExecutionRepo implements OrgClusterExecutionRepo {
       create: {
         orgId,
         enabled: patch.enabled ?? false,
-        targetNamespace: defaults.targetNamespace,
+        resourceName: defaults.resourceName,
         suspend: patch.suspend ?? false,
         daemonImage: patch.daemonImage ?? defaults.daemonImage,
         daemonTier: patch.daemonTier ?? defaults.daemonTier,

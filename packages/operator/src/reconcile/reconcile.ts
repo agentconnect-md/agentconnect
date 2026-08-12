@@ -1,7 +1,7 @@
 import { K8sApiError } from '@agentconnect.md/k8s-client'
 import { AgentConnectOrgSpecSchema, FINALIZER, type AgentConnectOrg } from '../crd/types.js'
 import { newObservations, type ReconcileContext } from './context.js'
-import { reconcileEnvelope, type EnvelopeInputs } from './envelope.js'
+import { envelopeInputs, reconcileEnvelope, type EnvelopeInputs } from './envelope.js'
 import { daemonPodsGone, reconcileDeletion, suspendAllSandboxes } from './finalizer.js'
 import { renderGatewayPolicies } from './gateway-limits.js'
 import { reconcileRollout } from './rollout.js'
@@ -32,14 +32,14 @@ export async function reconcile(ctx: ReconcileContext, name: string): Promise<Wo
     await writeStatus(ctx, org, obs)
     return {}
   }
-  const input: EnvelopeInputs = { orgName: name, spec: parsed.data }
+  const input: EnvelopeInputs = envelopeInputs(ctx, name, parsed.data)
   await reconcileEnvelope(ctx, input, obs)
   // suspend also quiesces bound Sandboxes — but only after the daemon pod finished draining,
   // since suspension deletes the runtime pod a mid-drain daemon may still be using. The
   // org-labeled pod deletion event re-enqueues this CR the moment the daemon is gone.
   if (input.spec.suspend && obs.namespaceReady) {
-    if (await daemonPodsGone(ctx, input.spec.targetNamespace)) {
-      await suspendAllSandboxes(ctx, input.spec.targetNamespace)
+    if (await daemonPodsGone(ctx, input.namespace)) {
+      await suspendAllSandboxes(ctx, input.namespace)
     } else {
       obs.progressing = true
     }

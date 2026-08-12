@@ -204,7 +204,7 @@ async function observeCredential(
 
 /** Read the live workload state the status summaries derive from. */
 export async function observeWorkloads(ctx: ReconcileContext, input: EnvelopeInputs, obs: Observations): Promise<void> {
-  const ns = input.spec.targetNamespace
+  const ns = input.namespace
   const deployment = await getOrNull<DeploymentRead>(ctx.http, groupPath('apps/v1', ns, 'deployments', DAEMON_NAME))
   if (deployment) {
     const desired = deployment.spec?.replicas ?? 0
