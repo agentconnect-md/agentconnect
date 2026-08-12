@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import {
+  additionalWorkspaceDirectories,
   clusterWorkspaceCwd,
   prepareClusterWorkspace,
   prepareWorkspaceForActivation,
@@ -52,6 +53,8 @@ let originUrl = 'https://github.com/acme/private.git'
  *  the configured one — which is exactly the case a marker must not paper over. */
 let headBranch = 'main'
 let pullFails = false
+/** The pod refusing to empty a path — a conversion that proceeded anyway would serve the old tree. */
+let clearFails = false
 
 function recordingRunner(cwd: string | undefined, env: Record<string, string> = {}): GitRunner {
   const run = async (args: string[]): Promise<string> => {
@@ -118,10 +121,14 @@ beforeEach(() => {
   originUrl = 'https://github.com/acme/private.git'
   headBranch = 'main'
   pullFails = false
+  clearFails = false
   // Every agent here runs in a pod, so both seams resolve to the sandbox.
   setWorkspaceGitRunnerResolver((_agentId, cwd) => recordingRunner(cwd))
   setWorkspacePathClearer(async (_agentId, root) => {
     cleared.push(root)
+    // Emptying the checkout is precisely what makes the pod's probe stop finding one.
+    if (root === CHECKOUT) checkoutExists = false
+    if (clearFails) return 'permission denied'
     return undefined
   })
   setSandboxWorkspaceMode(true)
@@ -153,6 +160,16 @@ describe('clusterWorkspaceCwd', () => {
 
   it('applies the configured working subdirectory inside the pod', () => {
     expect(clusterWorkspaceCwd(clusterAgent({ agentDir: 'services/api' }), POD_ROOT)).toBe(`${CHECKOUT}/services/api`)
+  })
+
+  it('names the enclosing checkout in the POD coordinates the cwd is in', () => {
+    // The runtime gets the repository root separately so repo-wide tools can reach `.git` and
+    // siblings. Deriving it the local way means `realpathSync` on a path that exists on no
+    // filesystem this daemon can see — which throws, and takes every cluster session with it.
+    const agent = clusterAgent({ agentDir: 'services/api' })
+    expect(additionalWorkspaceDirectories(agent, clusterWorkspaceCwd(agent, POD_ROOT))).toEqual([CHECKOUT])
+    // No subdirectory means the cwd already IS the root, and a second copy of it says nothing.
+    expect(additionalWorkspaceDirectories(clusterAgent(), CHECKOUT)).toEqual([])
   })
 
   it('still refuses session isolation rather than half-supporting it', () => {
@@ -349,9 +366,13 @@ describe('replacing a cluster workspace in place', () => {
     pullFails = true
     await prepareClusterWorkspace(moved, POD_ROOT)
 
-    await expect(prepareWorkspaceForActivation(moved, { reconcileMaterialization: true })).rejects.toThrow(
-      /cannot be converted in place with --k8s yet/
-    )
+    // Unproven, so the edit's replacement is still due: the next preparation empties the checkout
+    // and clones the configured branch rather than serving `main` forever.
+    await prepareWorkspaceForActivation(moved, { reconcileMaterialization: true })
+    calls.length = 0
+    await prepareClusterWorkspace(moved, POD_ROOT)
+    expect(cleared).toEqual([CHECKOUT])
+    expect(calls.find((call) => call.args[0] === 'clone')?.args).toContain('release')
   })
 
   it('records the marker once the volume is provably on the configured branch', async () => {
@@ -385,10 +406,8 @@ describe('replacing a cluster workspace in place', () => {
     // no pull has ever reached.
     originUrl = 'https://github.com/acme/renamed.git'
     await prepareClusterWorkspace(renamed, POD_ROOT)
-
-    await expect(prepareWorkspaceForActivation(renamed, { reconcileMaterialization: true })).rejects.toThrow(
-      /cannot be converted in place with --k8s yet/
-    )
+    // Nothing an EDIT asked for, so the unproven volume is left in place rather than replaced.
+    expect(cleared).toEqual([])
 
     // And once a pull from the new origin does succeed, it is proven and recorded.
     pullFails = false
@@ -396,19 +415,82 @@ describe('replacing a cluster workspace in place', () => {
     await expect(prepareWorkspaceForActivation(renamed, { reconcileMaterialization: true })).resolves.toBeTypeOf(
       'function'
     )
+    expect(cleared).toEqual([])
   })
 
-  it('refuses only a conversion of an EXISTING checkout, which has no rollback in a pod', async () => {
-    // The one case that needs the contract a pod cannot offer: a staged clone, an atomic swap, and a
-    // rollback that restores the previous tree. Unrefused, it stages a clone at a daemon-absolute
-    // path, which the shim's target fence rejects with an error about containment that says nothing
-    // about what was attempted.
+  it('records a conversion of an EXISTING checkout instead of refusing it', async () => {
+    // Activation cannot do the replacement itself: it has no atomic swap through the shim and runs
+    // before the CP has acknowledged the edit, so anything destructive here would have to survive a
+    // rollback that cannot restore it. It records the intent; the pod's preparation carries it out.
     const agent = await withProvenMarker()
     const moved = { ...agent, workspace: { ...agent.workspace, gitRepo: 'https://github.com/acme/other.git' } } as Agent
-    await expect(prepareWorkspaceForActivation(moved, { reconcileMaterialization: true })).rejects.toThrow(
-      /cannot be converted in place with --k8s yet/
+    await expect(prepareWorkspaceForActivation(moved, { reconcileMaterialization: true })).resolves.toBeTypeOf(
+      'function'
     )
     expect(calls).toEqual([])
+    expect(cleared).toEqual([])
+
+    checkoutExists = true
+    await prepareClusterWorkspace(moved, POD_ROOT)
+    // Emptied, then re-cloned from the new repository — the replacement the edit asked for.
+    expect(cleared).toEqual([CHECKOUT])
+    expect(calls.find((call) => call.args[0] === 'clone')?.args).toContain('https://github.com/acme/other.git')
+    // Never converged onto the previous tree, which is what a rewritten origin alone would do.
+    expect(calls.some((call) => call.args[1] === 'set-url')).toBe(false)
+  })
+
+  it('does not replace the volume twice for one edit', async () => {
+    // The marker advances when preparation proves the new workspace, and that — not the intent
+    // file — is what ends the conversion. A leftover intent must not re-wipe a converged volume.
+    const agent = await withProvenMarker()
+    const moved = { ...agent, workspace: { ...agent.workspace, gitRepo: 'https://github.com/acme/other.git' } } as Agent
+    await prepareWorkspaceForActivation(moved, { reconcileMaterialization: true })
+    checkoutExists = true
+    await prepareClusterWorkspace(moved, POD_ROOT)
+    checkoutExists = true
+    await prepareClusterWorkspace(moved, POD_ROOT)
+    expect(cleared).toEqual([CHECKOUT])
+  })
+
+  it('takes the intent back when the activation it belongs to fails', async () => {
+    // The rollback the daemon runs when the host will not start. The edit never became authoritative,
+    // so the volume must not be replaced on some later session as if it had.
+    const agent = await withProvenMarker()
+    const moved = { ...agent, workspace: { ...agent.workspace, gitRepo: 'https://github.com/acme/other.git' } } as Agent
+    const rollback = await prepareWorkspaceForActivation(moved, { reconcileMaterialization: true })
+    rollback()
+
+    checkoutExists = true
+    await prepareClusterWorkspace(moved, POD_ROOT)
+    expect(cleared).toEqual([])
+  })
+
+  it('fails closed when the pod will not empty the checkout', async () => {
+    // Proceeding would clone into a non-empty directory — or, worse, converge the new origin onto
+    // the previous repository's tree and serve it as the new workspace.
+    const agent = await withProvenMarker()
+    const moved = { ...agent, workspace: { ...agent.workspace, gitRepo: 'https://github.com/acme/other.git' } } as Agent
+    await prepareWorkspaceForActivation(moved, { reconcileMaterialization: true })
+    checkoutExists = true
+    clearFails = true
+    await expect(prepareClusterWorkspace(moved, POD_ROOT)).rejects.toThrow(/could not replace/)
+    expect(calls.some((call) => call.args[0] === 'clone')).toBe(false)
+  })
+
+  it('removes the checkout when the workspace converts back to from-scratch', async () => {
+    // The pod's volume outlives the mode, and the runtime's cwd becomes the mount root: a `repo/`
+    // left behind would sit in the scratch workspace as the previous repository's working tree.
+    const agent = await withProvenMarker()
+    const scratch = { ...agent, workspace: { ...agent.workspace, mode: 'from-scratch' } } as Agent
+    await prepareWorkspaceForActivation(scratch, { reconcileMaterialization: true })
+    checkoutExists = true
+    expect(await prepareClusterWorkspace(scratch, POD_ROOT)).toBe(POD_ROOT)
+    expect(cleared).toEqual([CHECKOUT])
+    expect(calls).toEqual([])
+
+    // And the marker now says scratch, so the next session does not empty it again.
+    await prepareClusterWorkspace(scratch, POD_ROOT)
+    expect(cleared).toEqual([CHECKOUT])
   })
 
   it('leaves a from-scratch cluster workspace alone, whose activation touches only bookkeeping', async () => {
