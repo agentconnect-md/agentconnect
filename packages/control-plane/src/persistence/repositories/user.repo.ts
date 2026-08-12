@@ -315,7 +315,10 @@ export async function ensurePersonalOrg(
       // this statement waited on) — move to the next candidate with the transaction
       // still healthy. `count: 1` ⇒ the row is OURS, and `slug` is unique, so reading it
       // back by slug cannot pick up someone else's org.
-      const { count } = await tx.org.createMany({ data: [{ name, slug }], skipDuplicates: true })
+      const { count } = await tx.org.createMany({
+        data: [{ name, slug, createdByUserId: userId }],
+        skipDuplicates: true
+      })
       if (count === 0) continue
       const org = await tx.org.findUniqueOrThrow({ where: { slug }, select: { id: true } })
       await tx.membership.create({ data: { orgId: org.id, userId, role: 'owner' } })

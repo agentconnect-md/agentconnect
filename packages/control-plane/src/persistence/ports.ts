@@ -3908,7 +3908,7 @@ export interface OrgRepo {
     name: string | null
     slug: string
     ownerUserId: string
-    /** Optional deployment quota; checked atomically against owner memberships. */
+    /** Optional deployment quota; checked atomically against orgs created by this user. */
     maxOrgsPerUser?: number
   }): Promise<OrgRecord>
   /** Update org settings. Throws P2025 when absent, P2002 on a slug collision. */

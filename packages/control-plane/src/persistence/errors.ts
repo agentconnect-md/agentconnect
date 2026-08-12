@@ -237,7 +237,7 @@ export class OrgCreationLimitReached extends Error {
     super(
       limit === 0
         ? 'organization creation is disabled for non-admin accounts'
-        : `non-admin accounts may own at most ${limit} organizations`
+        : `non-admin accounts may create at most ${limit} organizations`
     )
     this.name = 'OrgCreationLimitReached'
   }

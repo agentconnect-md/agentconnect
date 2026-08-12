@@ -303,11 +303,15 @@ describe('PgOrgRepo', () => {
       emailVerified: true
     })
     const orgs = new PgOrgRepo(prisma)
+    const other = await prisma.user.create({ data: { email: 'quota-other@acme.com' } })
+    const invitedOrg = await orgs.create({ name: null, slug: 'quota-invited', ownerUserId: other.id })
+    await prisma.membership.create({ data: { orgId: invitedOrg.id, userId, role: 'owner' } })
 
     await expect(
       orgs.create({ name: null, slug: 'quota-denied', ownerUserId: userId, maxOrgsPerUser: 1 })
     ).rejects.toMatchObject({ code: 'ORG_CREATION_LIMIT_REACHED' })
 
+    // An owner membership granted by somebody else does not consume this user's creation quota.
     await expect(
       orgs.create({ name: null, slug: 'quota-allowed', ownerUserId: userId, maxOrgsPerUser: 2 })
     ).resolves.toMatchObject({ slug: 'quota-allowed' })

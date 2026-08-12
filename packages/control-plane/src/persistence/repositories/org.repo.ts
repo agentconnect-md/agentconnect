@@ -80,11 +80,16 @@ export class PgOrgRepo implements OrgRepo {
     const org = await this.transaction(async (tx) => {
       if (input.maxOrgsPerUser !== undefined) {
         await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "app_user" WHERE "id" = ${input.ownerUserId} FOR UPDATE`)
-        const owned = await tx.membership.count({ where: { userId: input.ownerUserId, role: 'owner' } })
-        if (owned >= input.maxOrgsPerUser) throw new OrgCreationLimitReached(input.maxOrgsPerUser)
+        const created = await tx.org.count({ where: { createdByUserId: input.ownerUserId } })
+        if (created >= input.maxOrgsPerUser) throw new OrgCreationLimitReached(input.maxOrgsPerUser)
       }
       const created = await tx.org.create({
-        data: { name: input.name, slug: input.slug, icon: icon as Prisma.InputJsonValue }
+        data: {
+          name: input.name,
+          slug: input.slug,
+          icon: icon as Prisma.InputJsonValue,
+          createdByUserId: input.ownerUserId
+        }
       })
       await tx.membership.create({ data: { orgId: created.id, userId: input.ownerUserId, role: 'owner' } })
       if (this.presetAgents) {

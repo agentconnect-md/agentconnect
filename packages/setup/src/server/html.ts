@@ -355,7 +355,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
       <h2>Deployment options</h2>
       <div class="panel">
         <label class="field"><span><input id="preset-agents-enabled" type="checkbox"> Enable preset Agents</span></label>
-        <label class="field">Max organizations per non-ADMIN user<input id="max-orgs-per-non-admin-user" type="number" min="0" step="1" value="1"></label>
+        <label class="field">Max organizations created per non-ADMIN user<input id="max-orgs-per-non-admin-user" type="number" min="0" step="1" value="1"></label>
         <div class="row"><button id="save-options">Save options</button></div>
       </div>
     </section>

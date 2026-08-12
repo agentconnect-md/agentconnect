@@ -152,7 +152,7 @@ export const DeploymentConfigValuesV1Schema = z
       .nullable(),
     features: z.strictObject({
       presetAgentsEnabled: z.boolean(),
-      /** Maximum organizations a non-ADMIN account may own through the console. */
+      /** Maximum organizations a non-ADMIN account may create through the console. */
       maxOrgsPerNonAdminUser: z.number().int().nonnegative().default(1)
     })
   })

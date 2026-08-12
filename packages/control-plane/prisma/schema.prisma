@@ -69,6 +69,8 @@ model Org {
   // Optional display name; when absent the console falls back to `slug`.
   name                   String?
   slug                   String          @unique
+  // Immutable provenance: the user credited with creating the org; personal orgs use their recipient.
+  createdByUserId        String?
   // Console avatar descriptor (protocol AgentIcon): {kind:'runtime'} | {kind:'glyph',glyph,color}
   // | {kind:'image'}. Null ⇒ generated default (glyph plate keyed off the org id). An `image`
   // icon's bytes live in the object store (docs/designs/icon-uploads.md), served by GET
@@ -80,6 +82,7 @@ model Org {
   createdAt              DateTime        @default(now()) @db.Timestamptz(6)
   updatedAt              DateTime        @updatedAt @db.Timestamptz(6)
 
+  createdBy                 User?                         @relation("OrgCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
   members                   Membership[]
   daemons                   Daemon[]
   agents                    Agent[]
@@ -106,6 +109,7 @@ model Org {
   environmentEntries        OrganizationEnvironmentEntry[]
   clusterExecution          OrgClusterExecution?
 
+  @@index([createdByUserId])
   @@map("org")
 }
 
@@ -128,6 +132,7 @@ model User {
   createdAt               DateTime  @default(now()) @db.Timestamptz(6)
 
   memberships                      Membership[]
+  createdOrgs                       Org[]                      @relation("OrgCreatedBy")
   apiKeys                          ApiKey[]
   createdAgents                    Agent[]                    @relation("AgentCreatedBy")
   modifiedAgents                   Agent[]                    @relation("AgentModifiedBy")
@@ -2837,4 +2842,3 @@ model PendingEnvelopeTeardown {
 
   @@map("pending_envelope_teardown")
 }
-
