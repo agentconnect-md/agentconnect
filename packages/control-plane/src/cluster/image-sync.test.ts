@@ -72,11 +72,15 @@ class FakeRepo implements OrgClusterExecutionRepo {
     return null
   }
 
-  /** Revision-fenced, like the repo's conditional UPDATE. */
-  async restoreDaemonImage(orgId: OrgId, daemonImage: string, expectedRevision: number): Promise<void> {
+  /** Conditional on the image, and reports what the row ends up holding. */
+  async restoreDaemonImage(orgId: OrgId, daemonImage: string, expectedImage: string): Promise<string | null> {
     const row = this.rows.get(orgId)
-    if (!row || row.specRevision !== expectedRevision) return
-    this.rows.set(orgId, { ...row, daemonImage, specRevision: row.specRevision + 1 })
+    if (!row) return null
+    if (row.daemonImage === expectedImage) {
+      this.rows.set(orgId, { ...row, daemonImage, specRevision: row.specRevision + 1 })
+      return daemonImage
+    }
+    return row.daemonImage
   }
 
   async listEnabled(): Promise<ClusterExecutionSettings[]> {
@@ -120,6 +124,7 @@ class FakeRepo implements OrgClusterExecutionRepo {
     const next: ClusterExecutionSettings = {
       ...base,
       specRevision: base.specRevision + 1,
+      ...(patch.suspend !== undefined ? { suspend: patch.suspend } : {}),
       ...(patch.daemonImage !== undefined ? { daemonImage: patch.daemonImage } : {})
     }
     this.rows.set(orgId, next)
@@ -267,21 +272,48 @@ describe('ClusterExecutionService.setDaemonVersion', () => {
   })
 
   /**
-   * A peer that edited the row since owns it, so reverting blindly would discard their
-   * value. It still counts as abandoned: what will be applied is their image, not this
-   * call's, so the caller's operation is genuinely not going to happen.
+   * A peer that replaced the image owns it, so reverting blindly would discard their value.
+   * It still counts as abandoned: what will be applied is their image, not this call's, so
+   * the caller's operation is genuinely not going to happen.
    */
-  it('leaves a peer’s later edit alone and still reports abandoned', async () => {
+  it('leaves a peer’s later image alone and still reports abandoned', async () => {
     const { repo, api, service } = build()
     repo.seed('acme', 'registry.example.test/agentconnect/daemon:v1.4.0')
     api.failFor.add('acme')
     const deferred = await service.setDaemonVersion(OrgId('acme'), '1.5.0').catch((e) => e)
-    // A peer writes after the failed apply, bumping the revision the fence compares.
     await repo.upsert(OrgId('acme'), {} as never, {
       daemonImage: 'registry.example.test/agentconnect/daemon:v1.7.0'
     })
     expect(await service.abandonDaemonVersion(OrgId('acme'), deferred)).toBe(true)
     expect((await repo.get(OrgId('acme')))!.daemonImage).toBe('registry.example.test/agentconnect/daemon:v1.7.0')
+  })
+
+  /**
+   * The hole a revision fence left open. Any unrelated settings edit — quota here — bumps
+   * the revision while leaving this command's image exactly where it was, so a
+   * revision-fenced restore matched nothing and reported success over a change that the
+   * re-apply pass would still enact. Fencing on the IMAGE is what closes it.
+   */
+  it('still rolls back after an unrelated settings edit bumped the revision', async () => {
+    const { repo, api, service } = build()
+    repo.seed('acme', 'registry.example.test/agentconnect/daemon:v1.4.0')
+    api.failFor.add('acme')
+    const deferred = await service.setDaemonVersion(OrgId('acme'), '1.5.0').catch((e) => e)
+    await repo.upsert(OrgId('acme'), {} as never, { suspend: true })
+
+    expect(await service.abandonDaemonVersion(OrgId('acme'), deferred)).toBe(true)
+    expect((await repo.get(OrgId('acme')))!.daemonImage).toBe('registry.example.test/agentconnect/daemon:v1.4.0')
+  })
+
+  // Verified, not assumed: a restore that silently matched nothing must not read as success.
+  it('reports not-abandoned when the image survives the restore', async () => {
+    const { repo, api, service } = build()
+    repo.seed('acme', 'registry.example.test/agentconnect/daemon:v1.4.0')
+    api.failFor.add('acme')
+    const deferred = await service.setDaemonVersion(OrgId('acme'), '1.5.0').catch((e) => e)
+    // A store whose conditional update lands nowhere and says nothing about it.
+    repo.restoreDaemonImage = async () => 'registry.example.test/agentconnect/daemon:v1.5.0'
+    expect(await service.abandonDaemonVersion(OrgId('acme'), deferred)).toBe(false)
   })
 
   // The restore failing is the one case where the image really is still coming.

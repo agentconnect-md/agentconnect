@@ -17,7 +17,7 @@ import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
 import type { DaemonView, DaemonLiveness, DaemonRegistry } from '../../ports.js'
 import { isSyntheticEmail } from '../../persistence/ports.js'
-import { DaemonId } from '../../domain/ids.js'
+import { DaemonId, type OrgId } from '../../domain/ids.js'
 import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
 import { canView, canEdit, canManageSharing, type ViewCtx } from '../../authorization/policy.js'
 import { resolveShareSet } from '../sharing.js'
@@ -38,6 +38,7 @@ import { provisionDaemonConnect } from '../onboarding.js'
 import { detachDaemon } from '../daemon-removal.js'
 import { Tag } from '../plugins/openapi.js'
 import { CLUSTER_API_ERROR_CODE, sendClusterFailure } from '../cluster-failure.js'
+import type { ClusterExecutionService } from '../../cluster/index.js'
 import {
   canonicalVersion,
   ClusterEnvelopeNotEnabledError,
@@ -89,6 +90,46 @@ export async function retryArm(
       return true
     } catch (err) {
       log?.warn({ opId, daemonId, err }, 'lifecycle op arm recovery attempt failed')
+    }
+  }
+  return false
+}
+
+/**
+ * Background recovery for an abandonment that could not be confirmed in-request. An image
+ * still durable will be applied by the re-apply pass, so the op must not be closed failed
+ * until the rollback is OBSERVED — this keeps retrying until it is, then closes it.
+ *
+ * It re-reads the op first and stops if it is no longer pending: a cluster that recovered
+ * meanwhile applies the image, the replacement pod settles the op `succeeded`, and rolling
+ * back after that would revert an upgrade that did complete.
+ *
+ * Fire-and-forget and bounded, like {@link retryArm}. Exhausting the delays leaves a pending
+ * op whose image is durable — the one state that can still expire as failed while the change
+ * later lands, and the reason a durable rollback intent is the next thing this would need.
+ */
+export async function retryAbandon(
+  cluster: Pick<ClusterExecutionService, 'abandonDaemonVersion'>,
+  ops: DaemonLifecycleOpRepo,
+  opId: string,
+  orgId: OrgId,
+  deferred: ClusterImageWriteDeferredError,
+  delaysMs: number[],
+  log?: { warn: (obj: unknown, msg?: string) => void }
+): Promise<boolean> {
+  for (const delay of delaysMs) {
+    await new Promise<void>((r) => {
+      const t = setTimeout(r, delay)
+      t.unref?.() // a dangling recovery must never keep the process alive
+    })
+    try {
+      const op = await ops.getById(opId)
+      if (!op || op.status !== 'pending') return true // decided elsewhere; leave the state alone
+      if (!(await cluster.abandonDaemonVersion(orgId, deferred))) continue
+      await ops.settle(opId, 'failed', clusterUpgradeFailure(deferred.cause), new Date())
+      return true
+    } catch (err) {
+      log?.warn({ opId, orgId, err }, 'cluster daemon upgrade: rollback recovery attempt failed')
     }
   }
   return false
@@ -546,7 +587,18 @@ export function daemonRoutes(deps: HttpDeps) {
             deferred = error
             req.log.warn(
               { daemonId: id, opId: opRow.id, image: error.image, err: error.cause },
-              'cluster daemon upgrade: image recorded, rollback failed; the re-apply pass will converge it'
+              'cluster daemon upgrade: image still durable after rollback; scheduling recovery'
+            )
+            // The op stays open because the change is still coming. Recovery closes it once
+            // the rollback is observed — never on the assumption that it worked.
+            void retryAbandon(
+              cluster,
+              deps.repos.daemonLifecycleOp,
+              opRow.id,
+              orgOf(req),
+              error,
+              ARM_RECOVERY_DELAYS_MS,
+              req.log
             )
           } else {
             req.log.warn(

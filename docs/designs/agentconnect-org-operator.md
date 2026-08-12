@@ -579,12 +579,28 @@ past that leaves the operation reported `failed` while the pass goes on to repla
 the pod — the same contradiction as closing it early, only deferred.
 
 So a command **abandons** the intent: the envelope is restored to the image it had,
-and failure becomes the truth rather than a description that expires. The restore is
-fenced on the revision the failed write produced, so a peer that has since edited the
-row keeps their value — and that still counts as abandoned, because what will be
-applied is theirs, not this command's. The one case that keeps the op open is the
-restore ITSELF failing: the image is then still durable and still coming, so calling
-it failed would be the very error being avoided.
+and failure becomes the truth rather than a description that expires.
+
+Two properties make that a guarantee rather than a hope. The restore is fenced on the
+**image** this command wrote, not on the settings revision — a revision moves for any
+edit at all (quota, tier, suspension), so a revision fence would decline the restore on
+a row whose image still needed it, and report success over a change the re-apply pass
+would go on to enact. And the outcome is **read back**: a conditional update that
+matched nothing is silent, so the only safe basis for closing the op is the observed
+fact that the row no longer names this command's image — restored, or replaced by a peer
+whose image is what will be applied instead.
+
+When that fact cannot be established, the op stays open and a bounded background
+recovery keeps trying, closing it only once the rollback is observed. It re-reads the op
+first and stops if it is no longer pending, so a cluster that recovered meanwhile — pod
+replaced, op settled `succeeded` — is not rolled back afterwards.
+
+What remains: a process exit between the image write and the rollback leaves a durable
+image under a pending op. If the cluster recovers within the deadline the pod arrives on
+target and the op settles `succeeded`; if it does not, the op expires failed and the
+change lands later. Closing that needs a rollback intent persisted atomically with the
+command, which is a durable-saga shape and its own change rather than a detail of this
+one.
 
 The refusals checked _before_ any write — a disabled envelope, a digest pin, an
 unusable tag, a non-version target — close the op directly, and can, because nothing

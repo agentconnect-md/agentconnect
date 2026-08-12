@@ -5013,12 +5013,16 @@ export interface OrgClusterExecutionRepo {
    *  daemon needs, since a token names its namespace and nothing else. */
   getByResourceName(resourceName: string): Promise<ClusterExecutionSettings | null>
   /**
-   * Put `daemonImage` back, but only while the row is still at `expectedRevision` — the
-   * fence that keeps abandoning a failed apply from discarding a peer's later edit. A
-   * no-op (revision moved) is not an error: it means this caller's value is no longer the
-   * durable desired state, which is exactly what abandoning wanted.
+   * Put `daemonImage` back if and only if the row still names `expectedImage`, then report
+   * the image the row ends up holding (null ⇒ no row).
+   *
+   * The fence is the IMAGE, not the revision: a revision moves for any settings edit —
+   * quota, tier, suspension — while leaving this caller's image exactly where it was, so a
+   * revision fence would decline the restore on a row that still needs it. And the current
+   * image is returned because the caller must VERIFY the outcome rather than infer it from
+   * the absence of an error; a conditional update that matched nothing is silent.
    */
-  restoreDaemonImage(orgId: OrgId, daemonImage: string, expectedRevision: number): Promise<void>
+  restoreDaemonImage(orgId: OrgId, daemonImage: string, expectedImage: string): Promise<string | null>
   /** Every org whose envelope is switched on — what a deployment-wide sweep iterates.
    *  Unbounded on purpose: it is one row per organization with cluster execution enabled,
    *  and a sweep that silently stopped at a limit would leave part of the fleet stale. */

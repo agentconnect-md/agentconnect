@@ -58,10 +58,14 @@ class FakeRepo implements OrgClusterExecutionRepo {
     return row ? { ...row } : null
   }
 
-  async restoreDaemonImage(orgId: OrgId, daemonImage: string, expectedRevision: number): Promise<void> {
+  async restoreDaemonImage(orgId: OrgId, daemonImage: string, expectedImage: string): Promise<string | null> {
     const row = this.rows.get(orgId)
-    if (!row || row.specRevision !== expectedRevision) return
-    this.rows.set(orgId, { ...row, daemonImage, specRevision: row.specRevision + 1 })
+    if (!row) return null
+    if (row.daemonImage === expectedImage) {
+      this.rows.set(orgId, { ...row, daemonImage, specRevision: row.specRevision + 1 })
+      return daemonImage
+    }
+    return row.daemonImage
   }
 
   async listEnabled(): Promise<ClusterExecutionSettings[]> {
