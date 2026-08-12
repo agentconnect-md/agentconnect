@@ -58,6 +58,19 @@ class FakeRepo implements OrgClusterExecutionRepo {
     return row ? { ...row } : null
   }
 
+  /** Compare-and-set, like the repo's conditional UPDATE. */
+  async claimDaemonImage(
+    orgId: OrgId,
+    daemonImage: string,
+    owner: string | null,
+    expectedImage: string
+  ): Promise<boolean> {
+    const row = this.rows.get(orgId)
+    if (!row || row.daemonImage !== expectedImage) return false
+    this.rows.set(orgId, { ...row, daemonImage, daemonImageOwner: owner, specRevision: row.specRevision + 1 })
+    return true
+  }
+
   async listEnabled(): Promise<ClusterExecutionSettings[]> {
     return this.row?.enabled ? [{ ...this.row }] : []
   }

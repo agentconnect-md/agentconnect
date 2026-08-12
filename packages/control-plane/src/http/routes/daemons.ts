@@ -43,6 +43,7 @@ import {
   canonicalVersion,
   ClusterEnvelopeNotEnabledError,
   ClusterImageNotVersionedError,
+  ClusterImageSupersededError,
   ClusterImageWriteDeferredError,
   ClusterTransitionInProgressError,
   ClusterVersionNotPublishedError,
@@ -622,10 +623,22 @@ export function daemonRoutes(deps: HttpDeps) {
             return sendApplyFailure(reply, error.cause, `; it will be rolled back — track operation ${opRow.id}`)
           }
         } else {
-          // The write itself failed, so nothing durable exists and no obligation is owed.
+          // The write itself failed, so nothing durable exists and no obligation is owed. The
+          // op is closed here rather than left for the compensation pass, which would find
+          // nothing to undo.
           await deps.repos.daemonLifecycleOp
             .settle(opRow.id, 'failed', clusterUpgradeFailure(error), new Date())
             .catch(() => {})
+          // A peer wrote this envelope while the command was resolving. Their value stands, so
+          // this is a retry rather than a fault: nothing was overwritten and nothing is owed.
+          if (error instanceof ClusterImageSupersededError) {
+            return reply.code(409).send({
+              error: 'Conflict',
+              statusCode: 409,
+              message: `${error.message} — retry`,
+              code: 'CLUSTER_IMAGE_SUPERSEDED'
+            })
+          }
           return sendApplyFailure(reply, error, '')
         }
       }

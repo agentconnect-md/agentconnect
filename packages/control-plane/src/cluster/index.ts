@@ -14,6 +14,7 @@ export {
   ClusterExecutionService,
   ClusterEnvelopeNotEnabledError,
   ClusterImageNotVersionedError,
+  ClusterImageSupersededError,
   ClusterImageWriteDeferredError,
   ClusterTransitionInProgressError,
   ClusterVersionNotPublishedError,

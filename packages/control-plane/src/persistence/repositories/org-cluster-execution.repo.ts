@@ -69,6 +69,20 @@ export class PgOrgClusterExecutionRepo implements OrgClusterExecutionRepo {
     return row ? toRecord(row) : null
   }
 
+  /** One conditional statement, so a writer that lost the race changes nothing at all. */
+  async claimDaemonImage(
+    orgId: OrgId,
+    daemonImage: string,
+    owner: string | null,
+    expectedImage: string
+  ): Promise<boolean> {
+    const claimed = await this.prisma.orgClusterExecution.updateMany({
+      where: { orgId, daemonImage: expectedImage },
+      data: { daemonImage, daemonImageOwner: owner, specRevision: { increment: 1 } }
+    })
+    return claimed.count > 0
+  }
+
   /** Stable `orgId` order so a sweep's log reads the same across boots. */
   async listEnabled(): Promise<ClusterExecutionSettings[]> {
     const rows = await this.prisma.orgClusterExecution.findMany({

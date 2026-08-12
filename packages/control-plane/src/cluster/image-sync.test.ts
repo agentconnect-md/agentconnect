@@ -14,6 +14,7 @@ import {
   ClusterEnvelopeNotEnabledError,
   ClusterExecutionService,
   ClusterImageNotVersionedError,
+  ClusterImageSupersededError,
   ClusterImageWriteDeferredError,
   ClusterVersionNotPublishedError,
   type ClusterExecutionPolicy
@@ -75,6 +76,19 @@ class FakeRepo implements OrgClusterExecutionRepo {
   }
 
   /** Conditional on the image, and reports what the row ends up holding. */
+  /** Compare-and-set, like the repo's conditional UPDATE. */
+  async claimDaemonImage(
+    orgId: OrgId,
+    daemonImage: string,
+    owner: string | null,
+    expectedImage: string
+  ): Promise<boolean> {
+    const row = this.rows.get(orgId)
+    if (!row || row.daemonImage !== expectedImage) return false
+    this.rows.set(orgId, { ...row, daemonImage, daemonImageOwner: owner, specRevision: row.specRevision + 1 })
+    return true
+  }
+
   async listEnabled(): Promise<ClusterExecutionSettings[]> {
     return [...this.rows.values()].filter((r) => r.enabled).map((r) => ({ ...r }))
   }
@@ -377,6 +391,30 @@ describe('ClusterExecutionService.setDaemonVersion', () => {
   })
 })
 
+describe('ClusterExecutionService.applyDaemonVersion', () => {
+  /**
+   * The lost update the split plan/write seam allowed. The baseline is read before the
+   * operation opens, so an unconditional write would both discard whatever landed in that gap
+   * and record a baseline a later rollback would restore over it.
+   */
+  it('refuses when the image moved since the plan was resolved', async () => {
+    const { repo, api, service } = build()
+    repo.seed('acme', 'registry.example.test/agentconnect/daemon:v1.4.0')
+    const plan = await service.planDaemonVersion(OrgId('acme'), '1.5.0')
+    // A peer writes in the gap between resolving and applying.
+    await repo.upsert(OrgId('acme'), {} as never, {
+      daemonImage: 'registry.example.test/agentconnect/daemon:v1.6.0'
+    })
+
+    await expect(service.applyDaemonVersion(OrgId('acme'), plan, 'op-1')).rejects.toThrow(ClusterImageSupersededError)
+    // Neither overwritten nor mis-owned: the peer's value stands, untouched.
+    const row = (await repo.get(OrgId('acme')))!
+    expect(row.daemonImage).toBe('registry.example.test/agentconnect/daemon:v1.6.0')
+    expect(row.daemonImageOwner).toBeNull()
+    expect(api.applied).toHaveLength(0)
+  })
+})
+
 describe('ClusterExecutionService.alignDaemonVersion', () => {
   it('moves only the envelopes that are behind', async () => {
     const { repo, api, service } = build()
@@ -431,12 +469,36 @@ describe('ClusterExecutionService.alignDaemonVersion', () => {
   it('records an envelope whose row could not be written as failed', async () => {
     const { repo, service } = build()
     repo.seed('acme', 'registry.example.test/agentconnect/daemon:v1.4.0')
-    repo.upsert = async () => {
+    repo.claimDaemonImage = async () => {
       throw new Error('database unavailable')
     }
     const sweep = await service.alignDaemonVersion('1.5.0')
     expect(sweep.moved).toEqual([])
     expect(sweep.failed.map((f) => f.orgId)).toEqual(['acme'])
+  })
+
+  /**
+   * A peer wrote the envelope between this pass reading it and writing. Their value stands:
+   * the write is conditional on the baseline the pass captured, so losing costs nothing
+   * instead of discarding what they wrote.
+   */
+  it('skips an envelope a peer wrote while the pass was working', async () => {
+    const { repo, api, service } = build()
+    repo.seed('acme', 'registry.example.test/agentconnect/daemon:v1.4.0')
+    const claim = repo.claimDaemonImage.bind(repo)
+    repo.claimDaemonImage = async (orgId, image, owner, expected) => {
+      // Stand in for the peer landing in exactly that gap.
+      const row = repo.rows.get(orgId)!
+      repo.rows.set(orgId, { ...row, daemonImage: 'registry.example.test/agentconnect/daemon:v1.6.0' })
+      return claim(orgId, image, owner, expected)
+    }
+
+    const sweep = await service.alignDaemonVersion('1.5.0')
+    expect(sweep.moved).toEqual([])
+    expect(sweep.failed).toEqual([])
+    expect(sweep.skipped).toBe(1)
+    expect((await repo.get(OrgId('acme')))!.daemonImage).toBe('registry.example.test/agentconnect/daemon:v1.6.0')
+    expect(api.applied).toHaveLength(0)
   })
 })
 

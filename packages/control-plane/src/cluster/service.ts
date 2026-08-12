@@ -118,6 +118,19 @@ export class ClusterImageNotVersionedError extends Error {
   }
 }
 
+/**
+ * Raised when a peer wrote the daemon image between a command resolving its baseline and
+ * writing. Nothing was touched: the write is conditional on that baseline precisely so losing
+ * the race is visible rather than destructive — an unconditional write would discard the
+ * peer's value and then record a baseline a later rollback would restore over it.
+ */
+export class ClusterImageSupersededError extends Error {
+  constructor(readonly expectedImage: string) {
+    super(`the envelope's daemon image changed from "${expectedImage}" while this command was resolving`)
+    this.name = 'ClusterImageSupersededError'
+  }
+}
+
 /** Raised when an upgrade target is not a published version, so no image tag names it. */
 export class ClusterVersionNotPublishedError extends Error {
   constructor(readonly version: string) {
@@ -264,13 +277,14 @@ export class ClusterExecutionService {
    */
   async applyDaemonVersion(orgId: OrgId, plan: DaemonVersionPlan, ownerOpId?: string): Promise<void> {
     if (plan.image === plan.previousImage) return
-    // The owner is written WITH the image, so a rollback can name this write rather than the
-    // value it produced: the fleet sweep frequently writes the same version an operator asked
-    // for, and an unowned match would let a stale obligation revert it.
-    await this.repo.upsert(orgId, this.defaults(orgId), {
-      daemonImage: plan.image,
-      ...(ownerOpId ? { daemonImageOwner: ownerOpId } : {})
-    })
+    // Conditional on the baseline the plan read, so a peer that wrote in between is neither
+    // overwritten nor mis-recorded as this write's rollback target. The owner goes in the same
+    // statement, so a rollback can name this WRITE rather than the value it produced — the
+    // fleet sweep frequently writes the same version an operator asked for, and an unowned
+    // match would let a stale obligation revert it.
+    if (!(await this.repo.claimDaemonImage(orgId, plan.image, ownerOpId ?? null, plan.previousImage))) {
+      throw new ClusterImageSupersededError(plan.previousImage)
+    }
     try {
       await this.converge(orgId)
     } catch (err) {
@@ -383,7 +397,11 @@ export class ClusterExecutionService {
         await this.setDaemonVersion(OrgId(row.orgId), version)
         sweep.moved.push(row.orgId)
       } catch (err) {
+        // A deferred write is durable, so it counts as moved: the row is what the re-apply
+        // pass renders from. A superseded one means a peer wrote this envelope while the pass
+        // was working — their value stands, and the next boot re-evaluates it.
         if (err instanceof ClusterImageWriteDeferredError) sweep.moved.push(row.orgId)
+        else if (err instanceof ClusterImageSupersededError) sweep.skipped += 1
         else sweep.failed.push({ orgId: row.orgId, err })
       }
     }

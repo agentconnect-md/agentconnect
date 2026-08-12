@@ -5074,6 +5074,17 @@ export interface OrgClusterExecutionRepo {
    *  daemon needs, since a token names its namespace and nothing else. */
   getByResourceName(resourceName: string): Promise<ClusterExecutionSettings | null>
 
+  /**
+   * Compare-and-set the daemon image: write `daemonImage` (and `daemonImageOwner`) only while
+   * the row still names `expectedImage`. False ⇒ somebody wrote in between and nothing was
+   * touched.
+   *
+   * A command resolves its rollback baseline by reading, then writes; an unconditional write
+   * would overwrite whatever landed in that gap AND record a baseline that is no longer
+   * true, so a later rollback would restore a value nobody asked for. Conditioning the write
+   * on the baseline it captured makes losing the race visible instead of destructive.
+   */
+  claimDaemonImage(orgId: OrgId, daemonImage: string, owner: string | null, expectedImage: string): Promise<boolean>
   /** Every org whose envelope is switched on — what a deployment-wide sweep iterates.
    *  Unbounded on purpose: it is one row per organization with cluster execution enabled,
    *  and a sweep that silently stopped at a limit would leave part of the fleet stale. */

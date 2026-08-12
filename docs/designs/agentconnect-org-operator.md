@@ -604,6 +604,14 @@ compensation exists to withdraw. In-request rollback and a bounded background re
 as the fast paths, but the pass is what makes it a guarantee, because it is reconstructed
 from disk and runs however long the cluster stays broken.
 
+The forward write is a **compare-and-set** on the baseline the plan read. Resolution and
+writing are separate steps — they have to be, so the obligation can be recorded between them
+— and an unconditional write across that gap would do two wrong things at once: discard
+whatever a peer wrote there, and record a baseline that a later rollback would restore over
+their value. Conditioning the write makes losing that race visible instead of destructive:
+the command closes cleanly (409, retry), and nothing was touched. The fleet sweep treats the
+same loss as a skip — the peer's value stands, and the next boot re-evaluates it.
+
 A rollback identifies the **write**, not the value that write produced. The forward write
 stamps the row with the operation's id (`daemonImageOwner`), and only that operation's
 compensation matches it; every other writer clears it. Without that, matching on the image
