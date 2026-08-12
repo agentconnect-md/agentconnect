@@ -3480,7 +3480,7 @@ export type ChannelTrigger = 'off' | 'mention' | 'any'
 export type ConversationKind = 'channel' | 'im' | 'mpim'
 
 /** A conversation the bot was never invited to and that is never enumerated — a DM or a
- *  Slack group DM. Observation creates a visible, independently configurable row. */
+ *  Slack group DM. Observation creates a visible row for each bot membership. */
 export function isDirectConversationKind(kind: ConversationKind | undefined): boolean {
   return kind === 'im' || kind === 'mpim'
 }
@@ -3497,9 +3497,9 @@ export interface IntegrationChannelRecord {
   space: string | null
   isPrivate: boolean
   kind: ConversationKind
-  /** Repeated across shared-channel sibling rows; integration-scoped for DMs. */
+  /** Repeated across shared-bot sibling rows; per-integration for non-shared bots. */
   trigger: ChannelTrigger
-  /** Per-channel owner for a shared bot (§10.1); null on sibling non-owner rows. */
+  /** Per-conversation owner for a shared bot (§10.1); null on sibling non-owner rows. */
   agentId: AgentId | null
 }
 
@@ -3555,39 +3555,39 @@ export interface IntegrationChannelRepo {
   deleteChannel(integrationId: IntegrationId, channelId: string): Promise<boolean>
   listForIntegration(integrationId: IntegrationId): Promise<IntegrationChannelRecord[]>
   /** Incremental conversation upsert (§14.3, direct rows): create the row (kind,
-   *  name, `agentId`, `defaultTrigger`) when absent; when it exists refresh metadata
-   *  and a supplied agent attribution while preserving the operator-owned trigger. */
+   *  name, `defaultTrigger`) when absent; when it exists refresh metadata while
+   *  preserving the operator-owned trigger. */
   upsertConversation(
     integrationId: IntegrationId,
     conversation: ReportedChannel,
-    opts?: { agentId?: AgentId | null; defaultTrigger?: ChannelTrigger }
+    opts?: { defaultTrigger?: ChannelTrigger }
   ): Promise<IntegrationChannelRecord>
-  /** Channels across EVERY integration of a shared bot — the route compiler's
-   *  channel-ownership source. */
+  /** Conversations across EVERY integration of a shared bot — the route compiler's
+   *  ownership source. */
   listForBot(botId: BotId): Promise<IntegrationChannelRecord[]>
-  /** Per-channel trigger choice; returns null when the channel row doesn't exist. */
+  /** Per-conversation trigger choice; returns null when the row doesn't exist. */
   setTrigger(
     integrationId: IntegrationId,
     channelId: string,
     trigger: ChannelTrigger
   ): Promise<IntegrationChannelRecord | null>
   /** Set or clear this integration row's owner marker. The orchestrator keeps
-   *  exactly one row marked per shared channel. Returns null when missing. */
+   *  exactly one row marked per shared conversation. Returns null when missing. */
   setAgent(
     integrationId: IntegrationId,
     channelId: string,
     agentId: AgentId | null
   ): Promise<IntegrationChannelRecord | null>
-  /** Set the channel's owning agent, CREATING the row if absent. A shared bot's
-   *  ingest is on the relay, so the daemon never reports its channels — the config
-   *  modal must be able to name a channel the CP has never seen. `defaultTrigger`
+  /** Set the conversation's owning agent, CREATING the row if absent. A shared bot's
+   *  ingest is on the relay, so the daemon never reports its conversations — the config
+   *  modal must be able to name a conversation the CP has never seen. `defaultTrigger`
    *  seeds a CREATED row only ('off' for a gated owner, §14); an existing row
-   *  keeps its trigger. */
+   *  keeps its trigger. `kind` preserves observed DM/group-DM rows on backfill. */
   upsertAgent(
     integrationId: IntegrationId,
     channelId: string,
     agentId: AgentId,
-    opts?: { defaultTrigger?: ChannelTrigger }
+    opts?: { defaultTrigger?: ChannelTrigger; kind?: ConversationKind }
   ): Promise<IntegrationChannelRecord>
 }
 

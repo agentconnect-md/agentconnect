@@ -209,9 +209,9 @@ interface ConsoleData {
   createGithubHook: (input: CreateGithubHookInput) => Promise<CreatedHookDto>
   /** Delete a hook (its ingress URL dies with it), then invalidate its agent's hook cache. */
   deleteHook: (id: string, agentId?: string | null) => Promise<void>
-  /** Per-channel trigger choice (PATCH), applied to the local row on success. */
+  /** Per-conversation trigger choice (PATCH), applied to the local row on success. */
   setChannelTrigger: (integrationId: string, channelId: string, trigger: ChannelTrigger) => Promise<void>
-  /** Per-channel default agent for a shared bot (PATCH), applied locally. */
+  /** Per-conversation default agent for a shared bot (PATCH), applied locally. */
   setChannelAgent: (integrationId: string, channelId: string, agentId: string) => Promise<void>
   /** Forget a conversation row without touching the platform. */
   forgetChannel: (integrationId: string, channelId: string) => Promise<void>
@@ -1218,8 +1218,8 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     [mutateSkillSources]
   )
 
-  // Flip one conversation's trigger. Shared channels project bot-wide; direct rows
-  // remain integration-scoped. Avoid a full re-pull so the toggle does not flash.
+  // Flip one conversation's trigger. Shared bots project it bot-wide. Avoid a full
+  // re-pull so the toggle does not flash.
   const setChannelTrigger = useCallback(
     async (integrationId: string, channelId: string, trigger: ChannelTrigger) => {
       await apiUpdateIntegrationChannel(integrationId, channelId, { trigger })
@@ -1228,9 +1228,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
           (rows) => {
             const source = rows?.find((row) => row.id === integrationId)
             if (!rows || !source) return rows
-            const channel = source.channels.find((item) => item.channelId === channelId)
-            const botWide =
-              channel?.kind === 'channel' && realBots.some((bot) => bot.id === source.botId && bot.shareable)
+            const botWide = realBots.some((bot) => bot.id === source.botId && bot.shareable)
             return rows.map((row) =>
               (botWide ? row.botId === source.botId : row.id === integrationId)
                 ? {
@@ -1303,7 +1301,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     [dropChannelsFromCache, integrations]
   )
 
-  // Set a shared channel's sole owner. The API projects the effective bot-level
+  // Set a shared conversation's sole owner. The API projects the effective bot-level
   // state onto every integration copy, so keep those cached copies in sync.
   const setChannelAgent = useCallback(
     async (integrationId: string, channelId: string, agentId: string) => {

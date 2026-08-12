@@ -79,19 +79,19 @@ function botRosterRows(bots: BotDto[]): BotRosterRow[] {
   ])
 }
 
-// One merged channel row for a bot's expandable roster.
+// One merged conversation row for a bot's expandable roster.
 interface BotChannelView {
   channelId: string
   name: string
   kind: 'channel' | 'im' | 'mpim'
-  /** Effective per-channel owner; null only before legacy state converges. */
+  /** Effective per-conversation owner; null only before legacy state converges. */
   agentId: string | null
   /** Any integration whose snapshot row backs this channel; ownership PATCHes
    *  are bot-scoped. */
   integrationId: string | null
 }
 
-// The bot's channel roster, merged across its installs (a shared bot fans out to
+// The bot's conversation roster, merged across its installs (a shared bot fans out to
 // one integration per agent, each reporting its own membership snapshot).
 function botChannels(bot: BotDto, integrations: IntegrationRow[]): BotChannelView[] {
   const merged = new Map<string, BotChannelView>()
@@ -123,12 +123,11 @@ function botChannels(bot: BotDto, integrations: IntegrationRow[]): BotChannelVie
   })
 }
 
-/** Per-channel default dispatch for a SHARED bot (design: the Bots card's
- *  expanded channel rows) — the agent a channel's unmatched messages go to.
+/** Per-conversation default dispatch for a SHARED bot — the agent a conversation's
+ *  unmatched messages go to.
  *  Shows the current one and opens a menu of every agent installed on the bot;
- *  picking one PATCHes the channel's explicit owner. This is the full-roster
- *  picker: the agent page's own popover (IntegrationChannelList) only claims the
- *  channel for the agent being viewed. */
+ *  picking one PATCHes the conversation's explicit owner. This is the full-roster
+ *  picker: the agent page's own popover only claims it for the agent being viewed. */
 function DefaultDispatchPicker({
   options,
   activeId,
@@ -153,7 +152,7 @@ function DefaultDispatchPicker({
     <span className="relative justify-self-end" onClick={(e) => e.stopPropagation()}>
       <button
         onClick={() => !disabled && setOpen((v) => !v)}
-        title="Default dispatch — the agent this channel's unmatched messages go to"
+        title="Default dispatch — the agent this conversation's unmatched messages go to"
         className={`flex items-center gap-2 rounded-[7px] border-0 bg-transparent px-[5px] py-1 hover:bg-(--surface-hover) ${
           disabled ? 'cursor-default' : 'cursor-pointer'
         } ${saving ? 'opacity-60' : ''}`}
@@ -444,8 +443,7 @@ function BotsCard({
           const free = b.agentIds.length === 0
           const open = openBotId === b.id
           const channels = open ? botChannels(b, integrations) : []
-          const hasChannelRows = channels.some((c) => c.kind === 'channel')
-          const showDefaultDispatch = b.shareable && hasChannelRows
+          const showDefaultDispatch = b.shareable && channels.length > 0
           const chanGrid = showDefaultDispatch ? 'grid-cols-[1fr_auto]' : 'grid-cols-[1fr]'
           // The picker's choices: every agent installed on the bot.
           const agentOptions = b.agentIds.map((id) => {
@@ -599,7 +597,7 @@ function BotsCard({
                                   {isDirectConversation(c.kind) ? c.name.replace(/^@+/, '') : c.name}
                                 </span>
                               </span>
-                              {showDefaultDispatch && c.kind === 'channel' && (
+                              {showDefaultDispatch && (
                                 <DefaultDispatchPicker
                                   options={agentOptions}
                                   activeId={c.agentId ?? b.agentIds[0] ?? null}
@@ -614,7 +612,7 @@ function BotsCard({
                     </>
                   ) : (
                     <div className="font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-                      Not in any channel yet — invite the bot to a channel and it shows up here.
+                      No conversations observed yet — invite the bot to a channel or message it directly.
                     </div>
                   )}
                 </div>

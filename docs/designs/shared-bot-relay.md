@@ -207,9 +207,10 @@ store. Lark / Feishu HTTP bots require `appId`, `appSecret`, Verification Token,
 optional Encrypt Key. Secret reads and writes pass through the configured
 `SecretCipher`; list and metadata APIs do not select secret material.
 
-`IntegrationChannel.agentId` represents a channel-scoped default agent. Exactly one
-active integration row carries that owner for each shared channel; sibling rows are
-null because channel membership is repeated per integration.
+`IntegrationChannel.agentId` represents a conversation-scoped default agent. Exactly
+one active integration row carries that owner for each shared conversation, including
+an observed DM or group DM; sibling rows are null because membership is repeated per
+integration.
 `SharedThreadAgent` is the durable fallback for relay-local thread affinity. It
 contains routing metadata only, never message text.
 `SharedThreadParticipant` is the independently durable participant set. It lets
@@ -368,18 +369,20 @@ socket cannot be authenticated until the CP verification path recovers.
 ### 10.1 Slack arbitration
 
 CP compiles attributed routes from active integrations, placed agents, and
-channel settings. The relay applies the shared routing ladder:
+conversation settings. The relay applies the shared routing ladder:
 
-1. an explicit agent selection or scoped channel owner;
+1. an explicit agent selection or scoped conversation owner;
 2. existing thread affinity;
 3. agent-slug keyword disambiguation;
 4. the bot's default agent for a bare mention or direct message.
 
-Before compiling routes, CP converges each channel to one canonical owner row and
-replicates its effective trigger across the sibling membership rows, backfilling a
-missing row when a new install has not reported membership yet. A new or ownerless
-channel uses the earliest active integration, and a Console owner change preserves
-the trigger. An in-Slack move or automatic fallback to a restricted agent stays Off.
+Before compiling routes, CP converges each observed conversation to one canonical
+owner row and replicates its effective trigger across the sibling membership rows,
+backfilling a missing row when a new install has not reported membership yet. A new
+or ownerless conversation uses the earliest active integration, and a Console owner
+change preserves the trigger. An in-Slack move or automatic fallback to a restricted
+agent stays Off. Shared DMs and group DMs therefore have one scoped route, not one
+route per installed agent or a per-agent slug fan-out.
 This also preserves state and repairs ownership when an integration is removed;
 `No default` is not an operator state.
 
@@ -471,7 +474,7 @@ block at the daemon, and is never persisted by the relay or Control Plane.
   relay connection.
 
 Slack rate limits are global to a bot while send queues are local to member
-daemons. Each daemon respects `429` and `Retry-After`; channel ownership reduces
+daemons. Each daemon respects `429` and `Retry-After`; conversation ownership reduces
 but does not eliminate concurrent sends from different daemons.
 
 ## 12. Delivery Semantics
@@ -596,7 +599,7 @@ The smallest useful evidence for this design includes:
 - HTTP ingress tests for raw-body HMAC verification, replay timestamps,
   challenge handling, body limits, event deduplication, and interaction
   responses;
-- routing tests for channel ownership, keyword selection, default target,
+- routing tests for conversation ownership, keyword selection, default target,
   managed-bot echo suppression, thread report/broadcast/lookup, and session
   actions;
 - orchestration tests proving HTTP bot assignments and updates reach every
