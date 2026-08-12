@@ -2,9 +2,9 @@
  * `WorkspaceGit` — the seam answering the CP's `workspace/gitstatus`,
  * `workspace/gitdiff`, `workspace/gitlog`, `workspace/gitpull` and the four write
  * REQs (`gitstage` / `gitunstage` / `gitcommit` / `gitpush`) against an agent's
- * local git-repo workspace. Sibling to {@link WorkspaceReader}: git runs
- * daemon-local and only the outcome is proxied to the console (§1/§12), never the
- * repo.
+ * git-repo workspace. Sibling to {@link WorkspaceReader}: git runs wherever that
+ * workspace lives — this disk, or a cluster agent's sandbox pod — and only the
+ * outcome is proxied to the console (§1/§12), never the repo.
  *
  * DATA vs error: a from-scratch workspace (`isRepo:false`), a dirty tree, a path
  * with no changes, a binary change, or a pull that can't fast-forward (offline,
@@ -62,7 +62,7 @@ import {
   workspaceGitPullTarget,
   workspaceGitPushTarget
 } from '../workspace/git-injection.js'
-import { workspaceGitRunnerFor } from '../workspace/workspace-manager.js'
+import { sandboxWorkspaceMode, workspaceGitRunnerFor } from '../workspace/workspace-manager.js'
 import { type GitRunner } from '../workspace/git-runner.js'
 import { authorizeWorkspaceGitUrl } from '../workspace/git-origin-policy.js'
 import { canonicalWorkspacePath, containedWorkspacePath, WorkspaceViolationError } from './workspace-reader.js'
@@ -391,7 +391,10 @@ export function createWorkspaceGit(
       if (rows.length === 0) {
         // No change in this scope: the path either exists (unchanged, or untracked —
         // `git diff` never shows an untracked file) or it does not. Both are DATA.
-        return { agentId: req.agentId, path: req.path, isRepo: true, exists: canonical !== null }
+        // `canonical` is null for EVERY path in a sandbox workspace, so git answers there instead —
+        // the difference between "no changes" and "no such file".
+        const exists = sandboxWorkspaceMode() ? await pathExists(git, rel) : canonical !== null
+        return { agentId: req.agentId, path: req.path, isRepo: true, exists }
       }
       // git itself reported `-` `-` for every row ⇒ nothing textual to render. A
       // truncated row list cannot support that claim, so it falls through to the text.
@@ -859,6 +862,24 @@ async function numstatVsHead(git: GitRunner): Promise<Map<string, { additions?: 
   }
 }
 
+/** Whether the checkout HAS this path, asked of git rather than of a filesystem — the answer the
+ *  local seam reads with `realpath`, for a workspace this daemon cannot see. `--cached` covers a
+ *  tracked path (including one deleted from the worktree, whose change is still real) and `--others`
+ *  an untracked one; an ignored file is the single case this reports as absent. An empty `rel` IS
+ *  the workspace root, which exists whenever the checkout does. */
+async function pathExists(git: GitRunner, rel: string): Promise<boolean> {
+  if (rel === '') return true
+  try {
+    const out = await git.readBounded(
+      ['ls-files', '-z', '--cached', '--others', '--exclude-standard', '--', `:(literal)${rel}`],
+      METADATA_OUTPUT_BUDGET
+    )
+    return out.out.length > 0
+  } catch {
+    return false
+  }
+}
+
 /** One remote's fetch URL, authorized through the same policy the origin goes through, or null
  *  when it does not exist or is not a URL this daemon may talk to. */
 async function remoteUrl(git: GitRunner, remote: string): Promise<string | null> {
@@ -923,8 +944,11 @@ async function headCommit(git: GitRunner): Promise<WorkspaceGitCommit | null> {
 }
 
 /** When the checkout last fetched/pulled, from `.git/FETCH_HEAD`'s mtime (git
- *  rewrites it on every fetch/pull). Null if it has never fetched. */
+ *  rewrites it on every fetch/pull). Null if it has never fetched — and null for a
+ *  sandbox workspace, whose mtime no git subcommand reports and whose path names a
+ *  filesystem this process cannot see. Restoring it needs a shim stat, not an argv. */
 async function fetchHeadMtime(root: string): Promise<string | null> {
+  if (sandboxWorkspaceMode()) return null
   try {
     const st = await fs.stat(join(root, '.git', 'FETCH_HEAD'))
     return st.mtime.toISOString()

@@ -6,8 +6,9 @@ import { join } from 'node:path'
 import { MAX_FRAME_BYTES } from '@agentconnect.md/protocol'
 import { createWorkspaceGit } from '../src/cp/workspace-git.js'
 import { WorkspaceViolationError } from '../src/cp/workspace-reader.js'
-import { workspaceGitLocalEnv } from '../src/workspace/git-injection.js'
-import { setWorkspaceGitRunnerResolver } from '../src/workspace/workspace-manager.js'
+import { gitFor, workspaceGitLocalEnv } from '../src/workspace/git-injection.js'
+import { setSandboxWorkspaceMode, setWorkspaceGitRunnerResolver } from '../src/workspace/workspace-manager.js'
+import { LocalGitRunner } from '../src/workspace/git-runner.js'
 
 // The seam's git reads against a REAL repository: the mocked-simple-git suite
 // (workspace-git.test.ts) can prove the mapping, only actual `git` output can prove
@@ -375,5 +376,70 @@ describe('createWorkspaceGit.log against a real repo', () => {
 
   it('refuses an unknown agent with the machine-readable reason', async () => {
     await expect(seam.log({ agentId: 'nope', limit: 20 })).rejects.toMatchObject({ reason: 'unknown-agent' })
+  })
+})
+
+// The cluster shape, reproduced without a cluster: the root names a path in the POD's coordinates —
+// nothing on this filesystem — while git runs in the real checkout through the runner seam. Every
+// answer must therefore come from git, because the daemon-local `realpath` has nothing to resolve.
+describe('createWorkspaceGit against a workspace this daemon cannot see', () => {
+  const POD_ROOT = '/agent/repo'
+  let clusterSeam: ReturnType<typeof createWorkspaceGit>
+
+  beforeAll(() => {
+    setSandboxWorkspaceMode(true)
+    setWorkspaceGitRunnerResolver(
+      (_agentId, _cwd, abort) => new LocalGitRunner(gitFor(repo, abort), repo, (e) => gitFor(repo, abort).env(e))
+    )
+    clusterSeam = createWorkspaceGit((agentId) => (agentId === AGENT ? POD_ROOT : undefined))
+  })
+
+  afterAll(() => {
+    setSandboxWorkspaceMode(false)
+    setWorkspaceGitRunnerResolver(undefined)
+  })
+
+  it('reads the checkout at all — this is what answered isRepo:false over a real repository', async () => {
+    const s = await clusterSeam.status(AGENT)
+    expect(s.isRepo).toBe(true)
+    expect(s.files!.map((f) => f.path)).toContain('keep.txt')
+  })
+
+  it('tells "no changes" apart from "no such file" with no filesystem to ask', async () => {
+    // `exists` came from a `realpath` of the workspace root, which under --k8s resolves nothing at
+    // all — so every unchanged path answered "no such file". Both answers now come from git.
+    await expect(clusterSeam.diff({ agentId: AGENT, path: 'unchanged.txt', staged: false })).resolves.toEqual({
+      agentId: AGENT,
+      path: 'unchanged.txt',
+      isRepo: true,
+      exists: true
+    })
+    await expect(clusterSeam.diff({ agentId: AGENT, path: 'no/such/file.ts', staged: false })).resolves.toEqual({
+      agentId: AGENT,
+      path: 'no/such/file.ts',
+      isRepo: true,
+      exists: false
+    })
+  })
+
+  it('counts an untracked file as present, since git diff never shows one either way', async () => {
+    await expect(clusterSeam.diff({ agentId: AGENT, path: 'untracked.txt', staged: false })).resolves.toEqual({
+      agentId: AGENT,
+      path: 'untracked.txt',
+      isRepo: true,
+      exists: true
+    })
+  })
+
+  it('still carries a real diff, so the existence answer did not replace the read', async () => {
+    const d = await clusterSeam.diff({ agentId: AGENT, path: 'keep.txt', staged: true })
+    expect(d).toMatchObject({ isRepo: true, exists: true })
+    expect(d.diff).toContain('+staged addition')
+  })
+
+  it('withholds the last-fetch time rather than stat-ing a path on the wrong filesystem', async () => {
+    // No git subcommand reports it — only `.git/FETCH_HEAD`'s mtime does — so "unknown" is the
+    // honest answer here, and a `/agent/repo` that happened to exist on the daemon would be a lie.
+    expect((await clusterSeam.status(AGENT)).lastFetchAt).toBeUndefined()
   })
 })
