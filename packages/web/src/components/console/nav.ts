@@ -118,6 +118,14 @@ const SETTING_CARDS: ConsolePage[] = [
     ownerOnly: true
   },
   {
+    href: '/settings#cluster-execution',
+    label: 'Cluster execution',
+    icon: 'boxes',
+    kind: 'setting',
+    keywords: ['settings', 'kubernetes', 'envelope', 'sandbox'],
+    ownerOnly: true
+  },
+  {
     href: '/settings#members',
     label: 'Members & roles',
     icon: 'users',

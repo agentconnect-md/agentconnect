@@ -43,6 +43,7 @@ import { inviteLinkStatus, inviteLinkUrl } from '@/lib/org-invite-link'
 import EditMemberModal, { type MemberTarget } from '@/components/console/modals/EditMemberModal'
 import InviteMembersModal from '@/components/console/modals/InviteMembersModal'
 import { OrganizationEnvironmentCard } from '@/components/console/OrganizationEnvironmentCard'
+import { ClusterExecutionCard } from '@/components/console/ClusterExecutionCard'
 
 // A session-access row is a platform name and its switch. What the switch does is
 // said once, in the card header — restating it per row ("People with Slack access"
@@ -726,6 +727,10 @@ export default function SettingsView() {
       {/* Sits with the other organization-wide agent policies. Owner-only, so the
           card renders nothing at all for collaborators and viewers (§8.1). */}
       <OrganizationEnvironmentCard orgId={activeOrg?.id} isOwner={isOwner} agents={agents} />
+
+      {/* Owner-only, and absent entirely where the deployment runs no cluster —
+          the whole surface 404s there, so the card renders nothing at all. */}
+      <ClusterExecutionCard orgId={activeOrg?.id} isOwner={isOwner} />
 
       <div className="card mt-[18px]" id="members">
         <div className="cardhead justify-between">
