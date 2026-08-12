@@ -158,12 +158,7 @@ export interface GithubMatchCtx {
   commentSubjectFamily: 'issues' | 'pull_request' | undefined
 }
 
-const EXTERNAL_PR_REVISION_EVENTS = new Set([
-  'pull_request:opened',
-  'pull_request:synchronize',
-  'pull_request:ready_for_review',
-  'pull_request:converted_to_draft'
-])
+const EXTERNAL_PR_REVISION_EVENTS = new Set(['pull_request:opened', 'pull_request:synchronize'])
 
 /** Lifecycle deliveries that close a GitHub thread's daemon-owned workspace.
  * PR `closed` is cleanup only when GitHub also proves it was merged; an
@@ -251,7 +246,9 @@ export function githubRuleVerdict(rule: RcHookAssign, ctx: GithubMatchCtx): Gith
     (ctx.event === 'pull_request' &&
       (ctx.eventAction === 'pull_request:closed' ||
         ctx.eventAction === 'pull_request:reopened' ||
-        ctx.eventAction === 'pull_request:edited'))
+        ctx.eventAction === 'pull_request:edited' ||
+        ctx.eventAction === 'pull_request:ready_for_review' ||
+        ctx.eventAction === 'pull_request:converted_to_draft'))
   )
     return 'no-match'
   // Decision 10: any [bot] sender is vetoed unconditionally — kills the agent's

@@ -60,7 +60,18 @@ export const WebchatPost = z.object({
   conversationId: z.string().uuid(),
   author: z.discriminatedUnion('kind', [
     z.object({ kind: z.literal('user'), user: z.string().optional() }),
-    z.object({ kind: z.literal('agent'), agentId: z.string().uuid() })
+    z.object({
+      kind: z.literal('agent'),
+      agentId: z.string().uuid(),
+      // The authoring TURN's depth in the agent-call chain (send-message-routing-
+      // rework.md §4.1), stamped by the origin daemon at the commit boundary. A
+      // receiving participant's daemon charges ONE +1 transition on it — against the
+      // same MAX_AGENT_CALL_HOPS budget an internal agent call spends — before the
+      // post may continue the conversation as an activation (webchat-multi-agents.md
+      // §5.2a, the #549 parity). Absent (a pre-parity daemon), the post stays
+      // transcript-only: a missing depth must never coerce to zero.
+      hopCount: z.number().int().min(0).optional()
+    })
   ]),
   text: z.string(),
   at: z.number().int(), // canonical epoch-ms timestamp, minted once at origin

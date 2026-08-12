@@ -185,6 +185,28 @@ export interface DaemonRepo {
    */
   provision(daemonId: DaemonId, orgId: OrgId, createdByUserId?: string): Promise<DaemonRecord>
   /**
+   * The daemon record bound to a verified Kubernetes identity, JIT-provisioning one on
+   * first sight — the same shape as `UserRepo`'s OIDC-subject provisioning. The store's
+   * unique index is what makes the binding one-to-one, so an envelope can never end up
+   * with two records competing for its placements; the identity is namespace-derived, so
+   * a rebuilt envelope resolves back to the same row and keeps its history.
+   *
+   * `adoptDaemonId` names the record the retired API-key path already pinned for this
+   * envelope. On the first token connect it is bound to the identity rather than left
+   * beside a fresh one, so an org provisioned before this path keeps its placements and
+   * history. Ignored once the identity is bound, or if that record is another org's or
+   * already carries an identity.
+   *
+   * Null when the identity is already bound to a daemon in ANOTHER org: an identity may
+   * not move tenants, and refusing is the only answer that cannot leak one org's
+   * placements to another.
+   */
+  resolveClusterIdentity(
+    orgId: OrgId,
+    clusterIdentity: string,
+    opts?: { adoptDaemonId?: string }
+  ): Promise<DaemonRecord | null>
+  /**
    * Idempotent on `daemonId`. Bumps `sessionEpoch` (the fencing root) in ONE
    * transaction and sets status `authenticating`. Returns the new strictly-
    * increasing epoch. First call for a daemon creates the row.
@@ -4994,6 +5016,9 @@ export interface PendingDaemonKeyRevocation {
 
 export interface OrgClusterExecutionRepo {
   get(orgId: OrgId): Promise<ClusterExecutionSettings | null>
+  /** The org that owns a CR name — the reverse lookup an authenticating in-cluster
+   *  daemon needs, since a token names its namespace and nothing else. */
+  getByResourceName(resourceName: string): Promise<ClusterExecutionSettings | null>
   /** Oldest-first batch of envelopes whose organization is already gone. */
   listPendingTeardowns(limit: number): Promise<PendingEnvelopeTeardown[]>
   /** Drop a tombstone once its resource is confirmed gone. Idempotent. */

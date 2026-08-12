@@ -166,6 +166,33 @@ describe('GithubReviewClient', () => {
     expect(markerAt).toBeGreaterThan(footerAt)
   })
 
+  it('submits a formal review for an open draft pull request', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(json(200, []))
+      .mockResolvedValueOnce(
+        json(200, {
+          state: 'open',
+          merged: false,
+          draft: true,
+          head: { sha: target.expectedHeadSha },
+          base: { sha: target.expectedBaseSha }
+        })
+      )
+      .mockResolvedValueOnce(json(200, { id: '456', commit_id: target.expectedHeadSha }))
+    const client = new GithubReviewClient({ fetchImpl })
+
+    await expect(
+      client.submit(target, { event: 'APPROVE', verdict: 'pass', body: 'No changes are needed.' })
+    ).resolves.toMatchObject({
+      state: 'submitted',
+      event: 'APPROVE',
+      verdict: 'pass',
+      commitId: target.expectedHeadSha
+    })
+    expect(fetchImpl.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1)
+  })
+
   it('refuses a stale head/base without issuing the review POST', async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()

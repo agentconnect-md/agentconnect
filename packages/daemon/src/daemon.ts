@@ -297,6 +297,7 @@ import { nodeExecArgvModuleEntries } from './runtimes/node-exec-argv.js'
 import { makeLogger, type Logger } from './log.js'
 import { CpClient, CP_SUBPROTOCOL, CP_WS_PATH, type BootstrapUpgradeOutcome } from './cp/client.js'
 import { RelayManager } from './cp/relay-manager.js'
+import { readClusterIdentityToken } from './cp/cluster-identity.js'
 import { CpCollabRoutes } from './cp/cp-collab-routes.js'
 import { ClientTransport, systemClock, type Clock, type TimerHandle } from '@agentconnect.md/connection'
 import {
@@ -799,10 +800,13 @@ const MAX_HOOK_REPORT_INFLIGHT = 100
  * remains READY. Reconnect also kicks the durable drain immediately. */
 const SESSION_METADATA_RETRY_MS = 5_000
 
+/** Connectable when there is a URL and a credential: an API key, or — in-cluster — the
+ *  projected ServiceAccount token this pod presents instead of one. */
 function configuredControlPlane(
-  controlPlane: Config['controlPlane']
-): controlPlane is Config['controlPlane'] & { url: string; key: string } {
-  return controlPlane.enabled && !!controlPlane.url && !!controlPlane.key
+  controlPlane: Config['controlPlane'],
+  hasClusterIdentity = false
+): controlPlane is Config['controlPlane'] & { url: string } {
+  return controlPlane.enabled && !!controlPlane.url && (!!controlPlane.key || hasClusterIdentity)
 }
 
 /** Thrown to a `dispatch()` caller when the per-session admission queue is at its depth
@@ -1031,6 +1035,16 @@ interface CallMeta {
    * the same classification it would have made live.
    */
   platformOrigin?: true
+  /**
+   * webchat-multi-agents.md §5.2a (#549 parity): this delivery is a conversation-roster
+   * CONTINUATION — a peer participant's committed post fanned to this agent — not a
+   * direct `sendMessage` call. It keeps the full trusted call chain (hop budget,
+   * exactly-once rendezvous, caller identity) but must NOT assert "this activation is
+   * addressed to you": the standing response-choice contract decides whether the woken
+   * agent answers, exactly as it does for the user-targeted roster fan-out. Persisted
+   * with the inbox row like the rest of CallMeta.
+   */
+  conversationContinuation?: true
   /** A self-authored channel-root post initializes its new session but is not a model turn.
    *  Persisted with the inbox row so crash replay cannot accidentally activate the model. */
   initializeOnly?: boolean
@@ -2161,6 +2175,9 @@ export class Daemon {
   // `--k8s`: this daemon supervises runtimes in sandbox pods instead of local
   // subprocesses, so every "daemon and runtime share one machine" behavior is off.
   private readonly k8s: boolean
+  /** Reads this pod's projected CP-audience token; undefined unless the daemon runs
+   *  in-cluster AND the volume is actually mounted (decided once, at boot). */
+  private readonly clusterIdentityToken?: () => string | undefined
   // The k8s execution plane: shim endpoint + driver + workspace seam. Undefined outside --k8s.
   private k8sPlane?: K8sRuntimePlane
   // The resolved catalog the probed table is projected onto; it supplies command/args, which the
@@ -2411,6 +2428,9 @@ export class Daemon {
     } = {}
   ) {
     this.k8s = opts.k8s === true
+    // The mount either exists for this pod's whole life or never does, so availability is
+    // decided once here; the VALUE is re-read per connect, because the kubelet rotates it.
+    this.clusterIdentityToken = this.k8s && readClusterIdentityToken() ? () => readClusterIdentityToken() : undefined
     // A k8s runtime is isolated by its own pod, so the in-process SRT mechanism is
     // not part of that shape — it stays off even if this host happens to support it.
     this.sandboxMechanism =
@@ -2827,10 +2847,10 @@ export class Daemon {
     // daemon boots, reconciles, and connects on hosts with or without an OS
     // sandbox. The residual "an unconfined ACP child could tamper with skill
     // authority" exposure on an unsandboxed agent is a tracked P2.
-    // Mint a stable local daemonId only when we are NOT onboarding via a CP
-    // token: with a `controlPlane.key` and no explicit id, the CP assigns the
-    // id from the token's `sub` and the daemon adopts it (see startCpClient).
-    const cpKeyOnboarding = !!(cfg.controlPlane?.enabled && cfg.controlPlane.key)
+    // Mint a stable local daemonId only when the CP is not going to assign one:
+    // with a `controlPlane.key` — or an in-cluster identity token — and no explicit
+    // id, the CP resolves the id and the daemon adopts it (see startCpClient).
+    const cpKeyOnboarding = !!(cfg.controlPlane?.enabled && (cfg.controlPlane.key || this.clusterIdentityToken))
 
     // github-app git credentials — initialized FIRST: reconcile-time prefetch
     // clones can fire as soon as agents load, and they pre-warm through this
@@ -10814,7 +10834,13 @@ export class Daemon {
         }
       }
       case 'context': {
-        this.recordWebchatContextPost(msg.agentId, msg.chatId, op.post)
+        const landedTs = this.recordWebchatContextPost(msg.agentId, msg.chatId, op.post)
+        // webchat-multi-agents.md §5.2a (#549 parity): an agent-authored peer post
+        // does not stay transcript-only — it may continue the conversation for THIS
+        // pre-addressed participant. Recording above is unconditional and the ack is
+        // unchanged; the activation decision runs its own edge checks and is
+        // fire-and-forget, exactly like the `turn` dispatch below it.
+        if (landedTs !== undefined) this.maybeActivateWebchatContinuation(msg.agentId, msg.chatId, op.post, landedTs)
         return { msgId: msg.msgId, accepted: true }
       }
       case 'resume': {
@@ -10918,39 +10944,185 @@ export class Daemon {
 
   /**
    * Record a conversation post another participant produced (relay `context` op —
-   * webchat-multi-agents.md §5.2). Transcript-only, NEVER an activation: the row
-   * lands in the shared conversation log with the carried canonical `at`, and the
-   * §8.5 catch-up replay presents it as `[<author>] <text>` context at this
-   * agent's next activation. The relay excludes the authoring participant from
-   * the fan-out; the self-drop here is the fail-safe mirror of
-   * `isAgentBotMessage` on the IM path.
+   * webchat-multi-agents.md §5.2): the row lands in the shared conversation log with
+   * the carried canonical `at`, and the §8.5 catch-up replay presents it as
+   * `[<author>] <text>` context at this agent's next activation. The relay excludes
+   * the authoring participant from the fan-out; the self-drop here is the fail-safe
+   * mirror of `isAgentBotMessage` on the IM path.
+   *
+   * Recording is unconditional and activation-free. Whether the recorded post ALSO
+   * continues the conversation for this participant is a separate decision
+   * ({@link maybeActivateWebchatContinuation}, §5.2a) taken by the caller with the
+   * landed ts this returns — `undefined` means nothing was recorded (self copy,
+   * conversation mismatch, or an empty body) and nothing may activate either.
    */
-  private recordWebchatContextPost(agentId: string, chatId: string, contextPost: WebchatPost): void {
-    if (contextPost.conversationId !== chatId) return
-    if (contextPost.author.kind === 'agent' && contextPost.author.agentId === agentId) return
-    if (!contextPost.text.trim() && !contextPost.attachments?.length) return
+  private recordWebchatContextPost(agentId: string, chatId: string, contextPost: WebchatPost): string | undefined {
+    if (contextPost.conversationId !== chatId) return undefined
+    if (contextPost.author.kind === 'agent' && contextPost.author.agentId === agentId) return undefined
+    if (!contextPost.text.trim() && !contextPost.attachments?.length) return undefined
     const sender =
       contextPost.author.kind === 'agent' ? contextPost.author.agentId : (contextPost.author.user ?? 'webchat')
     // The canonical origin-minted ts. A re-fanned identical copy dedups in place
     // (the recipient tag still records the delivery for THIS agent when the text
     // row was already written by a co-hosted participant's turn); a foreign post
     // occupying the slot bumps by 1 ms instead of being silently dropped.
-    this.appendWebchatTextRow(transcriptChannelKey(chatId, undefined), `webchat:${chatId}`, String(contextPost.at), {
-      sender,
-      recipient: agentId,
-      postId: contextPost.postId,
-      text: contextPost.text,
-      ...(contextPost.author.kind === 'agent' ? { trustedAgentBot: true } : {}),
-      ...(contextPost.attachments?.length
-        ? {
-            attachments: contextPost.attachments.map((a) => ({
-              name: a.name,
-              mimeType: a.mimeType,
-              data: a.data
-            }))
-          }
-        : {})
+    return this.appendWebchatTextRow(
+      transcriptChannelKey(chatId, undefined),
+      `webchat:${chatId}`,
+      String(contextPost.at),
+      {
+        sender,
+        recipient: agentId,
+        postId: contextPost.postId,
+        text: contextPost.text,
+        ...(contextPost.author.kind === 'agent' ? { trustedAgentBot: true } : {}),
+        ...(contextPost.attachments?.length
+          ? {
+              attachments: contextPost.attachments.map((a) => ({
+                name: a.name,
+                mimeType: a.mimeType,
+                data: a.data
+              }))
+            }
+          : {})
+      }
+    )
+  }
+
+  /**
+   * The webchat analogue of the §6 verified-agent continuation ladder (#549 parity —
+   * webchat-multi-agents.md §5.2a, issue #904): a peer agent's COMMITTED conversation
+   * post, fanned to this pre-addressed participant as a `context` frame, wakes it
+   * instead of staying transcript-only. The relay's roster fan-out already excluded the
+   * author and chose the targets, so no arbitration happens here — only the checks the
+   * platform ladder applies to an implicitly selected edge, because those are
+   * properties of the EDGE and an implicit edge is still an agent call:
+   *
+   *  - author exclusion is absolute (fail-safe re-check; the relay already skips the
+   *    author, and `recordWebchatContextPost` drops self copies before this runs);
+   *  - the hop transition: ONE +1 against the SAME `MAX_AGENT_CALL_HOPS` budget an
+   *    internal call spends, computed from the depth the author's daemon stamped on
+   *    the post. A post with no usable depth (a pre-parity daemon) must never coerce
+   *    to zero — it stays transcript-only, mirroring §4.1 rule 1;
+   *  - final-events-only is structural: `rd/webchat-post` (and therefore `context`)
+   *    exists only for a committed reply — streaming rides `rd/chat` and cannot
+   *    reach here, and a silent `AC_NO_RESPONSE` decline commits no post at all;
+   *  - the directional call policy (`cpCollab.admits`), per edge;
+   *  - exactly-once per (post, target) through the durable activation rendezvous, so
+   *    a relay retry, doubly-connected relays, and a restart replay cannot
+   *    double-wake;
+   *  - the coarse loop guard is deliberately NOT charged, mirroring `usesLoopGuard`:
+   *    agent continuations have an exact trusted hop cap, and webchat has no in-band
+   *    `!resume` surface to reset a latch with.
+   *
+   * The woken turn carries the depth on its CallMeta, so the reply IT commits stamps
+   * `hopCount + …` and advances the chain by one — an alternating A↔B conversation
+   * now terminates by reaching the hop cap (with the refusal recorded below) rather
+   * than by an agent declining to address anyone. A woken agent that answers with the
+   * no-response sentinel stays silent — no post, so nothing further fans out — but its
+   * wake still spent the hop like any other admitted turn.
+   *
+   * Scope: this seam only ever sees relay `context` frames, which exist solely for
+   * MULTI-AGENT webchat conversations — single-agent conversations, the platform
+   * ladders, and playground sessions are structurally unreachable from here.
+   */
+  private maybeActivateWebchatContinuation(
+    targetAgentId: string,
+    chatId: string,
+    contextPost: WebchatPost,
+    landedTs: string
+  ): void {
+    // User turns activate through the relay's pre-addressed `turn` frames; their
+    // context copies stay transcript-only exactly as before.
+    if (contextPost.author.kind !== 'agent') return
+    const authorAgentId = contextPost.author.agentId
+    if (authorAgentId === targetAgentId) return // author-never-self-activates, the one absolute
+    const sourceHopCount = contextPost.author.hopCount
+    if (sourceHopCount === undefined || !Number.isInteger(sourceHopCount) || sourceHopCount < 0) {
+      this.log.debug(
+        `webchat: peer post ${contextPost.postId} carries no usable depth — transcript-only (pre-parity author daemon)`
+      )
+      return
+    }
+    // §4.1: ONE transition per delivery, against the same cap as an internal call.
+    const deliveryHopCount = sourceHopCount + 1
+    if (hasReachedAgentCallHopLimit(deliveryHopCount)) {
+      this.log.info(
+        `webchat: continuation refused for "${targetAgentId}" in conversation ${chatId} ` +
+          `(hop_limit: source depth ${sourceHopCount} + 1 reaches ${MAX_AGENT_CALL_HOPS}); ` +
+          `peer post ${contextPost.postId} stays transcript-only`
+      )
+      return
+    }
+    if (!this.agents.has(targetAgentId) || this.drainingAgents.has(targetAgentId)) return
+    if (!this.cpCollab.admits(authorAgentId, targetAgentId)) {
+      this.log.debug(`webchat: agent edge ${authorAgentId} → ${targetAgentId} denied by call policy`)
+      return
+    }
+    const webchat = this.webchatWakeContext('webchat', chatId)
+    if (!webchat) return
+    // TARGET-SCOPED, like the platform ladder's key: one post fans to several
+    // participants and each must be admitted once, independently of the others.
+    const key = activationKey('webchat', undefined, contextPost.postId, targetAgentId)
+    const deliveryId = `${contextPost.postId}#${targetAgentId}`
+    const envelope = JSON.stringify({
+      kind: 'webchat-continuation',
+      callFrom: authorAgentId,
+      hopCount: deliveryHopCount
     })
+    const claimed = this.store.attachActivationEnvelope(
+      key,
+      envelope,
+      this.clock.now() + ACTIVATION_PAIRING_TTL_MS,
+      deliveryId
+    )
+    if (!claimed.dispatch) {
+      this.log.debug(
+        `webchat: peer post ${contextPost.postId} → "${targetAgentId}" already admitted (${claimed.record.state})`
+      )
+      return
+    }
+    const msg: NormalizedMessage = {
+      msgId: `webchat:${chatId}`, // the conversation-stable id, so the wake lands in the ONE conversation session
+      traceId: deliveryId,
+      source: 'agent',
+      platform: 'webchat',
+      channel: chatId,
+      sender: { id: authorAgentId, isBot: true },
+      // A `source:'agent'` trigger is delivered bare (no `[sender]` wrapping in prompt
+      // assembly), so carry the author label in the text — the same `[<author>] <text>`
+      // shape the §8.5 context replay uses for peer rows.
+      text: `[${authorAgentId}] ${contextPost.text}`,
+      mentionedBots: [],
+      // The canonical coordinates its context row landed on, so SessionManager's
+      // trigger append dedups onto the recorded row (by postId) and the turn-final
+      // refresh queue-coalescing can match this activation to its transcript event.
+      transcriptTs: landedTs,
+      transcriptPostId: contextPost.postId,
+      isDm: true
+    }
+    const callMeta: CallMeta = {
+      callFrom: authorAgentId,
+      // §4.1 step 3/5: install the computed depth as trusted active-turn metadata, so
+      // the reply this target commits stamps it as the NEXT post's source depth —
+      // across queue replay and restart, since it persists with the inbox row.
+      hopCount: deliveryHopCount,
+      deliveryId,
+      // §8.6: settled centrally in `dispatch` — live, queued, and startup replay alike.
+      activationKey: key,
+      conversationContinuation: true
+    }
+    void this.dispatch(targetAgentId, msg, undefined, webchat, callMeta, {
+      // `accepted` must imply a replayable row, or the rendezvous goes terminal for a
+      // turn that can never be replayed — same contract as the platform ladder.
+      requireDurable: true,
+      deliveryId
+    }).catch((err) =>
+      this.log.error(`webchat continuation dispatch failed for agent "${targetAgentId}": ${formatErr(err)}`)
+    )
+    this.log.info(
+      `routing: webchat peer post ch=${chatId} "${authorAgentId}" → "${targetAgentId}" (hop ${deliveryHopCount})`
+    )
   }
 
   /** Route a Slack status-bar Block Kit interaction (model / effort / fast select or the
@@ -13472,8 +13644,11 @@ export class Daemon {
         {
           initializeOnly,
           // CallMeta is the trusted distinction between a real A2A delivery and
-          // synthetic `source: agent` wakes (background task/orchestration).
-          directAgentCall: callMeta !== undefined,
+          // synthetic `source: agent` wakes (background task/orchestration). A webchat
+          // roster continuation carries CallMeta for its hop/rendezvous chain but is a
+          // conversation post, not an address — it must not defeat the response-choice
+          // rule (webchat-multi-agents.md §5.2a).
+          directAgentCall: callMeta !== undefined && callMeta.conversationContinuation !== true,
           // Memory READS (index injection + auto-recall) are no longer session-
           // gated — every session may use shared memory (#653). WRITES stay gated
           // (memory write tools via memoryAccessAllowed; post-turn distillation via
@@ -14196,13 +14371,17 @@ export class Daemon {
           // Fan the completed reply out as a canonical conversation post so the
           // relay delivers it to the browser's message log and to the other
           // participants' daemons as context (webchat-multi-agents.md §5.2).
+          // `hopCount` is this turn's own chain depth (§4.1: stamped on every body
+          // the author posts), which is what lets a receiving participant charge
+          // the ONE +1 continuation transition (§5.2a) — the same stamp the
+          // platform paths put on their outbound authorship metadata.
           p.webchat.postSink?.({
             conversationId: p.webchat.conversationId,
             agentId,
             post: {
               postId: replyPostId,
               conversationId: p.webchat.conversationId,
-              author: { kind: 'agent', agentId },
+              author: { kind: 'agent', agentId, hopCount: p.sourceHopCount },
               text: p.webchat.replyText,
               at: Number(replyTs)
             },
@@ -14340,7 +14519,11 @@ export class Daemon {
             text: p.webchat.replyText
           })
           // A partial reply is still conversation content the other participants
-          // should see — fan it out exactly like the success path.
+          // should see — fan it out exactly like the success path. Deliberately
+          // WITHOUT the author hopCount stamp: a failed turn's fragment must not
+          // continue the conversation (§5.2a activates only on a committed reply
+          // carrying a usable depth), or a crash-looping agent would keep waking
+          // its peers with broken half-answers.
           p.webchat.postSink?.({
             conversationId: p.webchat.conversationId,
             agentId,
@@ -15001,7 +15184,7 @@ export class Daemon {
     // Session work may begin during startup before startCpClient() runs. Persist
     // that obligation whenever this daemon is configured to connect; only the
     // live send still depends on a constructed client.
-    if (!cpClient && !configuredControlPlane(this.cfg.controlPlane)) return
+    if (!cpClient && !configuredControlPlane(this.cfg.controlPlane, !!this.clusterIdentityToken)) return
     const now = new Date(this.clock.now()).toISOString()
     const row = this.sessionListProjection(input.sessionId, input.agentId)
     const key = row?.sessionKey
@@ -20220,10 +20403,11 @@ export class Daemon {
 
   private startCpClient(root: string): void {
     const cp = this.cfg.controlPlane
-    if (!configuredControlPlane(cp)) {
+    if (!configuredControlPlane(cp, !!this.clusterIdentityToken)) {
       this.log.info('cp: not connecting (disabled or missing url/token) — running local')
       return
     }
+    if (this.clusterIdentityToken) this.log.info("cp: authenticating with this pod's projected identity token")
     // Start host-load sampling only now — the snapshot exists solely to feed the CP
     // heartbeat below (no CP ⇒ no sampler, so CP-less runs never probe the system).
     this.metrics = new SystemMetrics({ clock: this.clock, log: this.log })
@@ -20237,7 +20421,10 @@ export class Daemon {
     // and if it matches it is redundant anyway.
     const echoDaemonId = this.opts.overrides?.daemonId
     const url = cp.url
-    const cpKey = cp.key // narrowed to string by the guard above
+    // Relay dial-out still authenticates with the API key: the relay verifies `daemon-key`
+    // credentials through the CP and has no token path yet, so a key-less in-cluster daemon
+    // simply never authenticates to a relay.
+    const cpKey = cp.key ?? ''
 
     // Relay dial-out manager: the CP publishes the roster (register/ok.relays + the
     // relay/roster EVT) and this set-converges an rd/* connection to each relay. Built
@@ -20323,11 +20510,14 @@ export class Daemon {
 
     this.cpClient = new CpClient({
       url,
-      token: cp.key,
+      ...(cp.key ? { token: cp.key } : {}),
+      ...(this.clusterIdentityToken ? { clusterIdentityToken: this.clusterIdentityToken } : {}),
       ...(echoDaemonId ? { daemonId: echoDaemonId } : {}),
       onDaemonId: (id) => {
         this.cfg.daemonId = id
-        persistDaemonId(root, id, this.opts.configPath)
+        // An in-cluster daemon persists nothing: its identity is re-derived from the
+        // projected token on every connect, so a stored id could only go stale.
+        if (!this.clusterIdentityToken) persistDaemonId(root, id, this.opts.configPath)
         this.log.info(`cp: adopted daemonId ${id} from auth/ok`)
       },
       onWebAppUrl: (url) => {

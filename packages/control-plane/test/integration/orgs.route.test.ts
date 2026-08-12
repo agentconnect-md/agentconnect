@@ -293,6 +293,53 @@ describe('DELETE /orgs/:orgId', () => {
     }
   })
 
+  // The envelope's daemon is the control plane's own, provisioned with the org
+  // rather than attached by an operator — so it must not be the thing that makes
+  // an organization undeletable, and no Daemons page could be asked to detach it.
+  it('retires the cluster envelope’s own daemon instead of refusing', async () => {
+    const envelopeDaemonId = 'aaaaaaa1-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    await prisma.daemon.create({
+      data: { id: envelopeDaemonId, orgId: DEFAULT_ORG_ID, sessionEpoch: 1n, status: 'ready' }
+    })
+    const disabled: string[] = []
+    const { app, close } = buildHttpApp(prisma, undefined, undefined, undefined, {
+      clusterExecution: {
+        settings: async () => ({ credentialDaemonId: envelopeDaemonId }),
+        configure: async (orgId: string) => void disabled.push(orgId),
+        drainTeardowns: async () => 0
+      } as never
+    })
+    try {
+      expect((await app.inject({ method: 'DELETE', url: ORG })).statusCode).toBe(204)
+      expect(disabled).toEqual([DEFAULT_ORG_ID])
+      expect(await prisma.org.findUnique({ where: { id: DEFAULT_ORG_ID } })).toBeNull()
+      expect(await prisma.daemon.findUnique({ where: { id: envelopeDaemonId } })).toBeNull()
+    } finally {
+      await close()
+    }
+  })
+
+  it('still refuses when a daemon other than the envelope’s is attached', async () => {
+    const envelopeDaemonId = 'aaaaaaa2-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    for (const id of [envelopeDaemonId, 'aaaaaaa3-aaaa-4aaa-8aaa-aaaaaaaaaaaa']) {
+      await prisma.daemon.create({ data: { id, orgId: DEFAULT_ORG_ID, sessionEpoch: 1n, status: 'ready' } })
+    }
+    const { app, close } = buildHttpApp(prisma, undefined, undefined, undefined, {
+      clusterExecution: {
+        settings: async () => ({ credentialDaemonId: envelopeDaemonId }),
+        configure: async () => {},
+        drainTeardowns: async () => 0
+      } as never
+    })
+    try {
+      expect((await app.inject({ method: 'DELETE', url: ORG })).statusCode).toBe(409)
+      // Refusing must not have retired the envelope on the way out.
+      expect(await prisma.daemon.findUnique({ where: { id: envelopeDaemonId } })).not.toBeNull()
+    } finally {
+      await close()
+    }
+  })
+
   it('transactionally rechecks daemons when the route preflight misses one', async () => {
     await prisma.daemon.create({
       data: { id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', orgId: DEFAULT_ORG_ID, sessionEpoch: 1n, status: 'ready' }

@@ -151,8 +151,13 @@ export const RelayWebchatOp = z.discriminatedUnion('op', [
   }),
   // A conversation post another participant produced (a user turn targeted
   // elsewhere, or a peer agent's reply), fanned out by the relay so THIS frame's
-  // agent sees the full conversation at its next activation. Transcript-only:
-  // the daemon records it (deduplicated by postId) and NEVER activates on it.
+  // agent sees the full conversation. The daemon always records it (deduplicated
+  // by postId). A USER-authored post stays transcript-only (user turns activate
+  // via pre-addressed `turn` frames); an AGENT-authored post carrying a usable
+  // `author.hopCount` additionally CONTINUES the conversation for this
+  // pre-addressed participant — the #549 parity of webchat-multi-agents.md §5.2a,
+  // bounded by the hop transition, exactly-once admission, and call policy on the
+  // receiving daemon. An agent post without a depth stays transcript-only.
   z.object({
     op: z.literal('context'),
     post: WebchatPost

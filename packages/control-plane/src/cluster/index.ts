@@ -1,4 +1,4 @@
-export { ClusterAccessError, loadClusterAccess, loadKubeconfig, type ClusterAccessConfig } from './access.js'
+export { loadClusterAccess, type ClusterAccessConfig } from './access.js'
 export {
   CONDITION_TYPES,
   DEFAULT_CREDENTIAL_SECRET_NAME,
@@ -8,6 +8,7 @@ export {
   type ConditionType
 } from './crd.js'
 export { AgentConnectOrgApi, type OrgResourceApi } from './org-api.js'
+export { ClusterDaemonIdentityService, clusterIdentityOf, parseServiceAccountSubject } from './daemon-identity.js'
 export {
   ClusterSecretApi,
   CREDENTIAL_SECRET_KEY,
@@ -24,6 +25,7 @@ export {
   ClusterNotEnabledError,
   ClusterRotationInProgressError,
   type ClusterCredentialView,
+  type EnsuredEnvelope,
   type ClusterExecutionPolicy,
   type ClusterKeyAuthority
 } from './service.js'

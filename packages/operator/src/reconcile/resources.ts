@@ -1,11 +1,13 @@
 import { K8sApiError, type K8sHttp } from '@agentconnect.md/k8s-client'
+import { ENVELOPE_DAEMON_SA_NAME } from '@agentconnect.md/protocol'
 
 /** Server-side-apply field manager; one manager, force=true — the operator owns what it stamps. */
 export const FIELD_MANAGER = 'agentconnect-operator'
 
 // Envelope object names are fixed per-namespace constants: the namespace is per-org,
 // so names never collide and stay greppable across every org envelope.
-export const DAEMON_NAME = 'ac-daemon'
+/** Also the ServiceAccount name the control plane checks on a daemon's token, hence shared. */
+export const DAEMON_NAME = ENVELOPE_DAEMON_SA_NAME
 export const RUNTIME_SA_NAME = 'ac-runtime'
 export const SHIM_SERVICE_NAME = 'ac-daemon-shim'
 export const DAEMON_PVC_NAME = 'ac-daemon-state'

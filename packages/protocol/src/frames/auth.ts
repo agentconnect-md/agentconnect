@@ -10,8 +10,13 @@ import { z } from 'zod'
 
 export const AuthReq = z.object({
   // Long-lived, revocable API key — a bare opaque `<secret><crc>`, hashed at rest and looked up
-  // by that unique hash (see docs/designs/daemon-api-key-auth.md). The only daemon credential.
-  apiKey: z.string(),
+  // by that unique hash (see docs/designs/daemon-api-key-auth.md). A daemon with no Kubernetes
+  // identity carries this; an in-cluster one sends `serviceAccountToken` instead.
+  apiKey: z.string().optional(),
+  // Projected ServiceAccount token of an operator-provisioned daemon pod, audience-scoped to
+  // CP_TOKEN_AUDIENCE and verified by TokenReview against the org's cluster (see "Daemon
+  // identity" in docs/designs/agentconnect-org-operator.md). Takes precedence over `apiKey`.
+  serviceAccountToken: z.string().optional(),
   // Optional echo of the daemonId. If present it must equal the daemonId the ApiKey row
   // resolves to; otherwise the daemon adopts the authoritative id from `auth/ok`.
   daemonId: z.string().uuid().optional(),

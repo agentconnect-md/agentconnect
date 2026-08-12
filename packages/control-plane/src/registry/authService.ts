@@ -2,7 +2,12 @@
  * `DaemonAuthService` — implements the C4 `DaemonAuth` port (design §2.3, §4.6;
  * protocol §3.1; daemon-api-key-auth.md §5).
  *
- * `authenticate` is the server side of the first frame on the socket:
+ * `authenticate` is the server side of the first frame on the socket. Two credentials
+ * reach it and each is simple on its own — an in-cluster daemon presents the projected
+ * ServiceAccount token its pod was born with, and a daemon on someone's laptop, which has
+ * no Kubernetes identity, presents the API key it always did.
+ *
+ * The key path:
  *   1. parse the presented `apiKey` offline (prefix/role/charset/CRC) — malformed
  *      → close `4401` (`AUTH_FAILED`), no DB call, no side effects;
  *   2. look the key up by its peppered hash; missing / revoked / expired / not a
@@ -10,17 +15,20 @@
  *   3. on success → mint the next monotonic `sessionEpoch` via `EpochService`
  *      (persisted in C6) and return the `auth/ok` frame.
  *
+ * The token path replaces steps 1–2 with one TokenReview against the org's cluster
+ * (`ClusterDaemonIdentity`), which yields the same `{daemonId, orgId}` and joins step 3.
+ *
  * A DB error during lookup or the epoch bump closes `1011` (SERVER_INTERNAL) so the
  * daemon backs off and retries rather than treating a transient blip as a dead
  * credential. The service is transport-free: it returns an `AuthResult` the WS
  * handler turns into `replyTo(..., "auth/ok", ...)` or `transport.close(...)`.
  */
 import type { AuthReq, AuthOk } from '@agentconnect.md/protocol'
-import type { AuthResult, ClientCtx, DaemonAuth } from '../ports.js'
+import type { AuthResult, ClientCtx, ClusterDaemonIdentity, DaemonAuth, VerifiedClusterDaemon } from '../ports.js'
 import type { ApiKeyRepo, OrgRepo } from '../persistence/ports.js'
 import type { EpochService } from '../orchestrator/epoch.js'
 import type { Clock } from '../domain/clock.js'
-import { DaemonId } from '../domain/ids.js'
+import { DaemonId, OrgId } from '../domain/ids.js'
 import { ApiKeyCodec } from './apiKey.js'
 
 /** Config slice the auth service needs. */
@@ -40,14 +48,44 @@ export class DaemonAuthService implements DaemonAuth {
     private readonly config: AuthServiceConfig,
     // Resolves the daemon's org slug for the org-scoped session deep link. Only `slugById`
     // is used; a failed lookup degrades to no `orgSlug` (never fails the handshake).
-    private readonly orgs: Pick<OrgRepo, 'slugById'>
+    private readonly orgs: Pick<OrgRepo, 'slugById'>,
+    /** Absent when this deployment provisions no clusters — then only the key path exists. */
+    private readonly clusterIdentity?: ClusterDaemonIdentity
   ) {}
 
-  async authenticate(req: AuthReq, _ctx: ClientCtx): Promise<AuthResult> {
+  async authenticate(req: AuthReq, ctx: ClientCtx): Promise<AuthResult> {
+    if (req.serviceAccountToken) return this.authenticateClusterDaemon(req, ctx)
+    return this.authenticateApiKey(req)
+  }
+
+  /**
+   * An in-cluster daemon: one TokenReview, then the same epoch mint the key path does. The
+   * verifier answers null for every refusal, so nothing here distinguishes an unknown org
+   * from a wrong audience — a rejection names no namespace, org, or check.
+   */
+  private async authenticateClusterDaemon(req: AuthReq, _ctx: ClientCtx): Promise<AuthResult> {
+    if (!this.clusterIdentity) return { ok: false, closeCode: 4401, reason: 'AUTH_FAILED' }
+    let verified: VerifiedClusterDaemon | null
+    try {
+      verified = await this.clusterIdentity.verify(req.serviceAccountToken!)
+    } catch {
+      // The API server or the database blinked. Transient, like a failed key lookup: 1011
+      // makes the daemon back off and retry instead of treating it as a dead identity.
+      return { ok: false, closeCode: 1011, reason: 'SERVER_INTERNAL' }
+    }
+    if (!verified) return { ok: false, closeCode: 4401, reason: 'AUTH_FAILED' }
+    // An echoed id must match what the identity resolves to; the token, never the echo, decides.
+    if (req.daemonId && req.daemonId !== verified.daemonId) {
+      return { ok: false, closeCode: 4401, reason: 'AUTH_FAILED' }
+    }
+    return this.mintEpoch(req, verified.daemonId, verified.orgId)
+  }
+
+  private async authenticateApiKey(req: AuthReq): Promise<AuthResult> {
     const nowMs = this.clock.now()
 
-    // 1. Parse offline. Malformed → 4401 with NO DB call / NO side effects.
-    const parsed = this.codec.parse(req.apiKey)
+    // 1. Parse offline. Malformed (or absent) → 4401 with NO DB call / NO side effects.
+    const parsed = req.apiKey ? this.codec.parse(req.apiKey) : undefined
     if (!parsed) return { ok: false, closeCode: 4401, reason: 'AUTH_FAILED' }
 
     // 2. Look up by the unique peppered hash. A DB error here is transient → 1011.
@@ -71,29 +109,39 @@ export class DaemonAuthService implements DaemonAuth {
 
     // 3. Success → mint the next monotonic sessionEpoch (persisted in C6). The
     //    provisioned row already exists (epoch 0), so this hits the increment branch.
-    //    A persistence failure must NOT crash the connection: 1011 → daemon retries.
+    const result = await this.mintEpoch(req, daemonId, orgId, row.id)
+
+    // Throttle-free best-effort liveness touch — never blocks or fails the handshake.
+    if (result.ok) void this.apiKeys.touchLastUsed(row.id, new Date(nowMs)).catch(() => {})
+
+    return result
+  }
+
+  /** The shared tail of both credentials: bump the fencing root and build `auth/ok`.
+   *  A persistence failure must NOT crash the connection: 1011 → daemon retries. */
+  private async mintEpoch(req: AuthReq, daemonId: string, orgId: string, tokenFp?: string): Promise<AuthResult> {
+    const nowMs = this.clock.now()
     let sessionEpoch: bigint
     try {
       ;({ sessionEpoch } = await this.epoch.bumpSessionEpoch({
-        daemonId,
-        orgId,
+        daemonId: DaemonId(daemonId),
+        orgId: OrgId(orgId),
         agentVersion: req.agentVersion,
         ...(req.machineId ? { machineId: req.machineId } : {}),
-        tokenFp: row.id // audit: ties this connection to the specific ApiKey row
+        // Audit: ties this connection to the specific ApiKey row. A cluster daemon has no
+        // key, and its identity is re-derived from its token each connect, so it has none.
+        ...(tokenFp ? { tokenFp } : {})
       }))
     } catch {
       return { ok: false, closeCode: 1011, reason: 'SERVER_INTERNAL' }
     }
 
-    // Throttle-free best-effort liveness touch — never blocks or fails the handshake.
-    void this.apiKeys.touchLastUsed(row.id, new Date(nowMs)).catch(() => {})
-
     // The org slug for the org-scoped console deep link. Best-effort: a DB blip here must
     // not fail an otherwise-good auth — the daemon just omits the org segment if absent.
-    const orgSlug = await this.orgs.slugById(orgId).catch(() => null)
+    const orgSlug = await this.orgs.slugById(OrgId(orgId)).catch(() => null)
 
     const okFrame: AuthOk = {
-      daemonId, // authoritative id (the key's daemonId) — the daemon adopts this
+      daemonId, // authoritative id (what the credential resolves to) — the daemon adopts this
       sessionEpoch: Number(sessionEpoch), // wire is a JS number; DB stores bigint
       heartbeatSec: this.config.HEARTBEAT_SEC,
       serverTime: new Date(nowMs).toISOString(),

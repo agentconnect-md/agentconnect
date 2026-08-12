@@ -202,11 +202,11 @@ export class GithubReviewClient {
       if (existing) return this.submitted(existing, target, input)
 
       const pull = await this.getPull(target.token, target.repoFullName, target.pullNumber)
-      if (pull.state !== 'open' || pull.merged || pull.draft) {
+      if (pull.state !== 'open' || pull.merged) {
         return {
           state: 'not_submitted',
           code: 'pull_unavailable',
-          message: `pull request is ${pull.merged ? 'merged' : pull.draft ? 'draft' : pull.state}`
+          message: `pull request is ${pull.merged ? 'merged' : pull.state}`
         }
       }
       if (pull.headSha !== target.expectedHeadSha || pull.baseSha !== target.expectedBaseSha) {

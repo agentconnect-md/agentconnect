@@ -37,6 +37,7 @@ import { type Clock, systemClock } from './domain/clock.js'
 import { K8sHttp } from '@agentconnect.md/k8s-client'
 import {
   AgentConnectOrgApi,
+  ClusterDaemonIdentityService,
   ClusterExecutionService,
   ClusterSecretApi,
   ClusterMaintenanceLoop,
@@ -386,6 +387,15 @@ export function buildContainer(
 
   const codec = new ApiKeyCodec({ API_KEY_PEPPER: config.API_KEY_PEPPER })
   const webAppUrl = resolveWebAppUrl(config)
+  // Managed cluster execution (docs/designs/agentconnect-org-operator.md): assembled ONLY
+  // when the switch is on. Unlike the forgiving S3 group further down, the env schema
+  // already fail-fasts on a half-configured credential source, so reaching here with the
+  // feature enabled means the credentials loaded. Hoisted above the auth service because an
+  // in-cluster daemon authenticates against this same cluster client.
+  const clusterAccess = loadClusterAccess(config)
+  const clusterHttp = clusterAccess ? new K8sHttp(clusterAccess) : undefined
+  const clusterOrgApi =
+    clusterAccess && clusterHttp ? new AgentConnectOrgApi(clusterHttp, clusterAccess.namespace) : undefined
   const auth = new DaemonAuthService(
     codec,
     repos.apiKey,
@@ -400,7 +410,17 @@ export function buildContainer(
       WEB_APP_URL: webAppUrl
     },
     // Resolves the daemon's org slug for the org-scoped deep link (`…/<orgSlug>/sessions/…`).
-    repos.org
+    repos.org,
+    // The in-cluster daemon's token path; undefined ⇒ this deployment only accepts API keys.
+    clusterHttp && clusterOrgApi
+      ? new ClusterDaemonIdentityService(
+          clusterHttp,
+          clusterOrgApi,
+          repos.orgClusterExecution,
+          repos.daemon,
+          config.CLUSTER_ORG_NAMESPACE_PREFIX
+        )
+      : undefined
   )
   const apiKeys = new ApiKeyService(codec, repos.apiKey, repos.daemon, repos.audit, clock)
   const oauth = new OAuthService(repos.oauth, apiKeys, codec, clock)
@@ -445,34 +465,32 @@ export function buildContainer(
           publicBaseUrl: config.S3_PUBLIC_BASE_URL
         })
       : undefined
-  // Managed cluster execution (docs/designs/agentconnect-org-operator.md):
-  // assembled ONLY when a credential source is configured. Unlike the forgiving
-  // S3 group above, the env schema already fail-fasts on a half-configured mode,
-  // so reaching here with a non-`off` mode means the credentials loaded.
-  const clusterAccess = loadClusterAccess(config)
-  const clusterExecution = clusterAccess
-    ? new ClusterExecutionService(
-        repos.orgClusterExecution,
-        new AgentConnectOrgApi(new K8sHttp(clusterAccess), clusterAccess.namespace),
-        repos.org,
-        {
-          namespacePrefix: config.CLUSTER_ORG_NAMESPACE_PREFIX,
-          daemonImage: config.CLUSTER_DAEMON_IMAGE!,
-          runtimeImage: config.CLUSTER_RUNTIME_IMAGE!,
-          daemonTier: config.CLUSTER_DEFAULT_TIER,
-          // Falls back to the daemon tier only because that is what this was before the
-          // two were told apart; an install whose master templates are not named after
-          // the daemon tiers must set CLUSTER_DEFAULT_RUNTIME_TIER (see config/env.ts).
-          runtimeTiers: [{ name: config.CLUSTER_DEFAULT_RUNTIME_TIER ?? config.CLUSTER_DEFAULT_TIER, warmReplicas: 0 }],
-          // The same URL onboarding renders into the `npx … run` command, so an
-          // envelope daemon and a hand-run one dial exactly the same endpoint.
-          controlPlaneUrl: daemonWsUrl(httpServerConfigFrom(config, { DEFAULT_OWNER_ID, relayStaleMs }))
-        },
-        new ClusterSecretApi(new K8sHttp(clusterAccess)),
-        apiKeys,
-        clock
-      )
-    : undefined
+  const clusterExecution =
+    clusterAccess && clusterHttp && clusterOrgApi
+      ? new ClusterExecutionService(
+          repos.orgClusterExecution,
+          clusterOrgApi,
+          repos.org,
+          {
+            namespacePrefix: config.CLUSTER_ORG_NAMESPACE_PREFIX,
+            daemonImage: config.CLUSTER_DAEMON_IMAGE!,
+            runtimeImage: config.CLUSTER_RUNTIME_IMAGE!,
+            daemonTier: config.CLUSTER_DEFAULT_TIER,
+            // Falls back to the daemon tier only because that is what this was before the
+            // two were told apart; an install whose master templates are not named after
+            // the daemon tiers must set CLUSTER_DEFAULT_RUNTIME_TIER (see config/env.ts).
+            runtimeTiers: [
+              { name: config.CLUSTER_DEFAULT_RUNTIME_TIER ?? config.CLUSTER_DEFAULT_TIER, warmReplicas: 0 }
+            ],
+            // The same URL onboarding renders into the `npx … run` command, so an
+            // envelope daemon and a hand-run one dial exactly the same endpoint.
+            controlPlaneUrl: daemonWsUrl(httpServerConfigFrom(config, { DEFAULT_OWNER_ID, relayStaleMs }))
+          },
+          new ClusterSecretApi(clusterHttp),
+          apiKeys,
+          clock
+        )
+      : undefined
   // Bases the reconcile roster + DTOs resolve avatar URLs against: `cp` for the
   // glyph/runtime PNG endpoint, `store` for uploaded `image` icons.
   const iconBases: IconUrlBases = {

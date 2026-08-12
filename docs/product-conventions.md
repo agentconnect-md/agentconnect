@@ -755,7 +755,7 @@ AgentConnect informational review Check in that App suite, with the same live ma
 authorization and revision fences as a single-Check rerun. It does not depend on the
 integration's ordinary event cadence.
 
-Every active informational review Check completed as `skipped` or `failure` offers a
+Every active informational review Check completed in a terminal state offers a
 `Request review` action. It targets only that Check's Agent and opens a new generation
 for the same revision after the same live maintainer authorization and revision fences.
 A retired Check offers no action because it no longer has a live integration to run.
@@ -775,7 +775,10 @@ Automatic PR revision reviews are latest-wins while active or queued. When a new
 request is durably admitted, the daemon cancels the older active review, suppresses all of
 its remaining output, and removes intermediate queued heads. Relay ingest time determines
 recency even if asynchronous authorization reorders delivery; the delivery key breaks
-same-timestamp ties deterministically. Explicit comments, review requests, and Check reruns
+same-timestamp ties deterministically. Draft state does not change review eligibility: an
+open draft PR follows the same formal review path as a ready PR, including approval when
+the current revision passes. Transitions between draft and ready are status-only and do
+not start another review generation. Explicit comments, review requests, and Check reruns
 remain ordered work and are never discarded by revision supersession.
 The trusted pull-request lane spans per-delivery anchor session keys but remains isolated by
 the configured output platform, channel, and integration.

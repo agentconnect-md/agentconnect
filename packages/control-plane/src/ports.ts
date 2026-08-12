@@ -32,12 +32,28 @@ export type AuthResult =
   { ok: true; daemonId: DaemonId; okFrame: AuthOk } | { ok: false; closeCode: 4401 | 4409 | 1011; reason: string }
 
 /**
- * C4 — daemon authentication. `authenticate` verifies the presented API key
- * (an opaque `<secret><crc>` key, looked up by its peppered hash) and, on success, mints the next
- * monotonic `sessionEpoch` (the global fencing token, §3.1).
+ * C4 — daemon authentication. `authenticate` verifies the presented credential — an opaque
+ * `<secret><crc>` API key looked up by its peppered hash, or an in-cluster daemon's projected
+ * ServiceAccount token — and, on success, mints the next monotonic `sessionEpoch` (the global
+ * fencing token, §3.1).
  */
 export interface DaemonAuth {
   authenticate(req: AuthReq, ctx: ClientCtx): Promise<AuthResult>
+}
+
+/** The daemon record a verified Kubernetes identity resolves to. */
+export interface VerifiedClusterDaemon {
+  daemonId: DaemonId
+  orgId: OrgId
+}
+
+/**
+ * Verifier for an in-cluster daemon's projected ServiceAccount token. Null ⇒ the token is
+ * not a usable envelope-daemon identity, for any reason: the auth path answers one coarse
+ * `AUTH_FAILED` either way, so the caller never learns which check refused it.
+ */
+export interface ClusterDaemonIdentity {
+  verify(token: string): Promise<VerifiedClusterDaemon | null>
 }
 
 /** A freshly minted key — the one-time plaintext returned to the operator. */

@@ -137,6 +137,22 @@ helm install ENV_NAME oci://ghcr.io/agentconnect-md/charts/agentconnect-operator
 (Chart publishing to the OCI registry lands with the release-pipeline wiring;
 until then install from this directory.)
 
+### Granting the control plane its TokenReview
+
+An in-cluster daemon authenticates to the control plane with the projected
+ServiceAccount token the kubelet gives its pod, and the control plane verifies
+that token by creating a `TokenReview` — a cluster-scoped API, so a cluster-scoped
+grant. Set `controlPlane.serviceAccountName` (and `controlPlane.namespace` when the
+control plane does not run in the release namespace) to have this install bind that
+grant alongside the rest of its RBAC:
+
+```bash
+--set controlPlane.serviceAccountName=CONTROL_PLANE_SA
+```
+
+Left empty, nothing is rendered and granting `create` on `tokenreviews` stays the
+deployment's own job.
+
 ## Telemetry
 
 The operator ships the same OpenTelemetry bootstrap as the other services and

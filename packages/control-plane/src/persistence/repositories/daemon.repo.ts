@@ -7,6 +7,7 @@
  * single UPDATE, so repeated auth yields strictly increasing, never-reused
  * epochs (§3.1, §3.13). The first auth creates the row at epoch 1.
  */
+import { randomUUID } from 'node:crypto'
 import type { Prisma, Daemon, User } from '../../generated/prisma/client.js'
 import { withAmbientTx, type PrismaLike } from '../prisma.js'
 import type {
@@ -85,6 +86,57 @@ export class PgDaemonRepo implements DaemonRepo {
       })
       return toRecord(daemon)
     })
+  }
+
+  async resolveClusterIdentity(
+    orgId: OrgId,
+    clusterIdentity: string,
+    opts: { adoptDaemonId?: string } = {}
+  ): Promise<DaemonRecord | null> {
+    const existing = await this.db.daemon.findUnique({ where: { clusterIdentity }, include: withUsers })
+    if (existing) return existing.orgId === orgId ? toRecord(existing) : null
+    const adopted = opts.adoptDaemonId ? await this.adoptForIdentity(orgId, clusterIdentity, opts.adoptDaemonId) : null
+    if (adopted) return adopted
+    try {
+      return await withAmbientTx(this.db, async (tx) => {
+        await lockResourceWriteMemberships(tx, { orgId, visibility: 'org' })
+        const daemon = await tx.daemon.create({
+          data: { id: randomUUID(), orgId, clusterIdentity, status: 'provisioned' },
+          include: withUsers
+        })
+        return toRecord(daemon)
+      })
+    } catch (error) {
+      // A concurrent first connect won the unique index; its row is the binding.
+      if ((error as { code?: string }).code !== 'P2002') throw error
+      const raced = await this.db.daemon.findUnique({ where: { clusterIdentity }, include: withUsers })
+      if (!raced) throw error
+      return raced.orgId === orgId ? toRecord(raced) : null
+    }
+  }
+
+  /** Bind an envelope's existing daemon record — the one the API-key path pinned — to the
+   *  identity now authenticating for it, so an org provisioned before the token path keeps
+   *  its placements and history instead of gaining a second record beside them. Conditional
+   *  on the row being this org's and still unbound; anything else falls through to a create. */
+  private async adoptForIdentity(
+    orgId: OrgId,
+    clusterIdentity: string,
+    daemonId: string
+  ): Promise<DaemonRecord | null> {
+    try {
+      const claimed = await this.db.daemon.updateMany({
+        where: { id: daemonId, orgId, clusterIdentity: null },
+        data: { clusterIdentity }
+      })
+      if (claimed.count !== 1) return null
+    } catch (error) {
+      // Another identity claimed this record first; it is not this envelope's to adopt.
+      if ((error as { code?: string }).code !== 'P2002') throw error
+      return null
+    }
+    const daemon = await this.db.daemon.findUnique({ where: { id: daemonId }, include: withUsers })
+    return daemon ? toRecord(daemon) : null
   }
 
   async upsertOnAuth(input: AuthReqInput): Promise<{ daemon: DaemonRecord; sessionEpoch: bigint }> {

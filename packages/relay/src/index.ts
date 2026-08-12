@@ -17,7 +17,7 @@ import { RelayCpClient } from './relay-cp-client.js'
 import { buildRelayServer } from './server.js'
 import { createRelayDaemonServer, type RelayDaemonServer } from './relay-daemon-server.js'
 import { createRelayBrowserServer } from './relay-browser-server.js'
-import { WebchatRouter } from './webchat-router.js'
+import { WebchatRouter, bindWebchatPostAuthor } from './webchat-router.js'
 import { RelayIngressManager } from './relay-ingress-manager.js'
 import { relayIngressPlugins } from './platforms/registry.js'
 import { CollaborationRouter } from './collaboration-router.js'
@@ -290,13 +290,26 @@ async function main(): Promise<void> {
     clock: systemClock,
     onChat: (chat) => router.deliver(chat),
     // A completed reply post: render to the browser (if attached), then fan a
-    // transcript-only context copy to every OTHER participant's daemon from the
-    // router's roster cache — independent of the browser sink, so a mid-turn
-    // browser close cannot drop the canonical post for the peers
-    // (webchat-multi-agents.md §5.2).
-    onWebchatPost: (post) => {
-      router.deliverPost(post)
-      for (const p of router.rosterOf(post.conversationId)) {
+    // context copy to every OTHER participant's daemon from the router's roster
+    // cache — independent of the browser sink, so a mid-turn browser close cannot
+    // drop the canonical post for the peers (webchat-multi-agents.md §5.2).
+    //
+    // The authorship claim is bound to the AUTHENTICATED source daemon FIRST
+    // (§5.2a): only a bound claim keeps the activation-capable depth stamp; an
+    // unbound one is stripped to the pre-§5.2a transcript-only shape, so a daemon
+    // can never make peers execute under an author identity the relay did not
+    // verify against the CP roster placement.
+    onWebchatPost: (fromDaemonId, post) => {
+      const roster = router.rosterOf(post.conversationId)
+      const bound = bindWebchatPostAuthor(post, fromDaemonId, roster)
+      if (!bound.authorBound && bound.post !== post) {
+        log.warn(
+          `relay: webchat post ${post.post.postId} author claim not bound to daemon ${fromDaemonId} — ` +
+            `depth stripped, context stays transcript-only`
+        )
+      }
+      router.deliverPost(bound.post)
+      for (const p of roster) {
         if (p.agentId === post.agentId || !p.daemonId) continue
         const conn = rdServer.get(p.daemonId)
         if (!conn) continue
@@ -307,7 +320,7 @@ async function main(): Promise<void> {
             sessionKey: post.conversationId,
             msgId: randomUUID(),
             chatId: post.conversationId,
-            payload: { op: 'context', post: post.post }
+            payload: { op: 'context', post: bound.post.post }
           })
           .catch((err) => log.warn(`relay: webchat post context fan-out failed: ${(err as Error).message}`))
       }

@@ -3,6 +3,7 @@
  *
  *   GET  /orgs/:orgId/cluster-execution            — the org's envelope settings
  *   PUT  /orgs/:orgId/cluster-execution            — owner-only; write + reconcile
+ *   POST /orgs/:orgId/cluster-execution/ensure     — owner-only; idempotent provision
  *   POST /orgs/:orgId/cluster-execution/credential — owner-only; issue / rotate
  *   GET  /orgs/:orgId/cluster-execution/status     — live status from the resource
  *
@@ -28,6 +29,7 @@ import {
 import type { ClusterExecutionSettings } from '../../persistence/ports.js'
 import {
   ClusterCredentialDto,
+  ClusterEnsureResultDto,
   ClusterEnvelopeStatusDto,
   ClusterExecutionSettingsDto,
   ErrorDto,
@@ -92,6 +94,29 @@ export function clusterExecutionRoutes(deps: HttpDeps) {
         try {
           const settings = await cluster.configure(orgOf(req), req.body)
           return settingsDto(settings, cluster.controlNamespace)
+        } catch (error) {
+          return sendClusterFailure(reply, error, 'cluster API rejected the request')
+        }
+      }
+    )
+
+    r.post(
+      '/cluster-execution/ensure',
+      {
+        schema: {
+          tags: [Tag.Cluster],
+          summary: 'Ensure the organization’s envelope exists',
+          description:
+            'Owner-only, idempotent. Provisions the organization’s AgentConnectOrg resource if it has none — the same thing organization creation does, repeated here so an organization created before this deployment (or outside `POST /orgs`) converges when its owner opens the console. Re-applies the spec when a resource is missing, and issues (or reissues) the daemon credential once the operator has published the envelope namespace. An organization whose owner switched cluster execution OFF is left alone; nothing here re-enables it. `settled: false` means work is still owed — the namespace is not ready, or another caller owns the credential transition — and the caller should repeat the call; it is not an error, and no settings field carries that meaning on its own.',
+          operationId: 'ensureClusterExecution',
+          response: { 200: ClusterEnsureResultDto, 403: ErrorDto, 502: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (denyNonOwner(req, reply)) return
+        try {
+          const { settings, settled } = await cluster.ensureProvisioned(orgOf(req), req.principal?.userId)
+          return { ...settingsDto(settings, cluster.controlNamespace), settled }
         } catch (error) {
           return sendClusterFailure(reply, error, 'cluster API rejected the request')
         }

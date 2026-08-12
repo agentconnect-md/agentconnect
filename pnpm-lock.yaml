@@ -277,7 +277,7 @@ importers:
         version: 0.0.67
       '@larksuiteoapi/node-sdk':
         specifier: ^1.71.1
-        version: 1.71.1(debug@4.3.4)
+        version: 1.71.1
       '@modelcontextprotocol/client':
         specifier: 2.0.0
         version: 2.0.0
@@ -499,6 +499,9 @@ importers:
       '@agentconnect.md/observability':
         specifier: workspace:*
         version: link:../observability
+      '@agentconnect.md/protocol':
+        specifier: workspace:*
+        version: link:../protocol
       zod:
         specifier: ^4.4.3
         version: 4.4.3
@@ -10232,9 +10235,9 @@ snapshots:
 
   '@kwsites/promise-deferred@1.1.1': {}
 
-  '@larksuiteoapi/node-sdk@1.71.1(debug@4.3.4)':
+  '@larksuiteoapi/node-sdk@1.71.1':
     dependencies:
-      axios: 1.18.1(debug@4.3.4)
+      axios: 1.18.1
       lodash.identity: 3.0.0
       lodash.merge: 4.6.2
       lodash.pickby: 4.6.0
@@ -11592,7 +11595,7 @@ snapshots:
       '@slack/types': 2.22.0
       '@types/node': 24.13.3
       '@types/retry': 0.12.0
-      axios: 1.18.1(debug@4.3.4)
+      axios: 1.18.1
       eventemitter3: 5.0.4
       form-data: 4.0.6
       is-electron: 2.2.2
@@ -12612,7 +12615,7 @@ snapshots:
       - supports-color
     optional: true
 
-  axios@1.18.1(debug@4.3.4):
+  axios@1.18.1:
     dependencies:
       follow-redirects: 1.16.0(debug@4.3.4)
       form-data: 4.0.6

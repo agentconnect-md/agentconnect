@@ -156,7 +156,12 @@ interface RegisterControlBarrier {
 
 export interface CpClientDeps {
   url: string
-  token: string
+  /** The CP API key. Absent on an in-cluster daemon, which presents
+   *  {@link CpClientDeps.clusterIdentityToken} instead. */
+  token?: string
+  /** This pod's projected ServiceAccount token, re-read per connect because the kubelet
+   *  rotates it roughly hourly. Present ⇒ it is the credential and the API key is not sent. */
+  clusterIdentityToken?: () => string | undefined
   /** Optional: when unset, the token's `sub` is the authoritative daemonId and
    *  the CP assigns it. The adopted id is surfaced via `onDaemonId`. */
   daemonId?: string
@@ -363,14 +368,18 @@ export class CpClient {
   private async handshake(expectedTransport: Transport): Promise<void> {
     // ── auth ── (resume on reconnect carries only the last epoch the daemon held)
     this.state = 'AUTHENTICATING'
+    // Read per connect, never cached: the kubelet rewrites the projected token roughly hourly.
+    const identityToken = this.deps.clusterIdentityToken?.()
     const authPayload: Record<string, unknown> = {
-      apiKey: this.deps.token,
+      ...(identityToken ? { serviceAccountToken: identityToken } : { apiKey: this.deps.token }),
       agentVersion: this.deps.agentVersion,
       ...(this.deps.onBootstrapUpgrade ? { bootstrapProtocolVersion: DAEMON_BOOTSTRAP_PROTOCOL_VERSION } : {})
     }
     // Send daemonId only if configured; otherwise the CP derives it from the
-    // token's `sub` and returns it in auth/ok (token-only onboarding).
-    if (this.deps.daemonId) {
+    // token's `sub` and returns it in auth/ok (token-only onboarding). Never echoed on the
+    // identity-token path: the CP re-derives the daemon from the token each connect, so an
+    // id adopted from an earlier auth/ok could only contradict it — and a mismatch is fatal.
+    if (this.deps.daemonId && !identityToken) {
       authPayload.daemonId = this.deps.daemonId
     }
     if (this.lastAuthedEpoch > 0) {
