@@ -1,0 +1,81 @@
+services:
+  postgres:
+    ports: !reset []
+    environment:
+      POSTGRES_PASSWORD: '${AGENTCONNECT_POSTGRES_PASSWORD:?set AGENTCONNECT_POSTGRES_PASSWORD before enabling HTTPS}'
+
+  # The Setup Server requires each public service URL to be an origin without a
+  # path. It cannot model the /cp and /relay topology below, so keep it opt-in
+  # after the initial deployment setup is complete.
+  setup-server:
+    profiles: [setup]
+    ports: !reset []
+
+  control-plane:
+    ports: !reset []
+    environment:
+      API_KEY_PEPPER: '${AGENTCONNECT_API_KEY_PEPPER:?set AGENTCONNECT_API_KEY_PEPPER before enabling HTTPS}'
+      RELAY_TOKEN: '${AGENTCONNECT_RELAY_TOKEN:?set AGENTCONNECT_RELAY_TOKEN before enabling HTTPS}'
+      OIDC_ISSUER: '${OIDC_ISSUER:?complete authenticated setup and set OIDC_ISSUER before enabling HTTPS}'
+      PUBLIC_CP_URL: 'https://${AGENTCONNECT_HTTPS_HOST}:${AGENTCONNECT_HTTPS_PORT}/cp'
+      PUBLIC_WEB_URL: 'https://${AGENTCONNECT_HTTPS_HOST}:${AGENTCONNECT_HTTPS_PORT}'
+      PUBLIC_RELAY_URL: 'https://${AGENTCONNECT_HTTPS_HOST}:${AGENTCONNECT_HTTPS_PORT}/relay'
+      CORS_ORIGIN: 'https://${AGENTCONNECT_HTTPS_HOST}:${AGENTCONNECT_HTTPS_PORT}'
+
+  relay:
+    ports: !reset []
+    environment:
+      RELAY_TOKEN: '${AGENTCONNECT_RELAY_TOKEN:?set AGENTCONNECT_RELAY_TOKEN before enabling HTTPS}'
+      DAEMON_DIAL_URL: 'wss://${AGENTCONNECT_HTTPS_HOST}:${AGENTCONNECT_HTTPS_PORT}/relay'
+
+  web:
+    ports: !reset []
+    environment:
+      PUBLIC_WEB_URL: 'https://${AGENTCONNECT_HTTPS_HOST}:${AGENTCONNECT_HTTPS_PORT}'
+      CP_URL: 'https://${AGENTCONNECT_HTTPS_HOST}:${AGENTCONNECT_HTTPS_PORT}/cp/api/v1'
+      RELAY_URL: 'https://${AGENTCONNECT_HTTPS_HOST}:${AGENTCONNECT_HTTPS_PORT}/relay'
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - web
+      - control-plane
+      - relay
+    ports:
+      - '${AGENTCONNECT_HTTPS_BIND_ADDRESS:-0.0.0.0}:${AGENTCONNECT_HTTPS_PORT}:443'
+    configs:
+      - source: caddyfile
+        target: /etc/caddy/Caddyfile
+    volumes:
+      - caddy_data:/data
+      - caddy_runtime_config:/config
+
+configs:
+  caddyfile:
+    content: |
+      {
+          # IP-address clients do not consistently send SNI. Select the
+          # certificate for this IP when the ClientHello omits it.
+          default_sni ${AGENTCONNECT_HTTPS_HOST}
+      }
+
+      https://${AGENTCONNECT_HTTPS_HOST} {
+          tls internal
+
+          handle_path /cp/* {
+              reverse_proxy control-plane:8080
+          }
+
+          handle_path /relay/* {
+              reverse_proxy relay:8080
+          }
+
+          handle {
+              reverse_proxy web:8080
+          }
+      }
+
+volumes:
+  caddy_data:
+  caddy_runtime_config:
