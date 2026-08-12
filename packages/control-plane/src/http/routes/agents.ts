@@ -522,13 +522,15 @@ export function toWorkspaceGitDiffDto(rep: WorkspaceGitDiffResult): WorkspaceGit
 }
 
 /** Wire REP → HTTP body for the commit log. `tracking` null ⇒ the branch tracks
- *  nothing, so every commit's `pushed` reads false and the console draws no markers. */
+ *  nothing, so every commit's `pushed` reads false and the console draws no markers;
+ *  `base` names the ref the listing excludes, null ⇒ the checkout's whole history. */
 export function toWorkspaceGitLogDto(rep: WorkspaceGitLog): WorkspaceGitLogDtoT {
   return {
     isRepo: rep.isRepo,
     commits: rep.commits,
     truncated: rep.truncated,
-    tracking: rep.tracking ?? null
+    tracking: rep.tracking ?? null,
+    base: rep.base ?? null
   }
 }
 

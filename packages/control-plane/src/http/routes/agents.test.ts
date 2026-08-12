@@ -248,7 +248,7 @@ describe('toWorkspaceGitDiffDto', () => {
 })
 
 describe('toWorkspaceGitLogDto', () => {
-  it('passes commits through and keeps the tracking ref pushed was computed against', () => {
+  it('passes commits through and keeps the tracking ref pushed was computed against, plus the excluded base', () => {
     expect(
       toWorkspaceGitLogDto({
         agentId: 'a1',
@@ -264,7 +264,8 @@ describe('toWorkspaceGitLogDto', () => {
           }
         ],
         truncated: true,
-        tracking: 'origin/main'
+        tracking: 'origin/main',
+        base: 'origin/main'
       })
     ).toEqual({
       isRepo: true,
@@ -279,16 +280,18 @@ describe('toWorkspaceGitLogDto', () => {
         }
       ],
       truncated: true,
-      tracking: 'origin/main'
+      tracking: 'origin/main',
+      base: 'origin/main'
     })
   })
 
-  it('nulls tracking for a branch that tracks nothing, and keeps an empty repo as data', () => {
+  it('nulls tracking and base for a branch that tracks nothing on its own base, keeping an empty repo as data', () => {
     expect(toWorkspaceGitLogDto({ agentId: 'a1', isRepo: true, commits: [], truncated: false })).toEqual({
       isRepo: true,
       commits: [],
       truncated: false,
-      tracking: null
+      tracking: null,
+      base: null
     })
   })
 })
