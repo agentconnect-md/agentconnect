@@ -65,8 +65,7 @@ export interface GithubIngressDeps {
   /** Resolve the current write authority of every issue/PR actor. This is
    *  metadata-only; the implementation delegates to the CP's GitHub App. */
   authorizeComment: (request: RcGithubCommentAuthz) => Promise<boolean>
-  /** Resolve an App-owned Check Run rerequest through the CP's durable
-   * projection. The response contains metadata only, never PR content. */
+  /** Resolve a signed review control through CP-owned durable metadata. */
   authorizeRerequest: (request: RcGithubRerequest) => Promise<RcGithubRerequestResult>
   /** Dedicated upstream-call budget, shared by every hook on one repository. */
   authzLimiter: HookRateLimiter
@@ -116,6 +115,11 @@ interface GithubPayload {
     id?: number
     head_sha?: string
     app?: { id?: number }
+  }
+  workflow_run?: {
+    event?: string
+    head_sha?: string
+    triggering_actor?: { login?: string }
   }
 }
 
@@ -471,6 +475,7 @@ function currentGithubRerequestRule(
   target: GithubRerequestTarget,
   repoId: number,
   installationId: number,
+  source: 'check' | 'workflow',
   expected?: Pick<RcHookAssign, 'agentId' | 'daemonId' | 'dispatchDaemonId'>
 ): GithubRerequestRule | undefined {
   const rule = table.getByHookId(target.hookId)
@@ -482,8 +487,9 @@ function currentGithubRerequestRule(
     !rule.github.installationIds.includes(String(installationId)) ||
     rule.configRevision !== target.configRevision ||
     rule.dispatchRevision !== target.dispatchRevision ||
-    rule.reportingMode !== 'check' ||
-    rule.gateMode !== 'informational' ||
+    (source === 'check'
+      ? rule.reportingMode !== 'check' || rule.gateMode !== 'informational'
+      : rule.reviewPolicy === undefined || rule.reviewPolicy === 'off') ||
     (expected !== undefined &&
       (rule.agentId !== expected.agentId ||
         rule.daemonId !== expected.daemonId ||
@@ -498,8 +504,8 @@ async function dispatchGithubRerequest(
   deps: GithubIngressDeps,
   payload: GithubPayload,
   deliveryKey: string,
-  event: 'check_run' | 'check_suite',
-  action: 'rerequested' | 'requested_action'
+  event: 'check_run' | 'check_suite' | 'workflow_run',
+  action: 'rerequested' | 'requested_action' | 'in_progress'
 ): Promise<void> {
   const checkRunId = payload.check_run?.id
   const checkSuiteId = payload.check_suite?.id
@@ -507,14 +513,20 @@ async function dispatchGithubRerequest(
   const repoId = payload.repository?.id
   const repoFullName = payload.repository?.full_name
   const installationId = payload.installation?.id
-  const headSha = event === 'check_run' ? payload.check_run?.head_sha : payload.check_suite?.head_sha
+  const headSha =
+    event === 'check_run'
+      ? payload.check_run?.head_sha
+      : event === 'check_suite'
+        ? payload.check_suite?.head_sha
+        : payload.workflow_run?.head_sha
   if (
     !positiveSafeInteger(repoId) ||
     !positiveSafeInteger(installationId) ||
     !repoFullName ||
     !headSha ||
     (event === 'check_run' && !positiveSafeInteger(checkRunId)) ||
-    (event === 'check_suite' && (!positiveSafeInteger(checkSuiteId) || !positiveSafeInteger(appId)))
+    (event === 'check_suite' && (!positiveSafeInteger(checkSuiteId) || !positiveSafeInteger(appId))) ||
+    (event === 'workflow_run' && payload.workflow_run?.event !== 'pull_request')
   ) {
     deps.log.info(`github ingress: ignored malformed ${event} rerequest ${deliveryKey}`)
     return
@@ -537,14 +549,22 @@ async function dispatchGithubRerequest(
             deliveryKey,
             ...(action === 'requested_action' ? { includeBaseSha: true as const } : {})
           }
-        : {
-            scope: 'suite',
-            appId: String(appId),
-            installationId: String(installationId),
-            repoId: String(repoId),
-            headSha,
-            deliveryKey
-          }
+        : event === 'check_suite'
+          ? {
+              scope: 'suite',
+              appId: String(appId),
+              installationId: String(installationId),
+              repoId: String(repoId),
+              headSha,
+              deliveryKey
+            }
+          : {
+              scope: 'workflow',
+              installationId: String(installationId),
+              repoId: String(repoId),
+              headSha,
+              deliveryKey
+            }
     result = await deps.authorizeRerequest(request)
   } catch {
     // This explicit control action requires the CP. The ordinary GitHub event
@@ -558,9 +578,9 @@ async function dispatchGithubRerequest(
   }
 
   let targets: GithubRerequestTarget[]
-  if (event === 'check_suite') {
+  if (event === 'check_suite' || event === 'workflow_run') {
     if (!('targets' in result)) {
-      deps.log.info(`github ingress: ignored mismatched check_suite rerequest result ${deliveryKey}`)
+      deps.log.info(`github ingress: ignored mismatched ${event} rerequest result ${deliveryKey}`)
       return
     }
     targets = result.targets
@@ -590,7 +610,13 @@ async function dispatchGithubRerequest(
   // compiled rules. A disable, retarget, reassign, or mode transition fails the
   // complete suite fan-out closed.
   const candidates = targets.map((target) => {
-    const rule = currentGithubRerequestRule(deps.table, target, repoId, installationId)
+    const rule = currentGithubRerequestRule(
+      deps.table,
+      target,
+      repoId,
+      installationId,
+      event === 'workflow_run' ? 'workflow' : 'check'
+    )
     return { rule, target }
   })
   if (candidates.some(({ rule }) => rule === undefined)) {
@@ -601,7 +627,7 @@ async function dispatchGithubRerequest(
   const representative = resolved[0]
   if (!representative) return
 
-  const senderLogin = payload.sender?.login
+  const senderLogin = event === 'workflow_run' ? payload.workflow_run?.triggering_actor?.login : payload.sender?.login
   if (!senderLogin) {
     deps.log.info(`github ingress: rerequest authz metadata incomplete ${deliveryKey}`)
     return
@@ -633,7 +659,14 @@ async function dispatchGithubRerequest(
   }
 
   const current = resolved.map(({ rule, target }) => {
-    const refreshed = currentGithubRerequestRule(deps.table, target, repoId, installationId, rule)
+    const refreshed = currentGithubRerequestRule(
+      deps.table,
+      target,
+      repoId,
+      installationId,
+      event === 'workflow_run' ? 'workflow' : 'check',
+      rule
+    )
     return { rule: refreshed, target }
   })
   if (current.some(({ rule }) => rule === undefined)) {
@@ -645,8 +678,10 @@ async function dispatchGithubRerequest(
   const firedAt = new Date(deps.clock.now()).toISOString()
   const dispatches: Promise<void>[] = []
   for (const { rule, target } of refreshed) {
+    const targetDeliveryKey =
+      event === 'workflow_run' ? `workflow-approval:${repoId}:${target.pullNumber}:${headSha}` : deliveryKey
     if (!deps.limiter.allow(rule.hookId)) {
-      deps.log.info(`github ingress: rate-limited ${rule.hookId}:${deliveryKey} (${event}:${action})`)
+      deps.log.info(`github ingress: rate-limited ${rule.hookId}:${targetDeliveryKey} (${event}:${action})`)
       continue
     }
     const github: GithubHookMetadata = {
@@ -657,15 +692,16 @@ async function dispatchGithubRerequest(
       pullNumber: target.pullNumber,
       headSha,
       baseSha: target.baseSha,
-      reportSha: headSha
+      reportSha: headSha,
+      ...(event === 'workflow_run' ? { explicitReviewRequest: true } : {})
     }
     const msg: RdMsgHook = {
       source: 'hook',
       agentId: rule.agentId,
       sessionKey: `${rule.github.sessionKeyPrefix ?? repoFullName}#${target.pullNumber}`,
-      msgId: `${rule.hookId}:${deliveryKey}`,
+      msgId: `${rule.hookId}:${targetDeliveryKey}`,
       hookId: rule.hookId,
-      deliveryKey,
+      deliveryKey: targetDeliveryKey,
       firedAt,
       ...hookSnapshotForDelivery(rule),
       event: `${event}:${action}`,
@@ -689,7 +725,7 @@ async function dispatchGithubRerequest(
         msg
       )
     )
-    deps.log.info(`github ingress: queued ${rule.hookId}:${deliveryKey} (${event}:${action})`)
+    deps.log.info(`github ingress: queued ${rule.hookId}:${targetDeliveryKey} (${event}:${action})`)
   }
   await Promise.all(dispatches)
 }
@@ -759,6 +795,14 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
         payload.requested_action?.identifier === GITHUB_REQUEST_REVIEW_ACTION
       ) {
         void dispatchGithubRerequest(deps, payload, deliveryKey, 'check_run', 'requested_action')
+        return reply.code(202).send({ deliveryKey })
+      }
+      if (
+        event === 'workflow_run' &&
+        payload.action === 'in_progress' &&
+        payload.workflow_run?.event === 'pull_request'
+      ) {
+        void dispatchGithubRerequest(deps, payload, deliveryKey, 'workflow_run', 'in_progress')
         return reply.code(202).send({ deliveryKey })
       }
 

@@ -152,6 +152,21 @@ function suiteRerequestPayload(overrides: Record<string, unknown> = {}): Record<
   }
 }
 
+function workflowRunPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    action: 'in_progress',
+    installation: { id: INSTALLATION },
+    repository: { id: REPO_ID, full_name: 'acme/infra' },
+    sender: { login: 'github-actions[bot]', type: 'Bot' },
+    workflow_run: {
+      event: 'pull_request',
+      head_sha: 'a'.repeat(40),
+      triggering_actor: { login: 'maintainer' }
+    },
+    ...overrides
+  }
+}
+
 interface Harness {
   app: FastifyInstance
   table: HookTable
@@ -629,6 +644,98 @@ describe('github ingress', () => {
 
     it('fails closed before the CP lookup when suite identity is malformed', async () => {
       await post('check_suite', suiteRerequestPayload({ check_suite: { id: 0, app: { id: APP_ID } } }))
+      await flush()
+      expect(h.rerequestRequests).toHaveLength(0)
+      expect(h.sent).toHaveLength(0)
+    })
+  })
+
+  describe('workflow approval', () => {
+    it('authorizes the triggering maintainer and starts every waiting external-PR review', async () => {
+      h.table.upsert(rule({ reportingMode: 'off' }))
+      h.table.upsert(
+        rule({
+          hookId: HOOK_B,
+          agentId: AGENT_B,
+          daemonId: DAEMON_B,
+          dispatchDaemonId: DAEMON_B,
+          configRevision: '4',
+          dispatchRevision: '6'
+        })
+      )
+      h.onlineDaemons.add(DAEMON_B)
+      h.rerequestResult = {
+        allowed: true,
+        targets: [
+          {
+            hookId: HOOK,
+            pullNumber: 585,
+            baseSha: 'b'.repeat(40),
+            configRevision: '3',
+            dispatchRevision: '5'
+          },
+          {
+            hookId: HOOK_B,
+            pullNumber: 585,
+            baseSha: 'b'.repeat(40),
+            configRevision: '4',
+            dispatchRevision: '6'
+          }
+        ]
+      }
+
+      const res = await post('workflow_run', workflowRunPayload())
+      expect(res.statusCode).toBe(202)
+      await flush()
+
+      expect(h.rerequestRequests).toEqual([
+        {
+          scope: 'workflow',
+          installationId: String(INSTALLATION),
+          repoId: String(REPO_ID),
+          headSha: 'a'.repeat(40),
+          deliveryKey: 'gh-delivery-1'
+        }
+      ])
+      expect(h.authzRequests).toEqual([
+        {
+          hookId: HOOK,
+          installationId: String(INSTALLATION),
+          repoId: String(REPO_ID),
+          repoFullName: 'acme/infra',
+          senderLogin: 'maintainer',
+          configRevision: '3',
+          dispatchRevision: '5',
+          siblingFences: [{ hookId: HOOK_B, configRevision: '4', dispatchRevision: '6' }]
+        }
+      ])
+      const stableDeliveryKey = `workflow-approval:${REPO_ID}:585:${'a'.repeat(40)}`
+      expect(h.sent).toEqual([
+        expect.objectContaining({
+          hookId: HOOK,
+          deliveryKey: stableDeliveryKey,
+          msgId: `${HOOK}:${stableDeliveryKey}`,
+          event: 'workflow_run:in_progress',
+          github: expect.objectContaining({ pullNumber: 585, explicitReviewRequest: true }),
+          context: expect.objectContaining({
+            event: 'workflow_run',
+            action: 'in_progress',
+            senderLogin: 'maintainer'
+          })
+        }),
+        expect.objectContaining({
+          hookId: HOOK_B,
+          deliveryKey: stableDeliveryKey,
+          msgId: `${HOOK_B}:${stableDeliveryKey}`,
+          event: 'workflow_run:in_progress',
+          github: expect.objectContaining({ pullNumber: 585, explicitReviewRequest: true })
+        })
+      ])
+    })
+
+    it('ignores workflow runs that are not a pull-request workflow start', async () => {
+      await post('workflow_run', workflowRunPayload({ action: 'completed' }))
+      await post('workflow_run', workflowRunPayload({ workflow_run: { event: 'push', head_sha: 'a'.repeat(40) } }))
       await flush()
       expect(h.rerequestRequests).toHaveLength(0)
       expect(h.sent).toHaveLength(0)

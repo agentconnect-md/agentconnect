@@ -805,7 +805,11 @@ comment follows the configured cadence only when both the commenter and the Issu
 author still have `write` or `admin` permission. This keeps automatic follow-ups on
 maintainer-owned threads while requiring an explicit maintainer summon for externally
 authored threads. Native review requests and Check reruns use the same
-current-maintainer boundary.
+current-maintainer boundary. For an external pull request waiting on its first
+review, approving its GitHub Actions workflows also starts the review when a
+pull-request workflow begins. AgentConnect authorizes the workflow's triggering
+actor as a current maintainer and coalesces multiple workflows for the same
+pull-request revision into one review generation.
 
 Trigger authorization is separate from effect authorization. A formal PR review still
 requires the active HookRun, review policy, Agent repository grant, and GitHub App

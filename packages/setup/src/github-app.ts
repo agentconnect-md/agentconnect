@@ -54,6 +54,7 @@ export const GITHUB_APP_EVENTS = [
   'pull_request_review_comment',
   'check_run',
   'check_suite',
+  'workflow_run',
   'release',
   'repository'
 ] as const

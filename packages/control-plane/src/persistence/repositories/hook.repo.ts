@@ -2556,6 +2556,37 @@ export class PgHookRepo implements HookRepo {
     ).map(toProjectionRecord)
   }
 
+  async listReviewRequestRequiredRuns(repoId: bigint, headSha: string): Promise<HookRunRecord[]> {
+    const hooks = await this.db.hookDef.findMany({
+      where: { kind: 'github', repoId, enabled: true, agentId: { not: null } },
+      select: { id: true }
+    })
+    if (hooks.length === 0) return []
+    const rows = await this.db.hookRun.findMany({
+      where: {
+        hookId: { in: hooks.map((hook) => hook.id) },
+        repoId,
+        headSha,
+        reportSha: headSha,
+        subjectKind: 'pull_request'
+      },
+      orderBy: [{ startedAt: 'desc' }, { id: 'desc' }]
+    })
+    const latestByHook = new Map<string, (typeof rows)[number]>()
+    for (const row of rows) if (!latestByHook.has(row.hookId)) latestByHook.set(row.hookId, row)
+    return [...latestByHook.values()]
+      .filter(
+        (row) =>
+          row.status === 'failed' &&
+          row.reason === HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED &&
+          row.completedAt !== null &&
+          row.turnStartedAt === null &&
+          row.orphanedAt === null
+      )
+      .sort((a, b) => a.hookId.localeCompare(b.hookId))
+      .map(toRunRecord)
+  }
+
   async listReviewProjectionsForAgentRepo(agentId: AgentId, repoId: bigint): Promise<HookReviewProjectionRecord[]> {
     return (await this.db.hookReviewProjection.findMany({ where: { agentId, repoId } })).map(toProjectionRecord)
   }

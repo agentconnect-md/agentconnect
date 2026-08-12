@@ -702,35 +702,32 @@ export class GithubRunReporter {
     let currentPulls: AssociatedPullResponse[] | null = null
     let errorCode: SubjectAssociationErrorCode | null = null
     try {
-      const pulls: AssociatedPullResponse[] = []
-      let complete = false
-      for (let page = 1; page <= MAX_ASSOCIATION_PAGES; page++) {
-        const batch = await githubRequest<AssociatedPullResponse[]>(
-          `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits/${encodeURIComponent(projection.headSha)}/pulls?per_page=${ASSOCIATION_PAGE_SIZE}&page=${page}`,
-          {
-            auth: token,
-            fetchImpl: this.deps.fetchImpl,
-            baseUrl: this.deps.baseUrl
-          }
-        )
-        if (!Array.isArray(batch) || batch.some((pull) => !isAssociatedPullResponse(pull))) {
-          errorCode = 'pr_association_incomplete'
-          break
-        }
-        pulls.push(...batch)
-        if (batch.length < ASSOCIATION_PAGE_SIZE) {
-          complete = true
-          break
-        }
-      }
-      if (!complete) {
+      const encodedRepo = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`
+      const pulls = await this.readAssociatedPullPages(
+        `${encodedRepo}/commits/${encodeURIComponent(projection.headSha)}/pulls`,
+        token
+      )
+      if (pulls === null) {
         errorCode = 'pr_association_incomplete'
       } else {
         const openPulls = dedupeAssociatedPulls(pulls.filter((pull) => pull.state === 'open'))
-        currentPulls = openPulls.filter((pull) => pull.head?.sha === projection.headSha)
-        if (openPulls.length === 0) errorCode = 'no_current_pull_request'
-        else if (currentPulls.length === 0) errorCode = 'stale_head'
-        else if (currentPulls.length > 1) errorCode = 'shared_head_multiple_prs'
+        if (openPulls.length === 0) {
+          // The base-repository commit endpoint returns no association for some fork heads.
+          const repoPulls = await this.readAssociatedPullPages(`${encodedRepo}/pulls`, token, 'state=open')
+          if (repoPulls === null) {
+            errorCode = 'pr_association_incomplete'
+          } else {
+            currentPulls = dedupeAssociatedPulls(
+              repoPulls.filter((pull) => pull.state === 'open' && pull.head?.sha === projection.headSha)
+            )
+            if (currentPulls.length === 0) errorCode = 'no_current_pull_request'
+            else if (currentPulls.length > 1) errorCode = 'shared_head_multiple_prs'
+          }
+        } else {
+          currentPulls = openPulls.filter((pull) => pull.head?.sha === projection.headSha)
+          if (currentPulls.length === 0) errorCode = 'stale_head'
+          else if (currentPulls.length > 1) errorCode = 'shared_head_multiple_prs'
+        }
       }
     } catch (err) {
       // A partial page set (including a transport/API failure mid-scan) is not
@@ -754,6 +751,24 @@ export class GithubRunReporter {
       errorCode
     )
     return { synchronized, errorCode }
+  }
+
+  private async readAssociatedPullPages(
+    path: string,
+    token: string,
+    query?: string
+  ): Promise<AssociatedPullResponse[] | null> {
+    const pulls: AssociatedPullResponse[] = []
+    for (let page = 1; page <= MAX_ASSOCIATION_PAGES; page++) {
+      const batch = await githubRequest<AssociatedPullResponse[]>(
+        `${path}?${query ? `${query}&` : ''}per_page=${ASSOCIATION_PAGE_SIZE}&page=${page}`,
+        { auth: token, fetchImpl: this.deps.fetchImpl, baseUrl: this.deps.baseUrl }
+      )
+      if (!Array.isArray(batch) || batch.some((pull) => !isAssociatedPullResponse(pull))) return null
+      pulls.push(...batch)
+      if (batch.length < ASSOCIATION_PAGE_SIZE) return pulls
+    }
+    return null
   }
 
   private async reconcileAmbiguous(

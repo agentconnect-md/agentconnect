@@ -295,6 +295,21 @@ describe('relay↔CP wire — skeleton frame codec (shared-bot-relay.md §7.1)',
     expect(decodedRep.frame.payload).toEqual(result)
   })
 
+  it('round-trips a workflow approval lookup for waiting external-PR reviews', () => {
+    const request = {
+      scope: 'workflow' as const,
+      installationId: '12345',
+      repoId: '987654321',
+      headSha: 'a'.repeat(40),
+      deliveryKey: 'delivery-workflow-start-1'
+    }
+    const req = buildRelayCpFrame('rc/github-rerequest', request)
+    const decoded = decodeRelayCpFrame(JSON.stringify(req))
+    expect(decoded.ok).toBe(true)
+    if (!decoded.ok || decoded.frame.type !== 'rc/github-rerequest') throw new Error('expected rerequest req')
+    expect(decoded.frame.payload).toEqual(request)
+  })
+
   it('rejects malformed rc/github-rerequest identities and incomplete allow results', () => {
     expect(RcGithubRerequest.safeParse({ checkRunId: '0', repoId: '1', headSha: 'a', deliveryKey: 'd' }).success).toBe(
       false

@@ -1,4 +1,8 @@
-import type { RcGithubRerequest, RcGithubRerequestResult } from '@agentconnect.md/protocol'
+import {
+  HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED,
+  type RcGithubRerequest,
+  type RcGithubRerequestResult
+} from '@agentconnect.md/protocol'
 import type { HookRecord, HookRepo, HookReviewProjectionRecord, HookRunRecord } from '../persistence/ports.js'
 
 export interface GithubRerequestDeps {
@@ -6,6 +10,7 @@ export interface GithubRerequestDeps {
     HookRepo,
     | 'findReviewProjectionByCheckRunId'
     | 'listReviewProjectionsForSuiteRerequest'
+    | 'listReviewRequestRequiredRuns'
     | 'getUnscoped'
     | 'getManyUnscoped'
     | 'getRunById'
@@ -23,16 +28,13 @@ const TERMINAL_CHECK_STATES = new Set([
   'cancelled'
 ])
 
-/**
- * Resolve a signature-verified GitHub Check Run or Check Suite rerequest
- * without trusting the webhook to choose a hook or agent. Durable projections
- * are fenced to their current informational hooks and runs.
- */
+/** Resolve a signed GitHub review control against durable runs and current hook fences. */
 export class GithubRerequestService {
   constructor(private readonly deps: GithubRerequestDeps) {}
 
   async resolve(req: RcGithubRerequest): Promise<RcGithubRerequestResult> {
-    return 'checkRunId' in req ? this.resolveRun(req) : this.resolveSuite(req)
+    if ('checkRunId' in req) return this.resolveRun(req)
+    return req.scope === 'suite' ? this.resolveSuite(req) : this.resolveWorkflow(req)
   }
 
   private async resolveRun(req: Extract<RcGithubRerequest, { checkRunId: string }>): Promise<RcGithubRerequestResult> {
@@ -96,6 +98,32 @@ export class GithubRerequestService {
     return { allowed: true, targets: targets.filter((target) => target !== null) }
   }
 
+  private async resolveWorkflow(
+    req: Extract<RcGithubRerequest, { scope: 'workflow' }>
+  ): Promise<RcGithubRerequestResult> {
+    const runs = await this.deps.hooks.listReviewRequestRequiredRuns(BigInt(req.repoId), req.headSha)
+    if (runs.length === 0 || new Set(runs.map((run) => run.hookId)).size !== runs.length) {
+      return { allowed: false }
+    }
+
+    const hooks = await this.deps.hooks.getManyUnscoped(runs.map((run) => run.hookId))
+    const hooksById = new Map(hooks.map((hook) => [hook.id, hook]))
+    const targets = runs.flatMap((run) => {
+      const hook = hooksById.get(run.hookId) ?? null
+      if (!this.matchesWorkflowRun(run, req) || !this.matchesWorkflowHook(hook, run)) return []
+      return [
+        {
+          hookId: hook.id,
+          pullNumber: run.pullNumber,
+          baseSha: run.baseSha,
+          configRevision: hook.configRevision.toString(),
+          dispatchRevision: hook.dispatchRevision.toString()
+        }
+      ]
+    })
+    return targets.length > 0 ? { allowed: true, targets } : { allowed: false }
+  }
+
   private matchesProjection(
     projection: HookReviewProjectionRecord | null,
     req: Pick<RcGithubRerequest, 'repoId' | 'headSha'>
@@ -149,6 +177,52 @@ export class GithubRerequestService {
       run.headSha === projection.headSha &&
       run.reportSha === projection.reportSha &&
       run.baseSha !== null
+    )
+  }
+
+  private matchesWorkflowRun(
+    run: HookRunRecord,
+    req: Extract<RcGithubRerequest, { scope: 'workflow' }>
+  ): run is HookRunRecord & { pullNumber: number; baseSha: string; agentId: NonNullable<HookRunRecord['agentId']> } {
+    return (
+      run.status === 'failed' &&
+      run.reason === HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED &&
+      (run.event === 'pull_request:opened' || run.event === 'pull_request:synchronize') &&
+      run.projectionIntent === 'revision_event' &&
+      run.repoId === BigInt(req.repoId) &&
+      run.sourceInstallationId === BigInt(req.installationId) &&
+      run.subjectKind === 'pull_request' &&
+      run.pullNumber !== null &&
+      run.headSha === req.headSha &&
+      run.reportSha === req.headSha &&
+      run.baseSha !== null &&
+      run.agentId !== null &&
+      run.projectionEpoch !== null &&
+      run.completedAt !== null &&
+      run.turnStartedAt === null &&
+      run.orphanedAt === null &&
+      run.sessionId === null &&
+      run.reviewAttemptId === null &&
+      run.reviewAttemptState === null &&
+      run.reviewErrorCode === null &&
+      run.reviewId === null &&
+      run.reviewEvent === null &&
+      run.verdict === null
+    )
+  }
+
+  private matchesWorkflowHook(
+    hook: HookRecord | null,
+    run: HookRunRecord & { agentId: NonNullable<HookRunRecord['agentId']> }
+  ): hook is HookRecord & { agentId: NonNullable<HookRecord['agentId']> } {
+    return (
+      hook !== null &&
+      hook.enabled &&
+      hook.kind === 'github' &&
+      hook.agentId === run.agentId &&
+      hook.repoId === run.repoId &&
+      hook.reviewPolicy !== 'off' &&
+      hook.projectionEpoch === run.projectionEpoch
     )
   }
 }

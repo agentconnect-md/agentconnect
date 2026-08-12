@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { RcGithubRerequest } from '@agentconnect.md/protocol'
+import { HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED, type RcGithubRerequest } from '@agentconnect.md/protocol'
 import { AgentId, DaemonId, HookId, OrgId } from '../domain/ids.js'
 import type { HookRecord, HookRepo, HookReviewProjectionRecord, HookRunRecord } from '../persistence/ports.js'
 import { GithubRerequestService } from './rerequest.service.js'
@@ -28,6 +28,13 @@ const suiteRequest: RcGithubRerequest = {
   repoId: REPO_ID.toString(),
   headSha: HEAD_SHA,
   deliveryKey: 'delivery-suite-rerun-1'
+}
+const workflowRequest: RcGithubRerequest = {
+  scope: 'workflow',
+  installationId: String(INSTALLATION_ID),
+  repoId: REPO_ID.toString(),
+  headSha: HEAD_SHA,
+  deliveryKey: 'delivery-workflow-start-1'
 }
 
 function projection(overrides: Partial<HookReviewProjectionRecord> = {}): HookReviewProjectionRecord {
@@ -77,6 +84,7 @@ function hook(overrides: Partial<HookRecord> = {}): HookRecord {
     kind: 'github',
     enabled: true,
     repoId: REPO_ID,
+    reviewPolicy: 'full',
     reportingMode: 'check',
     gateMode: 'informational',
     projectionEpoch: 2n,
@@ -113,7 +121,19 @@ function run(overrides: Partial<HookRunRecord> = {}): HookRunRecord {
     baseChanged: false,
     projectionId: projection().id,
     projectionGeneration: 3n,
+    startedAt: new Date(0),
+    turnStartedAt: null,
+    completedAt: new Date(1),
+    orphanedAt: null,
+    reviewAttemptId: null,
+    reviewAttemptState: null,
+    reviewErrorCode: null,
+    reviewId: null,
+    reviewEvent: null,
+    verdict: null,
+    sessionId: null,
     status: 'failed',
+    reason: HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED,
     ...overrides
   } as HookRunRecord
 }
@@ -132,6 +152,10 @@ function make(
     const candidate = opts.projection === undefined ? projection() : opts.projection
     return candidate ? [candidate] : []
   })
+  const listReviewRequestRequiredRuns = vi.fn(async () => {
+    const candidate = opts.run === undefined ? run() : opts.run
+    return candidate ? [candidate] : []
+  })
   const get = vi.fn(async () => (opts.hook === undefined ? hook() : opts.hook))
   const getMany = vi.fn(async () => {
     const candidate = opts.hook === undefined ? hook() : opts.hook
@@ -142,6 +166,7 @@ function make(
     hooks: {
       findReviewProjectionByCheckRunId,
       listReviewProjectionsForSuiteRerequest,
+      listReviewRequestRequiredRuns,
       getUnscoped: get,
       getManyUnscoped: getMany,
       getRunById
@@ -149,6 +174,7 @@ function make(
       HookRepo,
       | 'findReviewProjectionByCheckRunId'
       | 'listReviewProjectionsForSuiteRerequest'
+      | 'listReviewRequestRequiredRuns'
       | 'getUnscoped'
       | 'getManyUnscoped'
       | 'getRunById'
@@ -159,6 +185,7 @@ function make(
     service,
     findReviewProjectionByCheckRunId,
     listReviewProjectionsForSuiteRerequest,
+    listReviewRequestRequiredRuns,
     get,
     getMany,
     getRunById
@@ -210,6 +237,36 @@ describe('GithubRerequestService', () => {
     const h = make()
     await expect(h.service.resolve({ ...suiteRequest, appId: String(APP_ID + 1) })).resolves.toEqual({ allowed: false })
     expect(h.listReviewProjectionsForSuiteRerequest).not.toHaveBeenCalled()
+  })
+
+  it('resolves each current no-effect external-PR run when an approved workflow starts', async () => {
+    const h = make()
+    await expect(h.service.resolve(workflowRequest)).resolves.toEqual({
+      allowed: true,
+      targets: [
+        {
+          hookId: HOOK_ID,
+          pullNumber: 585,
+          baseSha: BASE_SHA,
+          configRevision: '7',
+          dispatchRevision: '9'
+        }
+      ]
+    })
+    expect(h.listReviewRequestRequiredRuns).toHaveBeenCalledWith(REPO_ID, HEAD_SHA)
+    expect(h.listReviewProjectionsForSuiteRerequest).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['different installation', run({ sourceInstallationId: INSTALLATION_ID + 1n }), hook()],
+    ['run already started', run({ turnStartedAt: new Date(1) }), hook()],
+    ['wrong waiting reason', run({ reason: 'daemon_offline' }), hook()],
+    ['review disabled', run(), hook({ reviewPolicy: 'off' })],
+    ['changed projection epoch', run(), hook({ projectionEpoch: 3n })]
+  ])('denies a workflow approval for %s', async (_label, waitingRun, currentHook) => {
+    await expect(make({ run: waitingRun, hook: currentHook }).service.resolve(workflowRequest)).resolves.toEqual({
+      allowed: false
+    })
   })
 
   it.each([
