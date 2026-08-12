@@ -947,6 +947,41 @@ describe('the PR tab', () => {
     expect(panel?.textContent).toContain('dev/jane-doe/candid-lynx')
   })
 
+  it('never names a branch the Git tab read for a DIFFERENT scope than this panel', async () => {
+    // Files/Git follow header focus; the PR tab follows the open session. A shared-workspace session
+    // makes the Git read the agent's PRIMARY checkout — `main` here — which is not this session's
+    // branch, so naming it would put the wrong branch in the create-pull-request turn.
+    wire.isolation = 'shared'
+    wire.git = {
+      isRepo: true,
+      clean: true,
+      repo: null,
+      agentDir: null,
+      branch: 'main',
+      tracking: 'origin/main',
+      ahead: null,
+      behind: null,
+      files: [],
+      truncated: false,
+      lastCommit: null,
+      lastFetchAt: null
+    }
+    wire.log = { isRepo: true, commits: [], truncated: false, tracking: 'origin/main' }
+    await render()
+    const tab = container?.querySelector('[data-dock-tab="pr"]')
+    expect(tab).not.toBeNull()
+    await act(async () => {
+      tab?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+    await render()
+    const panel = container?.querySelector('[data-pr-panel="none"]')
+    // The scope-free copy, and no claim about `main` in either direction.
+    expect(panel?.textContent).toContain('No pull request is linked to this session yet')
+    expect(panel?.textContent).not.toContain('main')
+    expect(panel?.textContent).not.toContain('No upstream configured')
+  })
+
   it('stands in the strip as loading while the linkage is unknown, then leaves it when the 404 lands', async () => {
     // The strip CHANGES SHAPE on the answer: a session with no PR AND no checkout loses the tab rather than keeping a dead one — the probe's verdict is what tells it from a linked one.
     wire.prGate = []

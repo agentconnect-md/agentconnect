@@ -2792,6 +2792,12 @@ export default function SessionDetailView() {
     : `Open ${focusedAgentLabel}’s workspace`
   // Scoped to this session's OWN worktree only where it has one. `hasSessionWorktree` is the same gate the Workspace link above uses, and it is load-bearing for the reads: the daemon answers a shared workspace's sessionId with BAD_PAYLOAD, which the CP maps to a 503 that reads as "the daemon may be offline".
   const filesSessionId = hasSessionWorktree && headerFocusSessionId ? headerFocusSessionId : undefined
+  // Whether the Git tab's read is about the SAME worktree the PR tab is keyed to. The two scopes are
+  // deliberately different — Files/Git follow header focus, the PR tab follows the open session — so
+  // only an exact match makes the branch it read this session's branch. A shared-workspace session
+  // (`filesSessionId` undefined) reads the agent's primary checkout, which is not a session branch at
+  // all, and never qualifies.
+  const prBranchScoped = filesSessionId !== undefined && filesSessionId === prSessionId
   const filesWorkdir = focusedAgent && focusedAgent.workdir !== '—' ? focusedAgent.workdir : undefined
   // A `?file=` on a session with no agent to read it from has nothing to open, so the conversation stays: the viewer never renders without a checkout behind it, nor before that checkout's scope is known, nor when the link named a workspace this conversation does not have.
   const viewerOpen = viewerPath !== null && filesAgentId !== null && filesScopeReady && !linkedFocusStale
@@ -4725,9 +4731,9 @@ export default function SessionDetailView() {
               active={dockTabKey === 'pr'}
               {...(session?.status ? { sessionStatus: session.status } : {})}
               turnActive={sessionBusy}
-              // The branch facts the no-PR state describes, from the Git tab's own read — the dock holds them already, so the PR panel spends no second round trip on them.
-              branch={gitVerdict.branch}
-              tracking={gitVerdict.tracking}
+              // The branch facts the no-PR state describes, from the Git tab's own read — the dock holds them already, so the PR panel spends no second round trip on them. Passed ONLY when that read is about THIS panel's session worktree: Files/Git follow header focus and the PR tab deliberately does not (§3.4), so in a merged conversation the focused participant's checkout is a different branch, and naming it here would put another agent's branch in this session's create-pull-request turn. Out of scope ⇒ null, and the panel says "this session's branch" instead of guessing which.
+              branch={prBranchScoped ? gitVerdict.branch : null}
+              tracking={prBranchScoped ? gitVerdict.tracking : null}
               // Both write actions ride the LIVE composer path (§5.2) behind the composer's OWN availability fence: a hook session has no composer, and a persisted webchat under `resumeDisabled` (agent moved, resume check pending) deliberately renders the composer inert — this callback must not exist as a way around that.
               {...(isLive && !resumeDisabled ? { onPostTurn: (text: string) => onPgSend(text) } : {})}
               onVerdictChange={setPrVerdict}

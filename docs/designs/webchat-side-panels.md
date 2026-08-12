@@ -1047,7 +1047,24 @@ list; `HookRun`'s recorded review appears only as the degraded-arm fallback
    there is no CP route that could). The tab is dropped only where a pull
    request is not a thing the session could have: no probe-able session id, or
    a workspace that is not a checkout at all. The branch facts come from the
-   Git tab's verdict, so the empty state costs no extra read.
+   Git tab's verdict, so the empty state costs no extra read — but ONLY when
+   that verdict is about this panel's own session worktree. Files/Git follow
+   header focus and the PR tab deliberately does not (§3.4), so a focused
+   participant's branch, or a shared workspace's primary checkout, is a
+   different branch and is not named here at all.
+
+   **What this action cannot do, and how the panel says so.** A PR the agent
+   opens from a conversation creates no `HookRun`, and PR identity comes from
+   the run that owns the session — so the probe keeps answering 404 after the
+   pull request exists. The panel therefore does not pretend the action closed
+   the loop: once asked, it says the agent replies with the URL in the
+   conversation and that this tab links a PR only for a review run, and the
+   control becomes **Ask again**. The instruction itself is idempotent (open
+   one, or report the existing one), so pressing again cannot yield a second PR
+   for the branch. Making the tab link a self-opened PR needs either a durable
+   session↔PR binding or a by-head-branch read source, both of which change the
+   §3.4 identity contract and belong in their own change.
+
 7. **Write authorization.** Committing as the agent and resolving GitHub threads
    from the console are new classes of action. Does workspace-write access plus
    the existing token clamp cover them, or do they need their own permission?

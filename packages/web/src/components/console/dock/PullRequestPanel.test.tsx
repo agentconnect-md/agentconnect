@@ -255,6 +255,46 @@ describe('PullRequestPanel verdicts', () => {
     expect(posted[0]).toContain('git push -u')
   })
 
+  it('stops presenting creation as fresh once asked, and says why this tab may never link the result', async () => {
+    // The probe identifies a PR through the run that owns the session, and an agent opening one from a
+    // conversation creates no such run — so the 404 outlives the pull request. Re-offering "Create pull
+    // request" against that state is what invited a second PR for the same branch.
+    wire.failure = { status: 404 }
+    const posted: string[] = []
+    await render({ branch: 'dev/jane-doe/candid-lynx', tracking: null, onPostTurn: accept(posted) })
+    expect(container?.querySelector('[data-pr-create]')?.textContent).toContain('Create pull request')
+    expect(container?.querySelector('[data-pr-create-requested]')).toBeNull()
+
+    await press('[data-pr-create]')
+    expect(posted).toHaveLength(1)
+    // The instruction makes the retry safe where it CAN be checked — on the agent, not in this panel.
+    expect(posted[0]).toContain('already has an open pull request')
+
+    await rerender({ branch: 'dev/jane-doe/candid-lynx', tracking: null, onPostTurn: accept(posted) })
+    expect(container?.querySelector('[data-pr-create-requested]')?.textContent).toContain(
+      'links one only when a review run owns the session'
+    )
+    expect(container?.querySelector('[data-pr-create]')?.textContent).toContain('Ask again')
+  })
+
+  it('forgets the ask when the panel switches session — it is a fact about ONE session', async () => {
+    wire.failure = { status: 404 }
+    const posted: string[] = []
+    await render({ branch: 'dev/jane-doe/candid-lynx', tracking: null, onPostTurn: accept(posted) })
+    await press('[data-pr-create]')
+    await rerender({ branch: 'dev/jane-doe/candid-lynx', tracking: null, onPostTurn: accept(posted) })
+    expect(container?.querySelector('[data-pr-create-requested]')).not.toBeNull()
+
+    await rerender({
+      sessionId: 'session-2',
+      branch: 'dev/sam/eager-heron',
+      tracking: null,
+      onPostTurn: accept(posted)
+    })
+    expect(container?.querySelector('[data-pr-create-requested]')).toBeNull()
+    expect(container?.querySelector('[data-pr-create]')?.textContent).toContain('Create pull request')
+  })
+
   it('says a published branch has no pull request yet, without claiming a missing upstream', async () => {
     wire.failure = { status: 404 }
     await render({ branch: 'dev/jane-doe/candid-lynx', tracking: 'origin/dev/jane-doe/candid-lynx' })

@@ -63,7 +63,10 @@ export function createPullRequestInstruction(branch: string | null, tracking: st
     tracking
       ? `2. Push the branch to its upstream (${tracking}).`
       : '2. Publish the branch to the remote with `git push -u`, so it has an upstream to review.',
-    '3. Create the pull request against the repository’s default branch, then reply with its URL.'
+    // Explicitly idempotent: this panel cannot tell whether the PR already exists (it identifies one
+    // only through the run that owns the session), so the reader can press again — and the agent, which
+    // CAN tell, is the one told not to open a second pull request for the same branch.
+    '3. If the branch already has an open pull request, reply with its URL instead of opening another; otherwise create one against the repository’s default branch and reply with its URL.'
   ].join('\n')
 }
 
@@ -257,6 +260,13 @@ export function PullRequestPanel({
   // must not graft the old session's wait onto the new one's reads.
   const [awaitingTurn, setAwaitingTurn] = useState(false)
   useEffect(() => setAwaitingTurn(false), [sessionId])
+  // Whether a create-pull-request turn was already handed to the agent HERE. It has to be remembered,
+  // because this panel cannot observe the result: identity comes from the pull-request run that owns the
+  // session (§3.4), and an agent opening a PR from a webchat session creates no such run — so the probe
+  // keeps answering 404 even once the PR exists. Without this, the state re-offers creation as though
+  // nothing had happened, which invites a second PR for the same branch. Reset per scope, like the wait.
+  const [createRequested, setCreateRequested] = useState(false)
+  useEffect(() => setCreateRequested(false), [sessionId])
   const wasTurnActive = useRef(turnActive)
   useEffect(() => {
     const settled = wasTurnActive.current && !turnActive
@@ -317,6 +327,8 @@ export function PullRequestPanel({
     busyTitle: string
     className: string
     text: () => string
+    /** Ran on an ACCEPTED send only, for the action that has to remember it was taken. */
+    onPosted?: () => void
   }) =>
     onPostTurn ? (
       <button
@@ -326,7 +338,9 @@ export function PullRequestPanel({
         disabled={awaitingTurn || turnActive}
         title={turnActive && !awaitingTurn ? opts.busyTitle : opts.title}
         onClick={() => {
-          if (onPostTurn(opts.text())) setAwaitingTurn(true)
+          if (!onPostTurn(opts.text())) return
+          setAwaitingTurn(true)
+          opts.onPosted?.()
         }}
       >
         {awaitingTurn ? <Spinner size={11} /> : <Icon name={opts.icon} size={12} />}
@@ -354,15 +368,34 @@ export function PullRequestPanel({
                 : 'No pull request is linked to this session yet.'
           }
         />
+        {/* What this panel CANNOT observe, said rather than hidden: it identifies a pull request through the run that owns the session, and a PR the agent opens from a conversation creates no such run — so this state can outlive the pull request it asked for. Drawn only after the ask, because until then it is not the reader's problem. */}
+        {createRequested ? (
+          <div
+            data-pr-create-requested=""
+            className="flex items-start gap-2 px-3 pb-[6px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)"
+          >
+            <Icon name="info" size={13} color="var(--text-tertiary)" className="mt-[2px] flex-none" />
+            <span>
+              A pull request was requested in this session — the agent replies with its URL in the conversation. This
+              tab links one only when a review run owns the session, so it can keep showing this state even after the
+              pull request exists.
+            </span>
+          </div>
+        ) : null}
         <div className="flex flex-none px-3 pb-2">
           {postAction({
             attr: { 'data-pr-create': '' },
-            label: 'Create pull request',
-            icon: 'git-pull-request',
-            title: 'Ask the agent to publish this branch and open a pull request for it, as one turn in this session',
+            // Relabelled once asked: the same press is now a RETRY, and a button that still reads
+            // "Create pull request" would invite a second PR for the branch that already has one.
+            label: createRequested ? 'Ask again' : 'Create pull request',
+            icon: createRequested ? 'rotate-ccw' : 'git-pull-request',
+            title: createRequested
+              ? 'Ask again — if this branch already has a pull request the agent will say so instead of opening a second one'
+              : 'Ask the agent to publish this branch and open a pull request for it, as one turn in this session',
             busyTitle: 'A turn is already running — this posts its own turn, so wait for this one to settle',
             className: 'dsbtn dsbtn-secondary sm flex-none',
-            text: () => createPullRequestInstruction(branch, tracking)
+            text: () => createPullRequestInstruction(branch, tracking),
+            onPosted: () => setCreateRequested(true)
           })}
         </div>
       </div>
