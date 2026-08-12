@@ -232,7 +232,8 @@ describe('PUT /cluster-execution', () => {
     expect(calls).toContain(`PATCH ${RESOURCE_PATH}`)
     expect(applied.at(-1)?.spec).toMatchObject({
       suspend: false,
-      daemon: { image: 'registry.example.test/daemon:2.0.0', tier: 'small', credentialSecretName: 'ac-daemon-token' },
+      daemon: { image: 'registry.example.test/daemon:2.0.0', tier: 'small' },
+      controlPlane: { url: POLICY.controlPlaneUrl },
       runtime: { image: POLICY.runtimeImage, tiers: [{ name: 'medium', warmReplicas: 2 }] },
       quota: { maxAgents: 6, cpu: '0', memory: '0', storage: '0' },
       egressPolicy: 'locked'
@@ -394,8 +395,10 @@ describe('POST /cluster-execution/credential', () => {
     // The key exists only inside the cluster Secret — not in the response.
     expect(JSON.stringify(body)).not.toContain(config.controlPlane.key)
 
-    // The resource is re-applied so the operator sees the new revision.
-    expect(applied.at(-1)?.spec).toMatchObject({ daemon: { credentialRevision: body.revision } })
+    // The revision is the row's, not the resource's: the pod mounts nothing, so nothing
+    // about the credential reaches the CR any more.
+    expect(body.revision).toBeTruthy()
+    expect(JSON.stringify(applied.at(-1)?.spec)).not.toContain('credential')
   })
 
   it('binds the credential to a real daemon row in the org', async () => {

@@ -10,8 +10,7 @@ An envelope's namespace is **derived by default**: `orgNamespacePrefix` plus the
 CRs cannot collide on one namespace. A deployment that needs a specific namespace
 sets `spec.targetNamespace`, which is immutable and must still start with the
 install's prefix. Either way the operator publishes the result on
-`status.namespace`, which is where every consumer — including the credential
-writer — reads it.
+`status.namespace`, which is where every consumer reads it.
 
 ## Layout
 
@@ -136,6 +135,30 @@ helm install ENV_NAME oci://ghcr.io/agentconnect-md/charts/agentconnect-operator
 
 (Chart publishing to the OCI registry lands with the release-pipeline wiring;
 until then install from this directory.)
+
+### Reaching the control plane
+
+The daemon learns **where** its control plane is from the `AgentConnectOrg`:
+`spec.controlPlane.url`, written by the control plane itself, injected into the
+daemon container as environment. Nothing here derives or overrides it — the
+control plane is the authority on its own address.
+
+Whether the daemon can **reach** that address is a different question, and it is
+this install's to answer. A `NetworkPolicy` selects namespaces and CIDRs; it
+cannot select the DNS name the resource carries. `daemonEgressNamespaces` is the
+list of namespaces an org's daemon may reach on any port:
+
+```yaml
+daemonEgressNamespaces: # unset = the release namespace
+  - CONTROL_NAMESPACE
+  - RELAY_NAMESPACE
+```
+
+Unset means the release namespace, which is what the operator assumed before this
+was configurable. Set it when the control plane or relay runs elsewhere in the
+cluster. An explicit empty list means there is no in-cluster peer, leaving the
+daemon on the DNS and 443 rules alone — which is all a control plane reached over
+public HTTPS needs.
 
 ### Granting the control plane its TokenReview
 

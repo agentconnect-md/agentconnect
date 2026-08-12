@@ -49,8 +49,6 @@ spec:
                 # move, and that includes moving between derived and overridden.
                 - rule: has(self.targetNamespace) == has(oldSelf.targetNamespace) && (!has(self.targetNamespace) || self.targetNamespace == oldSelf.targetNamespace)
                   message: targetNamespace is immutable
-                - rule: self.daemon.credentialSecretName == oldSelf.daemon.credentialSecretName
-                  message: daemon.credentialSecretName is immutable
               properties:
                 targetNamespace:
                   type: string
@@ -76,13 +74,14 @@ spec:
                     tier:
                       type: string
                       description: Resource tier name resolved against the install's tier definitions.
-                    credentialSecretName:
+                controlPlane:
+                  type: object
+                  required:
+                    - url
+                  properties:
+                    url:
                       type: string
-                      default: ac-daemon-token
-                      description: Name of the per-org Secret holding the daemon's control-plane credential. Written by the key authority, never by the operator; mounted as a required volume so the kubelet gates startup on it.
-                    credentialRevision:
-                      type: string
-                      description: Opaque revision the key authority bumps after rotating the credential Secret; projected into the pod template to force a Recreate.
+                      description: The control plane's own daemon WebSocket URL, written by it when it creates this resource and injected into the daemon container as environment. Plain text — a URL is not a secret, and the operator never derives one. The daemon authenticates with the projected ServiceAccount token its pod carries, so no credential is delivered here or anywhere else.
                 runtime:
                   type: object
                   required:

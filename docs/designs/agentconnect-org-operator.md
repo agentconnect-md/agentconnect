@@ -61,8 +61,6 @@ orgs aimed at one namespace are caught by the claim label
 | `targetNamespace`             | Optional DNS-label override, **immutable** (CEL). Unset ⇒ derived `<prefix><CR name>`. Shape-only at CRD level; install ownership (prefix) is enforced by the operator and admission.                                                            |
 | `suspend`                     | Quiesce the org: daemon to zero, sandboxes drained, gateway denies LLM calls.                                                                                                                                                                    |
 | `daemon.image`, `daemon.tier` | Supervisor image (change ⇒ Recreate rollout) and resource tier name.                                                                                                                                                                             |
-| `daemon.credentialSecretName` | **Retiring** with the key path — an in-cluster daemon carries no credential (see "Daemon identity"). While it exists: immutable, default `ac-daemon-token`, a reference the operator mounts required and never reads.                            |
-| `daemon.credentialRevision`   | **Retiring** with the same path; the projected token rotates without anyone being told. While it exists: opaque, bumped after rotation, projected into a pod-template annotation to force a Recreate.                                            |
 | `controlPlane.url`            | The control plane's own WebSocket URL, written by it when it creates the CR. Plain text — a URL is not a secret, and the control plane is authoritative for its own address, so the operator never derives it. Injected as daemon container env. |
 | `runtime.image`               | Sandbox image; change starts the drain-based rollout.                                                                                                                                                                                            |
 | `runtime.tiers[]`             | `{name, warmReplicas}` referencing cluster master template/pool pairs; 0 keeps a cold pool.                                                                                                                                                      |
@@ -75,7 +73,7 @@ orgs aimed at one namespace are caught by the claim label
 Status is operator-owned: `observedGeneration`, `namespace` (the resolved name,
 published atomically with `NamespaceReady`, only after create-or-adopt plus label
 validation — and the only place a consumer learns the namespace), conditions (`Ready`, `NamespaceReady`,
-`LimitsApplied`, `Progressing`, `Degraded` — `CredentialReady` retires with the
+`LimitsApplied`, `Progressing`, `Degraded` — `CredentialReady` retired with the
 key path, see "Daemon identity"), daemon/sandboxes/pools summaries,
 `appliedLimits` (an _observation record_ of the gateway policy API — possibly
 `Unknown`, never an enforcement proof), and `rollout` progress.

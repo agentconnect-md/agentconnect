@@ -1,6 +1,6 @@
 # Namespaced permissions: the CRs it reconciles and its election Lease.
-# The operator has ZERO Secret verbs anywhere — credentials reach workloads
-# via required volume mounts written by the key authority.
+# The operator has ZERO Secret verbs anywhere — an in-cluster daemon carries no
+# credential at all, only the token the kubelet projects into its own pod.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -59,14 +59,10 @@ rules:
       - resourcequotas
       - limitranges
     verbs: ['get', 'list', 'watch', 'create', 'patch', 'delete']
-  # Read-only: pod state drives CredentialReady and the org-labeled secondary watch.
+  # Read-only: the org-labeled secondary watch, and the suspend drain's "pods gone" check.
   - apiGroups: ['']
     resources: ['pods']
     verbs: ['get', 'list', 'watch']
-  # FailedMount events are the only place the kubelet names a Secret it could not mount.
-  - apiGroups: ['']
-    resources: ['events']
-    verbs: ['get', 'list']
   - apiGroups: ['apps']
     resources: ['deployments']
     verbs: ['get', 'list', 'watch', 'create', 'patch', 'delete']

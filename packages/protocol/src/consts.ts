@@ -216,3 +216,8 @@ export const ENVELOPE_DAEMON_SA_NAME = 'ac-daemon'
  *  from. Not part of the verification, but the same two-sided agreement: the mounter and the
  *  reader are both in this repo, so one definition beats a comment asking them to match. */
 export const CP_IDENTITY_TOKEN_PATH = '/var/run/ac-cp-identity/token'
+
+/** Env var carrying the control plane's own WebSocket URL into an envelope daemon, from
+ *  `spec.controlPlane.url`. The pod has no config file to read it from, and a URL is not a
+ *  secret. Same two-sided agreement as the token path: the operator sets it, the daemon reads it. */
+export const CP_URL_ENV = 'AC_CP_URL'

@@ -48,6 +48,7 @@ export async function reconcile(ctx: ReconcileContext, name: string): Promise<Wo
   await renderGatewayPolicies(ctx, input, obs)
   if (obs.namespaceReady) await observeWorkloads(ctx, input, obs)
   await writeStatus(ctx, org, obs)
-  // A provisional observation asks for one more look; no watch fires for a state only an Event describes.
-  return obs.recheckAfterMs !== undefined ? { requeueAfterMs: obs.recheckAfterMs } : {}
+  // No pass asks for a follow-up any more: the workqueue keeps the facility, and every state
+  // this operator observes is one a watch or the resync ticker wakes it for.
+  return {}
 }

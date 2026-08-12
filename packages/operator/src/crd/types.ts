@@ -14,8 +14,6 @@ export const DRAIN_REQUESTED_ANNOTATION = 'agentconnect.md/drain-requested'
 /** When the request above was written (RFC 3339). The drain deadline is measured from it, on the
  *  object rather than in the operator, so a leader change does not restart every drain's clock. */
 export const DRAIN_REQUESTED_AT_ANNOTATION = 'agentconnect.md/drain-requested-at'
-/** Pod-template annotation the operator bumps to force a Recreate on credential rotation. */
-export const CREDENTIAL_REVISION_ANNOTATION = 'agentconnect.md/credential-revision'
 /** Label mapping envelope workloads (Deployments/Pods) back to their owning org CR. */
 export const ORG_LABEL = 'agentconnect.md/org'
 /** Label an operator stamps on a namespace it created or adopted. */
@@ -23,7 +21,8 @@ export const NAMESPACE_CLAIM_LABEL = 'agentconnect.md/org-namespace'
 
 export const CONDITION_READY = 'Ready'
 export const CONDITION_NAMESPACE_READY = 'NamespaceReady'
-export const CONDITION_CREDENTIAL_READY = 'CredentialReady'
+// `CredentialReady` retired with the key path: there is no credential for the operator to
+// find missing, and whether a daemon registered is a fact only the control plane holds.
 export const CONDITION_LIMITS_APPLIED = 'LimitsApplied'
 export const CONDITION_PROGRESSING = 'Progressing'
 export const CONDITION_DEGRADED = 'Degraded'
@@ -41,10 +40,13 @@ export const AgentConnectOrgSpecSchema = z.object({
   suspend: z.boolean().default(false),
   daemon: z.object({
     image: z.string().min(1),
-    tier: z.string().min(1),
-    credentialSecretName: z.string().default('ac-daemon-token'),
-    credentialRevision: z.string().optional()
+    tier: z.string().min(1)
   }),
+  // The control plane's own WebSocket URL, written by it and passed through as container
+  // env. Plain text — a URL is not a secret, and the operator must not learn CP topology
+  // well enough to derive one. Absent ⇒ the daemon starts and never registers, which is
+  // the trade the retired kubelet Secret gate bought and this one gives back.
+  controlPlane: z.object({ url: z.string().min(1) }).optional(),
   runtime: z.object({
     image: z.string().min(1),
     tiers: z.array(

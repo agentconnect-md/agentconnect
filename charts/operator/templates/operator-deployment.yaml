@@ -30,6 +30,17 @@ spec:
               value: {{ .Release.Name }}-ac-tokenreview
             - name: AC_MASTER_TEMPLATE_PREFIX
               value: {{ .Values.masterTemplatePrefix | quote }}
+            {{- /* Where this deployment's control plane and relay run, so an org's daemon may reach
+                   them on their own service ports. Unset means the release namespace, which is what
+                   the operator hard-coded before; an explicit empty list means no in-cluster peer,
+                   leaving the daemon on the 443 rule alone. `kindIs`, not `default`: sprig reads an
+                   empty list as absent, and the two mean different things here. */}}
+            {{- $daemonEgress := .Values.daemonEgressNamespaces }}
+            {{- if kindIs "invalid" $daemonEgress }}
+            {{- $daemonEgress = list .Release.Namespace }}
+            {{- end }}
+            - name: AC_DAEMON_EGRESS_NAMESPACES
+              value: {{ join "," $daemonEgress | quote }}
             {{- /* Unset when empty: the operator then leaves the daemon PVC on the cluster default class. */}}
             {{- with .Values.daemonStorage.className }}
             - name: AC_DAEMON_STORAGE_CLASS
