@@ -111,11 +111,14 @@ function lastOccurrenceMs(event: EventRead): number {
   return stamps.length > 0 ? Math.max(...stamps) : 0
 }
 
-/** No container has been created yet — the state a blocked mount leaves the pod in, and the corroboration
- *  that keeps a retained Event from outliving the fault it described. */
+/** Uncreated-container waiting reasons: a pod with an init container reports PodInitializing, not ContainerCreating. */
+const NOT_YET_CREATED_REASONS = new Set(['ContainerCreating', 'PodInitializing'])
+
+/** No container created yet: where a blocked mount leaves the pod, and what stops a retained Event outliving it. */
 function isAwaitingContainerCreate(pod: PodRead): boolean {
   const containers = [...(pod.status?.initContainerStatuses ?? []), ...(pod.status?.containerStatuses ?? [])]
-  return containers.length === 0 || containers.some((status) => status.state?.waiting?.reason === 'ContainerCreating')
+  // Every, not some: a container stuck on its own blocker means the kubelet got past the mount.
+  return containers.every((status) => NOT_YET_CREATED_REASONS.has(status.state?.waiting?.reason ?? ''))
 }
 
 /** The name has to appear as the Secret the kubelet could not read — the wordings it uses to say so.

@@ -175,6 +175,20 @@ describe('observeWorkloads', () => {
     }
   })
 
+  /** A daemon pod blocked at Init:0/1: with an init container declared, every uncreated one reads PodInitializing. */
+  const initBlockedPod = (name = 'ac-daemon-0') => ({
+    metadata: { name },
+    status: {
+      phase: 'Pending',
+      conditions: [
+        { type: 'PodScheduled', status: 'True' },
+        { type: 'Initialized', status: 'False', reason: 'ContainersNotInitialized' }
+      ],
+      initContainerStatuses: [{ ready: false, state: { waiting: { reason: 'PodInitializing' } } }],
+      containerStatuses: [{ ready: false, state: { waiting: { reason: 'PodInitializing' } } }]
+    }
+  })
+
   it('does not report the target image Ready off the old pod`s stale readyReplicas', async () => {
     // Image just swapped: generation advanced, but readyReplicas still counts the old pod.
     const { obs } = await observe({
@@ -249,12 +263,14 @@ describe('observeWorkloads', () => {
     expect(obs.credential).toEqual({ status: 'True', reason: 'DaemonRunning' })
   })
 
-  it('names the credential secret when the kubelet cannot build the container config', async () => {
+  it('names the credential secret when the kubelet cannot build the init container config', async () => {
+    // The Secret is mounted by the init container alone, so only its status carries the error.
     const pod = {
       metadata: { name: 'ac-daemon-0' },
       status: {
         phase: 'Pending',
-        initContainerStatuses: [{ ready: false, state: { waiting: { reason: 'CreateContainerConfigError' } } }]
+        initContainerStatuses: [{ ready: false, state: { waiting: { reason: 'CreateContainerConfigError' } } }],
+        containerStatuses: [{ ready: false, state: { waiting: { reason: 'PodInitializing' } } }]
       }
     }
     const { obs } = await observe(convergedDeployment, {
@@ -264,6 +280,60 @@ describe('observeWorkloads', () => {
     expect(obs.credential?.status).toBe('False')
     expect(obs.credential?.reason).toBe('CredentialSecretMissing')
     expect(obs.credential?.message).toContain('org-daemon-credentials')
+  })
+
+  it('reads the FailedMount event while the pod is still stuck at init', async () => {
+    // The live shape: containers all PodInitializing, the mount failure named only by the kubelet's event.
+    const { obs } = await observe(convergedDeployment, {
+      pods: [initBlockedPod()],
+      events: [
+        failedMountEvent(
+          'ac-daemon-0',
+          'MountVolume.SetUp failed for volume "config" : secret "ac-daemon-token" not found'
+        )
+      ]
+    })
+    expect(obs.credential?.status).toBe('False')
+    expect(obs.credential?.reason).toBe('CredentialSecretMissing')
+    expect(obs.credential?.message).toContain('ac-daemon-token')
+    expect(obs.recheckAfterMs).toBeUndefined()
+  })
+
+  it('reads the FailedMount event before the kubelet reports any container at all', async () => {
+    const bare = { metadata: { name: 'ac-daemon-0' }, status: { phase: 'Pending' } }
+    const { obs } = await observe(convergedDeployment, {
+      pods: [bare],
+      events: [
+        failedMountEvent(
+          'ac-daemon-0',
+          'MountVolume.SetUp failed for volume "config" : secret "ac-daemon-token" not found'
+        )
+      ]
+    })
+    expect(obs.credential?.reason).toBe('CredentialSecretMissing')
+  })
+
+  it('drops the event when the init container is stuck on a blocker of its own', async () => {
+    // Mount fixed, the init image is the new blocker; the main container's PodInitializing must not re-blame it.
+    const pulling = {
+      metadata: { name: 'ac-daemon-0' },
+      status: {
+        phase: 'Pending',
+        conditions: [{ type: 'PodScheduled', status: 'True' }],
+        initContainerStatuses: [{ ready: false, state: { waiting: { reason: 'ImagePullBackOff' } } }],
+        containerStatuses: [{ ready: false, state: { waiting: { reason: 'PodInitializing' } } }]
+      }
+    }
+    const { obs } = await observe(convergedDeployment, {
+      pods: [pulling],
+      events: [
+        failedMountEvent(
+          'ac-daemon-0',
+          'MountVolume.SetUp failed for volume "config" : secret "ac-daemon-token" not found'
+        )
+      ]
+    })
+    expect(obs.credential).toEqual({ status: 'False', reason: 'DaemonPodNotReady' })
   })
 
   it('reads the pod`s FailedMount event as the missing credential secret, not a startup delay', async () => {
