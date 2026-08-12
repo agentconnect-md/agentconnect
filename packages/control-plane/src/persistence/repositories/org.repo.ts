@@ -12,6 +12,7 @@ import { OrgId } from '../../domain/ids.js'
 import { PgHookRepo } from './hook.repo.js'
 import { parseAgentIcon, randomGlyphIcon } from '../../agents/agent-icon.js'
 import { provisionPresetAgents } from '../preset-agents.js'
+import { OrgCreationLimitReached } from '../errors.js'
 
 export class PgOrgRepo implements OrgRepo {
   constructor(
@@ -64,7 +65,12 @@ export class PgOrgRepo implements OrgRepo {
     })
   }
 
-  async create(input: { name: string | null; slug: string; ownerUserId: string }): Promise<OrgRecord> {
+  async create(input: {
+    name: string | null
+    slug: string
+    ownerUserId: string
+    maxOrgsPerUser?: number
+  }): Promise<OrgRecord> {
     // New orgs get a random glyph+color by default (mirrors agents), so the console
     // always has a real avatar to show before any upload.
     const icon = randomGlyphIcon()
@@ -72,8 +78,18 @@ export class PgOrgRepo implements OrgRepo {
     // seam, preset-agents.md §3.2) commit or roll back together — an org is never
     // observable without its preset row.
     const org = await this.transaction(async (tx) => {
+      if (input.maxOrgsPerUser !== undefined) {
+        await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "app_user" WHERE "id" = ${input.ownerUserId} FOR UPDATE`)
+        const created = await tx.org.count({ where: { createdByUserId: input.ownerUserId } })
+        if (created >= input.maxOrgsPerUser) throw new OrgCreationLimitReached(input.maxOrgsPerUser)
+      }
       const created = await tx.org.create({
-        data: { name: input.name, slug: input.slug, icon: icon as Prisma.InputJsonValue }
+        data: {
+          name: input.name,
+          slug: input.slug,
+          icon: icon as Prisma.InputJsonValue,
+          createdByUserId: input.ownerUserId
+        }
       })
       await tx.membership.create({ data: { orgId: created.id, userId: input.ownerUserId, role: 'owner' } })
       if (this.presetAgents) {

@@ -241,7 +241,7 @@ describe('waitlist admission — GET /me/access', () => {
 })
 
 describe('waitlist admission — POST /waitlist/redeem', () => {
-  it('activates the matching user, creates their personal org, and unlocks org creation', async () => {
+  it('activates the matching user, creates their personal org, and enforces the org quota', async () => {
     const token = await approveAndMint('wl-redeem@acme.dev')
     const { app, close } = buildApp()
     try {
@@ -267,14 +267,15 @@ describe('waitlist admission — POST /waitlist/redeem', () => {
       expect(entry!.redeemedByUserId).toBe(user!.id)
       expect(entry!.redeemedAt).not.toBeNull()
 
-      // Now org creation is allowed.
+      // The automatically created personal org consumes the default quota of one.
       const create = await app.inject({
         method: 'POST',
         url: '/api/v1/orgs',
         headers: h,
         payload: { slug: 'wl-redeem-second' }
       })
-      expect(create.statusCode).toBe(201)
+      expect(create.statusCode).toBe(403)
+      expect(create.json()).toMatchObject({ code: 'ORG_CREATION_LIMIT_REACHED' })
 
       // Repeat redeem is idempotent.
       const again = await app.inject({ method: 'POST', url: '/api/v1/waitlist/redeem', headers: h, payload: { token } })

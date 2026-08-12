@@ -151,7 +151,9 @@ export const DeploymentConfigValuesV1Schema = z
       })
       .nullable(),
     features: z.strictObject({
-      presetAgentsEnabled: z.boolean()
+      presetAgentsEnabled: z.boolean(),
+      /** Maximum organizations a non-ADMIN account may create through the console. */
+      maxOrgsPerNonAdminUser: z.number().int().nonnegative().default(1)
     })
   })
   .superRefine((values, ctx) => {
@@ -192,7 +194,7 @@ export const DEFAULT_DEPLOYMENT_CONFIG_VALUES_V1: DeploymentConfigValuesV1 = {
   github: null,
   slack: null,
   logto: null,
-  features: { presetAgentsEnabled: true }
+  features: { presetAgentsEnabled: true, maxOrgsPerNonAdminUser: 1 }
 }
 
 export const DEPLOYMENT_SECRET_KEYS = [

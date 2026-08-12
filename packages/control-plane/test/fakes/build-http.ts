@@ -338,6 +338,7 @@ export function buildHttpApp(
 
   const deps: HttpDeps = {
     runtimeConfig: {},
+    maxOrgsPerNonAdminUser: 1,
     clock,
     repos: {
       agent: agentRepo,

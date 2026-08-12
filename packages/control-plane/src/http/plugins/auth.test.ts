@@ -186,7 +186,7 @@ describe('humanAuthPlugin identity warm trigger (oidc path)', () => {
   // shape the OIDC integration tests use, without any database behind it.
   let oidcServer: Server
   let oidcIssuer = ''
-  let mintBearer: (subject: string) => Promise<string>
+  let mintBearer: (subject: string, claims?: Record<string, unknown>) => Promise<string>
 
   beforeAll(async () => {
     const { privateKey, publicKey } = await generateKeyPair('RS256')
@@ -210,8 +210,8 @@ describe('humanAuthPlugin identity warm trigger (oidc path)', () => {
     })
     const { port } = oidcServer.address() as AddressInfo
     oidcIssuer = `http://127.0.0.1:${port}`
-    mintBearer = (subject) =>
-      new SignJWT({})
+    mintBearer = (subject, claims = {}) =>
+      new SignJWT(claims)
         .setProtectedHeader({ alg: 'RS256', kid: 'warm-test' })
         .setIssuer(oidcIssuer)
         .setSubject(subject)
@@ -243,6 +243,19 @@ describe('humanAuthPlugin identity warm trigger (oidc path)', () => {
 
     expect(response.statusCode).toBe(200)
     expect(warm).toHaveBeenCalledWith({ userId: 'local-sub-42', oidcSubject: 'sub-42' })
+  })
+
+  it('surfaces the verified ADMIN role on the human principal', async () => {
+    const app = await appWithOptions({ OIDC_ISSUER: oidcIssuer, resolveUser: async () => ({ userId: 'local-sub-42' }) })
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/v1/probe',
+      headers: { authorization: `Bearer ${await mintBearer('sub-42', { roles: ['ADMIN'] })}` }
+    })
+
+    expect(response.statusCode).toBe(200)
+    expect(response.json().principal).toEqual({ userId: 'local-sub-42', isAdmin: true })
   })
 
   it('a throwing trigger does not 401 a valid token', async () => {

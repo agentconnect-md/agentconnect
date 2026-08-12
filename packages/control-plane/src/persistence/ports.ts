@@ -3906,7 +3906,13 @@ export interface OrgRepo {
    * membership no longer exists. */
   selectForUser(orgId: string, userId: string, selectedAt: Date): Promise<void>
   /** Create an org with `ownerUserId` as its first owner (one transaction). */
-  create(input: { name: string | null; slug: string; ownerUserId: string }): Promise<OrgRecord>
+  create(input: {
+    name: string | null
+    slug: string
+    ownerUserId: string
+    /** Optional deployment quota; checked atomically against orgs created by this user. */
+    maxOrgsPerUser?: number
+  }): Promise<OrgRecord>
   /** Update org settings. Throws P2025 when absent, P2002 on a slug collision. */
   update(
     orgId: string,
