@@ -924,6 +924,7 @@ finishing the inherited wip:
 (§5.2), and `Merge when ready` (`enablePullRequestAutoMerge`) gated on the
 clamped token actually carrying write. _Exit:_ the design's headline loop — read
 the review, hand it to the agent, arm the merge — works end to end.
+**Landed.**
 
 Decisions recorded while building it:
 
