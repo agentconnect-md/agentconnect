@@ -188,7 +188,11 @@ export async function ensureNetworkPolicies(
             { protocol: 'TCP', port: 53 }
           ]
         },
-        // 443 covers CP/relay/platform/provider APIs; 6443 is the apiserver on most CNIs (CNI-dependent).
+        // The control plane and relay live in the control namespace and are reached on their own
+        // service ports, so 443 alone strands an in-cluster deployment — the daemon's registration
+        // WebSocket never completes and the org is orphaned from its control plane.
+        { to: [{ namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': ctx.controlNamespace } } }] },
+        // 443 covers platform and provider APIs, plus a CP reached over public HTTPS.
         { ports: [{ protocol: 'TCP', port: 443 }] },
         { ports: [{ protocol: 'TCP', port: 6443 }] }
       ]

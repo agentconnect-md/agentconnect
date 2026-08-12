@@ -130,6 +130,15 @@ describe('reconcileEnvelope', () => {
     expect(byPath(writes, '/networkpolicies/ac-daemon-egress')).toBeDefined()
     expect(byPath(writes, '/networkpolicies/ac-daemon-ingress')).toBeDefined()
 
+    // Without this the daemon's registration WebSocket to an in-cluster control plane
+    // never completes — its service port is not 443.
+    const egress = byPath(writes, '/networkpolicies/ac-daemon-egress')?.body as {
+      spec: { egress: Array<{ to?: Array<{ namespaceSelector?: { matchLabels: Record<string, string> } }> }> }
+    }
+    expect(egress.spec.egress).toContainEqual({
+      to: [{ namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': ctx.controlNamespace } } }]
+    })
+
     // All-zero quota means unlimited: the objects are deleted, not written.
     expect(byPath(writes, '/resourcequotas/ac-quota')?.method).toBe('DELETE')
     expect(byPath(writes, '/limitranges/ac-limits')?.method).toBe('DELETE')
