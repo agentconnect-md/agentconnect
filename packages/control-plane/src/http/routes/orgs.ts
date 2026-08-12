@@ -29,6 +29,7 @@ import type { HttpDeps } from '../deps.js'
 import type { OrgRecord } from '../../persistence/ports.js'
 import { DaemonId, OrgId } from '../../domain/ids.js'
 import { denyNonOwner, orgOf } from '../rbac.js'
+import { detachDaemon } from '../daemon-removal.js'
 import { Tag } from '../plugins/openapi.js'
 import { resolveOrgIconUrl, type IconUrlBases } from '../../agents/agent-icon.js'
 import { OrgDto, OrgListDto, CreateOrgBody, UpdateOrgBody, ErrorDto, type OrgDtoT } from '../dto/index.js'
@@ -253,14 +254,22 @@ export function orgScopedRoutes(deps: HttpDeps) {
         // revokes the key and hands the envelope to the operator's finalizer; a
         // cluster that refuses only delays that, since the tombstone written
         // inside the delete transaction is what the drain below acts on.
+        //
+        // The delete can still answer 409 after this — `review_cleanup_pending`,
+        // or losing the preflight race to a daemon registered in between — so
+        // the removal goes through the SAME sequence `DELETE /daemons/:id` uses
+        // rather than a bare row delete. What survives such a 409 is then an
+        // organization with cluster execution switched off and its agents
+        // properly unplaced: the state a manual disable produces, which the
+        // owner can re-enable, and not live-looking agents pointing at a daemon
+        // that no longer exists.
         if (envelopeDaemonId && daemons.length > 0) {
           try {
             await deps.clusterExecution!.configure(orgId, { enabled: false })
           } catch (err) {
             req.log.warn({ err, orgId }, 'cluster-execution: envelope retirement deferred to the periodic drain')
           }
-          await deps.registry.remove(orgId, DaemonId(envelopeDaemonId))
-          deps.relayControl.daemonRevoke(envelopeDaemonId)
+          await detachDaemon(deps, orgId, DaemonId(envelopeDaemonId), req.log)
         }
         const deleted = await deps.repos.org.delete(req.orgCtx!.orgId)
         for (const hookId of deleted.removedHookIds) deps.hooks.remove(hookId)

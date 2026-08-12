@@ -299,9 +299,12 @@ Secret that rotates in place needs no restart.
   since provisioning now happens with the org, leaving it in the count would make
   every organization undeletable. So the route excludes it from the guard,
   switches cluster execution off (revoking the key and handing the envelope to
-  the finalizer), and removes the row before the delete. A cluster that refuses
-  the disable does not fail the deletion — the tombstone below is what teardown
-  actually hangs on.
+  the finalizer), and removes it before the delete — through the same detach
+  sequence `DELETE /daemons/:id` uses (`http/daemon-removal.ts`), because the
+  delete can still answer 409 afterwards and what survives that must be an org
+  whose agents are properly unplaced, not live-looking agents pointing at a
+  daemon that no longer exists. A cluster that refuses the disable does not fail
+  the deletion — the tombstone below is what teardown actually hangs on.
 - Deleting an organization records its envelope in `pending_envelope_teardown`
   **inside the delete transaction**, because the cascade removes the only copy
   of its `resourceName` and after that nothing could name the resource, namespace
