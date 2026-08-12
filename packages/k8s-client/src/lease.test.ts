@@ -19,6 +19,20 @@ interface StoredLease {
   spec: Record<string, unknown>
 }
 
+/** MicroTime as the API server parses it: RFC3339 with exactly six fractional digits. */
+const MICRO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/
+
+/** A stamp shaped the way the API server would have stored it, for seeded holders. */
+const EPOCH_MICRO = '1970-01-01T00:00:00.000000Z'
+
+/** The real server 400s a mistyped stamp; the fake must too, or the wire format goes untested. */
+function malformedStamp(spec: Record<string, unknown>): string | undefined {
+  return ['acquireTime', 'renewTime'].find((field) => {
+    const value = spec[field]
+    return typeof value === 'string' && !MICRO_TIME.test(value)
+  })
+}
+
 /** Tiny stateful Lease endpoint: 404 until created, resourceVersion-guarded writes. */
 function leaseStore(initial?: StoredLease['spec']): { route: FakeRoute; current: () => StoredLease | undefined } {
   let lease: StoredLease | undefined = initial
@@ -30,6 +44,8 @@ function leaseStore(initial?: StoredLease['spec']): { route: FakeRoute; current:
       return lease ? { json: lease } : { status: 404, json: { kind: 'Status', reason: 'NotFound' } }
     }
     const incoming = JSON.parse(body) as { metadata?: { resourceVersion?: string }; spec: Record<string, unknown> }
+    const bad = malformedStamp(incoming.spec)
+    if (bad) return { status: 400, json: { kind: 'Status', reason: 'BadRequest', message: `${bad} is not MicroTime` } }
     if (method === 'POST') {
       if (lease) return { status: 409, json: { kind: 'Status', reason: 'AlreadyExists' } }
       lease = { metadata: { name: 'op', namespace: 'org-test', resourceVersion: `${++version}` }, spec: incoming.spec }
@@ -72,6 +88,21 @@ describe('LeaseElector', () => {
     await run
   })
 
+  it('stamps acquireTime and renewTime as MicroTime', async () => {
+    const { route, current } = leaseStore()
+    const { config } = await fakeApiServer(route)
+    const clock = new FakeClock(1_700_000_000_123)
+    const events: string[] = []
+    const lease = elector(new K8sHttp(config), clock, events)
+    const run = lease.start()
+    await waitUntil(() => events.includes('started'))
+    // Six fractional digits, not Date#toISOString's three — the API server rejects the latter outright.
+    expect(current()?.spec.renewTime).toBe('2023-11-14T22:13:20.123000Z')
+    expect(current()?.spec.acquireTime).toBe('2023-11-14T22:13:20.123000Z')
+    await lease.stop()
+    await run
+  })
+
   it('renews while holding without re-firing onStartedLeading', async () => {
     const { route, current } = leaseStore()
     const { config } = await fakeApiServer(route)
@@ -93,7 +124,7 @@ describe('LeaseElector', () => {
     const held = {
       holderIdentity: 'pod-b',
       leaseDurationSeconds: 15,
-      renewTime: new Date(0).toISOString(),
+      renewTime: EPOCH_MICRO,
       leaseTransitions: 0
     }
     const { route, current } = leaseStore(held)
@@ -114,7 +145,7 @@ describe('LeaseElector', () => {
     const held = {
       holderIdentity: 'pod-b',
       leaseDurationSeconds: 15,
-      renewTime: new Date(0).toISOString(),
+      renewTime: EPOCH_MICRO,
       leaseTransitions: 3
     }
     const { route, current } = leaseStore(held)
@@ -140,7 +171,7 @@ describe('LeaseElector', () => {
         return {
           json: {
             metadata: { name: 'op', namespace: 'org-test', resourceVersion: `${gets}` },
-            spec: { holderIdentity: 'pod-b', leaseDurationSeconds: 15, renewTime: new Date(0).toISOString() }
+            spec: { holderIdentity: 'pod-b', leaseDurationSeconds: 15, renewTime: EPOCH_MICRO }
           }
         }
       }

@@ -30,6 +30,11 @@ export interface LeaseElectorOptions {
 
 const DEFAULT_LEASE_DURATION_SECONDS = 15
 
+/** Lease stamps are MicroTime — the API server demands exactly six fractional digits, toISOString gives three. */
+function microTime(epochMs: number): string {
+  return new Date(epochMs).toISOString().replace(/\.(\d{3})Z$/, '.$1000Z')
+}
+
 /** Clock-driven abortable delay; mirrors the watch loop's listener-safe sleep. */
 function sleep(clock: Clock, ms: number, signal?: AbortSignal): Promise<void> {
   if (signal?.aborted) return Promise.resolve()
@@ -150,7 +155,7 @@ export class LeaseElector {
   }
 
   private heldSpec(nowMs: number, transitions: number): Lease['spec'] {
-    const stamp = new Date(nowMs).toISOString()
+    const stamp = microTime(nowMs)
     return {
       holderIdentity: this.identity,
       leaseDurationSeconds: this.leaseDurationSeconds,
