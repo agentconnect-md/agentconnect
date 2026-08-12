@@ -11,6 +11,9 @@ const wire = vi.hoisted(() => ({
   git: null as unknown,
   primary: null as unknown,
   gitFails: false,
+  // A status read that fails with a CP code rather than a bare network error — the sleeping-sandbox
+  // 503, which the panel must not draw as the offline story it shares a status with.
+  gitFailure: null as null | { status: number; code?: string },
   log: null as unknown,
   logFailure: null as null | { status: number; code?: string },
   logCalls: [] as Array<{ limit?: number; sessionId?: string }>,
@@ -40,6 +43,9 @@ vi.mock('@/lib/api', () => {
     fetchWorkspaceGitStatus: vi.fn((_agentId: string, sessionId?: string) => {
       if (sessionId) {
         wire.statusCalls += 1
+        if (wire.gitFailure) {
+          return Promise.reject(new ApiError('nope', wire.gitFailure.status, wire.gitFailure.code))
+        }
         return wire.gitFails ? Promise.reject(new Error('offline')) : Promise.resolve(wire.git)
       }
       return Promise.resolve(wire.primary)
@@ -200,6 +206,7 @@ beforeEach(() => {
   wire.primary = gitStatus()
   wire.gitFails = false
   wire.log = gitLog()
+  wire.gitFailure = null
   wire.logFailure = null
   wire.logCalls = []
   wire.statusCalls = 0
@@ -395,6 +402,29 @@ describe('GitPanel', () => {
     expect(text()).toContain('daemon may be offline')
     expect(verdicts.at(-1)).toEqual({ settled: true, changed: null })
     expect(container?.querySelector('[data-git-panel]')).not.toBeNull()
+  })
+
+  it('draws a sleeping sandbox as its own answer, not as an outage and not as "no checkout"', async () => {
+    // Both wrong answers this replaces were reachable: the daemon used to report `isRepo:false` for a
+    // suspended pod (drawn "Not a git checkout"), and the 503 it now sends is the same status an
+    // offline daemon sends. Only the code separates them, so the code is what this asserts on.
+    wire.gitFailure = { status: 503, code: 'WORKSPACE_SANDBOX_UNAVAILABLE' }
+    await render()
+
+    expect(text()).toContain('its pod is not running')
+    expect(text()).toContain('Sandbox not running')
+    expect(text()).not.toContain('daemon may be offline')
+    expect(text()).not.toContain('Not a git checkout')
+    // Still data: the tab settles and the panel stays mounted, like every other degraded answer.
+    expect(verdicts.at(-1)).toEqual({ settled: true, changed: null })
+    expect(container?.querySelector('[data-git-panel]')).not.toBeNull()
+  })
+
+  it('keeps a reasonless 503 on the offline story, which is what it is', async () => {
+    wire.gitFailure = { status: 503 }
+    await render()
+    expect(text()).toContain('daemon may be offline')
+    expect(text()).not.toContain('its pod is not running')
   })
 
   it('draws a clean tree as data', async () => {

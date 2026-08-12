@@ -27,6 +27,7 @@ import {
   type WorkspaceFiles,
   type WorkspaceLocation
 } from '../workspace/workspace-files.js'
+import { sandboxWorkspaceMode } from '../workspace/workspace-manager.js'
 
 // Re-exported rather than moved-and-chased: the error classes are what the CP dispatcher maps onto
 // wire frames, and the two path helpers are what the git seam contains its pathspecs with. Neither
@@ -64,6 +65,15 @@ export function createWorkspaceReader(
   function locationFor(agentId: string, sessionId?: string): WorkspaceLocation {
     const location = workspaceByAgent(agentId, sessionId)
     if (!location) throw new WorkspaceViolationError(`unknown agent "${agentId}"`, 'unknown-agent')
+    // A sandbox workspace with no channel to reach it. Falling back to `localWorkspaceFiles` would
+    // point them at a path in the POD's coordinates and answer `exists:false` — "this workspace is
+    // empty" for one that is merely asleep, which is the answer a reader cannot act on.
+    if (sandboxWorkspaceMode() && !filesFor(agentId)) {
+      throw new WorkspaceViolationError(
+        `agent "${agentId}" has no running sandbox, so its workspace cannot be reached`,
+        'sandbox-unavailable'
+      )
+    }
     return location
   }
 

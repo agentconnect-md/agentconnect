@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createWorkspaceReader, WorkspaceViolationError } from '../src/cp/workspace-reader.js'
 import { createLocalSkillsReader } from '../src/cp/local-skills-reader.js'
+import { createWorkspaceGit } from '../src/cp/workspace-git.js'
+import { setSandboxWorkspaceMode, setWorkspaceGitRunnerResolver } from '../src/workspace/workspace-manager.js'
 import { localWorkspaceFiles, type WorkspaceFiles } from '../src/workspace/workspace-files.js'
 
 /**
@@ -152,5 +154,69 @@ describe('createLocalSkillsReader routing', () => {
     const answer = await reader.list({ agentId: AGENT })
     expect(answer.materialized).toBe(true)
     expect(answer.skills.map((entry) => entry.name)).toEqual(['local-one'])
+  })
+})
+
+describe('an unreachable sandbox workspace', () => {
+  // The pod is suspended, or was never launched. Nothing is broken and the workspace is not empty —
+  // it is simply not reachable from here until the agent's next turn wakes it. Both seams have to say
+  // that, because the alternatives are the two answers a reader cannot act on: "not a git checkout"
+  // and an empty file tree, each about a workspace that is fine.
+  afterEach(() => {
+    setSandboxWorkspaceMode(false)
+    setWorkspaceGitRunnerResolver(undefined)
+  })
+
+  it('is a refusal with a machine-readable reason, not an empty listing', async () => {
+    const { daemonSide } = split()
+    setSandboxWorkspaceMode(true)
+    // No seam registered for this agent — exactly what the plane answers with no bound channel.
+    const reader = createWorkspaceReader(() => ({ root: '/agent', scratch: true }), pass)
+    for (const read of [
+      () => reader.list({ agentId: AGENT, path: '', limit: 50 }),
+      () => reader.read({ agentId: AGENT, path: 'app.ts', offset: 0, limit: 65_536 })
+    ]) {
+      await expect(read()).rejects.toMatchObject({
+        name: 'WorkspaceViolationError',
+        reason: 'sandbox-unavailable'
+      })
+    }
+    // A write refuses the same way rather than publishing to this daemon's disk.
+    await expect(
+      reader.write({ agentId: AGENT, path: 'notes.md', contentBase64: Buffer.from('x').toString('base64') })
+    ).rejects.toMatchObject({ reason: 'sandbox-unavailable' })
+    expect(existsSync(join(daemonSide, 'notes.md'))).toBe(false)
+  })
+
+  it('refuses the git seam too, instead of reporting "not a git checkout" for a sleeping pod', async () => {
+    setSandboxWorkspaceMode(true)
+    const git = createWorkspaceGit(() => '/agent/repo')
+    await expect(git.status(AGENT)).rejects.toMatchObject({ reason: 'sandbox-unavailable' })
+    await expect(git.log({ agentId: AGENT, limit: 20 })).rejects.toMatchObject({ reason: 'sandbox-unavailable' })
+    await expect(git.diff({ agentId: AGENT, path: 'a.ts', staged: false })).rejects.toMatchObject({
+      reason: 'sandbox-unavailable'
+    })
+    // A write must not fall through to a local runner and mutate whatever is at that path here.
+    await expect(git.commit({ agentId: AGENT, message: 'nope' })).rejects.toMatchObject({
+      reason: 'sandbox-unavailable'
+    })
+  })
+
+  it('says nothing of the kind once a channel is bound', async () => {
+    const { daemonSide, podSide } = split()
+    setSandboxWorkspaceMode(true)
+    const reader = createWorkspaceReader(
+      () => ({ root: daemonSide, scratch: true }),
+      pass,
+      () => filesAt(podSide)
+    )
+    expect((await reader.list({ agentId: AGENT, path: '', limit: 50 })).exists).toBe(true)
+  })
+
+  it('never fires on a self-hosted daemon, whose workspace is always right here', async () => {
+    const { daemonSide } = split()
+    // Cluster mode off: the resolver being empty is the NORMAL state, not an unreachable workspace.
+    const reader = createWorkspaceReader(() => ({ root: daemonSide, scratch: true }), pass)
+    expect((await reader.list({ agentId: AGENT, path: '', limit: 50 })).exists).toBe(true)
   })
 })

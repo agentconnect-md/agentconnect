@@ -336,6 +336,18 @@ describe('workspaceErrorCode / workspaceFailure', () => {
     })
   })
 
+  it('answers a sleeping sandbox 503 WITH its code, not the 400 every other reason gets', () => {
+    // The one reason that is transient rather than a bad request. A 400 would tell the console to
+    // stop retrying a workspace that comes back on the agent's next turn, and the bare 503 the
+    // reasonless case gets would leave it indistinguishable from a daemon that may never return.
+    expect(workspaceFailure(badPayload('sandbox-unavailable'))).toEqual({
+      status: 503,
+      error: 'Service Unavailable',
+      message: 'workspace/read failed: path escapes the workspace root',
+      code: 'WORKSPACE_SANDBOX_UNAVAILABLE'
+    })
+  })
+
   it('keeps the 503 for a reasonless rejection (an older daemon says nothing to branch on)', () => {
     expect(workspaceFailure(badPayload())).toEqual({
       status: 503,

@@ -615,6 +615,12 @@ export function workspaceErrorCode(err: ProtocolError): string | null {
   return reason.success ? `WORKSPACE_${reason.data.toUpperCase().replaceAll('-', '_')}` : null
 }
 
+/** The one workspace reason that is TRANSIENT rather than a bad request: the agent's sandbox is not
+ *  running, so its files are unreachable until it is. 503 like an offline daemon, because that is
+ *  what it is — but WITH the code, which is how the console tells "come back in a moment" from a
+ *  daemon that may never come back, and from an empty workspace. */
+const SANDBOX_UNAVAILABLE = 'WORKSPACE_SANDBOX_UNAVAILABLE'
+
 /** Status a console can act on instead of the 503 that reads as an offline daemon:
  *  a worktree the daemon lacks is 404 (as when the CP pre-empts the read), a bad path
  *  400, a stale fence 409. Reasonless ⇒ {@link daemonEdgeFailure}; null ⇒ rethrow. */
@@ -627,6 +633,11 @@ export function workspaceFailure(
       if (err.code === 'CONFLICT') return { status: 409, error: 'Conflict', message: err.message, code }
       if (code === 'WORKSPACE_UNKNOWN_AGENT') {
         return { status: 404, error: 'Not Found', message: 'workspace not found', code }
+      }
+      // Ahead of the 400: the daemon reports it as a refused request (it carries a reason), but
+      // nothing about the request was wrong, and a 400 tells a console to stop retrying.
+      if (code === SANDBOX_UNAVAILABLE) {
+        return { status: 503, error: 'Service Unavailable', message: err.message, code }
       }
       return { status: 400, error: 'Bad Request', message: err.message, code }
     }
@@ -656,6 +667,12 @@ function sendWorkspaceMutationFailure(reply: FastifyReply, err: unknown): boolea
   const code = err instanceof ProtocolError ? workspaceErrorCode(err) : null
   if (err instanceof ProtocolError && err.code === 'CONFLICT') {
     void reply.code(409).send({ error: 'Conflict', statusCode: 409, message: err.message, ...(code ? { code } : {}) })
+    return true
+  }
+  // Same exception as the read path, and it matters more here: a 400 on a write tells the console the
+  // edit itself was rejected, so the reader would go fix content that was never the problem.
+  if (err instanceof ProtocolError && code === SANDBOX_UNAVAILABLE) {
+    void reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: err.message, code })
     return true
   }
   if (err instanceof ProtocolError && err.code === 'BAD_PAYLOAD') {
