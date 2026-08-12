@@ -96,6 +96,12 @@ export const RcVerify = z.discriminatedUnion('kind', [
     kind: z.literal('daemon-key'),
     credential: z.string().min(1)
   }),
+  // An in-cluster daemon's projected ServiceAccount token, reviewed against the org's
+  // cluster. Resolves to the same daemonId + orgId a key would.
+  z.object({
+    kind: z.literal('daemon-token'),
+    credential: z.string().min(1)
+  }),
   z.object({
     kind: z.literal('webchat-token'),
     credential: z.string().min(1),
@@ -107,6 +113,7 @@ export type RcVerify = z.infer<typeof RcVerify>
 // C→R REP (corr = rc/verify id). `ok:false` carries no detail beyond `reason`
 // (no existence oracle). On success the identity fields depend on `kind`:
 //  - daemon-key     → daemonId + orgId
+//  - daemon-token   → daemonId + orgId (same shape; a different credential)
 //  - webchat-token  → userId (+ display `user`) + agentId + daemonId + orgId +
 //    conversationId, where daemonId is the agent's CURRENT placement and the
 //    conversation id is the CP-authorized binding carried by the token.

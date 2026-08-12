@@ -22,6 +22,7 @@ import { timingSafeEqual } from 'node:crypto'
 import type { RcAuth } from '@agentconnect.md/protocol'
 import type { ApiKeyRepo } from '../persistence/ports.js'
 import type { Clock } from '../domain/clock.js'
+import type { ClusterDaemonIdentity } from '../ports.js'
 import { ApiKeyCodec } from './apiKey.js'
 
 /** Config slice: the shared token (unset ⇒ token mode off) + the heartbeat cadence to advertise. */
@@ -39,7 +40,9 @@ export class RelayAuthService {
     private readonly codec: ApiKeyCodec,
     private readonly apiKeys: ApiKeyRepo,
     private readonly clock: Clock,
-    private readonly config: RelayAuthConfig
+    private readonly config: RelayAuthConfig,
+    /** Absent when this deployment provisions no clusters — then only the key path exists. */
+    private readonly clusterIdentity?: ClusterDaemonIdentity
   ) {}
 
   /** The heartbeat cadence advertised in `rc/auth/ok`. */
@@ -69,6 +72,20 @@ export class RelayAuthService {
     if (row.revokedAt) return null
     if (row.expiresAt && row.expiresAt.getTime() <= this.clock.now()) return null
     return { daemonId: row.daemonId, orgId: row.orgId }
+  }
+
+  /**
+   * Resolve an in-cluster daemon's projected ServiceAccount token to the same
+   * `{daemonId, orgId}` for `rc/verify(daemon-token)`. One TokenReview, exactly the check
+   * the daemon's own CP socket runs — the relay hop must not be a weaker door than the
+   * control socket. Null when this deployment provisions no clusters, or the token fails
+   * any of the audience / ServiceAccount / namespace checks; a cluster or store error
+   * PROPAGATES so the caller answers retryable rather than "invalid credential".
+   */
+  async verifyDaemonToken(credential: string): Promise<{ daemonId: string; orgId: string } | null> {
+    if (!this.clusterIdentity) return null
+    const verified = await this.clusterIdentity.verify(credential)
+    return verified ? { daemonId: verified.daemonId, orgId: verified.orgId } : null
   }
 
   private authToken(credential: string): RelayAuthResult {

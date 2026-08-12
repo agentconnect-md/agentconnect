@@ -59,6 +59,8 @@ class FakeTransport implements Transport {
 function make(
   over: {
     daemonId?: () => string | undefined
+    apiKey?: () => string
+    clusterIdentityToken?: () => string | undefined
     onRelayMsg?: (msg: RdMsgWebchat, chat: (event: RdChatEvent) => void) => RdAck
   } = {}
 ) {
@@ -70,7 +72,8 @@ function make(
     return t
   })
   const client = new RelayClient(RELAY_ID, URL, {
-    apiKey: () => 'daemon-key',
+    apiKey: over.apiKey ?? (() => 'daemon-key'),
+    ...(over.clusterIdentityToken ? { clusterIdentityToken: over.clusterIdentityToken } : {}),
     daemonId: over.daemonId ?? (() => DAEMON_ID),
     clock,
     connect,
@@ -109,6 +112,25 @@ describe('RelayClient (daemon → one relay)', () => {
     })
     expect(client.state).toBe('READY')
     expect(client.isReady()).toBe(true)
+  })
+
+  it('presents the projected token instead of a key when this daemon has one', async () => {
+    const reads: number[] = []
+    let current = 'projected-1'
+    const { client, transports } = make({
+      apiKey: () => '',
+      clusterIdentityToken: () => {
+        reads.push(reads.length)
+        return current
+      }
+    })
+    const t = await toReady(client, transports)
+    expect(t.lastReq('rd/hello')!.payload).toMatchObject({ serviceAccountToken: 'projected-1' })
+    expect(t.lastReq('rd/hello')!.payload.apiKey).toBeUndefined()
+    // Re-read per connect for the same reason as the CP socket: the kubelet rotates it.
+    current = 'projected-2'
+    await toReady(client, transports)
+    expect(reads.length).toBeGreaterThan(1)
   })
 
   it('treats a relayId echo mismatch as a misroute — never READY, reconnects', async () => {

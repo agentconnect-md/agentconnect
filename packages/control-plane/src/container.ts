@@ -396,6 +396,19 @@ export function buildContainer(
   const clusterHttp = clusterAccess ? new K8sHttp(clusterAccess) : undefined
   const clusterOrgApi =
     clusterAccess && clusterHttp ? new AgentConnectOrgApi(clusterHttp, clusterAccess.namespace) : undefined
+  // The in-cluster daemon's token path; undefined ⇒ this deployment only accepts API keys.
+  // Shared by both doors a daemon can knock on — the CP socket and, through `rc/verify`,
+  // the relay — so the relay hop can never be the weaker one.
+  const clusterIdentity =
+    clusterHttp && clusterOrgApi
+      ? new ClusterDaemonIdentityService(
+          clusterHttp,
+          clusterOrgApi,
+          repos.orgClusterExecution,
+          repos.daemon,
+          config.CLUSTER_ORG_NAMESPACE_PREFIX
+        )
+      : undefined
   const auth = new DaemonAuthService(
     codec,
     repos.apiKey,
@@ -411,16 +424,7 @@ export function buildContainer(
     },
     // Resolves the daemon's org slug for the org-scoped deep link (`…/<orgSlug>/sessions/…`).
     repos.org,
-    // The in-cluster daemon's token path; undefined ⇒ this deployment only accepts API keys.
-    clusterHttp && clusterOrgApi
-      ? new ClusterDaemonIdentityService(
-          clusterHttp,
-          clusterOrgApi,
-          repos.orgClusterExecution,
-          repos.daemon,
-          config.CLUSTER_ORG_NAMESPACE_PREFIX
-        )
-      : undefined
+    clusterIdentity
   )
   const apiKeys = new ApiKeyService(codec, repos.apiKey, repos.daemon, repos.audit, clock)
   const oauth = new OAuthService(repos.oauth, apiKeys, codec, clock)
@@ -437,10 +441,16 @@ export function buildContainer(
   // Relay↔CP `rc/auth` dual-mode verifier (§8): shared RELAY_TOKEN and/or per-relay
   // ApiKey. RELAY_TOKEN unset ⇒ token mode is off; org-less relay keys reuse the
   // pepper-hash mechanism (no epoch — relays carry no fencing state).
-  const relayAuth = new RelayAuthService(codec, repos.apiKey, clock, {
-    ...(config.RELAY_TOKEN ? { RELAY_TOKEN: config.RELAY_TOKEN } : {}),
-    HEARTBEAT_SEC: config.HEARTBEAT_SEC
-  })
+  const relayAuth = new RelayAuthService(
+    codec,
+    repos.apiKey,
+    clock,
+    {
+      ...(config.RELAY_TOKEN ? { RELAY_TOKEN: config.RELAY_TOKEN } : {}),
+      HEARTBEAT_SEC: config.HEARTBEAT_SEC
+    },
+    clusterIdentity
+  )
   const relayStaleMs = config.RELAY_STALE_SEC * 1000
 
   // Uploaded-icon object store (docs/designs/icon-uploads.md): a neutral S3-compatible

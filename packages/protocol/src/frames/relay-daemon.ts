@@ -86,11 +86,15 @@ export const RD_AGENT_IMPLICIT_ROUTING_V1 = 'agent-implicit-routing-v1'
  */
 export const RD_GITHUB_THREAD_WORKTREE_CLEANUP_V2 = 'github-thread-worktree-cleanup-v2'
 
-// D→R REQ → rd/hello/ok. The daemon presents its EXISTING daemon API key; the
-// relay holds no database, so it delegates to the CP via `rc/verify` and caches
+// D→R REQ → rd/hello/ok. The daemon presents the same credential it uses on the CP
+// socket — an API key, or an in-cluster daemon's projected ServiceAccount token. The
+// relay holds no database, so it delegates either to the CP via `rc/verify` and caches
 // the verdict until this connection closes. Secret material — NEVER log.
 export const RdHello = z.object({
-  apiKey: z.string().min(1),
+  apiKey: z.string().min(1).optional(),
+  // Projected ServiceAccount token of an operator-provisioned daemon pod, audience-scoped
+  // to CP_TOKEN_AUDIENCE. Takes precedence over `apiKey`; verified by the CP, never here.
+  serviceAccountToken: z.string().min(1).optional(),
   daemonId: z.string().uuid(),
   // Bounded so a hostile/buggy daemon cannot grow the relay's per-connection state.
   // Absent ⇒ an older daemon that advertises nothing; the relay must then assume the

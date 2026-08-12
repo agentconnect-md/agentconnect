@@ -20420,9 +20420,8 @@ export class Daemon {
     // and if it matches it is redundant anyway.
     const echoDaemonId = this.opts.overrides?.daemonId
     const url = cp.url
-    // Relay dial-out still authenticates with the API key: the relay verifies `daemon-key`
-    // credentials through the CP and has no token path yet, so a key-less in-cluster daemon
-    // simply never authenticates to a relay.
+    // Empty when this daemon has no key at all — then the projected token below is what it
+    // presents to a relay, exactly as it does to the control plane.
     const cpKey = cp.key ?? ''
 
     // Relay dial-out manager: the CP publishes the roster (register/ok.relays + the
@@ -20432,6 +20431,7 @@ export class Daemon {
     // cpClient.start() so applyReconcileSnapshot has a live manager during the handshake.
     this.relays = new RelayManager({
       apiKey: () => cpKey,
+      ...(this.clusterIdentityToken ? { clusterIdentityToken: this.clusterIdentityToken } : {}),
       daemonId: () => this.cfg.daemonId,
       clock: systemClock,
       connect: (relayUrl) =>
