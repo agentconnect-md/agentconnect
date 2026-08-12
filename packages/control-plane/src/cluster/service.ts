@@ -522,9 +522,12 @@ export class ClusterExecutionService {
     const claimed = await this.repo.beginCredentialRotation(orgId, token, new Date(this.clock.now()), ROTATION_LEASE_MS)
     if (!claimed) return false // a live transition owns this org; next pass
     try {
-      // A disabled envelope cannot owe a rollout — `retireCredential` drops the
-      // obligation — so this can only be an enabled row whose apply never landed.
-      await this.reconcile(claimed)
+      // Through the convergence fence, not a bare apply: a settings write needs
+      // no credential claim, so one can land while this apply is in flight and
+      // this pass would otherwise revert the CR to the spec it captured. The
+      // credential fields only move under the claim this pass holds, so the row
+      // a peer supersedes it with still carries the revision being rolled out.
+      await this.converge(orgId)
       await this.repo.completeCredentialRollout(orgId, token)
       return true
     } catch {

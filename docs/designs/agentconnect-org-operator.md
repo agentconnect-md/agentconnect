@@ -308,10 +308,14 @@ undo the retirement disable just performed. Beyond that, three mechanisms:
   `credentialRolloutPending`, and the held keys are released only by
   `completeCredentialRollout` — after the apply has actually succeeded. A
   request that dies in between leaves both the obligation and a working
-  credential; `drainCredentialRollouts` re-applies under the same per-org claim
+  credential; `drainCredentialRollouts` finishes it under the same per-org claim
   and releases then, so the retry is durable rather than dependent on the caller
-  coming back. Retiring the envelope drops the obligation and releases the keys,
-  since a pod that is going away has no credential left to strand.
+  coming back. That retry re-applies through the CONVERGENCE loop, not a bare
+  apply: a settings write needs no credential claim, so one can land while the
+  drain's apply is in flight, and a stale apply would revert the CR while the
+  drain closed the only record that anything was owed. Retiring the envelope
+  drops the obligation and releases the keys, since a pod that is going away has
+  no credential left to strand.
 
 Disabling takes the same claim BEFORE it writes anything, and the write that
 clears `enabled` is the same transaction that drops the credential, queues both

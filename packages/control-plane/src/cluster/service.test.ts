@@ -667,6 +667,25 @@ describe('ClusterExecutionService.issueCredential', () => {
     expect(await service.drainCredentialRollouts()).toBe(0)
   })
 
+  it('drains the rollout through the convergence fence, not a bare apply', async () => {
+    const { service, repo, api } = build()
+    await service.configure(ORG, { enabled: true })
+    await service.issueCredential(ORG)
+    api.failApply = true
+    await expect(service.issueCredential(ORG)).rejects.toThrow('cluster unreachable')
+    api.failApply = false
+    api.applied.length = 0
+
+    // A settings write needs no credential claim, so it can land while the
+    // drain's apply is in flight — the interleaving that would otherwise revert
+    // the CR to the spec this pass captured and then close the only pending work.
+    api.duringApply = async () => {
+      await repo.upsert(ORG, {} as ClusterExecutionDefaults, { daemonImage: 'peer' })
+    }
+    expect(await service.drainCredentialRollouts()).toBe(1)
+    expect(api.applied.at(-1)?.daemon.image).toBe('peer')
+  })
+
   it('keeps owing the rollout while the cluster stays unreachable', async () => {
     const { service, api, keys } = build()
     await service.configure(ORG, { enabled: true })
