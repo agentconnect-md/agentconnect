@@ -760,7 +760,7 @@ export class HttpBotOrchestrator {
     // 1. conversation ownership (§10.1, the primary path): an observed conversation
     //    routes to one owner, respecting its trigger. Emit scoped rules first.
     const chans = await this.channels.listForBot(bot.id)
-    const conversationOwner = new Map<string, string>()
+    const conversationOwner = new Map<string, AgentId>()
     for (const c of chans) {
       if (c.agentId && !conversationOwner.has(c.channelId)) conversationOwner.set(c.channelId, c.agentId)
     }
@@ -772,6 +772,10 @@ export class HttpBotOrchestrator {
       return !!agent && isGatedAgent(agent)
     }
     const muted = new Set(offChannels.map((c) => c.channelId))
+    // An enabled conversation with an unplaced owner must not fall through to unscoped rungs.
+    for (const [channelId, ownerId] of conversationOwner) {
+      if (!byAgent.has(ownerId)) muted.add(channelId)
+    }
     const gatedOff = new Set([...muted].filter(ownerGated))
 
     for (const c of chans) {

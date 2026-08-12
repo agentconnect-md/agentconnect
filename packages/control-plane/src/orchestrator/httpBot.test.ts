@@ -676,6 +676,15 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       expect(assign.mutedChannels).toEqual(['C9'])
     })
 
+    it("mutes an enabled DM whose owner isn't placed before unscoped fallback", async () => {
+      channels = [channel({ integrationId: INT_A, channelId: 'D42', kind: 'im', agentId: ALICE, trigger: 'any' })]
+      unplacedAgents = new Set([ALICE])
+      await makeOrch().syncBot(BOT)
+      const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
+      expect(assign.routes.filter((r) => r.scope?.channel === 'D42')).toEqual([])
+      expect(assign.mutedChannels).toContain('D42')
+    })
+
     // The fence covers every Off channel: dropping the route is not enough, because
     // the keyword and defaultAgentId rungs are unscoped and would hand a bare @bot to
     // a mixed bot's public default in a channel the console shows as Off.

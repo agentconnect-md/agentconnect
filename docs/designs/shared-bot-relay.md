@@ -382,7 +382,9 @@ backfilling a missing row when a new install has not reported membership yet. A 
 or ownerless conversation uses the earliest active integration, and a Console owner
 change preserves the trigger. An in-Slack move or automatic fallback to a restricted
 agent stays Off. Shared DMs and group DMs therefore have one scoped route, not one
-route per installed agent or a per-agent slug fan-out.
+route per installed agent or a per-agent slug fan-out. If that owner is active but
+currently unplaced, CP emits no scoped route and adds the conversation to the relay
+mute fence so it cannot fall through to another agent's unscoped default.
 This also preserves state and repairs ownership when an integration is removed;
 `No default` is not an operator state.
 
