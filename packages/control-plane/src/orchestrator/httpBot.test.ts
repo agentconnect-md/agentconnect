@@ -677,12 +677,14 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
     })
 
     it("mutes an enabled DM whose owner isn't placed before unscoped fallback", async () => {
+      gatedAgents = new Set([ALICE])
       channels = [channel({ integrationId: INT_A, channelId: 'D42', kind: 'im', agentId: ALICE, trigger: 'any' })]
       unplacedAgents = new Set([ALICE])
       await makeOrch().syncBot(BOT)
       const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
       expect(assign.routes.filter((r) => r.scope?.channel === 'D42')).toEqual([])
       expect(assign.mutedChannels).toContain('D42')
+      expect(assign.gatedOffChannels).not.toContain('D42')
     })
 
     // The fence covers every Off channel: dropping the route is not enough, because
@@ -983,7 +985,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
 
     const slackMove = orch.setChannelAgent(BOT, 'C7', BOB)
     await reached
-    const consoleUpdate = orch.updateChannel(
+    const consoleUpdate = orch.updateConversation(
       BOT,
       'C7',
       { trigger: 'any' },

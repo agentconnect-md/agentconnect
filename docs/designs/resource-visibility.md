@@ -897,7 +897,9 @@ remains forbidden for gated agents.
     in a channel the console shows as Off.
     An enabled conversation whose canonical owner is active but unplaced is
     also muted until that owner has a daemon placement; it must not fall
-    through to another agent's unscoped default.
+    through to another agent's unscoped default. This availability fence is
+    not included in `gatedOffChannels`, because the conversation is On rather
+    than Off and must not receive the gated-owner notice.
 - Because the relay fence covers both, it also has to say which Off conversations
   still deserve the §14.3 notice. `gatedOffChannels` carries that subset — the
   muted conversations whose owner is gated, i.e. Off because nobody has enabled them

@@ -27,7 +27,7 @@ import { AgentId, BotId, IntegrationId, OrgId } from '../../domain/ids.js'
 import { denyViewerWrite, ctxOf, orgOf } from '../rbac.js'
 import { canView, canEdit } from '../../authorization/policy.js'
 import { integrationToSpec, isGatedAgent } from '../../orchestrator/placement.js'
-import { pickConversationOwner } from '../../orchestrator/httpBot.js'
+import { conversationOwnerRow, pickConversationOwner } from '../../orchestrator/httpBot.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
 import { installNewBot } from '../install-bot.js'
 import { BotExternalIdentityTaken } from '../../persistence/errors.js'
@@ -550,10 +550,7 @@ export function integrationRoutes(deps: HttpDeps) {
           for (const [channelId, channels] of byChannel) {
             const owner = pickConversationOwner(state.installs, channels)
             if (!owner) continue
-            const channel =
-              channels.find((row) => row.agentId === owner.agentId) ??
-              channels.find((row) => row.integrationId === owner.id) ??
-              channels[0]
+            const channel = conversationOwnerRow(owner, channels)
             if (channel) {
               const persistedOwner = channels.some((row) => row.agentId === owner.agentId)
               const ownerAgent = persistedOwner ? null : await deps.repos.agent.get(orgOf(req), owner.agentId)
@@ -845,7 +842,7 @@ export function integrationRoutes(deps: HttpDeps) {
           let updated: IntegrationChannelRecord | null = null
           let routesSynced = false
           if (botScopedConversation) {
-            updated = await deps.httpBot.updateChannel(
+            updated = await deps.httpBot.updateConversation(
               bot.id,
               req.params.channelId,
               {

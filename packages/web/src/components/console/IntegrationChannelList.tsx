@@ -440,7 +440,7 @@ function RowActions({
  * names the owner. The CP already resolves this bot-wide (GET /integrations
  * stamps the effective owner onto every install, from ALL installs including
  * ones the viewer can't see, and PATCH …/channels/:id routes ownership through
- * `httpBot.updateChannel`), so this is the client-side safety net for a row
+ * `httpBot.updateConversation`), so this is the client-side safety net for a row
  * whose owner the CP couldn't resolve — never the only thing keeping the two
  * pages agreeing. Mirrors `botChannels` in SettingsView.
  */
@@ -702,7 +702,7 @@ export function IntegrationChannelList({
                   ownership of a shared (http) conversation is bot-scoped server-side —
                   the route resolves the effective owner across every install,
                   fences on it (`expectedOwnerAgentId`) and hands the write to
-                  `httpBot.updateChannel`, so exactly one row stays canonical no
+                  `httpBot.updateConversation`, so exactly one row stays canonical no
                   matter which install the console patched. */}
               <DefaultAgentPicker
                 current={def}

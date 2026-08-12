@@ -68,10 +68,10 @@ interface Compiled {
   defaultDaemonId?: string
   /** Members whose ingress is conversation-gated (resource-visibility.md §14). */
   gatedAgentIds: string[]
-  /** Every Off channel — the relay's subtractive fence over the rungs no missing
+  /** Every Off conversation — the relay's subtractive fence over the rungs no missing
    *  route can suppress (keyword, `defaultAgentId`, thread continuity). */
   mutedChannels: string[]
-  /** The muted channels whose owner is GATED: Off because §14 has not enabled them,
+  /** The muted conversations whose owner is GATED: Off because §14 has not enabled them,
    *  so they keep the one-time notice. Every other muted channel is silent. */
   gatedOffChannels: string[]
   /** Every membership row of the bot, read once for the compile and reused by the
@@ -95,8 +95,19 @@ export function pickConversationOwner(
   return installs.find((integration) => assigned.has(integration.agentId)) ?? installs[0]
 }
 
+export function conversationOwnerRow(
+  owner: IntegrationRecord | undefined,
+  rows: IntegrationChannelRecord[]
+): IntegrationChannelRecord | undefined {
+  return owner
+    ? (rows.find((row) => row.agentId === owner.agentId) ??
+        rows.find((row) => row.integrationId === owner.id) ??
+        rows[0])
+    : undefined
+}
+
 export class HttpBotOrchestrator {
-  private readonly channelMutationChains = new Map<string, Promise<unknown>>()
+  private readonly conversationMutationChains = new Map<string, Promise<unknown>>()
 
   constructor(
     /** Every bot read here is `getUnscoped`: this is the orchestration trust
@@ -558,13 +569,13 @@ export class HttpBotOrchestrator {
    * agent becomes the sole owner, and the conversation trigger follows the conversation when
    * ownership changes instead of reverting to a stale per-install value.
    */
-  async updateChannel(
+  async updateConversation(
     botId: string,
     channelId: string,
     patch: { agentId?: string; trigger?: ChannelTrigger },
     options: { expectedOwnerAgentId?: string; source?: 'console' | 'slack' } = {}
   ): Promise<IntegrationChannelRecord | null> {
-    return this.serializeChannelMutation(botId, channelId, async () => {
+    return this.serializeConversationMutation(botId, channelId, async () => {
       const bot = await this.bots.getUnscoped(BotId(botId))
       if (bot?.transport !== 'http') {
         this.log.warn({ botId }, 'http-bot: update-channel for a non-http/unknown bot — ignored')
@@ -590,10 +601,7 @@ export class HttpBotOrchestrator {
         return null
       }
 
-      const currentRow = currentOwner
-        ? (rows.find((row) => row.agentId === currentOwner.agentId) ??
-          rows.find((row) => row.integrationId === currentOwner.id))
-        : undefined
+      const currentRow = conversationOwnerRow(currentOwner, rows)
       const targetAgent = options.source === 'slack' ? await this.agents.getUnscoped(owner.agentId) : null
       let updated = await this.persistConversationOwner(installs, channelId, owner, rows[0])
       const trigger =
@@ -610,7 +618,7 @@ export class HttpBotOrchestrator {
   /** The in-Slack config modal changes only the owner. A workspace user must
    * never enable a restricted agent, so that target always starts Off. */
   async setChannelAgent(botId: string, channelId: string, agentId: string): Promise<void> {
-    await this.updateChannel(botId, channelId, { agentId }, { source: 'slack' })
+    await this.updateConversation(botId, channelId, { agentId }, { source: 'slack' })
   }
 
   /** Preserve bot-scoped conversation state before an owner integration is deleted. */
@@ -626,17 +634,17 @@ export class HttpBotOrchestrator {
   /** Serialize the owner check and write per conversation. Console authorization
    * happens before this boundary and supplies the owner it authorized; a queued
    * Slack move therefore makes that Console mutation fail closed. */
-  private serializeChannelMutation<T>(botId: string, channelId: string, run: () => Promise<T>): Promise<T> {
+  private serializeConversationMutation<T>(botId: string, channelId: string, run: () => Promise<T>): Promise<T> {
     const key = `${botId}\u0000${channelId}`
-    const previous = this.channelMutationChains.get(key) ?? Promise.resolve()
+    const previous = this.conversationMutationChains.get(key) ?? Promise.resolve()
     const result = previous.then(run, run)
     const settled = result.then(
       () => undefined,
       () => undefined
     )
-    this.channelMutationChains.set(key, settled)
+    this.conversationMutationChains.set(key, settled)
     void settled.finally(() => {
-      if (this.channelMutationChains.get(key) === settled) this.channelMutationChains.delete(key)
+      if (this.conversationMutationChains.get(key) === settled) this.conversationMutationChains.delete(key)
     })
     return result
   }
@@ -705,10 +713,8 @@ export class HttpBotOrchestrator {
       const owner = pickConversationOwner(installs, conversationRows)
       if (!owner) continue
       const persistedOwner = conversationRows.some((row) => row.agentId === owner.agentId)
-      let trigger =
-        conversationRows.find((row) => row.agentId === owner.agentId)?.trigger ??
-        conversationRows.find((row) => row.integrationId === owner.id)?.trigger ??
-        conversationRows[0]?.trigger
+      const ownerRow = conversationOwnerRow(owner, conversationRows)
+      let trigger = ownerRow?.trigger
       if (!persistedOwner) {
         const ownerAgent = await this.agents.getUnscoped(owner.agentId)
         if (ownerAgent && isGatedAgent(ownerAgent)) trigger = 'off'
@@ -764,19 +770,21 @@ export class HttpBotOrchestrator {
     for (const c of chans) {
       if (c.agentId && !conversationOwner.has(c.channelId)) conversationOwner.set(c.channelId, c.agentId)
     }
-    // Off closes unscoped fallback rungs; gated ownership also enables the one-time notice.
-    const offChannels = chans.filter((c) => c.trigger === 'off')
-    const ownerGated = (channelId: string): boolean => {
-      const owner = conversationOwner.get(channelId)
-      const agent = owner ? agentById.get(owner) : undefined
-      return !!agent && isGatedAgent(agent)
-    }
-    const muted = new Set(offChannels.map((c) => c.channelId))
-    // An enabled conversation with an unplaced owner must not fall through to unscoped rungs.
+    // Off or unavailable ownership closes unscoped fallback rungs.
+    const offConversationIds = new Set(chans.filter((c) => c.trigger === 'off').map((c) => c.channelId))
+    const muted = new Set(offConversationIds)
     for (const [channelId, ownerId] of conversationOwner) {
       if (!byAgent.has(ownerId)) muted.add(channelId)
     }
-    const gatedOff = new Set([...muted].filter(ownerGated))
+    const gatedOff = new Set(
+      chans
+        .filter((c) => c.trigger === 'off')
+        .filter((c) => {
+          const agent = c.agentId ? agentById.get(c.agentId) : undefined
+          return !!agent && isGatedAgent(agent)
+        })
+        .map((c) => c.channelId)
+    )
 
     for (const c of chans) {
       if (!c.agentId) continue
