@@ -56,7 +56,8 @@ export function fakeSlackAppFactory(identity: FakeSlackIdentity = {}): SlackAppF
           members: async () => ({ members: [] }),
           leave: ok,
           list: async () => ({ channels: [] }),
-          replies: async () => ({ messages: [] })
+          replies: async () => ({ messages: [] }),
+          history: async () => ({ messages: [] })
         },
         users: {
           info: async () => ({}),

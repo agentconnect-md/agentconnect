@@ -1,7 +1,12 @@
 import type { Integration } from '../agents/agent-schema.js'
 import { obj, unionOf, type ToolDescriptor } from '../tool-schema/descriptor.js'
 import { SESSION_TITLE_TOOL_NAME } from './session-title-tool.js'
-import { allAttachmentReadTools, attachmentReadToolsFor } from '../platforms/read-ports.js'
+import {
+  allAttachmentReadTools,
+  allChannelHistoryPlatforms,
+  attachmentReadToolsFor,
+  channelHistoryPlatformsFor
+} from '../platforms/read-ports.js'
 import { EXTERNAL_MEMORY_TOOL_NAMES, MEMORY_TOOLS } from '../memory/tools.js'
 import { BROKER_PIPELINE_STATUSES } from '../gitlab/broker.js'
 
@@ -360,6 +365,7 @@ function buildReadTools(platforms: string[]): ToolDescriptor[] {
     type: 'string',
     description: 'Optional. Pick a specific bot when the agent has multiple integrations on the target platform.'
   }
+  const historyPlatforms = channelHistoryPlatformsFor(platforms)
   return [
     {
       name: 'getCurrentChannel',
@@ -378,6 +384,29 @@ function buildReadTools(platforms: string[]): ToolDescriptor[] {
         'has multiple bots on the platform (history is not attributable to one bot).',
       inputSchema: obj({ platform, integrationId })
     },
+    ...(historyPlatforms.length > 0
+      ? [
+          {
+            name: 'getChannelHistory',
+            description:
+              'Read one bounded page of messages from the channel bound to this conversation. This tool is ' +
+              'intentionally limited to the current context channel and accepts no channel, platform, or ' +
+              'integration selector. Results are newest-first; pass nextCursor as cursor to continue with older ' +
+              'messages. This returns channel messages, not replies inside a thread.',
+            inputSchema: obj({
+              cursor: { type: 'string', description: 'Cursor returned by the previous page.' },
+              limit: {
+                type: 'integer',
+                minimum: 1,
+                maximum: 200,
+                description: 'Number of messages to request, capped at 200 per page.'
+              },
+              oldest: { type: 'string', description: 'Inclusive oldest message timestamp bound.' },
+              latest: { type: 'string', description: 'Inclusive latest message timestamp bound.' }
+            })
+          }
+        ]
+      : []),
     {
       name: 'listKnownUsers',
       description:
@@ -860,7 +889,7 @@ export const ALL_TOOL_NAMES = [
       // are stable and belong in the permission auto-allow set.
       buildSendMessageTool([]),
       buildShareFileTool(),
-      ...buildReadTools([]),
+      ...buildReadTools(allChannelHistoryPlatforms()),
       // Every platform's credentialed attachment tool, whatever this agent has:
       // the auto-allow set is about NAMES, and a name a platform can inject must
       // be listed even for an agent that will never see it.

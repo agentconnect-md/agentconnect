@@ -916,6 +916,39 @@ describe('executeTool: read tools', () => {
     expect(res.members).toEqual([{ id: 'U1', name: 'alice', isBot: false }])
   })
 
+  it('reads one channel-history page and forwards Slack pagination arguments', async () => {
+    const getChannelHistory = vi.fn(async () => ({
+      messages: [{ sender: 'U1', ts: '100.5', text: 'hello', isBot: false }],
+      hasMore: true,
+      nextCursor: 'next-page'
+    }))
+    const gw = fakeGateway({ getChannelHistory })
+    const { deps: d } = deps(gw)
+
+    const res = (await executeTool(
+      ctx,
+      'getChannelHistory',
+      { cursor: 'previous-page', limit: 2, oldest: '100.0', latest: '100.5' },
+      d
+    )) as Record<string, unknown>
+
+    expect(getChannelHistory).toHaveBeenCalledWith('C_CURRENT', {
+      cursor: 'previous-page',
+      limit: 2,
+      oldest: '100.0',
+      latest: '100.5'
+    })
+    expect(res).toMatchObject({
+      platform: 'slack',
+      channel: 'C_CURRENT',
+      hasMore: true,
+      nextCursor: 'next-page'
+    })
+
+    await executeTool(ctx, 'getChannelHistory', { channel: 'C_OTHER' }, d)
+    expect(getChannelHistory).toHaveBeenLastCalledWith('C_CURRENT', {})
+  })
+
   it('routes a read to another connected platform via the `platform` arg', async () => {
     // Slack session; agent also has a Telegram bot. Ask for Telegram channels — the
     // read must resolve the Telegram gateway, not the current Slack one.

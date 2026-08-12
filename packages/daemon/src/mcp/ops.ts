@@ -68,6 +68,8 @@ import {
 } from './ops/code-host.js'
 import {
   getCurrentChannel,
+  getChannelHistory,
+  GET_CHANNEL_HISTORY_ARGS,
   getUserProfile,
   GET_USER_PROFILE_ARGS,
   listChannelMembers,
@@ -180,7 +182,8 @@ const HANDLERS: Map<string, ToolHandler<OpsDeps>> = new Map<string, ToolHandler<
   ['listKnownUsers', listKnownUsers],
   ['listChannels', listChannels],
   ['listChannelMembers', listChannelMembers],
-  ['getUserProfile', getUserProfile]
+  ['getUserProfile', getUserProfile],
+  ['getChannelHistory', getChannelHistory]
 ])
 
 /**
@@ -223,6 +226,7 @@ export const TOOL_ARG_SCHEMAS: Map<string, ZodType> = new Map<string, ZodType>([
   ['listChannels', LIST_CHANNELS_ARGS],
   ['listChannelMembers', LIST_CHANNEL_MEMBERS_ARGS],
   ['getUserProfile', GET_USER_PROFILE_ARGS],
+  ['getChannelHistory', GET_CHANNEL_HISTORY_ARGS],
   // The session's own conversation is read from trusted context alone — no arguments.
   ['getCurrentChannel', z.object({})],
   // One body serves every platform's credentialed attachment read, so one schema does too.

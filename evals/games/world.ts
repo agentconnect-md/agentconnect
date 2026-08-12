@@ -268,6 +268,14 @@ export class ArenaWorld implements VirtualConnectionWorldPort {
     return { id: user, name: user, isBot: false }
   }
 
+  channelHistory(channel: string): readonly VirtualThreadMessage[] {
+    const prefix = `${channel}\u001f`
+    return [...this.history.entries()]
+      .filter(([key]) => key.startsWith(prefix))
+      .flatMap(([, messages]) => messages)
+      .sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0))
+  }
+
   // ── world log + effect stream ─────────────────────────────────────────────
 
   drainOutboundEffects(): readonly RecordedOutboundEffect[] {

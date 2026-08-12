@@ -14,7 +14,12 @@
  * that authorizes — not merely records — every attempted effect.
  */
 import type { SendIdentity } from '../mcp/ops.js'
-import type { PlatformConnection } from '../platforms/contract.js'
+import type {
+  PlatformChannelHistoryMessage,
+  PlatformChannelHistoryOptions,
+  PlatformChannelHistoryPage,
+  PlatformConnection
+} from '../platforms/contract.js'
 
 /** Slack post options subset the virtual transport interprets. Structurally
  *  compatible with the real connection's `SlackPostOptions`: `chrome` marks
@@ -127,6 +132,8 @@ export interface VirtualConnectionWorldPort {
   members(channel: string): readonly VirtualMember[]
   channels(integrationId: string): readonly VirtualChannelInfo[]
   profile(user: string): VirtualProfile | undefined
+  /** Provider channel history; absent ⇒ the virtual world has no history source. */
+  channelHistory?(channel: string): readonly VirtualThreadMessage[]
   /** Provider thread history in ts order, optionally windowed — backs
    *  `getThreadReplies`. Absent ⇒ the connection reports no history adapter and
    *  the daemon degrades to observed-only rows, exactly as on a platform
@@ -356,6 +363,36 @@ export class VirtualSlackConnection implements PlatformConnection {
       chrome: message.chrome ?? false,
       attachments: [] as never[]
     }))
+  }
+
+  /** Provider channel history with the same bounded, cursor-paginated shape as Slack. */
+  async getChannelHistory(
+    channel: string,
+    options: PlatformChannelHistoryOptions = {}
+  ): Promise<PlatformChannelHistoryPage> {
+    const limit = Math.min(Math.max(options.limit ?? 100, 1), 200)
+    const offset = Math.max(Number.parseInt(options.cursor ?? '0', 10) || 0, 0)
+    const oldest = options.oldest || undefined
+    const latest = options.latest || undefined
+    const messages = [...(this.world.channelHistory?.(channel) ?? [])]
+      .filter(
+        (message) => (oldest === undefined || message.ts >= oldest) && (latest === undefined || message.ts <= latest)
+      )
+      .sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0))
+    const page = messages.slice(offset, offset + limit)
+    const nextOffset = offset + page.length
+    const nextCursor = nextOffset < messages.length ? String(nextOffset) : undefined
+    const result: PlatformChannelHistoryMessage[] = page.map((message) => ({
+      sender: message.sender,
+      ts: message.ts,
+      text: message.text,
+      isBot: message.isBot
+    }))
+    return {
+      messages: result,
+      hasMore: nextCursor !== undefined,
+      ...(nextCursor !== undefined ? { nextCursor } : {})
+    }
   }
 
   /** Ephemeral presence (assistant status) — not a message; not recorded. */

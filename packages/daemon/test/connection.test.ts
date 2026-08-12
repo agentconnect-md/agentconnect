@@ -437,6 +437,72 @@ describe('SlackConnection.getThreadReplies', () => {
   })
 })
 
+describe('SlackConnection.getChannelHistory', () => {
+  it('forwards the official cursor and time bounds and returns one page', async () => {
+    const history = vi.fn(async () => ({
+      messages: [
+        { ts: '100.5', user: 'U1', text: 'latest', thread_ts: '100.1', reply_count: 2 },
+        { ts: '100.4', bot_id: 'B1', text: 'bot message' }
+      ],
+      has_more: true,
+      response_metadata: { next_cursor: 'next-page' }
+    }))
+    const conn = new SlackConnection(
+      deps() as any,
+      () =>
+        ({
+          message() {},
+          event() {},
+          action() {},
+          shortcut() {},
+          client: { auth: { test: async () => ({ user_id: 'UBOT' }) }, conversations: { history } },
+          start: async () => {},
+          stop: async () => {}
+        }) as any
+    )
+
+    await expect(
+      conn.getChannelHistory('C1', { cursor: 'previous-page', limit: 2, oldest: '100.0', latest: '100.5' })
+    ).resolves.toEqual({
+      messages: [
+        { sender: 'U1', ts: '100.5', text: 'latest', isBot: false, threadTs: '100.1', replyCount: 2 },
+        { sender: 'B1', ts: '100.4', text: 'bot message', isBot: true }
+      ],
+      hasMore: true,
+      nextCursor: 'next-page'
+    })
+    expect(history).toHaveBeenCalledWith({
+      channel: 'C1',
+      cursor: 'previous-page',
+      limit: 2,
+      oldest: '100.0',
+      latest: '100.5',
+      inclusive: true
+    })
+  })
+
+  it('surfaces a bounded Slack API error code to the caller', async () => {
+    const history = vi.fn(async () => {
+      throw { data: { error: 'missing_scope' } }
+    })
+    const conn = new SlackConnection(
+      deps() as any,
+      () =>
+        ({
+          message() {},
+          event() {},
+          action() {},
+          shortcut() {},
+          client: { auth: { test: async () => ({ user_id: 'UBOT' }) }, conversations: { history } },
+          start: async () => {},
+          stop: async () => {}
+        }) as any
+    )
+
+    await expect(conn.getChannelHistory('C1')).rejects.toThrow('Slack channel history failed: missing_scope')
+  })
+})
+
 describe('SlackConnection membership events', () => {
   const fakeAppWithEvents = (
     handlers: Map<string, (a: { event: unknown }) => unknown>,
