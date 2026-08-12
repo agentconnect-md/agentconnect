@@ -745,7 +745,11 @@ async function addSessionWorktree(agent: Agent, cwd: string, target: string, ini
       .catch(() => false)
     if (!taken) break
   }
-  await git().raw(['worktree', 'add', '-b', branch, cwd, target])
+  // --no-track: the start point is a remote-tracking ref, so git's own `branch.autoSetupMerge`
+  // would otherwise make `origin/<base>` this branch's upstream. That upstream is what the console's
+  // push authorizes against — it would turn the push button into a remote-branch creator — and it
+  // leaves a plain `git push` failing under push.default=simple on the name mismatch.
+  await git().raw(['worktree', 'add', '-b', branch, '--no-track', cwd, target])
 }
 
 /** Prepare the stable cwd for one logical session. Ordinary worktrees preserve

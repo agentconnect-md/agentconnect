@@ -58,6 +58,47 @@ describe('sessionBranchName', () => {
   })
 })
 
+describe('the worktree branch git actually creates', () => {
+  /** A clone with an `origin/main` to start a worktree from, as an agent workspace has. */
+  function clone() {
+    const root = mkdtempSync(join(tmpdir(), 'ac-branch-repo-'))
+    const origin = join(root, 'origin')
+    const dir = join(root, 'clone')
+    execFileSync('git', ['init', '-q', '--bare', origin])
+    execFileSync('git', ['clone', '-q', origin, dir], { stdio: 'ignore' })
+    execFileSync('git', ['commit', '-q', '--allow-empty', '-m', 'init'], { cwd: dir })
+    execFileSync('git', ['push', '-q', 'origin', 'HEAD:main'], { cwd: dir })
+    execFileSync('git', ['fetch', '-q', 'origin'], { cwd: dir })
+    return { root, dir }
+  }
+  const upstreamOf = (cwd: string) => {
+    try {
+      return execFileSync('git', ['rev-parse', '--abbrev-ref', '@{u}'], { cwd, stdio: ['ignore', 'pipe', 'ignore'] })
+        .toString()
+        .trim()
+    } catch {
+      return null
+    }
+  }
+
+  it('starts with NO upstream — git would otherwise adopt the remote-tracking start point', () => {
+    const { root, dir } = clone()
+    const branch = sessionBranchName('yulong')
+    const wt = join(root, 'wt')
+
+    // The exact command shape workspace-manager issues.
+    execFileSync('git', ['worktree', 'add', '-b', branch, '--no-track', wt, 'refs/remotes/origin/main'], {
+      cwd: dir,
+      stdio: 'ignore'
+    })
+
+    expect(execFileSync('git', ['symbolic-ref', '--short', 'HEAD'], { cwd: wt }).toString().trim()).toBe(branch)
+    // With `branch.autoSetupMerge` at its default this would be `origin/main`, which the console's
+    // push authorizes against and a plain `push.default=simple` push then refuses by name mismatch.
+    expect(upstreamOf(wt)).toBeNull()
+  })
+})
+
 describe('isSessionBranch (the retention GC delete guard)', () => {
   it('accepts a generated session branch', () => {
     expect(isSessionBranch(sessionBranchName('yulong'))).toBe(true)

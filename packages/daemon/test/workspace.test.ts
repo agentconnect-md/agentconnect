@@ -301,7 +301,7 @@ describe('prepareSessionWorkspace', () => {
       }
       if (args[0] === 'show-ref') throw new Error('no such ref')
       if (args[0] === 'worktree' && args[1] === 'add') {
-        mkdirSync(join(args[4]!, '.git'), { recursive: true })
+        mkdirSync(join(args.at(-2)!, '.git'), { recursive: true })
       }
       return ''
     })
@@ -320,8 +320,10 @@ describe('prepareSessionWorkspace', () => {
       .find((args) => args[0] === 'worktree' && args[1] === 'add')
     expect(addCall?.slice(0, 3)).toEqual(['worktree', 'add', '-b'])
     expect(addCall?.[3]).toMatch(/^dev\/[^/]+\/[a-z]+-[a-z]+$/)
-    expect(realpathSync(addCall![4]!)).toBe(cwd)
-    expect(addCall?.[5]).toBe(head)
+    // --no-track, or git makes the remote-tracking start point this branch's upstream.
+    expect(addCall?.[4]).toBe('--no-track')
+    expect(realpathSync(addCall!.at(-2)!)).toBe(cwd)
+    expect(addCall?.at(-1)).toBe(head)
     expect(
       rawMock.mock.calls.some(
         ([args, baseDir]) =>
@@ -383,8 +385,8 @@ describe('prepareSessionWorkspace', () => {
       if (args[0] === 'remote' && args[1] === 'get-url') return 'https://github.com/acme/repo.git\n'
       if (args[0] === 'show-ref') throw new Error('no such ref')
       if (args[0] === 'worktree' && args[1] === 'add') {
-        mkdirSync(join(args[4]!, '.git'), { recursive: true })
-        mkdirSync(join(args[4]!, 'agents', 'node-operator'), { recursive: true })
+        mkdirSync(join(args.at(-2)!, '.git'), { recursive: true })
+        mkdirSync(join(args.at(-2)!, 'agents', 'node-operator'), { recursive: true })
       }
       return args[0] === 'rev-parse' ? `${'c'.repeat(40)}\n` : ''
     })
@@ -418,7 +420,7 @@ describe('prepareSessionWorkspace', () => {
         if (!taken.includes(args.at(-1)!.replace('refs/heads/', ''))) throw new Error('no such ref')
         return ''
       }
-      if (args[0] === 'worktree' && args[1] === 'add') mkdirSync(join(args[4]!, '.git'), { recursive: true })
+      if (args[0] === 'worktree' && args[1] === 'add') mkdirSync(join(args.at(-2)!, '.git'), { recursive: true })
       return args[0] === 'rev-parse' ? `${'c'.repeat(40)}\n` : ''
     })
     const addCall = () =>
@@ -440,7 +442,7 @@ describe('prepareSessionWorkspace', () => {
     const { agent, addCall } = branchFixture()
     rawMock.mockImplementation(async (args: string[]) => {
       if (args[0] === 'remote' && args[1] === 'get-url') return 'https://github.com/acme/repo.git\n'
-      if (args[0] === 'worktree' && args[1] === 'add') mkdirSync(join(args[4]!, '.git'), { recursive: true })
+      if (args[0] === 'worktree' && args[1] === 'add') mkdirSync(join(args.at(-2)!, '.git'), { recursive: true })
       return args[0] === 'rev-parse' ? `${'c'.repeat(40)}\n` : ''
     })
 
