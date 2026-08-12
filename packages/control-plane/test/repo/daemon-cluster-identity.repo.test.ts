@@ -54,6 +54,46 @@ describe('DaemonRepo.resolveClusterIdentity', () => {
     expect(await prisma.daemon.count({ where: { clusterIdentity: IDENTITY } })).toBe(1)
   })
 
+  it('adopts the record the key path already pinned, instead of stranding it', async () => {
+    const repo = new PgDaemonRepo(prisma)
+    // An envelope provisioned before the token path: its daemon record exists and carries
+    // the placements and history the key-backed connection built up.
+    const keyBacked = DaemonId('55555555-5555-4555-8555-555555555555')
+    await repo.provision(keyBacked, DEF_ORG)
+    await repo.upsertOnAuth({ daemonId: keyBacked, orgId: DEF_ORG, agentVersion: '1.0.0' })
+
+    const bound = await repo.resolveClusterIdentity(DEF_ORG, IDENTITY, { adoptDaemonId: keyBacked })
+
+    expect(bound?.id).toBe(keyBacked)
+    expect(bound?.sessionEpoch).toBe(1n)
+    expect(await prisma.daemon.count({ where: { orgId: DEFAULT_ORG_ID } })).toBe(1)
+  })
+
+  it('ignores an adoption candidate that already carries another identity', async () => {
+    const repo = new PgDaemonRepo(prisma)
+    const taken = await repo.resolveClusterIdentity(DEF_ORG, 'system:serviceaccount:ac-org-other:ac-daemon')
+
+    const bound = await repo.resolveClusterIdentity(DEF_ORG, IDENTITY, { adoptDaemonId: taken!.id })
+
+    expect(bound).not.toBeNull()
+    expect(bound!.id).not.toBe(taken!.id)
+    expect(await prisma.daemon.findUnique({ where: { id: taken!.id } })).toMatchObject({
+      clusterIdentity: 'system:serviceaccount:ac-org-other:ac-daemon'
+    })
+  })
+
+  it('ignores an adoption candidate belonging to another org', async () => {
+    const repo = new PgDaemonRepo(prisma)
+    const other = await prisma.org.create({ data: { slug: 'adoption-other-org' } })
+    const theirs = DaemonId('66666666-6666-4666-8666-666666666666')
+    await repo.provision(theirs, OrgId(other.id))
+
+    const bound = await repo.resolveClusterIdentity(DEF_ORG, IDENTITY, { adoptDaemonId: theirs })
+
+    expect(bound!.id).not.toBe(theirs)
+    expect(await prisma.daemon.findUnique({ where: { id: theirs } })).toMatchObject({ clusterIdentity: null })
+  })
+
   it('gives distinct identities distinct records within one org', async () => {
     const repo = new PgDaemonRepo(prisma)
 

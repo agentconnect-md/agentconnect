@@ -47,13 +47,16 @@ function orgApi(publishedNamespace: string | undefined): OrgResourceApi {
   }
 }
 
-/** Records the identity it was asked to bind, so the binding argument itself is assertable. */
+/** Records what it was asked to bind, so the binding arguments themselves are assertable. */
 function daemons(record: Partial<DaemonRecord> | null = { id: DaemonId(DAEMON_ID) }) {
   const seen: string[] = []
+  const adopt: (string | undefined)[] = []
   return {
     seen,
-    resolveClusterIdentity: async (_orgId: OrgId, identity: string) => {
+    adopt,
+    resolveClusterIdentity: async (_orgId: OrgId, identity: string, opts?: { adoptDaemonId?: string }) => {
       seen.push(identity)
+      adopt.push(opts?.adoptDaemonId)
       return record as DaemonRecord | null
     }
   }
@@ -112,6 +115,19 @@ describe('ClusterDaemonIdentityService', () => {
     expect(await svc.verify('token')).toEqual({ daemonId: DAEMON_ID, orgId: ORG_ID })
     // The binding key is exactly the subject the API server reported.
     expect(store.seen).toEqual([`system:serviceaccount:${NAMESPACE}:${ENVELOPE_DAEMON_SA_NAME}`])
+    expect(store.adopt).toEqual([undefined])
+  })
+
+  it('offers the key path’s pinned daemon for adoption, so an existing envelope keeps it', async () => {
+    const { svc, store } = await service({
+      review: reviewed({
+        audiences: [CP_TOKEN_AUDIENCE],
+        username: clusterIdentityOf(NAMESPACE, ENVELOPE_DAEMON_SA_NAME)
+      }),
+      settings: { ...SETTINGS, credentialDaemonId: DAEMON_ID }
+    })
+    await svc.verify('token')
+    expect(store.adopt).toEqual([DAEMON_ID])
   })
 
   it('sends the control-plane audience on the TokenReview', async () => {

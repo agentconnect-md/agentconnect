@@ -376,8 +376,10 @@ export class CpClient {
       ...(this.deps.onBootstrapUpgrade ? { bootstrapProtocolVersion: DAEMON_BOOTSTRAP_PROTOCOL_VERSION } : {})
     }
     // Send daemonId only if configured; otherwise the CP derives it from the
-    // token's `sub` and returns it in auth/ok (token-only onboarding).
-    if (this.deps.daemonId) {
+    // token's `sub` and returns it in auth/ok (token-only onboarding). Never echoed on the
+    // identity-token path: the CP re-derives the daemon from the token each connect, so an
+    // id adopted from an earlier auth/ok could only contradict it — and a mismatch is fatal.
+    if (this.deps.daemonId && !identityToken) {
       authPayload.daemonId = this.deps.daemonId
     }
     if (this.lastAuthedEpoch > 0) {

@@ -96,6 +96,16 @@ describe('CpClient auth credential', () => {
     expect(t.lastSent().payload.serviceAccountToken).toBeUndefined()
   })
 
+  it('never echoes a daemonId on the identity path, where the CP re-derives it', async () => {
+    const t = new FakeTransport()
+    const client = new CpClient(
+      makeDeps(t, { daemonId: '22222222-2222-4222-8222-222222222222', clusterIdentityToken: () => 'projected-token' })
+    )
+    client.start()
+    await tick()
+    expect(t.lastSent().payload.daemonId).toBeUndefined()
+  })
+
   it('re-reads the token per connect, so an hourly rotation is picked up', async () => {
     const reads: string[] = []
     let current = 'token-1'
