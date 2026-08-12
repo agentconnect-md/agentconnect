@@ -2264,6 +2264,8 @@ describe('githubRuleVerdict (pure predicate)', () => {
     ['pull_request', 'pull_request:deleted'],
     ['pull_request', 'pull_request:edited'],
     ['pull_request', 'pull_request:reopened'],
+    ['pull_request', 'pull_request:ready_for_review'],
+    ['pull_request', 'pull_request:converted_to_draft'],
     ['issue_comment', 'issue_comment:deleted'],
     ['pull_request_review_comment', 'pull_request_review_comment:deleted']
   ])('hard-vetoes silent %s action even for an explicit legacy subscription', (event, eventAction) => {
@@ -2276,20 +2278,6 @@ describe('githubRuleVerdict (pure predicate)', () => {
     expect(githubRuleVerdict(r, { ...pr, eventAction: 'pull_request:synchronize' })).toBe('needs-authz')
     expect(matches(r, { ...pr, eventAction: 'pull_request:edited' })).toBe(false)
   })
-
-  it.each(['ready_for_review', 'converted_to_draft'] as const)(
-    'keeps legacy created PR hooks notified on %s',
-    (action) => {
-      const r = rule({}, { events: ['pull_request:opened'] })
-      expect(
-        githubRuleVerdict(r, {
-          ...ctx,
-          event: 'pull_request',
-          eventAction: `pull_request:${action}`
-        })
-      ).toBe('needs-authz')
-    }
-  )
 
   it('applies comment subject scope only when commentFamilies is non-empty', () => {
     const commentCtx = {

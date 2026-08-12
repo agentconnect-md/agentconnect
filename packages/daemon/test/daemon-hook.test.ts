@@ -2488,7 +2488,7 @@ describe('buildHookMessage', () => {
       expect(buildHookText(ghFire())).not.toContain('gh issue view')
     })
 
-    it('tells the agent when a PR is draft and keeps draft conversion status-only', () => {
+    it('reviews draft PRs and keeps draft/ready transitions status-only', () => {
       const github = {
         repoId: '123',
         repoFullName: 'acme/infra',
@@ -2507,9 +2507,10 @@ describe('buildHookMessage', () => {
         )
       )
       expect(draftText).toContain('Draft: true')
-      expect(draftText).toContain('currently a draft')
-      expect(draftText).toContain('If this delivery has no code changes to assess')
-      expect(draftText).toContain('Do not call `submitGithubReview`')
+      expect(draftText).toContain('opens a review generation for the current PR revision')
+      expect(draftText).toContain('use APPROVE + pass when it passes')
+      expect(draftText).toContain('submitGithubReview')
+      expect(draftText).not.toContain('cannot accept a formal review')
 
       const convertedText = buildHookText(
         ghFire(
@@ -2517,8 +2518,6 @@ describe('buildHookMessage', () => {
           { reviewPolicy: 'full', github }
         )
       )
-      expect(convertedText).toContain('draft-status notification, not a code revision')
-      expect(convertedText).toContain('reply only that the pull request is still a draft')
       expect(convertedText).not.toContain('opens a review generation for the current PR revision')
 
       const readyText = buildHookText(
@@ -2527,8 +2526,7 @@ describe('buildHookMessage', () => {
           { reviewPolicy: 'full', github: { ...github, isDraft: false } }
         )
       )
-      expect(readyText).toContain('opens a review generation for the current PR revision')
-      expect(readyText).toContain('use APPROVE + pass when it passes')
+      expect(readyText).not.toContain('opens a review generation for the current PR revision')
     })
 
     it('no excerpt ⇒ header only, no fence at all', () => {

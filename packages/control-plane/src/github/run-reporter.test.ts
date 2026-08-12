@@ -1056,6 +1056,8 @@ describe('GithubRunReporter', () => {
     // button alone. The write marker stays last for recovery matching.
     expect(body.output.summary).toContain('How to start this review')
     expect(body.output.summary).toContain('**Request review** button')
+    expect(body.output.summary).toContain('Approve and run workflows')
+    expect(body.output.summary).toContain('does not start this AgentConnect review')
     expect(body.output.summary).not.toContain('comment `@')
     expect(body.output.summary.trimEnd().endsWith('-->')).toBe(true)
     expect(JSON.stringify(body)).not.toContain(HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED)

@@ -347,12 +347,7 @@ const DURABLE_GITHUB_REDELIVERY_EVENTS = new Set([
   'pull_request_review_comment',
   'push'
 ])
-const REVIEW_REQUEST_REQUIRED_EVENTS = new Set([
-  'pull_request:opened',
-  'pull_request:synchronize',
-  'pull_request:ready_for_review',
-  'pull_request:converted_to_draft'
-])
+const REVIEW_REQUEST_REQUIRED_EVENTS = new Set(['pull_request:opened', 'pull_request:synchronize'])
 
 /** Only ordinary GitHub webhook families can be reconstructed from the App's
  * delivery list. Generic webhooks and Check rererequests use the Relay's short

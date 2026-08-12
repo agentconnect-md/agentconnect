@@ -6,9 +6,7 @@ import type { GithubCommentFamily } from './api'
  * commits) plus a per-repo TRIGGER MODE ("when"); the stored `HookDef.events`
  * patterns plus the `mentionOnly` flag encode both:
  *
- *   created  → `family:opened` for the regular cadence; PRs also listen for
- *              draft/ready transitions so a draft can be approved after it
- *              becomes ready; the relay additionally accepts a later explicit
+ *   created  → `family:opened` for the regular cadence; the relay additionally accepts a later explicit
  *              @mention in the selected thread family (commits have no "first"
  *              — a push subscription is inherently per-push, so `push:*` rides
  *              along unchanged)
@@ -41,7 +39,7 @@ export const GH_FAMILIES: { fam: GhFamily; pill: string; icon: string; label: st
     pill: 'PRs',
     icon: 'git-pull-request',
     label: 'Pull requests',
-    desc: 'opened, draft/ready, commits, replies'
+    desc: 'opened, new commits, replies'
   },
   {
     fam: 'issues',
@@ -72,7 +70,7 @@ export const GH_TRIGGER_PILL: Record<GhTriggerMode, string> = {
 export function githubTriggerTooltip(mode: GhTriggerMode, agentName: string): string {
   switch (mode) {
     case 'first':
-      return `Runs when an issue opens or a PR opens, becomes ready, or returns to draft, plus later @${agentName} mentions.`
+      return `Runs when an issue or PR opens, plus later @${agentName} mentions.`
     case 'every':
       return 'Runs when an issue or PR is opened and on supported updates and replies (close, reopen and edits are ignored).'
     case 'mention':
@@ -96,12 +94,6 @@ export const GH_DEFAULT_TRIGGER_MODE: GhTriggerMode = 'every'
 /** The comment subscription that rides updated/mention-only modes for thread families. */
 export const THREAD_COMMENT_EVENT = 'issue_comment:created'
 
-const PULL_REQUEST_CREATED_EVENTS = [
-  'pull_request:opened',
-  'pull_request:ready_for_review',
-  'pull_request:converted_to_draft'
-] as const
-
 /** Derive the explicit comment scope from the selected issue/PR families. */
 export function commentFamiliesForFamilies(fams: Iterable<GhFamily>): GithubCommentFamily[] {
   return [...fams].filter((fam): fam is GithubCommentFamily => fam === 'issues' || fam === 'pull_request')
@@ -112,7 +104,7 @@ export function eventsForFamilies(fams: Iterable<GhFamily>, mode: GhTriggerMode)
   const families = [...fams]
   const familyEvents = families.flatMap((fam) => {
     if (mode !== 'first' || fam === 'push') return [`${fam}:*`]
-    return fam === 'pull_request' ? [...PULL_REQUEST_CREATED_EVENTS] : [`${fam}:opened`]
+    return [`${fam}:opened`]
   })
   const listensForThreadReplies = mode !== 'first' && commentFamiliesForFamilies(families).length > 0
   return listensForThreadReplies ? [...familyEvents, THREAD_COMMENT_EVENT] : familyEvents

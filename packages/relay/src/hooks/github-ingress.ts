@@ -158,14 +158,7 @@ export interface GithubMatchCtx {
   commentSubjectFamily: 'issues' | 'pull_request' | undefined
 }
 
-const EXTERNAL_PR_REVISION_EVENTS = new Set([
-  'pull_request:opened',
-  'pull_request:synchronize',
-  'pull_request:ready_for_review',
-  'pull_request:converted_to_draft'
-])
-
-const LEGACY_CREATED_PR_LIFECYCLE_EVENTS = new Set(['pull_request:ready_for_review', 'pull_request:converted_to_draft'])
+const EXTERNAL_PR_REVISION_EVENTS = new Set(['pull_request:opened', 'pull_request:synchronize'])
 
 /** Lifecycle deliveries that close a GitHub thread's daemon-owned workspace.
  * PR `closed` is cleanup only when GitHub also proves it was merged; an
@@ -253,7 +246,9 @@ export function githubRuleVerdict(rule: RcHookAssign, ctx: GithubMatchCtx): Gith
     (ctx.event === 'pull_request' &&
       (ctx.eventAction === 'pull_request:closed' ||
         ctx.eventAction === 'pull_request:reopened' ||
-        ctx.eventAction === 'pull_request:edited'))
+        ctx.eventAction === 'pull_request:edited' ||
+        ctx.eventAction === 'pull_request:ready_for_review' ||
+        ctx.eventAction === 'pull_request:converted_to_draft'))
   )
     return 'no-match'
   // Decision 10: any [bot] sender is vetoed unconditionally — kills the agent's
@@ -279,11 +274,6 @@ export function githubRuleVerdict(rule: RcHookAssign, ctx: GithubMatchCtx): Gith
   const matchesPattern = (event: string): boolean =>
     (action !== '' && rule.github!.events.includes(`${event}${action}`)) || rule.github!.events.includes(`${event}:*`)
   const nativeEventMatched = matchesPattern(ctx.event)
-  // Existing console "created" hooks only stored pull_request:opened; keep them in sync with draft/ready lifecycle without a save.
-  const legacyCreatedPrLifecycleMatched =
-    ctx.event === 'pull_request' &&
-    LEGACY_CREATED_PR_LIFECYCLE_EVENTS.has(ctx.eventAction) &&
-    rule.github.events.includes('pull_request:opened')
   // Diff-line review comments may ride the shared issue_comment subscription;
   // an explicit review-comment API subscription remains authoritative.
   const sharedCommentAliasMatched = ctx.event === 'pull_request_review_comment' && matchesPattern('issue_comment')
@@ -302,8 +292,7 @@ export function githubRuleVerdict(rule: RcHookAssign, ctx: GithubMatchCtx): Gith
     summoned &&
     createdCadenceSummonFamily !== undefined &&
     rule.github.events.includes(`${createdCadenceSummonFamily}:opened`)
-  const eventMatched =
-    nativeEventMatched || legacyCreatedPrLifecycleMatched || sharedCommentAliasMatched || createdCadenceSummonMatched
+  const eventMatched = nativeEventMatched || sharedCommentAliasMatched || createdCadenceSummonMatched
   if (!eventMatched) return 'no-match'
   // `issue_comment` is one repo-wide GitHub event for BOTH issue and PR
   // conversations. A new CP explicitly supplies the console-selected thread

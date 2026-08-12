@@ -775,12 +775,11 @@ Automatic PR revision reviews are latest-wins while active or queued. When a new
 request is durably admitted, the daemon cancels the older active review, suppresses all of
 its remaining output, and removes intermediate queued heads. Relay ingest time determines
 recency even if asynchronous authorization reorders delivery; the delivery key breaks
-same-timestamp ties deterministically. A `pull_request:ready_for_review` delivery starts a
-fresh formal review even when the head SHA is unchanged, so a draft can be approved after
-the draft-only notification. A `pull_request:converted_to_draft` delivery is status-only:
-the agent is notified, but no formal review authority is opened. Explicit comments, review
-requests, and Check reruns remain ordered work and are never discarded by revision
-supersession.
+same-timestamp ties deterministically. Draft state does not change review eligibility: an
+open draft PR follows the same formal review path as a ready PR, including approval when
+the current revision passes. Transitions between draft and ready are status-only and do
+not start another review generation. Explicit comments, review requests, and Check reruns
+remain ordered work and are never discarded by revision supersession.
 The trusted pull-request lane spans per-delivery anchor session keys but remains isolated by
 the configured output platform, channel, and integration.
 
