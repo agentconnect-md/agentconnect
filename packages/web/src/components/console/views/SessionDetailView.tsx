@@ -2004,7 +2004,12 @@ export default function SessionDetailView() {
     setViewerDiffTick((tick) => tick + 1)
     setFilesRefreshTick((tick) => tick + 1)
   }, [])
-  const [gitVerdict, setGitVerdict] = useState<GitPanelVerdict>({ settled: false, changed: null })
+  const [gitVerdict, setGitVerdict] = useState<GitPanelVerdict>({
+    settled: false,
+    changed: null,
+    branch: null,
+    tracking: null
+  })
   // The Tasks tab's own `refresh-cw` and verdict. Its settle state feeds the tab status, its running count the badge.
   const [tasksRefreshTick, setTasksRefreshTick] = useState(0)
   const [tasksVerdict, setTasksVerdict] = useState<TasksPanelVerdict>({ settled: false, running: null })
@@ -2052,8 +2057,8 @@ export default function SessionDetailView() {
           : tab.key === 'tasks'
             ? // Dropped on the same terms and for the same reason, but against its OWN scope: no agent to ask, or no canonical session for the lease to be keyed by.
               filesAgentId !== null && tasksSessionId !== null && !MOCK_MODE
-            : // PR is a tab only while the session HAS a pull request: the probe's 404 means "no linked run", and that never changes later — the run is what created the session — so the strip changes shape rather than carrying a dead tab (§9 M5).
-              tab.key !== 'pr' || (prSessionId !== null && prVerdict.answer !== 'none')
+            : // PR keeps its tab without one: a 404 only means no pull-request run owns this session, and the panel then draws that branch's state and the action that opens one. Dropped only where a pull request is not a thing this session could have — no probe-able id, or a workspace that is not a checkout (`changed !== null` is exactly "the settled git read found one").
+              tab.key !== 'pr' || (prSessionId !== null && (prVerdict.answer !== 'none' || gitVerdict.changed !== null))
       ).map((tab) =>
         tab.key === 'sessions'
           ? { ...tab, status: sessionsStatus }
@@ -4720,8 +4725,11 @@ export default function SessionDetailView() {
               active={dockTabKey === 'pr'}
               {...(session?.status ? { sessionStatus: session.status } : {})}
               turnActive={sessionBusy}
-              // Auto-fix rides the LIVE composer path (§5.2) behind the composer's OWN availability fence: a hook session has no composer, and a persisted webchat under `resumeDisabled` (agent moved, resume check pending) deliberately renders the composer inert — this callback must not exist as a way around that.
-              {...(isLive && !resumeDisabled ? { onAutoFix: (text: string) => onPgSend(text) } : {})}
+              // The branch facts the no-PR state describes, from the Git tab's own read — the dock holds them already, so the PR panel spends no second round trip on them.
+              branch={gitVerdict.branch}
+              tracking={gitVerdict.tracking}
+              // Both write actions ride the LIVE composer path (§5.2) behind the composer's OWN availability fence: a hook session has no composer, and a persisted webchat under `resumeDisabled` (agent moved, resume check pending) deliberately renders the composer inert — this callback must not exist as a way around that.
+              {...(isLive && !resumeDisabled ? { onPostTurn: (text: string) => onPgSend(text) } : {})}
               onVerdictChange={setPrVerdict}
             />
           ) : null}

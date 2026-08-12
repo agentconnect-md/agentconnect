@@ -3005,12 +3005,15 @@ export interface WorkspaceGitLogCommitDto {
 
 // The newest commits of the workspace checkout, newest first. An empty repo is data
 // (`commits: []`); `tracking:null` means the branch tracks nothing, so every `pushed`
-// reads false and the console must not draw unpushed markers from it.
+// reads false and the console must not draw unpushed markers from it. `base` names the
+// ref the listing EXCLUDES — a session branch lists `<base>..HEAD`, its own work — and is
+// null when the checkout sits on that base branch, where the list is its full history.
 export interface WorkspaceGitLogDto {
   isRepo: boolean
   commits: WorkspaceGitLogCommitDto[]
-  truncated: boolean // true ⇒ the branch has more commits than the requested limit
+  truncated: boolean // true ⇒ this range has more commits than the requested limit
   tracking: string | null
+  base: string | null
 }
 
 // One path's unified diff, proxied live from the owning daemon (no CP storage). 409

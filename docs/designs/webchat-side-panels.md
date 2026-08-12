@@ -18,13 +18,13 @@ Today the session detail page is `[nav · body · rail]`, where the rail is a fi
 250px **session list** (`SessionRail.tsx`). The design turns that rail into a
 **resizable, tabbed dock** — the session list becomes one of five panels:
 
-| Tab      | Icon                    | Badge              | Header action   | What it shows                                                                                                                   |
-| -------- | ----------------------- | ------------------ | --------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| Sessions | `messages-square`       | —                  | `plus`          | today / yesterday / previous-7-days session groups + agent filter chips                                                         |
-| Files    | `folder-tree`           | —                  | `refresh-cw`    | workspace tree with git status tags, path search, branch + workdir header                                                       |
-| Git      | `git-commit-horizontal` | changed count      | `refresh-cw`    | branch + ahead/behind, staged / unstaged with `+/−` and per-row stage toggle, commit box with AI message generation, commit log |
-| PR       | `git-pull-request`      | unresolved threads | `external-link` | PR state, head→base, checks, reviews, unresolved threads with a single Auto-fix action, merge box with auto-merge               |
-| Tasks    | `list-checks`           | running count      | `refresh-cw`    | background tasks with state and elapsed, read-only (§3.5 — no per-task cancel exists to wire)                                   |
+| Tab      | Icon                    | Badge              | Header action   | What it shows                                                                                                                                                                                                   |
+| -------- | ----------------------- | ------------------ | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Sessions | `messages-square`       | —                  | `plus`          | today / yesterday / previous-7-days session groups + agent filter chips                                                                                                                                         |
+| Files    | `folder-tree`           | —                  | `refresh-cw`    | workspace tree with git status tags, path search, branch + workdir header                                                                                                                                       |
+| Git      | `git-commit-horizontal` | changed count      | `refresh-cw`    | branch + ahead/behind, staged / unstaged with `+/−` and per-row stage toggle, commit box with AI message generation, commit log                                                                                 |
+| PR       | `git-pull-request`      | unresolved threads | `external-link` | PR state, head→base, checks, reviews, unresolved threads with a single Auto-fix action, merge box with auto-merge — or, with no linked PR, the branch's upstream state and a Create-pull-request action (§12.6) |
+| Tasks    | `list-checks`           | running count      | `refresh-cw`    | background tasks with state and elapsed, read-only (§3.5 — no per-task cancel exists to wire)                                                                                                                   |
 
 Dock geometry: width **380–760px, default 480px**, drag handle on the left edge
 (brand-colored while dragging), tab strip with zero gap between tabs. Tab labels
@@ -110,7 +110,21 @@ frames). What the design adds:
 | per-row hover `+` / `−` stage toggle, Stage all / Unstage all | **missing** — write ops                                                                         |
 | commit box, "Commit N files", commit-and-push                 | **missing** — write ops. Identity is already solved: `register/ok` carries `gitCommitIdentity`. |
 | **AI commit-message generation** (wand button, loading state) | **missing** — new capability, §5.1                                                              |
-| commit log vs base, unpushed markers                          | **missing** — needs a new read                                                                  |
+| commit log vs base, unpushed markers                          | **missing** — needs a new read (`<base>..HEAD`, collapsed below the working half — see below)   |
+
+"Commit log **vs base**" is literal, and is what the log read answers: with the
+checkout on any branch other than the configured one, `workspace/gitlog` lists
+`<base>..HEAD` (base = `origin/<workspace branch>`, the ref a session worktree is
+created from) and returns that ref as `base`, so the panel can name the range.
+The base branch's own history is not this session's work. Three cases keep the
+full history instead — no configured branch, HEAD already on it (the agent's
+primary checkout), or a base ref this checkout never fetched, where excluding a
+missing ref would fail the read.
+
+The log also sits **last and collapsed**: the working half (changed files, then
+the commit box) is what a reader acts on, and an expanded history pushed both off
+a 480px dock. The closed row still carries the count — the read happens anyway —
+with a `+` when the page is a floor.
 
 Revision 2 **removed** the Fetch / Pull / Stash button row that revision 1 had.
 `workspace/gitpull` therefore keeps no UI home in the dock, and the plan drops
@@ -1024,9 +1038,16 @@ list; `HookRun`'s recorded review appears only as the degraded-arm fallback
 5. ~~**Tasks scope.**~~ Settled: per ACP session. `sdkLease` is keyed by
    `sdkLeaseKey(agentId, acpSessionId)` and the only per-agent aggregate is the
    `agentHasLiveSdkWork` boolean, so `task/list` requires a `sessionId`.
-6. **PR tab visibility.** Hide entirely for non-PR sessions, or show an empty
-   state? Hiding keeps the dock honest but makes the tab strip change shape
-   between sessions.
+6. ~~**PR tab visibility.**~~ Settled: an EMPTY STATE, not a hidden tab. A
+   session whose worktree is a checkout keeps its PR tab on a 404 and the panel
+   says what it found: **No upstream configured** for a branch that tracks
+   nothing, the sentence "Publish this branch to set its upstream before
+   creating a pull request.", and a **Create pull request** action that posts
+   one turn on §5.2's path (the agent publishes the branch and opens the PR;
+   there is no CP route that could). The tab is dropped only where a pull
+   request is not a thing the session could have: no probe-able session id, or
+   a workspace that is not a checkout at all. The branch facts come from the
+   Git tab's verdict, so the empty state costs no extra read.
 7. **Write authorization.** Committing as the agent and resolving GitHub threads
    from the console are new classes of action. Does workspace-write access plus
    the existing token clamp cover them, or do they need their own permission?

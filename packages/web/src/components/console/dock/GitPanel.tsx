@@ -1,6 +1,6 @@
 'use client'
 
-// The dock's Git tab (§3.3): the open session's worktree as a WORKING surface — branch and ahead/behind, the staged and unstaged file lists with their `+`/`−` counts and a per-row stage toggle, Stage all / Unstage all, the commit box, and the newest commits with unpushed markers. A row opens that file's diff in the left-pane viewer, which this panel does not own.
+// The dock's Git tab (§3.3): the open session's worktree as a WORKING surface — branch and ahead/behind, the staged and unstaged file lists with their `+`/`−` counts and a per-row stage toggle, Stage all / Unstage all, the commit box, and last of all a collapsed history of what this branch adds over its base, with unpushed markers. A row opens that file's diff in the left-pane viewer, which this panel does not own.
 // M3 adds the write half. Every write runs on the OWNING DAEMON in the session's own worktree (§2) and answers with the fresh status, so the panel draws the result of its own action without a second read.
 // Status, diff, log and every write come live from that daemon through the CP (body-locality), so an offline daemon, a from-scratch workspace, a clean tree, a capped status list, a daemon too old for the log or for git writes, and a busy agent that refuses the write are all expected answers, each drawn as data.
 
@@ -26,15 +26,19 @@ const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
 const statusOf = (e: unknown) => (e instanceof ApiError ? e.status : null)
 const codeOf = (e: unknown) => (e instanceof ApiError && e.code ? e.code : null)
 
-/** How many commits the panel asks for. The wire caps a page at 50; a review surface beside a conversation wants the recent history, not the branch. */
+/** How many commits the panel asks for. The wire caps a page at 50; a session branch's own work is a handful of commits, so 20 is a page nobody reaches. */
 const LOG_LIMIT = 20
 
 /** What the Git tab reports upward. The caller owns the tab descriptor, so the panel reports its verdict rather than applying it — the same shape the Files tab uses. */
 export interface GitPanelVerdict {
   /** The scoped git status has answered, one way or another. */
   settled: boolean
-  /** Changed paths for the tab's badge; null while unknown, and for a workspace that is not a checkout. */
+  /** Changed paths for the tab's badge; null while unknown, and for a workspace that is not a checkout — so a non-null count is also exactly "the last settled read found a checkout". */
   changed: number | null
+  /** The branch this scope's checkout is on; null while unknown, for a detached HEAD, and for a non-repo workspace. */
+  branch: string | null
+  /** The remote branch it tracks, or null when it tracks none — what tells the PR tab whether a pull request is reachable yet or the branch still has to be published. */
+  tracking: string | null
 }
 
 /** The Git tab's status: `loading` covers the first status read only. */
@@ -149,6 +153,8 @@ export function GitPanel({
   const [applied, setApplied] = useState<{ key: string; git: WorkspaceGitStatusDto } | null>(null)
   const appliedKey = `${scope}:${statusTick}`
   const git = applied?.key === appliedKey ? applied.git : readGit
+  // Whether the history is open. A reader preference, not per checkout: someone who wants to see commits wants them in the next scope too, and it starts closed because the working half above it is what the panel is for.
+  const [commitsOpen, setCommitsOpen] = useState(false)
   // Which staging write is in flight, by its own key, so the pressed control alone shows the spinner. One at a time: the daemon serialises workspace mutations anyway, and two replies would race to be the applied status.
   const [staging, setStaging] = useState<string | null>(null)
   const [stageErr, setStageErr] = useState<string | null>(null)
@@ -175,13 +181,30 @@ export function GitPanel({
       setStaging(null)
     }
   }
-  // The last answer, latched per scope like the Files panel's settle flag — and carrying the badge's count with it, so the tab reports `ready` once and a refresh keeps both the panel and its count on screen instead of blinking them off and back on behind an in-tree read.
-  const [answer, setAnswer] = useState<{ scope: string; changed: number | null } | null>(null)
+  // The last answer, latched per scope like the Files panel's settle flag — and carrying the badge's count and the branch facts with it, so the tab reports `ready` once and a refresh keeps them on screen instead of blinking them off and back on behind an in-tree read.
+  const [answer, setAnswer] = useState<{
+    scope: string
+    changed: number | null
+    branch: string | null
+    tracking: string | null
+  } | null>(null)
   useEffect(() => {
     if (outcome === 'pending') return
     // Distinct PATHS: a file staged and then edited again is one changed file, in two sections.
-    const next = outcome === 'repo' && git ? new Set(git.files.map((file) => file.path)).size : null
-    setAnswer((current) => (current?.scope === scope && current.changed === next ? current : { scope, changed: next }))
+    const next = {
+      scope,
+      changed: outcome === 'repo' && git ? new Set(git.files.map((file) => file.path)).size : null,
+      branch: outcome === 'repo' ? (git?.branch ?? null) : null,
+      tracking: outcome === 'repo' ? (git?.tracking ?? null) : null
+    }
+    setAnswer((current) =>
+      current?.scope === next.scope &&
+      current.changed === next.changed &&
+      current.branch === next.branch &&
+      current.tracking === next.tracking
+        ? current
+        : next
+    )
   }, [git, outcome, scope])
   const settled = answer?.scope === scope
   const changed = settled ? answer.changed : null
@@ -189,12 +212,14 @@ export function GitPanel({
   const sections = useMemo(() => splitGitSections(git?.files ?? []), [git])
   // Reported on the EDGE: the caller's callback is a fresh closure per render, and re-reporting a verdict the tab already has is a state write for nothing.
   const reported = useRef<string | null>(null)
+  const reportedBranch = settled ? answer.branch : null
+  const reportedTracking = settled ? answer.tracking : null
   useEffect(() => {
-    const key = `${settled}:${changed ?? ''}`
+    const key = `${settled}:${changed ?? ''}:${reportedBranch ?? ''}:${reportedTracking ?? ''}`
     if (reported.current === key) return
     reported.current = key
-    onVerdictChange?.({ settled, changed })
-  }, [changed, onVerdictChange, settled])
+    onVerdictChange?.({ settled, changed, branch: reportedBranch, tracking: reportedTracking })
+  }, [changed, onVerdictChange, reportedBranch, reportedTracking, settled])
 
   if (!settled) return null
 
@@ -206,11 +231,13 @@ export function GitPanel({
         ? `Branch ${git.branch} tracks no remote branch, so the daemon has no ref to push it to.`
         : null
 
-  const branch = sessionId ? primaryBranch : (git?.branch ?? null)
-  // A session worktree is detached, so the branch on screen is the primary checkout's — say so rather than implying the worktree sits on it.
-  const branchTitle = sessionId
-    ? "Branch of the agent's primary checkout; this session's worktree is detached from it"
-    : 'Current branch of the workspace checkout'
+  // A session worktree checks out its own generated `dev/<user>/<words>` branch, so its OWN branch is the answer when it has one; only a detached worktree falls back to naming the primary checkout's.
+  const branch = git?.branch ?? (sessionId ? primaryBranch : null)
+  const branchTitle = !sessionId
+    ? 'Current branch of the workspace checkout'
+    : git?.branch
+      ? "Branch this session's worktree is checked out on"
+      : "Branch of the agent's primary checkout; this session's worktree is detached from it"
 
   const fileRow = (file: WorkspaceGitFileDto, staged: boolean) => {
     const name = file.path.split('/').at(-1) ?? file.path
@@ -333,6 +360,9 @@ export function GitPanel({
     )
   }
 
+  // The closed row's count, null until a log read has answered about a checkout — a `0` before the answer would claim an empty branch.
+  const commitCount = log.log?.isRepo === true ? `${log.log.commits.length}${log.log.truncated ? '+' : ''}` : null
+
   const commits = (): ReactNode => {
     if (log.loading) {
       return (
@@ -344,7 +374,15 @@ export function GitPanel({
     if (log.err) return <PanelNotice text={logNoticeText(log.errStatus, log.errCode)} />
     if (!log.log?.isRepo) return null
     if (log.log.commits.length === 0) {
-      return <PanelNotice text="No commits yet — this checkout has no history of its own." />
+      return (
+        <PanelNotice
+          text={
+            log.log.base
+              ? `Nothing committed on this branch yet — it holds no commit that ${log.log.base} does not already have.`
+              : 'No commits yet — this checkout has no history of its own.'
+          }
+        />
+      )
     }
     const tracked = log.log.tracking !== null
     return (
@@ -430,17 +468,7 @@ export function GitPanel({
           </span>
         ) : null}
       </div>
-      <div className="flex min-h-0 flex-1 flex-col overflow-auto pb-2">
-        {files()}
-        {outcome === 'repo' ? (
-          <div data-git-section="commits" className="flex flex-none flex-col border-t border-(--border-subtle)">
-            <div className="px-3 pt-[10px] pb-[5px] font-sans text-[10.5px] font-semibold tracking-[0.04em] uppercase leading-normal text-(--text-disabled)">
-              Commits
-            </div>
-            {commits()}
-          </div>
-        ) : null}
-      </div>
+      <div className="flex min-h-0 flex-1 flex-col overflow-auto pb-2">{files()}</div>
       {/* A staging write that never got an answer — a busy agent, a daemon too old for git writes, a disconnected one. It sits above the commit box because it belongs to the lists, not to the message. */}
       {stageErr ? (
         <div
@@ -473,6 +501,47 @@ export function GitPanel({
             <span>Review only — your role in this organization cannot change this checkout.</span>
           </div>
         )
+      ) : null}
+      {/* History LAST and closed by default: what a reader does in this panel is read the changed files and commit them, and an open commit list pushed both off a 480px dock. The count is on the closed row because the log is read anyway — collapsing hides the list, not the fact that there is one. */}
+      {outcome === 'repo' ? (
+        <div data-git-section="commits" className="flex min-h-0 flex-none flex-col border-t border-(--border-subtle)">
+          <button
+            type="button"
+            data-git-commits-toggle={commitsOpen ? 'open' : 'closed'}
+            className="flex w-full cursor-pointer items-center gap-[6px] border-0 bg-transparent px-3 py-[7px] text-left [font:inherit] hover:bg-(--surface-hover)"
+            aria-expanded={commitsOpen}
+            title={
+              log.log?.base
+                ? `Commits this branch has and ${log.log.base} does not — the work opened for review, newest first`
+                : 'Commits of this checkout, newest first'
+            }
+            onClick={() => setCommitsOpen((open) => !open)}
+          >
+            <Icon
+              name={commitsOpen ? 'chevron-down' : 'chevron-right'}
+              size={12}
+              color="var(--text-tertiary)"
+              className="flex-none"
+            />
+            <span className="font-sans text-[10.5px] font-semibold tracking-[0.04em] uppercase leading-normal text-(--text-disabled)">
+              {log.log?.base ? 'Commits ahead' : 'Commits'}
+            </span>
+            {/* A `+` says the count is a FLOOR — the page carries `limit` commits and the range has more. */}
+            {commitCount !== null ? (
+              <span className="mono flex-none text-[11px] font-medium leading-normal text-(--text-tertiary)">
+                {commitCount}
+              </span>
+            ) : null}
+            {log.log?.base ? (
+              <span className="mono min-w-0 truncate text-[10.5px] font-normal leading-normal text-(--text-disabled)">
+                {`vs ${log.log.base}`}
+              </span>
+            ) : null}
+          </button>
+          {commitsOpen ? (
+            <div className="flex max-h-[240px] min-h-0 flex-col overflow-auto pb-2">{commits()}</div>
+          ) : null}
+        </div>
       ) : null}
     </div>
   )

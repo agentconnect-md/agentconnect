@@ -2,7 +2,7 @@
 
 // The dock's PR tab (§3.4): the pull request this session was dispatched for — state, head→base, checks, current reviews and unresolved threads — plus M6's two writes: ONE Auto-fix post over the whole unresolved set (§5.2, a webchat turn, no CP route) and the Merge-when-ready auto-merge toggle.
 // Identity comes from the CP's own records and live state from GitHub through the CP's short-TTL projection; thread bodies are proxied, never stored (§2). A rate-limited, denied or unreachable GitHub is DATA: the panel still names its PR and says why the live lists are missing.
-// A 404 from the probe is PROVISIONAL on a bounded ladder (the session→run link can commit after the status flip, or with no flip at all), then the absence is believed and the tab stays hidden.
+// A 404 from the probe is PROVISIONAL on a bounded ladder (the session→run link can commit after the status flip, or with no flip at all), then the absence is believed and drawn: the branch's state and a Create-pull-request action, which is another one-turn post on the same path as Auto-fix.
 
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Spinner } from '@/components/marks'
@@ -21,7 +21,7 @@ import type { DockTabStatus } from './SessionDock'
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
 const statusOf = (e: unknown) => (e instanceof ApiError ? e.status : null)
 
-/** The four answers the probe can settle on; `none` (a 404) is the one that takes the tab out of the strip entirely. */
+/** The four answers the probe can settle on; `none` (a 404) is "no pull-request run owns this session", which the panel draws rather than blanks. */
 export type PullRequestPanelAnswer = 'pending' | 'linked' | 'none' | 'failed'
 
 /** What the PR tab reports upward. The caller owns the tab descriptor, so the panel reports its verdict rather than applying it — the same shape every other tab uses. */
@@ -33,8 +33,8 @@ export interface PullRequestPanelVerdict {
   url: string | null
 }
 
-/** The PR tab's status: `loading` until the probe's first answer; `none` never reaches the strip because the caller drops the tab. */
-// Never `empty`: a 200 always carries identity to draw, "no PR" HIDES the tab instead of blanking it, and a failed probe has copy — no state is left for the dock's centred "Nothing to show" to describe.
+/** The PR tab's status: `loading` until the probe's first answer, `ready` after. */
+// Never `empty`: a 200 always carries identity to draw, and a `none` or failed probe has copy of its own — no state is left for the dock's centred "Nothing to show" to describe.
 export function pullRequestTabStatus(answer: PullRequestPanelAnswer): DockTabStatus {
   return answer === 'pending' ? 'loading' : 'ready'
 }
@@ -50,6 +50,20 @@ export function autoFixInstruction(view: SessionPullRequestDto): string {
     threads,
     '',
     'Address each thread in this session’s worktree, commit and push the fixes, then resolve the threads you fixed on GitHub.'
+  ].join('\n')
+}
+
+/** The turn the Create-pull-request action posts. One instruction covering both halves, because a branch with no upstream cannot be reviewed: publish it, then open the PR. Exported so the post's exact content is pinned, not approximated. */
+export function createPullRequestInstruction(branch: string | null, tracking: string | null): string {
+  const named = branch ? `this session’s branch (${branch})` : 'this session’s branch'
+  return [
+    `Open a pull request for ${named}:`,
+    '',
+    '1. Commit anything outstanding in this worktree that belongs in the pull request.',
+    tracking
+      ? `2. Push the branch to its upstream (${tracking}).`
+      : '2. Publish the branch to the remote with `git push -u`, so it has an upstream to review.',
+    '3. Create the pull request against the repository’s default branch, then reply with its URL.'
   ].join('\n')
 }
 
@@ -166,7 +180,9 @@ export function PullRequestPanel({
   active = true,
   sessionStatus,
   turnActive = false,
-  onAutoFix,
+  branch = null,
+  tracking = null,
+  onPostTurn,
   onVerdictChange
 }: {
   /** The OPEN SESSION's id, the scope the CP resolves to its hook run. Deliberately no agentId: the PR belongs to the session, so a merged conversation's header-focus change must not re-key this read — the prop shape makes that unbuildable rather than merely avoided. */
@@ -177,8 +193,12 @@ export function PullRequestPanel({
   sessionStatus?: string
   /** Whether a turn is streaming right now. After Auto-fix posts one, the FALLING edge is the panel's cue to force one re-read — the agent's GitHub write-back (resolved threads, pushed fixes) lands with the turn, and the CP's short TTL would otherwise hide it. */
   turnActive?: boolean
-  /** Posts one webchat message into the open session (§5.2's browser→relay→daemon path — no CP route), returning whether the send was ACCEPTED. Absent when the session has no usable composer (none at all, or a persisted webchat that cannot resume), and the Auto-fix action renders ABSENT with it, not disabled. */
-  onAutoFix?: (text: string) => boolean
+  /** The branch this session's checkout is on, from the Git tab's verdict — the panel's no-PR state is about THIS branch, and reading git status again here would be a second round trip for a fact the dock already holds. Null while that read has not answered, for a detached worktree, and for a workspace that is not a checkout. */
+  branch?: string | null
+  /** The remote branch it tracks, from the same verdict. Null ⇒ nothing to review yet: the branch has to be published before a pull request can exist. */
+  tracking?: string | null
+  /** Posts one webchat message into the open session (§5.2's browser→relay→daemon path — no CP route), returning whether the send was ACCEPTED. Absent when the session has no usable composer (none at all, or a persisted webchat that cannot resume), and the Auto-fix and Create-pull-request actions render ABSENT with it, not disabled. */
+  onPostTurn?: (text: string) => boolean
   /** The inputs to {@link pullRequestTabStatus}, the tab's badge and its external-link action. */
   onVerdictChange?: (verdict: PullRequestPanelVerdict) => void
 }) {
@@ -271,8 +291,8 @@ export function PullRequestPanel({
     onVerdictChange?.({ answer, unresolved, url })
   }, [answer, onVerdictChange, unresolved, url])
 
-  // Nothing while the dock's own "Loading…" placeholder speaks, and nothing at all for a session with no PR — its tab is not in the strip to open.
-  if (answer === 'pending' || answer === 'none') return null
+  // Nothing while the dock's own "Loading…" placeholder speaks.
+  if (answer === 'pending') return null
 
   const refresh = (
     <button
@@ -287,6 +307,67 @@ export function PullRequestPanel({
       {refreshing ? <Spinner size={11} /> : <Icon name="refresh-cw" size={13} />}
     </button>
   )
+
+  // Both write actions post ONE turn on the same path (§5.2) and share one fence: ABSENT (never disabled) without a composer to post through, disabled while any turn streams — the composer would QUEUE the post, and the running turn's falling edge would consume the wait before this turn dispatched — and the wait arms only on an ACCEPTED send, since a synchronous refusal produces no turn and no edge to clear it.
+  const postAction = (opts: {
+    attr: Record<string, string>
+    label: string
+    icon: string
+    title: string
+    busyTitle: string
+    className: string
+    text: () => string
+  }) =>
+    onPostTurn ? (
+      <button
+        type="button"
+        {...opts.attr}
+        className={`${opts.className} disabled:pointer-events-none disabled:opacity-50`}
+        disabled={awaitingTurn || turnActive}
+        title={turnActive && !awaitingTurn ? opts.busyTitle : opts.title}
+        onClick={() => {
+          if (onPostTurn(opts.text())) setAwaitingTurn(true)
+        }}
+      >
+        {awaitingTurn ? <Spinner size={11} /> : <Icon name={opts.icon} size={12} />}
+        {opts.label}
+      </button>
+    ) : null
+
+  // A session with no linked pull request keeps its tab: the branch behind it still has a next step, and this is where the reader takes it. The probe's 404 says only that no pull-request run owns this session — never that the work is unreviewable.
+  if (answer === 'none') {
+    const unpublished = branch !== null && tracking === null
+    return (
+      <div data-pr-panel="none" className="flex min-h-0 flex-1 flex-col">
+        <div className="flex flex-none items-center gap-2 border-b border-(--border-subtle) px-3 py-[7px]">
+          <span className="min-w-0 flex-1 font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
+            {unpublished ? 'No upstream configured' : 'No pull request'}
+          </span>
+          {refresh}
+        </div>
+        <PanelNotice
+          text={
+            unpublished
+              ? `Branch ${branch} tracks no remote branch. Publish this branch to set its upstream before creating a pull request.`
+              : branch !== null
+                ? `Branch ${branch} tracks ${tracking}, and no pull request is linked to this session yet.`
+                : 'No pull request is linked to this session yet.'
+          }
+        />
+        <div className="flex flex-none px-3 pb-2">
+          {postAction({
+            attr: { 'data-pr-create': '' },
+            label: 'Create pull request',
+            icon: 'git-pull-request',
+            title: 'Ask the agent to publish this branch and open a pull request for it, as one turn in this session',
+            busyTitle: 'A turn is already running — this posts its own turn, so wait for this one to settle',
+            className: 'dsbtn dsbtn-secondary sm flex-none',
+            text: () => createPullRequestInstruction(branch, tracking)
+          })}
+        </div>
+      </div>
+    )
+  }
 
   // A failed probe is not "no PR": hiding the tab here would claim an absence nobody verified, so the tab stays and says why there is nothing behind it.
   if (answer === 'failed' || !view) {
@@ -526,29 +607,20 @@ export function PullRequestPanel({
                   ) : null}
                 </div>
               ),
-              // ONE Auto-fix over the whole set (§5.2) — a real agent turn on the webchat path, absent (not disabled) when the session has no live composer to post through.
-              onAutoFix && view.threads.length > 0 ? (
-                <button
-                  type="button"
-                  data-pr-autofix=""
-                  className="dsbtn dsbtn-secondary sm flex-none disabled:pointer-events-none disabled:opacity-50"
-                  // Disabled while ANY turn streams: the composer would QUEUE the post, and the running
-                  // turn's falling edge would consume the wait before the Auto-fix turn even dispatched.
-                  disabled={awaitingTurn || turnActive}
-                  title={
-                    turnActive && !awaitingTurn
-                      ? 'A turn is already running — Auto-fix posts its own turn, so wait for this one to settle'
-                      : 'Hand every unresolved thread to the agent as one turn; it edits this session’s worktree and resolves the threads it fixes'
-                  }
-                  onClick={() => {
-                    // The wait arms only on an ACCEPTED send: a synchronous refusal (image preparing, mention joining) produces no turn, so an armed wait would disable the button forever with no edge to clear it.
-                    if (onAutoFix(autoFixInstruction(view))) setAwaitingTurn(true)
-                  }}
-                >
-                  {awaitingTurn ? <Spinner size={11} /> : <Icon name="wand-sparkles" size={12} />}
-                  Auto-fix
-                </button>
-              ) : undefined
+              // ONE Auto-fix over the whole set (§5.2) — a real agent turn on the webchat path.
+              view.threads.length > 0
+                ? postAction({
+                    attr: { 'data-pr-autofix': '' },
+                    label: 'Auto-fix',
+                    icon: 'wand-sparkles',
+                    title:
+                      'Hand every unresolved thread to the agent as one turn; it edits this session’s worktree and resolves the threads it fixes',
+                    busyTitle:
+                      'A turn is already running — Auto-fix posts its own turn, so wait for this one to settle',
+                    className: 'dsbtn dsbtn-secondary sm flex-none',
+                    text: () => autoFixInstruction(view)
+                  })
+                : undefined
             )}
           </>
         )}

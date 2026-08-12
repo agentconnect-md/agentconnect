@@ -181,7 +181,7 @@ afterEach(async () => {
 
 describe('pullRequestTabStatus', () => {
   it('is loading until the probe answers, and never empty', () => {
-    // Never `empty`: a 200 always has identity to draw, `none` takes the tab out of the strip entirely, and a failed probe has copy — so no state is left for the dock's centred "Nothing to show".
+    // Never `empty`: a 200 always has identity to draw, and `none` and a failed probe each have copy of their own — so no state is left for the dock's centred "Nothing to show".
     expect(pullRequestTabStatus('pending')).toBe('loading')
     expect(pullRequestTabStatus('linked')).toBe('ready')
     expect(pullRequestTabStatus('failed')).toBe('ready')
@@ -227,16 +227,42 @@ describe('PullRequestPanel verdicts', () => {
     expect(verdicts).toHaveLength(heard)
   })
 
-  it('reports a 404 as none, renders nothing, and NEVER asks again for that session', async () => {
+  it('reports a 404 as none, draws the no-PR state, and NEVER asks again for that session', async () => {
     // The linkage cannot appear later — the run is what created the session — so re-polling a 404 would spend reads on an answer that is already final (the M4 follow-up this panel must not repeat).
     wire.failure = { status: 404 }
     await render()
     expect(last()).toEqual({ answer: 'none', unresolved: null, url: null })
-    expect(container?.querySelector('[data-pr-panel]')).toBeNull()
+    expect(container?.querySelector('[data-pr-panel="none"]')).not.toBeNull()
 
     await rerender()
     await rerender()
     expect(wire.calls).toHaveLength(1)
+  })
+
+  it('names the branch and its missing upstream in the no-PR state, and offers one turn that opens the pull request', async () => {
+    wire.failure = { status: 404 }
+    await render({ branch: 'dev/jane-doe/candid-lynx', tracking: null, onPostTurn: () => true })
+    // The upstream is the FIRST obstacle, so it is the headline rather than the absent pull request.
+    expect(text()).toContain('No upstream configured')
+    expect(text()).toContain('Publish this branch to set its upstream before creating a pull request.')
+    expect(text()).toContain('dev/jane-doe/candid-lynx')
+
+    const posted: string[] = []
+    await rerender({ branch: 'dev/jane-doe/candid-lynx', tracking: null, onPostTurn: accept(posted) })
+    await press('[data-pr-create]')
+    expect(posted).toHaveLength(1)
+    expect(posted[0]).toContain('dev/jane-doe/candid-lynx')
+    expect(posted[0]).toContain('git push -u')
+  })
+
+  it('says a published branch has no pull request yet, without claiming a missing upstream', async () => {
+    wire.failure = { status: 404 }
+    await render({ branch: 'dev/jane-doe/candid-lynx', tracking: 'origin/dev/jane-doe/candid-lynx' })
+    expect(text()).toContain('No pull request')
+    expect(text()).not.toContain('No upstream configured')
+    expect(text()).toContain('origin/dev/jane-doe/candid-lynx')
+    // No composer to post through ⇒ the action is ABSENT, not a button that would fail.
+    expect(container?.querySelector('[data-pr-create]')).toBeNull()
   })
 
   it('reports a non-404 failure as failed — not none — so the tab stays up and says why', async () => {
@@ -363,7 +389,7 @@ describe('PullRequestPanel body', () => {
 
   it('gates M6’s writes: Auto-fix is ABSENT without a live composer, the merge toggle disabled below write tier', async () => {
     // Re-aimed from M5's read-only premise (§9), as that test asked: the writes exist now, but each is
-    // earned. No onAutoFix (a hook session with no composer) means NO button — absent, not disabled.
+    // earned. No onPostTurn (a hook session with no composer) means NO button — absent, not disabled.
     await render()
     expect(container?.querySelector('[data-pr-autofix]')).toBeNull()
     // The write-capable fixture's merge toggle is live; a read-tier caller's is disabled, not hidden —
@@ -387,7 +413,7 @@ describe('PullRequestPanel body', () => {
     // §5.2: one action over the whole set, a real webchat turn — and the panel's ONLY follow-up is a
     // single forced re-read on the turn's FALLING edge, where the agent's GitHub write-back landed.
     const posted: string[] = []
-    await render({ onAutoFix: accept(posted), turnActive: false })
+    await render({ onPostTurn: accept(posted), turnActive: false })
     expect(wire.calls).toHaveLength(1)
 
     await press('[data-pr-autofix]')
@@ -400,39 +426,39 @@ describe('PullRequestPanel body', () => {
     expect(container?.querySelector<HTMLButtonElement>('[data-pr-autofix]')?.disabled).toBe(true)
 
     // The turn starts streaming, then settles: exactly one re-read, forced past the CP's TTL.
-    await rerender({ onAutoFix: accept(posted), turnActive: true })
+    await rerender({ onPostTurn: accept(posted), turnActive: true })
     expect(wire.calls).toHaveLength(1)
     wire.data = pr({ threads: [], unresolvedCount: 0 })
-    await rerender({ onAutoFix: accept(posted), turnActive: false })
+    await rerender({ onPostTurn: accept(posted), turnActive: false })
     expect(wire.calls).toHaveLength(2)
     expect(wire.calls[1]).toMatchObject({ refresh: true })
     // A LATER turn settling re-reads nothing — the wait was consumed.
-    await rerender({ onAutoFix: accept(posted), turnActive: true })
-    await rerender({ onAutoFix: accept(posted), turnActive: false })
+    await rerender({ onPostTurn: accept(posted), turnActive: true })
+    await rerender({ onPostTurn: accept(posted), turnActive: false })
     expect(wire.calls).toHaveLength(2)
   })
 
   it('does not arm the wait on a REFUSED send — the button stays pressable and no edge is owed', async () => {
     // onPgSend refuses synchronously while an image prepares or a mention joins; an armed wait there
     // would disable the button forever, since the refused send produces no turn and no falling edge.
-    await render({ onAutoFix: () => false, turnActive: false })
+    await render({ onPostTurn: () => false, turnActive: false })
 
     await press('[data-pr-autofix]')
     expect(container?.querySelector<HTMLButtonElement>('[data-pr-autofix]')?.disabled).toBe(false)
 
     // And no stale wait rides a later, unrelated turn into a phantom re-read.
-    await rerender({ onAutoFix: () => false, turnActive: true })
-    await rerender({ onAutoFix: () => false, turnActive: false })
+    await rerender({ onPostTurn: () => false, turnActive: true })
+    await rerender({ onPostTurn: () => false, turnActive: false })
     expect(wire.calls).toHaveLength(1)
   })
 
   it('holds Auto-fix while ANY turn streams — a queued post would let that turn eat the wait', async () => {
     // The composer QUEUES a send during a running turn; the running turn's falling edge would then
     // consume `awaitingTurn` before the Auto-fix turn dispatched, and its real settle would refresh nothing.
-    await render({ onAutoFix: () => true, turnActive: true })
+    await render({ onPostTurn: () => true, turnActive: true })
     expect(container?.querySelector<HTMLButtonElement>('[data-pr-autofix]')?.disabled).toBe(true)
 
-    await rerender({ onAutoFix: () => true, turnActive: false })
+    await rerender({ onPostTurn: () => true, turnActive: false })
     expect(container?.querySelector<HTMLButtonElement>('[data-pr-autofix]')?.disabled).toBe(false)
   })
 
