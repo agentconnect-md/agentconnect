@@ -25,14 +25,7 @@ import type {
 } from '../persistence/ports.js'
 import { DEFAULT_CREDENTIAL_SECRET_NAME } from './crd.js'
 import type { OrgResourceApi } from './org-api.js'
-import {
-  ABSENT_ENVELOPE,
-  buildSpec,
-  orgNamespace,
-  orgResourceName,
-  projectStatus,
-  type ClusterEnvelopeStatus
-} from './spec.js'
+import { ABSENT_ENVELOPE, buildSpec, orgResourceName, projectStatus, type ClusterEnvelopeStatus } from './spec.js'
 
 /** Bounded re-apply passes; each concurrent writer runs its own, so this only
  *  has to outlast a burst, not an unbounded stream of edits. */
@@ -204,7 +197,7 @@ export class ClusterExecutionService {
       await this.repo.retireCredential(orgId, token, 'cluster execution disabled')
       // Directly, not through the drain: this call already owns the claim the
       // drain would try to take.
-      await this.deleteEnvelopeResource(orgId, claimed.targetNamespace)
+      await this.deleteEnvelopeResource(orgId, claimed.resourceName)
       await this.drainKeyRevocations()
     } finally {
       await this.repo.endCredentialRotation(orgId, token)
@@ -234,7 +227,7 @@ export class ClusterExecutionService {
       // longer exists — and the deletion's tombstone was written before it. Undo
       // it here rather than leave the operator holding an ownerless envelope.
       if (!after) {
-        await this.api.delete(orgResourceName(current.targetNamespace))
+        await this.api.delete(current.resourceName)
         return this.unconfigured(orgId)
       }
       if (after.specRevision === current.specRevision) return current
@@ -245,7 +238,7 @@ export class ClusterExecutionService {
 
   /** Apply one snapshot of the org's settings to the cluster. */
   async reconcile(settings: ClusterExecutionSettings): Promise<void> {
-    const name = orgResourceName(settings.targetNamespace)
+    const name = settings.resourceName
     if (!settings.enabled) return this.api.delete(name)
     // `displayName` is display-only on the CR, so the slug (always present) is
     // enough and costs one indexed read instead of a whole org projection.
@@ -256,9 +249,9 @@ export class ClusterExecutionService {
   /**
    * Delete the resources of organizations that are already gone, then drop
    * their tombstones. The tombstone is written inside the org's delete
-   * transaction because the cascade removes the only record of the immutable
-   * `targetNamespace` — after that, nothing else could name the namespace,
-   * daemon, and sandboxes the operator is still keeping alive.
+   * transaction because the cascade removes the only record of the envelope's
+   * `resourceName` — after that, nothing else could name the namespace, daemon,
+   * and sandboxes the operator is still keeping alive.
    *
    * Best-effort per row and safe to run at any time: a resource that is already
    * gone reads as deleted, and a row whose delete fails simply stays for the
@@ -268,7 +261,7 @@ export class ClusterExecutionService {
     const pending = await this.repo.listPendingTeardowns(limit)
     let retired = 0
     for (const entry of pending) {
-      const retiredOne = await this.retireEnvelope(OrgId(entry.orgId), entry.targetNamespace)
+      const retiredOne = await this.retireEnvelope(OrgId(entry.orgId), entry.resourceName)
       if (retiredOne) retired += 1
     }
     return retired
@@ -282,7 +275,7 @@ export class ClusterExecutionService {
    * re-enable just created. An org whose row is gone (deleted) has no claim to
    * take and no re-enable to race, so it is deleted directly.
    */
-  private async retireEnvelope(orgId: OrgId, targetNamespace: string): Promise<boolean> {
+  private async retireEnvelope(orgId: OrgId, resourceName: string): Promise<boolean> {
     const row = await this.repo.get(orgId)
     let token: string | undefined
     if (row) {
@@ -302,7 +295,7 @@ export class ClusterExecutionService {
       }
     }
     try {
-      return await this.deleteEnvelopeResource(orgId, targetNamespace)
+      return await this.deleteEnvelopeResource(orgId, resourceName)
     } finally {
       if (token) await this.repo.endCredentialRotation(orgId, token)
     }
@@ -315,8 +308,7 @@ export class ClusterExecutionService {
    * generation in the meantime makes the API server reject it rather than
    * removing what the re-enable just created.
    */
-  private async deleteEnvelopeResource(orgId: OrgId, targetNamespace: string): Promise<boolean> {
-    const name = orgResourceName(targetNamespace)
+  private async deleteEnvelopeResource(orgId: OrgId, name: string): Promise<boolean> {
     try {
       const existing = await this.api.get(name)
       if (existing) {
@@ -378,6 +370,9 @@ export class ClusterExecutionService {
     )
     if (!settings) throw new ClusterRotationInProgressError()
     try {
+      // Read BEFORE minting: the namespace is the operator's to derive and publish,
+      // so a pass that cannot learn it yet must not leave a key behind either.
+      const namespace = await this.envelopeNamespace(settings)
       const previousApiKeyId = settings.credentialApiKeyId
       const minted = await this.mintFor(orgId, token, settings.credentialDaemonId, actorUserId)
 
@@ -390,7 +385,7 @@ export class ClusterExecutionService {
       }
       try {
         await this.secrets.publishCredential(
-          settings.targetNamespace,
+          namespace,
           settings.credentialSecretName,
           settings.credentialRotationSeq,
           buildDaemonConfigJson({
@@ -400,7 +395,7 @@ export class ClusterExecutionService {
           })
         )
       } catch (error) {
-        const landed = await this.publishLanded(settings, error)
+        const landed = await this.publishLanded(namespace, settings, error)
         if (!landed) {
           // Definitely not published: clear the staged slot when this pass still
           // owns it, and queue the key either way — if the claim was taken over
@@ -458,10 +453,10 @@ export class ClusterExecutionService {
    * since the cost of keeping a key alive one rotation longer is far lower than
    * the cost of killing a live one.
    */
-  private async publishLanded(settings: ClusterExecutionSettings, error: unknown): Promise<boolean> {
+  private async publishLanded(namespace: string, settings: ClusterExecutionSettings, error: unknown): Promise<boolean> {
     if (error instanceof NamespaceNotReadyError || error instanceof StaleCredentialWriteError) return false
     try {
-      const published = await this.secrets.publishedSeq(settings.targetNamespace, settings.credentialSecretName)
+      const published = await this.secrets.publishedSeq(namespace, settings.credentialSecretName)
       return published >= settings.credentialRotationSeq
     } catch {
       return true
@@ -557,17 +552,29 @@ export class ClusterExecutionService {
     return revoked
   }
 
+  /**
+   * The envelope namespace, read off the CR the operator publishes it on. The
+   * control plane never derives it: the operator owns `<prefix><CR name>`, and
+   * `status.namespace` appears only once the namespace has actually been created
+   * and claim-validated. Absent ⇒ there is nothing to publish a Secret into yet.
+   */
+  private async envelopeNamespace(settings: ClusterExecutionSettings): Promise<string> {
+    const namespace = (await this.api.get(settings.resourceName))?.status?.namespace
+    if (!namespace) throw NamespaceNotReadyError.unpublished(settings.resourceName)
+    return namespace
+  }
+
   /** Live envelope status from the resource; absent ⇒ `present: false`. */
   async status(orgId: OrgId): Promise<ClusterEnvelopeStatus> {
     const settings = await this.repo.get(orgId)
     if (!settings) return ABSENT_ENVELOPE
-    const resource = await this.api.get(orgResourceName(settings.targetNamespace))
+    const resource = await this.api.get(settings.resourceName)
     return resource ? projectStatus(resource.status) : ABSENT_ENVELOPE
   }
 
   private defaults(orgId: OrgId): ClusterExecutionDefaults {
     return {
-      targetNamespace: orgNamespace(this.policy.namespacePrefix, orgId),
+      resourceName: orgResourceName(this.policy.namespacePrefix, orgId),
       daemonImage: this.policy.daemonImage,
       daemonTier: this.policy.daemonTier,
       credentialSecretName: DEFAULT_CREDENTIAL_SECRET_NAME,

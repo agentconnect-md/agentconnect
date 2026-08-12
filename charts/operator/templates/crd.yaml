@@ -24,9 +24,9 @@ spec:
       subresources:
         status: {}
       additionalPrinterColumns:
-        - name: Target
+        - name: Namespace
           type: string
-          jsonPath: .spec.targetNamespace
+          jsonPath: .status.namespace
         - name: Ready
           type: string
           jsonPath: .status.conditions[?(@.type=="Ready")].status
@@ -42,11 +42,12 @@ spec:
             spec:
               type: object
               required:
-                - targetNamespace
                 - daemon
                 - runtime
               x-kubernetes-validations:
-                - rule: self.targetNamespace == oldSelf.targetNamespace
+                # Optional, so both sides are tested for presence: an org's namespace must never
+                # move, and that includes moving between derived and overridden.
+                - rule: has(self.targetNamespace) == has(oldSelf.targetNamespace) && (!has(self.targetNamespace) || self.targetNamespace == oldSelf.targetNamespace)
                   message: targetNamespace is immutable
                 - rule: self.daemon.credentialSecretName == oldSelf.daemon.credentialSecretName
                   message: daemon.credentialSecretName is immutable
@@ -55,7 +56,7 @@ spec:
                   type: string
                   maxLength: 63
                   pattern: '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$'
-                  description: Namespace the org envelope is reconciled into. Shape-only validation here; the operator and admission policies enforce install ownership (prefix).
+                  description: Optional override for the envelope namespace, immutable once set. Omitted — the normal path, and what the control plane always writes — means the operator derives it as <org namespace prefix><CR name>, which cannot collide with another CR. Shape-only validation here; install ownership (prefix) is enforced by the operator and admission either way.
                 displayName:
                   type: string
                   description: Human-readable org name, display only.
@@ -186,7 +187,7 @@ spec:
                   type: integer
                 namespace:
                   type: string
-                  description: Published together with NamespaceReady, only after successful create-or-adopt and label validation.
+                  description: The envelope namespace the operator resolved — spec.targetNamespace when set, otherwise <org namespace prefix><CR name>. Published together with NamespaceReady, only after successful create-or-adopt and label validation, and the only place a consumer learns the namespace.
                 conditions:
                   type: array
                   items:

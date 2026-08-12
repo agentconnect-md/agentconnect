@@ -23,8 +23,8 @@ export const SANDBOX_GROUP = 'agents.x-k8s.io/v1beta1'
 export const SANDBOX_EXTENSIONS_GROUP = 'extensions.agents.x-k8s.io/v1beta1'
 
 /** The per-org ClusterRoleBinding name; unique because namespaces are prefix-disjoint per install. */
-export function tokenReviewBindingName(targetNamespace: string): string {
-  return `ac-tokenreview-${targetNamespace}`
+export function tokenReviewBindingName(namespace: string): string {
+  return `ac-tokenreview-${namespace}`
 }
 
 export function runtimeTierName(tier: string): string {

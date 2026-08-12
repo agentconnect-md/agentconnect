@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { ABSENT_ENVELOPE, ClusterNamingError, buildSpec, orgNamespace, orgResourceName, projectStatus } from './spec.js'
+import { ABSENT_ENVELOPE, ClusterNamingError, buildSpec, orgResourceName, projectStatus } from './spec.js'
 import type { ClusterExecutionSettings } from '../persistence/ports.js'
 
 const SETTINGS: ClusterExecutionSettings = {
   orgId: 'cm5exampleorgid0000000001',
   enabled: true,
-  targetNamespace: 'ac-org-cm5exampleorgid0000000001',
+  resourceName: 'cm5exampleorgid0000000001',
   suspend: false,
   daemonImage: 'registry.example.test/daemon:1.2.3',
   daemonTier: 'small',
@@ -18,38 +18,39 @@ const SETTINGS: ClusterExecutionSettings = {
   updatedAt: new Date(0)
 }
 
-describe('orgNamespace', () => {
-  it('joins the install prefix to the org id', () => {
-    expect(orgNamespace('ac-org-', 'cm5exampleorgid0000000001')).toBe('ac-org-cm5exampleorgid0000000001')
+describe('orgResourceName', () => {
+  it('names the resource after the org id, without the install prefix', () => {
+    expect(orgResourceName('ac-org-', 'cm5exampleorgid0000000001')).toBe('cm5exampleorgid0000000001')
   })
 
   it('folds an id that is not already a DNS label', () => {
-    expect(orgNamespace('ac-org-', 'Org_ID.42')).toBe('ac-org-org-id-42')
+    expect(orgResourceName('ac-org-', 'Org_ID.42')).toBe('org-id-42')
   })
 
-  it('truncates to 63 characters without leaving a trailing dash', () => {
-    const name = orgNamespace('ac-org-', `${'a'.repeat(55)}-tail`)
-    expect(name).toHaveLength(62)
+  // The operator prefixes this name to make the namespace, so the prefix's own
+  // length has to come out of the 63 a DNS label allows.
+  it('truncates so the prefixed namespace still fits, without a trailing dash', () => {
+    const name = orgResourceName('ac-org-', `${'a'.repeat(55)}-tail`)
+    expect(`ac-org-${name}`).toHaveLength(62)
     expect(name.endsWith('-')).toBe(false)
   })
 
-  it('is stable — the same org always derives the same namespace', () => {
-    expect(orgNamespace('ac-org-', 'abc')).toBe(orgNamespace('ac-org-', 'abc'))
+  it('is stable — the same org always derives the same name', () => {
+    expect(orgResourceName('ac-org-', 'abc')).toBe(orgResourceName('ac-org-', 'abc'))
   })
 
   it('refuses an org id that folds to nothing usable', () => {
-    expect(() => orgNamespace('ac-org-', '___')).toThrow(ClusterNamingError)
+    expect(() => orgResourceName('ac-org-', '___')).toThrow(ClusterNamingError)
   })
 
-  it('names the resource after the namespace it targets', () => {
-    expect(orgResourceName('ac-org-acme')).toBe('ac-org-acme')
+  it.each([63, 64, 80])('refuses a prefix of %i that leaves no room for a name', (length) => {
+    expect(() => orgResourceName('p'.repeat(length), 'acme')).toThrow(ClusterNamingError)
   })
 })
 
 describe('buildSpec', () => {
   it('projects every control-plane-owned field', () => {
     expect(buildSpec(SETTINGS, 'acme')).toEqual({
-      targetNamespace: 'ac-org-cm5exampleorgid0000000001',
       displayName: 'acme',
       suspend: false,
       daemon: {

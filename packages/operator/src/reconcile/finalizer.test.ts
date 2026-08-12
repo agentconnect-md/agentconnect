@@ -12,11 +12,11 @@ afterEach(closeFakeApiServers)
 
 const NS = 'test-ac-org-acme'
 
-function orgOf(targetNamespace = NS): AgentConnectOrg {
+function orgOf(name = 'acme', targetNamespace?: string): AgentConnectOrg {
   return {
-    metadata: { name: 'acme', resourceVersion: '1', deletionTimestamp: 'now', finalizers: [FINALIZER] },
+    metadata: { name, resourceVersion: '1', deletionTimestamp: 'now', finalizers: [FINALIZER] },
     spec: {
-      targetNamespace,
+      ...(targetNamespace ? { targetNamespace } : {}),
       daemon: { image: 'x', tier: 'small', credentialSecretName: 'ac-daemon-token' },
       runtime: { image: 'x', tiers: [] },
       suspend: false,
@@ -179,7 +179,14 @@ describe('reconcileDeletion', () => {
   })
 
   it('touches nothing outside the install prefix except the finalizer', async () => {
-    const { recorded } = await run({ org: orgOf('other-prefix-acme') })
+    const { recorded } = await run({ org: orgOf('acme', 'other-prefix-acme') })
+    expect(recorded).toHaveLength(1)
+    expect(recorded[0].path.includes('/agentconnectorgs/')).toBe(true)
+  })
+
+  // A CR name is a DNS subdomain, so dots are legal on the object and illegal in the namespace it derives.
+  it('touches nothing but the finalizer when the name derives no legal namespace', async () => {
+    const { recorded } = await run({ org: orgOf('acme.example') })
     expect(recorded).toHaveLength(1)
     expect(recorded[0].path.includes('/agentconnectorgs/')).toBe(true)
   })

@@ -38,7 +38,7 @@ import {
 function settingsDto(settings: ClusterExecutionSettings, controlNamespace: string): ClusterExecutionSettingsDtoT {
   return {
     enabled: settings.enabled,
-    targetNamespace: settings.targetNamespace,
+    resourceName: settings.resourceName,
     controlNamespace,
     suspend: settings.suspend,
     daemonImage: settings.daemonImage,
@@ -81,7 +81,7 @@ export function clusterExecutionRoutes(deps: HttpDeps) {
           tags: [Tag.Cluster],
           summary: 'Update cluster execution settings',
           description:
-            'Owner-only. Persists the settings and reconciles the organization’s AgentConnectOrg resource. `enabled: true` creates or converges it; `enabled: false` DELETES it, which hands the envelope — namespace included — to the operator’s deletion finalizer. Use `suspend` to quiesce without tearing down. `targetNamespace` and `credentialSecretName` are fixed at first enable and cannot be changed.',
+            'Owner-only. Persists the settings and reconciles the organization’s AgentConnectOrg resource. `enabled: true` creates or converges it; `enabled: false` DELETES it, which hands the envelope — namespace included — to the operator’s deletion finalizer. Use `suspend` to quiesce without tearing down. `resourceName` and `credentialSecretName` are fixed at first enable and cannot be changed; the envelope namespace is derived by the operator and read back from the status endpoint.',
           operationId: 'updateClusterExecution',
           body: UpdateClusterExecutionBody,
           response: { 200: ClusterExecutionSettingsDto, 403: ErrorDto, 502: ErrorDto }

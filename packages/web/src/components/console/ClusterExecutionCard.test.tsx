@@ -30,7 +30,7 @@ import { ClusterExecutionCard } from './ClusterExecutionCard'
 
 const SETTINGS: ClusterExecutionSettingsDto = {
   enabled: true,
-  targetNamespace: 'ac-org-acme',
+  resourceName: 'acme',
   controlNamespace: 'agentconnect-control',
   suspend: false,
   daemonImage: 'registry.example.test/daemon:1',
@@ -45,6 +45,7 @@ const SETTINGS: ClusterExecutionSettingsDto = {
 
 const STATUS: ClusterEnvelopeStatusDto = {
   present: true,
+  namespace: 'ac-org-acme',
   conditions: [
     { type: 'Ready', status: 'True' },
     { type: 'CredentialReady', status: 'False', reason: 'Pending' },

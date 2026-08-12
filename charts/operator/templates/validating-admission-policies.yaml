@@ -83,7 +83,7 @@ spec:
       message: an org namespace must carry the envelope org labels and a baseline-or-stricter Pod Security level
       reason: Forbidden
     # The only cluster-scoped object the envelope owns besides the namespace is the per-org
-    # TokenReview binding (`ac-tokenreview-<targetNamespace>`, packages/operator/src/reconcile/resources.ts).
+    # TokenReview binding (`ac-tokenreview-<org namespace>`, packages/operator/src/reconcile/resources.ts).
     - expression: >-
         variables.ns != '' || variables.isNamespace || (request.resource.group == 'rbac.authorization.k8s.io' &&
         request.resource.resource == 'clusterrolebindings' &&

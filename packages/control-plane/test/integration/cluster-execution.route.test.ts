@@ -10,7 +10,12 @@ import { K8sHttp } from '@agentconnect.md/k8s-client'
 import { closeFakeApiServers, fakeApiServer, type FakeRoute } from '@agentconnect.md/k8s-client/testing'
 import { prisma } from '../setup.db.js'
 import { buildHttpApp, TEST_API_KEY_PEPPER, type HttpApp } from '../fakes/build-http.js'
-import { AgentConnectOrgApi, ClusterExecutionService, ClusterSecretApi, orgNamespace } from '../../src/cluster/index.js'
+import {
+  AgentConnectOrgApi,
+  ClusterExecutionService,
+  ClusterSecretApi,
+  orgResourceName
+} from '../../src/cluster/index.js'
 import { ApiKeyCodec } from '../../src/registry/apiKey.js'
 import { ApiKeyService } from '../../src/registry/apiKeyService.js'
 import { systemClock } from '../../src/domain/clock.js'
@@ -35,10 +40,12 @@ const POLICY = {
   runtimeTiers: [{ name: 'small', warmReplicas: 0 }],
   controlPlaneUrl: 'wss://api.example.test/daemon/ws'
 }
-const TARGET_NAMESPACE = orgNamespace(POLICY.namespacePrefix, DEFAULT_ORG_ID)
+const RESOURCE_NAME = orgResourceName(POLICY.namespacePrefix, DEFAULT_ORG_ID)
+/** What the OPERATOR derives from the CR name; the fake server below publishes it on status. */
+const TARGET_NAMESPACE = `${POLICY.namespacePrefix}${RESOURCE_NAME}`
 /** What the service derives for an org that has never configured anything. */
 const DEFAULTS: ClusterExecutionDefaults = {
-  targetNamespace: TARGET_NAMESPACE,
+  resourceName: RESOURCE_NAME,
   daemonImage: POLICY.daemonImage,
   daemonTier: POLICY.daemonTier,
   credentialSecretName: 'ac-daemon-token',
@@ -47,7 +54,7 @@ const DEFAULTS: ClusterExecutionDefaults = {
   quota: { maxAgents: 0, cpu: '0', memory: '0', storage: '0' },
   egressPolicy: 'curated'
 }
-const RESOURCE_PATH = `/apis/agentconnect.md/v1alpha1/namespaces/${CONTROL_NAMESPACE}/agentconnectorgs/${TARGET_NAMESPACE}`
+const RESOURCE_PATH = `/apis/agentconnect.md/v1alpha1/namespaces/${CONTROL_NAMESPACE}/agentconnectorgs/${RESOURCE_NAME}`
 
 /** A per-request override; undefined falls through to the harness's default store. */
 type MaybeRoute = (req: Parameters<FakeRoute>[0]) => ReturnType<FakeRoute> | undefined
@@ -117,7 +124,8 @@ async function clusterApp(
     if (req.method === 'PATCH') {
       const body = JSON.parse(req.body) as { spec?: Record<string, unknown> }
       applied.push(body)
-      stored = { ...body, status: { observedGeneration: applied.length } }
+      // Standing in for the operator: it derives the namespace and publishes it on status.
+      stored = { ...body, status: { observedGeneration: applied.length, namespace: TARGET_NAMESPACE } }
     }
     if (req.method === 'DELETE' && !isSecret) stored = null
     const custom = options.route?.(req)
@@ -185,7 +193,7 @@ describe('GET /cluster-execution', () => {
       enabled: false,
       suspend: false,
       controlNamespace: CONTROL_NAMESPACE,
-      targetNamespace: TARGET_NAMESPACE,
+      resourceName: RESOURCE_NAME,
       daemonImage: POLICY.daemonImage,
       runtimeImage: POLICY.runtimeImage,
       credentialSecretName: 'ac-daemon-token',
@@ -223,7 +231,6 @@ describe('PUT /cluster-execution', () => {
 
     expect(calls).toContain(`PATCH ${RESOURCE_PATH}`)
     expect(applied.at(-1)?.spec).toMatchObject({
-      targetNamespace: TARGET_NAMESPACE,
       suspend: false,
       daemon: { image: 'registry.example.test/daemon:2.0.0', tier: 'small', credentialSecretName: 'ac-daemon-token' },
       runtime: { image: POLICY.runtimeImage, tiers: [{ name: 'medium', warmReplicas: 2 }] },
@@ -233,15 +240,18 @@ describe('PUT /cluster-execution', () => {
 
     const row = await prisma.orgClusterExecution.findUnique({ where: { orgId: DEFAULT_ORG_ID } })
     expect(row?.enabled).toBe(true)
-    expect(row?.targetNamespace).toBe(TARGET_NAMESPACE)
+    expect(row?.resourceName).toBe(RESOURCE_NAME)
+    // The namespace is the operator's alone: the applied spec never names one.
+    expect(applied.at(-1)?.spec).not.toHaveProperty('targetNamespace')
   })
 
-  it('keeps the derived namespace across later edits', async () => {
-    const { http, applied } = await clusterApp()
+  it('keeps addressing the same resource across later edits', async () => {
+    const { http, calls, applied } = await clusterApp()
     await http.app.inject({ method: 'PUT', url: CLUSTER, payload: { enabled: true } })
     await http.app.inject({ method: 'PUT', url: CLUSTER, payload: { suspend: true } })
     expect(applied).toHaveLength(2)
-    expect(applied[1]?.spec).toMatchObject({ targetNamespace: TARGET_NAMESPACE, suspend: true })
+    expect(applied[1]?.spec).toMatchObject({ suspend: true })
+    expect(calls.filter((call) => call === `PATCH ${RESOURCE_PATH}`)).toHaveLength(2)
   })
 
   it('applies a partial patch without resetting the untouched fields', async () => {
@@ -612,7 +622,7 @@ describe('DELETE /orgs/:orgId', () => {
     expect(await prisma.pendingEnvelopeTeardown.count()).toBe(0)
   })
 
-  it('keeps the tombstone — the only surviving record of the namespace — when the cluster refuses', async () => {
+  it('keeps the tombstone — the only surviving record of the envelope — when the cluster refuses', async () => {
     const { http } = await clusterApp({
       route: (req) =>
         req.method === 'DELETE'
@@ -626,7 +636,7 @@ describe('DELETE /orgs/:orgId', () => {
     const res = await http.app.inject({ method: 'DELETE', url: ORG })
     expect(res.statusCode).toBe(204)
     const pending = await prisma.pendingEnvelopeTeardown.findMany()
-    expect(pending.map((row) => row.targetNamespace)).toEqual([TARGET_NAMESPACE])
+    expect(pending.map((row) => row.resourceName)).toEqual([RESOURCE_NAME])
   })
 
   it('records the envelope even when this process has no cluster credentials', async () => {
@@ -641,7 +651,7 @@ describe('DELETE /orgs/:orgId', () => {
 
     const pending = await prisma.pendingEnvelopeTeardown.findMany()
     expect(pending.map((row) => row.orgId)).toEqual([DEFAULT_ORG_ID])
-    expect(pending[0]?.targetNamespace).toBe(TARGET_NAMESPACE)
+    expect(pending[0]?.resourceName).toBe(RESOURCE_NAME)
   })
 
   it('writes no tombstone for an org that never enabled cluster execution', async () => {

@@ -150,7 +150,7 @@ class FakeRepo implements OrgClusterExecutionRepo {
     }
     this.releaseHeld()
     this.rolloutPending = false
-    this.tombstones.push({ orgId: this.row.orgId, targetNamespace: this.row.targetNamespace })
+    this.tombstones.push({ orgId: this.row.orgId, resourceName: this.row.resourceName })
     this.row = {
       ...this.row,
       specRevision: this.row.specRevision + 1,
@@ -240,8 +240,15 @@ class FakeApi implements OrgResourceApi {
     return { spec }
   }
 
+  /** The namespace is the OPERATOR's to derive and publish; absent until it has. */
+  namespaceStatus: string | undefined = 'ac-org-acme'
+
   async get(): Promise<AgentConnectOrg | null> {
-    return this.present ? { metadata: { uid: 'uid-1', resourceVersion: '1' } } : null
+    if (!this.present) return null
+    return {
+      metadata: { uid: 'uid-1', resourceVersion: '1' },
+      ...(this.namespaceStatus ? { status: { namespace: this.namespaceStatus } } : {})
+    }
   }
 
   failDelete = false
@@ -265,7 +272,7 @@ class FakeSecrets implements OrgSecretApi {
   duringApply?: () => void
 
   async publishCredential(namespace: string, name: string, seq: number, configJson: string): Promise<void> {
-    if (this.namespaceMissing) throw new NamespaceNotReadyError(namespace)
+    if (this.namespaceMissing) throw NamespaceNotReadyError.missing(namespace)
     this.duringApply?.()
     // Same cluster-side ordering guard the real client enforces.
     if (seq < this.publishedSeq_) throw new StaleCredentialWriteError(seq, this.publishedSeq_)
@@ -338,7 +345,7 @@ describe('ClusterExecutionService.configure', () => {
     const settings = await service.configure(ORG, { enabled: true })
     expect(settings.enabled).toBe(true)
     expect(api.applied).toHaveLength(1)
-    expect(api.applied[0]).toMatchObject({ targetNamespace: 'ac-org-acme', displayName: 'acme' })
+    expect(api.applied[0]).toMatchObject({ displayName: 'acme' })
   })
 
   it('re-applies when a concurrent write superseded the snapshot it just applied', async () => {
@@ -370,7 +377,7 @@ describe('ClusterExecutionService.configure', () => {
     const { service, api } = build()
     await service.configure(ORG, { enabled: true })
     await service.configure(ORG, { enabled: false })
-    expect(api.deleted).toEqual(['ac-org-acme'])
+    expect(api.deleted).toEqual(['acme'])
     expect(api.applied).toHaveLength(1)
   })
 
@@ -384,7 +391,7 @@ describe('ClusterExecutionService.configure', () => {
     const settings = await service.configure(ORG, { enabled: true })
 
     expect(api.applied).toHaveLength(1)
-    expect(api.deleted).toEqual(['ac-org-acme'])
+    expect(api.deleted).toEqual(['acme'])
     expect(settings.enabled).toBe(false)
   })
 
@@ -402,7 +409,7 @@ describe('ClusterExecutionService.configure', () => {
     expect(settings).toMatchObject({
       enabled: false,
       specRevision: 0,
-      targetNamespace: 'ac-org-acme',
+      resourceName: 'acme',
       daemonImage: POLICY.daemonImage,
       runtimeImage: POLICY.runtimeImage
     })
@@ -451,6 +458,17 @@ describe('ClusterExecutionService.issueCredential', () => {
     // Daemon keys never expire, so an unpublished one must not survive.
     expect(keys.revoked).toEqual(['key-1'])
     expect(repo.revocations).toEqual([])
+  })
+
+  it('refuses to publish before the operator has derived and published the namespace', async () => {
+    const { service, api, secrets, keys } = build()
+    await service.configure(ORG, { enabled: true })
+    api.namespaceStatus = undefined // the envelope namespace is not claimed yet
+
+    await expect(service.issueCredential(ORG)).rejects.toThrow(NamespaceNotReadyError)
+    expect(secrets.written).toEqual([])
+    // Read before minting: a key with nowhere to be published is a key to leak.
+    expect(keys.minted).toBe(0)
   })
 
   it('reuses the daemon a failed first attempt provisioned, rather than making another', async () => {
@@ -735,7 +753,7 @@ describe('ClusterExecutionService.issueCredential', () => {
     keys.failRevoke = false
     expect(await service.drainTeardowns()).toBe(1)
     expect(await service.drainKeyRevocations()).toBe(1)
-    expect(api.deleted).toContain('ac-org-acme')
+    expect(api.deleted).toContain('acme')
     expect(keys.revoked).toEqual([issued.revision])
   })
 
@@ -757,17 +775,17 @@ describe('ClusterExecutionService.drainTeardowns', () => {
   it('deletes each deleted org’s resource and drops its tombstone', async () => {
     const { service, repo, api } = build()
     repo.tombstones = [
-      { orgId: 'gone-1', targetNamespace: 'ac-org-gone-1' },
-      { orgId: 'gone-2', targetNamespace: 'ac-org-gone-2' }
+      { orgId: 'gone-1', resourceName: 'gone-1' },
+      { orgId: 'gone-2', resourceName: 'gone-2' }
     ]
     expect(await service.drainTeardowns()).toBe(2)
-    expect(api.deleted).toEqual(['ac-org-gone-1', 'ac-org-gone-2'])
+    expect(api.deleted).toEqual(['gone-1', 'gone-2'])
     expect(repo.tombstones).toEqual([])
   })
 
   it('keeps a tombstone whose resource could not be deleted, for the next pass', async () => {
     const { service, repo, api } = build()
-    repo.tombstones = [{ orgId: 'gone', targetNamespace: 'ac-org-gone' }]
+    repo.tombstones = [{ orgId: 'gone', resourceName: 'gone' }]
     api.failDelete = true
     // Swallowed per row: one unreachable envelope must not hold up the others,
     // and callers that only recorded an intent must not fail on the sweep.
@@ -796,7 +814,7 @@ describe('ClusterExecutionService.drainTeardowns', () => {
     api.deleted.length = 0
 
     // A drain that had already listed the entry must not act on it now.
-    repo.tombstones = [{ orgId: ORG, targetNamespace: 'ac-org-acme' }]
+    repo.tombstones = [{ orgId: ORG, resourceName: 'acme' }]
     expect(await service.drainTeardowns()).toBe(0)
     expect(api.deleted).toEqual([])
   })
@@ -806,12 +824,12 @@ describe('ClusterExecutionService.drainTeardowns', () => {
     await service.configure(ORG, { enabled: true })
     await service.configure(ORG, { enabled: false })
     api.deleted.length = 0
-    repo.tombstones = [{ orgId: ORG, targetNamespace: 'ac-org-acme' }]
+    repo.tombstones = [{ orgId: ORG, resourceName: 'acme' }]
     await repo.beginCredentialRotation(ORG, 'peer-token', new Date(), 60_000)
 
     expect(await service.drainTeardowns()).toBe(0)
     await repo.endCredentialRotation(ORG, 'peer-token')
     expect(await service.drainTeardowns()).toBe(1)
-    expect(api.deleted).toEqual(['ac-org-acme'])
+    expect(api.deleted).toEqual(['acme'])
   })
 })

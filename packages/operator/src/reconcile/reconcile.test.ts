@@ -16,7 +16,6 @@ function orgOf(suspend: boolean): AgentConnectOrg {
   return {
     metadata: { name: 'acme', resourceVersion: '1', generation: 1, finalizers: [FINALIZER] },
     spec: {
-      targetNamespace: NS,
       suspend,
       daemon: { image: 'ghcr.io/example/daemon:v1', tier: 'small', credentialSecretName: 'ac-daemon-token' },
       runtime: { image: 'ghcr.io/example/runtime:v1', tiers: [] },

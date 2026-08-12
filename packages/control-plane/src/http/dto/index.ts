@@ -3253,8 +3253,10 @@ export const ClusterQuotaDto = z.object({
 
 export const ClusterExecutionSettingsDto = z.object({
   enabled: z.boolean(),
-  /** Derived once from the install prefix and the org id; immutable afterwards. */
-  targetNamespace: z.string(),
+  /** The organization's AgentConnectOrg name, derived once from the org id. The
+   *  envelope namespace is NOT here — the operator derives it and publishes it on
+   *  the resource, so the status endpoint is where a caller reads it. */
+  resourceName: z.string(),
   /** The operator install's control namespace, where the resource lives. */
   controlNamespace: z.string(),
   suspend: z.boolean(),

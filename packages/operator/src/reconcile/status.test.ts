@@ -139,8 +139,8 @@ describe('observeWorkloads', () => {
     const { AgentConnectOrgSpecSchema } = await import('../crd/types.js')
     const input = {
       orgName: 'acme',
+      namespace: 'test-ac-org-acme',
       spec: AgentConnectOrgSpecSchema.parse({
-        targetNamespace: 'test-ac-org-acme',
         suspend,
         daemon: { image: 'ghcr.io/example/daemon:v2', tier: 'small', ...daemonSpec },
         runtime: { image: 'x', tiers: [] }

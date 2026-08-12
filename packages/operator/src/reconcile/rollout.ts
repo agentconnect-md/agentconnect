@@ -52,7 +52,7 @@ async function patchSandbox(
  */
 export async function reconcileRollout(ctx: ReconcileContext, input: EnvelopeInputs, obs: Observations): Promise<void> {
   if (!obs.namespaceReady || input.spec.suspend) return
-  const ns = input.spec.targetNamespace
+  const ns = input.namespace
   const target = input.spec.runtime.image
   const rolloutId = createHash('sha256').update(target).digest('hex').slice(0, 8)
   const now = (ctx.clock ?? systemClock).now()

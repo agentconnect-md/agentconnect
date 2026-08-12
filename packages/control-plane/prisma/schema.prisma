@@ -2756,9 +2756,11 @@ enum ClusterEgressPolicy {
 /// there. Status is never mirrored here: it is read live from the CR, so a row
 /// can never disagree with the cluster.
 ///
-/// `targetNamespace` is derived once from the deployment's namespace prefix and
-/// the org id, and is IMMUTABLE afterwards — the CRD marks the field immutable
-/// too, so a rewrite here could never be applied.
+/// `resourceName` — the CR's name in the control namespace — is derived once
+/// from the org id and never rewritten: it is the handle every later call
+/// addresses the envelope by. The envelope NAMESPACE is not stored at all; the
+/// operator derives it as `<install prefix><CR name>` and publishes it on
+/// `status.namespace`, which is the only place a consumer learns it.
 model OrgClusterExecution {
   orgId String @id
   /// False ⇒ the org has no CR in the control namespace. Flipping to false
@@ -2770,7 +2772,7 @@ model OrgClusterExecution {
   /// interleaved writes can leave the row and the resource permanently apart —
   /// the operator reconciles the CR, not this table.
   specRevision         Int                 @default(1)
-  targetNamespace      String              @unique
+  resourceName         String              @unique
   /// Quiesce without tearing down: daemon to zero, sandboxes drained.
   suspend              Boolean             @default(false)
   daemonImage          String
@@ -2829,9 +2831,9 @@ model OrgClusterExecution {
 
 /// One row per deleted organization that still owns an `AgentConnectOrg`.
 /// Deleting the CR is a remote effect that cannot join the delete transaction,
-/// and the cascade above removes the only record of the immutable
-/// `targetNamespace` — so without this tombstone the operator would keep a
-/// namespace, daemon, and sandboxes alive that nothing left could name.
+/// and the cascade above removes the only record of its `resourceName` — so
+/// without this tombstone the operator would keep a namespace, daemon, and
+/// sandboxes alive that nothing left could name.
 ///
 /// Written inside the same transaction that deletes the organization, which is
 /// what makes it airtight: an enable that commits first is visible to that read,
@@ -2843,9 +2845,9 @@ model OrgClusterExecution {
 /// Deliberately NO foreign key: the row's whole purpose is to outlive the
 /// organization it names.
 model PendingEnvelopeTeardown {
-  orgId           String   @id // the deleted org (identity + idempotency key)
-  targetNamespace String // the envelope namespace, which is also the CR name
-  createdAt       DateTime @default(now()) @db.Timestamptz(6)
+  orgId        String   @id // the deleted org (identity + idempotency key)
+  resourceName String // the AgentConnectOrg to delete, in the control namespace
+  createdAt    DateTime @default(now()) @db.Timestamptz(6)
 
   @@map("pending_envelope_teardown")
 }

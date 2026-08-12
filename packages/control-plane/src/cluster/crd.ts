@@ -34,8 +34,14 @@ export const CONDITION_TYPES = [
 
 export type ConditionType = (typeof CONDITION_TYPES)[number]
 
+/**
+ * What the control plane emits. `targetNamespace` is deliberately absent: the CRD
+ * offers it as a deployment-level override, but an org provisioned from here takes
+ * the operator's derived `<install prefix><CR name>`. Server-side apply only prunes
+ * fields this manager previously owned, so an override written by hand survives
+ * every apply below — and the resolved name comes back on `status.namespace`.
+ */
 export interface AgentConnectOrgSpec {
-  targetNamespace: string
   displayName?: string
   suspend: boolean
   daemon: {
@@ -63,6 +69,8 @@ export interface AgentConnectOrgCondition {
 
 export interface AgentConnectOrgStatus {
   observedGeneration?: number
+  /** The envelope namespace the operator resolved — `<install prefix><CR name>` unless
+   *  the CR overrides it — published here, the only place a consumer learns it. */
   namespace?: string
   conditions?: AgentConnectOrgCondition[]
   daemon?: { ready: boolean; image?: string }
