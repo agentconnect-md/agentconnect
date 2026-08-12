@@ -13,6 +13,58 @@ orgNamespacePrefix: ac-org-
 # the operator stamps a per-org copy for every tier in spec.runtime.tiers.
 masterTemplatePrefix: ac-runtime-
 
+# The master SandboxTemplates themselves, one per entry, rendered into the release
+# namespace as `<masterTemplatePrefix><name>`. They are BLUEPRINTS, never an org's
+# own objects: the operator deep-copies the master a tier names into that org's
+# namespace and overrides only the container image, the shim endpoint and the
+# network policy, so everything else below is what that org's sandbox pods run
+# with. A tier an AgentConnectOrg names with no master here is skipped with a
+# warning — that org gets no warm pool and can never launch a sandbox — so these
+# names are the menu `spec.runtime.tiers[].name` chooses from. They mirror the
+# operator's built-in daemon tiers, which is what the control plane's
+# CLUSTER_DEFAULT_RUNTIME_TIER falls back to when it is left unset.
+runtimeTiers:
+  - name: small
+    # Placeholder: the operator replaces it with the org's spec.runtime.image.
+    image: ghcr.io/agentconnect-md/runtime-sandbox:latest
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        cpu: '2'
+        memory: 4Gi
+    # The per-sandbox workspace claim (also the runtime's HOME). Same className
+    # caveat as daemonStorage: empty means the cluster default StorageClass, which
+    # must be a cluster-wide class rather than a node-local provisioner.
+    workspace:
+      className: ''
+      size: 10Gi
+  - name: medium
+    image: ghcr.io/agentconnect-md/runtime-sandbox:latest
+    resources:
+      requests:
+        cpu: '1'
+        memory: 2Gi
+      limits:
+        cpu: '4'
+        memory: 8Gi
+    workspace:
+      className: ''
+      size: 20Gi
+  - name: large
+    image: ghcr.io/agentconnect-md/runtime-sandbox:latest
+    resources:
+      requests:
+        cpu: '2'
+        memory: 4Gi
+      limits:
+        cpu: '8'
+        memory: 16Gi
+    workspace:
+      className: ''
+      size: 40Gi
+
 # Namespaces an org's daemon may reach on any port — where this deployment's
 # control plane and relay actually run. This is network REACHABILITY and nothing
 # else: the control plane's ADDRESS reaches the daemon on the AgentConnectOrg,

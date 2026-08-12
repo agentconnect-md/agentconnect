@@ -1,0 +1,89 @@
+{{- range .Values.runtimeTiers }}
+{{- $tier := required "each runtimeTiers entry needs a name" .name }}
+{{- $workspace := required (printf "runtimeTiers[%s] needs a workspace block" $tier) .workspace }}
+---
+# Master SandboxTemplate for the `{{ $tier }}` tier — a blueprint in the control namespace,
+# never an org's own object and never claimed against directly. The operator deep-copies it
+# into an org namespace when that org's spec.runtime.tiers names this tier, overriding the
+# container image, AC_SHIM_ENDPOINT and the whole networkPolicy; everything else here is
+# inherited verbatim, so this is where an install states what a sandbox pod actually is.
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxTemplate
+metadata:
+  name: {{ $.Values.masterTemplatePrefix }}{{ $tier }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: agentconnect-operator
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+spec:
+  # A SandboxClaim may not add volumes of its own: pool pods are stamped before any user
+  # exists, and a claim carrying volumeClaimTemplates bypasses warm-pool adoption entirely.
+  volumeClaimTemplatesPolicy: Disallowed
+  networkPolicyManagement: Managed
+  # Placeholder: the operator rewrites this wholesale from the org's spec.egressPolicy, and
+  # an empty egress list is the safe thing for a blueprint to carry until it does.
+  networkPolicy:
+    egress: []
+  # One claim per sandbox, mounted below at the workspace root the runtime image fixes.
+  volumeClaimTemplates:
+    - metadata:
+        name: workspace
+      spec:
+        accessModes: ['ReadWriteOnce']
+        {{- with $workspace.className }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ required (printf "runtimeTiers[%s] needs workspace.size" $tier) $workspace.size | quote }}
+  podTemplate:
+    spec:
+      # Created per org by the operator with zero RoleBindings: the token below proves which
+      # pod this is to its own daemon, and grants nothing at the Kubernetes API.
+      serviceAccountName: ac-runtime
+      # Required by the install's ac-sandbox-baseline admission policy, which admits exactly
+      # one service-account token in a sandbox pod — the projected one at the bottom.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        # So the provisioned workspace volume is writable by the runtime user.
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        # First container by position — that is the one the operator retargets per org.
+        - name: runtime
+          # Placeholder: the operator replaces it with the org's spec.runtime.image.
+          image: {{ required (printf "runtimeTiers[%s] needs an image" $tier) .image | quote }}
+          env:
+            # Placeholder: rewritten per org to that org daemon's shim Service.
+            - name: AC_SHIM_ENDPOINT
+              value: ''
+          {{- with .resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ['ALL']
+          volumeMounts:
+            # /agent is HOME and workspace root in the runtime image (AC_SHIM_WORKSPACE_ROOT).
+            - name: workspace
+              mountPath: /agent
+            - name: ac-identity
+              mountPath: /var/run/ac-identity
+              readOnly: true
+      volumes:
+        # The pod's whole credential: audience-restricted, kubelet-rotated, and useless
+        # anywhere but the shim endpoint of the daemon that launched this pod.
+        - name: ac-identity
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  audience: ac-daemon-callback
+                  expirationSeconds: 3600
+{{- end }}

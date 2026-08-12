@@ -140,6 +140,60 @@ Both settings apply when the claim is created. Kubernetes rejects a class change
 on an existing PVC, so changing them moves new orgs only; an org already
 provisioned keeps its volume until that volume is deleted.
 
+## Runtime tiers — the master SandboxTemplates
+
+`runtimeTiers` renders one `SandboxTemplate` per entry into the release
+namespace, named `<masterTemplatePrefix><name>` — `ac-runtime-small` and friends
+by default:
+
+```yaml
+runtimeTiers:
+  - name: small
+    image: ghcr.io/agentconnect-md/runtime-sandbox:latest
+    resources:
+      requests: { cpu: 500m, memory: 1Gi }
+      limits: { cpu: '2', memory: 4Gi }
+    workspace:
+      className: '' # empty = the cluster default StorageClass
+      size: 10Gi
+```
+
+**These are blueprints, not per-org objects.** Nothing claims against them and no
+pod is ever born from one directly. When an `AgentConnectOrg` names a tier in
+`spec.runtime.tiers[]`, the operator deep-copies that master into the org's
+namespace as `ac-runtime-<tier>`, pairs it with a `SandboxWarmPool`, and
+overrides exactly three things:
+
+| Replaced per org            | With                                                                             |
+| --------------------------- | -------------------------------------------------------------------------------- |
+| the first container's image | the org's `spec.runtime.image`                                                   |
+| `AC_SHIM_ENDPOINT`          | that org daemon's shim Service, which has no address until the envelope exists   |
+| `spec.networkPolicy`        | the egress rules for the org's `spec.egressPolicy`, wholesale rather than merged |
+
+Everything else is inherited verbatim, so the master is where an install states
+what a sandbox pod actually is: `automountServiceAccountToken: false` and a
+projected, audience-restricted `serviceAccountToken` (the pod's only credential,
+and the only one the `ac-sandbox-baseline` policy admits), a non-root
+`securityContext` matching the runtime image's fixed uid, the workspace
+`volumeClaimTemplates` entry mounted at the workspace root the image fixes, and
+`volumeClaimTemplatesPolicy: Disallowed` — a `SandboxClaim` carrying volumes of
+its own would bypass warm-pool adoption, and pool pods are stamped before any
+user exists.
+
+A tier an org names with **no master** is not survivable: the operator skips it
+with a warning, so that org gets no template and no warm pool and can never
+launch a sandbox. The names here are therefore the menu
+`spec.runtime.tiers[].name` chooses from, and the control plane's
+`CLUSTER_DEFAULT_RUNTIME_TIER` (falling back to `CLUSTER_DEFAULT_TIER`, `small`)
+must name one of them.
+
+**First install on a cluster with no agent-sandbox.** Helm resolves every kind in
+a manifest before it creates anything, so one release cannot both install the
+`SandboxTemplate` CRD and create SandboxTemplates against it. Install once with
+`--set runtimeTiers=null`, then `helm upgrade` with the tiers; the second pass
+sees the CRD the first one installed. Clusters that already run agent-sandbox —
+the `installCRD: false` case — are unaffected.
+
 ## Install
 
 ```bash
