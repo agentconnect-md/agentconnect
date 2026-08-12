@@ -263,7 +263,9 @@ maintainer action. A maintainer can then request execution through:
 
 - the Check action;
 - a comment mention; or
-- GitHub's reviewer request or re-request controls.
+- an explicit native App-reviewer request event. GitHub's normal reviewer picker
+  cannot select a third-party App bot, so its Request/Re-request control is not a
+  general AgentConnect entry point.
 
 Each path revalidates current repository authority before opening a review
 generation.

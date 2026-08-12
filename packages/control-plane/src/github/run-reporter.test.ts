@@ -913,12 +913,16 @@ describe('GithubRunReporter', () => {
   })
 
   it.each([
+    ['success', 'No blocking findings'],
+    ['action_required', 'Review findings need attention'],
+    ['neutral', 'No blocking verdict'],
     ['skipped', 'Review was not run'],
-    ['failure', 'Review could not be completed']
-  ] as const)('publishes a Request review action for every active %s Check', async (desiredState, title) => {
+    ['failure', 'Review could not be completed'],
+    ['timed_out', 'Review exceeded its time limit']
+  ] as const)('publishes a Request review action for every active terminal %s Check', async (desiredState, title) => {
     const p = projection({
       desiredState,
-      observedState: 'in_progress',
+      observedState: desiredState,
       checkRunId: '90071992547409931'
     })
     const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
