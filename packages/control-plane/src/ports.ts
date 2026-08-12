@@ -210,6 +210,9 @@ export interface DaemonView {
   /** Human-assigned display name (console-set); null until named. */
   name: string | null
   agentVersion: string | null
+  /** True ⇒ an operator-managed pod: its version is its container image, so the console
+   *  offers no restart and an upgrade repoints the org's `AgentConnectOrg` instead. */
+  cluster: boolean
   status: DaemonStatus
   health: HealthState
   capabilities: DaemonCapabilities

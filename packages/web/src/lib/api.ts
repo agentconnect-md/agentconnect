@@ -1027,6 +1027,10 @@ export interface DaemonViewDto {
   canManageSharing: boolean
   /** Whether the caller may command restart/upgrade on this daemon (org owner only). */
   canManageLifecycle: boolean
+  /** True ⇒ an operator-managed pod: no restart to command, and an upgrade repoints the
+   *  org's execution envelope instead of reinstalling from npm. Optional so a console
+   *  built against an older control plane still parses the row. */
+  cluster?: boolean
 }
 
 /** The console-settable "Expire sessions" window (PATCH /daemons/:id):
@@ -1960,6 +1964,7 @@ export function daemonFromDto(d: DaemonViewDto): DaemonRow {
     lifecycleOp: d.lifecycleOp ?? null,
     lifecycleStatus: lifecycleStatus(d.lifecycleOp) ?? null,
     canManageLifecycle: d.canManageLifecycle ?? false,
+    cluster: d.cluster ?? false,
     // Flag an available upgrade only when both versions parse and latest > running.
     upgradeAvailable: isUpgradeAvailable(d.agentVersion, d.latestVersion),
     // Keep connection/readiness operational. Presentation surfaces combine this

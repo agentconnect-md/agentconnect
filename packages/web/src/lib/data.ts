@@ -1845,6 +1845,10 @@ export interface DaemonRow {
   lifecycleOp: DaemonLifecycleOp | null
   /** Whether the caller may command restart/upgrade on this daemon (org owner only). */
   canManageLifecycle: boolean
+  /** True ⇒ an operator-managed pod in this org's cluster envelope. Its version is its
+   *  container image, so Restart is not offered (Kubernetes relaunches it) and Upgrade
+   *  repoints the envelope rather than reinstalling from npm — including while offline. */
+  cluster: boolean
   /** Actual daemon connection/readiness. Never replaced by a presentation-only lifecycle state. */
   status: ConnectionStatusKey
   /** Planned lifecycle presentation while the durable operation is pending. */

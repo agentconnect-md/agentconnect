@@ -71,6 +71,7 @@ function toView(d: DaemonRecord, profiles: RuntimeProfileRecord[]): DaemonView {
     host: d.host,
     name: d.name,
     agentVersion: d.agentVersion,
+    cluster: d.cluster,
     status: d.status,
     health: d.health,
     capabilities: normCapabilities(d.capabilities),
@@ -104,7 +105,8 @@ export class DaemonRegistryService implements DaemonRegistry {
     await this.daemons.applyRegister(daemonId, {
       host: req.host,
       capabilities: req.capabilities,
-      maxAgents: req.maxAgents
+      maxAgents: req.maxAgents,
+      cluster: req.cluster
     })
   }
 

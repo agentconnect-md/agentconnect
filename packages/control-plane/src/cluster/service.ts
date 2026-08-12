@@ -29,6 +29,7 @@ import type {
   OrgRepo
 } from '../persistence/ports.js'
 import type { OrgResourceApi } from './org-api.js'
+import { imageRepository, imageTag, isNewerVersion, withImageTag } from './image.js'
 import { ABSENT_ENVELOPE, buildSpec, orgResourceName, projectStatus, type ClusterEnvelopeStatus } from './spec.js'
 
 /** Bounded re-apply passes; each concurrent writer runs its own, so this only
@@ -76,6 +77,33 @@ export class ClusterTransitionInProgressError extends Error {
   }
 }
 
+/** Raised when an org has no live envelope to repoint at another daemon version. */
+export class ClusterEnvelopeNotEnabledError extends Error {
+  constructor() {
+    super('cluster execution is not enabled for this organization')
+    this.name = 'ClusterEnvelopeNotEnabledError'
+  }
+}
+
+/** Raised when an envelope's daemon image is pinned by digest, so there is no tag to move. */
+export class ClusterImageNotVersionedError extends Error {
+  constructor(readonly image: string) {
+    super(`the envelope's daemon image "${image}" is not version-tagged`)
+    this.name = 'ClusterImageNotVersionedError'
+  }
+}
+
+/** What one deployment-wide version sweep did; `skipped` counts envelopes left deliberately alone. */
+export interface ClusterVersionSweep {
+  /** The image every moved envelope was pointed at. */
+  target: string
+  scanned: number
+  /** Org ids whose envelope now names `target`. */
+  moved: string[]
+  skipped: number
+  failed: { orgId: string; err: unknown }[]
+}
+
 export class ClusterExecutionService {
   /** Where the last re-apply pass stopped; null ⇒ start from the top of the fleet.
    *  Per process, deliberately: two replicas sweeping from different offsets both
@@ -119,6 +147,72 @@ export class ClusterExecutionService {
     if (patch.enabled === true) return this.enable(orgId, patch)
     await this.repo.upsert(orgId, this.defaults(orgId), patch)
     return this.converge(orgId)
+  }
+
+  /**
+   * Repoint one org's envelope daemon at a published version — the cluster half of a
+   * console-commanded daemon upgrade. A machine daemon reinstalls itself from npm; a pod
+   * cannot, so the version moves by rewriting the tag on its image and letting the
+   * operator's `Recreate` rollout replace the pod.
+   *
+   * It goes through `configure` rather than patching the CR directly, and that is the
+   * point: the row is desired state and {@link ClusterExecutionService.resyncEnvelopes}
+   * renders the spec from it, so an image written onto the resource alone would be
+   * reverted by the next pass. Returns the applied image reference.
+   *
+   * Throws `InvalidImageTagError` for a `version` that is not a usable tag — the guard
+   * lives in `withImageTag`, so this cannot be reached by forgetting to validate a route.
+   */
+  async setDaemonVersion(orgId: OrgId, version: string): Promise<string> {
+    const settings = await this.repo.get(orgId)
+    if (!settings?.enabled) throw new ClusterEnvelopeNotEnabledError()
+    // A digest pin has no tag to move, and silently replacing it with one would discard
+    // an exact pin somebody chose. Refuse instead of pretending the upgrade happened.
+    if (imageTag(settings.daemonImage) === null) throw new ClusterImageNotVersionedError(settings.daemonImage)
+    const daemonImage = withImageTag(settings.daemonImage, version)
+    if (daemonImage !== settings.daemonImage) await this.configure(orgId, { daemonImage })
+    return daemonImage
+  }
+
+  /**
+   * Move every enabled envelope onto `version` — the deployment-wide sweep the control
+   * plane runs at boot, so a release published while it was down reaches the fleet
+   * without an operator visiting each organization.
+   *
+   * Two envelopes are deliberately left alone: one whose daemon image names another
+   * repository than this install configured (somebody pointed that org elsewhere, and
+   * this channel says nothing about that registry's tags), and one whose current tag is
+   * not older than the target — a floating tag, a digest, or a version already ahead.
+   * Rolling a fleet BACKWARDS on a restart is the one outcome worse than staying stale.
+   *
+   * Returns a tally for the caller to log.
+   */
+  async alignDaemonVersion(version: string): Promise<ClusterVersionSweep> {
+    const installRepository = imageRepository(this.policy.daemonImage)
+    const target = withImageTag(this.policy.daemonImage, version)
+    const rows = await this.repo.listEnabled()
+    const sweep: ClusterVersionSweep = { target, scanned: rows.length, moved: [], skipped: 0, failed: [] }
+    for (const row of rows) {
+      const current = imageTag(row.daemonImage)
+      if (
+        current === null ||
+        imageRepository(row.daemonImage) !== installRepository ||
+        !isNewerVersion(version, current)
+      ) {
+        sweep.skipped += 1
+        continue
+      }
+      // Per-org and best-effort: one unreachable API server, or one org whose envelope is
+      // mid-transition, must not stop the rest of the fleet from moving.
+      try {
+        await this.configure(OrgId(row.orgId), { daemonImage: target })
+        sweep.moved.push(row.orgId)
+      } catch (err) {
+        // The next boot re-runs the sweep; nothing durable is owed in between.
+        sweep.failed.push({ orgId: row.orgId, err })
+      }
+    }
+    return sweep
   }
 
   /**

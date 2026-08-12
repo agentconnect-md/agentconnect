@@ -65,6 +65,20 @@ export class DaemonReleaseResolver {
     return { channel: this.channel, latestVersion: this.version, availableVersions: this.availableVersions() }
   }
 
+  /**
+   * Await a refresh attempt, then report the best-known release. `get()` deliberately
+   * never blocks because it serves a request; a one-shot boot task has nobody waiting on
+   * it and everything to lose from reading an empty cache, so it uses this instead. Still
+   * best-effort: a failed fetch resolves to whatever was already known (possibly null).
+   */
+  async resolve(): Promise<DaemonRelease> {
+    const now = this.clock.now()
+    if (!this.inFlight && (this.lastAttemptMs === 0 || now - this.lastAttemptMs > this.ttlMs)) {
+      await this.refresh(now)
+    }
+    return { channel: this.channel, latestVersion: this.version, availableVersions: this.availableVersions() }
+  }
+
   /** Distinct versions behind the published dist-tags, channel version first, then the
    *  rest in a stable descending order — the console's upgrade-target options.
    *

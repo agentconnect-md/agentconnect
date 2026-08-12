@@ -62,7 +62,8 @@ async function seedDaemon(features = ['worktree-iso']) {
   await repo.applyRegister(DaemonId(DAEMON), {
     host: 'macbook-pro',
     capabilities: { platforms: ['slack'], runtimes: ['claude', 'codex'], acp: true, features },
-    maxAgents: 3
+    maxAgents: 3,
+    cluster: false
   })
 }
 
@@ -1002,6 +1003,7 @@ describe('lifecycle op closure on register→READY', () => {
     host: 'macbook-pro',
     capabilities: { platforms: [] as never[], runtimes: [] as string[], acp: true, features: [] as string[] },
     maxAgents: 3,
+    cluster: false,
     localState: { assignments: [], crons: [], leases: [], agents: [], integrations: [], stagedAgents: [] }
   }
   const makeRegistry = (ops: PgDaemonLifecycleOpRepo) =>

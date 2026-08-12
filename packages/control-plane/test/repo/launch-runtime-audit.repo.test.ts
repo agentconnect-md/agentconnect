@@ -178,7 +178,8 @@ describe('RuntimeProfileRepo — snapshot seq fence (real Postgres)', () => {
     await new PgDaemonRepo(prisma).applyRegister(DaemonId(DAEMON), {
       host: 'host-1',
       capabilities: { platforms: ['slack'], runtimes: ['claude'], acp: true, features: [] },
-      maxAgents: 4
+      maxAgents: 4,
+      cluster: false
     })
     expect(await storedSeq()).toBeNull()
     expect(await profiles.replaceAll(DaemonId(DAEMON), [profile('claude')], at, 1)).toBe(true)

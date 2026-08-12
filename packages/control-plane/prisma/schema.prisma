@@ -373,6 +373,11 @@ model Daemon {
   /// from the org, so an envelope torn down and rebuilt presents the same identity and resolves
   /// back to this row — its placements and session history survive re-provisioning.
   clusterIdentity String? @unique
+  /// `RegisterReq.cluster` — the daemon's own report that it is an operator-managed pod, so its
+  /// version is its container image. Separate from `clusterIdentity` (which says WHO it is): this
+  /// says what its lifecycle is, and it is what the console reads to route upgrades through the
+  /// org's `AgentConnectOrg` instead of an npm command.
+  cluster       Boolean @default(false)
   attestationFp String? // 🅼 last accepted attestation digest
   capabilities  Json    @default("{}") @db.JsonB // {platforms[],runtimes[],acp,features[]}
   mcpServers    Json    @default("[]") @db.JsonB // facts/daemon-runtimes MCP-server list (FactsMcpServer[] = {name,transport}); replaced whole per frame

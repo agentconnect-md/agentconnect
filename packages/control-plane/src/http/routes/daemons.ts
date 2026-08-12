@@ -37,6 +37,13 @@ import type { DaemonLifecycleOpRecord, DaemonLifecycleOpRepo } from '../../persi
 import { provisionDaemonConnect } from '../onboarding.js'
 import { detachDaemon } from '../daemon-removal.js'
 import { Tag } from '../plugins/openapi.js'
+import { sendClusterFailure } from '../cluster-failure.js'
+import {
+  ClusterEnvelopeNotEnabledError,
+  ClusterImageNotVersionedError,
+  ClusterTransitionInProgressError,
+  InvalidImageTagError
+} from '../../cluster/index.js'
 
 /** Drain + (install +) relaunch + re-register budget for a CP-commanded lifecycle op.
  *  A still-`pending` op older than this reads as no-longer-in-flight and is closed
@@ -82,6 +89,22 @@ export async function retryArm(
     }
   }
   return false
+}
+
+/** A refusal the caller can act on (a disabled envelope, a digest pin, a peer mid-transition)
+ *  rather than an upstream fault — 409, not 502. */
+function isClusterRefusal(error: unknown): boolean {
+  return (
+    error instanceof ClusterEnvelopeNotEnabledError ||
+    error instanceof ClusterImageNotVersionedError ||
+    error instanceof ClusterTransitionInProgressError
+  )
+}
+
+/** Outcome text recorded on an op whose image change never landed. */
+function clusterUpgradeFailure(error: unknown): string {
+  const detail = error instanceof Error ? error.message : 'unknown error'
+  return `the control plane could not repoint the envelope: ${detail}`
 }
 
 /**
@@ -131,6 +154,7 @@ function toDto(
     host: view.host,
     name: view.name,
     agentVersion: view.agentVersion,
+    cluster: view.cluster,
     // Deployment-wide daemon release channel + its latest published version (same
     // for every row); the console flags a daemon whose agentVersion trails it.
     releaseChannel: release.channel,
@@ -383,6 +407,120 @@ export function daemonRoutes(deps: HttpDeps) {
       }
     )
 
+    /** Open the op, refusing when one is already in flight for this daemon. Null ⇒ replied. */
+    const openLifecycleOp = async (
+      req: FastifyRequest,
+      reply: FastifyReply,
+      id: string,
+      op: 'restart' | 'upgrade',
+      commandEpoch: bigint,
+      targetVersion?: string
+    ): Promise<DaemonLifecycleOpRecord | null> => {
+      // Expire stale operations before the partial unique index admits another command.
+      await deps.repos.daemonLifecycleOp.expireOverdue(new Date(), DaemonId(id))
+      // The pre-check gives a clear 409; the partial unique index backstops races.
+      if (await deps.repos.daemonLifecycleOp.pendingForDaemon(DaemonId(id))) {
+        reply
+          .code(409)
+          .send({ error: 'Conflict', statusCode: 409, message: 'a restart or upgrade is already in progress' })
+        return null
+      }
+      return deps.repos.daemonLifecycleOp.open({
+        daemonId: DaemonId(id),
+        op,
+        ...(targetVersion ? { targetVersion } : {}),
+        ...(req.principal?.userId ? { initiator: req.principal.userId } : {}),
+        commandEpoch,
+        deadline: new Date(Date.now() + LIFECYCLE_DEADLINE_MS)
+      })
+    }
+
+    const opDto = (row: DaemonLifecycleOpRecord) => ({
+      id: row.id,
+      op: row.op,
+      status: row.status,
+      targetVersion: row.targetVersion,
+      outcome: row.outcome
+    })
+
+    /**
+     * The cluster daemon's lifecycle: its version is its pod's image, so nothing is sent
+     * over the WebSocket. An upgrade rewrites the tag on `AgentConnectOrg.spec.daemon.image`
+     * and the operator's `Recreate` rollout replaces the pod; a restart is refused outright,
+     * because relaunching a pod is Kubernetes' job and the daemon would decline the command
+     * anyway (it has no supervisor to exit to).
+     *
+     * Reachability is deliberately NOT required: the whole value of this path is that it
+     * also rescues an envelope whose daemon is crash-looping on a bad image.
+     */
+    const clusterLifecycle = async (
+      req: FastifyRequest,
+      reply: FastifyReply,
+      existing: DaemonView,
+      op: 'restart' | 'upgrade',
+      targetVersion?: string
+    ) => {
+      const id = existing.daemonId
+      if (op === 'restart') {
+        return reply.code(409).send({
+          error: 'Conflict',
+          statusCode: 409,
+          message: 'a cluster daemon is relaunched by its operator; change its image instead of restarting it',
+          code: 'DAEMON_CLUSTER_MANAGED'
+        })
+      }
+      const cluster = deps.clusterExecution
+      if (!cluster) {
+        return reply.code(503).send({
+          error: 'Service Unavailable',
+          statusCode: 503,
+          message: 'cluster execution is not configured on this control plane'
+        })
+      }
+      if (!targetVersion) {
+        return reply.code(400).send({
+          error: 'Bad Request',
+          statusCode: 400,
+          message: 'upgrading a cluster daemon requires a target version'
+        })
+      }
+      // Nothing to roll: re-applying the image the pod already runs would change no
+      // generation, so the op could only ever expire. Say so now instead.
+      if (existing.agentVersion === targetVersion) {
+        return reply
+          .code(409)
+          .send({ error: 'Conflict', statusCode: 409, message: `daemon already runs ${targetVersion}` })
+      }
+      // The pod is replaced, so it re-auths and its epoch strictly exceeds this one —
+      // which is exactly the fence `settleLifecycleOpOnReady` closes the op on.
+      const commandEpoch = BigInt(deps.liveness.get(id)?.sessionEpoch ?? existing.sessionEpoch)
+      const opRow = await openLifecycleOp(req, reply, id, 'upgrade', commandEpoch, targetVersion)
+      if (!opRow) return reply
+      try {
+        const image = await cluster.setDaemonVersion(orgOf(req), targetVersion)
+        req.log.info({ daemonId: id, opId: opRow.id, image }, 'cluster daemon upgrade: envelope repointed')
+      } catch (error) {
+        await deps.repos.daemonLifecycleOp
+          .settle(opRow.id, 'failed', clusterUpgradeFailure(error), new Date())
+          .catch(() => {})
+        // Unreachable through `DaemonUpgradeBody`, which already rejects anything that is
+        // not a plain version — mapped anyway so the seam's own guard cannot read as a 500.
+        if (error instanceof InvalidImageTagError) {
+          return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: error.message })
+        }
+        if (isClusterRefusal(error)) {
+          return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: (error as Error).message })
+        }
+        return sendClusterFailure(reply, error, 'cluster API rejected the daemon image change')
+      }
+      // Armed with the same epoch the desired state was written under: the CR is the
+      // command, and the op now waits for the replacement pod's READY.
+      await deps.repos.daemonLifecycleOp.markAccepted(opRow.id, new Date(), commandEpoch).catch((err: unknown) => {
+        req.log.warn({ daemonId: id, opId: opRow.id, err }, 'lifecycle op arm write failed')
+      })
+      return reply.code(202).send(opDto((await deps.repos.daemonLifecycleOp.getById(opRow.id)) ?? opRow))
+    }
+
     // Open a fleet lifecycle op; bootstrap-capable upgrades may wait durably for the next auth.
     const commandLifecycle = async (
       req: FastifyRequest,
@@ -400,6 +538,9 @@ export function daemonRoutes(deps: HttpDeps) {
       if (!canEdit(existing, ctxOf(req))) {
         return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot manage this daemon' })
       }
+      // An operator-managed pod has no npm install to replace and no supervisor to exit
+      // to; its lifecycle runs through the org's resource instead of this connection.
+      if (existing.cluster) return clusterLifecycle(req, reply, existing, op, targetVersion)
       const liveConn = deps.liveness.get(id)
       // Direct delivery requires READY; only advertised bootstrap upgrades can queue offline.
       const liveReady = Boolean(liveConn?.reachable && liveConn.state === 'READY')
@@ -408,23 +549,16 @@ export function daemonRoutes(deps: HttpDeps) {
       if (!liveReady && !bootstrapUpgrade) {
         return reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: 'daemon is not ready' })
       }
-      // Expire stale operations before the partial unique index admits another command.
-      await deps.repos.daemonLifecycleOp.expireOverdue(new Date(), DaemonId(id))
-      // The pre-check gives a clear 409; the partial unique index backstops races.
-      if (await deps.repos.daemonLifecycleOp.pendingForDaemon(DaemonId(id))) {
-        return reply
-          .code(409)
-          .send({ error: 'Conflict', statusCode: 409, message: 'a restart or upgrade is already in progress' })
-      }
-      const opRow = await deps.repos.daemonLifecycleOp.open({
-        daemonId: DaemonId(id),
+      // Live delivery replaces this estimate with the sender's actual connection epoch.
+      const opRow = await openLifecycleOp(
+        req,
+        reply,
+        id,
         op,
-        ...(targetVersion ? { targetVersion } : {}),
-        ...(req.principal?.userId ? { initiator: req.principal.userId } : {}),
-        // Live delivery replaces this estimate with the sender's actual connection epoch.
-        commandEpoch: BigInt(liveConn?.sessionEpoch ?? existing.sessionEpoch),
-        deadline: new Date(Date.now() + LIFECYCLE_DEADLINE_MS)
-      })
+        BigInt(liveConn?.sessionEpoch ?? existing.sessionEpoch),
+        targetVersion
+      )
+      if (!opRow) return reply
 
       // Re-resolve after open: READY receives direct control; pre-READY reconnects through auth.
       const deliveryConn = deps.liveness.get(id)
@@ -433,13 +567,7 @@ export function daemonRoutes(deps: HttpDeps) {
         if (deliveryConn?.reachable) {
           deps.liveness.reconnectForBootstrap?.(id, deliveryConn.sessionEpoch)
         }
-        return reply.code(202).send({
-          id: opRow.id,
-          op: opRow.op,
-          status: opRow.status,
-          targetVersion: opRow.targetVersion,
-          outcome: opRow.outcome
-        })
+        return reply.code(202).send(opDto(opRow))
       }
 
       // Arm with the exact sent epoch; background recovery handles exhausted write retries.
@@ -521,13 +649,7 @@ export function daemonRoutes(deps: HttpDeps) {
         void retryArm(deps.repos.daemonLifecycleOp, deps.registry, opRow.id, id, epoch, ARM_RECOVERY_DELAYS_MS, req.log)
       }
       const latest = (await deps.repos.daemonLifecycleOp.getById(opRow.id).catch(() => null)) ?? opRow
-      return reply.code(202).send({
-        id: latest.id,
-        op: latest.op,
-        status: latest.status,
-        targetVersion: latest.targetVersion,
-        outcome: latest.outcome
-      })
+      return reply.code(202).send(opDto(latest))
     }
 
     // Install a target daemon version, then drain + relaunch onto it (§7).
@@ -538,12 +660,13 @@ export function daemonRoutes(deps: HttpDeps) {
           tags: [Tag.Daemons],
           summary: 'Upgrade a daemon',
           description:
-            'Open an upgrade op for a daemon. A ready daemon receives it immediately; an offline daemon that previously advertised bootstrap recovery consumes it during its next auth. The 202 means accepted or durably queued, while success requires READY on the target version.',
+            'Open an upgrade op for a daemon. A ready daemon receives it immediately; an offline daemon that previously advertised bootstrap recovery consumes it during its next auth. A CLUSTER daemon (`cluster: true`) takes neither path: the control plane rewrites the version tag on its organization’s AgentConnectOrg daemon image and the operator replaces the pod, so the command is accepted even while that daemon is offline. The 202 means accepted or durably queued, while success requires READY on the target version.',
           operationId: 'upgradeDaemon',
           params: IdParam,
           body: DaemonUpgradeBody,
           response: {
             202: DaemonLifecycleOpDto,
+            400: ErrorDto,
             403: ErrorDto,
             404: ErrorDto,
             409: ErrorDto,
@@ -563,7 +686,7 @@ export function daemonRoutes(deps: HttpDeps) {
           tags: [Tag.Daemons],
           summary: 'Restart a daemon',
           description:
-            'Command a daemon to drain and exit so its supervisor relaunches it (same version). The 202 returns the opened lifecycle op (with its id) and only means the daemon accepted the command; success is confirmed when it re-registers — track the op by id via the fleet read model’s lifecycleOp.',
+            'Command a daemon to drain and exit so its supervisor relaunches it (same version). The 202 returns the opened lifecycle op (with its id) and only means the daemon accepted the command; success is confirmed when it re-registers — track the op by id via the fleet read model’s lifecycleOp. Refused with 409 `DAEMON_CLUSTER_MANAGED` for a cluster daemon: relaunching that pod belongs to its Kubernetes operator.',
           operationId: 'restartDaemon',
           params: IdParam,
           response: {

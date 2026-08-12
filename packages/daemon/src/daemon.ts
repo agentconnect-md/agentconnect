@@ -20529,6 +20529,9 @@ export class Daemon {
       host: hostname(),
       heartbeatDefaultMs: cp.heartbeatMs,
       maxAgents: this.cfg.limits.maxAgents,
+      // The operator-managed pod shape, so the CP knows this daemon's version is its
+      // image and rolls the org's CR instead of commanding an npm upgrade or a restart.
+      cluster: this.k8s,
       capabilities: () => ({
         platforms: this.registrationPlatforms(),
         // Report the human-facing tool name (e.g. "Claude Agent"), not the

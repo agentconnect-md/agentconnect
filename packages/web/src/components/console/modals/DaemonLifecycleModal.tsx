@@ -87,6 +87,9 @@ export default function DaemonLifecycleModal({
   }
 
   const isUpgrade = mode === 'upgrade'
+  // A cluster daemon upgrades by image, not by install-then-relaunch: the control plane
+  // repoints the org's envelope and its operator replaces the pod. Same op tracking.
+  const isClusterUpgrade = isUpgrade && daemon.cluster
   const title = isUpgrade ? 'Upgrade daemon' : 'Restart daemon'
   const icon = isUpgrade ? 'arrow-up-circle' : 'refresh-cw'
   const noTargets = isUpgrade && options.length === 0
@@ -110,7 +113,13 @@ export default function DaemonLifecycleModal({
             <div className="mb-[14px] flex items-start gap-[9px] rounded-md border border-(--amber-500) bg-(--status-paused-soft) px-3 py-[11px]">
               <Icon name="alert-triangle" size={15} color="var(--amber-500)" className="mt-[1px] flex-none" />
               <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
-                {isUpgrade ? (
+                {isClusterUpgrade ? (
+                  <>
+                    <span className="mono text-(--text-primary)">{daemon.name}</span> runs in the cluster: its
+                    organization’s execution envelope is repointed at the target image and the operator replaces the
+                    pod. Active sessions end with the pod, and it re-registers once the new one is up.
+                  </>
+                ) : isUpgrade ? (
                   <>
                     <span className="mono text-(--text-primary)">{daemon.name}</span> will install the target version,
                     then drain its active sessions and relaunch onto it. Established sessions finish first; brief
@@ -192,10 +201,15 @@ export default function DaemonLifecycleModal({
                 </span>
                 <div className="flex-1">
                   <div className="font-sans text-[13px] font-semibold leading-normal">
-                    {isUpgrade ? 'Installing and relaunching…' : 'Draining and relaunching…'}
+                    {isClusterUpgrade
+                      ? 'Rolling the pod onto the new image…'
+                      : isUpgrade
+                        ? 'Installing and relaunching…'
+                        : 'Draining and relaunching…'}
                   </div>
                   <div className="mono text-[11px] text-(--text-tertiary)">
-                    {daemon.name} will re-register once its supervisor brings it back.
+                    {daemon.name} will re-register once{' '}
+                    {isClusterUpgrade ? 'its operator brings the new pod up' : 'its supervisor brings it back'}.
                   </div>
                 </div>
               </>

@@ -169,6 +169,8 @@ export interface CpClientDeps {
   host: string
   heartbeatDefaultMs: number
   maxAgents: number
+  /** True ⇒ registered as an operator-managed pod, whose version is its image. Defaults to false. */
+  cluster?: boolean
   capabilities: () => RegisterReq['capabilities']
   /** Observed runtime profiles, emitted as one `facts/daemon-runtimes` snapshot after each register. */
   runtimeProfiles: () => FactsRuntimeProfile[]
@@ -434,6 +436,7 @@ export class CpClient {
       host: this.deps.host,
       capabilities: registerCapabilities,
       maxAgents: this.deps.maxAgents,
+      cluster: this.deps.cluster === true,
       localState: this.deps.localState()
     })
     const barrier: RegisterControlBarrier = {

@@ -339,6 +339,14 @@ Remote completion is determined by the later `READY` registration. Unlike a
 local `upgrade --restart`, the remote flow does not perform process-level
 automatic rollback after the old daemon exits.
 
+Neither this nor §6.1 applies to a daemon that registered `cluster: true`. Its
+version is its container image, so nothing is sent over the WebSocket: the control
+plane rewrites the image tag on that organization's `AgentConnectOrg` and the
+operator replaces the pod. The op, its arming epoch, and the `READY`-on-target
+settlement are identical — only the delivery differs. Restart is refused outright.
+See "Which version an envelope daemon runs" in
+[agentconnect-org-operator.md](agentconnect-org-operator.md).
+
 ### 6.3 Auth-time bootstrap recovery
 
 The installed daemon entry performs a bounded auth-only bootstrap check before

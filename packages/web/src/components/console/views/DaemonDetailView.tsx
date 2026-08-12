@@ -32,6 +32,10 @@ import { useOrgs } from '@/lib/org-context'
 import { useIsMobile } from '@/lib/use-is-mobile'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 
+/** Why Restart is inert on a cluster daemon; the CP refuses it with the same reason. */
+const CLUSTER_RESTART_HINT =
+  'This daemon runs in the cluster — its operator relaunches the pod. Upgrade its version instead.'
+
 // Bar colour tracks the hotter reading (matches the daemons list).
 function barColor(pct: number): string {
   return pct >= 80 ? 'var(--status-paused)' : pct >= 60 ? 'var(--amber-500)' : 'var(--brand)'
@@ -102,8 +106,14 @@ export default function DaemonDetailView() {
   // Restart/upgrade are owner-only fleet ops (server denyNonOwner) — gate the controls on
   // the DTO capability so non-owners never see an action they'd 403 on. Restart needs the
   // daemon live; upgrade additionally needs the resolver to have surfaced other versions.
-  const canRestart = online && !pending && daemon.canManageLifecycle
-  const canUpgrade = canRestart && daemon.availableVersions.some((v) => v !== daemon.version)
+  // A cluster daemon has no restart to command — its operator relaunches the pod — and its
+  // upgrade is an image change, so it stays available while the daemon is offline.
+  const canRestart = online && !pending && daemon.canManageLifecycle && !daemon.cluster
+  // Rendered disabled rather than dropped: an operator looking for Restart should learn
+  // that the cluster owns it, not find the control silently missing.
+  const clusterRestartBlocked = daemon.cluster && !pending && daemon.canManageLifecycle
+  const versionsToOffer = daemon.availableVersions.some((v) => v !== daemon.version)
+  const canUpgrade = !pending && daemon.canManageLifecycle && versionsToOffer && (daemon.cluster || online)
 
   const hosted = agents.filter((a) => a.daemon === daemon.daemonId)
   const runtimes = daemon.runtimeModels.length
@@ -200,10 +210,12 @@ export default function DaemonDetailView() {
               Reconnect
             </button>
           )}
-          {canRestart && (
+          {(canRestart || clusterRestartBlocked) && (
             <button
-              onClick={() => openModal('restartDaemon', daemon)}
-              className="flex h-11 flex-1 cursor-pointer items-center justify-center gap-2 rounded-md border border-(--border-default) bg-(--surface-card) font-sans text-[14px] font-semibold leading-normal text-(--text-primary)"
+              onClick={canRestart ? () => openModal('restartDaemon', daemon) : undefined}
+              disabled={!canRestart}
+              title={canRestart ? undefined : CLUSTER_RESTART_HINT}
+              className="flex h-11 flex-1 cursor-pointer items-center justify-center gap-2 rounded-md border border-(--border-default) bg-(--surface-card) font-sans text-[14px] font-semibold leading-normal text-(--text-primary) disabled:cursor-default disabled:opacity-50"
             >
               <Icon name="refresh-cw" size={16} />
               Restart
@@ -553,9 +565,11 @@ export default function DaemonDetailView() {
                     Edit
                   </button>
                 )}
-                {canRestart && (
+                {(canRestart || clusterRestartBlocked) && (
                   <button
-                    className="dmi"
+                    className="dmi disabled:cursor-default disabled:opacity-50"
+                    disabled={!canRestart}
+                    title={canRestart ? undefined : CLUSTER_RESTART_HINT}
                     onClick={() => {
                       setMenuOpen(false)
                       openModal('restartDaemon', daemon)

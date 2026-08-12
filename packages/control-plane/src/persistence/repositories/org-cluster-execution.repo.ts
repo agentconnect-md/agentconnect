@@ -68,6 +68,15 @@ export class PgOrgClusterExecutionRepo implements OrgClusterExecutionRepo {
     return row ? toRecord(row) : null
   }
 
+  /** Stable `orgId` order so a sweep's log reads the same across boots. */
+  async listEnabled(): Promise<ClusterExecutionSettings[]> {
+    const rows = await this.prisma.orgClusterExecution.findMany({
+      where: { enabled: true },
+      orderBy: { orgId: 'asc' }
+    })
+    return rows.map(toRecord)
+  }
+
   async listPendingTeardowns(limit: number): Promise<PendingEnvelopeTeardown[]> {
     return this.prisma.pendingEnvelopeTeardown.findMany({
       select: { orgId: true, resourceName: true },

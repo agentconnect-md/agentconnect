@@ -141,6 +141,7 @@ export interface RegisterReqInput {
   host: RegisterReq['host']
   capabilities: RegisterReq['capabilities']
   maxAgents: RegisterReq['maxAgents']
+  cluster: RegisterReq['cluster']
 }
 
 export interface DaemonRecord {
@@ -150,6 +151,9 @@ export interface DaemonRecord {
   /** Human-assigned display name (console-set); null until a user names it. */
   name: string | null
   agentVersion: string | null
+  /** True ⇒ an operator-managed pod whose version is its container image, so its
+   *  lifecycle runs through the org's `AgentConnectOrg`, not an npm command. */
+  cluster: boolean
   capabilities: unknown
   /** Stored `facts/daemon-runtimes.mcpServers` snapshot (FactsMcpServer[] as JSON; `[]` until reported). */
   mcpServers: unknown
@@ -5008,6 +5012,10 @@ export interface OrgClusterExecutionRepo {
   /** The org that owns a CR name — the reverse lookup an authenticating in-cluster
    *  daemon needs, since a token names its namespace and nothing else. */
   getByResourceName(resourceName: string): Promise<ClusterExecutionSettings | null>
+  /** Every org whose envelope is switched on — what a deployment-wide sweep iterates.
+   *  Unbounded on purpose: it is one row per organization with cluster execution enabled,
+   *  and a sweep that silently stopped at a limit would leave part of the fleet stale. */
+  listEnabled(): Promise<ClusterExecutionSettings[]>
   /** Oldest-first batch of envelopes whose organization is already gone. */
   listPendingTeardowns(limit: number): Promise<PendingEnvelopeTeardown[]>
   /**

@@ -26,6 +26,12 @@ export const RegisterReq = z.object({
     features: z.array(z.string()).default([]) // e.g. ["cli-wrapper-fallback","worktree-iso"]
   }),
   maxAgents: z.number().int(), // concurrency ceiling for placement (C3)
+  // True ⇒ this daemon is an operator-managed pod inside an org's execution envelope, so
+  // its version IS its container image: npm self-upgrade and supervisor restart do not
+  // apply, and the CP repoints `AgentConnectOrg.spec.daemon.image` instead. Self-reported
+  // because only the daemon knows which SpawnDriver it runs; defaulted so an older daemon
+  // still registers as the machine it is (agentconnect-org-operator.md).
+  cluster: z.boolean().default(false),
   localState: z.object({
     // what the daemon currently believes it owns (for reconcile)
     assignments: z.array(z.string()), // sessionKeys it is actively serving

@@ -315,9 +315,10 @@ _where_ the CRs live.
   deleted since the slice was listed is reconciled to that instead. The listing
   skips orgs under a live transition claim, and re-applying an unchanged spec is
   a server-side-apply no-op: no `specRevision` bump, no new resource version.
-  `spec.daemon.image` is deliberately NOT swept back to the deployment default —
-  it is pinned per org at creation, and whether a fleet-wide upgrade should move
-  it is a separate product decision.
+  `spec.daemon.image` is deliberately NOT swept back to the deployment default by
+  this pass — it is pinned per org at creation, and it moves only through the two
+  paths that mean to move it, which write the ROW and let this pass render the
+  spec from it (see "Which version an envelope daemon runs" below).
 - Enabling, disabling, and the teardown drain take a leased per-org **transition
   claim**, and it outlives the credential it was introduced for: those three
   still create and destroy one envelope from three directions. The claim is what
@@ -499,6 +500,55 @@ control plane, but the release train ships them together, which bounds it.
 The shim audience is the precedent and the counter-example: it is a constant in
 the daemon with a comment on the sandbox template asking that they be kept equal.
 That works, and it is exactly the kind of agreement an import should be carrying.
+
+#### Which version an envelope daemon runs
+
+A machine daemon's version is an npm install it can replace, so the control plane
+tells it to (`cli-daemon-split.md` §6.2) and the daemon does the work. An envelope
+daemon's version is its **container image**, so neither of those commands means
+anything: it has no install to swap and no supervisor to exit to — the daemon
+refuses both already. The version therefore moves the only way a pod's version
+can: `spec.daemon.image` is rewritten and the operator's `Recreate` rollout
+replaces the pod.
+
+The register frame carries `cluster` so the control plane knows which of the two
+a daemon is. That is deliberately **not** read off the identity binding, even
+though a bound `clusterIdentity` implies one today: the binding answers _who_ a
+daemon is, and this question is _what its lifecycle is_ — a distinction that only
+the daemon can answer, since only it knows which `SpawnDriver` it runs. The stored
+flag is OR-ed with the binding so an envelope daemon that predates the field still
+reads correctly, and the console's read model exposes one boolean.
+
+Two paths write the image, and both go **through the settings row**, never
+straight to the CR. The row is desired state, and the periodic re-apply renders
+the spec from it — so an image written onto the resource alone is reverted by the
+next pass, and by the next ordinary settings write before that.
+
+- **A console upgrade** repoints one org, tracked by the same `DaemonLifecycleOp`
+  a machine upgrade opens: the op is armed with the epoch the image was written
+  under and settles when the replacement pod registers READY on the target
+  version — the fence already used for a drain-and-relaunch, and a new pod always
+  re-auths to a strictly greater epoch. Reachability is deliberately not required,
+  because rescuing a pod crash-looping on a bad image is most of the value.
+  Restart is refused with `DAEMON_CLUSTER_MANAGED`, and the console renders it
+  disabled rather than absent so an operator learns where it went.
+- **A boot sweep** moves the whole fleet onto the newest version the deployment's
+  release channel names (`DAEMON_DIST_TAG` — `rc` on a test control plane,
+  `latest` in production), which is sound because one release publishes the npm
+  package and the image from one version. It runs once per boot: it is the
+  catch-up for a release published while the process was down, and a timer would
+  additionally fight an operator who just pinned an org.
+
+The sweep's risk is doing too much, so it refuses three envelopes: one whose image
+names another repository than this install configured, one whose tag is not a
+parseable version (a floating tag or a digest is a pin somebody chose), and one
+already at or ahead of the target. **Rolling a fleet backwards on a restart is the
+one outcome worse than staying stale.** An explicit console upgrade has no such
+guard — offering every published version is how a bad release gets rolled back.
+
+The runtime image is left alone by both. It rolls through the drain handshake
+(§3), not a pod replacement, and moving it is a separate decision from moving the
+daemon.
 
 #### Verifying the token
 

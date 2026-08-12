@@ -12,7 +12,12 @@ export { ClusterMaintenanceLoop, type ClusterMaintenanceWork } from './maintenan
 export { ClusterNamingError, orgResourceName, type ClusterEnvelopeStatus } from './spec.js'
 export {
   ClusterExecutionService,
+  ClusterEnvelopeNotEnabledError,
+  ClusterImageNotVersionedError,
   ClusterTransitionInProgressError,
   type ClusterExecutionPolicy,
+  type ClusterVersionSweep,
   type EnvelopeResyncOutcome
 } from './service.js'
+export { ClusterDaemonImageSync, type DaemonReleaseLookup } from './image-sync.js'
+export { InvalidImageTagError, imageRepository, imageTag, isNewerVersion, withImageTag } from './image.js'

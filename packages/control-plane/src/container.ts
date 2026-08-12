@@ -38,6 +38,7 @@ import { K8sHttp } from '@agentconnect.md/k8s-client'
 import {
   AgentConnectOrgApi,
   ClusterDaemonIdentityService,
+  ClusterDaemonImageSync,
   ClusterExecutionService,
   ClusterMaintenanceLoop,
   loadClusterAccess
@@ -1069,6 +1070,15 @@ export function buildContainer(
     http.log
   )
 
+  // Boot-time only: point every enabled envelope at the newest daemon image the
+  // deployment's release channel names, so a release published while this process was
+  // down reaches the fleet. Needs both halves — no envelopes to move without cluster
+  // execution, and no notion of "newest" without the release resolver (inert in tests).
+  const clusterImageSync =
+    clusterExecution && daemonRelease
+      ? new ClusterDaemonImageSync(clusterExecution, daemonRelease, http.log)
+      : undefined
+
   // Durable one-time assertion recovery. Invocation rows are reaped before
   // expired delegations so a parent is never removed while cached/recoverable
   // invocation state still depends on it.
@@ -1638,6 +1648,9 @@ export function buildContainer(
       // One-shot (not a re-arming loop): the worklist empties itself; a partially
       // failed boot resumes on the next one. Never blocks listen.
       void presetBackfill?.run().catch((err) => http.log.error({ err }, 'preset-backfill: sweep failed'))
+      // Also one-shot, and deliberately so: this is the catch-up for a daemon release
+      // published while the process was down, not a policy that re-asserts on a timer.
+      void clusterImageSync?.run()
     },
     async shutdown() {
       clusterMaintenance.stop()

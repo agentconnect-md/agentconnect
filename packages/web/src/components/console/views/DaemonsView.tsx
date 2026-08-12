@@ -160,9 +160,11 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
   const offline = m.status === 'offline'
   // Restart is an edit offered while the daemon is online + no op in flight; upgrade
   // additionally needs a newer published version. Both gated on canManageLifecycle.
+  // A cluster daemon is never restartable here (its operator owns relaunching the pod)
+  // and IS upgradable while offline — the image change is what rescues a bad rollout.
   const pending = m.lifecycleOp?.status === 'pending'
-  const canRestart = online && !pending && m.canManageLifecycle
-  const canUpgrade = canRestart && m.upgradeAvailable
+  const canRestart = online && !pending && m.canManageLifecycle && !m.cluster
+  const canUpgrade = !pending && m.canManageLifecycle && m.upgradeAvailable && (m.cluster || online)
 
   const beginEdit = () => {
     setDraft(m.name)
@@ -304,6 +306,18 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
                       setMenuOpen(false)
                       openModal('restartDaemon', m)
                     }}
+                  >
+                    <Icon name="refresh-cw" size={15} />
+                    Restart
+                  </button>
+                )}
+                {/* Shown disabled rather than hidden: an operator looking for Restart should
+                    learn that Kubernetes owns it here, not that the option vanished. */}
+                {m.cluster && m.canManageLifecycle && (
+                  <button
+                    className="dmi disabled:cursor-default disabled:opacity-50"
+                    disabled
+                    title="This daemon runs in the cluster — its operator relaunches the pod. Upgrade its version instead."
                   >
                     <Icon name="refresh-cw" size={15} />
                     Restart

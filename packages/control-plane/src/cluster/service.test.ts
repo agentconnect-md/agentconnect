@@ -58,6 +58,10 @@ class FakeRepo implements OrgClusterExecutionRepo {
     return row ? { ...row } : null
   }
 
+  async listEnabled(): Promise<ClusterExecutionSettings[]> {
+    return this.row?.enabled ? [{ ...this.row }] : []
+  }
+
   async listPendingTeardowns(limit: number): Promise<PendingEnvelopeTeardown[]> {
     return this.tombstones.slice(0, limit)
   }

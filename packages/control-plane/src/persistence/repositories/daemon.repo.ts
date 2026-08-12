@@ -36,6 +36,9 @@ function toRecord(d: DaemonWithUsers): DaemonRecord {
     host: d.host,
     name: d.name,
     agentVersion: d.agentVersion,
+    // The register self-report OR a bound Kubernetes identity: an envelope daemon that
+    // authenticated with a projected token is one whatever its (older) register said.
+    cluster: d.cluster || d.clusterIdentity !== null,
     capabilities: d.capabilities,
     mcpServers: d.mcpServers,
     maxAgents: d.maxAgents,
@@ -178,6 +181,7 @@ export class PgDaemonRepo implements DaemonRepo {
         host: reg.host,
         capabilities: reg.capabilities as Prisma.InputJsonValue,
         maxAgents: reg.maxAgents,
+        cluster: reg.cluster,
         status: 'ready',
         // The `facts/daemon-runtimes.seq` counter is per-connection: reset the
         // fence so the reconnecting daemon's fresh count is accepted from 1.

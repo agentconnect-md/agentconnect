@@ -179,6 +179,10 @@ export const DaemonViewDto = z.object({
   /** Human-assigned display name (console-set); null until named. */
   name: z.string().nullable(),
   agentVersion: z.string().nullable(),
+  /** True ⇒ an operator-managed pod in the org's execution envelope. Its version IS its
+   *  container image, so the console offers no restart (Kubernetes owns that) and an
+   *  upgrade repoints the org's `AgentConnectOrg` rather than commanding an npm install. */
+  cluster: z.boolean(),
   /** The deployment's daemon release channel (npm dist-tag, e.g. `latest`/`rc`) that
    *  `latestVersion` was resolved from. Same for every daemon in the deployment. */
   releaseChannel: z.string(),
