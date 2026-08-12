@@ -84,13 +84,10 @@ function propertyPaths(schema: JsonSchema, prefix = ''): string[] {
 
 function loadCrdSchema(): { spec: JsonSchema; status: JsonSchema } {
   const here = dirname(fileURLToPath(import.meta.url))
-  const file = join(here, '../../../../charts/operator/templates/crd.yaml')
-  // The template is pure YAML wrapped in one {{- if }} / {{- end }} pair.
-  const yaml = readFileSync(file, 'utf8')
-    .split('\n')
-    .filter((line) => !line.trimStart().startsWith('{{'))
-    .join('\n')
-  const crd = parse(yaml) as {
+  // The chart's plain manifest, not the template that includes it — this is the exact
+  // text `kubectl apply -f` and Helm both install, parsed with nothing filtered out.
+  const file = join(here, '../../../../charts/operator/crd/agentconnectorg.yaml')
+  const crd = parse(readFileSync(file, 'utf8')) as {
     spec: { versions: { schema: { openAPIV3Schema: { properties: { spec: JsonSchema; status: JsonSchema } } } }[] }
   }
   const root = crd.spec.versions[0]?.schema.openAPIV3Schema.properties

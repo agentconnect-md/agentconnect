@@ -59,13 +59,10 @@ function valuePaths(value: unknown, prefix = ''): string[] {
 
 function loadCrd(): { spec: JsonSchema; status: JsonSchema; group: string; version: string; plural: string } {
   const here = dirname(fileURLToPath(import.meta.url))
-  const file = join(here, '../../../../charts/operator/templates/crd.yaml')
-  // The template is pure YAML wrapped in one {{- if }} / {{- end }} pair.
-  const yaml = readFileSync(file, 'utf8')
-    .split('\n')
-    .filter((line) => !line.trimStart().startsWith('{{'))
-    .join('\n')
-  const crd = parse(yaml) as {
+  // The chart's plain manifest, not the template that includes it — this is the exact
+  // text `kubectl apply -f` and Helm both install, parsed with nothing filtered out.
+  const file = join(here, '../../../../charts/operator/crd/agentconnectorg.yaml')
+  const crd = parse(readFileSync(file, 'utf8')) as {
     spec: {
       group: string
       names: { kind: string; plural: string }
