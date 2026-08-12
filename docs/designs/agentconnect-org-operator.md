@@ -2,7 +2,7 @@
 
 **Status:** Envelope, status, deletion, and rollout reconcile logic implemented — including the
 drain handshake with the daemon and its timeout — plus the control-plane CR provisioner (§6);
-gateway policy rendering waits on the gateway spike, and the credential key authority is still TODO.
+gateway policy rendering waits on the gateway spike.
 
 The managed execution plane provisions one _org envelope_ per organization on a
 Kubernetes cluster: a namespace, RBAC, network policies, sandbox templates and
@@ -249,10 +249,115 @@ differ (`CLUSTER_ORG_NAMESPACE_PREFIX`, which must equal the operator install's
   the convergence loop: a settings row that vanished between apply and re-read
   means the org is gone, so the request deletes what it just created.
 
-The credential Secret named by `spec.daemon.credentialSecretName` — and the
-`credentialRevision` bump that rolls the daemon after a rotation — belong to
-this same module as the key authority, and are still TODO; the operator keeps
-zero Secret access either way.
+### The key authority
+
+The same module writes the credential Secret, which is what makes "the operator
+has zero Secret verbs" workable: the operator only NAMES the Secret in
+`spec.daemon.credentialSecretName` and mounts it required, so the kubelet gates
+the daemon pod's startup on a credential the operator can never read.
+
+`POST /orgs/:orgId/cluster-execution/credential` (owner-only) mints the org's
+daemon API key, publishes it as the Secret's `config.json` entry — the same
+`{version, daemonId, controlPlane:{enabled,url,key}}` document a hand-run daemon
+reads, pointed at the same WebSocket URL onboarding renders — and bumps
+`credentialRevision`, which the operator projects into a pod-template annotation
+to force a Recreate. **The key is never returned**; it exists only inside the
+cluster Secret, and the response carries the daemon id, Secret name, and
+revision.
+
+Daemon keys never expire, so the design is mostly about what happens when a
+step fails. A credential is only issued while the envelope is ENABLED — a
+disabled one is being torn down, and publishing into its dying namespace would
+undo the retirement disable just performed. Beyond that, three mechanisms:
+
+- **A fencing token, not just a lease.** A transition claims
+  `credentialRotationAt` + `credentialRotationToken`, and every subsequent write
+  — staging, committing, retiring, and the release itself — carries that token
+  **in its `where` clause**, not in a preceding check: a check-then-write pair
+  leaves a window a takeover can land in, which Prisma's default isolation would
+  not close. The timestamp only decides when a takeover is allowed; the token is
+  what stops an expired holder from committing behind its successor or unlocking
+  it, and `commitCredential` additionally requires `enabled: true` so no
+  rotation can land a live key on an envelope disable already retired. A
+  takeover deliberately does NOT touch whatever the dead holder left in
+  `credentialStagedApiKeyId` — that key may already be published, so it stays
+  the pod's working credential until a later publish has definitely replaced it.
+- **A sequence for the cluster, since the token cannot reach it.** A database
+  token cannot fence a request already in flight to the API server, so
+  `credentialRotationSeq` — monotonic per claim — is stamped on the Secret as
+  `agentconnect.md/credential-seq`, publishing is a `resourceVersion`-guarded
+  read-modify-write, and a publish carrying a lower sequence than the one
+  already there refuses rather than overwrites. Otherwise a request that stalled
+  past its lease could land after its successor's and restore a key the row no
+  longer names.
+- **Staged before published.** The minted key is recorded before the Secret is
+  written, so every failure point after that leaves a durable handle rather than
+  a live key nobody can name.
+- **Queued before attempted.** Revocations go into
+  `pending_daemon_key_revocation` before they are tried and are cleared only
+  once they land; promoting a key and queueing the one it supersedes happen in
+  ONE transaction, because a stop in between would overwrite the only handle to
+  the predecessor. The maintenance loop retries whatever is still owed.
+- **Named before revocable.** Naming a key is not permission to kill it. A key
+  that MAY be in use — the one a successor displaces out of the staged slot, one
+  whose publish landed but whose commit lost the claim, or the predecessor a
+  commit supersedes — is queued `held`: durable, listed by nothing, drained by
+  nothing. Only a key that definitely never reached the cluster is revoked on
+  the spot.
+- **Committed is not rolled out.** `commitCredential` bumping `specRevision` is
+  durable INTENT; the pod keeps running on its old key until the CR itself
+  carries the new `credentialRevision`. So the commit also records
+  `credentialRolloutPending`, and the held keys are released only by
+  `completeCredentialRollout` — after the apply has actually succeeded. A
+  request that dies in between leaves both the obligation and a working
+  credential; `drainCredentialRollouts` finishes it under the same per-org claim
+  and releases then, so the retry is durable rather than dependent on the caller
+  coming back. That retry re-applies through the CONVERGENCE loop, not a bare
+  apply: a settings write needs no credential claim, so one can land while the
+  drain's apply is in flight, and a stale apply would revert the CR while the
+  drain closed the only record that anything was owed. Retiring the envelope
+  drops the obligation and releases the keys, since a pod that is going away has
+  no credential left to strand.
+
+Disabling takes the same claim BEFORE it writes anything, and the write that
+clears `enabled` is the same transaction that drops the credential, queues both
+its keys, and records the resource for teardown — so there is no moment where
+the row reads disabled but its credential was never retired, and a delete that
+fails leaves state that converges rather than an `enabled: false` row beside a
+live pod holding a live key. Re-enabling takes the same claim while it cancels
+the tombstone AND applies the resource, and the teardown drain takes it per org
+before deleting — otherwise a drain that had already listed that tombstone could
+delete the resource the re-enable just created.
+
+Four orderings carry the rest:
+
+- **Secret before revision.** A failed write leaves the running pod on its old,
+  still-valid key instead of rolling it onto a credential that was never
+  published. The namespace not existing yet is the ordinary "just enabled" state
+  and answers 409 rather than recording anything.
+- **Identity before publication.** A first issue records the provisioned
+  `credentialDaemonId` before anything can fail, and revokes its own key if
+  publication does — so a retry re-keys that daemon instead of provisioning
+  another one and leaking the first key.
+- **Revoke last, and only when definitely unpublished.** The superseded key dies
+  only after the rollout has been asked for, so there is no window in which no
+  valid key exists. And a publish that THREW is settled by re-reading the
+  Secret's sequence before anything is revoked: a write whose response was lost
+  to a dropped connection still landed, and revoking that key would leave the
+  pod mounting a dead credential. An unverifiable failure is treated as "may
+  have landed" — keeping a key alive one rotation too long is far cheaper than
+  killing a live one.
+- **One daemon identity.** The row pins `credentialDaemonId`, so a rotation
+  re-keys the org rather than orphaning its sessions, agents, and history under a
+  new daemon row. Switching cluster execution off revokes the key and clears the
+  credential; the daemon row itself stays, since removing one is the Daemons
+  page's job (it unplaces agents and repoints collaboration routes).
+
+The control plane's ServiceAccount therefore needs `get`, `create`, `update`,
+and `delete` on `secrets` in the org namespaces this install owns — `get` and
+`update` because publishing is a `resourceVersion`-guarded read-modify-write,
+not a blind apply. That is a deployment-side grant, and the only Secret
+permission anywhere in this system.
 
 ## 7. Verification
 

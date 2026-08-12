@@ -2779,6 +2779,38 @@ model OrgClusterExecution {
   credentialSecretName String              @default("ac-daemon-token")
   /// Bumped by the key authority after a credential rotation; forces a Recreate.
   credentialRevision   String?
+  /// The daemon identity the org's supervisor pod authenticates as. Created with
+  /// the first credential and reused by every rotation, so the pod keeps one
+  /// identity — its sessions, agents, and history — across key changes.
+  credentialDaemonId   String?             @db.Uuid
+  /// The api_key row currently published in the Secret; revoked when the next
+  /// rotation lands, so exactly one live key exists per envelope.
+  credentialApiKeyId   String?
+  /// When the in-flight credential transition was claimed, and by whom. The
+  /// token is the fencing half: EVERY write in a transition — staging,
+  /// committing, retiring, and the release itself — is conditional on it, so a
+  /// holder whose lease expired and whose claim was taken over can no longer
+  /// mutate the row or unlock its successor. The timestamp only decides when a
+  /// takeover is allowed, so a process that dies mid-rotation cannot wedge the
+  /// envelope.
+  credentialRotationAt    DateTime?        @db.Timestamptz(6)
+  credentialRotationToken String?
+  /// Monotonic per claim. The token fences the DATABASE; this fences the
+  /// CLUSTER: it is stamped on the credential Secret, and a publish refuses to
+  /// overwrite a Secret already carrying a higher one. Without it a request that
+  /// stalled past its lease could land its Secret after its successor's and
+  /// restore a key the row no longer names.
+  credentialRotationSeq   Int              @default(0)
+  /// A key that has been minted and may already be published, but is not yet the
+  /// committed credential. Written BEFORE the Secret is, because every failure
+  /// after that point would otherwise leave a live non-expiring key with nothing
+  /// naming it. Whoever next claims the transition adopts it for revocation.
+  credentialStagedApiKeyId String?
+  /// A committed credential whose `credentialRevision` has not been applied to
+  /// the CR yet — the rollout is owed. Bumping the row is durable intent; the pod
+  /// only rolls once the resource carries it, so until the apply lands no
+  /// superseded key may be revoked. The maintenance loop retries the apply.
+  credentialRolloutPending Boolean @default(false)
   runtimeImage         String
   /// `{name, warmReplicas}[]` — the org's sandbox tiers and warm-pool sizes.
   runtimeTiers         Json                @db.JsonB
@@ -2816,4 +2848,25 @@ model PendingEnvelopeTeardown {
   createdAt       DateTime @default(now()) @db.Timestamptz(6)
 
   @@map("pending_envelope_teardown")
+}
+
+/// A daemon key the cluster provisioner has finished with and must revoke.
+/// Daemon keys never expire, so a revoke that is merely attempted is not a
+/// revoke: a transient failure would leave a live credential with nothing left
+/// holding its id. The intent is recorded BEFORE the attempt and cleared only
+/// once the key is actually revoked, so the maintenance loop can retry forever.
+///
+/// Deliberately NO foreign key to `api_key` or `org`: the row must survive an
+/// organization deletion, which is one of the moments a key needs retiring.
+model PendingDaemonKeyRevocation {
+  apiKeyId  String   @id // the key to revoke (identity + idempotency key)
+  orgId     String // whose envelope it belonged to; diagnostics only
+  reason    String // recorded on the api_key row when the revoke lands
+  /// True ⇒ named but NOT yet eligible: the Secret may still carry this key, so
+  /// revoking it now could strand the pod on a dead credential. Cleared once a
+  /// higher-sequence publish has landed and its rollout has been asked for.
+  held      Boolean  @default(false)
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  @@map("pending_daemon_key_revocation")
 }

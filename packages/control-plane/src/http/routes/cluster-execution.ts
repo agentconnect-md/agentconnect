@@ -1,14 +1,17 @@
 /**
  * Managed cluster execution (docs/designs/agentconnect-org-operator.md).
  *
- *   GET /orgs/:orgId/cluster-execution         — the org's envelope settings
- *   PUT /orgs/:orgId/cluster-execution         — owner-only; write + reconcile
- *   GET /orgs/:orgId/cluster-execution/status  — live status from the resource
+ *   GET  /orgs/:orgId/cluster-execution            — the org's envelope settings
+ *   PUT  /orgs/:orgId/cluster-execution            — owner-only; write + reconcile
+ *   POST /orgs/:orgId/cluster-execution/credential — owner-only; issue / rotate
+ *   GET  /orgs/:orgId/cluster-execution/status     — live status from the resource
  *
  * The settings row is desired state; the resource is the truth. So the write
  * path persists first and then applies, and the status path never reads the
- * database for anything the operator owns. Absent cluster configuration ⇒ the
- * plugin registers nothing and the whole surface 404s.
+ * database for anything the operator owns. The credential path is the key
+ * authority: it publishes the key into the cluster Secret and never returns it.
+ * Absent cluster configuration ⇒ the plugin registers nothing and the whole
+ * surface 404s.
  */
 import type { FastifyInstance } from 'fastify'
 import type { ZodTypeProvider } from '../plugins/zod.js'
@@ -16,9 +19,15 @@ import type { HttpDeps } from '../deps.js'
 import { Tag } from '../plugins/openapi.js'
 import { denyNonOwner, orgOf } from '../rbac.js'
 import { sendClusterFailure } from '../cluster-failure.js'
-import type { ClusterExecutionService } from '../../cluster/index.js'
+import {
+  ClusterNotEnabledError,
+  ClusterRotationInProgressError,
+  NamespaceNotReadyError,
+  type ClusterExecutionService
+} from '../../cluster/index.js'
 import type { ClusterExecutionSettings } from '../../persistence/ports.js'
 import {
+  ClusterCredentialDto,
   ClusterEnvelopeStatusDto,
   ClusterExecutionSettingsDto,
   ErrorDto,
@@ -84,6 +93,52 @@ export function clusterExecutionRoutes(deps: HttpDeps) {
           const settings = await cluster.configure(orgOf(req), req.body)
           return settingsDto(settings, cluster.controlNamespace)
         } catch (error) {
+          return sendClusterFailure(reply, error, 'cluster API rejected the request')
+        }
+      }
+    )
+
+    r.post(
+      '/cluster-execution/credential',
+      {
+        schema: {
+          tags: [Tag.Cluster],
+          summary: 'Issue or rotate the envelope’s daemon credential',
+          description:
+            'Owner-only, and only while cluster execution is enabled. Mints the organization’s daemon API key, publishes it as the `config.json` entry of the Secret named by the AgentConnectOrg spec, and bumps `credentialRevision` so the operator recreates the daemon pod on the new credential. The key itself is never returned — it exists only inside the cluster Secret. Repeating the call rotates: the new key is published before the old one is revoked, and the daemon identity is reused so the organization’s sessions and agents survive the rotation. Exactly one rotation runs at a time. 409 carries `code`: `CLUSTER_NOT_ENABLED`, `CLUSTER_NAMESPACE_NOT_READY` (the operator has not created the envelope namespace yet — retry once `NamespaceReady` is true), or `CLUSTER_ROTATION_IN_PROGRESS`.',
+          operationId: 'issueClusterExecutionCredential',
+          response: { 201: ClusterCredentialDto, 403: ErrorDto, 409: ErrorDto, 502: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (denyNonOwner(req, reply)) return
+        try {
+          return reply.code(201).send(await cluster.issueCredential(orgOf(req), req.principal?.userId))
+        } catch (error) {
+          if (error instanceof ClusterNotEnabledError) {
+            return reply.code(409).send({
+              error: 'Conflict',
+              statusCode: 409,
+              message: error.message,
+              code: 'CLUSTER_NOT_ENABLED'
+            })
+          }
+          if (error instanceof NamespaceNotReadyError) {
+            return reply.code(409).send({
+              error: 'Conflict',
+              statusCode: 409,
+              message: error.message,
+              code: 'CLUSTER_NAMESPACE_NOT_READY'
+            })
+          }
+          if (error instanceof ClusterRotationInProgressError) {
+            return reply.code(409).send({
+              error: 'Conflict',
+              statusCode: 409,
+              message: error.message,
+              code: 'CLUSTER_ROTATION_IN_PROGRESS'
+            })
+          }
           return sendClusterFailure(reply, error, 'cluster API rejected the request')
         }
       }

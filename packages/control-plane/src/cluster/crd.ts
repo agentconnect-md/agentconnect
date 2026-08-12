@@ -74,7 +74,14 @@ export interface AgentConnectOrgStatus {
 export interface AgentConnectOrg {
   apiVersion?: string
   kind?: string
-  metadata?: { name?: string; namespace?: string; generation?: number; deletionTimestamp?: string }
+  metadata?: {
+    name?: string
+    namespace?: string
+    uid?: string
+    resourceVersion?: string
+    generation?: number
+    deletionTimestamp?: string
+  }
   spec?: AgentConnectOrgSpec
   status?: AgentConnectOrgStatus
 }

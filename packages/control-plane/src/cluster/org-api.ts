@@ -23,7 +23,7 @@ export interface OrgResourceApi {
   readonly namespace: string
   apply(name: string, spec: AgentConnectOrgSpec): Promise<AgentConnectOrg>
   get(name: string): Promise<AgentConnectOrg | null>
-  delete(name: string): Promise<void>
+  delete(name: string, precondition?: { uid?: string; resourceVersion?: string }): Promise<void>
 }
 
 export class AgentConnectOrgApi implements OrgResourceApi {
@@ -62,11 +62,34 @@ export class AgentConnectOrgApi implements OrgResourceApi {
     }
   }
 
-  /** Delete the CR; absence already is the desired state. The operator's
-   *  finalizer drains and removes the envelope from there. */
-  async delete(name: string): Promise<void> {
+  /**
+   * Delete the CR; absence already is the desired state. The operator's
+   * finalizer drains and removes the envelope from there.
+   *
+   * `precondition` makes the delete conditional on the exact object that was
+   * read: a caller whose lease expired can still have this request in flight
+   * when a re-enable applies a new generation, and an unconditional delete would
+   * remove the resource that re-enable just created. The API server rejects a
+   * mismatched `uid`/`resourceVersion` instead.
+   */
+  async delete(name: string, precondition?: { uid?: string; resourceVersion?: string }): Promise<void> {
     try {
-      await this.http.json({ method: 'DELETE', path: this.item(name) })
+      await this.http.json({
+        method: 'DELETE',
+        path: this.item(name),
+        ...(precondition?.uid || precondition?.resourceVersion
+          ? {
+              body: {
+                apiVersion: 'meta.k8s.io/v1',
+                kind: 'DeleteOptions',
+                preconditions: {
+                  ...(precondition.uid ? { uid: precondition.uid } : {}),
+                  ...(precondition.resourceVersion ? { resourceVersion: precondition.resourceVersion } : {})
+                }
+              }
+            }
+          : {})
+      })
     } catch (error) {
       if (error instanceof K8sApiError && error.isNotFound) return
       throw error

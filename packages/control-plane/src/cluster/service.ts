@@ -6,11 +6,16 @@
  * cluster mode and a hosted deployment run this same path — only the policy
  * inputs (the defaults below) differ.
  *
- * Nothing here reconciles on a timer: the operator is level-triggered and
- * re-reads the CR on its own resync, so the control plane only has to make the
- * spec true at the moment it changes.
+ * Nothing here re-applies the spec on a timer: the operator is level-triggered
+ * and re-reads the CR on its own resync, so the control plane only has to make
+ * the spec true at the moment it changes. The periodic work it does own is
+ * cleanup it may still owe after a request returned — see the drains below.
  */
-import type { OrgId } from '../domain/ids.js'
+import { randomUUID } from 'node:crypto'
+import { DaemonId, OrgId } from '../domain/ids.js'
+import type { Clock } from '../domain/clock.js'
+import { buildDaemonConfigJson } from './credential.js'
+import { NamespaceNotReadyError, StaleCredentialWriteError, type OrgSecretApi } from './secret-api.js'
 import type {
   ClusterExecutionDefaults,
   ClusterExecutionPatch,
@@ -36,6 +41,17 @@ const CONVERGE_ATTEMPTS = 5
 /** Tombstones retired per drain pass; a backlog is rare and drains over passes. */
 const TEARDOWN_BATCH = 50
 
+/** Owed revocations attempted per drain pass. */
+const REVOCATION_BATCH = 50
+
+/** Owed credential rollouts re-applied per drain pass. */
+const ROLLOUT_BATCH = 50
+
+/** How long one caller may own a credential transition before it is taken over.
+ *  Generous against a slow API server, short enough that a crashed process does
+ *  not lock an operator out of rotating for long. */
+const ROTATION_LEASE_MS = 2 * 60 * 1000
+
 /** Deployment policy for an org's first enable; the stored row owns it after that. */
 export interface ClusterExecutionPolicy {
   /** Install-time constant shared with the operator's `AC_ORG_NAMESPACE_PREFIX`. */
@@ -44,6 +60,48 @@ export interface ClusterExecutionPolicy {
   runtimeImage: string
   daemonTier: string
   runtimeTiers: { name: string; warmReplicas: number }[]
+  /** The daemon WebSocket URL written into every envelope's `config.json`. */
+  controlPlaneUrl: string
+}
+
+/** What a caller learns about a credential — never the key itself. */
+export interface ClusterCredentialView {
+  daemonId: string
+  secretName: string
+  revision: string
+  /** True when this call replaced an earlier credential (and revoked its key). */
+  rotated: boolean
+}
+
+/** The `ApiKeyAdmin` slice the key authority uses. */
+export interface ClusterKeyAuthority {
+  provisionDaemon(opts: { orgId: string; createdByUserId?: string }): Promise<{
+    daemonId: string
+    apiKeyId: string
+    token: string
+  }>
+  mintForDaemon(
+    orgId: OrgId,
+    daemonId: DaemonId,
+    opts?: { createdByUserId?: string }
+  ): Promise<{ apiKeyId: string; token: string }>
+  revoke(apiKeyId: string, reason: string): Promise<unknown>
+}
+
+/** Raised when the org has no ENABLED envelope to attach a credential to. */
+export class ClusterNotEnabledError extends Error {
+  constructor() {
+    super('cluster execution is not enabled for this organization')
+    this.name = 'ClusterNotEnabledError'
+  }
+}
+
+/** Raised when another caller already owns the org's credential transition. */
+export class ClusterRotationInProgressError extends Error {
+  constructor() {
+    super('a credential rotation is already in progress for this organization')
+    this.name = 'ClusterRotationInProgressError'
+  }
 }
 
 export class ClusterExecutionService {
@@ -52,7 +110,11 @@ export class ClusterExecutionService {
     private readonly api: OrgResourceApi,
     /** Only the slug is read — the CR's `displayName` is display-only. */
     private readonly orgs: Pick<OrgRepo, 'slugById'>,
-    private readonly policy: ClusterExecutionPolicy
+    private readonly policy: ClusterExecutionPolicy,
+    private readonly secrets: OrgSecretApi,
+    private readonly keys: ClusterKeyAuthority,
+    /** Drives the rotation lease; the same seam every other timed CP path uses. */
+    private readonly clock: Clock
   ) {}
 
   /** The control namespace this deployment provisions into — surfaced for operators. */
@@ -74,8 +136,80 @@ export class ClusterExecutionService {
    * under concurrency may include a peer's newer edit.
    */
   async configure(orgId: OrgId, patch: ClusterExecutionPatch): Promise<ClusterExecutionSettings> {
+    // Disabling destroys the envelope, so it takes the same exclusive claim a
+    // rotation does: otherwise a rotation already in flight could publish and
+    // commit a key moments after the credential was supposed to be retired.
+    if (patch.enabled === false) return this.disable(orgId, patch)
+    if (patch.enabled === true) return this.enable(orgId, patch)
     await this.repo.upsert(orgId, this.defaults(orgId), patch)
     return this.converge(orgId)
+  }
+
+  /**
+   * Switching cluster execution on. It takes the same claim the teardown drain
+   * does, and holds it while it cancels a previous disable's tombstone AND
+   * applies the resource — otherwise a drain that had already listed that
+   * tombstone could delete the resource this call just created, leaving an
+   * `enabled: true` row with no envelope and nothing to notice.
+   */
+  private async enable(orgId: OrgId, patch: ClusterExecutionPatch): Promise<ClusterExecutionSettings> {
+    // The claim comes FIRST, before `enabled` moves: a row flipped outside the
+    // claim is a state change a concurrent disable or drain never saw.
+    // `beginCredentialRotation` needs a row to claim, so an org that has never
+    // configured anything gets a disabled defaults row and is enabled under the
+    // claim. Insert-only: two first-enable calls both see no row, and the one
+    // that loses must leave the winner's row exactly as the winner claimed it.
+    await this.repo.createIfAbsent(orgId, this.defaults(orgId))
+    const token = randomUUID()
+    const claimed = await this.repo.beginCredentialRotation(orgId, token, new Date(this.clock.now()), ROTATION_LEASE_MS)
+    if (!claimed) {
+      // No row at all ⇒ the organization was deleted under this request; there
+      // is nothing to own and nothing to apply.
+      if (!(await this.repo.get(orgId))) return this.unconfigured(orgId)
+      throw new ClusterRotationInProgressError()
+    }
+    try {
+      await this.repo.upsert(orgId, this.defaults(orgId), patch)
+      await this.repo.clearPendingTeardown(orgId)
+      return await this.converge(orgId)
+    } finally {
+      await this.repo.endCredentialRotation(orgId, token)
+    }
+  }
+
+  /**
+   * Switching cluster execution off. Everything durable happens FIRST and in one
+   * transaction — the credential is dropped, both its keys are queued for
+   * revocation, and the resource is recorded for teardown — so a cluster that
+   * refuses the delete leaves state that converges through maintenance rather
+   * than a `enabled: false` row beside a live pod holding a live key.
+   *
+   * The daemon row itself stays: removing one unplaces agents and repoints
+   * collaboration routes, which is the Daemons page's job and not this one's.
+   */
+  private async disable(orgId: OrgId, patch: ClusterExecutionPatch): Promise<ClusterExecutionSettings> {
+    // The row must not be written before the claim is held: an upsert that flips
+    // `enabled` while an issuer owns the transition would leave a disabled row
+    // whose credential was never retired. `retireCredential` is what flips it,
+    // under the claim, so ownership and the state change are one step.
+    const token = randomUUID()
+    const claimed = await this.repo.beginCredentialRotation(orgId, token, new Date(this.clock.now()), ROTATION_LEASE_MS)
+    if (!claimed) {
+      if (!(await this.repo.get(orgId))) return this.unconfigured(orgId)
+      throw new ClusterRotationInProgressError()
+    }
+    try {
+      const { enabled: _dropped, ...rest } = patch
+      if (Object.keys(rest).length > 0) await this.repo.upsert(orgId, this.defaults(orgId), rest)
+      await this.repo.retireCredential(orgId, token, 'cluster execution disabled')
+      // Directly, not through the drain: this call already owns the claim the
+      // drain would try to take.
+      await this.deleteEnvelopeResource(orgId, claimed.targetNamespace)
+      await this.drainKeyRevocations()
+    } finally {
+      await this.repo.endCredentialRotation(orgId, token)
+    }
+    return this.settings(orgId)
   }
 
   /**
@@ -134,11 +268,293 @@ export class ClusterExecutionService {
     const pending = await this.repo.listPendingTeardowns(limit)
     let retired = 0
     for (const entry of pending) {
-      await this.api.delete(orgResourceName(entry.targetNamespace))
-      await this.repo.clearPendingTeardown(entry.orgId)
-      retired += 1
+      const retiredOne = await this.retireEnvelope(OrgId(entry.orgId), entry.targetNamespace)
+      if (retiredOne) retired += 1
     }
     return retired
+  }
+
+  /**
+   * Delete one org's resource under the same exclusive claim every other
+   * transition takes. The claim is the fence against the listing going stale: a
+   * re-enable holds it while it clears the tombstone and applies the CR, so a
+   * drain that listed the entry beforehand cannot delete the resource the
+   * re-enable just created. An org whose row is gone (deleted) has no claim to
+   * take and no re-enable to race, so it is deleted directly.
+   */
+  private async retireEnvelope(orgId: OrgId, targetNamespace: string): Promise<boolean> {
+    const row = await this.repo.get(orgId)
+    let token: string | undefined
+    if (row) {
+      token = randomUUID()
+      const claimed = await this.repo.beginCredentialRotation(
+        orgId,
+        token,
+        new Date(this.clock.now()),
+        ROTATION_LEASE_MS
+      )
+      if (!claimed) return false // someone owns this org right now; next pass
+      // Re-read under the claim: a re-enable that finished before we got here
+      // already cleared the tombstone, and this entry is stale.
+      if (claimed.enabled) {
+        await this.repo.endCredentialRotation(orgId, token)
+        return false
+      }
+    }
+    try {
+      return await this.deleteEnvelopeResource(orgId, targetNamespace)
+    } finally {
+      if (token) await this.repo.endCredentialRotation(orgId, token)
+    }
+  }
+
+  /**
+   * Delete the resource and drop its tombstone. The caller owns the claim — but
+   * a claim cannot fence a request already in flight, so the delete carries the
+   * read object's `uid`/`resourceVersion`: a re-enable that applied a new
+   * generation in the meantime makes the API server reject it rather than
+   * removing what the re-enable just created.
+   */
+  private async deleteEnvelopeResource(orgId: OrgId, targetNamespace: string): Promise<boolean> {
+    const name = orgResourceName(targetNamespace)
+    try {
+      const existing = await this.api.get(name)
+      if (existing) {
+        await this.api.delete(name, {
+          ...(existing.metadata?.uid ? { uid: existing.metadata.uid } : {}),
+          ...(existing.metadata?.resourceVersion ? { resourceVersion: existing.metadata.resourceVersion } : {})
+        })
+      }
+    } catch {
+      return false // still owed; the maintenance loop retries
+    }
+    await this.repo.clearPendingTeardown(orgId)
+    return true
+  }
+
+  /**
+   * Issue — or rotate — the org's daemon credential. The control plane is the
+   * key authority for the whole envelope: it mints the key, publishes it as the
+   * Secret the CRD names, and bumps `credentialRevision` so the operator
+   * projects a new pod-template annotation and forces a Recreate. The operator
+   * itself has no Secret verbs anywhere and never sees any of this.
+   *
+   * Daemon keys never expire, so the shape of this method is dictated by its
+   * failure points rather than its happy path:
+   *
+   * - **One owner.** A fencing token claims the transition and EVERY subsequent
+   *   write is conditional on it, so a holder whose lease expired cannot commit
+   *   behind its successor or unlock it.
+   * - **Staged before published.** The minted key is recorded before the Secret
+   *   is written, so any failure or crash after that point leaves a durable
+   *   handle the next claimer picks up.
+   * - **Named before revocable.** A key that MAY be in the Secret is queued
+   *   held: durably named, but not revocable until a higher-sequence publish has
+   *   landed and asked for its rollout. Only a key that definitely never reached
+   *   the cluster is revoked on the spot.
+   * - **Committed atomically.** Promoting the staged key and queueing the one it
+   *   supersedes happen in one transaction; separately, a stop in between would
+   *   overwrite the only handle to the predecessor.
+   * - **Secret before revision.** A failed publish leaves the running pod on its
+   *   old, still-valid key rather than rolling it onto one that never existed.
+   * - **Revoked last.** The predecessor dies only after the rollout is asked for.
+   *
+   * The daemon identity is created once and reused, so a rotation does not
+   * orphan the org's sessions, agents, and history under a new daemon row.
+   */
+  async issueCredential(orgId: OrgId, actorUserId?: string): Promise<ClusterCredentialView> {
+    // A disabled envelope has no resource and is being torn down; publishing a
+    // fresh Secret into its dying namespace would silently undo the retirement
+    // that disabling just performed.
+    const current = await this.repo.get(orgId)
+    if (!current?.enabled) throw new ClusterNotEnabledError()
+
+    const token = randomUUID()
+    const settings = await this.repo.beginCredentialRotation(
+      orgId,
+      token,
+      new Date(this.clock.now()),
+      ROTATION_LEASE_MS
+    )
+    if (!settings) throw new ClusterRotationInProgressError()
+    try {
+      const previousApiKeyId = settings.credentialApiKeyId
+      const minted = await this.mintFor(orgId, token, settings.credentialDaemonId, actorUserId)
+
+      // Durable before the publish: from here on the key is recoverable by
+      // whoever next claims the transition, whatever happens to this process.
+      // Nothing has reached the cluster yet, so a key this pass can no longer
+      // own is definitely not in the Secret and is revocable immediately.
+      if (!(await this.repo.stageCredentialKey(orgId, token, minted.apiKeyId))) {
+        throw await this.lostClaim(orgId, minted.apiKeyId, false)
+      }
+      try {
+        await this.secrets.publishCredential(
+          settings.targetNamespace,
+          settings.credentialSecretName,
+          settings.credentialRotationSeq,
+          buildDaemonConfigJson({
+            controlPlaneUrl: this.policy.controlPlaneUrl,
+            apiKey: minted.token,
+            daemonId: minted.daemonId
+          })
+        )
+      } catch (error) {
+        const landed = await this.publishLanded(settings, error)
+        if (!landed) {
+          // Definitely not published: clear the staged slot when this pass still
+          // owns it, and queue the key either way — if the claim was taken over
+          // the slot is the successor's, but the key is still this pass's to
+          // retire. Enqueueing is idempotent, so adoption cannot double-queue it.
+          await this.repo.abandonStagedCredential(orgId, token, 'cluster credential never published')
+          await this.repo.enqueueKeyRevocation(orgId, minted.apiKeyId, 'cluster credential never published')
+          await this.drainKeyRevocations()
+        }
+        // A newer rotation already published — this pass lost cluster-side, the
+        // same verdict the database fence would have given it.
+        if (error instanceof StaleCredentialWriteError) throw new ClusterRotationInProgressError()
+        // Ambiguous or confirmed-published: the key stays staged and un-revoked,
+        // because the pod may be holding it. The next claim adopts it, and by
+        // then a higher-sequence publish has replaced it in the Secret.
+        throw error
+      }
+
+      // The api-key id is already a unique, opaque, traceable handle for exactly
+      // this credential — which is what `credentialRevision` is defined to be.
+      const committed = await this.repo.commitCredential(
+        orgId,
+        token,
+        { daemonId: minted.daemonId, apiKeyId: minted.apiKeyId, revision: minted.apiKeyId },
+        'cluster credential rotated'
+      )
+      // The publish above succeeded, so this key IS in the Secret right now: name
+      // it, but leave it to the successor's commit to release.
+      if (!committed) throw await this.lostClaim(orgId, minted.apiKeyId, true)
+      // Only now has the rollout actually been ASKED for: the CR carries the new
+      // `credentialRevision`. A converge that throws leaves the obligation
+      // recorded and every superseded key held, so the pod keeps a working
+      // credential and the maintenance loop finishes the apply.
+      await this.converge(orgId)
+      await this.repo.completeCredentialRollout(orgId, token)
+      await this.drainKeyRevocations()
+
+      return {
+        daemonId: minted.daemonId,
+        secretName: settings.credentialSecretName,
+        revision: minted.apiKeyId,
+        rotated: previousApiKeyId !== undefined
+      }
+    } finally {
+      await this.repo.endCredentialRotation(orgId, token)
+    }
+  }
+
+  /**
+   * Did the publish that threw actually commit? A write whose response was lost
+   * to a dropped connection still lands, and revoking that key would leave the
+   * daemon pod mounting a dead credential. Only a rejection this module raised
+   * itself is unambiguous; anything else is settled by re-reading the Secret,
+   * and a read that fails too is treated as "may have landed" — the safe answer,
+   * since the cost of keeping a key alive one rotation longer is far lower than
+   * the cost of killing a live one.
+   */
+  private async publishLanded(settings: ClusterExecutionSettings, error: unknown): Promise<boolean> {
+    if (error instanceof NamespaceNotReadyError || error instanceof StaleCredentialWriteError) return false
+    try {
+      const published = await this.secrets.publishedSeq(settings.targetNamespace, settings.credentialSecretName)
+      return published >= settings.credentialRotationSeq
+    } catch {
+      return true
+    }
+  }
+
+  /** The lease expired and someone else owns the transition. The key this pass
+   *  minted is no longer anyone's credential, so hand it to the revocation queue
+   *  under the successor's ownership rather than dropping it on the floor —
+   *  HELD when it may already be published, since the successor's commit is what
+   *  proves a higher-sequence Secret has replaced it. */
+  private async lostClaim(orgId: OrgId, apiKeyId: string, published: boolean): Promise<Error> {
+    await this.repo.enqueueKeyRevocation(orgId, apiKeyId, 'cluster credential rotation superseded', published)
+    await this.drainKeyRevocations() // settles whatever is eligible; held keys are not
+    return new ClusterRotationInProgressError()
+  }
+
+  /**
+   * A key for the org's daemon, creating that daemon on the first issue. The
+   * new identity is recorded BEFORE anything can fail: a retry after a failed
+   * publication must re-key the same daemon, not provision another one.
+   */
+  private async mintFor(
+    orgId: OrgId,
+    token: string,
+    existingDaemonId: string | undefined,
+    actorUserId?: string
+  ): Promise<{ daemonId: string; apiKeyId: string; token: string }> {
+    const by = actorUserId ? { createdByUserId: actorUserId } : {}
+    if (existingDaemonId) {
+      const key = await this.keys.mintForDaemon(orgId, DaemonId(existingDaemonId), by)
+      return { daemonId: existingDaemonId, ...key }
+    }
+    const provisioned = await this.keys.provisionDaemon({ orgId, ...by })
+    await this.repo.stageCredentialDaemon(orgId, token, provisioned.daemonId)
+    return provisioned
+  }
+
+  /**
+   * Finish the applies a committed credential is still owed. A commit is durable
+   * intent; the pod only rolls onto the new key once the CR carries the new
+   * `credentialRevision`, so a request that died between the two leaves both the
+   * obligation and the keys it superseded — held, and therefore still working.
+   * This is the retry: re-apply, then release, under the same per-org claim
+   * every other transition takes. Returns how many rollouts it completed.
+   */
+  async drainCredentialRollouts(limit = ROLLOUT_BATCH): Promise<number> {
+    let completed = 0
+    for (const orgId of await this.repo.listPendingCredentialRollouts(limit)) {
+      if (await this.completeRollout(OrgId(orgId))) completed += 1
+    }
+    return completed
+  }
+
+  /** One owed rollout, or false when it is still owed after this pass. */
+  private async completeRollout(orgId: OrgId): Promise<boolean> {
+    const token = randomUUID()
+    const claimed = await this.repo.beginCredentialRotation(orgId, token, new Date(this.clock.now()), ROTATION_LEASE_MS)
+    if (!claimed) return false // a live transition owns this org; next pass
+    try {
+      // Through the convergence fence, not a bare apply: a settings write needs
+      // no credential claim, so one can land while this apply is in flight and
+      // this pass would otherwise revert the CR to the spec it captured. The
+      // credential fields only move under the claim this pass holds, so the row
+      // a peer supersedes it with still carries the revision being rolled out.
+      await this.converge(orgId)
+      await this.repo.completeCredentialRollout(orgId, token)
+      return true
+    } catch {
+      return false // still owed; the cluster is unreachable or refusing
+    } finally {
+      await this.repo.endCredentialRotation(orgId, token)
+    }
+  }
+
+  /**
+   * Revoke every key the provisioner still owes, dropping each intent only once
+   * its key is actually revoked. Errors are swallowed per key so one unreachable
+   * row cannot hold up the rest; the intent survives for the next pass.
+   */
+  async drainKeyRevocations(limit = REVOCATION_BATCH): Promise<number> {
+    const pending = await this.repo.listPendingKeyRevocations(limit)
+    let revoked = 0
+    for (const entry of pending) {
+      try {
+        await this.keys.revoke(entry.apiKeyId, entry.reason)
+      } catch {
+        continue // still owed; the maintenance loop retries
+      }
+      await this.repo.clearKeyRevocation(entry.apiKeyId)
+      revoked += 1
+    }
+    return revoked
   }
 
   /** Live envelope status from the resource; absent ⇒ `present: false`. */
@@ -166,6 +582,15 @@ export class ClusterExecutionService {
   private unconfigured(orgId: OrgId): ClusterExecutionSettings {
     const defaults = this.defaults(orgId)
     const epoch = new Date(0)
-    return { orgId, enabled: false, specRevision: 0, suspend: false, ...defaults, createdAt: epoch, updatedAt: epoch }
+    return {
+      orgId,
+      enabled: false,
+      specRevision: 0,
+      credentialRotationSeq: 0,
+      suspend: false,
+      ...defaults,
+      createdAt: epoch,
+      updatedAt: epoch
+    }
   }
 }
