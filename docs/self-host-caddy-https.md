@@ -1,143 +1,116 @@
-# Self-host AgentConnect behind Caddy HTTPS
+# Self-host AgentConnect and Logto behind Caddy HTTPS
 
-The default Compose stack binds its services to loopback and is intended for
-local evaluation. When users or daemons connect over a LAN, terminate HTTPS and
-WSS at a gateway instead of publishing the Web, Control Plane, Relay, and
-PostgreSQL ports directly.
+The default Compose stack is a loopback-only evaluation environment. Do not
+publish it directly to a LAN: without configured OIDC it uses development
+authentication, and its default credentials are intentionally local-only.
 
-This example uses the RFC 5737 documentation address `192.0.2.10`. Replace it
-with the LAN address of the AgentConnect host. The deployment uses one IP
-address and path prefixes:
+The checked-in `compose.logto.https.yaml` overlay provides one supported LAN
+topology: AgentConnect is authenticated by the bundled Logto deployment, and
+Caddy is the only public gateway. There is deliberately no generic HTTPS
+overlay for the no-auth base stack.
 
-| Public endpoint                   | Internal service       |
-| --------------------------------- | ---------------------- |
-| `https://192.0.2.10:1443/`        | `web:8080`             |
-| `https://192.0.2.10:1443/cp/*`    | `control-plane:8080/*` |
-| `https://192.0.2.10:1443/relay/*` | `relay:8080/*`         |
+This guide uses the RFC 5737 documentation address `192.0.2.10`. Replace it
+with the address or DNS name of the Docker host.
 
-Caddy supports WebSocket proxying without manually adding `Connection` or
-`Upgrade` headers. `handle_path` is important here because it strips `/cp` and
-`/relay` before forwarding the request.
+| Endpoint                          | Purpose                       |
+| --------------------------------- | ----------------------------- |
+| `https://192.0.2.10:1443/`        | Web console                   |
+| `https://192.0.2.10:1443/cp/*`    | Control Plane                 |
+| `https://192.0.2.10:1443/relay/*` | Relay HTTP and WebSocket      |
+| `https://192.0.2.10:1444/oidc/*`  | Logto OIDC issuer             |
+| `http://localhost:8091`           | Setup, through an SSH tunnel  |
+| `http://localhost:3002`           | Logto Admin, through a tunnel |
 
-## Complete authenticated setup first
+Setup and Logto Admin never bind to a LAN interface. PostgreSQL, Web, Control
+Plane, Relay, and Logto do not publish host ports. Caddy publishes the two HTTPS
+origins and owns the two loopback-only operator ports.
 
-Do not expose the default evaluation stack to a LAN. When `OIDC_ISSUER` is
-unset, the Control Plane uses a fixed-owner development authentication stub;
-the base Compose defaults also include known local-only database, API-key, and
-Relay credentials.
+## Prerequisites
 
-Before the first database initialization, copy `.env.example` to `.env` and set
-unique values for all three deployment credentials:
+This overlay uses inline `configs.content` and the `!reset` merge tag. Install
+Docker Compose 2.24.4 or newer:
+
+```bash
+docker compose version
+```
+
+Before the first database initialization, copy `.env.example` to `.env` and
+set unique deployment credentials. The API-key pepper is effectively
+immutable, and PostgreSQL applies its password when initializing the volume, so
+do not initialize with the defaults and try to rotate them afterward.
 
 ```dotenv
+AGENTCONNECT_HTTPS_HOST=192.0.2.10
+AGENTCONNECT_HTTPS_PORT=1443
+AGENTCONNECT_LOGTO_HTTPS_PORT=1444
+AGENTCONNECT_HTTPS_BIND_ADDRESS=0.0.0.0
+
+AGENTCONNECT_SETUP_PORT=8091
+AGENTCONNECT_LOGTO_ADMIN_PORT=3002
+
 AGENTCONNECT_POSTGRES_PASSWORD=<random-password>
+LOGTO_POSTGRES_PASSWORD=<random-url-safe-password>
 AGENTCONNECT_API_KEY_PEPPER=<random-32+-character-value>
 AGENTCONNECT_RELAY_TOKEN=<random-token>
 ```
 
-For example, `openssl rand -hex 32` generates a suitable value. Generate a
-different value for each variable. The API-key pepper is effectively immutable,
-and the PostgreSQL password is applied when the database volume is initialized,
-so do not bootstrap with the defaults and rotate them afterward.
+Generate a different value for every credential. For example,
+`openssl rand -hex 32` produces values accepted by all four settings.
 
-Configure an HTTPS OIDC/Logto issuer that every client can reach, and set its
-issuer in `.env`:
-
-```dotenv
-OIDC_ISSUER=https://login.example.test/oidc
-```
-
-Complete the browser-based [`@agentconnect.md/setup`](../packages/setup/README.md)
-flow while Setup Server remains loopback-only. On a remote Docker host, reach it
-through an SSH port forward rather than publishing its port:
-
-```bash
-ssh -L 8091:127.0.0.1:8091 user@agentconnect-host
-```
-
-During this bootstrap, use the final HTTPS Web origin for
-`AGENTCONNECT_PUBLIC_WEB_URL`, but use the gateway origin without `/cp` or
-`/relay` for the temporary Control Plane and Relay values. Setup intentionally
-accepts origins only:
-
-```dotenv
-AGENTCONNECT_PUBLIC_WEB_URL=https://192.0.2.10:1443
-AGENTCONNECT_PUBLIC_CP_URL=https://192.0.2.10:1443
-AGENTCONNECT_PUBLIC_RELAY_URL=https://192.0.2.10:1443
-```
-
-Start Setup without the HTTPS override, open `http://localhost:8091` through the
-tunnel, save the OIDC deployment configuration, claim the administrator role,
-sign in again, and confirm authenticated sign-in succeeds:
-
-```bash
-docker compose --env-file .env -f compose.yaml up -d setup-server
-```
-
-Stop Setup after authentication is verified. The HTTPS override keeps it behind
-the opt-in `setup` profile because Setup cannot model the final path-prefixed
-Control Plane and Relay URLs:
-
-```bash
-docker compose --env-file .env -f compose.yaml stop setup-server
-```
-
-Do not configure callback-based provider Apps during this temporary-origin
-bootstrap. Their callback URLs must match the final routed topology, which this
-path-prefixed example does not expose through Setup.
-
-### Use the bundled Logto overlay
-
-To run the repository's bundled Logto instead of an external OIDC provider,
-combine all three checked-in overlays:
+The overlay derives all public URLs and this OIDC issuer from the host and
+ports:
 
 ```text
-compose.yaml + compose.logto.yaml + compose.https.yaml + compose.logto.https.yaml
+https://192.0.2.10:1444/oidc
 ```
 
-Logto needs its own origin. With one IP address, the companion overlay serves
-AgentConnect on port `1443` and Logto on a different HTTPS port such as `1444`.
-It does not place Logto under a path prefix because OIDC issuer and browser
-callback URLs need a stable origin.
+Do not set a separate `OIDC_ISSUER`; the Logto HTTPS overlay supplies the value
+to the services that need it.
 
-Add the Logto ports and a unique database password to `.env`. The two HTTPS
-ports must differ:
+## Validate the merged stack
 
-```dotenv
-AGENTCONNECT_LOGTO_HTTPS_PORT=1444
-AGENTCONNECT_LOGTO_ADMIN_PORT=3002
-AGENTCONNECT_SETUP_PORT=8091
-LOGTO_POSTGRES_PASSWORD=<random-url-safe-password>
-OIDC_ISSUER=https://192.0.2.10:1444/oidc
-```
-
-The companion overlay derives Logto's public endpoint from the host and port.
-`OIDC_ISSUER` must match that endpoint plus `/oidc`; Compose requires it while
-loading the base HTTPS overlay, before merging the Logto-specific value.
-
-The public Logto port maps to Caddy's fixed internal TLS port `8443`; Caddy then
-proxies to `logto:3001`. The overlay enables Logto's trusted-proxy mode and
-forwards the HTTPS scheme so OIDC discovery and browser redirects advertise the
-public HTTPS endpoint rather than the internal HTTP hop.
-
-Start the stack with the local-only Setup and Logto Admin routes enabled through
-Caddy:
+Always use all three Compose files, in this order:
 
 ```bash
 docker compose \
   --env-file .env \
   -f compose.yaml \
   -f compose.logto.yaml \
-  -f compose.https.yaml \
+  -f compose.logto.https.yaml \
+  config --quiet
+```
+
+The command fails before changing containers if any required credential is
+missing. Do not satisfy the checks with the repository `local-only-*` values.
+
+Validate the embedded Caddyfile independently:
+
+```bash
+docker compose \
+  --env-file .env \
+  -f compose.yaml \
+  -f compose.logto.yaml \
+  -f compose.logto.https.yaml \
+  run --rm --no-deps caddy \
+  caddy validate --config /etc/caddy/Caddyfile
+```
+
+## Bootstrap authentication
+
+Start the stack with the loopback-only Setup route enabled:
+
+```bash
+docker compose \
+  --env-file .env \
+  -f compose.yaml \
+  -f compose.logto.yaml \
   -f compose.logto.https.yaml \
   --profile setup \
   up -d --force-recreate
 ```
 
-Caddy is the only service that publishes ports. AgentConnect and Logto are
-available over HTTPS on the LAN; Setup (`8091`) and Logto Admin (`3002`) are
-published by Caddy on host loopback only. For a remote host, forward both local
-operator ports:
+On a remote Docker host, forward both operator ports rather than publishing
+them:
 
 ```bash
 ssh \
@@ -147,13 +120,9 @@ ssh \
 ```
 
 If opening either page prints `open failed: administratively prohibited`, the
-host SSH daemon is rejecting TCP forwarding. Enable it on the host, validate
-the configuration, and fully restart the SSH service (a reload can leave
-existing sessions on the old policy):
-
-```text
-AllowTcpForwarding yes
-```
+host SSH daemon is rejecting TCP forwarding. Set `AllowTcpForwarding yes` in
+the host SSH server configuration, validate it, and fully restart SSH. Keep an
+existing administrator session open while restarting the service.
 
 For example, on Debian or Ubuntu:
 
@@ -162,135 +131,75 @@ sudo sshd -t
 sudo systemctl restart ssh
 ```
 
-Keep an existing administrator session open while restarting SSH. Then close
-the failed tunnel and create a new SSH connection; forwarding permissions are
-fixed when each session is authenticated.
+Close the failed tunnel and create a new SSH connection because forwarding
+permissions are fixed when each session is authenticated.
 
-Trust Caddy's root CA before opening Logto, then visit
-`http://localhost:8091` for Setup and `http://localhost:3002` for Logto Admin.
-Complete Logto Management API setup, save OIDC authentication, claim the first
-administrator, sign in again, and verify authenticated access to AgentConnect.
+Trust the Caddy root CA as described below, then open:
 
-After setup, omit `--profile setup` and recreate the stack. The Setup container
-stops, while its loopback Caddy route returns `502` until the profile is enabled
-again:
+- Setup: `http://localhost:8091`
+- Logto Admin: `http://localhost:3002`
+
+Complete the Logto Management API setup, save the OIDC deployment
+configuration, claim the first AgentConnect administrator, sign out, and sign
+in again. Confirm the Web console requires authentication and authenticated
+access succeeds before treating the deployment as ready.
+
+After setup, omit `--profile setup` and recreate the stack. This removes the
+Setup container; its loopback Caddy route returns `502` until the profile is
+enabled again.
 
 ```bash
 docker compose \
   --env-file .env \
   -f compose.yaml \
   -f compose.logto.yaml \
-  -f compose.https.yaml \
   -f compose.logto.https.yaml \
   up -d --force-recreate --remove-orphans
 ```
 
-## Configure the public URLs
-
-Replace the temporary Control Plane and Relay origins in `.env` with their final
-path-prefixed URLs, and add the gateway settings:
-
-```dotenv
-AGENTCONNECT_HTTPS_HOST=192.0.2.10
-AGENTCONNECT_HTTPS_PORT=1443
-AGENTCONNECT_HTTPS_BIND_ADDRESS=0.0.0.0
-
-AGENTCONNECT_PUBLIC_WEB_URL=https://192.0.2.10:1443
-AGENTCONNECT_PUBLIC_CP_URL=https://192.0.2.10:1443/cp
-AGENTCONNECT_PUBLIC_RELAY_URL=https://192.0.2.10:1443/relay
-AGENTCONNECT_RELAY_DAEMON_URL=wss://192.0.2.10:1443/relay
-```
-
-`AGENTCONNECT_RELAY_DAEMON_URL` is a base URL. Daemons append `/rd/ws` when
-they connect to the Relay.
-
-## Use the Compose override
-
-The repository includes `compose.https.yaml` beside `compose.yaml`. Pass both
-files to Docker Compose as shown below; no copy-and-paste configuration is
-required.
-
-The upstream port is `8080` even when the base Compose file publishes a
-different host port. Caddy reaches the other containers through the Compose
-network and therefore uses each container's listening port, not its host port.
-
-`!reset []` removes inherited port publications. A plain `ports: []` is not
-sufficient because Compose normally merges port sequences. Docker may still
-show `8080/tcp` or `5432/tcp` as image metadata; a port is published only when
-the output contains a mapping such as `0.0.0.0:1443->443/tcp`.
-
-This override uses both inline `configs.content` and the `!reset` merge tag. It
-requires Docker Compose 2.24.4 or newer.
-
-## Validate and start
-
-Render the merged model before changing running containers:
+## Verify the deployment boundary
 
 ```bash
 docker compose \
   --env-file .env \
   -f compose.yaml \
-  -f compose.https.yaml \
-  config --quiet
-```
-
-This command fails before changing containers if `OIDC_ISSUER` or any required
-deployment credential is missing. Do not bypass those checks by setting them to
-the repository's `local-only-*` defaults.
-
-Validate the inline Caddyfile independently:
-
-```bash
-docker compose \
-  --env-file .env \
-  -f compose.yaml \
-  -f compose.https.yaml \
-  run --rm --no-deps caddy \
-  caddy validate --config /etc/caddy/Caddyfile
-```
-
-Recreate the whole stack so the cleared ports and public URLs apply to every
-container:
-
-```bash
-docker compose \
-  --env-file .env \
-  -f compose.yaml \
-  -f compose.https.yaml \
-  up -d --force-recreate
-```
-
-Check the result:
-
-```bash
-docker compose \
-  --env-file .env \
-  -f compose.yaml \
-  -f compose.https.yaml \
+  -f compose.logto.yaml \
+  -f compose.logto.https.yaml \
   ps
 
 curl -k https://192.0.2.10:1443/cp/readyz
 curl -k https://192.0.2.10:1443/relay/readyz
+curl -k https://192.0.2.10:1444/oidc/.well-known/openid-configuration
 ```
 
-Both health endpoints should return HTTP 200. Only Caddy should have a host
-port mapping. The example exposes HTTP/1.1 and HTTP/2 over TCP. When the public
-port is not 443, omit the optional HTTP/3 UDP mapping unless Caddy is also
-configured to advertise that public port.
+The endpoints should return HTTP 200. Only Caddy should show host port
+mappings. Docker may display bare `8080/tcp`, `3001/tcp`, or `5432/tcp` image
+metadata; those ports are not published unless a host mapping such as
+`0.0.0.0:1443->443/tcp` appears.
 
-## Trust Caddy's internal CA
+Caddy uses `handle_path`, which removes `/cp` and `/relay` before proxying.
+WebSocket upgrades are handled automatically. Daemons connect to:
 
-`tls internal` issues certificates from Caddy's private CA. Browsers and Node.js
-daemons must trust that CA; disabling TLS verification is suitable only for a
-short diagnostic.
+```text
+wss://192.0.2.10:1443/cp/daemon/ws
+```
 
-Export the root certificate:
+The Relay daemon dial URL is the Relay base URL; Relay appends `/rd/ws` when it
+connects.
+
+## Trust the Caddy internal CA
+
+`tls internal` issues certificates from the private Caddy CA. Browsers and
+Node.js daemons must trust that CA.
+
+Export its root certificate:
 
 ```bash
 docker compose \
   --env-file .env \
   -f compose.yaml \
-  -f compose.https.yaml \
+  -f compose.logto.yaml \
+  -f compose.logto.https.yaml \
   cp caddy:/data/caddy/pki/authorities/local/root.crt \
   ./agentconnect-caddy-root.crt
 ```
@@ -304,8 +213,8 @@ sudo install -m 0644 \
 sudo update-ca-certificates
 ```
 
-For a Node.js daemon, explicitly provide the additional CA if the process does
-not pick up the operating-system trust store:
+If Node.js does not use the operating-system trust store, provide the CA
+explicitly:
 
 ```bash
 NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/agentconnect-caddy-root.crt \
@@ -314,31 +223,16 @@ NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/agentconnect-caddy-root.crt
   --api-key '<daemon-key>'
 ```
 
-For a systemd user service, add the same variable with
-`systemctl --user edit agentconnect`, then restart the service.
-
-For a short diagnostic only, you can disable Node.js TLS certificate
-verification for one CLI invocation:
-
-```bash
-NODE_TLS_REJECT_UNAUTHORIZED=0 \
-  npx -y @agentconnect.md/cli run \
-  --api-url wss://192.0.2.10:1443/cp/daemon/ws \
-  --api-key '<daemon-key>'
-```
-
-Do not use this as a permanent deployment setting. It disables certificate
-verification for every HTTPS and WSS request made by that Node.js process,
-allowing an attacker who can intercept the connection to impersonate the
-server. Trusting Caddy's root CA with `NODE_EXTRA_CA_CERTS` is the secure
-solution.
+`NODE_TLS_REJECT_UNAUTHORIZED=0` is suitable only for a short diagnostic. It
+disables certificate verification for every HTTPS and WSS request made by that
+Node.js process.
 
 ## Production considerations
 
-- Prefer a real DNS name and a publicly trusted certificate when clients cannot
-  install the Caddy CA.
+- Prefer a real DNS name and a publicly trusted certificate when clients
+  cannot install the Caddy CA.
 - Keep `.env`, daemon API keys, and private keys out of source control.
-- Membership in the host's `docker` group grants root-equivalent control over
+- Membership in the host `docker` group grants root-equivalent control over
   the machine; restrict it to trusted operators.
-- Do not add a plaintext `ws://` listener solely to avoid certificate setup.
-  Daemon keys and control traffic would cross the network without TLS.
+- Do not add a plaintext `ws://` listener to avoid certificate setup. Daemon
+  credentials and control traffic would cross the network without TLS.

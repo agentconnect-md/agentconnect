@@ -144,8 +144,9 @@ default no-auth Compose command above is unchanged.
 For image pinning, production networking, sign-in, secrets, GitHub App setup,
 and optional Mem0 configuration, see the
 [AgentConnect OSS guide](https://docs.agentconnect.md/docs/oss-get-started).
-For a single-IP LAN deployment with path-prefixed Control Plane and Relay
-routes, see the [Caddy HTTPS guide](docs/self-host-caddy-https.md).
+For an authenticated single-IP LAN deployment using bundled Logto and
+path-prefixed Control Plane and Relay routes, see the
+[Caddy HTTPS guide](docs/self-host-caddy-https.md).
 
 ### AgentConnect Cloud
 
