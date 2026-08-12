@@ -211,7 +211,7 @@ export function ClusterExecutionCard({ orgId, isOwner }: { orgId: string | undef
                 <div className="min-w-0 flex-1">
                   <div className="font-sans text-[13px] font-medium leading-normal">Daemon credential</div>
                   <div className={`${HELP} mt-[3px]`}>
-                    Published into the <span className="mono">{settings.credentialSecretName}</span> Secret in the
+                    Published into the <span className="mono">{settings.credentialSecretName}</span>&#32;Secret in the
                     envelope namespace. The key is never shown here; rotating recreates the daemon pod on the new one.
                   </div>
                 </div>
