@@ -1,9 +1,0 @@
-{{- if .Values.installCRD }}
-# The AgentConnectOrg CRD, kept as a plain manifest so an `installCRD: false` install can
-# `kubectl apply -f` the file instead of rendering it back out — `helm template --show-only`
-# on an OCI chart writes `Pulled:`/`Digest:` lines to stdout and corrupts the piped YAML.
-# Still a template, not a crds/ directory: crds/ cannot be conditional and Helm never
-# upgrades it, which a moving v1alpha1 schema cannot afford. No release-scoped label on it —
-# helm.sh/resource-policy: keep makes it outlive every release that installs it.
-{{ .Files.Get "crd/agentconnectorg.yaml" }}
-{{- end }}
