@@ -18,7 +18,7 @@ import type {
 import { isSelfSender, lifecycleStatus, MOCK_MODE } from '@/lib/data'
 import type { AgentIcon } from '@/lib/agent-icon'
 import { withIconUrl } from '@/lib/agent-icon'
-import { getToken, getIdTokenRaw, getUser, signOutDeletedAccount } from '@/lib/auth'
+import { forceRefreshToken, getToken, getIdTokenRaw, getUser, signOutDeletedAccount } from '@/lib/auth'
 import { track } from '@/lib/analytics'
 import { createSseParser } from '@/lib/sse'
 import { isUpgradeAvailable } from '@/lib/version'
@@ -1253,8 +1253,26 @@ async function authHeaders(extra?: Record<string, string>): Promise<Record<strin
   return h
 }
 
+async function fetchWithTokenRefresh(input: string, init: RequestInit = {}): Promise<Response> {
+  const extra = Object.fromEntries(new Headers(init.headers).entries())
+  const request = async () => fetch(input, { ...init, headers: await authHeaders(extra) })
+  const response = await request()
+  if (response.status !== 401) return response
+  const body = (await response
+    .clone()
+    .json()
+    .catch(() => undefined)) as { code?: unknown } | undefined
+  if (body?.code !== 'TOKEN_EXPIRED') return response
+
+  // The CP validates the JWT's authoritative exp. If it has expired while the
+  // SDK's cached expiresAt still says otherwise, evict that cache and retry the
+  // request once with a token minted from the refresh token.
+  await forceRefreshToken()
+  return request()
+}
+
 async function apiGet<T>(path: string): Promise<T> {
-  const res = await fetch(`${cpBase()}${path}`, { headers: await authHeaders(), cache: 'no-store' })
+  const res = await fetchWithTokenRefresh(`${cpBase()}${path}`, { cache: 'no-store' })
   // Parse the denial body like the write helpers do: reads carry machine-readable
   // `code`s too (e.g. DAEMON_FEATURE_MISSING on a capability-gated route), and a
   // status-only ApiError silently drops them.
@@ -1309,8 +1327,8 @@ async function readSessionEventStream(
   }, SESSION_STREAM_REAUTH_MS)
   const path = `/orgs/${encodeURIComponent(orgId)}/stream`
   try {
-    const res = await fetch(`${cpBase()}${path}`, {
-      headers: await authHeaders({ accept: 'text/event-stream' }),
+    const res = await fetchWithTokenRefresh(`${cpBase()}${path}`, {
+      headers: { accept: 'text/event-stream' },
       cache: 'no-store',
       signal: request.signal
     })
@@ -1402,9 +1420,9 @@ export function subscribeSessionEvents(
 }
 
 async function apiPost<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(`${cpBase()}${path}`, {
+  const res = await fetchWithTokenRefresh(`${cpBase()}${path}`, {
     method: 'POST',
-    headers: await authHeaders({ 'content-type': 'application/json' }),
+    headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body)
   })
   if (!res.ok) throw await apiErrorFromResponse('POST', path, res)
@@ -1426,9 +1444,9 @@ async function apiErrorFromResponse(method: string, path: string, res: Response)
 }
 
 async function apiPatch<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(`${cpBase()}${path}`, {
+  const res = await fetchWithTokenRefresh(`${cpBase()}${path}`, {
     method: 'PATCH',
-    headers: await authHeaders({ 'content-type': 'application/json' }),
+    headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body)
   })
   if (!res.ok) {
@@ -1440,9 +1458,9 @@ async function apiPatch<T>(path: string, body: unknown): Promise<T> {
 }
 
 async function apiPut<T>(path: string, body?: unknown): Promise<T> {
-  const res = await fetch(`${cpBase()}${path}`, {
+  const res = await fetchWithTokenRefresh(`${cpBase()}${path}`, {
     method: 'PUT',
-    headers: await authHeaders(body === undefined ? undefined : { 'content-type': 'application/json' }),
+    headers: body === undefined ? undefined : { 'content-type': 'application/json' },
     ...(body === undefined ? {} : { body: JSON.stringify(body) })
   })
   if (!res.ok) throw await apiErrorFromResponse('PUT', path, res)
@@ -1451,9 +1469,9 @@ async function apiPut<T>(path: string, body?: unknown): Promise<T> {
 }
 
 async function apiDelete<T>(path: string, body?: unknown): Promise<T> {
-  const res = await fetch(`${cpBase()}${path}`, {
+  const res = await fetchWithTokenRefresh(`${cpBase()}${path}`, {
     method: 'DELETE',
-    headers: await authHeaders(body === undefined ? undefined : { 'content-type': 'application/json' }),
+    headers: body === undefined ? undefined : { 'content-type': 'application/json' },
     ...(body === undefined ? {} : { body: JSON.stringify(body) })
   })
   if (!res.ok) throw await apiErrorFromResponse('DELETE', path, res)

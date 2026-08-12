@@ -4,6 +4,7 @@ const logto = vi.hoisted(() => ({
   isAuthenticated: vi.fn(),
   getAccessToken: vi.fn(),
   clearAllTokens: vi.fn(),
+  clearAccessToken: vi.fn(),
   replace: vi.fn(),
   clientConfig: undefined as unknown
 }))
@@ -16,6 +17,7 @@ vi.mock('@logto/browser', () => ({
     isAuthenticated = logto.isAuthenticated
     getAccessToken = logto.getAccessToken
     clearAllTokens = logto.clearAllTokens
+    clearAccessToken = logto.clearAccessToken
   },
   UserScope: {
     Email: 'email',
@@ -36,6 +38,7 @@ describe('getToken', () => {
     logto.isAuthenticated.mockReset().mockResolvedValue(true)
     logto.getAccessToken.mockReset()
     logto.clearAllTokens.mockReset().mockResolvedValue(undefined)
+    logto.clearAccessToken.mockReset().mockResolvedValue(undefined)
     logto.replace.mockReset()
     logto.clientConfig = undefined
     vi.stubGlobal('window', {
@@ -101,5 +104,15 @@ describe('getToken', () => {
 
     expect(logto.getAccessToken).toHaveBeenCalledWith()
     expect(logto.clientConfig).toMatchObject({ scopes: ['email', 'profile', 'identities', 'roles'] })
+  })
+
+  it('evicts the access-token cache before forcing a resource token refresh', async () => {
+    logto.getAccessToken.mockResolvedValue('fresh-resource-token')
+    const { forceRefreshToken } = await import('./auth')
+
+    await expect(forceRefreshToken()).resolves.toBe('fresh-resource-token')
+
+    expect(logto.clearAccessToken).toHaveBeenCalledOnce()
+    expect(logto.getAccessToken).toHaveBeenCalledWith('https://api.example.test')
   })
 })

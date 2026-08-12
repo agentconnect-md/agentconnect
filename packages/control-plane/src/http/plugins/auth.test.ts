@@ -186,7 +186,11 @@ describe('humanAuthPlugin identity warm trigger (oidc path)', () => {
   // shape the OIDC integration tests use, without any database behind it.
   let oidcServer: Server
   let oidcIssuer = ''
-  let mintBearer: (subject: string, claims?: Record<string, unknown>) => Promise<string>
+  let mintBearer: (
+    subject: string,
+    claims?: Record<string, unknown>,
+    expiration?: Parameters<SignJWT['setExpirationTime']>[0]
+  ) => Promise<string>
 
   beforeAll(async () => {
     const { privateKey, publicKey } = await generateKeyPair('RS256')
@@ -210,13 +214,13 @@ describe('humanAuthPlugin identity warm trigger (oidc path)', () => {
     })
     const { port } = oidcServer.address() as AddressInfo
     oidcIssuer = `http://127.0.0.1:${port}`
-    mintBearer = (subject, claims = {}) =>
+    mintBearer = (subject, claims = {}, expiration = '10m') =>
       new SignJWT(claims)
         .setProtectedHeader({ alg: 'RS256', kid: 'warm-test' })
         .setIssuer(oidcIssuer)
         .setSubject(subject)
         .setIssuedAt()
-        .setExpirationTime('10m')
+        .setExpirationTime(expiration)
         .sign(privateKey)
   })
 
@@ -286,5 +290,19 @@ describe('humanAuthPlugin identity warm trigger (oidc path)', () => {
 
     expect(response.statusCode).toBe(401)
     expect(warm).not.toHaveBeenCalled()
+  })
+
+  it('marks an expired bearer so the browser can refresh it once', async () => {
+    const app = await appWithOptions({ OIDC_ISSUER: oidcIssuer })
+    const expired = await mintBearer('sub-42', {}, Math.floor(Date.now() / 1000) - 60)
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/v1/probe',
+      headers: { authorization: `Bearer ${expired}` }
+    })
+
+    expect(response.statusCode).toBe(401)
+    expect(response.json()).toMatchObject({ code: 'TOKEN_EXPIRED', message: 'access token expired' })
   })
 })

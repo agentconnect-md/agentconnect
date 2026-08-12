@@ -149,6 +149,11 @@ let cachedUser: AuthUser | null = null
 // one cleanup so they do not race several redirects to the login page.
 let invalidGrantCleanup: Promise<void> | undefined
 
+// Coalesce the recovery path when a page fan-out discovers the same server-side
+// expiry at once. The SDK normally refreshes from its cached expiresAt; this is
+// the escape hatch when the JWT's authoritative exp is already past that cache.
+let forcedAccessTokenRefresh: Promise<string | undefined> | undefined
+
 function clearLocalSessionMetadata(): void {
   cachedUser = null
   resetAnalytics()
@@ -274,6 +279,24 @@ export async function getToken(): Promise<string | undefined> {
     return accessToken(c, apiResource)
   }
   return (await c.getIdToken()) ?? undefined
+}
+
+/** Evict the SDK's access-token cache and mint a replacement from its refresh token. */
+export async function forceRefreshToken(): Promise<string | undefined> {
+  const c = getClient()
+  if (!c || !(await c.isAuthenticated())) return undefined
+  forcedAccessTokenRefresh ??= (async () => {
+    await c.clearAccessToken()
+    const { apiResource } = readConfig()
+    if (apiResource) return accessToken(c, apiResource)
+    // Refreshing the default access token also rotates the ID token when Logto
+    // returns one; CP calls without an API resource use that signed ID token.
+    await accessToken(c)
+    return (await c.getIdToken()) ?? undefined
+  })().finally(() => {
+    forcedAccessTokenRefresh = undefined
+  })
+  return forcedAccessTokenRefresh
 }
 
 /**
