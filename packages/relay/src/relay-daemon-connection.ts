@@ -54,8 +54,12 @@ export interface RelayDaemonConnDeps {
   onChat: (chat: RdChat) => void
   /** Route an inbound `rd/webchat-post` (a participant's completed reply post) to the
    *  conversation's browser connection, which renders it and fans the context copies
-   *  to the other participants' daemons (webchat-multi-agents.md §5.2). */
-  onWebchatPost: (post: RdWebchatPost) => void
+   *  to the other participants' daemons (webchat-multi-agents.md §5.2). The socket's
+   *  AUTHENTICATED `daemonId` is passed in — like `onAgentMsg`, and for the same
+   *  reason: the frame's authorship fields are a daemon-supplied claim, and since a
+   *  context copy can now carry the activation-capable depth stamp (§5.2a), the
+   *  fan-out must first bind that claim to the daemon that actually sent the frame. */
+  onWebchatPost: (fromDaemonId: string, post: RdWebchatPost) => void
   /** Route an inbound cross-daemon `rd/agentmsg` (agent-collaboration §2.3/§6.2). The
    *  socket's AUTHENTICATED `daemonId` is passed in (NOT the frame's untrusted
    *  `claimedFromAgentId`) — the router binds the request to it, validates/authorizes
@@ -154,8 +158,9 @@ export class RelayDaemonConnection {
           this.deps.onChat(frame.payload)
           return
         case 'rd/webchat-post':
-          // Completed reply post → browser render + context fan-out.
-          this.deps.onWebchatPost(frame.payload)
+          // Completed reply post → browser render + context fan-out. Bound to the
+          // AUTHENTICATED daemonId (never the frame's own authorship claim).
+          this.deps.onWebchatPost(this.daemonId, frame.payload)
           return
         case 'rd/agentmsg': {
           // Cross-daemon agent-call REQ (§2.3/§6.2). Bind to the AUTHENTICATED daemonId —

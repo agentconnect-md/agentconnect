@@ -419,6 +419,18 @@ seam, keeping the relay's pre-addressed fan-out as the roster walk:
   computed depth; the post itself stays in the transcript). A post with no
   usable depth — an older daemon, or any non-integer/negative value — is
   transcript-only: a missing depth never coerces to zero.
+- **The authorship claim is bound at the relay.** `rd/webchat-post` authorship
+  is a daemon-supplied claim, and agent-call identity must be bound by a
+  trusted endpoint (the `rd/agentmsg` rule). Before fanning context copies,
+  the relay verifies that the outer and inner author fields agree and that
+  the claimed author's CP-verified roster placement IS the authenticated
+  daemon the frame arrived from (`bindWebchatPostAuthor`,
+  `packages/relay/src/webchat-router.ts`). An unbound claim is not dropped —
+  transcripts already record what authenticated daemons assert — but its
+  depth stamp is stripped, so it stays transcript-only and can never make a
+  peer execute under a forged `callFrom`. A stale or evicted roster cache
+  fails closed the same way. The receiving daemon's own checks (call policy,
+  hop budget, exactly-once) remain the terminal verification.
 - **Author exclusion is absolute.** The relay excludes the author from the
   context fan-out, the record path drops self copies, and the activation seam
   re-checks — an author can never wake itself, which would not be a loop the
