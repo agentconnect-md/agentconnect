@@ -39,6 +39,7 @@ function toRecord(row: OrgClusterExecution): ClusterExecutionSettings {
     resourceName: row.resourceName,
     suspend: row.suspend,
     daemonImage: row.daemonImage,
+    daemonImageOwner: row.daemonImageOwner,
     daemonTier: row.daemonTier,
     ...(row.legacyKeyDaemonId ? { legacyKeyDaemonId: row.legacyKeyDaemonId } : {}),
     runtimeImage: row.runtimeImage,
@@ -66,20 +67,6 @@ export class PgOrgClusterExecutionRepo implements OrgClusterExecutionRepo {
   async getByResourceName(resourceName: string): Promise<ClusterExecutionSettings | null> {
     const row = await this.prisma.orgClusterExecution.findUnique({ where: { resourceName } })
     return row ? toRecord(row) : null
-  }
-
-  /** Conditional on the image, then read back what the row actually holds — the caller
-   *  settles a command on this answer, so it must be observed rather than assumed. */
-  async restoreDaemonImage(orgId: OrgId, daemonImage: string, expectedImage: string): Promise<string | null> {
-    await this.prisma.orgClusterExecution.updateMany({
-      where: { orgId, daemonImage: expectedImage },
-      data: { daemonImage, specRevision: { increment: 1 } }
-    })
-    const row = await this.prisma.orgClusterExecution.findUnique({
-      where: { orgId },
-      select: { daemonImage: true }
-    })
-    return row?.daemonImage ?? null
   }
 
   /** Stable `orgId` order so a sweep's log reads the same across boots. */
@@ -214,6 +201,7 @@ export class PgOrgClusterExecutionRepo implements OrgClusterExecutionRepo {
         resourceName: defaults.resourceName,
         suspend: patch.suspend ?? false,
         daemonImage: patch.daemonImage ?? defaults.daemonImage,
+        daemonImageOwner: patch.daemonImage !== undefined ? (patch.daemonImageOwner ?? null) : null,
         daemonTier: patch.daemonTier ?? defaults.daemonTier,
         runtimeImage: patch.runtimeImage ?? defaults.runtimeImage,
         runtimeTiers: tiers,
@@ -230,7 +218,12 @@ export class PgOrgClusterExecutionRepo implements OrgClusterExecutionRepo {
         specRevision: { increment: 1 },
         ...(patch.enabled !== undefined ? { enabled: patch.enabled } : {}),
         ...(patch.suspend !== undefined ? { suspend: patch.suspend } : {}),
-        ...(patch.daemonImage !== undefined ? { daemonImage: patch.daemonImage } : {}),
+        // Written together, always: an image and who owns it are one fact, and a writer that
+        // set the image while leaving a previous owner behind would hand its write to someone
+        // else's rollback. Every non-command writer therefore clears it by omitting the id.
+        ...(patch.daemonImage !== undefined
+          ? { daemonImage: patch.daemonImage, daemonImageOwner: patch.daemonImageOwner ?? null }
+          : {}),
         ...(patch.daemonTier !== undefined ? { daemonTier: patch.daemonTier } : {}),
         ...(patch.runtimeImage !== undefined ? { runtimeImage: patch.runtimeImage } : {}),
         ...(patch.runtimeTiers !== undefined ? { runtimeTiers: tiers } : {}),

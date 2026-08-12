@@ -374,7 +374,18 @@ describe('cluster daemon upgrade — settlement and durability', () => {
  */
 describe('cluster daemon upgrade — durable compensation', () => {
   const ops = () => new PgDaemonLifecycleOpRepo(prisma)
+  const settingsRepo = new PgOrgClusterExecutionRepo(prisma)
   const past = () => new Date(Date.now() - 60_000)
+  /** Only `daemonImage`/`daemonImageOwner` are read from a patch; the rest is the row's. */
+  const DEFAULTS = {
+    resourceName: RESOURCE_NAME,
+    daemonImage: POLICY.daemonImage,
+    daemonTier: POLICY.daemonTier,
+    runtimeImage: POLICY.runtimeImage,
+    runtimeTiers: POLICY.runtimeTiers,
+    quota: { maxAgents: 0, cpu: '0', memory: '0', storage: '0' },
+    egressPolicy: 'curated' as const
+  }
 
   it('records both halves of the obligation on the operation', async () => {
     const { http } = await clusterApp()
@@ -423,12 +434,6 @@ describe('cluster daemon upgrade — durable compensation', () => {
     const { http, cluster } = await clusterApp()
     await enableEnvelope(http)
     await seedDaemon(true)
-    // The forward write survived the exit, so the envelope names the requested image.
-    await http.app.inject({
-      method: 'PUT',
-      url: CLUSTER,
-      payload: { daemonImage: 'registry.example.test/daemon:v1.5.0' }
-    })
     const op = await ops().open({
       daemonId: DaemonId(DAEMON),
       op: 'upgrade',
@@ -437,6 +442,12 @@ describe('cluster daemon upgrade — durable compensation', () => {
       deadline: past(),
       commandImage: 'registry.example.test/daemon:v1.5.0',
       rollbackImage: 'registry.example.test/daemon:v1.4.0'
+    })
+    // The forward write survived the exit, owner and all — that pairing is what lets the
+    // rollback name this operation's write instead of merely the image it produced.
+    await settingsRepo.upsert(OrgId(DEFAULT_ORG_ID), DEFAULTS, {
+      daemonImage: 'registry.example.test/daemon:v1.5.0',
+      daemonImageOwner: op.id
     })
 
     expect(await cluster.drainUpgradeCompensations()).toBe(1)
@@ -451,11 +462,6 @@ describe('cluster daemon upgrade — durable compensation', () => {
     const { http, cluster } = await clusterApp()
     await enableEnvelope(http)
     await seedDaemon(true)
-    await http.app.inject({
-      method: 'PUT',
-      url: CLUSTER,
-      payload: { daemonImage: 'registry.example.test/daemon:v1.5.0' }
-    })
     const op = await ops().open({
       daemonId: DaemonId(DAEMON),
       op: 'upgrade',
@@ -464,6 +470,10 @@ describe('cluster daemon upgrade — durable compensation', () => {
       deadline: past(),
       commandImage: 'registry.example.test/daemon:v1.5.0',
       rollbackImage: 'registry.example.test/daemon:v1.4.0'
+    })
+    await settingsRepo.upsert(OrgId(DEFAULT_ORG_ID), DEFAULTS, {
+      daemonImage: 'registry.example.test/daemon:v1.5.0',
+      daemonImageOwner: op.id
     })
     await ops().settle(op.id, 'succeeded', null, new Date())
 

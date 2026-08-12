@@ -2796,6 +2796,11 @@ model OrgClusterExecution {
   /// Quiesce without tearing down: daemon to zero, sandboxes drained.
   suspend              Boolean             @default(false)
   daemonImage          String
+  /// The `daemon_lifecycle_op.id` whose command wrote `daemonImage`, or null when anything
+  /// else did (a settings edit, the fleet version sweep, the first enable). It is what makes
+  /// a rollback name a WRITE rather than a value: an identical image written independently
+  /// carries no owner, so a stale obligation cannot revert somebody else's upgrade.
+  daemonImageOwner     String?
   daemonTier           String              @default("small")
   /// The daemon record the retired API-key path minted this envelope's key for.
   /// Nothing writes it any more: an in-cluster daemon authenticates with its

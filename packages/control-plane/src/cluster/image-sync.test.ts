@@ -53,6 +53,7 @@ class FakeRepo implements OrgClusterExecutionRepo {
       resourceName: orgId,
       suspend: false,
       daemonImage,
+      daemonImageOwner: null,
       daemonTier: 'small',
       runtimeImage: POLICY.runtimeImage,
       runtimeTiers: POLICY.runtimeTiers,
@@ -74,16 +75,6 @@ class FakeRepo implements OrgClusterExecutionRepo {
   }
 
   /** Conditional on the image, and reports what the row ends up holding. */
-  async restoreDaemonImage(orgId: OrgId, daemonImage: string, expectedImage: string): Promise<string | null> {
-    const row = this.rows.get(orgId)
-    if (!row) return null
-    if (row.daemonImage === expectedImage) {
-      this.rows.set(orgId, { ...row, daemonImage, specRevision: row.specRevision + 1 })
-      return daemonImage
-    }
-    return row.daemonImage
-  }
-
   async listEnabled(): Promise<ClusterExecutionSettings[]> {
     return [...this.rows.values()].filter((r) => r.enabled).map((r) => ({ ...r }))
   }
@@ -126,7 +117,9 @@ class FakeRepo implements OrgClusterExecutionRepo {
       ...base,
       specRevision: base.specRevision + 1,
       ...(patch.suspend !== undefined ? { suspend: patch.suspend } : {}),
-      ...(patch.daemonImage !== undefined ? { daemonImage: patch.daemonImage } : {})
+      ...(patch.daemonImage !== undefined
+        ? { daemonImage: patch.daemonImage, daemonImageOwner: patch.daemonImageOwner ?? null }
+        : {})
     }
     this.rows.set(orgId, next)
     return next
@@ -154,17 +147,33 @@ class FakeApi implements OrgResourceApi {
 /** The compensation worklist plus a record of what got settled. */
 class FakeOps {
   owed: OverdueUpgradeCompensation[] = []
-  settled: { opId: string; status: string; outcome: string | null }[] = []
+  settled: string[] = []
   /** Ops a peer closed between the listing and the settle. */
   alreadyClosed = new Set<string>()
+  /** Orgs whose compensating transaction cannot run at all. */
+  failFor = new Set<string>()
+
+  constructor(private readonly rows: FakeRepo) {}
 
   async listOverdueCompensations(): Promise<OverdueUpgradeCompensation[]> {
     return [...this.owed]
   }
 
-  async settle(opId: string, status: 'succeeded' | 'failed', outcome: string | null): Promise<boolean> {
-    if (this.alreadyClosed.has(opId)) return false
-    this.settled.push({ opId, status, outcome })
+  /** The op transitions first and gates the restore, and the restore is owner-guarded —
+   *  the two properties the real transaction provides. */
+  async settleWithCompensation(input: { opId: string; orgId: string; rollbackImage: string }): Promise<boolean> {
+    if (this.failFor.has(input.orgId)) throw new Error('transaction unavailable')
+    if (this.alreadyClosed.has(input.opId)) return false
+    this.settled.push(input.opId)
+    const row = this.rows.rows.get(input.orgId)
+    if (row?.daemonImageOwner === input.opId) {
+      this.rows.rows.set(input.orgId, {
+        ...row,
+        daemonImage: input.rollbackImage,
+        daemonImageOwner: null,
+        specRevision: row.specRevision + 1
+      })
+    }
     return true
   }
 }
@@ -172,7 +181,7 @@ class FakeOps {
 function build(policy: Partial<ClusterExecutionPolicy> = {}) {
   const repo = new FakeRepo()
   const api = new FakeApi()
-  const ops = new FakeOps()
+  const ops = new FakeOps(repo)
   const service = new ClusterExecutionService(
     repo,
     api,
@@ -280,82 +289,91 @@ describe('ClusterExecutionService.setDaemonVersion', () => {
 
   /**
    * Converging on its own is right for the fleet sweep and wrong for a command, which has a
-   * deadline it would outlive. Abandoning restores the previous image so "failed" is the
-   * truth rather than a description that expires.
+   * deadline it would outlive. Compensating restores the previous image so "failed" is the
+   * truth rather than a description that expires — and it does both in one transaction, the
+   * operation's own status gating the restore.
    */
-  it('abandons a deferred image back to the previous one', async () => {
-    const { repo, api, service } = build()
+  it('compensates a deferred image back to the previous one', async () => {
+    const { repo, api, ops, service } = build()
     repo.seed('acme', 'registry.example.test/agentconnect/daemon:v1.4.0')
     api.failFor.add('acme')
-    const deferred = await service.setDaemonVersion(OrgId('acme'), '1.5.0').catch((e) => e)
-    expect(await service.abandonDaemonVersion(OrgId('acme'), deferred.image, deferred.previousImage)).toBe(true)
+    await service.setDaemonVersion(OrgId('acme'), '1.5.0', 'op-1').catch(() => undefined)
+
+    expect(
+      await service.compensateUpgrade(OrgId('acme'), 'op-1', 'registry.example.test/agentconnect/daemon:v1.4.0')
+    ).toBe(true)
     expect((await repo.get(OrgId('acme')))!.daemonImage).toBe('registry.example.test/agentconnect/daemon:v1.4.0')
+    expect(ops.settled).toEqual(['op-1'])
   })
 
   /**
-   * A peer that replaced the image owns it, so reverting blindly would discard their value.
-   * It still counts as abandoned: what will be applied is their image, not this call's, so
-   * the caller's operation is genuinely not going to happen.
+   * The race an image-only fence could not see. An operator's chosen target and the release
+   * channel's newest version are usually the SAME version, so a stale obligation matching on
+   * the value alone would revert the identical image the fleet sweep had since written on its
+   * own — a silent downgrade. Ownership is what distinguishes the write from the value.
    */
-  it('leaves a peer’s later image alone and still reports abandoned', async () => {
-    const { repo, api, service } = build()
+  it('does not revert an identical image another writer owns', async () => {
+    const { repo, ops, service } = build()
     repo.seed('acme', 'registry.example.test/agentconnect/daemon:v1.4.0')
-    api.failFor.add('acme')
-    const deferred = await service.setDaemonVersion(OrgId('acme'), '1.5.0').catch((e) => e)
-    await repo.upsert(OrgId('acme'), {} as never, {
-      daemonImage: 'registry.example.test/agentconnect/daemon:v1.7.0'
-    })
-    expect(await service.abandonDaemonVersion(OrgId('acme'), deferred.image, deferred.previousImage)).toBe(true)
-    expect((await repo.get(OrgId('acme')))!.daemonImage).toBe('registry.example.test/agentconnect/daemon:v1.7.0')
+    // The command's own write never landed (it died first); the sweep then wrote the same
+    // version independently, so the row carries no owner.
+    await service.setDaemonVersion(OrgId('acme'), '1.5.0')
+
+    expect(
+      await service.compensateUpgrade(OrgId('acme'), 'op-1', 'registry.example.test/agentconnect/daemon:v1.4.0')
+    ).toBe(true)
+    expect((await repo.get(OrgId('acme')))!.daemonImage).toBe('registry.example.test/agentconnect/daemon:v1.5.0')
+    // The operation is still failed — its OWN write is not what the envelope is running.
+    expect(ops.settled).toEqual(['op-1'])
   })
 
   /**
-   * The hole a revision fence left open. Any unrelated settings edit — quota here — bumps
-   * the revision while leaving this command's image exactly where it was, so a
-   * revision-fenced restore matched nothing and reported success over a change that the
-   * re-apply pass would still enact. Fencing on the IMAGE is what closes it.
+   * An unrelated settings edit must not cost the rollback. It bumps the revision and leaves
+   * the image alone, so ownership survives it — which a revision fence could not express.
    */
-  it('still rolls back after an unrelated settings edit bumped the revision', async () => {
+  it('still compensates after an unrelated settings edit', async () => {
     const { repo, api, service } = build()
     repo.seed('acme', 'registry.example.test/agentconnect/daemon:v1.4.0')
     api.failFor.add('acme')
-    const deferred = await service.setDaemonVersion(OrgId('acme'), '1.5.0').catch((e) => e)
+    await service.setDaemonVersion(OrgId('acme'), '1.5.0', 'op-1').catch(() => undefined)
     await repo.upsert(OrgId('acme'), {} as never, { suspend: true })
 
-    expect(await service.abandonDaemonVersion(OrgId('acme'), deferred.image, deferred.previousImage)).toBe(true)
+    expect(
+      await service.compensateUpgrade(OrgId('acme'), 'op-1', 'registry.example.test/agentconnect/daemon:v1.4.0')
+    ).toBe(true)
     expect((await repo.get(OrgId('acme')))!.daemonImage).toBe('registry.example.test/agentconnect/daemon:v1.4.0')
   })
 
-  // Verified, not assumed: a restore that silently matched nothing must not read as success.
-  it('reports not-abandoned when the image survives the restore', async () => {
-    const { repo, api, service } = build()
+  /**
+   * The other race: a concurrent READY settling the op `succeeded`. The op transitions FIRST
+   * and gates the restore, so a decision made elsewhere leaves the image untouched — no
+   * succeeded operation over an image that was already reverted.
+   */
+  it('touches nothing when the operation is no longer pending', async () => {
+    const { repo, api, ops, service } = build()
     repo.seed('acme', 'registry.example.test/agentconnect/daemon:v1.4.0')
     api.failFor.add('acme')
-    const deferred = await service.setDaemonVersion(OrgId('acme'), '1.5.0').catch((e) => e)
-    // A store whose conditional update lands nowhere and says nothing about it.
-    repo.restoreDaemonImage = async () => 'registry.example.test/agentconnect/daemon:v1.5.0'
-    expect(await service.abandonDaemonVersion(OrgId('acme'), deferred.image, deferred.previousImage)).toBe(false)
+    await service.setDaemonVersion(OrgId('acme'), '1.5.0', 'op-1').catch(() => undefined)
+    ops.alreadyClosed.add('op-1')
+
+    expect(
+      await service.compensateUpgrade(OrgId('acme'), 'op-1', 'registry.example.test/agentconnect/daemon:v1.4.0')
+    ).toBe(false)
+    expect((await repo.get(OrgId('acme')))!.daemonImage).toBe('registry.example.test/agentconnect/daemon:v1.5.0')
   })
 
-  // The restore failing is the one case where the image really is still coming.
-  it('reports not-abandoned when the restore itself fails', async () => {
-    const { repo, api, service } = build()
+  // A transaction that cannot run changes nothing, so the obligation is still owed.
+  it('propagates a transaction failure rather than reporting success', async () => {
+    const { repo, api, ops, service } = build()
     repo.seed('acme', 'registry.example.test/agentconnect/daemon:v1.4.0')
     api.failFor.add('acme')
-    const deferred = await service.setDaemonVersion(OrgId('acme'), '1.5.0').catch((e) => e)
-    repo.restoreDaemonImage = async () => {
-      throw new Error('database unavailable')
-    }
-    expect(await service.abandonDaemonVersion(OrgId('acme'), deferred.image, deferred.previousImage)).toBe(false)
-  })
+    await service.setDaemonVersion(OrgId('acme'), '1.5.0', 'op-1').catch(() => undefined)
+    ops.failFor.add('acme')
 
-  // The refusals above are checked BEFORE any write, which is what makes them safe to
-  // report as terminal — nothing is left behind for a later pass to enact.
-  it('writes nothing when it refuses', async () => {
-    const { repo, service } = build()
-    repo.seed('acme', INSTALL_IMAGE, false)
-    await expect(service.setDaemonVersion(OrgId('acme'), '1.5.0')).rejects.toThrow(ClusterEnvelopeNotEnabledError)
-    expect((await repo.get(OrgId('acme')))!.daemonImage).toBe(INSTALL_IMAGE)
+    await expect(
+      service.compensateUpgrade(OrgId('acme'), 'op-1', 'registry.example.test/agentconnect/daemon:v1.4.0')
+    ).rejects.toThrow()
+    expect((await repo.get(OrgId('acme')))!.daemonImage).toBe('registry.example.test/agentconnect/daemon:v1.5.0')
   })
 })
 
@@ -496,9 +514,15 @@ describe('ClusterExecutionService.drainUpgradeCompensations', () => {
     rollbackImage: rollback
   })
 
+  /** An envelope whose row still carries the write `op-<orgId>` made. */
+  const seedOwned = (repo: FakeRepo, orgId: string, image: string): void => {
+    repo.seed(orgId, image)
+    repo.rows.set(orgId, { ...repo.rows.get(orgId)!, daemonImageOwner: `op-${orgId}` })
+  }
+
   it('restores the envelope and settles the operation failed', async () => {
     const { repo, ops, service } = build()
-    repo.seed('acme', 'registry.example.test/agentconnect/daemon:v1.5.0')
+    seedOwned(repo, 'acme', 'registry.example.test/agentconnect/daemon:v1.5.0')
     ops.owed = [
       owed(
         'acme',
@@ -509,31 +533,14 @@ describe('ClusterExecutionService.drainUpgradeCompensations', () => {
 
     expect(await service.drainUpgradeCompensations()).toBe(1)
     expect((await repo.get(OrgId('acme')))!.daemonImage).toBe('registry.example.test/agentconnect/daemon:v1.4.0')
-    expect(ops.settled).toEqual([{ opId: 'op-acme', status: 'failed', outcome: expect.any(String) }])
-  })
-
-  // The whole point: an operation whose change is still coming stays pending.
-  it('leaves an operation pending while its image is still durable', async () => {
-    const { repo, ops, service } = build()
-    repo.seed('acme', 'registry.example.test/agentconnect/daemon:v1.5.0')
-    repo.restoreDaemonImage = async () => 'registry.example.test/agentconnect/daemon:v1.5.0'
-    ops.owed = [
-      owed(
-        'acme',
-        'registry.example.test/agentconnect/daemon:v1.5.0',
-        'registry.example.test/agentconnect/daemon:v1.4.0'
-      )
-    ]
-
-    expect(await service.drainUpgradeCompensations()).toBe(0)
-    expect(ops.settled).toEqual([])
+    expect(ops.settled).toEqual(['op-acme'])
   })
 
   // A peer that closed the op between the listing and here keeps its verdict — notably the
   // `succeeded` a recovered cluster's replacement pod would have written.
   it('does not count an operation a peer already closed', async () => {
     const { repo, ops, service } = build()
-    repo.seed('acme', 'registry.example.test/agentconnect/daemon:v1.5.0')
+    seedOwned(repo, 'acme', 'registry.example.test/agentconnect/daemon:v1.5.0')
     ops.owed = [
       owed(
         'acme',
@@ -544,17 +551,16 @@ describe('ClusterExecutionService.drainUpgradeCompensations', () => {
     ops.alreadyClosed.add('op-acme')
 
     expect(await service.drainUpgradeCompensations()).toBe(0)
+    expect((await repo.get(OrgId('acme')))!.daemonImage).toBe('registry.example.test/agentconnect/daemon:v1.5.0')
   })
 
-  it('keeps draining past an organization it cannot restore', async () => {
+  // A transaction that cannot run leaves the obligation owed, and the pass moves on: one
+  // stuck organization must not stop the rest from being resolved.
+  it('keeps draining past an organization whose transaction fails', async () => {
     const { repo, ops, service } = build()
-    repo.seed('stuck', 'registry.example.test/agentconnect/daemon:v1.5.0')
-    repo.seed('fine', 'registry.example.test/agentconnect/daemon:v1.5.0')
-    const realRestore = repo.restoreDaemonImage.bind(repo)
-    repo.restoreDaemonImage = async (orgId, image, expected) => {
-      if (orgId === 'stuck') throw new Error('database unavailable')
-      return realRestore(orgId, image, expected)
-    }
+    seedOwned(repo, 'stuck', 'registry.example.test/agentconnect/daemon:v1.5.0')
+    seedOwned(repo, 'fine', 'registry.example.test/agentconnect/daemon:v1.5.0')
+    ops.failFor.add('stuck')
     ops.owed = [
       owed(
         'stuck',
@@ -569,6 +575,7 @@ describe('ClusterExecutionService.drainUpgradeCompensations', () => {
     ]
 
     expect(await service.drainUpgradeCompensations()).toBe(1)
-    expect(ops.settled.map((s) => s.opId)).toEqual(['op-fine'])
+    expect(ops.settled).toEqual(['op-fine'])
+    expect((await repo.get(OrgId('stuck')))!.daemonImage).toBe('registry.example.test/agentconnect/daemon:v1.5.0')
   })
 })

@@ -370,6 +370,29 @@ export interface DaemonLifecycleOpRepo {
   /** Overdue `pending` ops that still carry an obligation, oldest first — the compensation
    *  pass's worklist, joined to the org whose envelope has to be restored. */
   listOverdueCompensations(now: Date, limit: number): Promise<OverdueUpgradeCompensation[]>
+  /**
+   * Discharge an upgrade's obligation: fail the op and restore its envelope's image, in ONE
+   * transaction, with the op's own status as the gate.
+   *
+   * Both halves being one statement pair is the point. Rolling the image back and then
+   * settling would let a concurrent READY settle the op `succeeded` in between, leaving an
+   * operation that reports success over an image it had already reverted. So the op
+   * transitions FIRST, guarded on `pending` — if that loses, someone else decided this
+   * operation and nothing is touched.
+   *
+   * The image restore is guarded on `daemonImageOwner = opId`, so it only ever undoes the
+   * write this operation made. A row whose owner has changed is a write this operation does
+   * not own, and failing the op without touching it is then the correct answer.
+   *
+   * Returns whether the op transitioned; false ⇒ it was no longer pending.
+   */
+  settleWithCompensation(input: {
+    opId: string
+    orgId: string
+    rollbackImage: string
+    outcome: string
+    at: Date
+  }): Promise<boolean>
   /** Close an op to a terminal status with an optional detail. Transitions ONLY a row
    *  still `pending` (so a late register can't reopen one a decline already failed).
    *  Returns whether a row was transitioned. */
@@ -4997,6 +5020,9 @@ export interface ClusterExecutionSettings {
   resourceName: string
   suspend: boolean
   daemonImage: string
+  /** The lifecycle-op id whose command wrote `daemonImage`; null when anything else did.
+   *  A rollback matches on THIS, so an identical image written independently is safe. */
+  daemonImageOwner: string | null
   daemonTier: string
   /** The daemon record the retired API-key path minted this envelope's key for.
    *  Never written any more; it is how an envelope provisioned before the token
@@ -5015,6 +5041,9 @@ export interface ClusterExecutionPatch {
   enabled?: boolean
   suspend?: boolean
   daemonImage?: string
+  /** Who owns the `daemonImage` being written — a lifecycle-op id for a command, absent for
+   *  every other writer, which is what clears a previous owner. Ignored without `daemonImage`. */
+  daemonImageOwner?: string
   daemonTier?: string
   runtimeImage?: string
   runtimeTiers?: ClusterRuntimeTier[]
@@ -5044,17 +5073,7 @@ export interface OrgClusterExecutionRepo {
   /** The org that owns a CR name — the reverse lookup an authenticating in-cluster
    *  daemon needs, since a token names its namespace and nothing else. */
   getByResourceName(resourceName: string): Promise<ClusterExecutionSettings | null>
-  /**
-   * Put `daemonImage` back if and only if the row still names `expectedImage`, then report
-   * the image the row ends up holding (null ⇒ no row).
-   *
-   * The fence is the IMAGE, not the revision: a revision moves for any settings edit —
-   * quota, tier, suspension — while leaving this caller's image exactly where it was, so a
-   * revision fence would decline the restore on a row that still needs it. And the current
-   * image is returned because the caller must VERIFY the outcome rather than infer it from
-   * the absence of an error; a conditional update that matched nothing is silent.
-   */
-  restoreDaemonImage(orgId: OrgId, daemonImage: string, expectedImage: string): Promise<string | null>
+
   /** Every org whose envelope is switched on — what a deployment-wide sweep iterates.
    *  Unbounded on purpose: it is one row per organization with cluster execution enabled,
    *  and a sweep that silently stopped at a limit would leave part of the fleet stale. */

@@ -184,7 +184,7 @@ export class ClusterExecutionService {
     private readonly daemons: Pick<DaemonRepo, 'clusterBoundIds'>,
     /** Carries cluster upgrades' compensation obligations; see
      *  {@link ClusterExecutionService.drainUpgradeCompensations}. */
-    private readonly lifecycleOps: Pick<DaemonLifecycleOpRepo, 'listOverdueCompensations' | 'settle'>,
+    private readonly lifecycleOps: Pick<DaemonLifecycleOpRepo, 'listOverdueCompensations' | 'settleWithCompensation'>,
     /** Drives the transition lease; the same seam every other timed CP path uses. */
     private readonly clock: Clock
   ) {}
@@ -230,9 +230,9 @@ export class ClusterExecutionService {
    * Throws `InvalidImageTagError` for a `version` that is not a usable tag — the guard
    * lives in `withImageTag`, so this cannot be reached by forgetting to validate a route.
    */
-  async setDaemonVersion(orgId: OrgId, version: string): Promise<string> {
+  async setDaemonVersion(orgId: OrgId, version: string, ownerOpId?: string): Promise<string> {
     const plan = await this.planDaemonVersion(orgId, version)
-    await this.applyDaemonVersion(orgId, plan)
+    await this.applyDaemonVersion(orgId, plan, ownerOpId)
     return plan.image
   }
 
@@ -262,9 +262,15 @@ export class ClusterExecutionService {
    * the row is desired state, so the envelope re-apply pass will enact it regardless of
    * this attempt, and only a caller that owns a deadline needs to undo that.
    */
-  async applyDaemonVersion(orgId: OrgId, plan: DaemonVersionPlan): Promise<void> {
+  async applyDaemonVersion(orgId: OrgId, plan: DaemonVersionPlan, ownerOpId?: string): Promise<void> {
     if (plan.image === plan.previousImage) return
-    await this.repo.upsert(orgId, this.defaults(orgId), { daemonImage: plan.image })
+    // The owner is written WITH the image, so a rollback can name this write rather than the
+    // value it produced: the fleet sweep frequently writes the same version an operator asked
+    // for, and an unowned match would let a stale obligation revert it.
+    await this.repo.upsert(orgId, this.defaults(orgId), {
+      daemonImage: plan.image,
+      ...(ownerOpId ? { daemonImageOwner: ownerOpId } : {})
+    })
     try {
       await this.converge(orgId)
     } catch (err) {
@@ -273,40 +279,31 @@ export class ClusterExecutionService {
   }
 
   /**
-   * Give up a deferred image so it cannot land later, and report whether it worked.
+   * Discharge one upgrade's obligation: fail the operation and put its envelope's image
+   * back, atomically and owner-guarded (see `settleWithCompensation`).
    *
    * A durable-but-unapplied image converges on its own, which is right for the fleet sweep
    * and wrong for a COMMAND: a command carries a deadline, and a cluster that stays
    * unreachable past it leaves the operation reported failed while the re-apply pass goes on
-   * to replace the pod anyway — the very contradiction keeping the operation open was meant
-   * to avoid. So the caller that owns a deadline abandons the intent instead, making failure
-   * the truth rather than a temporary description.
-   *
-   * The fence is the IMAGE this call wrote, and the answer is READ BACK rather than inferred
-   * from the absence of an error. Both matter: a revision fence would decline the restore
-   * whenever any unrelated settings edit had bumped the revision — leaving the image durable
-   * while reporting success — and a conditional update that matched nothing is silent, so
-   * assuming it worked is how a command gets closed over a change that is still coming.
-   *
-   * True therefore means one observed fact: the row no longer names this call's image. It is
-   * restored, or a peer replaced it with their own — and a peer's image is what will be
-   * applied, not this one's, so the command is genuinely not going to happen either way.
+   * to replace the pod anyway. So the caller that owns a deadline withdraws the intent
+   * instead, making failure the truth rather than a temporary description.
    *
    * The CR was never changed (that is what failed), so restoring the row is all it takes.
    * The exception is an apply whose REPLY was lost after landing: the resource then holds
    * the new image and the next re-apply pass returns it to the restored row — a brief flap
    * ending on the version this operation reported, which is the consistent outcome.
    *
-   * False ⇒ the image is still the durable desired state, so it is still coming; the caller
-   * must keep its operation open rather than call it failed.
+   * False ⇒ the operation was no longer pending, so somebody else decided it and nothing was
+   * touched. Throws only if the transaction itself could not run, and then nothing changed.
    */
-  async abandonDaemonVersion(orgId: OrgId, commandImage: string, rollbackImage: string): Promise<boolean> {
-    try {
-      const current = await this.repo.restoreDaemonImage(orgId, rollbackImage, commandImage)
-      return current !== commandImage
-    } catch {
-      return false
-    }
+  async compensateUpgrade(orgId: OrgId, opId: string, rollbackImage: string): Promise<boolean> {
+    return this.lifecycleOps.settleWithCompensation({
+      opId,
+      orgId,
+      rollbackImage,
+      outcome: COMPENSATED_OUTCOME,
+      at: new Date(this.clock.now())
+    })
   }
 
   /**
@@ -318,23 +315,18 @@ export class ClusterExecutionService {
    * retries ran out, still finishes what the command started. Each op carries both halves of
    * its obligation, recorded before the forward write, so nothing has to be inferred.
    *
-   * An op is settled `failed` only once its image is OBSERVED absent from the row. One whose
-   * image is still durable is left pending for the next pass — it is still going to be
-   * applied, and that is precisely when calling it failed would be a lie. An op that stopped
-   * being pending in the meantime (the cluster recovered, the pod arrived, it settled
-   * `succeeded`) is skipped, because rolling back then would revert a completed upgrade.
-   *
-   * Returns how many it settled.
+   * Per-entry and best-effort: one org whose transaction fails costs the rest of the pass
+   * nothing and is retried next time. Returns how many operations it settled.
    */
   async drainUpgradeCompensations(limit = COMPENSATION_BATCH): Promise<number> {
-    const now = new Date(this.clock.now())
-    const owed = await this.lifecycleOps.listOverdueCompensations(now, limit)
+    const owed = await this.lifecycleOps.listOverdueCompensations(new Date(this.clock.now()), limit)
     let settled = 0
     for (const entry of owed) {
-      if (!(await this.abandonDaemonVersion(OrgId(entry.orgId), entry.commandImage, entry.rollbackImage))) continue
-      // `settle` transitions only a still-pending row, so a peer that closed this op between
-      // the listing and here keeps its verdict.
-      if (await this.lifecycleOps.settle(entry.opId, 'failed', COMPENSATED_OUTCOME, now)) settled += 1
+      try {
+        if (await this.compensateUpgrade(OrgId(entry.orgId), entry.opId, entry.rollbackImage)) settled += 1
+      } catch {
+        // Nothing changed — the obligation is still on the op for the next pass.
+      }
     }
     return settled
   }
@@ -699,6 +691,7 @@ export class ClusterExecutionService {
       enabled: false,
       specRevision: 0,
       suspend: false,
+      daemonImageOwner: null,
       ...defaults,
       createdAt: epoch,
       updatedAt: epoch

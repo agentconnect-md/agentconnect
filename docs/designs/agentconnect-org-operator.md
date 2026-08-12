@@ -604,11 +604,22 @@ compensation exists to withdraw. In-request rollback and a bounded background re
 as the fast paths, but the pass is what makes it a guarantee, because it is reconstructed
 from disk and runs however long the cluster stays broken.
 
-Two rules keep it one-directional. An op becomes terminal only once its image is
-**observed** absent from the row — one still durable is left pending, because it is still
-going to be applied and that is exactly when reporting failure would be a lie. And an op
-that stopped being pending is skipped: a recovered cluster's replacement pod settles it
-`succeeded`, and compensating after that would revert an upgrade that completed.
+A rollback identifies the **write**, not the value that write produced. The forward write
+stamps the row with the operation's id (`daemonImageOwner`), and only that operation's
+compensation matches it; every other writer clears it. Without that, matching on the image
+alone would revert an identical image somebody else had written — and "somebody else" is the
+common case, not an exotic one: an operator's chosen target and the release channel's newest
+version are usually the same version, so an obligation left by a crashed command would
+silently downgrade the org the fleet sweep had just upgraded.
+
+Failing the operation and restoring the row are **one transaction, in that order**, with the
+operation's own status as the gate. Restoring first would let a concurrent READY settle it
+`succeeded` in between, leaving an operation reporting success over an image it had already
+reverted. So the op transitions first, guarded on `pending`: if that loses, someone else
+decided this operation and nothing is touched — which is also what makes a recovered
+cluster's completed upgrade safe from a late compensation. A row whose owner has changed is
+not this operation's to revert, and failing it without touching that row is then correct,
+because its own write is not what the envelope is running either way.
 
 Because the obligation decides terminality, an op carrying one is **excluded from the
 ordinary deadline sweep** and from the read model's expiry projection. Both exist to stop

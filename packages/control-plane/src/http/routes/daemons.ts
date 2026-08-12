@@ -96,24 +96,17 @@ export async function retryArm(
 }
 
 /**
- * Background recovery for an abandonment that could not be confirmed in-request. An image
- * still durable will be applied by the re-apply pass, so the op must not be closed failed
- * until the rollback is OBSERVED — this keeps retrying until it is, then closes it.
- *
- * It re-reads the op first and stops if it is no longer pending: a cluster that recovered
- * meanwhile applies the image, the replacement pod settles the op `succeeded`, and rolling
- * back after that would revert an upgrade that did complete.
+ * Background recovery for a compensation whose transaction could not run in-request.
  *
  * Fire-and-forget and bounded, like {@link retryArm} — a fast path, not the guarantee. The
  * guarantee is the obligation persisted on the op row, which the cluster maintenance pass
  * discharges however long it takes and whichever process is running by then.
  */
-export async function retryAbandon(
-  cluster: Pick<ClusterExecutionService, 'abandonDaemonVersion'>,
-  ops: DaemonLifecycleOpRepo,
+export async function retryCompensation(
+  cluster: Pick<ClusterExecutionService, 'compensateUpgrade'>,
   opId: string,
   orgId: OrgId,
-  owed: { commandImage: string; rollbackImage: string; cause: unknown },
+  rollbackImage: string,
   delaysMs: number[],
   log?: { warn: (obj: unknown, msg?: string) => void }
 ): Promise<boolean> {
@@ -123,10 +116,9 @@ export async function retryAbandon(
       t.unref?.() // a dangling recovery must never keep the process alive
     })
     try {
-      const op = await ops.getById(opId)
-      if (!op || op.status !== 'pending') return true // decided elsewhere; leave the state alone
-      if (!(await cluster.abandonDaemonVersion(orgId, owed.commandImage, owed.rollbackImage))) continue
-      await ops.settle(opId, 'failed', clusterUpgradeFailure(owed.cause), new Date())
+      // Settling and restoring are one owner-guarded transaction, so a `false` here means the
+      // op was decided elsewhere — nothing was touched and nothing more is owed.
+      await cluster.compensateUpgrade(orgId, opId, rollbackImage)
       return true
     } catch (err) {
       log?.warn({ opId, orgId, err }, 'cluster daemon upgrade: rollback recovery attempt failed')
@@ -602,48 +594,32 @@ export function daemonRoutes(deps: HttpDeps) {
       }
       const opRow = await openLifecycleOp(req, reply, id, 'upgrade', commandEpoch, version, plan)
       if (!opRow) return reply
-      // Set only when the apply failed AND the rollback below could not undo it, so the image
-      // is still durable and still coming. That is the one outcome this op must not call
-      // failed, and the only one it keeps waiting on — and the op row carries the obligation
-      // durably, so the maintenance pass finishes it even if this process does not.
-      let deferred: ClusterImageWriteDeferredError | undefined
       try {
-        await cluster.applyDaemonVersion(orgOf(req), plan)
+        await cluster.applyDaemonVersion(orgOf(req), plan, opRow.id)
         req.log.info({ daemonId: id, opId: opRow.id, image: plan.image }, 'cluster daemon upgrade: envelope repointed')
       } catch (error) {
         if (error instanceof ClusterImageWriteDeferredError) {
           // The image is durable and would converge on the re-apply pass — but this op has a
           // deadline, and a cluster unreachable past it would leave the op reported failed
-          // while the pass replaced the pod anyway. So the intent is abandoned and failure
-          // becomes the truth. Only when the rollback ITSELF fails is the image still coming,
-          // and then the op has to stay open, because it is going to happen after all.
-          const abandoned = await cluster.abandonDaemonVersion(orgOf(req), plan.image, plan.previousImage)
-          if (!abandoned) {
-            deferred = error
-            req.log.warn(
-              { daemonId: id, opId: opRow.id, image: error.image, err: error.cause },
-              'cluster daemon upgrade: image still durable after rollback; scheduling recovery'
-            )
-            // The op stays open because the change is still coming. Recovery closes it once
-            // the rollback is observed — never on the assumption that it worked.
-            void retryAbandon(
-              cluster,
-              deps.repos.daemonLifecycleOp,
-              opRow.id,
-              orgOf(req),
-              { commandImage: plan.image, rollbackImage: plan.previousImage, cause: error.cause },
-              ARM_RECOVERY_DELAYS_MS,
-              req.log
-            )
-          } else {
+          // while the pass replaced the pod anyway. So the intent is withdrawn here: the op is
+          // failed and its write undone in one owner-guarded transaction.
+          try {
+            await cluster.compensateUpgrade(orgOf(req), opRow.id, plan.previousImage)
             req.log.warn(
               { daemonId: id, opId: opRow.id, image: error.image, err: error.cause },
               'cluster daemon upgrade: cluster refused the apply; the envelope was rolled back'
             )
-            await deps.repos.daemonLifecycleOp
-              .settle(opRow.id, 'failed', clusterUpgradeFailure(error.cause), new Date())
-              .catch(() => {})
             return sendApplyFailure(reply, error.cause, '; the envelope was rolled back')
+          } catch (err) {
+            // The transaction could not run, so nothing changed and the op is still pending
+            // with its obligation on disk. A retry follows, and the maintenance pass is the
+            // backstop that survives this process.
+            req.log.warn(
+              { daemonId: id, opId: opRow.id, image: error.image, err },
+              'cluster daemon upgrade: rollback could not be recorded; scheduling recovery'
+            )
+            void retryCompensation(cluster, opRow.id, orgOf(req), plan.previousImage, ARM_RECOVERY_DELAYS_MS, req.log)
+            return sendApplyFailure(reply, error.cause, `; it will be rolled back — track operation ${opRow.id}`)
           }
         } else {
           // The write itself failed, so nothing durable exists and no obligation is owed.
@@ -693,9 +669,6 @@ export function daemonRoutes(deps: HttpDeps) {
         }
       }
       const latest = (await deps.repos.daemonLifecycleOp.getById(opRow.id).catch(() => null)) ?? opRow
-      if (deferred) {
-        return sendApplyFailure(reply, deferred.cause, `; it will be re-applied — track operation ${latest.id}`)
-      }
       return reply.code(202).send(opDto(latest))
     }
 

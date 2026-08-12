@@ -58,16 +58,6 @@ class FakeRepo implements OrgClusterExecutionRepo {
     return row ? { ...row } : null
   }
 
-  async restoreDaemonImage(orgId: OrgId, daemonImage: string, expectedImage: string): Promise<string | null> {
-    const row = this.rows.get(orgId)
-    if (!row) return null
-    if (row.daemonImage === expectedImage) {
-      this.rows.set(orgId, { ...row, daemonImage, specRevision: row.specRevision + 1 })
-      return daemonImage
-    }
-    return row.daemonImage
-  }
-
   async listEnabled(): Promise<ClusterExecutionSettings[]> {
     return this.row?.enabled ? [{ ...this.row }] : []
   }
@@ -123,6 +113,7 @@ class FakeRepo implements OrgClusterExecutionRepo {
       enabled: false,
       specRevision: 1,
       suspend: false,
+      daemonImageOwner: null,
       ...defaults,
       createdAt: new Date(0),
       updatedAt: new Date(0)
@@ -139,6 +130,7 @@ class FakeRepo implements OrgClusterExecutionRepo {
       enabled: false,
       specRevision: 0,
       suspend: false,
+      daemonImageOwner: null,
       ...defaults,
       createdAt: new Date(0),
       updatedAt: new Date(0)
@@ -148,7 +140,9 @@ class FakeRepo implements OrgClusterExecutionRepo {
       specRevision: base.specRevision + 1,
       ...(patch.enabled !== undefined ? { enabled: patch.enabled } : {}),
       ...(patch.suspend !== undefined ? { suspend: patch.suspend } : {}),
-      ...(patch.daemonImage !== undefined ? { daemonImage: patch.daemonImage } : {})
+      ...(patch.daemonImage !== undefined
+        ? { daemonImage: patch.daemonImage, daemonImageOwner: patch.daemonImageOwner ?? null }
+        : {})
     }
     if (!this.swallowUpsert) this.rows.set(orgId, next)
     return next
@@ -235,7 +229,7 @@ function build(): Harness {
     { slugById: async () => 'acme' },
     policy,
     daemons,
-    { listOverdueCompensations: async () => [], settle: async () => true },
+    { listOverdueCompensations: async () => [], settleWithCompensation: async () => true },
     systemClock
   )
   return { service, repo, api, daemons, policy }

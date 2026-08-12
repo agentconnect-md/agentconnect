@@ -7,7 +7,7 @@
  * route), and the row is closed out-of-band by the register→READY closure or a decline.
  */
 import type { DaemonLifecycleOp } from '../../generated/prisma/client.js'
-import type { PrismaLike } from '../prisma.js'
+import { withAmbientTx, type PrismaLike } from '../prisma.js'
 import type {
   DaemonLifecycleOpRepo,
   DaemonLifecycleOpRecord,
@@ -153,6 +153,33 @@ export class PgDaemonLifecycleOpRepo implements DaemonLifecycleOpRepo {
           ]
         : []
     )
+  }
+
+  /** The op transitions FIRST and gates the restore, and both are one transaction — see the
+   *  port doc: rolling the image back before settling lets a concurrent READY report success
+   *  over an image that was already reverted. */
+  async settleWithCompensation(input: {
+    opId: string
+    orgId: string
+    rollbackImage: string
+    outcome: string
+    at: Date
+  }): Promise<boolean> {
+    return withAmbientTx(this.db, async (tx) => {
+      const settled = await tx.daemonLifecycleOp.updateMany({
+        where: { id: input.opId, status: 'pending' },
+        data: { status: 'failed', outcome: input.outcome, settledAt: input.at }
+      })
+      if (settled.count === 0) return false
+      // Owner-guarded, so this only undoes the write this operation made. A row somebody
+      // else now owns is not this operation's to revert, and the op still fails: its image
+      // is not the durable desired state either way.
+      await tx.orgClusterExecution.updateMany({
+        where: { orgId: input.orgId, daemonImageOwner: input.opId },
+        data: { daemonImage: input.rollbackImage, daemonImageOwner: null, specRevision: { increment: 1 } }
+      })
+      return true
+    })
   }
 
   async settle(id: string, status: 'succeeded' | 'failed', outcome: string | null, at: Date): Promise<boolean> {
