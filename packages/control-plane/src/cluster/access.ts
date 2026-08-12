@@ -1,13 +1,14 @@
 /**
  * Kubernetes API access for the cluster provisioner.
  *
- * Two credential sources, both producing the structural config
- * `@agentconnect.md/k8s-client` takes: the pod's projected ServiceAccount when
- * the control plane runs inside the cluster it provisions, or a kubeconfig file
- * for an out-of-cluster process (development, or a control plane deployed
- * beside the cluster). Bearer credentials only — `K8sHttp` authenticates with
- * `Authorization: Bearer`, so a client-certificate or `exec` kubeconfig user is
- * refused by name rather than half-working.
+ * One switch (`CLUSTER_EXECUTION_ENABLED`) and three credential sources, all
+ * producing the structural config `@agentconnect.md/k8s-client` takes. The
+ * source is DERIVED from what the deployment set rather than named, most
+ * explicit first: an API server + token, then a kubeconfig file, and finally
+ * the pod's own projected ServiceAccount — the zero-config case for a control
+ * plane running inside the cluster it provisions. Bearer credentials only —
+ * `K8sHttp` authenticates with `Authorization: Bearer`, so a client-certificate
+ * or `exec` kubeconfig user is refused by name rather than half-working.
  */
 import { readFileSync } from 'node:fs'
 import { dirname, isAbsolute, resolve } from 'node:path'
@@ -97,24 +98,81 @@ export function loadKubeconfig(path: string): InClusterConfig {
   }
 }
 
+/** A CA bundle given inline: PEM as-is, or the base64 of one (what kubeconfig
+ *  and Secret values carry), so an operator can paste either form. */
+function decodeCaBundle(value: string): string {
+  const trimmed = value.trim()
+  if (trimmed.includes('-----BEGIN')) return trimmed
+  return Buffer.from(trimmed, 'base64').toString('utf8')
+}
+
+function readCredentialFile(path: string, what: string): string {
+  try {
+    return readFileSync(path, 'utf8').trim()
+  } catch (error) {
+    throw new ClusterAccessError(`cannot read ${what} at ${path}: ${(error as Error).message}`)
+  }
+}
+
+/**
+ * A directly configured API server: the out-of-cluster path that needs no file
+ * on disk, which is what a control plane deployed beside its cluster (or one
+ * pointed at a different cluster than its own) can actually supply. The token
+ * is read per call when it comes from a file, so a mounted Secret that rotates
+ * in place is picked up without a restart.
+ */
+function loadApiServerAccess(config: ClusterAccessConfig): InClusterConfig {
+  const server = config.CLUSTER_API_SERVER!.trim()
+  const tokenFile = config.CLUSTER_API_TOKEN_FILE?.trim()
+  const inlineToken = config.CLUSTER_API_TOKEN?.trim()
+  if (!tokenFile && !inlineToken) {
+    throw new ClusterAccessError('CLUSTER_API_SERVER needs CLUSTER_API_TOKEN or CLUSTER_API_TOKEN_FILE')
+  }
+  // No pod to borrow a namespace from out here, so the control namespace is the
+  // deployment's to name; guessing one would provision into the wrong place.
+  const namespace = config.CLUSTER_CONTROL_NAMESPACE?.trim()
+  if (!namespace) throw new ClusterAccessError('CLUSTER_API_SERVER needs CLUSTER_CONTROL_NAMESPACE')
+  const caFile = config.CLUSTER_CA_CERT_FILE?.trim()
+  const ca = config.CLUSTER_CA_CERT?.trim()
+    ? decodeCaBundle(config.CLUSTER_CA_CERT)
+    : caFile
+      ? readCredentialFile(caFile, 'the cluster CA bundle')
+      : undefined
+  return {
+    server,
+    namespace,
+    ...(ca ? { ca } : {}),
+    token: () => (tokenFile ? readCredentialFile(tokenFile, 'the cluster API token') : inlineToken!)
+  }
+}
+
 export interface ClusterAccessConfig {
-  CLUSTER_EXECUTION_MODE: 'off' | 'in-cluster' | 'kubeconfig'
+  /** The whole feature's switch; everything below is optional refinement. */
+  CLUSTER_EXECUTION_ENABLED: boolean
+  CLUSTER_API_SERVER?: string
+  CLUSTER_API_TOKEN?: string
+  CLUSTER_API_TOKEN_FILE?: string
+  CLUSTER_CA_CERT?: string
+  CLUSTER_CA_CERT_FILE?: string
   CLUSTER_KUBECONFIG_PATH?: string
   CLUSTER_CONTROL_NAMESPACE?: string
 }
 
 /**
- * The client config for the configured mode, or undefined when the feature is
- * off. Throws when the mode is on but its credentials are unusable — the
- * provisioner is opt-in, so a deployment that asked for it should fail loudly
- * rather than serve a cluster surface that can never write.
+ * The client config for whichever credential source the deployment configured,
+ * or undefined when the feature is off. Throws when it is on but the
+ * credentials are unusable — the provisioner is opt-in, so a deployment that
+ * asked for it should fail loudly rather than serve a cluster surface that can
+ * never write. Setting nothing but the switch means "this pod is in the cluster
+ * it provisions", and the CRs land in the pod's own namespace.
  */
 export function loadClusterAccess(config: ClusterAccessConfig): InClusterConfig | undefined {
-  if (config.CLUSTER_EXECUTION_MODE === 'off') return undefined
-  const access =
-    config.CLUSTER_EXECUTION_MODE === 'kubeconfig'
-      ? loadKubeconfig(config.CLUSTER_KUBECONFIG_PATH!)
+  if (!config.CLUSTER_EXECUTION_ENABLED) return undefined
+  const access = config.CLUSTER_API_SERVER?.trim()
+    ? loadApiServerAccess(config)
+    : config.CLUSTER_KUBECONFIG_PATH?.trim()
+      ? loadKubeconfig(config.CLUSTER_KUBECONFIG_PATH.trim())
       : loadInClusterConfig()
-  const namespace = config.CLUSTER_CONTROL_NAMESPACE ?? access.namespace
+  const namespace = config.CLUSTER_CONTROL_NAMESPACE?.trim() || access.namespace
   return { ...access, namespace, token: access.token }
 }

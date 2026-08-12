@@ -224,17 +224,32 @@ const CoreConfigShape = {
     .string()
     .default('github,slack,telegram,discord,discordbot,feishu,feishu_app_bot,feishu_custom_bot'),
   // ── managed cluster execution (agentconnect-org-operator.md) — opt-in ──
-  // Where the provisioner gets its Kubernetes credentials, and the switch for the
-  // whole feature. `off` (default) ⇒ no cluster module, no routes, no behavior
-  // change for an existing deployment. `in-cluster` ⇒ the pod's projected
-  // ServiceAccount (the control plane runs in the cluster it provisions);
-  // `kubeconfig` ⇒ CLUSTER_KUBECONFIG_PATH, for an out-of-cluster process.
-  // An explicit mode rather than credential sniffing: a control plane that merely
-  // happens to run on Kubernetes must not start claiming an operator install.
-  CLUSTER_EXECUTION_MODE: z.enum(['off', 'in-cluster', 'kubeconfig']).default('off'),
-  // Kubeconfig file for CLUSTER_EXECUTION_MODE=kubeconfig. Its current-context user
-  // must carry a bearer token (`token` or `tokenFile`) — client-certificate and
-  // `exec` users are refused at boot.
+  // The switch for the whole feature. 'false' (default) ⇒ no cluster module, no
+  // routes, no behavior change for an existing deployment. Explicit rather than
+  // sniffed: a control plane that merely happens to run on Kubernetes must not
+  // start claiming an operator install. EXPLICIT enum, not z.coerce.boolean().
+  CLUSTER_EXECUTION_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
+  // Where the provisioner gets its credentials, derived from what is set below —
+  // API server first, then kubeconfig, then the pod's own ServiceAccount. Setting
+  // none of them means "this control plane runs in the cluster it provisions".
+  //
+  // Direct API access, for a process outside the cluster it provisions. The token
+  // is the ServiceAccount bearer token; _FILE reads it per request, so a mounted
+  // Secret that rotates in place needs no restart. CLUSTER_CONTROL_NAMESPACE is
+  // required with it — there is no pod namespace to fall back on out here.
+  CLUSTER_API_SERVER: z.string().url().optional(),
+  CLUSTER_API_TOKEN: z.string().optional(),
+  CLUSTER_API_TOKEN_FILE: z.string().optional(),
+  // API server CA: inline PEM (or its base64), or a path to the bundle. Unset ⇒
+  // the host's default trust store.
+  CLUSTER_CA_CERT: z.string().optional(),
+  CLUSTER_CA_CERT_FILE: z.string().optional(),
+  // Kubeconfig file, used when no CLUSTER_API_SERVER is set. Its current-context
+  // user must carry a bearer token (`token` or `tokenFile`) — client-certificate
+  // and `exec` users are refused at boot.
   CLUSTER_KUBECONFIG_PATH: z.string().optional(),
   // The operator install's control namespace, where every AgentConnectOrg lives.
   // Unset ⇒ the pod's own namespace (in-cluster) or the kubeconfig context's.
@@ -335,20 +350,34 @@ function validateSessionAccess(
 // whose every write fails at the API server. Fail at boot instead.
 function validateClusterExecution(
   config: {
-    CLUSTER_EXECUTION_MODE: 'off' | 'in-cluster' | 'kubeconfig'
-    CLUSTER_KUBECONFIG_PATH?: string
+    CLUSTER_EXECUTION_ENABLED: boolean
+    CLUSTER_API_SERVER?: string
+    CLUSTER_API_TOKEN?: string
+    CLUSTER_API_TOKEN_FILE?: string
+    CLUSTER_CONTROL_NAMESPACE?: string
     CLUSTER_DAEMON_IMAGE?: string
     CLUSTER_RUNTIME_IMAGE?: string
   },
   ctx: z.RefinementCtx
 ): void {
-  if (config.CLUSTER_EXECUTION_MODE === 'off') return
-  if (config.CLUSTER_EXECUTION_MODE === 'kubeconfig' && !config.CLUSTER_KUBECONFIG_PATH) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['CLUSTER_KUBECONFIG_PATH'],
-      message: 'CLUSTER_EXECUTION_MODE=kubeconfig requires CLUSTER_KUBECONFIG_PATH'
-    })
+  if (!config.CLUSTER_EXECUTION_ENABLED) return
+  if (config.CLUSTER_API_SERVER) {
+    if (!config.CLUSTER_API_TOKEN && !config.CLUSTER_API_TOKEN_FILE) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['CLUSTER_API_TOKEN'],
+        message: 'CLUSTER_API_SERVER requires CLUSTER_API_TOKEN or CLUSTER_API_TOKEN_FILE'
+      })
+    }
+    // Out-of-cluster there is no pod namespace to derive the control namespace
+    // from, and guessing one would provision every envelope into the wrong place.
+    if (!config.CLUSTER_CONTROL_NAMESPACE) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['CLUSTER_CONTROL_NAMESPACE'],
+        message: 'CLUSTER_API_SERVER requires CLUSTER_CONTROL_NAMESPACE'
+      })
+    }
   }
   for (const key of ['CLUSTER_DAEMON_IMAGE', 'CLUSTER_RUNTIME_IMAGE'] as const) {
     if (!config[key]) {

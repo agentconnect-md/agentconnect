@@ -446,9 +446,9 @@ export function buildContainer(
         })
       : undefined
   // Managed cluster execution (docs/designs/agentconnect-org-operator.md):
-  // assembled ONLY when a credential source is configured. Unlike the forgiving
-  // S3 group above, the env schema already fail-fasts on a half-configured mode,
-  // so reaching here with a non-`off` mode means the credentials loaded.
+  // assembled ONLY when the switch is on. Unlike the forgiving S3 group above,
+  // the env schema already fail-fasts on a half-configured credential source, so
+  // reaching here with the feature enabled means the credentials loaded.
   const clusterAccess = loadClusterAccess(config)
   const clusterExecution = clusterAccess
     ? new ClusterExecutionService(

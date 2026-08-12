@@ -226,8 +226,8 @@ export interface HttpDeps {
     oauth: OAuthRepo
   }
   /** The AgentConnectOrg writer + envelope status reader. Absent ⇒ cluster
-   *  execution is not configured (CLUSTER_EXECUTION_MODE=off) and its routes
-   *  are not mounted. */
+   *  execution is not configured (CLUSTER_EXECUTION_ENABLED unset) and its
+   *  routes are not mounted. */
   clusterExecution?: ClusterExecutionService
   registry: DaemonRegistry
   /**

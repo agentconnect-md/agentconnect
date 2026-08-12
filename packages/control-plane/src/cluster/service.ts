@@ -139,6 +139,44 @@ export class ClusterExecutionService {
   }
 
   /**
+   * Make an organization's envelope exist, idempotently: the provisioning path
+   * for an org that was never configured, and the self-heal for one whose CR
+   * went missing. Called when an organization is created and again whenever the
+   * console opens its Daemons page, so an org that predates this deployment —
+   * or one minted outside `POST /orgs` (a JIT personal org, a waitlist redeem) —
+   * converges on its first visit rather than needing an owner to find a toggle.
+   *
+   * It never overrides a decision: only an org with NO settings row is switched
+   * on, so an owner who deliberately disabled cluster execution keeps a row that
+   * reads disabled and nothing here resurrects it. An org that IS enabled gets
+   * its spec re-applied (which creates the CR when it is gone) and, once the
+   * operator has published the envelope namespace, its first credential.
+   *
+   * Best-effort by construction: the caller is a page load or an org create, so
+   * a namespace that is not ready yet or a peer already rotating is the ordinary
+   * "not this pass" answer and leaves the work to the next visit.
+   */
+  async ensureProvisioned(orgId: OrgId, actorUserId?: string): Promise<ClusterExecutionSettings> {
+    const existing = await this.repo.get(orgId)
+    // A row that reads disabled is a decision, not a gap: an owner switched this
+    // org off (or is tearing it down), and re-applying would undo that.
+    if (existing && !existing.enabled) return existing
+    // No row at all ⇒ never configured, so provisioning is the deployment's
+    // default rather than a reversal of anyone's choice.
+    const settings = existing ? await this.converge(orgId) : await this.enable(orgId, { enabled: true })
+    if (!settings.enabled || settings.credentialRevision) return settings
+    try {
+      await this.issueCredential(orgId, actorUserId)
+    } catch (error) {
+      // The namespace the operator has not created yet, and a peer that owns the
+      // transition, are both "come back later" — everything else is a real fault.
+      if (!(error instanceof NamespaceNotReadyError) && !(error instanceof ClusterRotationInProgressError)) throw error
+      return settings
+    }
+    return this.settings(orgId)
+  }
+
+  /**
    * Switching cluster execution on. It takes the same claim the teardown drain
    * does, and holds it while it cancels a previous disable's tombstone AND
    * applies the resource — otherwise a drain that had already listed that

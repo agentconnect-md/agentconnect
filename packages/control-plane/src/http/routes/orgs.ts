@@ -5,7 +5,9 @@
  *   GET  /orgs → every org the caller belongs to + their role (the picker).
  *                Self-heals an interrupted signup: a user with no memberships
  *                gets their personal org (re)created here.
- *   POST /orgs → create an org; the caller becomes its first owner.
+ *   POST /orgs → create an org; the caller becomes its first owner. Where the
+ *                deployment runs managed execution, its cluster envelope is
+ *                provisioned here too.
  *
  * Org surface (mounted under `/orgs/:orgId` behind the org-scope guard):
  *   GET    / → the org itself, from the caller's perspective
@@ -24,6 +26,7 @@ import { z } from 'zod'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
 import type { OrgRecord } from '../../persistence/ports.js'
+import { OrgId } from '../../domain/ids.js'
 import { denyNonOwner } from '../rbac.js'
 import { Tag } from '../plugins/openapi.js'
 import { resolveOrgIconUrl, type IconUrlBases } from '../../agents/agent-icon.js'
@@ -120,6 +123,18 @@ export function orgRoutes(deps: HttpDeps) {
           slug: req.body.slug,
           ownerUserId: req.principal!.userId
         })
+        // Managed execution, where the deployment runs it: the envelope is part
+        // of what an organization IS here, so it is provisioned with the org
+        // rather than waiting for an owner to find a toggle. Best-effort — an
+        // unreachable cluster must not fail a creation that already committed,
+        // and the console's Daemons page ensures the same thing on every visit.
+        if (deps.clusterExecution) {
+          try {
+            await deps.clusterExecution.ensureProvisioned(OrgId(org.id), req.principal!.userId)
+          } catch (err) {
+            req.log.warn({ err, orgId: org.id }, 'cluster-execution: envelope provisioning deferred to the next ensure')
+          }
+        }
         return reply.code(201).send(toDto(org, deps))
       }
     )

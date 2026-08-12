@@ -234,11 +234,25 @@ renders its own release-prefixed copies from its own constants (Kubernetes
 ## 6. Control-plane provisioner
 
 The CR writer is control-plane code (`packages/control-plane/src/cluster/`),
-opt-in through `CLUSTER_EXECUTION_MODE` (`off` | `in-cluster` | `kubeconfig`);
-off is the default and mounts nothing. It is deliberately the SAME path for a
-self-hosted cluster install and a hosted deployment — only the policy inputs
-differ (`CLUSTER_ORG_NAMESPACE_PREFIX`, which must equal the operator install's
+opt-in through `CLUSTER_EXECUTION_ENABLED`; off is the default and mounts
+nothing. It is deliberately the SAME path for a self-hosted cluster install and
+a hosted deployment — only the policy inputs differ
+(`CLUSTER_ORG_NAMESPACE_PREFIX`, which must equal the operator install's
 `AC_ORG_NAMESPACE_PREFIX`, plus the default images and tier).
+
+**One switch, a derived credential source.** The switch is explicit — a control
+plane that merely happens to run on Kubernetes must not start claiming an
+operator install — but what it connects _with_ is derived from what the
+deployment set, most explicit first: `CLUSTER_API_SERVER` plus
+`CLUSTER_API_TOKEN`/`_FILE` (and `CLUSTER_CA_CERT`/`_FILE`) for a process
+outside the cluster, else `CLUSTER_KUBECONFIG_PATH`, else the pod's own
+projected ServiceAccount. Setting nothing but the switch is therefore the
+in-cluster case, and `CLUSTER_CONTROL_NAMESPACE` defaults to the pod's own
+namespace — the zero-config shape for a control plane deployed beside its
+operator. It is required with `CLUSTER_API_SERVER`, where there is no pod
+namespace to derive and guessing one would provision every envelope into the
+wrong place. A token read from a file is re-read per request, so a mounted
+Secret that rotates in place needs no restart.
 
 - `org_cluster_execution` (one row per org) holds only the spec fields the
   control plane owns. Status is never mirrored there: the console reads it live
@@ -257,6 +271,22 @@ differ (`CLUSTER_ORG_NAMESPACE_PREFIX`, which must equal the operator install's
   `enabled: false` deletes the CR and hands the envelope to the finalizer, while
   `suspend` quiesces without tearing down. `GET …/cluster-execution/status`
   projects the operator's conditions and summaries.
+- **An envelope is part of what an organization is**, so it is provisioned with
+  the org rather than waiting for an owner to find a toggle: `POST /orgs` calls
+  `ensureProvisioned` after the create commits, best-effort — an unreachable
+  cluster must not fail a creation that already landed. That covers only the
+  orgs born on that route, and a personal org minted by JIT signup or a waitlist
+  redeem is created in repository code that has no business knowing about
+  Kubernetes. So `POST …/cluster-execution/ensure` (owner-only, idempotent) is
+  the same operation as a request, and the console's Daemons page fires it once
+  per org per session. Between them, every org converges — including ones that
+  predate the feature — without a reconciler sweeping the whole table.
+  `ensureProvisioned` enables only an org with NO settings row: a row that reads
+  disabled is an owner's decision, and re-applying would undo it. An org that is
+  enabled gets its spec re-applied (which recreates a CR that went missing) and,
+  once `status.namespace` is published, its first credential — the namespace not
+  existing yet at org-create time is the ordinary state, not a failure, and the
+  next visit finishes the job.
 - Every write bumps `specRevision`, and a write applies the CURRENT row and
   then re-reads that revision: two concurrent writers would otherwise be able to
   leave the row at one spec and the CR at an older one forever, since the

@@ -103,16 +103,68 @@ contexts: [{ name: c, context: { cluster: k, user: u } }]
 
 describe('loadClusterAccess', () => {
   it('is off by default, so an existing deployment is untouched', () => {
-    expect(loadClusterAccess({ CLUSTER_EXECUTION_MODE: 'off' })).toBeUndefined()
+    expect(
+      loadClusterAccess({ CLUSTER_EXECUTION_ENABLED: false, CLUSTER_API_SERVER: 'https://x.test' })
+    ).toBeUndefined()
   })
 
   it('overrides the control namespace when the deployment names one', () => {
     const access = loadClusterAccess({
-      CLUSTER_EXECUTION_MODE: 'kubeconfig',
+      CLUSTER_EXECUTION_ENABLED: true,
       CLUSTER_KUBECONFIG_PATH: writeConfig(TOKEN_CONFIG),
       CLUSTER_CONTROL_NAMESPACE: 'agentconnect-other'
     })
     expect(access?.namespace).toBe('agentconnect-other')
     expect(access?.token()).toBe('sa-token-value')
+  })
+
+  it('takes a directly configured API server ahead of a kubeconfig', () => {
+    const access = loadClusterAccess({
+      CLUSTER_EXECUTION_ENABLED: true,
+      CLUSTER_API_SERVER: 'https://kubernetes.direct.test:6443',
+      CLUSTER_API_TOKEN: 'direct-token',
+      CLUSTER_CA_CERT: Buffer.from('-----BEGIN CERTIFICATE-----\ndirect\n').toString('base64'),
+      CLUSTER_KUBECONFIG_PATH: writeConfig(TOKEN_CONFIG),
+      CLUSTER_CONTROL_NAMESPACE: 'agentconnect-control'
+    })
+    expect(access?.server).toBe('https://kubernetes.direct.test:6443')
+    expect(access?.token()).toBe('direct-token')
+    expect(access?.ca).toBe('-----BEGIN CERTIFICATE-----\ndirect\n')
+  })
+
+  // A mounted Secret rotates in place, so a token cached at boot outlives itself.
+  it('re-reads a token file on every call', () => {
+    const path = writeConfig('first-token\n', 'token')
+    const access = loadClusterAccess({
+      CLUSTER_EXECUTION_ENABLED: true,
+      CLUSTER_API_SERVER: 'https://kubernetes.direct.test:6443',
+      CLUSTER_API_TOKEN_FILE: path,
+      CLUSTER_CONTROL_NAMESPACE: 'agentconnect-control'
+    })
+    expect(access?.token()).toBe('first-token')
+    writeFileSync(path, 'second-token\n')
+    expect(access?.token()).toBe('second-token')
+  })
+
+  it('refuses an API server with no bearer credential', () => {
+    expect(() =>
+      loadClusterAccess({
+        CLUSTER_EXECUTION_ENABLED: true,
+        CLUSTER_API_SERVER: 'https://kubernetes.direct.test:6443',
+        CLUSTER_CONTROL_NAMESPACE: 'agentconnect-control'
+      })
+    ).toThrow(ClusterAccessError)
+  })
+
+  // Out of cluster there is no pod namespace to fall back on, and guessing one
+  // would provision every envelope into the wrong place.
+  it('refuses an API server with no control namespace', () => {
+    expect(() =>
+      loadClusterAccess({
+        CLUSTER_EXECUTION_ENABLED: true,
+        CLUSTER_API_SERVER: 'https://kubernetes.direct.test:6443',
+        CLUSTER_API_TOKEN: 'direct-token'
+      })
+    ).toThrow(/CLUSTER_CONTROL_NAMESPACE/)
   })
 })

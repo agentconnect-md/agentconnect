@@ -3,6 +3,7 @@
  *
  *   GET  /orgs/:orgId/cluster-execution            — the org's envelope settings
  *   PUT  /orgs/:orgId/cluster-execution            — owner-only; write + reconcile
+ *   POST /orgs/:orgId/cluster-execution/ensure     — owner-only; idempotent provision
  *   POST /orgs/:orgId/cluster-execution/credential — owner-only; issue / rotate
  *   GET  /orgs/:orgId/cluster-execution/status     — live status from the resource
  *
@@ -91,6 +92,29 @@ export function clusterExecutionRoutes(deps: HttpDeps) {
         if (denyNonOwner(req, reply)) return
         try {
           const settings = await cluster.configure(orgOf(req), req.body)
+          return settingsDto(settings, cluster.controlNamespace)
+        } catch (error) {
+          return sendClusterFailure(reply, error, 'cluster API rejected the request')
+        }
+      }
+    )
+
+    r.post(
+      '/cluster-execution/ensure',
+      {
+        schema: {
+          tags: [Tag.Cluster],
+          summary: 'Ensure the organization’s envelope exists',
+          description:
+            'Owner-only, idempotent. Provisions the organization’s AgentConnectOrg resource if it has none — the same thing organization creation does, repeated here so an organization created before this deployment (or outside `POST /orgs`) converges when its owner opens the console. Re-applies the spec when a resource is missing, and issues the first daemon credential once the operator has published the envelope namespace. An organization whose owner switched cluster execution OFF is left alone; nothing here re-enables it. A namespace that is not ready yet is not an error — the call returns the current settings and the next one finishes the job.',
+          operationId: 'ensureClusterExecution',
+          response: { 200: ClusterExecutionSettingsDto, 403: ErrorDto, 502: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (denyNonOwner(req, reply)) return
+        try {
+          const settings = await cluster.ensureProvisioned(orgOf(req), req.principal?.userId)
           return settingsDto(settings, cluster.controlNamespace)
         } catch (error) {
           return sendClusterFailure(reply, error, 'cluster API rejected the request')
