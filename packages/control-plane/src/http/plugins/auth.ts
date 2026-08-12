@@ -162,6 +162,15 @@ function unauthorized(reply: FastifyReply, message: string): FastifyReply {
   return reply.code(401).send({ error: 'Unauthorized', statusCode: 401, message })
 }
 
+function tokenExpired(reply: FastifyReply): FastifyReply {
+  return reply.code(401).send({
+    error: 'Unauthorized',
+    statusCode: 401,
+    code: 'TOKEN_EXPIRED',
+    message: 'access token expired'
+  })
+}
+
 /** The token is valid but the account behind it was deleted. A distinct `code` so
  *  the console can tell this apart from an expired/invalid token and force a
  *  sign-out instead of retrying with the same (now identity-less) session. */
@@ -440,6 +449,7 @@ function oidcAuth(cfg: HumanAuthOptions & { OIDC_ISSUER: string }): preHandlerHo
       // bare 401 and the reason is unknowable from the logs.
       const e = err as { code?: string; claim?: string; message?: string }
       req.log.warn({ code: e.code, claim: e.claim, reason: e.message }, 'humanAuth: bearer token rejected')
+      if (e.code === 'ERR_JWT_EXPIRED') return tokenExpired(reply)
       return unauthorized(reply, 'invalid token')
     }
   }

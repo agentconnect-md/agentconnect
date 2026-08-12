@@ -27,7 +27,12 @@ describe('Control Plane authentication recovery', () => {
   it('forces a token refresh and retries a rejected GET once', async () => {
     const fetchImpl = vi
       .fn()
-      .mockResolvedValueOnce(new Response('{}', { status: 401, headers: { 'content-type': 'application/json' } }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ code: 'TOKEN_EXPIRED' }), {
+          status: 401,
+          headers: { 'content-type': 'application/json' }
+        })
+      )
       .mockResolvedValueOnce(
         new Response(JSON.stringify({ identities: [], hasSecurityVerificationMethod: false }), {
           status: 200,
@@ -53,7 +58,12 @@ describe('Control Plane authentication recovery', () => {
 
   it('returns to sign-in when the refreshed token is rejected too', async () => {
     const fetchImpl = vi.fn(async () =>
-      Promise.resolve(new Response('{}', { status: 401, headers: { 'content-type': 'application/json' } }))
+      Promise.resolve(
+        new Response(JSON.stringify({ code: 'TOKEN_EXPIRED' }), {
+          status: 401,
+          headers: { 'content-type': 'application/json' }
+        })
+      )
     )
     vi.stubGlobal('fetch', fetchImpl)
     const { fetchMySocialAccount } = await import('./api')
@@ -62,6 +72,20 @@ describe('Control Plane authentication recovery', () => {
 
     expect(fetchImpl).toHaveBeenCalledTimes(2)
     expect(auth.redirectExpiredSession).toHaveBeenCalledOnce()
+  })
+
+  it('does not refresh an unrelated unauthorized response', async () => {
+    const fetchImpl = vi.fn(async () =>
+      Promise.resolve(new Response('{}', { status: 401, headers: { 'content-type': 'application/json' } }))
+    )
+    vi.stubGlobal('fetch', fetchImpl)
+    const { fetchMySocialAccount } = await import('./api')
+
+    await expect(fetchMySocialAccount()).rejects.toMatchObject({ status: 401 })
+
+    expect(fetchImpl).toHaveBeenCalledOnce()
+    expect(auth.refreshTokenAfterUnauthorized).not.toHaveBeenCalled()
+    expect(auth.redirectExpiredSession).not.toHaveBeenCalled()
   })
 
   it('does not refresh when the Control Plane says the account was deleted', async () => {

@@ -1301,9 +1301,7 @@ async function responseCode(response: Response): Promise<string | undefined> {
   return typeof body.code === 'string' ? body.code : undefined
 }
 
-/** Retry one CP request with a forced Logto token refresh. A second 401 means
- * the browser session cannot recover, so send it back through sign-in instead
- * of leaving individual panels on a Retry button that replays the same token. */
+// Retry one expired-token response; a second expiry returns the browser to sign-in.
 async function authenticatedFetch(
   path: string,
   init: Omit<RequestInit, 'headers'> = {},
@@ -1312,7 +1310,7 @@ async function authenticatedFetch(
   const url = `${cpBase()}${path}`
   const firstHeaders = await authHeaders(extraHeaders)
   const first = await fetch(url, { ...init, headers: firstHeaders })
-  if (first.status !== 401 || (await responseCode(first)) === 'ACCOUNT_GONE') return first
+  if (first.status !== 401 || (await responseCode(first)) !== 'TOKEN_EXPIRED') return first
 
   const refreshed = await refreshTokenAfterUnauthorized(bearerToken(firstHeaders))
   if (!refreshed) {
@@ -1321,7 +1319,7 @@ async function authenticatedFetch(
   }
 
   const retried = await fetch(url, { ...init, headers: await authHeaders(extraHeaders) })
-  if (retried.status === 401 && (await responseCode(retried)) !== 'ACCOUNT_GONE') await redirectExpiredSession()
+  if (retried.status === 401 && (await responseCode(retried)) === 'TOKEN_EXPIRED') await redirectExpiredSession()
   return retried
 }
 
