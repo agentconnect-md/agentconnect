@@ -12,6 +12,7 @@ import useSWR, { useSWRConfig } from 'swr'
 import { useOrgs } from '@/lib/org-context'
 import { consoleKeys } from '@/lib/swr-keys'
 import { useSessionList } from '@/lib/use-session-list'
+import { randomUuid } from '@/lib/random-uuid'
 import { accessNotificationSnapshot, type AccessNotificationSnapshot } from '@/lib/access-notification-snapshot'
 import {
   AGENTS,
@@ -1350,7 +1351,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
   // just mints a fresh client-side UUID (the CP keys the row on it).
   const saveCron = useCallback(
     async (id: string | null, body: UpsertCronInput) => {
-      await apiUpsertCron(id ?? crypto.randomUUID(), body)
+      await apiUpsertCron(id ?? randomUuid(), body)
       settleInBackground(mutateCrons())
     },
     [mutateCrons]
