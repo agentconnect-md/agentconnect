@@ -102,6 +102,12 @@ simply presents its own token. There is no one-shot token that can be revived.
 Rejections carry one coarse reason and a message that names no pod, token, or agent, so
 the endpoint cannot be probed for valid identities.
 
+The same proof runs in the other direction one hop up: a daemon the operator
+provisioned authenticates to the control plane with its own audience-scoped
+projected token, verified there rather than here. See "Daemon identity" in
+[agentconnect-org-operator.md](agentconnect-org-operator.md) — the audiences
+differ, so neither token is accepted at the other end.
+
 ## 4. The five invariants, and where they are enforced
 
 1. **Mutual authentication** — the shim proves its pod through TokenReview; the daemon
