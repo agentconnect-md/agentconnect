@@ -211,20 +211,6 @@ export function sandboxWorkspaceMode(): boolean {
   return workspacesLiveInSandboxes
 }
 
-/**
- * Whether this agent's workspace is on a sandbox volume that no bound channel can reach right now —
- * a suspended pod, or one never launched.
- *
- * The per-agent resolution is the right question HERE, and the wrong one where placement is decided:
- * {@link setSandboxWorkspaceMode} exists precisely because "is there a pod yet" must not choose which
- * filesystem to clone into. A READ has no such hazard and this is exactly its question — the
- * workspace is on the pod either way, so with no channel the honest answer is "not right now" rather
- * than a listing of whatever sits at that path on this disk.
- */
-export function sandboxWorkspaceUnreachable(agentId: string): boolean {
-  return workspacesLiveInSandboxes && resolveWorkspaceGitRunner?.(agentId) === undefined
-}
-
 /** Empty a path belonging to a cluster agent. A daemon with no clearer registered has no sandbox to
  *  reach, so there is nothing to empty — the local path never calls this. */
 async function clearSandboxPath(agentId: string, root: string): Promise<void> {
@@ -234,11 +220,22 @@ async function clearSandboxPath(agentId: string, root: string): Promise<void> {
   }
 }
 
-/** The same resolution for git run OUTSIDE this module — the console's workspace git seam. Exported
- *  rather than re-derived, so a second local-runner construction cannot reappear elsewhere and
- *  quietly run a cluster agent's write on this daemon's own disk. */
-export function workspaceGitRunnerFor(agentId: string, cwd?: string, abort?: AbortSignal): GitRunner {
-  return runnerFor(agentId, cwd, abort)
+/**
+ * The console git seam's runner: the agent's own, or — only when workspaces are not in sandboxes at
+ * all — this daemon's. `undefined` means "on a sandbox volume, with no channel to reach it".
+ *
+ * ONE resolution, and that is the point rather than a detail. Answering the reachability question
+ * separately and resolving afterwards is check-then-use: a routine detach between the two (the shim
+ * re-dials at half the credential TTL) yields a local runner pointed at a path in the POD's
+ * coordinates, so a read reports an empty workspace and a write mutates whatever is at that path on
+ * this disk. The fallback is therefore not merely unhelpful in sandbox mode — it is refused, so no
+ * caller can reintroduce it by ordering its checks differently.
+ */
+export function consoleWorkspaceGitRunner(agentId: string, cwd?: string, abort?: AbortSignal): GitRunner | undefined {
+  const remote = resolveWorkspaceGitRunner?.(agentId, cwd, abort)
+  if (remote) return remote
+  if (workspacesLiveInSandboxes) return undefined
+  return new LocalGitRunner(gitFor(cwd, abort), cwd, (env) => gitFor(cwd, abort).env(env))
 }
 
 async function convergeWorkspaceOrigin(agent: Agent, cwd = agent.workspace.path): Promise<void> {
@@ -844,30 +841,50 @@ export function clusterWorkspaceCwd(
   runtimeRoot: string | undefined,
   request?: Pick<PrepareSessionWorkspaceRequest, 'isolation'>
 ): string {
-  if (request?.isolation === 'session') {
-    // Still refused loudly: a logical-session worktree needs a daemon-owned parent beside the
-    // checkout, `worktree add` in the sandbox, and a retention GC that reads the pod's tree — a
-    // separate migration, and a clear error beats a mystery one from git inside the sandbox.
-    throw new Error(`session-isolated workspaces are not supported with --k8s yet (agent "${agent.id}")`)
-  }
-  const root = runtimeRoot ?? DEFAULT_SHIM_WORKSPACE_ROOT
-  if (agent.workspace.mode === 'from-scratch') return root
-  // A git-repo workspace checks out one level down, away from the runtime's HOME. The configured
-  // working subdirectory is applied LEXICALLY here: validating it means resolving symlinks and
-  // stat-ing, which only means something in the filesystem that holds it — so the shim does that
-  // when it refuses a cwd outside its own root.
-  const checkout = join(root, SANDBOX_CHECKOUT_DIR)
+  refuseSessionIsolationInCluster(agent, request)
+  const checkout = clusterWorkspaceCheckout(agent, runtimeRoot)
+  if (agent.workspace.mode === 'from-scratch') return checkout
+  // The configured working subdirectory is applied LEXICALLY here: validating it means resolving
+  // symlinks and stat-ing, which only means something in the filesystem that holds it — so the shim
+  // does that when it refuses a cwd outside its own root.
   const agentDir = normalizeRepoSubdir(agent.workspace.agentDir)
   return agentDir === undefined ? checkout : join(checkout, ...agentDir.split('/'))
 }
 
+/** A logical-session worktree needs a daemon-owned parent beside the checkout, `worktree add` in the
+ *  sandbox, and a retention GC that reads the pod's tree — a separate migration, and a clear error
+ *  beats a mystery one from git inside the sandbox. */
+function refuseSessionIsolationInCluster(
+  agent: Agent,
+  request?: Pick<PrepareSessionWorkspaceRequest, 'isolation'>
+): void {
+  if (request?.isolation === 'session') {
+    throw new Error(`session-isolated workspaces are not supported with --k8s yet (agent "${agent.id}")`)
+  }
+}
+
+/** Where a CLUSTER agent's tree ROOT is in the pod's coordinates: the mounted volume for a
+ *  from-scratch workspace, and the checkout one level down (away from the runtime's HOME) for a
+ *  git-repo one. The ACP cwd is derived from it; the console addresses it directly. */
+export function clusterWorkspaceCheckout(agent: Agent, runtimeRoot: string | undefined): string {
+  const root = runtimeRoot ?? DEFAULT_SHIM_WORKSPACE_ROOT
+  return agent.workspace.mode === 'from-scratch' ? root : join(root, SANDBOX_CHECKOUT_DIR)
+}
+
 /**
- * The root the CONSOLE's workspace surfaces work in — the coordinates {@link clusterWorkspaceCwd}
- * gives the runtime, because the directory the console browses, diffs and commits is the one the
- * agent works in. The panels went without one: the git seam handed a ShimGitRunner
+ * The root the CONSOLE's workspace surfaces work in: the CHECKOUT root, in the coordinates of the
+ * filesystem that holds it. The panels went without one, so the git seam handed a ShimGitRunner
  * `agent.workspace.path`, the shim's cwd fence refused it, `isRepo` swallowed the refusal, and a
  * cluster agent's Git panel reported "not a git checkout" over a real checkout — while the file
  * reader listed an empty daemon-side directory for the same workspace.
+ *
+ * NOT {@link clusterWorkspaceCwd}, which is the RUNTIME's cwd and goes one level further in when
+ * `agentDir` is configured. The distinction is the local path's, not a cluster nicety: locally the
+ * console has always addressed `workspace.path` (the clone root) while the ACP cwd went to the
+ * working subdirectory, because the console addresses the REPOSITORY — `isRepo` accepts only an
+ * empty `--show-prefix`, `git status` paths are repo-relative, and the file tree browses from the
+ * top. Routing the console through the ACP cwd instead put every `agentDir`-configured cluster agent
+ * back on "not a git checkout", one level down from the answer.
  *
  * `local` still decides WHETHER there is a workspace to name — absent stays absent, so a
  * shared-workspace sessionId is refused as before — and only the coordinates change.
@@ -879,7 +896,8 @@ export function consoleWorkspaceRoot(
   request?: Pick<PrepareSessionWorkspaceRequest, 'isolation'>
 ): string | undefined {
   if (local === undefined || !workspacesLiveInSandboxes) return local
-  return clusterWorkspaceCwd(agent, runtimeRoot, request)
+  refuseSessionIsolationInCluster(agent, request)
+  return clusterWorkspaceCheckout(agent, runtimeRoot)
 }
 
 /**

@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import {
+  clusterWorkspaceCwd,
   consoleWorkspaceRoot,
   prefetchWorkspace,
   removeSessionWorktree,
@@ -294,10 +295,23 @@ describe('consoleWorkspaceRoot', () => {
     expect(consoleWorkspaceRoot(agentAt('/local/ws'), '/local/ws', undefined)).toBe('/agent/repo')
   })
 
-  it('follows the same coordinates the RUNTIME gets — from-scratch and a working subdirectory', () => {
+  it('is the mounted volume itself for a from-scratch workspace', () => {
     setSandboxWorkspaceMode(true)
     expect(consoleWorkspaceRoot(agentAt('/local/ws', { mode: 'from-scratch' }), '/local/ws', '/agent')).toBe('/agent')
+  })
+
+  it('stops at the CHECKOUT root, not the runtime cwd, when a working subdirectory is configured', () => {
+    setSandboxWorkspaceMode(true)
+    // The distinction is the local path's: it has always addressed `workspace.path` (the clone root)
+    // while the ACP cwd went one level in. Routing the console through `clusterWorkspaceCwd` instead
+    // put every agentDir-configured cluster agent on "not a git checkout" — `isRepo` accepts only an
+    // empty `--show-prefix`, so a descendant cwd is rejected before any operation runs, and no status
+    // ever reaches the panel to be corrected downstream.
     expect(consoleWorkspaceRoot(agentAt('/local/ws', { agentDir: 'services/api' }), '/local/ws', '/agent')).toBe(
+      '/agent/repo'
+    )
+    // The RUNTIME still gets the subdirectory — the two answers differ on purpose.
+    expect(clusterWorkspaceCwd(agentAt('/local/ws', { agentDir: 'services/api' }), '/agent')).toBe(
       '/agent/repo/services/api'
     )
   })

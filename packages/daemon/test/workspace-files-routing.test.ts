@@ -220,3 +220,75 @@ describe('an unreachable sandbox workspace', () => {
     expect((await reader.list({ agentId: AGENT, path: '', limit: 50 })).exists).toBe(true)
   })
 })
+
+describe('a channel that drops between resolutions', () => {
+  // The shim re-dials at half its credential TTL, so "the resolver answered once" is not a promise
+  // that it answers the same way again. A fence that PROBES and then resolves is therefore
+  // check-then-use: the second answer can be this daemon's filesystem, against a root in the POD's
+  // coordinates. Reads would report an empty workspace; a create would `mkdir -p` that pod path here
+  // and publish into it. Both seams resolve once and hold what they got.
+  afterEach(() => {
+    setSandboxWorkspaceMode(false)
+    setWorkspaceGitRunnerResolver(undefined)
+  })
+
+  /** Answers the first call and nothing after it — a detach timed to land between two resolutions. */
+  function detachAfterFirst<T>(value: T): () => T | undefined {
+    let served = false
+    return () => {
+      if (served) return undefined
+      served = true
+      return value
+    }
+  }
+
+  it('does not publish a scratch file onto this disk when the channel drops mid-request', async () => {
+    const { daemonSide, podSide } = split()
+    setSandboxWorkspaceMode(true)
+    const reader = createWorkspaceReader(
+      // A root in POD coordinates, as the real resolver returns: what a local fallback would create.
+      () => ({ root: join(daemonSide, 'agent-repo'), scratch: true }),
+      pass,
+      detachAfterFirst(filesAt(podSide))
+    )
+    await reader.write({ agentId: AGENT, path: 'notes.md', contentBase64: Buffer.from('hi\n').toString('base64') })
+    // Landed on the workspace's own filesystem, and the pod path was never created here.
+    expect(readFileSync(join(podSide, 'notes.md'), 'utf8')).toBe('hi\n')
+    expect(existsSync(join(daemonSide, 'agent-repo'))).toBe(false)
+  })
+
+  it('does not read this disk when the channel drops mid-request', async () => {
+    const { daemonSide, podSide } = split()
+    setSandboxWorkspaceMode(true)
+    const reader = createWorkspaceReader(
+      () => ({ root: daemonSide, scratch: true }),
+      pass,
+      detachAfterFirst(filesAt(podSide))
+    )
+    const page = await reader.list({ agentId: AGENT, path: '', limit: 50 })
+    // `STALE-DAEMON-COPY.txt` exists only on this disk, so naming it would prove the wrong answer.
+    expect(page.entries.map((entry) => entry.name)).toEqual(['app.ts'])
+  })
+
+  it('keeps the git seam on the sandbox runner it resolved, not a local one', async () => {
+    setSandboxWorkspaceMode(true)
+    const seen: string[][] = []
+    const answering = {
+      withEnv: () => answering,
+      raw: async () => '',
+      clone: async () => {},
+      pull: async () => ({ files: [], insertions: 0, deletions: 0 }),
+      status: async () => ({ current: 'main', tracking: null, ahead: 0, behind: 0, files: [], clean: true }),
+      log: async () => [],
+      readBounded: async (args: string[]) => {
+        seen.push(args)
+        return { out: Buffer.from(''), overflow: false } // empty `--show-prefix` ⇒ at the top level
+      }
+    }
+    setWorkspaceGitRunnerResolver(detachAfterFirst(answering as never))
+    // `/agent/repo` is not a checkout on THIS machine, so a local fallback answers isRepo:false.
+    const status = await createWorkspaceGit(() => '/agent/repo').status(AGENT)
+    expect(status.isRepo).toBe(true)
+    expect(seen.some((args) => args.includes('--show-prefix'))).toBe(true)
+  })
+})

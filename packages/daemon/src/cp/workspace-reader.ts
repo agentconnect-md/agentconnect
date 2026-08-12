@@ -65,19 +65,31 @@ export function createWorkspaceReader(
   function locationFor(agentId: string, sessionId?: string): WorkspaceLocation {
     const location = workspaceByAgent(agentId, sessionId)
     if (!location) throw new WorkspaceViolationError(`unknown agent "${agentId}"`, 'unknown-agent')
-    // A sandbox workspace with no channel to reach it. Falling back to `localWorkspaceFiles` would
-    // point them at a path in the POD's coordinates and answer `exists:false` — "this workspace is
-    // empty" for one that is merely asleep, which is the answer a reader cannot act on.
-    if (sandboxWorkspaceMode() && !filesFor(agentId)) {
+    return location
+  }
+
+  /**
+   * The filesystem this request runs on, resolved ONCE and returned so the caller holds it.
+   *
+   * The reachability refusal lives HERE rather than beside it, because the two cannot be separate
+   * steps: the shim re-dials at half its credential TTL, so a resolver probed to prove a channel
+   * exists and then probed again to use it can answer differently across those two calls — and the
+   * second answer would be `localWorkspaceFiles` against a path in the POD's coordinates. A read
+   * would report an empty workspace; a create would `mkdir -p` that pod path on this daemon's disk
+   * and publish the file into it. So sandbox mode has no fallback at all: one resolution, and its
+   * absence is the refusal.
+   */
+  function filesOf(agentId: string): WorkspaceFiles {
+    const remote = filesFor(agentId)
+    if (remote) return remote
+    if (sandboxWorkspaceMode()) {
       throw new WorkspaceViolationError(
         `agent "${agentId}" has no running sandbox, so its workspace cannot be reached`,
         'sandbox-unavailable'
       )
     }
-    return location
+    return localWorkspaceFiles
   }
-
-  const filesOf = (agentId: string): WorkspaceFiles => filesFor(agentId) ?? localWorkspaceFiles
 
   return {
     async list(req) {
