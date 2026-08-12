@@ -144,29 +144,39 @@ function assertInsideRoot(root: string, requested: string): void {
 }
 
 /**
- * Refuse a workspace root the file operations will then treat as their containment boundary.
+ * Validate a workspace root and RETURN the path the operations must use as their boundary.
  *
- * Canonical when the path exists, which {@link assertInsideRoot} deliberately is not: its caller is a
- * clone target, a path that is not there yet. A read's root IS there, and the shared implementation
- * `realpath`s it to derive its OWN boundary — so the lexical form would accept `<root>/repo` after
- * something in this pod replaced `repo` with a symlink, and every containment check downstream would
- * then be measured against the link's target instead of the checkout.
+ * It returns rather than asserts because the two have to be one fact. `assertInsideRoot` is lexical
+ * on purpose — its other caller is a clone target, a path deliberately not there yet — so on its own
+ * it accepts `<mount>/repo` after something in this pod replaced `repo` with a symlink. Canonicalising
+ * and then handing the ORIGINAL string onward is barely better: the shared implementation `realpath`s
+ * whatever root it is given to derive its own inner boundary, so the path this check approved and the
+ * path that becomes the boundary would be two separate resolutions, and the runtime owns `/agent` and
+ * can change the answer between them. Returning the resolved value collapses them into one.
  *
- * Absence stays permitted: `realpath` fails while a workspace is still being materialized, there is
- * nothing to escape through yet, and the operations report a missing root as `exists:false` — which
- * is the answer a console read wants, where a refusal would read as a broken daemon.
+ * Absence stays permitted, and unresolved is returned as-is: `realpath` also fails while a workspace
+ * is still being materialized, there is nothing to escape through yet, and the operations report a
+ * missing root as `exists:false` — the answer a console read wants, where a refusal would read as a
+ * broken daemon.
+ *
+ * What remains is the window every path-based check in this file shares, `resolveCwd` included: a
+ * component swapped for a symlink between the resolution and the I/O that follows it. Node offers no
+ * fd-relative form of these operations, so it is bounded rather than closed — and bounded to the root
+ * alone, since the operations canonicalise and re-verify every TARGET against the boundary they were
+ * given.
  */
-function assertReadableRoot(root: string, requested: string): void {
+function readableRoot(root: string, requested: string): string {
   assertInsideRoot(root, requested)
   let resolved: string
   try {
     resolved = realpathSync(normalize(resolve(requested)))
   } catch {
-    return
+    return requested
   }
   // Canonical vs canonical: `assertInsideRoot` canonicalizes the base, and the target is already
   // resolved, so this comparison is the one the lexical check could not make.
   assertInsideRoot(root, resolved)
+  return resolved
 }
 
 /** Refuse a cwd that escapes the workspace root, whatever the daemon asked for. */
@@ -202,7 +212,7 @@ export function createExecHandler(
     // here because a path in a payload is a path on THIS filesystem however well-formed it looked
     // over there — and canonically, since that root becomes the operations' own boundary.
     if (capability === 'read') {
-      return applyWorkspaceFilesPayload(payload, (root) => assertReadableRoot(deps.workspaceRoot, root))
+      return applyWorkspaceFilesPayload(payload, (root) => readableRoot(deps.workspaceRoot, root))
     }
     throw new ExecRefusedError(`capability ${capability} is not served by this handler`)
   }

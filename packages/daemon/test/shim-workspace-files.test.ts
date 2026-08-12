@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, it } from 'vitest'
-import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { WorkspaceListPage, WorkspaceReadContent, WorkspaceWriteOk } from '@agentconnect.md/protocol'
@@ -235,6 +235,38 @@ describe('the shim read capability', () => {
     expect(reply).toMatchObject({ ok: true, value: { exists: false, entries: [] } })
   })
 
+  it('hands the operations the RESOLVED root, so the fence and the boundary are one resolution', async () => {
+    const { mount, checkout } = volume()
+    // Validating a canonical path and then passing the original string onward leaves two separate
+    // resolutions of the same root, and the runtime owns this volume — it can change the answer
+    // between them, and the second one becomes the operations' inner containment boundary. A benign
+    // in-mount symlink is enough to observe WHICH value arrives: the checkout reached through a link.
+    const real = join(mount, 'real-repo')
+    mkdirSync(real, { recursive: true })
+    rmSync(checkout, { recursive: true, force: true })
+    symlinkSync(real, checkout, 'dir')
+
+    const seen: string[] = []
+    const spy = {
+      ...localWorkspaceFiles,
+      list: async (root: string, req: Parameters<typeof localWorkspaceFiles.list>[1]) => {
+        seen.push(root)
+        return localWorkspaceFiles.list(root, req)
+      }
+    }
+    await applyWorkspaceFilesPayload(
+      { op: 'list', root: checkout, req: { agentId: AGENT, path: '', limit: 10 } },
+      (root) => {
+        // The exec handler's fence, in the shape the handler uses it: it RETURNS the root to use.
+        expect(root).toBe(checkout)
+        return realpathSync(root)
+      },
+      spy
+    )
+    expect(seen).toEqual([realpathSync(real)])
+    expect(seen).not.toContain(checkout)
+  })
+
   it('refuses a payload that is not one of the four operations', async () => {
     const { mount, checkout } = volume()
     await expect(handlerFor(mount)('read', { op: 'chmod', root: checkout })).rejects.toThrow()
@@ -250,6 +282,7 @@ describe('ShimWorkspaceFiles', () => {
         expect(capability).toBe('read')
         return applyWorkspaceFilesPayload(payload, (root) => {
           if (!root.startsWith(mount)) throw new Error('escapes the workspace root')
+          return root
         })
       }
     }

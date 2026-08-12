@@ -102,18 +102,21 @@ export type WorkspaceFilesReply = z.infer<typeof WorkspaceFilesReplySchema>
 /**
  * Apply one operation inside the sandbox.
  *
- * `assertRoot` is the caller's fence (the exec handler's workspace-root check), passed in rather
- * than imported so this module keeps no opinion about where the sandbox mounts things.
+ * `resolveRoot` is the caller's fence (the exec handler's workspace-root check), passed in rather
+ * than imported so this module keeps no opinion about where the sandbox mounts things. It RETURNS the
+ * root to operate on, and that return value is what the operation receives: the path the fence
+ * approved and the path that becomes the operations' own containment boundary have to be the same
+ * resolution, or the runtime — which owns the volume — can change the answer between the two.
  */
 export async function applyWorkspaceFilesPayload(
   payload: unknown,
-  assertRoot: (root: string) => void,
+  resolveRoot: (root: string) => string,
   files: WorkspaceFiles = localWorkspaceFiles
 ): Promise<WorkspaceFilesReply> {
   const parsed = WorkspaceFilesPayloadSchema.parse(payload)
-  assertRoot(parsed.root)
+  const root = resolveRoot(parsed.root)
   try {
-    const value = await run(parsed, files)
+    const value = await run({ ...parsed, root }, files)
     return { ok: true, value }
   } catch (err) {
     if (err instanceof WorkspaceViolationError) {
