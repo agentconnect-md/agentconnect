@@ -9,6 +9,8 @@ describe('loadConfig', () => {
     expect(config.orgNamespacePrefix).toBe('test-ac-org-')
     expect(config.tokenreviewClusterRole).toBe('test-ac-tokenreview')
     expect(config.masterTemplatePrefix).toBe('ac-runtime-')
+    expect(config.daemonStorageClass).toBeUndefined()
+    expect(config.daemonStorageSize).toBe('10Gi')
     expect(config.resyncIntervalMs).toBe(600_000)
     expect(config.leaseName).toBe('agentconnect-operator')
     expect(config.watchTimeoutSeconds).toBe(300)
@@ -18,6 +20,11 @@ describe('loadConfig', () => {
     expect(() => loadConfig({})).toThrow(/AC_ORG_NAMESPACE_PREFIX/)
     expect(() => loadConfig({ ...REQUIRED, AC_ORG_NAMESPACE_PREFIX: '' })).toThrow(/AC_ORG_NAMESPACE_PREFIX/)
     expect(() => loadConfig({ AC_ORG_NAMESPACE_PREFIX: 'p-' })).toThrow(/AC_TOKENREVIEW_CLUSTERROLE/)
+  })
+
+  it('reads a blank storage class as unset so the cluster default still applies', () => {
+    expect(loadConfig({ ...REQUIRED, AC_DAEMON_STORAGE_CLASS: '  ' }).daemonStorageClass).toBeUndefined()
+    expect(loadConfig({ ...REQUIRED, AC_DAEMON_STORAGE_CLASS: 'cluster-wide' }).daemonStorageClass).toBe('cluster-wide')
   })
 
   it('coerces numeric overrides', () => {

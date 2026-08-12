@@ -13,6 +13,18 @@ orgNamespacePrefix: ac-org-
 # the operator stamps a per-org copy for every tier in spec.runtime.tiers.
 masterTemplatePrefix: ac-runtime-
 
+# The per-org daemon state volume (transcripts + local state). Both settings are
+# properties of the cluster, not of an org, and both apply when the claim is
+# first created: Kubernetes rejects a class change on an existing PVC, so an
+# org already provisioned keeps its volume until that volume is deleted.
+daemonStorage:
+  # StorageClass for the claim. Empty leaves it off, so the cluster default
+  # applies. Set it when that default is a node-local provisioner: such a class
+  # only binds where it has a path, so the claim fails wherever the scheduler
+  # puts the daemon and the pod never starts. Name a cluster-wide class instead.
+  className: ''
+  size: 10Gi
+
 operator:
   image:
     repository: ghcr.io/agentconnect-md/operator

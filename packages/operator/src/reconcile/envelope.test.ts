@@ -40,13 +40,17 @@ function recorder() {
   return { gets, writes, route }
 }
 
-async function contextFor(route: FakeRoute): Promise<ReconcileContext> {
+async function contextFor(route: FakeRoute, env: NodeJS.ProcessEnv = {}): Promise<ReconcileContext> {
   const { config: cluster } = await fakeApiServer(route)
   const http = new K8sHttp(cluster)
   return {
     http,
     orgApi: new AgentConnectOrgApi(http, cluster.namespace),
-    config: loadConfig({ AC_ORG_NAMESPACE_PREFIX: 'test-ac-org-', AC_TOKENREVIEW_CLUSTERROLE: 'test-ac-tokenreview' }),
+    config: loadConfig({
+      AC_ORG_NAMESPACE_PREFIX: 'test-ac-org-',
+      AC_TOKENREVIEW_CLUSTERROLE: 'test-ac-tokenreview',
+      ...env
+    }),
     controlNamespace: cluster.namespace,
     log: {}
   }
@@ -193,6 +197,34 @@ describe('reconcileEnvelope', () => {
     expect(deployment.spec.replicas).toBe(0)
     const pool = byPath(writes, '/sandboxwarmpools/ac-runtime-std')?.body as { spec: { replicas: number } }
     expect(pool.spec.replicas).toBe(0)
+  })
+
+  it('provisions the daemon state PVC from the install`s storage class and size', async () => {
+    const { gets, writes, route } = recorder()
+    const ctx = await contextFor(route, { AC_DAEMON_STORAGE_CLASS: 'cluster-wide', AC_DAEMON_STORAGE_SIZE: '20Gi' })
+    gets.set(masterPath(ctx.controlNamespace), MASTER_TEMPLATE)
+    await reconcileEnvelope(ctx, inputOf(), newObservations())
+    const pvc = byPath(writes, '/persistentvolumeclaims/ac-daemon-state')?.body as {
+      spec: { storageClassName?: string; resources: { requests: { storage: string } } }
+    }
+    expect(pvc.spec.storageClassName).toBe('cluster-wide')
+    expect(pvc.spec.resources.requests.storage).toBe('20Gi')
+  })
+
+  it.each([
+    ['no class is configured', {}],
+    ['the chart renders the class blank', { AC_DAEMON_STORAGE_CLASS: '' }]
+  ])('leaves the PVC on the cluster default when %s', async (_case, env) => {
+    const { gets, writes, route } = recorder()
+    const ctx = await contextFor(route, env)
+    gets.set(masterPath(ctx.controlNamespace), MASTER_TEMPLATE)
+    await reconcileEnvelope(ctx, inputOf(), newObservations())
+    const pvc = byPath(writes, '/persistentvolumeclaims/ac-daemon-state')?.body as {
+      spec: Record<string, unknown> & { resources: { requests: { storage: string } } }
+    }
+    // Absent, not '': an empty class asks for no provisioner at all instead of the cluster default.
+    expect('storageClassName' in pvc.spec).toBe(false)
+    expect(pvc.spec.resources.requests.storage).toBe('10Gi')
   })
 
   it('renders spec.quota into ResourceQuota hard limits plus a LimitRange', async () => {

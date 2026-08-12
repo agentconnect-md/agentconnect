@@ -30,6 +30,13 @@ spec:
               value: {{ .Release.Name }}-ac-tokenreview
             - name: AC_MASTER_TEMPLATE_PREFIX
               value: {{ .Values.masterTemplatePrefix | quote }}
+            {{- /* Unset when empty: the operator then leaves the daemon PVC on the cluster default class. */}}
+            {{- with .Values.daemonStorage.className }}
+            - name: AC_DAEMON_STORAGE_CLASS
+              value: {{ . | quote }}
+            {{- end }}
+            - name: AC_DAEMON_STORAGE_SIZE
+              value: {{ .Values.daemonStorage.size | quote }}
             - name: AC_RESYNC_INTERVAL_SECONDS
               value: {{ .Values.operator.resyncIntervalSeconds | quote }}
             - name: AC_LEASE_NAME
