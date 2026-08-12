@@ -844,8 +844,11 @@ export class SessionManager {
       `visible \`sendMessage\` lands at a channel root and opens a new conversation there.\n` +
       `- Act only on what is asked of YOU. Do not relay a message onward or start your own broadcast to other ` +
       `agents unless a human explicitly tells you to.\n` +
-      `- Be quiet about mechanics: don't narrate each step or post a message per action, and don't restate tool ` +
-      `results like "delivered: true". Take the action, add at most one short status line if needed, then end your turn.\n` +
+      `- Be quiet about successful mechanics: don't narrate each step or post a message per action, and don't restate ` +
+      `successful tool results like "delivered: true". For a requested operation that fails or returns a structured ` +
+      `error, say what failed, include a safe provider error code when available, and give the next actionable step. ` +
+      `Treat an explicit error marker as failure even if a wrapper command exits 0. Never expose credentials, tokens, ` +
+      `or raw secret-bearing output. Take the action, add at most one short status line if needed, then end your turn.\n` +
       `- When another agent introduces itself to you, record it in your memory (a peer roster — id, name, what it ` +
       `does, how to reach it) so you know who to delegate to later. Then just acknowledge briefly; do NOT re-introduce ` +
       `yourself back or broadcast to everyone.`
