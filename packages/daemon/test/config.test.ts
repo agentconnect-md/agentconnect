@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loadConfig } from '../src/config/load-config.js'
 import { McpServerDefSchema, RuntimeDefSchema, sessionRetentionMs } from '../src/config/config-schema.js'
+import { CP_URL_ENV } from '@agentconnect.md/protocol'
 
 function tmpRoot(config: unknown): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-cfg-'))
@@ -28,6 +29,48 @@ describe('loadConfig', () => {
     expect(cfg.limits.maxAgents).toBe(32)
     expect(cfg.agentsDir).toContain('agents')
     expect(cfg.sessions.retention).toBe('7d') // #485 session retention defaults on
+  })
+
+  // An envelope daemon is born with no config file and no key: the operator injects the
+  // control plane's own address, and the pod's projected token is the credential.
+  describe(`${CP_URL_ENV} (the in-cluster bootstrap)`, () => {
+    const withEnv = <T>(value: string | undefined, run: () => T): T => {
+      const previous = process.env[CP_URL_ENV]
+      if (value === undefined) delete process.env[CP_URL_ENV]
+      else process.env[CP_URL_ENV] = value
+      try {
+        return run()
+      } finally {
+        if (previous === undefined) delete process.env[CP_URL_ENV]
+        else process.env[CP_URL_ENV] = previous
+      }
+    }
+
+    it('supplies the control-plane URL and turns the connection on', () => {
+      const cfg = withEnv('wss://api.example.test/daemon/ws', () => loadConfig({ root: tmpRoot({ version: 1 }) }))
+      expect(cfg.controlPlane.url).toBe('wss://api.example.test/daemon/ws')
+      expect(cfg.controlPlane.enabled).toBe(true)
+      expect(cfg.controlPlane.key).toBeUndefined()
+    })
+
+    it('never overrides a URL the config or a flag already stated', () => {
+      const root = tmpRoot({ version: 1, controlPlane: { enabled: true, url: 'wss://configured.example.test/x' } })
+      const cfg = withEnv('wss://api.example.test/daemon/ws', () => loadConfig({ root }))
+      expect(cfg.controlPlane.url).toBe('wss://configured.example.test/x')
+    })
+
+    it('still yields to --no-cp', () => {
+      const cfg = withEnv('wss://api.example.test/daemon/ws', () =>
+        loadConfig({ root: tmpRoot({ version: 1 }), overrides: { noCp: true } })
+      )
+      expect(cfg.controlPlane.enabled).toBe(false)
+    })
+
+    it('is ignored when blank, rather than configuring an empty endpoint', () => {
+      const cfg = withEnv('   ', () => loadConfig({ root: tmpRoot({ version: 1 }) }))
+      expect(cfg.controlPlane.url).toBeUndefined()
+      expect(cfg.controlPlane.enabled).toBe(false)
+    })
   })
 
   it("session retention accepts 'never' or any '<n>d' and maps to sweep windows", () => {

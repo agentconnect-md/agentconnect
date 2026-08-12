@@ -3,6 +3,7 @@ import { RelayAuthService } from './relayAuthService.js'
 import { ApiKeyCodec } from './apiKey.js'
 import type { ApiKeyRepo, ApiKeyRecord } from '../persistence/ports.js'
 import type { Clock } from '../domain/clock.js'
+import { DaemonId, OrgId } from '../domain/ids.js'
 
 const PEPPER = 'unit-test-pepper-0123456789abcdefghij'
 const codec = new ApiKeyCodec({ API_KEY_PEPPER: PEPPER })
@@ -28,12 +29,15 @@ function relayRecord(over: Partial<ApiKeyRecord> = {}): ApiKeyRecord {
   }
 }
 
-function service(row: ApiKeyRecord | null, opts: { RELAY_TOKEN?: string } = {}): RelayAuthService {
-  const repo = {
+function repo(row: ApiKeyRecord | null): ApiKeyRepo {
+  return {
     findByHash: vi.fn(async () => row),
     touchLastUsed: vi.fn(async () => {})
   } as unknown as ApiKeyRepo
-  return new RelayAuthService(codec, repo, clock, { ...opts, HEARTBEAT_SEC: 15 })
+}
+
+function service(row: ApiKeyRecord | null, opts: { RELAY_TOKEN?: string } = {}): RelayAuthService {
+  return new RelayAuthService(codec, repo(row), clock, { ...opts, HEARTBEAT_SEC: 15 })
 }
 
 describe('RelayAuthService — token mode', () => {
@@ -112,6 +116,28 @@ function daemonRecord(over: Partial<ApiKeyRecord> = {}): ApiKeyRecord {
     ...over
   })
 }
+
+describe('RelayAuthService.verifyDaemonToken (rc/verify daemon-token)', () => {
+  const identity = { daemonId: DaemonId('cccccccc-cccc-4ccc-8ccc-cccccccccccc'), orgId: OrgId('org-cluster') }
+
+  it('resolves a verified projected token to the same identity shape a key does', async () => {
+    const svc = new RelayAuthService(codec, repo(null), clock, { HEARTBEAT_SEC: 15 }, { verify: async () => identity })
+    expect(await svc.verifyDaemonToken('projected')).toEqual({
+      daemonId: identity.daemonId,
+      orgId: identity.orgId
+    })
+  })
+
+  it('refuses a token the cluster did not accept', async () => {
+    const svc = new RelayAuthService(codec, repo(null), clock, { HEARTBEAT_SEC: 15 }, { verify: async () => null })
+    expect(await svc.verifyDaemonToken('projected')).toBeNull()
+  })
+
+  it('refuses every token where the deployment provisions no clusters', async () => {
+    const svc = new RelayAuthService(codec, repo(null), clock, { HEARTBEAT_SEC: 15 })
+    expect(await svc.verifyDaemonToken('projected')).toBeNull()
+  })
+})
 
 describe('RelayAuthService.verifyDaemonKey (rc/verify daemon-key, read-only)', () => {
   it('resolves a live daemon key to {daemonId, orgId}', async () => {

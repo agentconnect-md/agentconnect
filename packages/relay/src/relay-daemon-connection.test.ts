@@ -74,6 +74,26 @@ describe('RelayDaemonConnection (rd/* accept FSM)', () => {
     expect(onReady).toHaveBeenCalledWith(DAEMON_ID, conn)
   })
 
+  it('delegates a projected ServiceAccount token as daemon-token, in place of any key', async () => {
+    const { conn, transport, verify } = build()
+    transport.feed('rd/hello', { serviceAccountToken: 'projected', apiKey: 'stale-key', daemonId: DAEMON_ID })
+    await Promise.resolve()
+    await Promise.resolve()
+    // The token wins: a stale key must never pick a different identity than the CP socket did.
+    expect(verify).toHaveBeenCalledWith('daemon-token', 'projected')
+    expect(conn.state).toBe('READY')
+  })
+
+  it('refuses a hello carrying no credential at all (close 4401)', async () => {
+    const { transport, verify } = build()
+    transport.feed('rd/hello', { daemonId: DAEMON_ID })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(verify).not.toHaveBeenCalled()
+    expect(transport.lastRep('error')!.payload).toMatchObject({ code: 'AUTH_FAILED' })
+    expect(transport.closed?.code).toBe(4401)
+  })
+
   it('rejects an invalid credential with AUTH_FAILED + close(4401)', async () => {
     const { transport } = build({ verify: async () => ({ ok: false, reason: 'nope' }) })
     transport.feed('rd/hello', { apiKey: 'bad', daemonId: DAEMON_ID })

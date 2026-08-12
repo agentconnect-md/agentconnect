@@ -23,9 +23,13 @@ import type {
   OrgClusterExecutionRepo,
   OrgRepo
 } from '../persistence/ports.js'
-import { DEFAULT_CREDENTIAL_SECRET_NAME } from './crd.js'
 import type { OrgResourceApi } from './org-api.js'
 import { ABSENT_ENVELOPE, buildSpec, orgResourceName, projectStatus, type ClusterEnvelopeStatus } from './spec.js'
+
+/** Name of the Secret the key path published. No longer on the CR — the operator mounts
+ *  nothing — so it is only the stored column's value until that column retires with the
+ *  rest of the key machinery. */
+const DEFAULT_CREDENTIAL_SECRET_NAME = 'ac-daemon-token'
 
 /** Bounded re-apply passes; each concurrent writer runs its own, so this only
  *  has to outlast a burst, not an unbounded stream of edits. */
@@ -53,7 +57,8 @@ export interface ClusterExecutionPolicy {
   runtimeImage: string
   daemonTier: string
   runtimeTiers: { name: string; warmReplicas: number }[]
-  /** The daemon WebSocket URL written into every envelope's `config.json`. */
+  /** This control plane's own daemon WebSocket URL, written onto every envelope's CR —
+   *  the address the daemon pod dials, in plain text because a URL is not a secret. */
   controlPlaneUrl: string
 }
 
@@ -337,7 +342,7 @@ export class ClusterExecutionService {
     // `displayName` is display-only on the CR, so the slug (always present) is
     // enough and costs one indexed read instead of a whole org projection.
     const slug = await this.orgs.slugById(settings.orgId)
-    await this.api.apply(name, buildSpec(settings, slug ?? undefined))
+    await this.api.apply(name, buildSpec(settings, this.policy.controlPlaneUrl, slug ?? undefined))
   }
 
   /**

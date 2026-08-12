@@ -13,6 +13,16 @@ orgNamespacePrefix: ac-org-
 # the operator stamps a per-org copy for every tier in spec.runtime.tiers.
 masterTemplatePrefix: ac-runtime-
 
+# Namespaces an org's daemon may reach on any port — where this deployment's
+# control plane and relay actually run. This is network REACHABILITY and nothing
+# else: the control plane's ADDRESS reaches the daemon on the AgentConnectOrg,
+# written by the control plane itself, and a NetworkPolicy cannot select a DNS
+# name. Unset means the release namespace, which is what the operator assumed
+# before this was configurable. Set it when the control plane runs elsewhere in
+# the cluster; an explicit empty list leaves the daemon on the 443 egress rule
+# alone, which is all a control plane outside the cluster needs.
+daemonEgressNamespaces: null
+
 # The per-org daemon state volume (transcripts + local state). Both settings are
 # properties of the cluster, not of an org, and both apply when the claim is
 # first created: Kubernetes rejects a class change on an existing PVC, so an

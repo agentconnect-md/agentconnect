@@ -1,7 +1,6 @@
 export { loadClusterAccess, type ClusterAccessConfig } from './access.js'
 export {
   CONDITION_TYPES,
-  DEFAULT_CREDENTIAL_SECRET_NAME,
   type AgentConnectOrg,
   type AgentConnectOrgSpec,
   type AgentConnectOrgStatus,

@@ -418,7 +418,9 @@ describe('ClusterExecutionService.configure', () => {
 })
 
 describe('ClusterExecutionService.issueCredential', () => {
-  it('publishes the Secret before bumping the revision that rolls the pod', async () => {
+  // The Secret and the revision still exist on the stored row; the CR no longer carries
+  // either, because the pod mounts nothing. Both retire with the rest of the key path.
+  it('publishes the Secret without putting a credential on the resource', async () => {
     const { service, api, secrets } = build()
     await service.configure(ORG, { enabled: true })
     api.applied.length = 0
@@ -431,7 +433,8 @@ describe('ClusterExecutionService.issueCredential', () => {
       daemonId: 'daemon-1',
       controlPlane: { enabled: true, url: POLICY.controlPlaneUrl, key: 'token-1' }
     })
-    expect(api.applied.at(-1)?.daemon.credentialRevision).toBe(view.revision)
+    expect(view.revision).toBe('key-1')
+    expect(JSON.stringify(api.applied.at(-1))).not.toContain('credential')
     expect(view.rotated).toBe(false)
   })
 

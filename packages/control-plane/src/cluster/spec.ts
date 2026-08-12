@@ -46,16 +46,20 @@ export function orgResourceName(prefix: string, orgId: string): string {
 }
 
 /** The desired `spec` for an org — everything the control plane owns, nothing else. */
-export function buildSpec(settings: ClusterExecutionSettings, displayName?: string): AgentConnectOrgSpec {
+export function buildSpec(
+  settings: ClusterExecutionSettings,
+  controlPlaneUrl: string,
+  displayName?: string
+): AgentConnectOrgSpec {
   return {
     ...(displayName ? { displayName } : {}),
     suspend: settings.suspend,
     daemon: {
       image: settings.daemonImage,
-      tier: settings.daemonTier,
-      credentialSecretName: settings.credentialSecretName,
-      ...(settings.credentialRevision ? { credentialRevision: settings.credentialRevision } : {})
+      tier: settings.daemonTier
     },
+    // The one thing the envelope daemon cannot derive and nobody else may state for it.
+    controlPlane: { url: controlPlaneUrl },
     runtime: {
       image: settings.runtimeImage,
       tiers: settings.runtimeTiers.map((tier) => ({ name: tier.name, warmReplicas: tier.warmReplicas }))

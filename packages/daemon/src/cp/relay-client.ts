@@ -50,8 +50,11 @@ export type RelayClientState = 'CONNECTING' | 'HELLO' | 'READY' | 'CLOSED' | 'DE
 
 /** The per-client deps, shared across every relay a daemon dials. */
 export interface RelayClientDeps {
-  /** The daemon's existing CP API key (presented on `rd/hello`). */
+  /** The daemon's existing CP API key (presented on `rd/hello`); empty when it has none. */
   apiKey: () => string
+  /** This pod's projected ServiceAccount token, re-read per connect because the kubelet
+   *  rotates it. Present ⇒ it is the credential and the API key is not sent. */
+  clusterIdentityToken?: () => string | undefined
   /** The daemon's adopted id (undefined until `auth/ok`; `rd/hello.daemonId` needs it). */
   daemonId: () => string | undefined
   clock: Clock
@@ -175,9 +178,12 @@ export class RelayClient {
 
   private async handshake(daemonId: string): Promise<void> {
     this.state = 'HELLO'
+    // Read per connect, never cached — the same credential and the same reason as the CP socket.
+    const identityToken = this.deps.clusterIdentityToken?.()
+    const apiKey = this.deps.apiKey()
     const rep = await this.sendRequest(
       buildRelayDaemonFrame('rd/hello', {
-        apiKey: this.deps.apiKey(),
+        ...(identityToken ? { serviceAccountToken: identityToken } : apiKey ? { apiKey } : {}),
         daemonId,
         capabilities: [...DAEMON_RD_CAPABILITIES]
       })

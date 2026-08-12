@@ -10,7 +10,8 @@ const FULL_SPEC = {
   targetNamespace: 'test-ac-org-acme',
   displayName: 'Acme',
   suspend: false,
-  daemon: { image: 'registry.example.test/daemon:1', tier: 'standard', credentialSecretName: 'ac-daemon-token' },
+  daemon: { image: 'registry.example.test/daemon:1', tier: 'standard' },
+  controlPlane: { url: 'wss://api.example.test/daemon/ws' },
   runtime: { image: 'registry.example.test/runtime:1', tiers: [{ name: 'small', warmReplicas: 0 }] },
   quota: { maxAgents: 0, cpu: '0', memory: '0', storage: '0' },
   llmLimits: {
@@ -36,7 +37,10 @@ describe('AgentConnectOrg schemas', () => {
     // Unset is the normal path: the operator derives the namespace from the CR name.
     expect(parsed.targetNamespace).toBeUndefined()
     expect(parsed.suspend).toBe(false)
-    expect(parsed.daemon.credentialSecretName).toBe('ac-daemon-token')
+    // Absent is legal in the schema and reported as a warning by the pass that would
+    // stamp it: the operator cannot invent an address, and refusing the whole spec would
+    // take the rest of the envelope down with it.
+    expect(parsed.controlPlane).toBeUndefined()
     expect(parsed.runtime.tiers[0]?.warmReplicas).toBe(0)
     expect(parsed.quota).toEqual({ maxAgents: 0, cpu: '0', memory: '0', storage: '0' })
     expect(parsed.egressPolicy).toBe('curated')
