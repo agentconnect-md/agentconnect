@@ -47,7 +47,7 @@ interface Term {
 /**
  * Leader-gated control loop: the primary CR watch in the control namespace,
  * secondary Deployment/Pod watches mapped back to the owning CR (status
- * timeliness — CredentialReady must not wait for resync), the short follow-up
+ * timeliness — daemon readiness must not wait for resync), the short follow-up
  * a pass can ask for when its own reading was provisional, and the bounded
  * full-resync ticker that converges everything else. All term-scoped: losing
  * the lease aborts every watch and drains the queue.

@@ -1,14 +1,12 @@
 /**
- * The periodic half of the provisioner's cleanup — the backstop for the two
- * things it can owe the world after a request has already returned.
+ * The periodic half of the provisioner's cleanup — the backstop for the one
+ * thing it can owe the world after a request has already returned.
  *
  * Deleting an organization records its `AgentConnectOrg` for removal inside the
- * delete transaction, committing a credential records the rollout it still owes,
- * and retiring a daemon key records the revocation before attempting it. Every
- * path runs inline first for latency; this loop covers what inline cannot — an
- * unreachable cluster, a process that crashed between the record and the act, or
- * a deployment that had cluster execution switched off when the organization was
- * deleted and turned it on later.
+ * delete transaction, and the delete route retires it immediately; this loop
+ * covers what inline cannot — an unreachable cluster, a process that crashed
+ * between the record and the act, or a deployment that had cluster execution
+ * switched off when the organization was deleted and turned it on later.
  */
 import type { Clock, TimerHandle } from '../domain/clock.js'
 
@@ -19,8 +17,6 @@ export interface ClusterMaintenanceLog {
 
 export interface ClusterMaintenanceWork {
   drainTeardowns(): Promise<number>
-  drainCredentialRollouts(): Promise<number>
-  drainKeyRevocations(): Promise<number>
 }
 
 export class ClusterMaintenanceLoop {
@@ -58,10 +54,8 @@ export class ClusterMaintenanceLoop {
   }
 
   /**
-   * One pass over both queues. Each is attempted independently, so a cluster
-   * that refuses deletions still lets owed revocations through; errors are
-   * logged and swallowed, and every record survives for the next pass. Exposed
-   * for tests.
+   * One pass over the queue. Errors are logged and swallowed, and every record
+   * survives for the next pass. Exposed for tests.
    */
   async tick(): Promise<void> {
     this.timer = undefined
@@ -71,18 +65,6 @@ export class ClusterMaintenanceLoop {
         () => this.work!.drainTeardowns(),
         'cluster-execution: retired deleted organizations’ envelopes',
         'cluster-execution: envelope teardown drain failed'
-      )
-      // Before the revocations, not after: completing a rollout is what makes the
-      // keys it superseded revocable, so both settle in one pass.
-      await this.step(
-        () => this.work!.drainCredentialRollouts(),
-        'cluster-execution: applied credential revisions that never reached the cluster',
-        'cluster-execution: credential rollout drain failed'
-      )
-      await this.step(
-        () => this.work!.drainKeyRevocations(),
-        'cluster-execution: revoked superseded daemon keys',
-        'cluster-execution: daemon key revocation drain failed'
       )
     } finally {
       this.arm()

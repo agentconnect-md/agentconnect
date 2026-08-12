@@ -6,14 +6,15 @@
 // READS status live from the AgentConnectOrg resource — a stored field is never
 // presented as cluster truth.
 //
-// Three things it deliberately does not do:
+// Two things it deliberately does not do:
 //
-//  1. It never shows the daemon key. Issuing publishes the key into a cluster
-//     Secret and answers with a revision handle only, so there is nothing to
-//     reveal and no copy button to offer.
-//  2. It renders nothing where the deployment has no cluster configured. The
+//  1. It renders nothing where the deployment has no cluster configured. The
 //     whole surface 404s there, which is an absent feature, not an error.
-//  3. It is owner-only, like every other write on this page.
+//  2. It is owner-only, like every other write on this page.
+//
+// There is no credential surface: the envelope's daemon authenticates with the
+// ServiceAccount token the kubelet projects into its pod, so nothing is issued,
+// rotated, or shown here.
 
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import useSWR from 'swr'
@@ -21,7 +22,6 @@ import {
   ApiError,
   fetchClusterExecution,
   fetchClusterExecutionStatus,
-  issueClusterExecutionCredential,
   updateClusterExecution,
   type ClusterConditionDto,
   type ClusterEgressPolicy,
@@ -52,7 +52,6 @@ const ROW = 'flex flex-col gap-3 px-4 py-[15px] desktop:flex-row desktop:items-c
 const CONDITION_LABELS: Record<string, string> = {
   Ready: 'Ready',
   NamespaceReady: 'Namespace',
-  CredentialReady: 'Credential',
   LimitsApplied: 'Limits',
   Progressing: 'Progressing',
   Degraded: 'Degraded'
@@ -69,9 +68,7 @@ const EGRESS_POLICIES: { value: ClusterEgressPolicy; label: string; detail: stri
 
 /** The refusals this surface answers with, in the console's own words. */
 const REFUSALS: Record<string, string> = {
-  CLUSTER_NOT_ENABLED: 'Cluster execution is switched off for this organization.',
-  CLUSTER_NAMESPACE_NOT_READY: 'The envelope namespace does not exist yet. Try again once Namespace reads ready.',
-  CLUSTER_ROTATION_IN_PROGRESS: 'Another credential rotation is already running for this organization.'
+  CLUSTER_TRANSITION_IN_PROGRESS: 'Another change to this organization’s envelope is already running.'
 }
 
 function errorMessage(err: unknown): string {
@@ -103,13 +100,11 @@ export function ClusterExecutionCard({ orgId, isOwner }: { orgId: string | undef
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [disabling, setDisabling] = useState(false)
-  const [rotating, setRotating] = useState(false)
   const [configuring, setConfiguring] = useState(false)
 
   useEffect(() => {
     setError(null)
     setDisabling(false)
-    setRotating(false)
     setConfiguring(false)
   }, [orgId])
 
@@ -123,21 +118,6 @@ export function ClusterExecutionCard({ orgId, isOwner }: { orgId: string | undef
     try {
       await mutate(await updateClusterExecution(patch, orgId), { revalidate: false })
       setDisabling(false)
-    } catch (err) {
-      setError(errorMessage(err))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const issue = async () => {
-    if (!orgId || busy) return
-    setBusy(true)
-    setError(null)
-    try {
-      await issueClusterExecutionCredential(orgId)
-      setRotating(false)
-      await mutate()
     } catch (err) {
       setError(errorMessage(err))
     } finally {
@@ -206,31 +186,10 @@ export function ClusterExecutionCard({ orgId, isOwner }: { orgId: string | undef
               </div>
 
               <EnvelopeStatus status={status} error={statusError} />
-
-              <div className={`${ROW} border-t border-(--border-subtle)`}>
-                <div className="min-w-0 flex-1">
-                  <div className="font-sans text-[13px] font-medium leading-normal">Daemon credential</div>
-                  <div className={`${HELP} mt-[3px]`}>
-                    Published into the <span className="mono">{settings.credentialSecretName}</span>&#32;Secret in the
-                    envelope namespace. The key is never shown here; rotating recreates the daemon pod on the new one.
-                  </div>
-                </div>
-                <span className="mono truncate text-[11px] text-(--text-tertiary)">
-                  {settings.credentialRevision ?? 'Not issued'}
-                </span>
-                <Button
-                  variant="secondary"
-                  size="xs"
-                  disabled={busy}
-                  onClick={() => (settings.credentialRevision ? setRotating(true) : void issue())}
-                >
-                  {settings.credentialRevision ? 'Rotate' : 'Issue'}
-                </Button>
-              </div>
             </>
           )}
 
-          {error && !disabling && !rotating && (
+          {error && !disabling && (
             <div
               role="alert"
               className="border-t border-(--border-subtle) px-4 py-[13px] font-sans text-[12px] font-normal leading-normal text-(--status-error)"
@@ -251,23 +210,8 @@ export function ClusterExecutionCard({ orgId, isOwner }: { orgId: string | undef
           onConfirm={() => void save({ enabled: false })}
           onClose={() => (busy ? undefined : setDisabling(false))}
         >
-          The operator removes this organization&apos;s envelope — its namespace, its daemon, and every sandbox in it —
-          and the daemon credential is revoked. Agents placed there stop running until it is switched back on.
-        </ConfirmationDialog>
-      )}
-
-      {rotating && (
-        <ConfirmationDialog
-          title="Rotate the daemon credential?"
-          confirmLabel="Rotate"
-          busy={busy}
-          busyLabel="Rotating…"
-          error={error}
-          onConfirm={() => void issue()}
-          onClose={() => (busy ? undefined : setRotating(false))}
-        >
-          The new key is published before the old one is revoked, and the daemon pod is recreated on it. Turns running
-          at that moment are interrupted; the organization&apos;s agents, sessions, and history are kept.
+          The operator removes this organization&apos;s envelope — its namespace, its daemon, and every sandbox in it.
+          Agents placed there stop running until it is switched back on.
         </ConfirmationDialog>
       )}
 
@@ -374,8 +318,8 @@ function ConditionBadge({ condition }: { condition: ClusterConditionDto }) {
   )
 }
 
-/** The spec fields the control plane owns. The resource name and the Secret name
- *  are fixed at first enable, and the namespace is the operator's, so none is here. */
+/** The spec fields the control plane owns. The resource name is fixed at first
+ *  enable and the namespace is the operator's, so neither is here. */
 function ConfigureSheet({
   settings,
   orgId,

@@ -17,7 +17,7 @@ function orgOf(suspend: boolean): AgentConnectOrg {
     metadata: { name: 'acme', resourceVersion: '1', generation: 1, finalizers: [FINALIZER] },
     spec: {
       suspend,
-      daemon: { image: 'ghcr.io/example/daemon:v1', tier: 'small', credentialSecretName: 'ac-daemon-token' },
+      daemon: { image: 'ghcr.io/example/daemon:v1', tier: 'small' },
       runtime: { image: 'ghcr.io/example/runtime:v1', tiers: [] },
       quota: { maxAgents: 0, cpu: '0', memory: '0', storage: '0' },
       egressPolicy: 'curated',

@@ -257,9 +257,17 @@ _where_ the CRs live.
   label, truncated so the operator's `<prefix><CR name>` still fits in 63
   characters, and stored: it is the handle every later call addresses the
   envelope by. The control plane never writes `spec.targetNamespace`, so the
-  namespace is the operator's to derive; anything that needs it (the credential
-  Secret write) reads `status.namespace` off the CR. Server-side apply only
-  prunes fields this manager owns, so an override written by hand survives.
+  namespace is the operator's to derive and nothing here needs to know it — the
+  console reads `status.namespace` off the CR, and token verification checks the
+  namespace it was told against that same field. Server-side apply only prunes
+  fields this manager owns, so an override written by hand survives.
+- **One object, and nothing after it.** The control plane writes the CR and is
+  done: an in-cluster daemon presents its own projected token, so there is no
+  key to mint, publish, roll out or revoke, and no second interaction gated on
+  the namespace existing. The fencing token, cluster rotation sequence,
+  staged-before-published slots and held-revocation queue that path needed are
+  gone with it; what survives is the per-org transition claim below, which was
+  never about the credential.
 - Writes are server-side apply under field manager
   `agentconnect-control-plane`, so the operator's own manager is untouched;
   the control plane never writes `/status`, finalizers, or envelope objects.
@@ -279,23 +287,36 @@ _where_ the CRs live.
   predate the feature — without a reconciler sweeping the whole table.
   `ensureProvisioned` enables only an org with NO settings row: a row that reads
   disabled is an owner's decision, and re-applying would undo it. An org that is
-  enabled gets its spec re-applied (which recreates a CR that went missing) and,
-  once `status.namespace` is published, its first credential — the namespace not
-  existing yet at org-create time is the ordinary state, not a failure, and the
-  next visit finishes the job.
+  enabled gets its spec re-applied, which recreates a CR that went missing.
+  Returning IS the completion signal — a pass either applies the CR or throws,
+  and with nothing delivered afterwards there is no half-done state for a caller
+  to come back and finish. (The key path needed an explicit `settled` flag
+  because a namespace that did not exist yet, or a peer mid-rotation, left real
+  work owed by an otherwise successful pass.)
 - Every write bumps `specRevision`, and a write applies the CURRENT row and
   then re-reads that revision: two concurrent writers would otherwise be able to
   leave the row at one spec and the CR at an older one forever, since the
   operator reconciles the CR and nothing here re-reads on a timer.
+- Enabling, disabling, and the teardown drain take a leased per-org **transition
+  claim**, and it outlives the credential it was introduced for: those three
+  still create and destroy one envelope from three directions. The claim is what
+  stops a drain holding a stale tombstone from deleting the CR a re-enable just
+  created, so it is held across clearing the tombstone AND applying. A lease
+  rather than a lock, so a process that dies mid-transition cannot wedge the
+  envelope. `specRevision` cannot serve here: it fences competing SPEC values,
+  not the existence of the resource.
 - Deleting an organization **retires its envelope first**. Org deletion is
   refused while any daemon row survives — a RESTRICT-FK barrier rechecked inside
   the delete transaction — and that guard exists to make someone detach the
   physical machines explicitly. The envelope's daemon is not one of those: the
   control plane provisioned it, no Daemons page could be asked to detach it, and
   since provisioning now happens with the org, leaving it in the count would make
-  every organization undeletable. So the route excludes it from the guard,
-  switches cluster execution off (revoking the key and handing the envelope to
-  the finalizer), and removes it before the delete — through the same detach
+  every organization undeletable. It is recognized by its identity binding —
+  a daemon that authenticated with a projected token carries one and a machine
+  a human attached never does — plus, until its pod reconnects and adopts it,
+  the record a pre-token envelope was provisioned with. So the route excludes it
+  from the guard, switches cluster execution off (handing the envelope to the
+  finalizer), and removes it before the delete — through the same detach
   sequence `DELETE /daemons/:id` uses (`http/daemon-removal.ts`), because the
   delete can still answer 409 afterwards and what survives that must be an org
   whose agents are properly unplaced, not live-looking agents pointing at a
@@ -342,6 +363,20 @@ annotation that forced a Recreate on rotation, and the fencing token, cluster
 sequence, and staged-before-published machinery that existed because a publish
 could half-fail. Rotation is now the kubelet's business and happens roughly
 hourly with nobody informed.
+
+Removing the queue that owed those revocations is not the same as performing
+them — daemon keys never expire — so the migration that drops it revokes every
+key it still named, plus each envelope's committed and staged one. Deleting the
+last thing able to revoke a live credential without first revoking it is the one
+mistake this teardown could make.
+
+That migration renames two columns and drops six, so it is a **forward-only
+deployment boundary** (the precedent is resource-visibility.md's ownership
+drop): an older control-plane binary selects columns that no longer exist, and
+every read of `org_cluster_execution` fails for it — including the one that
+resolves an authenticating daemon's org. The window is a rolling update's drain
+and it self-heals as daemons reconnect to the new binary, but recovery is a
+forward fix, never an old-binary restart.
 
 **API keys do not go away.** A daemon on someone's laptop has no Kubernetes
 identity, so the key path stays exactly as it is; the token path is what an
@@ -413,6 +448,15 @@ Three properties this has to hold:
 - **The daemon stores nothing.** It no longer needs to persist the `daemonId` it
   adopts from `auth/ok`, because identity is re-derived from the token on every
   connect. The control plane may still report it for logs and telemetry.
+
+The one thing the key path leaves behind is that pointer, kept under an honest
+name (`legacyKeyDaemonId`) and never written again. An envelope provisioned
+before the token path has a daemon record carrying its placements and history
+and NO identity binding until its pod reconnects; the pointer is what the first
+authenticated connect adopts, and until then it is also how the org-delete guard
+knows that record is the control plane's own rather than a machine someone must
+detach. It retires when no envelope predates the token path — the binding it
+seeds is the durable answer.
 
 #### The two names both sides must agree on
 

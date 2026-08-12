@@ -17,7 +17,7 @@ function orgOf(name = 'acme', targetNamespace?: string): AgentConnectOrg {
     metadata: { name, resourceVersion: '1', deletionTimestamp: 'now', finalizers: [FINALIZER] },
     spec: {
       ...(targetNamespace ? { targetNamespace } : {}),
-      daemon: { image: 'x', tier: 'small', credentialSecretName: 'ac-daemon-token' },
+      daemon: { image: 'x', tier: 'small' },
       runtime: { image: 'x', tiers: [] },
       suspend: false,
       quota: { maxAgents: 0, cpu: '0', memory: '0', storage: '0' },

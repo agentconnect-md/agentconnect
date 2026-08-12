@@ -118,13 +118,13 @@ describe('ClusterDaemonIdentityService', () => {
     expect(store.adopt).toEqual([undefined])
   })
 
-  it('offers the key path’s pinned daemon for adoption, so an existing envelope keeps it', async () => {
+  it('offers the retired key path’s pinned daemon for adoption, so an existing envelope keeps it', async () => {
     const { svc, store } = await service({
       review: reviewed({
         audiences: [CP_TOKEN_AUDIENCE],
         username: clusterIdentityOf(NAMESPACE, ENVELOPE_DAEMON_SA_NAME)
       }),
-      settings: { ...SETTINGS, credentialDaemonId: DAEMON_ID }
+      settings: { ...SETTINGS, legacyKeyDaemonId: DAEMON_ID }
     })
     await svc.verify('token')
     expect(store.adopt).toEqual([DAEMON_ID])
