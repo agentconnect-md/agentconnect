@@ -1323,7 +1323,9 @@ describe('daemon durable inbox', () => {
       post: expect.objectContaining({
         postId: expect.any(String),
         conversationId,
-        author: { kind: 'agent', agentId: 'bot-a' },
+        // The replayed wake's CallMeta carried hopCount 1, and the commit stamps the
+        // authoring turn's depth on the post (webchat-multi-agents.md §5.2a).
+        author: { kind: 'agent', agentId: 'bot-a', hopCount: 1 },
         text: 'recovered browser reply',
         at: expect.any(Number)
       }),

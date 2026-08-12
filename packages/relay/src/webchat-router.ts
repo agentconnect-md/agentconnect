@@ -30,6 +30,46 @@ export interface CachedParticipant {
 // attached (webchat-multi-agents.md §5.2), only on it having been here recently.
 const ROSTER_CACHE_MAX = 4096
 
+/**
+ * Bind an `rd/webchat-post`'s authorship claim to the AUTHENTICATED daemon that sent
+ * it (webchat-multi-agents.md §5.2a; the webchat mirror of the `rd/agentmsg` rule that
+ * agent-call identity is bound by a trusted endpoint, never taken from the frame).
+ *
+ * The claim is bound when the outer and inner author fields agree
+ * (`post.agentId === post.post.author.agentId`), the claimed author is a CP-verified
+ * roster participant of this conversation, and that participant's verified placement
+ * is the daemon the frame arrived from. A stale or evicted roster cache fails closed.
+ *
+ * An UNBOUND claim is not dropped — a context copy was pre-§5.2a trust (transcript
+ * only), and transcripts already record whatever an authenticated daemon asserts. What
+ * an unbound claim may NOT carry onward is the activation-capable depth stamp: the
+ * returned post has `author.hopCount` stripped, so every receiving daemon treats it as
+ * transcript-only, and a forged author can never make peers execute under a
+ * `callFrom` the relay did not verify. The target daemon's own checks (call policy,
+ * hop budget, exactly-once) remain the terminal verification on the bound path.
+ */
+export function bindWebchatPostAuthor(
+  post: RdWebchatPost,
+  fromDaemonId: string,
+  roster: CachedParticipant[]
+): { post: RdWebchatPost; authorBound: boolean } {
+  const author = post.post.author
+  const placement = roster.find((p) => p.agentId === post.agentId)
+  const authorBound =
+    author.kind === 'agent' &&
+    author.agentId === post.agentId &&
+    placement !== undefined &&
+    placement.daemonId !== undefined &&
+    placement.daemonId === fromDaemonId
+  if (authorBound || author.kind !== 'agent' || author.hopCount === undefined) {
+    return { post, authorBound }
+  }
+  return {
+    authorBound,
+    post: { ...post, post: { ...post.post, author: { kind: 'agent', agentId: author.agentId } } }
+  }
+}
+
 export class WebchatRouter {
   private byChatId = new Map<string, ChatSink>()
   private rosterByChatId = new Map<string, CachedParticipant[]>()
