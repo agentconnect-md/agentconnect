@@ -1,8 +1,8 @@
 # Self-host AgentConnect and Logto behind Caddy HTTPS
 
 The default Compose stack is a loopback-only evaluation environment. Do not
-publish it directly to a LAN: without configured OIDC it uses development
-authentication, and its default credentials are intentionally local-only.
+publish it directly to a LAN: it does not include Logto sign-in, and its default
+credentials are intentionally local-only.
 
 The checked-in `compose.logto.https.yaml` overlay provides one supported LAN
 topology: AgentConnect is authenticated by the bundled Logto deployment, and
@@ -17,7 +17,7 @@ with the address or DNS name of the Docker host.
 | `https://192.0.2.10:1443/`        | Web console                   |
 | `https://192.0.2.10:1443/cp/*`    | Control Plane                 |
 | `https://192.0.2.10:1443/relay/*` | Relay HTTP and WebSocket      |
-| `https://192.0.2.10:1444/oidc/*`  | Logto OIDC issuer             |
+| `https://192.0.2.10:1444/*`       | Logto sign-in                 |
 | `http://localhost:8091`           | Setup, through an SSH tunnel  |
 | `http://localhost:3002`           | Logto Admin, through a tunnel |
 
@@ -57,15 +57,8 @@ AGENTCONNECT_RELAY_TOKEN=<random-token>
 Generate a different value for every credential. For example,
 `openssl rand -hex 32` produces values accepted by all four settings.
 
-The overlay derives all public URLs and this OIDC issuer from the host and
-ports:
-
-```text
-https://192.0.2.10:1444/oidc
-```
-
-Do not set a separate `OIDC_ISSUER`; the Logto HTTPS overlay supplies the value
-to the services that need it.
+The overlay derives the AgentConnect and Logto public URLs from these host and
+port settings. No additional identity-provider URL is required in `.env`.
 
 ## Validate the merged stack
 
@@ -95,7 +88,7 @@ docker compose \
   caddy validate --config /etc/caddy/Caddyfile
 ```
 
-## Bootstrap authentication
+## Set up Logto
 
 Start the stack with the loopback-only Setup route enabled:
 
@@ -139,10 +132,10 @@ Trust the Caddy root CA as described below, then open:
 - Setup: `http://localhost:8091`
 - Logto Admin: `http://localhost:3002`
 
-Complete the Logto Management API setup, save the OIDC deployment
-configuration, claim the first AgentConnect administrator, sign out, and sign
-in again. Confirm the Web console requires authentication and authenticated
-access succeeds before treating the deployment as ready.
+Complete the Logto Management API setup, save the Logto configuration, claim
+the first AgentConnect administrator, sign out, and sign in again. Confirm the
+Web console requires sign-in and the administrator can access it before
+treating the deployment as ready.
 
 After setup, omit `--profile setup` and recreate the stack. This removes the
 Setup container; its loopback Caddy route returns `502` until the profile is
