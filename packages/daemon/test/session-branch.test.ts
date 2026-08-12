@@ -59,16 +59,25 @@ describe('sessionBranchName', () => {
 })
 
 describe('the worktree branch git actually creates', () => {
+  // Carried explicitly: a CI runner configures no identity, and `git commit` refuses without one.
+  const env = {
+    ...process.env,
+    GIT_AUTHOR_NAME: 'Ada Lovelace',
+    GIT_AUTHOR_EMAIL: 'ada@example.invalid',
+    GIT_COMMITTER_NAME: 'Ada Lovelace',
+    GIT_COMMITTER_EMAIL: 'ada@example.invalid'
+  }
+
   /** A clone with an `origin/main` to start a worktree from, as an agent workspace has. */
   function clone() {
     const root = mkdtempSync(join(tmpdir(), 'ac-branch-repo-'))
     const origin = join(root, 'origin')
     const dir = join(root, 'clone')
-    execFileSync('git', ['init', '-q', '--bare', origin])
-    execFileSync('git', ['clone', '-q', origin, dir], { stdio: 'ignore' })
-    execFileSync('git', ['commit', '-q', '--allow-empty', '-m', 'init'], { cwd: dir })
-    execFileSync('git', ['push', '-q', 'origin', 'HEAD:main'], { cwd: dir })
-    execFileSync('git', ['fetch', '-q', 'origin'], { cwd: dir })
+    execFileSync('git', ['init', '-q', '--bare', origin], { env, stdio: 'ignore' })
+    execFileSync('git', ['clone', '-q', origin, dir], { env, stdio: 'ignore' })
+    execFileSync('git', ['commit', '-q', '--allow-empty', '-m', 'init'], { cwd: dir, env, stdio: 'ignore' })
+    execFileSync('git', ['push', '-q', 'origin', 'HEAD:main'], { cwd: dir, env, stdio: 'ignore' })
+    execFileSync('git', ['fetch', '-q', 'origin'], { cwd: dir, env, stdio: 'ignore' })
     return { root, dir }
   }
   const upstreamOf = (cwd: string) => {
@@ -89,6 +98,7 @@ describe('the worktree branch git actually creates', () => {
     // The exact command shape workspace-manager issues.
     execFileSync('git', ['worktree', 'add', '-b', branch, '--no-track', wt, 'refs/remotes/origin/main'], {
       cwd: dir,
+      env,
       stdio: 'ignore'
     })
 
