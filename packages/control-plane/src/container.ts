@@ -460,7 +460,10 @@ export function buildContainer(
           daemonImage: config.CLUSTER_DAEMON_IMAGE!,
           runtimeImage: config.CLUSTER_RUNTIME_IMAGE!,
           daemonTier: config.CLUSTER_DEFAULT_TIER,
-          runtimeTiers: [{ name: config.CLUSTER_DEFAULT_TIER, warmReplicas: 0 }],
+          // Falls back to the daemon tier only because that is what this was before the
+          // two were told apart; an install whose master templates are not named after
+          // the daemon tiers must set CLUSTER_DEFAULT_RUNTIME_TIER (see config/env.ts).
+          runtimeTiers: [{ name: config.CLUSTER_DEFAULT_RUNTIME_TIER ?? config.CLUSTER_DEFAULT_TIER, warmReplicas: 0 }],
           // The same URL onboarding renders into the `npx … run` command, so an
           // envelope daemon and a hand-run one dial exactly the same endpoint.
           controlPlaneUrl: daemonWsUrl(httpServerConfigFrom(config, { DEFAULT_OWNER_ID, relayStaleMs }))

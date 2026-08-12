@@ -251,9 +251,18 @@ const CoreConfigShape = {
   // name its own registry, and there is no safe default to guess.
   CLUSTER_DAEMON_IMAGE: z.string().optional(),
   CLUSTER_RUNTIME_IMAGE: z.string().optional(),
-  // Resource tier a new org's daemon and sandbox pool start on; must name a tier the
-  // operator install defines (its built-in table is small/medium/large).
-  CLUSTER_DEFAULT_TIER: z.string().default('small')
+  // Resource tier a new org's DAEMON starts on, from the operator's built-in table
+  // (small/medium/large). An unknown name there is survivable — the operator falls back
+  // to `small` and records a warning.
+  CLUSTER_DEFAULT_TIER: z.string().default('small'),
+  // Resource tier a new org's sandbox pool starts on. A DIFFERENT namespace from the
+  // daemon tier above, which is why it is a separate knob: a runtime tier names a master
+  // SandboxTemplate the operator install defines (`<AC_MASTER_TEMPLATE_PREFIX><tier>`),
+  // and one that names no master is not survivable — the operator skips the tier, so the
+  // org is created with no SandboxTemplate and no warm pool and can never launch a
+  // sandbox. Unset ⇒ CLUSTER_DEFAULT_TIER, which only lines up on an install whose
+  // master templates happen to be named after the daemon tiers.
+  CLUSTER_DEFAULT_RUNTIME_TIER: z.string().optional()
 } as const
 
 /**
