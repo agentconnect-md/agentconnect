@@ -16,6 +16,8 @@ import { fileBrowserGlyph } from '@/components/console/FileBrowser'
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
 // The CP's status separates an offline daemon (503) from one too old for session worktrees (409) and a session whose worktree the viewer cannot read (404); a consumer that wants those apart needs the number, not the flattened message.
 const statusOf = (e: unknown) => (e instanceof ApiError ? e.status : null)
+// ...and the status alone is not enough for one case: a sandbox that is asleep is a 503 like an offline daemon, and only the code tells them apart.
+const codeOf = (e: unknown) => (e instanceof ApiError ? (e.code ?? null) : null)
 
 /** Per-directory listing state, keyed by directory path ('' = workspace root). Loaded lazily: the root on mount, each folder on first expand. */
 export interface WorkspaceDirState {
@@ -28,6 +30,8 @@ export interface WorkspaceDirState {
   err: string | null
   /** That failure's HTTP status, when it had one. */
   errStatus: number | null
+  /** That failure's machine code, when the CP named one — the only thing separating a sandbox that is asleep from an offline daemon, since both are 503. */
+  errCode: string | null
   /** Append (Load more) failure — keeps the rows already loaded. */
   moreErr: string | null
 }
@@ -40,6 +44,7 @@ const LOADING_DIR: WorkspaceDirState = {
   loadingMore: false,
   err: null,
   errStatus: null,
+  errCode: null,
   moreErr: null
 }
 
@@ -74,7 +79,7 @@ export function useWorkspaceTree(agentId: string, sessionId?: string, refreshTic
   const loadDir = useCallback(
     (path: string) => {
       const gen = generation.current
-      patchDir(path, { loading: true, err: null, errStatus: null })
+      patchDir(path, { loading: true, err: null, errStatus: null, errCode: null })
       fetchWorkspaceFiles(agentId, { path, ...(sessionId ? { sessionId } : {}) }).then(
         (page) => {
           if (gen !== generation.current) return
@@ -88,13 +93,14 @@ export function useWorkspaceTree(agentId: string, sessionId?: string, refreshTic
               loadingMore: false,
               err: null,
               errStatus: null,
+              errCode: null,
               moreErr: null
             }
           }))
         },
         (e) => {
           if (gen !== generation.current) return
-          patchDir(path, { loading: false, err: msg(e), errStatus: statusOf(e) })
+          patchDir(path, { loading: false, err: msg(e), errStatus: statusOf(e), errCode: codeOf(e) })
         }
       )
     },
@@ -178,12 +184,14 @@ export function useWorkspaceTree(agentId: string, sessionId?: string, refreshTic
             loadingMore: false,
             err: null,
             errStatus: null,
+            errCode: null,
             moreErr: null
           }
         })
       },
       (e) => {
-        if (active()) setDirs({ '': { ...LOADING_DIR, loading: false, err: msg(e), errStatus: statusOf(e) } })
+        if (active())
+          setDirs({ '': { ...LOADING_DIR, loading: false, err: msg(e), errStatus: statusOf(e), errCode: codeOf(e) } })
       }
     )
     return () => {
@@ -195,8 +203,16 @@ export function useWorkspaceTree(agentId: string, sessionId?: string, refreshTic
   return { dirs, root: dirs[''], expanded, toggleDir, loadMoreDir, openPath }
 }
 
-/** What the scoped git status resolved to. `none` is a from-scratch workspace and `unavailable` an offline daemon or unplaced agent — a null status alone cannot tell those two apart. */
-export type WorkspaceGitOutcome = 'pending' | 'repo' | 'none' | 'unavailable'
+/** What the scoped git status resolved to. `none` is a from-scratch workspace, `asleep` a cluster agent whose sandbox is not running, and `unavailable` an offline daemon or unplaced agent — a null status alone cannot tell the three apart. `asleep` is its own outcome because it is the only one that resolves itself: the workspace is there and reachable again on the agent's next turn, so the copy must not read as an outage or as an empty checkout. */
+export type WorkspaceGitOutcome = 'pending' | 'repo' | 'none' | 'asleep' | 'unavailable'
+
+/** The CP's code for "this agent's sandbox is not running". A 503 like an offline daemon — the code is the only thing that separates the two, and a plain 503 keeps the offline story. */
+export const SANDBOX_ASLEEP_CODE = 'WORKSPACE_SANDBOX_UNAVAILABLE'
+
+/** Whether a failed workspace read was the sandbox being asleep rather than anything being wrong. */
+export function isSandboxAsleep(err: unknown): boolean {
+  return err instanceof ApiError && err.code === SANDBOX_ASLEEP_CODE
+}
 
 export interface WorkspaceGitRead {
   /** The live status, or null for a non-repo workspace, an offline daemon, and the window before the first answer. */
@@ -222,10 +238,10 @@ export function useWorkspaceGitStatus(agentId: string, sessionId?: string, refre
         setOutcome(s.isRepo ? 'repo' : 'none')
         if (!sessionId) setPrimaryBranch(s.isRepo ? s.branch : null)
       },
-      () => {
+      (e: unknown) => {
         if (!active) return
         setGit(null)
-        setOutcome('unavailable')
+        setOutcome(isSandboxAsleep(e) ? 'asleep' : 'unavailable')
         if (!sessionId) setPrimaryBranch(null)
       }
     )

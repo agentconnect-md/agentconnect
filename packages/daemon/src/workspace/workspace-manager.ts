@@ -212,6 +212,20 @@ export function sandboxWorkspaceMode(): boolean {
   return workspacesLiveInSandboxes
 }
 
+/**
+ * Whether this agent's workspace is on a sandbox volume that no bound channel can reach right now —
+ * a suspended pod, or one never launched.
+ *
+ * The per-agent resolution is the right question HERE, and the wrong one where placement is decided:
+ * {@link setSandboxWorkspaceMode} exists precisely because "is there a pod yet" must not choose which
+ * filesystem to clone into. A READ has no such hazard and this is exactly its question — the
+ * workspace is on the pod either way, so with no channel the honest answer is "not right now" rather
+ * than a listing of whatever sits at that path on this disk.
+ */
+export function sandboxWorkspaceUnreachable(agentId: string): boolean {
+  return workspacesLiveInSandboxes && resolveWorkspaceGitRunner?.(agentId) === undefined
+}
+
 /** Empty a path belonging to a cluster agent. A daemon with no clearer registered has no sandbox to
  *  reach, so there is nothing to empty — the local path never calls this. */
 async function clearSandboxPath(agentId: string, root: string): Promise<void> {

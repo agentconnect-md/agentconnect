@@ -11,7 +11,8 @@
  * diverged, would clobber local edits) are all normal REPs — the caller renders
  * them. So is every way a write can decline: nothing to stage, an empty index, no
  * registered commit identity, a detached HEAD, a branch with no upstream, a
- * rejected push. Only an unknown agentId or a path escaping the workspace throws
+ * rejected push. Only an unknown agentId, a path escaping the workspace, or a
+ * sandbox workspace with no channel to reach it throws
  * ({@link WorkspaceViolationError} → `BAD_PAYLOAD` + a machine-readable reason);
  * an unexpected git/fs failure propagates (→ `INTERNAL`). Git-provided text is
  * scrubbed of the absolute workspace path before it leaves the daemon (raw git
@@ -62,7 +63,11 @@ import {
   workspaceGitPullTarget,
   workspaceGitPushTarget
 } from '../workspace/git-injection.js'
-import { sandboxWorkspaceMode, workspaceGitRunnerFor } from '../workspace/workspace-manager.js'
+import {
+  sandboxWorkspaceMode,
+  sandboxWorkspaceUnreachable,
+  workspaceGitRunnerFor
+} from '../workspace/workspace-manager.js'
 import { type GitRunner } from '../workspace/git-runner.js'
 import { authorizeWorkspaceGitUrl } from '../workspace/git-origin-policy.js'
 import { canonicalWorkspacePath, containedWorkspacePath, WorkspaceViolationError } from './workspace-reader.js'
@@ -171,9 +176,19 @@ export function createWorkspaceGit(
   /** The daemon's model pass. Absent ⇒ the wand answers `ok:false` as data instead of pretending. */
   commitMessagePass?: CommitMessagePass
 ): WorkspaceGit {
+  // Every operation starts here, reads AND writes. Without the reachability half, an unbound cluster
+  // agent fell through to a daemon-local runner pointed at a path in the POD's coordinates: git
+  // failed, `isRepo` swallowed it, and the panel reported "not a git checkout" — the same wrong
+  // answer for a suspended pod that it used to give for a bound one.
   function rootFor(agentId: string, sessionId?: string): string {
     const root = workspaceRootByAgent(agentId, sessionId)
     if (!root) throw new WorkspaceViolationError(`unknown agent "${agentId}"`, 'unknown-agent')
+    if (sandboxWorkspaceUnreachable(agentId)) {
+      throw new WorkspaceViolationError(
+        `agent "${agentId}" has no running sandbox, so its workspace cannot be reached`,
+        'sandbox-unavailable'
+      )
+    }
     return root
   }
 
