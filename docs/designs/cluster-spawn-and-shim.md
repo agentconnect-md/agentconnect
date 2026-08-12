@@ -276,3 +276,49 @@ still goes, through the idle rule above, which is where the cost actually is.
 The delete is best-effort by construction: the durable local removal has already succeeded, and
 failing the lifecycle ACK over a leaked claim would leave the CP and the daemon disagreeing
 about whether the agent exists. A failure is reported with the command that finishes the job.
+
+## 9. Editing the workspace of an agent that already has a volume
+
+A workspace edit is a **replacement**: the console says so, and the local path implements it that
+way — clone beside the target, `renameSync` for an atomic swap, and a rollback that restores the
+previous tree if the activation is refused. None of those three exist through the shim, and the
+step that would need them runs at `agent/activate`, _before_ the CP has acknowledged the edit. So
+the cluster path splits the operation across the two places that can each do half of it.
+
+**Activation records an intent.** It writes the target materialization to a daemon-side file beside
+the marker and returns; it destroys nothing, which is what makes the CP's rollback able to undo it
+by simply activating the original definition again. The marker is deliberately not advanced —
+it says what the volume HOLDS, and preparation reads it back as attestation of the repository.
+
+**Preparation performs it,** inside the bound sandbox, from the pod's own side: empty the checkout,
+then materialize the configured workspace — a clone for a git-repo target, nothing for a scratch
+one, since the checkout's absence IS the scratch workspace. Emptying is fail-closed; a clear that
+did not happen would leave the previous repository's tree serving as the new workspace.
+
+The two disagreeing is what "still due" means, so retries are free and repeats impossible: a failed
+clone leaves an empty checkout that the next preparation clones again, and a marker that has
+advanced to the target ends the conversion whether or not the intent file was cleaned up. A rolled
+back edit takes its intent with it, and a repository **rename** — the same changed URL, arriving
+without `reconcileWorkspace` — writes no intent at all and keeps its existing behaviour of
+repointing the checkout rather than replacing it.
+
+**A rejected activation gives back nothing — and that is the point.** `ensureHostAsync` runs
+before the ACK, so preparation may already be replacing the volume when the activation is rejected
+— for an ACP failure, a supersession, or a staging-commit failure — and nothing reaches a pod's
+tree to undo it. Withdrawing the intent, or restoring the marker, would tell the CP's restored
+definition that nothing changed, and it would repoint the rejected tree and be ACKed onto it with
+a pull failure degrading quietly. Left standing, the pair says the volume is unattributable and
+whichever definition arrives next re-materializes it — so the recovery needs no rollback to run at
+all. A stale intent costs nothing: a marker that proves the target ends the conversion.
+
+**The marker is dropped before the checkout is, not after.** Everything between the two — the
+clone, its repo-local helper pin, the marker write itself — can fail, and every one of those leaves
+a volume holding the new tree that nothing has proved. A marker still naming the emptied workspace
+during that stretch is the same lie as restoring one, so it goes first and the destructive step is
+ordered after it. Which is also why the intent's PRESENCE is the gate rather than the workspace it
+names: at that point the volume matches no definition, and the one that arrives next is as likely
+to be the rollback as a retry of the edit.
+
+What this does not cover is a **session-isolated** (worktree) git-repo workspace: that needs
+`worktree add` in the sandbox and a retention GC that reads the pod's tree, and is still refused
+by name at session preparation.

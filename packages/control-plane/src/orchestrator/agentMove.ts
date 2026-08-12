@@ -504,7 +504,8 @@ export class AgentMoveService {
     agent: AgentRecord,
     bundle: MoveBundle,
     moveId: string,
-    after: string
+    after: string,
+    detail?: string
   ): Promise<void> {
     try {
       requireAck(
@@ -516,7 +517,12 @@ export class AgentMoveService {
         })
       )
     } catch (err) {
-      throw new AgentMoveFailClosed(`${after} and the original workspace could not be reactivated`, err)
+      // The rejection that started this is what an operator has to act on; the restoration failure
+      // is the reason it is fail-closed. Dropping the first left the message naming only the second.
+      throw new AgentMoveFailClosed(
+        `${after}${detail ? ` (${detail})` : ''} and the original workspace could not be reactivated`,
+        err
+      )
     }
   }
 
@@ -546,7 +552,18 @@ export class AgentMoveService {
         'workspace edit was rejected but the agent changed before rollback; manual recovery is required'
       )
     }
-    await this.restoreDetachedWorkspace(converted.daemonId!, original, bundle, moveId, 'workspace activation rejection')
+    // The RESTORED row, not the pre-edit copy: the rollback advanced its revision past the rejected
+    // edit's, and the daemon's fence refuses a bundle whose spec is not newer than the one it just
+    // applied. Replaying `original` therefore could not restore anything the target had accepted —
+    // every rejected edit ended fail-closed with the agent staged and offline.
+    await this.restoreDetachedWorkspace(
+      converted.daemonId!,
+      restored,
+      bundle,
+      moveId,
+      'workspace activation rejection',
+      reason
+    )
     await this.convergeDerived(restored, bundle.httpBotIds)
     throw new AgentMoveFailed(`workspace edit rejected${reason ? `: ${reason}` : ''}`)
   }

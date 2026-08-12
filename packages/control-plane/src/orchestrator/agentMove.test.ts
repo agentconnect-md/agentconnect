@@ -145,6 +145,7 @@ function make(
     changeBundleAfterFirstActivate?: boolean
     moveOwnershipAfterFirstActivate?: boolean
     rejectWorkspaceActivate?: boolean
+    rejectWorkspaceRestore?: boolean
     workspacePersistenceFailsBeforeCommit?: boolean
     workspacePersistenceFailsAfterCommit?: boolean
     unplaced?: boolean
@@ -179,7 +180,8 @@ function make(
         ...current,
         workspace,
         workspaceRepoId,
-        lastModifiedAt: new Date(current.lastModifiedAt.getTime() + 1)
+        lastModifiedAt: new Date(current.lastModifiedAt.getTime() + 1),
+        configRevision: current.configRevision + 1n
       }
       if (opts.workspacePersistenceFailsAfterCommit) throw new Error('database response lost')
       return current
@@ -193,11 +195,14 @@ function make(
       workspace: AgentRecord['workspace'],
       workspaceRepoId?: bigint
     ) => {
+      // Like the real rollback: it is an edit of its own, so it ADVANCES the revision rather than
+      // rewinding to the rejected edit's predecessor — which is what the target's fence compares.
       current = {
         ...current,
         workspace,
         workspaceRepoId,
-        lastModifiedAt: new Date(current.lastModifiedAt.getTime() + 1)
+        lastModifiedAt: new Date(current.lastModifiedAt.getTime() + 1),
+        configRevision: current.configRevision + 1n
       }
       return current
     },
@@ -209,6 +214,7 @@ function make(
     }
   } as unknown as AgentRepo
   const ack = (ok = true, reason?: string): Ack => ({ ok, ...(reason ? { reason } : {}) })
+  const appliedRevisions = new Map<string, bigint>()
   let targetDetachCount = 0
   const control = {
     agentDetach: async (daemonId: string, value: AgentDetach) => {
@@ -227,8 +233,20 @@ function make(
     agentActivate: async (daemonId: string, value: AgentActivate) => {
       calls.push(`activate:${daemonId}`)
       activations.push(value)
+      // The target's own revision fence, which the CP cannot see and must not violate: a bundle
+      // older than the one this daemon already applied activates stale credentials and is refused.
+      // A rejected activation still leaves its spec applied, so a rollback has to be newer.
+      const incoming = BigInt(value.spec.configRevision ?? '0')
+      const seen = appliedRevisions.get(daemonId) ?? -1n
+      if (incoming < seen) {
+        return ack(false, `agent/activate: spec revision ${incoming} is not newer than the applied configuration`)
+      }
+      appliedRevisions.set(daemonId, incoming)
       if (value.reconcileWorkspace && opts.rejectWorkspaceActivate && activations.length === 1) {
         return ack(false, 'clone failed')
+      }
+      if (value.reconcileWorkspace && opts.rejectWorkspaceRestore && activations.length === 2) {
+        return ack(false, 'workspace is not empty')
       }
       if (daemonId === TARGET && activations.filter((a) => a.agentId === AGENT).length === 1) {
         if (opts.changeBundleAfterFirstActivate) cronRows = [{ ...cron, schedule: '5 * * * *' }]
@@ -367,8 +385,12 @@ describe('AgentMoveService', () => {
   it('rolls the database and daemon back to scratch after a known clone rejection', async () => {
     const t = make({ rejectWorkspaceActivate: true })
 
+    // The rejection itself, not a fail-closed report of a rollback that never landed. The daemon
+    // keeps the applied revision of the bundle it rejected, so restoring the pre-edit ROW would be
+    // refused as stale — and the agent would stay staged and offline with its edit undone in the
+    // database only. The reason the daemon gave rides along, or an operator sees neither failure.
     await expect(t.service.setWorkspace(t.current(), GITHUB_WORKSPACE, WORKSPACE_REPO_ID)).rejects.toThrow(
-      AgentMoveFailed
+      'workspace edit rejected: clone failed'
     )
     expect(t.current().workspace).toEqual({ mode: 'scratch' })
     expect(t.activations).toHaveLength(2)
@@ -379,6 +401,19 @@ describe('AgentMoveService', () => {
       isolation: 'shared',
       gitCredential: 'github-app'
     })
+    expect(BigInt(t.activations[1]!.spec.configRevision!)).toBeGreaterThan(
+      BigInt(t.activations[0]!.spec.configRevision!)
+    )
+  })
+
+  it('reports both failures when the restoration is refused too', async () => {
+    // Fail-closed is the right outcome once the original workspace cannot be brought back — but the
+    // message an operator reads has to name the rejection that started it, which was dropped.
+    const t = make({ rejectWorkspaceActivate: true, rejectWorkspaceRestore: true })
+
+    await expect(t.service.setWorkspace(t.current(), GITHUB_WORKSPACE, WORKSPACE_REPO_ID)).rejects.toThrow(
+      'workspace activation rejection (clone failed) and the original workspace could not be reactivated'
+    )
   })
 
   it('continues from durable GitHub state when the persistence response is lost after commit', async () => {

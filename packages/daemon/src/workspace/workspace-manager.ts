@@ -109,6 +109,7 @@ async function withSkills(agent: Agent, acpCwd: string, opts: PrepareWorkspaceOp
 const PULL_TIMEOUT_MS = 4500
 const REVIEW_FETCH_TIMEOUT_MS = 15_000
 const MATERIALIZATION_FILE = 'workspace-materialization.json'
+const CONVERSION_FILE = 'workspace-conversion.json'
 /** Word-pair branch names to try before falling back to a random suffix. */
 const SESSION_BRANCH_DRAWS = 5
 const GIT_OBJECT_ID = /^[0-9a-f]{40,64}$/i
@@ -212,6 +213,13 @@ async function clearSandboxPath(agentId: string, root: string): Promise<void> {
   if (error) {
     workspaceLog.warn(`workspace: could not empty ${root} for agent "${agentId}" after a failed clone (${error})`)
   }
+}
+
+/** Empty a cluster path the caller cannot proceed without. A conversion that kept the old checkout
+ *  would clone into a non-empty directory, or converge the new origin onto the previous tree. */
+async function requireEmptiedSandboxPath(agentId: string, root: string): Promise<void> {
+  const error = await clearWorkspacePathInSandbox?.(agentId, root).catch((err: unknown) => (err as Error).message)
+  if (error) throw new Error(`workspace: could not replace ${root} for agent "${agentId}" (${error})`)
 }
 
 /** The same resolution for git run OUTSIDE this module — the console's workspace git seam. Exported
@@ -335,6 +343,63 @@ function readMaterialization(agent: Agent): string | undefined {
   }
 }
 
+/**
+ * That an edit asked this agent's POD volume to be replaced, and which workspace it asked for.
+ *
+ * A cluster conversion cannot happen where every other one does. The tree is in the pod, the shim
+ * offers no rename and no rollback, and activation runs before the edit is even acknowledged — so
+ * activation records the intent here and the pod's own preparation carries it out, inside a bound
+ * sandbox, where a failed clone is retried like any other. It is deliberately NOT the marker: the
+ * marker says what the volume HOLDS, and this says the volume is due to stop holding it.
+ *
+ * It also separates a conversion from a repository RENAME, which reaches this daemon as the same
+ * changed URL but asks for the opposite treatment — repoint the checkout, never replace it. Only a
+ * `reconcileWorkspace` activation writes this file, and a rename does not carry one.
+ *
+ * Its PRESENCE is what gates the replacement; the key it records is for diagnosis. A conversion
+ * that cannot be attributed to a workspace is still a conversion — the volume is unattributable
+ * from the moment its checkout is emptied until preparation proves the new one.
+ */
+function conversionFile(agent: Agent): string {
+  const cwd = agent.workspace.path
+  return join(dirname(cwd), `.${basename(cwd)}.${CONVERSION_FILE}`)
+}
+
+function readPendingConversion(agent: Agent): string | undefined {
+  try {
+    const value = JSON.parse(readFileSync(conversionFile(agent), 'utf8')) as { key?: unknown }
+    return typeof value.key === 'string' ? value.key : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function writePendingConversion(agent: Agent, key: string | undefined): void {
+  const file = conversionFile(agent)
+  if (key === undefined) {
+    rmSync(file, { force: true })
+    return
+  }
+  mkdirSync(dirname(file), { recursive: true })
+  writeFileSync(file, JSON.stringify({ version: 1, key }, null, 2) + '\n')
+}
+
+/**
+ * Whether the pod still has to replace its checkout: a replacement was asked for, and the marker
+ * does not prove the volume already holds what this preparation is for.
+ *
+ * Deliberately not "the intent names THIS workspace". A conversion that emptied the checkout and
+ * then failed — a clone that threw, its helper pin, even the marker write — leaves a volume no
+ * marker can describe, and the definition that arrives next is as likely to be the CP's rollback as
+ * a retry of the edit. Either one has to re-materialize, so presence is the gate and the marker is
+ * the release: it is written only when preparation proved the volume, which is also when the intent
+ * is cleared. That makes a leftover intent inert rather than a repeated wipe.
+ */
+function clusterConversionDue(agent: Agent, stored: string | undefined, target: string): boolean {
+  if (sameMaterialization(agent, stored, target)) return false
+  return readPendingConversion(agent) !== undefined
+}
+
 function sameMaterialization(agent: Agent, previous: string | undefined, target: string): boolean {
   if (previous === target) return true
   if (!usesGithubApp(agent) || previous === undefined) return false
@@ -386,6 +451,13 @@ export async function convergeGithubAppWorkspaceRename(agent: Agent): Promise<vo
  * while the checkout still belongs to the recorded source. */
 export function ensureWorkspaceMaterialization(agent: Agent): void {
   if (!existsSync(materializationFile(agent))) recordWorkspaceMaterialization(agent)
+}
+
+/** Say that nothing is known about the volume, for the stretch where nothing IS: a cluster
+ *  conversion between emptying the checkout and proving its replacement. Throws rather than
+ *  leaving a stale marker behind — the destructive step is ordered after it for that reason. */
+function forgetWorkspaceMaterialization(agent: Agent): void {
+  rmSync(materializationFile(agent), { force: true })
 }
 
 function restoreWorkspaceMaterialization(agent: Agent, key: string | undefined): void {
@@ -860,19 +932,42 @@ export async function prepareClusterWorkspace(
   request?: Pick<PrepareSessionWorkspaceRequest, 'isolation'>
 ): Promise<string> {
   const acpCwd = clusterWorkspaceCwd(agent, runtimeRoot, request)
-  if (agent.workspace.mode === 'from-scratch') return acpCwd
+  const root = runtimeRoot ?? DEFAULT_SHIM_WORKSPACE_ROOT
+  const checkout = join(root, SANDBOX_CHECKOUT_DIR)
+  const targetMarker = materializationKey(agent)
+  const stored = readMaterialization(agent)
+  // The acknowledged edit's replacement, executed here because this is the only code that reaches
+  // the volume. Emptying the checkout IS the replacement: a git-repo target then clones below, and a
+  // from-scratch one is simply the absence of it. Fail-closed — a clear that did not happen would
+  // otherwise leave the previous repository's tree serving as the new workspace.
+  //
+  // The marker is dropped FIRST, and that order is the whole safety property. Everything from the
+  // clear to the proof can fail — the clone, its helper pin, the marker write itself — and a marker
+  // left describing the emptied workspace would tell the CP's rollback that nothing changed, so it
+  // would repoint the rejected tree and ACK an agent running the wrong repository. Unproven instead:
+  // whichever definition arrives next re-materializes the volume before anything runs on it.
+  const conversionDue = clusterConversionDue(agent, stored, targetMarker)
+  if (conversionDue) {
+    forgetWorkspaceMaterialization(agent)
+    await requireEmptiedSandboxPath(agent.id, checkout)
+  }
+
+  if (agent.workspace.mode === 'from-scratch') {
+    // Provable by construction: the checkout is gone, so the volume holds exactly the scratch
+    // workspace the configuration asks for. Recording it is what ends the conversion.
+    if (conversionDue) recordMaterializationBestEffort(agent)
+    return acpCwd
+  }
   // Validated at the execution boundary, exactly as the local path does: a hand-edited agent.json
   // must not turn daemon-managed git into a local-path or remote-helper launcher.
   const repository = gitRepoOf(agent)
-  const root = runtimeRoot ?? DEFAULT_SHIM_WORKSPACE_ROOT
-  const checkout = join(root, SANDBOX_CHECKOUT_DIR)
   const githubApp = usesGithubApp(agent)
 
   // Whether the volume can be PROVEN to hold what the marker would claim. A fresh clone can, by
   // construction (`--branch` at clone time). An existing one has to be interrogated.
   let volumeMatchesConfig = false
-  const targetMarker = materializationKey(agent)
-  const repositoryAttested = markerAttestsRepository(readMaterialization(agent), targetMarker)
+  // A conversion just emptied the checkout, so nothing the old marker attested survives it.
+  const repositoryAttested = !conversionDue && markerAttestsRepository(stored, targetMarker)
   if (!(await clusterCheckoutExists(agent.id, checkout))) {
     await cloneRepoInSandbox(agent, root, repository)
     volumeMatchesConfig = true
@@ -938,16 +1033,22 @@ export async function prepareClusterWorkspace(
     )
     return acpCwd
   }
-  // Best-effort from here: the volume IS prepared, and failing a session over bookkeeping would
-  // trade a stale marker for no session at all.
+  recordMaterializationBestEffort(agent)
+  return acpCwd
+}
+
+/** Cluster preparation's marker write: best-effort, because the volume IS prepared and failing a
+ *  session over bookkeeping would trade a stale marker for no session at all. The pending
+ *  conversion goes with it — the marker now says the volume holds what the edit asked for. */
+function recordMaterializationBestEffort(agent: Agent): void {
   try {
     recordWorkspaceMaterialization(agent)
+    writePendingConversion(agent, undefined)
   } catch (err) {
     workspaceLog.warn(
       `workspace: could not record the materialization marker for agent "${agent.id}" (${(err as Error).message})`
     )
   }
-  return acpCwd
 }
 
 /**
@@ -1036,6 +1137,14 @@ export function additionalWorkspaceDirectories(
   request?: Pick<PrepareSessionWorkspaceRequest, 'sessionKey' | 'isolation'>
 ): string[] {
   if (agent.workspace.mode !== 'git-repo') return []
+  if (workspacesLiveInSandboxes) {
+    // `cwd` is in the POD's coordinates, which this daemon cannot `realpathSync` — the path exists
+    // on no filesystem it can see, so the check below throws on the workspace it was handed. Undo
+    // the lexical join `clusterWorkspaceCwd` made instead; the shim re-checks containment itself.
+    const agentDir = normalizeRepoSubdir(agent.workspace.agentDir)
+    if (agentDir === undefined) return []
+    return [agentDir.split('/').reduce((path) => dirname(path), cwd)]
+  }
   const expectedRoot =
     request?.isolation === 'session' ? sessionWorktreePath(agent, request.sessionKey) : agent.workspace.path
   const root = realpathSync(expectedRoot)
@@ -1122,32 +1231,37 @@ export async function prepareWorkspaceForActivation(
     if (reconcileMaterialization) restoreWorkspaceMaterialization(agent, previousMaterialization)
   }
 
-  // A cluster agent's checkout is on its pod volume, so this function has nothing local to do —
-  // and, for the one case that would need to do something, no way to do it safely.
+  // A cluster agent's checkout is on its pod volume, so this function has nothing local to do — and
+  // the one case that would need to do something, replacing an existing checkout, cannot be done
+  // from here at all: it needs a staged clone beside the target, `renameSync` for an atomic swap,
+  // `readdirSync` to prove the destination is still empty, and a rollback that restores the previous
+  // tree. The shim offers none of those, and this runs BEFORE the CP has acknowledged the edit, so
+  // anything destructive here would have to survive a rollback that cannot restore it.
   //
-  // The distinction is REPLACING AN EXISTING CHECKOUT versus everything else, because only the
-  // former needs the contract a pod cannot offer: a staged clone beside the target, `renameSync`
-  // for an atomic swap, `readdirSync` to prove the destination is still empty at the boundary, and
-  // a rollback that restores the previous tree. The shim can write and clear — not rename, list or
-  // stat — so that is refused, and pointedly not the rest: activation is ALSO how a rejected edit
-  // is rolled back, how a staged agent is recovered, and how a same-workspace repair runs, each
-  // arriving here with `reconcileWorkspace` set. Refusing those left an agent staged and offline,
-  // because the rollback's own restoration hit the refusal too.
+  // So activation records the intent and returns. `prepareClusterWorkspace` carries it out on the
+  // volume — after the acknowledgement, inside a bound sandbox, where a failed clone is retried like
+  // any other and an empty checkout is the recovery state, not a lost one.
   //
-  // Everything else is a no-op that keeps the marker honest. Session preparation is what converges
-  // the volume — origin, helper pin, pull — and it runs before the runtime sees the workspace.
-  if (workspacesLiveInSandboxes && agent.workspace.mode === 'git-repo') {
-    if (replace && previousMaterialization !== undefined) {
-      throw new Error(
-        `a git-repo workspace cannot be converted in place with --k8s yet (agent "${agent.id}") — ` +
-          `recreate the agent to provision a fresh volume`
-      )
+  // The marker is deliberately NOT advanced. For a cluster agent it means "the volume held this",
+  // and writing the TARGET here would say it about a volume nothing has inspected — which cluster
+  // preparation then reads back as proof of the repository, in a circle. Seeding at detach is a
+  // different thing and stays: it names the definition the agent has been RUNNING on.
+  if (workspacesLiveInSandboxes) {
+    // Set, never taken back — not by the else branch of this condition, and not by the rollback
+    // below, which is why there is nothing to roll back. `ensureHostAsync` runs before the ACK, so
+    // preparation may already be replacing the volume when this activation is rejected, and no
+    // rollback reaches a pod's tree to undo it. Withdrawing the intent (or restoring the marker)
+    // there would tell the CP's restored definition that nothing changed, and it would be ACKed onto
+    // the rejected tree. Left standing, the pair says the volume is unattributable and whichever
+    // definition arrives next re-materializes it — so recovery needs no rollback to run at all.
+    // A stale intent costs nothing: a marker that proves the target ends the conversion.
+    //
+    // No previous marker means no proven volume to replace, so nothing is asked for — the pod either
+    // has no checkout, which preparation clones, or has one that convergence fixes.
+    if (reconcileMaterialization && replace && previousMaterialization !== undefined) {
+      writePendingConversion(agent, targetMaterialization)
     }
-    // Deliberately does NOT record. For a cluster agent the marker means "the volume held this", and
-    // writing the TARGET here would say it about a volume nothing has inspected — which cluster
-    // preparation then reads back as proof of the repository, in a circle. Seeding at detach is a
-    // different thing and stays: it names the definition the agent has been RUNNING on.
-    return restoreMarker
+    return () => {}
   }
   mkdirSync(cwd, { recursive: true })
 
