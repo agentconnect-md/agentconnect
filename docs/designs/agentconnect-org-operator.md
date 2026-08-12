@@ -228,11 +228,25 @@ renders its own release-prefixed copies from its own constants (Kubernetes
 ## 6. Control-plane provisioner
 
 The CR writer is control-plane code (`packages/control-plane/src/cluster/`),
-opt-in through `CLUSTER_EXECUTION_MODE` (`off` | `in-cluster` | `kubeconfig`);
-off is the default and mounts nothing. It is deliberately the SAME path for a
-self-hosted cluster install and a hosted deployment — only the policy inputs
-differ (`CLUSTER_ORG_NAMESPACE_PREFIX`, which must equal the operator install's
+opt-in through `CLUSTER_EXECUTION_ENABLED`; off is the default and mounts
+nothing. It is deliberately the SAME path for a self-hosted cluster install and
+a hosted deployment — only the policy inputs differ
+(`CLUSTER_ORG_NAMESPACE_PREFIX`, which must equal the operator install's
 `AC_ORG_NAMESPACE_PREFIX`, plus the default images and tier).
+
+**One switch, and no credentials to configure.** The switch is explicit — a
+control plane that merely happens to run on Kubernetes must not start claiming
+an operator install — but nothing beyond it is a knob: turning it on _asserts_
+that this control plane runs inside the cluster it provisions, so the credential
+is the pod's projected ServiceAccount and the control namespace is the pod's own.
+A process that is not in a pod fails at boot rather than at its first write.
+
+There is deliberately no out-of-cluster mode. An API server plus a token, or a
+kubeconfig, would each be a second deployment shape to keep correct — and since
+the control plane and the operator are installed together, a control plane that
+cannot reach its own ServiceAccount is misconfigured rather than differently
+configured. It also removes the one way the two halves could disagree about
+_where_ the CRs live.
 
 - `org_cluster_execution` (one row per org) holds only the spec fields the
   control plane owns. Status is never mirrored there: the console reads it live
@@ -251,10 +265,40 @@ differ (`CLUSTER_ORG_NAMESPACE_PREFIX`, which must equal the operator install's
   `enabled: false` deletes the CR and hands the envelope to the finalizer, while
   `suspend` quiesces without tearing down. `GET …/cluster-execution/status`
   projects the operator's conditions and summaries.
+- **An envelope is part of what an organization is**, so it is provisioned with
+  the org rather than waiting for an owner to find a toggle: `POST /orgs` calls
+  `ensureProvisioned` after the create commits, best-effort — an unreachable
+  cluster must not fail a creation that already landed. That covers only the
+  orgs born on that route, and a personal org minted by JIT signup or a waitlist
+  redeem is created in repository code that has no business knowing about
+  Kubernetes. So `POST …/cluster-execution/ensure` (owner-only, idempotent) is
+  the same operation as a request, and the console's Daemons page fires it once
+  per org per session. Between them, every org converges — including ones that
+  predate the feature — without a reconciler sweeping the whole table.
+  `ensureProvisioned` enables only an org with NO settings row: a row that reads
+  disabled is an owner's decision, and re-applying would undo it. An org that is
+  enabled gets its spec re-applied (which recreates a CR that went missing) and,
+  once `status.namespace` is published, its first credential — the namespace not
+  existing yet at org-create time is the ordinary state, not a failure, and the
+  next visit finishes the job.
 - Every write bumps `specRevision`, and a write applies the CURRENT row and
   then re-reads that revision: two concurrent writers would otherwise be able to
   leave the row at one spec and the CR at an older one forever, since the
   operator reconciles the CR and nothing here re-reads on a timer.
+- Deleting an organization **retires its envelope first**. Org deletion is
+  refused while any daemon row survives — a RESTRICT-FK barrier rechecked inside
+  the delete transaction — and that guard exists to make someone detach the
+  physical machines explicitly. The envelope's daemon is not one of those: the
+  control plane provisioned it, no Daemons page could be asked to detach it, and
+  since provisioning now happens with the org, leaving it in the count would make
+  every organization undeletable. So the route excludes it from the guard,
+  switches cluster execution off (revoking the key and handing the envelope to
+  the finalizer), and removes it before the delete — through the same detach
+  sequence `DELETE /daemons/:id` uses (`http/daemon-removal.ts`), because the
+  delete can still answer 409 afterwards and what survives that must be an org
+  whose agents are properly unplaced, not live-looking agents pointing at a
+  daemon that no longer exists. A cluster that refuses the disable does not fail
+  the deletion — the tombstone below is what teardown actually hangs on.
 - Deleting an organization records its envelope in `pending_envelope_teardown`
   **inside the delete transaction**, because the cascade removes the only copy
   of its `resourceName` and after that nothing could name the resource, namespace

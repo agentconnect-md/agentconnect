@@ -35,6 +35,7 @@ import {
 import type { DaemonViewDtoT } from '../dto/index.js'
 import type { DaemonLifecycleOpRecord, DaemonLifecycleOpRepo } from '../../persistence/ports.js'
 import { provisionDaemonConnect } from '../onboarding.js'
+import { detachDaemon } from '../daemon-removal.js'
 import { Tag } from '../plugins/openapi.js'
 
 /** Drain + (install +) relaunch + re-register budget for a CP-commanded lifecycle op.
@@ -336,45 +337,10 @@ export function daemonRoutes(deps: HttpDeps) {
             .code(409)
             .send({ error: 'Conflict', statusCode: 409, message: 'daemon is online; take it offline before deleting' })
         }
-        // Capture the placed agents BEFORE the delete: the agent FK is SetNull,
-        // so their placement silently clears with the row.
-        const placedAgents = await deps.repos.agent.listForDaemon(DaemonId(req.params.id))
-        // Unplace them EXPLICITLY first. The FK's SetNull clears `daemonId` in the DB
-        // but never touches `Agent.status` — `setPlacement` is the only writer that
-        // pairs the two — so a delete alone leaves `daemonId: null, status: 'active'`
-        // and every reader (console badge, `status !== 'active'` gates) sees a live
-        // agent with nowhere to run. Going through the repo also revokes the agents'
-        // webchat MCP delegations and bumps their hook dispatchRevision, exactly as an
-        // operator-initiated unplacement would.
-        for (const a of placedAgents) await deps.repos.agent.setPlacement(a.id, null)
-        await deps.registry.remove(orgOf(req), DaemonId(req.params.id))
-        // The daemon (and its FK-cascaded keys) is gone — tell relays to drop it (§9).
-        deps.relayControl.daemonRevoke(req.params.id)
-        // Its agents just became UNPLACED (Agent.daemonId is SetNull), so they leave the
-        // collaboration snapshot — but only if we push one. Every other holder of the
-        // snapshot (relay + the remaining daemons) otherwise keeps flat `agents[]` entries
-        // naming this dead daemonId, and `admits()` keeps admitting wakes the relay can only
-        // answer 'offline' to. Best-effort, after the row is already gone; `register/ok`
-        // carries the corrected directory as the reconnect backstop.
-        if (placedAgents.length > 0) {
-          try {
-            await deps.collabRoutes.broadcast(existing.orgId)
-          } catch (err) {
-            req.log.warn(
-              { err, daemonId: req.params.id, orgId: existing.orgId },
-              'collaboration routes push failed after daemon delete (backstop: reconnect snapshot)'
-            )
-          }
-        }
-        // Re-converge the unplaced agents' hook rules NOW: their compiled rules
-        // still name the dead daemonId in every relay's table and would fail
-        // each delivery with daemon_offline until a relay re-register replay.
-        // Unplaced ⇒ compile() returns null ⇒ pool-wide hook-remove.
-        for (const a of placedAgents) {
-          void deps.hooks
-            .rebroadcastForAgent(a.id)
-            .catch((err) => req.log.warn({ agentId: a.id, err }, 'daemon delete: hook re-converge failed'))
-        }
+        // Unplacement, relay revoke, collaboration push and hook re-converge —
+        // the whole sequence, shared with organization deletion (which retires
+        // the cluster envelope's own daemon) so the two cannot drift apart.
+        await detachDaemon(deps, orgOf(req), DaemonId(req.params.id), req.log)
         return reply.code(204).send(null)
       }
     )

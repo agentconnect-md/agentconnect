@@ -1,7 +1,8 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { ApiError, ensureClusterExecution } from '@/lib/api'
 import { presentedDaemonStatus, status, type DaemonRow } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { useModal } from '@/components/console/ModalProvider'
@@ -11,9 +12,63 @@ import { LoadingState } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
 
+/**
+ * Orgs this tab is done checking, so opening Daemons repeatedly costs one
+ * request per organization rather than one per navigation. Module-level rather
+ * than state: the view unmounts on every route change.
+ *
+ * An org lands here only on `settled`, which the server answers explicitly. No
+ * settings field can stand in for it: `credentialRevision` is populated while
+ * the operator is still publishing the namespace AND all through a rotation
+ * recovery a peer currently owns, and both are exactly the cases the next visit
+ * is supposed to finish. Reading one of those as done would strand the daemon
+ * uncredentialed until a full page reload.
+ */
+const settledOrgs = new Set<string>()
+
+/** Orgs with a request in flight — the effect re-runs on remount and under
+ *  React's development double-invoke, and neither should send a second one. */
+const ensuringOrgs = new Set<string>()
+
+/**
+ * Where the deployment runs managed execution, this page is the convergence
+ * point for an org that has no AgentConnectOrg yet — one created before this
+ * deployment, or outside `POST /orgs` (a JIT personal org, a waitlist redeem).
+ * The endpoint is idempotent and never re-enables an org whose owner switched
+ * cluster execution off, so the visit is safe to repeat.
+ *
+ * Failure is silent by design: someone who came here to look at daemons does not
+ * need to hear about it. It is not, however, forgotten — only a refusal that
+ * cannot change on a revisit stops the retry: 404 (this deployment has no
+ * cluster at all) and 403 (not this caller's to do). The daemon list is
+ * refreshed after a check, because issuing the credential is what registers the
+ * envelope's daemon.
+ */
+function useEnsureClusterEnvelope(orgId: string | undefined, isOwner: boolean, refreshDaemons: () => Promise<void>) {
+  useEffect(() => {
+    if (!orgId || !isOwner || settledOrgs.has(orgId) || ensuringOrgs.has(orgId)) return
+    ensuringOrgs.add(orgId)
+    let live = true
+    void ensureClusterExecution(orgId)
+      .then((result) => {
+        if (result.settled) settledOrgs.add(orgId)
+        return live ? refreshDaemons() : undefined
+      })
+      .catch((err: unknown) => {
+        if (err instanceof ApiError && (err.status === 404 || err.status === 403)) settledOrgs.add(orgId)
+      })
+      .finally(() => ensuringOrgs.delete(orgId))
+    return () => {
+      live = false
+    }
+  }, [orgId, isOwner, refreshDaemons])
+}
+
 export default function DaemonsView() {
-  const { daemons, daemonsLoading, agents } = useConsoleData()
+  const { daemons, daemonsLoading, agents, refreshDaemons } = useConsoleData()
   const { openModal } = useModal()
+  const { activeOrg, myRole } = useOrgs()
+  useEnsureClusterEnvelope(activeOrg?.id, myRole === 'owner', refreshDaemons)
 
   // Hosted-agent count per daemon — agents assigned to it (mirrors the detail
   // view's "Agents hosted"). NOT daemon.agents, which is the active-session count.

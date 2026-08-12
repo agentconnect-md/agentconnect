@@ -57,6 +57,20 @@ export interface ClusterExecutionPolicy {
   controlPlaneUrl: string
 }
 
+/**
+ * The outcome of one `ensureProvisioned` pass. `settled: false` means the
+ * envelope still owes work this pass could not do — the operator has not
+ * published the namespace yet, or a peer owns the credential transition — and
+ * the caller is expected to ask again. It is a separate field because no
+ * settings value carries that meaning: `credentialRevision` is populated
+ * throughout a staged-key recovery, so reading it as completion would settle an
+ * org whose rotation never finished.
+ */
+export interface EnsuredEnvelope {
+  settings: ClusterExecutionSettings
+  settled: boolean
+}
+
 /** What a caller learns about a credential — never the key itself. */
 export interface ClusterCredentialView {
   daemonId: string
@@ -136,6 +150,86 @@ export class ClusterExecutionService {
     if (patch.enabled === true) return this.enable(orgId, patch)
     await this.repo.upsert(orgId, this.defaults(orgId), patch)
     return this.converge(orgId)
+  }
+
+  /**
+   * Make an organization's envelope exist, idempotently: the provisioning path
+   * for an org that was never configured, and the self-heal for one whose CR
+   * went missing. Called when an organization is created and again whenever the
+   * console opens its Daemons page, so an org that predates this deployment —
+   * or one minted outside `POST /orgs` (a JIT personal org, a waitlist redeem) —
+   * converges on its first visit rather than needing an owner to find a toggle.
+   *
+   * It never overrides a decision: only an org with NO settings row is switched
+   * on, so an owner who deliberately disabled cluster execution keeps a row that
+   * reads disabled and nothing here resurrects it. An org that IS enabled gets
+   * its spec re-applied (which creates the CR when it is gone) and, once the
+   * operator has published the envelope namespace, a credential — issued, or
+   * REISSUED when the cluster no longer holds one.
+   *
+   * Best-effort by construction: the caller is a page load or an org create, so
+   * a namespace that is not ready yet or a peer already rotating is the ordinary
+   * "not this pass" answer and leaves the work to the next visit.
+   *
+   * Which is why `settled` is answered EXPLICITLY rather than left for a caller
+   * to infer from the settings. No field on the row carries that meaning: a
+   * `credentialRevision` is present all through a staged-key recovery, and a
+   * console that read it as completion would cache the org and never come back
+   * after the peer released its claim — breaking the next-visit convergence this
+   * whole path rests on. `settled: false` means something is still owed and the
+   * caller is expected to ask again.
+   */
+  async ensureProvisioned(orgId: OrgId, actorUserId?: string): Promise<EnsuredEnvelope> {
+    const existing = await this.repo.get(orgId)
+    // A row that reads disabled is a decision, not a gap: an owner switched this
+    // org off (or is tearing it down), and re-applying would undo that. Nothing
+    // is owed on a decision, so it is settled.
+    if (existing && !existing.enabled) return { settings: existing, settled: true }
+    // No row at all ⇒ never configured, so provisioning is the deployment's
+    // default rather than a reversal of anyone's choice.
+    const settings = existing ? await this.converge(orgId) : await this.enable(orgId, { enabled: true })
+    if (!settings.enabled) return { settings, settled: true }
+    if (await this.credentialPublished(settings)) return { settings, settled: true }
+    try {
+      await this.issueCredential(orgId, actorUserId)
+    } catch (error) {
+      // The namespace the operator has not created yet, and a peer that owns the
+      // transition, are both "come back later" — everything else is a real fault.
+      if (!(error instanceof NamespaceNotReadyError) && !(error instanceof ClusterRotationInProgressError)) throw error
+      return { settings, settled: false }
+    }
+    return { settings: await this.settings(orgId), settled: true }
+  }
+
+  /**
+   * Is this org's credential BOTH settled in the database and present in the
+   * cluster? Two different half-states hide behind a stored revision, and only
+   * the pair of checks below tells them apart from a finished credential.
+   *
+   * The row alone is not proof the Secret exists: deleting a CR hands the
+   * envelope to the operator's finalizer, which removes the namespace and the
+   * Secret inside it, so a pass that recreated the CR and then trusted the
+   * revision would leave the new daemon pod blocked forever on a Secret nobody
+   * was ever going to write. A namespace that has not been published or created
+   * yet reads as absent too, and the issue that follows answers
+   * `NamespaceNotReady` — the ordinary "come back later", not a re-key.
+   *
+   * And a Secret is not proof the row is settled: a publish whose response was
+   * lost still landed, so `issueCredential` deliberately leaves that key STAGED
+   * and its predecessor live rather than revoking a credential the pod may be
+   * holding. Recovery is a successor claim that publishes, commits, and retires
+   * both — and nothing here runs on a timer, so a pass that called that state
+   * complete would strand it forever: the key the Secret carries uncommitted,
+   * the one the row names never retired. A staged key therefore reads as
+   * incomplete whatever the cluster says. (A committed revision whose CR apply
+   * is still owed is a different case, already drained by the maintenance loop —
+   * and this pass has re-applied it through `converge` on the way here.)
+   */
+  private async credentialPublished(settings: ClusterExecutionSettings): Promise<boolean> {
+    if (!settings.credentialRevision || settings.credentialStagedApiKeyId) return false
+    const namespace = (await this.api.get(settings.resourceName))?.status?.namespace
+    if (!namespace) return false
+    return (await this.secrets.publishedSeq(namespace, settings.credentialSecretName)) > 0
   }
 
   /**

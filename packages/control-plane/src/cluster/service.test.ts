@@ -833,3 +833,146 @@ describe('ClusterExecutionService.drainTeardowns', () => {
     expect(api.deleted).toEqual(['acme'])
   })
 })
+
+/**
+ * The provisioning path an org create and every Daemons-page visit take. It has
+ * to be safely repeatable, has to finish a job an earlier pass could not, and
+ * must never reverse an owner who switched cluster execution off.
+ */
+describe('ensureProvisioned', () => {
+  it('provisions an org that was never configured, credential included', async () => {
+    const { service, api, secrets, keys } = build()
+    const { settings, settled } = await service.ensureProvisioned(ORG)
+    expect(settings.enabled).toBe(true)
+    expect(settled).toBe(true)
+    expect(api.applied.length).toBeGreaterThan(0)
+    expect(keys.minted).toBe(1)
+    expect(secrets.written).toHaveLength(1)
+    expect(settings.credentialRevision).toBe('key-1')
+  })
+
+  it('is idempotent — a second pass mints nothing and rotates nothing', async () => {
+    const { service, secrets, keys } = build()
+    await service.ensureProvisioned(ORG)
+    const { settings } = await service.ensureProvisioned(ORG)
+    expect(keys.minted).toBe(1)
+    expect(secrets.written).toHaveLength(1)
+    expect(settings.credentialRevision).toBe('key-1')
+  })
+
+  // The operator has not created the namespace yet at org-create time, which is
+  // the ordinary state, not a failure — the next visit finishes the job.
+  it('defers the credential until the operator publishes the namespace', async () => {
+    const { service, api, secrets } = build()
+    api.namespaceStatus = undefined
+    const deferred = await service.ensureProvisioned(ORG)
+    expect(deferred.settings.enabled).toBe(true)
+    expect(deferred.settings.credentialRevision).toBeUndefined()
+    // Explicitly NOT settled: the caller is expected to come back.
+    expect(deferred.settled).toBe(false)
+    expect(secrets.written).toEqual([])
+
+    api.namespaceStatus = 'ac-org-acme'
+    const done = await service.ensureProvisioned(ORG)
+    expect(done.settings.credentialRevision).toBe('key-1')
+    expect(done.settled).toBe(true)
+    expect(secrets.written).toHaveLength(1)
+  })
+
+  // Deleting a CR hands the envelope to the operator's finalizer, which removes
+  // the namespace and the Secret in it. The stored revision survives that, so it
+  // cannot be what decides whether the cluster still holds a credential.
+  it('re-keys an envelope whose Secret went with its namespace', async () => {
+    const { service, secrets, keys } = build()
+    await service.ensureProvisioned(ORG)
+    expect(keys.minted).toBe(1)
+
+    secrets.publishedSeq_ = 0
+    await service.ensureProvisioned(ORG)
+    expect(keys.minted).toBe(2)
+    expect(secrets.written).toHaveLength(2)
+  })
+
+  it('re-applies the spec when the resource went missing', async () => {
+    const { service, api } = build()
+    await service.ensureProvisioned(ORG)
+    api.applied.length = 0
+    api.present = false
+    await service.ensureProvisioned(ORG)
+    expect(api.applied).toHaveLength(1)
+  })
+
+  // A publish whose response was lost still landed, so the key stays STAGED and
+  // its predecessor stays live — a state only a successor claim resolves, and one
+  // nothing here runs on a timer. A Secret with a positive sequence must not read
+  // as complete, or that rotation is stranded forever.
+  it('finishes a rotation whose publish landed but whose commit did not', async () => {
+    const { service, repo, secrets, keys } = build()
+    await service.ensureProvisioned(ORG)
+    expect(repo.row?.credentialRevision).toBe('key-1')
+
+    secrets.failAfterPublish = true
+    await expect(service.issueCredential(ORG)).rejects.toThrow()
+    secrets.failAfterPublish = false
+    // Staged, un-revoked: the pod may already be holding it.
+    expect(repo.row?.credentialStagedApiKeyId).toBe('key-2')
+    expect(keys.revoked).toEqual([])
+
+    await service.ensureProvisioned(ORG)
+    expect(repo.row?.credentialStagedApiKeyId).toBeUndefined()
+    expect(repo.row?.credentialRevision).toBe('key-3')
+    // Both the stranded key and the one it superseded are retired now.
+    expect(keys.revoked.sort()).toEqual(['key-1', 'key-2'])
+  })
+
+  // The predecessor's revision is present throughout a staged recovery, so a
+  // console reading that field would settle the org and never come back after
+  // the peer released its claim.
+  it('reports a peer-owned staged recovery as unsettled, revision or not', async () => {
+    const { service, repo, secrets } = build()
+    await service.ensureProvisioned(ORG)
+    secrets.failAfterPublish = true
+    await expect(service.issueCredential(ORG)).rejects.toThrow()
+    secrets.failAfterPublish = false
+    await repo.beginCredentialRotation(ORG, 'peer-token', new Date(), 60_000)
+
+    const { settings, settled } = await service.ensureProvisioned(ORG)
+    expect(settings.credentialRevision).toBe('key-1')
+    expect(settled).toBe(false)
+
+    // Once the peer lets go, the next pass finishes it.
+    await repo.endCredentialRotation(ORG, 'peer-token')
+    expect((await service.ensureProvisioned(ORG)).settled).toBe(true)
+  })
+
+  // Switching it off is a decision; a page load must not undo it.
+  it('leaves an org whose owner disabled cluster execution alone', async () => {
+    const { service, api } = build()
+    await service.ensureProvisioned(ORG)
+    await service.configure(ORG, { enabled: false })
+    api.applied.length = 0
+
+    const { settings, settled } = await service.ensureProvisioned(ORG)
+    expect(settings.enabled).toBe(false)
+    // A decision owes nothing, so the console stops asking.
+    expect(settled).toBe(true)
+    expect(api.applied).toEqual([])
+  })
+
+  it('yields to a peer that owns the credential transition', async () => {
+    const { service, repo, keys } = build()
+    await service.configure(ORG, { enabled: true })
+    await repo.beginCredentialRotation(ORG, 'peer-token', new Date(), 60_000)
+
+    const { settings, settled } = await service.ensureProvisioned(ORG)
+    expect(settings.credentialRevision).toBeUndefined()
+    expect(keys.minted).toBe(0)
+    expect(settled).toBe(false)
+  })
+
+  it('surfaces a cluster that refuses the apply', async () => {
+    const { service, api } = build()
+    api.failApply = true
+    await expect(service.ensureProvisioned(ORG)).rejects.toThrow(/cluster unreachable/)
+  })
+})
