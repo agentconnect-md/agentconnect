@@ -88,6 +88,11 @@ export class PgOrgClusterExecutionRepo implements OrgClusterExecutionRepo {
     return row ? toRecord(row) : null
   }
 
+  async getByResourceName(resourceName: string): Promise<ClusterExecutionSettings | null> {
+    const row = await this.prisma.orgClusterExecution.findUnique({ where: { resourceName } })
+    return row ? toRecord(row) : null
+  }
+
   async listPendingTeardowns(limit: number): Promise<PendingEnvelopeTeardown[]> {
     return this.prisma.pendingEnvelopeTeardown.findMany({
       select: { orgId: true, resourceName: true },

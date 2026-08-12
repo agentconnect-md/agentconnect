@@ -4,7 +4,7 @@ import { ApiKeyCodec } from './apiKey.js'
 import type { ApiKeyRepo, ApiKeyRecord } from '../persistence/ports.js'
 import type { EpochService } from '../orchestrator/epoch.js'
 import type { Clock } from '../domain/clock.js'
-import type { ClientCtx } from '../ports.js'
+import type { ClientCtx, ClusterDaemonIdentity } from '../ports.js'
 import { OrgId, DaemonId } from '../domain/ids.js'
 
 const PEPPER = 'unit-test-pepper-0123456789abcdefghij'
@@ -174,5 +174,79 @@ describe('DaemonAuthService.authenticate — close-code contract', () => {
     const { token } = codec.mint()
     const r = await svc(repo, epoch).authenticate({ apiKey: token, agentVersion: '1' }, ctx)
     expect(r).toMatchObject({ ok: false, closeCode: 1011 })
+  })
+})
+
+describe('DaemonAuthService.authenticate — the in-cluster token path', () => {
+  const verified = { daemonId: DaemonId('cccccccc-cccc-4ccc-8ccc-cccccccccccc'), orgId: OrgId('org_cluster') }
+  const orgs = { slugById: async () => 'cluster-org' }
+
+  function withIdentity(verify: ClusterDaemonIdentity['verify'], repo = makeRepo()): DaemonAuthService {
+    return new DaemonAuthService(codec, repo, okEpoch, clock, { HEARTBEAT_SEC: 15 }, orgs, { verify })
+  }
+
+  it('a verified token authenticates without any API key', async () => {
+    const repo = makeRepo()
+    const r = await withIdentity(async () => verified, repo).authenticate(
+      { serviceAccountToken: 'projected', agentVersion: '1' },
+      ctx
+    )
+    expect(r.ok).toBe(true)
+    if (!r.ok) throw new Error('expected ok')
+    expect(r.daemonId).toBe(verified.daemonId)
+    expect(r.okFrame.sessionEpoch).toBe(7)
+    expect(r.okFrame.orgSlug).toBe('cluster-org')
+    // No key was presented, so nothing may be looked up or touched.
+    expect(repo.findByHash).not.toHaveBeenCalled()
+    expect(repo.touchLastUsed).not.toHaveBeenCalled()
+  })
+
+  it('the token wins over a presented key, so a stale key cannot pick the daemon', async () => {
+    const { token } = codec.mint()
+    const repo = makeRepo()
+    const r = await withIdentity(async () => verified, repo).authenticate(
+      { apiKey: token, serviceAccountToken: 'projected', agentVersion: '1' },
+      ctx
+    )
+    expect(r).toMatchObject({ ok: true, daemonId: verified.daemonId })
+    expect(repo.findByHash).not.toHaveBeenCalled()
+  })
+
+  it('a token presented to a deployment that provisions no clusters → 4401', async () => {
+    const r = await svc(makeRepo(), okEpoch).authenticate({ serviceAccountToken: 'projected', agentVersion: '1' }, ctx)
+    expect(r).toMatchObject({ ok: false, closeCode: 4401 })
+  })
+
+  it('a refused token → 4401, no epoch bump', async () => {
+    const epoch = makeEpoch(async () => {
+      throw new Error('must not be reached')
+    })
+    const service = new DaemonAuthService(codec, makeRepo(), epoch, clock, { HEARTBEAT_SEC: 15 }, orgs, {
+      verify: async () => null
+    })
+    const r = await service.authenticate({ serviceAccountToken: 'projected', agentVersion: '1' }, ctx)
+    expect(r).toMatchObject({ ok: false, closeCode: 4401 })
+  })
+
+  it('a verifier that throws → 1011 retryable, not a dead identity', async () => {
+    const r = await withIdentity(async () => {
+      throw new Error('api server unreachable')
+    }).authenticate({ serviceAccountToken: 'projected', agentVersion: '1' }, ctx)
+    expect(r).toMatchObject({ ok: false, closeCode: 1011 })
+  })
+
+  it('an echoed daemonId that disagrees with the identity → 4401', async () => {
+    const r = await withIdentity(async () => verified).authenticate(
+      { serviceAccountToken: 'projected', daemonId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', agentVersion: '1' },
+      ctx
+    )
+    expect(r).toMatchObject({ ok: false, closeCode: 4401 })
+  })
+
+  it('no credential at all → 4401 with no DB call', async () => {
+    const repo = makeRepo()
+    const r = await svc(repo, okEpoch).authenticate({ agentVersion: '1' }, ctx)
+    expect(r).toMatchObject({ ok: false, closeCode: 4401 })
+    expect(repo.findByHash).not.toHaveBeenCalled()
   })
 })

@@ -156,7 +156,12 @@ interface RegisterControlBarrier {
 
 export interface CpClientDeps {
   url: string
-  token: string
+  /** The CP API key. Absent on an in-cluster daemon, which presents
+   *  {@link CpClientDeps.clusterIdentityToken} instead. */
+  token?: string
+  /** This pod's projected ServiceAccount token, re-read per connect because the kubelet
+   *  rotates it roughly hourly. Present ⇒ it is the credential and the API key is not sent. */
+  clusterIdentityToken?: () => string | undefined
   /** Optional: when unset, the token's `sub` is the authoritative daemonId and
    *  the CP assigns it. The adopted id is surfaced via `onDaemonId`. */
   daemonId?: string
@@ -363,8 +368,10 @@ export class CpClient {
   private async handshake(expectedTransport: Transport): Promise<void> {
     // ── auth ── (resume on reconnect carries only the last epoch the daemon held)
     this.state = 'AUTHENTICATING'
+    // Read per connect, never cached: the kubelet rewrites the projected token roughly hourly.
+    const identityToken = this.deps.clusterIdentityToken?.()
     const authPayload: Record<string, unknown> = {
-      apiKey: this.deps.token,
+      ...(identityToken ? { serviceAccountToken: identityToken } : { apiKey: this.deps.token }),
       agentVersion: this.deps.agentVersion,
       ...(this.deps.onBootstrapUpgrade ? { bootstrapProtocolVersion: DAEMON_BOOTSTRAP_PROTOCOL_VERSION } : {})
     }

@@ -367,6 +367,12 @@ model Daemon {
   agentVersion  String?
   machineId     String? @db.Uuid // 🅼 AuthReq.machineId (stored, stub-enforced)
   tokenFp       String? // `id` of the authenticating ApiKey (audit; written by upsertOnAuth)
+  /// The Kubernetes identity an in-cluster daemon authenticates as, exactly as TokenReview
+  /// reports it (`system:serviceaccount:<org namespace>:ac-daemon`). Unique, so one envelope
+  /// can never end up with two records competing for its placements. The namespace is derived
+  /// from the org, so an envelope torn down and rebuilt presents the same identity and resolves
+  /// back to this row — its placements and session history survive re-provisioning.
+  clusterIdentity String? @unique
   attestationFp String? // 🅼 last accepted attestation digest
   capabilities  Json    @default("{}") @db.JsonB // {platforms[],runtimes[],acp,features[]}
   mcpServers    Json    @default("[]") @db.JsonB // facts/daemon-runtimes MCP-server list (FactsMcpServer[] = {name,transport}); replaced whole per frame

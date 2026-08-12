@@ -296,6 +296,7 @@ import { nodeExecArgvModuleEntries } from './runtimes/node-exec-argv.js'
 import { makeLogger, type Logger } from './log.js'
 import { CpClient, CP_SUBPROTOCOL, CP_WS_PATH, type BootstrapUpgradeOutcome } from './cp/client.js'
 import { RelayManager } from './cp/relay-manager.js'
+import { readClusterIdentityToken } from './cp/cluster-identity.js'
 import { CpCollabRoutes } from './cp/cp-collab-routes.js'
 import { ClientTransport, systemClock, type Clock, type TimerHandle } from '@agentconnect.md/connection'
 import {
@@ -798,10 +799,13 @@ const MAX_HOOK_REPORT_INFLIGHT = 100
  * remains READY. Reconnect also kicks the durable drain immediately. */
 const SESSION_METADATA_RETRY_MS = 5_000
 
+/** Connectable when there is a URL and a credential: an API key, or — in-cluster — the
+ *  projected ServiceAccount token this pod presents instead of one. */
 function configuredControlPlane(
-  controlPlane: Config['controlPlane']
-): controlPlane is Config['controlPlane'] & { url: string; key: string } {
-  return controlPlane.enabled && !!controlPlane.url && !!controlPlane.key
+  controlPlane: Config['controlPlane'],
+  hasClusterIdentity = false
+): controlPlane is Config['controlPlane'] & { url: string } {
+  return controlPlane.enabled && !!controlPlane.url && (!!controlPlane.key || hasClusterIdentity)
 }
 
 /** Thrown to a `dispatch()` caller when the per-session admission queue is at its depth
@@ -2170,6 +2174,9 @@ export class Daemon {
   // `--k8s`: this daemon supervises runtimes in sandbox pods instead of local
   // subprocesses, so every "daemon and runtime share one machine" behavior is off.
   private readonly k8s: boolean
+  /** Reads this pod's projected CP-audience token; undefined unless the daemon runs
+   *  in-cluster AND the volume is actually mounted (decided once, at boot). */
+  private readonly clusterIdentityToken?: () => string | undefined
   // The k8s execution plane: shim endpoint + driver + workspace seam. Undefined outside --k8s.
   private k8sPlane?: K8sRuntimePlane
   // The resolved catalog the probed table is projected onto; it supplies command/args, which the
@@ -2420,6 +2427,9 @@ export class Daemon {
     } = {}
   ) {
     this.k8s = opts.k8s === true
+    // The mount either exists for this pod's whole life or never does, so availability is
+    // decided once here; the VALUE is re-read per connect, because the kubelet rotates it.
+    this.clusterIdentityToken = this.k8s && readClusterIdentityToken() ? () => readClusterIdentityToken() : undefined
     // A k8s runtime is isolated by its own pod, so the in-process SRT mechanism is
     // not part of that shape — it stays off even if this host happens to support it.
     this.sandboxMechanism =
@@ -2836,10 +2846,10 @@ export class Daemon {
     // daemon boots, reconciles, and connects on hosts with or without an OS
     // sandbox. The residual "an unconfined ACP child could tamper with skill
     // authority" exposure on an unsandboxed agent is a tracked P2.
-    // Mint a stable local daemonId only when we are NOT onboarding via a CP
-    // token: with a `controlPlane.key` and no explicit id, the CP assigns the
-    // id from the token's `sub` and the daemon adopts it (see startCpClient).
-    const cpKeyOnboarding = !!(cfg.controlPlane?.enabled && cfg.controlPlane.key)
+    // Mint a stable local daemonId only when the CP is not going to assign one:
+    // with a `controlPlane.key` — or an in-cluster identity token — and no explicit
+    // id, the CP resolves the id and the daemon adopts it (see startCpClient).
+    const cpKeyOnboarding = !!(cfg.controlPlane?.enabled && (cfg.controlPlane.key || this.clusterIdentityToken))
 
     // github-app git credentials — initialized FIRST: reconcile-time prefetch
     // clones can fire as soon as agents load, and they pre-warm through this
@@ -15173,7 +15183,7 @@ export class Daemon {
     // Session work may begin during startup before startCpClient() runs. Persist
     // that obligation whenever this daemon is configured to connect; only the
     // live send still depends on a constructed client.
-    if (!cpClient && !configuredControlPlane(this.cfg.controlPlane)) return
+    if (!cpClient && !configuredControlPlane(this.cfg.controlPlane, !!this.clusterIdentityToken)) return
     const now = new Date(this.clock.now()).toISOString()
     const row = this.sessionListProjection(input.sessionId, input.agentId)
     const key = row?.sessionKey
@@ -20392,10 +20402,11 @@ export class Daemon {
 
   private startCpClient(root: string): void {
     const cp = this.cfg.controlPlane
-    if (!configuredControlPlane(cp)) {
+    if (!configuredControlPlane(cp, !!this.clusterIdentityToken)) {
       this.log.info('cp: not connecting (disabled or missing url/token) — running local')
       return
     }
+    if (this.clusterIdentityToken) this.log.info("cp: authenticating with this pod's projected identity token")
     // Start host-load sampling only now — the snapshot exists solely to feed the CP
     // heartbeat below (no CP ⇒ no sampler, so CP-less runs never probe the system).
     this.metrics = new SystemMetrics({ clock: this.clock, log: this.log })
@@ -20409,7 +20420,10 @@ export class Daemon {
     // and if it matches it is redundant anyway.
     const echoDaemonId = this.opts.overrides?.daemonId
     const url = cp.url
-    const cpKey = cp.key // narrowed to string by the guard above
+    // Relay dial-out still authenticates with the API key: the relay verifies `daemon-key`
+    // credentials through the CP and has no token path yet, so a key-less in-cluster daemon
+    // simply never authenticates to a relay.
+    const cpKey = cp.key ?? ''
 
     // Relay dial-out manager: the CP publishes the roster (register/ok.relays + the
     // relay/roster EVT) and this set-converges an rd/* connection to each relay. Built
@@ -20473,11 +20487,14 @@ export class Daemon {
 
     this.cpClient = new CpClient({
       url,
-      token: cp.key,
+      ...(cp.key ? { token: cp.key } : {}),
+      ...(this.clusterIdentityToken ? { clusterIdentityToken: this.clusterIdentityToken } : {}),
       ...(echoDaemonId ? { daemonId: echoDaemonId } : {}),
       onDaemonId: (id) => {
         this.cfg.daemonId = id
-        persistDaemonId(root, id, this.opts.configPath)
+        // An in-cluster daemon persists nothing: its identity is re-derived from the
+        // projected token on every connect, so a stored id could only go stale.
+        if (!this.clusterIdentityToken) persistDaemonId(root, id, this.opts.configPath)
         this.log.info(`cp: adopted daemonId ${id} from auth/ok`)
       },
       onWebAppUrl: (url) => {

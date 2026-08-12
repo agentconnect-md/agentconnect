@@ -8,6 +8,7 @@ export {
   type ConditionType
 } from './crd.js'
 export { AgentConnectOrgApi, type OrgResourceApi } from './org-api.js'
+export { ClusterDaemonIdentityService, clusterIdentityOf, parseServiceAccountSubject } from './daemon-identity.js'
 export {
   ClusterSecretApi,
   CREDENTIAL_SECRET_KEY,

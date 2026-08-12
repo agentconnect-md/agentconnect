@@ -190,3 +190,29 @@ export const RESERVED_RESTART_CODE = 75
  * image, so only whoever owns the Deployment can change it.
  */
 export const K8S_SUPERVISOR = 'k8s'
+
+/**
+ * Audience the projected ServiceAccount token an in-cluster daemon authenticates with is
+ * restricted to. The shim handshake run one hop up: a sandbox proves itself to the daemon
+ * with a token scoped to `SHIM_TOKEN_AUDIENCE`, and here the daemon proves itself to the
+ * control plane the same way. The audiences differ, so neither token is accepted at the
+ * other end.
+ *
+ * This and {@link ENVELOPE_DAEMON_SA_NAME} are the two names the operator that stamps them
+ * and the control plane that checks them must agree on exactly. They live here rather than
+ * being configured on each side because a constant kept in two places eventually holds two
+ * values: a rename passes every build and every test, since each side stays self-consistent,
+ * and fails only at runtime when a real daemon's token is rejected. One definition makes that
+ * a compile error instead.
+ */
+export const CP_TOKEN_AUDIENCE = 'ac-control-plane'
+
+/** ServiceAccount the operator gives an envelope's daemon pod — the control plane's second
+ *  check on a reviewed token, so a later change cannot authenticate some other pod in the
+ *  same namespace. Shared for the same reason as {@link CP_TOKEN_AUDIENCE}. */
+export const ENVELOPE_DAEMON_SA_NAME = 'ac-daemon'
+
+/** Where the operator projects that token into the daemon pod, and where the daemon reads it
+ *  from. Not part of the verification, but the same two-sided agreement: the mounter and the
+ *  reader are both in this repo, so one definition beats a comment asking them to match. */
+export const CP_IDENTITY_TOKEN_PATH = '/var/run/ac-cp-identity/token'
