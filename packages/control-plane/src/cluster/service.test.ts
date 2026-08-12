@@ -47,6 +47,8 @@ class FakeRepo implements OrgClusterExecutionRepo {
   rotationAt: Date | null = null
   rotationToken: string | null = null
   rotationSeq = 0
+  /** A committed credential whose revision has not reached the CR yet. */
+  rolloutPending = false
   /** Simulates a write whose row is cascaded away before anything reads it. */
   swallowUpsert = false
 
@@ -117,11 +119,21 @@ class FakeRepo implements OrgClusterExecutionRepo {
       credentialRevision: credential.revision,
       credentialStagedApiKeyId: undefined
     }
+    this.rolloutPending = true
     for (const key of [superseded, stagedBefore]) {
-      if (key && key !== credential.apiKeyId) await this.enqueueKeyRevocation(this.row.orgId, key, reason)
+      if (key && key !== credential.apiKeyId) await this.enqueueKeyRevocation(this.row.orgId, key, reason, true)
     }
-    this.releaseHeld()
     return true
+  }
+
+  async completeCredentialRollout(_orgId: OrgId, token: string): Promise<void> {
+    if (this.rotationToken !== token) return
+    this.rolloutPending = false
+    this.releaseHeld()
+  }
+
+  async listPendingCredentialRollouts(limit: number): Promise<string[]> {
+    return this.rolloutPending && this.row ? [this.row.orgId].slice(0, limit) : []
   }
 
   async abandonStagedCredential(_orgId: OrgId, token: string, reason: string): Promise<void> {
@@ -137,6 +149,7 @@ class FakeRepo implements OrgClusterExecutionRepo {
       if (apiKeyId) await this.enqueueKeyRevocation(this.row.orgId, apiKeyId, reason)
     }
     this.releaseHeld()
+    this.rolloutPending = false
     this.tombstones.push({ orgId: this.row.orgId, targetNamespace: this.row.targetNamespace })
     this.row = {
       ...this.row,
@@ -216,10 +229,13 @@ class FakeApi implements OrgResourceApi {
   /** Runs inside `apply`, so a test can land a peer write mid-flight. */
   duringApply?: () => Promise<void>
 
+  failApply = false
+
   async apply(_name: string, spec: AgentConnectOrgSpec): Promise<AgentConnectOrg> {
     const hook = this.duringApply
     this.duringApply = undefined
     if (hook) await hook()
+    if (this.failApply) throw new Error('cluster unreachable')
     this.applied.push(spec)
     return { spec }
   }
@@ -628,6 +644,39 @@ describe('ClusterExecutionService.issueCredential', () => {
     expect(second.daemonId).toBe(first.daemonId)
     expect(keys.minted).toBe(2)
     expect(keys.revoked).toEqual([first.revision])
+  })
+
+  it('keeps the superseded key alive until the CR actually carries the new revision', async () => {
+    const { service, repo, api, keys } = build()
+    await service.configure(ORG, { enabled: true })
+    const first = await service.issueCredential(ORG)
+
+    // The commit lands and the apply does not: the pod has not been asked to
+    // roll, so it is still running on the predecessor's key.
+    api.failApply = true
+    await expect(service.issueCredential(ORG)).rejects.toThrow('cluster unreachable')
+    expect(repo.revocations.map((entry) => entry.apiKeyId)).toEqual([first.revision])
+    expect(keys.revoked).toEqual([])
+    // Even a full maintenance pass must not touch it while the rollout is owed.
+    expect(await service.drainKeyRevocations()).toBe(0)
+
+    api.failApply = false
+    expect(await service.drainCredentialRollouts()).toBe(1)
+    expect(await service.drainKeyRevocations()).toBe(1)
+    expect(keys.revoked).toEqual([first.revision])
+    expect(await service.drainCredentialRollouts()).toBe(0)
+  })
+
+  it('keeps owing the rollout while the cluster stays unreachable', async () => {
+    const { service, api, keys } = build()
+    await service.configure(ORG, { enabled: true })
+    await service.issueCredential(ORG)
+    api.failApply = true
+    await expect(service.issueCredential(ORG)).rejects.toThrow('cluster unreachable')
+
+    expect(await service.drainCredentialRollouts()).toBe(0)
+    expect(await service.drainKeyRevocations()).toBe(0)
+    expect(keys.revoked).toEqual([])
   })
 
   it('refuses when the org has no envelope to attach a credential to', async () => {

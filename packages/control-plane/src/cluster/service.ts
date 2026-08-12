@@ -44,6 +44,9 @@ const TEARDOWN_BATCH = 50
 /** Owed revocations attempted per drain pass. */
 const REVOCATION_BATCH = 50
 
+/** Owed credential rollouts re-applied per drain pass. */
+const ROLLOUT_BATCH = 50
+
 /** How long one caller may own a credential transition before it is taken over.
  *  Generous against a slow API server, short enough that a crashed process does
  *  not lock an operator out of rotating for long. */
@@ -427,7 +430,12 @@ export class ClusterExecutionService {
       // The publish above succeeded, so this key IS in the Secret right now: name
       // it, but leave it to the successor's commit to release.
       if (!committed) throw await this.lostClaim(orgId, minted.apiKeyId, true)
+      // Only now has the rollout actually been ASKED for: the CR carries the new
+      // `credentialRevision`. A converge that throws leaves the obligation
+      // recorded and every superseded key held, so the pod keeps a working
+      // credential and the maintenance loop finishes the apply.
       await this.converge(orgId)
+      await this.repo.completeCredentialRollout(orgId, token)
       await this.drainKeyRevocations()
 
       return {
@@ -490,6 +498,40 @@ export class ClusterExecutionService {
     const provisioned = await this.keys.provisionDaemon({ orgId, ...by })
     await this.repo.stageCredentialDaemon(orgId, token, provisioned.daemonId)
     return provisioned
+  }
+
+  /**
+   * Finish the applies a committed credential is still owed. A commit is durable
+   * intent; the pod only rolls onto the new key once the CR carries the new
+   * `credentialRevision`, so a request that died between the two leaves both the
+   * obligation and the keys it superseded — held, and therefore still working.
+   * This is the retry: re-apply, then release, under the same per-org claim
+   * every other transition takes. Returns how many rollouts it completed.
+   */
+  async drainCredentialRollouts(limit = ROLLOUT_BATCH): Promise<number> {
+    let completed = 0
+    for (const orgId of await this.repo.listPendingCredentialRollouts(limit)) {
+      if (await this.completeRollout(OrgId(orgId))) completed += 1
+    }
+    return completed
+  }
+
+  /** One owed rollout, or false when it is still owed after this pass. */
+  private async completeRollout(orgId: OrgId): Promise<boolean> {
+    const token = randomUUID()
+    const claimed = await this.repo.beginCredentialRotation(orgId, token, new Date(this.clock.now()), ROTATION_LEASE_MS)
+    if (!claimed) return false // a live transition owns this org; next pass
+    try {
+      // A disabled envelope cannot owe a rollout — `retireCredential` drops the
+      // obligation — so this can only be an enabled row whose apply never landed.
+      await this.reconcile(claimed)
+      await this.repo.completeCredentialRollout(orgId, token)
+      return true
+    } catch {
+      return false // still owed; the cluster is unreachable or refusing
+    } finally {
+      await this.repo.endCredentialRotation(orgId, token)
+    }
   }
 
   /**

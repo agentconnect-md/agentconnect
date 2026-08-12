@@ -2803,6 +2803,11 @@ model OrgClusterExecution {
   /// after that point would otherwise leave a live non-expiring key with nothing
   /// naming it. Whoever next claims the transition adopts it for revocation.
   credentialStagedApiKeyId String?
+  /// A committed credential whose `credentialRevision` has not been applied to
+  /// the CR yet — the rollout is owed. Bumping the row is durable intent; the pod
+  /// only rolls once the resource carries it, so until the apply lands no
+  /// superseded key may be revoked. The maintenance loop retries the apply.
+  credentialRolloutPending Boolean @default(false)
   runtimeImage         String
   /// `{name, warmReplicas}[]` — the org's sandbox tiers and warm-pool sizes.
   runtimeTiers         Json                @db.JsonB

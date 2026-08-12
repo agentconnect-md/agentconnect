@@ -186,23 +186,46 @@ export class PgOrgClusterExecutionRepo implements OrgClusterExecutionRepo {
           credentialDaemonId: credential.daemonId,
           credentialApiKeyId: credential.apiKeyId,
           credentialRevision: credential.revision,
-          credentialStagedApiKeyId: null
+          credentialStagedApiKeyId: null,
+          // The bump above is intent; the pod rolls only once the CR carries it.
+          credentialRolloutPending: true
         }
       })
       if (won.count === 0) return false
       // Same transaction as the overwrite: queueing the predecessor separately
-      // would lose it whenever the process stopped in between.
+      // would lose it whenever the process stopped in between. HELD, because the
+      // running pod is still on this key until the rollout is actually requested.
       for (const superseded of [before?.credentialApiKeyId, before?.credentialStagedApiKeyId]) {
         if (superseded && superseded !== credential.apiKeyId) {
-          await enqueueRevocation(tx, orgId, superseded, reason)
+          await enqueueRevocation(tx, orgId, superseded, reason, true)
         }
       }
-      // This commit is the higher-sequence publish every held key was waiting on:
-      // the Secret now carries `credential.apiKeyId` and the rollout is asked for
-      // by the `specRevision` bump above, so the older keys become revocable.
-      await releaseHeldRevocations(tx, orgId)
       return true
     })
+  }
+
+  /** The CR now carries the committed `credentialRevision`, so the rollout has
+   *  actually been requested: drop the obligation and release the keys it
+   *  superseded, in one transaction. Conditional on `token`. */
+  async completeCredentialRollout(orgId: OrgId, token: string): Promise<void> {
+    await withTx(this.prisma, async (tx) => {
+      const done = await tx.orgClusterExecution.updateMany({
+        where: { orgId, credentialRotationToken: token },
+        data: { credentialRolloutPending: false }
+      })
+      if (done.count === 0) return
+      await releaseHeldRevocations(tx, orgId)
+    })
+  }
+
+  async listPendingCredentialRollouts(limit: number): Promise<string[]> {
+    const rows = await this.prisma.orgClusterExecution.findMany({
+      where: { credentialRolloutPending: true },
+      select: { orgId: true },
+      orderBy: { updatedAt: 'asc' },
+      take: limit
+    })
+    return rows.map((row) => row.orgId)
   }
 
   async abandonStagedCredential(orgId: OrgId, token: string, reason: string): Promise<void> {
@@ -229,7 +252,8 @@ export class PgOrgClusterExecutionRepo implements OrgClusterExecutionRepo {
           enabled: false,
           credentialApiKeyId: null,
           credentialRevision: null,
-          credentialStagedApiKeyId: null
+          credentialStagedApiKeyId: null,
+          credentialRolloutPending: false
         }
       })
       if (won.count === 0) return false

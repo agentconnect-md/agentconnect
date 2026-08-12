@@ -68,6 +68,8 @@ interface ClusterHarness {
   secrets: { path: string; seq: number; configJson: string }[]
   /** Make every Secret call 404 from here on, as an uncreated namespace does. */
   setNamespaceMissing(missing: boolean): void
+  /** The service behind the routes, for driving its maintenance drains. */
+  cluster: ClusterExecutionService
 }
 
 /**
@@ -158,6 +160,7 @@ async function clusterApp(
     calls,
     applied,
     secrets,
+    cluster,
     setNamespaceMissing: (missing: boolean) => {
       namespaceMissing = missing
     }
@@ -527,6 +530,40 @@ describe('POST /cluster-execution/credential', () => {
     expect((await http.app.inject({ method: 'POST', url: CREDENTIAL })).statusCode).toBe(201)
     expect((await prisma.apiKey.findUniqueOrThrow({ where: { id: orphan.id } })).revokedAt).not.toBeNull()
     expect(await prisma.pendingDaemonKeyRevocation.count()).toBe(0)
+  })
+
+  it('holds the predecessor until the CR carries the new revision, then finishes the rollout', async () => {
+    let rejectApply = false
+    const { http, cluster } = await clusterApp({
+      route: (req) =>
+        rejectApply && req.method === 'PATCH'
+          ? { status: 403, json: { kind: 'Status', reason: 'Forbidden', message: 'cannot patch agentconnectorgs' } }
+          : undefined
+    })
+    await http.app.inject({ method: 'PUT', url: CLUSTER, payload: { enabled: true } })
+    const first = (await http.app.inject({ method: 'POST', url: CREDENTIAL })).json()
+    const predecessor = await prisma.apiKey.findFirstOrThrow({ where: { daemonId: first.daemonId } })
+
+    // The credential commits, the apply does not: the pod was never asked to
+    // roll, so it is still authenticating with the predecessor's key.
+    rejectApply = true
+    expect((await http.app.inject({ method: 'POST', url: CREDENTIAL })).statusCode).toBe(502)
+    expect(
+      (await prisma.orgClusterExecution.findUniqueOrThrow({ where: { orgId: DEFAULT_ORG_ID } }))
+        .credentialRolloutPending
+    ).toBe(true)
+    expect(await cluster.drainKeyRevocations()).toBe(0)
+    expect((await prisma.apiKey.findUniqueOrThrow({ where: { id: predecessor.id } })).revokedAt).toBeNull()
+
+    // The maintenance loop finishes the apply; only then is the predecessor dead.
+    rejectApply = false
+    expect(await cluster.drainCredentialRollouts()).toBe(1)
+    expect(await cluster.drainKeyRevocations()).toBe(1)
+    expect((await prisma.apiKey.findUniqueOrThrow({ where: { id: predecessor.id } })).revokedAt).not.toBeNull()
+    expect(
+      (await prisma.orgClusterExecution.findUniqueOrThrow({ where: { orgId: DEFAULT_ORG_ID } }))
+        .credentialRolloutPending
+    ).toBe(false)
   })
 
   it('409s while the operator has not created the envelope namespace yet', async () => {

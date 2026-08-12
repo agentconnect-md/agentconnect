@@ -3,11 +3,12 @@
  * things it can owe the world after a request has already returned.
  *
  * Deleting an organization records its `AgentConnectOrg` for removal inside the
- * delete transaction, and retiring a daemon key records the revocation before
- * attempting it. Both paths run inline first for latency; this loop covers what
- * inline cannot — an unreachable cluster, a process that crashed between the
- * record and the act, or a deployment that had cluster execution switched off
- * when the organization was deleted and turned it on later.
+ * delete transaction, committing a credential records the rollout it still owes,
+ * and retiring a daemon key records the revocation before attempting it. Every
+ * path runs inline first for latency; this loop covers what inline cannot — an
+ * unreachable cluster, a process that crashed between the record and the act, or
+ * a deployment that had cluster execution switched off when the organization was
+ * deleted and turned it on later.
  */
 import type { Clock, TimerHandle } from '../domain/clock.js'
 
@@ -18,6 +19,7 @@ export interface ClusterMaintenanceLog {
 
 export interface ClusterMaintenanceWork {
   drainTeardowns(): Promise<number>
+  drainCredentialRollouts(): Promise<number>
   drainKeyRevocations(): Promise<number>
 }
 
@@ -69,6 +71,13 @@ export class ClusterMaintenanceLoop {
         () => this.work!.drainTeardowns(),
         'cluster-execution: retired deleted organizations’ envelopes',
         'cluster-execution: envelope teardown drain failed'
+      )
+      // Before the revocations, not after: completing a rollout is what makes the
+      // keys it superseded revocable, so both settle in one pass.
+      await this.step(
+        () => this.work!.drainCredentialRollouts(),
+        'cluster-execution: applied credential revisions that never reached the cluster',
+        'cluster-execution: credential rollout drain failed'
       )
       await this.step(
         () => this.work!.drainKeyRevocations(),

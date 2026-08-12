@@ -5021,9 +5021,9 @@ export interface OrgClusterExecutionRepo {
   /**
    * Promote the staged key to the org's credential in ONE transaction: bump
    * `specRevision` (so the CR re-applies with the new `credentialRevision`),
-   * clear the staged slot, queue the superseded key for revocation, and release
-   * every key held against this envelope — this commit IS the higher-sequence
-   * publish they were waiting on. Atomic because a commit that queued the
+   * clear the staged slot, record the rollout as owed, and queue the superseded
+   * key for revocation HELD — the running pod is still on that key until the CR
+   * actually carries the new revision. Atomic because a commit that queued the
    * predecessor separately could lose it.
    * False ⇒ the claim was taken over; nothing was written.
    */
@@ -5033,16 +5033,22 @@ export interface OrgClusterExecutionRepo {
     credential: { daemonId: string; apiKeyId: string; revision: string },
     reason: string
   ): Promise<boolean>
+  /** The CR now carries the committed revision, so the rollout has actually been
+   *  requested: drop the obligation and release the keys it superseded, in one
+   *  transaction. Conditional on `token`. */
+  completeCredentialRollout(orgId: OrgId, token: string): Promise<void>
+  /** Oldest-first orgs whose committed credential never reached the CR. */
+  listPendingCredentialRollouts(limit: number): Promise<string[]>
   /** Queue the staged key for revocation and clear the slot — the unwind path
    *  when publication fails. Conditional on `token`. */
   abandonStagedCredential(orgId: OrgId, token: string, reason: string): Promise<void>
   /**
    * Retire the envelope's credential in ONE transaction: clear the credential
-   * and staged slots, queue both keys for revocation, release every held key
-   * (the envelope itself is going away, so no Secret can still matter), and
-   * record the resource for teardown. Everything durable BEFORE the cluster is
-   * touched, so a disable whose delete fails still converges through
-   * maintenance. False ⇒ the claim was taken over; nothing was written.
+   * and staged slots, queue both keys for revocation, release every held key and
+   * drop any owed rollout (the envelope itself is going away, so no pod is left
+   * to strand), and record the resource for teardown. Everything durable BEFORE
+   * the cluster is touched, so a disable whose delete fails still converges
+   * through maintenance. False ⇒ the claim was taken over; nothing was written.
    */
   retireCredential(orgId: OrgId, token: string, reason: string): Promise<boolean>
   /** Record that a key must be revoked, outside any claim — the unwind path for

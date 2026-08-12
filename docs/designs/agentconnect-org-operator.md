@@ -297,14 +297,21 @@ undo the retirement disable just performed. Beyond that, three mechanisms:
   ONE transaction, because a stop in between would overwrite the only handle to
   the predecessor. The maintenance loop retries whatever is still owed.
 - **Named before revocable.** Naming a key is not permission to kill it. A key
-  that MAY be in the Secret — the one a successor displaces out of the staged
-  slot, or one whose publish landed but whose commit lost the claim — is queued
-  `held`: durable, listed by nothing, drained by nothing. `commitCredential`
-  releases every held key for the org, because that commit IS the
-  higher-sequence publish they were waiting on and its `specRevision` bump is
-  the rollout request; retiring the envelope releases them too, since a pod that
-  is going away has no credential left to strand. Only a key that definitely
-  never reached the cluster is revoked on the spot.
+  that MAY be in use — the one a successor displaces out of the staged slot, one
+  whose publish landed but whose commit lost the claim, or the predecessor a
+  commit supersedes — is queued `held`: durable, listed by nothing, drained by
+  nothing. Only a key that definitely never reached the cluster is revoked on
+  the spot.
+- **Committed is not rolled out.** `commitCredential` bumping `specRevision` is
+  durable INTENT; the pod keeps running on its old key until the CR itself
+  carries the new `credentialRevision`. So the commit also records
+  `credentialRolloutPending`, and the held keys are released only by
+  `completeCredentialRollout` — after the apply has actually succeeded. A
+  request that dies in between leaves both the obligation and a working
+  credential; `drainCredentialRollouts` re-applies under the same per-org claim
+  and releases then, so the retry is durable rather than dependent on the caller
+  coming back. Retiring the envelope drops the obligation and releases the keys,
+  since a pod that is going away has no credential left to strand.
 
 Disabling takes the same claim BEFORE it writes anything, and the write that
 clears `enabled` is the same transaction that drops the credential, queues both
