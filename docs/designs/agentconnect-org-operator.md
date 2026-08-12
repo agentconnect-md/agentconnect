@@ -56,25 +56,27 @@ that lands `Degraded/InvalidNamespaceName` and writes no envelope objects. Two
 orgs aimed at one namespace are caught by the claim label
 (`Degraded/NamespaceClaimConflict`) — the operator degrades, never adopts.
 
-| spec field                    | Notes                                                                                                                                                                                                                 |
-| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `targetNamespace`             | Optional DNS-label override, **immutable** (CEL). Unset ⇒ derived `<prefix><CR name>`. Shape-only at CRD level; install ownership (prefix) is enforced by the operator and admission.                                 |
-| `suspend`                     | Quiesce the org: daemon to zero, sandboxes drained, gateway denies LLM calls.                                                                                                                                         |
-| `daemon.image`, `daemon.tier` | Supervisor image (change ⇒ Recreate rollout) and resource tier name.                                                                                                                                                  |
-| `daemon.credentialSecretName` | **Retiring** with the key path — an in-cluster daemon carries no credential (see "Daemon identity"). While it exists: immutable, default `ac-daemon-token`, a reference the operator mounts required and never reads. |
-| `daemon.credentialRevision`   | **Retiring** with the same path; the projected token rotates without anyone being told. While it exists: opaque, bumped after rotation, projected into a pod-template annotation to force a Recreate.                 |
-| `runtime.image`               | Sandbox image; change starts the drain-based rollout.                                                                                                                                                                 |
-| `runtime.tiers[]`             | `{name, warmReplicas}` referencing cluster master template/pool pairs; 0 keeps a cold pool.                                                                                                                           |
-| `quota`                       | `maxAgents`/`cpu`/`memory`/`storage`; zero values mean unlimited.                                                                                                                                                     |
-| `llmLimits`                   | Per-session and per-org token/request rate bounds, rendered into egress-gateway policies.                                                                                                                             |
-| `egressPolicy`                | `locked \| curated \| open` sandbox egress tier.                                                                                                                                                                      |
-| `llmDeny`                     | Emergency LLM shutoff (`all` or per-agent).                                                                                                                                                                           |
-| `deletionPolicy`              | `Delete` only in v1alpha1; `Archive` joins when its semantics exist.                                                                                                                                                  |
+| spec field                    | Notes                                                                                                                                                                                                                                            |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `targetNamespace`             | Optional DNS-label override, **immutable** (CEL). Unset ⇒ derived `<prefix><CR name>`. Shape-only at CRD level; install ownership (prefix) is enforced by the operator and admission.                                                            |
+| `suspend`                     | Quiesce the org: daemon to zero, sandboxes drained, gateway denies LLM calls.                                                                                                                                                                    |
+| `daemon.image`, `daemon.tier` | Supervisor image (change ⇒ Recreate rollout) and resource tier name.                                                                                                                                                                             |
+| `daemon.credentialSecretName` | **Retiring** with the key path — an in-cluster daemon carries no credential (see "Daemon identity"). While it exists: immutable, default `ac-daemon-token`, a reference the operator mounts required and never reads.                            |
+| `daemon.credentialRevision`   | **Retiring** with the same path; the projected token rotates without anyone being told. While it exists: opaque, bumped after rotation, projected into a pod-template annotation to force a Recreate.                                            |
+| `controlPlane.url`            | The control plane's own WebSocket URL, written by it when it creates the CR. Plain text — a URL is not a secret, and the control plane is authoritative for its own address, so the operator never derives it. Injected as daemon container env. |
+| `runtime.image`               | Sandbox image; change starts the drain-based rollout.                                                                                                                                                                                            |
+| `runtime.tiers[]`             | `{name, warmReplicas}` referencing cluster master template/pool pairs; 0 keeps a cold pool.                                                                                                                                                      |
+| `quota`                       | `maxAgents`/`cpu`/`memory`/`storage`; zero values mean unlimited.                                                                                                                                                                                |
+| `llmLimits`                   | Per-session and per-org token/request rate bounds, rendered into egress-gateway policies.                                                                                                                                                        |
+| `egressPolicy`                | `locked \| curated \| open` sandbox egress tier.                                                                                                                                                                                                 |
+| `llmDeny`                     | Emergency LLM shutoff (`all` or per-agent).                                                                                                                                                                                                      |
+| `deletionPolicy`              | `Delete` only in v1alpha1; `Archive` joins when its semantics exist.                                                                                                                                                                             |
 
 Status is operator-owned: `observedGeneration`, `namespace` (the resolved name,
 published atomically with `NamespaceReady`, only after create-or-adopt plus label
-validation — and the only place a consumer learns the namespace), conditions (`Ready`, `NamespaceReady`, `CredentialReady`,
-`LimitsApplied`, `Progressing`, `Degraded`), daemon/sandboxes/pools summaries,
+validation — and the only place a consumer learns the namespace), conditions (`Ready`, `NamespaceReady`,
+`LimitsApplied`, `Progressing`, `Degraded` — `CredentialReady` retires with the
+key path, see "Daemon identity"), daemon/sandboxes/pools summaries,
 `appliedLimits` (an _observation record_ of the gateway policy API — possibly
 `Unknown`, never an enforcement proof), and `rollout` progress.
 
@@ -167,21 +169,13 @@ reconcile pass:
    SandboxWarmPool per tier from the cluster master templates.
 8. `ensureDaemonPvc` — ReadWriteOncePod (the Recreate strategy assumes
    single-attach).
-9. `ensureDaemonDeployment` — strategy Recreate; required credential Secret
-   volume (kubelet gates startup — both retire with the key path); `credentialRevision` annotation forces
-   rotation rollouts. `CredentialReady` derives from pod state plus the pod's
-   `FailedMount` events, which is where the kubelet — and only the kubelet —
-   names a Secret it could not mount: a blocked mount reads
-   `False/CredentialSecretMissing`, an unplaced pod
-   `Unknown/DaemonPodUnschedulable`, any other stall `False/DaemonPodNotReady`.
-   An Event is only believed while it is still being re-emitted and the pod is
-   still awaiting container creation, so one retained past its fix cannot
-   describe a mount that now works. Reading Events keeps the no-Secret-verbs
-   boundary intact, and a forbidden events read only costs the nuance, never
-   the status pass. An Event can also be written after the pod's last update,
-   which no watch would wake the operator for, so the provisional verdict asks
-   the queue for one follow-up pass a minute later rather than waiting for the
-   full resync.
+9. `ensureDaemonDeployment` — strategy Recreate; a projected `serviceAccountToken`
+   volume carrying the control-plane audience, and the control plane's URL from
+   `spec.controlPlane.url` as container env. No credential Secret volume, no
+   `install-config` init container, no `--config` file: there is nothing to
+   install, and the token is a file the kubelet keeps current. The pod therefore
+   starts whether or not it can authenticate, which is the trade the key path's
+   kubelet gate bought and this one gives back.
 10. `ensureDaemonService` — ClusterIP for relay ingress and shim dial-in.
 
 Deletion (finalizer `agentconnect.md/org-envelope`): quiesce → delete
@@ -316,6 +310,63 @@ plane's view of it, and that is where it must now be surfaced. And
 find missing, and whether a daemon registered is a fact only the control plane
 holds. The condition retires rather than being redefined into something the
 operator cannot observe.
+
+#### The bootstrap contract
+
+Nothing is delivered to the pod, so the pod must be born able to dial. Three
+pieces, all stamped by `ensureDaemonDeployment`:
+
+- **Where to dial** — `spec.controlPlane.url`, written by the control plane when
+  it creates the CR, injected as container env. The operator passes it through
+  and never derives it; a URL is not a secret and the control plane is the
+  authority on its own address.
+- **What to present** — a projected `serviceAccountToken` volume with the
+  control-plane audience, on the daemon pod only, mounted read-only at a fixed
+  path. Shape and expiry mirror the sandbox template's shim-audience volume,
+  which is the same mechanism one hop down.
+- **Nothing else** — no credential Secret volume, no `install-config` init
+  container, no `--config` file. The init container existed to copy a
+  root-owned read-only Secret onto a writable volume at a mode the daemon would
+  accept; with no Secret there is nothing to copy.
+
+The daemon reads that file at every connect rather than once at startup: the
+kubelet rewrites it roughly hourly, and a token cached for the process lifetime
+is a token that expires mid-life and reconnects with a credential the control
+plane refuses.
+
+Network reachability is a separate question from the URL, and stays a
+deployment configuration: a policy selects namespaces and CIDRs, and cannot
+select the DNS name the CR carries.
+
+#### Which daemon record
+
+TokenReview proves an org. It does not, on its own, say _which daemon_ — and the
+WebSocket fencing, placements and session history are keyed by `daemonId`, with
+more than one daemon record possible per org (a laptop daemon and this one can
+coexist). The retired key path answered this by minting the key **for a daemon
+record** and remembering it as `credentialDaemonId`; something has to take that
+job.
+
+An envelope has exactly one daemon: one Deployment, one replica, Recreate. So the
+verified identity — cluster, namespace, ServiceAccount — designates exactly one
+daemon record, and the control plane provisions that record on the first
+authenticated connect and binds it to that identity, resolving the same row on
+every reconnect afterwards. This is the pattern the control plane already runs
+for humans: an OIDC subject with no local user JIT-provisions one and is bound to
+it thereafter.
+
+Three properties this has to hold:
+
+- **The binding is unique.** One daemon record per identity, enforced by the
+  store, so nothing can end up with two records competing for one envelope's
+  placements.
+- **Re-provisioning keeps history.** The namespace is derived, so an envelope
+  torn down and rebuilt presents the same identity and resolves to the same
+  daemon record — placements and session history survive, which is what an
+  operator would expect from re-provisioning rather than a rename.
+- **The daemon stores nothing.** It no longer needs to persist the `daemonId` it
+  adopts from `auth/ok`, because identity is re-derived from the token on every
+  connect. The control plane may still report it for logs and telemetry.
 
 #### The two names both sides must agree on
 
