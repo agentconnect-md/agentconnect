@@ -6,6 +6,8 @@ import { ShimListener } from '../shim/listener.js'
 import { ShimGitRunner } from '../shim/git-exec.js'
 import { TunnelProxy } from '../shim/tunnel-proxy.js'
 import { ShimFileSink } from '../shim/channels.js'
+import { ShimWorkspaceFiles } from '../shim/workspace-files-channel.js'
+import type { WorkspaceFiles } from '../workspace/workspace-files.js'
 import type { TunnelName } from '../shim/tunnel.js'
 import type { ShimSession } from '../shim/session.js'
 import type { SpawnRecord } from '../shim/binding.js'
@@ -112,6 +114,10 @@ export interface K8sRuntimePlane {
   /** A git runner for an agent whose workspace lives on its sandbox pod, or undefined when this
    *  daemon has no channel for it — the caller then keeps its local behaviour. */
   gitRunnerFor: (agentId: string, cwd?: string, abort?: AbortSignal) => GitRunner | undefined
+  /** The console's file operations for that same workspace, on the same condition. Separate from the
+   *  git runner because they are separate capabilities (`read` vs `exec`) and a channel is not a
+   *  blanket permission — not because the two ever disagree about which filesystem to use. */
+  workspaceFilesFor: (agentId: string) => WorkspaceFiles | undefined
   /** Whether this agent's work runs in a pod right now — the SAME condition `gitRunnerFor`
    *  answers on. Callers that build paths for that work read it here rather than re-deriving it,
    *  so an environment can never describe one filesystem while the execution happens in another. */
@@ -294,6 +300,10 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
       // self-hosted agent beside a cluster-backed one needs anyway.
       if (!runsInSandbox(agentId)) return undefined
       return new ShimGitRunner(driver.sessionFor(agentId)!, cwd, undefined, abort)
+    },
+    workspaceFilesFor: (agentId) => {
+      if (!runsInSandbox(agentId)) return undefined
+      return new ShimWorkspaceFiles(driver.sessionFor(agentId)!)
     },
     runsInSandbox,
     clearPath: async (agentId, root) => {

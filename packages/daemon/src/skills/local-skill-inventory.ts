@@ -21,6 +21,7 @@ import { join, resolve, sep } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import { readSkillLedger, skillLedgerLocation } from './skill-install-ledger.js'
 import { readBoundedFile } from './skill-source-snapshot.js'
+import type { WorkspaceFiles } from '../workspace/workspace-files.js'
 
 export type LocalSkillOrigin = 'dream-accepted' | 'managed' | 'git-source' | 'repo'
 
@@ -49,6 +50,8 @@ const MAX_TOTAL_BYTES = 200 * 1024
 // skill root with decoy files/dirs that never yield a skill, so the loop must
 // stop scanning even when it never reaches MAX_SKILLS.
 const MAX_SCANNED_ENTRIES = 4096
+/** Entries per page when the walk goes through the workspace seam; the protocol's own ceiling. */
+const LIST_PAGE = 500
 
 export function originForSourceKey(sourceKey: string): LocalSkillOrigin {
   if (sourceKey.startsWith('dream:')) return 'dream-accepted'
@@ -146,14 +149,7 @@ export async function listLocalSkills(cwd: string, stateDir: string): Promise<Lo
     // No or unreadable ledger — treat everything found as repo-committed.
   }
 
-  const entries: LocalSkillEntry[] = []
-  // A skill can exist under more than one root (e.g. installed into one and
-  // mirrored/committed in another). The harness resolves a skill by name, so
-  // surface each name once; a ledger-known origin wins over an incidental repo
-  // copy of the same name.
-  const byName = new Map<string, number>()
-  let totalBytes = 0
-  let scanned = 0
+  const acc = skillAccumulator(ownedOrigin)
   for (const root of SKILL_ROOTS) {
     let dir
     try {
@@ -165,36 +161,14 @@ export async function listLocalSkills(cwd: string, stateDir: string): Promise<Lo
     }
     try {
       for await (const dirent of dir) {
-        if (entries.length >= MAX_SKILLS || scanned >= MAX_SCANNED_ENTRIES) return finalize(entries)
-        scanned += 1
+        if (acc.exhausted()) return acc.done()
+        acc.scanned()
         // A symlink entry has isDirectory()===false here (dirent reflects the
         // link, not its target), so this also drops symlinked skill dirs.
         if (!dirent.isDirectory()) continue
         const text = await readSkillManifest(cwdReal, join(cwdReal, root, dirent.name))
         if (text === undefined) continue // no readable SKILL.md / unsafe ⇒ not a skill
-        const manifest = parseSkillManifest(text)
-        const relPath = `${root}/${dirent.name}`
-        const entry: LocalSkillEntry = {
-          name: manifest.name ?? dirent.name,
-          description: manifest.description,
-          origin: ownedOrigin.get(relPath) ?? 'repo',
-          path: relPath
-        }
-        const existing = byName.get(entry.name)
-        if (existing !== undefined) {
-          // Same name under a second root: keep one, preferring a ledger-known
-          // origin over an incidental `repo` copy. Not a new entry, so the count
-          // and byte budget are unaffected.
-          if (entries[existing]!.origin === 'repo' && entry.origin !== 'repo') entries[existing] = entry
-          continue
-        }
-        // Keep the whole response under the control-frame limit; stop cleanly
-        // rather than return an oversized payload the receiver would reject.
-        const size = Buffer.byteLength(JSON.stringify(entry)) + 1
-        if (totalBytes + size > MAX_TOTAL_BYTES) return finalize(entries)
-        totalBytes += size
-        byName.set(entry.name, entries.length)
-        entries.push(entry)
+        if (acc.add(root, dirent.name, text) === 'full') return acc.done()
       }
     } finally {
       // for-await closes the handle on normal completion; close defensively in
@@ -202,10 +176,124 @@ export async function listLocalSkills(cwd: string, stateDir: string): Promise<Lo
       await dir.close().catch(() => undefined)
     }
   }
-  return finalize(entries)
+  return acc.done()
 }
 
-function finalize(entries: LocalSkillEntry[]): LocalSkillEntry[] {
-  entries.sort((a, b) => a.name.localeCompare(b.name) || a.path.localeCompare(b.path))
-  return entries
+/**
+ * The caps, the name dedup and the ordering — everything about the RESULT rather than about the
+ * traversal. Shared because a sandbox workspace is walked differently (see
+ * {@link listSandboxSkills}) and must still answer with a list bounded the same way; a second copy
+ * of these rules is how one of the two ends up able to overflow the frame it rides.
+ */
+interface SkillAccumulator {
+  /** Whether a further entry could still be accepted; the traversal stops asking when it cannot. */
+  exhausted(): boolean
+  /** Count one inspected entry, skill or not — a hostile checkout's decoys bound the scan too. */
+  scanned(): void
+  add(root: string, dirName: string, manifestText: string): 'added' | 'skipped' | 'full'
+  done(): LocalSkillEntry[]
+}
+
+function skillAccumulator(ownedOrigin: Map<string, LocalSkillOrigin>): SkillAccumulator {
+  const entries: LocalSkillEntry[] = []
+  // A skill can exist under more than one root (e.g. installed into one and
+  // mirrored/committed in another). The harness resolves a skill by name, so
+  // surface each name once; a ledger-known origin wins over an incidental repo
+  // copy of the same name.
+  const byName = new Map<string, number>()
+  let totalBytes = 0
+  let scannedCount = 0
+  return {
+    exhausted: () => entries.length >= MAX_SKILLS || scannedCount >= MAX_SCANNED_ENTRIES,
+    scanned: () => {
+      scannedCount += 1
+    },
+    add(root, dirName, manifestText) {
+      const manifest = parseSkillManifest(manifestText)
+      const relPath = `${root}/${dirName}`
+      const entry: LocalSkillEntry = {
+        name: manifest.name ?? dirName,
+        description: manifest.description,
+        origin: ownedOrigin.get(relPath) ?? 'repo',
+        path: relPath
+      }
+      const existing = byName.get(entry.name)
+      if (existing !== undefined) {
+        // Same name under a second root: keep one, preferring a ledger-known
+        // origin over an incidental `repo` copy. Not a new entry, so the count
+        // and byte budget are unaffected.
+        if (entries[existing]!.origin === 'repo' && entry.origin !== 'repo') entries[existing] = entry
+        return 'skipped'
+      }
+      // Keep the whole response under the control-frame limit; stop cleanly
+      // rather than return an oversized payload the receiver would reject.
+      const size = Buffer.byteLength(JSON.stringify(entry)) + 1
+      if (totalBytes + size > MAX_TOTAL_BYTES) return 'full'
+      totalBytes += size
+      byName.set(entry.name, entries.length)
+      entries.push(entry)
+      return 'added'
+    },
+    done() {
+      entries.sort((a, b) => a.name.localeCompare(b.name) || a.path.localeCompare(b.path))
+      return entries
+    }
+  }
+}
+
+/**
+ * The same inventory for a workspace on a sandbox pod's volume, walked through the workspace file
+ * seam instead of this process's filesystem.
+ *
+ * A separate traversal rather than a shared one, and the reason is the hardening: the local scan
+ * STREAMS its dirents so a checkout with a million entries in `.claude/skills` is never fully
+ * materialized, and no channel can stream a directory — the seam answers in pages. What the seam
+ * does give it, by construction, is every containment property the local walk hand-rolls
+ * (realpath confinement, a final-component symlink refused, a bounded read), so the difference
+ * stays traversal-shaped and does not reopen a safety question.
+ *
+ * Origins are always `repo`: the daemon installs no skills into a cluster agent's workspace, so
+ * there is no ownership ledger for one and anything present came with the repository.
+ */
+export async function listSandboxSkills(
+  files: WorkspaceFiles,
+  root: string,
+  agentId: string
+): Promise<LocalSkillEntry[]> {
+  const acc = skillAccumulator(new Map())
+  for (const skillRoot of SKILL_ROOTS) {
+    let cursor: string | undefined
+    do {
+      let page
+      try {
+        page = await files.list(root, { agentId, path: skillRoot, limit: LIST_PAGE, ...(cursor ? { cursor } : {}) })
+      } catch {
+        break // the root is absent, or unreadable in a way the seam refused — not a skill root
+      }
+      if (!page.exists) break
+      for (const entry of page.entries) {
+        if (acc.exhausted()) return acc.done()
+        acc.scanned()
+        // `dir` only: the seam reports a symlinked entry as `symlink`, so this drops the same
+        // entries the local walk's `isDirectory()` does.
+        if (entry.type !== 'dir') continue
+        let manifest
+        try {
+          manifest = await files.read(root, {
+            agentId,
+            path: `${skillRoot}/${entry.name}/SKILL.md`,
+            offset: 0,
+            limit: MAX_MANIFEST_BYTES
+          })
+        } catch {
+          continue // refused (a symlinked SKILL.md, a path that escaped) ⇒ not a skill
+        }
+        // No content means no readable manifest: absent, a directory, or binary.
+        if (!manifest.exists || manifest.encoding !== 'utf8' || manifest.content === undefined) continue
+        if (acc.add(skillRoot, entry.name, manifest.content) === 'full') return acc.done()
+      }
+      cursor = page.nextCursor
+    } while (cursor !== undefined)
+  }
+  return acc.done()
 }

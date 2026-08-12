@@ -5,6 +5,7 @@ import { isAbsolute, normalize, resolve, sep } from 'node:path'
 import { applyFileSinkPayload } from './file-sink.js'
 import { GitExecPayloadSchema, type GitExecResult } from './git-exec.js'
 import type { ShimCapability } from './protocol.js'
+import { applyWorkspaceFilesPayload } from './workspace-files-channel.js'
 
 /**
  * The git subcommands a sandbox will run, enforced HERE.
@@ -171,6 +172,12 @@ export function createExecHandler(
     }
     if (capability === 'exec') return runGit(payload, deps, abort)
     if (capability === 'probe') return probeRuntimes(deps, abort)
+    // The console's file operations, run on the mounted volume. The root the daemon named is fenced
+    // with `assertInsideRoot` — the same check the clone target gets, and for the same reason: a
+    // path in a payload is a path on THIS filesystem however well-formed it looked over there.
+    if (capability === 'read') {
+      return applyWorkspaceFilesPayload(payload, (root) => assertInsideRoot(deps.workspaceRoot, root))
+    }
     throw new ExecRefusedError(`capability ${capability} is not served by this handler`)
   }
 }

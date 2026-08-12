@@ -1,33 +1,15 @@
 /**
- * `WorkspaceReader` — the daemon-local seam answering the CP's workspace file
- * list/read/write/delete REQs. File bytes live only on the daemon (§1/§12); the
- * CP proxies single pages/slices or one bounded scratch-file mutation and never
- * persists them.
+ * `WorkspaceReader` — the seam answering the CP's workspace file list/read/write/delete
+ * REQs. File bytes live only at the edge (§1/§12); the CP proxies single pages/slices or
+ * one bounded scratch-file mutation and never persists them.
  *
- * Containment is to `workspace.path` EXACTLY — the parent directory holds
- * `agent.json` and other daemon-local secrets/state, so escaping even one level
- * is a secret leak.
- * Every request path is (1) rejected if absolute, (2) lexically resolved against
- * the root and prefix-checked, then (3) canonicalised with `realpath` and
- * re-verified so symlinks (including an intermediate directory component swapped
- * to a symlink after the check) cannot smuggle a target outside the root; all
- * I/O runs on the canonical path. Violations throw `WorkspaceViolationError`,
- * which the dispatcher maps to a `BAD_PAYLOAD` error frame; missing paths are
- * data (`exists:false`), not errors. Never log file contents.
- *
- * Writes are scratch-only and coordinated with the daemon's agent runtime.
- * Once the runtime is quiescent, creation uses an exclusive hard-link publish
- * and replacement uses an atomic rename, so the target path is always either
- * the complete old file or the complete new file.
- *
- * Frame-size safety: every REP must serialise under the 256 KiB wire cap. JSON
- * escaping of control bytes is a 6× blowup, so `read` bounds the slice by the
- * *encoded* reply size (not the raw byte `limit`) and `list` stops a page early
- * when the encoded entries would overflow — both leave headroom for the envelope.
+ * This module is the POLICY half: which agent, which workspace root, whether that workspace
+ * may be written at all, and serialising a mutation against the agent's runtime. The
+ * filesystem work itself is {@link WorkspaceFiles}, so a cluster agent's files — which live
+ * on its sandbox pod's volume and not on this disk — are served by the same operations
+ * running inside the pod. Containment, the atomic publish and the frame budgets are
+ * documented there.
  */
-import { randomUUID } from 'node:crypto'
-import { promises as fs } from 'node:fs'
-import * as path from 'node:path'
 import type {
   WorkspaceListReq,
   WorkspaceListPage,
@@ -36,108 +18,26 @@ import type {
   WorkspaceWriteReq,
   WorkspaceWriteOk,
   WorkspaceDeleteReq,
-  WorkspaceDeleteOk,
-  WorkspaceEntry,
-  WorkspaceErrorReason
+  WorkspaceDeleteOk
 } from '@agentconnect.md/protocol'
-import { MAX_WORKSPACE_EDIT_BYTES } from '@agentconnect.md/protocol'
-import { REPLY_BUDGET, encodedBytes, utf8Boundary, fitToBudget } from './wire-slice.js'
+import {
+  localWorkspaceFiles,
+  workspaceEditBytes,
+  WorkspaceViolationError,
+  type WorkspaceFiles,
+  type WorkspaceLocation
+} from '../workspace/workspace-files.js'
 
-/** Bytes sniffed from the head of a file for binary (NUL byte) detection. */
-const SNIFF_BYTES = 8192
-
-/** Path-containment / bad-request violation → `BAD_PAYLOAD` on the wire. `reason`
- *  rides along in the error frame's `details` so the CP can answer a bad request
- *  with a status the console can tell apart from an offline daemon. */
-export class WorkspaceViolationError extends Error {
-  readonly reason: WorkspaceErrorReason
-  constructor(message: string, reason: WorkspaceErrorReason) {
-    super(message)
-    this.name = 'WorkspaceViolationError'
-    this.reason = reason
-  }
-}
-
-/** Optimistic-concurrency failure → `CONFLICT` on the wire. */
-export class WorkspaceConflictError extends Error {
-  readonly reason: WorkspaceErrorReason = 'stale'
-  constructor(message: string) {
-    super(message)
-    this.name = 'WorkspaceConflictError'
-  }
-}
-
-/** Lexical containment for ONE workspace-relative path, shared by the file reader
- * and the git seam: `.git`, an absolute path and anything resolving outside the
- * root are violations. Returns the lexically-resolved absolute path — a caller that
- * goes on to read bytes must still canonicalise it (see {@link canonicalUnder}). */
-/**
- * Lexical containment PLUS realpath re-verification on the real target, which is
- * the only check that closes the check-vs-use gap: `containedWorkspacePath` is
- * lexical, and `lstat`/`stat` follow INTERMEDIATE components, so a symlinked
- * directory inside the workspace otherwise resolves out of it. Returns the
- * canonical path, or `null` when the path (or the root) is absent — absence is
- * DATA, and a deleted-but-tracked path still has a diff. Every seam that touches
- * the filesystem or hands git a pathspec must come through here.
- */
-export async function canonicalWorkspacePath(root: string, relPath: string): Promise<string | null> {
-  const resolved = containedWorkspacePath(root, relPath)
-  let realRoot: string
-  try {
-    realRoot = await fs.realpath(root)
-  } catch (err) {
-    if (isErrno(err, 'ENOENT')) return null
-    throw err
-  }
-  try {
-    const canon = await fs.realpath(resolved)
-    if (!under(realRoot, canon)) {
-      throw new WorkspaceViolationError('path resolves outside the workspace root', 'path-escape')
-    }
-    if (containsGitInternals(path.relative(realRoot, canon))) {
-      throw new WorkspaceViolationError('git internals are not readable', 'git-internals')
-    }
-    return canon
-  } catch (err) {
-    if (!isErrno(err, 'ENOENT')) throw err
-  }
-  // The leaf is absent, which is data — but the CHAIN above it still has to be checked, or
-  // "outside and present" (rejected) and "outside and absent" (exists:false) remain two
-  // distinguishable answers, i.e. the same oracle inverted. Canonicalise the deepest ancestor
-  // that does exist and verify containment there.
-  let ancestor = path.dirname(resolved)
-  for (;;) {
-    try {
-      const canon = await fs.realpath(ancestor)
-      if (!under(realRoot, canon) && canon !== realRoot) {
-        throw new WorkspaceViolationError('path resolves outside the workspace root', 'path-escape')
-      }
-      return null
-    } catch (err) {
-      if (err instanceof WorkspaceViolationError) throw err
-      if (!isErrno(err, 'ENOENT')) throw err
-      const up = path.dirname(ancestor)
-      // Ran out of chain without finding anything real: nothing to escape through.
-      if (up === ancestor) return null
-      ancestor = up
-    }
-  }
-}
-
-export function containedWorkspacePath(root: string, relPath: string): string {
-  if (containsGitInternals(relPath)) {
-    throw new WorkspaceViolationError('git internals are not readable', 'git-internals')
-  }
-  if (path.isAbsolute(relPath)) throw new WorkspaceViolationError('absolute paths are not allowed', 'path-escape')
-  const resolved = path.resolve(root, relPath)
-  if (!under(root, resolved)) throw new WorkspaceViolationError('path escapes the workspace root', 'path-escape')
-  return resolved
-}
-
-export interface WorkspaceLocation {
-  root: string
-  scratch: boolean
-}
+// Re-exported rather than moved-and-chased: the error classes are what the CP dispatcher maps onto
+// wire frames, and the two path helpers are what the git seam contains its pathspecs with. Neither
+// caller cares that the implementation now lives in the placement layer.
+export {
+  canonicalWorkspacePath,
+  containedWorkspacePath,
+  WorkspaceConflictError,
+  WorkspaceViolationError,
+  type WorkspaceLocation
+} from '../workspace/workspace-files.js'
 
 export interface WorkspaceReader {
   list(req: WorkspaceListReq): Promise<WorkspaceListPage>
@@ -148,21 +48,18 @@ export interface WorkspaceReader {
 
 export type WorkspaceWriteCoordinator = <T>(agentId: string, write: () => Promise<T>) => Promise<T>
 
-function isErrno(err: unknown, code: string): boolean {
-  return (err as NodeJS.ErrnoException | null)?.code === code
-}
-
-function under(root: string, p: string): boolean {
-  return p === root || p.startsWith(root + path.sep)
-}
-
-function containsGitInternals(relPath: string): boolean {
-  return relPath.split(/[\\/]+/).some((part) => part.toLowerCase() === '.git')
-}
+/**
+ * Which filesystem an agent's workspace files live on; undefined ⇒ this daemon's.
+ *
+ * Registered like the git runner's resolver, and per-agent for the same reason: one daemon can serve
+ * a cluster-backed agent beside a self-hosted one, and only the execution plane knows which is which.
+ */
+export type WorkspaceFilesResolver = (agentId: string) => WorkspaceFiles | undefined
 
 export function createWorkspaceReader(
   workspaceByAgent: (agentId: string, sessionId?: string) => WorkspaceLocation | undefined,
-  coordinateWrite: WorkspaceWriteCoordinator
+  coordinateWrite: WorkspaceWriteCoordinator,
+  filesFor: WorkspaceFilesResolver = () => undefined
 ): WorkspaceReader {
   function locationFor(agentId: string, sessionId?: string): WorkspaceLocation {
     const location = workspaceByAgent(agentId, sessionId)
@@ -170,366 +67,36 @@ export function createWorkspaceReader(
     return location
   }
 
-  /**
-   * Lexical containment. Rejects absolute paths and `..` escapes; returns the
-   * lexically-resolved path plus the canonical (realpath'd) root, or `null` for
-   * `realRoot` when the root does not exist yet (callers report `exists:false`).
-   */
-  async function resolveContained(
-    root: string,
-    relPath: string
-  ): Promise<{ resolved: string; realRoot: string | null }> {
-    const resolved = containedWorkspacePath(root, relPath)
-    try {
-      return { resolved, realRoot: await fs.realpath(root) }
-    } catch (err) {
-      if (isErrno(err, 'ENOENT')) return { resolved, realRoot: null } // no root ⇒ nothing to escape
-      throw err
-    }
-  }
-
-  /** Canonicalise an existing target and re-verify containment on the REAL path,
-   *  closing the check-vs-use gap (a symlinked intermediate component resolves
-   *  out and is rejected here). Returns the canonical path used for I/O. */
-  async function canonicalUnder(realRoot: string, abs: string): Promise<string> {
-    const canon = await fs.realpath(abs)
-    if (!under(realRoot, canon))
-      throw new WorkspaceViolationError('path resolves outside the workspace root', 'path-escape')
-    if (containsGitInternals(path.relative(realRoot, canon))) {
-      throw new WorkspaceViolationError('git internals are not readable', 'git-internals')
-    }
-    return canon
-  }
-
-  /** Create any missing parent directories one component at a time. Existing
-   * components must be real directories; every step is re-canonicalised under
-   * the workspace root before the next component is touched. */
-  async function createParentUnder(root: string, realRoot: string, resolved: string): Promise<string> {
-    const relativeParent = path.relative(path.resolve(root), path.dirname(resolved))
-    let parent = realRoot
-    for (const part of relativeParent.split(path.sep).filter(Boolean)) {
-      const candidate = path.join(parent, part)
-      let st
-      try {
-        st = await fs.lstat(candidate)
-      } catch (err) {
-        if (!isErrno(err, 'ENOENT')) throw err
-        try {
-          await fs.mkdir(candidate)
-        } catch (mkdirErr) {
-          if (!isErrno(mkdirErr, 'EEXIST')) throw mkdirErr
-        }
-        st = await fs.lstat(candidate)
-      }
-      if (!st.isDirectory()) throw new WorkspaceViolationError('the parent path is not a directory', 'not-a-directory')
-      parent = await canonicalUnder(realRoot, candidate)
-    }
-    return parent
-  }
+  const filesOf = (agentId: string): WorkspaceFiles => filesFor(agentId) ?? localWorkspaceFiles
 
   return {
     async list(req) {
       const root = locationFor(req.agentId, req.sessionId).root
-      const { resolved, realRoot } = await resolveContained(root, req.path)
-      const notFound = { agentId: req.agentId, path: req.path, exists: false, entries: [] as WorkspaceEntry[] }
-      if (realRoot === null) return notFound // workspace root missing
-
-      let target: string
-      try {
-        target = await canonicalUnder(realRoot, resolved)
-      } catch (err) {
-        if (isErrno(err, 'ENOENT')) return notFound
-        throw err
-      }
-
-      let dirents
-      try {
-        dirents = await fs.readdir(target, { withFileTypes: true })
-      } catch (err) {
-        // Missing dir or a non-directory target "does not exist" as a directory.
-        if (isErrno(err, 'ENOENT') || isErrno(err, 'ENOTDIR')) return notFound
-        throw err
-      }
-
-      const entries: WorkspaceEntry[] = []
-      for (const d of dirents) {
-        if (d.name === '.git') continue // git-repo mode internals
-        const type: WorkspaceEntry['type'] = d.isDirectory()
-          ? 'dir'
-          : d.isFile()
-            ? 'file'
-            : d.isSymbolicLink()
-              ? 'symlink'
-              : 'other'
-        const entry: WorkspaceEntry = { name: d.name, type }
-        if (type === 'file') {
-          // lstat (not stat): never follow symlinks for size/mtime.
-          try {
-            const st = await fs.lstat(path.join(target, d.name))
-            entry.size = st.size
-            entry.mtime = st.mtime.toISOString()
-          } catch {
-            // raced deletion — keep the name-only entry
-          }
-        }
-        entries.push(entry)
-      }
-      entries.sort(compareEntries)
-
-      // Opaque cursor = numeric index into the sorted listing. Page by BOTH the
-      // count limit and an encoded-size budget (long/many names could overflow
-      // the frame); always emit ≥1 entry so a pathological name still makes
-      // progress rather than wedging the cursor.
-      const start = req.cursor !== undefined && /^\d+$/.test(req.cursor) ? Number(req.cursor) : 0
-      const page: WorkspaceEntry[] = []
-      let acc = 0
-      for (let i = start; i < entries.length && page.length < req.limit; i++) {
-        const e = entries[i]!
-        const enc = encodedBytes(e) + 1 // + array separator
-        if (page.length > 0 && acc + enc > REPLY_BUDGET) break
-        page.push(e)
-        acc += enc
-      }
-      const consumed = start + page.length
-      return {
-        agentId: req.agentId,
-        path: req.path,
-        exists: true,
-        entries: page,
-        ...(consumed < entries.length ? { nextCursor: String(consumed) } : {})
-      }
+      return filesOf(req.agentId).list(root, req)
     },
 
     async read(req) {
       const root = locationFor(req.agentId, req.sessionId).root
-      const { resolved, realRoot } = await resolveContained(root, req.path)
-      const notFound = { agentId: req.agentId, path: req.path, exists: false }
-      if (realRoot === null) return notFound
-
-      // lstat the lexical target first: this rejects a FINAL-component symlink
-      // (isFile() is false) before we canonicalise.
-      let st
-      try {
-        st = await fs.lstat(resolved)
-      } catch (err) {
-        if (isErrno(err, 'ENOENT')) return notFound
-        throw err
-      }
-      // A DIRECTORY is DATA (`type:'dir'`, no content): reporting it as a violation
-      // made a `?file=` naming a directory indistinguishable from an offline daemon.
-      // Every OTHER non-regular target keeps the violation — a final-component
-      // symlink is a containment matter and must not read as an ordinary answer.
-      if (st.isDirectory()) {
-        // Canonicalise FIRST. `lstat` follows intermediate components, so a symlinked
-        // directory inside the workspace would otherwise let this branch report the
-        // existence and mtime of a host directory outside it — the same oracle the
-        // git-diff seam had, reopened by making directories an ordinary answer.
-        const dir = await canonicalUnder(realRoot, resolved)
-        const canonSt = await fs.lstat(dir)
-        return {
-          agentId: req.agentId,
-          path: req.path,
-          exists: true,
-          type: 'dir' as const,
-          mtime: canonSt.mtime.toISOString()
-        }
-      }
-      if (!st.isFile()) throw new WorkspaceViolationError('not a regular file', 'not-a-file')
-
-      // Canonicalise and re-verify (catches an intermediate component swapped to
-      // a symlink after resolveContained), then read the canonical path.
-      const target = await canonicalUnder(realRoot, resolved)
-      const size = st.size
-      const mtime = st.mtime.toISOString()
-      const fh = await fs.open(target, 'r')
-      try {
-        // Binary detection: NUL byte anywhere in the first 8 KiB ⇒ no content.
-        const sniffLen = Math.min(SNIFF_BYTES, size)
-        if (sniffLen > 0) {
-          const sniff = Buffer.alloc(sniffLen)
-          const { bytesRead } = await fh.read(sniff, 0, sniffLen, 0)
-          if (sniff.subarray(0, bytesRead).includes(0)) {
-            return {
-              agentId: req.agentId,
-              path: req.path,
-              exists: true,
-              type: 'file' as const,
-              size,
-              mtime,
-              encoding: 'none' as const
-            }
-          }
-        }
-
-        // Read up to the requested byte count, then shrink so the JSON-escaped
-        // reply fits the frame budget and ends on a UTF-8 boundary. `limit` is a
-        // ceiling; the slice may be shorter. `nextOffset` (not a client-side
-        // recount of `content`) is the authoritative next offset.
-        const want = Math.min(req.limit, Math.max(0, size - req.offset))
-        let slice = Buffer.alloc(0)
-        if (want > 0) {
-          const buf = Buffer.alloc(want)
-          const { bytesRead } = await fh.read(buf, 0, want, req.offset)
-          slice = buf.subarray(0, bytesRead)
-        }
-
-        let end = utf8Boundary(slice, slice.length)
-        // Control-byte-heavy content can escape past the budget; shrink to fit.
-        const fitted = fitToBudget(slice, end)
-        end = fitted.end
-        const content = fitted.content
-
-        const nextOffset = req.offset + end
-        return {
-          agentId: req.agentId,
-          path: req.path,
-          exists: true,
-          type: 'file' as const,
-          size,
-          mtime,
-          encoding: 'utf8' as const,
-          content,
-          offset: req.offset,
-          nextOffset,
-          truncated: nextOffset < size
-        }
-      } finally {
-        await fh.close()
-      }
+      return filesOf(req.agentId).read(root, req)
     },
 
     async write(req) {
+      // Gated BEFORE the coordinator so a read-only workspace is refused without first waiting for
+      // the agent's runtime to go quiet, and the bytes are validated here so oversized or binary
+      // content is refused without being shipped anywhere. Both checks run again where it lands.
       if (!locationFor(req.agentId).scratch) {
         throw new WorkspaceViolationError(
           'workspace files are editable only in scratch workspaces',
           'read-only-workspace'
         )
       }
-
-      const bytes = Buffer.from(req.contentBase64, 'base64')
-      if (bytes.byteLength > MAX_WORKSPACE_EDIT_BYTES) {
-        throw new WorkspaceViolationError(
-          `workspace file exceeds the ${MAX_WORKSPACE_EDIT_BYTES}-byte edit limit`,
-          'too-large'
-        )
-      }
-      if (bytes.includes(0)) throw new WorkspaceViolationError('binary files are not editable', 'binary')
-      try {
-        new TextDecoder('utf-8', { fatal: true }).decode(bytes)
-      } catch {
-        throw new WorkspaceViolationError('workspace file content must be valid UTF-8', 'not-utf8')
-      }
+      workspaceEditBytes(req)
 
       return coordinateWrite(req.agentId, async () => {
+        // Re-read inside the coordinator, as before: the agent's configuration can change while a
+        // write waits for quiescence, and the mode that governs is the one at mutation time.
         const location = locationFor(req.agentId)
-        if (!location.scratch) {
-          throw new WorkspaceViolationError(
-            'workspace files are editable only in scratch workspaces',
-            'read-only-workspace'
-          )
-        }
-
-        let { resolved, realRoot } = await resolveContained(location.root, req.path)
-        if (realRoot === null && req.ifMatchMtime === undefined) {
-          await fs.mkdir(location.root, { recursive: true })
-          ;({ resolved, realRoot } = await resolveContained(location.root, req.path))
-        }
-        if (realRoot === null) throw changedFile()
-
-        if (req.ifMatchMtime === undefined) {
-          const parent = await createParentUnder(location.root, realRoot, resolved)
-
-          const target = path.join(parent, path.basename(resolved))
-          try {
-            await fs.lstat(target)
-            throw existingFile()
-          } catch (err) {
-            if (!isErrno(err, 'ENOENT')) throw err
-          }
-
-          const temp = path.join(parent, `.agentconnect-edit-${randomUUID()}.tmp`)
-          try {
-            await fs.writeFile(temp, bytes, { flag: 'wx', mode: 0o666 })
-            try {
-              await fs.link(temp, target)
-            } catch (err) {
-              if (isErrno(err, 'EEXIST')) throw existingFile()
-              throw err
-            }
-          } finally {
-            await fs.rm(temp, { force: true }).catch(() => {})
-          }
-
-          const written = await fs.stat(target)
-          return {
-            agentId: req.agentId,
-            path: req.path,
-            size: written.size,
-            mtime: written.mtime.toISOString()
-          }
-        }
-
-        let initial
-        try {
-          initial = await fs.lstat(resolved)
-        } catch (err) {
-          if (isErrno(err, 'ENOENT')) throw changedFile()
-          throw err
-        }
-        if (!initial.isFile()) throw new WorkspaceViolationError('not a regular file', 'not-a-file')
-        if (initial.mtime.toISOString() !== req.ifMatchMtime) throw changedFile()
-
-        let target: string
-        try {
-          target = await canonicalUnder(realRoot, resolved)
-        } catch (err) {
-          if (isErrno(err, 'ENOENT')) throw changedFile()
-          throw err
-        }
-
-        // Match the read path's binary guard. The editor never turns a binary file
-        // into text merely because a caller bypassed the console UI.
-        const fh = await fs.open(target, 'r')
-        try {
-          const sniffLen = Math.min(SNIFF_BYTES, initial.size)
-          if (sniffLen > 0) {
-            const sniff = Buffer.alloc(sniffLen)
-            const { bytesRead } = await fh.read(sniff, 0, sniffLen, 0)
-            if (sniff.subarray(0, bytesRead).includes(0)) {
-              throw new WorkspaceViolationError('binary files are not editable', 'binary')
-            }
-          }
-        } finally {
-          await fh.close()
-        }
-
-        const temp = path.join(path.dirname(target), `.agentconnect-edit-${randomUUID()}.tmp`)
-        try {
-          await fs.writeFile(temp, bytes, { flag: 'wx', mode: initial.mode & 0o777 })
-          await fs.chmod(temp, initial.mode & 0o777)
-
-          let latest
-          try {
-            latest = await fs.lstat(target)
-          } catch (err) {
-            if (isErrno(err, 'ENOENT')) throw changedFile()
-            throw err
-          }
-          if (!sameFileVersion(initial, latest)) throw changedFile()
-
-          await fs.rename(temp, target)
-        } catch (err) {
-          await fs.rm(temp, { force: true }).catch(() => {})
-          throw err
-        }
-
-        const written = await fs.stat(target)
-        return {
-          agentId: req.agentId,
-          path: req.path,
-          size: written.size,
-          mtime: written.mtime.toISOString()
-        }
+        return filesOf(req.agentId).write(location.root, location.scratch, req)
       })
     },
 
@@ -543,68 +110,8 @@ export function createWorkspaceReader(
 
       return coordinateWrite(req.agentId, async () => {
         const location = locationFor(req.agentId)
-        if (!location.scratch) {
-          throw new WorkspaceViolationError(
-            'workspace files are editable only in scratch workspaces',
-            'read-only-workspace'
-          )
-        }
-
-        const { resolved, realRoot } = await resolveContained(location.root, req.path)
-        if (realRoot === null) throw changedFile()
-
-        let initial
-        try {
-          initial = await fs.lstat(resolved)
-        } catch (err) {
-          if (isErrno(err, 'ENOENT')) throw changedFile()
-          throw err
-        }
-        if (!initial.isFile()) throw new WorkspaceViolationError('not a regular file', 'not-a-file')
-        if (initial.mtime.toISOString() !== req.ifMatchMtime) throw changedFile()
-
-        let target: string
-        try {
-          target = await canonicalUnder(realRoot, resolved)
-        } catch (err) {
-          if (isErrno(err, 'ENOENT')) throw changedFile()
-          throw err
-        }
-
-        let latest
-        try {
-          latest = await fs.lstat(target)
-        } catch (err) {
-          if (isErrno(err, 'ENOENT')) throw changedFile()
-          throw err
-        }
-        if (!sameFileVersion(initial, latest)) throw changedFile()
-        await fs.unlink(target)
-        return { agentId: req.agentId, path: req.path }
+        return filesOf(req.agentId).delete(location.root, location.scratch, req)
       })
     }
   }
-}
-
-function sameFileVersion(a: Awaited<ReturnType<typeof fs.lstat>>, b: Awaited<ReturnType<typeof fs.lstat>>): boolean {
-  return b.isFile() && a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeMs === b.mtimeMs
-}
-
-function changedFile(): WorkspaceConflictError {
-  return new WorkspaceConflictError('the workspace file changed since it was read; reload and retry')
-}
-
-function existingFile(): WorkspaceConflictError {
-  return new WorkspaceConflictError('the workspace file already exists; open it to edit')
-}
-
-/** dirs first, then case-insensitive alphabetical (stable within the page). */
-function compareEntries(a: WorkspaceEntry, b: WorkspaceEntry): number {
-  const aDir = a.type === 'dir' ? 0 : 1
-  const bDir = b.type === 'dir' ? 0 : 1
-  if (aDir !== bDir) return aDir - bDir
-  const al = a.name.toLowerCase()
-  const bl = b.name.toLowerCase()
-  if (al !== bl) return al < bl ? -1 : 1
-  return a.name < b.name ? -1 : a.name > b.name ? 1 : 0
 }

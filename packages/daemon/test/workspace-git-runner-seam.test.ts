@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import {
-  consoleWorkspaceGitRoot,
+  consoleWorkspaceRoot,
   prefetchWorkspace,
   removeSessionWorktree,
   sessionWorktreeRoot,
@@ -270,7 +270,7 @@ describe('workspace-manager git runner seam', () => {
 // A resolver that routes into the sandbox is worthless if it is handed a path from this daemon's
 // filesystem — the shim's cwd fence refuses it, `isRepo` swallows the refusal, and the Git panel
 // reports "not a git checkout" over a checkout that is there.
-describe('consoleWorkspaceGitRoot', () => {
+describe('consoleWorkspaceRoot', () => {
   const agentAt = (path: string, workspace: Partial<Agent['workspace']> = {}): Agent =>
     ({
       ...clusterAgent('bot-root', path),
@@ -279,31 +279,25 @@ describe('consoleWorkspaceGitRoot', () => {
 
   it('is the daemon-local path for a self-hosted daemon', () => {
     expect(
-      consoleWorkspaceGitRoot(
-        agentAt('/var/lib/ac/agents/bot/workspace'),
-        '/var/lib/ac/agents/bot/workspace',
-        undefined
-      )
+      consoleWorkspaceRoot(agentAt('/var/lib/ac/agents/bot/workspace'), '/var/lib/ac/agents/bot/workspace', undefined)
     ).toBe('/var/lib/ac/agents/bot/workspace')
   })
 
   it('is the POD checkout under --k8s, never the daemon path the runtime cannot see', () => {
     setSandboxWorkspaceMode(true)
     const local = '/var/lib/agentconnect/agents/bot/workspace'
-    expect(consoleWorkspaceGitRoot(agentAt(local), local, '/agent')).toBe('/agent/repo')
+    expect(consoleWorkspaceRoot(agentAt(local), local, '/agent')).toBe('/agent/repo')
   })
 
   it('falls back to the legacy mount when the bound shim reported no root', () => {
     setSandboxWorkspaceMode(true)
-    expect(consoleWorkspaceGitRoot(agentAt('/local/ws'), '/local/ws', undefined)).toBe('/agent/repo')
+    expect(consoleWorkspaceRoot(agentAt('/local/ws'), '/local/ws', undefined)).toBe('/agent/repo')
   })
 
   it('follows the same coordinates the RUNTIME gets — from-scratch and a working subdirectory', () => {
     setSandboxWorkspaceMode(true)
-    expect(consoleWorkspaceGitRoot(agentAt('/local/ws', { mode: 'from-scratch' }), '/local/ws', '/agent')).toBe(
-      '/agent'
-    )
-    expect(consoleWorkspaceGitRoot(agentAt('/local/ws', { agentDir: 'services/api' }), '/local/ws', '/agent')).toBe(
+    expect(consoleWorkspaceRoot(agentAt('/local/ws', { mode: 'from-scratch' }), '/local/ws', '/agent')).toBe('/agent')
+    expect(consoleWorkspaceRoot(agentAt('/local/ws', { agentDir: 'services/api' }), '/local/ws', '/agent')).toBe(
       '/agent/repo/services/api'
     )
   })
@@ -312,13 +306,13 @@ describe('consoleWorkspaceGitRoot', () => {
     setSandboxWorkspaceMode(true)
     // The local resolver answers undefined for a sessionId naming a session that is NOT isolated.
     // Turning that into the shared checkout would answer a question about a worktree that has none.
-    expect(consoleWorkspaceGitRoot(agentAt('/local/ws'), undefined, '/agent')).toBeUndefined()
+    expect(consoleWorkspaceRoot(agentAt('/local/ws'), undefined, '/agent')).toBeUndefined()
   })
 
   it('refuses a session-isolated worktree loudly rather than naming the shared checkout', () => {
     setSandboxWorkspaceMode(true)
     expect(() =>
-      consoleWorkspaceGitRoot(agentAt('/local/ws'), '/local/ws/.sessions/abc', '/agent', { isolation: 'session' })
+      consoleWorkspaceRoot(agentAt('/local/ws'), '/local/ws/.sessions/abc', '/agent', { isolation: 'session' })
     ).toThrow(/session-isolated/)
   })
 })

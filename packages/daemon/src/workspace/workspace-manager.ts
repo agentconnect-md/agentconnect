@@ -848,15 +848,17 @@ export function clusterWorkspaceCwd(
 }
 
 /**
- * The root the CONSOLE's git seam runs in — the coordinates {@link clusterWorkspaceCwd} gives the
- * runtime, because the two run git in the same checkout. The panels went without one: the seam
- * handed a ShimGitRunner `agent.workspace.path`, the shim's cwd fence refused it, `isRepo` swallowed
- * the refusal, and a cluster agent's Git panel reported "not a git checkout" over a real checkout.
+ * The root the CONSOLE's workspace surfaces work in — the coordinates {@link clusterWorkspaceCwd}
+ * gives the runtime, because the directory the console browses, diffs and commits is the one the
+ * agent works in. The panels went without one: the git seam handed a ShimGitRunner
+ * `agent.workspace.path`, the shim's cwd fence refused it, `isRepo` swallowed the refusal, and a
+ * cluster agent's Git panel reported "not a git checkout" over a real checkout — while the file
+ * reader listed an empty daemon-side directory for the same workspace.
  *
  * `local` still decides WHETHER there is a workspace to name — absent stays absent, so a
  * shared-workspace sessionId is refused as before — and only the coordinates change.
  */
-export function consoleWorkspaceGitRoot(
+export function consoleWorkspaceRoot(
   agent: Agent,
   local: string | undefined,
   runtimeRoot: string | undefined,

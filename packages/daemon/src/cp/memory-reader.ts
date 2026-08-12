@@ -41,7 +41,7 @@ import type {
   MemoryRecordHistoryPage,
   MemoryPluginOperation
 } from '@agentconnect.md/protocol'
-import { fitToBudget, utf8Boundary } from './wire-slice.js'
+import { fitToBudget, utf8Boundary } from '../wire-slice.js'
 import {
   listMemory,
   listMemoryHistory,

@@ -5,12 +5,16 @@ import { join } from 'node:path'
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 import { createWorkspaceGit } from '../src/cp/workspace-git.js'
 import { WorkspaceViolationError } from '../src/cp/workspace-reader.js'
-import { daemonGitCredentialTarget, initGitInjection, workspaceGitLocalEnv } from '../src/workspace/git-injection.js'
+import {
+  daemonGitCredentialTarget,
+  initGitInjection,
+  workspaceGitLocalEnv,
+  gitFor
+} from '../src/workspace/git-injection.js'
 import type { GitRunner } from '../src/workspace/git-runner.js'
 import { parsePorcelainV2 } from '../src/shim/git-exec.js'
 import { setWorkspaceGitRunnerResolver } from '../src/workspace/workspace-manager.js'
 import { LocalGitRunner } from '../src/workspace/git-runner.js'
-import { gitFor } from '../src/workspace/git-injection.js'
 
 // Real git against real checkouts, no simple-git mock: the write half is a set of claims about what
 // `git add` / `reset` / `commit` / `push` actually do to an index and a remote, and a mocked runner

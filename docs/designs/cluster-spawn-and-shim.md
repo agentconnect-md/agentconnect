@@ -137,6 +137,23 @@ re-checked on the shim side — a daemon-side check cannot assume anything about
 environment. That re-check covers the `cwd` **and** a clone's target, which is a path in
 argv the cwd fence never looks at.
 
+The `read` channel — the console's workspace file list/read/write/delete — is the one place
+where the rule above inverts, and for a reason that is the rule rather than an exception to
+it. There is no orchestration to keep: the daemon names ONE operation and the file work is
+placement, not policy. So the shim runs the _same_ `localWorkspaceFiles` implementation the
+daemon runs for a local workspace, which means its containment is not a second version of
+the daemon's checks that could drift from them — it is those checks, executing on the side
+that holds the filesystem. The daemon still decides which agent, which root, and whether the
+workspace may be written at all, and sends that answer with the request; the shim fences the
+root it was given against its own workspace root and enforces the write gate again.
+
+Two refusals travel as DATA in the reply rather than as an error frame: a containment
+violation (with its machine-readable reason) and an optimistic-concurrency conflict. An error
+frame carries only a string, and the console needs to tell "that path is not readable" from
+"the daemon may be offline" — flattening them would make a contained path escape look like an
+outage. Everything else stays an error frame, which is what a bad root or an unexpected `EIO`
+should read as.
+
 ## 6. The credential tunnel, and which way it runs
 
 A tunnel exists because a process **inside** the pod wants a daemon-side server, while shim
