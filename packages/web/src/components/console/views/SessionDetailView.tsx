@@ -359,7 +359,8 @@ function msgStep(m: SessionMessageDto, toolSessionId?: string, platform?: string
     return {
       lane: 'THINK',
       laneColor: 'var(--brand)',
-      dot: 'var(--brand)',
+      // Purple, not brand magenta — a magenta dot reads as an error marker.
+      dot: 'var(--purple-500)',
       weight: 500,
       textColor: 'var(--text-tertiary)',
       codeColor: 'var(--text-secondary)',
@@ -476,7 +477,7 @@ function thinkStep(text: string, time?: string, platform?: string): FmtStep {
   return {
     lane: 'THINK',
     laneColor: 'var(--brand)',
-    dot: 'var(--brand)',
+    dot: 'var(--purple-500)',
     weight: 500,
     textColor: 'var(--text-tertiary)',
     codeColor: 'var(--text-secondary)',
@@ -512,7 +513,7 @@ function CopyTurnButton({ text }: { text: string }) {
 
 // A step's non-text extras (code block, file chips, captured tool body) — rendered
 // identically in a turn's plain answer and in its collapsed "work" rows.
-function StepExtras({ step, sessionId }: { step: FmtStep; sessionId?: string }) {
+function StepExtras({ step, sessionId, autoOpenTool }: { step: FmtStep; sessionId?: string; autoOpenTool?: boolean }) {
   const toolSessionId = step.toolSessionId ?? sessionId
   return (
     <>
@@ -530,8 +531,82 @@ function StepExtras({ step, sessionId }: { step: FmtStep; sessionId?: string }) 
           ))}
         </div>
       )}
-      {step.msg && toolSessionId && <ToolBodyDetail msg={step.msg} sessionId={toolSessionId} />}
+      {step.msg && toolSessionId && <ToolBodyDetail msg={step.msg} sessionId={toolSessionId} autoOpen={autoOpenTool} />}
     </>
+  )
+}
+
+// What the dot before a work-step title means, surfaced on hover.
+const LANE_TITLE: Record<string, string> = {
+  THINK: 'Reasoning',
+  PLAN: 'Plan',
+  TOOL: 'Tool command',
+  EDIT: 'File edit'
+}
+
+// Reasoning text is markdown — drop paired emphasis/backtick/heading markers so a
+// title line never shows raw `**`/`` ` `` wrappers.
+function stripMdMarkers(s: string): string {
+  return s
+    .replace(/^#{1,6}\s+/, '')
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/__(.+?)__/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+}
+
+// One work step, Claude-Code style: a one-line clickable title with a trailing
+// chevron; expanding reveals the step's full text and extras (command, files,
+// captured tool body). A row with nothing beyond its title line isn't expandable.
+function WorkStepRow({ step, sessionId, divider }: { step: FmtStep; sessionId?: string; divider: boolean }) {
+  const [open, setOpen] = useState(false)
+  // Tool rows keep their title in `code` (msgStep), so fall back to its first line.
+  const rawTitle = (step.text || step.code || '').split('\n', 1)[0]?.trim() || step.lane || 'Step'
+  const title = step.text ? stripMdMarkers(rawTitle) : rawTitle
+  // Single-line code with no text IS the title — expanding must not repeat it.
+  const codeBeyondTitle = !!step.code && (!!step.text || step.code.includes('\n'))
+  const expandable = !!step.msg || step.files.length > 0 || codeBeyondTitle || step.text.includes('\n')
+  const failed = (step.msg?.toolStatus ?? '').toLowerCase() === 'failed'
+  return (
+    <div className={divider ? 'border-t border-(--border-subtle)' : ''}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        disabled={!expandable}
+        className={`flex w-full min-w-0 items-center gap-[8px] border-0 bg-transparent px-[14px] py-[10px] text-left ${
+          expandable ? 'cursor-pointer hover:bg-(--surface-hover)' : ''
+        }`}
+      >
+        <span
+          className="dot h-[7px] w-[7px] flex-none"
+          style={{ background: step.dot }}
+          title={LANE_TITLE[step.lane]}
+        />
+        <span
+          className={`min-w-0 truncate leading-[1.5] ${step.text ? 'font-sans text-[13px]' : 'mono text-[12px]'}`}
+          style={{ fontWeight: step.weight, color: failed ? 'var(--red-600)' : step.textColor }}
+        >
+          {title}
+        </span>
+        {expandable && (
+          <Icon
+            name={open ? 'chevron-down' : 'chevron-right'}
+            size={13}
+            color="var(--text-tertiary)"
+            className="flex-none"
+          />
+        )}
+      </button>
+      {open && (
+        <div className="px-[14px] pb-[12px] pl-[29px]">
+          {step.text.includes('\n') && (
+            <div className="whitespace-pre-wrap font-sans text-[13px] leading-[1.5]" style={{ color: step.textColor }}>
+              <MessageText text={step.text} platform={step.platform} />
+            </div>
+          )}
+          <StepExtras step={codeBeyondTitle ? step : { ...step, code: '' }} sessionId={sessionId} autoOpenTool />
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -728,7 +803,15 @@ function ContentBlock({ block }: { block: unknown }) {
 
 // The expandable body panel for one tool row: input, output, content blocks,
 // locations, plus a "view full" affordance when only a truncated preview is inline.
-function ToolBodyDetail({ msg, sessionId }: { msg: SessionMessageDto; sessionId: string }) {
+function ToolBodyDetail({
+  msg,
+  sessionId,
+  autoOpen
+}: {
+  msg: SessionMessageDto
+  sessionId: string
+  autoOpen?: boolean
+}) {
   const [open, setOpen] = useState(false)
   const [full, setFull] = useState<{ source: SessionMessageDto; body: string } | null>(null)
   const [loading, setLoading] = useState(false)
@@ -804,25 +887,44 @@ function ToolBodyDetail({ msg, sessionId }: { msg: SessionMessageDto; sessionId:
     setOpen((o) => !o)
   }
 
+  // autoOpen: the surrounding work row was expanded — that chevron is the only
+  // toggle, so show the body straight away instead of a second "View detail"
+  // click. Mount-time only (the row unmounts this on collapse); a live row with
+  // no inline preview fetches its full body the way the toggle would.
+  useEffect(() => {
+    if (!autoOpen) return
+    if (bodyStr == null) loadFull()
+    else setOpen(true)
+    // The one-shot open must not re-fire on body/preview churn while open.
+  }, [autoOpen])
+
   return (
     <div className="mt-[6px]">
       <div className="flex flex-wrap items-center gap-2">
-        <button
-          onClick={toggle}
-          disabled={loading}
-          className="inline-flex cursor-pointer items-center gap-[5px] border-0 bg-transparent p-0 font-sans text-[11.5px] font-medium leading-normal text-(--text-tertiary)"
-        >
-          {loading ? <Spinner size={13} /> : <Icon name={open ? 'chevron-down' : 'chevron-right'} size={13} />}
-          {open ? 'Hide detail' : 'View detail'}
-        </button>
+        {autoOpen ? (
+          loading && <Spinner size={13} />
+        ) : (
+          <button
+            onClick={toggle}
+            disabled={loading}
+            className="inline-flex cursor-pointer items-center gap-[5px] border-0 bg-transparent p-0 font-sans text-[11.5px] font-medium leading-normal text-(--text-tertiary)"
+          >
+            {loading ? <Spinner size={13} /> : <Icon name={open ? 'chevron-down' : 'chevron-right'} size={13} />}
+            {open ? 'Hide detail' : 'View detail'}
+          </button>
+        )}
         {err && bodyStr == null && (
           <span className="font-sans text-[10.5px] font-medium leading-normal text-(--red-600)">{err}</span>
         )}
-        {kind && <span className="scope text-[10.5px]">{kind}</span>}
-        {badge && (
-          <span className="badge text-[10px]" style={{ background: badge.bg, color: badge.text }}>
-            <span className="dot h-[5px] w-[5px]" style={{ background: badge.dot }} />
-            {body?.status ?? msg.toolStatus}
+        {/* "Search completed" as plain text — the status colours the words, no chips. */}
+        {(kind || badge) && (
+          <span
+            className="font-sans text-[11.5px] font-medium leading-normal"
+            style={{ color: badge?.text ?? 'var(--text-tertiary)' }}
+          >
+            {[kind && kind.charAt(0).toUpperCase() + kind.slice(1), body?.status ?? msg.toolStatus]
+              .filter(Boolean)
+              .join(' ')}
           </span>
         )}
         {truncated && bytes != null && (
@@ -4034,43 +4136,17 @@ export default function SessionDetailView() {
                                       {/* All work steps show, streaming or not — a live turn's
                                     panel grows as steps arrive so the whole run is visible. */}
                                       {workSteps.map((st, si) => (
-                                        <div
+                                        <WorkStepRow
                                           // Keyed by tool identity where there is one, so an
-                                          // expanded ToolBodyDetail survives re-renders as new
-                                          // steps stream in. Steps without a tool id (THINK
-                                          // rows) fall back to the index; within one agent's
-                                          // turn a toolCallId appears once.
+                                          // open row survives re-renders as new steps stream
+                                          // in. Steps without a tool id (THINK rows) fall back
+                                          // to the index; within one agent's turn a toolCallId
+                                          // appears once.
                                           key={st.msg?.toolCallId ?? `i:${si}`}
-                                          className={`flex items-start gap-[11px] px-[14px] py-[10px] ${
-                                            si > 0 ? 'border-t border-(--border-subtle)' : ''
-                                          }`}
-                                        >
-                                          {/* min-h matches the text column's FIRST LINE box
-                                        (13px × 1.5), so centring inside it puts the dot
-                                        and lane label on that line's centre line. The
-                                        old `pt-[1px]` guessed at the same thing against
-                                        a 15px-tall mono box and read a few px high. */}
-                                          <div className="flex min-h-[20px] w-[52px] flex-none items-center gap-[6px]">
-                                            <span className="dot h-[7px] w-[7px]" style={{ background: st.dot }} />
-                                            <span
-                                              className="mono text-[10px] font-semibold tracking-[.02em]"
-                                              style={{ color: st.laneColor }}
-                                            >
-                                              {st.lane}
-                                            </span>
-                                          </div>
-                                          <div className="min-w-0 flex-1">
-                                            {st.text && (
-                                              <div
-                                                className="font-sans text-[13px] leading-[1.5]"
-                                                style={{ fontWeight: st.weight, color: st.textColor }}
-                                              >
-                                                <MessageText text={st.text} platform={st.platform} />
-                                              </div>
-                                            )}
-                                            <StepExtras step={st} sessionId={toolSid} />
-                                          </div>
-                                        </div>
+                                          step={st}
+                                          sessionId={toolSid}
+                                          divider={si > 0}
+                                        />
                                       ))}
                                     </div>
                                   )}
