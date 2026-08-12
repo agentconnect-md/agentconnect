@@ -111,7 +111,8 @@ const LANE_MAP: Record<LaneKind, LaneInfo> = {
   plan: {
     lane: 'PLAN',
     laneColor: 'var(--brand)',
-    dot: 'var(--brand)',
+    // Purple, not brand magenta — a magenta dot reads as an error marker.
+    dot: 'var(--purple-500)',
     weight: 500,
     textColor: 'var(--text-secondary)',
     codeColor: 'var(--text-secondary)'
