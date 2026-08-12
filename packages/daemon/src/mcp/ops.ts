@@ -360,6 +360,23 @@ export interface SubmitGithubReviewReq extends SubmitGithubReviewInput {
   transportScope?: string
 }
 
+export interface ReplyGithubReviewThreadsReq {
+  agentId: string
+  platform: string
+  channel: string
+  thread: string
+  transportScope?: string
+  replies: Array<{ threadRootCommentId: string; body: string }>
+}
+
+export interface ReplyGithubReviewThreadsResult {
+  replies: Array<{
+    threadRootCommentId: string
+    state: 'published' | 'settled' | 'ambiguous'
+    commentId?: string
+  }>
+}
+
 /** Refusal surfaced to the model when an isolated session tries to access
  *  agent memory shared with other users. Phrased so the agent stops retrying
  *  instead of attempting to reconstruct or persist the content another way. */
@@ -539,6 +556,8 @@ export interface OpsDeps {
    * turn. The implementation owns action-time CP authorization and head/base
    * fencing; ordinary sessions fail closed. */
   submitGithubReview?: (req: SubmitGithubReviewReq) => Promise<GithubReviewEffect>
+  /** Publish the independently authored replies for one trusted inline-review batch. */
+  replyGithubReviewThreads?: (req: ReplyGithubReviewThreadsReq) => Promise<ReplyGithubReviewThreadsResult>
   /** The agent memory provider — backs the `readMemory`/`writeMemory` tools.
    *  Universal (every agent has memory), independent of the platform. */
   memory: MemoryProvider
@@ -1365,6 +1384,18 @@ export async function executeTool(
     })
   }
 
+  if (name === 'replyGithubReviewThreads') {
+    if (!deps.replyGithubReviewThreads) throw new Error('batched GitHub review replies are unavailable on this daemon')
+    return deps.replyGithubReviewThreads({
+      agentId: ctx.agentId,
+      platform: ctx.platform,
+      channel: ctx.channel,
+      thread: ctx.thread,
+      ...(ctx.transportScope !== undefined ? { transportScope: ctx.transportScope } : {}),
+      replies: parseGithubReviewThreadReplies(args.replies)
+    })
+  }
+
   // (Outbound send is handled by the unified `sendMessage` branch above — it merged the
   // former `sendPlatformMessage` + `messageAgent` tools, session-concept §3.)
 
@@ -1615,5 +1646,23 @@ function parseReviewComments(value: unknown): GithubInlineReviewComment[] | unde
       ...(startLine !== undefined ? { startLine } : {}),
       ...(startSide !== undefined ? { startSide } : {})
     }
+  })
+}
+
+function parseGithubReviewThreadReplies(value: unknown): Array<{ threadRootCommentId: string; body: string }> {
+  if (!Array.isArray(value) || value.length === 0) throw new Error('argument replies must be a non-empty array')
+  if (value.length > 25) throw new Error('argument replies may contain at most 25 entries')
+  return value.map((item, index) => {
+    if (typeof item !== 'object' || item === null || Array.isArray(item)) {
+      throw new Error(`replies[${index}] must be an object`)
+    }
+    const row = item as Record<string, unknown>
+    const threadRootCommentId = requireString(row, 'threadRootCommentId')
+    if (!/^[1-9]\d*$/.test(threadRootCommentId)) {
+      throw new Error(`replies[${index}].threadRootCommentId must be a positive decimal string`)
+    }
+    const body = requireString(row, 'body')
+    if (!body.trim()) throw new Error(`replies[${index}].body must be non-empty`)
+    return { threadRootCommentId, body }
   })
 }

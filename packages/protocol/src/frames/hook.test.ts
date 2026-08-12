@@ -52,6 +52,7 @@ describe('R1/R2a hook control schemas', () => {
     expect(
       GithubHookMetadata.safeParse({
         ...github,
+        pullRequestReviewId: '3565283000',
         reviewCommentId: '3565656411',
         reviewThreadRootCommentId: '3565283658'
       }).success
@@ -70,6 +71,7 @@ describe('R1/R2a hook control schemas', () => {
     expect(GithubHookMetadata.safeParse({ ...github, pullNumber: undefined }).success).toBe(false)
     expect(GithubHookMetadata.safeParse({ ...github, headSha: undefined }).success).toBe(false)
     expect(GithubHookMetadata.safeParse({ ...github, reportSha: 'test-merge-sha' }).success).toBe(false)
+    expect(GithubHookMetadata.safeParse({ ...github, pullRequestReviewId: '0' }).success).toBe(false)
     expect(GithubHookMetadata.safeParse({ ...github, reviewCommentId: '-1' }).success).toBe(false)
     expect(GithubHookMetadata.safeParse({ ...github, reviewThreadRootCommentId: '01' }).success).toBe(false)
   })

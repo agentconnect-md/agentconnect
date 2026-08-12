@@ -805,6 +805,34 @@ export const GITHUB_REVIEW_TOOLS: ToolDescriptor[] = [
       },
       ['event', 'verdict', 'body']
     )
+  },
+  {
+    name: 'replyGithubReviewThreads',
+    description:
+      'Reply to every inline thread in the active batched GitHub review-comment turn. The authorized thread roots ' +
+      'are fixed by signature-verified webhook metadata: supply exactly one non-empty reply for every root listed ' +
+      'in the prompt, with no extra roots. This tool is unavailable outside that active batch and can be called at most once.',
+    inputSchema: obj(
+      {
+        replies: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 25,
+          items: obj(
+            {
+              threadRootCommentId: {
+                type: 'string',
+                pattern: '^[1-9][0-9]*$',
+                description: 'Trusted decimal thread-root id copied from the active batch prompt.'
+              },
+              body: { type: 'string', minLength: 1, description: 'Complete public reply for this review thread.' }
+            },
+            ['threadRootCommentId', 'body']
+          )
+        }
+      },
+      ['replies']
+    )
   }
 ]
 

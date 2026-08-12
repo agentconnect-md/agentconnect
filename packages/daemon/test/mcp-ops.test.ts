@@ -1496,3 +1496,44 @@ describe('executeTool: submitGithubReview', () => {
     expect(submitGithubReview).not.toHaveBeenCalled()
   })
 })
+
+describe('executeTool: replyGithubReviewThreads', () => {
+  it('takes session identity from trusted context and validates decimal roots', async () => {
+    const replyGithubReviewThreads = vi.fn(async () => ({
+      replies: [{ threadRootCommentId: '123', state: 'published' as const, commentId: '999' }]
+    }))
+    const { deps: d } = deps(fakeGateway())
+    d.replyGithubReviewThreads = replyGithubReviewThreads
+
+    await expect(
+      executeTool(
+        ctx,
+        'replyGithubReviewThreads',
+        {
+          repo: 'evil/repo',
+          number: 1,
+          replies: [{ threadRootCommentId: '123', body: 'Fixed in the latest push.' }]
+        },
+        d
+      )
+    ).resolves.toMatchObject({ replies: [{ commentId: '999' }] })
+    expect(replyGithubReviewThreads).toHaveBeenCalledWith({
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C_CURRENT',
+      thread: '111.1',
+      replies: [{ threadRootCommentId: '123', body: 'Fixed in the latest push.' }]
+    })
+
+    await expect(
+      executeTool(
+        ctx,
+        'replyGithubReviewThreads',
+        {
+          replies: [{ threadRootCommentId: '01', body: 'bad target' }]
+        },
+        d
+      )
+    ).rejects.toThrow(/positive decimal string/)
+  })
+})

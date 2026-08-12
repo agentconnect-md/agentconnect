@@ -40,18 +40,7 @@ export type HookConfigSnapshot = z.infer<typeof HookConfigSnapshot>
 export const OptionalHookConfigSnapshot = HookConfigSnapshot.partial()
 export type OptionalHookConfigSnapshot = z.infer<typeof OptionalHookConfigSnapshot>
 
-/**
- * Trusted, body-free GitHub subject/revision metadata. It is deliberately
- * separate from HookContext: HookContext contains attacker-authored prompt
- * excerpts, whereas this object is cut from a signature-verified payload and
- * fenced to the CP-compiled numeric repo/installation rule.
- *
- * `headSha` is absent for PR issue_comment deliveries because GitHub omits the
- * revision there; the daemon resolves it before `hook/start`. R2a informational
- * checks use `reportSha=headSha` once known. Review-comment deliveries may also
- * identify the triggering comment and its normalized thread root; both remain
- * optional so mixed-version relay/daemon rollouts continue to decode.
- */
+/** Signature-verified, body-free GitHub subject/revision metadata; optional review and comment ids preserve mixed-version decoding. */
 export const GithubHookMetadata = z
   .object({
     repoId: HookBigIntString,
@@ -71,6 +60,7 @@ export const GithubHookMetadata = z
     // enables formal reviews. The body stays off the CP wire; only this
     // trusted routing fact reopens the review generation.
     explicitReviewRequest: z.boolean().optional(),
+    pullRequestReviewId: HookBigIntString.refine((value) => value !== '0').optional(),
     reviewCommentId: HookBigIntString.optional(),
     reviewThreadRootCommentId: HookBigIntString.optional()
   })

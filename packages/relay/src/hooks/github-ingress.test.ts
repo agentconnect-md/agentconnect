@@ -2168,14 +2168,18 @@ describe('github ingress', () => {
 })
 
 describe('buildTrustedGithubMetadata review comment ids', () => {
-  const metadata = (id: number, inReplyToId: number | null | undefined) =>
+  const metadata = (id: number, inReplyToId: number | null | undefined, reviewId: number = 456) =>
     buildTrustedGithubMetadata(
       'pull_request_review_comment',
       {
         installation: { id: INSTALLATION },
         repository: { id: REPO_ID, full_name: 'acme/infra' },
         pull_request: { number: 7 },
-        comment: { id, ...(inReplyToId !== undefined ? { in_reply_to_id: inReplyToId } : {}) }
+        comment: {
+          id,
+          pull_request_review_id: reviewId,
+          ...(inReplyToId !== undefined ? { in_reply_to_id: inReplyToId } : {})
+        }
       },
       rule({}, { events: ['issue_comment:created'] })
     )
@@ -2183,6 +2187,7 @@ describe('buildTrustedGithubMetadata review comment ids', () => {
   it('accepts Number.MAX_SAFE_INTEGER for both a triggering comment and its root', () => {
     const max = Number.MAX_SAFE_INTEGER
     expect(metadata(max, null)).toMatchObject({
+      pullRequestReviewId: '456',
       reviewCommentId: String(max),
       reviewThreadRootCommentId: String(max)
     })
@@ -2196,6 +2201,10 @@ describe('buildTrustedGithubMetadata review comment ids', () => {
       expect(github?.reviewThreadRootCommentId).toBeUndefined()
     }
   )
+
+  it.each([Number.MAX_SAFE_INTEGER + 1, -1, 1.5])('omits an invalid review id (%s)', (reviewId) => {
+    expect(metadata(123, null, reviewId)?.pullRequestReviewId).toBeUndefined()
+  })
 
   it.each([Number.MAX_SAFE_INTEGER + 1, -1, 1.5])(
     'does not fall back to the child id when a present root id is invalid (%s)',

@@ -91,6 +91,7 @@ interface GithubPayload {
   pull_request?: GithubSubject
   comment?: {
     id?: number
+    pull_request_review_id?: number
     in_reply_to_id?: number | null
     body?: string
     html_url?: string
@@ -410,6 +411,12 @@ export function buildTrustedGithubMetadata(
   const pr = payload.pull_request
   const headSha = pr?.head?.sha
   const rawReviewCommentId = event === 'pull_request_review_comment' ? payload.comment?.id : undefined
+  const rawPullRequestReviewId =
+    event === 'pull_request_review_comment' ? payload.comment?.pull_request_review_id : undefined
+  const pullRequestReviewId =
+    rawPullRequestReviewId !== undefined && Number.isSafeInteger(rawPullRequestReviewId) && rawPullRequestReviewId > 0
+      ? rawPullRequestReviewId
+      : undefined
   const reviewCommentId =
     rawReviewCommentId !== undefined && Number.isSafeInteger(rawReviewCommentId) && rawReviewCommentId > 0
       ? rawReviewCommentId
@@ -438,6 +445,7 @@ export function buildTrustedGithubMetadata(
     ...(pr?.merge_commit_sha ? { mergeCommitSha: pr.merge_commit_sha } : {}),
     ...(pr?.draft !== undefined ? { isDraft: pr.draft } : {}),
     ...(explicitReviewRequest ? { explicitReviewRequest: true } : {}),
+    ...(pullRequestReviewId !== undefined ? { pullRequestReviewId: String(pullRequestReviewId) } : {}),
     ...(reviewCommentId !== undefined ? { reviewCommentId: String(reviewCommentId) } : {}),
     ...(reviewThreadRootCommentId !== undefined ? { reviewThreadRootCommentId: String(reviewThreadRootCommentId) } : {})
   }
