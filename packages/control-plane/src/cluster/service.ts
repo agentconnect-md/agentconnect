@@ -29,7 +29,7 @@ import type {
   OrgRepo
 } from '../persistence/ports.js'
 import type { OrgResourceApi } from './org-api.js'
-import { imageRepository, imageTag, isNewerVersion, withImageTag } from './image.js'
+import { imageRepository, imageTag, isNewerVersion, versionImageTag, withImageTag } from './image.js'
 import { ABSENT_ENVELOPE, buildSpec, orgResourceName, projectStatus, type ClusterEnvelopeStatus } from './spec.js'
 
 /** Bounded re-apply passes; each concurrent writer runs its own, so this only
@@ -93,12 +93,31 @@ export class ClusterImageNotVersionedError extends Error {
   }
 }
 
+/**
+ * Raised when the new image is DURABLE but this pass could not push it to the cluster.
+ *
+ * It is not a failure and must not be reported as one: the row is desired state and the
+ * re-apply pass renders the spec from it, so the change is still going to happen. A caller
+ * tracking the upgrade therefore keeps waiting rather than closing it — reporting "failed"
+ * for a command that later executes is the one answer that cannot be reconciled with what
+ * the operator then observes.
+ */
+export class ClusterImageWriteDeferredError extends Error {
+  constructor(
+    readonly image: string,
+    override readonly cause: unknown
+  ) {
+    super(`the daemon image "${image}" is recorded but the cluster refused this apply`)
+    this.name = 'ClusterImageWriteDeferredError'
+  }
+}
+
 /** What one deployment-wide version sweep did; `skipped` counts envelopes left deliberately alone. */
 export interface ClusterVersionSweep {
-  /** The image every moved envelope was pointed at. */
-  target: string
+  /** The published version every moved envelope was pointed at. */
+  version: string
   scanned: number
-  /** Org ids whose envelope now names `target`. */
+  /** Org ids whose envelope now names that version. */
   moved: string[]
   skipped: number
   failed: { orgId: string; err: unknown }[]
@@ -166,11 +185,20 @@ export class ClusterExecutionService {
   async setDaemonVersion(orgId: OrgId, version: string): Promise<string> {
     const settings = await this.repo.get(orgId)
     if (!settings?.enabled) throw new ClusterEnvelopeNotEnabledError()
+    const currentTag = imageTag(settings.daemonImage)
     // A digest pin has no tag to move, and silently replacing it with one would discard
     // an exact pin somebody chose. Refuse instead of pretending the upgrade happened.
-    if (imageTag(settings.daemonImage) === null) throw new ClusterImageNotVersionedError(settings.daemonImage)
-    const daemonImage = withImageTag(settings.daemonImage, version)
-    if (daemonImage !== settings.daemonImage) await this.configure(orgId, { daemonImage })
+    if (currentTag === null) throw new ClusterImageNotVersionedError(settings.daemonImage)
+    const daemonImage = withImageTag(settings.daemonImage, versionImageTag(currentTag, version))
+    if (daemonImage === settings.daemonImage) return daemonImage
+    // The two halves of `configure`, split so the caller can tell them apart: everything
+    // above here wrote nothing, and everything below runs with the change already durable.
+    await this.repo.upsert(orgId, this.defaults(orgId), { daemonImage })
+    try {
+      await this.converge(orgId)
+    } catch (err) {
+      throw new ClusterImageWriteDeferredError(daemonImage, err)
+    }
     return daemonImage
   }
 
@@ -189,9 +217,8 @@ export class ClusterExecutionService {
    */
   async alignDaemonVersion(version: string): Promise<ClusterVersionSweep> {
     const installRepository = imageRepository(this.policy.daemonImage)
-    const target = withImageTag(this.policy.daemonImage, version)
     const rows = await this.repo.listEnabled()
-    const sweep: ClusterVersionSweep = { target, scanned: rows.length, moved: [], skipped: 0, failed: [] }
+    const sweep: ClusterVersionSweep = { version, scanned: rows.length, moved: [], skipped: 0, failed: [] }
     for (const row of rows) {
       const current = imageTag(row.daemonImage)
       if (
@@ -203,13 +230,14 @@ export class ClusterExecutionService {
         continue
       }
       // Per-org and best-effort: one unreachable API server, or one org whose envelope is
-      // mid-transition, must not stop the rest of the fleet from moving.
+      // mid-transition, must not stop the rest of the fleet from moving. A deferred write
+      // counts as moved — the row is what the re-apply pass renders from.
       try {
-        await this.configure(OrgId(row.orgId), { daemonImage: target })
+        await this.setDaemonVersion(OrgId(row.orgId), version)
         sweep.moved.push(row.orgId)
       } catch (err) {
-        // The next boot re-runs the sweep; nothing durable is owed in between.
-        sweep.failed.push({ orgId: row.orgId, err })
+        if (err instanceof ClusterImageWriteDeferredError) sweep.moved.push(row.orgId)
+        else sweep.failed.push({ orgId: row.orgId, err })
       }
     }
     return sweep

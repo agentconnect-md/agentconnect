@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest'
-import { imageRepository, imageTag, withImageTag, isNewerVersion, parseVersion, InvalidImageTagError } from './image.js'
+import {
+  imageRepository,
+  imageTag,
+  withImageTag,
+  isNewerVersion,
+  parseVersion,
+  versionImageTag,
+  InvalidImageTagError
+} from './image.js'
 
 describe('image reference arithmetic', () => {
   it('splits a plain tagged reference', () => {
@@ -45,14 +53,29 @@ describe('parseVersion', () => {
     expect(parseVersion('1.5.0-rc.2')).toEqual({ release: ['1', '5', '0'], prerelease: ['rc', '2'] })
   })
 
+  // The `v` prefix is accepted because one version is spelled two ways: npm reports
+  // `1.5.0` and the released image is tagged `v1.5.0`, and these get compared.
+  it('accepts the image tag spelling of the same version', () => {
+    expect(parseVersion('v1.4.0')).toEqual({ release: ['1', '4', '0'], prerelease: null })
+    expect(parseVersion('v1.5.0-rc.2')).toEqual({ release: ['1', '5', '0'], prerelease: ['rc', '2'] })
+  })
+
   it('rejects a floating tag', () => {
     expect(parseVersion('latest')).toBeNull()
     expect(parseVersion('rc')).toBeNull()
-    expect(parseVersion('v1.4.0')).toBeNull()
+    expect(parseVersion('release-1.4.0')).toBeNull()
   })
 })
 
 describe('isNewerVersion', () => {
+  // What the sweep actually asks: is the channel's npm version newer than this image tag?
+  it('compares an npm version against an image tag of the same release', () => {
+    expect(isNewerVersion('1.5.0', 'v1.4.0')).toBe(true)
+    expect(isNewerVersion('1.4.0', 'v1.4.0')).toBe(false)
+    expect(isNewerVersion('1.4.0', 'v1.5.0')).toBe(false)
+    expect(isNewerVersion('1.5.0-rc.2', 'v1.5.0-rc.1')).toBe(true)
+  })
+
   it('orders release versions numerically, not lexicographically', () => {
     expect(isNewerVersion('1.10.0', '1.9.0')).toBe(true)
     expect(isNewerVersion('1.9.0', '1.10.0')).toBe(false)
@@ -77,5 +100,20 @@ describe('isNewerVersion', () => {
   it('never calls an unparseable version newer or older', () => {
     expect(isNewerVersion('1.5.0', 'latest')).toBe(false)
     expect(isNewerVersion('latest', '1.5.0')).toBe(false)
+  })
+})
+
+describe('versionImageTag', () => {
+  // The release train tags images with the GIT tag, so an npm version has to be
+  // translated: `.github/workflows/build.yaml` refuses anything but `vX.Y.Z(-rc.N)`.
+  it('prefixes a released version the way the release train tags it', () => {
+    expect(versionImageTag('v1.4.0', '1.5.0')).toBe('v1.5.0')
+    expect(versionImageTag('v1.4.0', '1.5.0-rc.2')).toBe('v1.5.0-rc.2')
+  })
+
+  // A bespoke build tagged without the prefix keeps its own convention: a tag this
+  // deployment never published is not an upgrade for it.
+  it('keeps an unprefixed convention unprefixed', () => {
+    expect(versionImageTag('1.4.0', '1.5.0')).toBe('1.5.0')
   })
 })

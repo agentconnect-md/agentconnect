@@ -528,16 +528,35 @@ next pass, and by the next ordinary settings write before that.
   a machine upgrade opens: the op is armed with the epoch the image was written
   under and settles when the replacement pod registers READY on the target
   version — the fence already used for a drain-and-relaunch, and a new pod always
-  re-auths to a strictly greater epoch. Reachability is deliberately not required,
-  because rescuing a pod crash-looping on a bad image is most of the value.
-  Restart is refused with `DAEMON_CLUSTER_MANAGED`, and the console renders it
-  disabled rather than absent so an operator learns where it went.
+  re-auths to a strictly greater epoch. Arming is followed by a re-check, because
+  the replacement can reach READY inside the request: an unarmed op ignores that
+  READY on purpose, and nothing would look again, so the op would sit pending to
+  its deadline after a successful upgrade. Reachability is deliberately not
+  required, because rescuing a pod crash-looping on a bad image is most of the
+  value. Restart is refused with `DAEMON_CLUSTER_MANAGED`, and the console renders
+  it disabled rather than absent so an operator learns where it went.
 - **A boot sweep** moves the whole fleet onto the newest version the deployment's
   release channel names (`DAEMON_DIST_TAG` — `rc` on a test control plane,
   `latest` in production), which is sound because one release publishes the npm
   package and the image from one version. It runs once per boot: it is the
   catch-up for a release published while the process was down, and a timer would
   additionally fight an operator who just pinned an org.
+
+One version, two spellings, and they must not be concatenated. npm reports
+`1.5.0`; the image is tagged with the GIT tag, `v1.5.0` — `build.yaml` refuses a
+release version that is not `vX.Y.Z(-rc.N)`. So composing a reference translates,
+and it translates the way the reference being replaced is already spelled: a tag
+carrying no `v` belongs to an install that built its own images, and a tag that
+deployment never published is not an upgrade for it.
+
+A refused apply is **not** a failed upgrade, and this is the one place the ordering
+matters. The row is written first, so the change is already durable and the
+re-apply pass will push it. The request therefore reports the cluster's refusal
+(502, so an operator sees it) while leaving the op open and armed — reporting
+`failed` for a command that the next pass then executes is the one answer that
+cannot be reconciled with what the operator afterwards observes. Only the refusals
+checked _before_ any write — a disabled envelope, a digest pin, an unusable tag —
+close the op, and they can, because nothing was left behind to enact.
 
 The sweep's risk is doing too much, so it refuses three envelopes: one whose image
 names another repository than this install configured, one whose tag is not a

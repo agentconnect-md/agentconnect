@@ -55,7 +55,6 @@ export class ClusterDaemonImageSync {
         {
           channel,
           version: latestVersion,
-          image: sweep.target,
           scanned: sweep.scanned,
           moved: sweep.moved.length,
           skipped: sweep.skipped,

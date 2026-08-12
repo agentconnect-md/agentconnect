@@ -14,10 +14,18 @@ export {
   ClusterExecutionService,
   ClusterEnvelopeNotEnabledError,
   ClusterImageNotVersionedError,
+  ClusterImageWriteDeferredError,
   ClusterTransitionInProgressError,
   type ClusterExecutionPolicy,
   type ClusterVersionSweep,
   type EnvelopeResyncOutcome
 } from './service.js'
 export { ClusterDaemonImageSync, type DaemonReleaseLookup } from './image-sync.js'
-export { InvalidImageTagError, imageRepository, imageTag, isNewerVersion, withImageTag } from './image.js'
+export {
+  InvalidImageTagError,
+  imageRepository,
+  imageTag,
+  isNewerVersion,
+  versionImageTag,
+  withImageTag
+} from './image.js'

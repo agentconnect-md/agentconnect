@@ -1,11 +1,16 @@
 /**
  * Pure arithmetic on a daemon image reference and on the versions behind it.
  *
- * A release publishes the npm package and the container image from one version
- * (`docker-bake.hcl`: `<registry>/<owner>/daemon:${VERSION}`), so the deployment's
- * dist-tag channel already names the image tag the envelope should run. What is left
- * is textual: swap the tag while keeping the registry and repository the install
- * configured, and refuse to touch a reference that does not name a version at all.
+ * A release publishes the npm package and the container image from one version, so the
+ * deployment's dist-tag channel already answers which image an envelope should run — but
+ * the two spell that version differently. npm reports `1.5.0`; the image is tagged with
+ * the GIT tag, `v1.5.0` (`.github/workflows/build.yaml` refuses a version that is not
+ * `vX.Y.Z(-rc.N)`, and `docker-bake.hcl` passes it through as `VERSION`). Composing an
+ * image reference therefore means translating, not concatenating — see
+ * {@link versionImageTag}.
+ *
+ * What is left is textual: swap the tag while keeping the registry and repository the
+ * install configured, and refuse to touch a reference that does not name a version.
  */
 
 /** A tag is everything after the LAST `:` — but only when that colon is in the final
@@ -79,8 +84,12 @@ function compareParts(a: string[], b: string[]): number {
   return 0
 }
 
-/** `x.y.z` with an optional `-prerelease`; build metadata is out of scope (never published). */
-const SEMVER = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/
+/**
+ * `x.y.z` with an optional `-prerelease` and an optional `v` prefix; build metadata is out
+ * of scope (never published). The prefix is accepted because the two things compared here
+ * spell one version two ways: an npm version (`1.5.0`) against an image tag (`v1.5.0`).
+ */
+const SEMVER = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/
 
 interface Parsed {
   release: string[]
@@ -92,6 +101,16 @@ export function parseVersion(version: string): Parsed | null {
   const m = SEMVER.exec(version.trim())
   if (!m) return null
   return { release: [m[1]!, m[2]!, m[3]!], prerelease: m[4] ? m[4].split('.') : null }
+}
+
+/**
+ * The image tag a published `version` was released under, spelled the way the reference
+ * being replaced spells it. The release train tags images `vX.Y.Z(-rc.N)`, so that is the
+ * default; an install whose current tag carries no `v` built its own images and keeps that
+ * convention, because a tag this deployment never published is not an upgrade for it.
+ */
+export function versionImageTag(currentTag: string, version: string): string {
+  return currentTag.startsWith('v') ? `v${version}` : version
 }
 
 /**

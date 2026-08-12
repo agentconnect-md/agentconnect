@@ -21,6 +21,8 @@ import { PgOrgClusterExecutionRepo } from '../../src/persistence/repositories/or
 import { PgDaemonRepo } from '../../src/persistence/repositories/daemon.repo.js'
 import { PgDaemonLifecycleOpRepo } from '../../src/persistence/repositories/daemon-lifecycle-op.repo.js'
 import { PgOrgRepo } from '../../src/persistence/repositories/org.repo.js'
+import { PgRuntimeProfileRepo } from '../../src/persistence/repositories/runtime-profile.repo.js'
+import { DaemonRegistryService } from '../../src/registry/registryService.js'
 import { DaemonId, OrgId } from '../../src/domain/ids.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 
@@ -30,8 +32,8 @@ const CLUSTER = `${ORG}/cluster-execution`
 const CONTROL_NAMESPACE = 'agentconnect-control'
 const POLICY = {
   namespacePrefix: 'ac-org-',
-  daemonImage: 'registry.example.test/daemon:1.4.0',
-  runtimeImage: 'registry.example.test/runtime:1.4.0',
+  daemonImage: 'registry.example.test/daemon:v1.4.0',
+  runtimeImage: 'registry.example.test/runtime:v1.4.0',
   daemonTier: 'small',
   runtimeTiers: [{ name: 'small', warmReplicas: 0 }],
   controlPlaneUrl: 'wss://api.example.test/daemon/ws'
@@ -49,14 +51,23 @@ interface Harness {
   /** Bodies of the apply PATCHes, newest last. */
   applied: { spec?: { daemon?: { image?: string } } }[]
   cluster: ClusterExecutionService
+  /** Flip to make every later apply fail — the cluster refusing a durable change. */
+  refuseApply: { on: boolean }
 }
 
-/** An app whose provisioner talks to a fake API server that stores what it is applied. */
-async function clusterApp(): Promise<Harness> {
+/**
+ * An app whose provisioner talks to a fake API server that stores what it is applied.
+ *
+ * `afterApply` runs between the image write and the route's arming step, which is the only
+ * way to land the replacement pod's READY inside that window from a test.
+ */
+async function clusterApp(options: { afterApply?: () => Promise<void> } = {}): Promise<Harness> {
   const applied: { spec?: { daemon?: { image?: string } } }[] = []
+  const refuseApply = { on: false }
   let stored: unknown = null
   const server = await fakeApiServer((req) => {
     if (req.method === 'PATCH') {
+      if (refuseApply.on) return { status: 500, json: { kind: 'Status', message: 'apply refused' } }
       const body = JSON.parse(req.body) as { spec?: { daemon?: { image?: string } } }
       applied.push(body)
       // Standing in for the operator, which derives and publishes the namespace.
@@ -78,9 +89,35 @@ async function clusterApp(): Promise<Harness> {
     new PgDaemonRepo(prisma),
     systemClock
   )
+  if (options.afterApply) {
+    const write = cluster.setDaemonVersion.bind(cluster)
+    cluster.setDaemonVersion = async (orgId, version) => {
+      const image = await write(orgId, version)
+      await options.afterApply!()
+      return image
+    }
+  }
   const http = buildHttpApp(prisma, undefined, undefined, undefined, { clusterExecution: cluster })
   opened.push(http)
-  return { http, applied, cluster }
+  return { http, applied, cluster, refuseApply }
+}
+
+/** The pod the operator replaced, coming back: a fresh auth (higher epoch) then READY. */
+async function replacementRegisters(agentVersion: string): Promise<void> {
+  const daemons = new PgDaemonRepo(prisma)
+  await daemons.upsertOnAuth({ daemonId: DaemonId(DAEMON), orgId: OrgId(DEFAULT_ORG_ID), agentVersion })
+  await daemons.applyRegister(DaemonId(DAEMON), {
+    host: 'ac-daemon',
+    capabilities: { platforms: [], runtimes: ['claude'], acp: true, features: [] },
+    maxAgents: 4,
+    cluster: true
+  })
+  await new DaemonRegistryService(
+    daemons,
+    new PgRuntimeProfileRepo(prisma),
+    new PgDaemonLifecycleOpRepo(prisma),
+    systemClock
+  ).settleLifecycleOpOnReady(DaemonId(DAEMON))
 }
 
 /** A registered daemon row, never connected — `cluster` is what `register` reported. */
@@ -133,10 +170,10 @@ describe('POST /daemons/:id/upgrade — cluster daemon', () => {
     expect(res.statusCode).toBe(202)
     expect(res.json()).toMatchObject({ op: 'upgrade', status: 'pending', targetVersion: '1.5.0' })
 
-    expect(applied.at(-1)?.spec?.daemon?.image).toBe('registry.example.test/daemon:1.5.0')
+    expect(applied.at(-1)?.spec?.daemon?.image).toBe('registry.example.test/daemon:v1.5.0')
     // And through the settings row, so the next ordinary write does not revert it.
     const settings = await http.app.inject({ method: 'GET', url: CLUSTER })
-    expect(settings.json()).toMatchObject({ daemonImage: 'registry.example.test/daemon:1.5.0' })
+    expect(settings.json()).toMatchObject({ daemonImage: 'registry.example.test/daemon:v1.5.0' })
 
     // Armed, so the replacement pod's READY can settle it (a bare `pending` never would).
     const op = await new PgDaemonLifecycleOpRepo(prisma).pendingForDaemon(DaemonId(DAEMON))
@@ -201,5 +238,74 @@ describe('POST /daemons/:id/restart — cluster daemon', () => {
     expect(res.json()).toMatchObject({ code: 'DAEMON_CLUSTER_MANAGED' })
     // Refused before anything durable: no op row to leave behind.
     expect(await new PgDaemonLifecycleOpRepo(prisma).latestForDaemon(DaemonId(DAEMON))).toBeNull()
+  })
+})
+
+describe('cluster daemon upgrade — settlement and durability', () => {
+  /**
+   * The replacement pod can reach READY before the route finishes arming the op, and an
+   * unarmed op ignores that READY on purpose (the command may still be declined). Nothing
+   * would look again, so the op would sit pending until its 15-minute deadline even though
+   * the upgrade succeeded. The route therefore re-checks after arming.
+   */
+  it('settles an upgrade whose pod came back before the op was armed', async () => {
+    const { http } = await clusterApp({ afterApply: () => replacementRegisters('1.5.0') })
+    await enableEnvelope(http)
+    await seedDaemon(true)
+
+    const res = await http.app.inject({
+      method: 'POST',
+      url: `${ORG}/daemons/${DAEMON}/upgrade`,
+      payload: { version: '1.5.0' }
+    })
+    expect(res.statusCode).toBe(202)
+    expect(res.json()).toMatchObject({ status: 'succeeded' })
+    expect(await new PgDaemonLifecycleOpRepo(prisma).pendingForDaemon(DaemonId(DAEMON))).toBeNull()
+  })
+
+  /**
+   * The row is written before the apply, and the periodic re-apply renders the spec from
+   * the row — so a refused apply is a change that is still going to happen. Closing the op
+   * `failed` here would report a failure for a command the next pass then executes.
+   */
+  it('keeps the op open when the image is recorded but the cluster refuses the apply', async () => {
+    const { http, refuseApply } = await clusterApp()
+    await enableEnvelope(http)
+    await seedDaemon(true)
+    refuseApply.on = true
+
+    const res = await http.app.inject({
+      method: 'POST',
+      url: `${ORG}/daemons/${DAEMON}/upgrade`,
+      payload: { version: '1.5.0' }
+    })
+    // Reported as an upstream failure, so an operator sees it — but not as a closed op.
+    expect(res.statusCode).toBe(502)
+    expect(res.json()).toMatchObject({ code: 'CLUSTER_API_ERROR' })
+
+    const op = await new PgDaemonLifecycleOpRepo(prisma).pendingForDaemon(DaemonId(DAEMON))
+    expect(op).toMatchObject({ op: 'upgrade', status: 'pending', targetVersion: '1.5.0' })
+    expect(op?.acceptedAt).not.toBeNull() // armed, so the replacement pod can still settle it
+    // And the desired state survived, which is what makes the re-apply converge it.
+    const settings = await http.app.inject({ method: 'GET', url: CLUSTER })
+    expect(settings.json()).toMatchObject({ daemonImage: 'registry.example.test/daemon:v1.5.0' })
+  })
+
+  // The whole point of writing the ROW: the periodic pass pushes what the request could not.
+  it('converges the recorded image on the next re-apply pass', async () => {
+    const { http, cluster, applied, refuseApply } = await clusterApp()
+    await enableEnvelope(http)
+    await seedDaemon(true)
+    refuseApply.on = true
+    await http.app.inject({
+      method: 'POST',
+      url: `${ORG}/daemons/${DAEMON}/upgrade`,
+      payload: { version: '1.5.0' }
+    })
+    refuseApply.on = false
+
+    const outcome = await cluster.resyncEnvelopes()
+    expect(outcome.failures).toEqual([])
+    expect(applied.at(-1)?.spec?.daemon?.image).toBe('registry.example.test/daemon:v1.5.0')
   })
 })

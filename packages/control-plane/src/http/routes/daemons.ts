@@ -37,10 +37,11 @@ import type { DaemonLifecycleOpRecord, DaemonLifecycleOpRepo } from '../../persi
 import { provisionDaemonConnect } from '../onboarding.js'
 import { detachDaemon } from '../daemon-removal.js'
 import { Tag } from '../plugins/openapi.js'
-import { sendClusterFailure } from '../cluster-failure.js'
+import { CLUSTER_API_ERROR_CODE, sendClusterFailure } from '../cluster-failure.js'
 import {
   ClusterEnvelopeNotEnabledError,
   ClusterImageNotVersionedError,
+  ClusterImageWriteDeferredError,
   ClusterTransitionInProgressError,
   InvalidImageTagError
 } from '../../cluster/index.js'
@@ -496,29 +497,87 @@ export function daemonRoutes(deps: HttpDeps) {
       const commandEpoch = BigInt(deps.liveness.get(id)?.sessionEpoch ?? existing.sessionEpoch)
       const opRow = await openLifecycleOp(req, reply, id, 'upgrade', commandEpoch, targetVersion)
       if (!opRow) return reply
+      // Set when the image is durable but this pass could not reach the API server. NOT a
+      // failure: the re-apply pass renders the spec from the row, so the pod is still going
+      // to be replaced — closing the op here would report "failed" for a command that then
+      // executes. The op stays open and the caller is told the outcome is unconfirmed.
+      let deferred: ClusterImageWriteDeferredError | undefined
       try {
         const image = await cluster.setDaemonVersion(orgOf(req), targetVersion)
         req.log.info({ daemonId: id, opId: opRow.id, image }, 'cluster daemon upgrade: envelope repointed')
       } catch (error) {
-        await deps.repos.daemonLifecycleOp
-          .settle(opRow.id, 'failed', clusterUpgradeFailure(error), new Date())
-          .catch(() => {})
-        // Unreachable through `DaemonUpgradeBody`, which already rejects anything that is
-        // not a plain version — mapped anyway so the seam's own guard cannot read as a 500.
-        if (error instanceof InvalidImageTagError) {
-          return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: error.message })
+        if (error instanceof ClusterImageWriteDeferredError) {
+          deferred = error
+          req.log.warn(
+            { daemonId: id, opId: opRow.id, image: error.image, err: error.cause },
+            'cluster daemon upgrade: image recorded but not applied; the re-apply pass will converge it'
+          )
+        } else {
+          // Everything else was refused BEFORE anything durable was written, so the command
+          // did not happen and never will — terminal-fail it.
+          await deps.repos.daemonLifecycleOp
+            .settle(opRow.id, 'failed', clusterUpgradeFailure(error), new Date())
+            .catch(() => {})
+          // Unreachable through `DaemonUpgradeBody`, which already rejects anything that is
+          // not a plain version — mapped anyway so the seam's own guard cannot read as a 500.
+          if (error instanceof InvalidImageTagError) {
+            return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: error.message })
+          }
+          if (isClusterRefusal(error)) {
+            return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: (error as Error).message })
+          }
+          return sendClusterFailure(reply, error, 'cluster API rejected the daemon image change')
         }
-        if (isClusterRefusal(error)) {
-          return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: (error as Error).message })
-        }
-        return sendClusterFailure(reply, error, 'cluster API rejected the daemon image change')
       }
       // Armed with the same epoch the desired state was written under: the CR is the
-      // command, and the op now waits for the replacement pod's READY.
-      await deps.repos.daemonLifecycleOp.markAccepted(opRow.id, new Date(), commandEpoch).catch((err: unknown) => {
-        req.log.warn({ daemonId: id, opId: opRow.id, err }, 'lifecycle op arm write failed')
-      })
-      return reply.code(202).send(opDto((await deps.repos.daemonLifecycleOp.getById(opRow.id)) ?? opRow))
+      // command, and the op now waits for the replacement pod's READY. An unarmed op
+      // ignores every later READY, so a transient write failure hands off to the same
+      // bounded recovery the machine path uses rather than being logged and dropped.
+      let armed = true
+      try {
+        await deps.repos.daemonLifecycleOp.markAccepted(opRow.id, new Date(), commandEpoch)
+      } catch (err) {
+        armed = false
+        req.log.warn({ daemonId: id, opId: opRow.id, err }, 'lifecycle op arm write failed; scheduling recovery')
+        void retryArm(
+          deps.repos.daemonLifecycleOp,
+          deps.registry,
+          opRow.id,
+          id,
+          commandEpoch,
+          ARM_RECOVERY_DELAYS_MS,
+          req.log
+        )
+      }
+      // Re-check for a completion already observed: the replacement pod can register READY
+      // between `open()` and the arm above, and that READY was ignored because the op was
+      // not yet armed. Without this the op would sit pending until its deadline.
+      if (armed) {
+        try {
+          await deps.registry.settleLifecycleOpOnReady(DaemonId(id))
+        } catch (err) {
+          req.log.warn({ daemonId: id, opId: opRow.id, err }, 'lifecycle op READY re-check failed; scheduling recovery')
+          void retryArm(
+            deps.repos.daemonLifecycleOp,
+            deps.registry,
+            opRow.id,
+            id,
+            commandEpoch,
+            ARM_RECOVERY_DELAYS_MS,
+            req.log
+          )
+        }
+      }
+      const latest = (await deps.repos.daemonLifecycleOp.getById(opRow.id).catch(() => null)) ?? opRow
+      if (deferred) {
+        return reply.code(502).send({
+          error: 'Bad Gateway',
+          statusCode: 502,
+          message: `${deferred.message}; it will be re-applied — track operation ${latest.id}`,
+          code: CLUSTER_API_ERROR_CODE
+        })
+      }
+      return reply.code(202).send(opDto(latest))
     }
 
     // Open a fleet lifecycle op; bootstrap-capable upgrades may wait durably for the next auth.

@@ -14,6 +14,7 @@ import {
   ClusterEnvelopeNotEnabledError,
   ClusterExecutionService,
   ClusterImageNotVersionedError,
+  ClusterImageWriteDeferredError,
   type ClusterExecutionPolicy
 } from './service.js'
 import type { OrgResourceApi } from './org-api.js'
@@ -28,11 +29,11 @@ import type {
   PendingEnvelopeTeardown
 } from '../persistence/ports.js'
 
-const INSTALL_IMAGE = 'registry.example.test/agentconnect/daemon:1.4.0'
+const INSTALL_IMAGE = 'registry.example.test/agentconnect/daemon:v1.4.0'
 const POLICY: ClusterExecutionPolicy = {
   namespacePrefix: 'ac-org-',
   daemonImage: INSTALL_IMAGE,
-  runtimeImage: 'registry.example.test/agentconnect/runtime:1.4.0',
+  runtimeImage: 'registry.example.test/agentconnect/runtime:v1.4.0',
   daemonTier: 'small',
   runtimeTiers: [{ name: 'small', warmReplicas: 0 }],
   controlPlaneUrl: 'wss://api.example.test/daemon/ws'
@@ -157,21 +158,21 @@ const appliedImage = (api: FakeApi, name: string): string | undefined =>
 describe('ClusterExecutionService.setDaemonVersion', () => {
   it('rewrites the tag and applies the CR', async () => {
     const { repo, api, service } = build()
-    repo.seed('acme', 'registry.example.test/agentconnect/daemon:1.4.0')
+    repo.seed('acme', 'registry.example.test/agentconnect/daemon:v1.4.0')
     const image = await service.setDaemonVersion(OrgId('acme'), '1.5.0')
-    expect(image).toBe('registry.example.test/agentconnect/daemon:1.5.0')
-    expect(appliedImage(api, 'acme')).toBe('registry.example.test/agentconnect/daemon:1.5.0')
+    expect(image).toBe('registry.example.test/agentconnect/daemon:v1.5.0')
+    expect(appliedImage(api, 'acme')).toBe('registry.example.test/agentconnect/daemon:v1.5.0')
     // Through the row, not around it: the periodic re-apply would revert a CR-only write.
-    expect((await repo.get(OrgId('acme')))!.daemonImage).toBe('registry.example.test/agentconnect/daemon:1.5.0')
+    expect((await repo.get(OrgId('acme')))!.daemonImage).toBe('registry.example.test/agentconnect/daemon:v1.5.0')
   })
 
   // Unlike the sweep, an explicit command may move backwards — the picker offers every
   // published version, and an operator rolling back a bad release is the point.
   it('allows an explicit downgrade', async () => {
     const { repo, service } = build()
-    repo.seed('acme', 'registry.example.test/agentconnect/daemon:1.5.0')
+    repo.seed('acme', 'registry.example.test/agentconnect/daemon:v1.5.0')
     expect(await service.setDaemonVersion(OrgId('acme'), '1.4.0')).toBe(
-      'registry.example.test/agentconnect/daemon:1.4.0'
+      'registry.example.test/agentconnect/daemon:v1.4.0'
     )
   })
 
@@ -188,29 +189,52 @@ describe('ClusterExecutionService.setDaemonVersion', () => {
     await expect(service.setDaemonVersion(OrgId('acme'), '1.5.0')).rejects.toThrow(ClusterImageNotVersionedError)
     expect(api.applied).toHaveLength(0)
   })
+
+  /**
+   * An apply that fails AFTER the row was written is not a failed upgrade: the periodic
+   * re-apply renders the spec from the row, so the pod is still going to be replaced.
+   * Saying "failed" here is what would let a caller close an operation that then executes.
+   */
+  it('reports a durable write the cluster refused as deferred, not failed', async () => {
+    const { repo, api, service } = build()
+    repo.seed('acme', 'registry.example.test/agentconnect/daemon:v1.4.0')
+    api.failFor.add('acme')
+    await expect(service.setDaemonVersion(OrgId('acme'), '1.5.0')).rejects.toThrow(ClusterImageWriteDeferredError)
+    // The distinguishing fact: the desired state survived the failure.
+    expect((await repo.get(OrgId('acme')))!.daemonImage).toBe('registry.example.test/agentconnect/daemon:v1.5.0')
+  })
+
+  // The refusals above are checked BEFORE any write, which is what makes them safe to
+  // report as terminal — nothing is left behind for a later pass to enact.
+  it('writes nothing when it refuses', async () => {
+    const { repo, service } = build()
+    repo.seed('acme', INSTALL_IMAGE, false)
+    await expect(service.setDaemonVersion(OrgId('acme'), '1.5.0')).rejects.toThrow(ClusterEnvelopeNotEnabledError)
+    expect((await repo.get(OrgId('acme')))!.daemonImage).toBe(INSTALL_IMAGE)
+  })
 })
 
 describe('ClusterExecutionService.alignDaemonVersion', () => {
   it('moves only the envelopes that are behind', async () => {
     const { repo, api, service } = build()
-    repo.seed('behind', 'registry.example.test/agentconnect/daemon:1.4.0')
-    repo.seed('current', 'registry.example.test/agentconnect/daemon:1.5.0')
-    repo.seed('ahead', 'registry.example.test/agentconnect/daemon:1.6.0')
-    repo.seed('off', 'registry.example.test/agentconnect/daemon:1.4.0', false)
+    repo.seed('behind', 'registry.example.test/agentconnect/daemon:v1.4.0')
+    repo.seed('current', 'registry.example.test/agentconnect/daemon:v1.5.0')
+    repo.seed('ahead', 'registry.example.test/agentconnect/daemon:v1.6.0')
+    repo.seed('off', 'registry.example.test/agentconnect/daemon:v1.4.0', false)
 
     const sweep = await service.alignDaemonVersion('1.5.0')
     expect(sweep.moved).toEqual(['behind'])
     expect(sweep.scanned).toBe(3) // the disabled envelope is not even listed
     expect(sweep.skipped).toBe(2)
-    expect(appliedImage(api, 'behind')).toBe('registry.example.test/agentconnect/daemon:1.5.0')
+    expect(appliedImage(api, 'behind')).toBe('registry.example.test/agentconnect/daemon:v1.5.0')
     expect(appliedImage(api, 'ahead')).toBeUndefined()
-    expect((await repo.get(OrgId('ahead')))!.daemonImage).toBe('registry.example.test/agentconnect/daemon:1.6.0')
+    expect((await repo.get(OrgId('ahead')))!.daemonImage).toBe('registry.example.test/agentconnect/daemon:v1.6.0')
   })
 
   // Somebody pointed this org at their own registry; this channel says nothing about it.
   it('leaves an envelope on another repository alone', async () => {
     const { repo, api, service } = build()
-    repo.seed('elsewhere', 'other.registry.test/fork/daemon:1.4.0')
+    repo.seed('elsewhere', 'other.registry.test/fork/daemon:v1.4.0')
     const sweep = await service.alignDaemonVersion('1.5.0')
     expect(sweep.moved).toEqual([])
     expect(api.applied).toHaveLength(0)
@@ -226,15 +250,30 @@ describe('ClusterExecutionService.alignDaemonVersion', () => {
     expect(api.applied).toHaveLength(0)
   })
 
-  it('keeps sweeping past an organization whose apply fails', async () => {
+  // Both orgs move: the one whose apply failed had its row written, and that row is what
+  // the re-apply pass renders from — so it converges without a second sweep.
+  it('counts an unappliable envelope as moved and keeps going', async () => {
     const { repo, api, service } = build()
-    repo.seed('broken', 'registry.example.test/agentconnect/daemon:1.4.0')
-    repo.seed('fine', 'registry.example.test/agentconnect/daemon:1.4.0')
+    repo.seed('broken', 'registry.example.test/agentconnect/daemon:v1.4.0')
+    repo.seed('fine', 'registry.example.test/agentconnect/daemon:v1.4.0')
     api.failFor.add('broken')
 
     const sweep = await service.alignDaemonVersion('1.5.0')
-    expect(sweep.moved).toEqual(['fine'])
-    expect(sweep.failed.map((f) => f.orgId)).toEqual(['broken'])
+    expect(sweep.moved).toEqual(['broken', 'fine'])
+    expect(sweep.failed).toEqual([])
+    expect((await repo.get(OrgId('broken')))!.daemonImage).toBe('registry.example.test/agentconnect/daemon:v1.5.0')
+  })
+
+  // A row that could not be written IS a failure — nothing durable, nothing to converge.
+  it('records an envelope whose row could not be written as failed', async () => {
+    const { repo, service } = build()
+    repo.seed('acme', 'registry.example.test/agentconnect/daemon:v1.4.0')
+    repo.upsert = async () => {
+      throw new Error('database unavailable')
+    }
+    const sweep = await service.alignDaemonVersion('1.5.0')
+    expect(sweep.moved).toEqual([])
+    expect(sweep.failed.map((f) => f.orgId)).toEqual(['acme'])
   })
 })
 
@@ -250,14 +289,14 @@ describe('ClusterDaemonImageSync', () => {
 
   it('sweeps the fleet onto the channel version', async () => {
     const { repo, api, service } = build()
-    repo.seed('acme', 'registry.example.test/agentconnect/daemon:1.4.0')
+    repo.seed('acme', 'registry.example.test/agentconnect/daemon:v1.4.0')
     const log = logs()
     await new ClusterDaemonImageSync(
       service,
       { resolve: async () => ({ channel: 'rc', latestVersion: '1.5.0-rc.2', availableVersions: [] }) },
       log
     ).run()
-    expect(appliedImage(api, 'acme')).toBe('registry.example.test/agentconnect/daemon:1.5.0-rc.2')
+    expect(appliedImage(api, 'acme')).toBe('registry.example.test/agentconnect/daemon:v1.5.0-rc.2')
     expect(log.entries.at(-1)).toMatchObject({ level: 'info', obj: { moved: 1, version: '1.5.0-rc.2' } })
   })
 
@@ -265,7 +304,7 @@ describe('ClusterDaemonImageSync', () => {
   // thing this must not do.
   it('touches nothing when the channel has no published version', async () => {
     const { repo, api, service } = build()
-    repo.seed('acme', 'registry.example.test/agentconnect/daemon:1.4.0')
+    repo.seed('acme', 'registry.example.test/agentconnect/daemon:v1.4.0')
     const log = logs()
     await new ClusterDaemonImageSync(
       service,
