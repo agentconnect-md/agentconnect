@@ -161,7 +161,8 @@ function workflowRunPayload(overrides: Record<string, unknown> = {}): Record<str
     workflow_run: {
       event: 'pull_request',
       head_sha: 'a'.repeat(40),
-      triggering_actor: { login: 'maintainer' }
+      triggering_actor: { login: 'maintainer' },
+      pull_requests: []
     },
     ...overrides
   }
@@ -651,6 +652,23 @@ describe('github ingress', () => {
   })
 
   describe('workflow approval', () => {
+    it('preserves GitHub signed PR identity when the workflow payload supplies it', async () => {
+      await post(
+        'workflow_run',
+        workflowRunPayload({
+          workflow_run: {
+            event: 'pull_request',
+            head_sha: 'a'.repeat(40),
+            triggering_actor: { login: 'maintainer' },
+            pull_requests: [{ number: 585, head: { sha: 'a'.repeat(40) } }]
+          }
+        })
+      )
+      await flush()
+
+      expect(h.rerequestRequests).toEqual([expect.objectContaining({ scope: 'workflow', pullNumber: 585 })])
+    })
+
     it('authorizes the triggering maintainer and starts every waiting external-PR review', async () => {
       h.table.upsert(rule({ reportingMode: 'off' }))
       h.table.upsert(

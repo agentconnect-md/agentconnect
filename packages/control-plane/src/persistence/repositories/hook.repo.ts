@@ -2556,7 +2556,7 @@ export class PgHookRepo implements HookRepo {
     ).map(toProjectionRecord)
   }
 
-  async listReviewRequestRequiredRuns(repoId: bigint, headSha: string): Promise<HookRunRecord[]> {
+  async listReviewRequestRequiredRuns(repoId: bigint, headSha: string, pullNumber?: number): Promise<HookRunRecord[]> {
     const hooks = await this.db.hookDef.findMany({
       where: { kind: 'github', repoId, enabled: true, agentId: { not: null } },
       select: { id: true }
@@ -2568,13 +2568,17 @@ export class PgHookRepo implements HookRepo {
         repoId,
         headSha,
         reportSha: headSha,
-        subjectKind: 'pull_request'
+        subjectKind: 'pull_request',
+        pullNumber: pullNumber ?? { not: null }
       },
       orderBy: [{ startedAt: 'desc' }, { id: 'desc' }]
     })
-    const latestByHook = new Map<string, (typeof rows)[number]>()
-    for (const row of rows) if (!latestByHook.has(row.hookId)) latestByHook.set(row.hookId, row)
-    return [...latestByHook.values()]
+    const latestByPull = new Map<string, (typeof rows)[number]>()
+    for (const row of rows) {
+      const key = `${row.hookId}:${row.pullNumber}`
+      if (!latestByPull.has(key)) latestByPull.set(key, row)
+    }
+    return [...latestByPull.values()]
       .filter(
         (row) =>
           row.status === 'failed' &&
@@ -2583,7 +2587,7 @@ export class PgHookRepo implements HookRepo {
           row.turnStartedAt === null &&
           row.orphanedAt === null
       )
-      .sort((a, b) => a.hookId.localeCompare(b.hookId))
+      .sort((a, b) => a.hookId.localeCompare(b.hookId) || (a.pullNumber ?? 0) - (b.pullNumber ?? 0))
       .map(toRunRecord)
   }
 

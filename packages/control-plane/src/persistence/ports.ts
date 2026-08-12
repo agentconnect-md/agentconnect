@@ -2465,8 +2465,8 @@ export interface HookRepo {
     headSha: string,
     installationId: bigint
   ): Promise<HookReviewProjectionRecord[]>
-  /** Latest no-effect external-PR run per hook awaiting a maintainer request. */
-  listReviewRequestRequiredRuns(repoId: bigint, headSha: string): Promise<HookRunRecord[]>
+  /** Latest external-PR run per hook/PR, preserving shared-head ambiguity. */
+  listReviewRequestRequiredRuns(repoId: bigint, headSha: string, pullNumber?: number): Promise<HookRunRecord[]>
   listReviewProjectionsForAgentRepo(agentId: AgentId, repoId: bigint): Promise<HookReviewProjectionRecord[]>
   wakeReviewProjectionsForInstallation(installationId: bigint, at: Date): Promise<number>
   wakeReviewProjectionsForOrg(orgId: OrgId, at: Date): Promise<number>

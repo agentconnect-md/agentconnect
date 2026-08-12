@@ -217,6 +217,7 @@ export const RcGithubRerequest = z.union([
       installationId: GithubNumericId,
       repoId: GithubNumericId,
       headSha: z.string().min(1),
+      pullNumber: z.number().int().positive().optional(),
       deliveryKey: z.string().min(1).max(200)
     })
     .strict()

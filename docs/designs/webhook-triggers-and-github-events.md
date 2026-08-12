@@ -274,10 +274,12 @@ Each path revalidates current repository authority before opening a review
 generation.
 
 The signed `workflow_run:in_progress` payload identifies the triggering actor,
-repository, installation, and head revision but not the target hook. Relay sends
-only those identities to CP, which resolves the latest body-free
-`review_request_required` run per hook. Relay then rechecks current rule fences
-and the triggering actor's live write/admin permission. A stable
+repository, installation, and head revision but not the target hook. Relay also
+preserves the PR number when GitHub supplies one; fork workflow runs may omit
+that association. CP otherwise resolves the latest body-free
+`review_request_required` candidate per hook and PR and rejects a shared head
+with multiple candidates instead of guessing. Relay then rechecks current rule
+fences and the triggering actor's live write/admin permission. A stable
 repository/pull/head delivery key coalesces multiple workflows for one revision.
 
 ### Session Affinity

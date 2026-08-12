@@ -120,6 +120,7 @@ interface GithubPayload {
     event?: string
     head_sha?: string
     triggering_actor?: { login?: string }
+    pull_requests?: Array<{ number?: number; head?: { sha?: string } }>
   }
 }
 
@@ -538,6 +539,14 @@ async function dispatchGithubRerequest(
     return
   }
 
+  const workflowPulls =
+    event === 'workflow_run'
+      ? (payload.workflow_run?.pull_requests ?? []).filter(
+          (pull) => positiveSafeInteger(pull.number) && pull.head?.sha === headSha
+        )
+      : []
+  const workflowPullNumber = workflowPulls.length === 1 ? workflowPulls[0]?.number : undefined
+
   let result: RcGithubRerequestResult
   try {
     const request: RcGithubRerequest =
@@ -563,6 +572,7 @@ async function dispatchGithubRerequest(
               installationId: String(installationId),
               repoId: String(repoId),
               headSha,
+              ...(workflowPullNumber !== undefined ? { pullNumber: workflowPullNumber } : {}),
               deliveryKey
             }
     result = await deps.authorizeRerequest(request)

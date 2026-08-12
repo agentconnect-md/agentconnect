@@ -301,6 +301,7 @@ describe('relay↔CP wire — skeleton frame codec (shared-bot-relay.md §7.1)',
       installationId: '12345',
       repoId: '987654321',
       headSha: 'a'.repeat(40),
+      pullNumber: 585,
       deliveryKey: 'delivery-workflow-start-1'
     }
     const req = buildRelayCpFrame('rc/github-rerequest', request)

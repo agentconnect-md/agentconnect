@@ -101,8 +101,12 @@ export class GithubRerequestService {
   private async resolveWorkflow(
     req: Extract<RcGithubRerequest, { scope: 'workflow' }>
   ): Promise<RcGithubRerequestResult> {
-    const runs = await this.deps.hooks.listReviewRequestRequiredRuns(BigInt(req.repoId), req.headSha)
-    if (runs.length === 0 || new Set(runs.map((run) => run.hookId)).size !== runs.length) {
+    const runs = await this.deps.hooks.listReviewRequestRequiredRuns(BigInt(req.repoId), req.headSha, req.pullNumber)
+    if (
+      runs.length === 0 ||
+      new Set(runs.map((run) => run.hookId)).size !== runs.length ||
+      new Set(runs.map((run) => run.pullNumber)).size !== 1
+    ) {
       return { allowed: false }
     }
 
@@ -193,6 +197,7 @@ export class GithubRerequestService {
       run.sourceInstallationId === BigInt(req.installationId) &&
       run.subjectKind === 'pull_request' &&
       run.pullNumber !== null &&
+      (req.pullNumber === undefined || run.pullNumber === req.pullNumber) &&
       run.headSha === req.headSha &&
       run.reportSha === req.headSha &&
       run.baseSha !== null &&
