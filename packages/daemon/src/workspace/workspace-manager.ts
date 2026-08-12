@@ -206,6 +206,12 @@ export function setSandboxWorkspaceMode(enabled: boolean): void {
   workspacesLiveInSandboxes = enabled
 }
 
+/** The same answer for callers OUTSIDE this module — a seam that would otherwise `stat` a workspace
+ *  path that names a filesystem this process cannot see. */
+export function sandboxWorkspaceMode(): boolean {
+  return workspacesLiveInSandboxes
+}
+
 /** Empty a path belonging to a cluster agent. A daemon with no clearer registered has no sandbox to
  *  reach, so there is nothing to empty — the local path never calls this. */
 async function clearSandboxPath(agentId: string, root: string): Promise<void> {
@@ -911,6 +917,25 @@ export function clusterWorkspaceCwd(
   const checkout = join(root, SANDBOX_CHECKOUT_DIR)
   const agentDir = normalizeRepoSubdir(agent.workspace.agentDir)
   return agentDir === undefined ? checkout : join(checkout, ...agentDir.split('/'))
+}
+
+/**
+ * The root the CONSOLE's git seam runs in — the coordinates {@link clusterWorkspaceCwd} gives the
+ * runtime, because the two run git in the same checkout. The panels went without one: the seam
+ * handed a ShimGitRunner `agent.workspace.path`, the shim's cwd fence refused it, `isRepo` swallowed
+ * the refusal, and a cluster agent's Git panel reported "not a git checkout" over a real checkout.
+ *
+ * `local` still decides WHETHER there is a workspace to name — absent stays absent, so a
+ * shared-workspace sessionId is refused as before — and only the coordinates change.
+ */
+export function consoleWorkspaceGitRoot(
+  agent: Agent,
+  local: string | undefined,
+  runtimeRoot: string | undefined,
+  request?: Pick<PrepareSessionWorkspaceRequest, 'isolation'>
+): string | undefined {
+  if (local === undefined || !workspacesLiveInSandboxes) return local
+  return clusterWorkspaceCwd(agent, runtimeRoot, request)
 }
 
 /**
