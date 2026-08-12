@@ -39,10 +39,12 @@ import { detachDaemon } from '../daemon-removal.js'
 import { Tag } from '../plugins/openapi.js'
 import { CLUSTER_API_ERROR_CODE, sendClusterFailure } from '../cluster-failure.js'
 import {
+  canonicalVersion,
   ClusterEnvelopeNotEnabledError,
   ClusterImageNotVersionedError,
   ClusterImageWriteDeferredError,
   ClusterTransitionInProgressError,
+  ClusterVersionNotPublishedError,
   InvalidImageTagError
 } from '../../cluster/index.js'
 
@@ -100,6 +102,11 @@ function isClusterRefusal(error: unknown): boolean {
     error instanceof ClusterImageNotVersionedError ||
     error instanceof ClusterTransitionInProgressError
   )
+}
+
+/** A malformed target, mapped to 400 — the caller's input, not a cluster or policy state. */
+function isBadUpgradeTarget(error: unknown): boolean {
+  return error instanceof InvalidImageTagError || error instanceof ClusterVersionNotPublishedError
 }
 
 /** Outcome text recorded on an op whose image change never landed. */
@@ -485,17 +492,28 @@ export function daemonRoutes(deps: HttpDeps) {
           message: 'upgrading a cluster daemon requires a target version'
         })
       }
+      // Normalized before anything durable is written, because the target feeds two things
+      // that must agree: the composed image tag, and the version the replacement pod reports
+      // for the op to settle against. `DaemonUpgradeBody` admits `v1.5.0` and `latest`; the
+      // first is the same version spelled the image's way, the second names no version at
+      // all and an image tag cannot be guessed from a dist-tag.
+      const version = canonicalVersion(targetVersion)
+      if (!version) {
+        return reply.code(400).send({
+          error: 'Bad Request',
+          statusCode: 400,
+          message: new ClusterVersionNotPublishedError(targetVersion).message
+        })
+      }
       // Nothing to roll: re-applying the image the pod already runs would change no
       // generation, so the op could only ever expire. Say so now instead.
-      if (existing.agentVersion === targetVersion) {
-        return reply
-          .code(409)
-          .send({ error: 'Conflict', statusCode: 409, message: `daemon already runs ${targetVersion}` })
+      if (existing.agentVersion === version) {
+        return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: `daemon already runs ${version}` })
       }
       // The pod is replaced, so it re-auths and its epoch strictly exceeds this one —
       // which is exactly the fence `settleLifecycleOpOnReady` closes the op on.
       const commandEpoch = BigInt(deps.liveness.get(id)?.sessionEpoch ?? existing.sessionEpoch)
-      const opRow = await openLifecycleOp(req, reply, id, 'upgrade', commandEpoch, targetVersion)
+      const opRow = await openLifecycleOp(req, reply, id, 'upgrade', commandEpoch, version)
       if (!opRow) return reply
       // Set when the image is durable but this pass could not reach the API server. NOT a
       // failure: the re-apply pass renders the spec from the row, so the pod is still going
@@ -503,7 +521,7 @@ export function daemonRoutes(deps: HttpDeps) {
       // executes. The op stays open and the caller is told the outcome is unconfirmed.
       let deferred: ClusterImageWriteDeferredError | undefined
       try {
-        const image = await cluster.setDaemonVersion(orgOf(req), targetVersion)
+        const image = await cluster.setDaemonVersion(orgOf(req), version)
         req.log.info({ daemonId: id, opId: opRow.id, image }, 'cluster daemon upgrade: envelope repointed')
       } catch (error) {
         if (error instanceof ClusterImageWriteDeferredError) {
@@ -518,10 +536,10 @@ export function daemonRoutes(deps: HttpDeps) {
           await deps.repos.daemonLifecycleOp
             .settle(opRow.id, 'failed', clusterUpgradeFailure(error), new Date())
             .catch(() => {})
-          // Unreachable through `DaemonUpgradeBody`, which already rejects anything that is
-          // not a plain version — mapped anyway so the seam's own guard cannot read as a 500.
-          if (error instanceof InvalidImageTagError) {
-            return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: error.message })
+          // Already normalized above, so these are the seams re-checking their own inputs;
+          // mapped anyway so a guard firing can never read as a 500.
+          if (isBadUpgradeTarget(error)) {
+            return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: (error as Error).message })
           }
           if (isClusterRefusal(error)) {
             return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: (error as Error).message })
@@ -719,7 +737,7 @@ export function daemonRoutes(deps: HttpDeps) {
           tags: [Tag.Daemons],
           summary: 'Upgrade a daemon',
           description:
-            'Open an upgrade op for a daemon. A ready daemon receives it immediately; an offline daemon that previously advertised bootstrap recovery consumes it during its next auth. A CLUSTER daemon (`cluster: true`) takes neither path: the control plane rewrites the version tag on its organization’s AgentConnectOrg daemon image and the operator replaces the pod, so the command is accepted even while that daemon is offline. The 202 means accepted or durably queued, while success requires READY on the target version.',
+            'Open an upgrade op for a daemon. A ready daemon receives it immediately; an offline daemon that previously advertised bootstrap recovery consumes it during its next auth. A CLUSTER daemon (`cluster: true`) takes neither path: the control plane rewrites the version tag on its organization’s AgentConnectOrg daemon image and the operator replaces the pod, so the command is accepted even while that daemon is offline. That path needs an exact published version (`1.5.0`, or the equivalent `v1.5.0`) because the version becomes an image tag; a dist-tag such as `latest` is refused with 400. The 202 means accepted or durably queued, while success requires READY on the target version.',
           operationId: 'upgradeDaemon',
           params: IdParam,
           body: DaemonUpgradeBody,

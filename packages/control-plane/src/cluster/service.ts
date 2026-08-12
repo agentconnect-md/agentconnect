@@ -30,6 +30,7 @@ import type {
 } from '../persistence/ports.js'
 import type { OrgResourceApi } from './org-api.js'
 import {
+  canonicalVersion,
   imageRepository,
   imageTag,
   isNewerVersion,
@@ -106,6 +107,14 @@ export class ClusterImageNotVersionedError extends Error {
   constructor(readonly image: string) {
     super(`the envelope's daemon image "${image}" does not name a version, so there is no release tag to follow`)
     this.name = 'ClusterImageNotVersionedError'
+  }
+}
+
+/** Raised when an upgrade target is not a published version, so no image tag names it. */
+export class ClusterVersionNotPublishedError extends Error {
+  constructor(readonly version: string) {
+    super(`"${version}" is not a published version; an envelope daemon upgrade needs an exact version such as 1.5.0`)
+    this.name = 'ClusterVersionNotPublishedError'
   }
 }
 
@@ -199,9 +208,13 @@ export class ClusterExecutionService {
    * lives in `withImageTag`, so this cannot be reached by forgetting to validate a route.
    */
   async setDaemonVersion(orgId: OrgId, version: string): Promise<string> {
+    // Re-canonicalized here even though the route already did: this seam composes the tag,
+    // and `v1.5.0` arriving unnormalized would become `vv1.5.0` in a registry reference.
+    const canonical = canonicalVersion(version)
+    if (!canonical) throw new ClusterVersionNotPublishedError(version)
     const settings = await this.repo.get(orgId)
     if (!settings?.enabled) throw new ClusterEnvelopeNotEnabledError()
-    const daemonImage = withImageTag(settings.daemonImage, versionImageTag(this.tagStyleFor(settings), version))
+    const daemonImage = withImageTag(settings.daemonImage, versionImageTag(this.tagStyleFor(settings), canonical))
     if (daemonImage === settings.daemonImage) return daemonImage
     // The two halves of `configure`, split so the caller can tell them apart: everything
     // above here wrote nothing, and everything below runs with the change already durable.

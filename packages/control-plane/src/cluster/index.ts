@@ -16,6 +16,7 @@ export {
   ClusterImageNotVersionedError,
   ClusterImageWriteDeferredError,
   ClusterTransitionInProgressError,
+  ClusterVersionNotPublishedError,
   type ClusterExecutionPolicy,
   type ClusterVersionSweep,
   type EnvelopeResyncOutcome
@@ -23,6 +24,7 @@ export {
 export { ClusterDaemonImageSync, type DaemonReleaseLookup } from './image-sync.js'
 export {
   InvalidImageTagError,
+  canonicalVersion,
   imageRepository,
   imageTag,
   isNewerVersion,

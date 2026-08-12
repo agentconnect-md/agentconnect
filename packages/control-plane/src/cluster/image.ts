@@ -103,6 +103,24 @@ export function parseVersion(version: string): Parsed | null {
   return { release: [m[1]!, m[2]!, m[3]!], prerelease: m[4] ? m[4].split('.') : null }
 }
 
+/**
+ * The canonical spelling of a published version — the one npm reports and, because the
+ * Dockerfile strips the `v` when it stamps `package.json`, the one a pod reports as its
+ * `agentVersion`. Null for anything that is not a version at all.
+ *
+ * Every cluster upgrade target passes through here, and both things it feeds need it. The
+ * image tag is composed from it, so an already-prefixed `v1.5.0` would otherwise become
+ * `vv1.5.0`; and the lifecycle op settles by comparing the target against what the
+ * replacement pod reports, so a target spelled any other way could never settle even if
+ * such an image existed. A floating token like `latest` is rejected rather than turned into
+ * `vlatest` — the daemon's own npm path can resolve a dist-tag, but an image tag cannot be
+ * guessed from one and no pod would ever report it.
+ */
+export function canonicalVersion(version: string): string | null {
+  const trimmed = version.trim()
+  return parseVersion(trimmed) ? trimmed.replace(/^v/, '') : null
+}
+
 /** How a repository spells a released version, learned from one tag that IS a version. */
 export type VersionTagStyle = 'v-prefixed' | 'bare'
 

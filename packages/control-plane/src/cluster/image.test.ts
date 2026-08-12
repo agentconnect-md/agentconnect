@@ -7,6 +7,7 @@ import {
   parseVersion,
   versionImageTag,
   versionTagStyle,
+  canonicalVersion,
   InvalidImageTagError
 } from './image.js'
 
@@ -131,5 +132,28 @@ describe('versionImageTag', () => {
     expect(versionImageTag('v-prefixed', '1.5.0')).toBe('v1.5.0')
     expect(versionImageTag('v-prefixed', '1.5.0-rc.2')).toBe('v1.5.0-rc.2')
     expect(versionImageTag('bare', '1.5.0')).toBe('1.5.0')
+  })
+})
+
+describe('canonicalVersion', () => {
+  /**
+   * The target feeds two things that must agree: the composed image tag, and the version
+   * the replacement pod reports for the op to settle against. The pod reports the npm
+   * spelling (the Dockerfile strips the `v` when it stamps package.json), so that is the
+   * canonical form — and `v1.5.0` must normalize rather than compose `vv1.5.0`.
+   */
+  it('strips the image spelling back to what a pod reports', () => {
+    expect(canonicalVersion('v1.5.0')).toBe('1.5.0')
+    expect(canonicalVersion('1.5.0')).toBe('1.5.0')
+    expect(canonicalVersion('v1.5.0-rc.2')).toBe('1.5.0-rc.2')
+    expect(canonicalVersion('  1.5.0  ')).toBe('1.5.0')
+  })
+
+  // A dist-tag names no version: no image tag can be derived from it, and no pod would
+  // ever report it, so the op could not settle even if such an image existed.
+  it('rejects a token that is not a version', () => {
+    expect(canonicalVersion('latest')).toBeNull()
+    expect(canonicalVersion('rc')).toBeNull()
+    expect(canonicalVersion('')).toBeNull()
   })
 })

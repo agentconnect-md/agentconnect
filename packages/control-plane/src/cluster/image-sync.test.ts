@@ -15,6 +15,7 @@ import {
   ClusterExecutionService,
   ClusterImageNotVersionedError,
   ClusterImageWriteDeferredError,
+  ClusterVersionNotPublishedError,
   type ClusterExecutionPolicy
 } from './service.js'
 import type { OrgResourceApi } from './org-api.js'
@@ -188,6 +189,17 @@ describe('ClusterExecutionService.setDaemonVersion', () => {
     repo.seed('acme', `registry.example.test/agentconnect/daemon@sha256:${'a'.repeat(64)}`)
     await expect(service.setDaemonVersion(OrgId('acme'), '1.5.0')).rejects.toThrow(ClusterImageNotVersionedError)
     expect(api.applied).toHaveLength(0)
+  })
+
+  // The seam re-checks its own input: it composes the tag, and an unnormalized `v1.5.0`
+  // arriving here would become `vv1.5.0` in a registry reference.
+  it('normalizes an image-spelled target and refuses a dist-tag', async () => {
+    const { repo, service } = build()
+    repo.seed('acme', 'registry.example.test/agentconnect/daemon:v1.4.0')
+    expect(await service.setDaemonVersion(OrgId('acme'), 'v1.5.0')).toBe(
+      'registry.example.test/agentconnect/daemon:v1.5.0'
+    )
+    await expect(service.setDaemonVersion(OrgId('acme'), 'latest')).rejects.toThrow(ClusterVersionNotPublishedError)
   })
 
   /**

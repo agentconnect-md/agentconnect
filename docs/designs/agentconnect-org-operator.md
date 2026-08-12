@@ -551,6 +551,15 @@ when it has it; when it does not, the install's configured reference is, but onl
 for the SAME repository — a convention seen on one registry says nothing about
 another's tags. With neither, the write is refused.
 
+The target is canonicalized before any of that, to the spelling the pod itself
+reports — npm's, since the Dockerfile strips the `v` when it stamps
+`package.json`. It has to be, because the target feeds two things that must agree:
+the image tag composed from it, and the version the replacement pod is compared
+against for the op to settle. An already-prefixed `v1.5.0` normalizes rather than
+composing `vv1.5.0`, and a dist-tag such as `latest` is refused — the daemon's own
+npm path can resolve one, but no image tag follows from it and no pod would ever
+report it, so the op could not settle even if the image existed.
+
 That last case is the one worth being strict about. An envelope sitting on a
 floating tag (`latest`) tells you which image to run and nothing about spelling, so
 reading its absent `v` as "no prefix" would compose `:1.5.0` against a registry

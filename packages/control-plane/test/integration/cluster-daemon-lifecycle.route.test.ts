@@ -213,6 +213,41 @@ describe('POST /daemons/:id/upgrade — cluster daemon', () => {
     expect(applied).toHaveLength(before)
   })
 
+  /**
+   * `DaemonUpgradeBody` admits any plain token, so the route normalizes before anything
+   * durable is written: `v1.5.0` is the same version spelled the image's way (and would
+   * otherwise compose `vv1.5.0`), while `latest` names no version an image tag or a pod
+   * report could ever match.
+   */
+  it('accepts the image spelling of a version and stores the canonical one', async () => {
+    const { http, applied } = await clusterApp()
+    await enableEnvelope(http)
+    await seedDaemon(true)
+    const res = await http.app.inject({
+      method: 'POST',
+      url: `${ORG}/daemons/${DAEMON}/upgrade`,
+      payload: { version: 'v1.5.0' }
+    })
+    expect(res.statusCode).toBe(202)
+    expect(res.json()).toMatchObject({ targetVersion: '1.5.0' }) // what the pod will report
+    expect(applied.at(-1)?.spec?.daemon?.image).toBe('registry.example.test/daemon:v1.5.0')
+  })
+
+  it('refuses a dist-tag before writing anything', async () => {
+    const { http, applied } = await clusterApp()
+    await enableEnvelope(http)
+    await seedDaemon(true)
+    const before = applied.length
+    const res = await http.app.inject({
+      method: 'POST',
+      url: `${ORG}/daemons/${DAEMON}/upgrade`,
+      payload: { version: 'latest' }
+    })
+    expect(res.statusCode).toBe(400)
+    expect(applied).toHaveLength(before)
+    expect(await new PgDaemonLifecycleOpRepo(prisma).latestForDaemon(DaemonId(DAEMON))).toBeNull()
+  })
+
   it('refuses when the organization has no live envelope', async () => {
     const { http } = await clusterApp()
     await seedDaemon(true)
