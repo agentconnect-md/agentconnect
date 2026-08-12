@@ -25,6 +25,16 @@ daemonStorage:
   className: ''
   size: 10Gi
 
+# The control plane this install serves. It is deployed separately — nothing here
+# creates it — but it verifies an in-cluster daemon's projected ServiceAccount token
+# by creating a TokenReview, which is a cluster-scoped API and so a cluster-scoped
+# grant. Naming its ServiceAccount here binds that grant with the rest of the
+# install's RBAC; leaving it empty leaves the grant to the deployment.
+controlPlane:
+  serviceAccountName: ''
+  # Namespace of that ServiceAccount. Empty = the release namespace.
+  namespace: ''
+
 operator:
   image:
     repository: ghcr.io/agentconnect-md/operator
