@@ -10,13 +10,18 @@ const ANONYMOUS_USER = 'agent'
 
 const MAX_USER_SEGMENT = 24
 
+// A sign-in address is what webchat carries when the user set no display name, and its
+// domain names nobody: only the local part reaches the branch.
+const EMAIL_RE = /^([^\s@]+)@[^\s@]+\.[^\s@]+$/
+
 /** One Git ref path component from an arbitrary platform display name. Unicode
  * letters and digits survive (a Feishu display name is routinely CJK, and a
  * branch named `agent` for every one of them defeats the point); everything
  * else — the space, dot, `~^:?*[\` and control characters Git rejects — becomes
  * a separator. */
 function userSegment(raw: string | undefined): string {
-  const slug = (raw ?? '')
+  const label = (raw ?? '').trim()
+  const slug = (EMAIL_RE.exec(label)?.[1] ?? label)
     .normalize('NFC')
     .toLowerCase()
     .replace(/[^\p{L}\p{N}]+/gu, '-')
