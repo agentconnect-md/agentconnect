@@ -874,6 +874,20 @@ describe('ensureProvisioned', () => {
     expect(secrets.written).toHaveLength(1)
   })
 
+  // Deleting a CR hands the envelope to the operator's finalizer, which removes
+  // the namespace and the Secret in it. The stored revision survives that, so it
+  // cannot be what decides whether the cluster still holds a credential.
+  it('re-keys an envelope whose Secret went with its namespace', async () => {
+    const { service, secrets, keys } = build()
+    await service.ensureProvisioned(ORG)
+    expect(keys.minted).toBe(1)
+
+    secrets.publishedSeq_ = 0
+    await service.ensureProvisioned(ORG)
+    expect(keys.minted).toBe(2)
+    expect(secrets.written).toHaveLength(2)
+  })
+
   it('re-applies the spec when the resource went missing', async () => {
     const { service, api } = build()
     await service.ensureProvisioned(ORG)

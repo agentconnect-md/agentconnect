@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { ensureClusterExecution } from '@/lib/api'
+import { ApiError, ensureClusterExecution } from '@/lib/api'
 import { presentedDaemonStatus, status, type DaemonRow } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { useModal } from '@/components/console/ModalProvider'
@@ -13,11 +13,21 @@ import { Button, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
 
 /**
- * Orgs whose envelope this tab already checked, so opening Daemons repeatedly
- * costs one request per organization, not one per navigation. Module-level
- * rather than state: the view unmounts on every route change.
+ * Orgs this tab is done checking, so opening Daemons repeatedly costs one
+ * request per organization rather than one per navigation. Module-level rather
+ * than state: the view unmounts on every route change.
+ *
+ * An org lands here only once the answer is FINAL. The endpoint deliberately
+ * answers 200 with no `credentialRevision` while the operator is still
+ * publishing the envelope namespace, and that is exactly the case the next visit
+ * is supposed to finish — recording it as done would strand the daemon
+ * uncredentialed until a full page reload.
  */
-const ensuredOrgs = new Set<string>()
+const settledOrgs = new Set<string>()
+
+/** Orgs with a request in flight — the effect re-runs on remount and under
+ *  React's development double-invoke, and neither should send a second one. */
+const ensuringOrgs = new Set<string>()
 
 /**
  * Where the deployment runs managed execution, this page is the convergence
@@ -26,18 +36,32 @@ const ensuredOrgs = new Set<string>()
  * The endpoint is idempotent and never re-enables an org whose owner switched
  * cluster execution off, so the visit is safe to repeat.
  *
- * Failure is silent by design: a deployment with no cluster 404s the whole
- * surface, a non-owner is refused, and neither is news to someone who came here
- * to look at daemons. The daemon list is refreshed only when the check ran,
- * because provisioning the credential is what registers the envelope's daemon.
+ * Failure is silent by design: someone who came here to look at daemons does not
+ * need to hear about it. It is not, however, forgotten — only a refusal that
+ * cannot change on a revisit stops the retry: 404 (this deployment has no
+ * cluster at all) and 403 (not this caller's to do). The daemon list is
+ * refreshed after a check, because issuing the credential is what registers the
+ * envelope's daemon.
  */
 function useEnsureClusterEnvelope(orgId: string | undefined, isOwner: boolean, refreshDaemons: () => Promise<void>) {
   useEffect(() => {
-    if (!orgId || !isOwner || ensuredOrgs.has(orgId)) return
-    ensuredOrgs.add(orgId)
+    if (!orgId || !isOwner || settledOrgs.has(orgId) || ensuringOrgs.has(orgId)) return
+    ensuringOrgs.add(orgId)
+    let live = true
     void ensureClusterExecution(orgId)
-      .then(() => refreshDaemons())
-      .catch(() => {})
+      .then((settings) => {
+        // Enabled AND credentialed is done; disabled is an owner's decision and
+        // just as final. Anything else is still converging — retry next visit.
+        if (!settings.enabled || settings.credentialRevision) settledOrgs.add(orgId)
+        return live ? refreshDaemons() : undefined
+      })
+      .catch((err: unknown) => {
+        if (err instanceof ApiError && (err.status === 404 || err.status === 403)) settledOrgs.add(orgId)
+      })
+      .finally(() => ensuringOrgs.delete(orgId))
+    return () => {
+      live = false
+    }
   }, [orgId, isOwner, refreshDaemons])
 }
 

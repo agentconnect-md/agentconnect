@@ -126,15 +126,16 @@ export function orgRoutes(deps: HttpDeps) {
         })
         // Managed execution, where the deployment runs it: the envelope is part
         // of what an organization IS here, so it is provisioned with the org
-        // rather than waiting for an owner to find a toggle. Best-effort — an
-        // unreachable cluster must not fail a creation that already committed,
-        // and the console's Daemons page ensures the same thing on every visit.
+        // rather than waiting for an owner to find a toggle. Deliberately NOT
+        // awaited — this is Kubernetes I/O with no bound, and an API server that
+        // has stopped answering must not hold open a creation whose row already
+        // committed, leaving the caller with neither an org nor a safe retry.
+        // The console's Daemons page ensures the same thing, so a dropped attempt
+        // costs a page visit rather than an envelope.
         if (deps.clusterExecution) {
-          try {
-            await deps.clusterExecution.ensureProvisioned(OrgId(org.id), req.principal!.userId)
-          } catch (err) {
+          void deps.clusterExecution.ensureProvisioned(OrgId(org.id), req.principal!.userId).catch((err: unknown) => {
             req.log.warn({ err, orgId: org.id }, 'cluster-execution: envelope provisioning deferred to the next ensure')
-          }
+          })
         }
         return reply.code(201).send(toDto(org, deps))
       }

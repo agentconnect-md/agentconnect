@@ -150,7 +150,8 @@ export class ClusterExecutionService {
    * on, so an owner who deliberately disabled cluster execution keeps a row that
    * reads disabled and nothing here resurrects it. An org that IS enabled gets
    * its spec re-applied (which creates the CR when it is gone) and, once the
-   * operator has published the envelope namespace, its first credential.
+   * operator has published the envelope namespace, a credential — issued, or
+   * REISSUED when the cluster no longer holds one.
    *
    * Best-effort by construction: the caller is a page load or an org create, so
    * a namespace that is not ready yet or a peer already rotating is the ordinary
@@ -164,7 +165,7 @@ export class ClusterExecutionService {
     // No row at all ⇒ never configured, so provisioning is the deployment's
     // default rather than a reversal of anyone's choice.
     const settings = existing ? await this.converge(orgId) : await this.enable(orgId, { enabled: true })
-    if (!settings.enabled || settings.credentialRevision) return settings
+    if (!settings.enabled || (await this.credentialPublished(settings))) return settings
     try {
       await this.issueCredential(orgId, actorUserId)
     } catch (error) {
@@ -174,6 +175,25 @@ export class ClusterExecutionService {
       return settings
     }
     return this.settings(orgId)
+  }
+
+  /**
+   * Does the CLUSTER hold this org's credential right now? The stored revision
+   * only says one was issued once, and that is not the same claim: deleting a CR
+   * hands the envelope to the operator's finalizer, which removes the namespace
+   * and the Secret inside it. A pass that recreated the CR and then trusted the
+   * revision would leave the new daemon pod blocked forever on a Secret nobody
+   * was ever going to write. Absent ⇒ re-key, which the daemon identity survives.
+   *
+   * A namespace that has not been published or created yet reads as absent too,
+   * and the issue that follows answers `NamespaceNotReady` — the ordinary "come
+   * back later", not a re-key.
+   */
+  private async credentialPublished(settings: ClusterExecutionSettings): Promise<boolean> {
+    if (!settings.credentialRevision) return false
+    const namespace = (await this.api.get(settings.resourceName))?.status?.namespace
+    if (!namespace) return false
+    return (await this.secrets.publishedSeq(namespace, settings.credentialSecretName)) > 0
   }
 
   /**
