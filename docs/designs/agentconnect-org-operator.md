@@ -143,7 +143,8 @@ diffing. Object names are fixed per-namespace constants (`ac-daemon`,
 `ac-daemon-shim`, `ac-daemon-state`, `ac-runtime-<tier>`, `ac-quota`,
 `ac-limits`); the namespace is per-org, so they never collide. Master
 SandboxTemplates live in the control namespace as
-`<AC_MASTER_TEMPLATE_PREFIX><tier>` (default `ac-runtime-<tier>`); daemon
+`<AC_MASTER_TEMPLATE_PREFIX><tier>` (default `ac-runtime-<tier>`), rendered by
+the chart from its `runtimeTiers` value; daemon
 resource tiers are a built-in small/medium/large table, unknown names falling
 back to `small` with a warning. Order is policy-before-workload within one
 reconcile pass:
@@ -190,7 +191,10 @@ carrying `helm.sh/resource-policy: keep` so no release uninstall can
 cascade-delete every org or every live Sandbox. The one thing the chart adds to
 the vendored stack is the controller's label-domain allowlist, which replaces
 rather than extends its default and without which every SandboxClaim is
-rejected. Everything else is per-install: operator Deployment (2 replicas) +
+rejected. Everything else is per-install: the master SandboxTemplates rendered
+from `runtimeTiers` (blueprints in the control namespace — the operator inherits
+each one wholesale except the image, the shim endpoint and the network policy),
+operator Deployment (2 replicas) +
 SA/RBAC, the release-prefixed tokenreview ClusterRole, two
 ValidatingAdmissionPolicies, and a pre-delete hook that refuses uninstall while
 CRs remain — removing the operator would strand every finalizer. That hook is a
