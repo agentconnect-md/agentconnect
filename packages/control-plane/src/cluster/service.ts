@@ -10,9 +10,11 @@
  * daemon authenticates with the token the kubelet projects into its pod, so
  * there is no key to mint, publish, roll out or revoke here.
  *
- * Nothing here re-applies the spec on a timer: the operator is level-triggered
- * and re-reads the CR on its own resync, so the control plane only has to make
- * the spec true at the moment it changes. The periodic work it does own is
+ * Writing the CR is level-triggered too, for the reason the operator's own
+ * reconcile is: part of the spec is rendered from control-plane CONFIGURATION
+ * rather than from the org's row, and an edge-triggered writer can only make
+ * that true for envelopes written after the configuration changed. See
+ * {@link ClusterExecutionService.resyncEnvelopes}. The other periodic work is
  * cleanup it may still owe after a request returned — see the drain below.
  */
 import { randomUUID } from 'node:crypto'
@@ -36,6 +38,10 @@ const CONVERGE_ATTEMPTS = 5
 /** Tombstones retired per drain pass; a backlog is rare and drains over passes. */
 const TEARDOWN_BATCH = 50
 
+/** Envelopes re-applied per pass. A slice rather than the fleet, so one pass costs a
+ *  bounded number of requests; the rotation below is what still covers everyone. */
+const RESYNC_BATCH = 100
+
 /** How long one caller may own an envelope transition before it is taken over.
  *  Generous against a slow API server, short enough that a crashed process does
  *  not lock an operator out of switching the envelope on or off for long. */
@@ -54,6 +60,14 @@ export interface ClusterExecutionPolicy {
   controlPlaneUrl: string
 }
 
+/** What one re-apply pass did. Failures are returned rather than swallowed: an
+ *  envelope that cannot be applied is stuck, and nothing else would ever say so. */
+export interface EnvelopeResyncOutcome {
+  /** Envelopes re-applied without error — mostly no-ops, which is the point. */
+  converged: number
+  failures: { orgId: string; error: unknown }[]
+}
+
 /** Raised when another caller already owns the org's envelope transition. */
 export class ClusterTransitionInProgressError extends Error {
   constructor() {
@@ -63,6 +77,11 @@ export class ClusterTransitionInProgressError extends Error {
 }
 
 export class ClusterExecutionService {
+  /** Where the last re-apply pass stopped; null ⇒ start from the top of the fleet.
+   *  Per process, deliberately: two replicas sweeping from different offsets both
+   *  converge, and a restart that starts over costs no-ops, not correctness. */
+  private resyncCursor: string | null = null
+
   constructor(
     private readonly repo: OrgClusterExecutionRepo,
     private readonly api: OrgResourceApi,
@@ -199,13 +218,15 @@ export class ClusterExecutionService {
   /**
    * Apply the current row, then confirm it is still current — the fence against
    * two concurrent writers reverting each other. Without it, A-upsert →
-   * B-upsert → B-apply → A-apply leaves the row at B and the resource
-   * permanently at A: the operator reconciles the CR, not the row, and nothing
-   * here re-reads on a timer, so that divergence would never heal.
+   * B-upsert → B-apply → A-apply leaves the row at B and the resource at A: the
+   * operator reconciles the CR, not the row, so only the re-apply pass would
+   * heal that, and only on its next rotation.
    *
    * Every writer runs this loop, so a request that gives up at the attempt
    * ceiling is one whose value was superseded — and the writer that superseded
-   * it is itself converging on the newer row.
+   * it is itself converging on the newer row. It is also what makes the periodic
+   * pass safe on a stale selection: a row switched off or deleted since is read
+   * here, and reconciled to, before anything is applied.
    */
   private async converge(orgId: OrgId): Promise<ClusterExecutionSettings> {
     let current = await this.repo.get(orgId)
@@ -235,6 +256,51 @@ export class ClusterExecutionService {
     // enough and costs one indexed read instead of a whole org projection.
     const slug = await this.orgs.slugById(settings.orgId)
     await this.api.apply(name, buildSpec(settings, this.policy.controlPlaneUrl, slug ?? undefined))
+  }
+
+  /**
+   * Re-apply a bounded slice of the enabled envelopes, so a CR converges on a
+   * change the org's own row never saw. `spec.controlPlane.url` is the case that
+   * forced this: it is rendered from control-plane CONFIGURATION, so a deployment
+   * that changes it — or a build that learns to write a field at all — leaves
+   * every existing envelope on a spec no settings write would ever revisit, and
+   * an operator with nothing to inject reports the stale CR `Ready`.
+   *
+   * Each org goes through {@link ClusterExecutionService.converge}, which applies
+   * the CURRENT row under the same revision fence every request path uses — so a
+   * row disabled or deleted since the listing is reconciled to what it says now,
+   * not to the snapshot this pass selected. The listing skips orgs under a live
+   * transition claim for the same reason enable, disable and the drain take one:
+   * a re-apply must not act on an envelope someone is creating or destroying.
+   *
+   * Bounded and rotating: one slice per pass, keyed forward from where the last
+   * stopped, so a fleet of any size converges over consecutive passes without one
+   * pass holding the API server. Re-applying an unchanged spec is a server-side
+   * apply no-op — nothing writes the row, so `specRevision` does not move, and the
+   * API server stores no new resource version — which is what makes running this
+   * against everyone, forever, cost a request rather than a change.
+   */
+  async resyncEnvelopes(limit = RESYNC_BATCH): Promise<EnvelopeResyncOutcome> {
+    const orgIds = await this.repo.listResyncableOrgIds(
+      this.resyncCursor,
+      limit,
+      new Date(this.clock.now()),
+      TRANSITION_LEASE_MS
+    )
+    // A short slice is the fleet's tail; the next pass starts from the top again.
+    this.resyncCursor = orgIds.length === limit ? (orgIds.at(-1) ?? null) : null
+    const outcome: EnvelopeResyncOutcome = { converged: 0, failures: [] }
+    for (const orgId of orgIds) {
+      try {
+        await this.converge(OrgId(orgId))
+        outcome.converged += 1
+      } catch (error) {
+        // Best-effort per envelope, like the drain: one unreachable org must not
+        // cost the rest of the pass, and the next pass retries it.
+        outcome.failures.push({ orgId, error })
+      }
+    }
+    return outcome
   }
 
   /**

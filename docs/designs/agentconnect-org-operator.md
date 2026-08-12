@@ -283,8 +283,9 @@ _where_ the CRs live.
   redeem is created in repository code that has no business knowing about
   Kubernetes. So `POST …/cluster-execution/ensure` (owner-only, idempotent) is
   the same operation as a request, and the console's Daemons page fires it once
-  per org per session. Between them, every org converges — including ones that
-  predate the feature — without a reconciler sweeping the whole table.
+  per org per session. Between them, every org gets a settings row — including
+  ones that predate the feature — without a reconciler deciding on anyone's
+  behalf which orgs should have an envelope at all.
   `ensureProvisioned` enables only an org with NO settings row: a row that reads
   disabled is an owner's decision, and re-applying would undo it. An org that is
   enabled gets its spec re-applied, which recreates a CR that went missing.
@@ -295,8 +296,28 @@ _where_ the CRs live.
   work owed by an otherwise successful pass.)
 - Every write bumps `specRevision`, and a write applies the CURRENT row and
   then re-reads that revision: two concurrent writers would otherwise be able to
-  leave the row at one spec and the CR at an older one forever, since the
-  operator reconciles the CR and nothing here re-reads on a timer.
+  leave the row at one spec and the CR at an older one until the next re-apply
+  pass, since the operator reconciles the CR, not the row.
+- **Writing the CR is level-triggered**, on the same maintenance loop as the
+  teardown drain: each pass re-applies a bounded, rotating slice of the enabled
+  envelopes. A settings write cannot be the only trigger, because part of the
+  spec is rendered from control-plane CONFIGURATION rather than from the org's
+  row — `spec.controlPlane.url` is the whole of it today. An edge-triggered
+  writer makes such a field true only for envelopes written after the
+  configuration changed; every older envelope keeps a CR that no edit to that
+  org will ever revisit, and the failure is silent by construction. A CR with no
+  `controlPlane.url` gives the operator nothing to inject, so the daemon pod
+  comes up with no `AC_CP_URL` and runs local — `Ready` on the CR, `1/1 Running`
+  on the pod, one log line as the only evidence. (Hence the daemon logs that
+  state at error when it was started with `--k8s`: in an envelope, local mode is
+  a fault, not a mode.) Each envelope goes through the same convergence loop a
+  request takes, so it applies the row as it reads NOW and a row switched off or
+  deleted since the slice was listed is reconciled to that instead. The listing
+  skips orgs under a live transition claim, and re-applying an unchanged spec is
+  a server-side-apply no-op: no `specRevision` bump, no new resource version.
+  `spec.daemon.image` is deliberately NOT swept back to the deployment default —
+  it is pinned per org at creation, and whether a fleet-wide upgrade should move
+  it is a separate product decision.
 - Enabling, disabling, and the teardown drain take a leased per-org **transition
   claim**, and it outlives the credential it was introduced for: those three
   still create and destroy one envelope from three directions. The claim is what

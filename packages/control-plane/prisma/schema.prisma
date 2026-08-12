@@ -2775,8 +2775,8 @@ model OrgClusterExecution {
   /// Bumped on every write. The provisioner applies the current row and then
   /// re-reads this: a changed value means a concurrent writer superseded the
   /// snapshot it just applied, so it applies again. Without the fence two
-  /// interleaved writes can leave the row and the resource permanently apart —
-  /// the operator reconciles the CR, not this table.
+  /// interleaved writes leave the row and the resource apart until the periodic
+  /// re-apply's next rotation — the operator reconciles the CR, not this table.
   specRevision         Int                 @default(1)
   resourceName         String              @unique
   /// Quiesce without tearing down: daemon to zero, sandboxes drained.

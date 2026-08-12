@@ -307,6 +307,7 @@ import {
   encodeSharedSlackStatusTarget,
   HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED,
   HookReport,
+  CP_URL_ENV,
   RELAY_DAEMON_SUBPROTOCOL,
   RELAY_DAEMON_WS_PATH,
   RESERVED_RESTART_CODE,
@@ -20403,7 +20404,20 @@ export class Daemon {
   private startCpClient(root: string): void {
     const cp = this.cfg.controlPlane
     if (!configuredControlPlane(cp, !!this.clusterIdentityToken)) {
-      this.log.info('cp: not connecting (disabled or missing url/token) — running local')
+      // Url first: an envelope daemon has no config file, so a missing address is
+      // ALSO why the connection reads disabled, and naming the cause beats the effect.
+      const missing = !cp.url ? 'no url' : !cp.enabled ? 'disabled' : 'no key and no projected identity'
+      // Local mode is a CHOICE on a host and a FAULT in a cluster: `--k8s` says this
+      // process is an envelope the control plane provisioned, so a missing address is
+      // a CR that never carried `spec.controlPlane.url`, not an operator's decision.
+      // At info it reads as normal, which is how a whole fleet of them goes unnoticed.
+      if (this.k8s) {
+        this.log.error(
+          `cp: not connecting (${missing}) — an in-cluster daemon has no local mode; expected ${CP_URL_ENV} from its AgentConnectOrg spec.controlPlane.url`
+        )
+      } else {
+        this.log.info(`cp: not connecting (${missing}) — running local`)
+      }
       return
     }
     if (this.clusterIdentityToken) this.log.info("cp: authenticating with this pod's projected identity token")

@@ -10,4 +10,9 @@ export { AgentConnectOrgApi, type OrgResourceApi } from './org-api.js'
 export { ClusterDaemonIdentityService, clusterIdentityOf, parseServiceAccountSubject } from './daemon-identity.js'
 export { ClusterMaintenanceLoop, type ClusterMaintenanceWork } from './maintenance-loop.js'
 export { ClusterNamingError, orgResourceName, type ClusterEnvelopeStatus } from './spec.js'
-export { ClusterExecutionService, ClusterTransitionInProgressError, type ClusterExecutionPolicy } from './service.js'
+export {
+  ClusterExecutionService,
+  ClusterTransitionInProgressError,
+  type ClusterExecutionPolicy,
+  type EnvelopeResyncOutcome
+} from './service.js'
