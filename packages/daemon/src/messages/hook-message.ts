@@ -134,9 +134,28 @@ export function githubOpensReviewGeneration(
 ): boolean {
   return Boolean(
     github?.subjectKind === 'pull_request' &&
+    github.isDraft !== true &&
     reviewPolicy !== undefined &&
     reviewPolicy !== 'off' &&
     (github.explicitReviewRequest || GITHUB_REVISION_REVIEW_EVENTS.has(event ?? ''))
+  )
+}
+
+function githubDraftStatusHint(c: HookContext, github: GithubHookMetadata | undefined): string {
+  if (github?.subjectKind !== 'pull_request' || github.isDraft !== true) return ''
+  const event = c.action ? `${c.event}:${c.action}` : (c.event ?? '')
+  if (event === 'pull_request:converted_to_draft') {
+    return (
+      ' This is a draft-status notification, not a code revision. Do not perform a code review or call ' +
+      '`submitGithubReview`; reply only that the pull request is still a draft and wait for ' +
+      '`pull_request:ready_for_review`, which will start the review that can approve the current revision.'
+    )
+  }
+  return (
+    ' This pull request is currently a draft, so GitHub cannot accept a formal review. Do not call ' +
+    '`submitGithubReview`. If this delivery has no code changes to assess, reply only that the pull request is a ' +
+    'draft; otherwise summarize any findings in the ordinary fallback comment. When it becomes ready, review the ' +
+    'current revision and submit the configured passing review if it still passes.'
   )
 }
 
@@ -233,7 +252,7 @@ function githubReplyHint(
   if (!reviewGeneration) {
     return [
       '',
-      `Return one self-contained final answer for this GitHub conversation. The daemon posts that final back to ${where} automatically and exclusively owns the reply. Formal GitHub review submission is unavailable for this delivery. Do NOT create, update, or delete GitHub comments or formal reviews through a tool, \`gh\`, another CLI, a connector, or a direct API call — those paths would race or double-post. Other GitHub tools are for READ-only inspection, then return the final answer for the daemon-owned reply.${githubWorkspaceCheckHint(github, false)}`
+      `Return one self-contained final answer for this GitHub conversation. The daemon posts that final back to ${where} automatically and exclusively owns the reply. Formal GitHub review submission is unavailable for this delivery. Do NOT create, update, or delete GitHub comments or formal reviews through a tool, \`gh\`, another CLI, a connector, or a direct API call — those paths would race or double-post. Other GitHub tools are for READ-only inspection, then return the final answer for the daemon-owned reply.${githubDraftStatusHint(c, github)}${githubWorkspaceCheckHint(github, false)}`
     ].join('\n')
   }
   return [
@@ -258,6 +277,7 @@ function buildGithubHookText(
     }`,
     ...(github?.baseSha ? [`Base SHA: ${github.baseSha}`] : []),
     ...(github?.headSha ? [`Head SHA: ${github.headSha}`] : []),
+    ...(github?.isDraft !== undefined ? [`Draft: ${github.isDraft}`] : []),
     ...(c.htmlUrl ? [c.htmlUrl] : [])
   ].join('\n')
   // Ordinary replies use the display context's number. Inline replies instead

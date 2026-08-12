@@ -2277,6 +2277,20 @@ describe('githubRuleVerdict (pure predicate)', () => {
     expect(matches(r, { ...pr, eventAction: 'pull_request:edited' })).toBe(false)
   })
 
+  it.each(['ready_for_review', 'converted_to_draft'] as const)(
+    'keeps legacy created PR hooks notified on %s',
+    (action) => {
+      const r = rule({}, { events: ['pull_request:opened'] })
+      expect(
+        githubRuleVerdict(r, {
+          ...ctx,
+          event: 'pull_request',
+          eventAction: `pull_request:${action}`
+        })
+      ).toBe('needs-authz')
+    }
+  )
+
   it('applies comment subject scope only when commentFamilies is non-empty', () => {
     const commentCtx = {
       ...ctx,

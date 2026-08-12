@@ -47,7 +47,7 @@ describe('GH_TRIGGER_PILL', () => {
 
 describe('GH_FAMILIES', () => {
   it('describes the supported update signals without promising silent lifecycle or metadata events', () => {
-    expect(GH_FAMILIES.find(({ fam }) => fam === 'pull_request')?.desc).toBe('opened, new commits, replies')
+    expect(GH_FAMILIES.find(({ fam }) => fam === 'pull_request')?.desc).toBe('opened, draft/ready, commits, replies')
     expect(GH_FAMILIES.find(({ fam }) => fam === 'issues')?.desc).toBe('opened, labels, replies')
   })
 
@@ -71,6 +71,8 @@ describe('eventsForFamilies', () => {
     expect(eventsForFamilies(['issues', 'pull_request', 'push'], 'first')).toEqual([
       'issues:opened',
       'pull_request:opened',
+      'pull_request:ready_for_review',
+      'pull_request:converted_to_draft',
       'push:*'
     ])
   })
@@ -118,7 +120,7 @@ describe('githubHookNeedsNormalization', () => {
     ).toBe(false)
     expect(
       githubHookNeedsNormalization({
-        events: ['pull_request:opened'],
+        events: ['pull_request:opened', 'pull_request:ready_for_review', 'pull_request:converted_to_draft'],
         commentFamilies: ['pull_request'],
         mentionOnly: false
       })

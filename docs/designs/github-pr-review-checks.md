@@ -351,7 +351,7 @@ Operator still confirms strict "branch up to date." Advancing base tip sends no 
 
 Only one **external current generation** per `(hookId, repoId, reportSha)`; subject rows hold each PR base/review revision:
 
-- Event contract: `issues:reopened|closed` and `pull_request:reopened|closed` are silent—no agent turn or comment. Every issue/PR `edited`, including title/body/base retarget, is silent. PR `synchronize` means head changed via push/force-push/rebase and starts a new revision review; never edit/append old output.
+- Event contract: `issues:reopened|closed` and `pull_request:reopened|closed` are silent—no agent turn or comment. Every issue/PR `edited`, including title/body/base retarget, is silent. PR `synchronize` means head changed via push/force-push/rebase and starts a new revision review; `ready_for_review` starts a fresh formal review even when the head is unchanged, while `converted_to_draft` only notifies the agent because draft PRs cannot accept formal reviews; never edit/append old output.
 - `opened/synchronize/ready_for_review` establish/increment queued generation. Draft-opened PR cannot pass; `converted_to_draft` seals current generation non-passing; `ready_for_review` starts new generation.
 - Non-code label/comment turn success never touches required context. A successful structured review can update informational verdict, but same-SHA turn cannot reopen required context.
 - Generation fence prevents late old completion from changing current check/status even if HookRun history updates.

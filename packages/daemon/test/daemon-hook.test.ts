@@ -2488,6 +2488,49 @@ describe('buildHookMessage', () => {
       expect(buildHookText(ghFire())).not.toContain('gh issue view')
     })
 
+    it('tells the agent when a PR is draft and keeps draft conversion status-only', () => {
+      const github = {
+        repoId: '123',
+        repoFullName: 'acme/infra',
+        sourceInstallationId: '456',
+        subjectKind: 'pull_request' as const,
+        pullNumber: 42,
+        headSha: 'a'.repeat(40),
+        baseSha: 'b'.repeat(40),
+        reportSha: 'a'.repeat(40),
+        isDraft: true
+      }
+      const draftText = buildHookText(
+        ghFire(
+          { event: 'pull_request', action: 'opened', title: 'draft PR', bodyExcerpt: undefined },
+          { reviewPolicy: 'full', github }
+        )
+      )
+      expect(draftText).toContain('Draft: true')
+      expect(draftText).toContain('currently a draft')
+      expect(draftText).toContain('If this delivery has no code changes to assess')
+      expect(draftText).toContain('Do not call `submitGithubReview`')
+
+      const convertedText = buildHookText(
+        ghFire(
+          { event: 'pull_request', action: 'converted_to_draft', title: 'draft PR', bodyExcerpt: undefined },
+          { reviewPolicy: 'full', github }
+        )
+      )
+      expect(convertedText).toContain('draft-status notification, not a code revision')
+      expect(convertedText).toContain('reply only that the pull request is still a draft')
+      expect(convertedText).not.toContain('opens a review generation for the current PR revision')
+
+      const readyText = buildHookText(
+        ghFire(
+          { event: 'pull_request', action: 'ready_for_review', title: 'ready PR', bodyExcerpt: undefined },
+          { reviewPolicy: 'full', github: { ...github, isDraft: false } }
+        )
+      )
+      expect(readyText).toContain('opens a review generation for the current PR revision')
+      expect(readyText).toContain('use APPROVE + pass when it passes')
+    })
+
     it('no excerpt ⇒ header only, no fence at all', () => {
       const noBody = ghFire()
       delete (noBody.context as { bodyExcerpt?: string }).bodyExcerpt
