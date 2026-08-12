@@ -29,7 +29,15 @@ import type {
   OrgRepo
 } from '../persistence/ports.js'
 import type { OrgResourceApi } from './org-api.js'
-import { imageRepository, imageTag, isNewerVersion, versionImageTag, withImageTag } from './image.js'
+import {
+  imageRepository,
+  imageTag,
+  isNewerVersion,
+  versionImageTag,
+  versionTagStyle,
+  withImageTag,
+  type VersionTagStyle
+} from './image.js'
 import { ABSENT_ENVELOPE, buildSpec, orgResourceName, projectStatus, type ClusterEnvelopeStatus } from './spec.js'
 
 /** Bounded re-apply passes; each concurrent writer runs its own, so this only
@@ -85,10 +93,18 @@ export class ClusterEnvelopeNotEnabledError extends Error {
   }
 }
 
-/** Raised when an envelope's daemon image is pinned by digest, so there is no tag to move. */
+/**
+ * Raised when an envelope's daemon image gives no tag to move to.
+ *
+ * Two shapes reach it, for one reason: nothing in scope says which tag a released version
+ * would be. A DIGEST is an exact pin, and replacing it with a tag would discard the pin an
+ * operator chose. A FLOATING tag (`latest`, `rc`) says which image to run but never how
+ * this repository spells a version — and guessing produces a tag that does not exist, so
+ * the upgrade would land the pod in ImagePullBackOff instead of failing here.
+ */
 export class ClusterImageNotVersionedError extends Error {
   constructor(readonly image: string) {
-    super(`the envelope's daemon image "${image}" is not version-tagged`)
+    super(`the envelope's daemon image "${image}" does not name a version, so there is no release tag to follow`)
     this.name = 'ClusterImageNotVersionedError'
   }
 }
@@ -185,11 +201,7 @@ export class ClusterExecutionService {
   async setDaemonVersion(orgId: OrgId, version: string): Promise<string> {
     const settings = await this.repo.get(orgId)
     if (!settings?.enabled) throw new ClusterEnvelopeNotEnabledError()
-    const currentTag = imageTag(settings.daemonImage)
-    // A digest pin has no tag to move, and silently replacing it with one would discard
-    // an exact pin somebody chose. Refuse instead of pretending the upgrade happened.
-    if (currentTag === null) throw new ClusterImageNotVersionedError(settings.daemonImage)
-    const daemonImage = withImageTag(settings.daemonImage, versionImageTag(currentTag, version))
+    const daemonImage = withImageTag(settings.daemonImage, versionImageTag(this.tagStyleFor(settings), version))
     if (daemonImage === settings.daemonImage) return daemonImage
     // The two halves of `configure`, split so the caller can tell them apart: everything
     // above here wrote nothing, and everything below runs with the change already durable.
@@ -200,6 +212,24 @@ export class ClusterExecutionService {
       throw new ClusterImageWriteDeferredError(daemonImage, err)
     }
     return daemonImage
+  }
+
+  /**
+   * How this envelope's repository spells a released version.
+   *
+   * The org's own tag is the evidence when it is itself a version. When it is not — a
+   * floating tag somebody pinned deliberately — the install's configured reference is the
+   * fallback, but ONLY for the same repository: a convention observed on one registry says
+   * nothing about another, and this deployment declared that one for its own image. With
+   * neither, there is nothing to infer from and the write is refused rather than guessed.
+   */
+  private tagStyleFor(settings: ClusterExecutionSettings): VersionTagStyle {
+    const sameRepository = imageRepository(settings.daemonImage) === imageRepository(this.policy.daemonImage)
+    const style =
+      versionTagStyle(imageTag(settings.daemonImage)) ??
+      (sameRepository ? versionTagStyle(imageTag(this.policy.daemonImage)) : null)
+    if (!style) throw new ClusterImageNotVersionedError(settings.daemonImage)
+    return style
   }
 
   /**

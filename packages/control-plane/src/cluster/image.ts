@@ -103,14 +103,25 @@ export function parseVersion(version: string): Parsed | null {
   return { release: [m[1]!, m[2]!, m[3]!], prerelease: m[4] ? m[4].split('.') : null }
 }
 
+/** How a repository spells a released version, learned from one tag that IS a version. */
+export type VersionTagStyle = 'v-prefixed' | 'bare'
+
 /**
- * The image tag a published `version` was released under, spelled the way the reference
- * being replaced spells it. The release train tags images `vX.Y.Z(-rc.N)`, so that is the
- * default; an install whose current tag carries no `v` built its own images and keeps that
- * convention, because a tag this deployment never published is not an upgrade for it.
+ * The convention a tag demonstrates, or null when it demonstrates nothing.
+ *
+ * Only a tag that already names a version is evidence. A floating tag (`latest`, `rc`) is
+ * not: it says which image to run, never how this repository spells a version, and reading
+ * a missing `v` off it as "bare" is how an upgrade fabricates `:1.5.0` for a registry that
+ * only publishes `:v1.5.0` — a tag that does not exist, and a pod in ImagePullBackOff.
  */
-export function versionImageTag(currentTag: string, version: string): string {
-  return currentTag.startsWith('v') ? `v${version}` : version
+export function versionTagStyle(tag: string | null): VersionTagStyle | null {
+  if (!tag || !parseVersion(tag)) return null
+  return tag.startsWith('v') ? 'v-prefixed' : 'bare'
+}
+
+/** Spell `version` as a tag in the given convention. */
+export function versionImageTag(style: VersionTagStyle, version: string): string {
+  return style === 'v-prefixed' ? `v${version}` : version
 }
 
 /**

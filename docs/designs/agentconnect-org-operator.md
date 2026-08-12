@@ -545,9 +545,19 @@ next pass, and by the next ordinary settings write before that.
 One version, two spellings, and they must not be concatenated. npm reports
 `1.5.0`; the image is tagged with the GIT tag, `v1.5.0` — `build.yaml` refuses a
 release version that is not `vX.Y.Z(-rc.N)`. So composing a reference translates,
-and it translates the way the reference being replaced is already spelled: a tag
-carrying no `v` belongs to an install that built its own images, and a tag that
-deployment never published is not an upgrade for it.
+and the convention it translates into has to be **observed, never assumed**: only
+a tag that is itself a version demonstrates one. The org's own tag is that evidence
+when it has it; when it does not, the install's configured reference is, but only
+for the SAME repository — a convention seen on one registry says nothing about
+another's tags. With neither, the write is refused.
+
+That last case is the one worth being strict about. An envelope sitting on a
+floating tag (`latest`) tells you which image to run and nothing about spelling, so
+reading its absent `v` as "no prefix" would compose `:1.5.0` against a registry
+that publishes only `:v1.5.0` — a tag that does not exist. The pod would land in
+ImagePullBackOff, which is a worse answer than telling the caller no. A digest pin
+is refused for the neighbouring reason: it names no version either, and replacing
+it with a tag would discard an exact pin somebody chose.
 
 A refused apply is **not** a failed upgrade, and this is the one place the ordering
 matters. The row is written first, so the change is already durable and the

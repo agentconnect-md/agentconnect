@@ -27,5 +27,7 @@ export {
   imageTag,
   isNewerVersion,
   versionImageTag,
-  withImageTag
+  versionTagStyle,
+  withImageTag,
+  type VersionTagStyle
 } from './image.js'

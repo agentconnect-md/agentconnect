@@ -6,6 +6,7 @@ import {
   isNewerVersion,
   parseVersion,
   versionImageTag,
+  versionTagStyle,
   InvalidImageTagError
 } from './image.js'
 
@@ -103,17 +104,32 @@ describe('isNewerVersion', () => {
   })
 })
 
-describe('versionImageTag', () => {
-  // The release train tags images with the GIT tag, so an npm version has to be
-  // translated: `.github/workflows/build.yaml` refuses anything but `vX.Y.Z(-rc.N)`.
-  it('prefixes a released version the way the release train tags it', () => {
-    expect(versionImageTag('v1.4.0', '1.5.0')).toBe('v1.5.0')
-    expect(versionImageTag('v1.4.0', '1.5.0-rc.2')).toBe('v1.5.0-rc.2')
+describe('versionTagStyle', () => {
+  it('reads the convention off a tag that is itself a version', () => {
+    expect(versionTagStyle('v1.4.0')).toBe('v-prefixed')
+    expect(versionTagStyle('v1.5.0-rc.2')).toBe('v-prefixed')
+    expect(versionTagStyle('1.4.0')).toBe('bare')
   })
 
-  // A bespoke build tagged without the prefix keeps its own convention: a tag this
-  // deployment never published is not an upgrade for it.
-  it('keeps an unprefixed convention unprefixed', () => {
-    expect(versionImageTag('1.4.0', '1.5.0')).toBe('1.5.0')
+  /**
+   * A floating tag is NOT evidence. Reading its missing `v` as "bare" is how an upgrade
+   * composes `:1.5.0` for a registry that only publishes `:v1.5.0` — a tag that does not
+   * exist, so the pod lands in ImagePullBackOff instead of the caller being told no.
+   */
+  it('learns nothing from a floating or absent tag', () => {
+    expect(versionTagStyle('latest')).toBeNull()
+    expect(versionTagStyle('rc')).toBeNull()
+    expect(versionTagStyle('main')).toBeNull()
+    expect(versionTagStyle(null)).toBeNull()
+  })
+})
+
+describe('versionImageTag', () => {
+  // The release train tags images with the GIT tag, so an npm version is translated:
+  // `.github/workflows/build.yaml` refuses anything but `vX.Y.Z(-rc.N)`.
+  it('spells a version in the given convention', () => {
+    expect(versionImageTag('v-prefixed', '1.5.0')).toBe('v1.5.0')
+    expect(versionImageTag('v-prefixed', '1.5.0-rc.2')).toBe('v1.5.0-rc.2')
+    expect(versionImageTag('bare', '1.5.0')).toBe('1.5.0')
   })
 })

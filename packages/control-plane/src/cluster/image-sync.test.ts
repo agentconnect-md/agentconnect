@@ -137,14 +137,14 @@ class FakeApi implements OrgResourceApi {
   async delete(): Promise<void> {}
 }
 
-function build() {
+function build(policy: Partial<ClusterExecutionPolicy> = {}) {
   const repo = new FakeRepo()
   const api = new FakeApi()
   const service = new ClusterExecutionService(
     repo,
     api,
     { slugById: async () => 'acme' },
-    POLICY,
+    { ...POLICY, ...policy },
     { clusterBoundIds: async () => [] },
     systemClock
   )
@@ -186,6 +186,35 @@ describe('ClusterExecutionService.setDaemonVersion', () => {
   it('refuses a digest-pinned image rather than discarding the pin', async () => {
     const { repo, api, service } = build()
     repo.seed('acme', `registry.example.test/agentconnect/daemon@sha256:${'a'.repeat(64)}`)
+    await expect(service.setDaemonVersion(OrgId('acme'), '1.5.0')).rejects.toThrow(ClusterImageNotVersionedError)
+    expect(api.applied).toHaveLength(0)
+  })
+
+  /**
+   * A floating tag says which image to run, never how the repository spells a version. The
+   * install's own reference does say, for its own repository — so an org that drifted onto
+   * `:latest` upgrades to the tag this deployment actually publishes.
+   */
+  it('takes the convention from the install reference when the org tag is floating', async () => {
+    const { repo, service } = build()
+    repo.seed('acme', 'registry.example.test/agentconnect/daemon:latest')
+    expect(await service.setDaemonVersion(OrgId('acme'), '1.5.0')).toBe(
+      'registry.example.test/agentconnect/daemon:v1.5.0'
+    )
+  })
+
+  // Neither side names a version, so composing one would invent a tag nothing published.
+  it('refuses a floating tag when the install reference is floating too', async () => {
+    const { repo, api, service } = build({ daemonImage: 'registry.example.test/agentconnect/daemon:latest' })
+    repo.seed('acme', 'registry.example.test/agentconnect/daemon:latest')
+    await expect(service.setDaemonVersion(OrgId('acme'), '1.5.0')).rejects.toThrow(ClusterImageNotVersionedError)
+    expect(api.applied).toHaveLength(0)
+  })
+
+  // A convention observed on one registry says nothing about another's tags.
+  it('refuses a floating tag on a repository the install did not configure', async () => {
+    const { repo, api, service } = build()
+    repo.seed('acme', 'other.registry.test/fork/daemon:latest')
     await expect(service.setDaemonVersion(OrgId('acme'), '1.5.0')).rejects.toThrow(ClusterImageNotVersionedError)
     expect(api.applied).toHaveLength(0)
   })
