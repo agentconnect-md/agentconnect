@@ -139,4 +139,13 @@ describe('cluster execution card', () => {
     await render(<ClusterExecutionCard orgId="org-test" isOwner />)
     expect(host.textContent).toContain('No envelope in the cluster yet')
   })
+
+  it('says the cluster read failed rather than loading forever', async () => {
+    statusAnswer = new ApiError('cluster API rejected the request', 502)
+    await render(<ClusterExecutionCard orgId="org-test" isOwner />)
+
+    expect(host.textContent).toContain("Couldn't read the envelope status from the cluster.")
+    // Never a condition from a read that did not happen.
+    expect(host.textContent).not.toContain('Ready')
+  })
 })

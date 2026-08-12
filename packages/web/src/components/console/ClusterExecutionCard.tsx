@@ -94,7 +94,7 @@ export function ClusterExecutionCard({ orgId, isOwner }: { orgId: string | undef
   } = useSWR<ClusterExecutionSettingsDto>(key, ([, id]) => fetchClusterExecution(id as string))
   // Status exists only once a resource does, and it is the operator's to answer.
   const statusKey = settings?.enabled ? consoleKeys.clusterExecutionStatus(orgId) : null
-  const { data: status } = useSWR<ClusterEnvelopeStatusDto>(
+  const { data: status, error: statusError } = useSWR<ClusterEnvelopeStatusDto>(
     statusKey,
     ([, id]) => fetchClusterExecutionStatus(id as string),
     { refreshInterval: STATUS_REFRESH_MS }
@@ -205,7 +205,7 @@ export function ClusterExecutionCard({ orgId, isOwner }: { orgId: string | undef
                 />
               </div>
 
-              <EnvelopeStatus status={status} />
+              <EnvelopeStatus status={status} error={statusError} />
 
               <div className={`${ROW} border-t border-(--border-subtle)`}>
                 <div className="min-w-0 flex-1">
@@ -286,33 +286,54 @@ export function ClusterExecutionCard({ orgId, isOwner }: { orgId: string | undef
   )
 }
 
-/** What the operator says about the envelope — never what the settings row says. */
-function EnvelopeStatus({ status }: { status: ClusterEnvelopeStatusDto | undefined }) {
-  if (!status) return <LoadingState size={20} padding={16} />
-  if (!status.present) {
+/**
+ * What the operator says about the envelope — never what the settings row says.
+ * Because this panel IS the live read, a failed one is never rendered as
+ * loading, and a snapshot SWR retained across a failure is never rendered as
+ * current: a stale `Ready` with nothing marking it is the one wrong answer here.
+ */
+function EnvelopeStatus({ status, error }: { status: ClusterEnvelopeStatusDto | undefined; error: unknown }) {
+  if (error && !status) {
     return (
-      <div className="border-t border-(--border-subtle) px-4 py-[15px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-        No envelope in the cluster yet — the operator creates one from the resource that was just applied.
+      <div className="border-t border-(--border-subtle) px-4 py-[15px] font-sans text-[12.5px] font-normal leading-normal text-(--status-error)">
+        Couldn&apos;t read the envelope status from the cluster.
       </div>
     )
   }
+  if (!status) return <LoadingState size={20} padding={16} />
   const shown = status.conditions.filter((condition) => !TRANSIENT.has(condition.type) || condition.status === 'True')
   const warm = status.pools?.reduce((sum, pool) => sum + pool.warmAvailable, 0)
   return (
     <div className="border-t border-(--border-subtle) px-4 py-[15px]">
-      <div className="flex flex-wrap items-center gap-[6px]">
-        {shown.length === 0 ? (
-          <span className="badge bg-(--surface-sunken) text-(--text-tertiary)">No conditions reported</span>
-        ) : (
-          shown.map((condition) => <ConditionBadge key={condition.type} condition={condition} />)
-        )}
-      </div>
-      <div className="mt-3 grid grid-cols-2 gap-3 desktop:grid-cols-4">
-        <Stat label="Daemon" value={status.daemon ? (status.daemon.ready ? 'Ready' : 'Not ready') : '—'} />
-        <Stat label="Sandboxes" value={status.sandboxes ? String(status.sandboxes.total) : '—'} />
-        <Stat label="Running" value={status.sandboxes ? String(status.sandboxes.running) : '—'} />
-        <Stat label="Warm" value={warm === undefined ? '—' : String(warm)} />
-      </div>
+      {Boolean(error) && (
+        <div
+          role="status"
+          className="mb-[10px] font-sans text-[11.5px] font-normal leading-[1.45] text-(--status-paused)"
+        >
+          The cluster read is failing — this is the last status it answered, not the current one.
+        </div>
+      )}
+      {!status.present ? (
+        <div className="font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+          No envelope in the cluster yet — the operator creates one from the resource that was just applied.
+        </div>
+      ) : (
+        <>
+          <div className="flex flex-wrap items-center gap-[6px]">
+            {shown.length === 0 ? (
+              <span className="badge bg-(--surface-sunken) text-(--text-tertiary)">No conditions reported</span>
+            ) : (
+              shown.map((condition) => <ConditionBadge key={condition.type} condition={condition} />)
+            )}
+          </div>
+          <div className="mt-3 grid grid-cols-2 gap-3 desktop:grid-cols-4">
+            <Stat label="Daemon" value={status.daemon ? (status.daemon.ready ? 'Ready' : 'Not ready') : '—'} />
+            <Stat label="Sandboxes" value={status.sandboxes ? String(status.sandboxes.total) : '—'} />
+            <Stat label="Running" value={status.sandboxes ? String(status.sandboxes.running) : '—'} />
+            <Stat label="Warm" value={warm === undefined ? '—' : String(warm)} />
+          </div>
+        </>
+      )}
     </div>
   )
 }

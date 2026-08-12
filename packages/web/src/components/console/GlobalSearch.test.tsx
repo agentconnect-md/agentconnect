@@ -15,11 +15,26 @@ vi.mock('@/lib/org-context', () => ({
 // GlobalSearch reads the three session-access states through SWR to decide
 // whether the Session access card would render at all.
 const sessionAccess = vi.fn(() => ({ available: true, enabled: false }))
+// …and the cluster-execution settings read, to decide the same for that card.
+const clusterExecution = vi.fn<() => { data?: unknown; error?: unknown }>(() => ({ data: {} }))
 vi.mock('swr', () => ({
-  default: (key: unknown) => ({ data: key ? sessionAccess() : undefined })
+  default: (key: unknown) => {
+    if (!key) return { data: undefined }
+    if (Array.isArray(key) && key[2] === 'cluster-execution') return clusterExecution()
+    return { data: sessionAccess() }
+  }
 }))
 vi.mock('@/lib/api', () => ({
-  fetchSessionExternalAccess: vi.fn()
+  fetchSessionExternalAccess: vi.fn(),
+  fetchClusterExecution: vi.fn(),
+  ApiError: class ApiError extends Error {
+    constructor(
+      message: string,
+      readonly status: number
+    ) {
+      super(message)
+    }
+  }
 }))
 vi.mock('@/lib/data-context', () => ({
   useConsoleData: () => ({ agents: [], daemons: [], crons: [], allSessions: [] })
@@ -35,6 +50,7 @@ vi.mock('@/components/marks', () => ({
   AgentIconView: () => <span data-agent-icon />
 }))
 
+import { ApiError } from '@/lib/api'
 import { GlobalSearch } from './GlobalSearch'
 import { NAV_GROUPS, SEARCH_PAGES } from './nav'
 
@@ -46,6 +62,7 @@ beforeEach(() => {
   authConfigured.mockReturnValue(true)
   myRole.mockReturnValue('owner')
   sessionAccess.mockReturnValue({ available: true, enabled: false })
+  clusterExecution.mockReturnValue({ data: {} })
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)
@@ -163,6 +180,25 @@ describe('GlobalSearch pages & settings', () => {
     sessionAccess.mockReturnValue({ available: false, enabled: false })
     type('session acces')
     type('session access')
+    expect(host.textContent).toContain('No results')
+  })
+
+  it('hides the Cluster execution entry once the deployment is KNOWN to run no cluster', () => {
+    render()
+    type('cluster execution')
+    expect(host.textContent).toContain('/settings#cluster-execution')
+
+    // A read that merely failed keeps the entry — the card renders then too.
+    clusterExecution.mockReturnValue({ data: undefined, error: new Error('offline') })
+    type('cluster executio')
+    type('cluster execution')
+    expect(host.textContent).toContain('/settings#cluster-execution')
+
+    // A 404 is the deployment saying it mounts no cluster routes at all, which
+    // is what makes the card render nothing and the anchor not exist.
+    clusterExecution.mockReturnValue({ data: undefined, error: new ApiError('not found', 404) })
+    type('cluster executio')
+    type('cluster execution')
     expect(host.textContent).toContain('No results')
   })
 
