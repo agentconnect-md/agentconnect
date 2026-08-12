@@ -128,6 +128,8 @@ export interface HttpServerConfig extends HumanAuthConfig {
 export interface HttpDeps {
   /** Secret-free startup snapshot served to the prebuilt browser image. */
   runtimeConfig: RuntimeConfigRouteDeps
+  /** Deployment quota for non-ADMIN organization creation; absent defaults to one. */
+  maxOrgsPerNonAdminUser?: number
   /** Shared process clock: delegated MCP execution uses the same timer seam as its reaper. */
   clock: Clock
   repos: {

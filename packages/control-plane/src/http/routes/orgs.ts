@@ -33,6 +33,7 @@ import { detachDaemon } from '../daemon-removal.js'
 import { Tag } from '../plugins/openapi.js'
 import { resolveOrgIconUrl, type IconUrlBases } from '../../agents/agent-icon.js'
 import { OrgDto, OrgListDto, CreateOrgBody, UpdateOrgBody, ErrorDto, type OrgDtoT } from '../dto/index.js'
+import { OrgCreationLimitReached } from '../../persistence/errors.js'
 
 function toDto(o: OrgRecord, deps: HttpDeps): OrgDtoT {
   const bases: IconUrlBases = {
@@ -90,7 +91,7 @@ export function orgRoutes(deps: HttpDeps) {
       }
     )
 
-    // Any authenticated user can create an org — they own what they create.
+    // ADMIN accounts bypass the deployment quota; local no-auth mode is the admin path.
     // A slug collision surfaces as 409 via the P2002 branch in the error mapper.
     r.post(
       '/orgs',
@@ -120,11 +121,26 @@ export function orgRoutes(deps: HttpDeps) {
             })
           }
         }
-        const org = await deps.repos.org.create({
-          name: req.body.name ?? null,
-          slug: req.body.slug,
-          ownerUserId: req.principal!.userId
-        })
+        const isAdmin = !deps.config.OIDC_ISSUER || req.principal!.isAdmin === true
+        let org: OrgRecord
+        try {
+          org = await deps.repos.org.create({
+            name: req.body.name ?? null,
+            slug: req.body.slug,
+            ownerUserId: req.principal!.userId,
+            ...(isAdmin ? {} : { maxOrgsPerUser: deps.maxOrgsPerNonAdminUser ?? 1 })
+          })
+        } catch (error) {
+          if (error instanceof OrgCreationLimitReached) {
+            return reply.code(403).send({
+              error: 'Forbidden',
+              statusCode: 403,
+              message: error.message,
+              code: error.code
+            })
+          }
+          throw error
+        }
         // Managed execution, where the deployment runs it: the envelope is part
         // of what an organization IS here, so it is provisioned with the org
         // rather than waiting for an owner to find a toggle. Deliberately NOT

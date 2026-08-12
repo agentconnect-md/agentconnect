@@ -295,4 +295,24 @@ describe('PgOrgRepo', () => {
     expect(def.role).toBe('collaborator')
     expect(def.memberCount).toBe(2) // seeded owner + this user
   })
+
+  it('enforces the non-admin organization quota inside the creation transaction', async () => {
+    const { userId } = await repo().provisionOidcUser({
+      oidcSubject: 'sub-org-quota',
+      email: 'quota@acme.com',
+      emailVerified: true
+    })
+    const orgs = new PgOrgRepo(prisma)
+
+    await expect(
+      orgs.create({ name: null, slug: 'quota-denied', ownerUserId: userId, maxOrgsPerUser: 1 })
+    ).rejects.toMatchObject({ code: 'ORG_CREATION_LIMIT_REACHED' })
+
+    await expect(
+      orgs.create({ name: null, slug: 'quota-allowed', ownerUserId: userId, maxOrgsPerUser: 2 })
+    ).resolves.toMatchObject({ slug: 'quota-allowed' })
+    await expect(
+      orgs.create({ name: null, slug: 'quota-denied-again', ownerUserId: userId, maxOrgsPerUser: 2 })
+    ).rejects.toMatchObject({ code: 'ORG_CREATION_LIMIT_REACHED' })
+  })
 })

@@ -25,6 +25,16 @@ import type { InternalInvocationAuth } from '../mcp/internal-invocation-auth.js'
 export interface HumanPrincipal {
   userId: string
   email?: string
+  /** True only when a verified OIDC token carries the deployment ADMIN role. */
+  isAdmin?: boolean
+}
+
+const ADMIN_ROLE = 'ADMIN'
+
+function hasAdminRole(claim: unknown): boolean {
+  if (Array.isArray(claim)) return claim.some((role) => role === ADMIN_ROLE)
+  if (typeof claim === 'string') return claim.split(/[\s,]+/).includes(ADMIN_ROLE)
+  return false
 }
 
 export interface HumanAuthConfig {
@@ -303,6 +313,7 @@ function oidcAuth(cfg: HumanAuthOptions & { OIDC_ISSUER: string }): preHandlerHo
       })
       if (!payload.sub) return unauthorized(reply, 'token missing subject')
       const sub = payload.sub
+      let isAdmin = hasAdminRole(payload.roles)
       // Was this subject's account deleted? Anything issued at or before that moment
       // — including the bearer that was live when it happened — stays rejected, so no
       // amount of retrying re-provisions it. A token with no `iat` cannot prove it is
@@ -344,10 +355,11 @@ function oidcAuth(cfg: HumanAuthOptions & { OIDC_ISSUER: string }): preHandlerHo
       let picture = typeof payload.picture === 'string' ? payload.picture : undefined
       const rawIdTokenHint = req.headers['x-ac-id-token']
       const idTokenHint = (Array.isArray(rawIdTokenHint) ? rawIdTokenHint[0] : rawIdTokenHint)?.trim() || undefined
-      if (!email && idTokenHint) {
+      if (idTokenHint) {
         try {
           const { payload: idClaims } = await jwtVerify(idTokenHint, await getJwks(), { issuer })
           if (idClaims.sub === sub) {
+            isAdmin ||= hasAdminRole(idClaims.roles)
             if (typeof idClaims.email === 'string') email = idClaims.email
             if (!displayName && typeof idClaims.name === 'string') displayName = idClaims.name
             if (!picture && typeof idClaims.picture === 'string') picture = idClaims.picture
@@ -407,7 +419,11 @@ function oidcAuth(cfg: HumanAuthOptions & { OIDC_ISSUER: string }): preHandlerHo
       }
       // Identity only — which org the request acts on is the URL's business
       // (`/orgs/:orgId/…`, verified by the org-scope guard).
-      req.principal = { userId: identity.userId, email: email ?? headerEmail }
+      req.principal = {
+        userId: identity.userId,
+        email: email ?? headerEmail,
+        ...(isAdmin ? { isAdmin: true } : {})
+      }
       req.oidcSubject = sub
       // Warm the identity projection behind this response (cold-visit §3). Contained:
       // a throw here must not fall into the outer catch and 401 a valid token.

@@ -77,7 +77,7 @@ function getClient(): LogtoClient | undefined {
       appId,
       // Request the profile claims so the CP can read email/name (from the token or
       // its /userinfo endpoint), plus identities for the user-facing Account API.
-      scopes: [UserScope.Email, UserScope.Profile, UserScope.Identities],
+      scopes: [UserScope.Email, UserScope.Profile, UserScope.Identities, UserScope.Roles],
       ...(apiResource ? { resources: [apiResource] } : {})
     })
   }

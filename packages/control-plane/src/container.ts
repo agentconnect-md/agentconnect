@@ -932,6 +932,7 @@ export function buildContainer(
           }
         }
       : {},
+    maxOrgsPerNonAdminUser: opts.deploymentConfig?.values.features.maxOrgsPerNonAdminUser ?? 1,
     clock,
     // The same late-bound façade the orchestrators above hold (see its
     // definition): the providers below are constructed WITH `httpDeps` — their
