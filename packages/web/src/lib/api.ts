@@ -2227,6 +2227,105 @@ export function putSessionExternalAccess(
   return apiPut<SessionExternalAccessDto>(`${orgBase(orgId)}/session-access/${provider}`, { enabled })
 }
 
+// ── managed cluster execution (docs/designs/agentconnect-org-operator.md) ───
+// The control plane owns the envelope SPEC and the operator owns everything
+// after it, so settings are read and written here while status is read live
+// from the `AgentConnectOrg` resource — the two never come from the same place.
+// A deployment with no cluster configured mounts none of these routes, so every
+// call below 404s there and the console reads that as an absent feature.
+
+export type ClusterEgressPolicy = 'locked' | 'curated' | 'open'
+
+export interface ClusterRuntimeTierDto {
+  name: string
+  warmReplicas: number
+}
+
+export interface ClusterQuotaDto {
+  maxAgents: number
+  cpu: string
+  memory: string
+  storage: string
+}
+
+export interface ClusterExecutionSettingsDto {
+  enabled: boolean
+  /** Derived once at first enable; immutable afterwards, like the Secret name. */
+  targetNamespace: string
+  controlNamespace: string
+  suspend: boolean
+  daemonImage: string
+  daemonTier: string
+  credentialSecretName: string
+  /** Opaque handle for the published credential; absent until one is issued. */
+  credentialRevision?: string
+  runtimeImage: string
+  runtimeTiers: ClusterRuntimeTierDto[]
+  quota: ClusterQuotaDto
+  egressPolicy: ClusterEgressPolicy
+  updatedAt: string
+}
+
+export interface UpdateClusterExecutionBody {
+  enabled?: boolean
+  suspend?: boolean
+  daemonImage?: string
+  daemonTier?: string
+  runtimeImage?: string
+  runtimeTiers?: ClusterRuntimeTierDto[]
+  quota?: Partial<ClusterQuotaDto>
+  egressPolicy?: ClusterEgressPolicy
+}
+
+export interface ClusterConditionDto {
+  type: string
+  status: 'True' | 'False' | 'Unknown'
+  reason?: string
+  message?: string
+  lastTransitionTime?: string
+}
+
+export interface ClusterEnvelopeStatusDto {
+  /** False ⇒ no resource exists yet; the operator has not been asked for one. */
+  present: boolean
+  observedGeneration?: number
+  namespace?: string
+  conditions: ClusterConditionDto[]
+  daemon?: { ready: boolean; image?: string }
+  sandboxes?: { total: number; running: number; suspended: number }
+  pools?: { name: string; warmAvailable: number; claimed: number }[]
+  rollout?: { rolloutId: string; targetImage: string; pending: string[]; failed: string[] }
+}
+
+/** What issuing a credential answers with — the key never leaves the cluster. */
+export interface ClusterCredentialDto {
+  daemonId: string
+  secretName: string
+  revision: string
+  rotated: boolean
+}
+
+export function fetchClusterExecution(orgId?: string): Promise<ClusterExecutionSettingsDto> {
+  return apiGet<ClusterExecutionSettingsDto>(`${orgBase(orgId)}/cluster-execution`)
+}
+
+export function updateClusterExecution(
+  patch: UpdateClusterExecutionBody,
+  orgId?: string
+): Promise<ClusterExecutionSettingsDto> {
+  return apiPut<ClusterExecutionSettingsDto>(`${orgBase(orgId)}/cluster-execution`, patch)
+}
+
+export function fetchClusterExecutionStatus(orgId?: string): Promise<ClusterEnvelopeStatusDto> {
+  return apiGet<ClusterEnvelopeStatusDto>(`${orgBase(orgId)}/cluster-execution/status`)
+}
+
+/** Mint or rotate the envelope's daemon credential. The key is published into a
+ *  cluster Secret and is never returned, so there is nothing here to display. */
+export function issueClusterExecutionCredential(orgId?: string): Promise<ClusterCredentialDto> {
+  return apiPost<ClusterCredentialDto>(`${orgBase(orgId)}/cluster-execution/credential`, {})
+}
+
 // One page of a session's transcript, proxied live from the daemon recorded on
 // SessionMeta. Content ownership stays pinned there when the agent moves.
 export async function fetchSessionMessages(

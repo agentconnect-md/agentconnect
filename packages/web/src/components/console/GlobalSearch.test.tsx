@@ -96,6 +96,7 @@ describe('SEARCH_PAGES index', () => {
       '/settings#agent-visibility',
       '/settings#session-access',
       '/settings#environment',
+      '/settings#cluster-execution',
       '/settings#members',
       '/settings#invite-links',
       '/profile'
