@@ -205,8 +205,12 @@ filters require at least one current subject label to match.
 `commentFamilies` distinguishes issue comments from pull-request conversation
 comments because GitHub sends both through `issue_comment`.
 
-The matcher always rejects `sender.type === "Bot"` to prevent self-reply loops
-and agent-to-agent mention loops.
+The matcher rejects bot-authored comments and review comments, plus unrelated bot
+events, to prevent self-reply loops and agent-to-agent mention loops. PR `opened` and
+`synchronize` revisions authored by the configured App are admitted as the lifecycle
+exception: same-repository PRs are treated as an internal CI lane and may start review
+without a human-author permission lookup, while fork PRs remain on the maintainer
+workflow-approval path.
 
 Closed, deleted, reopened, and edited issue or pull-request lifecycle events do
 not start turns. Signed issue-close, issue-delete, and merged-pull-request
