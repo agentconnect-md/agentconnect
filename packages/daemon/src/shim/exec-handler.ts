@@ -143,6 +143,32 @@ function assertInsideRoot(root: string, requested: string): void {
   }
 }
 
+/**
+ * Refuse a workspace root the file operations will then treat as their containment boundary.
+ *
+ * Canonical when the path exists, which {@link assertInsideRoot} deliberately is not: its caller is a
+ * clone target, a path that is not there yet. A read's root IS there, and the shared implementation
+ * `realpath`s it to derive its OWN boundary — so the lexical form would accept `<root>/repo` after
+ * something in this pod replaced `repo` with a symlink, and every containment check downstream would
+ * then be measured against the link's target instead of the checkout.
+ *
+ * Absence stays permitted: `realpath` fails while a workspace is still being materialized, there is
+ * nothing to escape through yet, and the operations report a missing root as `exists:false` — which
+ * is the answer a console read wants, where a refusal would read as a broken daemon.
+ */
+function assertReadableRoot(root: string, requested: string): void {
+  assertInsideRoot(root, requested)
+  let resolved: string
+  try {
+    resolved = realpathSync(normalize(resolve(requested)))
+  } catch {
+    return
+  }
+  // Canonical vs canonical: `assertInsideRoot` canonicalizes the base, and the target is already
+  // resolved, so this comparison is the one the lexical check could not make.
+  assertInsideRoot(root, resolved)
+}
+
 /** Refuse a cwd that escapes the workspace root, whatever the daemon asked for. */
 function resolveCwd(root: string, requested: string | undefined): string {
   const base = canonical(root)
@@ -173,10 +199,10 @@ export function createExecHandler(
     if (capability === 'exec') return runGit(payload, deps, abort)
     if (capability === 'probe') return probeRuntimes(deps, abort)
     // The console's file operations, run on the mounted volume. The root the daemon named is fenced
-    // with `assertInsideRoot` — the same check the clone target gets, and for the same reason: a
-    // path in a payload is a path on THIS filesystem however well-formed it looked over there.
+    // here because a path in a payload is a path on THIS filesystem however well-formed it looked
+    // over there — and canonically, since that root becomes the operations' own boundary.
     if (capability === 'read') {
-      return applyWorkspaceFilesPayload(payload, (root) => assertInsideRoot(deps.workspaceRoot, root))
+      return applyWorkspaceFilesPayload(payload, (root) => assertReadableRoot(deps.workspaceRoot, root))
     }
     throw new ExecRefusedError(`capability ${capability} is not served by this handler`)
   }

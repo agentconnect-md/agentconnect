@@ -111,6 +111,9 @@ describe('createWorkspaceReader routing', () => {
 })
 
 describe('createLocalSkillsReader routing', () => {
+  // The mode is module state, so leaving it set makes the NEXT test read as a cluster daemon.
+  afterEach(() => setSandboxWorkspaceMode(false))
+
   function skill(root: string, dir: string, name: string, description: string): void {
     mkdirSync(join(root, '.claude', 'skills', dir), { recursive: true })
     writeFileSync(
@@ -143,6 +146,22 @@ describe('createLocalSkillsReader routing', () => {
       () => missing,
       daemonSide,
       () => filesAt(missing)
+    )
+    expect(await reader.list({ agentId: AGENT })).toEqual({ materialized: false, skills: [] })
+  })
+
+  it('does not read this daemon disk for an unbound cluster agent', async () => {
+    const { daemonSide, podSide } = split()
+    setSandboxWorkspaceMode(true)
+    // The root is already in POD coordinates, so an `existsSync`/`listLocalSkills` fallback inspects
+    // whatever sits at that path HERE — the daemon-disk fallback the git and file seams had removed,
+    // still open on the skills surface. Unreachable reports unmaterialized; the wire has no third
+    // answer, and reporting a listing of this filesystem would be worse than saying "not prepared".
+    skill(daemonSide, 'ghost', 'ghost', 'must not appear')
+    const reader = createLocalSkillsReader(
+      () => daemonSide,
+      join(podSide, 'skill-installs'),
+      () => undefined
     )
     expect(await reader.list({ agentId: AGENT })).toEqual({ materialized: false, skills: [] })
   })

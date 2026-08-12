@@ -207,6 +207,34 @@ describe('the shim read capability', () => {
     expect(readFileSync(join(checkout, 'notes.md'), 'utf8')).toBe('second\n')
   })
 
+  it('refuses a root that reaches out through a symlink, not just one that looks contained', async () => {
+    const { mount, checkout } = volume()
+    // The lexical fence was borrowed from the clone-target check, where the path deliberately does not
+    // exist yet. A read's root DOES, and the shared implementation `realpath`s it to derive its own
+    // containment boundary — so anything in this pod that replaces the checkout with a symlink moves
+    // every downstream check onto the link's target. Such a root still reads as contained lexically.
+    const escaped = mkdtempSync(join(tmpdir(), 'ac-shimfiles-outside-'))
+    roots.push(escaped)
+    writeFileSync(join(escaped, 'HOST_SECRET.env'), 'token=abc\n')
+    rmSync(checkout, { recursive: true, force: true })
+    symlinkSync(escaped, checkout, 'dir')
+
+    await expect(
+      handlerFor(mount)('read', { op: 'list', root: checkout, req: { agentId: AGENT, path: '', limit: 50 } })
+    ).rejects.toThrow(/escapes the workspace root/)
+  })
+
+  it('still serves a root that is not there yet, because materialization races the first read', async () => {
+    const { mount, checkout } = volume()
+    // `realpath` fails while the workspace is still being cloned, and there is nothing to escape
+    // through yet. Refusing would surface as a broken daemon; absence is the answer a reader wants.
+    rmSync(checkout, { recursive: true, force: true })
+    const reply = WorkspaceFilesReplySchema.parse(
+      await handlerFor(mount)('read', { op: 'list', root: checkout, req: { agentId: AGENT, path: '', limit: 50 } })
+    )
+    expect(reply).toMatchObject({ ok: true, value: { exists: false, entries: [] } })
+  })
+
   it('refuses a payload that is not one of the four operations', async () => {
     const { mount, checkout } = volume()
     await expect(handlerFor(mount)('read', { op: 'chmod', root: checkout })).rejects.toThrow()
