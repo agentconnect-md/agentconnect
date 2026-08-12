@@ -484,6 +484,15 @@ model DaemonLifecycleOp {
   deadline      DateTime                @db.Timestamptz(6) // drain+relaunch budget; a lapse closes the op `failed`
   outcome       String? // short closure detail (decline reason / "version mismatch" / "expired")
   settledAt     DateTime?               @db.Timestamptz(6) // when it left `pending`
+  // A cluster upgrade's COMPENSATION OBLIGATION, both halves. `commandImage` is the image
+  // this op asked the envelope to run; `rollbackImage` is what to restore if the op has to
+  // be undone. Written when the op opens — BEFORE the forward write — so a process that
+  // dies mid-command still leaves the obligation on disk for maintenance to discharge.
+  // Non-null therefore also MARKS an op whose terminality is the compensation pass's to
+  // decide: the ordinary deadline sweep must not fail it while its image is still durable,
+  // or the command reads failed and then executes.
+  commandImage  String?
+  rollbackImage String?
   createdAt     DateTime                @default(now()) @db.Timestamptz(6)
 
   daemon Daemon @relation(fields: [daemonId], references: [id], onDelete: Cascade)

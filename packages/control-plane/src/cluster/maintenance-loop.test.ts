@@ -20,6 +20,7 @@ function fakeLog(): ClusterMaintenanceLog & {
 function work(overrides: Partial<ClusterMaintenanceWork> = {}): ClusterMaintenanceWork {
   return {
     drainTeardowns: async () => 0,
+    drainUpgradeCompensations: async () => 0,
     resyncEnvelopes: async () => ({ converged: 0, failures: [] }),
     ...overrides
   }

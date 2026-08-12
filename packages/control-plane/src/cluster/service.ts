@@ -24,6 +24,7 @@ import type {
   ClusterExecutionDefaults,
   ClusterExecutionPatch,
   ClusterExecutionSettings,
+  DaemonLifecycleOpRepo,
   DaemonRepo,
   OrgClusterExecutionRepo,
   OrgRepo
@@ -51,6 +52,13 @@ const TEARDOWN_BATCH = 50
 /** Envelopes re-applied per pass. A slice rather than the fleet, so one pass costs a
  *  bounded number of requests; the rotation below is what still covers everyone. */
 const RESYNC_BATCH = 100
+
+/** Overdue upgrade obligations discharged per pass; a backlog is rare and drains over passes. */
+const COMPENSATION_BATCH = 50
+
+/** What a compensated operation reports. It names the fact an operator can act on — the
+ *  envelope is back where it was — rather than the transport error that caused it. */
+const COMPENSATED_OUTCOME = 'the cluster did not accept the new daemon image; the envelope was rolled back'
 
 /** How long one caller may own an envelope transition before it is taken over.
  *  Generous against a slow API server, short enough that a crashed process does
@@ -139,6 +147,16 @@ export class ClusterImageWriteDeferredError extends Error {
   }
 }
 
+/** What an upgrade would write, resolved from a read so the obligation can be recorded first. */
+export interface DaemonVersionPlan {
+  /** The canonical (npm-spelled) version, which is also what the replacement pod reports. */
+  version: string
+  /** The image reference to write — the version translated into this repository's tag style. */
+  image: string
+  /** What the envelope names now; the value a compensation restores. */
+  previousImage: string
+}
+
 /** What one deployment-wide version sweep did; `skipped` counts envelopes left deliberately alone. */
 export interface ClusterVersionSweep {
   /** The published version every moved envelope was pointed at. */
@@ -164,6 +182,9 @@ export class ClusterExecutionService {
     private readonly policy: ClusterExecutionPolicy,
     /** Names the envelope's own daemon; see {@link ClusterExecutionService.envelopeDaemonIds}. */
     private readonly daemons: Pick<DaemonRepo, 'clusterBoundIds'>,
+    /** Carries cluster upgrades' compensation obligations; see
+     *  {@link ClusterExecutionService.drainUpgradeCompensations}. */
+    private readonly lifecycleOps: Pick<DaemonLifecycleOpRepo, 'listOverdueCompensations' | 'settle'>,
     /** Drives the transition lease; the same seam every other timed CP path uses. */
     private readonly clock: Clock
   ) {}
@@ -210,23 +231,45 @@ export class ClusterExecutionService {
    * lives in `withImageTag`, so this cannot be reached by forgetting to validate a route.
    */
   async setDaemonVersion(orgId: OrgId, version: string): Promise<string> {
-    // Re-canonicalized here even though the route already did: this seam composes the tag,
-    // and `v1.5.0` arriving unnormalized would become `vv1.5.0` in a registry reference.
+    const plan = await this.planDaemonVersion(orgId, version)
+    await this.applyDaemonVersion(orgId, plan)
+    return plan.image
+  }
+
+  /**
+   * Resolve what an upgrade WOULD write, reading only. Split from the write so a caller can
+   * record the compensation obligation in between: every refusal is raised here, before
+   * anything durable exists, and `applyDaemonVersion` below runs only once the obligation is
+   * on disk. Ordering the two that way is what lets a process die mid-command without
+   * stranding a change nobody can undo.
+   *
+   * Throws `ClusterVersionNotPublishedError` for a target that is not a version — re-checked
+   * here even when a route already normalized, because this seam composes the tag and
+   * `v1.5.0` arriving unnormalized would become `vv1.5.0` in a registry reference.
+   */
+  async planDaemonVersion(orgId: OrgId, version: string): Promise<DaemonVersionPlan> {
     const canonical = canonicalVersion(version)
     if (!canonical) throw new ClusterVersionNotPublishedError(version)
     const settings = await this.repo.get(orgId)
     if (!settings?.enabled) throw new ClusterEnvelopeNotEnabledError()
-    const daemonImage = withImageTag(settings.daemonImage, versionImageTag(this.tagStyleFor(settings), canonical))
-    if (daemonImage === settings.daemonImage) return daemonImage
-    // The two halves of `configure`, split so the caller can tell them apart: everything
-    // above here wrote nothing, and everything below runs with the change already durable.
-    await this.repo.upsert(orgId, this.defaults(orgId), { daemonImage })
+    const image = withImageTag(settings.daemonImage, versionImageTag(this.tagStyleFor(settings), canonical))
+    return { version: canonical, image, previousImage: settings.daemonImage }
+  }
+
+  /**
+   * Make a plan durable and push it. Everything here runs with the change already recorded,
+   * which is why a failure is `ClusterImageWriteDeferredError` rather than a plain error:
+   * the row is desired state, so the envelope re-apply pass will enact it regardless of
+   * this attempt, and only a caller that owns a deadline needs to undo that.
+   */
+  async applyDaemonVersion(orgId: OrgId, plan: DaemonVersionPlan): Promise<void> {
+    if (plan.image === plan.previousImage) return
+    await this.repo.upsert(orgId, this.defaults(orgId), { daemonImage: plan.image })
     try {
       await this.converge(orgId)
     } catch (err) {
-      throw new ClusterImageWriteDeferredError(daemonImage, settings.daemonImage, err)
+      throw new ClusterImageWriteDeferredError(plan.image, plan.previousImage, err)
     }
-    return daemonImage
   }
 
   /**
@@ -257,13 +300,43 @@ export class ClusterExecutionService {
    * False ⇒ the image is still the durable desired state, so it is still coming; the caller
    * must keep its operation open rather than call it failed.
    */
-  async abandonDaemonVersion(orgId: OrgId, deferred: ClusterImageWriteDeferredError): Promise<boolean> {
+  async abandonDaemonVersion(orgId: OrgId, commandImage: string, rollbackImage: string): Promise<boolean> {
     try {
-      const current = await this.repo.restoreDaemonImage(orgId, deferred.previousImage, deferred.image)
-      return current !== deferred.image
+      const current = await this.repo.restoreDaemonImage(orgId, rollbackImage, commandImage)
+      return current !== commandImage
     } catch {
       return false
     }
+  }
+
+  /**
+   * Discharge the compensation obligations of overdue cluster upgrades — the durable half of
+   * the rollback, and the only half that survives a restart.
+   *
+   * An in-request rollback is an intention held in one process; this is the same decision
+   * reconstructed from disk, so a control plane that exited mid-command, or one whose bounded
+   * retries ran out, still finishes what the command started. Each op carries both halves of
+   * its obligation, recorded before the forward write, so nothing has to be inferred.
+   *
+   * An op is settled `failed` only once its image is OBSERVED absent from the row. One whose
+   * image is still durable is left pending for the next pass — it is still going to be
+   * applied, and that is precisely when calling it failed would be a lie. An op that stopped
+   * being pending in the meantime (the cluster recovered, the pod arrived, it settled
+   * `succeeded`) is skipped, because rolling back then would revert a completed upgrade.
+   *
+   * Returns how many it settled.
+   */
+  async drainUpgradeCompensations(limit = COMPENSATION_BATCH): Promise<number> {
+    const now = new Date(this.clock.now())
+    const owed = await this.lifecycleOps.listOverdueCompensations(now, limit)
+    let settled = 0
+    for (const entry of owed) {
+      if (!(await this.abandonDaemonVersion(OrgId(entry.orgId), entry.commandImage, entry.rollbackImage))) continue
+      // `settle` transitions only a still-pending row, so a peer that closed this op between
+      // the listing and here keeps its verdict.
+      if (await this.lifecycleOps.settle(entry.opId, 'failed', COMPENSATED_OUTCOME, now)) settled += 1
+    }
+    return settled
   }
 
   /**

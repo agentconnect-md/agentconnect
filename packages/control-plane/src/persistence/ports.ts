@@ -296,6 +296,13 @@ export interface OpenLifecycleOpInput {
   commandEpoch: bigint
   /** When a still-`pending` op is considered failed (drain + relaunch budget). */
   deadline: Date
+  /** A cluster upgrade's compensation obligation: the image this op asks the envelope to
+   *  run, and the one to restore if it must be undone. Recorded HERE — as the op opens,
+   *  before the forward write — so a process that dies mid-command still leaves both halves
+   *  on disk. Omitted for every other op, and their absence is what marks an op the ordinary
+   *  deadline sweep may fail. */
+  commandImage?: string
+  rollbackImage?: string
 }
 
 export interface DaemonLifecycleOpRecord {
@@ -313,6 +320,20 @@ export interface DaemonLifecycleOpRecord {
   deadline: Date
   outcome: string | null
   settledAt: Date | null
+  /** The image this op asked for; non-null ⇒ it carries a compensation obligation and only
+   *  the compensation pass may make it terminal. */
+  commandImage: string | null
+  /** The image to restore when compensating. */
+  rollbackImage: string | null
+}
+
+/** One overdue cluster upgrade whose obligation is still owed, joined to its org. */
+export interface OverdueUpgradeCompensation {
+  opId: string
+  daemonId: DaemonId
+  orgId: string
+  commandImage: string
+  rollbackImage: string
 }
 
 export interface DaemonLifecycleOpRepo {
@@ -334,10 +355,21 @@ export interface DaemonLifecycleOpRepo {
   latestForDaemon(daemonId: DaemonId): Promise<DaemonLifecycleOpRecord | null>
   /** The most recent op per daemon across a set (ANY status) — the batched fleet read (no N+1). */
   latestForDaemons(daemonIds: DaemonId[]): Promise<DaemonLifecycleOpRecord[]>
-  /** Fail every `pending` op past its `deadline` (optionally scoped to one daemon) — the
-   *  clock-driven expiry that unblocks a daemon whose command was accepted but which never
-   *  re-registered. Returns the number expired. */
+  /**
+   * Fail every `pending` op past its `deadline` (optionally scoped to one daemon) — the
+   * clock-driven expiry that unblocks a daemon whose command was accepted but which never
+   * re-registered. Returns the number expired.
+   *
+   * Ops carrying a compensation obligation (`commandImage` set) are DELIBERATELY excluded:
+   * their image may still be the durable desired state, so failing them here would report a
+   * failure for a change the envelope re-apply pass then enacts. Their terminality belongs
+   * to {@link DaemonLifecycleOpRepo.listOverdueCompensations}'s pass, which can discharge
+   * the obligation first.
+   */
   expireOverdue(now: Date, daemonId?: DaemonId): Promise<number>
+  /** Overdue `pending` ops that still carry an obligation, oldest first — the compensation
+   *  pass's worklist, joined to the org whose envelope has to be restored. */
+  listOverdueCompensations(now: Date, limit: number): Promise<OverdueUpgradeCompensation[]>
   /** Close an op to a terminal status with an optional detail. Transitions ONLY a row
    *  still `pending` (so a late register can't reopen one a decline already failed).
    *  Returns whether a row was transitioned. */

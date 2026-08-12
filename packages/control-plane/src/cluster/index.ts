@@ -19,6 +19,7 @@ export {
   ClusterVersionNotPublishedError,
   type ClusterExecutionPolicy,
   type ClusterVersionSweep,
+  type DaemonVersionPlan,
   type EnvelopeResyncOutcome
 } from './service.js'
 export { ClusterDaemonImageSync, type DaemonReleaseLookup } from './image-sync.js'

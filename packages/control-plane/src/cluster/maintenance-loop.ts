@@ -24,6 +24,7 @@ export interface ClusterMaintenanceLog {
 
 export interface ClusterMaintenanceWork {
   drainTeardowns(): Promise<number>
+  drainUpgradeCompensations(): Promise<number>
   resyncEnvelopes(): Promise<EnvelopeResyncOutcome>
 }
 
@@ -62,9 +63,10 @@ export class ClusterMaintenanceLoop {
   }
 
   /**
-   * One pass: retire what deletion left owed, then re-apply a slice of the live
-   * envelopes. Errors are logged and swallowed, and everything either pass could
-   * not finish survives for the next one. Exposed for tests.
+   * One pass: retire what deletion left owed, discharge the upgrade obligations that
+   * outlived their command, then re-apply a slice of the live envelopes. Errors are logged
+   * and swallowed, and everything any pass could not finish survives for the next one.
+   * Exposed for tests.
    */
   async tick(): Promise<void> {
     this.timer = undefined
@@ -74,6 +76,14 @@ export class ClusterMaintenanceLoop {
         () => this.work!.drainTeardowns(),
         'cluster-execution: retired deleted organizations’ envelopes',
         'cluster-execution: envelope teardown drain failed'
+      )
+      // BEFORE the re-apply below, deliberately: an upgrade that has to be undone must be
+      // undone before anything pushes its image again, or the pass would enact the very
+      // change the compensation exists to withdraw.
+      await this.step(
+        () => this.work!.drainUpgradeCompensations(),
+        'cluster-execution: rolled back daemon upgrades the cluster never accepted',
+        'cluster-execution: upgrade compensation drain failed'
       )
       await this.resync()
     } finally {

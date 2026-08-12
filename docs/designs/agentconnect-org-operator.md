@@ -590,17 +590,31 @@ matched nothing is silent, so the only safe basis for closing the op is the obse
 fact that the row no longer names this command's image — restored, or replaced by a peer
 whose image is what will be applied instead.
 
-When that fact cannot be established, the op stays open and a bounded background
-recovery keeps trying, closing it only once the rollback is observed. It re-reads the op
-first and stops if it is no longer pending, so a cluster that recovered meanwhile — pod
-replaced, op settled `succeeded` — is not rolled back afterwards.
+The rollback is an **obligation on the operation**, not an intention in a process. Both
+halves — the image the command asked for and the image to restore — are written onto the
+op row when it opens, BEFORE the forward write. That ordering is the whole guarantee: a
+process that dies at any point after opening leaves a record from which any later one can
+tell what happened and finish it. A crash before the write leaves an op whose image was
+never durable (nothing to undo, so it fails cleanly); a crash after it leaves one whose
+image is durable, and the obligation says what to put back.
 
-What remains: a process exit between the image write and the rollback leaves a durable
-image under a pending op. If the cluster recovers within the deadline the pod arrives on
-target and the op settles `succeeded`; if it does not, the op expires failed and the
-change lands later. Closing that needs a rollback intent persisted atomically with the
-command, which is a durable-saga shape and its own change rather than a detail of this
-one.
+Discharging it is the cluster maintenance pass, ahead of the re-apply in the same tick —
+undo before anything pushes that image again, or the pass enacts the change the
+compensation exists to withdraw. In-request rollback and a bounded background retry stay
+as the fast paths, but the pass is what makes it a guarantee, because it is reconstructed
+from disk and runs however long the cluster stays broken.
+
+Two rules keep it one-directional. An op becomes terminal only once its image is
+**observed** absent from the row — one still durable is left pending, because it is still
+going to be applied and that is exactly when reporting failure would be a lie. And an op
+that stopped being pending is skipped: a recovered cluster's replacement pod settles it
+`succeeded`, and compensating after that would revert an upgrade that completed.
+
+Because the obligation decides terminality, an op carrying one is **excluded from the
+ordinary deadline sweep** and from the read model's expiry projection. Both exist to stop
+a stuck op reading as in-flight; here they would do the opposite — report failure for a
+change still on its way. `commandImage` being non-null is what marks the difference, in
+the store and in the DTO alike.
 
 The refusals checked _before_ any write — a disabled envelope, a digest pin, an
 unusable tag, a non-version target — close the op directly, and can, because nothing

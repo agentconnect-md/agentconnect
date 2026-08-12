@@ -13,7 +13,8 @@ import type {
   DaemonLifecycleOpRecord,
   DaemonLifecycleOpType,
   DaemonLifecycleOpStatus,
-  OpenLifecycleOpInput
+  OpenLifecycleOpInput,
+  OverdueUpgradeCompensation
 } from '../ports.js'
 import { DaemonId } from '../../domain/ids.js'
 
@@ -30,7 +31,9 @@ function toRecord(o: DaemonLifecycleOp): DaemonLifecycleOpRecord {
     startedAt: o.startedAt,
     deadline: o.deadline,
     outcome: o.outcome,
-    settledAt: o.settledAt
+    settledAt: o.settledAt,
+    commandImage: o.commandImage,
+    rollbackImage: o.rollbackImage
   }
 }
 
@@ -46,6 +49,8 @@ export class PgDaemonLifecycleOpRepo implements DaemonLifecycleOpRepo {
         initiator: input.initiator ?? null,
         commandEpoch: input.commandEpoch,
         deadline: input.deadline,
+        commandImage: input.commandImage ?? null,
+        rollbackImage: input.rollbackImage ?? null,
         status: 'pending'
       }
     })
@@ -99,9 +104,17 @@ export class PgDaemonLifecycleOpRepo implements DaemonLifecycleOpRepo {
     return out
   }
 
+  /** `commandImage: null` is the exclusion, not an oversight: an op carrying a compensation
+   *  obligation may still have its image durable, and reporting it failed here is exactly the
+   *  contradiction the obligation exists to prevent. The compensation pass owns those. */
   async expireOverdue(now: Date, daemonId?: DaemonId): Promise<number> {
     const res = await this.db.daemonLifecycleOp.updateMany({
-      where: { status: 'pending', deadline: { lt: now }, ...(daemonId ? { daemonId } : {}) },
+      where: {
+        status: 'pending',
+        deadline: { lt: now },
+        commandImage: null,
+        ...(daemonId ? { daemonId } : {})
+      },
       data: {
         status: 'failed',
         outcome: 'timed out — the daemon did not re-register before the deadline',
@@ -109,6 +122,37 @@ export class PgDaemonLifecycleOpRepo implements DaemonLifecycleOpRepo {
       }
     })
     return res.count
+  }
+
+  /** Oldest first, so a backlog drains in the order the commands were issued. */
+  async listOverdueCompensations(now: Date, limit: number): Promise<OverdueUpgradeCompensation[]> {
+    const rows = await this.db.daemonLifecycleOp.findMany({
+      where: { status: 'pending', deadline: { lt: now }, commandImage: { not: null } },
+      select: {
+        id: true,
+        daemonId: true,
+        commandImage: true,
+        rollbackImage: true,
+        daemon: { select: { orgId: true } }
+      },
+      orderBy: { startedAt: 'asc' },
+      take: limit
+    })
+    return rows.flatMap((row) =>
+      // Both halves or nothing: half an obligation cannot be discharged, and skipping it
+      // leaves the op for a human rather than guessing an image to restore.
+      row.commandImage && row.rollbackImage
+        ? [
+            {
+              opId: row.id,
+              daemonId: DaemonId(row.daemonId),
+              orgId: row.daemon.orgId,
+              commandImage: row.commandImage,
+              rollbackImage: row.rollbackImage
+            }
+          ]
+        : []
+    )
   }
 
   async settle(id: string, status: 'succeeded' | 'failed', outcome: string | null, at: Date): Promise<boolean> {

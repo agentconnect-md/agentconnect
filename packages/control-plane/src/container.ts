@@ -497,6 +497,7 @@ export function buildContainer(
             controlPlaneUrl: daemonWsUrl(httpServerConfigFrom(config, { DEFAULT_OWNER_ID, relayStaleMs }))
           },
           repos.daemon,
+          repos.daemonLifecycleOp,
           clock
         )
       : undefined

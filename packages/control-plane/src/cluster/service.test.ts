@@ -229,7 +229,15 @@ function build(): Harness {
   const api = new FakeApi()
   const daemons = new FakeDaemons()
   const policy: ClusterExecutionPolicy = { ...POLICY }
-  const service = new ClusterExecutionService(repo, api, { slugById: async () => 'acme' }, policy, daemons, systemClock)
+  const service = new ClusterExecutionService(
+    repo,
+    api,
+    { slugById: async () => 'acme' },
+    policy,
+    daemons,
+    { listOverdueCompensations: async () => [], settle: async () => true },
+    systemClock
+  )
   return { service, repo, api, daemons, policy }
 }
 

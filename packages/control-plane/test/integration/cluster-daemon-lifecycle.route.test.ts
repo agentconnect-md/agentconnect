@@ -87,14 +87,14 @@ async function clusterApp(options: { afterApply?: () => Promise<void> } = {}): P
     new PgOrgRepo(prisma),
     POLICY,
     new PgDaemonRepo(prisma),
+    new PgDaemonLifecycleOpRepo(prisma),
     systemClock
   )
   if (options.afterApply) {
-    const write = cluster.setDaemonVersion.bind(cluster)
-    cluster.setDaemonVersion = async (orgId, version) => {
-      const image = await write(orgId, version)
+    const write = cluster.applyDaemonVersion.bind(cluster)
+    cluster.applyDaemonVersion = async (orgId, plan) => {
+      await write(orgId, plan)
       await options.afterApply!()
-      return image
     }
   }
   const http = buildHttpApp(prisma, undefined, undefined, undefined, { clusterExecution: cluster })
@@ -248,6 +248,8 @@ describe('POST /daemons/:id/upgrade — cluster daemon', () => {
     expect(await new PgDaemonLifecycleOpRepo(prisma).latestForDaemon(DaemonId(DAEMON))).toBeNull()
   })
 
+  // Refused while resolving, which happens before the op opens — so there is no operation
+  // to close, and none is left behind for the console to explain.
   it('refuses when the organization has no live envelope', async () => {
     const { http } = await clusterApp()
     await seedDaemon(true)
@@ -257,9 +259,7 @@ describe('POST /daemons/:id/upgrade — cluster daemon', () => {
       payload: { version: '1.5.0' }
     })
     expect(res.statusCode).toBe(409)
-    // The op is opened before the write is attempted, so it must be closed on failure.
-    const op = await new PgDaemonLifecycleOpRepo(prisma).latestForDaemon(DaemonId(DAEMON))
-    expect(op).toMatchObject({ status: 'failed' })
+    expect(await new PgDaemonLifecycleOpRepo(prisma).latestForDaemon(DaemonId(DAEMON))).toBeNull()
   })
 })
 
@@ -363,5 +363,113 @@ describe('cluster daemon upgrade — settlement and durability', () => {
     expect(applied.at(-1)?.spec?.daemon?.image).toBe('registry.example.test/daemon:v1.5.0')
     const settings = await http.app.inject({ method: 'GET', url: CLUSTER })
     expect(settings.json()).toMatchObject({ daemonImage: 'registry.example.test/daemon:v1.5.0' })
+  })
+})
+
+/**
+ * The obligation is what survives the process. Everything above tests a request that stayed
+ * alive long enough to undo its own work; these test the case it cannot cover — the control
+ * plane exiting between the forward write and the rollback, which is why the images are
+ * recorded on the operation before the write rather than held in memory.
+ */
+describe('cluster daemon upgrade — durable compensation', () => {
+  const ops = () => new PgDaemonLifecycleOpRepo(prisma)
+  const past = () => new Date(Date.now() - 60_000)
+
+  it('records both halves of the obligation on the operation', async () => {
+    const { http } = await clusterApp()
+    await enableEnvelope(http)
+    await seedDaemon(true)
+    const res = await http.app.inject({
+      method: 'POST',
+      url: `${ORG}/daemons/${DAEMON}/upgrade`,
+      payload: { version: '1.5.0' }
+    })
+    expect(res.statusCode).toBe(202)
+    expect(await ops().pendingForDaemon(DaemonId(DAEMON))).toMatchObject({
+      commandImage: 'registry.example.test/daemon:v1.5.0',
+      rollbackImage: 'registry.example.test/daemon:v1.4.0'
+    })
+  })
+
+  /**
+   * The deadline sweep must leave it alone. Failing it here is the contradiction itself: the
+   * image is still the durable desired state, so the re-apply pass would enact the change
+   * after the operation had reported failure.
+   */
+  it('is not failed by the ordinary deadline sweep', async () => {
+    const { http } = await clusterApp()
+    await enableEnvelope(http)
+    await seedDaemon(true)
+    const op = await ops().open({
+      daemonId: DaemonId(DAEMON),
+      op: 'upgrade',
+      targetVersion: '1.5.0',
+      commandEpoch: 1n,
+      deadline: past(),
+      commandImage: 'registry.example.test/daemon:v1.5.0',
+      rollbackImage: 'registry.example.test/daemon:v1.4.0'
+    })
+
+    expect(await ops().expireOverdue(new Date(), DaemonId(DAEMON))).toBe(0)
+    expect(await ops().getById(op.id)).toMatchObject({ status: 'pending' })
+    // And the console must not fabricate `failed` at read time either.
+    const list = await http.app.inject({ method: 'GET', url: `${ORG}/daemons` })
+    expect(list.json()[0].lifecycleOp).toMatchObject({ status: 'pending' })
+  })
+
+  // The process that opened it is gone; a later one reconstructs the rollback from disk.
+  it('is discharged by the maintenance pass, which restores the image and fails the op', async () => {
+    const { http, cluster } = await clusterApp()
+    await enableEnvelope(http)
+    await seedDaemon(true)
+    // The forward write survived the exit, so the envelope names the requested image.
+    await http.app.inject({
+      method: 'PUT',
+      url: CLUSTER,
+      payload: { daemonImage: 'registry.example.test/daemon:v1.5.0' }
+    })
+    const op = await ops().open({
+      daemonId: DaemonId(DAEMON),
+      op: 'upgrade',
+      targetVersion: '1.5.0',
+      commandEpoch: 1n,
+      deadline: past(),
+      commandImage: 'registry.example.test/daemon:v1.5.0',
+      rollbackImage: 'registry.example.test/daemon:v1.4.0'
+    })
+
+    expect(await cluster.drainUpgradeCompensations()).toBe(1)
+    expect(await ops().getById(op.id)).toMatchObject({ status: 'failed' })
+    const settings = await http.app.inject({ method: 'GET', url: CLUSTER })
+    expect(settings.json()).toMatchObject({ daemonImage: 'registry.example.test/daemon:v1.4.0' })
+  })
+
+  // A pod that arrived on target already settled the op; compensating after that would
+  // revert an upgrade that completed.
+  it('leaves an operation a recovered pod already settled', async () => {
+    const { http, cluster } = await clusterApp()
+    await enableEnvelope(http)
+    await seedDaemon(true)
+    await http.app.inject({
+      method: 'PUT',
+      url: CLUSTER,
+      payload: { daemonImage: 'registry.example.test/daemon:v1.5.0' }
+    })
+    const op = await ops().open({
+      daemonId: DaemonId(DAEMON),
+      op: 'upgrade',
+      targetVersion: '1.5.0',
+      commandEpoch: 1n,
+      deadline: past(),
+      commandImage: 'registry.example.test/daemon:v1.5.0',
+      rollbackImage: 'registry.example.test/daemon:v1.4.0'
+    })
+    await ops().settle(op.id, 'succeeded', null, new Date())
+
+    // It restores the row it was asked to (the obligation is still listed), but the verdict
+    // stands: `settle` transitions only a pending row, so nothing is counted or overwritten.
+    expect(await cluster.drainUpgradeCompensations()).toBe(0)
+    expect(await ops().getById(op.id)).toMatchObject({ status: 'succeeded' })
   })
 })

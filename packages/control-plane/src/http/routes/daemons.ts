@@ -38,7 +38,7 @@ import { provisionDaemonConnect } from '../onboarding.js'
 import { detachDaemon } from '../daemon-removal.js'
 import { Tag } from '../plugins/openapi.js'
 import { CLUSTER_API_ERROR_CODE, sendClusterFailure } from '../cluster-failure.js'
-import type { ClusterExecutionService } from '../../cluster/index.js'
+import type { ClusterExecutionService, DaemonVersionPlan } from '../../cluster/index.js'
 import {
   canonicalVersion,
   ClusterEnvelopeNotEnabledError,
@@ -104,16 +104,16 @@ export async function retryArm(
  * meanwhile applies the image, the replacement pod settles the op `succeeded`, and rolling
  * back after that would revert an upgrade that did complete.
  *
- * Fire-and-forget and bounded, like {@link retryArm}. Exhausting the delays leaves a pending
- * op whose image is durable — the one state that can still expire as failed while the change
- * later lands, and the reason a durable rollback intent is the next thing this would need.
+ * Fire-and-forget and bounded, like {@link retryArm} — a fast path, not the guarantee. The
+ * guarantee is the obligation persisted on the op row, which the cluster maintenance pass
+ * discharges however long it takes and whichever process is running by then.
  */
 export async function retryAbandon(
   cluster: Pick<ClusterExecutionService, 'abandonDaemonVersion'>,
   ops: DaemonLifecycleOpRepo,
   opId: string,
   orgId: OrgId,
-  deferred: ClusterImageWriteDeferredError,
+  owed: { commandImage: string; rollbackImage: string; cause: unknown },
   delaysMs: number[],
   log?: { warn: (obj: unknown, msg?: string) => void }
 ): Promise<boolean> {
@@ -125,8 +125,8 @@ export async function retryAbandon(
     try {
       const op = await ops.getById(opId)
       if (!op || op.status !== 'pending') return true // decided elsewhere; leave the state alone
-      if (!(await cluster.abandonDaemonVersion(orgId, deferred))) continue
-      await ops.settle(opId, 'failed', clusterUpgradeFailure(deferred.cause), new Date())
+      if (!(await cluster.abandonDaemonVersion(orgId, owed.commandImage, owed.rollbackImage))) continue
+      await ops.settle(opId, 'failed', clusterUpgradeFailure(owed.cause), new Date())
       return true
     } catch (err) {
       log?.warn({ opId, orgId, err }, 'cluster daemon upgrade: rollback recovery attempt failed')
@@ -160,6 +160,13 @@ function sendApplyFailure(reply: FastifyReply, cause: unknown, note: string): Fa
     message: `cluster API rejected the daemon image change: ${detail}${note}`,
     code: CLUSTER_API_ERROR_CODE
   })
+}
+
+/** Whether a pending op should READ as failed for having passed its deadline. An op still
+ *  owing a compensation must not: it is terminal only once that is discharged. */
+function isOpExpired(op: DaemonLifecycleOpRecord | null, nowMs: number): boolean {
+  if (!op || op.status !== 'pending' || op.deadline.getTime() > nowMs) return false
+  return op.commandImage === null
 }
 
 /** Outcome text recorded on an op whose image change never landed. */
@@ -209,7 +216,12 @@ function toDto(
   // Read-time expiry projection: a still-`pending` op past its deadline is reported as
   // `failed` (timed out) even before the sweep/next-command persists that — so the
   // console never renders a dead op as in-flight, and a stuck op reads terminal.
-  const expired = latestOp?.status === 'pending' && latestOp.deadline.getTime() <= nowMs
+  //
+  // Except one carrying a compensation obligation: its image may still be the durable desired
+  // state, so it is genuinely still in flight until the compensation pass either withdraws it
+  // or the replacement pod arrives. Showing `failed` first is the contradiction itself, in the
+  // read model rather than the database.
+  const expired = isOpExpired(latestOp, nowMs)
   return {
     daemonId: view.daemonId,
     host: view.host,
@@ -475,7 +487,9 @@ export function daemonRoutes(deps: HttpDeps) {
       id: string,
       op: 'restart' | 'upgrade',
       commandEpoch: bigint,
-      targetVersion?: string
+      targetVersion?: string,
+      /** A cluster upgrade's compensation obligation, recorded before the forward write. */
+      plan?: DaemonVersionPlan
     ): Promise<DaemonLifecycleOpRecord | null> => {
       // Expire stale operations before the partial unique index admits another command.
       await deps.repos.daemonLifecycleOp.expireOverdue(new Date(), DaemonId(id))
@@ -492,7 +506,8 @@ export function daemonRoutes(deps: HttpDeps) {
         ...(targetVersion ? { targetVersion } : {}),
         ...(req.principal?.userId ? { initiator: req.principal.userId } : {}),
         commandEpoch,
-        deadline: new Date(Date.now() + LIFECYCLE_DEADLINE_MS)
+        deadline: new Date(Date.now() + LIFECYCLE_DEADLINE_MS),
+        ...(plan ? { commandImage: plan.image, rollbackImage: plan.previousImage } : {})
       })
     }
 
@@ -566,15 +581,35 @@ export function daemonRoutes(deps: HttpDeps) {
       // The pod is replaced, so it re-auths and its epoch strictly exceeds this one —
       // which is exactly the fence `settleLifecycleOpOnReady` closes the op on.
       const commandEpoch = BigInt(deps.liveness.get(id)?.sessionEpoch ?? existing.sessionEpoch)
-      const opRow = await openLifecycleOp(req, reply, id, 'upgrade', commandEpoch, version)
+      // Resolved BEFORE the op opens, so every refusal happens with nothing durable behind it
+      // and the op can carry the images its compensation would need.
+      let plan
+      try {
+        plan = await cluster.planDaemonVersion(orgOf(req), version)
+      } catch (error) {
+        if (isBadUpgradeTarget(error)) {
+          return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: (error as Error).message })
+        }
+        if (isClusterRefusal(error)) {
+          return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: (error as Error).message })
+        }
+        return sendClusterFailure(reply, error, 'cluster API rejected the daemon image change')
+      }
+      if (plan.image === plan.previousImage) {
+        return reply
+          .code(409)
+          .send({ error: 'Conflict', statusCode: 409, message: `the envelope already names ${plan.image}` })
+      }
+      const opRow = await openLifecycleOp(req, reply, id, 'upgrade', commandEpoch, version, plan)
       if (!opRow) return reply
       // Set only when the apply failed AND the rollback below could not undo it, so the image
       // is still durable and still coming. That is the one outcome this op must not call
-      // failed, and the only one it keeps waiting on.
+      // failed, and the only one it keeps waiting on — and the op row carries the obligation
+      // durably, so the maintenance pass finishes it even if this process does not.
       let deferred: ClusterImageWriteDeferredError | undefined
       try {
-        const image = await cluster.setDaemonVersion(orgOf(req), version)
-        req.log.info({ daemonId: id, opId: opRow.id, image }, 'cluster daemon upgrade: envelope repointed')
+        await cluster.applyDaemonVersion(orgOf(req), plan)
+        req.log.info({ daemonId: id, opId: opRow.id, image: plan.image }, 'cluster daemon upgrade: envelope repointed')
       } catch (error) {
         if (error instanceof ClusterImageWriteDeferredError) {
           // The image is durable and would converge on the re-apply pass — but this op has a
@@ -582,7 +617,7 @@ export function daemonRoutes(deps: HttpDeps) {
           // while the pass replaced the pod anyway. So the intent is abandoned and failure
           // becomes the truth. Only when the rollback ITSELF fails is the image still coming,
           // and then the op has to stay open, because it is going to happen after all.
-          const abandoned = await cluster.abandonDaemonVersion(orgOf(req), error)
+          const abandoned = await cluster.abandonDaemonVersion(orgOf(req), plan.image, plan.previousImage)
           if (!abandoned) {
             deferred = error
             req.log.warn(
@@ -596,7 +631,7 @@ export function daemonRoutes(deps: HttpDeps) {
               deps.repos.daemonLifecycleOp,
               opRow.id,
               orgOf(req),
-              error,
+              { commandImage: plan.image, rollbackImage: plan.previousImage, cause: error.cause },
               ARM_RECOVERY_DELAYS_MS,
               req.log
             )
@@ -611,20 +646,11 @@ export function daemonRoutes(deps: HttpDeps) {
             return sendApplyFailure(reply, error.cause, '; the envelope was rolled back')
           }
         } else {
-          // Everything else was refused BEFORE anything durable was written, so the command
-          // did not happen and never will — terminal-fail it.
+          // The write itself failed, so nothing durable exists and no obligation is owed.
           await deps.repos.daemonLifecycleOp
             .settle(opRow.id, 'failed', clusterUpgradeFailure(error), new Date())
             .catch(() => {})
-          // Already normalized above, so these are the seams re-checking their own inputs;
-          // mapped anyway so a guard firing can never read as a 500.
-          if (isBadUpgradeTarget(error)) {
-            return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: (error as Error).message })
-          }
-          if (isClusterRefusal(error)) {
-            return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: (error as Error).message })
-          }
-          return sendClusterFailure(reply, error, 'cluster API rejected the daemon image change')
+          return sendApplyFailure(reply, error, '')
         }
       }
       // Armed with the same epoch the desired state was written under: the CR is the
@@ -880,7 +906,7 @@ export function daemonRoutes(deps: HttpDeps) {
         if (!opRow || opRow.daemonId !== req.params.id) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'lifecycle op not found' })
         }
-        const expired = opRow.status === 'pending' && opRow.deadline.getTime() <= Date.now()
+        const expired = isOpExpired(opRow, Date.now())
         return {
           id: opRow.id,
           op: opRow.op,

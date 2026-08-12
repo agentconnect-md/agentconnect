@@ -14,6 +14,7 @@ import { AgentConnectOrgApi, ClusterExecutionService, orgResourceName } from '..
 import { systemClock } from '../../src/domain/clock.js'
 import { PgOrgClusterExecutionRepo } from '../../src/persistence/repositories/org-cluster-execution.repo.js'
 import { PgDaemonRepo } from '../../src/persistence/repositories/daemon.repo.js'
+import { PgDaemonLifecycleOpRepo } from '../../src/persistence/repositories/daemon-lifecycle-op.repo.js'
 import { PgOrgRepo } from '../../src/persistence/repositories/org.repo.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import type { ClusterExecutionDefaults, OrgMemberRole } from '../../src/persistence/ports.js'
@@ -98,6 +99,7 @@ async function clusterApp(options: { route?: MaybeRoute; userId?: string } = {})
     new PgOrgRepo(prisma),
     POLICY,
     new PgDaemonRepo(prisma),
+    new PgDaemonLifecycleOpRepo(prisma),
     systemClock
   )
   const http = buildHttpApp(

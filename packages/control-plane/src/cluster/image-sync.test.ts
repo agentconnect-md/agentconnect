@@ -20,13 +20,14 @@ import {
 } from './service.js'
 import type { OrgResourceApi } from './org-api.js'
 import type { AgentConnectOrg, AgentConnectOrgSpec } from './crd.js'
-import { OrgId } from '../domain/ids.js'
+import { DaemonId, OrgId } from '../domain/ids.js'
 import { systemClock } from '../domain/clock.js'
 import type {
   ClusterExecutionDefaults,
   ClusterExecutionPatch,
   ClusterExecutionSettings,
   OrgClusterExecutionRepo,
+  OverdueUpgradeCompensation,
   PendingEnvelopeTeardown
 } from '../persistence/ports.js'
 
@@ -150,18 +151,38 @@ class FakeApi implements OrgResourceApi {
   async delete(): Promise<void> {}
 }
 
+/** The compensation worklist plus a record of what got settled. */
+class FakeOps {
+  owed: OverdueUpgradeCompensation[] = []
+  settled: { opId: string; status: string; outcome: string | null }[] = []
+  /** Ops a peer closed between the listing and the settle. */
+  alreadyClosed = new Set<string>()
+
+  async listOverdueCompensations(): Promise<OverdueUpgradeCompensation[]> {
+    return [...this.owed]
+  }
+
+  async settle(opId: string, status: 'succeeded' | 'failed', outcome: string | null): Promise<boolean> {
+    if (this.alreadyClosed.has(opId)) return false
+    this.settled.push({ opId, status, outcome })
+    return true
+  }
+}
+
 function build(policy: Partial<ClusterExecutionPolicy> = {}) {
   const repo = new FakeRepo()
   const api = new FakeApi()
+  const ops = new FakeOps()
   const service = new ClusterExecutionService(
     repo,
     api,
     { slugById: async () => 'acme' },
     { ...POLICY, ...policy },
     { clusterBoundIds: async () => [] },
+    ops,
     systemClock
   )
-  return { repo, api, service }
+  return { repo, api, ops, service }
 }
 
 /** The image the CR was last applied with, for one org. */
@@ -267,7 +288,7 @@ describe('ClusterExecutionService.setDaemonVersion', () => {
     repo.seed('acme', 'registry.example.test/agentconnect/daemon:v1.4.0')
     api.failFor.add('acme')
     const deferred = await service.setDaemonVersion(OrgId('acme'), '1.5.0').catch((e) => e)
-    expect(await service.abandonDaemonVersion(OrgId('acme'), deferred)).toBe(true)
+    expect(await service.abandonDaemonVersion(OrgId('acme'), deferred.image, deferred.previousImage)).toBe(true)
     expect((await repo.get(OrgId('acme')))!.daemonImage).toBe('registry.example.test/agentconnect/daemon:v1.4.0')
   })
 
@@ -284,7 +305,7 @@ describe('ClusterExecutionService.setDaemonVersion', () => {
     await repo.upsert(OrgId('acme'), {} as never, {
       daemonImage: 'registry.example.test/agentconnect/daemon:v1.7.0'
     })
-    expect(await service.abandonDaemonVersion(OrgId('acme'), deferred)).toBe(true)
+    expect(await service.abandonDaemonVersion(OrgId('acme'), deferred.image, deferred.previousImage)).toBe(true)
     expect((await repo.get(OrgId('acme')))!.daemonImage).toBe('registry.example.test/agentconnect/daemon:v1.7.0')
   })
 
@@ -301,7 +322,7 @@ describe('ClusterExecutionService.setDaemonVersion', () => {
     const deferred = await service.setDaemonVersion(OrgId('acme'), '1.5.0').catch((e) => e)
     await repo.upsert(OrgId('acme'), {} as never, { suspend: true })
 
-    expect(await service.abandonDaemonVersion(OrgId('acme'), deferred)).toBe(true)
+    expect(await service.abandonDaemonVersion(OrgId('acme'), deferred.image, deferred.previousImage)).toBe(true)
     expect((await repo.get(OrgId('acme')))!.daemonImage).toBe('registry.example.test/agentconnect/daemon:v1.4.0')
   })
 
@@ -313,7 +334,7 @@ describe('ClusterExecutionService.setDaemonVersion', () => {
     const deferred = await service.setDaemonVersion(OrgId('acme'), '1.5.0').catch((e) => e)
     // A store whose conditional update lands nowhere and says nothing about it.
     repo.restoreDaemonImage = async () => 'registry.example.test/agentconnect/daemon:v1.5.0'
-    expect(await service.abandonDaemonVersion(OrgId('acme'), deferred)).toBe(false)
+    expect(await service.abandonDaemonVersion(OrgId('acme'), deferred.image, deferred.previousImage)).toBe(false)
   })
 
   // The restore failing is the one case where the image really is still coming.
@@ -325,7 +346,7 @@ describe('ClusterExecutionService.setDaemonVersion', () => {
     repo.restoreDaemonImage = async () => {
       throw new Error('database unavailable')
     }
-    expect(await service.abandonDaemonVersion(OrgId('acme'), deferred)).toBe(false)
+    expect(await service.abandonDaemonVersion(OrgId('acme'), deferred.image, deferred.previousImage)).toBe(false)
   })
 
   // The refusals above are checked BEFORE any write, which is what makes them safe to
@@ -454,5 +475,100 @@ describe('ClusterDaemonImageSync', () => {
       ).run()
     ).resolves.toBeUndefined()
     expect(log.entries.at(-1)?.level).toBe('warn')
+  })
+})
+
+/**
+ * The durable half of the rollback. An in-request abandon is one process's intention; this is
+ * the same decision reconstructed from the obligation stored on the operation, so a control
+ * plane that exited mid-command — or one whose bounded retries ran out — still finishes it.
+ *
+ * The rule under test is one-directional: an operation becomes terminal only once its image
+ * is OBSERVED gone. While the image is still durable it is still going to be applied, and
+ * that is exactly when reporting failure would be the contradiction.
+ */
+describe('ClusterExecutionService.drainUpgradeCompensations', () => {
+  const owed = (orgId: string, command: string, rollback: string): OverdueUpgradeCompensation => ({
+    opId: `op-${orgId}`,
+    daemonId: DaemonId('11111111-1111-4111-8111-111111111111'),
+    orgId,
+    commandImage: command,
+    rollbackImage: rollback
+  })
+
+  it('restores the envelope and settles the operation failed', async () => {
+    const { repo, ops, service } = build()
+    repo.seed('acme', 'registry.example.test/agentconnect/daemon:v1.5.0')
+    ops.owed = [
+      owed(
+        'acme',
+        'registry.example.test/agentconnect/daemon:v1.5.0',
+        'registry.example.test/agentconnect/daemon:v1.4.0'
+      )
+    ]
+
+    expect(await service.drainUpgradeCompensations()).toBe(1)
+    expect((await repo.get(OrgId('acme')))!.daemonImage).toBe('registry.example.test/agentconnect/daemon:v1.4.0')
+    expect(ops.settled).toEqual([{ opId: 'op-acme', status: 'failed', outcome: expect.any(String) }])
+  })
+
+  // The whole point: an operation whose change is still coming stays pending.
+  it('leaves an operation pending while its image is still durable', async () => {
+    const { repo, ops, service } = build()
+    repo.seed('acme', 'registry.example.test/agentconnect/daemon:v1.5.0')
+    repo.restoreDaemonImage = async () => 'registry.example.test/agentconnect/daemon:v1.5.0'
+    ops.owed = [
+      owed(
+        'acme',
+        'registry.example.test/agentconnect/daemon:v1.5.0',
+        'registry.example.test/agentconnect/daemon:v1.4.0'
+      )
+    ]
+
+    expect(await service.drainUpgradeCompensations()).toBe(0)
+    expect(ops.settled).toEqual([])
+  })
+
+  // A peer that closed the op between the listing and here keeps its verdict — notably the
+  // `succeeded` a recovered cluster's replacement pod would have written.
+  it('does not count an operation a peer already closed', async () => {
+    const { repo, ops, service } = build()
+    repo.seed('acme', 'registry.example.test/agentconnect/daemon:v1.5.0')
+    ops.owed = [
+      owed(
+        'acme',
+        'registry.example.test/agentconnect/daemon:v1.5.0',
+        'registry.example.test/agentconnect/daemon:v1.4.0'
+      )
+    ]
+    ops.alreadyClosed.add('op-acme')
+
+    expect(await service.drainUpgradeCompensations()).toBe(0)
+  })
+
+  it('keeps draining past an organization it cannot restore', async () => {
+    const { repo, ops, service } = build()
+    repo.seed('stuck', 'registry.example.test/agentconnect/daemon:v1.5.0')
+    repo.seed('fine', 'registry.example.test/agentconnect/daemon:v1.5.0')
+    const realRestore = repo.restoreDaemonImage.bind(repo)
+    repo.restoreDaemonImage = async (orgId, image, expected) => {
+      if (orgId === 'stuck') throw new Error('database unavailable')
+      return realRestore(orgId, image, expected)
+    }
+    ops.owed = [
+      owed(
+        'stuck',
+        'registry.example.test/agentconnect/daemon:v1.5.0',
+        'registry.example.test/agentconnect/daemon:v1.4.0'
+      ),
+      owed(
+        'fine',
+        'registry.example.test/agentconnect/daemon:v1.5.0',
+        'registry.example.test/agentconnect/daemon:v1.4.0'
+      )
+    ]
+
+    expect(await service.drainUpgradeCompensations()).toBe(1)
+    expect(ops.settled.map((s) => s.opId)).toEqual(['op-fine'])
   })
 })
