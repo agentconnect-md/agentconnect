@@ -16,9 +16,11 @@
  * facts from GitHub (decision 11). Subscription events (`issues`,
  * `pull_request`, `issue_comment`) match against the CP-compiled rules by
  * NUMERIC repo id, gated per rule by the org's installation set (decision 6),
- * with an unconditional `[bot]`-sender veto (decision 10). Every matching hook
- * fires its own `rd/msg` (msgId is hookId-prefixed, so fan-out of one delivery
- * to several hooks never self-dedups at the daemon).
+ * with a bot-sender veto except for PR revisions authored by this App (decision
+ * 10). Same-repository revisions enter the internal CI lane; fork revisions
+ * remain behind workflow approval. Every matching hook fires its own `rd/msg`
+ * (msgId is hookId-prefixed, so fan-out of one delivery to several hooks never
+ * self-dedups at the daemon).
  */
 import { randomUUID } from 'node:crypto'
 import type { FastifyInstance } from 'fastify'
@@ -129,7 +131,7 @@ interface GithubSubject {
   title?: string
   body?: string | null
   html_url?: string
-  user?: { login?: string }
+  user?: { login?: string; type?: string }
   author_association?: string
   labels?: Array<{ name?: string }>
   head?: { sha?: string; repo?: { full_name?: string } | null }
@@ -153,6 +155,9 @@ export interface GithubMatchCtx {
   // comment body, else issue/PR body, else the head commit message. Handles are
   // matched locally, but actor permission is always resolved live by the CP.
   subjectAuthorLogin?: string
+  subjectAuthorType?: string
+  headRepoFullName?: string
+  baseRepoFullName?: string
   commentAuthorLogin?: string
   mentionText: string | undefined
   /** GitHub's native reviewer request target. Only this App's `[bot]` login
@@ -208,6 +213,29 @@ function githubRuleSupportsPullRequests(rule: RcHookAssign): boolean {
   )
 }
 
+function isConfiguredAppPullRequest(rule: RcHookAssign, ctx: GithubMatchCtx): boolean {
+  if (
+    ctx.event !== 'pull_request' ||
+    !EXTERNAL_PR_REVISION_EVENTS.has(ctx.eventAction) ||
+    !rule.github?.appSlug ||
+    ctx.subjectAuthorType !== 'Bot' ||
+    !ctx.subjectAuthorLogin
+  )
+    return false
+  return ctx.subjectAuthorLogin.toLowerCase() === `${rule.github.appSlug}[bot]`.toLowerCase()
+}
+
+/** A same-repository App-authored revision is the internal CI lane. It may
+ * trigger review without treating the App bot as a human maintainer. */
+function isInternalAppPullRequest(rule: RcHookAssign, ctx: GithubMatchCtx): boolean {
+  return Boolean(
+    isConfiguredAppPullRequest(rule, ctx) &&
+    ctx.headRepoFullName &&
+    ctx.baseRepoFullName &&
+    ctx.headRepoFullName.toLowerCase() === ctx.baseRepoFullName.toLowerCase()
+  )
+}
+
 function isGithubThreadComment(ctx: GithubMatchCtx): boolean {
   return ctx.event === 'issue_comment' || ctx.event === 'pull_request_review_comment'
 }
@@ -256,9 +284,9 @@ export function githubRuleVerdict(rule: RcHookAssign, ctx: GithubMatchCtx): Gith
         ctx.eventAction === 'pull_request:converted_to_draft'))
   )
     return 'no-match'
-  // Decision 10: any [bot] sender is vetoed unconditionally — kills the agent's
-  // own comment echo and two agents' mutual-@ oscillation alike.
-  if (ctx.senderType === 'Bot') return 'no-match'
+  // Decision 10: bot-authored comments/review-comments and unrelated bot PRs
+  // remain vetoed; only this App's same-repository PR revisions enter review.
+  if (ctx.senderType === 'Bot' && !isConfiguredAppPullRequest(rule, ctx)) return 'no-match'
   // Decision 6(a): the org-attribution gate. An event that cannot prove its
   // installation does not fire.
   if (!ctx.installationId || !rule.github.installationIds.includes(ctx.installationId)) return 'no-match'
@@ -327,7 +355,7 @@ export function githubRuleVerdict(rule: RcHookAssign, ctx: GithubMatchCtx): Gith
   // GitHub's relationship labels are descriptive, not an authorization proof:
   // MEMBER and COLLABORATOR may still have only read/triage access. Every
   // numbered-thread event therefore resolves current write/admin authority.
-  return ctx.event === 'push' ? 'trusted' : 'needs-authz'
+  return ctx.event === 'push' || isInternalAppPullRequest(rule, ctx) ? 'trusted' : 'needs-authz'
 }
 
 /** Truncate on a UTF-8 BYTE budget, cutting at a code-point boundary — the
@@ -844,6 +872,9 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
         labels: (subject?.labels ?? []).map((l) => l.name ?? '').filter(Boolean),
         senderType: payload.sender?.type,
         subjectAuthorLogin: subject?.user?.login,
+        subjectAuthorType: subject?.user?.type,
+        headRepoFullName: subject?.head?.repo?.full_name,
+        baseRepoFullName: subject?.base?.repo?.full_name,
         commentAuthorLogin: payload.comment?.user?.login,
         requestedReviewerLogin: payload.requested_reviewer?.login,
         commentSubjectFamily:
@@ -1055,8 +1086,13 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
         ctx.event === 'issues' ||
         (ctx.event === 'pull_request' && ctx.eventAction !== 'pull_request:review_requested')
       ) {
+        for (const rule of matched.filter((candidate) => candidate.verdict === 'trusted').map(({ rule }) => rule)) {
+          dispatchRule(rule, true)
+        }
+        const needsAuthz = matched.filter((candidate) => candidate.verdict === 'needs-authz').map(({ rule }) => rule)
+        if (needsAuthz.length === 0) return reply.code(202).send({ deliveryKey })
         void authorizeAndDispatch(
-          matched.map((candidate) => candidate.rule),
+          needsAuthz,
           { senderLogin: ctx.subjectAuthorLogin },
           ctx.event === 'pull_request' ? 'request-review' : 'skip'
         ).catch((err) => {

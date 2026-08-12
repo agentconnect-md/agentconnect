@@ -824,9 +824,12 @@ are present, broadcast wins; mentioning an unrelated GitHub user does not change
 the configured review cadence.
 
 Mention routing does not bypass the integration's event family, label filter,
-installation attribution, live maintainer authorization, or bot-sender veto. A
-targeted agent mention narrows an otherwise broader `updated` fan-out, while an
-event with no AgentConnect mention continues to follow its configured cadence.
+installation attribution, or live maintainer authorization. Bot-sender veto still
+applies to comments and review comments. An `opened`/`synchronize` PR authored by
+the installed App is admitted as a lifecycle event: same-repository PRs follow the
+internal CI review lane, while fork PRs wait for workflow approval. A targeted agent
+mention narrows an otherwise broader `updated` fan-out, while an event with no
+AgentConnect mention continues to follow its configured cadence.
 In a pull request conversation, an authorized explicit AgentConnect mention
 starts a new review generation for the current revision when the integration
 allows formal reviews, so its informational Check reopens and enters in progress

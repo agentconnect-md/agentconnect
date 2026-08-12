@@ -965,6 +965,62 @@ describe('github ingress', () => {
       }
     )
 
+    it.each(['opened', 'synchronize'] as const)(
+      'dispatches a same-repository PR %s authored by this App without human-author authorization',
+      async (action) => {
+        h.table.upsert(rule({}, { events: ['pull_request:*'], appSlug: 'example-review-app' }))
+        h.authzResult = false
+        const pullRequest = pullPayload().pull_request as Record<string, unknown>
+        const appBot = 'example-review-app[bot]'
+
+        await post(
+          'pull_request',
+          pullPayload({
+            action,
+            sender: { login: 'release-manager', type: 'User' },
+            pull_request: {
+              ...pullRequest,
+              user: { login: appBot, type: 'Bot' },
+              head: { sha: 'a'.repeat(40), repo: { full_name: 'acme/infra' } },
+              base: { sha: 'b'.repeat(40), repo: { full_name: 'acme/infra' } }
+            }
+          })
+        )
+        await flush()
+
+        expect(h.authzRequests).toHaveLength(0)
+        expect(h.sent).toHaveLength(1)
+        expect(h.sent[0]).toMatchObject({ event: `pull_request:${action}`, agentId: AGENT })
+        expect(h.reports).toEqual([expect.objectContaining({ status: 'accepted' })])
+      }
+    )
+
+    it('keeps an App-authored fork PR behind the workflow-approval marker', async () => {
+      h.table.upsert(rule({}, { events: ['pull_request:*'], appSlug: 'example-review-app' }))
+      h.authzResult = false
+      const pullRequest = pullPayload().pull_request as Record<string, unknown>
+
+      await post(
+        'pull_request',
+        pullPayload({
+          sender: { login: 'example-review-app[bot]', type: 'Bot' },
+          pull_request: {
+            ...pullRequest,
+            user: { login: 'example-review-app[bot]', type: 'Bot' },
+            head: { sha: 'a'.repeat(40), repo: { full_name: 'example-fork/infra' } },
+            base: { sha: 'b'.repeat(40), repo: { full_name: 'acme/infra' } }
+          }
+        })
+      )
+      await flush()
+
+      expect(h.authzRequests).toEqual([expect.objectContaining({ senderLogin: 'example-review-app[bot]' })])
+      expect(h.sent).toHaveLength(0)
+      expect(h.reports).toEqual([
+        expect.objectContaining({ reason: HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED, status: 'failed' })
+      ])
+    })
+
     it.each(['OWNER', 'MEMBER', 'COLLABORATOR'] as const)(
       'live-checks a PR author even when the payload association is %s',
       async (authorAssociation) => {
@@ -2402,6 +2458,27 @@ describe('githubRuleVerdict (pure predicate)', () => {
     const pr = { ...ctx, event: 'pull_request' }
     expect(githubRuleVerdict(r, { ...pr, eventAction: 'pull_request:synchronize' })).toBe('needs-authz')
     expect(matches(r, { ...pr, eventAction: 'pull_request:edited' })).toBe(false)
+  })
+
+  it('trusts only same-repository revisions authored by this App', () => {
+    const r = rule({}, { events: ['pull_request:*'], appSlug: 'example-review-app' })
+    const appPr = {
+      ...ctx,
+      event: 'pull_request',
+      eventAction: 'pull_request:synchronize',
+      subjectAuthorLogin: 'example-review-app[bot]',
+      subjectAuthorType: 'Bot',
+      headRepoFullName: 'acme/infra',
+      baseRepoFullName: 'acme/infra'
+    }
+
+    expect(githubRuleVerdict(r, appPr)).toBe('trusted')
+    expect(githubRuleVerdict(r, { ...appPr, headRepoFullName: 'fork/infra', baseRepoFullName: 'acme/infra' })).toBe(
+      'needs-authz'
+    )
+    expect(githubRuleVerdict(r, { ...appPr, senderType: 'Bot', subjectAuthorLogin: 'dependabot[bot]' })).toBe(
+      'no-match'
+    )
   })
 
   it('applies comment subject scope only when commentFamilies is non-empty', () => {
