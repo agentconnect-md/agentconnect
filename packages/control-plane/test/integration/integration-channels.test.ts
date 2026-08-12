@@ -811,6 +811,22 @@ describe('PATCH /integrations/:id/channels/:channelId', () => {
           name: 'deploys',
           trigger: 'mention',
           agentId: null
+        },
+        {
+          integrationId: aliceIntegration,
+          channelId: 'D1',
+          name: '@Alice',
+          kind: 'im',
+          trigger: 'off',
+          agentId: alice
+        },
+        {
+          integrationId: bobIntegration,
+          channelId: 'D1',
+          name: '@Alice',
+          kind: 'im',
+          trigger: 'any',
+          agentId: bob
         }
       ]
     })
@@ -818,11 +834,32 @@ describe('PATCH /integrations/:id/channels/:channelId', () => {
 
     let listed = await running.app.inject({ method: 'GET', url: `${ORG}/integrations` })
     let shared = (
-      listed.json() as Array<{ botId: string; channels: Array<{ agentId: string; trigger: string }> }>
+      listed.json() as Array<{
+        botId: string
+        channels: Array<{ channelId: string; agentId: string; trigger: string }>
+      }>
     ).filter((integration) => integration.botId === botId)
     expect(shared).toHaveLength(2)
-    expect(shared.every((integration) => integration.channels[0]?.agentId === alice)).toBe(true)
-    expect(shared.every((integration) => integration.channels[0]?.trigger === 'any')).toBe(true)
+    expect(
+      shared.every(
+        (integration) => integration.channels.find((channel) => channel.channelId === 'C1')?.agentId === alice
+      )
+    ).toBe(true)
+    expect(
+      shared.every(
+        (integration) => integration.channels.find((channel) => channel.channelId === 'C1')?.trigger === 'any'
+      )
+    ).toBe(true)
+    expect(
+      shared.every(
+        (integration) => integration.channels.find((channel) => channel.channelId === 'D1')?.agentId === alice
+      )
+    ).toBe(true)
+    expect(
+      shared.every(
+        (integration) => integration.channels.find((channel) => channel.channelId === 'D1')?.trigger === 'off'
+      )
+    ).toBe(true)
 
     const changed = await running.app.inject({
       method: 'PATCH',
@@ -841,12 +878,50 @@ describe('PATCH /integrations/:id/channels/:channelId', () => {
       trigger: 'any'
     })
 
+    await prisma.integrationChannel.delete({
+      where: { integrationId_channelId: { integrationId: bobIntegration, channelId: 'D1' } }
+    })
+    const directChanged = await running.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/integrations/${aliceIntegration}/channels/D1`,
+      payload: { agentId: bob }
+    })
+    expect(directChanged.statusCode).toBe(200)
+    expect(directChanged.json()).toMatchObject({ kind: 'im', agentId: bob, trigger: 'off' })
+
+    const directStored = await prisma.integrationChannel.findMany({
+      where: { integration: { botId }, channelId: 'D1' }
+    })
+    expect(directStored.find((channel) => channel.integrationId === aliceIntegration)?.agentId).toBeNull()
+    expect(directStored.find((channel) => channel.integrationId === bobIntegration)).toMatchObject({
+      kind: 'im',
+      agentId: bob,
+      trigger: 'off'
+    })
+
     listed = await running.app.inject({ method: 'GET', url: `${ORG}/integrations` })
-    shared = (listed.json() as Array<{ botId: string; channels: Array<{ agentId: string; trigger: string }> }>).filter(
-      (integration) => integration.botId === botId
-    )
-    expect(shared.every((integration) => integration.channels[0]?.agentId === bob)).toBe(true)
-    expect(shared.every((integration) => integration.channels[0]?.trigger === 'any')).toBe(true)
+    shared = (
+      listed.json() as Array<{
+        botId: string
+        channels: Array<{ channelId: string; agentId: string; trigger: string }>
+      }>
+    ).filter((integration) => integration.botId === botId)
+    expect(
+      shared.every((integration) => integration.channels.find((channel) => channel.channelId === 'C1')?.agentId === bob)
+    ).toBe(true)
+    expect(
+      shared.every(
+        (integration) => integration.channels.find((channel) => channel.channelId === 'C1')?.trigger === 'any'
+      )
+    ).toBe(true)
+    expect(
+      shared.every((integration) => integration.channels.find((channel) => channel.channelId === 'D1')?.agentId === bob)
+    ).toBe(true)
+    expect(
+      shared.every(
+        (integration) => integration.channels.find((channel) => channel.channelId === 'D1')?.trigger === 'off'
+      )
+    ).toBe(true)
 
     const cleared = await running.app.inject({
       method: 'PATCH',

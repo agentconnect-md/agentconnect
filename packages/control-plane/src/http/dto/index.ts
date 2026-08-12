@@ -750,7 +750,7 @@ export const IntegrationChannelDto = z.object({
   isPrivate: z.boolean(),
   kind: z.enum(['channel', 'im', 'mpim']),
   trigger: z.enum(['off', 'mention', 'any']),
-  /** Effective per-channel owner for a shared bot (§10.1); null before convergence
+  /** Effective per-conversation owner for a shared bot (§10.1); null before convergence
    *  or when ownership does not apply. */
   agentId: z.string().nullable()
 })

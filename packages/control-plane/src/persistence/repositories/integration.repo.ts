@@ -800,7 +800,7 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
   async upsertConversation(
     integrationId: IntegrationId,
     conversation: ReportedChannel,
-    opts?: { agentId?: AgentId | null; defaultTrigger?: ChannelTrigger }
+    opts?: { defaultTrigger?: ChannelTrigger }
   ): Promise<IntegrationChannelRecord> {
     const row = await this.db.integrationChannel.upsert({
       where: { integrationId_channelId: { integrationId, channelId: conversation.id } },
@@ -814,16 +814,13 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
         kind: conversation.kind ?? 'channel',
         // Restricted installs supply Off. Otherwise 1:1 DMs start On and rooms use
         // Mention, matching replaceSnapshot and the controls shown in the Console.
-        trigger: opts?.defaultTrigger ?? (conversation.kind === 'im' ? 'any' : 'mention'),
-        ...(opts?.agentId !== undefined ? { agentId: opts.agentId } : {})
+        trigger: opts?.defaultTrigger ?? (conversation.kind === 'im' ? 'any' : 'mention')
       },
-      // Refresh only a KNOWN name — a nameless re-report must not clobber a
-      // previously resolved counterpart name; trigger/agentId stay operator-owned.
+      // Refresh only known metadata; trigger/agentId stay operator-owned.
       update: {
         ...(conversation.name ? { name: conversation.name } : {}),
         ...(conversation.spaceId ? { spaceId: conversation.spaceId } : {}),
-        ...(conversation.space ? { space: conversation.space } : {}),
-        ...(opts?.agentId !== undefined ? { agentId: opts.agentId } : {})
+        ...(conversation.space ? { space: conversation.space } : {})
       }
     })
     return toChannelRecord(row)
@@ -866,7 +863,7 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
     integrationId: IntegrationId,
     channelId: string,
     agentId: AgentId,
-    opts?: { defaultTrigger?: ChannelTrigger }
+    opts?: { defaultTrigger?: ChannelTrigger; kind?: ConversationKind }
   ): Promise<IntegrationChannelRecord> {
     const row = await this.db.integrationChannel.upsert({
       where: { integrationId_channelId: { integrationId, channelId } },
@@ -874,6 +871,7 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
         integrationId,
         channelId,
         agentId,
+        ...(opts?.kind ? { kind: opts.kind } : {}),
         ...(opts?.defaultTrigger ? { trigger: opts.defaultTrigger } : {})
       },
       update: { agentId }

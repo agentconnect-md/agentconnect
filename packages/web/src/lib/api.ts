@@ -820,7 +820,7 @@ export interface IntegrationChannelDto {
   isPrivate: boolean
   kind: 'channel' | 'im' | 'mpim'
   trigger: ChannelTrigger
-  agentId: string | null // effective shared-channel owner; null before convergence / when not applicable
+  agentId: string | null // effective shared-conversation owner; null before convergence / when not applicable
 }
 
 // `/integrations` list/create row — control-plane metadata only, NEVER tokens.
@@ -3755,7 +3755,7 @@ export async function fetchHookRuns(id: string, orgId?: string): Promise<HookRun
   return apiGet<HookRunDto[]>(`${orgBase(orgId)}/hooks/${encodeURIComponent(id)}/runs`)
 }
 
-// Per-channel trigger choice (`PATCH /integrations/:id/channels/:channelId`). The CP
+// Per-conversation trigger choice (`PATCH /integrations/:id/channels/:channelId`). The CP
 // persists it and pushes the integration's recomputed bind rules to the owning daemon.
 export async function updateIntegrationChannel(
   integrationId: string,

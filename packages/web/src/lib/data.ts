@@ -1717,7 +1717,7 @@ export interface IntegrationChannelRow {
   /** 'im' = a DM conversation row, 'mpim' = a Slack group DM; absent = channel. */
   kind?: 'channel' | 'im' | 'mpim'
   trigger: 'off' | 'mention' | 'any'
-  /** Effective per-channel owner for a shared bot. */
+  /** Effective per-conversation owner for a shared bot. */
   agentId?: string | null
 }
 
@@ -1736,7 +1736,7 @@ export interface IntegrationRow {
   agentId?: string
   /** The bot's identity id — needed to toggle sharing / find sibling installs. */
   botId?: string
-  /** Whether the backing bot is shared (may serve many agents; per-channel default agents apply). */
+  /** Whether the backing bot is shared (may serve many agents; per-conversation defaults apply). */
   shareable?: boolean
   /** Discord application (client) id from the backing bot — builds the "Add to Discord" invite URL. Null/absent for non-Discord or when unknown. */
   discordAppId?: string | null

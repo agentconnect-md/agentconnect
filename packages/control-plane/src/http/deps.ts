@@ -156,7 +156,7 @@ export interface HttpDeps {
     waitlist: WaitlistRepo
     /** Platform integration metadata (never tokens). */
     integration: IntegrationRepo
-    /** Daemon-reported channel membership + the per-channel trigger choice. */
+    /** Daemon-reported conversation membership + the per-conversation trigger choice. */
     integrationChannel: IntegrationChannelRepo
     /** Durable bot identities — outlive their integration, reusable after uninstall. */
     bot: BotRepo

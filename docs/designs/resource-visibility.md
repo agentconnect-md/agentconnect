@@ -728,7 +728,10 @@ So authorization must live in AgentConnect's own routing layer.
 integration card groups rows into **Channels** and **Direct messages**; 1:1 DM
 rows are binary (Off / On — a DM needs no mention distinction). Org-visible
 agents default new DMs On; restricted agents default them Off. Both expose the
-same control, and both enforce it.
+same control, and both enforce it. Classic integrations keep these controls per
+integration. A shared HTTP bot converges each observed conversation to one
+default owner and projects its trigger across all sibling integrations, the same
+way it handles an enumerated channel.
 
 **Behavior of an Off conversation.**
 
@@ -833,8 +836,10 @@ counterpart's display name where available. An optional boot-time sweep
 _Shared bots:_ the relay's membership snapshot drops IMs, so direct rows take
 the incremental path there too — every human DM (and addressed group DM) makes
 the relay emit `rc/bot-conversation` (conversation id + best-effort `users.info`
-counterpart name), which the CP fans across **every install**. Restricted rows
-start Off; org-visible 1:1 DMs start On and group DMs on Mention. The relay also
+counterpart name), which the CP fans across **every install** and converges to
+one owner plus one effective trigger. A new conversation uses the earliest
+active install as owner; restricted rows start Off, org-visible 1:1 DMs start On,
+and group DMs start on Mention. The relay also
 posts the one-time
 per-conversation notice (chrome-marked; the unrouted @-mention case included)
 since no daemon is involved before arbitration. Because a channel mention
@@ -849,12 +854,10 @@ is the **`noticedDmConversations`** set, which records notices ACTUALLY
 DELIVERED (reported via `rc/notice-posted` after the post, then re-stamped to
 every pod) — deliberately not derived from conversation rows, since a mixed
 bot's DM routed by its public default creates a row with no notice and must
-still receive one if it later becomes unroutable. Enabling the row compiles a
-conversation-scoped `auto` route plus a conversation-scoped **slug keyword**
-route — arbitration ranks scoped mention → keyword → auto — so a DM enabled
-for several gated agents can be addressed by slug while an unslugged DM falls
-to the first enabled agent. Unscoped keyword remains forbidden for gated
-agents.
+still receive one if it later becomes unroutable. Enabling a shared conversation
+compiles one conversation-scoped route for its selected owner; it does not fan
+out to every install or create per-agent DM slug routes. Unscoped keyword
+remains forbidden for gated agents.
 
 **Control-plane and web.**
 
@@ -862,9 +865,9 @@ agents.
   gains `off`; new `kind` column (`channel` | `im` | `mpim`). Row creation
   derives the default from visibility and kind: restricted conversations Off,
   org-visible 1:1 DMs On, and other org-visible rooms Mention.
-- The existing per-channel trigger PATCH route accepts `off` and reuses the
+- The existing per-conversation trigger PATCH route accepts `off` and reuses the
   existing recompute-bindRules-and-push flow. A direct integration requires edit
-  rights on its parent agent. A shared bot's channel state is bot-scoped, so the
+  rights on its parent agent. A shared bot's conversation state is bot-scoped, so the
   route additionally requires edit rights on the effective owner and on a newly
   selected owner; changing a visible sibling cannot enable a hidden restricted
   owner. Mutations are serialized per bot/channel and fenced to the owner that
@@ -872,7 +875,7 @@ agents.
   request retry instead of applying its trigger to the new owner.
 - `gated` is **derived** from `agent.visibility === 'restricted'` at spec
   assembly; there is no separate stored toggle (see §14.7).
-- Web `IntegrationChannelList`: tri-state segmented control per channel row
+- Web `IntegrationChannelList`: tri-state segmented control per conversation row
   (Off / Mention / All messages) — offered for every agent, not only a gated
   one — a Direct-messages section with binary rows, pending badges, and a
   banner on restricted agents' integration cards explaining the gate.
@@ -887,18 +890,23 @@ agents.
     no unscoped defaults at all, so its Off already is the absence of a scoped
     rule, and stating the same fact twice would let the two drift apart.
   - **Relay** (`rc/bot-assign` / `rc/routes`, per bot): every bot-scoped Off
-    channel, plus a direct conversation when no placed install has it enabled.
+    conversation, including an observed DM or group DM.
     A gated owner's missing route is not enough here: an
     ungated sibling's unscoped rungs are still in the same table, so on a
     mixed-visibility bot a bare `@bot` would otherwise reach the public default
     in a channel the console shows as Off.
-- Because the relay fence covers both, it also has to say which Off channels
+    An enabled conversation whose canonical owner is active but unplaced is
+    also muted until that owner has a daemon placement; it must not fall
+    through to another agent's unscoped default. This availability fence is
+    not included in `gatedOffChannels`, because the conversation is On rather
+    than Off and must not receive the gated-owner notice.
+- Because the relay fence covers both, it also has to say which Off conversations
   still deserve the §14.3 notice. `gatedOffChannels` carries that subset — the
-  muted channels whose owner is gated, i.e. Off because nobody has enabled them
+  muted conversations whose owner is gated, i.e. Off because nobody has enabled them
   rather than because an operator silenced them. The relay posts the notice only
-  for those; an operator's Off is silent (see "Per-channel trigger" in
+  for those; an operator's Off is silent (see "Per-conversation trigger" in
   product-conventions.md). The two states share a trigger value and the relay
-  cannot infer channel ownership from a table that holds no route for them, so
+  cannot infer conversation ownership from a table that holds no route for them, so
   this is explicit wire state rather than something derived.
 
 ### 14.4 Visibility transitions
