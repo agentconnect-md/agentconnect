@@ -5012,6 +5012,13 @@ export interface OrgClusterExecutionRepo {
   /** The org that owns a CR name — the reverse lookup an authenticating in-cluster
    *  daemon needs, since a token names its namespace and nothing else. */
   getByResourceName(resourceName: string): Promise<ClusterExecutionSettings | null>
+  /**
+   * Put `daemonImage` back, but only while the row is still at `expectedRevision` — the
+   * fence that keeps abandoning a failed apply from discarding a peer's later edit. A
+   * no-op (revision moved) is not an error: it means this caller's value is no longer the
+   * durable desired state, which is exactly what abandoning wanted.
+   */
+  restoreDaemonImage(orgId: OrgId, daemonImage: string, expectedRevision: number): Promise<void>
   /** Every org whose envelope is switched on — what a deployment-wide sweep iterates.
    *  Unbounded on purpose: it is one row per organization with cluster execution enabled,
    *  and a sweep that silently stopped at a limit would leave part of the fleet stale. */

@@ -72,6 +72,13 @@ class FakeRepo implements OrgClusterExecutionRepo {
     return null
   }
 
+  /** Revision-fenced, like the repo's conditional UPDATE. */
+  async restoreDaemonImage(orgId: OrgId, daemonImage: string, expectedRevision: number): Promise<void> {
+    const row = this.rows.get(orgId)
+    if (!row || row.specRevision !== expectedRevision) return
+    this.rows.set(orgId, { ...row, daemonImage, specRevision: row.specRevision + 1 })
+  }
+
   async listEnabled(): Promise<ClusterExecutionSettings[]> {
     return [...this.rows.values()].filter((r) => r.enabled).map((r) => ({ ...r }))
   }
@@ -243,6 +250,50 @@ describe('ClusterExecutionService.setDaemonVersion', () => {
     await expect(service.setDaemonVersion(OrgId('acme'), '1.5.0')).rejects.toThrow(ClusterImageWriteDeferredError)
     // The distinguishing fact: the desired state survived the failure.
     expect((await repo.get(OrgId('acme')))!.daemonImage).toBe('registry.example.test/agentconnect/daemon:v1.5.0')
+  })
+
+  /**
+   * Converging on its own is right for the fleet sweep and wrong for a command, which has a
+   * deadline it would outlive. Abandoning restores the previous image so "failed" is the
+   * truth rather than a description that expires.
+   */
+  it('abandons a deferred image back to the previous one', async () => {
+    const { repo, api, service } = build()
+    repo.seed('acme', 'registry.example.test/agentconnect/daemon:v1.4.0')
+    api.failFor.add('acme')
+    const deferred = await service.setDaemonVersion(OrgId('acme'), '1.5.0').catch((e) => e)
+    expect(await service.abandonDaemonVersion(OrgId('acme'), deferred)).toBe(true)
+    expect((await repo.get(OrgId('acme')))!.daemonImage).toBe('registry.example.test/agentconnect/daemon:v1.4.0')
+  })
+
+  /**
+   * A peer that edited the row since owns it, so reverting blindly would discard their
+   * value. It still counts as abandoned: what will be applied is their image, not this
+   * call's, so the caller's operation is genuinely not going to happen.
+   */
+  it('leaves a peer’s later edit alone and still reports abandoned', async () => {
+    const { repo, api, service } = build()
+    repo.seed('acme', 'registry.example.test/agentconnect/daemon:v1.4.0')
+    api.failFor.add('acme')
+    const deferred = await service.setDaemonVersion(OrgId('acme'), '1.5.0').catch((e) => e)
+    // A peer writes after the failed apply, bumping the revision the fence compares.
+    await repo.upsert(OrgId('acme'), {} as never, {
+      daemonImage: 'registry.example.test/agentconnect/daemon:v1.7.0'
+    })
+    expect(await service.abandonDaemonVersion(OrgId('acme'), deferred)).toBe(true)
+    expect((await repo.get(OrgId('acme')))!.daemonImage).toBe('registry.example.test/agentconnect/daemon:v1.7.0')
+  })
+
+  // The restore failing is the one case where the image really is still coming.
+  it('reports not-abandoned when the restore itself fails', async () => {
+    const { repo, api, service } = build()
+    repo.seed('acme', 'registry.example.test/agentconnect/daemon:v1.4.0')
+    api.failFor.add('acme')
+    const deferred = await service.setDaemonVersion(OrgId('acme'), '1.5.0').catch((e) => e)
+    repo.restoreDaemonImage = async () => {
+      throw new Error('database unavailable')
+    }
+    expect(await service.abandonDaemonVersion(OrgId('acme'), deferred)).toBe(false)
   })
 
   // The refusals above are checked BEFORE any write, which is what makes them safe to

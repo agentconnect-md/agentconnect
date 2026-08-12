@@ -130,6 +130,10 @@ export class ClusterVersionNotPublishedError extends Error {
 export class ClusterImageWriteDeferredError extends Error {
   constructor(
     readonly image: string,
+    /** What the envelope named before this write — what abandoning the intent restores. */
+    readonly previousImage: string,
+    /** The revision this write produced; the fence that keeps an abandon from clobbering a peer. */
+    readonly specRevision: number,
     override readonly cause: unknown
   ) {
     super(`the daemon image "${image}" is recorded but the cluster refused this apply`)
@@ -218,13 +222,44 @@ export class ClusterExecutionService {
     if (daemonImage === settings.daemonImage) return daemonImage
     // The two halves of `configure`, split so the caller can tell them apart: everything
     // above here wrote nothing, and everything below runs with the change already durable.
-    await this.repo.upsert(orgId, this.defaults(orgId), { daemonImage })
+    const written = await this.repo.upsert(orgId, this.defaults(orgId), { daemonImage })
     try {
       await this.converge(orgId)
     } catch (err) {
-      throw new ClusterImageWriteDeferredError(daemonImage, err)
+      throw new ClusterImageWriteDeferredError(daemonImage, settings.daemonImage, written.specRevision, err)
     }
     return daemonImage
+  }
+
+  /**
+   * Give up a deferred image so it cannot land later, and report whether it worked.
+   *
+   * A durable-but-unapplied image converges on its own, which is right for the fleet sweep
+   * and wrong for a COMMAND: a command carries a deadline, and a cluster that stays
+   * unreachable past it leaves the operation reported failed while the re-apply pass goes on
+   * to replace the pod anyway — the very contradiction keeping the operation open was meant
+   * to avoid. So the caller that owns a deadline abandons the intent instead, making failure
+   * the truth rather than a temporary description.
+   *
+   * The restore is fenced on the revision this write produced: a peer that has since edited
+   * the row owns it, and reverting blindly would discard their value. A fenced-out revision
+   * still counts as abandoned — a peer's image is what will be applied, not this call's.
+   *
+   * The CR was never changed (that is what failed), so restoring the row is all it takes.
+   * The exception is an apply whose REPLY was lost after landing: the resource then holds
+   * the new image and the next re-apply pass returns it to the restored row — a brief flap
+   * ending on the version this operation reported, which is the consistent outcome.
+   *
+   * False ⇒ the restore itself failed, so the image is still durable and still coming; the
+   * caller must keep its operation open rather than call it failed.
+   */
+  async abandonDaemonVersion(orgId: OrgId, deferred: ClusterImageWriteDeferredError): Promise<boolean> {
+    try {
+      await this.repo.restoreDaemonImage(orgId, deferred.previousImage, deferred.specRevision)
+      return true
+    } catch {
+      return false
+    }
   }
 
   /**

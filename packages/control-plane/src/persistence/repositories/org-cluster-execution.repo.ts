@@ -68,6 +68,14 @@ export class PgOrgClusterExecutionRepo implements OrgClusterExecutionRepo {
     return row ? toRecord(row) : null
   }
 
+  /** One conditional statement, so a peer's edit between the read and this write wins. */
+  async restoreDaemonImage(orgId: OrgId, daemonImage: string, expectedRevision: number): Promise<void> {
+    await this.prisma.orgClusterExecution.updateMany({
+      where: { orgId, specRevision: expectedRevision },
+      data: { daemonImage, specRevision: { increment: 1 } }
+    })
+  }
+
   /** Stable `orgId` order so a sweep's log reads the same across boots. */
   async listEnabled(): Promise<ClusterExecutionSettings[]> {
     const rows = await this.prisma.orgClusterExecution.findMany({

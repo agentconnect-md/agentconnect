@@ -568,14 +568,31 @@ ImagePullBackOff, which is a worse answer than telling the caller no. A digest p
 is refused for the neighbouring reason: it names no version either, and replacing
 it with a tag would discard an exact pin somebody chose.
 
-A refused apply is **not** a failed upgrade, and this is the one place the ordering
-matters. The row is written first, so the change is already durable and the
-re-apply pass will push it. The request therefore reports the cluster's refusal
-(502, so an operator sees it) while leaving the op open and armed — reporting
-`failed` for a command that the next pass then executes is the one answer that
-cannot be reconciled with what the operator afterwards observes. Only the refusals
-checked _before_ any write — a disabled envelope, a digest pin, an unusable tag —
-close the op, and they can, because nothing was left behind to enact.
+A refused apply needs care, and the two callers resolve it **differently** for one
+reason: only one of them owns a deadline.
+
+The row is written first, so a refused apply leaves a change the re-apply pass will
+push anyway. For the **fleet sweep** that is the desired outcome — it has nothing
+waiting on it, so the envelope simply converges on a later pass. For a **console
+upgrade** it is not: the op expires after fifteen minutes, so a cluster unreachable
+past that leaves the operation reported `failed` while the pass goes on to replace
+the pod — the same contradiction as closing it early, only deferred.
+
+So a command **abandons** the intent: the envelope is restored to the image it had,
+and failure becomes the truth rather than a description that expires. The restore is
+fenced on the revision the failed write produced, so a peer that has since edited the
+row keeps their value — and that still counts as abandoned, because what will be
+applied is theirs, not this command's. The one case that keeps the op open is the
+restore ITSELF failing: the image is then still durable and still coming, so calling
+it failed would be the very error being avoided.
+
+The refusals checked _before_ any write — a disabled envelope, a digest pin, an
+unusable tag, a non-version target — close the op directly, and can, because nothing
+was left behind to enact.
+
+Abandoning lives with the caller rather than in the seam, which is the point worth
+keeping: the same failure is correctly durable for one and correctly rolled back for
+the other, and only the caller knows which it is.
 
 The sweep's risk is doing too much, so it refuses three envelopes: one whose image
 names another repository than this install configured, one whose tag is not a

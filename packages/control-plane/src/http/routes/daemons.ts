@@ -109,6 +109,18 @@ function isBadUpgradeTarget(error: unknown): boolean {
   return error instanceof InvalidImageTagError || error instanceof ClusterVersionNotPublishedError
 }
 
+/** A refused apply, always 502: the change is upstream's to accept, and the cause may be a
+ *  plain error rather than a `K8sApiError`, which `sendClusterFailure` would rethrow as a 500. */
+function sendApplyFailure(reply: FastifyReply, cause: unknown, note: string): FastifyReply {
+  const detail = cause instanceof Error ? cause.message : 'unknown error'
+  return reply.code(502).send({
+    error: 'Bad Gateway',
+    statusCode: 502,
+    message: `cluster API rejected the daemon image change: ${detail}${note}`,
+    code: CLUSTER_API_ERROR_CODE
+  })
+}
+
 /** Outcome text recorded on an op whose image change never landed. */
 function clusterUpgradeFailure(error: unknown): string {
   const detail = error instanceof Error ? error.message : 'unknown error'
@@ -515,21 +527,37 @@ export function daemonRoutes(deps: HttpDeps) {
       const commandEpoch = BigInt(deps.liveness.get(id)?.sessionEpoch ?? existing.sessionEpoch)
       const opRow = await openLifecycleOp(req, reply, id, 'upgrade', commandEpoch, version)
       if (!opRow) return reply
-      // Set when the image is durable but this pass could not reach the API server. NOT a
-      // failure: the re-apply pass renders the spec from the row, so the pod is still going
-      // to be replaced — closing the op here would report "failed" for a command that then
-      // executes. The op stays open and the caller is told the outcome is unconfirmed.
+      // Set only when the apply failed AND the rollback below could not undo it, so the image
+      // is still durable and still coming. That is the one outcome this op must not call
+      // failed, and the only one it keeps waiting on.
       let deferred: ClusterImageWriteDeferredError | undefined
       try {
         const image = await cluster.setDaemonVersion(orgOf(req), version)
         req.log.info({ daemonId: id, opId: opRow.id, image }, 'cluster daemon upgrade: envelope repointed')
       } catch (error) {
         if (error instanceof ClusterImageWriteDeferredError) {
-          deferred = error
-          req.log.warn(
-            { daemonId: id, opId: opRow.id, image: error.image, err: error.cause },
-            'cluster daemon upgrade: image recorded but not applied; the re-apply pass will converge it'
-          )
+          // The image is durable and would converge on the re-apply pass — but this op has a
+          // deadline, and a cluster unreachable past it would leave the op reported failed
+          // while the pass replaced the pod anyway. So the intent is abandoned and failure
+          // becomes the truth. Only when the rollback ITSELF fails is the image still coming,
+          // and then the op has to stay open, because it is going to happen after all.
+          const abandoned = await cluster.abandonDaemonVersion(orgOf(req), error)
+          if (!abandoned) {
+            deferred = error
+            req.log.warn(
+              { daemonId: id, opId: opRow.id, image: error.image, err: error.cause },
+              'cluster daemon upgrade: image recorded, rollback failed; the re-apply pass will converge it'
+            )
+          } else {
+            req.log.warn(
+              { daemonId: id, opId: opRow.id, image: error.image, err: error.cause },
+              'cluster daemon upgrade: cluster refused the apply; the envelope was rolled back'
+            )
+            await deps.repos.daemonLifecycleOp
+              .settle(opRow.id, 'failed', clusterUpgradeFailure(error.cause), new Date())
+              .catch(() => {})
+            return sendApplyFailure(reply, error.cause, '; the envelope was rolled back')
+          }
         } else {
           // Everything else was refused BEFORE anything durable was written, so the command
           // did not happen and never will — terminal-fail it.
@@ -588,12 +616,7 @@ export function daemonRoutes(deps: HttpDeps) {
       }
       const latest = (await deps.repos.daemonLifecycleOp.getById(opRow.id).catch(() => null)) ?? opRow
       if (deferred) {
-        return reply.code(502).send({
-          error: 'Bad Gateway',
-          statusCode: 502,
-          message: `${deferred.message}; it will be re-applied — track operation ${latest.id}`,
-          code: CLUSTER_API_ERROR_CODE
-        })
+        return sendApplyFailure(reply, deferred.cause, `; it will be re-applied — track operation ${latest.id}`)
       }
       return reply.code(202).send(opDto(latest))
     }

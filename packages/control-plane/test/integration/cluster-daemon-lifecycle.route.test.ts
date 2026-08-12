@@ -299,11 +299,13 @@ describe('cluster daemon upgrade — settlement and durability', () => {
   })
 
   /**
-   * The row is written before the apply, and the periodic re-apply renders the spec from
-   * the row — so a refused apply is a change that is still going to happen. Closing the op
-   * `failed` here would report a failure for a command the next pass then executes.
+   * The row is written before the apply, so a refused apply leaves a change that the
+   * re-apply pass would eventually push — outliving this operation's deadline and landing
+   * under an op already reported failed. A COMMAND cannot leave that behind, so the intent
+   * is abandoned: the envelope goes back to the image it had, and failure is then simply
+   * true rather than a description that expires.
    */
-  it('keeps the op open when the image is recorded but the cluster refuses the apply', async () => {
+  it('rolls the envelope back and fails the op when the cluster refuses the apply', async () => {
     const { http, refuseApply } = await clusterApp()
     await enableEnvelope(http)
     await seedDaemon(true)
@@ -314,20 +316,20 @@ describe('cluster daemon upgrade — settlement and durability', () => {
       url: `${ORG}/daemons/${DAEMON}/upgrade`,
       payload: { version: '1.5.0' }
     })
-    // Reported as an upstream failure, so an operator sees it — but not as a closed op.
     expect(res.statusCode).toBe(502)
     expect(res.json()).toMatchObject({ code: 'CLUSTER_API_ERROR' })
 
-    const op = await new PgDaemonLifecycleOpRepo(prisma).pendingForDaemon(DaemonId(DAEMON))
-    expect(op).toMatchObject({ op: 'upgrade', status: 'pending', targetVersion: '1.5.0' })
-    expect(op?.acceptedAt).not.toBeNull() // armed, so the replacement pod can still settle it
-    // And the desired state survived, which is what makes the re-apply converge it.
+    const ops = new PgDaemonLifecycleOpRepo(prisma)
+    expect(await ops.pendingForDaemon(DaemonId(DAEMON))).toBeNull()
+    expect(await ops.latestForDaemon(DaemonId(DAEMON))).toMatchObject({ status: 'failed' })
+    // The decisive assertion: nothing durable survives, so no later pass can enact it.
     const settings = await http.app.inject({ method: 'GET', url: CLUSTER })
-    expect(settings.json()).toMatchObject({ daemonImage: 'registry.example.test/daemon:v1.5.0' })
+    expect(settings.json()).toMatchObject({ daemonImage: 'registry.example.test/daemon:v1.4.0' })
   })
 
-  // The whole point of writing the ROW: the periodic pass pushes what the request could not.
-  it('converges the recorded image on the next re-apply pass', async () => {
+  // And with the intent abandoned, a recovered cluster converges on the OLD image — the
+  // version the failed operation reported, not a surprise upgrade after the fact.
+  it('does not apply the abandoned image once the cluster recovers', async () => {
     const { http, cluster, applied, refuseApply } = await clusterApp()
     await enableEnvelope(http)
     await seedDaemon(true)
@@ -341,6 +343,25 @@ describe('cluster daemon upgrade — settlement and durability', () => {
 
     const outcome = await cluster.resyncEnvelopes()
     expect(outcome.failures).toEqual([])
+    expect(applied.at(-1)?.spec?.daemon?.image).toBe('registry.example.test/daemon:v1.4.0')
+  })
+
+  /**
+   * The fleet sweep has no deadline to outlive, so it keeps the durable intent and lets the
+   * re-apply pass push what its own attempt could not. Same failure, opposite decision —
+   * which is why abandoning lives with the caller that owns a deadline, not in the seam.
+   */
+  it('keeps a sweep’s durable intent and converges it on the next pass', async () => {
+    const { http, cluster, applied, refuseApply } = await clusterApp()
+    await enableEnvelope(http)
+    refuseApply.on = true
+    const sweep = await cluster.alignDaemonVersion('1.5.0')
+    expect(sweep.moved).toEqual([DEFAULT_ORG_ID])
+    refuseApply.on = false
+
+    await cluster.resyncEnvelopes()
     expect(applied.at(-1)?.spec?.daemon?.image).toBe('registry.example.test/daemon:v1.5.0')
+    const settings = await http.app.inject({ method: 'GET', url: CLUSTER })
+    expect(settings.json()).toMatchObject({ daemonImage: 'registry.example.test/daemon:v1.5.0' })
   })
 })
