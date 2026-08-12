@@ -465,6 +465,46 @@ describe('replacing a cluster workspace in place', () => {
     expect(cleared).toEqual([])
   })
 
+  /** An activation rejected AFTER its preparation already replaced the volume: `ensureHostAsync`
+   *  runs before the ACK, so an ACP failure, a supersession or a staging-commit failure all land
+   *  here. Returns the daemon state the CP's rollback then activates the original definition into. */
+  async function rejectedAfterConversion(runRollback: boolean): Promise<Agent> {
+    const agent = await withProvenMarker()
+    const moved = { ...agent, workspace: { ...agent.workspace, gitRepo: 'https://github.com/acme/other.git' } } as Agent
+    const rollback = await prepareWorkspaceForActivation(moved, { reconcileMaterialization: true })
+    checkoutExists = true
+    await prepareClusterWorkspace(moved, POD_ROOT)
+    if (runRollback) rollback()
+    cleared.length = 0
+    calls.length = 0
+    return agent
+  }
+
+  it('does not tell the restored definition that the volume never changed', async () => {
+    // Nothing reaches a pod's tree to put the old checkout back, so a marker restored to the previous
+    // workspace would be a claim about a volume that now holds the REJECTED repository — and the CP's
+    // own rollback would be ACKed onto it, silently, with pull failures degrading as usual.
+    const original = await rejectedAfterConversion(true)
+
+    await prepareWorkspaceForActivation(original, { reconcileMaterialization: true })
+    checkoutExists = true
+    await prepareClusterWorkspace(original, POD_ROOT)
+    expect(cleared).toEqual([CHECKOUT])
+    expect(calls.find((call) => call.args[0] === 'clone')?.args).toContain('https://github.com/acme/private.git')
+  })
+
+  it('recovers the same way when the activation rollback never ran', async () => {
+    // The marker describing the volume is what arms the reverse conversion, so recovery does not
+    // depend on a rollback closure that a crash — or a failure path that forgets it — never calls.
+    const original = await rejectedAfterConversion(false)
+
+    await prepareWorkspaceForActivation(original, { reconcileMaterialization: true })
+    checkoutExists = true
+    await prepareClusterWorkspace(original, POD_ROOT)
+    expect(cleared).toEqual([CHECKOUT])
+    expect(calls.find((call) => call.args[0] === 'clone')?.args).toContain('https://github.com/acme/private.git')
+  })
+
   it('fails closed when the pod will not empty the checkout', async () => {
     // Proceeding would clone into a non-empty directory — or, worse, converge the new origin onto
     // the previous repository's tree and serve it as the new workspace.

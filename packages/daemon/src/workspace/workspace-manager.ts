@@ -1229,9 +1229,16 @@ export async function prepareWorkspaceForActivation(
         replace && previousMaterialization !== undefined ? targetMaterialization : undefined
       )
     }
+    // Rolling this back takes the intent, and pointedly NOT the marker. `ensureHostAsync` runs
+    // before the ACK, so preparation may already have replaced the volume when the activation is
+    // rejected — and no rollback reaches a pod's tree to put the old one back. Restoring the marker
+    // would then claim the volume still holds the previous workspace, and the restored definition's
+    // own activation would read that as "nothing changed" and be ACKed onto the rejected repository.
+    // Left alone, the marker keeps saying what the volume ACTUALLY holds, so that activation sees a
+    // changed workspace and arms the reverse conversion by the ordinary rule — which also means the
+    // recovery does not depend on this closure running at all.
     return () => {
       if (reconcileMaterialization) writePendingConversion(agent, previousConversion)
-      restoreMarker()
     }
   }
   mkdirSync(cwd, { recursive: true })

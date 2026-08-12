@@ -296,6 +296,16 @@ back edit takes its intent with it, and a repository **rename** — the same cha
 without `reconcileWorkspace` — writes no intent at all and keeps its existing behaviour of
 repointing the checkout rather than replacing it.
 
+**A rejected activation gives back its intent, never its marker.** `ensureHostAsync` runs before
+the ACK, so preparation may already have replaced the volume when the activation is rejected —
+for an ACP failure, a supersession, or a staging-commit failure — and nothing reaches a pod's tree
+to put the old checkout back. Restoring the marker there would claim the volume still holds the
+previous workspace, and the CP's own rollback would then be ACKed onto the rejected repository
+with a pull failure degrading quietly. Left alone, the marker keeps describing what the volume
+actually holds, the restored definition's activation sees a changed workspace, and the reverse
+conversion is armed by the ordinary rule — so the recovery does not depend on the rollback closure
+running at all.
+
 What this does not cover is a **session-isolated** (worktree) git-repo workspace: that needs
 `worktree add` in the sandbox and a retention GC that reads the pod's tree, and is still refused
 by name at session preparation.
