@@ -191,11 +191,21 @@ export interface DaemonRepo {
    * with two records competing for its placements; the identity is namespace-derived, so
    * a rebuilt envelope resolves back to the same row and keeps its history.
    *
+   * `adoptDaemonId` names the record the retired API-key path already pinned for this
+   * envelope. On the first token connect it is bound to the identity rather than left
+   * beside a fresh one, so an org provisioned before this path keeps its placements and
+   * history. Ignored once the identity is bound, or if that record is another org's or
+   * already carries an identity.
+   *
    * Null when the identity is already bound to a daemon in ANOTHER org: an identity may
    * not move tenants, and refusing is the only answer that cannot leak one org's
    * placements to another.
    */
-  resolveClusterIdentity(orgId: OrgId, clusterIdentity: string): Promise<DaemonRecord | null>
+  resolveClusterIdentity(
+    orgId: OrgId,
+    clusterIdentity: string,
+    opts?: { adoptDaemonId?: string }
+  ): Promise<DaemonRecord | null>
   /**
    * Idempotent on `daemonId`. Bumps `sessionEpoch` (the fencing root) in ONE
    * transaction and sets status `authenticating`. Returns the new strictly-
