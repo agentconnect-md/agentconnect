@@ -19,6 +19,7 @@ import {
 } from '@/lib/cron'
 import { useConsoleData } from '@/lib/data-context'
 import { useProfile } from '@/lib/profile'
+import { randomUuid } from '@/lib/random-uuid'
 import { AgentIconView, PlatformMark } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { VisibilityField, sameSharing, type SharingValue } from '@/components/console/VisibilityField'
@@ -201,7 +202,7 @@ export default function AddCronModal({ cron, onClose }: { cron?: CronDto | null;
         ? { integrationId: selectedOpt.integrationId, channel: selectedOpt.channelId, platform: selectedOpt.platform }
         : target
       const creating = !cron
-      const cronId = cron?.id ?? crypto.randomUUID()
+      const cronId = cron?.id ?? randomUuid()
       const existingInput = cron ? cronUpdateInput(cron) : null
       await saveCron(cronId, {
         ...(existingInput ?? {}),

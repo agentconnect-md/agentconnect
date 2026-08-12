@@ -114,6 +114,12 @@ references.
 Open `http://localhost:3000`. The default stack listens only on `127.0.0.1`,
 uses local no-auth mode, and is intended for local evaluation.
 
+Use HTTPS when exposing the console beyond loopback; authentication and daemon
+traffic still rely on a secure deployment boundary. The Web console does not,
+however, require the secure-context-only `crypto.randomUUID()` API to mint its
+non-secret client request IDs, so browsers without that API can still use the
+local evaluation flow.
+
 The Compose stack does not run agent daemons. Add a daemon from the Web console,
 then run its generated command on each machine that should host agents,
 workspaces, and runtime credentials.
