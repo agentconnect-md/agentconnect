@@ -1929,7 +1929,8 @@ describe('SessionManager — collaboration preamble', () => {
     expect(first).not.toContain('`to.toAgent`')
     expect(first).not.toContain('`to.sessionId`')
     expect(first).not.toContain('`messageAgent`')
-    expect(first).toContain('Be quiet about mechanics') // conciseness guidance
+    expect(first).toContain('Be quiet about successful mechanics') // conciseness guidance
+    expect(first).toContain('For a requested operation that fails or returns a structured error') // surface failures
     expect(first).toContain('introduces itself to you') // record-newcomer-in-memory guidance
     store.close()
   })
