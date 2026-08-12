@@ -1053,6 +1053,18 @@ list; `HookRun`'s recorded review appears only as the degraded-arm fallback
    participant's branch, or a shared workspace's primary checkout, is a
    different branch and is not named here at all.
 
+   **Both write actions are single-agent only.** They post through the
+   conversation composer with no `@mention`, and the relay's default for an
+   unnarrowed webchat turn is EVERY participant — so in a multi-agent
+   conversation one press would have three agents each publishing their own
+   worktree and opening their own pull request (and, for Auto-fix, each fixing
+   the same threads). The panel is session-keyed and deliberately holds no agent
+   identity to narrow to, so `onPostTurn` is withheld above one participant and
+   both controls render absent; the composer's own mention chips are the surface
+   for asking ONE agent. The no-PR state is likewise drawn only off a git read
+   of this panel's own session worktree, so a focused participant's checkout can
+   neither name its branch here nor make this action appear.
+
    **What this action cannot do, and how the panel says so.** A PR the agent
    opens from a conversation creates no `HookRun`, and PR identity comes from
    the run that owns the session — so the probe keeps answering 404 after the

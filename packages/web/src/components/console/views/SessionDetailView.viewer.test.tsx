@@ -947,10 +947,11 @@ describe('the PR tab', () => {
     expect(panel?.textContent).toContain('dev/jane-doe/candid-lynx')
   })
 
-  it('never names a branch the Git tab read for a DIFFERENT scope than this panel', async () => {
+  it('withholds the no-PR state when the git read is about a DIFFERENT scope than this panel', async () => {
     // Files/Git follow header focus; the PR tab follows the open session. A shared-workspace session
-    // makes the Git read the agent's PRIMARY checkout — `main` here — which is not this session's
-    // branch, so naming it would put the wrong branch in the create-pull-request turn.
+    // makes the Git read the agent's PRIMARY checkout — `main` here — which is no session branch at
+    // all. Drawing the state off it would both name the wrong branch and put THIS session's create
+    // action on screen off another checkout's eligibility, so the tab is dropped instead.
     wire.isolation = 'shared'
     wire.git = {
       isRepo: true,
@@ -966,17 +967,12 @@ describe('the PR tab', () => {
       lastCommit: null,
       lastFetchAt: null
     }
-    wire.log = { isRepo: true, commits: [], truncated: false, tracking: 'origin/main' }
+    wire.log = { isRepo: true, commits: [], truncated: false, tracking: 'origin/main', base: null }
     await render()
-    const tab = container?.querySelector('[data-dock-tab="pr"]')
-    expect(tab).not.toBeNull()
-    await act(async () => {
-      tab?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      await Promise.resolve()
-    })
-    await render()
+    // No tab, so the action is unreachable — the panel still MOUNTS (its verdict is what could reveal
+    // a tab at all), and what it drew names no branch: the scope-free copy, not `main`'s state.
+    expect(container?.querySelector('[data-dock-tab="pr"]')).toBeNull()
     const panel = container?.querySelector('[data-pr-panel="none"]')
-    // The scope-free copy, and no claim about `main` in either direction.
     expect(panel?.textContent).toContain('No pull request is linked to this session yet')
     expect(panel?.textContent).not.toContain('main')
     expect(panel?.textContent).not.toContain('No upstream configured')
