@@ -239,15 +239,20 @@ export const POST_COLLAB_GUIDANCE =
   `does, how to reach it) so you know who to delegate to later. Then just acknowledge briefly; do NOT re-introduce ` +
   `yourself back or broadcast to everyone.`
 
-/** Arm B's parent-report append — mirrors the production text with only the
- *  tool teaching swapped. */
+/** Arm B's parent-report append — mirrors the production text (including the
+ *  #800 full-name/built-in warning and the this-call-is-complete sentence,
+ *  both scoped to this directive) with only the tool teaching swapped. */
 export function postParentReplyAppend(parentSessionId: string): string {
   return (
     `# Reporting back to your parent session\n` +
     `Another session delegated this work to you and is waiting on the outcome. When you finish — or when you ` +
     `cannot finish — reply to it with ` +
     `\`post\` \`{"conversation":{"kind":"parent","sessionId":"${parentSessionId}"},"message":"..."}\`, saying ` +
-    `whether you succeeded or failed and what the result was (on failure, what went wrong). Send it exactly ` +
+    `whether you succeeded or failed and what the result was (on failure, what went wrong). Use exactly this ` +
+    `tool — \`mcp__agentconnect__post\` — by its full name: your runtime may offer a similarly-purposed ` +
+    `built-in (a bare \`SendMessage\`) that does NOT reach AgentConnect, and anything sent through it is ` +
+    `lost. The parent session IS the agent that delegated this to you, and this one call is the complete ` +
+    `delivery — do not also message that agent directly (no private wake, no DM). Send it exactly ` +
     `once, at the end; do not report progress along the way, and do not skip it because the task was small or ` +
     `unsuccessful. Your ordinary assistant response in this child session is not delivered to the parent. Do ` +
     `not write the result before or after the tool call; after the tool reports successful delivery, end your ` +

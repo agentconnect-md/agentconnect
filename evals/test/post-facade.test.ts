@@ -188,6 +188,18 @@ describe('static cost of each tool surface', () => {
     expect(postParentReplyAppend('S1')).toContain('"kind":"parent"')
   })
 
+  it("arm B's parent-report append mirrors the #800 collision + complete-delivery sentences", () => {
+    // The production directive carries the niche #800 fix (full tool name, the
+    // runtime built-in reaches nothing, one call is the complete delivery).
+    // Arm parity requires the same sentences here, worded for arm B's surface.
+    const text = postParentReplyAppend('S1')
+    expect(text).toContain('`mcp__agentconnect__post` — by its full name')
+    expect(text).toContain('a bare `SendMessage`')
+    expect(text).toContain('anything sent through it is lost')
+    expect(text).toContain('this one call is the complete delivery')
+    expect(text).toContain('do not also message that agent directly')
+  })
+
   it("arm B's guidance keeps the non-surface behavioral rules of the production text verbatim", () => {
     // Only the tool teaching may differ between the arms' prompts.
     for (const sentence of [
