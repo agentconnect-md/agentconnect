@@ -29,6 +29,7 @@ import {
 import type { ClusterExecutionSettings } from '../../persistence/ports.js'
 import {
   ClusterCredentialDto,
+  ClusterEnsureResultDto,
   ClusterEnvelopeStatusDto,
   ClusterExecutionSettingsDto,
   ErrorDto,
@@ -106,16 +107,16 @@ export function clusterExecutionRoutes(deps: HttpDeps) {
           tags: [Tag.Cluster],
           summary: 'Ensure the organization’s envelope exists',
           description:
-            'Owner-only, idempotent. Provisions the organization’s AgentConnectOrg resource if it has none — the same thing organization creation does, repeated here so an organization created before this deployment (or outside `POST /orgs`) converges when its owner opens the console. Re-applies the spec when a resource is missing, and issues the first daemon credential once the operator has published the envelope namespace. An organization whose owner switched cluster execution OFF is left alone; nothing here re-enables it. A namespace that is not ready yet is not an error — the call returns the current settings and the next one finishes the job.',
+            'Owner-only, idempotent. Provisions the organization’s AgentConnectOrg resource if it has none — the same thing organization creation does, repeated here so an organization created before this deployment (or outside `POST /orgs`) converges when its owner opens the console. Re-applies the spec when a resource is missing, and issues (or reissues) the daemon credential once the operator has published the envelope namespace. An organization whose owner switched cluster execution OFF is left alone; nothing here re-enables it. `settled: false` means work is still owed — the namespace is not ready, or another caller owns the credential transition — and the caller should repeat the call; it is not an error, and no settings field carries that meaning on its own.',
           operationId: 'ensureClusterExecution',
-          response: { 200: ClusterExecutionSettingsDto, 403: ErrorDto, 502: ErrorDto }
+          response: { 200: ClusterEnsureResultDto, 403: ErrorDto, 502: ErrorDto }
         }
       },
       async (req, reply) => {
         if (denyNonOwner(req, reply)) return
         try {
-          const settings = await cluster.ensureProvisioned(orgOf(req), req.principal?.userId)
-          return settingsDto(settings, cluster.controlNamespace)
+          const { settings, settled } = await cluster.ensureProvisioned(orgOf(req), req.principal?.userId)
+          return { ...settingsDto(settings, cluster.controlNamespace), settled }
         } catch (error) {
           return sendClusterFailure(reply, error, 'cluster API rejected the request')
         }

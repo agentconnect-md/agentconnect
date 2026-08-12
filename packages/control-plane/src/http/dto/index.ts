@@ -3273,6 +3273,13 @@ export const ClusterExecutionSettingsDto = z.object({
   updatedAt: z.string()
 })
 
+/** The settings plus what the ensure pass concluded. `settled` is its own field
+ *  because no settings value means "nothing further is owed" — `credentialRevision`
+ *  is populated all through a rotation that has not finished. */
+export const ClusterEnsureResultDto = ClusterExecutionSettingsDto.extend({
+  settled: z.boolean()
+})
+
 export const UpdateClusterExecutionBody = z.object({
   enabled: z.boolean().optional(),
   suspend: z.boolean().optional(),
@@ -3395,6 +3402,7 @@ export type WorkspaceGitPushResultDtoT = z.infer<typeof WorkspaceGitPushResultDt
 export type WorkspaceGitMessageResultDtoT = z.infer<typeof WorkspaceGitMessageResultDto>
 export type AgentTasksDtoT = z.infer<typeof AgentTasksDto>
 export type ClusterExecutionSettingsDtoT = z.infer<typeof ClusterExecutionSettingsDto>
+export type ClusterEnsureResultDtoT = z.infer<typeof ClusterEnsureResultDto>
 export type ClusterEnvelopeStatusDtoT = z.infer<typeof ClusterEnvelopeStatusDto>
 export type ClusterCredentialDtoT = z.infer<typeof ClusterCredentialDto>
 export type ErrorDtoT = z.infer<typeof ErrorDto>

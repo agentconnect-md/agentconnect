@@ -24,6 +24,7 @@ export {
   ClusterNotEnabledError,
   ClusterRotationInProgressError,
   type ClusterCredentialView,
+  type EnsuredEnvelope,
   type ClusterExecutionPolicy,
   type ClusterKeyAuthority
 } from './service.js'

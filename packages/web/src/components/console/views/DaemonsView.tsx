@@ -17,10 +17,11 @@ import { useOrgs } from '@/lib/org-context'
  * request per organization rather than one per navigation. Module-level rather
  * than state: the view unmounts on every route change.
  *
- * An org lands here only once the answer is FINAL. The endpoint deliberately
- * answers 200 with no `credentialRevision` while the operator is still
- * publishing the envelope namespace, and that is exactly the case the next visit
- * is supposed to finish — recording it as done would strand the daemon
+ * An org lands here only on `settled`, which the server answers explicitly. No
+ * settings field can stand in for it: `credentialRevision` is populated while
+ * the operator is still publishing the namespace AND all through a rotation
+ * recovery a peer currently owns, and both are exactly the cases the next visit
+ * is supposed to finish. Reading one of those as done would strand the daemon
  * uncredentialed until a full page reload.
  */
 const settledOrgs = new Set<string>()
@@ -49,10 +50,8 @@ function useEnsureClusterEnvelope(orgId: string | undefined, isOwner: boolean, r
     ensuringOrgs.add(orgId)
     let live = true
     void ensureClusterExecution(orgId)
-      .then((settings) => {
-        // Enabled AND credentialed is done; disabled is an owner's decision and
-        // just as final. Anything else is still converging — retry next visit.
-        if (!settings.enabled || settings.credentialRevision) settledOrgs.add(orgId)
+      .then((result) => {
+        if (result.settled) settledOrgs.add(orgId)
         return live ? refreshDaemons() : undefined
       })
       .catch((err: unknown) => {

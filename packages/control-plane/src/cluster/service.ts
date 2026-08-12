@@ -57,6 +57,20 @@ export interface ClusterExecutionPolicy {
   controlPlaneUrl: string
 }
 
+/**
+ * The outcome of one `ensureProvisioned` pass. `settled: false` means the
+ * envelope still owes work this pass could not do — the operator has not
+ * published the namespace yet, or a peer owns the credential transition — and
+ * the caller is expected to ask again. It is a separate field because no
+ * settings value carries that meaning: `credentialRevision` is populated
+ * throughout a staged-key recovery, so reading it as completion would settle an
+ * org whose rotation never finished.
+ */
+export interface EnsuredEnvelope {
+  settings: ClusterExecutionSettings
+  settled: boolean
+}
+
 /** What a caller learns about a credential — never the key itself. */
 export interface ClusterCredentialView {
   daemonId: string
@@ -156,25 +170,35 @@ export class ClusterExecutionService {
    * Best-effort by construction: the caller is a page load or an org create, so
    * a namespace that is not ready yet or a peer already rotating is the ordinary
    * "not this pass" answer and leaves the work to the next visit.
+   *
+   * Which is why `settled` is answered EXPLICITLY rather than left for a caller
+   * to infer from the settings. No field on the row carries that meaning: a
+   * `credentialRevision` is present all through a staged-key recovery, and a
+   * console that read it as completion would cache the org and never come back
+   * after the peer released its claim — breaking the next-visit convergence this
+   * whole path rests on. `settled: false` means something is still owed and the
+   * caller is expected to ask again.
    */
-  async ensureProvisioned(orgId: OrgId, actorUserId?: string): Promise<ClusterExecutionSettings> {
+  async ensureProvisioned(orgId: OrgId, actorUserId?: string): Promise<EnsuredEnvelope> {
     const existing = await this.repo.get(orgId)
     // A row that reads disabled is a decision, not a gap: an owner switched this
-    // org off (or is tearing it down), and re-applying would undo that.
-    if (existing && !existing.enabled) return existing
+    // org off (or is tearing it down), and re-applying would undo that. Nothing
+    // is owed on a decision, so it is settled.
+    if (existing && !existing.enabled) return { settings: existing, settled: true }
     // No row at all ⇒ never configured, so provisioning is the deployment's
     // default rather than a reversal of anyone's choice.
     const settings = existing ? await this.converge(orgId) : await this.enable(orgId, { enabled: true })
-    if (!settings.enabled || (await this.credentialPublished(settings))) return settings
+    if (!settings.enabled) return { settings, settled: true }
+    if (await this.credentialPublished(settings)) return { settings, settled: true }
     try {
       await this.issueCredential(orgId, actorUserId)
     } catch (error) {
       // The namespace the operator has not created yet, and a peer that owns the
       // transition, are both "come back later" — everything else is a real fault.
       if (!(error instanceof NamespaceNotReadyError) && !(error instanceof ClusterRotationInProgressError)) throw error
-      return settings
+      return { settings, settled: false }
     }
-    return this.settings(orgId)
+    return { settings: await this.settings(orgId), settled: true }
   }
 
   /**
