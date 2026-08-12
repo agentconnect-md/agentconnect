@@ -76,6 +76,26 @@ export class PgOrgClusterExecutionRepo implements OrgClusterExecutionRepo {
     })
   }
 
+  /** The claim predicate is `beginTransition`'s, negated: an org someone owns
+   *  right now is left to them, and an expired claim is swept like any other. */
+  async listResyncableOrgIds(afterOrgId: string | null, limit: number, now: Date, leaseMs: number): Promise<string[]> {
+    const rows = await this.prisma.orgClusterExecution.findMany({
+      where: {
+        enabled: true,
+        ...(afterOrgId === null ? {} : { orgId: { gt: afterOrgId } }),
+        OR: [
+          { envelopeTransitionToken: null },
+          { envelopeTransitionAt: null },
+          { envelopeTransitionAt: { lt: new Date(now.getTime() - leaseMs) } }
+        ]
+      },
+      select: { orgId: true },
+      orderBy: { orgId: 'asc' },
+      take: limit
+    })
+    return rows.map((row) => row.orgId)
+  }
+
   async clearPendingTeardown(orgId: string): Promise<void> {
     await this.prisma.pendingEnvelopeTeardown.deleteMany({ where: { orgId } })
   }

@@ -5010,6 +5010,14 @@ export interface OrgClusterExecutionRepo {
   getByResourceName(resourceName: string): Promise<ClusterExecutionSettings | null>
   /** Oldest-first batch of envelopes whose organization is already gone. */
   listPendingTeardowns(limit: number): Promise<PendingEnvelopeTeardown[]>
+  /**
+   * One bounded slice of the periodic re-apply's rotation: enabled orgs with no
+   * live transition claim, ordered by `orgId` and keyed forward from
+   * `afterOrgId` (null ⇒ from the start). The claim filter is
+   * {@link OrgClusterExecutionRepo.beginTransition}'s own takeover predicate, so
+   * an expired claim is swept rather than excluded until someone notices.
+   */
+  listResyncableOrgIds(afterOrgId: string | null, limit: number, now: Date, leaseMs: number): Promise<string[]>
   /** Drop a tombstone once its resource is confirmed gone. Idempotent. */
   clearPendingTeardown(orgId: string): Promise<void>
   /**

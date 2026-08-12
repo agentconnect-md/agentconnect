@@ -1059,7 +1059,9 @@ export function buildContainer(
   // durably before the act, so this loop is the backstop for a cluster that was
   // unreachable, a process that died between the two, or a deployment that had
   // cluster execution switched off at the time; the delete route kicks the same
-  // work inline for latency. Inert when off.
+  // work inline for latency. It also re-applies a slice of the live envelopes
+  // each pass, so a spec field rendered from THIS process's configuration
+  // converges on envelopes written before that configuration. Inert when off.
   const clusterMaintenance = new ClusterMaintenanceLoop(
     clusterExecution,
     clock,
