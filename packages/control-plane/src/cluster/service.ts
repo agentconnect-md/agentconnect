@@ -178,19 +178,31 @@ export class ClusterExecutionService {
   }
 
   /**
-   * Does the CLUSTER hold this org's credential right now? The stored revision
-   * only says one was issued once, and that is not the same claim: deleting a CR
-   * hands the envelope to the operator's finalizer, which removes the namespace
-   * and the Secret inside it. A pass that recreated the CR and then trusted the
-   * revision would leave the new daemon pod blocked forever on a Secret nobody
-   * was ever going to write. Absent ⇒ re-key, which the daemon identity survives.
+   * Is this org's credential BOTH settled in the database and present in the
+   * cluster? Two different half-states hide behind a stored revision, and only
+   * the pair of checks below tells them apart from a finished credential.
    *
-   * A namespace that has not been published or created yet reads as absent too,
-   * and the issue that follows answers `NamespaceNotReady` — the ordinary "come
-   * back later", not a re-key.
+   * The row alone is not proof the Secret exists: deleting a CR hands the
+   * envelope to the operator's finalizer, which removes the namespace and the
+   * Secret inside it, so a pass that recreated the CR and then trusted the
+   * revision would leave the new daemon pod blocked forever on a Secret nobody
+   * was ever going to write. A namespace that has not been published or created
+   * yet reads as absent too, and the issue that follows answers
+   * `NamespaceNotReady` — the ordinary "come back later", not a re-key.
+   *
+   * And a Secret is not proof the row is settled: a publish whose response was
+   * lost still landed, so `issueCredential` deliberately leaves that key STAGED
+   * and its predecessor live rather than revoking a credential the pod may be
+   * holding. Recovery is a successor claim that publishes, commits, and retires
+   * both — and nothing here runs on a timer, so a pass that called that state
+   * complete would strand it forever: the key the Secret carries uncommitted,
+   * the one the row names never retired. A staged key therefore reads as
+   * incomplete whatever the cluster says. (A committed revision whose CR apply
+   * is still owed is a different case, already drained by the maintenance loop —
+   * and this pass has re-applied it through `converge` on the way here.)
    */
   private async credentialPublished(settings: ClusterExecutionSettings): Promise<boolean> {
-    if (!settings.credentialRevision) return false
+    if (!settings.credentialRevision || settings.credentialStagedApiKeyId) return false
     const namespace = (await this.api.get(settings.resourceName))?.status?.namespace
     if (!namespace) return false
     return (await this.secrets.publishedSeq(namespace, settings.credentialSecretName)) > 0

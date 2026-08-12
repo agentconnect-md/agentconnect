@@ -897,6 +897,29 @@ describe('ensureProvisioned', () => {
     expect(api.applied).toHaveLength(1)
   })
 
+  // A publish whose response was lost still landed, so the key stays STAGED and
+  // its predecessor stays live — a state only a successor claim resolves, and one
+  // nothing here runs on a timer. A Secret with a positive sequence must not read
+  // as complete, or that rotation is stranded forever.
+  it('finishes a rotation whose publish landed but whose commit did not', async () => {
+    const { service, repo, secrets, keys } = build()
+    await service.ensureProvisioned(ORG)
+    expect(repo.row?.credentialRevision).toBe('key-1')
+
+    secrets.failAfterPublish = true
+    await expect(service.issueCredential(ORG)).rejects.toThrow()
+    secrets.failAfterPublish = false
+    // Staged, un-revoked: the pod may already be holding it.
+    expect(repo.row?.credentialStagedApiKeyId).toBe('key-2')
+    expect(keys.revoked).toEqual([])
+
+    await service.ensureProvisioned(ORG)
+    expect(repo.row?.credentialStagedApiKeyId).toBeUndefined()
+    expect(repo.row?.credentialRevision).toBe('key-3')
+    // Both the stranded key and the one it superseded are retired now.
+    expect(keys.revoked.sort()).toEqual(['key-1', 'key-2'])
+  })
+
   // Switching it off is a decision; a page load must not undo it.
   it('leaves an org whose owner disabled cluster execution alone', async () => {
     const { service, api } = build()
