@@ -590,8 +590,8 @@ export function createWorkspaceGit(
       try {
         const git = base.withEnv(workspaceGitLocalEnv())
         const branch = await currentBranch(git)
-        // Every session worktree is `worktree add --detach`, so this is the ordinary answer there —
-        // and naming a branch for one is a product decision this milestone does not make.
+        // A session worktree now checks out its own `dev/<user>/<words>` branch, so this
+        // answers only a worktree created before that, or one the agent detached itself.
         if (!branch) {
           return pushRefusal(
             agentId,
@@ -773,7 +773,7 @@ function stopReasonDetail(answer: { output: string; stopReason: string }): strin
   }
 }
 
-/** The checked-out branch, or null when HEAD is detached — which every session worktree is. */
+/** The checked-out branch, or null when HEAD is detached. */
 async function currentBranch(git: GitRunner): Promise<string | null> {
   try {
     const out = await git.readBounded(['rev-parse', '--abbrev-ref', 'HEAD'], 4096)

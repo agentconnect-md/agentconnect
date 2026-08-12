@@ -344,7 +344,7 @@ export const WorkspaceGitWriteReason = z.enum([
   'nothing-staged', // commit with an empty index diff
   'empty-message', // commit message is blank once trimmed
   'no-identity', // no `gitCommitIdentity` was registered, so the commit would take the host operator's
-  'detached-head', // push from a worktree with no branch (every session worktree is detached)
+  'detached-head', // push from a worktree with no branch checked out
   'no-upstream', // the branch tracks nothing, so there is no ref to push to
   'unsafe-origin', // the checkout's `origin` is not the daemon-authorized remote
   'unsafe-config', // the checkout's local config carries a disallowed override (audit refused)

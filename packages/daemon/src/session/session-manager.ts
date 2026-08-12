@@ -3,6 +3,7 @@ import { LocalStore, sessionKey, transcriptChannelKey, type TranscriptEntry } fr
 import { monotonicTs } from '../store/monotonic-ts.js'
 import { SLACK_RESPONSE_FINAL_EVENT_TAG } from '@agentconnect.md/message'
 import { additionalWorkspaceDirectories, prepareWorkspace } from '../workspace/workspace-manager.js'
+import { initiatorLabel } from '../workspace/session-branch.js'
 import { memoryKindOf, type MemoryProvider, type MemoryScope } from '../agents/memory-provider.js'
 import { MAX_INDEX_INJECT_BYTES } from '../agents/memory.js'
 import { agentChildEnv } from '../agents/agent-env.js'
@@ -248,7 +249,7 @@ export class SessionManager {
       prepareWorkspace?: (
         agent: Agent,
         expectedWarmHost?: AcpHost,
-        request?: { sessionKey: string; isolation: 'shared' | 'session' }
+        request?: { sessionKey: string; isolation: 'shared' | 'session'; initiatedBy?: string }
       ) => Promise<string>
       /** Resolve the cwd produced by hostFor's cold preparation without
        * repeating pull/source acquisition/reconciliation. Production supplies
@@ -585,6 +586,16 @@ export class SessionManager {
         (originSessionId !== undefined &&
           rec?.originSessionId !== undefined &&
           originSessionId !== rec.originSessionId))
+    // Names a session worktree's branch: the user who OPENED the session (`triggeredBy`,
+    // first-wins in the store), not whoever's turn this is — a shared thread must not
+    // change branch owner when someone else replies.
+    const initiator = rec?.triggeredBy ?? msg.sessionTriggerId ?? msg.sender.id
+    const initiatedBy = initiatorLabel(
+      initiator,
+      this.deps.store.getDisplayNames([initiator]).get(initiator),
+      msg.sender
+    )
+    const workspaceRequest = { sessionKey: key, isolation: workspaceIsolation, initiatedBy }
     // Production hostFor owns the single cold-host preparation gate before spawn.
     // After it resolves, consume that already-prepared cwd through the pure resolver.
     // Lightweight embedders without that contract retain the legacy pre-host fallback.
@@ -594,9 +605,7 @@ export class SessionManager {
     let preparedCwd =
       hostCold && !this.deps.resolvePreparedWorkspace
         ? await abortable(
-            () =>
-              this.deps.prepareWorkspace?.(agent, undefined, { sessionKey: key, isolation: workspaceIsolation }) ??
-              prepareWorkspace(agent),
+            () => this.deps.prepareWorkspace?.(agent, undefined, workspaceRequest) ?? prepareWorkspace(agent),
             signal
           )
         : undefined
@@ -897,9 +906,7 @@ export class SessionManager {
         options.preparedWorkspaceCwd ??
         (workspaceIsolation === 'shared' ? preparedCwd : undefined) ??
         (await abortable(
-          () =>
-            this.deps.prepareWorkspace?.(agent, expectedWarmHost, { sessionKey: key, isolation: workspaceIsolation }) ??
-            prepareWorkspace(agent),
+          () => this.deps.prepareWorkspace?.(agent, expectedWarmHost, workspaceRequest) ?? prepareWorkspace(agent),
           signal
         ))
       const ordinaryMcpServers =
@@ -960,9 +967,7 @@ export class SessionManager {
         options.preparedWorkspaceCwd ??
         (workspaceIsolation === 'shared' ? preparedCwd : undefined) ??
         (await abortable(
-          () =>
-            this.deps.prepareWorkspace?.(agent, expectedWarmHost, { sessionKey: key, isolation: workspaceIsolation }) ??
-            prepareWorkspace(agent),
+          () => this.deps.prepareWorkspace?.(agent, expectedWarmHost, workspaceRequest) ?? prepareWorkspace(agent),
           signal
         ))
       // Resolved once, shared by both paths: session/load must re-attach the same
