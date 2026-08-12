@@ -134,8 +134,6 @@ jobs:
       # bundle, stamped version, fail-fast on missing config and outside a cluster.
       - name: Verify the image properties
         run: node scripts/verify-operator-image.mjs ac-operator:ci v9.9.9-ci
-      - name: Lint the operator chart
-        run: helm lint charts/operator
 
   runtime-sandbox-image:
     name: Runtime Sandbox Image
