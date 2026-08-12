@@ -33,7 +33,7 @@ agent-sandbox stack it builds on is documented in `deploy/k8s/README.md`.
 
 ## 2. CRD
 
-Authoritative schema: `charts/operator/templates/crd.yaml` (full
+Authoritative schema: `charts/operator/crd/agentconnectorg.yaml` (full
 openAPIV3Schema with per-field descriptions and CEL transition rules). The
 zod schemas in `packages/operator/src/crd/types.ts` are the operator's runtime
 guard; a parity unit test asserts the two field trees stay identical.

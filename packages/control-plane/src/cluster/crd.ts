@@ -2,7 +2,7 @@
  * The `AgentConnectOrg` contract as the control plane uses it
  * (docs/designs/agentconnect-org-operator.md §2).
  *
- * The CRD in `charts/operator/templates/crd.yaml` is authoritative — the API
+ * The CRD in `charts/operator/crd/agentconnectorg.yaml` is authoritative — the API
  * server validates every write against it and prunes anything unknown. The
  * control plane is a WRITER of `spec` and a READER of `status`, so it needs the
  * group coordinates, the field shapes it emits, and the condition names it

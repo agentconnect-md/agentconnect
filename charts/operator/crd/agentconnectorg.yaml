@@ -1,0 +1,261 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: agentconnectorgs.agentconnect.md
+  annotations:
+    # Survive uninstall of the owning release: deleting the CRD would cascade
+    # to every AgentConnectOrg and its finalized envelope.
+    helm.sh/resource-policy: keep
+spec:
+  group: agentconnect.md
+  scope: Namespaced
+  names:
+    kind: AgentConnectOrg
+    listKind: AgentConnectOrgList
+    plural: agentconnectorgs
+    singular: agentconnectorg
+    shortNames:
+      - acorg
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Namespace
+          type: string
+          jsonPath: .status.namespace
+        - name: Ready
+          type: string
+          jsonPath: .status.conditions[?(@.type=="Ready")].status
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          required:
+            - spec
+          properties:
+            spec:
+              type: object
+              required:
+                - daemon
+                - runtime
+              x-kubernetes-validations:
+                # Optional, so both sides are tested for presence: an org's namespace must never
+                # move, and that includes moving between derived and overridden.
+                - rule: has(self.targetNamespace) == has(oldSelf.targetNamespace) && (!has(self.targetNamespace) || self.targetNamespace == oldSelf.targetNamespace)
+                  message: targetNamespace is immutable
+              properties:
+                targetNamespace:
+                  type: string
+                  maxLength: 63
+                  pattern: '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$'
+                  description: Optional override for the envelope namespace, immutable once set. Omitted — the normal path, and what the control plane always writes — means the operator derives it as <org namespace prefix><CR name>, which cannot collide with another CR. Shape-only validation here; install ownership (prefix) is enforced by the operator and admission either way.
+                displayName:
+                  type: string
+                  description: Human-readable org name, display only.
+                suspend:
+                  type: boolean
+                  default: false
+                  description: Quiesce the org — the daemon scales to zero, sandboxes drain to Suspended, and gateway policies deny LLM calls.
+                daemon:
+                  type: object
+                  required:
+                    - image
+                    - tier
+                  properties:
+                    image:
+                      type: string
+                      description: Daemon supervisor image. Changing it triggers a Recreate rollout.
+                    tier:
+                      type: string
+                      description: Resource tier name resolved against the install's tier definitions.
+                controlPlane:
+                  type: object
+                  required:
+                    - url
+                  properties:
+                    url:
+                      type: string
+                      description: The control plane's own daemon WebSocket URL, written by it when it creates this resource and injected into the daemon container as environment. Plain text — a URL is not a secret, and the operator never derives one. The daemon authenticates with the projected ServiceAccount token its pod carries, so no credential is delivered here or anywhere else.
+                runtime:
+                  type: object
+                  required:
+                    - image
+                    - tiers
+                  properties:
+                    image:
+                      type: string
+                      description: Runtime sandbox image. Changing it starts the drain-based rollout over bound Sandboxes.
+                    tiers:
+                      type: array
+                      items:
+                        type: object
+                        required:
+                          - name
+                        properties:
+                          name:
+                            type: string
+                            description: Tier name referencing a cluster master SandboxTemplate/WarmPool pair.
+                          warmReplicas:
+                            type: integer
+                            minimum: 0
+                            default: 0
+                            description: Warm pool size for this tier; 0 keeps a cold (replicas 0) pool.
+                quota:
+                  type: object
+                  properties:
+                    maxAgents:
+                      type: integer
+                      minimum: 0
+                      default: 0
+                      description: Maximum agents for this org; 0 means unlimited.
+                    cpu:
+                      type: string
+                      default: '0'
+                      description: Namespace CPU quota (Kubernetes quantity); "0" means unlimited.
+                    memory:
+                      type: string
+                      default: '0'
+                      description: Namespace memory quota; "0" means unlimited.
+                    storage:
+                      type: string
+                      default: '0'
+                      description: Namespace storage quota; "0" means unlimited.
+                llmLimits:
+                  type: object
+                  description: Rendered by the operator into egress-gateway policies. All values 0 mean unlimited.
+                  properties:
+                    perSession:
+                      type: object
+                      properties:
+                        tokensPerMinute:
+                          type: integer
+                          minimum: 0
+                          default: 0
+                          description: Per-session spend-rate bound (response-costed).
+                    perOrg:
+                      type: object
+                      properties:
+                        tokensPerMinute:
+                          type: integer
+                          minimum: 0
+                          default: 0
+                        requestsPerMinute:
+                          type: integer
+                          minimum: 0
+                          default: 0
+                        tokensPerDay:
+                          type: integer
+                          minimum: 0
+                          default: 0
+                          description: Daily ceiling — the margin projection of the org's plan quota.
+                egressPolicy:
+                  type: string
+                  enum:
+                    - locked
+                    - curated
+                    - open
+                  default: curated
+                  description: Sandbox egress tier applied through the org's NetworkPolicies.
+                llmDeny:
+                  type: object
+                  description: Emergency LLM shutoff, applied as gateway deny rules.
+                  properties:
+                    all:
+                      type: boolean
+                      default: false
+                    agents:
+                      type: array
+                      items:
+                        type: string
+                deletionPolicy:
+                  type: string
+                  enum:
+                    - Delete
+                  default: Delete
+                  description: v1alpha1 only supports Delete; an Archive value joins once its export semantics are implemented.
+            status:
+              type: object
+              properties:
+                observedGeneration:
+                  type: integer
+                namespace:
+                  type: string
+                  description: The envelope namespace the operator resolved — spec.targetNamespace when set, otherwise <org namespace prefix><CR name>. Published together with NamespaceReady, only after successful create-or-adopt and label validation, and the only place a consumer learns the namespace.
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - type
+                      - status
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                        enum:
+                          - 'True'
+                          - 'False'
+                          - Unknown
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                      observedGeneration:
+                        type: integer
+                daemon:
+                  type: object
+                  properties:
+                    ready:
+                      type: boolean
+                    image:
+                      type: string
+                      description: Image actually running, from pod state.
+                sandboxes:
+                  type: object
+                  properties:
+                    total:
+                      type: integer
+                    running:
+                      type: integer
+                    suspended:
+                      type: integer
+                pools:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      name:
+                        type: string
+                      warmAvailable:
+                        type: integer
+                      claimed:
+                        type: integer
+                appliedLimits:
+                  type: object
+                  description: Operator's observation of the gateway policy API only — possibly stale or Unknown; the authoritative applied signal is control-plane-side.
+                  properties:
+                    generation:
+                      type: integer
+                rollout:
+                  type: object
+                  properties:
+                    rolloutId:
+                      type: string
+                    targetImage:
+                      type: string
+                    pending:
+                      type: array
+                      items:
+                        type: string
+                    failed:
+                      type: array
+                      items:
+                        type: string

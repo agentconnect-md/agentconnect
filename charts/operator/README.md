@@ -34,8 +34,23 @@ vendored agent-sandbox stack.
   them. Same setting for a cluster that already runs agent-sandbox: Helm
   refuses to adopt objects it did not create.
 
+The `AgentConnectOrg` CRD is a plain manifest the chart merely includes, so an
+out-of-band install applies the file itself:
+
+```bash
+kubectl apply -f charts/operator/crd/agentconnectorg.yaml
+```
+
+No `helm template --show-only` step, which for an OCI chart writes `Pulled:` and
+`Digest:` progress lines to stdout and corrupts the YAML on its way into
+`kubectl`. That file is also the authoritative schema — the API server validates
+every write against it, and the operator's and the control plane's parity tests
+read it directly.
+
 Every CRD carries `helm.sh/resource-policy: keep`: uninstalling the release that
-installed them leaves them — and every org and Sandbox — in place.
+installed them leaves them — and every org and Sandbox — in place. None carries
+a release-scoped label: a cluster-shared object that outlives every release is
+not any one release's property.
 
 ## Admission policies
 
