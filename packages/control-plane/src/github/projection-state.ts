@@ -83,7 +83,7 @@ export function hookSkippedCheckGuidance(reason?: string | null, appSlug?: strin
     '### How to start this review',
     "This pull request was opened from outside the repository's write boundary, so no agent ran. " +
       `To review it, ${mention}use the **Request review** button above. ` +
-      'Either way needs write or admin access to this repository. GitHub Actions **Approve and run workflows** ' +
-      'only authorizes Actions; it does not start this AgentConnect review.'
+      'Either path needs write or admin access to this repository. GitHub Actions **Approve and run workflows** ' +
+      'also starts the waiting review when the pull-request workflow begins.'
   ].join('\n\n')
 }

@@ -177,6 +177,8 @@ After signature verification:
 - verified unmatched deliveries return `202`;
 - `installation` and `installation_repositories` events become
   `rc/github-installation` doorbells;
+- Check actions and pull-request `workflow_run:in_progress` events are resolved
+  as explicit metadata-only review controls before subscription matching;
 - subscription events are matched by numeric `repository.id`; and
 - every candidate rule must contain the payload `installation.id` in its
   CP-compiled installation set.
@@ -261,7 +263,9 @@ For external PR revision-bearing events such as open and synchronize, the system
 maintainer action. A maintainer can then request execution through:
 
 - the Check action;
-- a comment mention; or
+- a comment mention;
+- GitHub Actions' `Approve and run workflows` control, when the approved
+  pull-request workflow enters `in_progress`; or
 - an explicit native App-reviewer request event. GitHub's normal reviewer picker
   cannot select a third-party App bot, so its Request/Re-request control is not a
   general AgentConnect entry point.
@@ -269,9 +273,14 @@ maintainer action. A maintainer can then request execution through:
 Each path revalidates current repository authority before opening a review
 generation.
 
-GitHub Actions' `Approve and run workflows` control is separate from the
-AgentConnect Check action: it releases a fork workflow run, but does not start
-an AgentConnect review.
+The signed `workflow_run:in_progress` payload identifies the triggering actor,
+repository, installation, and head revision but not the target hook. Relay also
+preserves the PR number when GitHub supplies one; fork workflow runs may omit
+that association. CP otherwise resolves the latest body-free
+`review_request_required` candidate per hook and PR and rejects a shared head
+with multiple candidates instead of guessing. Relay then rechecks current rule
+fences and the triggering actor's live write/admin permission. A stable
+repository/pull/head delivery key coalesces multiple workflows for one revision.
 
 ### Session Affinity
 

@@ -1057,7 +1057,7 @@ describe('GithubRunReporter', () => {
     expect(body.output.summary).toContain('How to start this review')
     expect(body.output.summary).toContain('**Request review** button')
     expect(body.output.summary).toContain('Approve and run workflows')
-    expect(body.output.summary).toContain('does not start this AgentConnect review')
+    expect(body.output.summary).toContain('starts the waiting review')
     expect(body.output.summary).not.toContain('comment `@')
     expect(body.output.summary.trimEnd().endsWith('-->')).toBe(true)
     expect(JSON.stringify(body)).not.toContain(HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED)
@@ -1207,7 +1207,8 @@ describe('GithubRunReporter', () => {
         ? []
         : pulls.map((pull) => ({ pullNumber: pull.pullNumber, headSha: pull.headSha, baseSha: 'b'.repeat(40) }))
     expect(hooks.synchronizeReviewSubjects).toHaveBeenCalledWith(p.id, p.generation, expectedSubjects, errorCode)
-    const patchBody = JSON.parse(String(fetchImpl.mock.calls[1]![1]?.body)) as {
+    const patchCall = fetchImpl.mock.calls.find(([, init]) => init?.method === 'PATCH')
+    const patchBody = JSON.parse(String(patchCall?.[1]?.body)) as {
       conclusion: string
       output: { title: string; summary: string }
     }
@@ -1221,6 +1222,39 @@ describe('GithubRunReporter', () => {
       })
     )
     expect(p.desiredState).toBe('success')
+  })
+
+  it('falls back to the base repository open-PR list for a fork head SHA', async () => {
+    const p = projection({ desiredState: 'success', observedState: 'in_progress' })
+    const forkPull = associatedPull(p, 910)
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes(`/commits/${p.headSha}/pulls?`)) return Response.json([])
+      if (url.includes('/pulls?state=open')) return Response.json([forkPull])
+      return Response.json({
+        id: '90071992547409931',
+        external_id: p.externalId,
+        status: 'completed',
+        conclusion: 'success',
+        output: { summary: JSON.parse(String(init?.body)).output.summary }
+      })
+    })
+    const { reporter, hooks } = worker(p, fetchImpl)
+
+    await reporter.tick()
+
+    expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining(`/commits/${p.headSha}/pulls?per_page=100&page=1`),
+        expect.stringContaining('/pulls?state=open&per_page=100&page=1')
+      ])
+    )
+    expect(hooks.synchronizeReviewSubjects).toHaveBeenCalledWith(
+      p.id,
+      p.generation,
+      [{ pullNumber: 910, headSha: p.headSha, baseSha: 'b'.repeat(40) }],
+      null
+    )
+    expect(hooks.completeProjectionWrite).toHaveBeenCalledWith(expect.objectContaining({ observedState: 'success' }))
   })
 
   it('fails closed when commit association pagination reaches the safety cap', async () => {
