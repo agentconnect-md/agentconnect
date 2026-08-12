@@ -344,17 +344,21 @@ function readMaterialization(agent: Agent): string | undefined {
 }
 
 /**
- * The workspace an acknowledged edit asked this agent's POD volume to hold.
+ * That an edit asked this agent's POD volume to be replaced, and which workspace it asked for.
  *
  * A cluster conversion cannot happen where every other one does. The tree is in the pod, the shim
  * offers no rename and no rollback, and activation runs before the edit is even acknowledged — so
  * activation records the intent here and the pod's own preparation carries it out, inside a bound
  * sandbox, where a failed clone is retried like any other. It is deliberately NOT the marker: the
- * marker says what the volume HOLDS, and the two disagreeing is exactly what "still due" means.
+ * marker says what the volume HOLDS, and this says the volume is due to stop holding it.
  *
  * It also separates a conversion from a repository RENAME, which reaches this daemon as the same
  * changed URL but asks for the opposite treatment — repoint the checkout, never replace it. Only a
  * `reconcileWorkspace` activation writes this file, and a rename does not carry one.
+ *
+ * Its PRESENCE is what gates the replacement; the key it records is for diagnosis. A conversion
+ * that cannot be attributed to a workspace is still a conversion — the volume is unattributable
+ * from the moment its checkout is emptied until preparation proves the new one.
  */
 function conversionFile(agent: Agent): string {
   const cwd = agent.workspace.path
@@ -380,13 +384,20 @@ function writePendingConversion(agent: Agent, key: string | undefined): void {
   writeFileSync(file, JSON.stringify({ version: 1, key }, null, 2) + '\n')
 }
 
-/** Whether the pod still has to replace its checkout: an edit asked for THIS workspace and the
- *  marker says the volume holds another. Stays true across retries, false once preparation proved
- *  the new one — so a leftover intent cannot re-wipe a volume that already converged. */
+/**
+ * Whether the pod still has to replace its checkout: a replacement was asked for, and the marker
+ * does not prove the volume already holds what this preparation is for.
+ *
+ * Deliberately not "the intent names THIS workspace". A conversion that emptied the checkout and
+ * then failed — a clone that threw, its helper pin, even the marker write — leaves a volume no
+ * marker can describe, and the definition that arrives next is as likely to be the CP's rollback as
+ * a retry of the edit. Either one has to re-materialize, so presence is the gate and the marker is
+ * the release: it is written only when preparation proved the volume, which is also when the intent
+ * is cleared. That makes a leftover intent inert rather than a repeated wipe.
+ */
 function clusterConversionDue(agent: Agent, stored: string | undefined, target: string): boolean {
   if (sameMaterialization(agent, stored, target)) return false
-  const pending = readPendingConversion(agent)
-  return pending !== undefined && sameMaterialization(agent, pending, target)
+  return readPendingConversion(agent) !== undefined
 }
 
 function sameMaterialization(agent: Agent, previous: string | undefined, target: string): boolean {
@@ -440,6 +451,13 @@ export async function convergeGithubAppWorkspaceRename(agent: Agent): Promise<vo
  * while the checkout still belongs to the recorded source. */
 export function ensureWorkspaceMaterialization(agent: Agent): void {
   if (!existsSync(materializationFile(agent))) recordWorkspaceMaterialization(agent)
+}
+
+/** Say that nothing is known about the volume, for the stretch where nothing IS: a cluster
+ *  conversion between emptying the checkout and proving its replacement. Throws rather than
+ *  leaving a stale marker behind — the destructive step is ordered after it for that reason. */
+function forgetWorkspaceMaterialization(agent: Agent): void {
+  rmSync(materializationFile(agent), { force: true })
 }
 
 function restoreWorkspaceMaterialization(agent: Agent, key: string | undefined): void {
@@ -922,8 +940,17 @@ export async function prepareClusterWorkspace(
   // the volume. Emptying the checkout IS the replacement: a git-repo target then clones below, and a
   // from-scratch one is simply the absence of it. Fail-closed — a clear that did not happen would
   // otherwise leave the previous repository's tree serving as the new workspace.
+  //
+  // The marker is dropped FIRST, and that order is the whole safety property. Everything from the
+  // clear to the proof can fail — the clone, its helper pin, the marker write itself — and a marker
+  // left describing the emptied workspace would tell the CP's rollback that nothing changed, so it
+  // would repoint the rejected tree and ACK an agent running the wrong repository. Unproven instead:
+  // whichever definition arrives next re-materializes the volume before anything runs on it.
   const conversionDue = clusterConversionDue(agent, stored, targetMarker)
-  if (conversionDue) await requireEmptiedSandboxPath(agent.id, checkout)
+  if (conversionDue) {
+    forgetWorkspaceMaterialization(agent)
+    await requireEmptiedSandboxPath(agent.id, checkout)
+  }
 
   if (agent.workspace.mode === 'from-scratch') {
     // Provable by construction: the checkout is gone, so the volume holds exactly the scratch
@@ -1220,26 +1247,21 @@ export async function prepareWorkspaceForActivation(
   // preparation then reads back as proof of the repository, in a circle. Seeding at detach is a
   // different thing and stays: it names the definition the agent has been RUNNING on.
   if (workspacesLiveInSandboxes) {
-    const previousConversion = readPendingConversion(agent)
-    // No marker means no proven volume to replace, so nothing is due — the pod either has no
-    // checkout, which preparation clones, or has one that convergence fixes.
-    if (reconcileMaterialization) {
-      writePendingConversion(
-        agent,
-        replace && previousMaterialization !== undefined ? targetMaterialization : undefined
-      )
+    // Set, never taken back — not by the else branch of this condition, and not by the rollback
+    // below, which is why there is nothing to roll back. `ensureHostAsync` runs before the ACK, so
+    // preparation may already be replacing the volume when this activation is rejected, and no
+    // rollback reaches a pod's tree to undo it. Withdrawing the intent (or restoring the marker)
+    // there would tell the CP's restored definition that nothing changed, and it would be ACKed onto
+    // the rejected tree. Left standing, the pair says the volume is unattributable and whichever
+    // definition arrives next re-materializes it — so recovery needs no rollback to run at all.
+    // A stale intent costs nothing: a marker that proves the target ends the conversion.
+    //
+    // No previous marker means no proven volume to replace, so nothing is asked for — the pod either
+    // has no checkout, which preparation clones, or has one that convergence fixes.
+    if (reconcileMaterialization && replace && previousMaterialization !== undefined) {
+      writePendingConversion(agent, targetMaterialization)
     }
-    // Rolling this back takes the intent, and pointedly NOT the marker. `ensureHostAsync` runs
-    // before the ACK, so preparation may already have replaced the volume when the activation is
-    // rejected — and no rollback reaches a pod's tree to put the old one back. Restoring the marker
-    // would then claim the volume still holds the previous workspace, and the restored definition's
-    // own activation would read that as "nothing changed" and be ACKed onto the rejected repository.
-    // Left alone, the marker keeps saying what the volume ACTUALLY holds, so that activation sees a
-    // changed workspace and arms the reverse conversion by the ordinary rule — which also means the
-    // recovery does not depend on this closure running at all.
-    return () => {
-      if (reconcileMaterialization) writePendingConversion(agent, previousConversion)
-    }
+    return () => {}
   }
   mkdirSync(cwd, { recursive: true })
 

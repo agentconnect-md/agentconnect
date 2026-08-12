@@ -296,15 +296,22 @@ back edit takes its intent with it, and a repository **rename** — the same cha
 without `reconcileWorkspace` — writes no intent at all and keeps its existing behaviour of
 repointing the checkout rather than replacing it.
 
-**A rejected activation gives back its intent, never its marker.** `ensureHostAsync` runs before
-the ACK, so preparation may already have replaced the volume when the activation is rejected —
-for an ACP failure, a supersession, or a staging-commit failure — and nothing reaches a pod's tree
-to put the old checkout back. Restoring the marker there would claim the volume still holds the
-previous workspace, and the CP's own rollback would then be ACKed onto the rejected repository
-with a pull failure degrading quietly. Left alone, the marker keeps describing what the volume
-actually holds, the restored definition's activation sees a changed workspace, and the reverse
-conversion is armed by the ordinary rule — so the recovery does not depend on the rollback closure
-running at all.
+**A rejected activation gives back nothing — and that is the point.** `ensureHostAsync` runs
+before the ACK, so preparation may already be replacing the volume when the activation is rejected
+— for an ACP failure, a supersession, or a staging-commit failure — and nothing reaches a pod's
+tree to undo it. Withdrawing the intent, or restoring the marker, would tell the CP's restored
+definition that nothing changed, and it would repoint the rejected tree and be ACKed onto it with
+a pull failure degrading quietly. Left standing, the pair says the volume is unattributable and
+whichever definition arrives next re-materializes it — so the recovery needs no rollback to run at
+all. A stale intent costs nothing: a marker that proves the target ends the conversion.
+
+**The marker is dropped before the checkout is, not after.** Everything between the two — the
+clone, its repo-local helper pin, the marker write itself — can fail, and every one of those leaves
+a volume holding the new tree that nothing has proved. A marker still naming the emptied workspace
+during that stretch is the same lie as restoring one, so it goes first and the destructive step is
+ordered after it. Which is also why the intent's PRESENCE is the gate rather than the workspace it
+names: at that point the volume matches no definition, and the one that arrives next is as likely
+to be the rollback as a retry of the edit.
 
 What this does not cover is a **session-isolated** (worktree) git-repo workspace: that needs
 `worktree add` in the sandbox and a retention GC that reads the pod's tree, and is still refused

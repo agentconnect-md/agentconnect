@@ -55,6 +55,9 @@ let headBranch = 'main'
 let pullFails = false
 /** The pod refusing to empty a path — a conversion that proceeded anyway would serve the old tree. */
 let clearFails = false
+/** The repo-local helper pin failing AFTER a successful clone — it runs outside the clone's own
+ *  cleanup, so the checkout survives while nothing has proved it. */
+let helperWriteFails = false
 
 function recordingRunner(cwd: string | undefined, env: Record<string, string> = {}): GitRunner {
   const run = async (args: string[]): Promise<string> => {
@@ -63,6 +66,7 @@ function recordingRunner(cwd: string | undefined, env: Record<string, string> = 
       if (!checkoutExists) throw new Error('cwd does not resolve: no checkout in the pod')
       return '.git'
     }
+    if (args[0] === 'config' && args.includes('--add') && helperWriteFails) throw new Error('helper pin refused')
     if (args[0] === 'remote' && args[1] === 'get-url') return originUrl
     if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return headBranch
     return ''
@@ -122,6 +126,7 @@ beforeEach(() => {
   headBranch = 'main'
   pullFails = false
   clearFails = false
+  helperWriteFails = false
   // Every agent here runs in a pod, so both seams resolve to the sandbox.
   setWorkspaceGitRunnerResolver((_agentId, cwd) => recordingRunner(cwd))
   setWorkspacePathClearer(async (_agentId, root) => {
@@ -452,17 +457,44 @@ describe('replacing a cluster workspace in place', () => {
     expect(cleared).toEqual([CHECKOUT])
   })
 
-  it('takes the intent back when the activation it belongs to fails', async () => {
-    // The rollback the daemon runs when the host will not start. The edit never became authoritative,
-    // so the volume must not be replaced on some later session as if it had.
+  it('leaves an intent inert once the marker proves the workspace', async () => {
+    // An activation rejected before its preparation touched anything: the intent stands, because
+    // withdrawing it is unsafe in the case where preparation HAD started. It costs nothing here —
+    // the restored definition's marker still proves the volume, so nothing is replaced.
     const agent = await withProvenMarker()
     const moved = { ...agent, workspace: { ...agent.workspace, gitRepo: 'https://github.com/acme/other.git' } } as Agent
     const rollback = await prepareWorkspaceForActivation(moved, { reconcileMaterialization: true })
     rollback()
 
     checkoutExists = true
-    await prepareClusterWorkspace(moved, POD_ROOT)
+    await prepareClusterWorkspace(agent, POD_ROOT)
     expect(cleared).toEqual([])
+    expect(calls.some((call) => call.args[0] === 'clone')).toBe(false)
+  })
+
+  it('re-materializes when the conversion failed between emptying the checkout and proving it', async () => {
+    // `cloneRepoInSandbox` can create the checkout and still throw — the repo-local helper pin runs
+    // after the clone's own cleanup — and the marker write after it is best-effort. Either way the
+    // volume holds the new tree while nothing has proved it, and the definition that arrives next is
+    // as likely to be the CP's rollback as a retry. A marker still naming the emptied workspace
+    // would send that rollback down the converge-and-pull path over the rejected tree.
+    const agent = await withProvenMarker()
+    const moved = { ...agent, workspace: { ...agent.workspace, gitRepo: 'https://github.com/acme/other.git' } } as Agent
+    await prepareWorkspaceForActivation(moved, { reconcileMaterialization: true })
+    checkoutExists = true
+    helperWriteFails = true
+    await expect(prepareClusterWorkspace(moved, POD_ROOT)).rejects.toThrow(/helper pin refused/)
+
+    helperWriteFails = false
+    cleared.length = 0
+    calls.length = 0
+    await prepareWorkspaceForActivation(agent, { reconcileMaterialization: true })
+    checkoutExists = true
+    await prepareClusterWorkspace(agent, POD_ROOT)
+    expect(cleared).toEqual([CHECKOUT])
+    expect(calls.find((call) => call.args[0] === 'clone')?.args).toContain('https://github.com/acme/private.git')
+    // Never the alternative: repointing the rejected tree at the original origin and pulling.
+    expect(calls.some((call) => call.args[1] === 'set-url')).toBe(false)
   })
 
   /** An activation rejected AFTER its preparation already replaced the volume: `ensureHostAsync`
