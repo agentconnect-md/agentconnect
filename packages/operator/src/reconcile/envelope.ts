@@ -43,9 +43,6 @@ const DAEMON_TIERS: Record<string, { requests: Record<string, string>; limits: R
   large: { requests: { cpu: '1', memory: '2Gi' }, limits: { memory: '8Gi' } }
 }
 
-/** Default daemon state volume size until the CRD grows a knob for it. */
-const DAEMON_STORAGE = '10Gi'
-
 function envelopeLabels(orgName: string, extra: Record<string, string> = {}): Record<string, string> {
   return { [ORG_LABEL]: orgName, ...extra }
 }
@@ -355,9 +352,10 @@ async function pruneRemovedTiers(ctx: ReconcileContext, input: EnvelopeInputs): 
   }
 }
 
-/** The daemon's ReadWriteOncePod PVC (transcripts + state). */
+/** The daemon's ReadWriteOncePod PVC (transcripts + state), sized and classed by the install. */
 export async function ensureDaemonPvc(ctx: ReconcileContext, input: EnvelopeInputs, obs: Observations): Promise<void> {
   const ns = input.spec.targetNamespace
+  const storageClass = ctx.config.daemonStorageClass
   // RWOP is load-bearing: the Recreate strategy assumes the volume can never double-attach.
   await applyObject(ctx.http, corePath(ns, 'persistentvolumeclaims', DAEMON_PVC_NAME), {
     apiVersion: 'v1',
@@ -365,7 +363,9 @@ export async function ensureDaemonPvc(ctx: ReconcileContext, input: EnvelopeInpu
     metadata: { name: DAEMON_PVC_NAME, namespace: ns, labels: envelopeLabels(input.orgName) },
     spec: {
       accessModes: ['ReadWriteOncePod'],
-      resources: { requests: { storage: DAEMON_STORAGE } }
+      // Omitted rather than emptied when unset: an empty string pins "no class", not the cluster default.
+      ...(storageClass ? { storageClassName: storageClass } : {}),
+      resources: { requests: { storage: ctx.config.daemonStorageSize } }
     }
   })
   void obs

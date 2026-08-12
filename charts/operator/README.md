@@ -98,6 +98,26 @@ them forward (`keep` only holds them back from an uninstall). A release that
 moves the stored API version is the exception: upstream ships a storage
 migration for it, and skipping that is how CRs become unreadable.
 
+## Daemon state volume
+
+Every org envelope carries one `ReadWriteOncePod` PVC for its daemon's
+transcripts and local state, provisioned from `daemonStorage`:
+
+```yaml
+daemonStorage:
+  className: '' # empty = the cluster default StorageClass
+  size: 10Gi
+```
+
+Leave `className` empty only when the cluster default is a cluster-wide
+(network-attached) class. A node-local default provisioner binds a volume to
+whichever node has a path for it, so the claim fails wherever the scheduler
+places the daemon — the pod then never starts, with the PVC stuck `Pending`.
+
+Both settings apply when the claim is created. Kubernetes rejects a class change
+on an existing PVC, so changing them moves new orgs only; an org already
+provisioned keeps its volume until that volume is deleted.
+
 ## Install
 
 ```bash
