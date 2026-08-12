@@ -4,6 +4,10 @@
 -- publish path needed goes with it — the Secret name, the revision handle, the
 -- staged/committed key slots, the cluster rotation sequence, the owed rollout
 -- flag, and the held-revocation queue.
+--
+-- FORWARD-ONLY: an older binary selects columns this drops, so every
+-- `org_cluster_execution` read fails for it until it drains. Recovery is a
+-- forward fix, not an old-binary restart.
 
 -- Settle what the queue still owed BEFORE dropping it. Daemon keys never expire,
 -- so a key named here and left alone would stay live with nothing able to revoke

@@ -370,6 +370,14 @@ key it still named, plus each envelope's committed and staged one. Deleting the
 last thing able to revoke a live credential without first revoking it is the one
 mistake this teardown could make.
 
+That migration renames two columns and drops six, so it is a **forward-only
+deployment boundary** (the precedent is resource-visibility.md's ownership
+drop): an older control-plane binary selects columns that no longer exist, and
+every read of `org_cluster_execution` fails for it — including the one that
+resolves an authenticating daemon's org. The window is a rolling update's drain
+and it self-heals as daemons reconnect to the new binary, but recovery is a
+forward fix, never an old-binary restart.
+
 **API keys do not go away.** A daemon on someone's laptop has no Kubernetes
 identity, so the key path stays exactly as it is; the token path is what an
 in-cluster daemon uses instead. The control plane accepts both and each is
