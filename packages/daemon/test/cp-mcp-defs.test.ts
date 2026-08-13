@@ -8,43 +8,52 @@ const stdioDef = (command: string): McpServerDef => ({ transport: 'stdio', comma
 describe('CpMcpDefs — CP-pushed defs layered over local config', () => {
   it('a CP def wins over a same-named local def, and the local def is restored on remove', () => {
     const m = new CpMcpDefs({ notion: stdioDef('local-notion') })
-    expect(m.effective().notion).toEqual(stdioDef('local-notion'))
+    expect(m.effective('org-a').notion).toEqual(stdioDef('local-notion'))
 
-    expect(m.upsert('notion', httpDef('https://relay/mcp/p1'))).toBe(true) // CP shadows local
-    expect(m.effective().notion).toEqual(httpDef('https://relay/mcp/p1'))
+    expect(m.upsert('org-a', 'notion', httpDef('https://relay/mcp/p1'))).toBe(true)
+    expect(m.effective('org-a').notion).toEqual(httpDef('https://relay/mcp/p1'))
 
-    expect(m.remove('notion')).toBe(true) // local restored, not deleted
-    expect(m.effective().notion).toEqual(stdioDef('local-notion'))
+    expect(m.remove('org-a', 'notion')).toBe(true)
+    expect(m.effective('org-a').notion).toEqual(stdioDef('local-notion'))
   })
 
   it('reports whether an op changed the set — idempotent re-push and no-op converge return false', () => {
     const m = new CpMcpDefs({})
-    expect(m.upsert('a', httpDef('https://relay/mcp/a'))).toBe(true)
-    expect(m.upsert('a', httpDef('https://relay/mcp/a'))).toBe(false) // identical re-push — no churn
-    expect(m.upsert('a', httpDef('https://relay/mcp/a2'))).toBe(true) // value changed
-    expect(m.remove('missing')).toBe(false)
-    expect(m.converge([['a', httpDef('https://relay/mcp/a2')]])).toBe(false) // same set
-    expect(m.converge([['b', httpDef('https://relay/mcp/b')]])).toBe(true) // different set
+    expect(m.upsert('org-a', 'a', httpDef('https://relay/mcp/a'))).toBe(true)
+    expect(m.upsert('org-a', 'a', httpDef('https://relay/mcp/a'))).toBe(false)
+    expect(m.upsert('org-a', 'a', httpDef('https://relay/mcp/a2'))).toBe(true)
+    expect(m.remove('org-a', 'missing')).toBe(false)
+    expect(m.converge([['org-a', 'a', httpDef('https://relay/mcp/a2')]])).toBe(false)
+    expect(m.converge([['org-a', 'b', httpDef('https://relay/mcp/b')]])).toBe(true)
   })
 
   it('local-only and CP-only names both pass through; remove of an absent name is a no-op', () => {
     const m = new CpMcpDefs({ localOnly: stdioDef('x') })
-    m.upsert('cpOnly', httpDef('https://relay/mcp/p2'))
-    expect(Object.keys(m.effective()).sort()).toEqual(['cpOnly', 'localOnly'])
-    expect(m.remove('missing')).toBe(false)
-    expect(m.remove('cpOnly')).toBe(true)
-    expect(Object.keys(m.effective())).toEqual(['localOnly'])
+    m.upsert('org-a', 'cpOnly', httpDef('https://relay/mcp/p2'))
+    expect(Object.keys(m.effective('org-a')).sort()).toEqual(['cpOnly', 'localOnly'])
+    expect(m.remove('org-a', 'missing')).toBe(false)
+    expect(m.remove('org-a', 'cpOnly')).toBe(true)
+    expect(Object.keys(m.effective('org-a'))).toEqual(['localOnly'])
   })
 
   it('converge FULL-REPLACES the CP set — a def absent from the snapshot is pruned, local survives', () => {
     const m = new CpMcpDefs({ base: stdioDef('b') })
-    m.upsert('a', httpDef('https://relay/mcp/a'))
-    m.upsert('b', httpDef('https://relay/mcp/b')) // CP shadows local base
+    m.upsert('org-a', 'a', httpDef('https://relay/mcp/a'))
+    m.upsert('org-a', 'b', httpDef('https://relay/mcp/b'))
 
-    m.converge([['c', httpDef('https://relay/mcp/c')]]) // reconnect snapshot: only c
-    const eff = m.effective()
-    expect(eff.a).toBeUndefined() // pruned (not in snapshot)
+    m.converge([['org-a', 'c', httpDef('https://relay/mcp/c')]])
+    const eff = m.effective('org-a')
+    expect(eff.a).toBeUndefined()
     expect(eff.c).toEqual(httpDef('https://relay/mcp/c'))
-    expect(eff.base).toEqual(stdioDef('b')) // local unshadowed again (b no longer in CP set)
+    expect(eff.base).toEqual(stdioDef('b'))
+  })
+
+  it('keeps same-named CP definitions isolated by organization', () => {
+    const m = new CpMcpDefs({})
+    m.upsert('org-a', 'shared-name', httpDef('https://relay/mcp/a'))
+    m.upsert('org-b', 'shared-name', httpDef('https://relay/mcp/b'))
+
+    expect(m.effective('org-a')['shared-name']).toEqual(httpDef('https://relay/mcp/a'))
+    expect(m.effective('org-b')['shared-name']).toEqual(httpDef('https://relay/mcp/b'))
   })
 })

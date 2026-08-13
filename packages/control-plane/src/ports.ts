@@ -29,7 +29,8 @@ export interface ClientCtx {
 
 /** Outcome of `DaemonAuth.authenticate` (design §2.3). */
 export type AuthResult =
-  { ok: true; daemonId: DaemonId; okFrame: AuthOk } | { ok: false; closeCode: 4401 | 4409 | 1011; reason: string }
+  | { ok: true; daemonId: DaemonId; orgId: OrgId | null; okFrame: AuthOk }
+  | { ok: false; closeCode: 4401 | 4409 | 1011; reason: string }
 
 /**
  * C4 — daemon authentication. `authenticate` verifies the presented credential — an opaque
@@ -41,24 +42,19 @@ export interface DaemonAuth {
   authenticate(req: AuthReq, ctx: ClientCtx): Promise<AuthResult>
 }
 
-/** The daemon record a verified Kubernetes identity resolves to. */
-export interface VerifiedClusterDaemon {
-  daemonId: DaemonId
-  orgId: OrgId
-}
+/** The daemon record a verified Kubernetes identity, including a cloud Pod UID, resolves to. */
+export type VerifiedClusterDaemon =
+  { daemonId: DaemonId; scope: 'org'; orgId: OrgId } | { daemonId: DaemonId; scope: 'install' }
 
 /**
  * Verifier for an in-cluster daemon's projected ServiceAccount token. Null ⇒ the token is
  * not a usable in-cluster daemon identity, for any reason: the auth path answers one coarse
  * `AUTH_FAILED` either way, so the caller never learns which check refused it.
  *
- * `claim` is what the CALLER said this connection is for, never trusted on its own. An
- * envelope daemon's namespace already names its org, so a claim may only agree with it. A
- * cloud daemon's identity names no org — it serves every one — so its claim is what selects
- * which org this connection serves, and the identity is what makes that selection legitimate.
+ * A claimed daemon id is only an echo used by the relay hop; the reviewed identity and Pod UID decide.
  */
 export interface ClusterDaemonIdentity {
-  verify(token: string, claim?: { orgId?: string; daemonId?: string }): Promise<VerifiedClusterDaemon | null>
+  verify(token: string, claim?: { daemonId?: string }): Promise<VerifiedClusterDaemon | null>
 }
 
 /** A freshly minted key — the one-time plaintext returned to the operator. */
@@ -209,8 +205,8 @@ export interface DaemonRuntimeProfile {
 /** Read model for `GET /daemons` (C2). */
 export interface DaemonView {
   daemonId: DaemonId
-  /** The owning org — console reads filter on it (multi-tenant). */
-  orgId: OrgId
+  /** Null only for install-wide infrastructure shared by all organizations. */
+  orgId: OrgId | null
   host: string | null
   /** Human-assigned display name (console-set); null until named. */
   name: string | null

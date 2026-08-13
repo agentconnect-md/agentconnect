@@ -80,7 +80,7 @@ describe('RelayDaemonConnection (rd/* accept FSM)', () => {
     await Promise.resolve()
     await Promise.resolve()
     // The token wins: a stale key must never pick a different identity than the CP socket did.
-    // The claimed id rides along — a cloud daemon holds one record per org, so it is what
+    // The claimed id rides along so CP can match it to the install-wide daemon record.
     // tells the CP which of them this token is presented for.
     expect(verify).toHaveBeenCalledWith('daemon-token', 'projected', DAEMON_ID)
     expect(conn.state).toBe('READY')

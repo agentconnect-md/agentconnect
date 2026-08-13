@@ -406,7 +406,6 @@ export function buildContainer(
           repos.orgClusterExecution,
           repos.daemon,
           config.CLUSTER_ORG_NAMESPACE_PREFIX,
-          repos.org,
           // Where this install's cloud daemons live; its own namespace unless told otherwise.
           config.CLUSTER_CLOUD_DAEMON_NAMESPACE ?? clusterAccess.namespace
         )

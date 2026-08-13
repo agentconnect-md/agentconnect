@@ -220,9 +220,7 @@ export class RelayDaemonConnection {
     }
     let result: RcVerifyResult
     try {
-      // The claimed id travels with the token: a cloud daemon's identity names no org, so
-      // this is what says which of its per-org records it is dialing as. Unverified here —
-      // the CP owns that check, and the id it answers with is still what wins below.
+      // CP verifies the untrusted echoed id against the reviewed cloud Pod UID.
       result = await this.deps.verify(presented.kind, presented.credential, hello.daemonId)
     } catch {
       // Link not READY / CP error → transient; the daemon backs off and retries.

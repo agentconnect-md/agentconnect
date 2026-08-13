@@ -223,6 +223,7 @@ describe('telegram projection equivalence with the live integrationToSpec path',
       { channel: '-100', match: { kind: 'auto' } }
     ]
     expect(spec).toEqual({
+      orgId: INTEGRATION.orgId,
       integrationId: INTEGRATION.id,
       agentId: INTEGRATION.agentId,
       platform: 'telegram',

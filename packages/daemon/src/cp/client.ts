@@ -162,10 +162,6 @@ export interface CpClientDeps {
   /** This pod's projected ServiceAccount token, re-read per connect because the kubelet
    *  rotates it roughly hourly. Present ⇒ it is the credential and the API key is not sent. */
   clusterIdentityToken?: () => string | undefined
-  /** The org this connection serves. Set only on a cloud daemon, whose Kubernetes identity
-   *  names no org because it serves every one; an envelope daemon's namespace already
-   *  answers and the CP refuses a disagreeing claim. */
-  orgId?: string
   /** Optional: when unset, the token's `sub` is the authoritative daemonId and
    *  the CP assigns it. The adopted id is surfaced via `onDaemonId`. */
   daemonId?: string
@@ -183,6 +179,10 @@ export interface CpClientDeps {
   localState: () => RegisterReq['localState']
   loadSnapshot: () => Heartbeat['load']
   activeSessions: () => number
+  /** Tenant lookup for agent-scoped frames on an install-wide connection. */
+  orgForAgent?: (agentId: string) => string | undefined
+  /** Tenant lookup for integration reports whose payload has no agent id. */
+  orgForIntegration?: (integrationId: string) => string | undefined
   /** Unservable CP-rule agentIds, surfaced in heartbeat.degradedScopes. Defaults to []. */
   degradedScopes?: () => string[]
   configApply: ConfigApply
@@ -240,6 +240,7 @@ export class CpClient {
   private stopped = false
   private fatal = false // 4401 — never auto-retry
   private serverFeatures = new Set<string>()
+  private organizationMode: 'connection' | 'frame' = 'connection'
   private attempt = 0
   private reconnectTimer?: TimerHandle
   private lastAuthedEpoch = 0 // for resume on reconnect (per-agent seq tail is out of scope)
@@ -376,8 +377,6 @@ export class CpClient {
     const identityToken = this.deps.clusterIdentityToken?.()
     const authPayload: Record<string, unknown> = {
       ...(identityToken ? { serviceAccountToken: identityToken } : { apiKey: this.deps.token }),
-      // A cloud daemon's org: its identity serves every org, so the socket says which one.
-      ...(identityToken && this.deps.orgId ? { orgId: this.deps.orgId } : {}),
       agentVersion: this.deps.agentVersion,
       ...(this.deps.onBootstrapUpgrade ? { bootstrapProtocolVersion: DAEMON_BOOTSTRAP_PROTOCOL_VERSION } : {})
     }
@@ -398,9 +397,11 @@ export class CpClient {
       heartbeatSec: number
       webAppUrl?: string
       orgSlug?: string
+      organizationMode?: 'connection' | 'frame'
       lifecycle?: BootstrapLifecycle
     }
     this.sessionEpoch = ok.sessionEpoch
+    this.organizationMode = ok.organizationMode ?? 'connection'
     this.lastAuthedEpoch = ok.sessionEpoch
     // Adopt the authoritative daemonId the CP assigned (no-op if we already had one).
     if (ok.daemonId && ok.daemonId !== this.deps.daemonId) {
@@ -605,7 +606,7 @@ export class CpClient {
    */
   emitUsageReport(report: UsageReport): void {
     if (this.state !== 'READY' && this.state !== 'DRAINING') return
-    this.transport?.send(encode(buildEnvelope('usage/report', report)))
+    this.transport?.send(encode(this.scopedFrame('usage/report', report)))
   }
 
   /**
@@ -618,7 +619,7 @@ export class CpClient {
    */
   emitEventSession(event: EventSession): void {
     if (this.state !== 'READY' && this.state !== 'DRAINING') return
-    this.transport?.send(encode(buildEnvelope('event/session', event)))
+    this.transport?.send(encode(this.scopedFrame('event/session', event)))
   }
 
   /**
@@ -662,7 +663,7 @@ export class CpClient {
   emitSessionActivity(activity: SessionActivity): void {
     if (this.state !== 'READY' && this.state !== 'DRAINING') return
     if (!this.supportsServerFeature(SESSION_LIVE_TAIL_FEATURE)) return
-    this.transport?.send(encode(buildEnvelope('event/session-activity', activity)))
+    this.transport?.send(encode(this.scopedFrame('event/session-activity', activity)))
   }
 
   /**
@@ -674,7 +675,9 @@ export class CpClient {
    */
   emitIntegrationChannels(snapshot: IntegrationChannels): void {
     if (this.state !== 'READY' && this.state !== 'DRAINING') return
-    this.transport?.send(encode(buildEnvelope('integration/channels', snapshot)))
+    this.transport?.send(
+      encode(this.scopedFrame('integration/channels', snapshot, this.deps.orgForIntegration?.(snapshot.integrationId)))
+    )
   }
 
   /**
@@ -686,7 +689,7 @@ export class CpClient {
    */
   emitCronReport(report: CronReport): void {
     if (this.state !== 'READY' && this.state !== 'DRAINING') return
-    this.transport?.send(encode(buildEnvelope('cron/report', report)))
+    this.transport?.send(encode(this.scopedFrame('cron/report', report)))
   }
 
   /**
@@ -715,9 +718,9 @@ export class CpClient {
   }
 
   /** One-attempt, action-time formal-review purpose token. */
-  async authorizeGithubReview(payload: GithubReviewAuthorize): Promise<GithubReviewAuthorized> {
+  async authorizeGithubReview(payload: GithubReviewAuthorize, orgId?: string): Promise<GithubReviewAuthorized> {
     this.requireReady('github/review-authorize')
-    const rep = await this.request('github/review-authorize', payload)
+    const rep = await this.request('github/review-authorize', payload, orgId)
     if (rep.type !== 'github/review-authorized') {
       throw new WireError('INTERNAL', `expected github/review-authorized, got ${rep.type}`, false)
     }
@@ -725,36 +728,36 @@ export class CpClient {
   }
 
   /** Immediate body-free outcome; HookReport repeats it for lost-reply recovery. */
-  async reportGithubReviewResult(payload: GithubReviewResultReport): Promise<GithubReviewResultOk> {
+  async reportGithubReviewResult(payload: GithubReviewResultReport, orgId?: string): Promise<GithubReviewResultOk> {
     this.requireReady('github/review-result')
-    const rep = await this.request('github/review-result', payload)
+    const rep = await this.request('github/review-result', payload, orgId)
     if (rep.type !== 'github/review-result/ok') {
       throw new WireError('INTERNAL', `expected github/review-result/ok, got ${rep.type}`, false)
     }
     return rep.payload as GithubReviewResultOk
   }
 
-  async issueWebchatMcpGrant(payload: WebchatMcpGrantIssue): Promise<WebchatMcpGrantIssued> {
+  async issueWebchatMcpGrant(payload: WebchatMcpGrantIssue, orgId?: string): Promise<WebchatMcpGrantIssued> {
     this.requireReady('webchat/mcp-grant/issue')
-    const rep = await this.request('webchat/mcp-grant/issue', payload)
+    const rep = await this.request('webchat/mcp-grant/issue', payload, orgId)
     if (rep.type !== 'webchat/mcp-grant/issued') {
       throw new WireError('INTERNAL', `expected webchat/mcp-grant/issued, got ${rep.type}`, false)
     }
     return rep.payload as WebchatMcpGrantIssued
   }
 
-  async acceptWebchatMcpGrant(payload: WebchatMcpGrantAccept): Promise<WebchatMcpGrantActivate> {
+  async acceptWebchatMcpGrant(payload: WebchatMcpGrantAccept, orgId?: string): Promise<WebchatMcpGrantActivate> {
     this.requireReady('webchat/mcp-grant/accept')
-    const rep = await this.request('webchat/mcp-grant/accept', payload)
+    const rep = await this.request('webchat/mcp-grant/accept', payload, orgId)
     if (rep.type !== 'webchat/mcp-grant/activate') {
       throw new WireError('INTERNAL', `expected webchat/mcp-grant/activate, got ${rep.type}`, false)
     }
     return rep.payload as WebchatMcpGrantActivate
   }
 
-  async revokeWebchatMcpGrant(payload: WebchatMcpGrantRevoke): Promise<WebchatMcpGrantRevoked> {
+  async revokeWebchatMcpGrant(payload: WebchatMcpGrantRevoke, orgId?: string): Promise<WebchatMcpGrantRevoked> {
     this.requireReady('webchat/mcp-grant/revoke')
-    const rep = await this.request('webchat/mcp-grant/revoke', payload)
+    const rep = await this.request('webchat/mcp-grant/revoke', payload, orgId)
     if (rep.type !== 'webchat/mcp-grant/revoked') {
       throw new WireError('INTERNAL', `expected webchat/mcp-grant/revoked, got ${rep.type}`, false)
     }
@@ -767,8 +770,8 @@ export class CpClient {
     }
   }
 
-  private request(type: string, payload: unknown): Promise<AnyFrame> {
-    const frame = buildEnvelope(type as Parameters<typeof buildEnvelope>[0], payload)
+  private request(type: string, payload: unknown, explicitOrgId?: string): Promise<AnyFrame> {
+    const frame = this.scopedFrame(type, payload, explicitOrgId)
     return this.correlator.request(frame, (e) => this.transport!.send(e))
   }
 
@@ -785,7 +788,7 @@ export class CpClient {
     if ((this.state !== 'READY' && this.state !== 'DRAINING') || !this.transport) {
       throw new WireError('INTERNAL', `control plane unreachable (client ${this.state})`, true)
     }
-    const frame = buildEnvelope('gitcred/request', payload)
+    const frame = this.scopedFrame('gitcred/request', payload)
     const rep = await this.correlator.request(frame, (e) => this.transport!.send(e), {
       maxTries: 1,
       ackTimeoutMs: 10_000
@@ -818,7 +821,7 @@ export class CpClient {
     if ((this.state !== 'READY' && this.state !== 'DRAINING') || !this.transport) {
       throw new WireError('INTERNAL', `control plane unreachable (client ${this.state})`, true)
     }
-    const frame = buildEnvelope('channel/agents', payload)
+    const frame = this.scopedFrame('channel/agents', payload)
     const rep = await this.correlator.request(frame, (e) => this.transport!.send(e))
     if (rep.type !== 'channel/agents/ok') {
       throw new WireError('INTERNAL', `expected channel/agents/ok, got ${rep.type}`, false)
@@ -834,11 +837,11 @@ export class CpClient {
    * nothing. `parentSessionId` is the asking session's own id, taken from the trusted session
    * store, and the CP verifies this daemon actually reported it.
    */
-  async childSessionStatus(payload: ChildSessionStatusReq): Promise<ChildSessionStatus> {
+  async childSessionStatus(payload: ChildSessionStatusReq, orgId?: string): Promise<ChildSessionStatus> {
     if ((this.state !== 'READY' && this.state !== 'DRAINING') || !this.transport) {
       throw new WireError('INTERNAL', `control plane unreachable (client ${this.state})`, true)
     }
-    const frame = buildEnvelope('session/child-status', payload)
+    const frame = this.scopedFrame('session/child-status', payload, orgId)
     const rep = await this.correlator.request(frame, (e) => this.transport!.send(e))
     if (rep.type !== 'session/child-status/ok') {
       throw new WireError('INTERNAL', `expected session/child-status/ok, got ${rep.type}`, false)
@@ -882,10 +885,13 @@ export class CpClient {
     return rep.payload as OrgSkillsOk
   }
 
-  async syncOrganizationSuggestions(payload: OrganizationSuggestionsSyncReq): Promise<OrganizationSuggestionsSyncOk> {
+  async syncOrganizationSuggestions(
+    payload: OrganizationSuggestionsSyncReq,
+    orgId?: string
+  ): Promise<OrganizationSuggestionsSyncOk> {
     this.requireReady('knowledge/suggestions/sync')
     if (!this.supportsServerFeature(ORGANIZATION_KNOWLEDGE_FEATURE)) return { decisions: [] }
-    const rep = await this.request('knowledge/suggestions/sync', payload)
+    const rep = await this.request('knowledge/suggestions/sync', payload, orgId)
     if (rep.type !== 'knowledge/suggestions/sync/ok') {
       throw new WireError('INTERNAL', `expected knowledge/suggestions/sync/ok, got ${rep.type}`, false)
     }
@@ -969,7 +975,61 @@ export class CpClient {
       this.sendError(frame.id, 'STALE_EPOCH', 'epoch < current', true)
       return
     }
+    if (this.organizationMode === 'frame' && !frame.orgId && !this.installWideControl(frame.type)) {
+      this.sendError(frame.id, 'SCOPE_DENIED', 'organization is required on an install-wide connection', false)
+      return
+    }
+    const expectedOrgId = this.organizationForControl(frame)
+    if (frame.orgId && expectedOrgId && frame.orgId !== expectedOrgId) {
+      this.sendError(frame.id, 'SCOPE_DENIED', 'organization does not match the targeted resource', false)
+      return
+    }
     this.dispatchControl(frame)
+  }
+
+  private organizationForControl(frame: AnyFrame): string | undefined {
+    const payload = frame.payload && typeof frame.payload === 'object' ? (frame.payload as Record<string, unknown>) : {}
+    if (typeof payload.orgId === 'string') return payload.orgId
+    const spec =
+      payload.spec && typeof payload.spec === 'object' ? (payload.spec as Record<string, unknown>) : undefined
+    if (typeof spec?.orgId === 'string') return spec.orgId
+    const agentId = [
+      payload.agentId,
+      payload.requesterAgentId,
+      payload.sourceAgentId,
+      payload.callerAgentId,
+      payload.childAgentId,
+      spec?.agentId
+    ].find((value): value is string => typeof value === 'string')
+    if (agentId) return this.deps.orgForAgent?.(agentId)
+    if (typeof payload.integrationId === 'string') return this.deps.orgForIntegration?.(payload.integrationId)
+    return undefined
+  }
+
+  private installWideControl(type: string): boolean {
+    return (
+      type === 'relay/roster' ||
+      type === 'collaboration/routes' ||
+      type === 'daemon/drain' ||
+      type === 'daemon/restart' ||
+      type === 'daemon/upgrade' ||
+      type === 'config/push'
+    )
+  }
+
+  private scopedFrame(type: string, payload: unknown, explicitOrgId?: string): AnyFrame {
+    let orgId = explicitOrgId
+    if (!orgId && payload && typeof payload === 'object') {
+      const p = payload as Record<string, unknown>
+      const agentId = [p.agentId, p.requesterAgentId, p.sourceAgentId, p.callerAgentId, p.childAgentId].find(
+        (value): value is string => typeof value === 'string'
+      )
+      if (agentId) orgId = this.deps.orgForAgent?.(agentId)
+    }
+    if (this.organizationMode === 'frame' && !orgId) {
+      throw new WireError('SCOPE_DENIED', `cannot resolve organization for ${type}`, false)
+    }
+    return buildEnvelope(type as Parameters<typeof buildEnvelope>[0], payload, orgId ? { orgId } : {})
   }
 
   private decodeErrorCode(msg: string): 'UNKNOWN_FRAME' | 'FRAME_TOO_LARGE' | 'BAD_PAYLOAD' {
@@ -1205,7 +1265,7 @@ export class CpClient {
         this.deps.configApply.applyMcpServerUpsert(frame.payload as Parameters<ConfigApply['applyMcpServerUpsert']>[0])
         return // EVT — no reply (reconnect roster is the backstop)
       case 'mcpserver/remove':
-        this.deps.configApply.applyMcpServerRemove((frame.payload as { name: string }).name)
+        this.deps.configApply.applyMcpServerRemove(frame.payload as Parameters<ConfigApply['applyMcpServerRemove']>[0])
         return // EVT — no reply
       case 'memoryconnection/upsert':
         // Grant/secret-bearing daemon-private payload — NEVER log the frame body.
@@ -1700,7 +1760,14 @@ export class CpClient {
   }
 
   private reply(req: AnyFrame, type: string, payload: unknown): void {
-    this.transport?.send(encode(buildEnvelope(type as Parameters<typeof buildEnvelope>[0], payload, { corr: req.id })))
+    this.transport?.send(
+      encode(
+        buildEnvelope(type as Parameters<typeof buildEnvelope>[0], payload, {
+          corr: req.id,
+          ...(req.orgId ? { orgId: req.orgId } : {})
+        })
+      )
+    )
   }
 
   /** Emit an uncorrelated EVT (e.g. `drain/progress`). */

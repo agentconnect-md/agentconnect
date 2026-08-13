@@ -18,7 +18,11 @@ function frame(type: string, payload: unknown, extra: Record<string, unknown> = 
   return JSON.stringify({ ...buildEnvelope(type as any, payload), ...extra })
 }
 
-async function readyClient(over: Partial<CpClientDeps> = {}, serverFeatures: string[] = ['hook-report-ack-v1']) {
+async function readyClient(
+  over: Partial<CpClientDeps> = {},
+  serverFeatures: string[] = ['hook-report-ack-v1'],
+  organizationMode: 'connection' | 'frame' = 'connection'
+) {
   const t = new FakeTransport()
   const clock = new FakeClock()
   // Merge configApply/sessionRead/workspaceRead overrides into the default mocks — do NOT let ...over clobber them.
@@ -125,7 +129,8 @@ async function readyClient(over: Partial<CpClientDeps> = {}, serverFeatures: str
           daemonId: DAEMON_ID,
           sessionEpoch: 5,
           heartbeatSec: 15,
-          serverTime: '2026-06-26T00:00:00.000Z'
+          serverTime: '2026-06-26T00:00:00.000Z',
+          organizationMode
         },
         { corr: auth.id }
       )
@@ -179,6 +184,23 @@ describe('CpClient dispatch', () => {
     const legacy = await readyClient({}, [])
     legacy.client.emitSessionActivity(activity)
     expect(legacy.t.sent).toHaveLength(0)
+  })
+
+  it('stamps agent-scoped outbound frames with orgId in frame organization mode', async () => {
+    const { t, client } = await readyClient(
+      { orgForAgent: (agentId) => (agentId === CRON_AGENT_ID ? 'org-1' : undefined) },
+      [SESSION_LIVE_TAIL_FEATURE],
+      'frame'
+    )
+
+    client.emitSessionActivity({
+      sessionId: 'session-live',
+      agentId: CRON_AGENT_ID,
+      revision: '12',
+      ts: '2026-07-27T00:00:00.000Z'
+    })
+
+    expect(JSON.parse(t.sent[0]!)).toMatchObject({ type: 'event/session-activity', orgId: 'org-1' })
   })
 
   it('keeps hook/report correlated until the CP durably ACKs it', async () => {

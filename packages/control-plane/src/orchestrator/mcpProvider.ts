@@ -19,6 +19,7 @@ import type { McpServerSpec, RcMcpAssign } from '@agentconnect.md/protocol'
 /** The provider fields the mappers read (structural subset of the McpProvider row). */
 interface ProviderView {
   id: string
+  orgId: string
   name: string
   url: string
 }
@@ -110,6 +111,7 @@ export function relayHttpOrigin(relayUrl: string): string {
  */
 export function mcpProxyDef(provider: ProviderView, grantKey: string, relayBaseUrl: string): McpServerSpec {
   return {
+    orgId: provider.orgId,
     name: provider.name,
     transport: 'http',
     url: `${relayBaseUrl}/mcp/${provider.id}`,

@@ -85,6 +85,7 @@ describe('CpClient auth credential', () => {
     expect(auth.type).toBe('auth')
     expect(auth.payload.serviceAccountToken).toBe('projected-token')
     expect(auth.payload.apiKey).toBeUndefined()
+    expect(auth.payload.orgId).toBeUndefined()
   })
 
   it('falls back to the API key when this daemon has no Kubernetes identity', async () => {
@@ -94,24 +95,6 @@ describe('CpClient auth credential', () => {
     await tick()
     expect(t.lastSent().payload).toMatchObject({ apiKey: 'ac_daemon_key' })
     expect(t.lastSent().payload.serviceAccountToken).toBeUndefined()
-  })
-
-  it('names the org it serves, which is the one thing a cloud daemon’s identity cannot say', async () => {
-    const t = new FakeTransport()
-    const client = new CpClient(makeDeps(t, { orgId: 'org_a1b2c3', clusterIdentityToken: () => 'projected-token' }))
-    client.start()
-    await tick()
-    expect(t.lastSent().payload.orgId).toBe('org_a1b2c3')
-  })
-
-  it('sends no org on the API-key path, where the key already names one', async () => {
-    const t = new FakeTransport()
-    const client = new CpClient(
-      makeDeps(t, { token: 'ac_daemon_key', orgId: 'org_a1b2c3', clusterIdentityToken: () => undefined })
-    )
-    client.start()
-    await tick()
-    expect(t.lastSent().payload.orgId).toBeUndefined()
   })
 
   it('never echoes a daemonId on the identity path, where the CP re-derives it', async () => {

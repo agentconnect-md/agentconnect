@@ -96,15 +96,12 @@ export const RcVerify = z.discriminatedUnion('kind', [
     kind: z.literal('daemon-key'),
     credential: z.string().min(1)
   }),
-  // An in-cluster daemon's projected ServiceAccount token, reviewed against the org's
-  // cluster. Resolves to the same daemonId + orgId a key would.
+  // An in-cluster daemon's projected ServiceAccount token, reviewed against its cluster.
   z.object({
     kind: z.literal('daemon-token'),
     credential: z.string().min(1),
-    // The daemonId the dialing daemon claimed on `rd/hello`, forwarded unverified. A cloud
-    // daemon's identity names no org, so this is what selects which of its per-org daemon
-    // records the token is being presented for; the CP refuses a claim the identity does
-    // not own. Absent ⇒ an envelope daemon, whose namespace already names exactly one.
+    // The daemonId claimed on `rd/hello`, forwarded unverified. CP binds a cloud token's
+    // reviewed Pod UID to one member record and refuses any different claim.
     daemonId: z.string().uuid().optional()
   }),
   z.object({
@@ -897,6 +894,7 @@ export type RcMcpUnassign = z.infer<typeof RcMcpUnassign>
 // does not reuse rc/mcp-assign: memory plugin traffic is daemon-private and must
 // never enter an agent/model MCP enable-list. Secret header values are relay-only.
 export const RcMemoryConnectionAssign = z.object({
+  orgId: z.string().min(1).max(64).optional(),
   connectionId: z.string().uuid(),
   // Monotonic durable connection revision. Relays ignore stale assignments so
   // concurrent HTTP mutations cannot roll credentials/config back out of order.

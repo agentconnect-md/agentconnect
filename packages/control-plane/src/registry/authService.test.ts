@@ -178,7 +178,11 @@ describe('DaemonAuthService.authenticate — close-code contract', () => {
 })
 
 describe('DaemonAuthService.authenticate — the in-cluster token path', () => {
-  const verified = { daemonId: DaemonId('cccccccc-cccc-4ccc-8ccc-cccccccccccc'), orgId: OrgId('org_cluster') }
+  const verified = {
+    daemonId: DaemonId('cccccccc-cccc-4ccc-8ccc-cccccccccccc'),
+    scope: 'org' as const,
+    orgId: OrgId('org_cluster')
+  }
   const orgs = { slugById: async () => 'cluster-org' }
 
   function withIdentity(verify: ClusterDaemonIdentity['verify'], repo = makeRepo()): DaemonAuthService {
@@ -196,6 +200,7 @@ describe('DaemonAuthService.authenticate — the in-cluster token path', () => {
     expect(r.daemonId).toBe(verified.daemonId)
     expect(r.okFrame.sessionEpoch).toBe(7)
     expect(r.okFrame.orgSlug).toBe('cluster-org')
+    expect(r.okFrame.organizationMode).toBe('connection')
     // No key was presented, so nothing may be looked up or touched.
     expect(repo.findByHash).not.toHaveBeenCalled()
     expect(repo.touchLastUsed).not.toHaveBeenCalled()
@@ -235,17 +240,27 @@ describe('DaemonAuthService.authenticate — the in-cluster token path', () => {
     expect(r).toMatchObject({ ok: false, closeCode: 1011 })
   })
 
-  it('forwards the connection’s claim, so a cloud daemon’s socket can name its org', async () => {
+  it('forwards only the optional daemon id to the Kubernetes verifier', async () => {
     const claims: unknown[] = []
     const r = await withIdentity(async (_token, claim) => {
       claims.push(claim)
       return verified
-    }).authenticate(
-      { serviceAccountToken: 'projected', orgId: 'org_cluster', daemonId: verified.daemonId, agentVersion: '1' },
+    }).authenticate({ serviceAccountToken: 'projected', daemonId: verified.daemonId, agentVersion: '1' }, ctx)
+    expect(r).toMatchObject({ ok: true, daemonId: verified.daemonId })
+    expect(claims).toEqual([{ daemonId: verified.daemonId }])
+  })
+
+  it('authenticates an install-wide cloud daemon in frame-scoped organization mode', async () => {
+    const cloud = { daemonId: verified.daemonId, scope: 'install' as const }
+    const r = await withIdentity(async () => cloud).authenticate(
+      { serviceAccountToken: 'projected', agentVersion: '1' },
       ctx
     )
-    expect(r).toMatchObject({ ok: true, daemonId: verified.daemonId })
-    expect(claims).toEqual([{ orgId: 'org_cluster', daemonId: verified.daemonId }])
+    expect(r.ok).toBe(true)
+    if (!r.ok) throw new Error('expected ok')
+    expect(r.orgId).toBeNull()
+    expect(r.okFrame.organizationMode).toBe('frame')
+    expect(r.okFrame.orgSlug).toBeUndefined()
   })
 
   it('an echoed daemonId that disagrees with the identity → 4401', async () => {

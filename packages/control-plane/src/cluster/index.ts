@@ -9,9 +9,9 @@ export {
 export { AgentConnectOrgApi, type OrgResourceApi } from './org-api.js'
 export {
   ClusterDaemonIdentityService,
-  cloudIdentityOf,
   clusterIdentityOf,
-  parseServiceAccountSubject
+  parseServiceAccountSubject,
+  reviewedPodUid
 } from './daemon-identity.js'
 export { ClusterMaintenanceLoop, type ClusterMaintenanceWork } from './maintenance-loop.js'
 export { ClusterNamingError, orgResourceName, type ClusterEnvelopeStatus } from './spec.js'

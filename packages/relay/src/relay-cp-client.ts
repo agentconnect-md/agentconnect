@@ -167,9 +167,7 @@ export class RelayCpClient {
    * the browser webchat handshake (PR 3) resolve their credentials this way.
    * Usable only while READY; throws a retryable {@link WireError} otherwise.
    *
-   * `daemonId` is the id a dialing daemon claimed, forwarded unverified with a projected
-   * token: a cloud daemon holds one record per org, so it is what tells the CP which record
-   * the token is presented for. The CP refuses a claim the identity does not own.
+   * `daemonId` is forwarded unverified; CP requires it to match the reviewed install identity.
    */
   async verify(kind: RcVerify['kind'], credential: string, daemonId?: string): Promise<RcVerifyResult> {
     if (this.state !== 'READY' || !this.transport) {

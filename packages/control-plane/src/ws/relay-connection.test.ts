@@ -614,7 +614,7 @@ describe('RelayConnection FSM', () => {
     })
     await toReady(transport)
     // The claimed id travels with the token: a cloud daemon's identity names no org, so it
-    // is what says which of its per-org records this hop is for.
+    // is checked against the install-wide daemon record.
     const claimedId = '99999999-9999-4999-8999-999999999999'
     transport.feed('rc/verify', { kind: 'daemon-token', credential: 'projected', daemonId: claimedId })
     await Promise.resolve()

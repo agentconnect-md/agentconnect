@@ -189,6 +189,7 @@ export type MemoryPluginPin = z.infer<typeof MemoryPluginPin>
 
 const MemoryConnectionSpecBase = z
   .object({
+    orgId: z.string().min(1).max(64).optional(),
     connectionId: z.string().uuid(),
     revision: z.number().int().positive(),
     config: z.record(z.string(), z.unknown()),

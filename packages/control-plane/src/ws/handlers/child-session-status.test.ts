@@ -62,7 +62,9 @@ function fakeDeps(
       registry: { getUnscoped: async () => ({ id: ASKING_DAEMON, orgId: ORG }) },
       session: {
         getUnscoped: async () =>
-          'parent' in over ? over.parent : { id: PARENT_SESSION, daemonId: ASKING_DAEMON, agentId: CHILD_AGENT }
+          'parent' in over
+            ? over.parent
+            : { id: PARENT_SESSION, orgId: ORG, daemonId: ASKING_DAEMON, agentId: CHILD_AGENT }
       },
       agent: {
         getUnscoped: async () =>
@@ -89,7 +91,9 @@ describe('handleChildSessionStatus — cross-daemon child status (session-concep
     expect(request).toHaveBeenCalledWith(
       'session/child-status/probe',
       { parentSessionId: PARENT_SESSION, childSessionId: CHILD_SESSION },
-      { epoch: 7 }
+      { epoch: 7 },
+      undefined,
+      ORG
     )
   })
 

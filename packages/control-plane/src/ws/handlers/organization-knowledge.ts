@@ -3,7 +3,7 @@ import {
   ORGANIZATION_KNOWLEDGE_FEATURE,
   ORGANIZATION_SUGGESTION_REVIEW_FEATURE
 } from '@agentconnect.md/protocol'
-import { AgentId, DaemonId } from '../../domain/ids.js'
+import { AgentId, DaemonId, OrgId } from '../../domain/ids.js'
 import type { DaemonView } from '../../ports.js'
 import type { Handler } from './index.js'
 
@@ -148,19 +148,24 @@ export const handleOrganizationSuggestionsSync: Handler = async (frame, conn, de
   if (!isFrame('knowledge/suggestions/sync')(frame)) return
   const daemon = await featureDaemon(frame.id, conn, deps)
   if (!daemon) return
+  const orgId = frame.orgId ? OrgId(frame.orgId) : daemon.orgId
+  if (!orgId) {
+    conn.sendError(frame.id, 'SCOPE_DENIED', 'organization is required', false)
+    return
+  }
   const repo = deps.organizationKnowledge
   if (!repo) {
     conn.sendError(frame.id, 'INTERNAL', 'organization knowledge is unavailable', true)
     return
   }
-  const agents = await deps.agent.list(daemon.orgId)
+  const agents = await deps.agent.list(orgId)
   const allowed = new Set(
     agents.filter((agent) => agent.daemonId === DaemonId(conn.daemonId)).map((agent) => String(agent.id))
   )
   const proposed = frame.payload.suggestions.filter(
     (suggestion) => suggestion.state === 'proposed' && allowed.has(suggestion.sourceAgentId)
   )
-  const records = await repo.syncSuggestions(daemon.orgId, conn.daemonId, proposed)
+  const records = await repo.syncSuggestions(orgId, conn.daemonId, proposed)
   conn.replyTo(frame, 'knowledge/suggestions/sync/ok', {
     decisions: daemon.capabilities.features.includes(ORGANIZATION_SUGGESTION_REVIEW_FEATURE)
       ? records

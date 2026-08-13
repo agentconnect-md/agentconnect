@@ -27,14 +27,22 @@ export type LifecycleState = 'CONNECTING' | 'AUTHENTICATING' | 'REGISTERING' | '
 export interface ConnChannel {
   readonly daemonId: string
   /** Issue a fenced REQ and await its correlated REP. */
-  request<TReply = unknown>(type: string, payload: unknown, ext?: ControlExt, opts?: RequestOpts): Promise<TReply>
+  request<TReply = unknown>(
+    type: string,
+    payload: unknown,
+    ext?: ControlExt,
+    opts?: RequestOpts,
+    orgId?: string
+  ): Promise<TReply>
   /** Fire-and-forget EVT (C→D). */
-  send(type: string, payload: unknown, ext?: ControlExt): void
+  send(type: string, payload: unknown, ext?: ControlExt, orgId?: string): void
   close(code: number, reason: string): void
 }
 
 export interface DaemonConnState {
   daemonId: string
+  /** Null means the install-wide connection requires org context per scoped frame. */
+  orgId?: string | null
   conn: ConnChannel
   sessionEpoch: number // current fencing epoch (bumped each auth)
   state: LifecycleState
@@ -46,6 +54,11 @@ export interface DaemonConnState {
   reachable: boolean
   assignments: Set<string> // sessionKeyStr owned by this daemon
   launches: Map<string, { launchId: string; acpSessionId?: string; runtime: string }> // agentId → launch
+  orgByAgent?: Map<string, string>
+  orgByIntegration?: Map<string, string>
+  orgByCron?: Map<string, string>
+  orgByMcpServer?: Map<string, string>
+  orgByMemoryConnection?: Map<string, string>
 }
 
 /** A request was dispatched, but its daemon connection closed before a reply. */

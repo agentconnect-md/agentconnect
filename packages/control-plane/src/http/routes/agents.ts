@@ -965,7 +965,7 @@ export function agentRoutes(deps: HttpDeps) {
           for (const name of removed) {
             if (!byName.has(name)) continue
             const stillUsed = peers.some((a) => a.daemonId === daemonId && a.mcpServers.includes(name))
-            if (!stillUsed) await send(() => deps.control.mcpServerRemove(daemonId, name))
+            if (!stillUsed) await send(() => deps.control.mcpServerRemove(daemonId, orgId, name))
           }
         }
       } catch (err) {

@@ -118,7 +118,11 @@ function daemonRecord(over: Partial<ApiKeyRecord> = {}): ApiKeyRecord {
 }
 
 describe('RelayAuthService.verifyDaemonToken (rc/verify daemon-token)', () => {
-  const identity = { daemonId: DaemonId('cccccccc-cccc-4ccc-8ccc-cccccccccccc'), orgId: OrgId('org-cluster') }
+  const identity = {
+    daemonId: DaemonId('cccccccc-cccc-4ccc-8ccc-cccccccccccc'),
+    scope: 'org' as const,
+    orgId: OrgId('org-cluster')
+  }
 
   it('resolves a verified projected token to the same identity shape a key does', async () => {
     const svc = new RelayAuthService(codec, repo(null), clock, { HEARTBEAT_SEC: 15 }, { verify: async () => identity })
@@ -138,7 +142,7 @@ describe('RelayAuthService.verifyDaemonToken (rc/verify daemon-token)', () => {
     expect(await svc.verifyDaemonToken('projected')).toBeNull()
   })
 
-  it('forwards the claimed daemonId, which is how a cloud daemon names its record', async () => {
+  it('forwards the claimed daemonId for identity verification', async () => {
     const claims: unknown[] = []
     const svc = new RelayAuthService(
       codec,
@@ -152,7 +156,10 @@ describe('RelayAuthService.verifyDaemonToken (rc/verify daemon-token)', () => {
         }
       }
     )
-    expect(await svc.verifyDaemonToken('projected', identity.daemonId)).toEqual(identity)
+    expect(await svc.verifyDaemonToken('projected', identity.daemonId)).toEqual({
+      daemonId: identity.daemonId,
+      orgId: identity.orgId
+    })
     expect(claims).toEqual([{ daemonId: identity.daemonId }])
   })
 })

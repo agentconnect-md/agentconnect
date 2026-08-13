@@ -15,10 +15,7 @@
  *   3. on success → mint the next monotonic `sessionEpoch` via `EpochService`
  *      (persisted in C6) and return the `auth/ok` frame.
  *
- * The token path replaces steps 1–2 with one TokenReview against the cluster
- * (`ClusterDaemonIdentity`), which yields the same `{daemonId, orgId}` and joins step 3. An
- * envelope daemon's org comes from its namespace; a cloud daemon serves every org, so the
- * `orgId` on the frame is what picks the one this connection is for.
+ * TokenReview resolves an envelope to one org or a cloud Pod to one install-wide member.
  *
  * A DB error during lookup or the epoch bump closes `1011` (SERVER_INTERNAL) so the
  * daemon backs off and retries rather than treating a transient blip as a dead
@@ -69,11 +66,7 @@ export class DaemonAuthService implements DaemonAuth {
     if (!this.clusterIdentity) return { ok: false, closeCode: 4401, reason: 'AUTH_FAILED' }
     let verified: VerifiedClusterDaemon | null
     try {
-      // The claim is the connection's own statement of what it is for: a cloud daemon serves
-      // every org and so must say which one this socket is, while an envelope daemon's
-      // namespace already answered and its claim may only agree. The verifier decides which.
       verified = await this.clusterIdentity.verify(req.serviceAccountToken!, {
-        ...(req.orgId ? { orgId: req.orgId } : {}),
         ...(req.daemonId ? { daemonId: req.daemonId } : {})
       })
     } catch {
@@ -86,7 +79,7 @@ export class DaemonAuthService implements DaemonAuth {
     if (req.daemonId && req.daemonId !== verified.daemonId) {
       return { ok: false, closeCode: 4401, reason: 'AUTH_FAILED' }
     }
-    return this.mintEpoch(req, verified.daemonId, verified.orgId)
+    return this.mintEpoch(req, verified.daemonId, verified.scope === 'org' ? verified.orgId : null)
   }
 
   private async authenticateApiKey(req: AuthReq): Promise<AuthResult> {
@@ -127,13 +120,13 @@ export class DaemonAuthService implements DaemonAuth {
 
   /** The shared tail of both credentials: bump the fencing root and build `auth/ok`.
    *  A persistence failure must NOT crash the connection: 1011 → daemon retries. */
-  private async mintEpoch(req: AuthReq, daemonId: string, orgId: string, tokenFp?: string): Promise<AuthResult> {
+  private async mintEpoch(req: AuthReq, daemonId: string, orgId: string | null, tokenFp?: string): Promise<AuthResult> {
     const nowMs = this.clock.now()
     let sessionEpoch: bigint
     try {
       ;({ sessionEpoch } = await this.epoch.bumpSessionEpoch({
         daemonId: DaemonId(daemonId),
-        orgId: OrgId(orgId),
+        orgId: orgId ? OrgId(orgId) : null,
         agentVersion: req.agentVersion,
         ...(req.machineId ? { machineId: req.machineId } : {}),
         // Audit: ties this connection to the specific ApiKey row. A cluster daemon has no
@@ -146,19 +139,20 @@ export class DaemonAuthService implements DaemonAuth {
 
     // The org slug for the org-scoped console deep link. Best-effort: a DB blip here must
     // not fail an otherwise-good auth — the daemon just omits the org segment if absent.
-    const orgSlug = await this.orgs.slugById(OrgId(orgId)).catch(() => null)
+    const orgSlug = orgId ? await this.orgs.slugById(OrgId(orgId)).catch(() => null) : null
 
     const okFrame: AuthOk = {
       daemonId, // authoritative id (what the credential resolves to) — the daemon adopts this
       sessionEpoch: Number(sessionEpoch), // wire is a JS number; DB stores bigint
       heartbeatSec: this.config.HEARTBEAT_SEC,
       serverTime: new Date(nowMs).toISOString(),
+      organizationMode: orgId ? 'connection' : 'frame',
       ...(this.config.WEB_APP_URL ? { webAppUrl: this.config.WEB_APP_URL } : {}),
       ...(orgSlug ? { orgSlug } : {}),
       // A reconnecting daemon (resume present) is told to do a full register reconcile.
       ...(req.resume ? { resume: { accepted: false } } : {})
     }
 
-    return { ok: true, daemonId: DaemonId(daemonId), okFrame }
+    return { ok: true, daemonId: DaemonId(daemonId), orgId: orgId ? OrgId(orgId) : null, okFrame }
   }
 }

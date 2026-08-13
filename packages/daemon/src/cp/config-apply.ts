@@ -22,6 +22,7 @@ import type {
   IntegrationLeave,
   IntegrationLeaveOk,
   McpServerSpec,
+  McpServerRemove,
   MemoryConnectionSpec,
   Ack,
   Drain,
@@ -69,7 +70,7 @@ export interface ConfigApply {
   /** Add or replace a CP-pushed MCP server def in memory (mcpserver/upsert EVT). */
   applyMcpServerUpsert(spec: McpServerSpec): void
   /** Drop a CP-pushed MCP server def by name (mcpserver/remove EVT). */
-  applyMcpServerRemove(name: string): void
+  applyMcpServerRemove(remove: McpServerRemove): void
   /** Add or replace one daemon-private external-memory connection definition. */
   applyMemoryConnectionUpsert(spec: MemoryConnectionSpec): Promise<Ack>
   /** Drop one daemon-private external-memory connection definition. */

@@ -130,7 +130,7 @@ function driverFor(
 ) {
   return new K8sDriver({
     api: api.api as never,
-    orgId: 'org-1',
+    orgForAgent: () => 'org-1',
     warmPoolName: 'pool',
     connectChannel: awaitChannel
       ? async (record, _podIp, timeoutMs) => await awaitChannel(record.agentId, record.generation, timeoutMs)

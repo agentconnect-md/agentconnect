@@ -428,6 +428,7 @@ function frame<T extends FrameType>(type: T, payload: (typeof FRAME_SCHEMAS)[T])
     ts: z.string().datetime(),
     type: z.literal(type),
     corr: z.string().uuid().optional(),
+    orgId: z.string().min(1).max(64).optional(),
     payload
   })
 }
