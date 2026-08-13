@@ -30,6 +30,7 @@ interface SupervisedDial {
   endpoint: string
   stopped: boolean
   readySettled: boolean
+  inFlight?: ShimTransport
   current?: ShimConnection
   ready: Promise<ShimConnection>
   resolveReady: (connection: ShimConnection) => void
@@ -72,7 +73,7 @@ export class ShimDialer {
       existing.endpoint === endpoint &&
       existing.record.generation === record.generation
     ) {
-      return existing.current ? Promise.resolve(existing.current) : existing.ready
+      return existing.current ? Promise.resolve(existing.current) : this.awaitReady(existing, timeoutMs)
     }
     if (existing) this.stopDial(existing, 'superseded by a newer launch')
     let resolveReady: (connection: ShimConnection) => void = () => {}
@@ -92,7 +93,7 @@ export class ShimDialer {
     }
     this.dials.set(record.agentId, dial)
     void this.supervise(dial, timeoutMs)
-    return ready
+    return this.awaitReady(dial, timeoutMs)
   }
 
   connectionsFor(agentId: string): ShimConnection[] {
@@ -119,6 +120,8 @@ export class ShimDialer {
   private stopDial(dial: SupervisedDial, reason: string): void {
     if (dial.stopped) return
     dial.stopped = true
+    dial.inFlight?.close(4408, reason)
+    dial.inFlight = undefined
     dial.current?.close(reason)
     dial.current = undefined
     if (!dial.readySettled) {
@@ -133,11 +136,7 @@ export class ShimDialer {
     let first = true
     while (!dial.stopped) {
       try {
-        const transport = await (this.deps.dial ?? defaultDial)(dial.endpoint, {
-          subprotocol: SHIM_SUBPROTOCOL,
-          path: SHIM_WS_PATH
-        })
-        const { connection, closed } = await this.bind(transport, dial.record)
+        const { connection, closed } = await this.dialAndBind(dial, timeoutMs)
         if (dial.stopped) {
           connection.close('dial no longer current')
           return
@@ -151,7 +150,10 @@ export class ShimDialer {
         }
         this.deps.onConnection?.(connection)
         const close = await closed
-        if (dial.current === connection) dial.current = undefined
+        if (dial.current === connection) {
+          dial.current = undefined
+          this.resetReady(dial)
+        }
         this.registry.revokeIssued(connection.issuedCredential)
         if (dial.stopped) return
         this.deps.onConnectionLost?.(dial.record.agentId, `shim channel closed (${close.code})`)
@@ -174,6 +176,81 @@ export class ShimDialer {
         await this.delay(delay)
       }
     }
+  }
+
+  private dialAndBind(
+    dial: SupervisedDial,
+    timeoutMs: number
+  ): Promise<{ connection: ShimConnection; closed: Promise<{ code: number; reason: string }> }> {
+    const boundedMs = Math.max(1, timeoutMs)
+    let transport: ShimTransport | undefined
+    let timedOut = false
+    let timeoutHandle: ReturnType<Clock['setTimeout']> | undefined
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timeoutHandle = this.clock.setTimeout(() => {
+        timedOut = true
+        transport?.close(4408, 'binding timeout')
+        reject(new Error(`binding timed out after ${boundedMs}ms`))
+      }, boundedMs)
+    })
+    const attempt = (async () => {
+      transport = await (this.deps.dial ?? defaultDial)(dial.endpoint, {
+        subprotocol: SHIM_SUBPROTOCOL,
+        path: SHIM_WS_PATH
+      })
+      if (timedOut || dial.stopped) {
+        transport.close(4408, timedOut ? 'binding timeout' : 'dial no longer current')
+        throw new Error(timedOut ? `binding timed out after ${boundedMs}ms` : 'dial no longer current')
+      }
+      dial.inFlight = transport
+      try {
+        return await this.bind(transport, dial.record)
+      } finally {
+        if (dial.inFlight === transport) dial.inFlight = undefined
+      }
+    })()
+    return Promise.race([attempt, timeout]).finally(() => {
+      if (timeoutHandle !== undefined) this.clock.clearTimeout(timeoutHandle)
+    })
+  }
+
+  private awaitReady(dial: SupervisedDial, timeoutMs: number): Promise<ShimConnection> {
+    const boundedMs = Math.max(1, timeoutMs)
+    return new Promise((resolve, reject) => {
+      let settled = false
+      const timer = this.clock.setTimeout(() => {
+        if (settled) return
+        settled = true
+        dial.inFlight?.close(4408, 'binding timeout')
+        reject(new Error(`could not connect to sandbox shim: binding timed out after ${boundedMs}ms`))
+      }, boundedMs)
+      void dial.ready.then(
+        (connection) => {
+          if (settled) return
+          settled = true
+          this.clock.clearTimeout(timer)
+          resolve(connection)
+        },
+        (error: Error) => {
+          if (settled) return
+          settled = true
+          this.clock.clearTimeout(timer)
+          reject(error)
+        }
+      )
+    })
+  }
+
+  private resetReady(dial: SupervisedDial): void {
+    let resolveReady: (connection: ShimConnection) => void = () => {}
+    let rejectReady: (error: Error) => void = () => {}
+    dial.ready = new Promise<ShimConnection>((resolve, reject) => {
+      resolveReady = resolve
+      rejectReady = reject
+    })
+    dial.resolveReady = resolveReady
+    dial.rejectReady = rejectReady
+    dial.readySettled = false
   }
 
   private bind(

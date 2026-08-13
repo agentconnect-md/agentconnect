@@ -34,6 +34,14 @@ async function sandbox(options: { handle?: (capability: string, payload: unknown
   return { endpoint: `ws://127.0.0.1:${port}`, client }
 }
 
+async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error('condition not met in time')
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+}
+
 function record(generation = 1): SpawnRecord {
   return {
     agentId: 'agent-a',
@@ -96,6 +104,37 @@ describe('sandbox shim dial-in', () => {
     dialers.push(dialer)
 
     await expect(dialer.connect(endpoint, record(), 1)).rejects.toThrow(/pod identity|not accepted|connect/)
+    expect(dialer.connectionsFor('agent-a')).toEqual([])
+  })
+
+  it('waits for the replacement connection while a bound channel is reconnecting', async () => {
+    const { endpoint } = await sandbox()
+    const dialer = new ShimDialer({
+      verifier: {
+        reviewToken: async () => ({ authenticated: true, podName: 'sandbox-pod-1', podUid: 'pod-uid-1' })
+      },
+      log: { info: () => {}, warn: () => {} }
+    })
+    dialers.push(dialer)
+
+    const first = await dialer.connect(endpoint, record(), 8_000)
+    first.close('force reconnect')
+    await waitFor(() => dialer.connectionsFor('agent-a').length === 0)
+
+    const replacement = await dialer.connect(endpoint, record(), 8_000)
+    expect(replacement).not.toBe(first)
+    expect(dialer.connectionsFor('agent-a')).toEqual([replacement])
+  }, 10_000)
+
+  it('times out an accepted socket whose identity verification never completes', async () => {
+    const { endpoint } = await sandbox()
+    const dialer = new ShimDialer({
+      verifier: { reviewToken: () => new Promise(() => {}) },
+      log: { info: () => {}, warn: () => {} }
+    })
+    dialers.push(dialer)
+
+    await expect(dialer.connect(endpoint, record(), 25)).rejects.toThrow(/binding timed out/)
     expect(dialer.connectionsFor('agent-a')).toEqual([])
   })
 })
