@@ -29,7 +29,8 @@ import {
   settle,
   userPost
 } from '../../packages/daemon/test/webchat-continuation-fixture.js'
-import { scenariosFor, type ParityScenario } from '../parity/spec.js'
+import { selectTurnTargets } from '../../packages/relay/src/relay-browser-connection.js'
+import { declaredOutcome, scenariosFor, type ParityScenario } from '../parity/spec.js'
 import type { RdWebchatPost } from '../../packages/protocol/src/index.js'
 
 const P1 = 'bot-a'
@@ -91,6 +92,40 @@ function injectTurn(
   )
 }
 
+/**
+ * Play the relay's §5.2 user-turn fan-out for a target set the PRODUCTION
+ * choice (`selectTurnTargets`) computed: a pre-addressed `turn` frame per
+ * target, and a transcript-only user `context` copy to every other roster
+ * member — exactly what `RelayBrowserConnection.sendTurn` emits.
+ */
+function playRelayUserTurn(
+  leg: WebchatLeg,
+  roster: readonly string[],
+  targets: readonly string[],
+  text: string,
+  options: { mentions?: string[]; postId: string; at: number; msgPrefix: string }
+): void {
+  for (const [index, agentId] of targets.entries()) {
+    expect(
+      injectTurn(leg, agentId, text, {
+        msgId: `${options.msgPrefix}-t${index}`,
+        ...(options.mentions !== undefined ? { mentions: options.mentions } : {}),
+        postId: options.postId,
+        at: options.at
+      })
+    ).toMatchObject({ accepted: true })
+  }
+  for (const [index, peer] of roster.filter((agentId) => !targets.includes(agentId)).entries()) {
+    ;(leg.daemon as any).handleRelayMsg(
+      rd(
+        { op: 'context', post: userPost(CONV, text, options.at, options.postId) },
+        { agentId: peer, msgId: `${options.msgPrefix}-c${index}` }
+      ),
+      () => {}
+    )
+  }
+}
+
 /** Reply rows a given sender committed into the shared conversation log. */
 function transcriptRowsBy(leg: WebchatLeg, sender: string): unknown[] {
   return (leg.daemon as any).store
@@ -103,50 +138,44 @@ const drivers: Record<string, (scenario: ParityScenario) => Promise<void>> = {
   // (every participant gets a pre-addressed `turn` frame); mention-narrowing
   // reduces the set to the named participants, and a user post's `context`
   // copy to a non-target never activates.
-  'human-kickoff-activation': async () => {
+  'human-kickoff-activation': async (scenario) => {
+    // The spec is load-bearing: editing this scenario's declared outcome
+    // fails this pin; changing the behavior fails the measured asserts below.
+    expect(declaredOutcome(scenario.expect.webchat!)).toEqual({ activates: 'roster' })
     const leg = await startLeg([P1, P2, REF], {
       [P1]: () => NO_RESPONSE,
       [P2]: () => NO_RESPONSE,
       [REF]: () => NO_RESPONSE
     })
+    const roster = [P1, P2, REF]
     try {
-      // Unnarrowed kickoff → the relay addresses every roster member.
-      for (const [agentId, msgId] of [
-        [P1, 't-a'],
-        [P2, 't-b'],
-        [REF, 't-c']
-      ] as const) {
-        expect(injectTurn(leg, agentId, 'hello everyone', { msgId })).toMatchObject({ accepted: true })
-      }
+      // Unnarrowed kickoff: the PRODUCTION choice (relay `selectTurnTargets`)
+      // picks the whole roster, so every member gets a `turn` frame.
+      const unnarrowed = selectTurnTargets(roster, {})
+      expect(unnarrowed).toEqual({ valid: roster, invalid: [] })
+      playRelayUserTurn(leg, roster, unnarrowed.valid, 'hello everyone', {
+        postId: KICKOFF_TURN,
+        at: 1_000,
+        msgPrefix: 'kick'
+      })
       await vi.waitFor(() => {
         expect(leg.prompts.get(P1)).toHaveLength(1)
         expect(leg.prompts.get(P2)).toHaveLength(1)
         expect(leg.prompts.get(REF)).toHaveLength(1)
       }, WAIT)
 
-      // Mention-narrowed follow-up → only the named participant activates;
-      // the others get the user post as context, which never activates.
+      // Mention-narrowed follow-up: the production choice reduces the set to
+      // the named participant; the others get the user post as a `context`
+      // copy, which never activates.
+      const narrowed = selectTurnTargets(roster, { mentions: [P1] })
+      expect(narrowed).toEqual({ valid: [P1], invalid: [] })
       const narrowedId = '11111111-0000-4000-8000-000000000001'
-      expect(
-        injectTurn(leg, P1, 'just you, player one', {
-          msgId: 't-narrow',
-          mentions: [P1],
-          postId: narrowedId,
-          at: 2_000
-        })
-      ).toMatchObject({ accepted: true })
-      for (const [peer, msgId] of [
-        [P2, 'uctx-b'],
-        [REF, 'uctx-c']
-      ] as const) {
-        ;(leg.daemon as any).handleRelayMsg(
-          rd(
-            { op: 'context', post: userPost(CONV, 'just you, player one', 2_000, narrowedId) },
-            { agentId: peer, msgId }
-          ),
-          () => {}
-        )
-      }
+      playRelayUserTurn(leg, roster, narrowed.valid, 'just you, player one', {
+        mentions: [P1],
+        postId: narrowedId,
+        at: 2_000,
+        msgPrefix: 'narrow'
+      })
       await vi.waitFor(() => expect(leg.prompts.get(P1)).toHaveLength(2), WAIT)
       await settle()
       expect(leg.prompts.get(P2)).toHaveLength(1)
@@ -157,7 +186,10 @@ const drivers: Record<string, (scenario: ParityScenario) => Promise<void>> = {
   },
 
   // (b) A committed agent post wakes every other participant, never its author.
-  'agent-continuation-minus-author': async () => {
+  'agent-continuation-minus-author': async (scenario) => {
+    // The spec is load-bearing: editing this scenario's declared outcome
+    // fails this pin; changing the behavior fails the measured asserts below.
+    expect(declaredOutcome(scenario.expect.webchat!)).toEqual({ activates: 'participants-minus-author' })
     const leg = await startLeg([P1, P2, REF], {
       [P1]: (text) => (/kick off/.test(text) ? 'the one committed post' : NO_RESPONSE),
       [P2]: () => NO_RESPONSE,
@@ -190,7 +222,10 @@ const drivers: Record<string, (scenario: ParityScenario) => Promise<void>> = {
 
   // (c) A context frame mis-addressed to the post's own author is dropped —
   // no prompt, no rendezvous record.
-  'author-never-self-activates': async () => {
+  'author-never-self-activates': async (scenario) => {
+    // The spec is load-bearing: editing this scenario's declared outcome
+    // fails this pin; changing the behavior fails the measured asserts below.
+    expect(declaredOutcome(scenario.expect.webchat!)).toEqual({ activates: 'nobody' })
     const leg = await startLeg([P1], { [P1]: () => 'should never run' })
     try {
       const post = agentPost(CONV, P1, 'my own words', 2_000, '00000003-0000-4000-8000-000000000003', 0)
@@ -205,7 +240,10 @@ const drivers: Record<string, (scenario: ParityScenario) => Promise<void>> = {
 
   // (d) Exactly-once per (post, target): a re-fanned identical copy under a
   // fresh relay msgId is absorbed by the durable rendezvous.
-  'explicit-mention-exactly-once': async () => {
+  'explicit-mention-exactly-once': async (scenario) => {
+    // The spec is load-bearing: editing this scenario's declared outcome
+    // fails this pin; changing the behavior fails the measured asserts below.
+    expect(declaredOutcome(scenario.expect.webchat!)).toEqual({ activates: 'named-peer-exactly-once' })
     const leg = await startLeg([P1], { [P1]: () => NO_RESPONSE })
     try {
       seedCallPolicy(leg.daemon, [P1, P2]) // the author lives on another daemon — only the edge matters
@@ -222,7 +260,13 @@ const drivers: Record<string, (scenario: ParityScenario) => Promise<void>> = {
 
   // (e) Streaming never routes: while the author is still generating nothing
   // fans out and no peer wakes; the committed post is what activates.
-  'streaming-never-routes': async () => {
+  'streaming-never-routes': async (scenario) => {
+    // The spec is load-bearing: editing this scenario's declared outcome
+    // fails this pin; changing the behavior fails the measured asserts below.
+    expect(declaredOutcome(scenario.expect.webchat!)).toEqual({
+      activates: 'named-peer-exactly-once',
+      streamingNeverRoutes: true
+    })
     let releaseP1!: () => void
     const p1Blocked = new Promise<void>((resolve) => (releaseP1 = resolve))
     const leg = await startLeg([P1, P2], {
@@ -251,8 +295,13 @@ const drivers: Record<string, (scenario: ParityScenario) => Promise<void>> = {
   // at the cap is refused with a recorded hop_limit reason. (Declared
   // divergence: channels ALSO charge the loop guard, which binds first.)
   'hop-transition-and-refusal': async (scenario) => {
+    // The spec is load-bearing: editing this scenario's declared outcome
+    // fails this pin; changing the behavior fails the measured asserts below.
+    expect(declaredOutcome(scenario.expect.webchat!)).toEqual({
+      activates: 'participants-minus-author',
+      refusal: { reason: 'hop_limit', afterEdges: MAX_AGENT_CALL_HOPS - 1 }
+    })
     const refusal = scenario.expect.webchat!.refusal!
-    expect(refusal).toEqual({ reason: 'hop_limit', afterEdges: MAX_AGENT_CALL_HOPS - 1 })
     let n = 0
     const always = () => String(++n)
     const leg = await startLeg([P1, P2], { [P1]: always, [P2]: always })
@@ -277,7 +326,13 @@ const drivers: Record<string, (scenario: ParityScenario) => Promise<void>> = {
 
   // (g) A silent decline absorbs the wake: no post, no transcript reply row,
   // nothing further fans out.
-  'silent-decline-absorbs-wake': async () => {
+  'silent-decline-absorbs-wake': async (scenario) => {
+    // The spec is load-bearing: editing this scenario's declared outcome
+    // fails this pin; changing the behavior fails the measured asserts below.
+    expect(declaredOutcome(scenario.expect.webchat!)).toEqual({
+      activates: 'participants-minus-author',
+      silentDeclinePostsNothing: true
+    })
     const leg = await startLeg([P1, REF], {
       [P1]: (text) => (/kick off/.test(text) ? 'observed post' : NO_RESPONSE),
       [REF]: () => NO_RESPONSE
@@ -299,7 +354,10 @@ const drivers: Record<string, (scenario: ParityScenario) => Promise<void>> = {
   // (i) Fail closed on an unverifiable author: an agent post with no usable
   // depth stamp (pre-parity daemon, or a claim the relay could not bind and
   // therefore stripped — §5.2a) is transcript-only.
-  'unverified-author-no-agent-rungs': async () => {
+  'unverified-author-no-agent-rungs': async (scenario) => {
+    // The spec is load-bearing: editing this scenario's declared outcome
+    // fails this pin; changing the behavior fails the measured asserts below.
+    expect(declaredOutcome(scenario.expect.webchat!)).toEqual({ activates: 'nobody' })
     const leg = await startLeg([P1], { [P1]: () => 'should never run' })
     try {
       seedCallPolicy(leg.daemon, [P1, P2])

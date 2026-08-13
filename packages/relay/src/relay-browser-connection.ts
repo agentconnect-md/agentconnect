@@ -170,6 +170,37 @@ export function parseBrowserFrame(msg: unknown, user: string): ParsedBrowserOp |
   }
 }
 
+/**
+ * Which participants one user turn ACTIVATES (pure — the production choice,
+ * exported so the activation parity suite exercises this exact seam rather
+ * than a re-implementation; evals/parity/spec.ts `human-kickoff-activation`).
+ *
+ * Conversation membership is a STANDING mention (webchat-multi-agents.md
+ * §4.2): an unmentioned message activates the WHOLE roster — each agent may
+ * still decline via the no-response contract — while explicit @mentions (or an
+ * explicit `targets` list) narrow the turn to the named participants.
+ *
+ * `valid` preserves the chosen list's order filtered to roster members;
+ * `invalid` are the chosen non-members, each of which is nacked
+ * `not_participant`. Roster members outside `valid` receive the turn as a
+ * transcript-only `context` copy instead.
+ */
+export function selectTurnTargets(
+  roster: readonly string[],
+  options: { mentions?: readonly string[]; requestedTargets?: readonly string[] } = {}
+): { valid: string[]; invalid: string[] } {
+  const chosen = options.requestedTargets?.length
+    ? options.requestedTargets
+    : options.mentions?.length
+      ? options.mentions
+      : roster
+  const members = new Set(roster)
+  return {
+    valid: chosen.filter((agentId) => members.has(agentId)),
+    invalid: chosen.filter((agentId) => !members.has(agentId))
+  }
+}
+
 export class RelayBrowserConnection implements ChatSink {
   private closed = false
   private readonly remoteMcp?: Readonly<WebchatRemoteMcpEntitlement>
@@ -267,23 +298,16 @@ export class RelayBrowserConnection implements ChatSink {
 
   /** Fan one user turn out to its targeted participants + context to the rest. */
   private async sendTurn(op: Extract<RelayWebchatOp, { op: 'turn' }>, requestedTargets?: string[]): Promise<void> {
-    // Conversation membership is a STANDING mention (webchat-multi-agents.md
-    // §4.2): an unmentioned message activates the WHOLE roster — each agent may
-    // still decline via the no-response contract — while explicit @mentions (or
-    // an explicit `targets` list) narrow the turn to the named participants.
-    const targets = requestedTargets?.length
-      ? requestedTargets
-      : op.mentions?.length
-        ? op.mentions
-        : [...this.byAgentId.keys()]
+    const { valid, invalid } = selectTurnTargets([...this.byAgentId.keys()], {
+      ...(op.mentions !== undefined ? { mentions: op.mentions } : {}),
+      ...(requestedTargets !== undefined ? { requestedTargets } : {})
+    })
     const turnId = op.turnId ?? randomUUID()
     this.lastPostAt = Math.max(Date.now(), this.lastPostAt + 1)
     const post = { postId: randomUUID(), at: this.lastPostAt }
-    const invalid = targets.filter((t) => !this.byAgentId.has(t))
     for (const t of invalid) {
       this.send({ type: 'ack', ack: { accepted: false, turnId, agentId: t, reason: 'not_participant' } })
     }
-    const valid = targets.filter((t) => this.byAgentId.has(t))
     if (valid.length === 0) return
 
     const turn: RelayWebchatOp = { ...op, turnId, post }

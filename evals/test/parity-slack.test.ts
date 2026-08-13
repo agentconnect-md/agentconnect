@@ -16,7 +16,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest'
 import { MAX_AGENT_CALL_HOPS } from '../../packages/protocol/src/consts.js'
-import { AUTOMATIC_TURNS_PER_WINDOW, scenariosFor, type ParityScenario } from '../parity/spec.js'
+import { AUTOMATIC_TURNS_PER_WINDOW, declaredOutcome, scenariosFor, type ParityScenario } from '../parity/spec.js'
 import { RoutingFixture, type RoutingScriptContext } from './routing-fixture.js'
 
 let fixture: RoutingFixture | undefined
@@ -48,7 +48,10 @@ const drivers: Record<string, (scenario: ParityScenario) => Promise<void>> = {
   // mentioned agent; the other channel member stays idle even after the
   // author's (unmentioning) reply echoes back. DECLARED divergence from the
   // webchat roster convention — see the spec entry.
-  'human-kickoff-activation': async () => {
+  'human-kickoff-activation': async (scenario) => {
+    // The spec is load-bearing: editing this scenario's declared outcome
+    // fails this pin; changing the behavior fails the measured asserts below.
+    expect(declaredOutcome(scenario.expect.slack!)).toEqual({ activates: 'mentioned-only' })
     const leg = await startRoom({
       agent1: (ctx) => {
         if (/HELLO ROOM/.test(ctx.text)) ctx.reply('hello back, no mentions here')
@@ -65,7 +68,10 @@ const drivers: Record<string, (scenario: ParityScenario) => Promise<void>> = {
   // (b) #549: a verified agent-authored reply naming NOBODY continues the
   // conversation — the thread's other participant is woken exactly once, the
   // author is excluded.
-  'agent-continuation-minus-author': async () => {
+  'agent-continuation-minus-author': async (scenario) => {
+    // The spec is load-bearing: editing this scenario's declared outcome
+    // fails this pin; changing the behavior fails the measured asserts below.
+    expect(declaredOutcome(scenario.expect.slack!)).toEqual({ activates: 'participants-minus-author' })
     const leg = await startRoom({
       agent1: (ctx) => {
         if (/START/.test(ctx.text)) ctx.reply(`<@${fixture!.botUserId('agent2')}> please review the rollout`)
@@ -89,7 +95,10 @@ const drivers: Record<string, (scenario: ParityScenario) => Promise<void>> = {
 
   // (c) The author never self-activates, even with its own mention token in
   // the finalized reply.
-  'author-never-self-activates': async () => {
+  'author-never-self-activates': async (scenario) => {
+    // The spec is load-bearing: editing this scenario's declared outcome
+    // fails this pin; changing the behavior fails the measured asserts below.
+    expect(declaredOutcome(scenario.expect.slack!)).toEqual({ activates: 'nobody' })
     const leg = await startRoom({
       agent1: (ctx) => {
         if (/SAY SELF/.test(ctx.text)) ctx.reply(`<@${fixture!.botUserId('agent1')}> note to self`)
@@ -105,7 +114,10 @@ const drivers: Record<string, (scenario: ParityScenario) => Promise<void>> = {
 
   // (d) One finalized reply naming one peer → exactly one admitted delivery
   // for it; the streaming echo and any duplicate collapse in the rendezvous.
-  'explicit-mention-exactly-once': async () => {
+  'explicit-mention-exactly-once': async (scenario) => {
+    // The spec is load-bearing: editing this scenario's declared outcome
+    // fails this pin; changing the behavior fails the measured asserts below.
+    expect(declaredOutcome(scenario.expect.slack!)).toEqual({ activates: 'named-peer-exactly-once' })
     const leg = await startRoom({
       agent1: (ctx) => {
         if (/START/.test(ctx.text)) ctx.reply(`<@${fixture!.botUserId('agent2')}> please review the rollout`)
@@ -125,7 +137,13 @@ const drivers: Record<string, (scenario: ParityScenario) => Promise<void>> = {
 
   // (e) Streaming never routes: every streaming echo admission is refused;
   // only the response-closing (finalized) edit routes, once.
-  'streaming-never-routes': async () => {
+  'streaming-never-routes': async (scenario) => {
+    // The spec is load-bearing: editing this scenario's declared outcome
+    // fails this pin; changing the behavior fails the measured asserts below.
+    expect(declaredOutcome(scenario.expect.slack!)).toEqual({
+      activates: 'named-peer-exactly-once',
+      streamingNeverRoutes: true
+    })
     const leg = await startRoom({
       agent1: (ctx) => {
         if (/START/.test(ctx.text)) ctx.reply(`<@${fixture!.botUserId('agent2')}> please review the rollout`)
@@ -149,8 +167,13 @@ const drivers: Record<string, (scenario: ParityScenario) => Promise<void>> = {
   // (declared divergence; collaboration-arena-baseline.md §6.1): 16 edges,
   // then a recorded `gated` refusal with hop budget to spare.
   'hop-transition-and-refusal': async (scenario) => {
+    // The spec is load-bearing: editing this scenario's declared outcome
+    // fails this pin; changing the behavior fails the measured asserts below.
+    expect(declaredOutcome(scenario.expect.slack!)).toEqual({
+      activates: 'participants-minus-author',
+      refusal: { reason: 'automatic_turn_budget', afterEdges: AUTOMATIC_TURNS_PER_WINDOW * 2 }
+    })
     const refusal = scenario.expect.slack!.refusal!
-    expect(refusal).toEqual({ reason: 'automatic_turn_budget', afterEdges: AUTOMATIC_TURNS_PER_WINDOW * 2 })
     const script = (self: 'agent1' | 'agent2') => (ctx: RoutingScriptContext) => {
       const other = self === 'agent1' ? 'agent2' : 'agent1'
       const numbers = [...ctx.text.matchAll(/your turn (\d+)/g)]
@@ -181,7 +204,13 @@ const drivers: Record<string, (scenario: ParityScenario) => Promise<void>> = {
 
   // (g) A silent decline absorbs the wake: the woken participant posts
   // nothing, and nothing further fans out from its silent turn.
-  'silent-decline-absorbs-wake': async () => {
+  'silent-decline-absorbs-wake': async (scenario) => {
+    // The spec is load-bearing: editing this scenario's declared outcome
+    // fails this pin; changing the behavior fails the measured asserts below.
+    expect(declaredOutcome(scenario.expect.slack!)).toEqual({
+      activates: 'participants-minus-author',
+      silentDeclinePostsNothing: true
+    })
     const leg = await startRoom({
       agent1: (ctx) => {
         if (/START/.test(ctx.text)) ctx.reply(`<@${fixture!.botUserId('agent2')}> please review the rollout`)
@@ -206,7 +235,10 @@ const drivers: Record<string, (scenario: ParityScenario) => Promise<void>> = {
 
   // (h) needsReply round trip: the child's report wakes the parent session
   // exactly once, and the report body is never published anywhere.
-  'needs-reply-round-trip': async () => {
+  'needs-reply-round-trip': async (scenario) => {
+    // The spec is load-bearing: editing this scenario's declared outcome
+    // fails this pin; changing the behavior fails the measured asserts below.
+    expect(declaredOutcome(scenario.expect.slack!)).toEqual({ activates: 'parent-exactly-once' })
     const leg = await startRoom({
       agent1: async (ctx) => {
         const wake = /WAKE ([0-9a-f-]{36})/.exec(ctx.text)
@@ -249,7 +281,10 @@ const drivers: Record<string, (scenario: ParityScenario) => Promise<void>> = {
   // bot message never activates through the implicit agent rungs (no thread
   // affinity, no fan-out) — while an explicit mention from it still activates
   // on Slack, whose manifest admits bot senders.
-  'unverified-author-no-agent-rungs': async () => {
+  'unverified-author-no-agent-rungs': async (scenario) => {
+    // The spec is load-bearing: editing this scenario's declared outcome
+    // fails this pin; changing the behavior fails the measured asserts below.
+    expect(declaredOutcome(scenario.expect.slack!)).toEqual({ activates: 'nobody' })
     const leg = await startRoom({
       agent1: (ctx) => {
         if (/START/.test(ctx.text)) ctx.reply('anchored in this thread')

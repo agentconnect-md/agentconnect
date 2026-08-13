@@ -5,7 +5,7 @@
  * docs/designs/activation-parity.md.
  */
 import { describe, expect, it } from 'vitest'
-import { PARITY_SCENARIOS, PARITY_SURFACES } from '../parity/spec.js'
+import { PARITY_SCENARIOS, PARITY_SURFACES, declaredOutcome } from '../parity/spec.js'
 
 describe('activation parity spec', () => {
   it('scenario ids are unique', () => {
@@ -39,9 +39,9 @@ describe('activation parity spec', () => {
         const expectation = scenario.expect[surface]
         if (expectation === undefined) return []
         // Compare the outcome fields that define parity; notes are per-surface
-        // mechanics footnotes and may legitimately differ.
-        const { notes: _notes, ...outcome } = expectation
-        return [JSON.stringify(outcome)]
+        // mechanics footnotes and may legitimately differ. Same shape every
+        // leg driver pins with an exact toEqual.
+        return [JSON.stringify(declaredOutcome(expectation))]
       })
       const diverges = new Set(expectations).size > 1
       if (diverges) {

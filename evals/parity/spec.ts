@@ -277,3 +277,18 @@ export const PARITY_SCENARIOS: readonly ParityScenario[] = [
 export function scenariosFor(surface: ParitySurface): readonly ParityScenario[] {
   return PARITY_SCENARIOS.filter((scenario) => scenario.expect[surface] !== undefined)
 }
+
+/**
+ * The COMPARABLE outcome of an expectation — every field except `notes`, which
+ * is commentary rather than contract.
+ *
+ * Every leg driver pins `declaredOutcome(scenario.expect[surface])` with an
+ * exact `toEqual` before demonstrating the behavior, so the spec is
+ * load-bearing in both directions: editing an expectation here fails the
+ * driver that demonstrates the old outcome, and a behavior change fails the
+ * driver's measured assertions. The divergence guard compares the same shape.
+ */
+export function declaredOutcome(expectation: SurfaceExpectation): Omit<SurfaceExpectation, 'notes'> {
+  const { notes: _notes, ...outcome } = expectation
+  return outcome
+}

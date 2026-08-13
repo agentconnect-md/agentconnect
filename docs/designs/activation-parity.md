@@ -53,7 +53,11 @@ One surface-agnostic scenario spec, several per-surface legs:
   Slack-shaped room, scripted hosts, production-style platform echo.
 - **Webchat leg:** `evals/test/parity-webchat.test.ts` — the daemon-level seam
   the #906 tests drive (`handleRelayMsg` + played relay fan-out), via the
-  shared fixture `packages/daemon/test/webchat-continuation-fixture.ts`.
+  shared fixture `packages/daemon/test/webchat-continuation-fixture.ts`. The
+  kickoff scenario computes its turn-vs-context split with the relay's
+  PRODUCTION target choice (`selectTurnTargets`,
+  `packages/relay/src/relay-browser-connection.ts`), so the roster-wide vs
+  mention-narrowed decision is the deployed code, not a re-implementation.
 - **Spec guard:** `evals/test/parity-spec.test.ts` — the spec itself stays
   well-formed (unique ids, expectation xor declared-not-applicable per surface,
   undeclared cross-surface differences fail, citations point into
@@ -61,8 +65,12 @@ One surface-agnostic scenario spec, several per-surface legs:
 
 Each leg iterates the spec and must implement a driver for every scenario the
 spec declares for its surface — a scenario added to the spec without a driver
-fails the leg's coverage guard. All of it is credential-free and runs in the
-Unit Test CI gate: `pnpm eval:parity`.
+fails the leg's coverage guard. Every driver additionally **pins its
+scenario's declared outcome with an exact `toEqual`**
+(`declaredOutcome(scenario.expect[surface])`), so the spec is load-bearing in
+both directions: editing an expectation fails the driver that demonstrates the
+old outcome, and a behavior change fails the driver's measured assertions. All
+of it is credential-free and runs in the Unit Test CI gate: `pnpm eval:parity`.
 
 The relay's arbitrate ladder has no leg yet; it is pinned by its own unit suite
 (`packages/relay/src/bot-arbitration.test.ts`) and inherits the daemon
