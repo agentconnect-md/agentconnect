@@ -181,7 +181,10 @@ export function prepareRealWebchatRoot(seats: readonly WebchatSeat[], options: R
     }
     const referee = seats.find((seat) => seat.alias === options.refereeAlias)
     if (!referee) throw new Error(`no seat named "${options.refereeAlias}" for the referee`)
-    writeSeatAgent(root, referee, { runtime: 'ac-puppet' })
+    // `none` memory needs a runtime-verified off-switch, which the puppet
+    // adapter (an unregistered runtime) cannot offer — `managed` is our own
+    // no-op-for-the-adapter store and the evaluation profile keeps memory off.
+    writeSeatAgent(root, referee, { runtime: 'ac-puppet' }, 'managed')
     return {
       root,
       secrets: [...new Set([...secrets, ...environmentSecrets()].filter((secret) => secret.length >= 4))],
@@ -193,7 +196,12 @@ export function prepareRealWebchatRoot(seats: readonly WebchatSeat[], options: R
   }
 }
 
-function writeSeatAgent(root: string, seat: WebchatSeat, template: Record<string, unknown>): void {
+function writeSeatAgent(
+  root: string,
+  seat: WebchatSeat,
+  template: Record<string, unknown>,
+  memoryProvider: 'none' | 'managed' = 'none'
+): void {
   const agentDir = join(root, 'agents', seat.agentId)
   mkdirSync(agentDir, { recursive: true, mode: 0o700 })
   const workspacePath = join(agentDir, 'workspace')
@@ -208,7 +216,7 @@ function writeSeatAgent(root: string, seat: WebchatSeat, template: Record<string
     integrations: [],
     crons: [],
     mcpServers: [],
-    memory: { provider: 'none' },
+    memory: { provider: memoryProvider },
     workspace: { mode: 'from-scratch', path: workspacePath, gitBranch: 'main', pullOnNewSession: true, skills: [] },
     output: { mode: 'low', showFooter: false, showStatusBar: false }
   }
