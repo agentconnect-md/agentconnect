@@ -92,7 +92,6 @@ async function clusterUnderTest(options: { credentialTtlMs?: number } = {}): Pro
   const server = new ShimServer()
   servers.push(server)
   const port = await server.start(0, '127.0.0.1')
-  let driver: K8sDriver
   const dialer = new ShimDialer({
     verifier: { reviewToken: async () => ({ authenticated: true, podName: 'runtime-1', podUid: 'pod-uid-1' }) },
     now: () => Date.now(),
@@ -120,7 +119,7 @@ async function clusterUnderTest(options: { credentialTtlMs?: number } = {}): Pro
   clients.push(client)
   void client.start()
 
-  driver = new K8sDriver({
+  const driver = new K8sDriver({
     api: api.api as never,
     orgId: 'org-1',
     warmPoolName: 'pool',
