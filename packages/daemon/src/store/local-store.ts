@@ -1273,7 +1273,7 @@ export class LocalStore {
       .map((row) => row.acpSessionId)
   }
 
-  currentTranscriptRevision(): number {
+  currentTranscriptRevision(_agentId?: string): number {
     return this.transcriptRevision
   }
 

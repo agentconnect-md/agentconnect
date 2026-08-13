@@ -20,8 +20,6 @@ export const DataPlaneConfigSchema = z
   .object({
     version: z.literal(1),
     databaseUrl: PostgresUrl,
-    /** CP-issued org locator; schema isolation makes a missing org predicate impossible. */
-    schema: z.string().regex(/^[a-z][a-z0-9_]{0,62}$/),
     maxConnections: z.number().int().min(1).max(32).default(4)
   })
   .strict()

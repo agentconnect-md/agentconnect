@@ -2807,11 +2807,14 @@ export class Daemon {
     }
     if (this.k8s) {
       const openDataPlane = this.opts.openDataPlane ?? openMountedPostgresDataPlane
-      this.dataPlane = await openDataPlane((error) => {
-        this.log.error(`data-plane: PostgreSQL persistence failed — ${formatErr(error)}`)
-        this.draining = true
-        this.requestExit(1)
-      })
+      this.dataPlane = await openDataPlane(
+        (agentId) => this.cpCollab.orgForAgent(agentId),
+        (error) => {
+          this.log.error(`data-plane: PostgreSQL persistence failed — ${formatErr(error)}`)
+          this.draining = true
+          this.requestExit(1)
+        }
+      )
       // A pod's terminationGracePeriodSeconds must exceed this, or the kubelet SIGKILLs
       // mid-drain and the graceful window is a promise the deployment cannot keep. The
       // daemon cannot read its own grace period (it has no pod read), so it states the
