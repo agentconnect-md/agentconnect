@@ -1,5 +1,14 @@
 import { afterAll, describe, expect, it } from 'vitest'
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync, rmSync } from 'node:fs'
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  symlinkSync,
+  writeFileSync,
+  rmSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { WorkspaceListPage, WorkspaceReadContent, WorkspaceWriteOk } from '@agentconnect.md/protocol'
@@ -11,7 +20,9 @@ import {
 } from '../src/shim/workspace-files-channel.js'
 import type { ShimRequester } from '../src/shim/channels.js'
 import {
+  assertSameDirectory,
   createWorkspaceFiles,
+  directoryIdentity,
   localWorkspaceFiles,
   WorkspaceConflictError,
   WorkspaceViolationError
@@ -273,6 +284,28 @@ describe('the shim read capability', () => {
     await expect(localWorkspaceFiles.list(checkout, { agentId: AGENT, path: '', limit: 50 })).resolves.toMatchObject({
       exists: true
     })
+  })
+
+  it('refuses when the directory the root named is replaced by another real one', async () => {
+    const { mount, checkout } = volume()
+    // The window the pinned check above cannot see: `canonicalUnder` returns, and THEN the runtime
+    // renames the checkout aside and puts something else at the same path. Every later `readdir` and
+    // `open` follows the replacement, and no amount of re-resolving the same name notices — the path
+    // still resolves, still canonically, still inside the mount. The inode does not, which is why the
+    // identity is captured at validation and re-checked before any answer leaves.
+    // Renamed into place rather than deleted and recreated: freeing an inode and immediately asking
+    // for another can hand back the same number, which would make this test pass for the wrong reason.
+    const replacement = join(mount, 'other')
+    mkdirSync(replacement, { recursive: true })
+    const identity = await directoryIdentity(checkout)
+    rmSync(checkout, { recursive: true, force: true })
+    renameSync(replacement, checkout) // same path, definitely a different inode
+    await expect(assertSameDirectory(checkout, identity)).rejects.toMatchObject({
+      name: 'WorkspaceViolationError',
+      reason: 'path-escape'
+    })
+    // ...and the same check passes for the directory it was taken from.
+    await expect(assertSameDirectory(checkout, await directoryIdentity(checkout))).resolves.toBeUndefined()
   })
 
   it('refuses a pinned root that disappears between the fence and the work', async () => {

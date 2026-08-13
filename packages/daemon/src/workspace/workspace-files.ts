@@ -29,7 +29,7 @@
  * overflow — both leave headroom for the envelope.
  */
 import { randomUUID } from 'node:crypto'
-import { promises as fs } from 'node:fs'
+import { constants, promises as fs } from 'node:fs'
 import * as path from 'node:path'
 import type {
   WorkspaceListReq,
@@ -180,25 +180,55 @@ export async function canonicalWorkspacePath(root: string, relPath: string): Pro
  * work to the directory that was approved; a mismatch means the ground moved and is refused. Callers
  * whose roots may legitimately contain symlinks (the daemon's own `workspace.path`) leave it off.
  */
+/**
+ * The identity of a directory, as the inode pair its path currently names.
+ *
+ * Node has no fd-relative `readdir`/`open`, so a validated PATH is all these operations can carry
+ * into their I/O — and a path is not a directory. Capturing this at validation and re-checking it
+ * before the answer leaves is what makes a swap during the window unable to produce a RESULT: the
+ * work may have touched a replacement, but its output is discarded rather than returned.
+ */
+export async function directoryIdentity(dir: string): Promise<string> {
+  const st = await fs.lstat(dir)
+  return `${st.dev}:${st.ino}`
+}
+
+/** Refuse when `dir` no longer names the directory `identity` was taken from. */
+export async function assertSameDirectory(dir: string, identity: string): Promise<void> {
+  const now = await directoryIdentity(dir).catch(() => null)
+  if (now !== identity) {
+    throw new WorkspaceViolationError('the workspace root moved while it was being read', 'path-escape')
+  }
+}
+
 async function resolveContained(
   root: string,
   relPath: string,
   pinned: boolean
-): Promise<{ resolved: string; realRoot: string | null }> {
+): Promise<{ resolved: string; realRoot: string | null; pin: () => Promise<void> }> {
   const resolved = containedWorkspacePath(root, relPath)
+  const settled = (realRoot: string | null, identity?: string) => ({
+    resolved,
+    realRoot,
+    // No-op unless the caller pinned the root: the daemon's own workspace is not on a filesystem an
+    // agent controls, and paying two extra `lstat`s per read there buys nothing.
+    pin: async () => {
+      if (identity !== undefined) await assertSameDirectory(realRoot!, identity)
+    }
+  })
   try {
     const realRoot = await fs.realpath(root)
     if (pinned && realRoot !== path.resolve(root)) {
       throw new WorkspaceViolationError('the workspace root moved while it was being read', 'path-escape')
     }
-    return { resolved, realRoot }
+    return settled(realRoot, pinned ? await directoryIdentity(realRoot) : undefined)
   } catch (err) {
     if (err instanceof WorkspaceViolationError) throw err
     // A pinned root was proven to exist by the caller that resolved it, so its disappearance is the
     // same event as its replacement: refuse rather than fall through to "nothing to escape".
     if (isErrno(err, 'ENOENT')) {
       if (pinned) throw new WorkspaceViolationError('the workspace root moved while it was being read', 'path-escape')
-      return { resolved, realRoot: null } // no root ⇒ nothing to escape
+      return settled(null) // no root ⇒ nothing to escape
     }
     throw err
   }
@@ -280,7 +310,7 @@ export function workspaceEditBytes(req: WorkspaceWriteReq): Buffer {
 export function createWorkspaceFiles({ pinnedRoot = false }: { pinnedRoot?: boolean } = {}): WorkspaceFiles {
   return {
     async list(root, req) {
-      const { resolved, realRoot } = await resolveContained(root, req.path, pinnedRoot)
+      const { resolved, realRoot, pin } = await resolveContained(root, req.path, pinnedRoot)
       const notFound = { agentId: req.agentId, path: req.path, exists: false, entries: [] as WorkspaceEntry[] }
       if (realRoot === null) return notFound // workspace root missing
 
@@ -341,6 +371,9 @@ export function createWorkspaceFiles({ pinnedRoot = false }: { pinnedRoot?: bool
         acc += enc
       }
       const consumed = start + page.length
+      // The names and sizes above came from a PATH. Verified before they leave, so a directory
+      // swapped underneath the enumeration yields a refusal instead of a sibling's listing.
+      await pin()
       return {
         agentId: req.agentId,
         path: req.path,
@@ -351,7 +384,7 @@ export function createWorkspaceFiles({ pinnedRoot = false }: { pinnedRoot?: bool
     },
 
     async read(root, req) {
-      const { resolved, realRoot } = await resolveContained(root, req.path, pinnedRoot)
+      const { resolved, realRoot, pin } = await resolveContained(root, req.path, pinnedRoot)
       const notFound = { agentId: req.agentId, path: req.path, exists: false }
       if (realRoot === null) return notFound
 
@@ -375,6 +408,7 @@ export function createWorkspaceFiles({ pinnedRoot = false }: { pinnedRoot?: bool
         // git-diff seam had, reopened by making directories an ordinary answer.
         const dir = await canonicalUnder(realRoot, resolved)
         const canonSt = await fs.lstat(dir)
+        await pin()
         return {
           agentId: req.agentId,
           path: req.path,
@@ -390,7 +424,10 @@ export function createWorkspaceFiles({ pinnedRoot = false }: { pinnedRoot?: bool
       const target = await canonicalUnder(realRoot, resolved)
       const size = st.size
       const mtime = st.mtime.toISOString()
-      const fh = await fs.open(target, 'r')
+      // O_NOFOLLOW on the pinned path: `canonicalUnder` just proved this target is not a symlink, so
+      // the flag can only fire if it BECAME one — the one window looking again cannot cover. The
+      // daemon's own instance keeps the plain open, where nothing races it.
+      const fh = await fs.open(target, pinnedRoot ? constants.O_RDONLY | constants.O_NOFOLLOW : 'r')
       try {
         // Binary detection: NUL byte anywhere in the first 8 KiB ⇒ no content.
         const sniffLen = Math.min(SNIFF_BYTES, size)
@@ -398,6 +435,7 @@ export function createWorkspaceFiles({ pinnedRoot = false }: { pinnedRoot?: bool
           const sniff = Buffer.alloc(sniffLen)
           const { bytesRead } = await fh.read(sniff, 0, sniffLen, 0)
           if (sniff.subarray(0, bytesRead).includes(0)) {
+            await pin()
             return {
               agentId: req.agentId,
               path: req.path,
@@ -429,6 +467,8 @@ export function createWorkspaceFiles({ pinnedRoot = false }: { pinnedRoot?: bool
         const content = fitted.content
 
         const nextOffset = req.offset + end
+        // Content, so this verification is what keeps a swapped directory's bytes from being returned.
+        await pin()
         return {
           agentId: req.agentId,
           path: req.path,
@@ -451,10 +491,10 @@ export function createWorkspaceFiles({ pinnedRoot = false }: { pinnedRoot?: bool
       assertScratch(scratch)
       const bytes = workspaceEditBytes(req)
 
-      let { resolved, realRoot } = await resolveContained(root, req.path, pinnedRoot)
+      let { resolved, realRoot, pin } = await resolveContained(root, req.path, pinnedRoot)
       if (realRoot === null && req.ifMatchMtime === undefined) {
         await fs.mkdir(root, { recursive: true })
-        ;({ resolved, realRoot } = await resolveContained(root, req.path, pinnedRoot))
+        ;({ resolved, realRoot, pin } = await resolveContained(root, req.path, pinnedRoot))
       }
       if (realRoot === null) throw changedFile()
 
@@ -472,6 +512,9 @@ export function createWorkspaceFiles({ pinnedRoot = false }: { pinnedRoot?: bool
         const temp = path.join(parent, `.agentconnect-edit-${randomUUID()}.tmp`)
         try {
           await fs.writeFile(temp, bytes, { flag: 'wx', mode: 0o666 })
+          // Before the publish rather than after it: a link that has already landed in a replaced
+          // parent cannot be taken back, so the check has to precede it.
+          await pin()
           try {
             await fs.link(temp, target)
           } catch (err) {
@@ -538,7 +581,8 @@ export function createWorkspaceFiles({ pinnedRoot = false }: { pinnedRoot?: bool
           throw err
         }
         if (!sameFileVersion(initial, latest)) throw changedFile()
-
+        // Immediately before the rename, so the parent this lands in is the one that was validated.
+        await pin()
         await fs.rename(temp, target)
       } catch (err) {
         await fs.rm(temp, { force: true }).catch(() => {})
@@ -556,7 +600,7 @@ export function createWorkspaceFiles({ pinnedRoot = false }: { pinnedRoot?: bool
 
     async delete(root, scratch, req) {
       assertScratch(scratch)
-      const { resolved, realRoot } = await resolveContained(root, req.path, pinnedRoot)
+      const { resolved, realRoot, pin } = await resolveContained(root, req.path, pinnedRoot)
       if (realRoot === null) throw changedFile()
 
       let initial
@@ -585,6 +629,7 @@ export function createWorkspaceFiles({ pinnedRoot = false }: { pinnedRoot?: bool
         throw err
       }
       if (!sameFileVersion(initial, latest)) throw changedFile()
+      await pin()
       await fs.unlink(target)
       return { agentId: req.agentId, path: req.path }
     }
