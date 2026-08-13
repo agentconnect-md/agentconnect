@@ -2416,6 +2416,8 @@ export class Daemon {
       startK8sPlane?: typeof startK8sRuntimePlane
       /** Test seam only; production `--k8s` always reads the fixed Secret mount. */
       openDataPlane?: typeof openMountedPostgresDataPlane
+      /** Test seam for the cloud startup barrier; production waits for CP register/ok. */
+      startControlPlane?: (root: string) => Promise<void> | undefined
       /** Test seams for local catalog resolution and executable/state filtering. */
       resolveCatalog?: typeof resolveRuntimeCatalog
       installed?: typeof installedRuntimes
@@ -3518,14 +3520,17 @@ export class Daemon {
       warn: (m) => this.log.warn(m)
     })
 
-    // open consolidated Slack connections, resolve bot user ids (merged rules are per-message)
     const groups = consolidate(this.transportAgents(agents))
     this.botUserIds = {}
-    // Collaboration Arena (§5): project the evaluation environment's effective
-    // integrations into `agent.integrations` + the connection maps BEFORE any
-    // routing/dispatch can observe them, and AFTER physical Slack consolidation
-    // was computed — virtual transports never open sockets.
+    // Install synthetic evaluation integrations before routing observes them; they never open sockets.
     this.installEvaluationEnvironment()
+    const startControlPlane = this.opts.startControlPlane ?? ((cpRoot: string) => this.startCpClient(cpRoot))
+    const cloudCpReady = this.k8s ? startControlPlane(root) : undefined
+    if (this.k8s && !cloudCpReady)
+      throw new Error('daemon startup refused: --k8s requires an authoritative CP organization registry')
+    if (cloudCpReady) this.log.info('data-plane: waiting for the initial CP organization registry before ingress')
+    await cloudCpReady
+    // open consolidated Slack connections, resolve bot user ids (merged rules are per-message)
     if (groups.size === 0) this.log.info('slack: no slack integrations configured')
     else this.log.info(`slack: opening ${groups.size} socket connection(s)`)
     for (const group of groups.values()) {
@@ -3629,7 +3634,7 @@ export class Daemon {
     // Curated admission belongs to local runtime resolution, not CP readiness.
     // Start it even when the control plane is disabled or still unreachable.
     void this.probeRuntimesAndEmit(false).finally(() => this.armRuntimeProbeRefresh())
-    this.startCpClient(root)
+    if (!this.k8s) startControlPlane(root)
     this.armIdleSweep()
     this.log.info('daemon ready')
   }
@@ -19640,8 +19645,8 @@ export class Daemon {
             .map(({ name, ...def }) => [name, def])
         )
         this.mcpServerDefs = this.cpMcpDefs?.effective() ?? this.mcpServerDefs
-        this.convergeRelays(snap.relays) // set-converge relay dial-out sockets (DOES prune) + persist for boot re-dial
         this.cpCollab.replace(snap.collabRoutes) // baseline collaboration routing snapshot (P2 terminal-verify)
+        this.convergeRelays(snap.relays) // connect ingress only after its organization authority is installed
         this.cpRouting?.converge({
           routingEpoch: snap.routingEpoch,
           assignments: snap.assignments,
@@ -20459,7 +20464,7 @@ export class Daemon {
     }
   }
 
-  private startCpClient(root: string): void {
+  private startCpClient(root: string): Promise<void> | undefined {
     const cp = this.cfg.controlPlane
     if (!configuredControlPlane(cp, !!this.clusterIdentityToken)) {
       // Url first: an envelope daemon has no config file, so a missing address is
@@ -20476,7 +20481,7 @@ export class Daemon {
       } else {
         this.log.info(`cp: not connecting (${missing}) — running local`)
       }
-      return
+      return undefined
     }
     if (this.clusterIdentityToken) this.log.info("cp: authenticating with this pod's projected identity token")
     // Start host-load sampling only now — the snapshot exists solely to feed the CP
@@ -20517,11 +20522,13 @@ export class Daemon {
       // A forwarded cross-daemon agent-call — terminal-verify + dispatch (P2).
       onRelayAgentMsg: (msg) => this.handleRelayAgentMsg(msg)
     })
-    // Boot-dial the persisted roster before the CP is even reachable: it survives a
-    // CP outage in config.json, so webchat ingress keeps working across a daemon
-    // restart while the CP is down (graceful degradation). register/ok re-converges
-    // authoritatively — and prunes any relay the CP has since dropped — once connected.
-    if (this.cfg.relays.length) this.relays.converge(this.cfg.relays)
+    // Self-hosted daemons boot-dial persisted relays; cloud ingress waits for fresh org authority.
+    if (this.cfg.relays.length && !this.k8s) this.relays.converge(this.cfg.relays)
+
+    let resolveInitialRegistry!: () => void
+    const initialRegistry = new Promise<void>((resolve) => {
+      resolveInitialRegistry = resolve
+    })
 
     const workspaceLocation = (id: string, sessionId?: string) => {
       const agent = this.agents.get(id)
@@ -20610,6 +20617,7 @@ export class Daemon {
       // and re-assert each integration's cached channel-membership snapshot (the CP
       // may have missed emits while we were disconnected; latest-wins upsert).
       onReady: () => {
+        resolveInitialRegistry()
         void this.probeRuntimesAndEmit()
         void this.syncOrganizationSuggestions().catch((err) =>
           this.log.warn(`cp: organization suggestion replay failed (${err instanceof Error ? err.name : 'unknown'})`)
@@ -20717,6 +20725,7 @@ export class Daemon {
     if (orphaned) this.log.info(`remote MCP: queued ${orphaned} orphaned grant revocation(s) from previous run`)
     this.cpClient.start()
     this.log.info(`cp: connecting to ${url}…`)
+    return initialRegistry
   }
 
   /** Build the current profile entry for a runtime (one element of the

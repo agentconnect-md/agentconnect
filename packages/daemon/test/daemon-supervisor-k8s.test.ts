@@ -34,6 +34,7 @@ function daemon(opts: { k8s?: boolean; supervisor?: string; requestExit?: (code:
               },
               close: async () => {}
             }) as never,
+          startControlPlane: async () => {},
           startK8sPlane: async () =>
             ({
               driver: {} as never,
