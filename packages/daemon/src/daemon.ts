@@ -11250,6 +11250,9 @@ export class Daemon {
       thread,
       ts,
       sender: msg.sender.id,
+      // The canonical webchat post identity must survive whichever writer wins the
+      // first insert, or the browser's live frame cannot reconcile against the row.
+      ...(msg.transcriptPostId ? { postId: msg.transcriptPostId } : {}),
       ...(recipient ? { recipient } : {}),
       // The observer often wins the INSERT race against SessionManager's
       // authoritative append — the provider send time must ride the FIRST
