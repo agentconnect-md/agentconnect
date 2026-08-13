@@ -34,6 +34,21 @@ export class ShimRequestAbortedError extends Error {
   }
 }
 
+/**
+ * Raised for a request whose CHANNEL went away — the routine half-TTL renewal, or a lost launch.
+ *
+ * Typed rather than a plain Error because the two outcomes are not alike: this one says the request
+ * may never have reached the sandbox at all, so a caller that reads it as an answer is inventing one.
+ * `ShimSession.attach` documents that a renewal fails in-flight requests and the caller may simply ask
+ * again; that instruction is only actionable if the caller can tell this apart from a real reply.
+ */
+export class ShimChannelLostError extends Error {
+  constructor(reason: string) {
+    super(reason)
+    this.name = 'ShimChannelLostError'
+  }
+}
+
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
 
 /**
@@ -131,7 +146,7 @@ export class ShimChannel implements ShimRequester {
   abort(reason: string): void {
     for (const [id, waiter] of [...this.pending]) {
       this.pending.delete(id)
-      waiter.reject(new Error(reason))
+      waiter.reject(new ShimChannelLostError(reason))
     }
   }
 

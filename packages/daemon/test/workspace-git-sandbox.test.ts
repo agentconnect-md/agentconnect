@@ -3,6 +3,8 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createWorkspaceGit } from '../src/cp/workspace-git.js'
+import { ShimChannelLostError } from '../src/shim/channels.js'
+import { ShimGitRunner } from '../src/shim/git-exec.js'
 import { setSandboxWorkspaceMode, setWorkspaceGitRunnerResolver } from '../src/workspace/workspace-manager.js'
 
 /**
@@ -103,5 +105,75 @@ describe('the console git seam without a bound sandbox', () => {
     await expect(createWorkspaceGit(() => undefined).status('nope')).rejects.toMatchObject({
       reason: 'unknown-agent'
     })
+  })
+})
+
+describe('a shim channel that goes away mid-request', () => {
+  // The renewal is ROUTINE: the shim re-dials at half its credential TTL and `ShimSession.attach`
+  // fails whatever was in flight. `isRepo` used to swallow that like any other git failure, so an
+  // ordinary renewal settled as "not a git checkout" — the same misleading answer this seam was built
+  // to remove, arriving from the transport instead of from a wrong path.
+  afterEach(() => {
+    setSandboxWorkspaceMode(false)
+    setWorkspaceGitRunnerResolver(undefined)
+  })
+
+  /** A remote runner whose channel is lost on the Nth request, as a renewal loses it. */
+  function losingRunner(loseOn: (n: number) => boolean, requester?: { calls: number }) {
+    const state = requester ?? { calls: 0 }
+    const session = {
+      request: async () => {
+        state.calls += 1
+        if (loseOn(state.calls)) throw new ShimChannelLostError('shim channel renewed')
+        return { code: 0, stdout: '', stderr: '' }
+      }
+    }
+    return { runner: new ShimGitRunner(session), state }
+  }
+
+  it('retries a read once across the renewal rather than reporting no checkout', async () => {
+    setSandboxWorkspaceMode(true)
+    // The first `rev-parse` loses its channel; the second lands. The panel must never see the blip.
+    const { runner, state } = losingRunner((n) => n === 1)
+    setWorkspaceGitRunnerResolver(() => runner)
+    const status = await createWorkspaceGit(() => '/agent/repo').status(AGENT)
+    expect(status.isRepo).toBe(true)
+    expect(state.calls).toBeGreaterThan(1)
+  })
+
+  it('reports a channel that stays gone as transient, NOT as "not a git checkout"', async () => {
+    setSandboxWorkspaceMode(true)
+    const { runner } = losingRunner(() => true)
+    setWorkspaceGitRunnerResolver(() => runner)
+    await expect(createWorkspaceGit(() => '/agent/repo').status(AGENT)).rejects.toMatchObject({
+      name: 'WorkspaceViolationError',
+      reason: 'sandbox-unavailable'
+    })
+  })
+
+  it('never repeats a write, whose first attempt may already have landed', async () => {
+    setSandboxWorkspaceMode(true)
+    // The abort says a REPLY was lost, not whether the request arrived — so a repeated `commit` risks
+    // a second commit. Reads are the only invocations this may resend.
+    const seen: string[][] = []
+    const session = {
+      request: async (_capability: string, payload: unknown) => {
+        const args = (payload as { args: string[] }).args
+        seen.push(args)
+        if (args[0] === 'rev-parse' && args[1] === '--show-prefix') return { code: 0, stdout: '', stderr: '' }
+        throw new ShimChannelLostError('shim channel renewed')
+      }
+    }
+    setWorkspaceGitRunnerResolver(() => new ShimGitRunner(session))
+    // Refused as transient rather than retried. `config` — the executable-config audit a stage runs
+    // first — is left out of the repeatable set for the same reason: it CAN write, and the cheapest
+    // way never to get that wrong is to repeat nothing that can.
+    await expect(
+      createWorkspaceGit(() => '/agent/repo').stage({ agentId: AGENT, paths: ['a.ts'] })
+    ).rejects.toMatchObject({ reason: 'sandbox-unavailable' })
+    // Nothing that mutates was sent twice — nor, here, even once.
+    const sent = seen.map((args) => args.join(' '))
+    expect(new Set(sent).size).toBe(sent.length)
+    expect(sent.some((line) => line.startsWith('add ') || line.startsWith('commit'))).toBe(false)
   })
 })

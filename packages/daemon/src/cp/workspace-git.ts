@@ -64,7 +64,7 @@ import {
   workspaceGitPushTarget
 } from '../workspace/git-injection.js'
 import { consoleWorkspaceGitRunner, sandboxWorkspaceMode } from '../workspace/workspace-manager.js'
-import { type GitRunner } from '../workspace/git-runner.js'
+import { GitTransportError, type GitRunner } from '../workspace/git-runner.js'
 import { authorizeWorkspaceGitUrl } from '../workspace/git-origin-policy.js'
 import { canonicalWorkspacePath, containedWorkspacePath, WorkspaceViolationError } from './workspace-reader.js'
 import {
@@ -124,7 +124,42 @@ function runnerFor(agentId: string, cwd: string, abort?: AbortSignal): GitRunner
       'sandbox-unavailable'
     )
   }
-  return runner
+  return transient(agentId, runner)
+}
+
+/**
+ * Surface "the invocation never reached git" as the TRANSIENT refusal, on every call this seam makes.
+ *
+ * One wrapper rather than a check per operation, because the failure it translates is routine: the
+ * shim re-dials at half its credential TTL, and the retry inside the remote runner covers the reads
+ * it can safely repeat but cannot cover a write. What must not happen is that such a failure reaches
+ * a caller which reads a git error as an ANSWER — `isRepo` is the sharp one, and it would settle a
+ * renewal as "not a git checkout" for a checkout that is there. The same reason the whole panel
+ * already has copy for: the sandbox is not reachable this instant, and it comes back.
+ */
+function transient(agentId: string, runner: GitRunner): GitRunner {
+  const unreachable = (err: GitTransportError): WorkspaceViolationError =>
+    new WorkspaceViolationError(
+      `agent "${agentId}" lost its sandbox channel, so its workspace could not be read: ${err.message}`,
+      'sandbox-unavailable'
+    )
+  const translate = async <T>(work: () => Promise<T>): Promise<T> => {
+    try {
+      return await work()
+    } catch (err) {
+      throw err instanceof GitTransportError ? unreachable(err) : err
+    }
+  }
+  const wrap = (inner: GitRunner): GitRunner => ({
+    withEnv: (env) => wrap(inner.withEnv(env)),
+    raw: (args) => translate(() => inner.raw(args)),
+    clone: (repo, target, options) => translate(() => inner.clone(repo, target, options)),
+    pull: (remote, branch, options) => translate(() => inner.pull(remote, branch, options)),
+    status: () => translate(() => inner.status()),
+    log: (options) => translate(() => inner.log(options)),
+    readBounded: (args, maxBytes) => translate(() => inner.readBounded(args, maxBytes))
+  })
+  return wrap(runner)
 }
 
 const MAX_STATUS_FILES = 500
@@ -206,7 +241,12 @@ export function createWorkspaceGit(
       // so it needs no path comparison to be right about all three. Measured, not assumed.
       const out = await git.readBounded(['rev-parse', '--show-prefix'], 4096)
       return out.out.toString('utf8').trim() === ''
-    } catch {
+    } catch (err) {
+      // Only GIT's own answer makes this false. A request that never reached git — the shim's routine
+      // half-TTL renewal fails the ones in flight — arrives here as the transient refusal, and
+      // swallowing it would settle a renewal as "not a git checkout" for a checkout that is there:
+      // the exact misleading outcome this seam exists to remove, reintroduced from the other end.
+      if (err instanceof WorkspaceViolationError) throw err
       return false
     }
   }
