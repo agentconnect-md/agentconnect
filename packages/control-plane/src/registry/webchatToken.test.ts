@@ -19,6 +19,12 @@ describe('WebchatTokenService', () => {
     expect(await svc.verify(token)).toEqual(CLAIMS)
   })
 
+  it('round-trips an exact private-session owner proof', async () => {
+    const svc = new WebchatTokenService(PEPPER)
+    const claims = { ...CLAIMS, privateSessionOwnerIdentity: 'slack:T1:U1' }
+    expect(await svc.verify(await svc.mint(claims))).toEqual(claims)
+  })
+
   it('rejects a token minted with a DIFFERENT pepper (bad signature)', async () => {
     const minted = await new WebchatTokenService(PEPPER).mint(CLAIMS)
     const other = new WebchatTokenService('a-totally-different-pepper-0123456789ab')

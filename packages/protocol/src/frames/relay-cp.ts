@@ -70,7 +70,10 @@ export type RcAuthOk = z.infer<typeof RcAuthOk>
 // is never registered here.
 export const RcRegister = z.object({
   name: z.string().min(1), // deployment-side identity (pod name etc.)
-  daemonUrl: z.string().min(1) // per-instance-routable WSS origin daemons dial
+  daemonUrl: z.string().min(1), // per-instance-routable WSS origin daemons dial
+  // Relay feature advertisement (e.g. webchat_session_continuation_v1). The
+  // default keeps old relays register-compatible; absent ⇒ no features.
+  features: z.array(z.string()).default([])
 })
 export type RcRegister = z.infer<typeof RcRegister>
 
@@ -140,6 +143,12 @@ export const RcVerifyResult = z.object({
   // above stay the PRIMARY's values for rolling compatibility; `participants`
   // always includes the primary. Absent ⇒ single-agent conversation on an older CP.
   participants: z.array(RcWebchatParticipant).max(16).optional(),
+  // Session-targeted continuation (webchat-cross-integration-continuation.md):
+  // the CP-selected target ACP session id. The relay copies it verbatim onto
+  // every rd/msg for this conversation; it never originates in the browser and
+  // is deliberately the only cross-system coordinate on the wire — every local
+  // coordinate comes from the daemon's own session row.
+  targetSessionId: z.string().min(1).optional(),
   remoteMcp: WebchatRemoteMcpEntitlement.optional()
 })
 export type RcVerifyResult = z.infer<typeof RcVerifyResult>

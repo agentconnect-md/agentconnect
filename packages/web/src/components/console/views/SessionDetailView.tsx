@@ -231,7 +231,7 @@ function ComposerTextarea({
   sessionId: string
   placeholder: string
   onSend: () => void
-  onImageFile: (file: File) => void
+  onImageFile?: (file: File) => void
   mentionCandidates: MentionOption[]
   onPickMention: (option: MentionOption) => void | Promise<boolean>
   /** Mirrors `mention.joining` up to the parent so the (separately isolated)
@@ -270,6 +270,7 @@ function ComposerTextarea({
           mention.sync(el.value, el.selectionStart ?? el.value.length)
         }}
         onPaste={(event) => {
+          if (!onImageFile) return
           const image = clipboardImageFile(event.clipboardData)
           if (!image) return
           event.preventDefault()
@@ -1501,6 +1502,7 @@ export default function SessionDetailView() {
     isPgBusy,
     setPgImage,
     pgSend,
+    markSessionTarget,
     getPgQueue,
     pgCancelQueued,
     pgAddAgent,
@@ -2777,7 +2779,20 @@ export default function SessionDetailView() {
   // Header channel chip — resolves a headless `cron:<id>` channel to its schedule.
   const channelDisplay = sessionChannelDisplay(session, (id) => crons.find((c) => c.id === id)?.name)
   const usesIntegrationAvatar = session.platform === 'hook' && sessionIntegration === 'github'
-  const isLive = isPg || isWebchat
+  // Session-targeted continuation (webchat-cross-integration-continuation.md
+  // §6.5): server-computed — the client never re-derives authorization. A
+  // transient blocker renders the disabled composer with product-language copy;
+  // unauthorized/unsupported keep today's read-only view.
+  const isContinuable = !isPg && !isWebchat && currentSessionDetail?.canContinue === true
+  const continuationReason = currentSessionDetail?.continuationUnavailableReason ?? null
+  const continuationBlocked =
+    !isPg &&
+    !isWebchat &&
+    !isContinuable &&
+    (continuationReason === 'agent_moved' ||
+      continuationReason === 'daemon_offline' ||
+      continuationReason === 'unavailable')
+  const isLive = isPg || isWebchat || isContinuable || continuationBlocked
   const currentDaemonByAgent = new Map(
     agents.map((agent) => [agent.id, agent.daemon === '—' ? undefined : agent.daemon])
   )
@@ -2797,11 +2812,15 @@ export default function SessionDetailView() {
       )
     : []
   const resumeState = isPg ? 'available' : sessionResumeState(persistedResumeMembers, currentDaemonByAgent)
-  const resumeDisabled = isWebchat && resumeState !== 'available'
+  const resumeDisabled = (isWebchat && resumeState !== 'available') || continuationBlocked
   // Composer state is per-session in the provider — bind it to THIS session's id so a
   // different live conversation streaming in the background can't disable or clear it.
   const pgBusy = sessionBusy
   const pgImage = getPgImage(session.id)
+  const attachmentsEnabled = !isContinuable
+  useEffect(() => {
+    if (isContinuable) setPgImage(session.id)
+  }, [isContinuable, session.id, setPgImage])
   const pgQueue = getPgQueue(session.id)
   const hasSessionWorktree =
     focusedAgent?.workspace.mode === 'github' &&
@@ -2823,7 +2842,7 @@ export default function SessionDetailView() {
   const filesWorkdir = focusedAgent && focusedAgent.workdir !== '—' ? focusedAgent.workdir : undefined
   // A `?file=` on a session with no agent to read it from has nothing to open, so the conversation stays: the viewer never renders without a checkout behind it, nor before that checkout's scope is known, nor when the link named a workspace this conversation does not have.
   const viewerOpen = viewerPath !== null && filesAgentId !== null && filesScopeReady && !linkedFocusStale
-  const liveSteps = isWebchat ? getLiveSteps(session.id) : []
+  const liveSteps = isWebchat || isContinuable ? getLiveSteps(session.id) : []
 
   // The conversation roster, for EVERY live surface — the synthetic playground and
   // a resumed (or merged) webchat conversation alike. Scoping it to the playground
@@ -2844,8 +2863,13 @@ export default function SessionDetailView() {
       ).map((p) => ({ ...p, name: rosterParticipantName(p, agentById.get(p.agentId)) }))
     : []
   const multiLive = liveRoster.length > 1
-  const resumePlaceholder =
-    resumeState === 'checking'
+  const resumePlaceholder = continuationBlocked
+    ? continuationReason === 'agent_moved'
+      ? 'This session can’t continue because the agent moved to another daemon.'
+      : continuationReason === 'daemon_offline'
+        ? 'This session can’t continue while the agent is offline.'
+        : 'This session can’t continue here yet.'
+    : resumeState === 'checking'
       ? 'Checking whether this conversation can continue…'
       : multiLive
         ? 'This conversation can’t continue because one or more agents moved to another daemon.'
@@ -2856,8 +2880,10 @@ export default function SessionDetailView() {
   // Returns ACCEPTANCE: callers that arm follow-up state (the PR panel's Auto-fix wait) must know a
   // synchronous refusal — image preparing, mention joining, nothing to send — from an accepted send.
   const onPgSend = (text?: string): boolean => {
-    if (imagePreparing || mentionJoining) return false
+    if (imagePreparing || mentionJoining || (isContinuable && pgImage !== undefined)) return false
     setImageError(null)
+    // A continuation socket mints through the session-target route (§6.5).
+    if (isContinuable) markSessionTarget(session.id)
     // Pass the fetched roster: an adopted webchat session has no provider-side
     // state, and without it a multi-agent send can't pre-create stream lanes or
     // narrow by @mention (the relay would apply its all-participants default).
@@ -2880,7 +2906,7 @@ export default function SessionDetailView() {
     return sent
   }
   const onImageFile = async (file: File | undefined): Promise<void> => {
-    if (!file || imagePreparing) return
+    if (!attachmentsEnabled || !file || imagePreparing) return
     const generation = ++imagePrepareGenerationRef.current
     setAttachMenuOpen(false)
     setImagePreparing(true)
@@ -2899,7 +2925,9 @@ export default function SessionDetailView() {
       }
     }
   }
-  const webchatConversationId = isLive ? session.channelId : undefined
+  // Continuations excluded: their channelId is a platform coordinate, not a
+  // webchat conversation id, and a targeted conversation has no remote MCP.
+  const webchatConversationId = isPg || isWebchat ? session.channelId : undefined
   // Mid-conversation join (webchat-multi-agents.md §3.1): a live playground
   // conversation may GROW its roster; removal stays unsupported. The join is
   // still playground-only — `pgAddAgent` mutates provider-side session state that
@@ -3229,9 +3257,10 @@ export default function SessionDetailView() {
     })
   }
 
-  // An adopted webchat session layers the turns you send THIS visit below its fetched
-  // history — the same fold as a synthetic playground session.
-  if (isWebchat) {
+  // An adopted webchat session — and a session-targeted continuation — layers the
+  // turns you send THIS visit below its fetched history, like a synthetic
+  // playground session.
+  if (isWebchat || isContinuable) {
     for (const stp of liveSteps) {
       if (stp.kind === 'msg') {
         const who = stp.who ?? session.user
@@ -3439,7 +3468,10 @@ export default function SessionDetailView() {
   // frames are authoritative when they include choices. An idle or restored session
   // may not have a live frame, so fall back to the owning daemon's discovered catalog.
   const allowRuntimeChangesInChat = owner?.allowRuntimeChangesInChat === true
-  const runtimeChangesEnabled = sessionRuntimeChangesEnabled(allowRuntimeChangesInChat, session)
+  // A continuation adds human input but never session-global runtime
+  // administration — pills stay hidden (§6.5).
+  const runtimeChangesEnabled =
+    !isContinuable && !continuationBlocked && sessionRuntimeChangesEnabled(allowRuntimeChangesInChat, session)
   const runtimeSelection = runtimeSelections[session.id]
   const setRuntimeSelection = (patch: { model?: string; effort?: string; permissionPreset?: string; fast?: boolean }) =>
     setRuntimeSelections((current) => ({
@@ -4347,14 +4379,16 @@ export default function SessionDetailView() {
                         disabled
                       />
                     )}
-                    <input
-                      ref={imageInputRef}
-                      type="file"
-                      accept="image/*"
-                      hidden
-                      onChange={(event) => void onImageFile(event.target.files?.[0])}
-                    />
-                    {pgImage && (
+                    {attachmentsEnabled && (
+                      <input
+                        ref={imageInputRef}
+                        type="file"
+                        accept="image/*"
+                        hidden
+                        onChange={(event) => void onImageFile(event.target.files?.[0])}
+                      />
+                    )}
+                    {attachmentsEnabled && pgImage && (
                       <div className="relative mx-[15px] mt-3 w-fit">
                         <img
                           src={`data:${pgImage.mimeType};base64,${pgImage.data}`}
@@ -4379,55 +4413,57 @@ export default function SessionDetailView() {
                         (session.participants?.length ?? 0) > 1 ? 'Message everyone…' : `Message ${session.agentName}…`
                       }
                       onSend={() => onPgSend()}
-                      onImageFile={(file) => void onImageFile(file)}
+                      onImageFile={attachmentsEnabled ? (file) => void onImageFile(file) : undefined}
                       mentionCandidates={mentionCandidates}
                       onPickMention={onPickMention}
                       onMentionJoiningChange={setMentionJoining}
                     />
                     <div className="flex items-center gap-2 border-t border-(--border-subtle) py-[7px] pr-[9px] pl-[10px]">
-                      <div className="relative flex-none">
-                        <button
-                          type="button"
-                          className="flex h-7 w-7 flex-none cursor-pointer items-center justify-center rounded-md border-0 bg-transparent text-(--text-tertiary) hover:bg-(--surface-hover) hover:text-(--text-secondary)"
-                          aria-label="Attach a file"
-                          aria-haspopup="menu"
-                          aria-expanded={attachMenuOpen}
-                          title="Attach a file"
-                          disabled={imagePreparing}
-                          onClick={() => {
-                            setComposerMenuOpen(null)
-                            setAttachMenuOpen((open) => !open)
-                          }}
-                        >
-                          {imagePreparing ? <Spinner size={14} /> : <Icon name="paperclip" size={15} />}
-                        </button>
-                        {attachMenuOpen && (
-                          <>
-                            <div
-                              aria-hidden="true"
-                              className="fixed inset-0 z-40"
-                              onClick={() => setAttachMenuOpen(false)}
-                            ></div>
-                            <div
-                              role="menu"
-                              className="absolute bottom-[calc(100%+8px)] left-0 z-50 w-[166px] rounded-[9px] border border-(--border-default) bg-(--surface-card) p-1 shadow-(--shadow-lg)"
-                            >
-                              <button
-                                type="button"
-                                role="menuitem"
-                                className="fopt"
-                                onClick={() => {
-                                  setAttachMenuOpen(false)
-                                  imageInputRef.current?.click()
-                                }}
+                      {attachmentsEnabled && (
+                        <div className="relative flex-none">
+                          <button
+                            type="button"
+                            className="flex h-7 w-7 flex-none cursor-pointer items-center justify-center rounded-md border-0 bg-transparent text-(--text-tertiary) hover:bg-(--surface-hover) hover:text-(--text-secondary)"
+                            aria-label="Attach a file"
+                            aria-haspopup="menu"
+                            aria-expanded={attachMenuOpen}
+                            title="Attach a file"
+                            disabled={imagePreparing}
+                            onClick={() => {
+                              setComposerMenuOpen(null)
+                              setAttachMenuOpen((open) => !open)
+                            }}
+                          >
+                            {imagePreparing ? <Spinner size={14} /> : <Icon name="paperclip" size={15} />}
+                          </button>
+                          {attachMenuOpen && (
+                            <>
+                              <div
+                                aria-hidden="true"
+                                className="fixed inset-0 z-40"
+                                onClick={() => setAttachMenuOpen(false)}
+                              ></div>
+                              <div
+                                role="menu"
+                                className="absolute bottom-[calc(100%+8px)] left-0 z-50 w-[166px] rounded-[9px] border border-(--border-default) bg-(--surface-card) p-1 shadow-(--shadow-lg)"
                               >
-                                <Icon name="image" size={16} color="var(--text-secondary)" />
-                                Add photos
-                              </button>
-                            </div>
-                          </>
-                        )}
-                      </div>
+                                <button
+                                  type="button"
+                                  role="menuitem"
+                                  className="fopt"
+                                  onClick={() => {
+                                    setAttachMenuOpen(false)
+                                    imageInputRef.current?.click()
+                                  }}
+                                >
+                                  <Icon name="image" size={16} color="var(--text-secondary)" />
+                                  Add photos
+                                </button>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      )}
                       {/* nowrap on mobile — pills shrink + truncate (ComposerMenu min-w-0)
                       instead of wrapping into a second toolbar line. Except with a
                       multi-agent roster: those chips are unbounded in count, so no

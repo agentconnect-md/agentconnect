@@ -15,6 +15,7 @@
 import {
   buildRelayCpFrame,
   decodeRelayCpFrame,
+  WEBCHAT_SESSION_CONTINUATION_FEATURE,
   type RelayCpFrame,
   type RcAuthOk,
   type RcDeploymentConfig,
@@ -404,7 +405,13 @@ export class RelayCpClient {
     // ── register (upsert by name → relayId; re-sent every reconnect) ──
     this.state = 'REGISTERING'
     const registered = await this.sendRequest(
-      buildRelayCpFrame('rc/register', { name: this.deps.name, daemonUrl: this.deps.daemonUrl })
+      buildRelayCpFrame('rc/register', {
+        name: this.deps.name,
+        daemonUrl: this.deps.daemonUrl,
+        // This relay preserves RdMsgWebchat.targetSessionId end to end; the CP
+        // gates session-targeted mints on every live relay advertising it.
+        features: [WEBCHAT_SESSION_CONTINUATION_FEATURE]
+      })
     )
     this.relayId = (registered.payload as RcRegistered).relayId
     this.deps.onRegistered?.(this.relayId)

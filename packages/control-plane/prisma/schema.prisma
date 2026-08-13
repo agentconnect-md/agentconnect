@@ -1031,6 +1031,7 @@ model SessionMeta {
 
   webchatCurrentFor      WebchatConversation[]      @relation("WebchatCurrentSession")
   webchatAgentCurrentFor WebchatConversationAgent[] @relation("WebchatAgentCurrentSession")
+  webchatTargetedBy      WebchatConversation[]      @relation("WebchatTargetSession")
 
   @@index([agentId, startedAt])
   @@index([lastActivityAt(sort: Desc), startedAt(sort: Desc), id(sort: Desc), agentId], map: "session_meta_activity_page_idx")
@@ -1111,16 +1112,27 @@ model WebchatConversation {
   // session row disappears.
   currentSessionId     String?
   currentSessionRev    Int      @default(0) // bumped in the same tx as any pointer change
+  // Session-targeted continuation (webchat-cross-integration-continuation.md §6.2):
+  // non-null ⇒ this conversation adopts an existing integration-origin session
+  // (immutable after creation); null ⇒ ordinary webchat conversation. Cascade:
+  // a targeted conversation without its target has no purpose — metadata
+  // deletion removes the row; retention purge keeps it and every continuation
+  // gate rejects on the session's contentPurgedAt.
+  targetSessionId      String?
   createdAt            DateTime @default(now()) @db.Timestamptz(6)
 
   org            Org                        @relation(fields: [orgId], references: [id], onDelete: Cascade)
   agent          Agent                      @relation(fields: [agentId], references: [id], onDelete: Cascade)
   user           User                       @relation(fields: [userId], references: [id], onDelete: Cascade)
   currentSession SessionMeta?               @relation("WebchatCurrentSession", fields: [currentSessionId], references: [id], onDelete: SetNull)
+  targetSession  SessionMeta?               @relation("WebchatTargetSession", fields: [targetSessionId], references: [id], onDelete: Cascade)
   delegations    WebchatMcpDelegation[]
   mcpOperations  WebchatMcpOperation[]
   participants   WebchatConversationAgent[]
 
+  // Concurrent mints for one user/session converge on one browser conversation
+  // (Postgres permits all-null targets, so standard rows are unconstrained).
+  @@unique([userId, targetSessionId])
   @@index([orgId])
   @@index([agentId])
   @@index([userId])
@@ -1771,6 +1783,9 @@ model Relay {
   // topology (design §5). The pool-level public ingress (browser/webhook) is
   // env-level PUBLIC_RELAY_URL and never stored per relay.
   daemonUrl  String
+  // Advertised relay features (rc/register.features), e.g.
+  // webchat_session_continuation_v1. Refreshed on every register.
+  features   String[]  @default([])
   lastSeenAt DateTime? @db.Timestamptz(6) // rc/heartbeat; drives the failover sweeper
   createdAt  DateTime  @default(now()) @db.Timestamptz(6)
 

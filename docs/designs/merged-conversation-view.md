@@ -390,11 +390,11 @@ session read policy; the merge renders what comes back:
 
 ## 8. Composer and live behavior
 
-|             | Webchat conversation                                                                                                                                                | Slack thread                                                                                                                                                                                     |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Composer    | Full: same conversation resume + all-respond fan-out as today's adopted session page; placeholder "Message everyone…"                                               | None. "Open in Slack" (threadUrl). The console is an observer of IM platforms, not a poster — replying belongs to Slack (a console→Slack composer is a separate product question, out of scope). |
-| Live        | On resume the existing relay socket streams all lanes into the merged canvas — identical to the live Playground (which this page effectively replaces post-refresh) | SWR revalidate / poll, like the session detail today. Streaming deferred to the ACP gateway track.                                                                                               |
-| Typing/busy | per-participant, from existing lane state                                                                                                                           | activity dot from `activityState`, as today                                                                                                                                                      |
+|             | Webchat conversation                                                                                                                                                | Slack thread                                                                                                                                                                                                                   |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Composer    | Full: same conversation resume + all-respond fan-out as today's adopted session page; placeholder "Message everyone…"                                               | Single-agent continuation via the session detail page (webchat-cross-integration-continuation.md); the MERGED multi-agent Slack view keeps "Open in Slack" (threadUrl) — its composer is that feature's multi-agent follow-up. |
+| Live        | On resume the existing relay socket streams all lanes into the merged canvas — identical to the live Playground (which this page effectively replaces post-refresh) | SWR revalidate / poll, like the session detail today. Streaming deferred to the ACP gateway track.                                                                                                                             |
+| Typing/busy | per-participant, from existing lane state                                                                                                                           | activity dot from `activityState`, as today                                                                                                                                                                                    |
 
 ## 9. Conversations and session lineage (parent/child)
 
@@ -554,9 +554,11 @@ how divergence starts.
   ACL) — rejected: webchat already has its object (the conversation row), and
   Slack's membership is emergent; a second registry would drift from both.
   The conversation stays a _view_ over sessions.
-- **Slack composer in the console** — rejected for this design: posting to
-  Slack from the console is an identity and product question (who is the
-  author?), not a rendering one.
+- **Slack composer in the console** — out of scope for this design; the
+  identity/product question is answered by
+  [webchat-cross-integration-continuation.md](webchat-cross-integration-continuation.md)
+  (bot-attributed mirror, single-agent v1); the merged view's multi-agent
+  composer is that feature's follow-up.
 - **Webchat-first, Slack later** — rejected by product decision: the two
   adapters are what keep the core honest; Slack is also the higher-value
   debugging surface (multi-bot ops threads).

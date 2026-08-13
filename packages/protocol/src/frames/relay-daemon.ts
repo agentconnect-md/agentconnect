@@ -200,6 +200,10 @@ export const RdMsgWebchat = z.object({
   sessionKey: z.string().min(1),
   msgId: z.string().min(1), // relay-minted idempotency key (unique per op)
   chatId: z.string().uuid(), // == conversationId (SessionKey.channel for 'webchat')
+  // Session-targeted continuation: the CP-verified target ACP session id,
+  // copied verbatim from the rc/verify verdict. Absent ⇒ today's behavior
+  // (conversation-derived webchat session). Never originates in the browser.
+  targetSessionId: z.string().min(1).optional(),
   remoteMcp: WebchatRemoteMcpEntitlement.optional(),
   payload: RelayWebchatOp
 })

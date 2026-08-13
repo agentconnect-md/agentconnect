@@ -6,6 +6,7 @@
  * §3.1 — the roster is fixed at creation; `webchat_conversation.agentId`
  * mirrors the `role='primary'` participant row).
  */
+import { randomUUID } from 'node:crypto'
 import type { PrismaClient, Prisma } from '../../generated/prisma/client.js'
 import type { PrismaLike } from '../prisma.js'
 import type { WebchatConversationBinding, WebchatConversationRepo, WebchatParticipant } from '../ports.js'
@@ -129,5 +130,61 @@ export class PgWebchatConversationRepo implements WebchatConversationRepo {
       select: { agentId: true }
     })
     return row ? { primaryAgentId: AgentId(row.agentId) } : null
+  }
+
+  async upsertSessionTargeted(
+    binding: Omit<WebchatConversationBinding, 'conversationId'>,
+    targetSessionId: string
+  ): Promise<{ conversationId: string }> {
+    const existing = await this.db.webchatConversation.findFirst({
+      where: { userId: binding.userId, targetSessionId, orgId: binding.orgId, agentId: binding.agentId },
+      select: { id: true }
+    })
+    if (existing) return { conversationId: existing.id }
+    const conversationId = randomUUID()
+    try {
+      await this.inTx(async (tx) => {
+        await tx.webchatConversation.create({
+          data: {
+            id: conversationId,
+            orgId: binding.orgId,
+            agentId: binding.agentId,
+            userId: binding.userId,
+            targetSessionId,
+            // The adoption IS the current-session fence — installed atomically
+            // at creation, not by a later milestone.
+            currentSessionId: targetSessionId
+          }
+        })
+        await tx.webchatConversationAgent.create({
+          data: {
+            conversationId,
+            agentId: binding.agentId,
+            role: 'primary',
+            ord: 0,
+            addedByUserId: binding.userId,
+            currentSessionId: targetSessionId
+          }
+        })
+      })
+    } catch (err) {
+      // A concurrent mint won the (userId, targetSessionId) unique — converge on its row.
+      const raced = await this.db.webchatConversation.findFirst({
+        where: { userId: binding.userId, targetSessionId, orgId: binding.orgId, agentId: binding.agentId },
+        select: { id: true }
+      })
+      if (raced) return { conversationId: raced.id }
+      throw err
+    }
+    return { conversationId }
+  }
+
+  async target(conversationId: string): Promise<{ targetSessionId: string | null } | null> {
+    if (!UUID_RE.test(conversationId)) return null
+    const row = await this.db.webchatConversation.findUnique({
+      where: { id: conversationId },
+      select: { targetSessionId: true }
+    })
+    return row ? { targetSessionId: row.targetSessionId } : null
   }
 }

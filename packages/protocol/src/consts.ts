@@ -125,6 +125,16 @@ export const WEBCHAT_REMOTE_MCP_FEATURE = 'webchat_remote_mcp_v1'
  */
 export const WEBCHAT_MULTI_AGENT_FEATURE = 'webchat_multi_agent_v1'
 
+/**
+ * Cross-surface session continuation (webchat-cross-integration-continuation.md):
+ * the daemon accepts `RdMsgWebchat.targetSessionId` and dispatches the browser
+ * turn onto the target session's own local coordinates; a relay advertises the
+ * same feature in `rc/register.features` when it preserves the field end to end.
+ * The CP refuses to mint a session-targeted webchat token unless the owning
+ * daemon AND every live relay advertise it (fail-closed rollout).
+ */
+export const WEBCHAT_SESSION_CONTINUATION_FEATURE = 'webchat_session_continuation_v1'
+
 /** Daemon and Control Plane support Organization Knowledge, Dream suggestions,
  * and immutable managed-skill bundle retrieval. */
 export const ORGANIZATION_KNOWLEDGE_FEATURE = 'organization-knowledge-v1'

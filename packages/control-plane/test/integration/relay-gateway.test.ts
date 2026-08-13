@@ -16,6 +16,7 @@ import { WebSocket } from 'ws'
 import {
   WEBCHAT_MULTI_AGENT_FEATURE,
   WEBCHAT_REMOTE_MCP_FEATURE,
+  WEBCHAT_SESSION_CONTINUATION_FEATURE,
   isFrame,
   type AnyFrame,
   RELAY_CP_SUBPROTOCOL,
@@ -24,7 +25,7 @@ import {
   type RcVerifyResult
 } from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
-import { seedAgent } from '../fixtures/seed.js'
+import { seedAgent, seedSessionMeta } from '../fixtures/seed.js'
 import { buildApp, type App } from '../../src/app.js'
 import { AppConfigSchema, type AppConfig } from '../../src/config/env.js'
 import { systemClock } from '../../src/domain/clock.js'
@@ -110,8 +111,8 @@ function closeCode(ws: WebSocket): Promise<number> {
 }
 
 /** Drive a relay through rc/auth → rc/register; resolve with its relayId. */
-async function registerRelay(base: string, name: string, daemonUrl: string): Promise<string> {
-  const { ws, relayId } = await openRelay(base, name, daemonUrl)
+async function registerRelay(base: string, name: string, daemonUrl: string, features?: string[]): Promise<string> {
+  const { ws, relayId } = await openRelay(base, name, daemonUrl, features)
   const closed = new Promise<void>((resolve) => ws.once('close', () => resolve()))
   ws.close()
   await closed
@@ -119,12 +120,17 @@ async function registerRelay(base: string, name: string, daemonUrl: string): Pro
 }
 
 /** Register a relay and RETURN the still-open READY socket (caller closes it). */
-async function openRelay(base: string, name: string, daemonUrl: string): Promise<{ ws: WebSocket; relayId: string }> {
+async function openRelay(
+  base: string,
+  name: string,
+  daemonUrl: string,
+  features?: string[]
+): Promise<{ ws: WebSocket; relayId: string }> {
   const ws = await dial(`${base}/api/v1/relays/ws`, RELAY_CP_SUBPROTOCOL)
   sendFrame(ws, 'rc/auth', { method: 'token', credential: RELAY_TOKEN })
   const authOk = (await nextFrame(ws, 'rc/auth/ok')).payload as RcAuthOk
   expect(authOk.heartbeatSec).toBe(15)
-  sendFrame(ws, 'rc/register', { name, daemonUrl })
+  sendFrame(ws, 'rc/register', { name, daemonUrl, ...(features ? { features } : {}) })
   const registered = (await nextFrame(ws, 'rc/registered')).payload as RcRegistered
   return { ws, relayId: registered.relayId }
 }
@@ -886,5 +892,123 @@ describe('relay control gateway — rc/* handshake over agentconnect.rc.v1', () 
       expect(await prisma.githubInstallation.count()).toBe(0)
       ws.close()
     })
+  })
+})
+
+// ── session-targeted continuation (webchat-cross-integration-continuation.md §6.2) ──
+describe('webchat session-continuation mint + verify', () => {
+  const SESSION_ID = 'acp-continuation-session-1'
+  const CONTINUATION = [WEBCHAT_SESSION_CONTINUATION_FEATURE]
+
+  function mintSessionToken(app: App, sessionId: string) {
+    return app.http.inject({
+      method: 'POST',
+      url: `/api/v1/orgs/${DEFAULT_ORG_ID}/sessions/${sessionId}/webchat/token`,
+      payload: {}
+    })
+  }
+
+  async function seedContinuable(over: { sessionDaemonId?: string; platform?: string } = {}): Promise<void> {
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    await seedSessionMeta(prisma, SESSION_ID, AGENT, {
+      daemonId: over.sessionDaemonId ?? DAEMON,
+      platform: over.platform ?? 'slack',
+      channel: 'C123'
+    })
+  }
+
+  it('mints an adopting conversation, converges concurrent mints, and verifies with targetSessionId', async () => {
+    const { app, base } = await start({ PUBLIC_RELAY_URL: RELAY_URL })
+    const daemonWs = await connectDaemonReady(base, CONTINUATION)
+    const { ws: relayWs } = await openRelay(base, 'pod-cont', 'wss://pod-cont.example.test', CONTINUATION)
+    await seedContinuable()
+
+    const first = await mintSessionToken(app, SESSION_ID)
+    expect(first.statusCode).toBe(200)
+    const minted = first.json() as { token: string; conversationId: string; relayUrl: string }
+    expect(minted.relayUrl).toBe(RELAY_URL)
+
+    // A later mint by the same user converges on the (userId, targetSessionId) unique row.
+    const second = await mintSessionToken(app, SESSION_ID)
+    expect(second.statusCode).toBe(200)
+    expect((second.json() as { conversationId: string }).conversationId).toBe(minted.conversationId)
+
+    const row = await prisma.webchatConversation.findUnique({ where: { id: minted.conversationId } })
+    expect(row?.targetSessionId).toBe(SESSION_ID)
+    expect(row?.currentSessionId).toBe(SESSION_ID)
+
+    // Verify resolves the continuation verdict: targetSessionId + single fixed participant.
+    sendFrame(relayWs, 'rc/verify', { kind: 'webchat-token', credential: minted.token, conversationBinding: 'v1' })
+    const verdict = (await nextFrame(relayWs, 'rc/verify/ok')).payload as RcVerifyResult
+    expect(verdict).toMatchObject({
+      ok: true,
+      conversationId: minted.conversationId,
+      daemonId: DAEMON,
+      targetSessionId: SESSION_ID,
+      participants: [{ agentId: AGENT, daemonId: DAEMON, primary: true }]
+    })
+    expect(verdict.remoteMcp).toBeUndefined()
+
+    // Mid-conversation join is refused — a targeted conversation has a fixed participant.
+    await seedAgent(prisma, AGENT_B, { daemonId: DAEMON })
+    const join = await app.http.inject({
+      method: 'POST',
+      url: `/api/v1/orgs/${DEFAULT_ORG_ID}/webchat/conversations/${minted.conversationId}/agents`,
+      payload: { agentId: AGENT_B }
+    })
+    expect(join.statusCode).toBe(409)
+
+    relayWs.close()
+    daemonWs.close()
+  })
+
+  it('refuses to mint while any live relay lacks the feature, the daemon lacks it, or the state drifted', async () => {
+    const { app, base } = await start({ PUBLIC_RELAY_URL: RELAY_URL })
+    const daemonWs = await connectDaemonReady(base, CONTINUATION)
+    await seedContinuable()
+
+    // No live relay at all.
+    expect((await mintSessionToken(app, SESSION_ID)).statusCode).toBe(409)
+
+    // One capable + one old relay ⇒ still refused (all-live-relays gate).
+    await registerRelay(base, 'pod-new', 'wss://pod-new.example.test')
+    const oldRelay = await prisma.relay.findUnique({ where: { name: 'pod-new' } })
+    expect(oldRelay?.features).toEqual([])
+    const { ws: capable } = await openRelay(base, 'pod-cap', 'wss://pod-cap.example.test', CONTINUATION)
+    expect((await mintSessionToken(app, SESSION_ID)).statusCode).toBe(409)
+
+    // Homogeneous pool: re-register the old pod WITH the feature ⇒ mint succeeds.
+    await registerRelay(base, 'pod-new', 'wss://pod-new.example.test', CONTINUATION)
+    expect((await mintSessionToken(app, SESSION_ID)).statusCode).toBe(200)
+
+    // Retention purge invalidates minting.
+    await prisma.sessionMeta.update({ where: { id: SESSION_ID }, data: { contentPurgedAt: new Date() } })
+    expect((await mintSessionToken(app, SESSION_ID)).statusCode).toBe(409)
+    await prisma.sessionMeta.update({ where: { id: SESSION_ID }, data: { contentPurgedAt: null } })
+
+    // Agent moved off the session's content-owning daemon.
+    await prisma.agent.update({ where: { id: AGENT }, data: { daemonId: null } })
+    expect((await mintSessionToken(app, SESSION_ID)).statusCode).toBe(409)
+    await prisma.agent.update({ where: { id: AGENT }, data: { daemonId: DAEMON } })
+
+    capable.close()
+    daemonWs.close()
+  })
+
+  it('refuses non-chat-origin sessions and daemons without the capability', async () => {
+    const { app, base } = await start({ PUBLIC_RELAY_URL: RELAY_URL })
+    const { ws: relayWs } = await openRelay(base, 'pod-cont-2', 'wss://pod-cont-2.example.test', CONTINUATION)
+
+    // Daemon READY but WITHOUT the continuation feature.
+    const daemonWs = await connectDaemonReady(base)
+    await seedContinuable()
+    expect((await mintSessionToken(app, SESSION_ID)).statusCode).toBe(409)
+
+    // Non-chat platform (hook) is never continuable.
+    await seedSessionMeta(prisma, 'acp-hook-session', AGENT, { daemonId: DAEMON, platform: 'hook' })
+    expect((await mintSessionToken(app, 'acp-hook-session')).statusCode).toBe(409)
+
+    relayWs.close()
+    daemonWs.close()
   })
 })

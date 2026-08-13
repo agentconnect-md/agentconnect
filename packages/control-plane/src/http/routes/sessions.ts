@@ -18,7 +18,8 @@ import type { HttpDeps } from '../deps.js'
 import { AgentId, HookId, OrgId, SessionId } from '../../domain/ids.js'
 import { orgOf, ctxOf, denyNonOwner } from '../rbac.js'
 import { decodeConversationKey, encodeConversationKey } from '../conversation-key.js'
-import { canChangeSessionVisibility, canViewSession } from '../../authorization/policy.js'
+import { canChangeSessionVisibility, canContinueSession, canView, canViewSession } from '../../authorization/policy.js'
+import { originKindOf, WEBCHAT_SESSION_CONTINUATION_FEATURE } from '@agentconnect.md/protocol'
 import { makeSessionAccessResolver } from '../session-access.js'
 import { Tag } from '../plugins/openapi.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
@@ -750,6 +751,33 @@ export function sessionRoutes(deps: HttpDeps) {
         ])
         const hook = hookMetadataForSession(hookMetadata, s)
         const display = sessionDisplayMetadata(s, hook)
+        // Continuation gate (webchat-cross-integration-continuation.md §6.5):
+        // the same predicate + state checks the mint route applies, projected as
+        // one server-computed flag + bounded product-language reason.
+        const continuationUnavailableReason = await (async () => {
+          const owningAgent = orgAgents.find((agent) => agent.id === s.agentId)
+          if (
+            !owningAgent ||
+            !canView(owningAgent, ctx) ||
+            !canContinueSession(s, ctx, access.identitySet, access.externalAccess)
+          ) {
+            return 'unauthorized' as const
+          }
+          if (s.contentPurgedAt) return 'content_purged' as const
+          if (originKindOf(s.platform ?? '') !== 'chat') return 'unsupported_platform' as const
+          if (!s.daemonId || owningAgent.daemonId !== s.daemonId) return 'agent_moved' as const
+          const daemon = deps.daemonConns.get(s.daemonId)
+          if (daemon?.state !== 'READY') return 'daemon_offline' as const
+          if (!daemon.capabilities?.features?.includes(WEBCHAT_SESSION_CONTINUATION_FEATURE)) {
+            return 'unavailable' as const
+          }
+          if (!deps.config.PUBLIC_RELAY_URL) return 'unavailable' as const
+          const alive = await deps.repos.relay.listAlive(new Date(Date.now() - (deps.config.RELAY_STALE_MS ?? 45_000)))
+          if (alive.length === 0 || alive.some((r) => !r.features.includes(WEBCHAT_SESSION_CONTINUATION_FEATURE))) {
+            return 'unavailable' as const
+          }
+          return null
+        })()
         const siblings = siblingCandidates.filter((candidate) => candidate.id !== s.id)
         const related = [...(parent ? [parent] : []), ...siblings, ...children]
         const relatedAccess = await sessionAccess.forSessions(req, related)
@@ -825,6 +853,8 @@ export function sessionRoutes(deps: HttpDeps) {
           // boundary only takes effect once every affected daemon has acked.
           visibilityState: await visibilityStateOf(deps.visibilityPush, deps.repos, [s.id]),
           canChangeVisibility: canChangeSessionVisibility(s, ctx, access.identitySet),
+          canContinue: continuationUnavailableReason === null,
+          continuationUnavailableReason,
           accessSyncDegraded: access.degraded || relatedAccess.degraded,
           accessIssues,
           contentPurgedAt: s.contentPurgedAt ? s.contentPurgedAt.toISOString() : null,

@@ -143,6 +143,7 @@ import {
   slackSharedKey,
   SlackConnection,
   type InteractionActor,
+  type SlackPostOptions,
   type SlackStatusOptions
 } from './slack/connection.js'
 import {
@@ -303,6 +304,7 @@ import {
   AgentActivate as AgentActivateSchema,
   WEBCHAT_MULTI_AGENT_FEATURE,
   WEBCHAT_REMOTE_MCP_FEATURE,
+  WEBCHAT_SESSION_CONTINUATION_FEATURE,
   WebchatMcpGrantRevoke,
   encodeSharedSlackStatusTarget,
   HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED,
@@ -1494,6 +1496,10 @@ interface QueueEntry {
   cancelledReason?: TurnInterruptReason
   /** Cross-session GitHub coordination must settle before this durable entry can start. */
   coordinationWait?: Promise<void>
+  /** An admitted continuation waits for its platform mirror; false skips only this entry. */
+  admissionWait?: Promise<boolean>
+  /** Record chat observation only after admissionWait succeeds. */
+  deferObservedInbound?: boolean
   posterPublishState?: 'not_started' | 'in_flight' | 'settled'
   /** The live inbox row was redacted into a durable terminal HookReport
    * receipt; removeInbox must retain it for restart-safe redelivery dedup. */
@@ -5459,6 +5465,9 @@ export class Daemon {
       // on turns, the transcript-only context op, agent-attributed stream frames,
       // and rd/webchat-post reply fan-out. Static — no runtime dependency.
       WEBCHAT_MULTI_AGENT_FEATURE,
+      // Session-targeted webchat continuation: RdMsgWebchat.targetSessionId is
+      // resolved onto the target session's own local coordinates. Static.
+      WEBCHAT_SESSION_CONTINUATION_FEATURE,
       // This bit attests to daemon-side grant + ACP descriptor delivery, not to
       // a runtime artifact, capability probe, or sandbox policy. The CP remains
       // authoritative for deciding whether a conversation belongs to the
@@ -7317,6 +7326,144 @@ export class Daemon {
     return { accepted: true, turnId }
   }
 
+  /**
+   * Session-targeted continuation turn (webchat-cross-integration-continuation.md
+   * §5.2/§6.4): dispatch one browser turn INTO an existing chat-origin session on
+   * its own local coordinates — the `replyToSession` local shape with a human
+   * sender — with the webchat stream attached as an additional sink. The human
+   * turn is mirrored to the origin thread BEFORE dispatch, so platform
+   * participants never miss input that changed the agent's context; a failed
+   * mirror refuses the turn. The crash window between a delivered mirror and the
+   * committed dispatch is the ordinary projection-failure boundary (not atomic).
+   */
+  private async dispatchWebchatContinuationTurn(
+    agentId: string,
+    chatId: string,
+    targetSessionId: string,
+    text: string,
+    user: string,
+    sink: WebchatSink,
+    requestedTurnId?: string
+  ): Promise<WebchatAck> {
+    const turnId = requestedTurnId ?? randomUUID()
+    if (!this.agents.has(agentId)) return { accepted: false, turnId, reason: 'no_agent' }
+    // ACP ids are runtime-owned: resolve agent-scoped, and use ONLY the local
+    // row's coordinates. A miss means the CP verdict is stale (retention GC /
+    // metadata replacement) — fail closed.
+    const local = this.store.getSessionByAcpIdForAgent(agentId, targetSessionId)
+    if (!local || originKindOf(local.platform) !== 'chat') return { accepted: false, turnId, reason: 'not_found' }
+    if (this.paused(agentId)) return { accepted: false, turnId, reason: 'paused' }
+    if (this.safetyDrainingAgents.has(agentId)) return { accepted: false, turnId, reason: 'busy' }
+    if (this.draining || this.drainingAgents.has(agentId)) return { accepted: false, turnId, reason: 'draining' }
+    const integrationId = this.integrationIdForSessionTransport(agentId, local.platform, local.transportScope)
+    const conn = integrationId ? this.connForIntegration(integrationId) : undefined
+    if (!integrationId || !conn) return { accepted: false, turnId, reason: 'integration_offline' }
+    const botUserId = this.botUserIds[integrationId] ?? this.resolveCpAgent(agentId, local.platform)?.botUserId
+    const msg: NormalizedMessage = {
+      msgId: `webchat-cont:${chatId}:${turnId}`,
+      traceId: turnId,
+      source: 'user',
+      platform: local.platform,
+      channel: local.channel,
+      ...(local.thread ? { thread: local.thread } : {}),
+      ...(local.transportScope ? { transportScope: local.transportScope } : {}),
+      // Ordered as NEW content in the origin session (the replyToSession rule).
+      transcriptTs: monotonicTs(),
+      sender: { id: user, isBot: false },
+      text,
+      mentionedBots: botUserId ? [botUserId] : [],
+      isDm: local.conversationKind === 'dm',
+      trigger: local.conversationKind === 'dm' ? 'dm' : 'mention'
+    }
+    // The synthesized coordinates must rebuild the EXACT stored key, or dispatch
+    // would mint a sibling session instead of continuing this one.
+    const key = sessionKey(msg.platform, msg.channel, msg.thread ?? msg.msgId, agentId, msg.transportScope)
+    if (key !== local.key) {
+      this.log.warn(`webchat continuation: key mismatch for session ${targetSessionId} (${key} != ${local.key})`)
+      return { accepted: false, turnId, reason: 'not_found' }
+    }
+    // Serial/queue preflight on the TARGET session's own key.
+    if (this.inflight.has(key) && (this.serialQueue.get(key)?.length ?? 0) >= MAX_QUEUED_PER_SESSION) {
+      return { accepted: false, turnId, reason: 'busy' }
+    }
+    this.pruneWebchatStreams()
+    if (this.webchatStreams.has(this.webchatStreamKey(turnId, agentId))) {
+      return { accepted: false, turnId, reason: 'busy' }
+    }
+    const stream = this.createWebchatTurnStream(agentId, chatId, turnId, sink)
+    let settleMirror!: (mirrored: boolean) => void
+    const mirrorAdmission = new Promise<boolean>((resolve) => {
+      settleMirror = resolve
+    })
+    let admission: { accepted: boolean; reason?: string } | undefined
+    const turn = this.dispatch(agentId, msg, integrationId, stream, undefined, {
+      admissionWait: mirrorAdmission,
+      deferObservedInbound: true,
+      onAdmission: (result) => {
+        admission = result
+      }
+    })
+    void turn.catch((err) => {
+      if (!(err instanceof LifecycleCleanupBlockedError))
+        this.log.error(`webchat continuation dispatch failed for agent "${agentId}": ${formatErr(err)}`)
+    })
+    if (!admission) throw new Error('continuation admission barrier did not settle synchronously')
+    if (!admission.accepted) {
+      settleMirror(false)
+      this.removeWebchatStream(this.webchatStreamKey(turnId, agentId), stream)
+      return { accepted: false, turnId, reason: admission.reason === 'draining' ? 'draining' : 'busy' }
+    }
+    // Admission owns a serial-queue slot before mirroring and waits for its result before execution.
+    const mirrorText = `[${user} via console] ${text}`
+    // The mirror takes the SAME two-step shape an ordinary agent reply does:
+    // an attributed body post, then a finalizing chat.update stamping the
+    // trusted routing claim (author = the target agent, root depth, unaddressed
+    // final). The `message_changed` finalization is the ONE event every Slack
+    // ingress admits before its own-bot echo suppression, so same-app/shared-bot
+    // participants route it exactly like different-app observers do: thread
+    // peers activate exactly-once via the durable rendezvous under their own
+    // connection-fenced rules, and the author is excluded (it gets the targeted
+    // dispatch). Platforms without a metadata claim degrade to transcript-only
+    // peers, like agent replies there.
+    let slackMirror: { conn: SlackConnection; ts: string } | undefined
+    try {
+      // postMessage resolves undefined when the provider swallows a send failure
+      // (Discord/Feishu) or lands nothing (Slack) — only a returned message id
+      // proves the mirror is visible, so undefined takes the failure path too.
+      const mirrorId =
+        local.platform === 'slack'
+          ? await (conn as SlackConnection).postMessage(local.channel, mirrorText, local.thread || undefined, {
+              agentAuthorId: agentId
+            } satisfies SlackPostOptions)
+          : await conn.postMessage(local.channel, mirrorText, local.thread || undefined)
+      if (!mirrorId) throw new Error('provider returned no message id')
+      if (local.platform === 'slack') slackMirror = { conn: conn as SlackConnection, ts: mirrorId }
+      settleMirror(true)
+    } catch (err) {
+      this.log.warn(`webchat continuation: mirror post failed for ${local.key}: ${formatErr(err)}`)
+      this.removeWebchatStream(this.webchatStreamKey(turnId, agentId), stream)
+      settleMirror(false)
+      return { accepted: false, turnId, reason: 'integration_delivery_failed' }
+    }
+    // Routing finalization is best-effort AFTER the proven post, mirroring
+    // turn-output's contract: a failed update degrades to unrouted peers,
+    // never to a hidden or mis-routed input. Duck-typed for test fakes.
+    if (slackMirror && typeof slackMirror.conn.finalizeResponse === 'function') {
+      const finalized = await slackMirror.conn.finalizeResponse(
+        local.channel,
+        slackMirror.ts,
+        [{ type: 'markdown', text: mirrorText }],
+        mirrorText,
+        agentId,
+        { responseId: msg.msgId, deliveryState: 'final', hopCount: 0, mentionedAgentIds: [] }
+      )
+      if (!finalized)
+        this.log.warn(`webchat continuation: mirror finalization failed for ${local.key} (peers unrouted)`)
+    }
+    this.log.info(`webchat continuation: ${user} → session ${local.key} (conversation ${chatId}, turn ${turnId})`)
+    return { accepted: true, turnId }
+  }
+
   /** Handle a webchat conversation close (relay `close` op). No live resources are
    *  bound per-conversation (the session TTL-closes like any other), so this is
    *  currently just observability — the in-flight turn, if any, runs to completion. */
@@ -7874,6 +8021,23 @@ export class Daemon {
         : msg.source === 'platform_action'
           ? this.handleRelayPlatformAction(msg)
           : this.handleRelayIm(msg)
+    // A session-continuation turn settles async (it awaits the platform mirror);
+    // park it like a hook admission so a retransmit joins the same in-flight ack.
+    if (ack instanceof Promise) {
+      const task = ack
+        .catch((err): RdAck => {
+          this.log.error(`webchat continuation admission failed for ${dedupKey}: ${formatErr(err)}`)
+          return { msgId: msg.msgId, accepted: false, reason: 'busy' }
+        })
+        .then((settled) => {
+          this.pendingRelayMsgAcks.delete(dedupKey)
+          if (this.relayMsgAcks.size >= 2000) this.relayMsgAcks.clear()
+          this.relayMsgAcks.set(dedupKey, settled)
+          return settled
+        })
+      this.pendingRelayMsgAcks.set(dedupKey, task)
+      return task
+    }
     if (this.relayMsgAcks.size >= 2000) this.relayMsgAcks.clear() // bound the window
     this.relayMsgAcks.set(dedupKey, ack)
     return ack
@@ -10849,13 +11013,47 @@ export class Daemon {
     msg: RdMsgWebchat,
     chat: (event: RdChatEvent) => void,
     post?: (p: RdWebchatPost) => void
-  ): RdAck {
+  ): RdAck | Promise<RdAck> {
     const sink: WebchatSink = {
       output: (o) => chat({ kind: 'output', output: o }),
       done: (d) => chat({ kind: 'done', done: d })
     }
     const op = msg.payload
     const key = (): string => this.webchatSessionKey(msg.chatId, msg.agentId)
+    // Session-targeted continuation: `turn` dispatches onto the target session's
+    // own coordinates; runtime-set ops are refused (this ingress adds human
+    // input, never session-global administration); a context copy is a no-op
+    // (the roster is fixed at one). resume/cancel/close keep their ordinary
+    // shape — resume is keyed by (turnId, agentId), cancel by the conversation's
+    // own webchat-attached turns.
+    if (msg.targetSessionId !== undefined) {
+      switch (op.op) {
+        case 'turn':
+          return this.dispatchWebchatContinuationTurn(
+            msg.agentId,
+            msg.chatId,
+            msg.targetSessionId,
+            op.text,
+            op.user ?? 'webchat',
+            sink,
+            op.turnId
+          ).then((ack) => ({
+            msgId: msg.msgId,
+            accepted: ack.accepted,
+            turnId: ack.turnId,
+            ...(ack.reason ? { reason: ack.reason } : {})
+          }))
+        case 'set_model':
+        case 'set_effort':
+        case 'set_permission_mode':
+        case 'set_fast':
+          return { msgId: msg.msgId, accepted: false, reason: 'runtime changes are disabled for a continued session' }
+        case 'context':
+          return { msgId: msg.msgId, accepted: true }
+        default:
+          break // resume/cancel/close fall through to the ordinary handlers
+      }
+    }
     switch (op.op) {
       case 'turn': {
         const ack = this.dispatchWebchatTurn(
@@ -12873,6 +13071,10 @@ export class Daemon {
       /** Synchronous admission barrier: called after the durable row is owned,
        * or with a rejection before any turn can start. */
       onAdmission?: (result: { accepted: boolean; reason?: string; duplicate?: boolean }) => void
+      /** Hold an admitted entry before execution; false drops only that entry. */
+      admissionWait?: Promise<boolean>
+      /** Delay observed-inbound persistence until admissionWait succeeds. */
+      deferObservedInbound?: boolean
       /** Best-effort notification once the ACP session exists, before prompt. */
       onSessionReady?: (sessionId: string) => void
     },
@@ -12892,7 +13094,11 @@ export class Daemon {
     }
     if (msg.sender.avatarUrl && msg.transportScope)
       this.store.setProfileAvatar(msg.transportScope, msg.sender.id, msg.sender.avatarUrl, Date.now())
-    if (this.cfg.features.turnFinalContextRefresh && originKindOf(msg.platform) === 'chat') {
+    if (
+      !opts?.deferObservedInbound &&
+      this.cfg.features.turnFinalContextRefresh &&
+      originKindOf(msg.platform) === 'chat'
+    ) {
       this.recordObservedInbound(msg, agentId)
     }
     return new Promise<string | null>((resolve, reject) => {
@@ -13040,6 +13246,8 @@ export class Daemon {
         ...(callMeta ? { callMeta } : {}),
         ...(hookContext ? { hookContext } : {}),
         ...(opts?.onSessionReady ? { onSessionReady: opts.onSessionReady } : {}),
+        ...(opts?.admissionWait ? { admissionWait: opts.admissionWait } : {}),
+        ...(opts?.deferObservedInbound ? { deferObservedInbound: true } : {}),
         ...(opts?.isQueueCmd ? { isQueueCmd: true } : {}),
         ...(githubReply ? { githubReply } : {}),
         ...(posterPublishState ? { posterPublishState } : {}),
@@ -13425,19 +13633,27 @@ export class Daemon {
             await entry.coordinationWait
             entry.coordinationWait = undefined
           }
-          const releaseDispatch = await this.admitActiveDispatch(entry.agentId, key)
-          let sessionId: string | null
-          try {
-            await this.settleGithubReviewBatch(entry)
-            sessionId = await this.dispatchOne(entry, key)
-          } finally {
-            releaseDispatch()
+          const runAdmittedEntry = entry.admissionWait === undefined || (await entry.admissionWait)
+          entry.admissionWait = undefined
+          if (runAdmittedEntry) {
+            if (entry.deferObservedInbound) this.recordObservedInbound(entry.msg, entry.agentId)
+            const releaseDispatch = await this.admitActiveDispatch(entry.agentId, key)
+            let sessionId: string | null
+            try {
+              await this.settleGithubReviewBatch(entry)
+              sessionId = await this.dispatchOne(entry, key)
+            } finally {
+              releaseDispatch()
+            }
+            // A turn that genuinely COMPLETED is done — remove its row even during a shutdown
+            // drain (it must NOT replay). A cold turn explicitly aborted by shutdown is the
+            // exception: it never ran, so retain its admitted row for startup replay.
+            if (!(this.draining && entry.cancelledReason === 'shutdown')) this.removeInbox(entry)
+            entry.resolve(sessionId)
+          } else {
+            this.removeInbox(entry)
+            entry.resolve(null)
           }
-          // A turn that genuinely COMPLETED is done — remove its row even during a shutdown
-          // drain (it must NOT replay). A cold turn explicitly aborted by shutdown is the
-          // exception: it never ran, so retain its admitted row for startup replay.
-          if (!(this.draining && entry.cancelledReason === 'shutdown')) this.removeInbox(entry)
-          entry.resolve(sessionId)
         } catch (err) {
           // On shutdown (`this.draining`) the throw is the deadline-cancel unwinding a blocked
           // ACP prompt (drainForShutdown → host.cancel → dispatchOne throws). That message was

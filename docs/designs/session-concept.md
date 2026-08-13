@@ -103,6 +103,11 @@ lines — so the agent always knows who is speaking and never has to guess the
 sender from ambient account context. Synthetic (cron/hook) triggers stay bare,
 and an agent-to-agent delivery already names its caller in the forwarded text.
 
+A `human` turn may also enter a platform session via the **console ingress**
+(webchat-cross-integration-continuation.md): it carries the same source
+metadata shape, is attributed to the console user, and is mirrored to the
+origin thread before dispatch so both projections stay honest.
+
 An outbound `agent` message does **not** necessarily reach an IM platform. The
 session's output mode, `none < minimal < low < medium < high`, decides whether
 owner output is delivered to Slack, Telegram, or another platform. Regardless
