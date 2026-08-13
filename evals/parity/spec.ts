@@ -45,20 +45,20 @@ export const AUTOMATIC_TURNS_PER_WINDOW = 8
  *  - `roster`           — every conversation participant (standing mention);
  *  - `participants-minus-author` — everyone already in the conversation except
  *                          the (verified agent) author;
- *  - `named-peer-exactly-once`   — the one named peer, admitted exactly once
- *                          across echoes/retries/duplicate frames;
+ *  - `target-exactly-once`       — the delivery's target, admitted exactly
+ *                          once across echoes/retries/duplicate frames. How
+ *                          the target is ADDRESSED is surface mechanics: an
+ *                          explicit mention where the surface has mention
+ *                          addressing (channels), the pre-addressed roster
+ *                          fan-out where it does not (webchat agent posts
+ *                          carry no structured mentions);
  *  - `parent-exactly-once`       — the delegating parent session, woken exactly
  *                          once by the child's report;
  *  - `nobody`           — no activation at all (transcript-only where the
  *                          surface records transcripts).
  */
 export type ActivationSet =
-  | 'mentioned-only'
-  | 'roster'
-  | 'participants-minus-author'
-  | 'named-peer-exactly-once'
-  | 'parent-exactly-once'
-  | 'nobody'
+  'mentioned-only' | 'roster' | 'participants-minus-author' | 'target-exactly-once' | 'parent-exactly-once' | 'nobody'
 
 export interface ChainRefusal {
   /** Which protection terminates the scenario's agent-to-agent chain. */
@@ -154,18 +154,25 @@ export const PARITY_SCENARIOS: readonly ParityScenario[] = [
     }
   },
   {
-    id: 'explicit-mention-exactly-once',
-    title: 'an explicit mention activates the named peer exactly once',
+    id: 'delivery-exactly-once',
+    title: 'one committed agent message admits each target exactly once',
     invariant:
-      'One finalized agent message naming one peer produces exactly one activation for that peer — duplicate frames, echoes, and retries are absorbed by the durable rendezvous.',
+      'One committed agent message produces exactly one activation per (message, target) — duplicate frames, echoes, and retries are absorbed by the durable rendezvous.',
     expect: {
+      // The addressed EDGE differs per surface by construction, and that is
+      // mechanics, not outcome: channels address a peer with an explicit
+      // mention; a webchat agent post carries no structured mentions, so its
+      // addressed edge IS the relay's pre-addressed fan-out copy. Both must
+      // collapse duplicates to one admission.
       slack: {
-        activates: 'named-peer-exactly-once',
-        notes: 'the streaming echo and the finalized echo of the same message collapse to one admission'
+        activates: 'target-exactly-once',
+        notes:
+          'the explicit-mention edge: the streaming echo and the finalized echo of one response collapse to one admission for the named peer'
       },
       webchat: {
-        activates: 'named-peer-exactly-once',
-        notes: 'a re-fanned identical context copy under a fresh relay msgId does not double-wake'
+        activates: 'target-exactly-once',
+        notes:
+          'the pre-addressed fan-out edge: a re-fanned identical context copy under a fresh relay msgId does not double-wake the target'
       }
     }
   },
@@ -176,12 +183,12 @@ export const PARITY_SCENARIOS: readonly ParityScenario[] = [
       'Streaming/partial agent output never activates anyone; activation happens only on the committed (finalized) message.',
     expect: {
       slack: {
-        activates: 'named-peer-exactly-once',
+        activates: 'target-exactly-once',
         streamingNeverRoutes: true,
         notes: 'every streaming echo admission is refused; only the response-closing edit routes'
       },
       webchat: {
-        activates: 'named-peer-exactly-once',
+        activates: 'target-exactly-once',
         streamingNeverRoutes: true,
         notes: 'structural on this surface: rd/webchat-post exists only for committed replies, streaming rides rd/chat'
       }

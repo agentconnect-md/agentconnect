@@ -112,12 +112,13 @@ const drivers: Record<string, (scenario: ParityScenario) => Promise<void>> = {
     expect(leg.activations('agent2')).toBe(0)
   },
 
-  // (d) One finalized reply naming one peer → exactly one admitted delivery
-  // for it; the streaming echo and any duplicate collapse in the rendezvous.
-  'explicit-mention-exactly-once': async (scenario) => {
+  // (d) Exactly one admission per (message, target). This surface's addressed
+  // edge is the explicit mention: one finalized reply naming one peer, whose
+  // streaming echo and finalized echo collapse to one admission.
+  'delivery-exactly-once': async (scenario) => {
     // The spec is load-bearing: editing this scenario's declared outcome
     // fails this pin; changing the behavior fails the measured asserts below.
-    expect(declaredOutcome(scenario.expect.slack!)).toEqual({ activates: 'named-peer-exactly-once' })
+    expect(declaredOutcome(scenario.expect.slack!)).toEqual({ activates: 'target-exactly-once' })
     const leg = await startRoom({
       agent1: (ctx) => {
         if (/START/.test(ctx.text)) ctx.reply(`<@${fixture!.botUserId('agent2')}> please review the rollout`)
@@ -141,7 +142,7 @@ const drivers: Record<string, (scenario: ParityScenario) => Promise<void>> = {
     // The spec is load-bearing: editing this scenario's declared outcome
     // fails this pin; changing the behavior fails the measured asserts below.
     expect(declaredOutcome(scenario.expect.slack!)).toEqual({
-      activates: 'named-peer-exactly-once',
+      activates: 'target-exactly-once',
       streamingNeverRoutes: true
     })
     const leg = await startRoom({

@@ -238,12 +238,14 @@ const drivers: Record<string, (scenario: ParityScenario) => Promise<void>> = {
     }
   },
 
-  // (d) Exactly-once per (post, target): a re-fanned identical copy under a
-  // fresh relay msgId is absorbed by the durable rendezvous.
-  'explicit-mention-exactly-once': async (scenario) => {
+  // (d) Exactly one admission per (message, target). This surface's addressed
+  // edge is the relay's pre-addressed fan-out copy — webchat agent posts carry
+  // no structured mentions — and a re-fanned identical copy under a fresh
+  // relay msgId is absorbed by the durable rendezvous.
+  'delivery-exactly-once': async (scenario) => {
     // The spec is load-bearing: editing this scenario's declared outcome
     // fails this pin; changing the behavior fails the measured asserts below.
-    expect(declaredOutcome(scenario.expect.webchat!)).toEqual({ activates: 'named-peer-exactly-once' })
+    expect(declaredOutcome(scenario.expect.webchat!)).toEqual({ activates: 'target-exactly-once' })
     const leg = await startLeg([P1], { [P1]: () => NO_RESPONSE })
     try {
       seedCallPolicy(leg.daemon, [P1, P2]) // the author lives on another daemon — only the edge matters
@@ -264,7 +266,7 @@ const drivers: Record<string, (scenario: ParityScenario) => Promise<void>> = {
     // The spec is load-bearing: editing this scenario's declared outcome
     // fails this pin; changing the behavior fails the measured asserts below.
     expect(declaredOutcome(scenario.expect.webchat!)).toEqual({
-      activates: 'named-peer-exactly-once',
+      activates: 'target-exactly-once',
       streamingNeverRoutes: true
     })
     let releaseP1!: () => void

@@ -45,7 +45,7 @@ One surface-agnostic scenario spec, several per-surface legs:
 - **Spec:** [`evals/parity/spec.ts`](../../evals/parity/spec.ts) — each
   scenario is data: an invariant sentence plus per-surface expected outcomes in
   one vocabulary (`mentioned-only`, `roster`, `participants-minus-author`,
-  `named-peer-exactly-once`, `parent-exactly-once`, `nobody`, chain-refusal
+  `target-exactly-once`, `parent-exactly-once`, `nobody`, chain-refusal
   reasons). Where surfaces intentionally differ, the spec carries a
   **declared divergence** with design-doc citations.
 - **Slack-shaped leg:** `evals/test/parity-slack.test.ts` — the arena routing
