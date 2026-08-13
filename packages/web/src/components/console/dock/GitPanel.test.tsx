@@ -78,7 +78,7 @@ vi.mock('@/lib/api', () => {
   }
 })
 
-import { GitPanel, gitTabStatus, splitGitSections, type GitPanelVerdict } from './GitPanel'
+import { baseBranchOf, GitPanel, gitTabStatus, splitGitSections, type GitPanelVerdict } from './GitPanel'
 import { commitWorkspace, draftWorkspaceCommitMessage, fetchWorkspaceGitLog } from '@/lib/api'
 import type { WorkspaceGitFileDto, WorkspaceGitLogDto, WorkspaceGitStatusDto } from '@/lib/api'
 
@@ -110,7 +110,7 @@ function gitStatus(overrides: Partial<WorkspaceGitStatusDto> = {}): WorkspaceGit
 }
 
 function gitLog(overrides: Partial<WorkspaceGitLogDto> = {}): WorkspaceGitLogDto {
-  return { isRepo: true, commits: [], truncated: false, tracking: null, ...overrides }
+  return { isRepo: true, commits: [], truncated: false, tracking: null, base: null, ...overrides }
 }
 
 function file(
@@ -179,6 +179,11 @@ const toggles = (section: 'staged' | 'changes') =>
 const stageAll = (section: 'staged' | 'changes') =>
   container?.querySelector<HTMLButtonElement>(`[data-git-stage-all="${section}"]`) ?? undefined
 const commitRows = () => Array.from(container?.querySelectorAll<HTMLElement>('[data-git-commit]') ?? [])
+const commitsToggle = () => container?.querySelector<HTMLButtonElement>('[data-git-commits-toggle]') ?? undefined
+/** The history is closed by default (it sits under the working half), so every case about the list opens it first. */
+const openCommits = async () => {
+  await click(commitsToggle(), 'commits toggle')
+}
 
 async function click(element: Element | undefined, what: string) {
   expect(element, what).toBeDefined()
@@ -243,6 +248,16 @@ describe('splitGitSections', () => {
   })
 })
 
+describe('baseBranchOf', () => {
+  it('reduces the log ref to the branch a pull request can target, and answers nothing for no base', () => {
+    expect(baseBranchOf('origin/release')).toBe('release')
+    // A configured branch that is itself path-shaped keeps every segment but the remote.
+    expect(baseBranchOf('origin/release/2026.08')).toBe('release/2026.08')
+    expect(baseBranchOf(null)).toBeNull()
+    expect(baseBranchOf(undefined)).toBeNull()
+  })
+})
+
 describe('gitTabStatus', () => {
   it('is loading only until the status has answered, and never empty', () => {
     expect(gitTabStatus(false)).toBe('loading')
@@ -259,7 +274,21 @@ describe('GitPanel', () => {
     await render()
 
     // The last report is the one the tab uses; the count is DISTINCT paths, so a file in both sections is one changed file.
-    expect(verdicts.at(-1)).toEqual({ settled: true, changed: 2 })
+    expect(verdicts.at(-1)).toEqual({ settled: true, changed: 2, branch: 'main', tracking: null, base: null })
+  })
+
+  it('reports the log’s base as the branch it names, so the PR tab targets the CONFIGURED base and not the repository default', async () => {
+    wire.git = gitStatus({ branch: 'dev/jane-doe/candid-lynx', tracking: null })
+    wire.log = gitLog({ base: 'origin/release', commits: [commit()] })
+    await render()
+
+    expect(verdicts.at(-1)).toEqual({
+      settled: true,
+      changed: 0,
+      branch: 'dev/jane-doe/candid-lynx',
+      tracking: null,
+      base: 'release'
+    })
   })
 
   it('draws the branch and, only against a real upstream, ahead/behind', async () => {
@@ -343,6 +372,7 @@ describe('GitPanel', () => {
       commits: [commit({ sha: 'b'.repeat(40), shortSha: 'bbbbbbb', subject: 'wip', pushed: false }), commit()]
     })
     await render()
+    await openCommits()
 
     expect(commitRows()).toHaveLength(2)
     expect(commitRows()[0]?.textContent).toContain('wip')
@@ -355,6 +385,7 @@ describe('GitPanel', () => {
   it('draws no unpushed markers for a branch that tracks nothing, and says why', async () => {
     wire.log = gitLog({ tracking: null, commits: [commit({ pushed: false })] })
     await render()
+    await openCommits()
 
     expect(commitRows()).toHaveLength(1)
     expect(text()).not.toContain('unpushed')
@@ -384,8 +415,8 @@ describe('GitPanel', () => {
     expect(text()).toContain('not a git checkout')
     expect(rows('staged')).toHaveLength(0)
     expect(container?.querySelector('[data-git-section="commits"]')).toBeNull()
-    // Nothing to badge, so the tab gets no count at all rather than a zero.
-    expect(verdicts.at(-1)).toEqual({ settled: true, changed: null })
+    // Nothing to badge, so the tab gets no count at all rather than a zero — and a non-checkout has no branch facts to report either.
+    expect(verdicts.at(-1)).toEqual({ settled: true, changed: null, branch: null, tracking: null, base: null })
   })
 
   it('draws an offline daemon as data and still settles its tab', async () => {
@@ -393,7 +424,7 @@ describe('GitPanel', () => {
     await render()
 
     expect(text()).toContain('daemon may be offline')
-    expect(verdicts.at(-1)).toEqual({ settled: true, changed: null })
+    expect(verdicts.at(-1)).toEqual({ settled: true, changed: null, branch: null, tracking: null, base: null })
     expect(container?.querySelector('[data-git-panel]')).not.toBeNull()
   })
 
@@ -412,6 +443,7 @@ describe('GitPanel', () => {
     wire.git = gitStatus({ clean: false, files: [file('a.ts', 'M', ' ')] })
     wire.logFailure = { status: 409, code: 'DAEMON_FEATURE_MISSING' }
     await render()
+    await openCommits()
 
     expect(text()).toContain('cannot list commits')
     expect(text()).not.toContain('may be offline')
@@ -422,12 +454,60 @@ describe('GitPanel', () => {
   it('falls back to the offline story for a log failure the CP did not name', async () => {
     wire.logFailure = { status: 503 }
     await render()
+    await openCommits()
     expect(text()).toContain('Commits are unavailable')
   })
 
   it('says no commits yet for a repository with no history', async () => {
     await render()
+    await openCommits()
     expect(text()).toContain('No commits yet')
+  })
+
+  it('keeps the history CLOSED until asked, under the changed files and the commit box', async () => {
+    wire.git = gitStatus({ clean: false, files: [file('a.ts', ' ', 'M')] })
+    wire.log = gitLog({ commits: [commit({ subject: 'earlier work' })] })
+    await render({ canWrite: true })
+
+    // Closed: the list is absent from the DOM, not merely scrolled away — and the count is still on the row.
+    expect(commitRows()).toHaveLength(0)
+    expect(text()).not.toContain('earlier work')
+    expect(commitsToggle()?.dataset.gitCommitsToggle).toBe('closed')
+    expect(commitsToggle()?.textContent).toContain('1')
+    // The working half comes first in document order: changed files, the commit box, then the history.
+    const order = Array.from(
+      container?.querySelectorAll('[data-git-section="changes"], [data-commit-box], [data-git-section="commits"]') ?? []
+    ).map((node) => (node as HTMLElement).dataset.gitSection ?? 'commit-box')
+    expect(order).toEqual(['changes', 'commit-box', 'commits'])
+
+    await openCommits()
+    expect(commitsToggle()?.dataset.gitCommitsToggle).toBe('open')
+    expect(commitRows()).toHaveLength(1)
+  })
+
+  it('names the base a session branch is measured against, and counts only what the branch adds', async () => {
+    wire.git = gitStatus({ branch: 'dev/jane-doe/candid-lynx', tracking: null })
+    wire.log = gitLog({
+      base: 'origin/main',
+      truncated: true,
+      commits: [commit({ subject: 'feat: the session’s work' })]
+    })
+    await render()
+
+    // The header says which range this is: a count with no base would read as the repository's whole history.
+    expect(commitsToggle()?.textContent).toContain('Commits ahead')
+    expect(commitsToggle()?.textContent).toContain('vs origin/main')
+    // A truncated page makes the count a FLOOR, so it is drawn as one.
+    expect(commitsToggle()?.textContent).toContain('1+')
+  })
+
+  it('says an empty ahead-range holds nothing, naming the base rather than claiming no history', async () => {
+    wire.log = gitLog({ base: 'origin/main', commits: [] })
+    await render()
+    await openCommits()
+    expect(text()).toContain('Nothing committed on this branch yet')
+    expect(text()).toContain('origin/main')
+    expect(text()).not.toContain('No commits yet')
   })
 
   it('re-reads both halves on the tab’s refresh action without unmounting the panel', async () => {
@@ -440,9 +520,9 @@ describe('GitPanel', () => {
     expect(rowPaths('staged')).toEqual(['late.ts'])
     // The tab never un-readies and never loses its badge across a refresh: both are latched per scope.
     expect(verdicts).toEqual([
-      { settled: false, changed: null },
-      { settled: true, changed: 0 },
-      { settled: true, changed: 1 }
+      { settled: false, changed: null, branch: null, tracking: null, base: null },
+      { settled: true, changed: 0, branch: 'main', tracking: null, base: null },
+      { settled: true, changed: 1, branch: 'main', tracking: null, base: null }
     ])
   })
 })
@@ -471,7 +551,7 @@ describe('GitPanel — staging', () => {
     expect(rowPaths('staged')).toEqual(['src/staged.ts', 'src/edited.ts'])
     expect(rowPaths('changes')).toEqual([])
     // The badge follows the applied status, and the caller is told so it can re-read what it owns.
-    expect(verdicts.at(-1)).toEqual({ settled: true, changed: 2 })
+    expect(verdicts.at(-1)).toEqual({ settled: true, changed: 2, branch: 'main', tracking: null, base: null })
     expect(wrote).toBe(1)
   })
 
@@ -744,6 +824,7 @@ describe('GitPanel — staging', () => {
     expect(wire.statusCalls).toBeGreaterThan(statusReads)
     expect(fetchWorkspaceGitLog).toHaveBeenCalledTimes(2)
     expect(rowPaths('staged')).toEqual([])
+    await openCommits()
     expect(text()).toContain('feat: staged work')
     expect(wrote).toBe(1)
   })

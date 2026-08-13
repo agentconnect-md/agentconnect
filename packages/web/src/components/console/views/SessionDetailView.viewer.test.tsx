@@ -907,19 +907,79 @@ describe('the PR tab', () => {
     ...overrides
   })
 
-  it('is HIDDEN for a session with no linked run, whose 404 is asked exactly once', async () => {
-    // The default wire answer IS the 404: most sessions were not dispatched for a PR, and their strip must not carry a dead tab (§9 M5). One probe decides it — the linkage cannot appear later, so nothing re-asks.
+  it('is HIDDEN for a session whose workspace is no checkout, whose 404 is asked exactly once', async () => {
+    // The default wire answer IS the 404, over a from-scratch workspace: with no checkout there is no branch a pull request could ever be opened from, so the strip must not carry a dead tab. One probe decides it — the linkage cannot appear later, so nothing re-asks.
     await render()
     expect(container?.querySelector('[data-dock-tab="pr"]')).toBeNull()
-    expect(container?.querySelector('[data-pr-panel]')).toBeNull()
     expect(wire.prCalls).toEqual([{ sessionId: 'session-1', refresh: false }])
     await render()
     await render()
     expect(wire.prCalls).toHaveLength(1)
   })
 
+  it('KEEPS its tab over a checkout with no linked run, naming the branch that has no upstream yet', async () => {
+    // The same 404, but the session works in a real checkout: "no pull request" is then a state with a next action, not an absence to hide.
+    wire.git = {
+      isRepo: true,
+      clean: true,
+      repo: null,
+      agentDir: null,
+      branch: 'dev/jane-doe/candid-lynx',
+      tracking: null,
+      ahead: null,
+      behind: null,
+      files: [],
+      truncated: false,
+      lastCommit: null,
+      lastFetchAt: null
+    }
+    wire.log = { isRepo: true, commits: [], truncated: false, tracking: null }
+    await render()
+    const tab = container?.querySelector('[data-dock-tab="pr"]')
+    expect(tab).not.toBeNull()
+    await act(async () => {
+      tab?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+    await render()
+    const panel = container?.querySelector('[data-pr-panel="none"]')
+    expect(panel?.textContent).toContain('No upstream configured')
+    expect(panel?.textContent).toContain('dev/jane-doe/candid-lynx')
+  })
+
+  it('withholds the no-PR state when the git read is about a DIFFERENT scope than this panel', async () => {
+    // Files/Git follow header focus; the PR tab follows the open session. A shared-workspace session
+    // makes the Git read the agent's PRIMARY checkout — `main` here — which is no session branch at
+    // all. Drawing the state off it would both name the wrong branch and put THIS session's create
+    // action on screen off another checkout's eligibility, so the tab is dropped instead.
+    wire.isolation = 'shared'
+    wire.git = {
+      isRepo: true,
+      clean: true,
+      repo: null,
+      agentDir: null,
+      branch: 'main',
+      tracking: 'origin/main',
+      ahead: null,
+      behind: null,
+      files: [],
+      truncated: false,
+      lastCommit: null,
+      lastFetchAt: null
+    }
+    wire.log = { isRepo: true, commits: [], truncated: false, tracking: 'origin/main', base: null }
+    await render()
+    // No tab, so the action is unreachable — the panel still MOUNTS (its verdict is what could reveal
+    // a tab at all), and what it drew names no branch: the scope-free copy, not `main`'s state.
+    expect(container?.querySelector('[data-dock-tab="pr"]')).toBeNull()
+    const panel = container?.querySelector('[data-pr-panel="none"]')
+    expect(panel?.textContent).toContain('No pull request is linked to this session yet')
+    expect(panel?.textContent).not.toContain('main')
+    expect(panel?.textContent).not.toContain('No upstream configured')
+  })
+
   it('stands in the strip as loading while the linkage is unknown, then leaves it when the 404 lands', async () => {
-    // The strip CHANGES SHAPE on the answer: a session that turns out to have no PR loses the tab rather than keeping a dead one, and a linked one keeps it — the probe's verdict is the only thing that can tell them apart.
+    // The strip CHANGES SHAPE on the answer: a session with no PR AND no checkout loses the tab rather than keeping a dead one — the probe's verdict is what tells it from a linked one.
     wire.prGate = []
     await render()
     expect(container?.querySelector('[data-dock-tab="pr"]')).not.toBeNull()

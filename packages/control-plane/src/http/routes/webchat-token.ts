@@ -56,6 +56,14 @@ export function webchatTokenRoutes(deps: HttpDeps) {
   return async function webchatTokenRoutesPlugin(app: FastifyInstance): Promise<void> {
     const r = app.withTypeProvider<ZodTypeProvider>()
 
+    /** The display handle the token attests — the transcript author line AND the name
+     *  the daemon puts in a session worktree's branch, so the profile's full name wins
+     *  over the sign-in address (`dev/jane-doe/…`, not `dev/jane-example-com/…`). */
+    const authorHandle = async (userId: string, email: string | undefined): Promise<string> => {
+      const profile = await deps.repos.user.getProfile(userId)
+      return profile?.displayName?.trim() || email || userId
+    }
+
     /** Mint-time fence (webchat-multi-agents.md §10.2): a resume requires the
      *  owner to currently `canView` EVERY participant, not only the primary —
      *  losing access to one restricted member revokes the whole conversation,
@@ -115,7 +123,7 @@ export function webchatTokenRoutes(deps: HttpDeps) {
         }
         const token = await deps.webchatTokens.mint({
           userId,
-          user: req.principal!.email ?? userId,
+          user: await authorHandle(userId, req.principal!.email),
           agentId: agent.id,
           orgId: agent.orgId,
           conversationId
@@ -173,7 +181,7 @@ export function webchatTokenRoutes(deps: HttpDeps) {
           }
           const token = await deps.webchatTokens.mint({
             userId,
-            user: req.principal!.email ?? userId,
+            user: await authorHandle(userId, req.principal!.email),
             agentId: primary.id,
             orgId,
             conversationId
@@ -212,7 +220,7 @@ export function webchatTokenRoutes(deps: HttpDeps) {
         )
         const token = await deps.webchatTokens.mint({
           userId,
-          user: req.principal!.email ?? userId,
+          user: await authorHandle(userId, req.principal!.email),
           agentId: primary!.id,
           orgId,
           conversationId

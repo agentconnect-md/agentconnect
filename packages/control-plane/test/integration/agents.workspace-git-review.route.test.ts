@@ -81,7 +81,9 @@ class GitReviewSpy {
         }
       ],
       truncated: true,
-      tracking: 'origin/main'
+      tracking: 'origin/main',
+      // The session worktree sits on its own branch, so the daemon lists `<base>..HEAD` and says so.
+      base: 'origin/main'
     }
   }
 
@@ -376,7 +378,8 @@ describe('GET /agents/:id/workspace/gitlog', () => {
         }
       ],
       truncated: true,
-      tracking: 'origin/main'
+      tracking: 'origin/main',
+      base: 'origin/main'
     })
 
     const capped = await running.app.inject({ method: 'GET', url: `${ORG}/agents/${AGENT}/workspace/gitlog?limit=51` })

@@ -491,7 +491,25 @@ describe('relay control gateway — rc/* handshake over agentconnect.rc.v1', () 
       orgId: DEFAULT_ORG_ID,
       conversationId: token.conversationId
     })
-    expect(typeof ok.user).toBe('string') // the transcript author handle from the token
+    // The handle names the PERSON: the daemon puts it on the transcript author line AND in the
+    // session worktree's branch, so the profile's display name wins over the sign-in address.
+    expect(ok.user).toBe('Owner')
+    ws.close()
+    daemonWs.close()
+  })
+
+  it('rc/verify(webchat-token) falls back past a profile with no display name', async () => {
+    const { app, base } = await start({ PUBLIC_RELAY_URL: RELAY_URL })
+    const daemonWs = await connectDaemonReady(base)
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    await prisma.user.update({ where: { id: DEFAULT_OWNER_ID }, data: { displayName: null } })
+    const token = (await mintWebchatToken(app, AGENT).then((r) => r.json())) as { token: string }
+
+    const { ws } = await openRelay(base, 'pod-w2', 'wss://pod-w2.example.test')
+    sendFrame(ws, 'rc/verify', { kind: 'webchat-token', credential: token.token, conversationBinding: 'v1' })
+    const ok = (await nextFrame(ws, 'rc/verify/ok')).payload as RcVerifyResult
+    // devAuth carries no email either, so the last resort is the user id — never an empty handle.
+    expect(ok.user).toBe(DEFAULT_OWNER_ID)
     ws.close()
     daemonWs.close()
   })

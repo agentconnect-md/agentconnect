@@ -427,11 +427,18 @@ export function createWorkspaceGit(
       // Through the runner, so a cluster-backed workspace answers by running git in its own sandbox rather than on a disk this daemon cannot see.
       const git = base.withEnv({ ...workspaceGitLocalEnv(), GIT_OPTIONAL_LOCKS: '0' })
 
+      // What a reader of THIS checkout is asking about: a session worktree on its own
+      // `dev/<user>/<words>` wants the commits it adds over the base branch, not the repository's
+      // history — the base's newest commit is not this session's work. On the base branch itself
+      // there is nothing to exclude, so the full history stands (the agent workspace page's view).
+      const baseRef = await logBaseRef(git, workspaceTargetByAgent(req.agentId)?.branch)
+      const range = baseRef ? `${baseRef}..HEAD` : 'HEAD'
+
       // One extra row proves there are more commits than the caller asked for.
       let parsed
       try {
         const out = await git.readBounded(
-          ['log', '-z', `--format=${LOG_FORMAT}`, `-n`, String(req.limit + 1), 'HEAD'],
+          ['log', '-z', `--format=${LOG_FORMAT}`, `-n`, String(req.limit + 1), range],
           METADATA_OUTPUT_BUDGET
         )
         parsed = parseLogZ(out.out.toString('utf8'))
@@ -458,7 +465,8 @@ export function createWorkspaceGit(
         isRepo: true,
         commits,
         truncated: parsed.length > req.limit,
-        ...(tracking ? { tracking } : {})
+        ...(tracking ? { tracking } : {}),
+        ...(baseRef ? { base: baseRef } : {})
       }
     },
 
@@ -779,6 +787,26 @@ async function currentBranch(git: GitRunner): Promise<string | null> {
     const out = await git.readBounded(['rev-parse', '--abbrev-ref', 'HEAD'], 4096)
     const branch = out.out.toString('utf8').trim()
     return branch === '' || branch === 'HEAD' ? null : branch
+  } catch {
+    return null
+  }
+}
+
+/** The ref a log listing excludes so it shows what THIS checkout adds, or null for the whole history.
+ *
+ * The configured branch's remote-tracking ref, because that is what a session worktree is created
+ * from (`refs/remotes/origin/<branch>`) and what its work will be reviewed against. Null in the three
+ * cases where excluding anything would be wrong or a guess: no configured branch, HEAD is already
+ * that branch (nothing to compare — the primary checkout's own history is the answer), or the ref is
+ * absent from this checkout (never fetched), where `<missing>..HEAD` would fail the read outright. */
+async function logBaseRef(git: GitRunner, configuredBranch: string | undefined): Promise<string | null> {
+  if (!configuredBranch) return null
+  const head = await currentBranch(git)
+  if (head === configuredBranch) return null
+  const ref = `origin/${configuredBranch}`
+  try {
+    await git.readBounded(['rev-parse', '--verify', '--quiet', `refs/remotes/${ref}`], 4096)
+    return ref
   } catch {
     return null
   }

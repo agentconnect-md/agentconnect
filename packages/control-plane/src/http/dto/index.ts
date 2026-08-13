@@ -3005,8 +3005,11 @@ export const WorkspaceGitLogCommitDto = z.object({
 export const WorkspaceGitLogDto = z.object({
   isRepo: z.boolean(), // false ⇒ from-scratch workspace (no .git); no log
   commits: z.array(WorkspaceGitLogCommitDto),
-  truncated: z.boolean(), // true ⇒ the branch has more commits than the requested limit
-  tracking: z.string().nullable() // upstream ref `pushed` was computed against
+  truncated: z.boolean(), // true ⇒ this range has more commits than the requested limit
+  tracking: z.string().nullable(), // upstream ref `pushed` was computed against
+  // The base ref the listing excludes (`<base>..HEAD`), so the commits are this branch's own work;
+  // null ⇒ the checkout sits on the base branch itself and the list is its full history.
+  base: z.string().nullable()
 })
 
 /** `POST /agents/:id/workspace/gitpull` — outcome of a forced ff-only pull. A

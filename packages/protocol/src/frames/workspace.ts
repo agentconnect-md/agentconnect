@@ -277,8 +277,11 @@ export const WorkspaceGitLog = z.object({
   agentId: z.string(),
   isRepo: z.boolean(), // false ⇒ from-scratch workspace (no .git) — no log
   commits: z.array(WorkspaceGitLogCommit).max(MAX_WORKSPACE_LOG_COMMITS),
-  truncated: z.boolean(), // true ⇒ the branch has more commits than `limit`
-  tracking: z.string().optional() // upstream ref `pushed` was computed against (absent ⇒ tracks nothing)
+  truncated: z.boolean(), // true ⇒ more commits in this range than `limit`
+  tracking: z.string().optional(), // upstream ref `pushed` was computed against (absent ⇒ tracks nothing)
+  // The base ref the listing EXCLUDES, set only when the checkout sits on some other branch: the
+  // commits are then `<base>..HEAD`, this branch's own work, not the repository's whole history.
+  base: z.string().optional()
 })
 export type WorkspaceGitLog = z.infer<typeof WorkspaceGitLog>
 

@@ -1951,6 +1951,19 @@ export default function SessionDetailView() {
     MOCK_MODE || !session || (syntheticPlayground && !session.realSessionId)
       ? null
       : (session.realSessionId ?? session.id)
+  // Whether the Git tab's read is about the SAME worktree the PR tab is keyed to. The two scopes are
+  // deliberately different — Files/Git follow header focus, the PR tab follows the open session — so
+  // only an exact match makes the branch it read this session's branch, and only then may the PR tab
+  // draw a no-PR state off it: otherwise participant B's checkout would both name its branch in, and
+  // expose the action of, session A. A shared-workspace session reads the agent's PRIMARY checkout,
+  // which is no session branch at all, so `sessionWorktreeScope` (the same gate `filesSessionId`
+  // applies, computed here because the dock's tab list is built above where that lives) never holds.
+  const prBranchScoped =
+    prSessionId !== null &&
+    headerFocusSessionId === prSessionId &&
+    focusedAgent?.workspace.mode === 'github' &&
+    (focusedSessionDetail?.workspaceIsolation ?? focusedSession?.workspaceIsolation) === 'session' &&
+    !(focusedSessionDetail?.contentPurgedAt ?? focusedSession?.contentPurgedAt)
   const focusedAgentRuntime = focusedSession?.runtime || focusedAgent?.runtime || ''
   const focusedRuntimeMeta = acpRuntime(acpRegistry, focusedAgentRuntime)
 
@@ -2004,7 +2017,13 @@ export default function SessionDetailView() {
     setViewerDiffTick((tick) => tick + 1)
     setFilesRefreshTick((tick) => tick + 1)
   }, [])
-  const [gitVerdict, setGitVerdict] = useState<GitPanelVerdict>({ settled: false, changed: null })
+  const [gitVerdict, setGitVerdict] = useState<GitPanelVerdict>({
+    settled: false,
+    changed: null,
+    branch: null,
+    tracking: null,
+    base: null
+  })
   // The Tasks tab's own `refresh-cw` and verdict. Its settle state feeds the tab status, its running count the badge.
   const [tasksRefreshTick, setTasksRefreshTick] = useState(0)
   const [tasksVerdict, setTasksVerdict] = useState<TasksPanelVerdict>({ settled: false, running: null })
@@ -2052,8 +2071,9 @@ export default function SessionDetailView() {
           : tab.key === 'tasks'
             ? // Dropped on the same terms and for the same reason, but against its OWN scope: no agent to ask, or no canonical session for the lease to be keyed by.
               filesAgentId !== null && tasksSessionId !== null && !MOCK_MODE
-            : // PR is a tab only while the session HAS a pull request: the probe's 404 means "no linked run", and that never changes later — the run is what created the session — so the strip changes shape rather than carrying a dead tab (§9 M5).
-              tab.key !== 'pr' || (prSessionId !== null && prVerdict.answer !== 'none')
+            : // PR keeps its tab without one: a 404 only means no pull-request run owns this session, and the panel then draws that branch's state and the action that opens one. That state is drawn only off a git read of THIS session's worktree (`prBranchScoped`) — the focused participant's checkout must not put session A's action on screen — and only when that read found a checkout (`changed !== null` is exactly "the settled read found one"). A linked PR keeps its tab whatever the git scope is: its identity comes from the run, not from a checkout.
+              tab.key !== 'pr' ||
+              (prSessionId !== null && (prVerdict.answer !== 'none' || (prBranchScoped && gitVerdict.changed !== null)))
       ).map((tab) =>
         tab.key === 'sessions'
           ? { ...tab, status: sessionsStatus }
@@ -2091,6 +2111,7 @@ export default function SessionDetailView() {
       filesStatus,
       gitStatus,
       gitVerdict.changed,
+      prBranchScoped,
       prSessionId,
       prStatus,
       prVerdict.answer,
@@ -4720,8 +4741,14 @@ export default function SessionDetailView() {
               active={dockTabKey === 'pr'}
               {...(session?.status ? { sessionStatus: session.status } : {})}
               turnActive={sessionBusy}
-              // Auto-fix rides the LIVE composer path (§5.2) behind the composer's OWN availability fence: a hook session has no composer, and a persisted webchat under `resumeDisabled` (agent moved, resume check pending) deliberately renders the composer inert — this callback must not exist as a way around that.
-              {...(isLive && !resumeDisabled ? { onAutoFix: (text: string) => onPgSend(text) } : {})}
+              // The branch facts the no-PR state describes, from the Git tab's own read — the dock holds them already, so the PR panel spends no second round trip on them. Passed ONLY when that read is about THIS panel's session worktree: Files/Git follow header focus and the PR tab deliberately does not (§3.4), so in a merged conversation the focused participant's checkout is a different branch, and naming it here would put another agent's branch in this session's create-pull-request turn. Out of scope ⇒ null, and the panel says "this session's branch" instead of guessing which.
+              branch={prBranchScoped ? gitVerdict.branch : null}
+              tracking={prBranchScoped ? gitVerdict.tracking : null}
+              // The base the create-pull-request turn targets, from the same scoped read: the workspace's CONFIGURED branch, which an agent configured onto `release` while the repository defaults to `main` makes a different branch entirely. Out of scope ⇒ null, like the two above.
+              base={prBranchScoped ? gitVerdict.base : null}
+              // Both write actions ride the LIVE composer path (§5.2) behind the composer's OWN availability fence: a hook session has no composer, and a persisted webchat under `resumeDisabled` (agent moved, resume check pending) deliberately renders the composer inert — this callback must not exist as a way around that.
+              // And NOT in a multi-agent conversation: this send carries no @mention, so the relay applies its all-participants default (see `onPgSend`) and every participant would run the turn — three agents each publishing their own worktree and opening their own pull request for one ask. The panel is session-keyed and holds no agent identity to narrow to, so the honest answer is to withhold both actions here; the composer's own mention chips are the surface for asking ONE agent.
+              {...(isLive && !resumeDisabled && !multiLive ? { onPostTurn: (text: string) => onPgSend(text) } : {})}
               onVerdictChange={setPrVerdict}
             />
           ) : null}
