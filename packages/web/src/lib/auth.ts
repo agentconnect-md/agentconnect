@@ -148,6 +148,7 @@ let cachedUser: AuthUser | null = null
 // Multiple API reads can discover the same dead refresh token at once. Share
 // one cleanup so they do not race several redirects to the login page.
 let invalidGrantCleanup: Promise<void> | undefined
+let unauthorizedTokenReset: Promise<void> | undefined
 
 function clearLocalSessionMetadata(): void {
   cachedUser = null
@@ -172,6 +173,38 @@ async function clearInvalidGrantSession(c: LogtoClient): Promise<void> {
     window.location.replace('/login')
   })()
   await invalidGrantCleanup
+}
+
+/**
+ * Force one refresh after a resource server rejects an access token. The SDK
+ * normally refreshes by expiry, but a token can be rejected just before its
+ * local expiry check notices it. Concurrent 401s share the same rotation; a
+ * caller holding the old token reuses a refresh another request already won.
+ */
+export async function refreshTokenAfterUnauthorized(
+  rejectedToken?: string,
+  audience: 'control-plane' | 'account' = 'control-plane'
+): Promise<string | undefined> {
+  const c = getClient()
+  if (!c || !(await c.isAuthenticated())) return undefined
+  const { apiResource } = readConfig()
+  const resource = audience === 'control-plane' ? apiResource : undefined
+  const currentToken = await accessToken(c, resource)
+  if (rejectedToken && currentToken !== rejectedToken) return currentToken
+
+  unauthorizedTokenReset ??= c.clearAccessToken().finally(() => {
+    unauthorizedTokenReset = undefined
+  })
+  await unauthorizedTokenReset
+  return accessToken(c, resource)
+}
+
+/** A refreshed token was rejected too: clear the unusable local session and
+ * return to sign-in. No-op in the intentionally unauthenticated OSS mode. */
+export async function redirectExpiredSession(): Promise<void> {
+  const c = getClient()
+  if (!c) return
+  await clearInvalidGrantSession(c)
 }
 
 // Many in-flight calls can hit the same ACCOUNT_GONE reply at once; share one
