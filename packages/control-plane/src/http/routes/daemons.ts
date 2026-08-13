@@ -126,6 +126,7 @@ function toDto(
   // `failed` (timed out) even before the sweep/next-command persists that — so the
   // console never renders a dead op as in-flight, and a stuck op reads terminal.
   const expired = latestOp?.status === 'pending' && latestOp.deadline.getTime() <= nowMs
+  const orgOwned = view.orgId !== null
   return {
     daemonId: view.daemonId,
     host: view.host,
@@ -168,11 +169,10 @@ function toDto(
     sessionRetention: SESSION_RETENTION_RE.test(view.sessionRetention) ? view.sessionRetention : '7d',
     visibility: view.visibility,
     sharedWith: view.sharedWith,
-    canEdit: canEdit(view, ctx),
-    canManageSharing: canManageSharing(view, ctx),
-    // Restart/upgrade are operational edits on the daemon. They follow the same
-    // visibility + non-viewer gate as content edits and sharing management.
-    canManageLifecycle: canEdit(view, ctx)
+    canEdit: orgOwned && canEdit(view, ctx),
+    canManageSharing: orgOwned && canManageSharing(view, ctx),
+    // Install-wide infrastructure is visible but mutable only through its deployment owner.
+    canManageLifecycle: orgOwned && canEdit(view, ctx)
   }
 }
 

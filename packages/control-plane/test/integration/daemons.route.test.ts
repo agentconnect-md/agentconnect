@@ -100,6 +100,9 @@ type DaemonDto = {
     name: string
     transport: string
   }[]
+  canEdit: boolean
+  canManageSharing: boolean
+  canManageLifecycle: boolean
 }
 
 describe('GET /daemons — live-status overlay', () => {
@@ -121,7 +124,11 @@ describe('GET /daemons — live-status overlay', () => {
     running = buildHttpApp(prisma)
 
     const rows = (await running.app.inject({ method: 'GET', url: `${ORG}/daemons` })).json() as DaemonDto[]
-    expect(rows.map((row) => row.daemonId)).toContain(cloud.id)
+    expect(rows.find((row) => row.daemonId === cloud.id)).toMatchObject({
+      canEdit: false,
+      canManageSharing: false,
+      canManageLifecycle: false
+    })
 
     const issueKey = await running.app.inject({ method: 'POST', url: `${ORG}/daemons/${cloud.id}/keys` })
     expect(issueKey.statusCode).toBe(404)
