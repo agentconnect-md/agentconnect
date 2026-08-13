@@ -1065,6 +1065,17 @@ list; `HookRun`'s recorded review appears only as the degraded-arm fallback
    of this panel's own session worktree, so a focused participant's checkout can
    neither name its branch here nor make this action appear.
 
+   **The base is the workspace's, not the repository's.** A workspace may be
+   configured onto a branch that is not the repository default (`release` while
+   the default is `main`), and §3.3's commit range already measures the session
+   branch against exactly that base — `origin/<configured branch>`. The
+   instruction therefore names that branch, carried on the same Git verdict as
+   the branch facts and reduced to the branch a PR can target. Where the read
+   names none — no configured branch, HEAD already on it, or a base ref this
+   checkout never fetched — the turn has the agent derive its base rather than
+   naming the repository default, which only the first of those three cases
+   would make right.
+
    **What this action cannot do, and how the panel says so.** A PR the agent
    opens from a conversation creates no `HookRun`, and PR identity comes from
    the run that owns the session — so the probe keeps answering 404 after the

@@ -2021,7 +2021,8 @@ export default function SessionDetailView() {
     settled: false,
     changed: null,
     branch: null,
-    tracking: null
+    tracking: null,
+    base: null
   })
   // The Tasks tab's own `refresh-cw` and verdict. Its settle state feeds the tab status, its running count the badge.
   const [tasksRefreshTick, setTasksRefreshTick] = useState(0)
@@ -4743,6 +4744,8 @@ export default function SessionDetailView() {
               // The branch facts the no-PR state describes, from the Git tab's own read — the dock holds them already, so the PR panel spends no second round trip on them. Passed ONLY when that read is about THIS panel's session worktree: Files/Git follow header focus and the PR tab deliberately does not (§3.4), so in a merged conversation the focused participant's checkout is a different branch, and naming it here would put another agent's branch in this session's create-pull-request turn. Out of scope ⇒ null, and the panel says "this session's branch" instead of guessing which.
               branch={prBranchScoped ? gitVerdict.branch : null}
               tracking={prBranchScoped ? gitVerdict.tracking : null}
+              // The base the create-pull-request turn targets, from the same scoped read: the workspace's CONFIGURED branch, which an agent configured onto `release` while the repository defaults to `main` makes a different branch entirely. Out of scope ⇒ null, like the two above.
+              base={prBranchScoped ? gitVerdict.base : null}
               // Both write actions ride the LIVE composer path (§5.2) behind the composer's OWN availability fence: a hook session has no composer, and a persisted webchat under `resumeDisabled` (agent moved, resume check pending) deliberately renders the composer inert — this callback must not exist as a way around that.
               // And NOT in a multi-agent conversation: this send carries no @mention, so the relay applies its all-participants default (see `onPgSend`) and every participant would run the turn — three agents each publishing their own worktree and opening their own pull request for one ask. The panel is session-keyed and holds no agent identity to narrow to, so the honest answer is to withhold both actions here; the composer's own mention chips are the surface for asking ONE agent.
               {...(isLive && !resumeDisabled && !multiLive ? { onPostTurn: (text: string) => onPgSend(text) } : {})}

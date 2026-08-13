@@ -39,6 +39,14 @@ export interface GitPanelVerdict {
   branch: string | null
   /** The remote branch it tracks, or null when it tracks none — what tells the PR tab whether a pull request is reachable yet or the branch still has to be published. */
   tracking: string | null
+  /** The base branch this scope's commits are measured against — the workspace's CONFIGURED branch, which is what a pull request from here targets and is not necessarily the repository default. Null while the log has not answered, and wherever the daemon excluded nothing (§3.3's three cases: no configured branch, HEAD already on it, or a base ref this checkout never fetched). */
+  base: string | null
+}
+
+/** The log's base REF as the branch a pull request can target. The daemon builds that ref as `origin/<configured branch>` from the one remote it clones, so the prefix is exactly that and stripping it is not a guess. */
+export function baseBranchOf(ref: string | null | undefined): string | null {
+  if (!ref) return null
+  return (ref.startsWith('origin/') ? ref.slice('origin/'.length) : ref) || null
 }
 
 /** The Git tab's status: `loading` covers the first status read only. */
@@ -187,25 +195,30 @@ export function GitPanel({
     changed: number | null
     branch: string | null
     tracking: string | null
+    base: string | null
   } | null>(null)
   useEffect(() => {
     if (outcome === 'pending') return
-    // Distinct PATHS: a file staged and then edited again is one changed file, in two sections.
-    const next = {
-      scope,
-      changed: outcome === 'repo' && git ? new Set(git.files.map((file) => file.path)).size : null,
-      branch: outcome === 'repo' ? (git?.branch ?? null) : null,
-      tracking: outcome === 'repo' ? (git?.tracking ?? null) : null
-    }
-    setAnswer((current) =>
-      current?.scope === next.scope &&
-      current.changed === next.changed &&
-      current.branch === next.branch &&
-      current.tracking === next.tracking
-        ? current
+    setAnswer((current) => {
+      const held = current?.scope === scope ? current : null
+      // Distinct PATHS: a file staged and then edited again is one changed file, in two sections.
+      const next = {
+        scope,
+        changed: outcome === 'repo' && git ? new Set(git.files.map((file) => file.path)).size : null,
+        branch: outcome === 'repo' ? (git?.branch ?? null) : null,
+        tracking: outcome === 'repo' ? (git?.tracking ?? null) : null,
+        // The log settles on its own schedule, so a pending one KEEPS the base this scope already reported instead of blinking it off behind a refresh — the same latch the counts above get.
+        base: outcome === 'repo' ? (log.loading ? (held?.base ?? null) : baseBranchOf(log.log?.base)) : null
+      }
+      return held &&
+        held.changed === next.changed &&
+        held.branch === next.branch &&
+        held.tracking === next.tracking &&
+        held.base === next.base
+        ? held
         : next
-    )
-  }, [git, outcome, scope])
+    })
+  }, [git, log, outcome, scope])
   const settled = answer?.scope === scope
   const changed = settled ? answer.changed : null
 
@@ -214,12 +227,13 @@ export function GitPanel({
   const reported = useRef<string | null>(null)
   const reportedBranch = settled ? answer.branch : null
   const reportedTracking = settled ? answer.tracking : null
+  const reportedBase = settled ? answer.base : null
   useEffect(() => {
-    const key = `${settled}:${changed ?? ''}:${reportedBranch ?? ''}:${reportedTracking ?? ''}`
+    const key = `${settled}:${changed ?? ''}:${reportedBranch ?? ''}:${reportedTracking ?? ''}:${reportedBase ?? ''}`
     if (reported.current === key) return
     reported.current = key
-    onVerdictChange?.({ settled, changed, branch: reportedBranch, tracking: reportedTracking })
-  }, [changed, onVerdictChange, reportedBranch, reportedTracking, settled])
+    onVerdictChange?.({ settled, changed, branch: reportedBranch, tracking: reportedTracking, base: reportedBase })
+  }, [changed, onVerdictChange, reportedBase, reportedBranch, reportedTracking, settled])
 
   if (!settled) return null
 

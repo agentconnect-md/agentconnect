@@ -78,7 +78,7 @@ vi.mock('@/lib/api', () => {
   }
 })
 
-import { GitPanel, gitTabStatus, splitGitSections, type GitPanelVerdict } from './GitPanel'
+import { baseBranchOf, GitPanel, gitTabStatus, splitGitSections, type GitPanelVerdict } from './GitPanel'
 import { commitWorkspace, draftWorkspaceCommitMessage, fetchWorkspaceGitLog } from '@/lib/api'
 import type { WorkspaceGitFileDto, WorkspaceGitLogDto, WorkspaceGitStatusDto } from '@/lib/api'
 
@@ -248,6 +248,16 @@ describe('splitGitSections', () => {
   })
 })
 
+describe('baseBranchOf', () => {
+  it('reduces the log ref to the branch a pull request can target, and answers nothing for no base', () => {
+    expect(baseBranchOf('origin/release')).toBe('release')
+    // A configured branch that is itself path-shaped keeps every segment but the remote.
+    expect(baseBranchOf('origin/release/2026.08')).toBe('release/2026.08')
+    expect(baseBranchOf(null)).toBeNull()
+    expect(baseBranchOf(undefined)).toBeNull()
+  })
+})
+
 describe('gitTabStatus', () => {
   it('is loading only until the status has answered, and never empty', () => {
     expect(gitTabStatus(false)).toBe('loading')
@@ -264,7 +274,21 @@ describe('GitPanel', () => {
     await render()
 
     // The last report is the one the tab uses; the count is DISTINCT paths, so a file in both sections is one changed file.
-    expect(verdicts.at(-1)).toEqual({ settled: true, changed: 2, branch: 'main', tracking: null })
+    expect(verdicts.at(-1)).toEqual({ settled: true, changed: 2, branch: 'main', tracking: null, base: null })
+  })
+
+  it('reports the log’s base as the branch it names, so the PR tab targets the CONFIGURED base and not the repository default', async () => {
+    wire.git = gitStatus({ branch: 'dev/jane-doe/candid-lynx', tracking: null })
+    wire.log = gitLog({ base: 'origin/release', commits: [commit()] })
+    await render()
+
+    expect(verdicts.at(-1)).toEqual({
+      settled: true,
+      changed: 0,
+      branch: 'dev/jane-doe/candid-lynx',
+      tracking: null,
+      base: 'release'
+    })
   })
 
   it('draws the branch and, only against a real upstream, ahead/behind', async () => {
@@ -392,7 +416,7 @@ describe('GitPanel', () => {
     expect(rows('staged')).toHaveLength(0)
     expect(container?.querySelector('[data-git-section="commits"]')).toBeNull()
     // Nothing to badge, so the tab gets no count at all rather than a zero — and a non-checkout has no branch facts to report either.
-    expect(verdicts.at(-1)).toEqual({ settled: true, changed: null, branch: null, tracking: null })
+    expect(verdicts.at(-1)).toEqual({ settled: true, changed: null, branch: null, tracking: null, base: null })
   })
 
   it('draws an offline daemon as data and still settles its tab', async () => {
@@ -400,7 +424,7 @@ describe('GitPanel', () => {
     await render()
 
     expect(text()).toContain('daemon may be offline')
-    expect(verdicts.at(-1)).toEqual({ settled: true, changed: null, branch: null, tracking: null })
+    expect(verdicts.at(-1)).toEqual({ settled: true, changed: null, branch: null, tracking: null, base: null })
     expect(container?.querySelector('[data-git-panel]')).not.toBeNull()
   })
 
@@ -496,9 +520,9 @@ describe('GitPanel', () => {
     expect(rowPaths('staged')).toEqual(['late.ts'])
     // The tab never un-readies and never loses its badge across a refresh: both are latched per scope.
     expect(verdicts).toEqual([
-      { settled: false, changed: null, branch: null, tracking: null },
-      { settled: true, changed: 0, branch: 'main', tracking: null },
-      { settled: true, changed: 1, branch: 'main', tracking: null }
+      { settled: false, changed: null, branch: null, tracking: null, base: null },
+      { settled: true, changed: 0, branch: 'main', tracking: null, base: null },
+      { settled: true, changed: 1, branch: 'main', tracking: null, base: null }
     ])
   })
 })
@@ -527,7 +551,7 @@ describe('GitPanel — staging', () => {
     expect(rowPaths('staged')).toEqual(['src/staged.ts', 'src/edited.ts'])
     expect(rowPaths('changes')).toEqual([])
     // The badge follows the applied status, and the caller is told so it can re-read what it owns.
-    expect(verdicts.at(-1)).toEqual({ settled: true, changed: 2, branch: 'main', tracking: null })
+    expect(verdicts.at(-1)).toEqual({ settled: true, changed: 2, branch: 'main', tracking: null, base: null })
     expect(wrote).toBe(1)
   })
 

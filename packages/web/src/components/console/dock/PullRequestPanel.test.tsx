@@ -46,6 +46,7 @@ vi.mock('@/lib/api', () => {
 import {
   PR_LINK_RETRY_LADDER_MS,
   PullRequestPanel,
+  createPullRequestInstruction,
   formatCheckDuration,
   pullRequestPillKey,
   pullRequestTabStatus,
@@ -200,6 +201,28 @@ describe('pullRequestPillKey', () => {
   })
 })
 
+describe('createPullRequestInstruction', () => {
+  it('targets the workspace’s configured base branch, which is not always the repository default', async () => {
+    const instruction = createPullRequestInstruction('dev/jane-doe/candid-lynx', null, 'release')
+    expect(instruction).toContain('create one against release')
+    // The default is what the review would have been opened against had this said nothing — and on a
+    // workspace configured onto `release` that is the wrong base, carrying history this branch never added.
+    expect(instruction).not.toContain('default branch')
+  })
+
+  it('has the agent derive the base rather than naming a default, when the read could not name one', async () => {
+    // Null base is three cases at once (no configured branch, HEAD already on it, a base ref never fetched);
+    // only the first makes the repository default right, so none of them gets told it is.
+    const instruction = createPullRequestInstruction(
+      'dev/jane-doe/candid-lynx',
+      'origin/dev/jane-doe/candid-lynx',
+      null
+    )
+    expect(instruction).toContain('the branch this worktree was created from')
+    expect(instruction).toContain('the workspace’s configured branch')
+  })
+})
+
 describe('formatCheckDuration', () => {
   it('reads seconds, then minutes-and-seconds, then hours-and-minutes', () => {
     expect(formatCheckDuration('2026-08-11T10:00:00.000Z', '2026-08-11T10:00:41.000Z')).toBe('41s')
@@ -248,11 +271,14 @@ describe('PullRequestPanel verdicts', () => {
     expect(text()).toContain('dev/jane-doe/candid-lynx')
 
     const posted: string[] = []
-    await rerender({ branch: 'dev/jane-doe/candid-lynx', tracking: null, onPostTurn: accept(posted) })
+    await rerender({ branch: 'dev/jane-doe/candid-lynx', tracking: null, base: 'release', onPostTurn: accept(posted) })
     await press('[data-pr-create]')
     expect(posted).toHaveLength(1)
     expect(posted[0]).toContain('dev/jane-doe/candid-lynx')
     expect(posted[0]).toContain('git push -u')
+    // The base comes from the same scoped git read as the branch: a workspace configured onto `release`
+    // must not have its review opened against the repository's default.
+    expect(posted[0]).toContain('against release')
   })
 
   it('stops presenting creation as fresh once asked, and says why this tab may never link the result', async () => {

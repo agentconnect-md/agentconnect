@@ -54,8 +54,18 @@ export function autoFixInstruction(view: SessionPullRequestDto): string {
 }
 
 /** The turn the Create-pull-request action posts. One instruction covering both halves, because a branch with no upstream cannot be reviewed: publish it, then open the PR. Exported so the post's exact content is pinned, not approximated. */
-export function createPullRequestInstruction(branch: string | null, tracking: string | null): string {
+export function createPullRequestInstruction(
+  branch: string | null,
+  tracking: string | null,
+  base: string | null
+): string {
   const named = branch ? `this session’s branch (${branch})` : 'this session’s branch'
+  // The base is the WORKSPACE's configured branch, which a repository whose default is another branch
+  // makes a different thing: naming the default there opens the review against the wrong base and drags
+  // in history this branch never added. Unknown ⇒ the agent derives it, rather than being told a guess.
+  const target = base
+    ? `against ${base}`
+    : 'against the branch this worktree was created from — the workspace’s configured branch, or the repository’s default only where it configures none'
   return [
     `Open a pull request for ${named}:`,
     '',
@@ -66,7 +76,7 @@ export function createPullRequestInstruction(branch: string | null, tracking: st
     // Explicitly idempotent: this panel cannot tell whether the PR already exists (it identifies one
     // only through the run that owns the session), so the reader can press again — and the agent, which
     // CAN tell, is the one told not to open a second pull request for the same branch.
-    '3. If the branch already has an open pull request, reply with its URL instead of opening another; otherwise create one against the repository’s default branch and reply with its URL.'
+    `3. If the branch already has an open pull request, reply with its URL instead of opening another; otherwise create one ${target} and reply with its URL.`
   ].join('\n')
 }
 
@@ -185,6 +195,7 @@ export function PullRequestPanel({
   turnActive = false,
   branch = null,
   tracking = null,
+  base = null,
   onPostTurn,
   onVerdictChange
 }: {
@@ -200,6 +211,8 @@ export function PullRequestPanel({
   branch?: string | null
   /** The remote branch it tracks, from the same verdict. Null ⇒ nothing to review yet: the branch has to be published before a pull request can exist. */
   tracking?: string | null
+  /** The base branch this checkout's commits are measured against, from the same verdict — the workspace's configured branch, which is the base a pull request from here takes. Null ⇒ unknown, and the posted turn then has the agent derive it instead of naming the repository default, which a workspace configured onto another branch would make wrong. */
+  base?: string | null
   /** Posts one webchat message into the open session (§5.2's browser→relay→daemon path — no CP route), returning whether the send was ACCEPTED. Absent when the session has no usable composer (none at all, or a persisted webchat that cannot resume), and the Auto-fix and Create-pull-request actions render ABSENT with it, not disabled. */
   onPostTurn?: (text: string) => boolean
   /** The inputs to {@link pullRequestTabStatus}, the tab's badge and its external-link action. */
@@ -394,7 +407,7 @@ export function PullRequestPanel({
               : 'Ask the agent to publish this branch and open a pull request for it, as one turn in this session',
             busyTitle: 'A turn is already running — this posts its own turn, so wait for this one to settle',
             className: 'dsbtn dsbtn-secondary sm flex-none',
-            text: () => createPullRequestInstruction(branch, tracking),
+            text: () => createPullRequestInstruction(branch, tracking, base),
             onPosted: () => setCreateRequested(true)
           })}
         </div>
