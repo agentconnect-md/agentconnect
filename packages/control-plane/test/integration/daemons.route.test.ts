@@ -113,6 +113,29 @@ describe('GET /daemons — live-status overlay', () => {
     expect(d!.status).toBe('offline') // durable status is still `ready`, but it is not connected
   })
 
+  it('lists an install-wide cloud daemon without granting org-owned mutation access', async () => {
+    const cloud = await new PgDaemonRepo(prisma).resolveCloudClusterIdentity(
+      'system:serviceaccount:agentconnect:ac-cloud-daemon',
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    )
+    running = buildHttpApp(prisma)
+
+    const rows = (await running.app.inject({ method: 'GET', url: `${ORG}/daemons` })).json() as DaemonDto[]
+    expect(rows.map((row) => row.daemonId)).toContain(cloud.id)
+
+    const issueKey = await running.app.inject({ method: 'POST', url: `${ORG}/daemons/${cloud.id}/keys` })
+    expect(issueKey.statusCode).toBe(404)
+    expect(await prisma.apiKey.count({ where: { daemonId: cloud.id } })).toBe(0)
+
+    expect((await running.app.inject({ method: 'POST', url: `${ORG}/daemons/${cloud.id}/restart` })).statusCode).toBe(
+      404
+    )
+    expect(
+      (await running.app.inject({ method: 'PATCH', url: `${ORG}/daemons/${cloud.id}`, payload: { name: 'mine' } }))
+        .statusCode
+    ).toBe(404)
+  })
+
   it('reads `ready` when the daemon is live + reachable, `unreachable` when frozen', async () => {
     await seedDaemon()
 

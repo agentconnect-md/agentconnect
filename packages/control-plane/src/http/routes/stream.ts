@@ -79,14 +79,12 @@ export function streamRoutes(deps: HttpDeps) {
 
         const orgId = req.orgCtx!.orgId
         const connectedCtx = ctxOf(req)
-        // daemonId → belongs-to-this-org, memoized per connection (events arrive
-        // in bursts from the same few daemons; one registry lookup each). The read
-        // is org-fenced (org-scoped-data-layer.md §3), so "resolves" IS "in org".
+        // daemonId → available to this org, memoized per connection; shared cloud members qualify.
         const daemonOrg = new Map<string, boolean>()
         const inOrg = async (daemonId: string): Promise<boolean> => {
           const cached = daemonOrg.get(daemonId)
           if (cached !== undefined) return cached
-          const view = await deps.registry.get(orgId, DaemonId(daemonId)).catch(() => null)
+          const view = await deps.registry.getAvailable(orgId, DaemonId(daemonId)).catch(() => null)
           const ok = !!view
           daemonOrg.set(daemonId, ok)
           return ok

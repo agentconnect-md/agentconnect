@@ -210,14 +210,14 @@ export function daemonRoutes(deps: HttpDeps) {
           tags: [Tag.Daemons],
           summary: 'List daemons',
           description:
-            'The org’s daemon fleet from the registry, each overlaid with its live connection status (a daemon that has exited reads as offline).',
+            'The org’s available daemon fleet, including install-wide cloud members, overlaid with live connection status.',
           operationId: 'listDaemons',
           response: { 200: DaemonListDto }
         }
       },
       async (req) => {
         const ctx = ctxOf(req)
-        const rows = await deps.registry.list(orgOf(req), ctx)
+        const rows = await deps.registry.listAvailable(orgOf(req), ctx)
         // One batched latest-op query for the whole fleet (no N+1), grouped by daemon.
         const ops = await deps.repos.daemonLifecycleOp.latestForDaemons(rows.map((d) => DaemonId(d.daemonId)))
         const byDaemon = new Map(ops.map((o) => [o.daemonId as string, o]))

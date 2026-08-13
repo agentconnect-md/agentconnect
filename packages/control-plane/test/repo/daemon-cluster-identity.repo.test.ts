@@ -113,7 +113,7 @@ describe('DaemonRepo.resolveClusterIdentity', () => {
     expect(await prisma.daemon.findUnique({ where: { id: laptop } })).toMatchObject({ clusterIdentity: null })
   })
 
-  it('gives each cloud Pod its own org-less member visible across org views', async () => {
+  it('keeps cloud Pods out of owned reads while exposing them to availability reads', async () => {
     const repo = new PgDaemonRepo(prisma)
     const other = await prisma.org.create({ data: { slug: 'install-daemon-other-org' } })
 
@@ -125,12 +125,20 @@ describe('DaemonRepo.resolveClusterIdentity', () => {
     expect(secondPod.id).not.toBe(first.id)
     expect(first.orgId).toBeNull()
     expect(secondPod.orgId).toBeNull()
-    expect(await repo.get(DEF_ORG, first.id)).toMatchObject({ id: first.id, orgId: null })
-    expect(await repo.get(OrgId(other.id), secondPod.id)).toMatchObject({ id: secondPod.id, orgId: null })
-    expect((await repo.list(DEF_ORG)).map((daemon) => daemon.id)).toEqual(
+    expect(await repo.get(DEF_ORG, first.id)).toBeNull()
+    expect(await repo.get(OrgId(other.id), secondPod.id)).toBeNull()
+    const ownedByDefault = (await repo.list(DEF_ORG)).map((daemon) => daemon.id)
+    const ownedByOther = (await repo.list(OrgId(other.id))).map((daemon) => daemon.id)
+    expect(ownedByDefault).not.toContain(first.id)
+    expect(ownedByDefault).not.toContain(secondPod.id)
+    expect(ownedByOther).not.toContain(first.id)
+    expect(ownedByOther).not.toContain(secondPod.id)
+    expect(await repo.getAvailable(DEF_ORG, first.id)).toMatchObject({ id: first.id, orgId: null })
+    expect(await repo.getAvailable(OrgId(other.id), secondPod.id)).toMatchObject({ id: secondPod.id, orgId: null })
+    expect((await repo.listAvailable(DEF_ORG)).map((daemon) => daemon.id)).toEqual(
       expect.arrayContaining([first.id, secondPod.id])
     )
-    expect((await repo.list(OrgId(other.id))).map((daemon) => daemon.id)).toEqual(
+    expect((await repo.listAvailable(OrgId(other.id))).map((daemon) => daemon.id)).toEqual(
       expect.arrayContaining([first.id, secondPod.id])
     )
     await expect(repo.rename(DEF_ORG, first.id, 'tenant must not rename shared infrastructure')).rejects.toThrow()

@@ -357,7 +357,11 @@ export class PgDaemonRepo implements DaemonRepo {
   }
 
   async get(orgId: OrgId, daemonId: DaemonId): Promise<DaemonRecord | null> {
-    // Org resources see their own daemons plus every install-wide cloud member.
+    const d = await this.db.daemon.findUnique({ where: { id: daemonId, orgId }, include: withUsers })
+    return d ? toRecord(d) : null
+  }
+
+  async getAvailable(orgId: OrgId, daemonId: DaemonId): Promise<DaemonRecord | null> {
     const d = await this.db.daemon.findFirst({
       where: { id: daemonId, OR: [{ orgId }, { orgId: null, clusterIdentity: { not: null } }] },
       include: withUsers
@@ -372,16 +376,24 @@ export class PgDaemonRepo implements DaemonRepo {
 
   async list(orgId?: OrgId, viewer?: ViewCtx): Promise<DaemonRecord[]> {
     const visibility = visibilityWhere(viewer)
-    const where = orgId
-      ? {
-          OR: [
-            { orgId, ...visibility },
-            { orgId: null, clusterIdentity: { not: null } }
-          ]
-        }
-      : visibility
+    const where = orgId ? { orgId, ...visibility } : visibility
     const rows = await this.db.daemon.findMany({
       ...(Object.keys(where).length ? { where } : {}),
+      orderBy: { createdAt: 'asc' },
+      include: withUsers
+    })
+    return rows.map(toRecord)
+  }
+
+  async listAvailable(orgId: OrgId, viewer?: ViewCtx): Promise<DaemonRecord[]> {
+    const visibility = visibilityWhere(viewer)
+    const rows = await this.db.daemon.findMany({
+      where: {
+        OR: [
+          { orgId, ...visibility },
+          { orgId: null, clusterIdentity: { not: null } }
+        ]
+      },
       orderBy: { createdAt: 'asc' },
       include: withUsers
     })

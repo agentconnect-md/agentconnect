@@ -263,19 +263,19 @@ export interface DaemonRepo {
   /** Daemons unreachable for longer than `graceSec` — reassignment candidates (§4.9).
    *  System-tier: the watchdog's worklist is deliberately fleet-wide. */
   findReassignable(graceSec: number, now: Date): Promise<DaemonRecord[]>
-  /** Org-fenced point read (org-scoped-data-layer.md §3): a cross-org id reads
-   *  as absent, exactly like a missing row. The only daemon read the HTTP/MCP
-   *  surface may use. */
+  /** Org-owned point read; shared cloud members are deliberately absent. */
   get(orgId: OrgId, daemonId: DaemonId): Promise<DaemonRecord | null>
+  /** Placement/display read admitting both org-owned daemons and install-wide cloud members. */
+  getAvailable(orgId: OrgId, daemonId: DaemonId): Promise<DaemonRecord | null>
   /** Tenancy-UNSCOPED read for internal trust domains — WS handlers resolving
    *  their own connection's daemon, orchestration/placement resolving a daemon
    *  from a routing row, the watchdog. Never call this from the HTTP surface;
    *  lint enforces it (org-scoped-data-layer.md §6). */
   getUnscoped(daemonId: DaemonId): Promise<DaemonRecord | null>
-  /** The fleet, optionally filtered to one org (console reads pass the org). Every
-   *  supplied human principal is resource-filtered; undefined is reserved for
-   *  unfiltered internal reads (authorization/policy.ts#visibilityWhere). */
+  /** Owned fleet, optionally filtered to one org; undefined is the internal fleet-wide read. */
   list(orgId?: OrgId, viewer?: ViewCtx): Promise<DaemonRecord[]>
+  /** Display/placement fleet including install-wide cloud members. */
+  listAvailable(orgId: OrgId, viewer?: ViewCtx): Promise<DaemonRecord[]>
 }
 
 // ───────────────────────────────────────────────────────────────────────────

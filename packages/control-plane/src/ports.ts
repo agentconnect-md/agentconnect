@@ -308,13 +308,14 @@ export interface DaemonRegistry {
   /** Hard-delete a daemon from the fleet (DELETE /daemons/:id). Org-fenced:
    *  throws for an absent row and for a cross-org id alike. */
   remove(orgId: OrgId, daemonId: DaemonId): Promise<void>
-  /** The org's fleet (console read model). Every supplied human principal filters
-   *  out restricted daemons they cannot see; undefined keeps internal reads unfiltered. */
+  /** The org-owned fleet; shared cloud members are deliberately absent. */
   list(orgId: OrgId, viewer?: ViewCtx): Promise<DaemonView[]>
-  /** One daemon of `orgId` (the read behind rename/delete/keys); null when absent
-   *  OR when the id belongs to another organization — the two are deliberately
-   *  indistinguishable (org-scoped-data-layer.md §3). */
+  /** The display/placement fleet, including install-wide cloud members. */
+  listAvailable(orgId: OrgId, viewer?: ViewCtx): Promise<DaemonView[]>
+  /** One org-owned daemon; shared and foreign ids are indistinguishable from missing. */
   get(orgId: OrgId, daemonId: DaemonId): Promise<DaemonView | null>
+  /** One daemon available for this org's display or placement. */
+  getAvailable(orgId: OrgId, daemonId: DaemonId): Promise<DaemonView | null>
   /** Tenancy-UNSCOPED read model for internal trust domains: WS handlers reading
    *  their own connection's daemon, and daemon-derived platform capability
    *  checks. Never call this from the HTTP surface; lint enforces it (§6). */
