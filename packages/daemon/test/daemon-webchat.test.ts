@@ -1140,6 +1140,59 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     await daemon.stop()
   }, 15_000)
 
+  // #807 follow-up: the fix posted only the woken agent's REPLY live — the SENDER's own
+  // message reached the browser only via refresh (history), never in the live view.
+  it('an agent-initiated wake posts the INBOUND message live, postId shared with its transcript row', async () => {
+    const { factory } = streamingHost([text('forwarding: B says hi')])
+    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    await daemon.start()
+    const cp = fakeCpClient()
+    ;(daemon as any).cpClient = cp
+    const posts: any[] = []
+    ;(daemon as any).relays = { stop: vi.fn(async () => {}), sendWebchatPost: (p: any) => posts.push(p) }
+
+    const SENDER = '99999999-9999-4999-8999-999999999999'
+    const thread = `webchat:${CONV}`
+    const msg = {
+      msgId: `agentcall:${CONV}:d-1`,
+      traceId: 'd-1',
+      source: 'agent' as const,
+      platform: 'webchat' as const,
+      channel: CONV,
+      thread,
+      transcriptTs: String(Date.now()),
+      sender: { id: SENDER, isBot: true },
+      text: 'hi from B',
+      mentionedBots: [] as string[],
+      isDm: false
+    }
+    await (daemon as any).dispatch(AGENT_ID, msg, undefined, (daemon as any).webchatWakeContext('webchat', CONV))
+
+    // Two live posts: the inbound sender message first, then the woken reply.
+    expect(posts).toHaveLength(2)
+    expect(posts[0]).toMatchObject({
+      conversationId: CONV,
+      agentId: SENDER,
+      initiator: 'agent',
+      post: { author: { kind: 'agent', agentId: SENDER }, text: 'hi from B', at: Number(msg.transcriptTs) }
+    })
+    expect(posts[1]).toMatchObject({
+      agentId: AGENT_ID,
+      initiator: 'agent',
+      post: { author: { kind: 'agent', agentId: AGENT_ID }, text: 'forwarding: B says hi' }
+    })
+    // The transcript row carries the same postId, so a later transcript refetch
+    // reconciles the live step instead of double-rendering it.
+    const rows = (daemon as any).store.threadTranscript(CONV, thread) as {
+      sender: string
+      postId?: string
+      text: string
+    }[]
+    const inbound = rows.find((r) => r.sender === SENDER)
+    expect(inbound?.postId).toBe(posts[0].post.postId)
+    await daemon.stop()
+  }, 15_000)
+
   it('records EVERY user turn — a stable per-conversation msgId must not dedup follow-ups', async () => {
     // Regression: webchat's msgId is stable per conversation, so a naive transcript ts
     // (derived from the msgId) is identical for every turn — the (channel,thread,ts) unique
