@@ -164,6 +164,7 @@ export type IntegrationCoreEnvelope = z.infer<typeof IntegrationCoreEnvelope>
  *    must not kill the register/ok snapshot it rides in.
  */
 export const IntegrationSpec = z.object({
+  orgId: z.string().min(1).max(64).optional(),
   integrationId: z.string().uuid(),
   agentId: z.string().uuid(),
   platform: Platform,

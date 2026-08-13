@@ -108,7 +108,7 @@ describe('sandbox shim dial-in', () => {
   })
 
   it('waits for the replacement connection while a bound channel is reconnecting', async () => {
-    const { endpoint } = await sandbox()
+    const { endpoint, client } = await sandbox()
     const dialer = new ShimDialer({
       verifier: {
         reviewToken: async () => ({ authenticated: true, podName: 'sandbox-pod-1', podUid: 'pod-uid-1' })
@@ -119,7 +119,7 @@ describe('sandbox shim dial-in', () => {
 
     const first = await dialer.connect(endpoint, record(), 8_000)
     first.close('force reconnect')
-    await waitFor(() => dialer.connectionsFor('agent-a').length === 0)
+    await waitFor(() => dialer.connectionsFor('agent-a').length === 0 && client.binding() === undefined)
 
     const replacement = await dialer.connect(endpoint, record(), 8_000)
     expect(replacement).not.toBe(first)

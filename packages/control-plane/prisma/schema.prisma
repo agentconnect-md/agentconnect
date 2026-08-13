@@ -366,18 +366,16 @@ enum HealthState {
 
 model Daemon {
   id            String  @id @db.Uuid // AuthReq.daemonId (wire UUID)
-  orgId         String
+  orgId         String? // null only for an install-wide cloud-daemon member shared by every org
   host          String? // RegisterReq.host (display)
   name          String? // human-assigned display name (set via the console, never by the daemon)
   agentVersion  String?
   machineId     String? @db.Uuid // 🅼 AuthReq.machineId (stored, stub-enforced)
   tokenFp       String? // `id` of the authenticating ApiKey (audit; written by upsertOnAuth)
-  /// The Kubernetes identity an in-cluster daemon authenticates as, exactly as TokenReview
-  /// reports it (`system:serviceaccount:<org namespace>:ac-daemon`). Unique, so one envelope
-  /// can never end up with two records competing for its placements. The namespace is derived
-  /// from the org, so an envelope torn down and rebuilt presents the same identity and resolves
-  /// back to this row — its placements and session history survive re-provisioning.
-  clusterIdentity String? @unique
+  /// The Kubernetes ServiceAccount subject TokenReview reports. Envelope rows are unique by
+  /// subject; cloud members share the subject and are unique by the bound token's Pod UID.
+  clusterIdentity String?
+  clusterPodUid   String?
   attestationFp String? // 🅼 last accepted attestation digest
   capabilities  Json    @default("{}") @db.JsonB // {platforms[],runtimes[],acp,features[]}
   mcpServers    Json    @default("[]") @db.JsonB // facts/daemon-runtimes MCP-server list (FactsMcpServer[] = {name,transport}); replaced whole per frame
@@ -424,7 +422,7 @@ model Daemon {
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @db.Timestamptz(6)
 
-  org                   Org                    @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  org                   Org?                   @relation(fields: [orgId], references: [id], onDelete: Restrict)
   createdBy             User?                  @relation("DaemonCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
   lastModifiedBy        User?                  @relation("DaemonModifiedBy", fields: [lastModifiedByUserId], references: [id], onDelete: SetNull)
   agents                Agent[]
@@ -437,6 +435,7 @@ model Daemon {
   lifecycleOps          DaemonLifecycleOp[]
   webchatMcpDelegations WebchatMcpDelegation[]
 
+  @@unique([clusterIdentity, clusterPodUid], map: "daemon_cluster_identity_pod_key")
   @@index([orgId])
   @@index([status])
   @@index([lastSeenAt])

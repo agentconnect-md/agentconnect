@@ -268,7 +268,7 @@ import {
 } from './github/review.js'
 import { resolveRuntimeCatalog, type ResolvedRuntimeCatalog } from './runtimes/registry.js'
 import { installedRuntimeCatalog, installedRuntimes, resolveCommandPath } from './runtimes/probe.js'
-import { startK8sRuntimePlane, type K8sRuntimePlane } from './k8s/runtime-plane.js'
+import { K8S_ORG_ID_ENV, startK8sRuntimePlane, type K8sRuntimePlane } from './k8s/runtime-plane.js'
 import {
   setSandboxWorkspaceMode,
   setWorkspaceGitRunnerResolver,
@@ -296,7 +296,7 @@ import { nodeExecArgvModuleEntries } from './runtimes/node-exec-argv.js'
 import { makeLogger, type Logger } from './log.js'
 import { CpClient, CP_SUBPROTOCOL, CP_WS_PATH, type BootstrapUpgradeOutcome } from './cp/client.js'
 import { RelayManager } from './cp/relay-manager.js'
-import { readClusterIdentityToken } from './cp/cluster-identity.js'
+import { CP_IDENTITY_TOKEN_PATH, readClusterIdentityToken } from './cp/cluster-identity.js'
 import { CpCollabRoutes } from './cp/cp-collab-routes.js'
 import { ClientTransport, systemClock, type Clock, type TimerHandle } from '@agentconnect.md/connection'
 import {
@@ -2227,12 +2227,9 @@ export class Daemon {
   // keeps the catalog, so the CP's capability data survives transient timeouts.
   private runtimeCatalogs = new Map<string, RuntimeModelCatalog>()
   private modelCatalogSvc?: ModelCatalogService
-  // EFFECTIVE MCP-server defs (local config `mcpServers` with CP-pushed defs layered
-  // on top, CP wins) — resolved into agent sessions and reported to the CP (name +
-  // transport) alongside runtimes. Recomputed from `cpMcpDefs` whenever the CP set changes.
+  // Daemon-local MCP definitions; CP definitions are overlaid per organization at use sites.
   private mcpServerDefs: Record<string, import('./config/config-schema.js').McpServerDef> = {}
-  // CP-pushed MCP defs over the local base (centralized-tool-management.md §7/§8);
-  // memory-only, re-converged from register/ok. Built from config at start.
+  // Tenant-scoped CP MCP definitions, re-converged from register/ok.
   private cpMcpDefs?: import('./mcp/cp-mcp-defs.js').CpMcpDefs
   /** CP-owned, daemon-private external-memory definitions + verified clients. */
   private memoryConnections?: CpMemoryConnectionRegistry
@@ -2810,7 +2807,7 @@ export class Daemon {
     if (this.k8s) {
       const openDataPlane = this.opts.openDataPlane ?? openMountedPostgresDataPlane
       this.dataPlane = await openDataPlane(
-        (agentId) => this.cpCollab.orgForAgent(agentId),
+        (agentId) => this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId),
         (error) => {
           this.log.error(`data-plane: PostgreSQL persistence failed — ${formatErr(error)}`)
           this.draining = true
@@ -2832,6 +2829,7 @@ export class Daemon {
       const startPlane = this.opts.startK8sPlane ?? startK8sRuntimePlane
       try {
         this.k8sPlane = await startPlane({
+          orgForAgent: (agentId) => this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId),
           // Which sockets this agent's pod needs, and where this daemon serves them. A GitHub-App
           // workspace is the one case today: its git reaches the credential helper over a unix
           // socket that, without a tunnel, exists only on the daemon's own filesystem. MCP is
@@ -3047,7 +3045,7 @@ export class Daemon {
     if (reservedMcp)
       this.log.warn(`mcp: config server name "${RESERVED_MCP_SERVER_NAME}" is reserved for the daemon bridge — ignored`)
     this.cpMcpDefs = new CpMcpDefs(mcpServerDefs)
-    this.mcpServerDefs = this.cpMcpDefs.effective()
+    this.mcpServerDefs = this.cpMcpDefs.localDefinitions()
     if (Object.keys(mcpServerDefs).length)
       this.log.info(`mcp servers configured: ${Object.keys(mcpServerDefs).join(', ')}`)
 
@@ -3477,7 +3475,7 @@ export class Daemon {
         servers.push(
           ...resolveAgentMcpServers({
             enabled: agent.mcpServers,
-            defs: this.mcpServerDefs,
+            defs: this.mcpDefsForAgent(agent.id),
             caps: this.runtimeMcpCaps.get(agent.runtime),
             ...(this.agentRunsInSandbox(agent)
               ? {
@@ -4991,7 +4989,7 @@ export class Daemon {
     githubAppCredentials: boolean
   ): string[] {
     const configuredMcp = agent.mcpServers.flatMap((name) => {
-      const definition = this.mcpServerDefs[name]
+      const definition = this.mcpDefsForAgent(agent.id)[name]
       return definition ? [definition] : []
     })
     const cliEntry = daemonEntryForShims(this.root)
@@ -5235,7 +5233,7 @@ export class Daemon {
         agent,
         runtime,
         { ...agentChildEnv(agent), ...cpRuntimeEnv(agent) },
-        this.externalMemoryAdmission()
+        this.externalMemoryAdmission(agent.id)
       ).runtimeEnv()
     }
     let configFileState: { childEnv?: Record<string, string | undefined>; materialized: boolean } = {
@@ -5280,7 +5278,7 @@ export class Daemon {
       // redirects it under the private runtime HOME. Throws
       // MemoryProviderUnavailableError for an unbuildable provider (external, or
       // native on an unregistered runtime) — surfaced here at spawn.
-      ...memoryProviderFor(memoryAgent, runtime, baseEnv, this.externalMemoryAdmission()).runtimeEnv(),
+      ...memoryProviderFor(memoryAgent, runtime, baseEnv, this.externalMemoryAdmission(agent.id)).runtimeEnv(),
       ...(agent.workspace.mode === 'git-repo'
         ? githubAppCredentials
           ? sessionGitEnv(agent.id, this.gitCommitIdentity)
@@ -6327,13 +6325,35 @@ export class Daemon {
     const client = this.cpClient
     if (!client || !client.supportsServerFeature?.(ORGANIZATION_KNOWLEDGE_FEATURE)) return
     const runner = this.dreamRunner()
-    const reply = await client.syncOrganizationSuggestions({ suggestions: runner.organizationSuggestionInventory() })
-    // The inventory is metadata-only and remains safe to converge during the
-    // production hold. Returned decisions are different: applying one changes
-    // local review state and can delete/sweep historical staged bytes, so the
-    // held path is intentionally publish-only.
+    const byOrg = new Map<string | undefined, ReturnType<DreamRunner['organizationSuggestionInventory']>>()
+    const inventory = runner.organizationSuggestionInventory()
+    for (const suggestion of inventory) {
+      const orgId = this.cpAgents?.orgForAgent(suggestion.sourceAgentId)
+      const suggestions = byOrg.get(orgId) ?? []
+      suggestions.push(suggestion)
+      byOrg.set(orgId, suggestions)
+    }
+    if (inventory.length === 0) {
+      const orgIds = this.cpAgents?.organizationIds() ?? []
+      if (orgIds.length > 0) {
+        for (const orgId of orgIds) byOrg.set(orgId, [])
+      } else {
+        byOrg.set(undefined, [])
+      }
+    }
+    const decisions = (
+      await Promise.all(
+        [...byOrg].map(([orgId, suggestions]) => {
+          const sync = orgId
+            ? client.syncOrganizationSuggestions({ suggestions }, orgId)
+            : client.syncOrganizationSuggestions({ suggestions })
+          return sync.then((reply) => reply.decisions)
+        })
+      )
+    ).flat()
+    // During the production hold, publish inventory but do not apply destructive review decisions.
     if (!this.dreamOperationsAllowed()) return
-    for (const decision of reply.decisions) await runner.organizationSuggestionReview(decision)
+    for (const decision of decisions) await runner.organizationSuggestionReview(decision)
   }
 
   private dreamRunner(): DreamRunner {
@@ -9472,7 +9492,9 @@ export class Daemon {
       throw new Error(
         'the status of a session on another daemon is unavailable while the control plane is disconnected'
       )
-    const res = await client.childSessionStatus({ parentSessionId, childSessionId, childAgentId })
+    const parentAgentId = this.store.getSessionByAcpId(parentSessionId)?.agentId
+    const orgId = parentAgentId ? this.cpAgents?.orgForAgent(parentAgentId) : undefined
+    const res = await client.childSessionStatus({ parentSessionId, childSessionId, childAgentId }, orgId)
     if (res.reason === 'offline') {
       throw new Error(`the daemon running ${childSessionId} is not currently reachable — try again shortly`)
     }
@@ -10621,14 +10643,18 @@ export class Daemon {
     const requestedVerdict = active.hook.reviewRequestedVerdict
     if (!cp || !attemptId || !requestedEvent || !requestedVerdict) return
     try {
-      const authorized = await cp.authorizeGithubReview({
+      const authorization: Parameters<CpClient['authorizeGithubReview']>[0] = {
         hookId: active.hook.hookId,
         deliveryKey: active.hook.deliveryKey,
         attemptId,
         requestedEvent,
         requestedVerdict,
         snapshot: active.snapshot
-      })
+      }
+      const orgId = this.cpAgents?.orgForAgent(active.hook.agentId) ?? this.cpCollab.orgForAgent(active.hook.agentId)
+      const authorized = orgId
+        ? await cp.authorizeGithubReview(authorization, orgId)
+        : await cp.authorizeGithubReview(authorization)
       if (!authorizedReviewTargetMatches(active, attemptId, authorized)) {
         this.log.warn('github review: recovery authorization returned a mismatched target')
         return
@@ -10644,13 +10670,15 @@ export class Daemon {
       // and the CP reservation converges to submitted or blocked.
       if (effect.state === 'not_submitted') return
       const result = this.persistGithubReviewEffect(active, attemptId, effect, true)
-      await cp.reportGithubReviewResult({
+      const report: Parameters<CpClient['reportGithubReviewResult']>[0] = {
         hookId: active.hook.hookId,
         deliveryKey: active.hook.deliveryKey,
         attemptId,
         snapshot: active.snapshot,
         result
-      })
+      }
+      if (orgId) await cp.reportGithubReviewResult(report, orgId)
+      else await cp.reportGithubReviewResult(report)
       // Ambiguous keeps the same durable attempt eligible for an explicit
       // marker-first retry; submitted is terminal for this turn.
       active.reviewState = effect.state === 'ambiguous' ? 'idle' : 'done'
@@ -10732,14 +10760,18 @@ export class Daemon {
     }
     let authorized: Awaited<ReturnType<CpClient['authorizeGithubReview']>>
     try {
-      authorized = await cp.authorizeGithubReview({
+      const authorization: Parameters<CpClient['authorizeGithubReview']>[0] = {
         hookId: active.hook.hookId,
         deliveryKey: active.hook.deliveryKey,
         attemptId,
         requestedEvent: req.event,
         requestedVerdict: req.verdict,
         snapshot: active.snapshot
-      })
+      }
+      const orgId = this.cpAgents?.orgForAgent(req.agentId) ?? this.cpCollab.orgForAgent(req.agentId)
+      authorized = orgId
+        ? await cp.authorizeGithubReview(authorization, orgId)
+        : await cp.authorizeGithubReview(authorization)
     } catch (err) {
       active.reviewState = 'done'
       throw err
@@ -10758,13 +10790,16 @@ export class Daemon {
     )
     const result = this.persistGithubReviewEffect(active, attemptId, effect)
     try {
-      await cp.reportGithubReviewResult({
+      const report: Parameters<CpClient['reportGithubReviewResult']>[0] = {
         hookId: active.hook.hookId,
         deliveryKey: active.hook.deliveryKey,
         attemptId,
         snapshot: active.snapshot,
         result
-      })
+      }
+      const orgId = this.cpAgents?.orgForAgent(req.agentId) ?? this.cpCollab.orgForAgent(req.agentId)
+      if (orgId) await cp.reportGithubReviewResult(report, orgId)
+      else await cp.reportGithubReviewResult(report)
       if (effect.state === 'not_submitted') {
         // CP proved/released the no-effect reservation; this turn may correct
         // its input and try again with a fresh attempt id.
@@ -18882,12 +18917,15 @@ export class Daemon {
       for (const row of due) {
         const reason = WebchatMcpGrantRevoke.shape.reason.safeParse(row.reason)
         try {
-          await this.cpClient.revokeWebchatMcpGrant({
-            authorityId: row.authorityId,
-            authorityGeneration: row.authorityGeneration,
-            conversationId: row.conversationId,
-            reason: reason.success ? reason.data : 'session_closed'
-          })
+          await this.cpClient.revokeWebchatMcpGrant(
+            {
+              authorityId: row.authorityId,
+              authorityGeneration: row.authorityGeneration,
+              conversationId: row.conversationId,
+              reason: reason.success ? reason.data : 'session_closed'
+            },
+            this.cpAgents?.orgForAgent(row.agentId)
+          )
           this.store.clearWebchatMcpGrant(row.conversationId, row.authorityId, row.authorityGeneration)
         } catch (error) {
           const backoff = Math.min(10 * 60_000, 5_000 * 2 ** Math.min(row.attempts, 8))
@@ -19137,7 +19175,7 @@ export class Daemon {
     const caps = this.runtimeMcpCaps.get(agent.runtime)
     for (const name of agent.mcpServers) {
       if (name === RESERVED_MCP_SERVER_NAME) return `MCP server name "${name}" is reserved`
-      const def = this.mcpServerDefs[name]
+      const def = this.mcpDefsForAgent(agent.id)[name]
       if (!def) return `MCP server "${name}" is not configured on this daemon`
       if (def.transport !== 'stdio' && caps && !caps[def.transport]) {
         return `MCP server "${name}" needs unsupported ${def.transport} transport on runtime "${agent.runtime}"`
@@ -19151,7 +19189,7 @@ export class Daemon {
           agent,
           runtime,
           { ...agentChildEnv(agent), ...cpRuntimeEnv(agent) },
-          this.externalMemoryAdmission()
+          this.externalMemoryAdmission(agent.id)
         ).runtimeEnv()
       } catch (error) {
         return error instanceof Error ? error.message : 'external memory admission failed'
@@ -19636,15 +19674,12 @@ export class Daemon {
           if (!this.agentDestructivePending(agentId)) this.drainingAgents.delete(agentId)
           this.gitCreds?.clearDenied(agentId)
         }
-        // MCP defs: full-replace the CP set from the per-daemon snapshot (memory-only, so a
-        // provider removed while disconnected is pruned on reconnect). Reserved name stripped.
-        // The subsequent onReady/register emit re-derives the facts from these defs.
+        // Reconnect full-replaces tenant-scoped CP definitions; daemon-local definitions remain unchanged.
         this.cpMcpDefs?.converge(
           (snap.mcpServers ?? [])
             .filter((s) => s.name !== RESERVED_MCP_SERVER_NAME)
-            .map(({ name, ...def }) => [name, def])
+            .flatMap(({ orgId, name, ...def }) => (orgId ? [[orgId, name, def] as const] : []))
         )
-        this.mcpServerDefs = this.cpMcpDefs?.effective() ?? this.mcpServerDefs
         this.cpCollab.replace(snap.collabRoutes) // baseline collaboration routing snapshot (P2 terminal-verify)
         this.convergeRelays(snap.relays) // connect ingress only after its organization authority is installed
         this.cpRouting?.converge({
@@ -20025,17 +20060,19 @@ export class Daemon {
           this.log.warn(`mcp: ignoring CP push for reserved server name "${spec.name}"`)
           return
         }
-        const { name, ...def } = spec
-        if (this.cpMcpDefs?.upsert(name, def)) {
+        const { orgId, name, ...def } = spec
+        if (!orgId) return
+        if (this.cpMcpDefs?.upsert(orgId, name, def)) {
           this.onMcpDefsChanged()
           // NEVER log def values — an http proxy def's headers carry the bearer grant key.
-          this.log.info(`mcp: applied CP server def "${name}" (${Object.keys(this.mcpServerDefs).length} effective)`)
+          this.log.info(`mcp: applied CP server def "${name}" for organization ${orgId}`)
         }
       },
-      applyMcpServerRemove: (name) => {
-        if (this.cpMcpDefs?.remove(name)) {
+      applyMcpServerRemove: ({ orgId, name }) => {
+        if (!orgId) return
+        if (this.cpMcpDefs?.remove(orgId, name)) {
           this.onMcpDefsChanged()
-          this.log.info(`mcp: removed CP server def "${name}"`)
+          this.log.info(`mcp: removed CP server def "${name}" for organization ${orgId}`)
         }
       },
       applyMemoryConnectionUpsert: async (spec) => {
@@ -20483,6 +20520,13 @@ export class Daemon {
       }
       return undefined
     }
+    // A managed cloud daemon's credential is its Kubernetes identity, full stop.
+    if (this.k8s && !process.env[K8S_ORG_ID_ENV]?.trim() && !this.clusterIdentityToken) {
+      this.log.error(
+        `cp: not connecting — a cloud daemon authenticates with its projected identity token, expected at ${CP_IDENTITY_TOKEN_PATH}`
+      )
+      return
+    }
     if (this.clusterIdentityToken) this.log.info("cp: authenticating with this pod's projected identity token")
     // Start host-load sampling only now — the snapshot exists solely to feed the CP
     // heartbeat below (no CP ⇒ no sampler, so CP-less runs never probe the system).
@@ -20655,6 +20699,11 @@ export class Daemon {
         agents: this.hosts.size
       }),
       activeSessions: () => this.pending.size,
+      orgForAgent: (agentId) => this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId),
+      orgForIntegration: (integrationId) => {
+        const agentId = this.cpIntegrations?.agentForIntegration(integrationId)
+        return agentId ? (this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId)) : undefined
+      },
       degradedScopes: () => this.cpDegradedScopes(),
       configApply: this.cpConfigApply(),
       sessionRead: createSessionReader(
@@ -20698,27 +20747,31 @@ export class Daemon {
       connect: () => ClientTransport.dial(url, { subprotocol: CP_SUBPROTOCOL, path: CP_WS_PATH }),
       log: this.log
     })
-    this.remoteWebchatGrants = new RemoteWebchatGrantManager(this.cpClient, {
-      recordActive: (entry) =>
-        this.store.recordWebchatMcpGrant({
-          conversationId: entry.conversationId,
-          agentId: entry.agentId ?? '',
-          authorityId: entry.authorityId,
-          authorityGeneration: entry.authorityGeneration,
-          now: this.clock.now()
-        }),
-      markRevoking: (entry) =>
-        this.store.markWebchatMcpGrantRevoking({
-          conversationId: entry.conversationId,
-          agentId: entry.agentId ?? '',
-          authorityId: entry.authorityId,
-          authorityGeneration: entry.authorityGeneration,
-          reason: entry.reason,
-          now: this.clock.now()
-        }),
-      clear: (entry) =>
-        this.store.clearWebchatMcpGrant(entry.conversationId, entry.authorityId, entry.authorityGeneration)
-    })
+    this.remoteWebchatGrants = new RemoteWebchatGrantManager(
+      this.cpClient,
+      {
+        recordActive: (entry) =>
+          this.store.recordWebchatMcpGrant({
+            conversationId: entry.conversationId,
+            agentId: entry.agentId ?? '',
+            authorityId: entry.authorityId,
+            authorityGeneration: entry.authorityGeneration,
+            now: this.clock.now()
+          }),
+        markRevoking: (entry) =>
+          this.store.markWebchatMcpGrantRevoking({
+            conversationId: entry.conversationId,
+            agentId: entry.agentId ?? '',
+            authorityId: entry.authorityId,
+            authorityGeneration: entry.authorityGeneration,
+            reason: entry.reason,
+            now: this.clock.now()
+          }),
+        clear: (entry) =>
+          this.store.clearWebchatMcpGrant(entry.conversationId, entry.authorityId, entry.authorityGeneration)
+      },
+      (agentId) => this.cpAgents?.orgForAgent(agentId)
+    )
     // Grants recorded by a previous process have no surviving descriptor or
     // plaintext — queue them for remote revocation before the first connect.
     const orphaned = this.store.markAllWebchatMcpGrantsRevoking('session_closed', this.clock.now())
@@ -21219,22 +21272,30 @@ export class Daemon {
     return Object.entries(this.mcpServerDefs).map(([name, def]) => ({ name, transport: def.transport }))
   }
 
+  private mcpDefsForAgent(agentId: string): Record<string, import('./config/config-schema.js').McpServerDef> {
+    return this.cpMcpDefs?.effective(this.cpAgents?.orgForAgent(agentId)) ?? this.mcpServerDefs
+  }
+
   /**
    * A CP-pushed MCP def changed (mcpserver/upsert|remove): recompute the effective
    * map and re-emit `facts/daemon-runtimes` so its MCP-server list (REPLACE-based)
    * converges with the new provider set.
    */
   private onMcpDefsChanged(): void {
-    this.mcpServerDefs = this.cpMcpDefs?.effective() ?? this.mcpServerDefs
     this.cpClient?.emitDaemonRuntimes?.(
       this.reportedRuntimeIds().map((id) => this.runtimeProfileFor(id)),
       this.mcpServerFactsFromDefs()
     )
   }
 
-  private externalMemoryAdmission(): { assertReady(connectionId: string): void } {
+  private externalMemoryAdmission(agentId: string): { assertReady(connectionId: string): void } {
     return {
       assertReady: (connectionId) => {
+        const specOrgId = this.memoryConnections?.specFor(connectionId)?.orgId
+        const agentOrgId = this.cpAgents?.orgForAgent(agentId)
+        if (specOrgId && agentOrgId && specOrgId !== agentOrgId) {
+          throw new MemoryProviderUnavailableError('external memory connection belongs to another organization')
+        }
         const reason = this.memoryConnections
           ? this.memoryConnections.admissionError(connectionId)
           : 'external memory connection registry is not ready'

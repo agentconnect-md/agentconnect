@@ -90,6 +90,7 @@ describe('cron replication CP→daemon (REST → cron/upsert·remove)', () => {
     expect(spy.upserts[0]!.daemonId).toBe(DAEMON)
     expect(spy.upserts[0]!.u).toEqual({
       cronId,
+      orgId: DEFAULT_ORG_ID,
       agentId,
       schedule: '0 9 * * 1-5',
       timezone: 'Asia/Singapore',

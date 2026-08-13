@@ -32,7 +32,7 @@ const withUsers = { createdBy: true, lastModifiedBy: true } as const
 function toRecord(d: DaemonWithUsers): DaemonRecord {
   return {
     id: DaemonId(d.id),
-    orgId: OrgId(d.orgId),
+    orgId: d.orgId ? OrgId(d.orgId) : null,
     host: d.host,
     name: d.name,
     agentVersion: d.agentVersion,
@@ -93,7 +93,10 @@ export class PgDaemonRepo implements DaemonRepo {
     clusterIdentity: string,
     opts: { adoptDaemonId?: string } = {}
   ): Promise<DaemonRecord | null> {
-    const existing = await this.db.daemon.findUnique({ where: { clusterIdentity }, include: withUsers })
+    const existing = await this.db.daemon.findFirst({
+      where: { clusterIdentity, clusterPodUid: null },
+      include: withUsers
+    })
     if (existing) return existing.orgId === orgId ? toRecord(existing) : null
     const adopted = opts.adoptDaemonId ? await this.adoptForIdentity(orgId, clusterIdentity, opts.adoptDaemonId) : null
     if (adopted) return adopted
@@ -109,10 +112,40 @@ export class PgDaemonRepo implements DaemonRepo {
     } catch (error) {
       // A concurrent first connect won the unique index; its row is the binding.
       if ((error as { code?: string }).code !== 'P2002') throw error
-      const raced = await this.db.daemon.findUnique({ where: { clusterIdentity }, include: withUsers })
+      const raced = await this.db.daemon.findFirst({
+        where: { clusterIdentity, clusterPodUid: null },
+        include: withUsers
+      })
       if (!raced) throw error
       return raced.orgId === orgId ? toRecord(raced) : null
     }
+  }
+
+  async resolveCloudClusterIdentity(clusterIdentity: string, clusterPodUid: string): Promise<DaemonRecord> {
+    const where = { clusterIdentity_clusterPodUid: { clusterIdentity, clusterPodUid } }
+    const existing = await this.db.daemon.findUnique({ where, include: withUsers })
+    if (existing) return toRecord(existing)
+    try {
+      const daemon = await this.db.daemon.create({
+        data: { id: randomUUID(), orgId: null, clusterIdentity, clusterPodUid, status: 'provisioned' },
+        include: withUsers
+      })
+      return toRecord(daemon)
+    } catch (error) {
+      // A concurrent connection from the same Pod won the compound unique index.
+      if ((error as { code?: string }).code !== 'P2002') throw error
+      const raced = await this.db.daemon.findUnique({ where, include: withUsers })
+      if (!raced) throw error
+      return toRecord(raced)
+    }
+  }
+
+  async findClusterIdentity(daemonId: DaemonId): Promise<{ orgId: string | null; clusterIdentity: string } | null> {
+    const row = await this.db.daemon.findUnique({
+      where: { id: daemonId },
+      select: { orgId: true, clusterIdentity: true }
+    })
+    return row?.clusterIdentity ? { orgId: row.orgId, clusterIdentity: row.clusterIdentity } : null
   }
 
   async clusterBoundIds(orgId: OrgId): Promise<string[]> {
@@ -276,7 +309,7 @@ export class PgDaemonRepo implements DaemonRepo {
         select: { orgId: true }
       })
       const memberships = await lockResourceWriteMemberships(tx, {
-        orgId: existing.orgId,
+        orgId: OrgId(existing.orgId!),
         visibility: sharing.visibility,
         actorUserId: byUserId,
         sharedWith: sharing.sharedWith
@@ -324,9 +357,15 @@ export class PgDaemonRepo implements DaemonRepo {
   }
 
   async get(orgId: OrgId, daemonId: DaemonId): Promise<DaemonRecord | null> {
-    // The org filter rides the unique lookup (extended where): a cross-org id
-    // is indistinguishable from a missing row (org-scoped-data-layer.md §3).
     const d = await this.db.daemon.findUnique({ where: { id: daemonId, orgId }, include: withUsers })
+    return d ? toRecord(d) : null
+  }
+
+  async getAvailable(orgId: OrgId, daemonId: DaemonId): Promise<DaemonRecord | null> {
+    const d = await this.db.daemon.findFirst({
+      where: { id: daemonId, OR: [{ orgId }, { orgId: null, clusterIdentity: { not: null } }] },
+      include: withUsers
+    })
     return d ? toRecord(d) : null
   }
 
@@ -336,9 +375,25 @@ export class PgDaemonRepo implements DaemonRepo {
   }
 
   async list(orgId?: OrgId, viewer?: ViewCtx): Promise<DaemonRecord[]> {
-    const where = { ...(orgId ? { orgId } : {}), ...visibilityWhere(viewer) }
+    const visibility = visibilityWhere(viewer)
+    const where = orgId ? { orgId, ...visibility } : visibility
     const rows = await this.db.daemon.findMany({
       ...(Object.keys(where).length ? { where } : {}),
+      orderBy: { createdAt: 'asc' },
+      include: withUsers
+    })
+    return rows.map(toRecord)
+  }
+
+  async listAvailable(orgId: OrgId, viewer?: ViewCtx): Promise<DaemonRecord[]> {
+    const visibility = visibilityWhere(viewer)
+    const rows = await this.db.daemon.findMany({
+      where: {
+        OR: [
+          { orgId, ...visibility },
+          { orgId: null, clusterIdentity: { not: null } }
+        ]
+      },
       orderBy: { createdAt: 'asc' },
       include: withUsers
     })

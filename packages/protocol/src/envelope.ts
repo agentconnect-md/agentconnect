@@ -15,6 +15,7 @@ export const Envelope = z.object({
   ts: z.string().datetime(), // RFC3339, sender clock (advisory only)
   type: z.string(), // frame discriminator, e.g. "register"
   corr: z.string().uuid().optional(), // correlation: set on a reply to the request's `id`
+  orgId: z.string().min(1).max(64).optional(), // tenant context on an install-wide daemon connection
   payload: z.unknown() // validated by the per-type schema
 })
 export type Envelope = z.infer<typeof Envelope>
@@ -51,6 +52,7 @@ export function frameSchema<T extends string, P extends z.ZodTypeAny>(type: T, p
     ts: z.string().datetime(),
     type: z.literal(type),
     corr: z.string().uuid().optional(),
+    orgId: z.string().min(1).max(64).optional(),
     payload
   })
 }

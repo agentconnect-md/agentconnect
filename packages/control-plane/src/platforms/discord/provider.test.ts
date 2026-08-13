@@ -274,6 +274,7 @@ describe('discord projection equivalence with the live integrationToSpec path', 
       { channel: 'C1', match: { kind: 'auto' } }
     ]
     expect(spec).toEqual({
+      orgId: INTEGRATION.orgId,
       integrationId: INTEGRATION.id,
       agentId: INTEGRATION.agentId,
       platform: 'discord',

@@ -606,13 +606,13 @@ describe('Daemon CP agent → memory + reconcile', () => {
     ).resolves.toEqual({ ok: false, reason: 'agent/activate: MCP server "missing" is not configured on this daemon' })
 
     await seam(daemon).applyAgentDetach({ agentId: 'ghost', moveId: MOVE_ID_3 })
-    ;(daemon as any).mcpServerDefs.remote = { transport: 'http', url: 'https://mcp.invalid' }
+    ;(daemon as any).cpMcpDefs.upsert('org-a', 'remote', { transport: 'http', url: 'https://mcp.invalid' })
     ;(daemon as any).runtimeMcpCaps.set('claude', { http: false, sse: false })
     await expect(
       seam(daemon).applyAgentActivate({
         agentId: 'ghost',
         moveId: MOVE_ID_3,
-        spec: { name: 'ghost', runtime: 'claude', mcpServers: ['remote'] },
+        spec: { orgId: 'org-a', name: 'ghost', runtime: 'claude', mcpServers: ['remote'] },
         integrations: [],
         crons: []
       })

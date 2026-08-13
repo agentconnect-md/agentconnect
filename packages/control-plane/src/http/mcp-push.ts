@@ -55,7 +55,7 @@ export function makeMcpPush(deps: HttpDeps): McpPush {
       deps.relayControl.mcpUnassign({ providerId: provider.id })
       for (const d of await daemonsEnabling(orgId, provider.name)) {
         try {
-          await deps.control.mcpServerRemove(d, provider.name)
+          await deps.control.mcpServerRemove(d, orgId, provider.name)
         } catch {
           // daemon offline — reconcile drops the stale def on its next register
         }

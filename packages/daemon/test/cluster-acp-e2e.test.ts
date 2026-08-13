@@ -121,7 +121,7 @@ async function clusterUnderTest(options: { credentialTtlMs?: number } = {}): Pro
 
   const driver = new K8sDriver({
     api: api.api as never,
-    orgId: 'org-1',
+    orgForAgent: () => 'org-1',
     warmPoolName: 'pool',
     connectChannel: (record: SpawnRecord, _podIp, timeoutMs) =>
       dialer.connect(`ws://127.0.0.1:${port}`, record, timeoutMs),

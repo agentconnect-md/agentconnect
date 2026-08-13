@@ -108,6 +108,7 @@ function connState(
 ): DaemonConnState {
   return {
     daemonId,
+    orgId: DEFAULT_ORG_ID,
     conn,
     sessionEpoch,
     state: 'READY',
@@ -150,6 +151,7 @@ function build(): Built {
   const connA = new DaemonConnection(stubA, deps, new FrameRouter())
   connA.start()
   connA.daemonId = DAEMON_A
+  connA.orgId = DEFAULT_ORG_ID
   connA.sessionEpoch = 5
   connA.state = 'READY'
 
@@ -157,6 +159,7 @@ function build(): Built {
   const connB = new DaemonConnection(stubB, deps, new FrameRouter())
   connB.start()
   connB.daemonId = DAEMON_B
+  connB.orgId = DEFAULT_ORG_ID
   connB.sessionEpoch = 3
   connB.state = 'READY'
 

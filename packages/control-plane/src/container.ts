@@ -399,13 +399,15 @@ export function buildContainer(
   // Shared by both doors a daemon can knock on — the CP socket and, through `rc/verify`,
   // the relay — so the relay hop can never be the weaker one.
   const clusterIdentity =
-    clusterHttp && clusterOrgApi
+    clusterAccess && clusterHttp && clusterOrgApi
       ? new ClusterDaemonIdentityService(
           clusterHttp,
           clusterOrgApi,
           repos.orgClusterExecution,
           repos.daemon,
-          config.CLUSTER_ORG_NAMESPACE_PREFIX
+          config.CLUSTER_ORG_NAMESPACE_PREFIX,
+          // Where this install's cloud daemons live; its own namespace unless told otherwise.
+          config.CLUSTER_CLOUD_DAEMON_NAMESPACE ?? clusterAccess.namespace
         )
       : undefined
   const auth = new DaemonAuthService(

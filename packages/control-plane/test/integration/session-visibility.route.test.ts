@@ -1169,7 +1169,9 @@ describe('session visibility — §5.1 daemon-ack cutover', () => {
 
     expect(await repo.countUnackedVisibility(daemonId)).toBe(1)
     const capped = await repo.visibilitySnapshotForDaemon(daemonId, 1)
-    expect(capped).toEqual([{ sessionId: stale, visibility: 'private', sharedMemoryExcluded: true, visibilityRev: 1 }])
+    expect(capped).toEqual([
+      { sessionId: stale, orgId: DEFAULT_ORG_ID, visibility: 'private', sharedMemoryExcluded: true, visibilityRev: 1 }
+    ])
   })
 
   it('reports the cutover as pending while a DESCENDANT daemon is still behind', async () => {
@@ -1211,8 +1213,20 @@ describe('session visibility — §5.1 daemon-ack cutover', () => {
 
     const snapshot = await new PgSessionRepo(prisma).visibilitySnapshotForDaemon(daemonId, 10)
     expect(snapshot).toEqual([
-      { sessionId: newer, visibility: 'private', sharedMemoryExcluded: true, visibilityRev: 0 },
-      { sessionId: older, visibility: 'org', sharedMemoryExcluded: false, visibilityRev: 0 }
+      {
+        sessionId: newer,
+        orgId: DEFAULT_ORG_ID,
+        visibility: 'private',
+        sharedMemoryExcluded: true,
+        visibilityRev: 0
+      },
+      {
+        sessionId: older,
+        orgId: DEFAULT_ORG_ID,
+        visibility: 'org',
+        sharedMemoryExcluded: false,
+        visibilityRev: 0
+      }
     ])
   })
 })

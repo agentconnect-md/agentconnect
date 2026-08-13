@@ -9,7 +9,8 @@ export const handleWebchatMcpGrantIssue: Handler = async (frame, conn, deps) => 
   try {
     const issued = await deps.webchatRemoteMcp?.issue({
       ...frame.payload,
-      authenticatedDaemonId: conn.daemonId
+      authenticatedDaemonId: conn.daemonId,
+      authenticatedOrgId: frame.orgId ?? conn.orgId ?? undefined
     })
     if (!issued) return denied(frame.id, conn)
     conn.replyTo(frame, 'webchat/mcp-grant/issued', issued)
@@ -23,7 +24,8 @@ export const handleWebchatMcpGrantAccept: Handler = async (frame, conn, deps) =>
   try {
     const activated = await deps.webchatRemoteMcp?.accept({
       ...frame.payload,
-      authenticatedDaemonId: conn.daemonId
+      authenticatedDaemonId: conn.daemonId,
+      authenticatedOrgId: frame.orgId ?? conn.orgId ?? undefined
     })
     if (!activated) return denied(frame.id, conn)
     conn.replyTo(frame, 'webchat/mcp-grant/activate', { ...frame.payload, activated: true })
@@ -38,7 +40,8 @@ export const handleWebchatMcpGrantRevoke: Handler = async (frame, conn, deps) =>
     const revoked =
       (await deps.webchatRemoteMcp?.revoke({
         ...frame.payload,
-        authenticatedDaemonId: conn.daemonId
+        authenticatedDaemonId: conn.daemonId,
+        authenticatedOrgId: frame.orgId ?? conn.orgId ?? undefined
       })) ?? false
     if (!revoked) return denied(frame.id, conn)
     conn.replyTo(frame, 'webchat/mcp-grant/revoked', {

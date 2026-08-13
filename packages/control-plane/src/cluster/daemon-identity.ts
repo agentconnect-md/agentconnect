@@ -1,21 +1,5 @@
-/**
- * Verifying an in-cluster daemon's Kubernetes identity
- * (docs/designs/agentconnect-org-operator.md, "Daemon identity").
- *
- * The daemon presents the audience-scoped ServiceAccount token the kubelet projects into
- * its pod; this reviews it against the cluster that issued it and maps the reviewed subject
- * back to an org. Three things must hold, and the token is refused unless all three do:
- * the audience is {@link CP_TOKEN_AUDIENCE}, the ServiceAccount is
- * {@link ENVELOPE_DAEMON_SA_NAME}, and the subject's namespace is the one the operator
- * published on that org's `status.namespace`. The audience is the real gate — a sandbox's
- * token carries the shim audience and is refused here — and the rest keep a token from a
- * neighbouring pod or a neighbouring org from standing in for the daemon.
- *
- * The daemon record is resolved-or-provisioned from the verified identity, the same
- * just-in-time shape `UserRepo` runs for an OIDC subject: an envelope has exactly one
- * daemon, so cluster + namespace + ServiceAccount designates exactly one record.
- */
-import { CP_TOKEN_AUDIENCE, ENVELOPE_DAEMON_SA_NAME } from '@agentconnect.md/protocol'
+/** Verifies projected Kubernetes identity as an org envelope or an install-wide cloud member. */
+import { CLOUD_DAEMON_SA_NAME, CP_TOKEN_AUDIENCE, ENVELOPE_DAEMON_SA_NAME } from '@agentconnect.md/protocol'
 import type { K8sHttp } from '@agentconnect.md/k8s-client'
 import { DaemonId, OrgId } from '../domain/ids.js'
 import type { ClusterDaemonIdentity, VerifiedClusterDaemon } from '../ports.js'
@@ -28,7 +12,7 @@ interface TokenReviewResponse {
     authenticated?: boolean
     audiences?: string[]
     error?: string
-    user?: { username?: string }
+    user?: { username?: string; extra?: Record<string, string[]> }
   }
 }
 
@@ -44,10 +28,18 @@ export function parseServiceAccountSubject(username: string | undefined): {
   return { namespace, serviceAccount }
 }
 
-/** The identity string a daemon record is bound to; exactly what TokenReview reported, so
- *  the binding is the API server's answer rather than a re-derivation of it. */
+/** The identity string an envelope daemon's record is bound to; exactly what TokenReview
+ *  reported, so the binding is the API server's answer rather than a re-derivation of it. */
 export function clusterIdentityOf(namespace: string, serviceAccount: string): string {
   return `system:serviceaccount:${namespace}:${serviceAccount}`
+}
+
+const POD_UID_EXTRA = 'authentication.kubernetes.io/pod-uid'
+
+/** The Pod UID attested by TokenReview for a Pod-bound projected token. */
+export function reviewedPodUid(extra: Record<string, string[]> | undefined): string | null {
+  const values = extra?.[POD_UID_EXTRA]
+  return values?.length === 1 && values[0] ? values[0] : null
 }
 
 export class ClusterDaemonIdentityService implements ClusterDaemonIdentity {
@@ -55,12 +47,15 @@ export class ClusterDaemonIdentityService implements ClusterDaemonIdentity {
     private readonly http: K8sHttp,
     private readonly api: OrgResourceApi,
     private readonly cluster: Pick<OrgClusterExecutionRepo, 'getByResourceName'>,
-    private readonly daemons: Pick<DaemonRepo, 'resolveClusterIdentity'>,
+    private readonly daemons: Pick<DaemonRepo, 'resolveClusterIdentity' | 'resolveCloudClusterIdentity'>,
     /** The install's org-namespace prefix — how a namespace names its CR. */
-    private readonly namespacePrefix: string
+    private readonly namespacePrefix: string,
+    /** Namespace the install runs its cloud daemons in. A cloud identity from anywhere else
+     *  is refused, so the claim-your-own-org rule stays confined to pods the install placed. */
+    private readonly cloudNamespace: string
   ) {}
 
-  async verify(token: string): Promise<VerifiedClusterDaemon | null> {
+  async verify(token: string, claim?: { daemonId?: string }): Promise<VerifiedClusterDaemon | null> {
     const review = await this.http.json<TokenReviewResponse>({
       method: 'POST',
       path: '/apis/authentication.k8s.io/v1/tokenreviews',
@@ -76,8 +71,32 @@ export class ClusterDaemonIdentityService implements ClusterDaemonIdentity {
     // audiences the token is actually valid for, and only ours may authenticate here.
     if (!status.audiences?.includes(CP_TOKEN_AUDIENCE)) return null
     const subject = parseServiceAccountSubject(status.user?.username)
-    if (!subject || subject.serviceAccount !== ENVELOPE_DAEMON_SA_NAME) return null
-    return this.bind(subject.namespace, subject.serviceAccount)
+    if (!subject) return null
+    if (subject.serviceAccount === ENVELOPE_DAEMON_SA_NAME) {
+      const verified = await this.bind(subject.namespace, subject.serviceAccount)
+      if (!verified) return null
+      if (claim?.daemonId && claim.daemonId !== verified.daemonId) return null
+      return verified
+    }
+    if (subject.serviceAccount === CLOUD_DAEMON_SA_NAME && subject.namespace === this.cloudNamespace) {
+      const podUid = reviewedPodUid(status.user?.extra)
+      if (!podUid) return null
+      return this.bindCloud(subject.namespace, subject.serviceAccount, podUid, claim?.daemonId)
+    }
+    return null
+  }
+
+  /** Resolve one cloud Pod to its org-less member row. */
+  private async bindCloud(
+    namespace: string,
+    serviceAccount: string,
+    podUid: string,
+    claimedDaemonId?: string
+  ): Promise<VerifiedClusterDaemon | null> {
+    const identity = clusterIdentityOf(namespace, serviceAccount)
+    const daemon = await this.daemons.resolveCloudClusterIdentity(identity, podUid)
+    if (claimedDaemonId && claimedDaemonId !== daemon.id) return null
+    return { daemonId: DaemonId(daemon.id), scope: 'install' }
   }
 
   /** The org that owns a verified namespace, and the daemon record bound to that identity. */
@@ -99,6 +118,6 @@ export class ClusterDaemonIdentityService implements ClusterDaemonIdentity {
       ...(settings.legacyKeyDaemonId ? { adoptDaemonId: settings.legacyKeyDaemonId } : {})
     })
     if (!daemon) return null
-    return { daemonId: DaemonId(daemon.id), orgId }
+    return { daemonId: DaemonId(daemon.id), scope: 'org', orgId }
   }
 }

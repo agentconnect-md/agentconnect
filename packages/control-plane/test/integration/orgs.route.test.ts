@@ -11,6 +11,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { prisma } from '../setup.db.js'
 import { buildHttpApp } from '../fakes/build-http.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
+import { PgDaemonRepo } from '../../src/persistence/repositories/daemon.repo.js'
 import { Prisma } from '../../src/generated/prisma/client.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 
@@ -341,6 +342,25 @@ describe('DELETE /orgs/:orgId', () => {
       // (docs/designs/per-org-secret-encryption.md §6). Deliberately no FK, so
       // the cascade above cannot take it.
       expect(await prisma.pendingKeyShred.findUnique({ where: { orgId: created.id } })).not.toBeNull()
+    } finally {
+      await close()
+    }
+  })
+
+  it('does not treat install-wide cloud daemons as org deletion blockers', async () => {
+    const cloud = await new PgDaemonRepo(prisma).resolveCloudClusterIdentity(
+      'system:serviceaccount:agentconnect:ac-cloud-daemon',
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    )
+    const { app, close } = buildHttpApp(prisma)
+    try {
+      const created = (await (
+        await app.inject({ method: 'POST', url: '/api/v1/orgs', payload: { name: 'Doomed', slug: 'doomed' } })
+      ).json()) as OrgBody
+
+      expect((await app.inject({ method: 'DELETE', url: `/api/v1/orgs/${created.id}` })).statusCode).toBe(204)
+      expect(await prisma.org.findUnique({ where: { id: created.id } })).toBeNull()
+      expect(await prisma.daemon.findUnique({ where: { id: cloud.id } })).not.toBeNull()
     } finally {
       await close()
     }

@@ -26,6 +26,7 @@ export const handleAuth: Handler = async (frame, conn, deps) => {
   }
 
   conn.daemonId = verdict.daemonId
+  conn.orgId = verdict.orgId
   conn.sessionEpoch = verdict.okFrame.sessionEpoch
   conn.state = 'REGISTERING'
 
@@ -39,6 +40,7 @@ export const handleAuth: Handler = async (frame, conn, deps) => {
 
   deps.connReg.add({
     daemonId: verdict.daemonId,
+    orgId: verdict.orgId,
     conn,
     sessionEpoch: verdict.okFrame.sessionEpoch,
     state: 'REGISTERING',
@@ -48,7 +50,12 @@ export const handleAuth: Handler = async (frame, conn, deps) => {
     lastBeatAt: deps.clock.now(),
     reachable: true,
     assignments: new Set(),
-    launches: new Map()
+    launches: new Map(),
+    orgByAgent: new Map(),
+    orgByIntegration: new Map(),
+    orgByCron: new Map(),
+    orgByMcpServer: new Map(),
+    orgByMemoryConnection: new Map()
   })
 
   let okFrame = verdict.okFrame

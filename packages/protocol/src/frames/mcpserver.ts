@@ -27,6 +27,7 @@ const NameValueList = z.array(z.object({ name: z.string(), value: z.string() }))
  */
 export const McpServerSpec = z
   .object({
+    orgId: z.string().min(1).max(64).optional(),
     name: z.string(),
     transport: z.enum(['stdio', 'http', 'sse']).default('stdio'),
     command: z.string().optional(),
@@ -48,5 +49,5 @@ export const McpServerUpsert = McpServerSpec
 export type McpServerUpsert = z.infer<typeof McpServerUpsert>
 
 /** C→D EVT (`mcpserver/remove`) — drop a pushed MCP server def by name. */
-export const McpServerRemove = z.object({ name: z.string() })
+export const McpServerRemove = z.object({ orgId: z.string().min(1).max(64).optional(), name: z.string() })
 export type McpServerRemove = z.infer<typeof McpServerRemove>

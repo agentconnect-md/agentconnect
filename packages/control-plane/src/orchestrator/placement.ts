@@ -67,7 +67,7 @@ import type { CpPlatformRegistry } from '../platforms/provider.js'
 import { mcpProxyDef, relayHttpOrigin } from './mcpProvider.js'
 import { memoryConnectionSpec, stdioMemoryConnectionSpec } from './memoryConnection.js'
 import type { DaemonId } from '../domain/ids.js'
-import { AgentId as toAgentId, DaemonId as toDaemonId } from '../domain/ids.js'
+import { AgentId as toAgentId, DaemonId as toDaemonId, IntegrationId as toIntegrationId } from '../domain/ids.js'
 import { sessionKeyStr, type SessionKey } from '../domain/sessionKey.js'
 import { toDbPlatform } from '../persistence/platform.js'
 import type { AgentSpecAssembler } from './agentSpecAssembler.js'
@@ -139,6 +139,7 @@ function assignmentToRoute(a: AssignmentRecord): RouteAssign {
 export function cronToUpsert(c: CronRecord): CronUpsert | null {
   if (!c.agentId) return null
   return {
+    orgId: c.orgId,
     cronId: c.id,
     agentId: c.agentId,
     schedule: c.schedule,
@@ -326,7 +327,7 @@ async function projectSpec(
   const provider = platforms.get(i.platform)
   if (!provider) throw new Error(`no control-plane platform provider registered for ${i.platform}`)
   const config = await provider.projectIntegrationConfig(i, bot, core, secret)
-  return { integrationId: i.id, agentId: i.agentId, platform: i.platform, core, config }
+  return { orgId: i.orgId, integrationId: i.id, agentId: i.agentId, platform: i.platform, core, config }
 }
 
 /** A session to re-home: its key + the agent/workspace that should own it. */
@@ -458,11 +459,22 @@ export class Placement implements ReconcileService {
     // `orgDirectory` is the flat companion: policy-only rows for EVERY org agent,
     // including the integration-less ones no channel placement can express. One
     // org-scoped query, not a per-agent fan-out.
-    const [placements, orgDirectory] = await Promise.all([
-      this.integrations.channelPlacements(daemon.orgId),
-      this.agents.orgDirectory(daemon.orgId)
-    ])
-    const collabRoutes = buildCollabSnapshot(daemon.orgId, placements, Number(daemon.routingEpoch), orgDirectory)
+    const collabRoutes: RegisterOk['collabRoutes'] = {
+      generation: Number(daemon.routingEpoch),
+      channels: [],
+      agents: [],
+      platformKinds: []
+    }
+    for (const orgId of new Set(ownedAgents.map((agent) => agent.orgId))) {
+      const [placements, orgDirectory] = await Promise.all([
+        this.integrations.channelPlacements(orgId),
+        this.agents.orgDirectory(orgId)
+      ])
+      const snapshot = buildCollabSnapshot(orgId, placements, Number(daemon.routingEpoch), orgDirectory)
+      collabRoutes.channels.push(...snapshot.channels)
+      collabRoutes.agents.push(...snapshot.agents)
+      collabRoutes.platformKinds = snapshot.platformKinds
+    }
 
     // drop = localState − desired. Agent/integration replicas need an explicit
     // ownership proof so hand-authored local config survives. A legacy replica
@@ -484,9 +496,21 @@ export class Placement implements ReconcileService {
     // One org-scoped lookup per resource kind avoids turning an arbitrary local
     // inventory into an N-query fan-out at register time.
     const [orgAgents, orgIntegrations] = await Promise.all([
-      staleAgentCandidates.length ? this.agents.list(daemon.orgId) : Promise.resolve([]),
+      staleAgentCandidates.length
+        ? daemon.orgId
+          ? this.agents.list(daemon.orgId)
+          : Promise.all(staleAgentCandidates.map((local) => this.agents.getUnscoped(toAgentId(local.agentId)))).then(
+              (rows) => rows.filter((row): row is AgentRecord => row !== null)
+            )
+        : Promise.resolve([]),
       staleIntegrationCandidates.some((i) => i.origin === 'unknown')
-        ? this.integrations.listForOrg(daemon.orgId)
+        ? daemon.orgId
+          ? this.integrations.listForOrg(daemon.orgId)
+          : Promise.all(
+              staleIntegrationCandidates.map((local) =>
+                this.integrations.getUnscoped(toIntegrationId(local.integrationId))
+              )
+            ).then((rows) => rows.filter((row): row is IntegrationRecord => row !== null))
         : Promise.resolve([])
     ])
     const orgAgentById = new Map(orgAgents.map((agent) => [agent.id as string, agent]))

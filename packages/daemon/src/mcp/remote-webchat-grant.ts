@@ -14,9 +14,9 @@ const SERVER_NAME = 'agentconnect-admin'
 const RENEW_BEFORE_EXPIRY_MS = 5 * 60_000
 
 export interface RemoteWebchatGrantClient {
-  issueWebchatMcpGrant(input: WebchatMcpGrantIssue): Promise<WebchatMcpGrantIssued>
-  acceptWebchatMcpGrant(input: WebchatMcpGrantAccept): Promise<WebchatMcpGrantActivate>
-  revokeWebchatMcpGrant(input: WebchatMcpGrantRevoke): Promise<WebchatMcpGrantRevoked>
+  issueWebchatMcpGrant(input: WebchatMcpGrantIssue, orgId?: string): Promise<WebchatMcpGrantIssued>
+  acceptWebchatMcpGrant(input: WebchatMcpGrantAccept, orgId?: string): Promise<WebchatMcpGrantActivate>
+  revokeWebchatMcpGrant(input: WebchatMcpGrantRevoke, orgId?: string): Promise<WebchatMcpGrantRevoked>
 }
 
 /** Durable, non-secret sidecar for grant lifecycle. `recordActive` mirrors a
@@ -77,7 +77,8 @@ export class RemoteWebchatGrantManager {
 
   constructor(
     private readonly client: RemoteWebchatGrantClient,
-    private readonly ledger?: RemoteWebchatGrantLedger
+    private readonly ledger?: RemoteWebchatGrantLedger,
+    private readonly orgForAgent?: (agentId: string) => string | undefined
   ) {}
 
   async descriptor(
@@ -104,22 +105,29 @@ export class RemoteWebchatGrantManager {
     }
 
     const descriptorInstanceId = current?.descriptorInstanceId ?? stableDescriptorId(conversationId)
-    const issued = await this.client.issueWebchatMcpGrant({
+    const orgId = agentId ? this.orgForAgent?.(agentId) : undefined
+    const issue = {
       authorityId: entitlement.authorityId,
       authorityGeneration: entitlement.authorityGeneration,
       conversationId,
       descriptorInstanceId
-    })
+    }
+    const issued = orgId
+      ? await this.client.issueWebchatMcpGrant(issue, orgId)
+      : await this.client.issueWebchatMcpGrant(issue)
     this.assertIssued(issued, entitlement, conversationId, descriptorInstanceId, current)
 
-    const activated = await this.client.acceptWebchatMcpGrant({
+    const accept = {
       authorityId: issued.authorityId,
       authorityGeneration: issued.authorityGeneration,
       conversationId: issued.conversationId,
       descriptorInstanceId: issued.descriptorInstanceId,
       grantRevision: issued.grantRevision,
       grantId: issued.grantId
-    })
+    }
+    const activated = orgId
+      ? await this.client.acceptWebchatMcpGrant(accept, orgId)
+      : await this.client.acceptWebchatMcpGrant(accept)
     if (
       !activated.activated ||
       activated.grantId !== issued.grantId ||
@@ -164,12 +172,15 @@ export class RemoteWebchatGrantManager {
   ): Promise<void> {
     const agentId = this.active.get(conversationId)?.agentId
     try {
-      await this.client.revokeWebchatMcpGrant({
+      const input = {
         authorityId: entitlement.authorityId,
         authorityGeneration: entitlement.authorityGeneration,
         conversationId,
         reason
-      })
+      }
+      const orgId = agentId ? this.orgForAgent?.(agentId) : undefined
+      if (orgId) await this.client.revokeWebchatMcpGrant(input, orgId)
+      else await this.client.revokeWebchatMcpGrant(input)
     } catch (error) {
       // The obligation outlives this call: queue a durable retry BEFORE the
       // failure surfaces, so lifecycle teardown may proceed while the CP-side

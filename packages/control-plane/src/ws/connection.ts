@@ -22,9 +22,29 @@ import type { FrameRouter } from './handlers/index.js'
 import { FencingState, checkFencing } from '../orchestrator/fencing.js'
 import { ProtocolError } from '../domain/errors.js'
 
+const INSTALL_WIDE_FRAME_TYPES = new Set([
+  'register',
+  'register/ok',
+  'heartbeat',
+  'capabilities/update',
+  'facts/daemon-runtimes',
+  'facts/memory-connections',
+  'relay/roster',
+  'collaboration/routes',
+  'daemon/drain',
+  'drain/progress',
+  'drain/done',
+  'daemon/restart',
+  'daemon/upgrade',
+  'daemon/bootstrap/result',
+  'config/push'
+])
+
 export class DaemonConnection implements ConnChannel {
   state: LifecycleState = 'CONNECTING'
   daemonId = '' // set on auth/ok; "" until then (ConnChannel requires a string)
+  /** Auth-scoped org; null for an install-wide cloud daemon. */
+  orgId: string | null = null
   /** Current fencing epoch for this daemon (set on auth/ok). */
   sessionEpoch = 0
   /** Per-agent fencing baseline (current launch + next-expected inbound seq). */
@@ -79,6 +99,8 @@ export class DaemonConnection implements ConnChannel {
       return
     }
 
+    if (!this.gateOrganization(frame)) return
+
     // Fencing gate (protocol §4.2): any inbound control frame that carries a
     // ControlExt (epoch present) is validated epoch → launchId BEFORE dispatch.
     // A `agent/launched` first refreshes the launch fence so its own (new)
@@ -98,6 +120,54 @@ export class DaemonConnection implements ConnChannel {
     } catch {
       if (this.state !== 'CLOSED') this.close(1011, 'SERVER_INTERNAL')
     }
+  }
+
+  /** Enforce connection-scoped tenancy for ordinary daemons and frame-scoped tenancy for cloud. */
+  private gateOrganization(frame: AnyFrame): boolean {
+    if (this.state === 'AUTHENTICATING' || this.state === 'REGISTERING') return true
+    if (this.orgId) {
+      if (frame.orgId && frame.orgId !== this.orgId) {
+        this.sendError(frame.id, 'SCOPE_DENIED', 'organization does not match authenticated connection', false)
+        return false
+      }
+      return true
+    }
+    if (frame.orgId) {
+      const targetedOrgId = this.organizationForInbound(frame)
+      if (targetedOrgId === null || (targetedOrgId && targetedOrgId !== frame.orgId)) {
+        this.sendError(frame.id, 'SCOPE_DENIED', 'organization does not match the targeted resource', false)
+        return false
+      }
+      return true
+    }
+    if (INSTALL_WIDE_FRAME_TYPES.has(frame.type)) return true
+    this.sendError(frame.id, 'SCOPE_DENIED', 'organization is required on an install-wide connection', false)
+    return false
+  }
+
+  private organizationForInbound(frame: AnyFrame): string | null | undefined {
+    const payload = frame.payload && typeof frame.payload === 'object' ? (frame.payload as Record<string, unknown>) : {}
+    const state = this.deps.connReg.get(this.daemonId)
+    const organizations = new Set<string>()
+    const collect = (value: unknown, map: Map<string, string> | undefined): void => {
+      if (typeof value !== 'string') return
+      const orgId = map?.get(value)
+      if (orgId) organizations.add(orgId)
+    }
+    for (const key of ['agentId', 'requesterAgentId', 'sourceAgentId', 'callerAgentId', 'childAgentId']) {
+      collect(payload[key], state?.orgByAgent)
+    }
+    collect(payload.integrationId, state?.orgByIntegration)
+    collect(payload.cronId, state?.orgByCron)
+    collect(payload.connectionId, state?.orgByMemoryConnection)
+    const suggestions = Array.isArray(payload.suggestions) ? payload.suggestions : []
+    for (const suggestion of suggestions) {
+      if (suggestion && typeof suggestion === 'object') {
+        collect((suggestion as Record<string, unknown>).sourceAgentId, state?.orgByAgent)
+      }
+    }
+    if (organizations.size > 1) return null
+    return organizations.values().next().value
   }
 
   /**
@@ -154,22 +224,69 @@ export class DaemonConnection implements ConnChannel {
     type: string,
     payload: unknown,
     ext?: ControlExt,
-    opts?: RequestOpts
+    opts?: RequestOpts,
+    orgId?: string
   ): Promise<TReply> {
-    const frame = buildEnvelope(type as Parameters<typeof buildEnvelope>[0], payload, ext ? { ext } : {})
+    const scopedOrgId = orgId ?? this.organizationFor(type, payload)
+    const frame = buildEnvelope(type as Parameters<typeof buildEnvelope>[0], payload, {
+      ...(ext ? { ext } : {}),
+      ...(scopedOrgId ? { orgId: scopedOrgId } : {})
+    })
     const rep = await this.correlator.request(frame, (e) => this.transport.send(e), opts)
     return rep.payload as TReply
   }
 
   /** Fire-and-forget EVT (C→D). */
-  send(type: string, payload: unknown, ext?: ControlExt): void {
-    const frame = buildEnvelope(type as Parameters<typeof buildEnvelope>[0], payload, ext ? { ext } : {})
+  send(type: string, payload: unknown, ext?: ControlExt, orgId?: string): void {
+    const scopedOrgId = orgId ?? this.organizationFor(type, payload)
+    const frame = buildEnvelope(type as Parameters<typeof buildEnvelope>[0], payload, {
+      ...(ext ? { ext } : {}),
+      ...(scopedOrgId ? { orgId: scopedOrgId } : {})
+    })
     this.transport.send(encode(frame))
+  }
+
+  private organizationFor(type: string, payload: unknown): string | undefined {
+    if (this.orgId) return this.orgId
+    if (INSTALL_WIDE_FRAME_TYPES.has(type)) return undefined
+    const p = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
+    const spec = p.spec && typeof p.spec === 'object' ? (p.spec as Record<string, unknown>) : undefined
+    const state = this.deps.connReg.get(this.daemonId)
+    const explicitOrgId =
+      typeof p.orgId === 'string' ? p.orgId : typeof spec?.orgId === 'string' ? spec.orgId : undefined
+    if (explicitOrgId) {
+      const remember = (key: string, map: Map<string, string> | undefined): void => {
+        const value = p[key] ?? spec?.[key]
+        if (typeof value === 'string') map?.set(value, explicitOrgId)
+      }
+      remember('agentId', state?.orgByAgent)
+      remember('integrationId', state?.orgByIntegration)
+      remember('cronId', state?.orgByCron)
+      remember('connectionId', state?.orgByMemoryConnection)
+      return explicitOrgId
+    }
+    const from = (key: string, map: Map<string, string> | undefined): string | undefined =>
+      typeof p[key] === 'string' ? map?.get(p[key]) : undefined
+    const orgId =
+      from('agentId', state?.orgByAgent) ??
+      from('requesterAgentId', state?.orgByAgent) ??
+      from('sourceAgentId', state?.orgByAgent) ??
+      from('callerAgentId', state?.orgByAgent) ??
+      from('childAgentId', state?.orgByAgent) ??
+      from('integrationId', state?.orgByIntegration) ??
+      from('cronId', state?.orgByCron) ??
+      from('name', state?.orgByMcpServer) ??
+      from('connectionId', state?.orgByMemoryConnection)
+    if (!orgId) throw new ProtocolError('SCOPE_DENIED', `organization is required for ${type}`, { retryable: false })
+    return orgId
   }
 
   /** Reply to an inbound REQ with a correlated REP. */
   replyTo(req: AnyFrame, type: string, payload: unknown): void {
-    const frame = buildEnvelope(type as Parameters<typeof buildEnvelope>[0], payload, { corr: req.id })
+    const frame = buildEnvelope(type as Parameters<typeof buildEnvelope>[0], payload, {
+      corr: req.id,
+      ...(req.orgId ? { orgId: req.orgId } : {})
+    })
     this.transport.send(encode(frame))
   }
 

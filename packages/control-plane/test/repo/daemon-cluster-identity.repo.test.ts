@@ -1,8 +1,4 @@
-/**
- * The daemon record an in-cluster daemon's verified Kubernetes identity resolves to
- * (docs/designs/agentconnect-org-operator.md, "Which daemon record"). Three properties,
- * all of which need real Postgres because the unique index is what enforces the first.
- */
+/** Real-Postgres coverage for Kubernetes identity-to-daemon bindings. */
 import { describe, it, expect } from 'vitest'
 import { prisma } from '../setup.db.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
@@ -10,6 +6,9 @@ import { PgDaemonRepo } from '../../src/persistence/repositories/daemon.repo.js'
 import { DaemonId, OrgId } from '../../src/domain/ids.js'
 
 const IDENTITY = 'system:serviceaccount:ac-org-example:ac-daemon'
+const INSTALL_IDENTITY = 'system:serviceaccount:agentconnect:ac-cloud-daemon'
+const POD_UID_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+const POD_UID_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
 const DEF_ORG = OrgId(DEFAULT_ORG_ID)
 
 describe('DaemonRepo.resolveClusterIdentity', () => {
@@ -112,5 +111,37 @@ describe('DaemonRepo.resolveClusterIdentity', () => {
 
     expect(envelope!.id).not.toBe(laptop)
     expect(await prisma.daemon.findUnique({ where: { id: laptop } })).toMatchObject({ clusterIdentity: null })
+  })
+
+  it('keeps cloud Pods out of owned reads while exposing them to availability reads', async () => {
+    const repo = new PgDaemonRepo(prisma)
+    const other = await prisma.org.create({ data: { slug: 'install-daemon-other-org' } })
+
+    const first = await repo.resolveCloudClusterIdentity(INSTALL_IDENTITY, POD_UID_A)
+    const samePod = await repo.resolveCloudClusterIdentity(INSTALL_IDENTITY, POD_UID_A)
+    const secondPod = await repo.resolveCloudClusterIdentity(INSTALL_IDENTITY, POD_UID_B)
+
+    expect(samePod.id).toBe(first.id)
+    expect(secondPod.id).not.toBe(first.id)
+    expect(first.orgId).toBeNull()
+    expect(secondPod.orgId).toBeNull()
+    expect(await repo.get(DEF_ORG, first.id)).toBeNull()
+    expect(await repo.get(OrgId(other.id), secondPod.id)).toBeNull()
+    const ownedByDefault = (await repo.list(DEF_ORG)).map((daemon) => daemon.id)
+    const ownedByOther = (await repo.list(OrgId(other.id))).map((daemon) => daemon.id)
+    expect(ownedByDefault).not.toContain(first.id)
+    expect(ownedByDefault).not.toContain(secondPod.id)
+    expect(ownedByOther).not.toContain(first.id)
+    expect(ownedByOther).not.toContain(secondPod.id)
+    expect(await repo.getAvailable(DEF_ORG, first.id)).toMatchObject({ id: first.id, orgId: null })
+    expect(await repo.getAvailable(OrgId(other.id), secondPod.id)).toMatchObject({ id: secondPod.id, orgId: null })
+    expect((await repo.listAvailable(DEF_ORG)).map((daemon) => daemon.id)).toEqual(
+      expect.arrayContaining([first.id, secondPod.id])
+    )
+    expect((await repo.listAvailable(OrgId(other.id))).map((daemon) => daemon.id)).toEqual(
+      expect.arrayContaining([first.id, secondPod.id])
+    )
+    await expect(repo.rename(DEF_ORG, first.id, 'tenant must not rename shared infrastructure')).rejects.toThrow()
+    expect(await prisma.daemon.count({ where: { clusterIdentity: INSTALL_IDENTITY } })).toBe(2)
   })
 })

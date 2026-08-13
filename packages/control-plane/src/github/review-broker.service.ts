@@ -340,7 +340,11 @@ export class GithubReviewBrokerService {
   }
 
   /** Reserve one attempt, revalidate live policy/placement, then mint its token. */
-  async authorize(input: GithubReviewAuthorize, reportingDaemonId: DaemonId): Promise<GithubReviewAuthorized> {
+  async authorize(
+    input: GithubReviewAuthorize,
+    reportingDaemonId: DaemonId,
+    reportingOrgId?: string
+  ): Promise<GithubReviewAuthorized> {
     const hookId = HookId(input.hookId)
     const initial = requireAcceptedRun(
       await this.deps.hook.getRun(hookId, input.deliveryKey),
@@ -349,6 +353,7 @@ export class GithubReviewBrokerService {
       { started: true }
     )
     if (initial.agentId === null) denied('accepted hook run has no agent identity')
+    if (reportingOrgId && initial.orgId !== reportingOrgId) denied('organization does not match the accepted hook run')
     if (!submittedVerdictIsValid(input.requestedEvent, input.requestedVerdict)) {
       denied('requested review event and verdict are incompatible')
     }
@@ -468,7 +473,11 @@ export class GithubReviewBrokerService {
   }
 
   /** Fold the daemon's body-free POST outcome into the durable reservation. */
-  async recordResult(input: GithubReviewResultReport, reportingDaemonId: DaemonId): Promise<void> {
+  async recordResult(
+    input: GithubReviewResultReport,
+    reportingDaemonId: DaemonId,
+    reportingOrgId?: string
+  ): Promise<void> {
     const hookId = HookId(input.hookId)
     const run = requireAcceptedRun(
       await this.deps.hook.getRun(hookId, input.deliveryKey),
@@ -476,6 +485,7 @@ export class GithubReviewBrokerService {
       reportingDaemonId,
       { started: true }
     )
+    if (reportingOrgId && run.orgId !== reportingOrgId) denied('organization does not match the accepted hook run')
     if (run.reviewAttemptId !== input.attemptId) denied('review result does not own this hook run', 'CONFLICT')
 
     const result = input.result

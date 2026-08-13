@@ -85,6 +85,7 @@ describe('CpClient auth credential', () => {
     expect(auth.type).toBe('auth')
     expect(auth.payload.serviceAccountToken).toBe('projected-token')
     expect(auth.payload.apiKey).toBeUndefined()
+    expect(auth.payload.orgId).toBeUndefined()
   })
 
   it('falls back to the API key when this daemon has no Kubernetes identity', async () => {

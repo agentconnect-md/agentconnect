@@ -126,6 +126,7 @@ function toDto(
   // `failed` (timed out) even before the sweep/next-command persists that — so the
   // console never renders a dead op as in-flight, and a stuck op reads terminal.
   const expired = latestOp?.status === 'pending' && latestOp.deadline.getTime() <= nowMs
+  const orgOwned = view.orgId !== null
   return {
     daemonId: view.daemonId,
     host: view.host,
@@ -168,11 +169,10 @@ function toDto(
     sessionRetention: SESSION_RETENTION_RE.test(view.sessionRetention) ? view.sessionRetention : '7d',
     visibility: view.visibility,
     sharedWith: view.sharedWith,
-    canEdit: canEdit(view, ctx),
-    canManageSharing: canManageSharing(view, ctx),
-    // Restart/upgrade are operational edits on the daemon. They follow the same
-    // visibility + non-viewer gate as content edits and sharing management.
-    canManageLifecycle: canEdit(view, ctx)
+    canEdit: orgOwned && canEdit(view, ctx),
+    canManageSharing: orgOwned && canManageSharing(view, ctx),
+    // Install-wide infrastructure is visible but mutable only through its deployment owner.
+    canManageLifecycle: orgOwned && canEdit(view, ctx)
   }
 }
 
@@ -210,14 +210,14 @@ export function daemonRoutes(deps: HttpDeps) {
           tags: [Tag.Daemons],
           summary: 'List daemons',
           description:
-            'The org’s daemon fleet from the registry, each overlaid with its live connection status (a daemon that has exited reads as offline).',
+            'The org’s available daemon fleet, including install-wide cloud members, overlaid with live connection status.',
           operationId: 'listDaemons',
           response: { 200: DaemonListDto }
         }
       },
       async (req) => {
         const ctx = ctxOf(req)
-        const rows = await deps.registry.list(orgOf(req), ctx)
+        const rows = await deps.registry.listAvailable(orgOf(req), ctx)
         // One batched latest-op query for the whole fleet (no N+1), grouped by daemon.
         const ops = await deps.repos.daemonLifecycleOp.latestForDaemons(rows.map((d) => DaemonId(d.daemonId)))
         const byDaemon = new Map(ops.map((o) => [o.daemonId as string, o]))

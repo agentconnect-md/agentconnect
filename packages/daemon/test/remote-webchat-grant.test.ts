@@ -112,6 +112,20 @@ describe('RemoteWebchatGrantManager', () => {
     expect(ledger.markRevoking).not.toHaveBeenCalled()
   })
 
+  it('carries the agent organization through issue, accept, and revoke', async () => {
+    const client = workingClient()
+    const manager = new RemoteWebchatGrantManager(client, undefined, (agentId) =>
+      agentId === 'agent-1' ? 'org-1' : undefined
+    )
+
+    await manager.provision(conversationId, entitlement, 0, 'agent-1')
+    await manager.revokeConversation(conversationId, 'session_expired')
+
+    expect(client.issueWebchatMcpGrant).toHaveBeenCalledWith(expect.any(Object), 'org-1')
+    expect(client.acceptWebchatMcpGrant).toHaveBeenCalledWith(expect.any(Object), 'org-1')
+    expect(client.revokeWebchatMcpGrant).toHaveBeenCalledWith(expect.any(Object), 'org-1')
+  })
+
   it('clears the ledger only after the CP confirms revocation', async () => {
     const ledger = fakeLedger()
     const client = workingClient()
@@ -145,8 +159,7 @@ describe('RemoteWebchatGrantManager', () => {
       reason: 'agent_detached'
     })
     expect(ledger.clear).not.toHaveBeenCalled()
-    // The plaintext descriptor is dropped even though the remote revoke failed:
-    // nothing may reuse a conversation whose authority is queued for revocation.
+    // Drop the plaintext descriptor once revocation is queued so nothing can reuse it.
     await expect(manager.revokeAgent('agent-1', 'agent_detached')).resolves.toBeUndefined()
     expect(client.revokeWebchatMcpGrant).toHaveBeenCalledTimes(1)
   })

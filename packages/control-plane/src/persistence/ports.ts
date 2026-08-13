@@ -127,10 +127,10 @@ export type AuditKind =
 // DaemonRepo (C4) — fleet registry & fencing root (§3.3)
 // ───────────────────────────────────────────────────────────────────────────
 
-/** What `auth` carries that the persistence layer needs (§3.3). `orgId` anchors a fresh row. */
+/** What `auth` carries that the persistence layer needs (§3.3). */
 export interface AuthReqInput {
   daemonId: DaemonId
-  orgId: OrgId
+  orgId: OrgId | null
   agentVersion: AuthReq['agentVersion']
   machineId?: string
   tokenFp?: string
@@ -145,7 +145,8 @@ export interface RegisterReqInput {
 
 export interface DaemonRecord {
   id: DaemonId
-  orgId: OrgId
+  /** Null only for an install-wide cloud-daemon member. */
+  orgId: OrgId | null
   host: string | null
   /** Human-assigned display name (console-set); null until a user names it. */
   name: string | null
@@ -187,7 +188,7 @@ export interface DaemonRepo {
   /**
    * The daemon record bound to a verified Kubernetes identity, JIT-provisioning one on
    * first sight — the same shape as `UserRepo`'s OIDC-subject provisioning. The store's
-   * unique index is what makes the binding one-to-one, so an envelope can never end up
+   * envelope-only unique index makes the binding one-to-one, so an envelope never ends up
    * with two records competing for its placements; the identity is namespace-derived, so
    * a rebuilt envelope resolves back to the same row and keeps its history.
    *
@@ -197,7 +198,7 @@ export interface DaemonRepo {
    * history. Ignored once the identity is bound, or if that record is another org's or
    * already carries an identity.
    *
-   * Null when the identity is already bound to a daemon in ANOTHER org: an identity may
+   * Null when the identity is already bound to a daemon in ANOTHER org: an envelope identity may
    * not move tenants, and refusing is the only answer that cannot leak one org's
    * placements to another.
    */
@@ -206,6 +207,10 @@ export interface DaemonRepo {
     clusterIdentity: string,
     opts?: { adoptDaemonId?: string }
   ): Promise<DaemonRecord | null>
+  /** Resolve one install-wide cloud member by its reviewed ServiceAccount subject and Pod UID. */
+  resolveCloudClusterIdentity(clusterIdentity: string, clusterPodUid: string): Promise<DaemonRecord>
+  /** The Kubernetes identity a daemon record is bound to, or null for an unknown/key daemon. */
+  findClusterIdentity(daemonId: DaemonId): Promise<{ orgId: string | null; clusterIdentity: string } | null>
   /** Ids of the org's daemons bound to a Kubernetes identity — the ones the control
    *  plane provisioned for a cluster envelope rather than a human attaching a machine. */
   clusterBoundIds(orgId: OrgId): Promise<string[]>
@@ -258,19 +263,19 @@ export interface DaemonRepo {
   /** Daemons unreachable for longer than `graceSec` — reassignment candidates (§4.9).
    *  System-tier: the watchdog's worklist is deliberately fleet-wide. */
   findReassignable(graceSec: number, now: Date): Promise<DaemonRecord[]>
-  /** Org-fenced point read (org-scoped-data-layer.md §3): a cross-org id reads
-   *  as absent, exactly like a missing row. The only daemon read the HTTP/MCP
-   *  surface may use. */
+  /** Org-owned point read; shared cloud members are deliberately absent. */
   get(orgId: OrgId, daemonId: DaemonId): Promise<DaemonRecord | null>
+  /** Placement/display read admitting both org-owned daemons and install-wide cloud members. */
+  getAvailable(orgId: OrgId, daemonId: DaemonId): Promise<DaemonRecord | null>
   /** Tenancy-UNSCOPED read for internal trust domains — WS handlers resolving
    *  their own connection's daemon, orchestration/placement resolving a daemon
    *  from a routing row, the watchdog. Never call this from the HTTP surface;
    *  lint enforces it (org-scoped-data-layer.md §6). */
   getUnscoped(daemonId: DaemonId): Promise<DaemonRecord | null>
-  /** The fleet, optionally filtered to one org (console reads pass the org). Every
-   *  supplied human principal is resource-filtered; undefined is reserved for
-   *  unfiltered internal reads (authorization/policy.ts#visibilityWhere). */
+  /** Owned fleet, optionally filtered to one org; undefined is the internal fleet-wide read. */
   list(orgId?: OrgId, viewer?: ViewCtx): Promise<DaemonRecord[]>
+  /** Display/placement fleet including install-wide cloud members. */
+  listAvailable(orgId: OrgId, viewer?: ViewCtx): Promise<DaemonRecord[]>
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -1037,6 +1042,7 @@ export interface SessionVisibilityChange {
 
 /** One entry of the §5.1 register-time gate snapshot. */
 export interface SessionVisibilityState {
+  orgId: OrgId
   sessionId: SessionId
   visibility: SessionVisibility
   sharedMemoryExcluded: boolean

@@ -53,7 +53,7 @@ describe('provider credentials in the direct-connect stage', () => {
     const { api, created } = fakeApi()
     const driver = new K8sDriver({
       api: api as never,
-      orgId: 'org-1',
+      orgForAgent: () => 'org-1',
       warmPoolName: 'pool',
       connectChannel: async () => ({}) as ShimConnection,
       log: { info: () => {}, warn: () => {}, debug: () => {} }

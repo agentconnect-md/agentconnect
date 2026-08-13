@@ -125,6 +125,7 @@ describe('facts/memory-connections — daemon-scoped and revision-fenced', () =>
     expect(registered.payload.memoryConnections).toEqual([
       {
         connectionId: connection.id,
+        orgId: DEFAULT_ORG_ID,
         revision: 1,
         transport: 'stdio',
         commandRef: 'operator-mem0',
@@ -159,6 +160,7 @@ describe('facts/memory-connections — daemon-scoped and revision-fenced', () =>
     expect(registered.payload.memoryConnections).toEqual([
       {
         connectionId: connection1.id,
+        orgId: DEFAULT_ORG_ID,
         revision: 1,
         transport: 'streamable-http',
         relayUrl: `https://relay.example/memory/${connection1.id}`,

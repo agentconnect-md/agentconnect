@@ -65,7 +65,7 @@ describe('stream route × viewer identity (live unlink)', () => {
     let linked: { teamId: string; userId: string } | null = { teamId: 'T024BE7LD', userId: 'U0123ABCD' }
     const handlers: Array<(e: SessionEventEnvelope) => void> = []
     const deps = {
-      registry: { get: async () => ({ orgId: ORG_ID }) },
+      registry: { getAvailable: async () => ({ orgId: ORG_ID }) },
       repos: {
         org: { roleOf: async () => 'collaborator' },
         session: {

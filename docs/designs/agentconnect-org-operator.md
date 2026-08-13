@@ -373,6 +373,62 @@ the daemon with an audience-scoped projected token the daemon verifies
 the same way. The audience differs so a token minted for one hop cannot
 authenticate at the other.
 
+#### The cloud daemon, which serves every org
+
+A **cloud daemon** is not an envelope's pod. The deployment runs it in the
+install's own namespace and it serves _every_ org, so neither credential the
+per-org shapes use can name it: an API key is bound to one org and one daemon,
+and there is no namespace to map back to an org. It authenticates with the same
+mechanism anyway — a projected token, audience `ac-control-plane` — and the
+**ServiceAccount name is the discriminator**: `ac-cloud-daemon` in the
+`CLUSTER_CLOUD_DAEMON_NAMESPACE` (default: the control plane's own namespace),
+versus `ac-daemon` in an org namespace. A cloud identity presented from any
+other namespace is refused, so "may serve any org" never follows from a pod
+merely holding the ServiceAccount name.
+
+For a cloud token, TokenReview must also attest
+`authentication.kubernetes.io/pod-uid`. The ServiceAccount subject establishes
+install authority; the Pod UID establishes the deployment member. A plain
+ServiceAccount token without that Pod binding is refused.
+
+What differs after verification is the tenancy scope of each daemon record and connection:
+
+|                       | envelope daemon          | each cloud-daemon Pod member                |
+| --------------------- | ------------------------ | ------------------------------------------- |
+| daemon record scope   | one organization         | install-wide (`Daemon.orgId = null`)        |
+| WebSocket connections | one                      | one per Pod                                 |
+| durable binding       | ServiceAccount subject   | ServiceAccount subject + reviewed Pod UID   |
+| org authority         | authenticated connection | every organization-scoped protocol envelope |
+
+Cloud replicas share the reviewed subject,
+`system:serviceaccount:<ns>:ac-cloud-daemon`, but each Pod resolves to its own
+org-less daemon record and WebSocket through the reviewed Pod UID. A container
+restart in the same Pod keeps the member record; a replacement Pod gets a new
+daemon ID. Each member may register agents and dependent resources from every
+organization. The CP stamps `orgId` onto every organization-scoped downlink
+frame; the daemon resolves `orgId` from its trusted agent/integration registries
+for every organization-scoped uplink frame. Both peers reject a scoped frame
+that omits the organization or conflicts with the targeted resource. Auth,
+register, heartbeat, fleet facts, relay roster, collaboration routes, and daemon
+lifecycle control remain member-scoped and omit `orgId`.
+
+Placements, sessions, routing, visibility, MCP definitions, memory connections,
+and Kubernetes Sandbox claims remain organization-fenced even though the daemon
+pool is shared. Agent placement, migration, and failover across cloud members are
+outside this change. Reconnect registration is a combined multi-org snapshot,
+with `orgId` carried on each scoped spec.
+
+The relay hop runs the same check from the other end. `rd/hello` carries the
+daemonId adopted from `auth/ok`, so the relay forwards it with the token on
+`rc/verify(daemon-token)`; the control plane requires it to match the member row
+bound to the reviewed Pod UID. The relay socket is likewise per member.
+
+The shared data-plane mount (`/var/run/ac-data-plane/config.json`,
+cloud-data-plane-postgres.md) supplies one install-level database credential.
+Organization identity comes from the CP agent registry at every store boundary,
+not from a per-org schema. A cloud daemon refuses API-key authentication because
+a daemon key is necessarily bound to one organization.
+
 What the control plane writes is therefore **one object**: the
 `AgentConnectOrg`, carrying its own WebSocket URL in plain text because a URL is
 not a secret. It needs no permission in any org namespace, and nothing has to
