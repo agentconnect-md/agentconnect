@@ -7,6 +7,7 @@ import { lockfileClosureChanged } from './lockfile-closure-changed.mjs'
 
 const DAEMON_IMPORTERS = [
   'packages/daemon',
+  'packages/activation-policy',
   'packages/message',
   'packages/protocol',
   'packages/connection',
@@ -41,6 +42,7 @@ const baseLock = () => ({
     },
     'packages/daemon': {
       dependencies: {
+        '@agentconnect.md/activation-policy': { specifier: 'workspace:*', version: 'link:../activation-policy' },
         '@agentconnect.md/connection': { specifier: 'workspace:*', version: 'link:../connection' },
         '@agentconnect.md/k8s-client': { specifier: 'workspace:*', version: 'link:../k8s-client' },
         '@agentconnect.md/message': { specifier: 'workspace:*', version: 'link:../message' },
@@ -49,6 +51,14 @@ const baseLock = () => ({
       },
       devDependencies: {
         tsdown: { specifier: '^0.22.3', version: '0.22.3(typescript@6.0.3)' }
+      }
+    },
+    'packages/activation-policy': {
+      dependencies: {
+        '@agentconnect.md/protocol': { specifier: 'workspace:*', version: 'link:../protocol' }
+      },
+      devDependencies: {
+        typescript: { specifier: '^6.0.3', version: '6.0.3' }
       }
     },
     'packages/k8s-client': {
@@ -119,6 +129,22 @@ test('web-only dependency bump does not affect the daemon closure', () => {
       lock.snapshots['lucide-react@0.501.0(react@19.0.0)'] = { dependencies: { react: '19.0.0' } }
     }),
     false
+  )
+})
+
+test('an activation-policy dependency bump reaches the daemon closure', () => {
+  assert.equal(
+    changed((lock) => {
+      lock.importers['packages/activation-policy'].devDependencies.typescript = {
+        specifier: '^6.0.4',
+        version: '6.0.4'
+      }
+      delete lock.packages['typescript@6.0.3']
+      delete lock.snapshots['typescript@6.0.3']
+      lock.packages['typescript@6.0.4'] = { resolution: { integrity: 'sha512-ts2' } }
+      lock.snapshots['typescript@6.0.4'] = {}
+    }),
+    true
   )
 })
 

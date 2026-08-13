@@ -11,10 +11,12 @@ suite** and the governance rule attached to it.
 
 "Who does this message activate" is implemented more than once:
 
-1. **The daemon platform ladder** —
-   `packages/daemon/src/router/routing-table.ts` (`routeRules`, kind precedence
-   mention > dm > keyword > auto) plus the verified agent-author ladder in
-   `packages/daemon/src/daemon.ts` (`routeVerifiedAgentMessage` /
+1. **The daemon platform ladder** — the pure decision logic now lives in
+   `@agentconnect.md/activation-policy` (`routeRules`, kind precedence
+   mention > dm > keyword > auto, the conversation-peer selection, and the
+   §4.1 hop gates), consumed through the thin adapter
+   `packages/daemon/src/router/routing-table.ts` by the verified agent-author
+   ladder in `packages/daemon/src/daemon.ts` (`routeVerifiedAgentMessage` /
    `fanOutToThreadPeers`), including the #549 rung: a verified agent-authored
    message naming nobody continues the conversation with the author excluded,
    hop-bounded.
@@ -74,8 +76,11 @@ of it is credential-free and runs in the Unit Test CI gate: `pnpm eval:parity`.
 
 The relay's arbitrate ladder has no leg yet; it is pinned by its own unit suite
 (`packages/relay/src/bot-arbitration.test.ts`) and inherits the daemon
-expectations by construction ("same rules", §6). It gains a leg when the
-single policy module lands and the relay consumes it.
+expectations by construction ("same rules", §6). The single policy module now
+exists (`@agentconnect.md/activation-policy`, consumed by the daemon); the
+relay leg lands when the relay is folded onto it — the module's header
+documents how `AttributedRoute`s and the affinity map plug into the same
+functions.
 
 ### 2.1 Declared per-surface divergences (as of this writing)
 

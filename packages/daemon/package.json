@@ -39,6 +39,7 @@
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^1.3.0",
+    "@agentconnect.md/activation-policy": "workspace:*",
     "@agentconnect.md/connection": "workspace:*",
     "@agentconnect.md/k8s-client": "workspace:*",
     "@agentconnect.md/message": "workspace:*",

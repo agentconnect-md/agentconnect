@@ -1,0 +1,378 @@
+/**
+ * `@agentconnect.md/activation-policy` — the PURE activation policy: "who does
+ * this message activate", extracted from the daemon's platform ladder
+ * (send-message-routing-rework.md §6/§2.3, PR #549) so every surface can
+ * eventually consume ONE implementation instead of keeping copies in sync by
+ * hand (the #549 → #904 → #906 incident; see
+ * docs/designs/activation-parity.md).
+ *
+ * Everything here is a pure function over:
+ *  - normalized MESSAGE FACTS ({@link ActivationMessageFacts} — a structural
+ *    subset of the daemon's `NormalizedMessage` and the wire
+ *    `NormalizedPlatformMessage`, so both satisfy it without adapters);
+ *  - resolved ROUTING RULES ({@link ActivationRule} — the daemon's merged
+ *    local ∪ CP rule set; structurally satisfied by the daemon's
+ *    `RoutingRule`);
+ *  - verified AUTHORSHIP facts (the author's agent id and stamped hop depth —
+ *    verification itself stays with the caller, since it needs I/O);
+ *  - narrow context PROVIDERS passed as plain values or callbacks
+ *    (`threadOwner`, thread participants), never as live objects.
+ *
+ * NO I/O, no daemon imports, no platform SDKs. The daemon's
+ * `router/routing-table.ts` re-exports the ladder and its call sites act as
+ * thin adapters supplying the providers; behavior is byte-for-byte what the
+ * daemon shipped before the extraction.
+ *
+ * How the OTHER surfaces plug in (future work, deliberately not folded yet):
+ *
+ *  - **Relay** (`packages/relay/src/bot-arbitration.ts`): an
+ *    `AttributedRoute` maps structurally onto {@link ActivationRule}
+ *    (`agentId`/`scope`/`match`, integration + daemon attribution carried in
+ *    the caller's own map), the assignment's `mutedChannels` become the rules'
+ *    `mutedChannels`, and its thread-affinity map is the `threadOwner`
+ *    provider. Its extra rungs (conversation-scoped keyword, `defaultAgentId`)
+ *    are relay-specific selection AFTER this ladder declines, exactly as
+ *    documented in shared-bot-relay.md §10.
+ *  - **Webchat** (`daemon.ts` `maybeActivateWebchatContinuation`): the roster
+ *    fan-out already chose the target, so it consumes only the edge gates —
+ *    {@link isUsableSourceDepth} and {@link hopTransition} — plus the author
+ *    exclusion those helpers assume the caller enforces absolutely.
+ */
+import { MAX_AGENT_CALL_HOPS, hasReachedAgentCallHopLimit } from '@agentconnect.md/protocol'
+
+/** A routing rule's trigger — structurally identical to the daemon's
+ *  `BindMatch` (agent.json bindRules) and the wire route match. */
+export type RuleMatch = { kind: 'mention' } | { kind: 'dm' } | { kind: 'keyword'; value: string } | { kind: 'auto' }
+
+/**
+ * One resolved routing rule of the merged (local ∪ CP) set. Structurally
+ * satisfied by the daemon's `RoutingRule` (router/routing-rule.ts), which
+ * remains the documented owner of how these are BUILT from integrations and
+ * CP frames — building rules needs config/wire knowledge this package must
+ * not have.
+ */
+export interface ActivationRule {
+  agentId: string
+  integrationId: string
+  botUserId: string // for `mention` matching ("" when unknown)
+  scope: { channel?: string; thread?: string }
+  match: RuleMatch
+  /** Channels its integration is switched OFF in — the subtractive fence a
+   *  purely additive rule set cannot express. Carried per rule so the ladder
+   *  stays pure and every rung is fenced by the one scope filter. */
+  mutedChannels?: string[]
+  source: 'config' | 'cp'
+  epoch?: number // cp layer only
+  /** Platform this rule belongs to. Undefined = matches any platform
+   *  (legacy/tests); rules built from integrations always set it. */
+  platform?: string
+}
+
+/** The message facts the policy reads — a structural subset of the daemon's
+ *  `NormalizedMessage`, so callers pass their message object directly. */
+export interface ActivationMessageFacts {
+  platform: string
+  channel: string
+  thread?: string | undefined
+  text: string
+  isDm: boolean
+  mentionedBots: string[]
+  sender: { isBot: boolean }
+}
+
+// ─── routeRules: arbitration ladder over the merged (local ∪ CP) rule set ───
+
+const KIND_ORDER = ['mention', 'dm', 'keyword', 'auto'] as const
+
+function channelInScope(scopeChannel: string | undefined, msg: ActivationMessageFacts): boolean {
+  if (scopeChannel === undefined) return true
+  return scopeChannel === msg.channel
+}
+
+function scopeMatches(r: ActivationRule, msg: ActivationMessageFacts): boolean {
+  // A platform-tagged rule only serves its own platform, so an unscoped Slack
+  // `dm`/`auto` rule can't route a Telegram message (and vice-versa). Undefined
+  // platform (legacy/tests) matches any.
+  if (r.platform !== undefined && r.platform !== msg.platform) return false
+  // A channel the operator switched OFF silences its integration outright. Applied
+  // here, in the ONE scope filter, so no rung can slip past it: not an unscoped
+  // mention default, not thread continuity (which reads the same candidate set), not
+  // a CP session placement. Threads inherit the enclosing channel's Off through the
+  // same predicate the positive scope uses.
+  if (r.mutedChannels?.some((muted) => channelInScope(muted, msg))) return false
+  if (!channelInScope(r.scope.channel, msg)) return false
+  if (r.scope.thread !== undefined && r.scope.thread !== msg.thread) return false
+  return true
+}
+
+function kindMatches(r: ActivationRule, msg: ActivationMessageFacts): boolean {
+  switch (r.match.kind) {
+    case 'mention':
+      return r.botUserId !== '' && msg.mentionedBots.includes(r.botUserId)
+    case 'dm':
+      return msg.isDm
+    case 'keyword':
+      return msg.text.toLowerCase().includes(r.match.value.toLowerCase())
+    case 'auto':
+      return true
+  }
+}
+
+/** Which ladder rung matched. `mention` is the only *explicit address* — the daemon
+ *  uses it to clear (and bypass) a `!stop` thread mute; everything else is implicit
+ *  routing and is suppressed while the session is muted. */
+export type RouteVia = 'mention' | 'thread' | 'dm' | 'keyword' | 'auto'
+
+const pickRule = (r: ActivationRule, via: RouteVia) => ({ agentId: r.agentId, integrationId: r.integrationId, via })
+
+/**
+ * Every agent this connection serves that the message's mentions actually NAME.
+ *
+ * `routeRules` returns one primary target because its callers need one; this returns the
+ * whole named set, because a mention is a JOIN and a body can name several agents. Using
+ * it removes the only place mention handling depended on which rule `find` saw first —
+ * the shape that made a shared bot resolve the same event differently.
+ */
+export function mentionedAgents(msg: ActivationMessageFacts, rules: ActivationRule[], exclude?: string): string[] {
+  if (msg.mentionedBots.length === 0) return []
+  const named = new Set<string>()
+  for (const r of rules) {
+    if (r.match.kind !== 'mention' || !scopeMatches(r, msg)) continue
+    if (r.botUserId === '' || !msg.mentionedBots.includes(r.botUserId)) continue
+    if (r.agentId !== exclude) named.add(r.agentId)
+  }
+  return [...named]
+}
+
+/** Agents this connection serves that are ALREADY in the thread, minus `exclude`. Scope
+ *  (including the Off fence) is applied here so a participant in a silenced channel is
+ *  not revived by conversation it can no longer take part in. */
+export function participantAgents(
+  msg: ActivationMessageFacts,
+  rules: ActivationRule[],
+  participants: readonly string[],
+  exclude?: string
+): string[] {
+  if (participants.length === 0) return []
+  const servable = new Set(rules.filter((r) => scopeMatches(r, msg)).map((r) => r.agentId))
+  return participants.filter((id) => id !== exclude && servable.has(id))
+}
+
+/** Agents whose `auto` rule makes them participants in every conversation covered by
+ * that rule. Unlike `routeRules`, this returns the whole set: channel-wide participation
+ * is not an arbitration tie that should collapse to whichever rule happens to be first. */
+export function automaticAgents(msg: ActivationMessageFacts, rules: ActivationRule[], exclude?: string): string[] {
+  return [
+    ...new Set(
+      rules
+        .filter((r) => r.match.kind === 'auto' && scopeMatches(r, msg) && r.agentId !== exclude)
+        .map((r) => r.agentId)
+    )
+  ]
+}
+
+/**
+ * Arbitrate the merged (local ∪ CP) rule set for an inbound message (design §8.2/§8.3).
+ * Ladder: (1) explicit @bot mention (cross-layer; overrides thread affinity) →
+ * (2) thread affinity (highest after explicit @; bypasses the kind filter, gated on
+ * reachable-bot count) → (3) CP per-sessionKey override → (4/5) kind precedence
+ * mention > dm > keyword > auto within the chosen layer.
+ *
+ * `explicitAgentId` short-circuits the whole ladder: a relay webchat turn names its
+ * target agent in the `rd/msg` payload, so there is nothing to arbitrate — it routes
+ * directly to that agent (integrationId '' because webchat ingress arrives over the
+ * relay data plane rather than a platform integration). Null if that agentId isn't a
+ * servable rule here.
+ *
+ * `verifiedAgentAuthor` opens the implicit rungs to an AgentConnect-authored message
+ * (send-message-routing-rework.md §2.3): the message routes through THIS ladder exactly
+ * as a human's would, with the author removed from the candidate set so it can never
+ * wake itself. Set only after the caller has VERIFIED authorship — an unverified bot,
+ * including a third-party one, still stops at the explicit-mention rung below.
+ */
+export function routeRules(
+  msg: ActivationMessageFacts,
+  rules: ActivationRule[],
+  threadOwner: (channel: string, thread: string) => string | null,
+  explicitAgentId?: string,
+  verifiedAgentAuthor?: string
+): { agentId: string; integrationId: string; via: RouteVia } | null {
+  if (explicitAgentId !== undefined) {
+    // Direct address (webchat): the message names its agent, so bypass mention/thread/
+    // keyword/auto arbitration entirely. No Slack integration is involved.
+    return { agentId: explicitAgentId, integrationId: '', via: 'mention' }
+  }
+  // Scope candidates are KIND-AGNOSTIC (used for reachability + thread continuity).
+  // A verified agent author is removed here, once, so EVERY rung below inherits the
+  // exclusion — an agent that could match its own rule would wake itself on its own
+  // reply, which is an unconditional self-loop rather than a conversation.
+  const scopeCandidates = rules.filter(
+    (r) => scopeMatches(r, msg) && (verifiedAgentAuthor === undefined || r.agentId !== verifiedAgentAuthor)
+  )
+  // kind-candidates: also match the message kind.
+  const kindCandidates = scopeCandidates.filter((r) => kindMatches(r, msg))
+
+  // 1. explicit @bot mention — across layers; overrides thread affinity (§8.3).
+  const mention = kindCandidates.find((r) => r.match.kind === 'mention')
+  // A third-party Slack bot may explicitly address an agent. Bot-authored traffic
+  // never falls through to DM/thread/keyword/auto; AgentConnect-managed bot apps are
+  // removed by the daemon before this pure routing boundary.
+  //
+  // A mention JOINS an agent to this thread — it does not pick between agents. The
+  // difference matters on a bot serving several agent routes: `mentionedAgents`
+  // returns every rule the body actually named, so nothing depends on which one `find`
+  // happened to see first, and everyone already in the thread receives the message
+  // regardless (`threadParticipants`).
+  if (mention && verifiedAgentAuthor === undefined && (!msg.sender.isBot || msg.platform === 'slack')) {
+    return pickRule(mention, 'mention')
+  }
+  // A VERIFIED AgentConnect author continues into the implicit rungs; every other bot
+  // still stops here. That difference is the whole of §2.3: we know exactly which agent
+  // wrote this and have already checked its policy, so it is treated as a participant
+  // rather than as anonymous bot traffic.
+  if (msg.sender.isBot && verifiedAgentAuthor === undefined) return null
+  // An unmatched mention in a channel belongs to another bot (or a human). Do not let
+  // local thread affinity claim it: dedicated Slack apps each see the channel event,
+  // and every daemon otherwise believes its own agent is the sole local thread owner.
+  // A one-to-one DM is already addressed to this bot, though, so mentioning the bot (or
+  // another participant) must not suppress its dm rule. Group DMs are channel-like and
+  // normalize with isDm=false, so they remain mention-gated here.
+  //
+  // A VERIFIED agent author is exempt: its peers are meant to see what it said and judge
+  // for themselves whether to answer, so a `<@…>` aimed at anyone — a human, another app,
+  // a peer whose token this directory cannot resolve — must not silence the conversation.
+  // Unverified traffic keeps the old rule, because for it an unresolved mention really is
+  // "addressed to someone else".
+  if (!msg.isDm && msg.mentionedBots.length > 0 && verifiedAgentAuthor === undefined) return null
+
+  // 2. thread affinity (§8.2 step 2 — highest after explicit @; bypasses kind filter).
+  if (msg.thread) {
+    const owner = threadOwner(msg.channel, msg.thread)
+    if (owner) {
+      // threadOwner returns the sole agent with an OPEN session in this thread, and
+      // null when 2+ agents actively share it (→ mention-gated via fallthrough). Thread
+      // PARTICIPATION, not channel reachability, is the disambiguator (§8.5): route an
+      // un-mentioned follow-up to that owner if it's reachable here, regardless of how
+      // many other bots are also bound to the channel.
+      const ownerRule = scopeCandidates.find((x) => x.agentId === owner)
+      if (ownerRule) return pickRule(ownerRule, 'thread') // continuity, kind-agnostic
+    }
+  }
+
+  // 3. CP per-sessionKey override (§8.3: CP authoritative).
+  // A rule scoped to the channel this message sits in (its enclosing channel counts —
+  // same predicate as the scope filter), NOT an unscoped global CP rule.
+  const cpInChannel = kindCandidates.some(
+    (r) =>
+      r.source === 'cp' &&
+      r.scope.channel !== undefined &&
+      channelInScope(r.scope.channel, msg) &&
+      (r.scope.thread === undefined || r.scope.thread === msg.thread)
+  )
+  const layer = cpInChannel ? kindCandidates.filter((r) => r.source === 'cp') : kindCandidates
+
+  // 4/5. kind precedence within the chosen layer (mention already handled).
+  for (const kind of KIND_ORDER) {
+    if (kind === 'mention') continue
+    const r = layer.find((x) => x.match.kind === kind)
+    if (r) return pickRule(r, kind)
+  }
+  return null
+}
+
+// ─── conversation-delivery selection and verified-agent edge gates ───
+
+/**
+ * Does this conversation admit an activation for `agentId` at all?
+ *
+ * The per-channel trigger is an operator fence, not a routing preference: "Off means the
+ * agent does not respond in that channel at all. Not to an @-mention, not to a follow-up
+ * in a thread it had already joined, not to a control command" (product-conventions).
+ * The human ladder gets this from `routeRules`' scope filter, which the verified-agent
+ * ladder deliberately bypasses — so the fence is re-applied through this predicate
+ * rather than inherited.
+ *
+ * Implemented as "some rule for this agent covers this channel and none mutes it",
+ * which is the same data `routeRules` consults, minus the kind/trigger matching that
+ * would be wrong here (an agent mention is explicit by construction).
+ */
+export function conversationAdmitsAgent(rules: readonly ActivationRule[], agentId: string, channel: string): boolean {
+  const agentRules = rules.filter((rule) => rule.agentId === agentId)
+  if (agentRules.length === 0) return false
+  const covers = (scopeChannel: string | undefined): boolean => scopeChannel === undefined || scopeChannel === channel
+  if (agentRules.some((rule) => rule.mutedChannels?.some((muted) => covers(muted)))) return false
+  return agentRules.some((rule) => covers(rule.scope.channel))
+}
+
+/** Is a stamped source depth usable at all? §4.1 rule 1 / §5.2a fail-closed: a
+ *  missing, non-integer, or negative depth must never coerce to zero — the
+ *  message stays transcript-only instead. */
+export function isUsableSourceDepth(value: number | undefined): value is number {
+  return value !== undefined && Number.isInteger(value) && value >= 0
+}
+
+/**
+ * The §4.1 trusted hop transition: ONE +1 per agent-to-agent delivery, against
+ * the SAME `MAX_AGENT_CALL_HOPS` cap an internal call spends — so a mention
+ * chain, a `messageAgent` chain, and a webchat continuation all consume the
+ * one budget at the same rate. `refusal` is set when the edge must not run;
+ * the caller records the message transcript-only and logs the refusal.
+ */
+export function hopTransition(sourceHopCount: number): {
+  deliveryHopCount: number
+  refusal?: { reason: 'hop_limit'; cap: number }
+} {
+  const deliveryHopCount = sourceHopCount + 1
+  if (hasReachedAgentCallHopLimit(deliveryHopCount)) {
+    return { deliveryHopCount, refusal: { reason: 'hop_limit', cap: MAX_AGENT_CALL_HOPS } }
+  }
+  return { deliveryHopCount }
+}
+
+/**
+ * Everyone a conversation event is DELIVERED to beyond the arbitration
+ * primary (send-message-routing-rework.md §2.3/§6): agents already in the
+ * thread, every agent the body explicitly names, the verified final's exact
+ * recipient joins, and channel-`auto` agents — author and primary excluded.
+ *
+ * Pure selection only: each returned peer is still an INDEPENDENT delivery
+ * whose edge gates (call policy, Off fence, `!stop` mute, hop budget,
+ * exactly-once rendezvous) the caller applies per target. Insertion order is
+ * part of the contract — participants, then explicit joins, then automatic —
+ * because callers dispatch in iteration order.
+ */
+export function conversationPeers(
+  msg: ActivationMessageFacts,
+  rules: ActivationRule[],
+  /** Agents with an open session in this thread (the caller's session state). */
+  participants: readonly string[],
+  options: {
+    /** The arbitration primary, excluded from the peer set. */
+    primaryAgentId?: string | undefined
+    /** Verified agent authorship: the author is excluded absolutely, and the
+     *  final's exact resolved recipients JOIN even where provider bot-user
+     *  metadata alone cannot map the mention back to an agent. */
+    verified?: { authorAgentId: string; recipients: readonly string[] } | undefined
+  } = {}
+): { peers: string[]; explicitlyMentioned: ReadonlySet<string> } {
+  const explicitlyMentioned = new Set(mentionedAgents(msg, rules, options.primaryAgentId))
+  // A verified final carries the exact agent ids resolved before provider
+  // splitting/echo. They are joins, not the complete delivery set: include them
+  // so a shared-bot peer with an unscoped slug route can enter the room even when
+  // provider bot-user metadata alone cannot map the mention back to that agent.
+  if (options.verified) {
+    for (const agentId of options.verified.recipients) {
+      if (agentId !== options.primaryAgentId && agentId !== options.verified.authorAgentId) {
+        explicitlyMentioned.add(agentId)
+      }
+    }
+  }
+  const peers = new Set([
+    ...participantAgents(msg, rules, participants, options.primaryAgentId),
+    ...explicitlyMentioned,
+    ...automaticAgents(msg, rules, options.primaryAgentId)
+  ])
+  if (options.primaryAgentId !== undefined) peers.delete(options.primaryAgentId)
+  if (options.verified) peers.delete(options.verified.authorAgentId)
+  return { peers: [...peers], explicitlyMentioned }
+}

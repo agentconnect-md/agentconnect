@@ -45,6 +45,7 @@ RUN printf 'fetch-retries=5\nfetch-retry-maxtimeout=600000\nfetch-retry-mintimeo
 FROM base AS manifests
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json .pnpmfile.mjs ./
 COPY scripts/ scripts/
+COPY packages/activation-policy/package.json packages/activation-policy/
 COPY packages/message/package.json packages/message/
 COPY packages/protocol/package.json packages/protocol/
 COPY packages/connection/package.json packages/connection/
@@ -169,8 +170,9 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
 
 COPY . .
 
-# protocol → message / connection / observability → daemon (topological).
+# protocol → activation-policy / message / connection / observability → daemon (topological).
 RUN pnpm --filter "@agentconnect.md/protocol" \
+  --filter "@agentconnect.md/activation-policy" \
   --filter "@agentconnect.md/message" \
   --filter "@agentconnect.md/connection" \
   --filter "@agentconnect.md/observability" \
