@@ -4,13 +4,13 @@
  *   pnpm --filter @agentconnect.md/daemon exec tsx scripts/smoke-runtime-image.mts <image>
  *
  * Proves the four things the image exists to do, against a REAL container running the REAL shim:
- * the pod starts, the shim dials the daemon back and binds, the ACP runtime starts inside it, and
+ * the pod starts, the daemon dials its shim and binds, the ACP runtime starts inside it, and
  * a session can be created through the channel. Nothing here is stubbed on the sandbox side —
  * unit tests already cover the protocol, and what this catches is the class of defect they
  * cannot: a shim that cannot resolve its own imports in the image, a runtime that is not on PATH,
  * an entrypoint that never reaches the shim, a non-root user that cannot write its workspace.
  *
- * The daemon side is deliberately minimal: a real ShimListener with a verifier that accepts this
+ * The daemon side is deliberately minimal: a real ShimDialer with a verifier that accepts this
  * run's token. Pod identity is verified against the API server in production and is unit-tested;
  * re-deriving it here would mean standing up Kubernetes to test a container image.
  */
@@ -18,7 +18,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { ShimListener } from '../src/shim/listener.js'
+import { ShimDialer } from '../src/shim/dialer.js'
 import { ShimSession } from '../src/shim/session.js'
 import type { SpawnRecord } from '../src/shim/binding.js'
 
@@ -34,7 +34,7 @@ const tokenPath = join(scratch, 'token')
 writeFileSync(tokenPath, TOKEN)
 
 let container: string | undefined
-let listener: ShimListener | undefined
+let dialer: ShimDialer | undefined
 
 function step(message: string): void {
   console.log(`  ✓ ${message}`)
@@ -68,45 +68,45 @@ try {
     agentId: 'smoke-agent',
     sandboxUid: 'smoke-sandbox-uid',
     generation: 1,
-    grants: ['acp']
-  } as SpawnRecord
+    grants: ['acp'],
+    podName: 'smoke-pod'
+  }
 
-  listener = new ShimListener({
+  dialer = new ShimDialer({
     verifier: {
       reviewToken: async (token) =>
         token === TOKEN
           ? { authenticated: true, podName: 'smoke-pod', podUid: 'smoke-pod-uid' }
           : { authenticated: false, error: 'not this run' }
     },
-    spawnRecordForPod: () => record,
     now: () => Date.now(),
-    log: { info: (m) => console.log(`    [listener] ${m}`), warn: (m) => console.warn(`    [listener] ${m}`) }
+    log: { info: (m) => console.log(`    [dialer] ${m}`), warn: (m) => console.warn(`    [dialer] ${m}`) }
   })
-  const port = await listener.start(0, '0.0.0.0')
-  step(`daemon-side shim listener on port ${port}`)
 
-  // --network host so the container reaches the listener on the loopback address the daemon bound.
-  // In a cluster this is a Service address; here it is the smallest thing that is still a real
-  // network hop rather than an in-process call.
   container = execFileSync(
     'docker',
     [
       'run',
       '--detach',
-      '--network',
-      'host',
+      '--publish',
+      '127.0.0.1::8085',
       '--volume',
       `${tokenPath}:/var/run/ac-identity/token:ro`,
-      '--env',
-      `AC_SHIM_ENDPOINT=ws://127.0.0.1:${port}`,
       image
     ],
     { encoding: 'utf8' }
   ).trim()
   step(`container started (${container.slice(0, 12)})`)
 
-  const connection = await until(() => listener?.connectionsFor('smoke-agent')[0], 'the shim to dial back and bind')
-  step(`shim dialled back and bound as generation ${connection.binding.generation}`)
+  const published = await until(() => {
+    try {
+      return execFileSync('docker', ['port', container!, '8085/tcp'], { encoding: 'utf8' }).trim() || undefined
+    } catch {
+      return undefined
+    }
+  }, 'the shim port to publish')
+  const connection = await dialer.connect(`ws://${published}`, record, 90_000)
+  step(`daemon dialled the shim and bound generation ${connection.binding.generation}`)
 
   const session = new ShimSession('smoke-agent', record.generation, {
     setTimeout: (fn, ms) => setTimeout(fn, ms),
@@ -181,10 +181,10 @@ try {
     }
   }
   cleanup()
-  await listener?.stop()
+  dialer?.stop()
   process.exit(1)
 }
 
 cleanup()
-await listener?.stop()
+dialer?.stop()
 process.exit(0)

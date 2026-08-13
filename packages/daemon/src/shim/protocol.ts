@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { TunnelNameSchema } from './tunnel.js'
 
-/** WS subprotocol and path the shim dials the daemon on. */
+/** WS subprotocol and path the daemon uses when dialing the sandbox shim. */
 export const SHIM_SUBPROTOCOL = 'agentconnect.shim.v1'
 export const SHIM_WS_PATH = '/shim/v1'
 
@@ -13,9 +13,12 @@ export const SHIM_TOKEN_AUDIENCE = 'ac-daemon-callback'
 /** Where the pod template projects that token, and where the shim reads it from. */
 export const SHIM_IDENTITY_TOKEN_PATH = '/var/run/ac-identity/token'
 
-/** The env var carrying the daemon's shim endpoint into the sandbox. Non-secret, so it
- *  is safe in a SandboxTemplate whose pods are stamped before any user exists. */
+/** Legacy dial-out endpoint, retained only for compatibility while old images are tested. */
 export const SHIM_ENDPOINT_ENV = 'AC_SHIM_ENDPOINT'
+
+/** Port the in-sandbox shim listens on for daemon dial-in. */
+export const SHIM_LISTEN_PORT_ENV = 'AC_SHIM_PORT'
+export const DEFAULT_SHIM_LISTEN_PORT = 8085
 
 /** Root the sandbox permits filesystem work inside — the mounted agent volume. Also non-secret,
  *  and fixed by the image rather than chosen per request, since the shim uses it to refuse a
@@ -48,19 +51,26 @@ export const ShimCapabilitySchema = z.enum([
 ])
 export type ShimCapability = z.infer<typeof ShimCapabilitySchema>
 
-/** The shim's opening frame: it proves which pod it is, plus one filesystem fact. */
-export const ShimHelloSchema = z.object({
+/** The daemon opens a dial-in channel with the launch it expects to bind. */
+export const ShimDialHelloSchema = z.object({
   type: z.literal('shim/hello'),
+  agentId: z.string().min(1),
+  generation: z.number().int().nonnegative()
+})
+
+/** The shim answers the dialer's hello by proving which pod accepted it. */
+export const ShimIdentitySchema = z.object({
+  type: z.literal('shim/identity'),
   /** Projected ServiceAccount token, audience-restricted to {@link SHIM_TOKEN_AUDIENCE}. */
   token: z.string().min(1),
   /** Shim build, for operator diagnosis only — never an authorization input. */
   shimVersion: z.string().max(64).optional(),
-  /** Where THIS pod mounts its workspace volume — the daemon cannot name a path on a machine
-   *  it is not on, and every path it later sends into the pod (ACP cwd, git cwd) is built on
-   *  this. Pod-reported and only ever echoed back into the same pod, so a lying shim gains
-   *  nothing daemon-side. Absent on legacy shims ⇒ {@link DEFAULT_SHIM_WORKSPACE_ROOT}. */
+  /** This pod's workspace mount; absent on legacy shims means {@link DEFAULT_SHIM_WORKSPACE_ROOT}. */
   workspaceRoot: z.string().min(1).max(4096).optional()
 })
+
+/** Legacy dial-out identity, accepted only by the old listener during the staged migration. */
+export const LegacyShimHelloSchema = ShimIdentitySchema.extend({ type: z.literal('shim/hello') })
 
 /** The daemon's answer once the token is verified and mapped to a spawn record. */
 export const ShimBoundSchema = z.object({
@@ -132,8 +142,10 @@ export const ShimEventSchema = z.object({
   ])
 })
 
-export const ShimFrameSchema = z.discriminatedUnion('type', [
-  ShimHelloSchema,
+export const ShimFrameSchema = z.union([
+  ShimDialHelloSchema,
+  ShimIdentitySchema,
+  LegacyShimHelloSchema,
   ShimBoundSchema,
   ShimRejectedSchema,
   ShimRequestSchema,
@@ -142,7 +154,7 @@ export const ShimFrameSchema = z.discriminatedUnion('type', [
   ShimEventSchema
 ])
 
-export type ShimHello = z.infer<typeof ShimHelloSchema>
+export type ShimHello = z.infer<typeof LegacyShimHelloSchema>
 export type ShimBound = z.infer<typeof ShimBoundSchema>
 export type ShimRejected = z.infer<typeof ShimRejectedSchema>
 export type ShimRequest = z.infer<typeof ShimRequestSchema>
@@ -150,6 +162,8 @@ export type ShimCancel = z.infer<typeof ShimCancelSchema>
 export type ShimResponse = z.infer<typeof ShimResponseSchema>
 export type ShimEvent = z.infer<typeof ShimEventSchema>
 export type ShimFrame = z.infer<typeof ShimFrameSchema>
+export type ShimDialHello = z.infer<typeof ShimDialHelloSchema>
+export type ShimIdentity = z.infer<typeof ShimIdentitySchema>
 
 /** Parse an inbound frame, returning undefined rather than throwing: a malformed frame
  *  from a half-trusted peer is a close-the-connection event, not an exception path. */

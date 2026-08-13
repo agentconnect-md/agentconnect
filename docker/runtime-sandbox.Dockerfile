@@ -148,12 +148,14 @@ RUN mkdir -p /opt/agentconnect/runtime \
 # only, and a value the daemon already sent for that runtime wins (src/shim/acp-runner.ts).
 ENV HOME=/agent \
   AC_SHIM_WORKSPACE_ROOT=/agent \
+  AC_SHIM_PORT=8085 \
   npm_config_update_notifier=false \
   NODE_OPTIONS=--dns-result-order=ipv4first
+EXPOSE 8085
 WORKDIR /agent
 USER 10001:10001
 
 # tini reaps the runtime's children and forwards SIGTERM, which is what makes a graceful drain
-# possible. The shim is the only process this image starts: it dials the daemon out, and the
-# runtime is spawned by it rather than by an entrypoint that would run before any binding exists.
+# possible. The shim is the only process this image starts: it listens for its daemon, then spawns
+# the runtime only after the channel is bound.
 ENTRYPOINT ["/usr/bin/tini", "--", "node", "/opt/agentconnect/shim/index.js"]

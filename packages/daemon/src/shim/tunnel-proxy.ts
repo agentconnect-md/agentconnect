@@ -50,7 +50,7 @@ export class TunnelProxy {
   constructor(private readonly deps: TunnelProxyDeps) {
     deps.session.onEvent(this.onEvent)
     // The pod's listener and its live client connections outlive a physical channel — the shim
-    // re-dials at half the credential TTL — but a frame that was travelling when the socket was
+    // reconnects at half the credential TTL — but a frame that was travelling when the socket was
     // replaced does not. See dropUnaccountedStreams.
     deps.session.onAttach(this.onAttach)
     // A lost channel takes every stream with it: the pod that held the other end is gone, and a

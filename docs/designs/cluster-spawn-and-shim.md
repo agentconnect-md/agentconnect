@@ -44,7 +44,7 @@ which filesystem the runtime will see — a daemon-side lookup would hand a sand
 absolute paths from the daemon pod. The host states the policy as a declarative hint; the
 driver performs the lookup where it applies.
 
-## 2. The shim, and why it dials out
+## 2. The shim, and why the daemon dials it
 
 Once the runtime is in another pod, everything the daemon used to do by sharing a
 filesystem and a set of unix sockets needs an explicit protocol: materializing secrets and
@@ -58,12 +58,15 @@ with the credential helper: a second name would be a second in-pod path onto one
 `mcp` is declared but not yet opened — the in-pod bridge that would dial it is not in the
 image, so a listener for it would be a socket nothing can use.
 
-**The shim dials out; the daemon listens.** The sandbox therefore needs zero inbound: its
-NetworkPolicy keeps an empty ingress list and no per-sandbox Service exists. The reverse
-direction would need a Service per sandbox, an ingress allowance, and a readiness probe —
-all surface for nothing.
+**The shim listens; the daemon dials the ready pod's IP.** The Sandbox status already reports
+the backing pod's addresses, so no per-sandbox Service is required. During migration, the
+sandbox NetworkPolicy admits daemon-labelled pods from either its dedicated namespace or the
+install's pool namespace on the fixed shim port; the pooled tier can narrow this to the pool
+namespace once tiered envelopes land. The daemon no longer exposes a shim listener. This
+direction also makes a future daemon pool possible: the duty holder can dial the
+sandbox it owns without publishing a callback endpoint for every daemon.
 
-## 3. Binding: proving which pod is calling
+## 3. Binding: proving which pod accepted the connection
 
 A shim connection must be bound to the pod it claims to be, before it is given anything.
 
@@ -73,11 +76,9 @@ Two tempting shortcuts are wrong, and both were rejected explicitly:
   warm-pool adoption, and claim env does not propagate to a rebuilt pod — so after a
   resume or an eviction the pod would hold only an exhausted token and the wake path would
   deadlock.
-- **Reverse-looking the source IP.** Pod IPs are reusable and the Sandbox status that
-  mirrors them is asynchronous. Inside that stale window, a sibling sandbox in the same
-  namespace could present a just-recycled IP and claim a victim agent's channel. The
-  connection's source address is therefore a logging and correlation hint only, never a
-  trust input.
+- **Trusting the dial target's IP.** Pod IPs are reusable and the Sandbox status that mirrors
+  them is asynchronous. The address selects where to connect, but never authenticates the
+  peer; the projected token and exact launch-record match remain the trust inputs.
 
 What is used instead is the pod's own Kubernetes credential:
 
@@ -86,21 +87,22 @@ What is used instead is the pod's own Kubernetes credential:
    a dedicated runtime ServiceAccount that holds **no RoleBindings**. Audience-restricted
    plus permissionless means the token is useless anywhere except proving "I am this pod"
    to this endpoint;
-2. the shim reads it and dials the daemon, presenting it as its only claim;
-3. the daemon calls **TokenReview** with the expected audience — omitting the audience
+2. after the Sandbox is Ready, the daemon reads its pod name and IP and connects to the shim;
+3. the daemon sends the agent id and generation it expects, and the shim answers with its
+   projected token;
+4. the daemon calls **TokenReview** with the expected audience — omitting the audience
    would accept a token minted for something else entirely — and takes the bound pod
    name/UID from the response;
-4. the daemon maps that pod to its own spawn record. No match, no binding: an
-   authenticated pod that this daemon did not launch binds to nothing;
-5. **only then** is a session credential issued, short-lived and bound to this pod and
+5. the reviewed pod name must exactly match the launch record used for this dial. No match,
+   no binding: an authenticated sibling pod binds to nothing;
+6. **only then** is a session credential issued, short-lived and bound to this pod and
    generation.
 
 Because the identity is the pod's own rotating credential, first bind, resume from
 suspension, and eviction/rescheduling are indistinguishable to the protocol: each new pod
 simply presents its own token. There is no one-shot token that can be revived.
 
-Rejections carry one coarse reason and a message that names no pod, token, or agent, so
-the endpoint cannot be probed for valid identities.
+Rejections carry one coarse reason and a message that names no pod, token, or agent.
 
 The same proof runs in the other direction one hop up: a daemon the operator
 provisioned authenticates to the control plane with its own audience-scoped
@@ -150,9 +152,10 @@ requests only ever flow daemon → shim. So the pod announces each accepted conn
 `connect` event on a stream id it mints, and the daemon answers by dialling its own socket;
 bytes then travel as events one way and `data` requests the other.
 
-Its listeners belong to the **pod**, not to a channel. The shim re-dials at half the
-credential TTL, and a socket torn down on every renewal would break any client mid-request —
-so `listen` is idempotent and the socket lives as long as the pod does.
+Its Unix-socket listeners belong to the **pod**, not to a channel. At half the credential
+TTL the shim closes the channel and the daemon reconnects; tearing down those listeners on
+every renewal would break any client mid-request, so `listen` is idempotent and each socket
+lives as long as the pod does.
 
 A frame that was travelling when the socket was replaced is a different matter, and the
 resolution is deliberate: the renewal aborts requests in flight, and that abort says a
@@ -256,14 +259,9 @@ what makes the next turn claim a **fresh generation** — the fence the replacem
 against. `forgetLaunch` describes exactly this recovery and was, until this rule existed,
 called by nothing.
 
-The narrow case this leaves is a socket that comes back _after_ loss was reported while its pod
-stayed alive — a blip longer than the rebind grace. That connection is bound to a generation
-nothing is waiting for any more, so it simply sits there, and the launch recovers when the shim
-next re-dials at credential renewal. Closing it to force an immediate re-dial is deliberately
-NOT done: a first bind is indistinguishable from it at that point (the session is created after
-the channel arrives), and every pod would re-dial into a close loop after a daemon restart.
-Recovering at renewal is slower than that would be, and strictly better than the alternative it
-replaced, which was a channel that could never serve again until the daemon restarted.
+After loss is reported, the driver revokes the outbound dial and forgets the launch. A late
+socket therefore cannot reattach to the terminal session; the next turn creates a fresh
+generation and dials the pod through the ordinary wake path.
 
 **Removed ⇒ delete the claim, and the volume with it.** Where the local path deletes the
 agent's checkout, the cluster path deletes its SandboxClaim; the volume is not reachable from

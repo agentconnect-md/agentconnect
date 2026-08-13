@@ -79,7 +79,7 @@ export interface ShimConnection {
 }
 
 /**
- * The daemon's shim endpoint: the shim dials out, this listens.
+ * Legacy daemon-side dial-out endpoint, retained for staged compatibility tests.
  *
  * Direction is deliberate — the sandbox needs zero inbound, so its NetworkPolicy keeps
  * an empty ingress list and no per-sandbox Service exists. Binding is proved by the
@@ -226,7 +226,7 @@ export class ShimListener {
         ws.close(4400, 'malformed frame')
         return
       }
-      if (frame.type === 'shim/hello') {
+      if (frame.type === 'shim/hello' && 'token' in frame) {
         // Single-flight: a second hello arriving while TokenReview is in flight would bind
         // twice and leave a stale connection entry behind.
         if (bound || binding) {

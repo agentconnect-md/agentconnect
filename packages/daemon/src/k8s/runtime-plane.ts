@@ -2,13 +2,13 @@ import { K8sHttp, loadInClusterConfig } from '@agentconnect.md/k8s-client'
 import { K8sDriver, PROBE_GRANTS } from './driver.js'
 import { SandboxApi } from './sandbox-api.js'
 import { clusterMetrics } from './cluster-metrics.js'
-import { ShimListener } from '../shim/listener.js'
+import { ShimDialer } from '../shim/dialer.js'
 import { ShimGitRunner } from '../shim/git-exec.js'
 import { TunnelProxy } from '../shim/tunnel-proxy.js'
 import { ShimFileSink } from '../shim/channels.js'
+import { DEFAULT_SHIM_LISTEN_PORT } from '../shim/protocol.js'
 import type { TunnelName } from '../shim/tunnel.js'
 import type { ShimSession } from '../shim/session.js'
-import type { SpawnRecord } from '../shim/binding.js'
 import { K8sRuntimeTableSchema, type K8sRuntimeTable } from '../runtimes/k8s-runtimes.js'
 import type { GitRunner } from '../workspace/git-runner.js'
 
@@ -21,7 +21,7 @@ export const PROBE_AGENT_ID = 'ac-runtime-probe'
 const PROBE_TIMEOUT_MS = 180_000
 
 /**
- * Assembles the k8s execution plane: the shim endpoint, the driver, and the seams that make an
+ * Assembles the k8s execution plane: the shim dialer, the driver, and the seams that make an
  * agent's git run where its workspace actually is.
  *
  * It exists because every piece of this was built and tested separately and nothing put them
@@ -35,10 +35,8 @@ export interface K8sRuntimePlaneOptions {
   orgId?: string
   /** Warm pool the claims reference. v1beta1 requires one; a cold pool is `replicas: 0`. */
   warmPoolName?: string
-  /** Port the shim dials back on. The pod learns it from the template's AC_SHIM_ENDPOINT, so
-   *  this side only has to listen — the daemon never dials into a sandbox. */
+  /** Port the sandbox shim listens on; the daemon combines it with the ready pod's IP. */
   shimPort?: number
-  shimHost?: string
   /** Environment the deployment settings come from; `process.env` unless a test names another. */
   env?: NodeJS.ProcessEnv
   readyTimeoutMs?: number
@@ -64,7 +62,6 @@ export interface K8sPlaneSettings {
   orgId: string
   warmPoolName: string
   shimPort: number
-  shimHost?: string
 }
 
 /** Deployment-owned settings. Env rather than the config file: they describe where this pod sits
@@ -72,8 +69,7 @@ export interface K8sPlaneSettings {
 export const K8S_ORG_ID_ENV = 'AC_K8S_ORG_ID'
 export const K8S_WARM_POOL_ENV = 'AC_K8S_WARM_POOL'
 export const K8S_SHIM_PORT_ENV = 'AC_K8S_SHIM_PORT'
-export const K8S_SHIM_HOST_ENV = 'AC_K8S_SHIM_HOST'
-export const DEFAULT_SHIM_PORT = 8085
+export const DEFAULT_SHIM_PORT = DEFAULT_SHIM_LISTEN_PORT
 
 /** Explicit options win per FIELD, so a caller may name one and leave the rest to the env. */
 export function resolveK8sPlaneSettings(options: K8sRuntimePlaneOptions = {}): K8sPlaneSettings {
@@ -86,11 +82,10 @@ export function resolveK8sPlaneSettings(options: K8sRuntimePlaneOptions = {}): K
   if (!warmPoolName) throw new Error(`--k8s requires ${K8S_WARM_POOL_ENV}`)
   const rawPort = options.shimPort ?? env[K8S_SHIM_PORT_ENV] ?? DEFAULT_SHIM_PORT
   const shimPort = Number(rawPort)
-  if (!Number.isInteger(shimPort) || shimPort < 0 || shimPort > 65_535) {
+  if (!Number.isInteger(shimPort) || shimPort < 1 || shimPort > 65_535) {
     throw new Error(`${K8S_SHIM_PORT_ENV} is not a valid port: ${rawPort}`)
   }
-  const shimHost = options.shimHost ?? env[K8S_SHIM_HOST_ENV]?.trim()
-  return { orgId, warmPoolName, shimPort, ...(shimHost ? { shimHost } : {}) }
+  return { orgId, warmPoolName, shimPort }
 }
 
 /** The env contract on its own, which is what a deployment has to satisfy. */
@@ -100,7 +95,7 @@ export function k8sPlaneSettings(env: NodeJS.ProcessEnv): K8sPlaneSettings {
 
 export interface K8sRuntimePlane {
   driver: K8sDriver
-  listener: ShimListener
+  dialer: ShimDialer
   /** Bring an agent's Sandbox up and bind its channel WITHOUT starting a runtime, so the
    *  workspace can be prepared on the pod's own volume before the runtime looks at it. */
   ensureChannel: (agentId: string) => Promise<void>
@@ -152,13 +147,8 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
       return new SandboxApi(new K8sHttp(config), config.namespace)
     })()
 
-  // Records keyed by the pod they authorize. A TokenReview yields a pod name and uid and nothing
-  // else, so this map is the whole of how a dialing pod is resolved back to its launch.
-  const recordsByPod = new Map<string, SpawnRecord>()
-
-  const listener = new ShimListener({
+  const dialer = new ShimDialer({
     verifier: { reviewToken: (token, audiences) => api.reviewToken(token, audiences) },
-    spawnRecordForPod: (pod) => recordsByPod.get(pod.name),
     now: () => Date.now(),
     metrics: clusterMetrics,
     onConnection: (connection) => {
@@ -167,8 +157,8 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
       lossTimers.delete(connection.binding.agentId)
       driver.onChannelBound(connection)
     },
-    // A closed socket is NOT a lost launch. The shim closes and re-dials at half the credential
-    // TTL, and `ShimSession.lose()` is terminal — reporting loss here killed the runtime on every
+    // A closed socket is not a lost launch; renewals reconnect underneath the logical session.
+    // `ShimSession.lose()` is terminal — reporting loss here killed the runtime on every
     // routine renewal, which is the exact failure ShimSession exists to prevent. Loss is reported
     // only if no replacement binds for the same launch within the grace window.
     onConnectionLost: (agentId, reason) => scheduleLossCheck(agentId, reason),
@@ -216,30 +206,20 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     orgId: settings.orgId,
     warmPoolName: settings.warmPoolName,
     onChannelReady: ensureTunnels,
-    awaitChannel: (agentId, generation, timeoutMs) => listener.awaitConnection(agentId, generation, timeoutMs),
-    publishSpawnRecord: (record) => {
-      // Keyed by pod, and the previous pod's entry is dropped: leaving it would let a terminating
-      // pod keep binding against a launch that has moved on.
-      for (const [podName, existing] of recordsByPod) {
-        if (existing.agentId === record.agentId && podName !== record.podName) recordsByPod.delete(podName)
-      }
-      recordsByPod.set(record.podName, record)
-    },
+    connectChannel: (record, podIp, timeoutMs) =>
+      dialer.connect(shimEndpoint(podIp, settings.shimPort), record, timeoutMs),
+    revokeChannel: (agentId) => dialer.revokeAgent(agentId),
     metrics: clusterMetrics,
     ...(options.readyTimeoutMs === undefined ? {} : { readyTimeoutMs: options.readyTimeoutMs }),
     log: options.log ?? SILENT
   })
-
-  // Started only once the driver exists: `onConnection` reaches into it, and a pod that dialled
-  // in between would hit an uninitialized binding.
-  await listener.start(settings.shimPort, settings.shimHost ?? '0.0.0.0')
 
   // Follows this namespace's Sandboxes for the rollout's drain requests. Part of starting the
   // plane rather than of the first launch: an instance whose agent is idle is exactly the one a
   // rollout is waiting on, and nothing else would ever look at it.
   driver.startSandboxWatch()
 
-  // A renewal re-dials immediately (the client resets its backoff for a planned rebind), so a
+  // A renewal reconnects immediately, so a
   // replacement that has not arrived well inside the request deadline is a pod that is gone.
   const REBIND_GRACE_MS = 20_000
   const lossTimers = new Map<string, NodeJS.Timeout>()
@@ -250,7 +230,7 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
       agentId,
       setTimeout(() => {
         lossTimers.delete(agentId)
-        if (listener.connectionsFor(agentId).length > 0) return
+        if (dialer.connectionsFor(agentId).length > 0) return
         options.log?.warn(`k8s: no shim channel for agent ${agentId} after ${REBIND_GRACE_MS}ms — reporting loss`)
         driver.onChannelLost(agentId, reason)
       }, REBIND_GRACE_MS).unref?.() as NodeJS.Timeout
@@ -259,7 +239,7 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
 
   return {
     driver,
-    listener,
+    dialer,
     ensureChannel: async (agentId) => {
       await driver.ensureBoundChannel(agentId)
     },
@@ -307,7 +287,7 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     discardAgent: async (agentId) => {
       // Close and forget the pod's channel before the claim goes: the pod has its whole
       // termination grace to keep using a binding this daemon no longer means to honour.
-      listener.revokeAgent(agentId)
+      dialer.revokeAgent(agentId)
       // Ordered after the revoke, whose close schedules one: a loss check for an agent that no
       // longer exists would report a lost launch nobody is waiting for.
       clearTimeout(lossTimers.get(agentId))
@@ -322,7 +302,13 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
       lossTimers.clear()
       for (const { proxy } of proxies.values()) proxy.stop('daemon is shutting down')
       proxies.clear()
-      await listener.stop()
+      dialer.stop()
     }
   }
+}
+
+/** WebSocket URL for a Pod IP, including the brackets an IPv6 literal requires. */
+export function shimEndpoint(podIp: string, port: number): string {
+  const host = podIp.includes(':') && !podIp.startsWith('[') ? `[${podIp}]` : podIp
+  return `ws://${host}:${port}`
 }

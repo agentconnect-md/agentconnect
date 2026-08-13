@@ -1,11 +1,16 @@
 #!/usr/bin/env node
 /** The in-sandbox shim executable. Lives at a fixed path in the runtime image
  *  (`/opt/agentconnect/shim`), root-owned and read-only, with tini as PID 1. */
-import { ClientTransport } from '@agentconnect.md/connection'
-import { ShimClient, type ShimTransport } from './client.js'
+import { ShimClient } from './client.js'
 import { createExecHandler } from './exec-handler.js'
 import { resolveCommandInPath } from './path-resolve.js'
-import { DEFAULT_SHIM_WORKSPACE_ROOT, SHIM_ENDPOINT_ENV, SHIM_WORKSPACE_ROOT_ENV } from './protocol.js'
+import {
+  DEFAULT_SHIM_LISTEN_PORT,
+  DEFAULT_SHIM_WORKSPACE_ROOT,
+  SHIM_LISTEN_PORT_ENV,
+  SHIM_WORKSPACE_ROOT_ENV
+} from './protocol.js'
+import { ShimServer } from './server.js'
 import { TunnelHost } from './tunnel-host.js'
 
 const log = {
@@ -14,20 +19,20 @@ const log = {
 }
 
 async function main(): Promise<number> {
-  const endpoint = process.env[SHIM_ENDPOINT_ENV]?.trim()
-  if (!endpoint) {
-    log.warn(`${SHIM_ENDPOINT_ENV} is not set — nothing to dial`)
+  const port = Number(process.env[SHIM_LISTEN_PORT_ENV] ?? DEFAULT_SHIM_LISTEN_PORT)
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    log.warn(`${SHIM_LISTEN_PORT_ENV} is not a valid port`)
     return 2
   }
   const workspaceRoot = process.env[SHIM_WORKSPACE_ROOT_ENV] ?? DEFAULT_SHIM_WORKSPACE_ROOT
   const exec = createExecHandler({ workspaceRoot, log })
-  // Its listeners belong to the POD, not to a channel, so it is built once here rather than per
-  // binding — a socket torn down on each credential renewal would break any client mid-request.
+  const server = new ShimServer({ log })
+  // Tunnel listeners follow pod lifetime so credential renewal cannot break client sockets.
   const tunnels = new TunnelHost({ emit: (streamId, event) => client.emit(streamId, event), log })
   const client = new ShimClient({
-    endpoint,
-    dial: (url, opts) =>
-      ClientTransport.dial(url, { subprotocol: opts.subprotocol, path: opts.path }) as Promise<ShimTransport>,
+    endpoint: 'accepted-daemon-channel',
+    acceptDialIn: true,
+    dial: () => server.nextTransport(),
     // Without this the runner skips executable hints entirely, so CLAUDE_CODE_EXECUTABLE and
     // path-qualified registry commands would never resolve in the sandbox.
     resolveCommand: resolveCommandInPath,
@@ -38,17 +43,16 @@ async function main(): Promise<number> {
     // because they own long-lived sockets rather than answering one request.
     handle: (capability, payload, abort) =>
       capability === 'tunnel' ? tunnels.handle(payload) : exec(capability, payload, abort),
-    // Reported in the hello: daemon-built pod paths (ACP cwd, git cwd) are anchored on it.
+    // Reported in the hello so daemon-built pod paths are anchored on this filesystem.
     workspaceRoot,
     log
   })
-  // A signal is the pod being torn down; drop the channel rather than racing the
-  // container's exit, since every credential we hold is re-obtained on the next bind.
+  await server.start(port)
   for (const signal of ['SIGTERM', 'SIGINT'] as const) {
     process.on(signal, () => {
       tunnels.close()
       client.stop()
-      process.exit(0)
+      void server.stop().finally(() => process.exit(0))
     })
   }
   await client.start()

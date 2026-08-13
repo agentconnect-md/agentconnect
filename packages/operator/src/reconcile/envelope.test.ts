@@ -134,6 +134,9 @@ describe('reconcileEnvelope', () => {
 
     expect(byPath(writes, '/networkpolicies/ac-daemon-egress')).toBeDefined()
     expect(byPath(writes, '/networkpolicies/ac-daemon-ingress')).toBeDefined()
+    expect(
+      (byPath(writes, '/networkpolicies/ac-daemon-ingress')?.body as { spec: { ingress: unknown[] } }).spec.ingress
+    ).toEqual([])
 
     // Without this the daemon's registration WebSocket to an in-cluster control plane
     // never completes — its service port is not 443.
@@ -150,14 +153,22 @@ describe('reconcileEnvelope', () => {
 
     const template = byPath(writes, `/namespaces/${NS}/sandboxtemplates/ac-runtime-std`)?.body as {
       spec: {
-        podTemplate: { spec: { containers: Array<{ image: string; env: Array<{ name: string; value: string }> }> } }
+        podTemplate: {
+          spec: {
+            containers: Array<{
+              image: string
+              env: Array<{ name: string; value: string }>
+              ports: Array<{ name: string; containerPort: number; protocol: string }>
+            }>
+          }
+        }
       }
     }
     const container = template.spec.podTemplate.spec.containers[0]
     expect(container.image).toBe('ghcr.io/example/runtime:v1')
-    expect(container.env.find((entry) => entry.name === 'AC_SHIM_ENDPOINT')?.value).toBe(
-      `ws://ac-daemon-shim.${NS}.svc.cluster.local:8085`
-    )
+    expect(container.env.find((entry) => entry.name === 'AC_SHIM_ENDPOINT')).toBeUndefined()
+    expect(container.env.find((entry) => entry.name === 'AC_SHIM_PORT')?.value).toBe('8085')
+    expect(container.ports).toContainEqual({ name: 'shim', containerPort: 8085, protocol: 'TCP' })
 
     const pool = byPath(writes, '/sandboxwarmpools/ac-runtime-std')?.body as { spec: { replicas: number } }
     expect(pool.spec.replicas).toBe(2)
@@ -205,7 +216,7 @@ describe('reconcileEnvelope', () => {
     expect(JSON.stringify(deployment.spec.template.spec)).not.toContain('install-config')
     expect(JSON.stringify(deployment.spec.template.spec.volumes)).not.toContain('secret')
 
-    expect(byPath(writes, '/services/ac-daemon-shim')).toBeDefined()
+    expect(byPath(writes, '/services/ac-daemon-shim')?.method).toBe('DELETE')
   })
 
   // A control plane in another namespace is reachable only if the policy says so, and a
@@ -224,7 +235,7 @@ describe('reconcileEnvelope', () => {
         to: [{ namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': namespace } } }]
       })
     }
-    expect(egress.spec.egress.filter((rule) => rule.to)).toHaveLength(2)
+    expect(egress.spec.egress.filter((rule) => rule.to?.some((peer) => peer.namespaceSelector))).toHaveLength(2)
   })
 
   it('names no namespace at all when the install has no in-cluster peer', async () => {
@@ -236,7 +247,9 @@ describe('reconcileEnvelope', () => {
     const egress = byPath(writes, '/networkpolicies/ac-daemon-egress')?.body as {
       spec: { egress: Array<{ to?: unknown[]; ports?: Array<{ port: number }> }> }
     }
-    expect(egress.spec.egress.filter((rule) => rule.to)).toEqual([])
+    expect(egress.spec.egress.every((rule) => rule.to?.every((peer) => !('namespaceSelector' in peer)) ?? true)).toBe(
+      true
+    )
     // A control plane outside the cluster is already covered by the 443 rule.
     expect(egress.spec.egress.some((rule) => rule.ports?.some((port) => port.port === 443))).toBe(true)
   })
@@ -411,14 +424,37 @@ describe('reconcileEnvelope', () => {
     expect(writes.filter((write) => write.method === 'DELETE' && write.path.includes('ac-runtime-std'))).toEqual([])
   })
 
-  it('locked egress restricts the sandbox template to daemon and DNS', async () => {
+  it('locked sandbox networking admits only daemon dial-in and DNS egress', async () => {
     const { gets, writes, route } = recorder()
     const ctx = await contextFor(route)
     gets.set(masterPath(ctx.controlNamespace), MASTER_TEMPLATE)
     await reconcileEnvelope(ctx, inputOf(ctx, { egressPolicy: 'locked' }), newObservations())
     const template = byPath(writes, `/namespaces/${NS}/sandboxtemplates/ac-runtime-std`)?.body as {
-      spec: { networkPolicy: { egress: unknown[] } }
+      spec: { networkPolicy: { ingress: unknown[]; egress: unknown[] } }
     }
-    expect(template.spec.networkPolicy.egress).toHaveLength(2)
+    expect(template.spec.networkPolicy).toEqual({
+      ingress: [
+        {
+          from: [
+            { podSelector: { matchLabels: { app: 'ac-daemon' } } },
+            {
+              namespaceSelector: {
+                matchLabels: { 'kubernetes.io/metadata.name': ctx.controlNamespace }
+              },
+              podSelector: { matchLabels: { app: 'ac-daemon' } }
+            }
+          ],
+          ports: [{ protocol: 'TCP', port: 8085 }]
+        }
+      ],
+      egress: [
+        {
+          ports: [
+            { protocol: 'UDP', port: 53 },
+            { protocol: 'TCP', port: 53 }
+          ]
+        }
+      ]
+    })
   })
 })
