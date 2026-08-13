@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -29,6 +29,22 @@ function seedHistorySession(s: LocalStore, { platform = 'slack', channel = 'C1',
 }
 
 describe('SessionReader', () => {
+  it('uses the history page snapshot watermark as the initial live cursor', async () => {
+    const s = store()
+    seedHistorySession(s)
+    const currentTranscriptRevision = vi.fn(async () => 99)
+    const history = await createSessionReader(s, undefined, {
+      transcriptPageForAgentByEventTime: async () => ({ rows: [], hasMore: false, cursor: 17 }),
+      transcriptPageForAgent: async () => ({ rows: [], hasMore: false, cursor: 17 }),
+      transcriptTailForAgent: async () => ({ rows: [], hasMore: false, cursor: 17 }),
+      currentTranscriptRevision,
+      getToolBodyForAgent: async () => undefined
+    } as never).history({ agentId: AGENT, sessionId: 'acp-1', limit: 20 })
+    expect(history.liveCursor).toBe('17')
+    expect(currentTranscriptRevision).not.toHaveBeenCalled()
+    s.close()
+  })
+
   it('reads only the transcript namespace persisted on the session', async () => {
     const s = store()
     s.upsertSession({

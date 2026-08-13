@@ -28,4 +28,4 @@ Migration rules:
 3. Add nullable columns or a compatible default before readers require them; destructive cleanup belongs in a later release.
 4. Exercise the shared-schema integration test with `DATA_PLANE_TEST_DATABASE_URL` before release.
 
-The PostgreSQL transcript tables preserve the SQLite transcript's insertion sequence, mutation revision, per-agent recipients, tool bodies, attachment/quote sidecars, and chronological event-time index. Sequence and revision allocation happen in PostgreSQL, so concurrent daemon members do not mint colliding cursors.
+The PostgreSQL transcript tables preserve the SQLite transcript's insertion sequence, mutation revision, per-agent recipients, tool bodies, attachment/quote sidecars, and chronological event-time index. Transcript mutation transactions hold a per-org advisory lock while assigning revisions, making revision order commit-safe across daemon members. History pages and their terminal revision watermark come from one repeatable-read snapshot, so a concurrent commit cannot be skipped by the next live cursor.

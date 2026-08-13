@@ -113,7 +113,7 @@ export class PostgresTranscriptStore implements TranscriptReplicaSink {
     patch: { title: string; body: string }
   ): void {
     this.enqueue(async () => {
-      await this.withSchema((client) =>
+      await this.withRevisionTransaction((client) =>
         client.query(
           `UPDATE transcript
            SET text = $1, body = $2, revision = nextval('transcript_revision_seq')
@@ -140,37 +140,52 @@ export class PostgresTranscriptStore implements TranscriptReplicaSink {
     }
   }
 
+  private async withRevisionTransaction<T>(operation: (client: PoolClient) => Promise<T>): Promise<T> {
+    return this.withSchema(async (client) => {
+      await client.query('BEGIN')
+      try {
+        await client.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext('agentconnect-transcript-revision'))", [
+          this.schema
+        ])
+        const result = await operation(client)
+        await client.query('COMMIT')
+        return result
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => undefined)
+        throw error
+      }
+    })
+  }
+
   private async writeTranscript(entry: TranscriptEntry): Promise<void> {
     const quoteJson = entry.quoted?.text ? JSON.stringify(entry.quoted) : (entry.quoteJson ?? null)
     const attachmentsJson = entry.attachments?.length ? JSON.stringify(entry.attachments) : null
-    await this.withSchema(async (client) => {
-      await client.query('BEGIN')
-      try {
-        const inserted = await client.query<{ inserted: boolean }>(
-          `INSERT INTO transcript
+    await this.withRevisionTransaction(async (client) => {
+      const inserted = await client.query<{ inserted: boolean }>(
+        `INSERT INTO transcript
              (channel, thread, ts, sender, kind, text, recipient, event_time_us,
               attachments_json, quote_json, trusted_agent_bot, post_id)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
            ON CONFLICT (channel, thread, ts) WHERE kind = 'text' DO NOTHING
            RETURNING true AS inserted`,
-          [
-            entry.channel,
-            entry.thread,
-            entry.ts,
-            entry.sender,
-            entry.kind,
-            entry.text,
-            entry.recipient ?? null,
-            entry.eventTimeUs ?? transcriptEventTimeUs(entry.ts),
-            attachmentsJson,
-            quoteJson,
-            entry.trustedAgentBot || null,
-            entry.postId ?? null
-          ]
-        )
-        if (inserted.rowCount === 0 && entry.kind === 'text') {
-          await client.query(
-            `UPDATE transcript SET
+        [
+          entry.channel,
+          entry.thread,
+          entry.ts,
+          entry.sender,
+          entry.kind,
+          entry.text,
+          entry.recipient ?? null,
+          entry.eventTimeUs ?? transcriptEventTimeUs(entry.ts),
+          attachmentsJson,
+          quoteJson,
+          entry.trustedAgentBot || null,
+          entry.postId ?? null
+        ]
+      )
+      if (inserted.rowCount === 0 && entry.kind === 'text') {
+        await client.query(
+          `UPDATE transcript SET
                text = CASE WHEN $1 THEN $2 ELSE text END,
                event_time_us = CASE WHEN $3::bigint IS NOT NULL THEN $3 ELSE event_time_us END,
                attachments_json = COALESCE(attachments_json, $4),
@@ -185,44 +200,39 @@ export class PostgresTranscriptStore implements TranscriptReplicaSink {
                  OR ($5::text IS NOT NULL AND quote_json IS DISTINCT FROM $5)
                  OR ($6 AND trusted_agent_bot IS DISTINCT FROM true)
                  OR (post_id IS NULL AND $7::text IS NOT NULL))`,
-            [
-              entry.authoritative === true,
-              entry.text,
-              entry.eventTimeUs ?? null,
-              attachmentsJson,
-              quoteJson,
-              entry.trustedAgentBot === true,
-              entry.postId ?? null,
-              entry.channel,
-              entry.thread,
-              entry.ts
-            ]
-          )
-        }
-        if (entry.recipient && entry.ts) {
-          const delivered = await client.query(
-            `INSERT INTO transcript_recipient (channel, thread, ts, agent_id)
+          [
+            entry.authoritative === true,
+            entry.text,
+            entry.eventTimeUs ?? null,
+            attachmentsJson,
+            quoteJson,
+            entry.trustedAgentBot === true,
+            entry.postId ?? null,
+            entry.channel,
+            entry.thread,
+            entry.ts
+          ]
+        )
+      }
+      if (entry.recipient && entry.ts) {
+        const delivered = await client.query(
+          `INSERT INTO transcript_recipient (channel, thread, ts, agent_id)
              VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING RETURNING agent_id`,
-            [entry.channel, entry.thread, entry.ts, entry.recipient]
-          )
-          if (inserted.rowCount === 0 && delivered.rowCount === 1) {
-            await client.query(
-              `UPDATE transcript SET revision = nextval('transcript_revision_seq')
+          [entry.channel, entry.thread, entry.ts, entry.recipient]
+        )
+        if (inserted.rowCount === 0 && delivered.rowCount === 1) {
+          await client.query(
+            `UPDATE transcript SET revision = nextval('transcript_revision_seq')
                WHERE channel = $1 AND thread = $2 AND ts = $3 AND kind = 'text'`,
-              [entry.channel, entry.thread, entry.ts]
-            )
-          }
+            [entry.channel, entry.thread, entry.ts]
+          )
         }
-        await client.query('COMMIT')
-      } catch (error) {
-        await client.query('ROLLBACK').catch(() => undefined)
-        throw error
       }
     })
   }
 
   private async writeToolCall(entry: TranscriptToolCall): Promise<void> {
-    await this.withSchema(async (client) => {
+    await this.withRevisionTransaction(async (client) => {
       await client.query(
         `INSERT INTO transcript
            (channel, thread, ts, sender, kind, text, tool_call_id, body, event_time_us)
@@ -255,19 +265,20 @@ export class PostgresTranscriptStore implements TranscriptReplicaSink {
     agentId: string,
     beforeSeq: number | null,
     limit: number
-  ): Promise<{ rows: TranscriptRow[]; hasMore: boolean }> {
+  ): Promise<{ rows: TranscriptRow[]; hasMore: boolean; cursor: number }> {
     await this.flush()
     const hidden = [...SESSION_TITLE_TOOL_TITLES]
     const values: unknown[] = [channel, thread, agentId, ...hidden]
     const before = beforeSeq === null ? '' : `AND seq < $${values.push(beforeSeq)}`
     const limitParam = `$${values.push(limit + 1)}`
-    return this.page(
+    const page = await this.snapshotPage(
       `SELECT * FROM transcript WHERE channel = $1 AND thread = $2 ${before}
          AND ${this.scopeSql()} AND NOT (kind = 'tool' AND text IN ($4,$5))
        ORDER BY seq DESC LIMIT ${limitParam}`,
       values,
       limit
     )
+    return { rows: page.rows, hasMore: page.hasMore, cursor: page.watermark }
   }
 
   async transcriptPageForAgentByEventTime(
@@ -276,7 +287,7 @@ export class PostgresTranscriptStore implements TranscriptReplicaSink {
     agentId: string,
     before: TranscriptEventCursor | null,
     limit: number
-  ): Promise<{ rows: TranscriptRow[]; hasMore: boolean }> {
+  ): Promise<{ rows: TranscriptRow[]; hasMore: boolean; cursor: number }> {
     await this.flush()
     const hidden = [...SESSION_TITLE_TOOL_TITLES]
     const values: unknown[] = [channel, thread, agentId, ...hidden]
@@ -285,13 +296,14 @@ export class PostgresTranscriptStore implements TranscriptReplicaSink {
         ? ''
         : `AND (event_time_us < $${values.push(before.eventTimeUs)} OR (event_time_us = $${values.push(before.eventTimeUs)} AND seq < $${values.push(before.seq)}))`
     const limitParam = `$${values.push(limit + 1)}`
-    return this.page(
+    const page = await this.snapshotPage(
       `SELECT * FROM transcript WHERE channel = $1 AND thread = $2 ${cursor}
          AND ${this.scopeSql()} AND NOT (kind = 'tool' AND text IN ($4,$5))
        ORDER BY event_time_us DESC, seq DESC LIMIT ${limitParam}`,
       values,
       limit
     )
+    return { rows: page.rows, hasMore: page.hasMore, cursor: page.watermark }
   }
 
   async transcriptTailForAgent(
@@ -303,15 +315,18 @@ export class PostgresTranscriptStore implements TranscriptReplicaSink {
   ): Promise<{ rows: TranscriptRow[]; hasMore: boolean; cursor: number }> {
     await this.flush()
     const hidden = [...SESSION_TITLE_TOOL_TITLES]
-    const result = await this.page(
+    const result = await this.snapshotPage(
       `SELECT * FROM transcript WHERE channel = $1 AND thread = $2 AND revision > $6
          AND ${this.scopeSql()} AND NOT (kind = 'tool' AND text IN ($4,$5))
        ORDER BY revision ASC LIMIT $7`,
       [channel, thread, agentId, ...hidden, afterRevision, limit + 1],
       limit
     )
-    const revision = await this.currentTranscriptRevision()
-    return { ...result, cursor: result.hasMore ? (result.rows.at(-1)?.revision ?? afterRevision) : revision }
+    return {
+      rows: result.rows,
+      hasMore: result.hasMore,
+      cursor: result.hasMore ? (result.rows.at(-1)?.revision ?? afterRevision) : result.watermark
+    }
   }
 
   async currentTranscriptRevision(): Promise<number> {
@@ -341,16 +356,30 @@ export class PostgresTranscriptStore implements TranscriptReplicaSink {
     })
   }
 
-  private async page(
+  private async snapshotPage(
     sql: string,
     values: unknown[],
     limit: number
-  ): Promise<{ rows: TranscriptRow[]; hasMore: boolean }> {
+  ): Promise<{ rows: TranscriptRow[]; hasMore: boolean; watermark: number }> {
     return this.withSchema(async (client) => {
-      const result = await client.query<PgTranscriptRow>(sql, values)
-      const rows = result.rows.map(transcriptRow)
-      const hasMore = rows.length > limit
-      return { rows: hasMore ? rows.slice(0, limit) : rows, hasMore }
+      await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY')
+      try {
+        const result = await client.query<PgTranscriptRow>(sql, values)
+        const revision = await client.query<{ watermark: string }>(
+          'SELECT COALESCE(MAX(revision), 0)::text AS watermark FROM transcript'
+        )
+        await client.query('COMMIT')
+        const rows = result.rows.map(transcriptRow)
+        const hasMore = rows.length > limit
+        return {
+          rows: hasMore ? rows.slice(0, limit) : rows,
+          hasMore,
+          watermark: safeInteger(revision.rows[0]?.watermark ?? '0', 'transcript.revision')
+        }
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => undefined)
+        throw error
+      }
     })
   }
 }

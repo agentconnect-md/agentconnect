@@ -206,6 +206,12 @@ type AsyncTranscriptReadStore = {
   ) => Promise<ReturnType<TranscriptReadStore[Method]>>
 }
 
+function transcriptPageCursor(page: unknown): number | undefined {
+  if (!page || typeof page !== 'object' || !('cursor' in page)) return undefined
+  const cursor = (page as { cursor?: unknown }).cursor
+  return typeof cursor === 'number' && Number.isSafeInteger(cursor) ? cursor : undefined
+}
+
 /**
  * @param threadUrlFor Best-effort platform strategy for legacy/dynamic links that
  *   were not persisted on the session itself (Slack workspace permalinks today).
@@ -383,9 +389,7 @@ export function createSessionReader(
         const liveMore = hasMore || droppedToBudget
         const lastMutationRow = kept.length > 0 ? rows[kept.length - 1] : undefined
         const liveCursor =
-          liveMore && lastMutationRow
-            ? lastMutationRow.revision
-            : (page as Awaited<ReturnType<AsyncTranscriptReadStore['transcriptTailForAgent']>>).cursor
+          liveMore && lastMutationRow ? lastMutationRow.revision : (transcriptPageCursor(page) ?? afterRevision)
         // Mutation order and display order differ when a warm-thread backfill inserts
         // an older platform message — possible only where message ids order natively.
         // Return a chronological page while the revision cursor above remains anchored
@@ -432,7 +436,7 @@ export function createSessionReader(
       return {
         sessionId: req.sessionId,
         messages: kept,
-        liveCursor: String(await transcriptRead.currentTranscriptRevision()),
+        liveCursor: String(transcriptPageCursor(page) ?? (await transcriptRead.currentTranscriptRevision())),
         ...(hasOlder && oldestKept
           ? {
               nextCursor:
