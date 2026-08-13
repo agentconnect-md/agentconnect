@@ -232,6 +232,7 @@ jobs:
             'Unit test report' \
             'message=@agentconnect.md/message' \
             'protocol=@agentconnect.md/protocol' \
+            'activation-policy=@agentconnect.md/activation-policy' \
             'connection=@agentconnect.md/connection' \
             'control-plane=@agentconnect.md/control-plane' \
             'relay=@agentconnect.md/relay' \

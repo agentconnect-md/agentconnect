@@ -120,9 +120,10 @@ import {
 import { createDreamReader } from './cp/dream-reader.js'
 import { createLocalSkillsReader } from './cp/local-skills-reader.js'
 import {
-  automaticAgents,
-  mentionedAgents,
-  participantAgents,
+  conversationAdmitsAgent,
+  conversationPeers,
+  hopTransition,
+  isUsableSourceDepth,
   routeRules,
   type RouteVia
 } from './router/routing-table.js'
@@ -6492,7 +6493,7 @@ export class Daemon {
     if (msg.sender.appId !== undefined && placement.botAppId !== undefined && placement.botAppId !== msg.sender.appId) {
       return null
     }
-    if (!Number.isInteger(claim.hopCount) || claim.hopCount < 0) return null
+    if (!isUsableSourceDepth(claim.hopCount)) return null
     return {
       authorAgentId: claim.authorAgentId,
       orgId,
@@ -6532,12 +6533,14 @@ export class Daemon {
       return { kind: 'rejected', reason: 'unrouted' }
     }
     // §4.1: ONE transition per agent-to-agent delivery, against the SAME cap as an
-    // internal call. Computed once here and installed on the admitted turn, so a mention
-    // chain and a `messageAgent` chain consume the same budget at the same rate.
-    const deliveryHopCount = verified.sourceHopCount + 1
-    if (hasReachedAgentCallHopLimit(deliveryHopCount)) {
-      return transcriptOnly(`hop_limit: source depth ${verified.sourceHopCount} + 1 reaches ${MAX_AGENT_CALL_HOPS}`)
+    // internal call (policy `hopTransition`). Computed once here and installed on the
+    // admitted turn, so a mention chain and a `messageAgent` chain consume the same
+    // budget at the same rate.
+    const transition = hopTransition(verified.sourceHopCount)
+    if (transition.refusal) {
+      return transcriptOnly(`hop_limit: source depth ${verified.sourceHopCount} + 1 reaches ${transition.refusal.cap}`)
     }
+    const deliveryHopCount = transition.deliveryHopCount
     // The VISIBLE half of a paired `toAgent + channel` send is the one case whose target
     // is structured rather than parsed: `sendMessage` named the agent id outright, and the
     // rendezvous only converges if both halves name the SAME target. Route it to exactly
@@ -6663,12 +6666,7 @@ export class Daemon {
   }
 
   private agentConversationAdmits(agentId: string, msg: NormalizedMessage): boolean {
-    const rules = this.mergedRules().filter((rule) => rule.agentId === agentId)
-    if (rules.length === 0) return false
-    const covers = (scopeChannel: string | undefined): boolean =>
-      scopeChannel === undefined || scopeChannel === msg.channel
-    if (rules.some((rule) => rule.mutedChannels?.some((muted) => covers(muted)))) return false
-    return rules.some((rule) => covers(rule.scope.channel))
+    return conversationAdmitsAgent(this.mergedRules(), agentId, msg.channel)
   }
 
   /**
@@ -7055,23 +7053,16 @@ export class Daemon {
   ): Array<{ kind: 'rejected'; reason: DeliveryRejectionReason } | { kind: 'dispatched'; handle: DeliveryHandle }> {
     const thread = msg.thread
     const participants = thread ? this.sessions.threadParticipants(msg.channel, thread, msg.transportScope) : []
-    const explicitlyMentioned = new Set(mentionedAgents(msg, rules, primaryAgentId))
-    // A verified final carries the exact agent ids resolved before provider
-    // splitting/echo. They are joins, not the complete delivery set: include them
-    // so a shared-bot peer with an unscoped slug route can enter the room even when
-    // provider bot-user metadata alone cannot map the mention back to that agent.
-    if (agentCall) {
-      for (const agentId of agentCall.verified.recipients) {
-        if (agentId !== primaryAgentId && agentId !== agentCall.verified.authorAgentId) {
-          explicitlyMentioned.add(agentId)
-        }
-      }
-    }
-    const peers = new Set([
-      ...participantAgents(msg, rules, participants, primaryAgentId),
-      ...explicitlyMentioned,
-      ...automaticAgents(msg, rules, primaryAgentId)
-    ])
+    // Pure selection (policy `conversationPeers`): participants ∪ explicit joins
+    // (including the verified final's exact recipient joins) ∪ channel-auto,
+    // minus primary and (for agent calls) the author. Every edge gate below —
+    // policy, Off, mute, hop, rendezvous — remains per-target in this loop.
+    const { peers, explicitlyMentioned } = conversationPeers(msg, rules, participants, {
+      primaryAgentId,
+      verified: agentCall
+        ? { authorAgentId: agentCall.verified.authorAgentId, recipients: agentCall.verified.recipients }
+        : undefined
+    })
     const outcomes: Array<
       { kind: 'rejected'; reason: DeliveryRejectionReason } | { kind: 'dispatched'; handle: DeliveryHandle }
     > = []
@@ -11085,22 +11076,24 @@ export class Daemon {
     const authorAgentId = contextPost.author.agentId
     if (authorAgentId === targetAgentId) return // author-never-self-activates, the one absolute
     const sourceHopCount = contextPost.author.hopCount
-    if (sourceHopCount === undefined || !Number.isInteger(sourceHopCount) || sourceHopCount < 0) {
+    if (!isUsableSourceDepth(sourceHopCount)) {
       this.log.debug(
         `webchat: peer post ${contextPost.postId} carries no usable depth — transcript-only (pre-parity author daemon)`
       )
       return
     }
-    // §4.1: ONE transition per delivery, against the same cap as an internal call.
-    const deliveryHopCount = sourceHopCount + 1
-    if (hasReachedAgentCallHopLimit(deliveryHopCount)) {
+    // §4.1: ONE transition per delivery, against the same cap as an internal call —
+    // the same policy `hopTransition` the platform ladder charges.
+    const transition = hopTransition(sourceHopCount)
+    if (transition.refusal) {
       this.log.info(
         `webchat: continuation refused for "${targetAgentId}" in conversation ${chatId} ` +
-          `(hop_limit: source depth ${sourceHopCount} + 1 reaches ${MAX_AGENT_CALL_HOPS}); ` +
+          `(hop_limit: source depth ${sourceHopCount} + 1 reaches ${transition.refusal.cap}); ` +
           `peer post ${contextPost.postId} stays transcript-only`
       )
       return
     }
+    const deliveryHopCount = transition.deliveryHopCount
     if (!this.agents.has(targetAgentId) || this.drainingAgents.has(targetAgentId)) return
     if (!this.cpCollab.admits(authorAgentId, targetAgentId)) {
       this.log.debug(`webchat: agent edge ${authorAgentId} → ${targetAgentId} denied by call policy`)

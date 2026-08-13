@@ -9,27 +9,20 @@
  */
 import type { Agent, BindMatch, BindRuleConfig, Integration } from '../agents/agent-schema.js'
 import { configuredBotSelfId, integrationCore } from '../platforms/integration-config.js'
+import type { ActivationRule } from '@agentconnect.md/activation-policy'
 import type { RouteAssign, RouteUpdate } from '@agentconnect.md/protocol'
 
 export type RoutingMatch = BindMatch
 
-export interface RoutingRule {
-  agentId: string
-  integrationId: string
-  botUserId: string // for `mention` matching ("" when unknown)
-  scope: { channel?: string; thread?: string }
+/**
+ * The daemon's resolved routing rule — the policy package's `ActivationRule`
+ * (field docs live there) with the daemon's own `BindMatch` as the match
+ * vocabulary. `extends` is the compile-time guarantee that what this module
+ * BUILDS stays consumable by the pure ladder without adaptation; if either
+ * shape drifts, this declaration breaks instead of the routing behavior.
+ */
+export interface RoutingRule extends ActivationRule {
   match: RoutingMatch
-  // Channels its integration is switched OFF in — the subtractive fence a purely
-  // additive rule set cannot express. Carried per rule (rather than consulted
-  // separately) so `routeRules` stays pure and every rung — mention, thread
-  // continuity, CP override, keyword, auto — is fenced by the one scope filter.
-  mutedChannels?: string[]
-  source: 'config' | 'cp'
-  epoch?: number // cp layer only
-  // Platform this rule belongs to ('slack' | 'telegram'). Undefined = matches any
-  // platform (legacy/tests); rules built from integrations always set it, so a
-  // Slack `dm`/`auto` rule can't route a Telegram message and vice-versa.
-  platform?: string
 }
 
 /**
