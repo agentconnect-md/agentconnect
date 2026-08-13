@@ -7397,6 +7397,28 @@ export class Daemon {
     }
   }
 
+  /** The inbound half of an agent-initiated webchat wake: post the SENDER's message live
+   *  at admission (#807 posted only the woken reply, so this message reached the browser
+   *  only via a page refresh). Shares `msg.transcriptPostId` with the transcript row the
+   *  turn writes, so the browser drops the live step once the canonical row lands. */
+  private postAgentWakeInbound(webchat: WebchatTurnContext | undefined, msg: NormalizedMessage): void {
+    if (webchat?.initiator !== 'agent' || !webchat.postSink) return
+    if (!msg.transcriptPostId || !UUID_RE.test(msg.sender.id)) return
+    msg.transcriptTs ??= monotonicTs() // every wake site sets it; keep row ts == post.at regardless
+    webchat.postSink({
+      conversationId: webchat.conversationId,
+      agentId: msg.sender.id,
+      post: {
+        postId: msg.transcriptPostId,
+        conversationId: webchat.conversationId,
+        author: { kind: 'agent', agentId: msg.sender.id },
+        text: msg.text,
+        at: Number(msg.transcriptTs)
+      },
+      initiator: 'agent'
+    })
+  }
+
   /** Buffer before sending so a transport gap is recoverable even when the live
    * write is lost. The terminal frame carries the final output index for browser
    * gap detection. */
@@ -11245,6 +11267,9 @@ export class Daemon {
       thread,
       ts,
       sender: msg.sender.id,
+      // The canonical webchat post identity must survive whichever writer wins the
+      // first insert, or the browser's live frame cannot reconcile against the row.
+      ...(msg.transcriptPostId ? { postId: msg.transcriptPostId } : {}),
       ...(recipient ? { recipient } : {}),
       // The observer often wins the INSERT race against SessionManager's
       // authoritative append — the provider send time must ride the FIRST
@@ -11454,6 +11479,9 @@ export class Daemon {
         thread,
         ts,
         sender: entry.msg.sender.id,
+        // Carried so a live agent-wake post (postAgentWakeInbound) reconciles against
+        // this row even when its turn was coalesced into an in-flight generation.
+        ...(entry.msg.transcriptPostId ? { postId: entry.msg.transcriptPostId } : {}),
         recipient: entry.agentId,
         kind: 'text',
         text: mention ? `${entry.msg.text}\n${mention}`.trim() : entry.msg.text
@@ -12847,6 +12875,13 @@ export class Daemon {
     if (integrationId !== undefined) {
       msg.transportScope ??= this.transportScopeForIntegrationIds([integrationId])
     }
+    // An agent-initiated wake's INBOUND message posts live too (#807 only posted the woken
+    // REPLY, so the sender's message appeared on refresh but never in the live view). Mint
+    // its canonical post identity before the inbox row persists so a replay reuses it and
+    // the transcript row SessionManager writes carries the same postId (browser reconcile).
+    if (webchat?.initiator === 'agent' && UUID_RE.test(msg.sender.id)) {
+      msg.transcriptPostId ??= randomUUID()
+    }
     if (msg.sender.avatarUrl && msg.transportScope)
       this.store.setProfileAvatar(msg.transportScope, msg.sender.id, msg.sender.avatarUrl, Date.now())
     if (this.cfg.features.turnFinalContextRefresh && originKindOf(msg.platform) === 'chat') {
@@ -12869,6 +12904,9 @@ export class Daemon {
             channel: msg.channel,
             data: { source: msg.source }
           })
+          // NOT for §5.2a continuation wakes: their inbound IS a committed peer post the
+          // browser already rendered — re-posting it would duplicate that reply.
+          if (callMeta?.conversationContinuation !== true) this.postAgentWakeInbound(webchat, msg)
         }
         // §8.6, the ONE place every delivery path settles — live dispatch, queued
         // dispatch, and startup replay alike. Completing the rendezvous here rather than

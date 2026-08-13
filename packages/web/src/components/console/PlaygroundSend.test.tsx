@@ -27,7 +27,12 @@ vi.mock('@/lib/api', () => ({
   agentApiRelayUrl: () => 'wss://relay.test',
   fetchSessionMessages: vi.fn(async () => ({ messages: [] })),
   mintWebchatConversation: vi.fn(async () => ({ conversationId: 'c1' })),
-  webchatSocketUrl: () => 'wss://relay.test/ws'
+  webchatSocketUrl: () => 'wss://relay.test/ws',
+  // Rejects by default so the acceptance tests keep their fail-fast send path
+  // (busy clears, the queue dispatcher runs); the post-frame tests resolve it.
+  webchatWsUrl: vi.fn(async () => {
+    throw new Error('no relay in this test')
+  })
 }))
 
 const { PlaygroundProvider, usePlayground } = await import('./PlaygroundProvider')
@@ -206,5 +211,48 @@ describe('pgSend acceptance', () => {
   // probe wiring is real and not a partially-mocked stand-in.
   it('exposes the real provider surface', () => {
     expect(typeof openPlayground).toBe('function')
+  })
+})
+
+// #807 follow-up: an agent-initiated post renders once per postId — the daemon may
+// re-broadcast the same canonical post (inbox replay, relay fan-out echo).
+describe('agent-initiated post frames', () => {
+  class CapturingSocket extends StubSocket {
+    static instances: CapturingSocket[] = []
+    onopen?: () => void
+    onmessage?: (e: { data: string }) => void
+    onerror?: (e: unknown) => void
+    onclose?: () => void
+    constructor() {
+      super()
+      CapturingSocket.instances.push(this)
+    }
+  }
+
+  it('dedups a re-broadcast post by postId', async () => {
+    CapturingSocket.instances = []
+    Reflect.set(globalThis, 'WebSocket', CapturingSocket)
+    const api = await import('@/lib/api')
+    vi.mocked(api.webchatWsUrl).mockResolvedValue('wss://relay.test/ws')
+    await act(async () => {
+      pgSend('s1', 'agent-1', 'hello', 'c1')
+    })
+    const sock = CapturingSocket.instances[0]!
+    await act(async () => {
+      sock.readyState = 1
+      sock.onopen?.()
+    })
+    const frame = JSON.stringify({
+      type: 'post',
+      initiator: 'agent',
+      post: { postId: 'post-9', author: { kind: 'agent', agentId: 'agent-2' }, text: 'hi from B' }
+    })
+    await act(async () => {
+      sock.onmessage?.({ data: frame })
+      sock.onmessage?.({ data: frame })
+    })
+    const posts = getLiveSteps('s1').filter((s) => s.postId === 'post-9')
+    expect(posts).toHaveLength(1)
+    expect(posts[0]).toMatchObject({ kind: 'done', agentId: 'agent-2', text: 'hi from B' })
   })
 })
