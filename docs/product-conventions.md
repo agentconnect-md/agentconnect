@@ -279,16 +279,17 @@ A reply whose parent lives on another daemon behaves identically. If that daemon
 old to understand the delivery kind, the reply **fails** rather than being dispatched into
 the wrong session.
 
-## Per-channel trigger
+## Per-conversation trigger
 
-Every channel a bot is in carries a trigger, and every agent gets all three settings —
-Off, every message, or @-mention (the default). Off is not a gating feature: an
-org-visible agent is entitled to the same control as a restricted one.
+Every conversation a bot is in carries a trigger. Channels and group DMs expose all
+three settings — Off, every message, or @-mention (the default); a 1:1 DM presents the
+equivalent compact Off / On control. Off is not a gating feature: an org-visible agent
+is entitled to the same control as a restricted one.
 
-Off means the agent does not respond in that channel at all. Not to an @-mention, not to
+Off means the agent does not respond in that conversation at all. Not to an @-mention, not to
 a follow-up in a thread it had already joined, not to a control command, and not through
 a shared bot's slug or default-dispatch fallback. It leaves everything else intact: the
-bot stays in the channel, the channel keeps its row and its owner, past sessions keep
+bot stays in the conversation, the conversation keeps its row and its owner, past sessions keep
 their transcripts, and an agent may still post there when something else — a scheduled
 task, another agent's hand-off — directs it to.
 
@@ -372,21 +373,20 @@ A platform's refusal is shown as the platform worded it. A missing scope, a
 last-member channel, or a lost right is usually something the operator can act on, and
 collapsing it into a generic failure would throw away the only useful part.
 
-## Shared-bot channel ownership
+## Shared-bot conversation ownership
 
-Every active channel served by a shared bot has exactly one default agent. A newly
-observed or ownerless channel converges to the bot's earliest active agent, and removing
-the current owner immediately transfers ownership to the earliest remaining agent.
-Console surfaces must show the same effective owner and trigger from every member
-agent's integration; they must not expose a `No default` state. The trigger is
+Every active conversation served by a shared bot has exactly one default agent. A newly
+observed or ownerless conversation converges to the bot's earliest active agent, and
+removing the current owner immediately transfers ownership to the earliest remaining
+agent. Console surfaces must show the same effective owner and trigger from every
+member agent's integration; they must not expose a `No default` state. The trigger is
 replicated across every active membership row, backfilling a missing sibling, so
-removing the owner does not discard the channel or its trigger.
+removing the owner does not discard the conversation or its trigger.
 
-A Console owner change preserves the channel's trigger. An in-Slack owner change or
-automatic fallback to a restricted agent instead leaves the channel Off, because only
-an authorized Console editor may enable it. Direct messages remain per-agent rather
-than bot-scoped: every agent may independently enable or disable its own conversation
-row.
+A Console owner change preserves the conversation's trigger. An in-Slack owner change
+or automatic fallback to a restricted agent instead leaves the conversation Off,
+because only an authorized Console editor may enable it. This same owner boundary
+applies to observed 1:1 and group DMs; classic integrations remain per-agent.
 
 ## Direct messages
 
@@ -403,9 +403,13 @@ Visibility determines the initial state, not whether the control exists:
   until a Console editor enables it.
 
 Direct rows are observed incrementally because platforms do not enumerate them as bot
-membership. Switching Everyone → Restricted closes every known direct row before the
-gated routing configuration is pushed. Switching back keeps the stored choices; the
-rows stay visible and configurable.
+membership. For a shared bot, the row is repeated for each install but owner and trigger
+are bot-scoped, and the Console offers the same default-dispatch picker as a channel.
+Removing or leaving a shared conversation clears the repeated rows together; a classic
+integration still removes only its own listing.
+Switching Everyone → Restricted closes every known direct row before the gated routing
+configuration is pushed. Switching back keeps the stored choices; the rows stay visible
+and configurable.
 
 ## Group direct messages
 
@@ -426,10 +430,10 @@ three-way trigger as a channel:
   unroutable until a Console editor enables it.
 
 A shared bot is one Slack identity, so a mention in a group DM cannot name which agent
-behind it is meant, and the slug that disambiguates a shared DM does not apply — a DM
-activates on any message, which a slug can outrank, while a group DM activates on the
-mention itself. A group DM served by a shared bot therefore converges on exactly one
-agent: the bot's earliest active install among those whose row is enabled.
+behind it is meant. A group DM served by a shared bot therefore converges on exactly one
+selected owner; its trigger is replicated to every sibling row and its route targets
+that owner. Shared 1:1 DMs follow the same owner boundary, with no per-agent DM slug
+fan-out.
 
 A conversation first mistaken for a channel converts to a group DM once resolved, and
 that conversion receives the visibility-appropriate group-DM default (Mention for
@@ -805,7 +809,11 @@ comment follows the configured cadence only when both the commenter and the Issu
 author still have `write` or `admin` permission. This keeps automatic follow-ups on
 maintainer-owned threads while requiring an explicit maintainer summon for externally
 authored threads. Native review requests and Check reruns use the same
-current-maintainer boundary.
+current-maintainer boundary. For an external pull request waiting on its first
+review, approving its GitHub Actions workflows also starts the review when a
+pull-request workflow begins. AgentConnect authorizes the workflow's triggering
+actor as a current maintainer and coalesces multiple workflows for the same
+pull-request revision into one review generation.
 
 Trigger authorization is separate from effect authorization. A formal PR review still
 requires the active HookRun, review policy, Agent repository grant, and GitHub App
@@ -820,9 +828,12 @@ are present, broadcast wins; mentioning an unrelated GitHub user does not change
 the configured review cadence.
 
 Mention routing does not bypass the integration's event family, label filter,
-installation attribution, live maintainer authorization, or bot-sender veto. A
-targeted agent mention narrows an otherwise broader `updated` fan-out, while an
-event with no AgentConnect mention continues to follow its configured cadence.
+installation attribution, or live maintainer authorization. Bot-sender veto still
+applies to comments and review comments. An `opened`/`synchronize` PR authored by
+the installed App is admitted as a lifecycle event: same-repository PRs follow the
+internal CI review lane, while fork PRs wait for workflow approval. A targeted agent
+mention narrows an otherwise broader `updated` fan-out, while an event with no
+AgentConnect mention continues to follow its configured cadence.
 In a pull request conversation, an authorized explicit AgentConnect mention
 starts a new review generation for the current revision when the integration
 allows formal reviews, so its informational Check reopens and enters in progress

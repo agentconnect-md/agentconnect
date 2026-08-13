@@ -33,6 +33,7 @@ import { detachDaemon } from '../daemon-removal.js'
 import { Tag } from '../plugins/openapi.js'
 import { resolveOrgIconUrl, type IconUrlBases } from '../../agents/agent-icon.js'
 import { OrgDto, OrgListDto, CreateOrgBody, UpdateOrgBody, ErrorDto, type OrgDtoT } from '../dto/index.js'
+import { OrgCreationLimitReached } from '../../persistence/errors.js'
 
 function toDto(o: OrgRecord, deps: HttpDeps): OrgDtoT {
   const bases: IconUrlBases = {
@@ -90,7 +91,7 @@ export function orgRoutes(deps: HttpDeps) {
       }
     )
 
-    // Any authenticated user can create an org — they own what they create.
+    // ADMIN accounts bypass the deployment quota; local no-auth mode is the admin path.
     // A slug collision surfaces as 409 via the P2002 branch in the error mapper.
     r.post(
       '/orgs',
@@ -120,11 +121,26 @@ export function orgRoutes(deps: HttpDeps) {
             })
           }
         }
-        const org = await deps.repos.org.create({
-          name: req.body.name ?? null,
-          slug: req.body.slug,
-          ownerUserId: req.principal!.userId
-        })
+        const isAdmin = !deps.config.OIDC_ISSUER || req.principal!.isAdmin === true
+        let org: OrgRecord
+        try {
+          org = await deps.repos.org.create({
+            name: req.body.name ?? null,
+            slug: req.body.slug,
+            ownerUserId: req.principal!.userId,
+            ...(isAdmin ? {} : { maxOrgsPerUser: deps.maxOrgsPerNonAdminUser ?? 1 })
+          })
+        } catch (error) {
+          if (error instanceof OrgCreationLimitReached) {
+            return reply.code(403).send({
+              error: 'Forbidden',
+              statusCode: 403,
+              message: error.message,
+              code: error.code
+            })
+          }
+          throw error
+        }
         // Managed execution, where the deployment runs it: the envelope is part
         // of what an organization IS here, so it is provisioned with the org
         // rather than waiting for an owner to find a toggle. Deliberately NOT
@@ -134,7 +150,7 @@ export function orgRoutes(deps: HttpDeps) {
         // The console's Daemons page ensures the same thing, so a dropped attempt
         // costs a page visit rather than an envelope.
         if (deps.clusterExecution) {
-          void deps.clusterExecution.ensureProvisioned(OrgId(org.id), req.principal!.userId).catch((err: unknown) => {
+          void deps.clusterExecution.ensureProvisioned(OrgId(org.id)).catch((err: unknown) => {
             req.log.warn({ err, orgId: org.id }, 'cluster-execution: envelope provisioning deferred to the next ensure')
           })
         }
@@ -238,11 +254,11 @@ export function orgScopedRoutes(deps: HttpDeps) {
         // organization, not a machine an operator attached — so the guard below
         // must not ask anyone to go detach it, and nobody could: the Daemons page
         // is for the fleet a human built. It is retired here instead.
-        const envelopeDaemonId = deps.clusterExecution
-          ? (await deps.clusterExecution.settings(orgId)).credentialDaemonId
-          : undefined
+        const envelopeDaemonIds = new Set(
+          deps.clusterExecution ? await deps.clusterExecution.envelopeDaemonIds(orgId) : []
+        )
         const daemons = await deps.registry.list(orgId)
-        if (daemons.some((daemon) => daemon.daemonId !== envelopeDaemonId)) {
+        if (daemons.some((daemon) => !envelopeDaemonIds.has(daemon.daemonId))) {
           return reply.code(409).send({
             error: 'Conflict',
             statusCode: 409,
@@ -250,10 +266,10 @@ export function orgScopedRoutes(deps: HttpDeps) {
           })
         }
         // Before the delete, because its daemon row is a RESTRICT FK the delete
-        // transaction refuses to cross. Switching cluster execution off is what
-        // revokes the key and hands the envelope to the operator's finalizer; a
-        // cluster that refuses only delays that, since the tombstone written
-        // inside the delete transaction is what the drain below acts on.
+        // transaction refuses to cross. Switching cluster execution off hands the
+        // envelope to the operator's finalizer; a cluster that refuses only delays
+        // that, since the tombstone written inside the delete transaction is what
+        // the drain below acts on.
         //
         // The delete can still answer 409 after this — `review_cleanup_pending`,
         // or losing the preflight race to a daemon registered in between — so
@@ -263,13 +279,14 @@ export function orgScopedRoutes(deps: HttpDeps) {
         // properly unplaced: the state a manual disable produces, which the
         // owner can re-enable, and not live-looking agents pointing at a daemon
         // that no longer exists.
-        if (envelopeDaemonId && daemons.length > 0) {
+        const attached = daemons.filter((daemon) => envelopeDaemonIds.has(daemon.daemonId))
+        if (attached.length > 0) {
           try {
             await deps.clusterExecution!.configure(orgId, { enabled: false })
           } catch (err) {
             req.log.warn({ err, orgId }, 'cluster-execution: envelope retirement deferred to the periodic drain')
           }
-          await detachDaemon(deps, orgId, DaemonId(envelopeDaemonId), req.log)
+          for (const daemon of attached) await detachDaemon(deps, orgId, DaemonId(daemon.daemonId), req.log)
         }
         const deleted = await deps.repos.org.delete(req.orgCtx!.orgId)
         for (const hookId of deleted.removedHookIds) deps.hooks.remove(hookId)

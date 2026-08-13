@@ -17,12 +17,9 @@ import { useOrgs } from '@/lib/org-context'
  * request per organization rather than one per navigation. Module-level rather
  * than state: the view unmounts on every route change.
  *
- * An org lands here only on `settled`, which the server answers explicitly. No
- * settings field can stand in for it: `credentialRevision` is populated while
- * the operator is still publishing the namespace AND all through a rotation
- * recovery a peer currently owns, and both are exactly the cases the next visit
- * is supposed to finish. Reading one of those as done would strand the daemon
- * uncredentialed until a full page reload.
+ * An org lands here on any answer the endpoint returns, because the endpoint
+ * delivers one resource and nothing after it: a 2xx means the envelope is
+ * applied and nothing is owed. Only a failure is worth repeating.
  */
 const settledOrgs = new Set<string>()
 
@@ -41,8 +38,8 @@ const ensuringOrgs = new Set<string>()
  * need to hear about it. It is not, however, forgotten — only a refusal that
  * cannot change on a revisit stops the retry: 404 (this deployment has no
  * cluster at all) and 403 (not this caller's to do). The daemon list is
- * refreshed after a check, because issuing the credential is what registers the
- * envelope's daemon.
+ * refreshed after a check, since a freshly provisioned envelope's daemon
+ * registers itself moments later.
  */
 function useEnsureClusterEnvelope(orgId: string | undefined, isOwner: boolean, refreshDaemons: () => Promise<void>) {
   useEffect(() => {
@@ -50,8 +47,8 @@ function useEnsureClusterEnvelope(orgId: string | undefined, isOwner: boolean, r
     ensuringOrgs.add(orgId)
     let live = true
     void ensureClusterExecution(orgId)
-      .then((result) => {
-        if (result.settled) settledOrgs.add(orgId)
+      .then(() => {
+        settledOrgs.add(orgId)
         return live ? refreshDaemons() : undefined
       })
       .catch((err: unknown) => {

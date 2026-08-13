@@ -15,7 +15,10 @@ export type OperatingMode = 'Running' | 'Suspended'
 
 export interface Sandbox extends K8sObject {
   spec?: { operatingMode?: OperatingMode; podTemplate?: unknown }
-  status?: { conditions?: Array<{ type?: string; status?: string }> }
+  status?: {
+    conditions?: Array<{ type?: string; status?: string }>
+    podIPs?: Array<string | { ip?: string }>
+  }
 }
 
 /** The claim's status names the bound Sandbox; the Sandbox UID comes from that

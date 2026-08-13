@@ -8,7 +8,6 @@ import { ApiError, setApiOrgId, type ClusterEnvelopeStatusDto, type ClusterExecu
 
 let settingsAnswer: ClusterExecutionSettingsDto | Error
 let statusAnswer: ClusterEnvelopeStatusDto | Error
-const issued = vi.fn()
 
 vi.mock('@/lib/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/api')>()
@@ -21,8 +20,7 @@ vi.mock('@/lib/api', async (importOriginal) => {
     fetchClusterExecutionStatus: async () => {
       if (statusAnswer instanceof Error) throw statusAnswer
       return statusAnswer
-    },
-    issueClusterExecutionCredential: (...args: unknown[]) => issued(...args)
+    }
   }
 })
 
@@ -35,7 +33,6 @@ const SETTINGS: ClusterExecutionSettingsDto = {
   suspend: false,
   daemonImage: 'registry.example.test/daemon:1',
   daemonTier: 'small',
-  credentialSecretName: 'ac-daemon-token',
   runtimeImage: 'registry.example.test/runtime:1',
   runtimeTiers: [{ name: 'small', warmReplicas: 1 }],
   quota: { maxAgents: 0, cpu: '0', memory: '0', storage: '0' },
@@ -48,7 +45,7 @@ const STATUS: ClusterEnvelopeStatusDto = {
   namespace: 'ac-org-acme',
   conditions: [
     { type: 'Ready', status: 'True' },
-    { type: 'CredentialReady', status: 'False', reason: 'Pending' },
+    { type: 'NamespaceReady', status: 'True' },
     { type: 'Degraded', status: 'False' }
   ],
   daemon: { ready: true },
@@ -84,7 +81,6 @@ beforeEach(() => {
   setApiOrgId('org-test')
   settingsAnswer = SETTINGS
   statusAnswer = STATUS
-  issued.mockReset()
 })
 
 afterEach(async () => {
@@ -109,30 +105,20 @@ describe('cluster execution card', () => {
     await render(<ClusterExecutionCard orgId="org-test" isOwner />)
 
     expect(host.textContent).toContain('Ready')
-    expect(host.textContent).toContain('Credential')
+    expect(host.textContent).toContain('Namespace')
     // A fault condition that is False is not news, so it is left out.
     expect(host.textContent).not.toContain('Degraded')
     expect(host.textContent).toContain('ac-org-acme')
   })
 
-  it('offers to issue a first credential, and never shows a key', async () => {
+  // The envelope's daemon carries a projected token, so nothing here issues,
+  // rotates, or names a credential.
+  it('offers no credential surface at all', async () => {
     await render(<ClusterExecutionCard orgId="org-test" isOwner />)
 
-    expect(host.textContent).toContain('Not issued')
-    expect(button('Issue')).toBeDefined()
+    expect(host.textContent).not.toContain('credential')
+    expect(button('Issue')).toBeUndefined()
     expect(button('Rotate')).toBeUndefined()
-  })
-
-  it('confirms before rotating, because a rotation recreates the daemon pod', async () => {
-    settingsAnswer = { ...SETTINGS, credentialRevision: 'rev-1' }
-    await render(<ClusterExecutionCard orgId="org-test" isOwner />)
-    expect(host.textContent).toContain('rev-1')
-
-    await act(async () => {
-      button('Rotate')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
-    expect(host.textContent).toContain('Rotate the daemon credential?')
-    expect(issued).not.toHaveBeenCalled()
   })
 
   it('says the envelope is not there yet rather than reporting it as unhealthy', async () => {

@@ -264,6 +264,67 @@ describe('createWorkspaceGit.log against a real repo', () => {
     expect(l.truncated).toBe(true)
   })
 
+  // A session worktree checks out its own `dev/<user>/<words>` from `refs/remotes/origin/<base>`,
+  // so the answer a reader wants there is what the BRANCH adds — the base branch's newest commit is
+  // not this session's work. The exclusion is asked of the configured branch only, and only when HEAD
+  // is some other branch, so the agent's primary checkout keeps its full history.
+  describe('the range one checkout is measured over', () => {
+    const target = { repo: 'https://github.com/acme/api.git', branch: 'main', githubApp: false }
+    let branched: string
+
+    beforeAll(() => {
+      branched = join(base, 'branched')
+      mkdirSync(branched, { recursive: true })
+      git(branched, 'init', '-b', 'main')
+      writeFileSync(join(branched, 'a.txt'), 'a\n')
+      git(branched, 'add', '-A')
+      git(branched, 'commit', '-m', 'base: already on main')
+      git(branched, 'remote', 'add', 'origin', join(base, 'unreachable-remote'))
+      git(branched, 'update-ref', 'refs/remotes/origin/main', 'HEAD')
+      git(branched, 'checkout', '-q', '-b', 'dev/jane-doe/candid-lynx')
+      writeFileSync(join(branched, 'b.txt'), 'b\n')
+      git(branched, 'add', '-A')
+      git(branched, 'commit', '-m', 'the session’s own work')
+    })
+
+    const seamFor = (root: string) =>
+      createWorkspaceGit(
+        () => root,
+        () => ({}),
+        () => target
+      )
+
+    it('lists only what the checked-out branch adds over the configured base, and names it', async () => {
+      const l = await seamFor(branched).log({ agentId: AGENT, limit: 20 })
+      expect(l.base).toBe('origin/main')
+      expect(l.commits.map((c) => c.subject)).toEqual(['the session’s own work'])
+    })
+
+    it('keeps the whole history on the base branch itself — there is nothing to exclude there', async () => {
+      git(branched, 'checkout', '-q', 'main')
+      try {
+        const l = await seamFor(branched).log({ agentId: AGENT, limit: 20 })
+        expect(l.base).toBeUndefined()
+        expect(l.commits.map((c) => c.subject)).toEqual(['base: already on main'])
+      } finally {
+        git(branched, 'checkout', '-q', 'dev/jane-doe/candid-lynx')
+      }
+    })
+
+    it('falls back to the whole history when the base ref is not in this checkout', async () => {
+      // A never-fetched base: `<missing>..HEAD` would fail the read outright, so the exclusion is dropped.
+      const unfetched = join(base, 'unfetched')
+      mkdirSync(unfetched, { recursive: true })
+      git(unfetched, 'init', '-b', 'work')
+      writeFileSync(join(unfetched, 'a.txt'), 'a\n')
+      git(unfetched, 'add', '-A')
+      git(unfetched, 'commit', '-m', 'only commit')
+      const l = await seamFor(unfetched).log({ agentId: AGENT, limit: 20 })
+      expect(l.base).toBeUndefined()
+      expect(l.commits.map((c) => c.subject)).toEqual(['only commit'])
+    })
+  })
+
   it('a branch that tracks nothing reports no tracking ref and nothing pushed', async () => {
     const orphan = join(base, 'orphan')
     mkdirSync(orphan, { recursive: true })

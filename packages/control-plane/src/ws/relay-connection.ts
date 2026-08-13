@@ -337,10 +337,12 @@ export class RelayConnection implements RelayChannel {
     try {
       result =
         req.kind === 'daemon-key'
-          ? await this.verifyDaemonKey(req.credential)
-          : req.conversationBinding === 'v1'
-            ? await this.deps.verifyWebchatToken(req.credential)
-            : { ok: false, reason: 'unsupported webchat binding' }
+          ? await this.verifyDaemonCredential('daemon-key', req.credential)
+          : req.kind === 'daemon-token'
+            ? await this.verifyDaemonCredential('daemon-token', req.credential)
+            : req.conversationBinding === 'v1'
+              ? await this.deps.verifyWebchatToken(req.credential)
+              : { ok: false, reason: 'unsupported webchat binding' }
     } catch {
       this.sendError(frame.id, 'INTERNAL', 'verify failed', true)
       return
@@ -348,8 +350,16 @@ export class RelayConnection implements RelayChannel {
     this.reply(frame, 'rc/verify/ok', result)
   }
 
-  private async verifyDaemonKey(credential: string): Promise<RcVerifyResult> {
-    const id = await this.deps.auth.verifyDaemonKey(credential)
+  /** Both daemon credentials resolve to the same identity and answer the same coarse
+   *  refusal — the relay learns which daemon dialed, never why one did not. */
+  private async verifyDaemonCredential(
+    kind: 'daemon-key' | 'daemon-token',
+    credential: string
+  ): Promise<RcVerifyResult> {
+    const id =
+      kind === 'daemon-key'
+        ? await this.deps.auth.verifyDaemonKey(credential)
+        : await this.deps.auth.verifyDaemonToken(credential)
     return id ? { ok: true, daemonId: id.daemonId, orgId: id.orgId } : { ok: false, reason: 'invalid credential' }
   }
 

@@ -9,11 +9,13 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { parse } from 'yaml'
-import { CONDITION_TYPES, DEFAULT_CREDENTIAL_SECRET_NAME, GROUP, KIND, PLURAL, VERSION } from './crd.js'
+import { CONDITION_TYPES, GROUP, KIND, PLURAL, VERSION } from './crd.js'
 import { buildSpec, projectStatus } from './spec.js'
 import type { ClusterExecutionSettings } from '../persistence/ports.js'
 
 type JsonSchema = { type?: string; properties?: Record<string, JsonSchema>; items?: JsonSchema }
+
+const CP_URL = 'wss://api.example.test/daemon/ws'
 
 const SETTINGS: ClusterExecutionSettings = {
   orgId: 'org_example',
@@ -22,8 +24,7 @@ const SETTINGS: ClusterExecutionSettings = {
   suspend: false,
   daemonImage: 'registry.example.test/daemon:1',
   daemonTier: 'small',
-  credentialSecretName: DEFAULT_CREDENTIAL_SECRET_NAME,
-  credentialRevision: '3',
+  credentialSecretName: 'ac-daemon-token',
   runtimeImage: 'registry.example.test/runtime:1',
   runtimeTiers: [{ name: 'small', warmReplicas: 1 }],
   quota: { maxAgents: 4, cpu: '8', memory: '16Gi', storage: '100Gi' },
@@ -58,13 +59,10 @@ function valuePaths(value: unknown, prefix = ''): string[] {
 
 function loadCrd(): { spec: JsonSchema; status: JsonSchema; group: string; version: string; plural: string } {
   const here = dirname(fileURLToPath(import.meta.url))
-  const file = join(here, '../../../../charts/operator/templates/crd.yaml')
-  // The template is pure YAML wrapped in one {{- if }} / {{- end }} pair.
-  const yaml = readFileSync(file, 'utf8')
-    .split('\n')
-    .filter((line) => !line.trimStart().startsWith('{{'))
-    .join('\n')
-  const crd = parse(yaml) as {
+  // The chart's plain manifest, not the template that includes it — this is the exact
+  // text `kubectl apply -f` and Helm both install, parsed with nothing filtered out.
+  const file = join(here, '../../../../charts/operator/crd/agentconnectorg.yaml')
+  const crd = parse(readFileSync(file, 'utf8')) as {
     spec: {
       group: string
       names: { kind: string; plural: string }
@@ -95,7 +93,7 @@ describe('AgentConnectOrg CRD parity', () => {
 
   it('emits only spec fields the CRD declares', () => {
     const declared = new Set(propertyPaths(crd.spec))
-    for (const path of valuePaths(buildSpec(SETTINGS, 'Example Org'))) {
+    for (const path of valuePaths(buildSpec(SETTINGS, CP_URL, 'Example Org'))) {
       expect(declared, `spec.${path} is not declared by the CRD`).toContain(path)
     }
   })
@@ -122,22 +120,24 @@ describe('AgentConnectOrg CRD parity', () => {
   // writes one, so the operator derives `<prefix><CR name>` for every org it provisions.
   it('never writes the namespace override the CRD still offers', () => {
     expect(propertyPaths(crd.spec)).toContain('targetNamespace')
-    expect(valuePaths(buildSpec(SETTINGS, 'Example Org'))).not.toContain('targetNamespace')
+    expect(valuePaths(buildSpec(SETTINGS, CP_URL, 'Example Org'))).not.toContain('targetNamespace')
   })
 
-  it('names the credential secret default the CRD carries', () => {
-    const daemon = crd.spec.properties?.daemon as { properties?: { credentialSecretName?: { default?: string } } }
-    expect(daemon.properties?.credentialSecretName?.default).toBe(DEFAULT_CREDENTIAL_SECRET_NAME)
+  // The daemon pod is born able to dial or it never registers, so this field is required
+  // by the CRD and written on every apply — a parity slip here is a silent outage.
+  it('writes the control-plane URL the CRD requires', () => {
+    const controlPlane = crd.spec.properties?.controlPlane as { required?: string[] } | undefined
+    expect(controlPlane?.required).toEqual(['url'])
+    expect(valuePaths(buildSpec(SETTINGS, CP_URL))).toContain('controlPlane.url')
+  })
+
+  it('declares no credential fields on either side, the key path having retired', () => {
+    const declared = propertyPaths(crd.spec)
+    expect(declared.filter((path) => path.toLowerCase().includes('credential'))).toEqual([])
+    expect(valuePaths(buildSpec(SETTINGS, CP_URL)).filter((p) => p.toLowerCase().includes('credential'))).toEqual([])
   })
 
   it('projects the conditions the operator publishes', () => {
-    expect(CONDITION_TYPES).toEqual([
-      'Ready',
-      'NamespaceReady',
-      'CredentialReady',
-      'LimitsApplied',
-      'Progressing',
-      'Degraded'
-    ])
+    expect(CONDITION_TYPES).toEqual(['Ready', 'NamespaceReady', 'LimitsApplied', 'Progressing', 'Degraded'])
   })
 })

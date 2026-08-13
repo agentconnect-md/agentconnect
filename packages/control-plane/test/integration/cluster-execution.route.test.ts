@@ -9,19 +9,10 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { K8sHttp } from '@agentconnect.md/k8s-client'
 import { closeFakeApiServers, fakeApiServer, type FakeRoute } from '@agentconnect.md/k8s-client/testing'
 import { prisma } from '../setup.db.js'
-import { buildHttpApp, TEST_API_KEY_PEPPER, type HttpApp } from '../fakes/build-http.js'
-import {
-  AgentConnectOrgApi,
-  ClusterExecutionService,
-  ClusterSecretApi,
-  orgResourceName
-} from '../../src/cluster/index.js'
-import { ApiKeyCodec } from '../../src/registry/apiKey.js'
-import { ApiKeyService } from '../../src/registry/apiKeyService.js'
+import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
+import { AgentConnectOrgApi, ClusterExecutionService, orgResourceName } from '../../src/cluster/index.js'
 import { systemClock } from '../../src/domain/clock.js'
 import { PgOrgClusterExecutionRepo } from '../../src/persistence/repositories/org-cluster-execution.repo.js'
-import { PgApiKeyRepo } from '../../src/persistence/repositories/api-key.repo.js'
-import { PgAuditRepo } from '../../src/persistence/repositories/audit.repo.js'
 import { PgDaemonRepo } from '../../src/persistence/repositories/daemon.repo.js'
 import { PgOrgRepo } from '../../src/persistence/repositories/org.repo.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
@@ -48,7 +39,6 @@ const DEFAULTS: ClusterExecutionDefaults = {
   resourceName: RESOURCE_NAME,
   daemonImage: POLICY.daemonImage,
   daemonTier: POLICY.daemonTier,
-  credentialSecretName: 'ac-daemon-token',
   runtimeImage: POLICY.runtimeImage,
   runtimeTiers: POLICY.runtimeTiers,
   quota: { maxAgents: 0, cpu: '0', memory: '0', storage: '0' },
@@ -71,11 +61,7 @@ interface ClusterHarness {
   calls: string[]
   /** Bodies of the apply PATCHes, newest last. */
   applied: { spec?: Record<string, unknown> }[]
-  /** Credential Secrets written, newest last. */
-  secrets: { path: string; seq: number; configJson: string }[]
-  /** Make every Secret call 404 from here on, as an uncreated namespace does. */
-  setNamespaceMissing(missing: boolean): void
-  /** The service behind the routes, for driving its maintenance drains. */
+  /** The service behind the routes, for driving its maintenance drain. */
   cluster: ClusterExecutionService
 }
 
@@ -84,50 +70,19 @@ interface ClusterHarness {
  * reply per request; the default is a store that answers GET from whatever was
  * last applied, which is what a real API server does.
  */
-async function clusterApp(
-  options: { route?: MaybeRoute; userId?: string; namespaceMissing?: boolean } = {}
-): Promise<ClusterHarness> {
+async function clusterApp(options: { route?: MaybeRoute; userId?: string } = {}): Promise<ClusterHarness> {
   const calls: string[] = []
   const applied: { spec?: Record<string, unknown> }[] = []
-  const secrets: { path: string; seq: number; configJson: string }[] = []
   let stored: unknown = null
-  let storedSecret: { metadata: { resourceVersion: string; annotations: Record<string, string> } } | null = null
-  let namespaceMissing = options.namespaceMissing ?? false
   const server = await fakeApiServer((req) => {
     calls.push(`${req.method} ${req.url.pathname}`)
-    // Secrets are a real little store: the provisioner reads before it writes,
-    // and only creates when the read said the Secret is absent.
-    const isSecret = req.url.pathname.includes('/secrets')
-    if (isSecret) {
-      const missing = { status: 404, json: { kind: 'Status', reason: 'NotFound', message: 'not found' } }
-      if (namespaceMissing) return missing
-      if (req.method === 'GET') return storedSecret ? { json: storedSecret } : missing
-      if (req.method === 'POST' || req.method === 'PUT') {
-        const body = JSON.parse(req.body) as {
-          metadata?: { annotations?: Record<string, string> }
-          stringData?: Record<string, string>
-        }
-        storedSecret = {
-          metadata: {
-            resourceVersion: String(secrets.length + 1),
-            annotations: body.metadata?.annotations ?? {}
-          }
-        }
-        secrets.push({
-          path: req.url.pathname,
-          seq: Number(body.metadata?.annotations?.['agentconnect.md/credential-seq'] ?? 0),
-          configJson: body.stringData?.['config.json'] ?? ''
-        })
-        return { json: storedSecret }
-      }
-    }
     if (req.method === 'PATCH') {
       const body = JSON.parse(req.body) as { spec?: Record<string, unknown> }
       applied.push(body)
       // Standing in for the operator: it derives the namespace and publishes it on status.
       stored = { ...body, status: { observedGeneration: applied.length, namespace: TARGET_NAMESPACE } }
     }
-    if (req.method === 'DELETE' && !isSecret) stored = null
+    if (req.method === 'DELETE') stored = null
     const custom = options.route?.(req)
     if (custom) return custom
     if (req.method === 'GET') {
@@ -137,22 +92,12 @@ async function clusterApp(
     }
     return { json: stored ?? {} }
   })
-  // The same key service the app builds, over the same pepper — a credential
-  // minted here authenticates a real daemon handshake.
-  const apiKeys = new ApiKeyService(
-    new ApiKeyCodec({ API_KEY_PEPPER: TEST_API_KEY_PEPPER }),
-    new PgApiKeyRepo(prisma),
-    new PgDaemonRepo(prisma),
-    new PgAuditRepo(prisma),
-    systemClock
-  )
   const cluster = new ClusterExecutionService(
     new PgOrgClusterExecutionRepo(prisma),
     new AgentConnectOrgApi(new K8sHttp(server.config), CONTROL_NAMESPACE),
     new PgOrgRepo(prisma),
     POLICY,
-    new ClusterSecretApi(new K8sHttp(server.config)),
-    apiKeys,
+    new PgDaemonRepo(prisma),
     systemClock
   )
   const http = buildHttpApp(
@@ -163,16 +108,7 @@ async function clusterApp(
     { clusterExecution: cluster }
   )
   opened.push(http)
-  return {
-    http,
-    calls,
-    applied,
-    secrets,
-    cluster,
-    setNamespaceMissing: (missing: boolean) => {
-      namespaceMissing = missing
-    }
-  }
+  return { http, calls, applied, cluster }
 }
 
 /** Provision a user and add them to the default org with a role. */
@@ -196,7 +132,6 @@ describe('GET /cluster-execution', () => {
       resourceName: RESOURCE_NAME,
       daemonImage: POLICY.daemonImage,
       runtimeImage: POLICY.runtimeImage,
-      credentialSecretName: 'ac-daemon-token',
       egressPolicy: 'curated',
       quota: { maxAgents: 0, cpu: '0', memory: '0', storage: '0' }
     })
@@ -232,7 +167,8 @@ describe('PUT /cluster-execution', () => {
     expect(calls).toContain(`PATCH ${RESOURCE_PATH}`)
     expect(applied.at(-1)?.spec).toMatchObject({
       suspend: false,
-      daemon: { image: 'registry.example.test/daemon:2.0.0', tier: 'small', credentialSecretName: 'ac-daemon-token' },
+      daemon: { image: 'registry.example.test/daemon:2.0.0', tier: 'small' },
+      controlPlane: { url: POLICY.controlPlaneUrl },
       runtime: { image: POLICY.runtimeImage, tiers: [{ name: 'medium', warmReplicas: 2 }] },
       quota: { maxAgents: 6, cpu: '0', memory: '0', storage: '0' },
       egressPolicy: 'locked'
@@ -371,242 +307,35 @@ describe('GET /cluster-execution/status', () => {
   })
 })
 
-describe('POST /cluster-execution/credential', () => {
-  const CREDENTIAL = `${CLUSTER}/credential`
+describe('POST /cluster-execution/ensure', () => {
+  const ENSURE = `${CLUSTER}/ensure`
 
-  it('publishes the daemon config as the Secret the CRD names and never returns the key', async () => {
-    const { http, calls, applied, secrets } = await clusterApp()
-    await http.app.inject({ method: 'PUT', url: CLUSTER, payload: { enabled: true } })
-
-    const res = await http.app.inject({ method: 'POST', url: CREDENTIAL })
-    expect(res.statusCode).toBe(201)
-    const body = res.json()
-    expect(body.secretName).toBe('ac-daemon-token')
-    expect(body.rotated).toBe(false)
-    expect(calls).toContain(`POST /api/v1/namespaces/${TARGET_NAMESPACE}/secrets`)
-    expect(secrets.at(-1)?.path).toContain('/secrets')
-
-    const config = JSON.parse(secrets.at(-1)!.configJson)
-    expect(config.version).toBe(1)
-    expect(config.daemonId).toBe(body.daemonId)
-    expect(config.controlPlane).toMatchObject({ enabled: true, url: POLICY.controlPlaneUrl })
-    expect(config.controlPlane.key).toMatch(/^[0-9A-Za-z]{49}$/)
-    // The key exists only inside the cluster Secret — not in the response.
-    expect(JSON.stringify(body)).not.toContain(config.controlPlane.key)
-
-    // The resource is re-applied so the operator sees the new revision.
-    expect(applied.at(-1)?.spec).toMatchObject({ daemon: { credentialRevision: body.revision } })
+  it('provisions an envelope for an org that never configured one', async () => {
+    const { http, calls, applied } = await clusterApp()
+    const res = await http.app.inject({ method: 'POST', url: ENSURE })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({ enabled: true, resourceName: RESOURCE_NAME })
+    expect(calls).toContain(`PATCH ${RESOURCE_PATH}`)
+    // Applying the resource is the whole job — nothing is delivered after it.
+    expect(applied).toHaveLength(1)
+    expect(calls.some((call) => call.includes('/secrets'))).toBe(false)
   })
 
-  it('binds the credential to a real daemon row in the org', async () => {
-    const { http } = await clusterApp()
+  it('leaves an org whose owner switched cluster execution off alone', async () => {
+    const { http, applied } = await clusterApp()
     await http.app.inject({ method: 'PUT', url: CLUSTER, payload: { enabled: true } })
-    const body = (await http.app.inject({ method: 'POST', url: CREDENTIAL })).json()
+    await http.app.inject({ method: 'PUT', url: CLUSTER, payload: { enabled: false } })
+    applied.length = 0
 
-    const daemon = await prisma.daemon.findUnique({ where: { id: body.daemonId } })
-    expect(daemon?.orgId).toBe(DEFAULT_ORG_ID)
-    const keys = await prisma.apiKey.findMany({ where: { daemonId: body.daemonId } })
-    expect(keys).toHaveLength(1)
-    expect(keys[0]?.revokedAt).toBeNull()
-  })
-
-  it('rotates onto a new key, keeping the daemon identity and revoking the old key', async () => {
-    const { http, secrets } = await clusterApp()
-    await http.app.inject({ method: 'PUT', url: CLUSTER, payload: { enabled: true } })
-    const first = (await http.app.inject({ method: 'POST', url: CREDENTIAL })).json()
-
-    const second = (await http.app.inject({ method: 'POST', url: CREDENTIAL })).json()
-    expect(second.rotated).toBe(true)
-    expect(second.daemonId).toBe(first.daemonId)
-    expect(second.revision).not.toBe(first.revision)
-
-    // The published key changed, and the superseded one is revoked — in that order.
-    const [before, after] = secrets.slice(-2).map((entry) => JSON.parse(entry.configJson).controlPlane.key)
-    expect(after).not.toBe(before)
-    const keys = await prisma.apiKey.findMany({ where: { daemonId: first.daemonId }, orderBy: { createdAt: 'asc' } })
-    expect(keys).toHaveLength(2)
-    expect(keys[0]?.revokedAt).not.toBeNull()
-    expect(keys[1]?.revokedAt).toBeNull()
+    const res = await http.app.inject({ method: 'POST', url: ENSURE })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().enabled).toBe(false)
+    expect(applied).toEqual([])
   })
 
   it('is owner-only', async () => {
-    const { http, secrets } = await clusterApp({ userId: await makeUser('collab-credential', 'collaborator') })
-    expect((await http.app.inject({ method: 'POST', url: CREDENTIAL })).statusCode).toBe(403)
-    expect(secrets).toEqual([])
-  })
-
-  it('409s before cluster execution is enabled', async () => {
-    const { http } = await clusterApp()
-    const res = await http.app.inject({ method: 'POST', url: CREDENTIAL })
-    expect(res.statusCode).toBe(409)
-    expect(res.json().code).toBe('CLUSTER_NOT_ENABLED')
-  })
-
-  it('409s once cluster execution is switched off, rather than re-publishing a Secret', async () => {
-    const { http, secrets } = await clusterApp()
-    await http.app.inject({ method: 'PUT', url: CLUSTER, payload: { enabled: true } })
-    await http.app.inject({ method: 'POST', url: CREDENTIAL })
-    await http.app.inject({ method: 'PUT', url: CLUSTER, payload: { enabled: false } })
-    const written = secrets.length
-
-    const res = await http.app.inject({ method: 'POST', url: CREDENTIAL })
-    expect(res.statusCode).toBe(409)
-    expect(res.json().code).toBe('CLUSTER_NOT_ENABLED')
-    expect(secrets).toHaveLength(written)
-  })
-
-  it('409s while another rotation owns the transition', async () => {
-    const { http } = await clusterApp()
-    await http.app.inject({ method: 'PUT', url: CLUSTER, payload: { enabled: true } })
-    await prisma.orgClusterExecution.update({
-      where: { orgId: DEFAULT_ORG_ID },
-      data: { credentialRotationAt: new Date(), credentialRotationToken: 'peer-token' }
-    })
-
-    const res = await http.app.inject({ method: 'POST', url: CREDENTIAL })
-    expect(res.statusCode).toBe(409)
-    expect(res.json().code).toBe('CLUSTER_ROTATION_IN_PROGRESS')
-    // The loser minted nothing at all — no daemon, no key.
-    expect(await prisma.daemon.count()).toBe(0)
-  })
-
-  it('stamps the rotation sequence on the Secret so a stalled publish cannot win', async () => {
-    const { http, secrets, calls } = await clusterApp()
-    await http.app.inject({ method: 'PUT', url: CLUSTER, payload: { enabled: true } })
-    await http.app.inject({ method: 'POST', url: CREDENTIAL })
-    await http.app.inject({ method: 'POST', url: CREDENTIAL })
-
-    // Read-before-write on every publish, and a create only when the read said absent.
-    expect(calls.filter((call) => call.startsWith('GET /api/v1/namespaces')).length).toBeGreaterThanOrEqual(2)
-    expect(calls.filter((call) => call === `POST /api/v1/namespaces/${TARGET_NAMESPACE}/secrets`)).toHaveLength(1)
-    expect(secrets).toHaveLength(2)
-    // Monotonic is the whole requirement — every claim advances it, so the
-    // second publish can never carry a sequence the first already used.
-    expect(secrets[1]!.seq).toBeGreaterThan(secrets[0]!.seq)
-    const row = await prisma.orgClusterExecution.findUnique({ where: { orgId: DEFAULT_ORG_ID } })
-    expect(row?.credentialRotationSeq).toBe(secrets[1]!.seq)
-  })
-
-  it('adopts the key a crashed rotation left staged, rather than stranding it', async () => {
-    const { http } = await clusterApp()
-    await http.app.inject({ method: 'PUT', url: CLUSTER, payload: { enabled: true } })
-    const first = (await http.app.inject({ method: 'POST', url: CREDENTIAL })).json()
-
-    // A holder that died after staging a second key and before committing it,
-    // with its lease long expired.
-    const orphan = await prisma.apiKey.findFirstOrThrow({ where: { daemonId: first.daemonId } })
-    await prisma.orgClusterExecution.update({
-      where: { orgId: DEFAULT_ORG_ID },
-      data: {
-        credentialStagedApiKeyId: orphan.id,
-        credentialRotationAt: new Date(Date.now() - 60 * 60 * 1000),
-        credentialRotationToken: 'dead-holder'
-      }
-    })
-
-    expect((await http.app.inject({ method: 'POST', url: CREDENTIAL })).statusCode).toBe(201)
-    const row = await prisma.orgClusterExecution.findUnique({ where: { orgId: DEFAULT_ORG_ID } })
-    expect(row?.credentialStagedApiKeyId).toBeNull()
-    expect((await prisma.apiKey.findUniqueOrThrow({ where: { id: orphan.id } })).revokedAt).not.toBeNull()
-    expect(await prisma.pendingDaemonKeyRevocation.count()).toBe(0)
-  })
-
-  it('never revokes a displaced key while the Secret may still carry it', async () => {
-    const { http, setNamespaceMissing } = await clusterApp()
-    await http.app.inject({ method: 'PUT', url: CLUSTER, payload: { enabled: true } })
-    const first = (await http.app.inject({ method: 'POST', url: CREDENTIAL })).json()
-    const orphan = await prisma.apiKey.findFirstOrThrow({ where: { daemonId: first.daemonId } })
-    // A holder that died after staging that key — it is what the Secret holds.
-    await prisma.orgClusterExecution.update({
-      where: { orgId: DEFAULT_ORG_ID },
-      data: {
-        credentialStagedApiKeyId: orphan.id,
-        credentialRotationAt: new Date(Date.now() - 60 * 60 * 1000),
-        credentialRotationToken: 'dead-holder'
-      }
-    })
-
-    // This pass displaces the orphan and then fails to publish anything, so the
-    // Secret is unchanged: draining the orphan now would kill the live credential.
-    setNamespaceMissing(true)
-    expect((await http.app.inject({ method: 'POST', url: CREDENTIAL })).statusCode).toBe(409)
-    expect((await prisma.apiKey.findUniqueOrThrow({ where: { id: orphan.id } })).revokedAt).toBeNull()
-    expect(await prisma.pendingDaemonKeyRevocation.findUniqueOrThrow({ where: { apiKeyId: orphan.id } })).toMatchObject(
-      { held: true }
-    )
-
-    // The next publish is the higher sequence it was waiting on.
-    setNamespaceMissing(false)
-    expect((await http.app.inject({ method: 'POST', url: CREDENTIAL })).statusCode).toBe(201)
-    expect((await prisma.apiKey.findUniqueOrThrow({ where: { id: orphan.id } })).revokedAt).not.toBeNull()
-    expect(await prisma.pendingDaemonKeyRevocation.count()).toBe(0)
-  })
-
-  it('holds the predecessor until the CR carries the new revision, then finishes the rollout', async () => {
-    let rejectApply = false
-    const { http, cluster } = await clusterApp({
-      route: (req) =>
-        rejectApply && req.method === 'PATCH'
-          ? { status: 403, json: { kind: 'Status', reason: 'Forbidden', message: 'cannot patch agentconnectorgs' } }
-          : undefined
-    })
-    await http.app.inject({ method: 'PUT', url: CLUSTER, payload: { enabled: true } })
-    const first = (await http.app.inject({ method: 'POST', url: CREDENTIAL })).json()
-    const predecessor = await prisma.apiKey.findFirstOrThrow({ where: { daemonId: first.daemonId } })
-
-    // The credential commits, the apply does not: the pod was never asked to
-    // roll, so it is still authenticating with the predecessor's key.
-    rejectApply = true
-    expect((await http.app.inject({ method: 'POST', url: CREDENTIAL })).statusCode).toBe(502)
-    expect(
-      (await prisma.orgClusterExecution.findUniqueOrThrow({ where: { orgId: DEFAULT_ORG_ID } }))
-        .credentialRolloutPending
-    ).toBe(true)
-    expect(await cluster.drainKeyRevocations()).toBe(0)
-    expect((await prisma.apiKey.findUniqueOrThrow({ where: { id: predecessor.id } })).revokedAt).toBeNull()
-
-    // The maintenance loop finishes the apply; only then is the predecessor dead.
-    rejectApply = false
-    expect(await cluster.drainCredentialRollouts()).toBe(1)
-    expect(await cluster.drainKeyRevocations()).toBe(1)
-    expect((await prisma.apiKey.findUniqueOrThrow({ where: { id: predecessor.id } })).revokedAt).not.toBeNull()
-    expect(
-      (await prisma.orgClusterExecution.findUniqueOrThrow({ where: { orgId: DEFAULT_ORG_ID } }))
-        .credentialRolloutPending
-    ).toBe(false)
-  })
-
-  it('409s while the operator has not created the envelope namespace yet', async () => {
-    const { http } = await clusterApp({ namespaceMissing: true })
-    await http.app.inject({ method: 'PUT', url: CLUSTER, payload: { enabled: true } })
-
-    const res = await http.app.inject({ method: 'POST', url: CREDENTIAL })
-    expect(res.statusCode).toBe(409)
-    expect(res.json().code).toBe('CLUSTER_NAMESPACE_NOT_READY')
-    // No credential was recorded, so a retry after NamespaceReady starts clean —
-    // but the daemon identity IS kept, so the retry re-keys it rather than
-    // provisioning a second daemon, and the unpublished key is already revoked.
-    const row = await prisma.orgClusterExecution.findUnique({ where: { orgId: DEFAULT_ORG_ID } })
-    expect(row?.credentialRevision).toBeNull()
-    expect(row?.credentialDaemonId).not.toBeNull()
-    expect(row?.credentialRotationAt).toBeNull()
-    const keys = await prisma.apiKey.findMany({ where: { daemonId: row!.credentialDaemonId! } })
-    expect(keys).toHaveLength(1)
-    expect(keys[0]?.revokedAt).not.toBeNull()
-    expect(await prisma.pendingDaemonKeyRevocation.count()).toBe(0)
-  })
-
-  it('retires the credential when cluster execution is switched off', async () => {
-    const { http } = await clusterApp()
-    await http.app.inject({ method: 'PUT', url: CLUSTER, payload: { enabled: true } })
-    const issued = (await http.app.inject({ method: 'POST', url: CREDENTIAL })).json()
-
-    await http.app.inject({ method: 'PUT', url: CLUSTER, payload: { enabled: false } })
-    const row = await prisma.orgClusterExecution.findUnique({ where: { orgId: DEFAULT_ORG_ID } })
-    expect(row?.credentialRevision).toBeNull()
-    expect(row?.credentialApiKeyId).toBeNull()
-    const keys = await prisma.apiKey.findMany({ where: { daemonId: issued.daemonId } })
-    expect(keys.every((key) => key.revokedAt !== null)).toBe(true)
+    const { http } = await clusterApp({ userId: await makeUser('collab-ensure', 'collaborator') })
+    expect((await http.app.inject({ method: 'POST', url: ENSURE })).statusCode).toBe(403)
   })
 })
 
@@ -652,6 +381,41 @@ describe('DELETE /orgs/:orgId', () => {
     const pending = await prisma.pendingEnvelopeTeardown.findMany()
     expect(pending.map((row) => row.orgId)).toEqual([DEFAULT_ORG_ID])
     expect(pending[0]?.resourceName).toBe(RESOURCE_NAME)
+  })
+
+  // The envelope's daemon is the control plane's own — nobody could be asked to
+  // detach it — and it is recognized by the identity binding its token connect wrote.
+  it('retires the envelope’s own daemon instead of refusing the delete', async () => {
+    const { http } = await clusterApp()
+    await http.app.inject({ method: 'PUT', url: CLUSTER, payload: { enabled: true } })
+    const daemonId = '99999999-9999-4999-8999-999999999999'
+    await prisma.daemon.create({
+      data: {
+        id: daemonId,
+        orgId: DEFAULT_ORG_ID,
+        sessionEpoch: 1n,
+        status: 'ready',
+        clusterIdentity: `system:serviceaccount:${TARGET_NAMESPACE}:ac-daemon`
+      }
+    })
+
+    expect((await http.app.inject({ method: 'DELETE', url: ORG })).statusCode).toBe(204)
+    expect(await prisma.daemon.findUnique({ where: { id: daemonId } })).toBeNull()
+  })
+
+  it('still refuses while a daemon someone attached by hand survives', async () => {
+    const { http } = await clusterApp()
+    await http.app.inject({ method: 'PUT', url: CLUSTER, payload: { enabled: true } })
+    const daemonId = '88888888-8888-4888-8888-888888888888'
+    await prisma.daemon.create({
+      data: { id: daemonId, orgId: DEFAULT_ORG_ID, sessionEpoch: 1n, status: 'ready' }
+    })
+
+    const res = await http.app.inject({ method: 'DELETE', url: ORG })
+    expect(res.statusCode).toBe(409)
+    // Refusing must not have retired the envelope on the way out.
+    expect(await prisma.daemon.findUnique({ where: { id: daemonId } })).not.toBeNull()
+    expect((await prisma.orgClusterExecution.findUnique({ where: { orgId: DEFAULT_ORG_ID } }))?.enabled).toBe(true)
   })
 
   it('writes no tombstone for an org that never enabled cluster execution', async () => {

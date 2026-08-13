@@ -355,6 +355,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
       <h2>Deployment options</h2>
       <div class="panel">
         <label class="field"><span><input id="preset-agents-enabled" type="checkbox"> Enable preset Agents</span></label>
+        <label class="field">Max organizations created per non-ADMIN user<input id="max-orgs-per-non-admin-user" type="number" min="0" step="1" value="1"></label>
         <div class="row"><button id="save-options">Save options</button></div>
       </div>
     </section>
@@ -573,6 +574,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
       );
 
       el('preset-agents-enabled').checked = values.features.presetAgentsEnabled;
+      el('max-orgs-per-non-admin-user').value = String(values.features.maxOrgsPerNonAdminUser);
 
       const github = values.github;
       const webhookStored = byKey.get('github.webhookSecret') && byKey.get('github.webhookSecret').configured;
@@ -1396,7 +1398,8 @@ export const SETUP_HTML = String.raw`<!doctype html>
       const values = {
         ...currentStatus.values,
         features: {
-          presetAgentsEnabled: el('preset-agents-enabled').checked
+          presetAgentsEnabled: el('preset-agents-enabled').checked,
+          maxOrgsPerNonAdminUser: Number(el('max-orgs-per-non-admin-user').value)
         }
       };
       const saved = await json(await fetch(api + '/deployment-config', {

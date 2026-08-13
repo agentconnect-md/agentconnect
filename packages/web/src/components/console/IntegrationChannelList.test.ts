@@ -2,7 +2,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import {
-  channelOwners,
+  conversationOwners,
   groupBySpace,
   IntegrationChannelList,
   placePopover,
@@ -18,16 +18,25 @@ vi.mock('@/lib/data-context', () => ({
     setChannelAgent: vi.fn(),
     forgetChannel: vi.fn(),
     leaveConversation: vi.fn(),
-    bots: [],
-    agents: [],
-    integrations: []
+    bots: [{ id: 'bot_shared', agentIds: ['alice', 'bob'] }],
+    agents: [
+      { id: 'alice', name: 'alice', displayName: 'Alice', runtime: 'claude' },
+      { id: 'bob', name: 'bob', displayName: 'Bob', runtime: 'codex' }
+    ],
+    integrations: [
+      {
+        id: 'int_bob',
+        botId: 'bot_shared',
+        channels: [{ channelId: 'D1', name: '@Alice', kind: 'im', trigger: 'any', agentId: 'bob' }]
+      }
+    ]
   })
 }))
 
 // A shared bot fans its membership snapshot out to one integration per member
-// agent, but persists the per-channel owner on a single canonical row. Every
+// agent, but persists the per-conversation owner on a single canonical row. Every
 // member's page must therefore read ownership bot-wide, not off its own row.
-describe('channelOwners', () => {
+describe('conversationOwners', () => {
   const install = (id: string, agentId: string, channels: IntegrationChannelRow[]): IntegrationRow => ({
     id,
     agentId,
@@ -51,7 +60,7 @@ describe('channelOwners', () => {
   })
 
   it('finds an owner persisted on a different member installation', () => {
-    const owners = channelOwners('bot_shared', [
+    const owners = conversationOwners('bot_shared', [
       install('int_alice', 'alice', [chan('C-deploys', null)]),
       install('int_bob', 'bob', [chan('C-deploys', 'bob')])
     ])
@@ -59,21 +68,25 @@ describe('channelOwners', () => {
     expect(owners.get('C-deploys')).toBe('bob')
   })
 
-  it('ignores installs of other bots and direct-conversation rows', () => {
+  it('ignores installs of other bots but includes direct-conversation rows', () => {
     const other = { ...install('int_other', 'zoe', [chan('C-deploys', 'zoe')]), botId: 'bot_other' }
-    // Neither a DM nor a group DM is a channel a shared bot can hand out ownership of.
+    // DM and group DM owners use the same bot-wide projection as channels.
     const dm = install('int_dm', 'bob', [
       { ...chan('D-bob', 'bob'), kind: 'im' as const },
       { ...chan('G-team', 'bob'), kind: 'mpim' as const }
     ])
-    const owners = channelOwners('bot_shared', [other, dm, install('int_bob', 'bob', [chan('C-deploys', 'bob')])])
-    expect([...owners]).toEqual([['C-deploys', 'bob']])
+    const owners = conversationOwners('bot_shared', [other, dm, install('int_bob', 'bob', [chan('C-deploys', 'bob')])])
+    expect([...owners]).toEqual([
+      ['D-bob', 'bob'],
+      ['G-team', 'bob'],
+      ['C-deploys', 'bob']
+    ])
   })
 
   it('keeps the first explicit owner when installs disagree', () => {
     // Legacy state can leave two rows claiming a channel; the console must be
     // deterministic rather than depending on install iteration luck.
-    const owners = channelOwners('bot_shared', [
+    const owners = conversationOwners('bot_shared', [
       install('int_bob', 'bob', [chan('C-deploys', 'bob')]),
       install('int_alice', 'alice', [chan('C-deploys', 'alice')])
     ])
@@ -81,7 +94,7 @@ describe('channelOwners', () => {
   })
 
   it('reports nothing for a channel no install has claimed', () => {
-    const owners = channelOwners('bot_shared', [install('int_alice', 'alice', [chan('C-deploys', null)])])
+    const owners = conversationOwners('bot_shared', [install('int_alice', 'alice', [chan('C-deploys', null)])])
     expect(owners.has('C-deploys')).toBe(false)
   })
 })
@@ -315,5 +328,19 @@ describe('IntegrationChannelList direct rows', () => {
     expect(html).toContain('Direct messages')
     expect(html).toContain('>off</button>')
     expect(html).toContain('>on</button>')
+  })
+
+  it('renders shared-bot default dispatch for a DM', () => {
+    const html = renderToStaticMarkup(
+      createElement(IntegrationChannelList, {
+        integrationId: 'int_alice',
+        botId: 'bot_shared',
+        agentId: 'alice',
+        platform: 'slack',
+        shareable: true,
+        channels: [{ channelId: 'D1', name: '@Alice', kind: 'im', trigger: 'any', agentId: 'bob' }]
+      })
+    )
+    expect(html).toContain('Default dispatch — Bob')
   })
 })

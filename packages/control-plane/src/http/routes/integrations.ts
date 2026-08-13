@@ -27,8 +27,7 @@ import { AgentId, BotId, IntegrationId, OrgId } from '../../domain/ids.js'
 import { denyViewerWrite, ctxOf, orgOf } from '../rbac.js'
 import { canView, canEdit } from '../../authorization/policy.js'
 import { integrationToSpec, isGatedAgent } from '../../orchestrator/placement.js'
-import { pickChannelOwner } from '../../orchestrator/httpBot.js'
-import { isDirectConversationKind } from '../../persistence/ports.js'
+import { conversationOwnerRow, pickConversationOwner } from '../../orchestrator/httpBot.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
 import { installNewBot } from '../install-bot.js'
 import { BotExternalIdentityTaken } from '../../persistence/errors.js'
@@ -97,7 +96,7 @@ export function integrationRoutes(deps: HttpDeps) {
       return current
     }
 
-    // Push the full spec (metadata + tokens + per-channel bindRules) to the owning
+    // Push the full spec (metadata + tokens + per-conversation bindRules) to the owning
     // daemon. Best-effort: if the daemon is offline the reconcile roster carries it
     // on the next connect. Token-bearing — never log the spec.
     const replicateUpsert = async (i: IntegrationRecord, daemonId: string): Promise<void> => {
@@ -509,7 +508,7 @@ export function integrationRoutes(deps: HttpDeps) {
         schema: {
           tags: [Tag.Integrations],
           summary: 'List integrations',
-          description: 'Every platform integration in the active organization, each with its per-channel bindings.',
+          description: 'Every platform integration in the active organization, each with its conversation bindings.',
           operationId: 'listIntegrations',
           response: { 200: IntegrationListDto }
         }
@@ -526,8 +525,7 @@ export function integrationRoutes(deps: HttpDeps) {
         )
         // Membership is repeated per shareable-bot integration, while only the
         // canonical owner row persists agentId. Read effective state from every
-        // active install of each visible bot — not only viewer-visible integrations
-        // — so a sibling never disagrees with the relay's route table.
+        // active install of each visible bot so every conversation copy agrees.
         const effective = new Map<string, IntegrationChannelRecord>()
         const bots = new Map((await deps.repos.bot.listForOrg(orgIdOf(req))).map((bot) => [bot.id, bot]))
         const botStates = await Promise.all(
@@ -538,7 +536,7 @@ export function integrationRoutes(deps: HttpDeps) {
               deps.repos.integration.listForBot(botId),
               deps.repos.integrationChannel.listForBot(botId)
             ])
-            return { botId, installs, channels: channels.filter((channel) => channel.kind === 'channel') }
+            return { botId, installs, channels }
           })
         )
         for (const state of botStates) {
@@ -550,12 +548,9 @@ export function integrationRoutes(deps: HttpDeps) {
             byChannel.set(channel.channelId, channels)
           }
           for (const [channelId, channels] of byChannel) {
-            const owner = pickChannelOwner(state.installs, channels)
+            const owner = pickConversationOwner(state.installs, channels)
             if (!owner) continue
-            const channel =
-              channels.find((row) => row.agentId === owner.agentId) ??
-              channels.find((row) => row.integrationId === owner.id) ??
-              channels[0]
+            const channel = conversationOwnerRow(owner, channels)
             if (channel) {
               const persistedOwner = channels.some((row) => row.agentId === owner.agentId)
               const ownerAgent = persistedOwner ? null : await deps.repos.agent.get(orgOf(req), owner.agentId)
@@ -571,7 +566,6 @@ export function integrationRoutes(deps: HttpDeps) {
           toDto(
             integration,
             channels.map((channel) => {
-              if (channel.kind !== 'channel') return channel
               const state = effective.get(`${integration.botId}\u0000${channel.channelId}`)
               return state ? { ...channel, agentId: state.agentId, trigger: state.trigger } : channel
             })
@@ -581,7 +575,7 @@ export function integrationRoutes(deps: HttpDeps) {
     )
 
     /**
-     * Shared admission for the per-channel routes: the integration must be in this
+     * Shared admission for the per-conversation routes: the integration must be in this
      * org, its owning agent visible AND editable, and the row must exist. Replies on
      * the failure paths and returns null, so a caller that gets a value is cleared.
      *
@@ -685,13 +679,13 @@ export function integrationRoutes(deps: HttpDeps) {
     }
 
     /**
-     * A shared bot's channel is bot-scoped: one owner, and a trigger replicated across
-     * every install. Ending its listing therefore reaches agents beyond the one whose
+     * A shared bot's conversation is bot-scoped: one owner, and a trigger replicated
+     * across every install. Ending its listing therefore reaches agents beyond the one whose
      * page this is, so it takes the SAME authorization the trigger/owner PATCH takes —
      * edit rights on the effective owner — instead of only on this integration's agent.
      * Returns an error envelope to send, or null when the action may proceed.
      */
-    const resolveBotScopedChannel = async (
+    const resolveBotScopedConversation = async (
       req: { params: { id: string; channelId?: string } },
       integration: IntegrationRecord,
       bot: BotRecord,
@@ -702,39 +696,36 @@ export function integrationRoutes(deps: HttpDeps) {
     > => {
       const rows = await deps.repos.integrationChannel.listForIntegration(integration.id)
       const row = rows.find((candidate) => candidate.channelId === channelId)
-      // A DIRECT row is per-agent even on a shared bot (§14.3: each gated install gets
-      // its own DM row), so it is never fanned out and needs no owner check — sharing
-      // one would let an editor of one agent silently drop another agent's DM.
-      if (bot.transport !== 'http' || (row && isDirectConversationKind(row.kind))) {
+      if (bot.transport !== 'http' || !row) {
         return { ok: true, botScoped: false }
       }
-      const [installs, channelRows] = await Promise.all([
+      const [installs, conversationRows] = await Promise.all([
         deps.repos.integration.listForBot(bot.id),
         deps.repos.integrationChannel.listForBot(bot.id)
       ])
-      const owner = pickChannelOwner(
+      const owner = pickConversationOwner(
         installs,
-        channelRows.filter((candidate) => candidate.kind === 'channel' && candidate.channelId === channelId)
+        conversationRows.filter((candidate) => candidate.channelId === channelId)
       )
       const ownerAgent = owner ? await deps.repos.agent.get(owner.orgId, owner.agentId) : null
       if (!ownerAgent) {
         return {
           ok: false,
           code: 409,
-          body: { error: 'Conflict', statusCode: 409, message: 'channel owner changed; refresh and retry' }
+          body: { error: 'Conflict', statusCode: 409, message: 'conversation owner changed; refresh and retry' }
         }
       }
       if (!canEdit(ownerAgent, ctxOf(req as never))) {
         return {
           ok: false,
           code: 403,
-          body: { error: 'Forbidden', statusCode: 403, message: 'cannot edit this channel’s owning agent' }
+          body: { error: 'Forbidden', statusCode: 403, message: 'cannot edit this conversation’s owning agent' }
         }
       }
       return { ok: true, botScoped: true, ownerAgentId: ownerAgent.id }
     }
 
-    // Per-channel trigger choice (@-mention vs any message). Persist, then push the
+    // Per-conversation trigger choice (@-mention vs any message). Persist, then push the
     // integration's recomputed bindRules to the owning daemon (integration/upsert,
     // best-effort — the reconcile roster converges an offline daemon later).
     r.patch(
@@ -742,8 +733,8 @@ export function integrationRoutes(deps: HttpDeps) {
       {
         schema: {
           tags: [Tag.Integrations],
-          summary: 'Update a channel',
-          description: "Set a channel's trigger or default agent, then push the updated routing configuration.",
+          summary: 'Update a conversation',
+          description: "Set a conversation's trigger or default agent, then push the updated routing configuration.",
           operationId: 'updateIntegrationChannel',
           params: IdParam.extend({ channelId: z.string().min(1) }),
           body: UpdateIntegrationChannelBody,
@@ -776,10 +767,10 @@ export function integrationRoutes(deps: HttpDeps) {
         if (!bot) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'bot not found' })
         }
-        const botScopedChannel = bot.transport === 'http' && existingChannel.kind === 'channel'
+        const botScopedConversation = bot.transport === 'http'
         let effectiveOwner: AgentRecord | null = null
         let selectedOwner: AgentRecord | null = null
-        if (botScopedChannel) {
+        if (botScopedConversation) {
           if (req.body.agentId !== undefined && !bot.agentIds.includes(AgentId(req.body.agentId))) {
             return reply.code(409).send({
               error: 'Conflict',
@@ -787,13 +778,13 @@ export function integrationRoutes(deps: HttpDeps) {
               message: 'default agent must be an agent that uses this bot'
             })
           }
-          const [installs, channelRows] = await Promise.all([
+          const [installs, conversationRows] = await Promise.all([
             deps.repos.integration.listForBot(bot.id),
             deps.repos.integrationChannel.listForBot(bot.id)
           ])
-          const owner = pickChannelOwner(
+          const owner = pickConversationOwner(
             installs,
-            channelRows.filter((channel) => channel.kind === 'channel' && channel.channelId === req.params.channelId)
+            conversationRows.filter((channel) => channel.channelId === req.params.channelId)
           )
           effectiveOwner = owner ? await deps.repos.agent.get(orgOf(req), owner.agentId) : null
           selectedOwner =
@@ -804,14 +795,14 @@ export function integrationRoutes(deps: HttpDeps) {
             return reply.code(409).send({
               error: 'Conflict',
               statusCode: 409,
-              message: 'channel owner changed; refresh and retry the integration change'
+              message: 'conversation owner changed; refresh and retry the integration change'
             })
           }
           if (!canEdit(effectiveOwner, ctxOf(req)) || !canEdit(selectedOwner, ctxOf(req))) {
             return reply.code(403).send({
               error: 'Forbidden',
               statusCode: 403,
-              message: 'cannot edit the current or selected channel owner'
+              message: 'cannot edit the current or selected conversation owner'
             })
           }
         }
@@ -844,14 +835,14 @@ export function integrationRoutes(deps: HttpDeps) {
             refreshed.set(current.id, current)
           }
           agent = refreshed.get(agent.id)!
-          // HTTP channel ownership is bot-scoped even though membership rows are
+          // HTTP conversation ownership is bot-scoped even though membership rows are
           // stored per integration. Route the whole patch through the orchestrator
           // so every agent detail shows the same owner/trigger and exactly one row
           // remains authoritative.
           let updated: IntegrationChannelRecord | null = null
           let routesSynced = false
-          if (botScopedChannel) {
-            updated = await deps.httpBot.updateChannel(
+          if (botScopedConversation) {
+            updated = await deps.httpBot.updateConversation(
               bot.id,
               req.params.channelId,
               {
@@ -867,7 +858,7 @@ export function integrationRoutes(deps: HttpDeps) {
               return reply.code(409).send({
                 error: 'Conflict',
                 statusCode: 409,
-                message: 'channel owner changed; refresh and retry the integration change'
+                message: 'conversation owner changed; refresh and retry the integration change'
               })
             }
             routesSynced = true
@@ -876,7 +867,7 @@ export function integrationRoutes(deps: HttpDeps) {
               return reply.code(400).send({
                 error: 'Bad Request',
                 statusCode: 400,
-                message: 'default agent applies only to shared channels'
+                message: 'default agent applies only to shared bot conversations'
               })
             }
             updated = await deps.repos.integrationChannel.setTrigger(
@@ -918,7 +909,7 @@ export function integrationRoutes(deps: HttpDeps) {
       {
         schema: {
           tags: [Tag.Integrations],
-          summary: 'Forget a channel',
+          summary: 'Forget a conversation',
           description:
             'Remove a conversation row from AgentConnect without touching the platform. Intended for a conversation the bot has already left where the platform cannot report its own departure. The row returns on the next authoritative listing if the bot is still a member.',
           operationId: 'deleteIntegrationChannel',
@@ -931,7 +922,7 @@ export function integrationRoutes(deps: HttpDeps) {
         const admitted = await admitChannelAction(req, reply)
         if (!admitted) return
         const { integration, agent, bot } = admitted
-        const scope = await resolveBotScopedChannel(req, integration, bot, req.params.channelId)
+        const scope = await resolveBotScopedConversation(req, integration, bot, req.params.channelId)
         if (!scope.ok) return reply.code(scope.code).send(scope.body)
         // The owner joins the lease, not just the authorization: a bot-wide action
         // decided against one owner must not commit while a move re-places that owner.
@@ -945,12 +936,12 @@ export function integrationRoutes(deps: HttpDeps) {
         try {
           // Ownership can change between resolving it and holding the lease, so the
           // verdict is re-taken under the lease and must still name the same owner.
-          const fenced = await resolveBotScopedChannel(req, integration, bot, req.params.channelId)
+          const fenced = await resolveBotScopedConversation(req, integration, bot, req.params.channelId)
           if (!fenced.ok) return reply.code(fenced.code).send(fenced.body)
           if (fenced.ownerAgentId !== scope.ownerAgentId) {
             return reply
               .code(409)
-              .send({ error: 'Conflict', statusCode: 409, message: 'channel owner changed; refresh and retry' })
+              .send({ error: 'Conflict', statusCode: 409, message: 'conversation owner changed; refresh and retry' })
           }
           const rows = await deps.repos.integrationChannel.listForIntegration(integration.id)
           if (!rows.some((row) => row.channelId === req.params.channelId)) {
@@ -964,10 +955,8 @@ export function integrationRoutes(deps: HttpDeps) {
           // suppression. Same order the leave route uses: confirm, then touch local state.
           const suppressed = await pushForget(integration, agent, [req.params.channelId])
           if (!suppressed.ok) return reply.code(502).send(suppressed.body)
-          // A shared bot's CHANNEL state is bot-scoped — ownership and trigger are
-          // replicated across every install — so forgetting it on one install alone
-          // would leave siblings listing it and let the compiler resurrect the row. A
-          // direct row is per-agent and stays on this install only (§14.3).
+          // A shared bot's conversation state is bot-scoped, so delete every sibling
+          // row or the compiler can resurrect it on the next convergence.
           const installs = scope.botScoped ? await deps.repos.integration.listForBot(bot.id) : [integration]
           for (const install of installs) {
             await deps.repos.integrationChannel.deleteChannel(install.id, req.params.channelId)
@@ -1039,7 +1028,7 @@ export function integrationRoutes(deps: HttpDeps) {
         }
         const scope =
           target.kind === 'conversation'
-            ? await resolveBotScopedChannel(req, integration, bot, target.channel)
+            ? await resolveBotScopedConversation(req, integration, bot, target.channel)
             : ({ ok: true, botScoped: false, ownerAgentId: undefined } as const)
         if (!scope.ok) return reply.code(scope.code).send(scope.body)
         // Held across the whole request, not just the row writes. A cold move
@@ -1059,12 +1048,12 @@ export function integrationRoutes(deps: HttpDeps) {
         }
         try {
           if (target.kind === 'conversation') {
-            const fenced = await resolveBotScopedChannel(req, integration, bot, target.channel)
+            const fenced = await resolveBotScopedConversation(req, integration, bot, target.channel)
             if (!fenced.ok) return reply.code(fenced.code).send(fenced.body)
             if (fenced.ownerAgentId !== scope.ownerAgentId) {
               return reply
                 .code(409)
-                .send({ error: 'Conflict', statusCode: 409, message: 'channel owner changed; refresh and retry' })
+                .send({ error: 'Conflict', statusCode: 409, message: 'conversation owner changed; refresh and retry' })
             }
           }
           // Placement may have changed between admission and taking the lease, so the

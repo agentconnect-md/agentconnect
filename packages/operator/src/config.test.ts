@@ -14,6 +14,14 @@ describe('loadConfig', () => {
     expect(config.resyncIntervalMs).toBe(600_000)
     expect(config.leaseName).toBe('agentconnect-operator')
     expect(config.watchTimeoutSeconds).toBe(300)
+    // Unset renders as empty from the chart's own default, which is a real answer: no
+    // in-cluster peer, so the daemon egresses on the 443 rule alone.
+    expect(config.daemonEgressNamespaces).toEqual([])
+  })
+
+  it('reads the daemon egress namespaces as a de-duplicated, trimmed list', () => {
+    const config = loadConfig({ ...REQUIRED, AC_DAEMON_EGRESS_NAMESPACES: ' ac-control , relay ,ac-control, ' })
+    expect(config.daemonEgressNamespaces).toEqual(['ac-control', 'relay'])
   })
 
   it('fails fast when an install-time constant is missing or empty', () => {

@@ -1,9 +1,10 @@
 import { readFileSync } from 'node:fs'
-import { Backoff, systemClock, type Clock } from '@agentconnect.md/connection'
+import { Backoff, systemClock, type Clock, type TimerHandle } from '@agentconnect.md/connection'
 import { AcpRunner, type ResolveCommand } from './acp-runner.js'
 
 /** Bounded so a long outage cannot grow the buffer without limit. */
 const MAX_BUFFERED_EVENTS = 2_000
+const HANDSHAKE_TIMEOUT_MS = 10_000
 import {
   SHIM_IDENTITY_TOKEN_PATH,
   SHIM_SUBPROTOCOL,
@@ -32,6 +33,8 @@ interface Channel {
 
 export interface ShimClientDeps {
   endpoint: string
+  /** Wait for a daemon hello on an accepted socket instead of initiating the handshake. */
+  acceptDialIn?: boolean
   /** Dial the daemon. Injected so tests need no real WebSocket. */
   dial: (url: string, opts: { subprotocol: string; path: string }) => Promise<ShimTransport>
   /** Reads the projected token. Injected for tests; defaults to the mounted path. */
@@ -55,7 +58,7 @@ export interface ShimClientDeps {
  * operations the daemon authorizes. Everything it carries is short-lived and re-obtained
  * by re-handshaking, so a compromised sandbox yields no lasting credential.
  *
- * It re-reads the projected token on every dial. The kubelet rotates that token and
+ * It re-reads the projected token on every accepted connection. The kubelet rotates that token and
  * invalidates it when the pod goes away, which is what makes first bind, resume from
  * suspension, and eviction indistinguishable here: each new pod simply presents its own.
  */
@@ -80,6 +83,7 @@ export class ShimClient {
    *  mutating shared state: a delayed close from a transport being replaced must not tear
    *  down the healthy replacement that already bound. */
   private channel?: Channel
+  private highestBinding?: { agentId: string; generation: number }
   private readonly clock: Clock
   private readonly backoff: Backoff
 
@@ -95,7 +99,7 @@ export class ShimClient {
   /**
    * Run the channel for the pod's lifetime, resolving once the FIRST binding succeeds so a
    * caller can wait for readiness. The supervision loop keeps running after that: a
-   * dropped socket re-dials with backoff, and the credential is renewed by re-handshaking
+   * dropped socket reconnects with backoff, and the credential is renewed by re-handshaking
    * before it expires.
    *
    * Both halves matter. Returning after the first bind and stopping there left a live
@@ -122,15 +126,15 @@ export class ShimClient {
             // from a close or from the renewal deadline coming due.
             const reason = await this.runUntilRebindNeeded(bound, channel)
             if (reason === 'renew') {
-              // A planned renewal is not a failure: re-dial at once, and keep the backoff
+              // A planned renewal is not a failure: reconnect at once, and keep the backoff
               // counter clean so a later genuine drop starts from its base delay.
               this.backoff.reset()
               continue
             }
             // A drop IS a failure signal, so it goes through backoff — the daemon may be
-            // rolling, and hammering it with immediate re-dials is what backoff prevents.
+            // rolling, and hammering it with immediate reconnects is what backoff prevents.
             const delay = this.backoff.next()
-            this.deps.log?.warn(`shim: channel dropped, re-dialing in ${delay}ms`)
+            this.deps.log?.warn(`shim: channel dropped, reconnecting in ${delay}ms`)
             await new Promise<void>((settle) => this.clock.setTimeout(settle, delay))
           } catch (err) {
             if (this.stopped) {
@@ -138,7 +142,7 @@ export class ShimClient {
               return
             }
             const delay = this.backoff.next()
-            this.deps.log?.warn(`shim: channel lost, re-dialing in ${delay}ms (${(err as Error).message})`)
+            this.deps.log?.warn(`shim: channel lost, reconnecting in ${delay}ms (${(err as Error).message})`)
             await new Promise<void>((settle) => this.clock.setTimeout(settle, delay))
           }
         }
@@ -159,7 +163,7 @@ export class ShimClient {
   /**
    * Resolve when the channel needs rebuilding: the socket closed, or the credential is
    * close enough to expiry to renew. Renewing at half the lifetime leaves a full half as
-   * margin for a slow TokenReview or a re-dial.
+   * margin for a slow TokenReview or a reconnect.
    */
   private runUntilRebindNeeded(bound: ShimBound, channel: Channel): Promise<'renew' | 'lost'> {
     if (channel.ended) {
@@ -188,7 +192,9 @@ export class ShimClient {
   }
 
   private async connectOnce(): Promise<{ bound: ShimBound; channel: Channel }> {
-    const token = (this.deps.readToken ?? (() => readFileSync(SHIM_IDENTITY_TOKEN_PATH, 'utf8').trim()))()
+    const legacyToken = this.deps.acceptDialIn
+      ? undefined
+      : (this.deps.readToken ?? (() => readFileSync(SHIM_IDENTITY_TOKEN_PATH, 'utf8').trim()))()
     const transport = await this.deps.dial(this.deps.endpoint, {
       subprotocol: SHIM_SUBPROTOCOL,
       path: SHIM_WS_PATH
@@ -198,11 +204,22 @@ export class ShimClient {
     this.channel = channel
     return await new Promise<{ bound: ShimBound; channel: typeof channel }>((resolve, reject) => {
       let settled = false
+      let expected: { agentId: string; generation: number } | undefined
+      let handshakeTimer: TimerHandle | undefined
+      const clearHandshakeTimer = (): void => {
+        if (handshakeTimer !== undefined) this.clock.clearTimeout(handshakeTimer)
+        handshakeTimer = undefined
+      }
       const fail = (message: string): void => {
         if (settled) return
         settled = true
+        clearHandshakeTimer()
         reject(new Error(message))
       }
+      handshakeTimer = this.clock.setTimeout(() => {
+        transport.close(4408, 'binding timeout')
+        fail('binding timed out')
+      }, HANDSHAKE_TIMEOUT_MS)
       transport.onClose((code, reason) => {
         // Unconditionally, and before the channel guard below: this transport's work is dead
         // whichever channel is current, because its replies had this socket as their only route.
@@ -214,7 +231,7 @@ export class ShimClient {
         this.bound = undefined
         if (this.transport === transport) this.transport = undefined
         // Before binding this fails the dial; after binding it ends the channel so the
-        // supervision loop re-dials instead of leaving the process alive but detached.
+        // supervision loop reconnects instead of leaving the process alive but detached.
         fail(`connection closed (${code}${reason ? ` ${reason}` : ''})`)
         // A close can land between binding and the loop arming `end`. Recording it means
         // the wait below observes it instead of parking on a channel that is already gone.
@@ -227,9 +244,40 @@ export class ShimClient {
           transport.close(4400, 'malformed frame')
           return
         }
+        if (frame.type === 'shim/hello' && 'agentId' in frame) {
+          if (!this.deps.acceptDialIn || expected || this.bound) {
+            transport.close(4400, 'unexpected hello')
+            return
+          }
+          const highest = this.highestBinding
+          if (highest && (highest.agentId !== frame.agentId || frame.generation < highest.generation)) {
+            transport.close(4403, 'stale generation')
+            return
+          }
+          expected = { agentId: frame.agentId, generation: frame.generation }
+          const token = (this.deps.readToken ?? (() => readFileSync(SHIM_IDENTITY_TOKEN_PATH, 'utf8').trim()))()
+          transport.send(
+            JSON.stringify({
+              type: 'shim/identity',
+              token,
+              ...(this.deps.workspaceRoot ? { workspaceRoot: this.deps.workspaceRoot } : {})
+            } satisfies Extract<ShimFrame, { type: 'shim/identity' }>)
+          )
+          return
+        }
         if (frame.type === 'shim/bound') {
+          if (
+            this.deps.acceptDialIn &&
+            (!expected || expected.agentId !== frame.agentId || expected.generation !== frame.generation)
+          ) {
+            transport.close(4403, 'binding mismatch')
+            fail('binding did not match the daemon hello')
+            return
+          }
           this.bound = frame
+          this.highestBinding = { agentId: frame.agentId, generation: frame.generation }
           this.backoff.reset()
+          clearHandshakeTimer()
           // A live stream's output resumes here rather than being lost with the old socket.
           this.flushPendingEvents(transport)
           if (!settled) {
@@ -247,14 +295,15 @@ export class ShimClient {
         if (frame.type === 'shim/request') void this.serve(transport, frame)
         if (frame.type === 'shim/cancel') this.cancel(frame)
       })
-      // The token is the whole proof of identity; the workspace root is a filesystem fact.
-      transport.send(
-        JSON.stringify({
-          type: 'shim/hello',
-          token,
-          ...(this.deps.workspaceRoot ? { workspaceRoot: this.deps.workspaceRoot } : {})
-        } satisfies Extract<ShimFrame, { type: 'shim/hello' }>)
-      )
+      if (!this.deps.acceptDialIn) {
+        transport.send(
+          JSON.stringify({
+            type: 'shim/hello',
+            token: legacyToken!,
+            ...(this.deps.workspaceRoot ? { workspaceRoot: this.deps.workspaceRoot } : {})
+          } satisfies Extract<ShimFrame, { type: 'shim/hello' }>)
+        )
+      }
     })
   }
 

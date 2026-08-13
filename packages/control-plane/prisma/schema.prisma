@@ -69,6 +69,8 @@ model Org {
   // Optional display name; when absent the console falls back to `slug`.
   name                   String?
   slug                   String          @unique
+  // Immutable provenance: the user credited with creating the org; personal orgs use their recipient.
+  createdByUserId        String?
   // Console avatar descriptor (protocol AgentIcon): {kind:'runtime'} | {kind:'glyph',glyph,color}
   // | {kind:'image'}. Null ⇒ generated default (glyph plate keyed off the org id). An `image`
   // icon's bytes live in the object store (docs/designs/icon-uploads.md), served by GET
@@ -80,6 +82,7 @@ model Org {
   createdAt              DateTime        @default(now()) @db.Timestamptz(6)
   updatedAt              DateTime        @updatedAt @db.Timestamptz(6)
 
+  createdBy                 User?                         @relation("OrgCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
   members                   Membership[]
   daemons                   Daemon[]
   agents                    Agent[]
@@ -106,6 +109,7 @@ model Org {
   environmentEntries        OrganizationEnvironmentEntry[]
   clusterExecution          OrgClusterExecution?
 
+  @@index([createdByUserId])
   @@map("org")
 }
 
@@ -128,6 +132,7 @@ model User {
   createdAt               DateTime  @default(now()) @db.Timestamptz(6)
 
   memberships                      Membership[]
+  createdOrgs                       Org[]                      @relation("OrgCreatedBy")
   apiKeys                          ApiKey[]
   createdAgents                    Agent[]                    @relation("AgentCreatedBy")
   modifiedAgents                   Agent[]                    @relation("AgentModifiedBy")
@@ -2033,13 +2038,13 @@ model IntegrationChannel {
   space         String?
   isPrivate     Boolean          @default(false)
   kind          ConversationKind @default(channel)
-  // Relay-backed channel rows repeat the effective trigger across each active
-  // integration so deleting the canonical owner does not discard channel state.
-  // Direct rows remain independently configurable per integration.
+  // Relay-backed shared-bot rows repeat the effective trigger across each active
+  // integration so deleting the canonical owner does not discard conversation state.
+  // Classic integrations keep their trigger per integration.
   trigger       ChannelTrigger   @default(mention)
-  // Per-channel default/owning agent for a SHARED bot (shared-bot-relay.md §10.1
-  // channel ownership — the primary disambiguation path). Exactly one active
-  // integration row per shared channel carries the owner; sibling rows are null.
+  // Per-conversation default/owning agent for a SHARED bot (shared-bot-relay.md §10.1
+  // conversation ownership — the primary disambiguation path). Exactly one active
+  // integration row per shared conversation carries the owner; sibling rows are null.
   // Irrelevant for a classic integration, where its agent is the only target.
   agentId       String?          @db.Uuid
   firstSeenAt   DateTime         @default(now()) @db.Timestamptz(6)
@@ -2775,50 +2780,30 @@ model OrgClusterExecution {
   /// Bumped on every write. The provisioner applies the current row and then
   /// re-reads this: a changed value means a concurrent writer superseded the
   /// snapshot it just applied, so it applies again. Without the fence two
-  /// interleaved writes can leave the row and the resource permanently apart —
-  /// the operator reconciles the CR, not this table.
+  /// interleaved writes leave the row and the resource apart until the periodic
+  /// re-apply's next rotation — the operator reconciles the CR, not this table.
   specRevision         Int                 @default(1)
   resourceName         String              @unique
   /// Quiesce without tearing down: daemon to zero, sandboxes drained.
   suspend              Boolean             @default(false)
   daemonImage          String
   daemonTier           String              @default("small")
-  /// Name of the Secret the key authority writes; immutable per the CRD.
-  credentialSecretName String              @default("ac-daemon-token")
-  /// Bumped by the key authority after a credential rotation; forces a Recreate.
-  credentialRevision   String?
-  /// The daemon identity the org's supervisor pod authenticates as. Created with
-  /// the first credential and reused by every rotation, so the pod keeps one
-  /// identity — its sessions, agents, and history — across key changes.
-  credentialDaemonId   String?             @db.Uuid
-  /// The api_key row currently published in the Secret; revoked when the next
-  /// rotation lands, so exactly one live key exists per envelope.
-  credentialApiKeyId   String?
-  /// When the in-flight credential transition was claimed, and by whom. The
-  /// token is the fencing half: EVERY write in a transition — staging,
-  /// committing, retiring, and the release itself — is conditional on it, so a
+  /// The daemon record the retired API-key path minted this envelope's key for.
+  /// Nothing writes it any more: an in-cluster daemon authenticates with its
+  /// projected ServiceAccount token, and the binding lives on
+  /// `daemon.clusterIdentity`. It is kept because an envelope provisioned before
+  /// that path has no such binding until its pod reconnects — this is what the
+  /// first token connect adopts, so placements and session history survive, and
+  /// what excepts the envelope's own daemon from the org-delete guard until then.
+  legacyKeyDaemonId    String?             @db.Uuid
+  /// When the in-flight envelope transition was claimed, and by whom. The token
+  /// is the fencing half: every write in a transition is conditional on it, so a
   /// holder whose lease expired and whose claim was taken over can no longer
   /// mutate the row or unlock its successor. The timestamp only decides when a
-  /// takeover is allowed, so a process that dies mid-rotation cannot wedge the
-  /// envelope.
-  credentialRotationAt    DateTime?        @db.Timestamptz(6)
-  credentialRotationToken String?
-  /// Monotonic per claim. The token fences the DATABASE; this fences the
-  /// CLUSTER: it is stamped on the credential Secret, and a publish refuses to
-  /// overwrite a Secret already carrying a higher one. Without it a request that
-  /// stalled past its lease could land its Secret after its successor's and
-  /// restore a key the row no longer names.
-  credentialRotationSeq   Int              @default(0)
-  /// A key that has been minted and may already be published, but is not yet the
-  /// committed credential. Written BEFORE the Secret is, because every failure
-  /// after that point would otherwise leave a live non-expiring key with nothing
-  /// naming it. Whoever next claims the transition adopts it for revocation.
-  credentialStagedApiKeyId String?
-  /// A committed credential whose `credentialRevision` has not been applied to
-  /// the CR yet — the rollout is owed. Bumping the row is durable intent; the pod
-  /// only rolls once the resource carries it, so until the apply lands no
-  /// superseded key may be revoked. The maintenance loop retries the apply.
-  credentialRolloutPending Boolean @default(false)
+  /// takeover is allowed, so a process that dies mid-transition cannot wedge the
+  /// envelope. Enable, disable and the teardown drain all take it.
+  envelopeTransitionAt    DateTime?        @db.Timestamptz(6)
+  envelopeTransitionToken String?
   runtimeImage         String
   /// `{name, warmReplicas}[]` — the org's sandbox tiers and warm-pool sizes.
   runtimeTiers         Json                @db.JsonB
@@ -2856,25 +2841,4 @@ model PendingEnvelopeTeardown {
   createdAt    DateTime @default(now()) @db.Timestamptz(6)
 
   @@map("pending_envelope_teardown")
-}
-
-/// A daemon key the cluster provisioner has finished with and must revoke.
-/// Daemon keys never expire, so a revoke that is merely attempted is not a
-/// revoke: a transient failure would leave a live credential with nothing left
-/// holding its id. The intent is recorded BEFORE the attempt and cleared only
-/// once the key is actually revoked, so the maintenance loop can retry forever.
-///
-/// Deliberately NO foreign key to `api_key` or `org`: the row must survive an
-/// organization deletion, which is one of the moments a key needs retiring.
-model PendingDaemonKeyRevocation {
-  apiKeyId  String   @id // the key to revoke (identity + idempotency key)
-  orgId     String // whose envelope it belonged to; diagnostics only
-  reason    String // recorded on the api_key row when the revoke lands
-  /// True ⇒ named but NOT yet eligible: the Secret may still carry this key, so
-  /// revoking it now could strand the pod on a dead credential. Cleared once a
-  /// higher-sequence publish has landed and its rollout has been asked for.
-  held      Boolean  @default(false)
-  createdAt DateTime @default(now()) @db.Timestamptz(6)
-
-  @@map("pending_daemon_key_revocation")
 }

@@ -12,8 +12,8 @@ import { chatPlatformName } from '@/lib/platform-labels'
 
 /** The per-conversation trigger toggle: a ⚡ marker followed by the segmented
  *  bar. Channels: "off" / "any message" / "@-mention" (the default, so it sits
- *  last). DM rows are binary off/on for every agent — resource-visibility.md
- *  §14. Every segment carries hover copy. */
+ *  last). DM rows are binary off/on; shared bots project that state across every
+ *  membership row. Every segment carries hover copy. */
 function TriggerToggle({
   channel,
   platform,
@@ -260,7 +260,7 @@ export const canLeaveRow = (kind: IntegrationChannelRow['kind'], platform?: stri
  *
  * Three cases hide behind "cannot leave", and they call for different sentences:
  * a Discord bot belongs to a SERVER, so the way out is the band heading above the row,
- * and naming Discord would send the operator hunting for a per-channel control that
+ * and naming Discord would send the operator hunting for a per-conversation control that
  * does not exist; a direct conversation is not somewhere the bot was ever ADDED, so
  * there is nothing to be shown out of and the row is only a listing; everything else
  * has a real membership the operator ends in the chat app.
@@ -432,7 +432,7 @@ function RowActions({
 }
 
 /**
- * Explicit per-channel owners of one bot, merged across every install of it.
+ * Explicit per-conversation owners of one bot, merged across every install of it.
  *
  * A shared bot fans its membership snapshot out to one integration per agent,
  * while the owner is persisted on a single canonical row — so the row this
@@ -440,30 +440,30 @@ function RowActions({
  * names the owner. The CP already resolves this bot-wide (GET /integrations
  * stamps the effective owner onto every install, from ALL installs including
  * ones the viewer can't see, and PATCH …/channels/:id routes ownership through
- * `httpBot.updateChannel`), so this is the client-side safety net for a row
+ * `httpBot.updateConversation`), so this is the client-side safety net for a row
  * whose owner the CP couldn't resolve — never the only thing keeping the two
  * pages agreeing. Mirrors `botChannels` in SettingsView.
  */
-export function channelOwners(botId: string, integrations: IntegrationRow[]): Map<string, string> {
+export function conversationOwners(botId: string, integrations: IntegrationRow[]): Map<string, string> {
   const owners = new Map<string, string>()
   for (const i of integrations) {
     if (i.botId !== botId) continue
     for (const c of i.channels) {
-      if (isDirectConversation(c.kind) || !c.agentId || owners.has(c.channelId)) continue
+      if (!c.agentId || owners.has(c.channelId)) continue
       owners.set(c.channelId, c.agentId)
     }
   }
   return owners
 }
 
-/** Per-channel default dispatch for a SHARED bot (§10.1). Every active shared
- *  channel has exactly one owner: the agent that answers whatever the channel's
+/** Per-conversation default dispatch for a SHARED bot (§10.1). Every active shared
+ *  conversation has exactly one owner: the agent that answers whatever its
  *  routing rules don't hand to someone else.
  *
  *  The design keeps this strictly apart from the trigger toggle ("切换 default 和
  *  trigger 是两类控制，不要混一起") — a compact avatar + chevron whose popover
  *  READS the current default and offers exactly one action, claiming the channel
- *  for the agent whose page this is. Handing a channel to some third agent stays
+ *  for the agent whose page this is. Handing a conversation to some third agent stays
  *  in Settings → Bots, where the whole roster is in view. */
 function DefaultAgentPicker({
   current,
@@ -584,7 +584,7 @@ function DefaultAgentPicker({
 /**
  * The conversation rows of one integration — one row per channel the bot is in
  * (plus one row per reported direct conversation), each
- * with its trigger toggle (and, for a SHARED bot, the per-channel default-dispatch
+ * with its trigger toggle (and, for a SHARED bot, the per-conversation default-dispatch
  * popover ahead of it), closed by the "invite the bot" hint. Render inside a
  * padding-less card whose header row sits above. Demo rows (no `integrationId`)
  * are inert.
@@ -601,14 +601,14 @@ export function IntegrationChannelList({
 }: {
   integrationId?: string
   channels: IntegrationChannelRow[]
-  /** The backing bot id — resolves the member agents offered as per-channel defaults. */
+  /** The backing bot id — resolves the member agents offered as per-conversation defaults. */
   botId?: string
   /** Which platform this integration talks to. Decides what "leave" can even mean:
    *  one conversation (Slack, Telegram), a whole server (Discord), or nothing. */
   platform?: string
   /** The agent whose page this is — the "Make … default" target of the default-dispatch popover. */
   agentId?: string
-  /** When true (shared bot), show the per-channel default-agent picker. */
+  /** When true (shared bot), show the per-conversation default-agent picker. */
   shareable?: boolean
   /** Restricted-agent integration (resource-visibility.md §14): conversations are
    *  gated — new ones start off and the banner explains the gate. */
@@ -630,26 +630,26 @@ export function IntegrationChannelList({
       setError(cause instanceof Error ? cause.message : String(cause))
     }
   }, [])
-  // The agents that share this bot — the candidate per-channel defaults.
+  // The agents that share this bot — the candidate per-conversation defaults.
   const memberIds = shareable && botId ? (bots.find((b) => b.id === botId)?.agentIds ?? []) : []
   const member = (id: string): MemberAgent => {
     const a = agents.find((x) => x.id === id)
     return { id, label: a ? agentLabel(a) : id, runtime: a?.runtime ?? a?.model ?? '', icon: a?.icon }
   }
-  // The agents that share this bot. A channel's default is its explicit owner —
+  // The agents that share this bot. A conversation's default is its explicit owner —
   // this row's when the CP stamped it, else whichever sibling install of the bot
   // persists it — falling back to the earliest install, the same ordering
-  // httpBot.ts's compiler uses for a channel nobody has ever claimed.
+  // httpBot.ts's compiler uses for a conversation nobody has ever claimed.
   const members = memberIds.map(member)
-  const owners = shareable && botId ? channelOwners(botId, integrations) : undefined
+  const owners = shareable && botId ? conversationOwners(botId, integrations) : undefined
   const viewer = agentId && memberIds.includes(agentId) ? member(agentId) : undefined
   const defaultAgent = (c: IntegrationChannelRow) => {
     const explicit = c.agentId ?? owners?.get(c.channelId)
     return (explicit ? members.find((m) => m.id === explicit) : undefined) ?? members[0]
   }
   const channelRows = channels.filter((c) => !isDirectConversation(c.kind))
-  // Direct conversations are independently configurable for every agent. A 1:1 DM
-  // gets the binary Off/On control above; a group DM keeps the channel-style trigger.
+  // Direct rows keep their compact On/Off trigger control; shared bots project it
+  // bot-wide just like channels.
   const dmRows = channels.filter((c) => isDirectConversation(c.kind))
   const grouped = groupBySpace(channelRows)
   /**
@@ -684,7 +684,7 @@ export function IntegrationChannelList({
     )
   }
   const row = (c: IntegrationChannelRow) => {
-    const def = !isDirectConversation(c.kind) && shareable ? defaultAgent(c) : undefined
+    const def = shareable ? defaultAgent(c) : undefined
     return (
       <div
         key={c.channelId}
@@ -699,10 +699,10 @@ export function IntegrationChannelList({
           {def && (
             <>
               {/* The PATCH goes through THIS agent's integration on purpose:
-                  ownership of a shared (http) channel is bot-scoped server-side —
+                  ownership of a shared (http) conversation is bot-scoped server-side —
                   the route resolves the effective owner across every install,
                   fences on it (`expectedOwnerAgentId`) and hands the write to
-                  `httpBot.updateChannel`, so exactly one row stays canonical no
+                  `httpBot.updateConversation`, so exactly one row stays canonical no
                   matter which install the console patched. */}
               <DefaultAgentPicker
                 current={def}
@@ -780,9 +780,9 @@ export function IntegrationChannelList({
               where leaving is done instead. It deliberately no longer narrates the
               menu's own items: those explain themselves on screen, and repeating them
               here in different words was most of what made this card read oddly. */}
-          {`A ${roomNoun(platform)} appears here once the bot is added to it, and its trigger is set per ${roomNoun(platform)}.`}
+          {`A ${roomNoun(platform)} appears here once the bot is added to it, and its trigger is set per conversation.`}
           {' Direct messages appear when someone writes to the bot.'}
-          {shareable && ' Default dispatch is the agent who handles unmatched messages.'}
+          {shareable && ' Default dispatch is the agent who handles unmatched messages in the conversation.'}
           {/* The platform's own tail, when it has one: Discord's servers-not-channels
               note, Slack's remove-it-in-Slack note (which encodes an authoritative
               membership snapshot — the list updates by itself). */}

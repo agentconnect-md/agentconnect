@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { ABSENT_ENVELOPE, ClusterNamingError, buildSpec, orgResourceName, projectStatus } from './spec.js'
 import type { ClusterExecutionSettings } from '../persistence/ports.js'
 
+const CP_URL = 'wss://api.example.test/daemon/ws'
+
 const SETTINGS: ClusterExecutionSettings = {
   orgId: 'cm5exampleorgid0000000001',
   enabled: true,
@@ -50,14 +52,14 @@ describe('orgResourceName', () => {
 
 describe('buildSpec', () => {
   it('projects every control-plane-owned field', () => {
-    expect(buildSpec(SETTINGS, 'acme')).toEqual({
+    expect(buildSpec(SETTINGS, CP_URL, 'acme')).toEqual({
       displayName: 'acme',
       suspend: false,
       daemon: {
         image: 'registry.example.test/daemon:1.2.3',
-        tier: 'small',
-        credentialSecretName: 'ac-daemon-token'
+        tier: 'small'
       },
+      controlPlane: { url: CP_URL },
       runtime: {
         image: 'registry.example.test/runtime:1.2.3',
         tiers: [{ name: 'small', warmReplicas: 2 }]
@@ -67,17 +69,16 @@ describe('buildSpec', () => {
     })
   })
 
-  it('omits credentialRevision until a credential has been issued', () => {
-    expect(buildSpec(SETTINGS).daemon.credentialRevision).toBeUndefined()
-    expect(buildSpec({ ...SETTINGS, credentialRevision: '7' }).daemon.credentialRevision).toBe('7')
+  it('carries this control plane\u2019s own address, the one thing the pod cannot derive', () => {
+    expect(buildSpec(SETTINGS, CP_URL).controlPlane).toEqual({ url: CP_URL })
   })
 
   it('omits displayName when the org has no name to show', () => {
-    expect('displayName' in buildSpec(SETTINGS)).toBe(false)
+    expect('displayName' in buildSpec(SETTINGS, CP_URL)).toBe(false)
   })
 
   it('carries suspend through so the operator can quiesce without deletion', () => {
-    expect(buildSpec({ ...SETTINGS, suspend: true }).suspend).toBe(true)
+    expect(buildSpec({ ...SETTINGS, suspend: true }, CP_URL).suspend).toBe(true)
   })
 })
 
@@ -87,10 +88,10 @@ describe('projectStatus', () => {
       conditions: [
         { type: 'Degraded', status: 'False' },
         { type: 'Ready', status: 'True' },
-        { type: 'CredentialReady', status: 'Unknown' }
+        { type: 'Progressing', status: 'Unknown' }
       ]
     })
-    expect(status.conditions.map((c) => c.type)).toEqual(['Ready', 'CredentialReady', 'Degraded'])
+    expect(status.conditions.map((c) => c.type)).toEqual(['Ready', 'Progressing', 'Degraded'])
   })
 
   it('keeps a condition the operator adds later, after the known ones', () => {

@@ -1,10 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { RcGithubRerequest } from '@agentconnect.md/protocol'
+import { HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED, type RcGithubRerequest } from '@agentconnect.md/protocol'
 import { AgentId, DaemonId, HookId, OrgId } from '../domain/ids.js'
 import type { HookRecord, HookRepo, HookReviewProjectionRecord, HookRunRecord } from '../persistence/ports.js'
 import { GithubRerequestService } from './rerequest.service.js'
 
 const HOOK_ID = HookId('88888888-8888-4888-8888-888888888888')
+const HOOK_ID_B = HookId('77777777-7777-4777-8777-777777777777')
 const AGENT_ID = AgentId('33333333-3333-4333-8333-333333333333')
 const DAEMON_ID = DaemonId('dddddddd-dddd-4ddd-8ddd-dddddddddddd')
 const HEAD_SHA = 'a'.repeat(40)
@@ -28,6 +29,13 @@ const suiteRequest: RcGithubRerequest = {
   repoId: REPO_ID.toString(),
   headSha: HEAD_SHA,
   deliveryKey: 'delivery-suite-rerun-1'
+}
+const workflowRequest: RcGithubRerequest = {
+  scope: 'workflow',
+  installationId: String(INSTALLATION_ID),
+  repoId: REPO_ID.toString(),
+  headSha: HEAD_SHA,
+  deliveryKey: 'delivery-workflow-start-1'
 }
 
 function projection(overrides: Partial<HookReviewProjectionRecord> = {}): HookReviewProjectionRecord {
@@ -77,6 +85,7 @@ function hook(overrides: Partial<HookRecord> = {}): HookRecord {
     kind: 'github',
     enabled: true,
     repoId: REPO_ID,
+    reviewPolicy: 'full',
     reportingMode: 'check',
     gateMode: 'informational',
     projectionEpoch: 2n,
@@ -113,7 +122,19 @@ function run(overrides: Partial<HookRunRecord> = {}): HookRunRecord {
     baseChanged: false,
     projectionId: projection().id,
     projectionGeneration: 3n,
+    startedAt: new Date(0),
+    turnStartedAt: null,
+    completedAt: new Date(1),
+    orphanedAt: null,
+    reviewAttemptId: null,
+    reviewAttemptState: null,
+    reviewErrorCode: null,
+    reviewId: null,
+    reviewEvent: null,
+    verdict: null,
+    sessionId: null,
     status: 'failed',
+    reason: HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED,
     ...overrides
   } as HookRunRecord
 }
@@ -123,6 +144,7 @@ function make(
     projection?: HookReviewProjectionRecord | null
     hook?: HookRecord | null
     run?: HookRunRecord | null
+    runs?: HookRunRecord[]
   } = {}
 ) {
   const findReviewProjectionByCheckRunId = vi.fn(async () =>
@@ -130,6 +152,11 @@ function make(
   )
   const listReviewProjectionsForSuiteRerequest = vi.fn(async () => {
     const candidate = opts.projection === undefined ? projection() : opts.projection
+    return candidate ? [candidate] : []
+  })
+  const listReviewRequestRequiredRuns = vi.fn(async () => {
+    if (opts.runs) return opts.runs
+    const candidate = opts.run === undefined ? run() : opts.run
     return candidate ? [candidate] : []
   })
   const get = vi.fn(async () => (opts.hook === undefined ? hook() : opts.hook))
@@ -142,6 +169,7 @@ function make(
     hooks: {
       findReviewProjectionByCheckRunId,
       listReviewProjectionsForSuiteRerequest,
+      listReviewRequestRequiredRuns,
       getUnscoped: get,
       getManyUnscoped: getMany,
       getRunById
@@ -149,6 +177,7 @@ function make(
       HookRepo,
       | 'findReviewProjectionByCheckRunId'
       | 'listReviewProjectionsForSuiteRerequest'
+      | 'listReviewRequestRequiredRuns'
       | 'getUnscoped'
       | 'getManyUnscoped'
       | 'getRunById'
@@ -159,6 +188,7 @@ function make(
     service,
     findReviewProjectionByCheckRunId,
     listReviewProjectionsForSuiteRerequest,
+    listReviewRequestRequiredRuns,
     get,
     getMany,
     getRunById
@@ -210,6 +240,66 @@ describe('GithubRerequestService', () => {
     const h = make()
     await expect(h.service.resolve({ ...suiteRequest, appId: String(APP_ID + 1) })).resolves.toEqual({ allowed: false })
     expect(h.listReviewProjectionsForSuiteRerequest).not.toHaveBeenCalled()
+  })
+
+  it('resolves each current no-effect external-PR run when an approved workflow starts', async () => {
+    const h = make()
+    await expect(h.service.resolve(workflowRequest)).resolves.toEqual({
+      allowed: true,
+      targets: [
+        {
+          hookId: HOOK_ID,
+          pullNumber: 585,
+          baseSha: BASE_SHA,
+          configRevision: '7',
+          dispatchRevision: '9'
+        }
+      ]
+    })
+    expect(h.listReviewRequestRequiredRuns).toHaveBeenCalledWith(REPO_ID, HEAD_SHA, undefined)
+    expect(h.listReviewProjectionsForSuiteRerequest).not.toHaveBeenCalled()
+  })
+
+  it('preserves a signed workflow pull-request association when GitHub supplies one', async () => {
+    const h = make({ runs: [run({ pullNumber: 586 })] })
+    await expect(h.service.resolve({ ...workflowRequest, pullNumber: 586 })).resolves.toEqual({
+      allowed: true,
+      targets: [
+        expect.objectContaining({
+          hookId: HOOK_ID,
+          pullNumber: 586
+        })
+      ]
+    })
+    expect(h.listReviewRequestRequiredRuns).toHaveBeenCalledWith(REPO_ID, HEAD_SHA, 586)
+  })
+
+  it('fails closed when one hook has multiple waiting PRs on the same head SHA', async () => {
+    const h = make({
+      runs: [run({ id: 'run-1', pullNumber: 585 }), run({ id: 'run-2', pullNumber: 586 })]
+    })
+    await expect(h.service.resolve(workflowRequest)).resolves.toEqual({ allowed: false })
+    expect(h.getMany).not.toHaveBeenCalled()
+  })
+
+  it('fails closed when shared-head candidates across hooks disagree on the PR', async () => {
+    const h = make({
+      runs: [run({ hookId: HOOK_ID, pullNumber: 585 }), run({ hookId: HOOK_ID_B, pullNumber: 586 })]
+    })
+    await expect(h.service.resolve(workflowRequest)).resolves.toEqual({ allowed: false })
+    expect(h.getMany).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['different installation', run({ sourceInstallationId: INSTALLATION_ID + 1n }), hook()],
+    ['run already started', run({ turnStartedAt: new Date(1) }), hook()],
+    ['wrong waiting reason', run({ reason: 'daemon_offline' }), hook()],
+    ['review disabled', run(), hook({ reviewPolicy: 'off' })],
+    ['changed projection epoch', run(), hook({ projectionEpoch: 3n })]
+  ])('denies a workflow approval for %s', async (_label, waitingRun, currentHook) => {
+    await expect(make({ run: waitingRun, hook: currentHook }).service.resolve(workflowRequest)).resolves.toEqual({
+      allowed: false
+    })
   })
 
   it.each([

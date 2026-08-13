@@ -96,6 +96,12 @@ export const RcVerify = z.discriminatedUnion('kind', [
     kind: z.literal('daemon-key'),
     credential: z.string().min(1)
   }),
+  // An in-cluster daemon's projected ServiceAccount token, reviewed against the org's
+  // cluster. Resolves to the same daemonId + orgId a key would.
+  z.object({
+    kind: z.literal('daemon-token'),
+    credential: z.string().min(1)
+  }),
   z.object({
     kind: z.literal('webchat-token'),
     credential: z.string().min(1),
@@ -107,6 +113,7 @@ export type RcVerify = z.infer<typeof RcVerify>
 // C→R REP (corr = rc/verify id). `ok:false` carries no detail beyond `reason`
 // (no existence oracle). On success the identity fields depend on `kind`:
 //  - daemon-key     → daemonId + orgId
+//  - daemon-token   → daemonId + orgId (same shape; a different credential)
 //  - webchat-token  → userId (+ display `user`) + agentId + daemonId + orgId +
 //    conversationId, where daemonId is the agent's CURRENT placement and the
 //    conversation id is the CP-authorized binding carried by the token.
@@ -180,10 +187,7 @@ export type RcGithubCommentAuthz = z.infer<typeof RcGithubCommentAuthz>
 export const RcGithubCommentAuthzResult = z.object({ allowed: z.boolean() }).strict()
 export type RcGithubCommentAuthzResult = z.infer<typeof RcGithubCommentAuthzResult>
 
-// R→C REQ — a signature-verified Check rerequest control action. A run action
-// carries its opaque Check identity; a suite action carries the App +
-// installation identity needed to infer that App's existing projections for
-// the revision. The CP resolves durable ownership before authorizing delivery.
+// R→C REQ — signature-verified Check identity, suite identity, or waiting external-PR workflow control.
 const GithubNumericId = z.string().regex(/^[1-9]\d*$/)
 export const RcGithubRerequest = z.union([
   z
@@ -206,13 +210,21 @@ export const RcGithubRerequest = z.union([
       headSha: z.string().min(1),
       deliveryKey: z.string().min(1).max(200)
     })
+    .strict(),
+  z
+    .object({
+      scope: z.literal('workflow'),
+      installationId: GithubNumericId,
+      repoId: GithubNumericId,
+      headSha: z.string().min(1),
+      pullNumber: z.number().int().positive().optional(),
+      deliveryKey: z.string().min(1).max(200)
+    })
     .strict()
 ])
 export type RcGithubRerequest = z.infer<typeof RcGithubRerequest>
 
-// C→R REP (corr = rc/github-rerequest id). A denial is intentionally bare. On
-// success the CP returns only metadata already bound to the projection's
-// current HookRun; the relay re-fences it against its current compiled rule.
+// C→R REP — a bare denial or durable run targets that relay re-fences against current compiled rules.
 const RcGithubRerequestTarget = z
   .object({
     hookId: z.string().uuid(),

@@ -2,7 +2,7 @@
  * The `AgentConnectOrg` contract as the control plane uses it
  * (docs/designs/agentconnect-org-operator.md §2).
  *
- * The CRD in `charts/operator/templates/crd.yaml` is authoritative — the API
+ * The CRD in `charts/operator/crd/agentconnectorg.yaml` is authoritative — the API
  * server validates every write against it and prunes anything unknown. The
  * control plane is a WRITER of `spec` and a READER of `status`, so it needs the
  * group coordinates, the field shapes it emits, and the condition names it
@@ -19,18 +19,10 @@ export const PLURAL = 'agentconnectorgs'
 /** Server-side-apply field manager; the control plane owns exactly `spec`. */
 export const FIELD_MANAGER = 'agentconnect-control-plane'
 
-/** CRD default for `spec.daemon.credentialSecretName`; immutable once created. */
-export const DEFAULT_CREDENTIAL_SECRET_NAME = 'ac-daemon-token'
-
-/** Operator-owned status conditions, in the order the console renders them. */
-export const CONDITION_TYPES = [
-  'Ready',
-  'NamespaceReady',
-  'CredentialReady',
-  'LimitsApplied',
-  'Progressing',
-  'Degraded'
-] as const
+/** Operator-owned status conditions, in the order the console renders them.
+ *  `CredentialReady` retired with the key path — an in-cluster daemon carries no
+ *  credential, and whether it registered is a fact only this side holds. */
+export const CONDITION_TYPES = ['Ready', 'NamespaceReady', 'LimitsApplied', 'Progressing', 'Degraded'] as const
 
 export type ConditionType = (typeof CONDITION_TYPES)[number]
 
@@ -47,9 +39,11 @@ export interface AgentConnectOrgSpec {
   daemon: {
     image: string
     tier: string
-    credentialSecretName: string
-    credentialRevision?: string
   }
+  /** This control plane's own daemon WebSocket URL, passed through to the daemon pod as
+   *  env. Written here because the control plane is the authority on its own address, and
+   *  in plain text because a URL is not a secret. */
+  controlPlane: { url: string }
   runtime: {
     image: string
     tiers: { name: string; warmReplicas: number }[]

@@ -39,7 +39,6 @@ import {
   AgentConnectOrgApi,
   ClusterDaemonIdentityService,
   ClusterExecutionService,
-  ClusterSecretApi,
   ClusterMaintenanceLoop,
   loadClusterAccess
 } from './cluster/index.js'
@@ -396,6 +395,19 @@ export function buildContainer(
   const clusterHttp = clusterAccess ? new K8sHttp(clusterAccess) : undefined
   const clusterOrgApi =
     clusterAccess && clusterHttp ? new AgentConnectOrgApi(clusterHttp, clusterAccess.namespace) : undefined
+  // The in-cluster daemon's token path; undefined ⇒ this deployment only accepts API keys.
+  // Shared by both doors a daemon can knock on — the CP socket and, through `rc/verify`,
+  // the relay — so the relay hop can never be the weaker one.
+  const clusterIdentity =
+    clusterHttp && clusterOrgApi
+      ? new ClusterDaemonIdentityService(
+          clusterHttp,
+          clusterOrgApi,
+          repos.orgClusterExecution,
+          repos.daemon,
+          config.CLUSTER_ORG_NAMESPACE_PREFIX
+        )
+      : undefined
   const auth = new DaemonAuthService(
     codec,
     repos.apiKey,
@@ -411,16 +423,7 @@ export function buildContainer(
     },
     // Resolves the daemon's org slug for the org-scoped deep link (`…/<orgSlug>/sessions/…`).
     repos.org,
-    // The in-cluster daemon's token path; undefined ⇒ this deployment only accepts API keys.
-    clusterHttp && clusterOrgApi
-      ? new ClusterDaemonIdentityService(
-          clusterHttp,
-          clusterOrgApi,
-          repos.orgClusterExecution,
-          repos.daemon,
-          config.CLUSTER_ORG_NAMESPACE_PREFIX
-        )
-      : undefined
+    clusterIdentity
   )
   const apiKeys = new ApiKeyService(codec, repos.apiKey, repos.daemon, repos.audit, clock)
   const oauth = new OAuthService(repos.oauth, apiKeys, codec, clock)
@@ -437,10 +440,16 @@ export function buildContainer(
   // Relay↔CP `rc/auth` dual-mode verifier (§8): shared RELAY_TOKEN and/or per-relay
   // ApiKey. RELAY_TOKEN unset ⇒ token mode is off; org-less relay keys reuse the
   // pepper-hash mechanism (no epoch — relays carry no fencing state).
-  const relayAuth = new RelayAuthService(codec, repos.apiKey, clock, {
-    ...(config.RELAY_TOKEN ? { RELAY_TOKEN: config.RELAY_TOKEN } : {}),
-    HEARTBEAT_SEC: config.HEARTBEAT_SEC
-  })
+  const relayAuth = new RelayAuthService(
+    codec,
+    repos.apiKey,
+    clock,
+    {
+      ...(config.RELAY_TOKEN ? { RELAY_TOKEN: config.RELAY_TOKEN } : {}),
+      HEARTBEAT_SEC: config.HEARTBEAT_SEC
+    },
+    clusterIdentity
+  )
   const relayStaleMs = config.RELAY_STALE_SEC * 1000
 
   // Uploaded-icon object store (docs/designs/icon-uploads.md): a neutral S3-compatible
@@ -486,8 +495,7 @@ export function buildContainer(
             // envelope daemon and a hand-run one dial exactly the same endpoint.
             controlPlaneUrl: daemonWsUrl(httpServerConfigFrom(config, { DEFAULT_OWNER_ID, relayStaleMs }))
           },
-          new ClusterSecretApi(clusterHttp),
-          apiKeys,
+          repos.daemon,
           clock
         )
       : undefined
@@ -924,6 +932,7 @@ export function buildContainer(
           }
         }
       : {},
+    maxOrgsPerNonAdminUser: opts.deploymentConfig?.values.features.maxOrgsPerNonAdminUser ?? 1,
     clock,
     // The same late-bound façade the orchestrators above hold (see its
     // definition): the providers below are constructed WITH `httpDeps` — their
@@ -1047,11 +1056,13 @@ export function buildContainer(
     http.log
   )
 
-  // Retires deleted organizations' AgentConnectOrgs and superseded daemon keys.
-  // Both intents are recorded durably before the act, so this loop is the
-  // backstop for a cluster that was unreachable, a process that died between the
-  // two, or a deployment that had cluster execution switched off at the time;
-  // the request paths kick their own work inline for latency. Inert when off.
+  // Retires deleted organizations' AgentConnectOrgs. The intent is recorded
+  // durably before the act, so this loop is the backstop for a cluster that was
+  // unreachable, a process that died between the two, or a deployment that had
+  // cluster execution switched off at the time; the delete route kicks the same
+  // work inline for latency. It also re-applies a slice of the live envelopes
+  // each pass, so a spec field rendered from THIS process's configuration
+  // converges on envelopes written before that configuration. Inert when off.
   const clusterMaintenance = new ClusterMaintenanceLoop(
     clusterExecution,
     clock,

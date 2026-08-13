@@ -68,6 +68,7 @@ async function readyClient(over: Partial<CpClientDeps> = {}, serverFeatures: str
   const sessionRead = {
     list: vi.fn(() => ({ sessions: [] })),
     history: vi.fn(() => ({ sessionId: DAEMON_ID, messages: [] })),
+    toolBody: vi.fn(() => ({ sessionId: DAEMON_ID, toolCallId: 'tool', data: '', totalBytes: 0 })),
     ...((over.sessionRead as any) ?? {})
   }
   const workspaceRead = {
@@ -938,6 +939,7 @@ describe('CpClient dispatch', () => {
       frame('session/history', { agentId: CRON_AGENT_ID, sessionId: DAEMON_ID, limit: 50 }, { epoch: 5 })
     )
     t.pushInbound(JSON.stringify(f))
+    await tick()
     const rep = JSON.parse(t.sent[0]!)
     expect(rep.type).toBe('session/history/page')
     expect(rep.corr).toBe(f.id)

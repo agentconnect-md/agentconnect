@@ -895,18 +895,28 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                 // wake, #753): it never streamed output/done to this socket, so the
                 // completed post IS its first and only rendering here.
                 const agentId = m.post.author.agentId
-                pushStep(id, {
-                  kind: 'done',
-                  turnId: m.post.postId,
-                  // The daemon persists this reply before the post frame ever arrives, so
-                  // `postId` is what lets `reconcilePersistedLiveSteps` drop this step once
-                  // the canonical row lands in a later transcript refresh (#753) — text/time
-                  // matching (the prompt-turn heuristic) has nothing to anchor on here.
-                  postId: m.post.postId,
-                  agentId,
-                  ...(participantName(id, agentId) ? { who: participantName(id, agentId) } : {}),
-                  text: m.post.text
-                })
+                const post = m.post
+                // Keyed by postId so a daemon re-broadcast (inbox replay, relay fan-out
+                // echo) upserts instead of duplicating the step.
+                mutateSteps(id, (steps) =>
+                  steps.some((step) => step.postId === post.postId)
+                    ? steps
+                    : [
+                        ...steps,
+                        stampStep({
+                          kind: 'done',
+                          turnId: post.postId,
+                          // The daemon persists this reply before the post frame ever arrives, so
+                          // `postId` is what lets `reconcilePersistedLiveSteps` drop this step once
+                          // the canonical row lands in a later transcript refresh (#753) — text/time
+                          // matching (the prompt-turn heuristic) has nothing to anchor on here.
+                          postId: post.postId,
+                          agentId,
+                          ...(participantName(id, agentId) ? { who: participantName(id, agentId) } : {}),
+                          text: post.text
+                        })
+                      ]
+                )
               } else if (m.type === 'ack' && m.ack?.accepted !== false) {
                 let key = cursorKeyFor(id, m.ack?.agentId)
                 // The relay may target participants the client did not lane (a

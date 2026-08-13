@@ -233,7 +233,7 @@ export const MCP_TOOLS: McpToolDef[] = [
   },
   {
     name: 'listIntegrations',
-    description: 'List platform integrations (bot ↔ agent bindings) with their per-channel triggers.',
+    description: 'List platform integrations (bot ↔ agent bindings) with their conversation triggers.',
     schema: NoArgs,
     call: (ctx) => ctx.get(org(ctx, '/integrations'))
   },
@@ -410,7 +410,7 @@ export const MCP_TOOLS: McpToolDef[] = [
   {
     name: 'setChannelTrigger',
     description:
-      'Change how an integration behaves in one conversation: the trigger mode (off / mention-only / any message; off disables the conversation) and/or the channel’s owning agent (null clears the per-channel override).',
+      'Change how an integration behaves in one conversation: the trigger mode (off / mention-only / any message; off disables the conversation) and/or the conversation’s owning agent (null clears the override).',
     write: true,
     schema: z
       .object({

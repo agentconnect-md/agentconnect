@@ -2556,6 +2556,41 @@ export class PgHookRepo implements HookRepo {
     ).map(toProjectionRecord)
   }
 
+  async listReviewRequestRequiredRuns(repoId: bigint, headSha: string, pullNumber?: number): Promise<HookRunRecord[]> {
+    const hooks = await this.db.hookDef.findMany({
+      where: { kind: 'github', repoId, enabled: true, agentId: { not: null } },
+      select: { id: true }
+    })
+    if (hooks.length === 0) return []
+    const rows = await this.db.hookRun.findMany({
+      where: {
+        hookId: { in: hooks.map((hook) => hook.id) },
+        repoId,
+        headSha,
+        reportSha: headSha,
+        subjectKind: 'pull_request',
+        pullNumber: pullNumber ?? { not: null }
+      },
+      orderBy: [{ startedAt: 'desc' }, { id: 'desc' }]
+    })
+    const latestByPull = new Map<string, (typeof rows)[number]>()
+    for (const row of rows) {
+      const key = `${row.hookId}:${row.pullNumber}`
+      if (!latestByPull.has(key)) latestByPull.set(key, row)
+    }
+    return [...latestByPull.values()]
+      .filter(
+        (row) =>
+          row.status === 'failed' &&
+          row.reason === HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED &&
+          row.completedAt !== null &&
+          row.turnStartedAt === null &&
+          row.orphanedAt === null
+      )
+      .sort((a, b) => a.hookId.localeCompare(b.hookId) || (a.pullNumber ?? 0) - (b.pullNumber ?? 0))
+      .map(toRunRecord)
+  }
+
   async listReviewProjectionsForAgentRepo(agentId: AgentId, repoId: bigint): Promise<HookReviewProjectionRecord[]> {
     return (await this.db.hookReviewProjection.findMany({ where: { agentId, repoId } })).map(toProjectionRecord)
   }

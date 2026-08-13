@@ -1,7 +1,7 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import type { ShimCapability } from './protocol.js'
 
-/** What the daemon knows about a sandbox it launched, before any shim dials in. */
+/** What the daemon knows about a sandbox it launched before dialing its shim. */
 export interface SpawnRecord {
   agentId: string
   /** Sandbox object UID — from the Sandbox's own `metadata.uid`; the claim has none. */
@@ -10,9 +10,7 @@ export interface SpawnRecord {
   generation: number
   /** Capabilities this launch may exercise, decided by the daemon at spawn time. */
   grants: ShimCapability[]
-  /** The pod backing this launch, from the Sandbox's pod-name annotation. It is how a dialing
-   *  pod is resolved back to its launch — a TokenReview yields only a pod name and uid, and
-   *  nothing else the daemon holds connects those to an agent. */
+  /** The pod backing this launch, matched exactly against the dialed shim's TokenReview identity. */
   podName: string
 }
 

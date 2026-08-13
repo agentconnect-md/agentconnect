@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_DEPLOYMENT_CONFIG_VALUES_V1,
+  DeploymentConfigValuesV1Schema,
   deploymentSecretsRequiringRefresh,
   type DeploymentConfigValuesV1
 } from './deployment-config.js'
@@ -16,6 +17,22 @@ const base: DeploymentConfigValuesV1 = {
     githubConnector: null
   }
 }
+
+describe('DeploymentConfigValuesV1Schema', () => {
+  it('defaults the non-admin organization quota and accepts zero', () => {
+    const legacy = DeploymentConfigValuesV1Schema.parse({
+      ...DEFAULT_DEPLOYMENT_CONFIG_VALUES_V1,
+      features: { presetAgentsEnabled: true }
+    })
+    expect(legacy.features.maxOrgsPerNonAdminUser).toBe(1)
+
+    const zero = DeploymentConfigValuesV1Schema.parse({
+      ...DEFAULT_DEPLOYMENT_CONFIG_VALUES_V1,
+      features: { presetAgentsEnabled: true, maxOrgsPerNonAdminUser: 0 }
+    })
+    expect(zero.features.maxOrgsPerNonAdminUser).toBe(0)
+  })
+})
 
 describe('deploymentSecretsRequiringRefresh', () => {
   it('binds write-only secrets only to provider identity fields', () => {

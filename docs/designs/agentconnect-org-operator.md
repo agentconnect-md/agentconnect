@@ -33,7 +33,7 @@ agent-sandbox stack it builds on is documented in `deploy/k8s/README.md`.
 
 ## 2. CRD
 
-Authoritative schema: `charts/operator/templates/crd.yaml` (full
+Authoritative schema: `charts/operator/crd/agentconnectorg.yaml` (full
 openAPIV3Schema with per-field descriptions and CEL transition rules). The
 zod schemas in `packages/operator/src/crd/types.ts` are the operator's runtime
 guard; a parity unit test asserts the two field trees stay identical.
@@ -61,8 +61,6 @@ orgs aimed at one namespace are caught by the claim label
 | `targetNamespace`             | Optional DNS-label override, **immutable** (CEL). Unset ⇒ derived `<prefix><CR name>`. Shape-only at CRD level; install ownership (prefix) is enforced by the operator and admission.                                                            |
 | `suspend`                     | Quiesce the org: daemon to zero, sandboxes drained, gateway denies LLM calls.                                                                                                                                                                    |
 | `daemon.image`, `daemon.tier` | Supervisor image (change ⇒ Recreate rollout) and resource tier name.                                                                                                                                                                             |
-| `daemon.credentialSecretName` | **Retiring** with the key path — an in-cluster daemon carries no credential (see "Daemon identity"). While it exists: immutable, default `ac-daemon-token`, a reference the operator mounts required and never reads.                            |
-| `daemon.credentialRevision`   | **Retiring** with the same path; the projected token rotates without anyone being told. While it exists: opaque, bumped after rotation, projected into a pod-template annotation to force a Recreate.                                            |
 | `controlPlane.url`            | The control plane's own WebSocket URL, written by it when it creates the CR. Plain text — a URL is not a secret, and the control plane is authoritative for its own address, so the operator never derives it. Injected as daemon container env. |
 | `runtime.image`               | Sandbox image; change starts the drain-based rollout.                                                                                                                                                                                            |
 | `runtime.tiers[]`             | `{name, warmReplicas}` referencing cluster master template/pool pairs; 0 keeps a cold pool.                                                                                                                                                      |
@@ -75,7 +73,7 @@ orgs aimed at one namespace are caught by the claim label
 Status is operator-owned: `observedGeneration`, `namespace` (the resolved name,
 published atomically with `NamespaceReady`, only after create-or-adopt plus label
 validation — and the only place a consumer learns the namespace), conditions (`Ready`, `NamespaceReady`,
-`LimitsApplied`, `Progressing`, `Degraded` — `CredentialReady` retires with the
+`LimitsApplied`, `Progressing`, `Degraded` — `CredentialReady` retired with the
 key path, see "Daemon identity"), daemon/sandboxes/pools summaries,
 `appliedLimits` (an _observation record_ of the gateway policy API — possibly
 `Unknown`, never an enforcement proof), and `rollout` progress.
@@ -142,10 +140,11 @@ plus the Deployment/Pod secondary watches that keep status conditions prompt.
 Everything is stamped by server-side apply (field manager
 `agentconnect-operator`, force) — one PATCH per object per pass, no read-back
 diffing. Object names are fixed per-namespace constants (`ac-daemon`,
-`ac-daemon-shim`, `ac-daemon-state`, `ac-runtime-<tier>`, `ac-quota`,
+`ac-daemon-state`, `ac-runtime-<tier>`, `ac-quota`,
 `ac-limits`); the namespace is per-org, so they never collide. Master
 SandboxTemplates live in the control namespace as
-`<AC_MASTER_TEMPLATE_PREFIX><tier>` (default `ac-runtime-<tier>`); daemon
+`<AC_MASTER_TEMPLATE_PREFIX><tier>` (default `ac-runtime-<tier>`), rendered by
+the chart from its `runtimeTiers` value; daemon
 resource tiers are a built-in small/medium/large table, unknown names falling
 back to `small` with a warning. Order is policy-before-workload within one
 reconcile pass:
@@ -162,8 +161,10 @@ reconcile pass:
    release-prefixed tokenreview ClusterRole (TokenReview is cluster-scoped;
    a namespaced Role cannot grant it). No namespace ownerReference — the
    finalizer deletes it explicitly.
-5. `ensureNetworkPolicies` — sandbox egress (gateway + git only) and daemon
-   egress (control plane/relay/platform APIs + kube-apiserver + DNS).
+5. `ensureNetworkPolicies` — sandbox ingress from daemon-labelled pods in either
+   the current dedicated namespace or the install's control/pool namespace, plus configured
+   egress, and daemon egress (sandboxes + control plane/relay/platform APIs +
+   kube-apiserver + DNS). Daemon ingress stays closed.
 6. `ensureQuotaAndLimitRange` — from `spec.quota`; omit when unlimited.
 7. `ensureSandboxTemplates` — stamp per-org SandboxTemplate + one
    SandboxWarmPool per tier from the cluster master templates.
@@ -176,11 +177,11 @@ reconcile pass:
    install, and the token is a file the kubelet keeps current. The pod therefore
    starts whether or not it can authenticate, which is the trade the key path's
    kubelet gate bought and this one gives back.
-10. `ensureDaemonService` — ClusterIP for relay ingress and shim dial-in.
-
-Deletion (finalizer `agentconnect.md/org-envelope`): quiesce → delete
-workloads → (future: archive) → delete namespace + cluster-scoped bindings →
-remove finalizer. Steps must be idempotent.
+10. `removeLegacyDaemonService` — delete the callback Service from the old shim
+    dial-out topology; relay traffic already uses daemon-initiated WebSockets.
+    Deletion (finalizer `agentconnect.md/org-envelope`): quiesce → delete
+    workloads → (future: archive) → delete namespace + cluster-scoped bindings →
+    remove finalizer. Steps must be idempotent.
 
 ## 5. Chart (`charts/operator`, name `agentconnect-operator`)
 
@@ -192,7 +193,10 @@ carrying `helm.sh/resource-policy: keep` so no release uninstall can
 cascade-delete every org or every live Sandbox. The one thing the chart adds to
 the vendored stack is the controller's label-domain allowlist, which replaces
 rather than extends its default and without which every SandboxClaim is
-rejected. Everything else is per-install: operator Deployment (2 replicas) +
+rejected. Everything else is per-install: the master SandboxTemplates rendered
+from `runtimeTiers` (blueprints in the control namespace — the operator inherits
+each one wholesale except the image, shim listen port and network policy),
+operator Deployment (2 replicas) +
 SA/RBAC, the release-prefixed tokenreview ClusterRole, two
 ValidatingAdmissionPolicies, and a pre-delete hook that refuses uninstall while
 CRs remain — removing the operator would strand every finalizer. That hook is a
@@ -255,9 +259,17 @@ _where_ the CRs live.
   label, truncated so the operator's `<prefix><CR name>` still fits in 63
   characters, and stored: it is the handle every later call addresses the
   envelope by. The control plane never writes `spec.targetNamespace`, so the
-  namespace is the operator's to derive; anything that needs it (the credential
-  Secret write) reads `status.namespace` off the CR. Server-side apply only
-  prunes fields this manager owns, so an override written by hand survives.
+  namespace is the operator's to derive and nothing here needs to know it — the
+  console reads `status.namespace` off the CR, and token verification checks the
+  namespace it was told against that same field. Server-side apply only prunes
+  fields this manager owns, so an override written by hand survives.
+- **One object, and nothing after it.** The control plane writes the CR and is
+  done: an in-cluster daemon presents its own projected token, so there is no
+  key to mint, publish, roll out or revoke, and no second interaction gated on
+  the namespace existing. The fencing token, cluster rotation sequence,
+  staged-before-published slots and held-revocation queue that path needed are
+  gone with it; what survives is the per-org transition claim below, which was
+  never about the credential.
 - Writes are server-side apply under field manager
   `agentconnect-control-plane`, so the operator's own manager is untouched;
   the control plane never writes `/status`, finalizers, or envelope objects.
@@ -273,27 +285,61 @@ _where_ the CRs live.
   redeem is created in repository code that has no business knowing about
   Kubernetes. So `POST …/cluster-execution/ensure` (owner-only, idempotent) is
   the same operation as a request, and the console's Daemons page fires it once
-  per org per session. Between them, every org converges — including ones that
-  predate the feature — without a reconciler sweeping the whole table.
+  per org per session. Between them, every org gets a settings row — including
+  ones that predate the feature — without a reconciler deciding on anyone's
+  behalf which orgs should have an envelope at all.
   `ensureProvisioned` enables only an org with NO settings row: a row that reads
   disabled is an owner's decision, and re-applying would undo it. An org that is
-  enabled gets its spec re-applied (which recreates a CR that went missing) and,
-  once `status.namespace` is published, its first credential — the namespace not
-  existing yet at org-create time is the ordinary state, not a failure, and the
-  next visit finishes the job.
+  enabled gets its spec re-applied, which recreates a CR that went missing.
+  Returning IS the completion signal — a pass either applies the CR or throws,
+  and with nothing delivered afterwards there is no half-done state for a caller
+  to come back and finish. (The key path needed an explicit `settled` flag
+  because a namespace that did not exist yet, or a peer mid-rotation, left real
+  work owed by an otherwise successful pass.)
 - Every write bumps `specRevision`, and a write applies the CURRENT row and
   then re-reads that revision: two concurrent writers would otherwise be able to
-  leave the row at one spec and the CR at an older one forever, since the
-  operator reconciles the CR and nothing here re-reads on a timer.
+  leave the row at one spec and the CR at an older one until the next re-apply
+  pass, since the operator reconciles the CR, not the row.
+- **Writing the CR is level-triggered**, on the same maintenance loop as the
+  teardown drain: each pass re-applies a bounded, rotating slice of the enabled
+  envelopes. A settings write cannot be the only trigger, because part of the
+  spec is rendered from control-plane CONFIGURATION rather than from the org's
+  row — `spec.controlPlane.url` is the whole of it today. An edge-triggered
+  writer makes such a field true only for envelopes written after the
+  configuration changed; every older envelope keeps a CR that no edit to that
+  org will ever revisit, and the failure is silent by construction. A CR with no
+  `controlPlane.url` gives the operator nothing to inject, so the daemon pod
+  comes up with no `AC_CP_URL` and runs local — `Ready` on the CR, `1/1 Running`
+  on the pod, one log line as the only evidence. (Hence the daemon logs that
+  state at error when it was started with `--k8s`: in an envelope, local mode is
+  a fault, not a mode.) Each envelope goes through the same convergence loop a
+  request takes, so it applies the row as it reads NOW and a row switched off or
+  deleted since the slice was listed is reconciled to that instead. The listing
+  skips orgs under a live transition claim, and re-applying an unchanged spec is
+  a server-side-apply no-op: no `specRevision` bump, no new resource version.
+  `spec.daemon.image` is deliberately NOT swept back to the deployment default —
+  it is pinned per org at creation, and whether a fleet-wide upgrade should move
+  it is a separate product decision.
+- Enabling, disabling, and the teardown drain take a leased per-org **transition
+  claim**, and it outlives the credential it was introduced for: those three
+  still create and destroy one envelope from three directions. The claim is what
+  stops a drain holding a stale tombstone from deleting the CR a re-enable just
+  created, so it is held across clearing the tombstone AND applying. A lease
+  rather than a lock, so a process that dies mid-transition cannot wedge the
+  envelope. `specRevision` cannot serve here: it fences competing SPEC values,
+  not the existence of the resource.
 - Deleting an organization **retires its envelope first**. Org deletion is
   refused while any daemon row survives — a RESTRICT-FK barrier rechecked inside
   the delete transaction — and that guard exists to make someone detach the
   physical machines explicitly. The envelope's daemon is not one of those: the
   control plane provisioned it, no Daemons page could be asked to detach it, and
   since provisioning now happens with the org, leaving it in the count would make
-  every organization undeletable. So the route excludes it from the guard,
-  switches cluster execution off (revoking the key and handing the envelope to
-  the finalizer), and removes it before the delete — through the same detach
+  every organization undeletable. It is recognized by its identity binding —
+  a daemon that authenticated with a projected token carries one and a machine
+  a human attached never does — plus, until its pod reconnects and adopts it,
+  the record a pre-token envelope was provisioned with. So the route excludes it
+  from the guard, switches cluster execution off (handing the envelope to the
+  finalizer), and removes it before the delete — through the same detach
   sequence `DELETE /daemons/:id` uses (`http/daemon-removal.ts`), because the
   delete can still answer 409 afterwards and what survives that must be an org
   whose agents are properly unplaced, not live-looking agents pointing at a
@@ -340,6 +386,20 @@ annotation that forced a Recreate on rotation, and the fencing token, cluster
 sequence, and staged-before-published machinery that existed because a publish
 could half-fail. Rotation is now the kubelet's business and happens roughly
 hourly with nobody informed.
+
+Removing the queue that owed those revocations is not the same as performing
+them — daemon keys never expire — so the migration that drops it revokes every
+key it still named, plus each envelope's committed and staged one. Deleting the
+last thing able to revoke a live credential without first revoking it is the one
+mistake this teardown could make.
+
+That migration renames two columns and drops six, so it is a **forward-only
+deployment boundary** (the precedent is resource-visibility.md's ownership
+drop): an older control-plane binary selects columns that no longer exist, and
+every read of `org_cluster_execution` fails for it — including the one that
+resolves an authenticating daemon's org. The window is a rolling update's drain
+and it self-heals as daemons reconnect to the new binary, but recovery is a
+forward fix, never an old-binary restart.
 
 **API keys do not go away.** A daemon on someone's laptop has no Kubernetes
 identity, so the key path stays exactly as it is; the token path is what an
@@ -411,6 +471,15 @@ Three properties this has to hold:
 - **The daemon stores nothing.** It no longer needs to persist the `daemonId` it
   adopts from `auth/ok`, because identity is re-derived from the token on every
   connect. The control plane may still report it for logs and telemetry.
+
+The one thing the key path leaves behind is that pointer, kept under an honest
+name (`legacyKeyDaemonId`) and never written again. An envelope provisioned
+before the token path has a daemon record carrying its placements and history
+and NO identity binding until its pod reconnects; the pointer is what the first
+authenticated connect adopts, and until then it is also how the org-delete guard
+knows that record is the control plane's own rather than a machine someone must
+detach. It retires when no envelope predates the token path — the binding it
+seeds is the durable answer.
 
 #### The two names both sides must agree on
 

@@ -152,6 +152,22 @@ function suiteRerequestPayload(overrides: Record<string, unknown> = {}): Record<
   }
 }
 
+function workflowRunPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    action: 'in_progress',
+    installation: { id: INSTALLATION },
+    repository: { id: REPO_ID, full_name: 'acme/infra' },
+    sender: { login: 'github-actions[bot]', type: 'Bot' },
+    workflow_run: {
+      event: 'pull_request',
+      head_sha: 'a'.repeat(40),
+      triggering_actor: { login: 'maintainer' },
+      pull_requests: []
+    },
+    ...overrides
+  }
+}
+
 interface Harness {
   app: FastifyInstance
   table: HookTable
@@ -635,6 +651,115 @@ describe('github ingress', () => {
     })
   })
 
+  describe('workflow approval', () => {
+    it('preserves GitHub signed PR identity when the workflow payload supplies it', async () => {
+      await post(
+        'workflow_run',
+        workflowRunPayload({
+          workflow_run: {
+            event: 'pull_request',
+            head_sha: 'a'.repeat(40),
+            triggering_actor: { login: 'maintainer' },
+            pull_requests: [{ number: 585, head: { sha: 'a'.repeat(40) } }]
+          }
+        })
+      )
+      await flush()
+
+      expect(h.rerequestRequests).toEqual([expect.objectContaining({ scope: 'workflow', pullNumber: 585 })])
+    })
+
+    it('authorizes the triggering maintainer and starts every waiting external-PR review', async () => {
+      h.table.upsert(rule({ reportingMode: 'off' }))
+      h.table.upsert(
+        rule({
+          hookId: HOOK_B,
+          agentId: AGENT_B,
+          daemonId: DAEMON_B,
+          dispatchDaemonId: DAEMON_B,
+          configRevision: '4',
+          dispatchRevision: '6'
+        })
+      )
+      h.onlineDaemons.add(DAEMON_B)
+      h.rerequestResult = {
+        allowed: true,
+        targets: [
+          {
+            hookId: HOOK,
+            pullNumber: 585,
+            baseSha: 'b'.repeat(40),
+            configRevision: '3',
+            dispatchRevision: '5'
+          },
+          {
+            hookId: HOOK_B,
+            pullNumber: 585,
+            baseSha: 'b'.repeat(40),
+            configRevision: '4',
+            dispatchRevision: '6'
+          }
+        ]
+      }
+
+      const res = await post('workflow_run', workflowRunPayload())
+      expect(res.statusCode).toBe(202)
+      await flush()
+
+      expect(h.rerequestRequests).toEqual([
+        {
+          scope: 'workflow',
+          installationId: String(INSTALLATION),
+          repoId: String(REPO_ID),
+          headSha: 'a'.repeat(40),
+          deliveryKey: 'gh-delivery-1'
+        }
+      ])
+      expect(h.authzRequests).toEqual([
+        {
+          hookId: HOOK,
+          installationId: String(INSTALLATION),
+          repoId: String(REPO_ID),
+          repoFullName: 'acme/infra',
+          senderLogin: 'maintainer',
+          configRevision: '3',
+          dispatchRevision: '5',
+          siblingFences: [{ hookId: HOOK_B, configRevision: '4', dispatchRevision: '6' }]
+        }
+      ])
+      const stableDeliveryKey = `workflow-approval:${REPO_ID}:585:${'a'.repeat(40)}`
+      expect(h.sent).toEqual([
+        expect.objectContaining({
+          hookId: HOOK,
+          deliveryKey: stableDeliveryKey,
+          msgId: `${HOOK}:${stableDeliveryKey}`,
+          event: 'workflow_run:in_progress',
+          github: expect.objectContaining({ pullNumber: 585, explicitReviewRequest: true }),
+          context: expect.objectContaining({
+            event: 'workflow_run',
+            action: 'in_progress',
+            senderLogin: 'maintainer'
+          })
+        }),
+        expect.objectContaining({
+          hookId: HOOK_B,
+          deliveryKey: stableDeliveryKey,
+          msgId: `${HOOK_B}:${stableDeliveryKey}`,
+          event: 'workflow_run:in_progress',
+          github: expect.objectContaining({ pullNumber: 585, explicitReviewRequest: true })
+        })
+      ])
+    })
+
+    it('ignores workflow runs that are not a pull-request workflow start', async () => {
+      await post('workflow_run', workflowRunPayload({ action: 'completed' }))
+      await post('workflow_run', workflowRunPayload({ workflow_run: { event: 'push', head_sha: 'a'.repeat(40) } }))
+      await flush()
+      expect(h.rerequestRequests).toHaveLength(0)
+      expect(h.sent).toHaveLength(0)
+    })
+  })
+
   describe('matching', () => {
     it('an exact event:action hit fires the daemon with the perThread sessionKey', async () => {
       h.table.upsert(rule())
@@ -839,6 +964,62 @@ describe('github ingress', () => {
         ])
       }
     )
+
+    it.each(['opened', 'synchronize'] as const)(
+      'dispatches a same-repository PR %s authored by this App without human-author authorization',
+      async (action) => {
+        h.table.upsert(rule({}, { events: ['pull_request:*'], appSlug: 'example-review-app' }))
+        h.authzResult = false
+        const pullRequest = pullPayload().pull_request as Record<string, unknown>
+        const appBot = 'example-review-app[bot]'
+
+        await post(
+          'pull_request',
+          pullPayload({
+            action,
+            sender: { login: 'release-manager', type: 'User' },
+            pull_request: {
+              ...pullRequest,
+              user: { login: appBot, type: 'Bot' },
+              head: { sha: 'a'.repeat(40), repo: { full_name: 'acme/infra' } },
+              base: { sha: 'b'.repeat(40), repo: { full_name: 'acme/infra' } }
+            }
+          })
+        )
+        await flush()
+
+        expect(h.authzRequests).toHaveLength(0)
+        expect(h.sent).toHaveLength(1)
+        expect(h.sent[0]).toMatchObject({ event: `pull_request:${action}`, agentId: AGENT })
+        expect(h.reports).toEqual([expect.objectContaining({ status: 'accepted' })])
+      }
+    )
+
+    it('keeps an App-authored fork PR behind the workflow-approval marker', async () => {
+      h.table.upsert(rule({}, { events: ['pull_request:*'], appSlug: 'example-review-app' }))
+      h.authzResult = false
+      const pullRequest = pullPayload().pull_request as Record<string, unknown>
+
+      await post(
+        'pull_request',
+        pullPayload({
+          sender: { login: 'example-review-app[bot]', type: 'Bot' },
+          pull_request: {
+            ...pullRequest,
+            user: { login: 'example-review-app[bot]', type: 'Bot' },
+            head: { sha: 'a'.repeat(40), repo: { full_name: 'example-fork/infra' } },
+            base: { sha: 'b'.repeat(40), repo: { full_name: 'acme/infra' } }
+          }
+        })
+      )
+      await flush()
+
+      expect(h.authzRequests).toEqual([expect.objectContaining({ senderLogin: 'example-review-app[bot]' })])
+      expect(h.sent).toHaveLength(0)
+      expect(h.reports).toEqual([
+        expect.objectContaining({ reason: HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED, status: 'failed' })
+      ])
+    })
 
     it.each(['OWNER', 'MEMBER', 'COLLABORATOR'] as const)(
       'live-checks a PR author even when the payload association is %s',
@@ -2277,6 +2458,27 @@ describe('githubRuleVerdict (pure predicate)', () => {
     const pr = { ...ctx, event: 'pull_request' }
     expect(githubRuleVerdict(r, { ...pr, eventAction: 'pull_request:synchronize' })).toBe('needs-authz')
     expect(matches(r, { ...pr, eventAction: 'pull_request:edited' })).toBe(false)
+  })
+
+  it('trusts only same-repository revisions authored by this App', () => {
+    const r = rule({}, { events: ['pull_request:*'], appSlug: 'example-review-app' })
+    const appPr = {
+      ...ctx,
+      event: 'pull_request',
+      eventAction: 'pull_request:synchronize',
+      subjectAuthorLogin: 'example-review-app[bot]',
+      subjectAuthorType: 'Bot',
+      headRepoFullName: 'acme/infra',
+      baseRepoFullName: 'acme/infra'
+    }
+
+    expect(githubRuleVerdict(r, appPr)).toBe('trusted')
+    expect(githubRuleVerdict(r, { ...appPr, headRepoFullName: 'fork/infra', baseRepoFullName: 'acme/infra' })).toBe(
+      'needs-authz'
+    )
+    expect(githubRuleVerdict(r, { ...appPr, senderType: 'Bot', subjectAuthorLogin: 'dependabot[bot]' })).toBe(
+      'no-match'
+    )
   })
 
   it('applies comment subject scope only when commentFamilies is non-empty', () => {

@@ -750,7 +750,7 @@ export const IntegrationChannelDto = z.object({
   isPrivate: z.boolean(),
   kind: z.enum(['channel', 'im', 'mpim']),
   trigger: z.enum(['off', 'mention', 'any']),
-  /** Effective per-channel owner for a shared bot (§10.1); null before convergence
+  /** Effective per-conversation owner for a shared bot (§10.1); null before convergence
    *  or when ownership does not apply. */
   agentId: z.string().nullable()
 })
@@ -3005,8 +3005,11 @@ export const WorkspaceGitLogCommitDto = z.object({
 export const WorkspaceGitLogDto = z.object({
   isRepo: z.boolean(), // false ⇒ from-scratch workspace (no .git); no log
   commits: z.array(WorkspaceGitLogCommitDto),
-  truncated: z.boolean(), // true ⇒ the branch has more commits than the requested limit
-  tracking: z.string().nullable() // upstream ref `pushed` was computed against
+  truncated: z.boolean(), // true ⇒ this range has more commits than the requested limit
+  tracking: z.string().nullable(), // upstream ref `pushed` was computed against
+  // The base ref the listing excludes (`<base>..HEAD`), so the commits are this branch's own work;
+  // null ⇒ the checkout sits on the base branch itself and the list is its full history.
+  base: z.string().nullable()
 })
 
 /** `POST /agents/:id/workspace/gitpull` — outcome of a forced ff-only pull. A
@@ -3262,22 +3265,11 @@ export const ClusterExecutionSettingsDto = z.object({
   suspend: z.boolean(),
   daemonImage: z.string(),
   daemonTier: z.string(),
-  /** Name of the Secret the daemon's credential is published as. */
-  credentialSecretName: z.string(),
-  /** Present once a credential has been issued; opaque, bumped on rotation. */
-  credentialRevision: z.string().optional(),
   runtimeImage: z.string(),
   runtimeTiers: z.array(ClusterRuntimeTierDto),
   quota: ClusterQuotaDto,
   egressPolicy: ClusterEgressPolicyDto,
   updatedAt: z.string()
-})
-
-/** The settings plus what the ensure pass concluded. `settled` is its own field
- *  because no settings value means "nothing further is owed" — `credentialRevision`
- *  is populated all through a rotation that has not finished. */
-export const ClusterEnsureResultDto = ClusterExecutionSettingsDto.extend({
-  settled: z.boolean()
 })
 
 export const UpdateClusterExecutionBody = z.object({
@@ -3289,18 +3281,6 @@ export const UpdateClusterExecutionBody = z.object({
   runtimeTiers: z.array(ClusterRuntimeTierDto).min(1).max(16).optional(),
   quota: ClusterQuotaDto.partial().optional(),
   egressPolicy: ClusterEgressPolicyDto.optional()
-})
-
-/** The result of issuing or rotating a credential — never the key itself. */
-export const ClusterCredentialDto = z.object({
-  /** The daemon identity the envelope's supervisor authenticates as. */
-  daemonId: z.string(),
-  /** The Secret the credential was published into, in the envelope namespace. */
-  secretName: z.string(),
-  /** Opaque handle for this credential; the operator forces a pod Recreate on change. */
-  revision: z.string(),
-  /** True when this replaced an earlier credential, whose key was revoked. */
-  rotated: z.boolean()
 })
 
 export const ClusterConditionDto = z.object({
@@ -3402,7 +3382,5 @@ export type WorkspaceGitPushResultDtoT = z.infer<typeof WorkspaceGitPushResultDt
 export type WorkspaceGitMessageResultDtoT = z.infer<typeof WorkspaceGitMessageResultDto>
 export type AgentTasksDtoT = z.infer<typeof AgentTasksDto>
 export type ClusterExecutionSettingsDtoT = z.infer<typeof ClusterExecutionSettingsDto>
-export type ClusterEnsureResultDtoT = z.infer<typeof ClusterEnsureResultDto>
 export type ClusterEnvelopeStatusDtoT = z.infer<typeof ClusterEnvelopeStatusDto>
-export type ClusterCredentialDtoT = z.infer<typeof ClusterCredentialDto>
 export type ErrorDtoT = z.infer<typeof ErrorDto>

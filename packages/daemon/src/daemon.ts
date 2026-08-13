@@ -308,6 +308,7 @@ import {
   encodeSharedSlackStatusTarget,
   HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED,
   HookReport,
+  CP_URL_ENV,
   RELAY_DAEMON_SUBPROTOCOL,
   RELAY_DAEMON_WS_PATH,
   RESERVED_RESTART_CODE,
@@ -376,6 +377,7 @@ import { CpMcpDefs } from './mcp/cp-mcp-defs.js'
 import { CpMemoryConnectionRegistry, type MemoryPluginConnector } from './cp/memory-connection-registry.js'
 import { MemoryCaptureOutbox } from './memory-plugin/outbox.js'
 import { defaultMemoryPluginMetrics } from './memory-plugin/metrics.js'
+import { openMountedPostgresDataPlane, type PostgresDataPlane } from './store/postgres-transcript-store.js'
 import {
   EvaluationCapabilityProfileSchema,
   EvaluationEventEmitter,
@@ -1872,6 +1874,7 @@ export class Daemon {
   private readonly evaluation: EvaluationEventEmitter
   private readonly evaluationProfile: EvaluationCapabilityProfile
   private store!: LocalStore
+  private dataPlane?: PostgresDataPlane
   private mcp!: McpControlServer
   // The agent memory provider. Per-agent: it dispatches each call to the agent's
   // configured backend (managed = our <agent-root>/memory/ dir; native = the
@@ -2178,7 +2181,7 @@ export class Daemon {
   /** Reads this pod's projected CP-audience token; undefined unless the daemon runs
    *  in-cluster AND the volume is actually mounted (decided once, at boot). */
   private readonly clusterIdentityToken?: () => string | undefined
-  // The k8s execution plane: shim endpoint + driver + workspace seam. Undefined outside --k8s.
+  // The k8s execution plane: shim dialer + driver + workspace seam. Undefined outside --k8s.
   private k8sPlane?: K8sRuntimePlane
   // The resolved catalog the probed table is projected onto; it supplies command/args, which the
   // table never does — the table only says which ids this image provides.
@@ -2412,6 +2415,8 @@ export class Daemon {
        *  outcome the mode exists to prevent, so it must not be a fallback. Tests override this
        *  to exercise k8s-mode policy without a cluster. */
       startK8sPlane?: typeof startK8sRuntimePlane
+      /** Test seam only; production `--k8s` always reads the fixed Secret mount. */
+      openDataPlane?: typeof openMountedPostgresDataPlane
       /** Test seams for local catalog resolution and executable/state filtering. */
       resolveCatalog?: typeof resolveRuntimeCatalog
       installed?: typeof installedRuntimes
@@ -2802,6 +2807,12 @@ export class Daemon {
       )
     }
     if (this.k8s) {
+      const openDataPlane = this.opts.openDataPlane ?? openMountedPostgresDataPlane
+      this.dataPlane = await openDataPlane((error) => {
+        this.log.error(`data-plane: PostgreSQL persistence failed — ${formatErr(error)}`)
+        this.draining = true
+        this.requestExit(1)
+      })
       // A pod's terminationGracePeriodSeconds must exceed this, or the kubelet SIGKILLs
       // mid-drain and the graceful window is a promise the deployment cannot keep. The
       // daemon cannot read its own grace period (it has no pod read), so it states the
@@ -2815,21 +2826,27 @@ export class Daemon {
       // ever created and runtimes still spawn on this host, which is the one outcome the mode
       // exists to prevent, so a failure here refuses the boot rather than degrading.
       const startPlane = this.opts.startK8sPlane ?? startK8sRuntimePlane
-      this.k8sPlane = await startPlane({
-        // Which sockets this agent's pod needs, and where this daemon serves them. A GitHub-App
-        // workspace is the one case today: its git reaches the credential helper over a unix
-        // socket that, without a tunnel, exists only on the daemon's own filesystem. MCP is
-        // deliberately absent — the in-pod bridge that would dial it is not in the image yet, so
-        // a listener for it would be a socket nobody can use.
-        tunnelsFor: (agentId) =>
-          this.agents.get(agentId)?.workspace.gitCredential === 'github-app' ? ['gitcred'] : [],
-        tunnelSocketPath: (tunnel) => (tunnel === 'gitcred' ? gitcredSocketPath(root) : undefined),
-        log: {
-          info: (message) => this.log.info(message),
-          warn: (message) => this.log.warn(message),
-          debug: (message) => this.log.debug?.(message)
-        }
-      })
+      try {
+        this.k8sPlane = await startPlane({
+          // Which sockets this agent's pod needs, and where this daemon serves them. A GitHub-App
+          // workspace is the one case today: its git reaches the credential helper over a unix
+          // socket that, without a tunnel, exists only on the daemon's own filesystem. MCP is
+          // deliberately absent — the in-pod bridge that would dial it is not in the image yet, so
+          // a listener for it would be a socket nobody can use.
+          tunnelsFor: (agentId) =>
+            this.agents.get(agentId)?.workspace.gitCredential === 'github-app' ? ['gitcred'] : [],
+          tunnelSocketPath: (tunnel) => (tunnel === 'gitcred' ? gitcredSocketPath(root) : undefined),
+          log: {
+            info: (message) => this.log.info(message),
+            warn: (message) => this.log.warn(message),
+            debug: (message) => this.log.debug?.(message)
+          }
+        })
+      } catch (error) {
+        await this.dataPlane.close().catch(() => undefined)
+        this.dataPlane = undefined
+        throw error
+      }
       // Workspace git then runs where the workspace actually is. Registered for ALL agents; the
       // resolver answers undefined for any without a bound channel, so an agent this daemon has
       // not launched into a sandbox keeps its local behaviour.
@@ -2840,7 +2857,7 @@ export class Daemon {
       // And the mode itself, which decides what workspace operations are available at all: an
       // in-place conversion has no pod-side implementation of its rollback contract.
       setSandboxWorkspaceMode(true)
-      this.log.info(`k8s: execution plane ready — shim endpoint on :${this.k8sPlane.listener.listeningPort()}`)
+      this.log.info('k8s: execution plane ready — daemon-to-sandbox shim dialing enabled')
     }
     // Sandbox-optional principle (#36): skills are NOT force-sandboxed fleet-wide.
     // A skill runs sandboxed only when its agent does (agentRunsInSandbox), so the
@@ -3038,6 +3055,7 @@ export class Daemon {
     })
 
     this.store = new LocalStore(statePath(root))
+    this.store.setTranscriptReplica(this.dataPlane?.transcripts)
     this.store.setTranscriptMutationListener((mutation) => this.scheduleSessionActivity(mutation))
     this.memoryOutbox = new MemoryCaptureOutbox(this.store, this.memoryConnections, {
       log: { warn: (message) => this.log.warn(message) }
@@ -7380,6 +7398,28 @@ export class Daemon {
     }
   }
 
+  /** The inbound half of an agent-initiated webchat wake: post the SENDER's message live
+   *  at admission (#807 posted only the woken reply, so this message reached the browser
+   *  only via a page refresh). Shares `msg.transcriptPostId` with the transcript row the
+   *  turn writes, so the browser drops the live step once the canonical row lands. */
+  private postAgentWakeInbound(webchat: WebchatTurnContext | undefined, msg: NormalizedMessage): void {
+    if (webchat?.initiator !== 'agent' || !webchat.postSink) return
+    if (!msg.transcriptPostId || !UUID_RE.test(msg.sender.id)) return
+    msg.transcriptTs ??= monotonicTs() // every wake site sets it; keep row ts == post.at regardless
+    webchat.postSink({
+      conversationId: webchat.conversationId,
+      agentId: msg.sender.id,
+      post: {
+        postId: msg.transcriptPostId,
+        conversationId: webchat.conversationId,
+        author: { kind: 'agent', agentId: msg.sender.id },
+        text: msg.text,
+        at: Number(msg.transcriptTs)
+      },
+      initiator: 'agent'
+    })
+  }
+
   /** Buffer before sending so a transport gap is recoverable even when the live
    * write is lost. The terminal frame carries the final output index for browser
    * gap detection. */
@@ -11228,6 +11268,9 @@ export class Daemon {
       thread,
       ts,
       sender: msg.sender.id,
+      // The canonical webchat post identity must survive whichever writer wins the
+      // first insert, or the browser's live frame cannot reconcile against the row.
+      ...(msg.transcriptPostId ? { postId: msg.transcriptPostId } : {}),
       ...(recipient ? { recipient } : {}),
       // The observer often wins the INSERT race against SessionManager's
       // authoritative append — the provider send time must ride the FIRST
@@ -11437,6 +11480,9 @@ export class Daemon {
         thread,
         ts,
         sender: entry.msg.sender.id,
+        // Carried so a live agent-wake post (postAgentWakeInbound) reconciles against
+        // this row even when its turn was coalesced into an in-flight generation.
+        ...(entry.msg.transcriptPostId ? { postId: entry.msg.transcriptPostId } : {}),
         recipient: entry.agentId,
         kind: 'text',
         text: mention ? `${entry.msg.text}\n${mention}`.trim() : entry.msg.text
@@ -12830,6 +12876,13 @@ export class Daemon {
     if (integrationId !== undefined) {
       msg.transportScope ??= this.transportScopeForIntegrationIds([integrationId])
     }
+    // An agent-initiated wake's INBOUND message posts live too (#807 only posted the woken
+    // REPLY, so the sender's message appeared on refresh but never in the live view). Mint
+    // its canonical post identity before the inbox row persists so a replay reuses it and
+    // the transcript row SessionManager writes carries the same postId (browser reconcile).
+    if (webchat?.initiator === 'agent' && UUID_RE.test(msg.sender.id)) {
+      msg.transcriptPostId ??= randomUUID()
+    }
     if (msg.sender.avatarUrl && msg.transportScope)
       this.store.setProfileAvatar(msg.transportScope, msg.sender.id, msg.sender.avatarUrl, Date.now())
     if (this.cfg.features.turnFinalContextRefresh && originKindOf(msg.platform) === 'chat') {
@@ -12852,6 +12905,9 @@ export class Daemon {
             channel: msg.channel,
             data: { source: msg.source }
           })
+          // NOT for §5.2a continuation wakes: their inbound IS a committed peer post the
+          // browser already rendered — re-posting it would duplicate that reply.
+          if (callMeta?.conversationContinuation !== true) this.postAgentWakeInbound(webchat, msg)
         }
         // §8.6, the ONE place every delivery path settles — live dispatch, queued
         // dispatch, and startup replay alike. Completing the rendezvous here rather than
@@ -20404,7 +20460,20 @@ export class Daemon {
   private startCpClient(root: string): void {
     const cp = this.cfg.controlPlane
     if (!configuredControlPlane(cp, !!this.clusterIdentityToken)) {
-      this.log.info('cp: not connecting (disabled or missing url/token) — running local')
+      // Url first: an envelope daemon has no config file, so a missing address is
+      // ALSO why the connection reads disabled, and naming the cause beats the effect.
+      const missing = !cp.url ? 'no url' : !cp.enabled ? 'disabled' : 'no key and no projected identity'
+      // Local mode is a CHOICE on a host and a FAULT in a cluster: `--k8s` says this
+      // process is an envelope the control plane provisioned, so a missing address is
+      // a CR that never carried `spec.controlPlane.url`, not an operator's decision.
+      // At info it reads as normal, which is how a whole fleet of them goes unnoticed.
+      if (this.k8s) {
+        this.log.error(
+          `cp: not connecting (${missing}) — an in-cluster daemon has no local mode; expected ${CP_URL_ENV} from its AgentConnectOrg spec.controlPlane.url`
+        )
+      } else {
+        this.log.info(`cp: not connecting (${missing}) — running local`)
+      }
       return
     }
     if (this.clusterIdentityToken) this.log.info("cp: authenticating with this pod's projected identity token")
@@ -20421,9 +20490,8 @@ export class Daemon {
     // and if it matches it is redundant anyway.
     const echoDaemonId = this.opts.overrides?.daemonId
     const url = cp.url
-    // Relay dial-out still authenticates with the API key: the relay verifies `daemon-key`
-    // credentials through the CP and has no token path yet, so a key-less in-cluster daemon
-    // simply never authenticates to a relay.
+    // Empty when this daemon has no key at all — then the projected token below is what it
+    // presents to a relay, exactly as it does to the control plane.
     const cpKey = cp.key ?? ''
 
     // Relay dial-out manager: the CP publishes the roster (register/ok.relays + the
@@ -20433,6 +20501,7 @@ export class Daemon {
     // cpClient.start() so applyReconcileSnapshot has a live manager during the handshake.
     this.relays = new RelayManager({
       apiKey: () => cpKey,
+      ...(this.clusterIdentityToken ? { clusterIdentityToken: this.clusterIdentityToken } : {}),
       daemonId: () => this.cfg.daemonId,
       clock: systemClock,
       connect: (relayUrl) =>
@@ -20600,7 +20669,11 @@ export class Daemon {
       activeSessions: () => this.pending.size,
       degradedScopes: () => this.cpDegradedScopes(),
       configApply: this.cpConfigApply(),
-      sessionRead: createSessionReader(this.store, (session) => this.sessionThreadUrl(session)),
+      sessionRead: createSessionReader(
+        this.store,
+        (session) => this.sessionThreadUrl(session),
+        this.dataPlane?.transcripts
+      ),
       // §5.4: serve a CP-forwarded status probe for a child session we own. Authorization is
       // re-done here (the lineage rule lives where the session lives), not trusted from the CP.
       childSessionStatusProbe: (probe) => this.childSessionStatusProbe(probe),
@@ -21313,6 +21386,8 @@ export class Daemon {
     // so server.close() isn't left waiting on a live bridge connection.
     await Promise.resolve(this.mcp?.stop()).catch((e) => errors.push(e))
     this.gitCredServer?.stop()
+    this.store?.setTranscriptReplica()
+    await this.dataPlane?.close().catch((e) => errors.push(e))
     this.store?.close()
     if (errors.length) throw new AggregateError(errors, 'stop: partial failure')
   }

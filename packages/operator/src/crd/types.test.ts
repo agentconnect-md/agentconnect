@@ -10,7 +10,8 @@ const FULL_SPEC = {
   targetNamespace: 'test-ac-org-acme',
   displayName: 'Acme',
   suspend: false,
-  daemon: { image: 'registry.example.test/daemon:1', tier: 'standard', credentialSecretName: 'ac-daemon-token' },
+  daemon: { image: 'registry.example.test/daemon:1', tier: 'standard' },
+  controlPlane: { url: 'wss://api.example.test/daemon/ws' },
   runtime: { image: 'registry.example.test/runtime:1', tiers: [{ name: 'small', warmReplicas: 0 }] },
   quota: { maxAgents: 0, cpu: '0', memory: '0', storage: '0' },
   llmLimits: {
@@ -36,7 +37,10 @@ describe('AgentConnectOrg schemas', () => {
     // Unset is the normal path: the operator derives the namespace from the CR name.
     expect(parsed.targetNamespace).toBeUndefined()
     expect(parsed.suspend).toBe(false)
-    expect(parsed.daemon.credentialSecretName).toBe('ac-daemon-token')
+    // Absent is legal in the schema and reported as a warning by the pass that would
+    // stamp it: the operator cannot invent an address, and refusing the whole spec would
+    // take the rest of the envelope down with it.
+    expect(parsed.controlPlane).toBeUndefined()
     expect(parsed.runtime.tiers[0]?.warmReplicas).toBe(0)
     expect(parsed.quota).toEqual({ maxAgents: 0, cpu: '0', memory: '0', storage: '0' })
     expect(parsed.egressPolicy).toBe('curated')
@@ -80,13 +84,10 @@ function propertyPaths(schema: JsonSchema, prefix = ''): string[] {
 
 function loadCrdSchema(): { spec: JsonSchema; status: JsonSchema } {
   const here = dirname(fileURLToPath(import.meta.url))
-  const file = join(here, '../../../../charts/operator/templates/crd.yaml')
-  // The template is pure YAML wrapped in one {{- if }} / {{- end }} pair.
-  const yaml = readFileSync(file, 'utf8')
-    .split('\n')
-    .filter((line) => !line.trimStart().startsWith('{{'))
-    .join('\n')
-  const crd = parse(yaml) as {
+  // The chart's plain manifest, not the template that includes it — this is the exact
+  // text `kubectl apply -f` and Helm both install, parsed with nothing filtered out.
+  const file = join(here, '../../../../charts/operator/crd/agentconnectorg.yaml')
+  const crd = parse(readFileSync(file, 'utf8')) as {
     spec: { versions: { schema: { openAPIV3Schema: { properties: { spec: JsonSchema; status: JsonSchema } } } }[] }
   }
   const root = crd.spec.versions[0]?.schema.openAPIV3Schema.properties

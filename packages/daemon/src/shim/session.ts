@@ -6,8 +6,8 @@ import { parseShimFrame } from './protocol.js'
 /**
  * A logical channel to one agent's sandbox that survives the physical connection.
  *
- * A runtime lives for hours; a shim connection does not. The shim renews its credential by
- * dialing a replacement at half the TTL, and the listener closes the superseded socket — so
+ * A runtime lives for hours; a shim connection does not. The shim closes at half the TTL and
+ * the daemon dials a replacement — so
  * anything holding one `ShimConnection` for a runtime's lifetime is stranded on the first
  * ordinary renewal. This tracks the current connection instead, re-attaching when the same
  * launch rebinds and reporting a genuine loss when a NEW launch takes over.

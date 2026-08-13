@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { K8sHttp } from '@agentconnect.md/k8s-client'
+import { CP_TOKEN_AUDIENCE } from '@agentconnect.md/protocol'
 import { closeFakeApiServers, fakeApiServer, type FakeRoute } from '@agentconnect.md/k8s-client/testing'
 import { loadConfig } from '../config.js'
 import { AgentConnectOrgApi } from '../crd/api.js'
@@ -49,6 +50,7 @@ async function contextFor(route: FakeRoute, env: NodeJS.ProcessEnv = {}): Promis
     config: loadConfig({
       AC_ORG_NAMESPACE_PREFIX: 'test-ac-org-',
       AC_TOKENREVIEW_CLUSTERROLE: 'test-ac-tokenreview',
+      AC_DAEMON_EGRESS_NAMESPACES: cluster.namespace,
       ...env
     }),
     controlNamespace: cluster.namespace,
@@ -58,9 +60,12 @@ async function contextFor(route: FakeRoute, env: NodeJS.ProcessEnv = {}): Promis
 
 const NS = 'test-ac-org-acme'
 
+const CP_URL = 'wss://api.example.test/daemon/ws'
+
 function specOf(overrides: Partial<AgentConnectOrgSpec> = {}): AgentConnectOrgSpec {
   return AgentConnectOrgSpecSchema.parse({
     daemon: { image: 'ghcr.io/example/daemon:v1', tier: 'small' },
+    controlPlane: { url: CP_URL },
     runtime: { image: 'ghcr.io/example/runtime:v1', tiers: [{ name: 'std', warmReplicas: 2 }] },
     ...overrides
   })
@@ -129,6 +134,9 @@ describe('reconcileEnvelope', () => {
 
     expect(byPath(writes, '/networkpolicies/ac-daemon-egress')).toBeDefined()
     expect(byPath(writes, '/networkpolicies/ac-daemon-ingress')).toBeDefined()
+    expect(
+      (byPath(writes, '/networkpolicies/ac-daemon-ingress')?.body as { spec: { ingress: unknown[] } }).spec.ingress
+    ).toEqual([])
 
     // Without this the daemon's registration WebSocket to an in-cluster control plane
     // never completes — its service port is not 443.
@@ -145,14 +153,22 @@ describe('reconcileEnvelope', () => {
 
     const template = byPath(writes, `/namespaces/${NS}/sandboxtemplates/ac-runtime-std`)?.body as {
       spec: {
-        podTemplate: { spec: { containers: Array<{ image: string; env: Array<{ name: string; value: string }> }> } }
+        podTemplate: {
+          spec: {
+            containers: Array<{
+              image: string
+              env: Array<{ name: string; value: string }>
+              ports: Array<{ name: string; containerPort: number; protocol: string }>
+            }>
+          }
+        }
       }
     }
     const container = template.spec.podTemplate.spec.containers[0]
     expect(container.image).toBe('ghcr.io/example/runtime:v1')
-    expect(container.env.find((entry) => entry.name === 'AC_SHIM_ENDPOINT')?.value).toBe(
-      `ws://ac-daemon-shim.${NS}.svc.cluster.local:8085`
-    )
+    expect(container.env.find((entry) => entry.name === 'AC_SHIM_ENDPOINT')).toBeUndefined()
+    expect(container.env.find((entry) => entry.name === 'AC_SHIM_PORT')?.value).toBe('8085')
+    expect(container.ports).toContainEqual({ name: 'shim', containerPort: 8085, protocol: 'TCP' })
 
     const pool = byPath(writes, '/sandboxwarmpools/ac-runtime-std')?.body as { spec: { replicas: number } }
     expect(pool.spec.replicas).toBe(2)
@@ -166,7 +182,12 @@ describe('reconcileEnvelope', () => {
       spec: {
         replicas: number
         strategy: { type: string }
-        template: { spec: { containers: Array<{ env: Array<{ name: string; value: string }> }>; volumes: unknown[] } }
+        template: {
+          spec: {
+            containers: Array<{ env: Array<{ name: string; value: string }>; args: string[] }>
+            volumes: unknown[]
+          }
+        }
       }
     }
     expect(deployment.spec.replicas).toBe(1)
@@ -174,12 +195,79 @@ describe('reconcileEnvelope', () => {
     const env = deployment.spec.template.spec.containers[0].env
     expect(env.find((entry) => entry.name === 'AC_K8S_ORG_ID')?.value).toBe('acme')
     expect(env.find((entry) => entry.name === 'AC_K8S_WARM_POOL')?.value).toBe('ac-runtime-std')
+    // The pod is born able to dial: the CP's own address as env, and the projected token
+    // it presents instead of a credential. No Secret volume, no init container.
+    expect(env.find((entry) => entry.name === 'AC_CP_URL')?.value).toBe(CP_URL)
     expect(deployment.spec.template.spec.volumes).toContainEqual({
-      name: 'config',
-      secret: { secretName: 'ac-daemon-token', optional: false }
+      name: 'cp-identity',
+      projected: {
+        defaultMode: 0o444,
+        sources: [
+          {
+            serviceAccountToken: {
+              path: 'token',
+              audience: CP_TOKEN_AUDIENCE,
+              expirationSeconds: 3600
+            }
+          }
+        ]
+      }
     })
+    expect(JSON.stringify(deployment.spec.template.spec)).not.toContain('install-config')
+    expect(JSON.stringify(deployment.spec.template.spec.volumes)).not.toContain('secret')
 
-    expect(byPath(writes, '/services/ac-daemon-shim')).toBeDefined()
+    expect(byPath(writes, '/services/ac-daemon-shim')?.method).toBe('DELETE')
+  })
+
+  // A control plane in another namespace is reachable only if the policy says so, and a
+  // policy selects namespaces — it cannot select the DNS name the CR carries.
+  it('opens daemon egress to every namespace the install names, not just the control one', async () => {
+    const { gets, writes, route } = recorder()
+    const ctx = await contextFor(route, { AC_DAEMON_EGRESS_NAMESPACES: 'cp-ns,relay-ns' })
+    gets.set(masterPath(ctx.controlNamespace), MASTER_TEMPLATE)
+    await reconcileEnvelope(ctx, inputOf(ctx), newObservations())
+
+    const egress = byPath(writes, '/networkpolicies/ac-daemon-egress')?.body as {
+      spec: { egress: Array<{ to?: Array<{ namespaceSelector?: { matchLabels: Record<string, string> } }> }> }
+    }
+    for (const namespace of ['cp-ns', 'relay-ns']) {
+      expect(egress.spec.egress).toContainEqual({
+        to: [{ namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': namespace } } }]
+      })
+    }
+    expect(egress.spec.egress.filter((rule) => rule.to?.some((peer) => peer.namespaceSelector))).toHaveLength(2)
+  })
+
+  it('names no namespace at all when the install has no in-cluster peer', async () => {
+    const { gets, writes, route } = recorder()
+    const ctx = await contextFor(route, { AC_DAEMON_EGRESS_NAMESPACES: '' })
+    gets.set(masterPath(ctx.controlNamespace), MASTER_TEMPLATE)
+    await reconcileEnvelope(ctx, inputOf(ctx), newObservations())
+
+    const egress = byPath(writes, '/networkpolicies/ac-daemon-egress')?.body as {
+      spec: { egress: Array<{ to?: unknown[]; ports?: Array<{ port: number }> }> }
+    }
+    expect(egress.spec.egress.every((rule) => rule.to?.every((peer) => !('namespaceSelector' in peer)) ?? true)).toBe(
+      true
+    )
+    // A control plane outside the cluster is already covered by the 443 rule.
+    expect(egress.spec.egress.some((rule) => rule.ports?.some((port) => port.port === 443))).toBe(true)
+  })
+
+  // Nothing operator-side can invent an address, and refusing the spec would take the rest
+  // of the envelope down with it — so the pod runs, does not register, and the CR says so.
+  it('warns rather than fails when the resource carries no control-plane URL', async () => {
+    const { gets, writes, route } = recorder()
+    const ctx = await contextFor(route)
+    gets.set(masterPath(ctx.controlNamespace), MASTER_TEMPLATE)
+    const obs = newObservations()
+    await reconcileEnvelope(ctx, inputOf(ctx, { controlPlane: undefined }), obs)
+
+    expect(obs.warnings.join(' ')).toContain('spec.controlPlane.url')
+    const deployment = byPath(writes, '/deployments/ac-daemon')?.body as {
+      spec: { template: { spec: { containers: Array<{ env: Array<{ name: string }> }> } } }
+    }
+    expect(deployment.spec.template.spec.containers[0].env.map((entry) => entry.name)).not.toContain('AC_CP_URL')
   })
 
   it('honours a targetNamespace override that stays inside the install prefix', async () => {
@@ -336,14 +424,37 @@ describe('reconcileEnvelope', () => {
     expect(writes.filter((write) => write.method === 'DELETE' && write.path.includes('ac-runtime-std'))).toEqual([])
   })
 
-  it('locked egress restricts the sandbox template to daemon and DNS', async () => {
+  it('locked sandbox networking admits only daemon dial-in and DNS egress', async () => {
     const { gets, writes, route } = recorder()
     const ctx = await contextFor(route)
     gets.set(masterPath(ctx.controlNamespace), MASTER_TEMPLATE)
     await reconcileEnvelope(ctx, inputOf(ctx, { egressPolicy: 'locked' }), newObservations())
     const template = byPath(writes, `/namespaces/${NS}/sandboxtemplates/ac-runtime-std`)?.body as {
-      spec: { networkPolicy: { egress: unknown[] } }
+      spec: { networkPolicy: { ingress: unknown[]; egress: unknown[] } }
     }
-    expect(template.spec.networkPolicy.egress).toHaveLength(2)
+    expect(template.spec.networkPolicy).toEqual({
+      ingress: [
+        {
+          from: [
+            { podSelector: { matchLabels: { app: 'ac-daemon' } } },
+            {
+              namespaceSelector: {
+                matchLabels: { 'kubernetes.io/metadata.name': ctx.controlNamespace }
+              },
+              podSelector: { matchLabels: { app: 'ac-daemon' } }
+            }
+          ],
+          ports: [{ protocol: 'TCP', port: 8085 }]
+        }
+      ],
+      egress: [
+        {
+          ports: [
+            { protocol: 'UDP', port: 53 },
+            { protocol: 'TCP', port: 53 }
+          ]
+        }
+      ]
+    })
   })
 })

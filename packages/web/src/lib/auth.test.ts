@@ -20,7 +20,8 @@ vi.mock('@logto/browser', () => ({
   UserScope: {
     Email: 'email',
     Profile: 'profile',
-    Identities: 'identities'
+    Identities: 'identities',
+    Roles: 'roles'
   },
   isLogtoRequestError: (error: unknown) => error instanceof Error && error.name === 'LogtoRequestError'
 }))
@@ -99,6 +100,6 @@ describe('getToken', () => {
     await expect(getAccountToken()).resolves.toBe('opaque-account-token')
 
     expect(logto.getAccessToken).toHaveBeenCalledWith()
-    expect(logto.clientConfig).toMatchObject({ scopes: ['email', 'profile', 'identities'] })
+    expect(logto.clientConfig).toMatchObject({ scopes: ['email', 'profile', 'identities', 'roles'] })
   })
 })

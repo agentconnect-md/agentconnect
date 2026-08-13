@@ -820,7 +820,7 @@ export interface IntegrationChannelDto {
   isPrivate: boolean
   kind: 'channel' | 'im' | 'mpim'
   trigger: ChannelTrigger
-  agentId: string | null // effective shared-channel owner; null before convergence / when not applicable
+  agentId: string | null // effective shared-conversation owner; null before convergence / when not applicable
 }
 
 // `/integrations` list/create row — control-plane metadata only, NEVER tokens.
@@ -2257,9 +2257,6 @@ export interface ClusterExecutionSettingsDto {
   suspend: boolean
   daemonImage: string
   daemonTier: string
-  credentialSecretName: string
-  /** Opaque handle for the published credential; absent until one is issued. */
-  credentialRevision?: string
   runtimeImage: string
   runtimeTiers: ClusterRuntimeTierDto[]
   quota: ClusterQuotaDto
@@ -2298,14 +2295,6 @@ export interface ClusterEnvelopeStatusDto {
   rollout?: { rolloutId: string; targetImage: string; pending: string[]; failed: string[] }
 }
 
-/** What issuing a credential answers with — the key never leaves the cluster. */
-export interface ClusterCredentialDto {
-  daemonId: string
-  secretName: string
-  revision: string
-  rotated: boolean
-}
-
 export function fetchClusterExecution(orgId?: string): Promise<ClusterExecutionSettingsDto> {
   return apiGet<ClusterExecutionSettingsDto>(`${orgBase(orgId)}/cluster-execution`)
 }
@@ -2321,25 +2310,13 @@ export function fetchClusterExecutionStatus(orgId?: string): Promise<ClusterEnve
   return apiGet<ClusterEnvelopeStatusDto>(`${orgBase(orgId)}/cluster-execution/status`)
 }
 
-/** The settings an ensure pass left behind, plus whether anything is still owed.
- *  `settled` is the ONLY completion signal: `credentialRevision` is populated
- *  throughout a rotation that has not finished, so it cannot stand in for one. */
-export interface ClusterEnsureResultDto extends ClusterExecutionSettingsDto {
-  settled: boolean
-}
-
-/** Idempotently provision the org's envelope: creates the AgentConnectOrg when
- *  it has none and issues the credential once the namespace exists. An org whose
- *  owner switched cluster execution off is left as it is. `settled: false` means
- *  work remains and the caller should repeat the call later. */
-export function ensureClusterExecution(orgId?: string): Promise<ClusterEnsureResultDto> {
-  return apiPost<ClusterEnsureResultDto>(`${orgBase(orgId)}/cluster-execution/ensure`, {})
-}
-
-/** Mint or rotate the envelope's daemon credential. The key is published into a
- *  cluster Secret and is never returned, so there is nothing here to display. */
-export function issueClusterExecutionCredential(orgId?: string): Promise<ClusterCredentialDto> {
-  return apiPost<ClusterCredentialDto>(`${orgBase(orgId)}/cluster-execution/credential`, {})
+/** Idempotently provision the org's envelope: creates the AgentConnectOrg when it
+ *  has none, and re-applies the spec when the resource went missing. An org whose
+ *  owner switched cluster execution off is left as it is. Returning means the
+ *  resource is applied — the envelope's daemon carries its own projected token, so
+ *  nothing is delivered after it and there is nothing to come back for. */
+export function ensureClusterExecution(orgId?: string): Promise<ClusterExecutionSettingsDto> {
+  return apiPost<ClusterExecutionSettingsDto>(`${orgBase(orgId)}/cluster-execution/ensure`, {})
 }
 
 // One page of a session's transcript, proxied live from the daemon recorded on
@@ -3020,12 +2997,15 @@ export interface WorkspaceGitLogCommitDto {
 
 // The newest commits of the workspace checkout, newest first. An empty repo is data
 // (`commits: []`); `tracking:null` means the branch tracks nothing, so every `pushed`
-// reads false and the console must not draw unpushed markers from it.
+// reads false and the console must not draw unpushed markers from it. `base` names the
+// ref the listing EXCLUDES — a session branch lists `<base>..HEAD`, its own work — and is
+// null when the checkout sits on that base branch, where the list is its full history.
 export interface WorkspaceGitLogDto {
   isRepo: boolean
   commits: WorkspaceGitLogCommitDto[]
-  truncated: boolean // true ⇒ the branch has more commits than the requested limit
+  truncated: boolean // true ⇒ this range has more commits than the requested limit
   tracking: string | null
+  base: string | null
 }
 
 // One path's unified diff, proxied live from the owning daemon (no CP storage). 409
@@ -3778,7 +3758,7 @@ export async function fetchHookRuns(id: string, orgId?: string): Promise<HookRun
   return apiGet<HookRunDto[]>(`${orgBase(orgId)}/hooks/${encodeURIComponent(id)}/runs`)
 }
 
-// Per-channel trigger choice (`PATCH /integrations/:id/channels/:channelId`). The CP
+// Per-conversation trigger choice (`PATCH /integrations/:id/channels/:channelId`). The CP
 // persists it and pushes the integration's recomputed bind rules to the owning daemon.
 export async function updateIntegrationChannel(
   integrationId: string,

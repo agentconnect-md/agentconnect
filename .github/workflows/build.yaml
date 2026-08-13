@@ -394,26 +394,6 @@ jobs:
           alias_unchanged daemon "$DAEMON_EFFECTIVE"
           alias_unchanged operator "$OPERATOR_EFFECTIVE"
 
-      - name: Checkout
-        uses: actions/checkout@v5
-        with:
-          persist-credentials: false
-
-      # The chart rides the same release train as the CRD and the operator image
-      # (they must version together). Chart version = release semver (no v);
-      # appVersion = the release tag, which the deployment template uses as the
-      # default operator image tag — the alias step above guarantees
-      # operator:VERSION resolves even when the image itself was unchanged.
-      - name: Publish Helm chart to the OCI registry
-        env:
-          OWNER: ${{ github.repository_owner }}
-          CHART_VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          set -euo pipefail
-          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login "$REGISTRY" --username "${{ github.actor }}" --password-stdin
-          helm package charts/operator --version "${CHART_VERSION#v}" --app-version "$CHART_VERSION" --destination "$RUNNER_TEMP"
-          helm push "$RUNNER_TEMP/agentconnect-operator-${CHART_VERSION#v}.tgz" "oci://$REGISTRY/$OWNER/charts"
-
   notify-workflow:
     name: Notify workflow
     needs: finalize

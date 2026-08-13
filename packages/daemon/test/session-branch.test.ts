@@ -30,6 +30,15 @@ describe('sessionBranchName', () => {
     expect(userOf(sessionBranchName('a..b'))).toBe('a-b')
   })
 
+  it('reduces a sign-in address to its local part — the domain names nobody', () => {
+    // What webchat carries for a user who set no display name; `dev/jane-example-com/…` is the branch this avoids.
+    expect(userOf(sessionBranchName('jane.doe@example.com'))).toBe('jane-doe')
+    expect(userOf(sessionBranchName('Jane.Doe@Example.co.uk'))).toBe('jane-doe')
+    // Not an address: a handle that merely starts with `@` keeps every character it has.
+    expect(userOf(sessionBranchName('@jane'))).toBe('jane')
+    expect(userOf(sessionBranchName('jane@doe'))).toBe('jane-doe')
+  })
+
   it('keeps a CJK display name rather than flattening every such user to one branch', () => {
     expect(userOf(sessionBranchName('张伟'))).toBe('张伟')
   })

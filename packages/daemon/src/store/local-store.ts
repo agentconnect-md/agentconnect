@@ -31,7 +31,7 @@ type SqlParams = Record<string, SQLInputValue>
  * Unknown/unsafe values fall back to 0. They remain stable via the `seq` tie-breaker
  * and sort before real timestamps instead of blocking an in-place store migration.
  */
-function transcriptEventTimeUs(ts: string | null | undefined): number {
+export function transcriptEventTimeUs(ts: string | null | undefined): number {
   let raw = ts?.trim() ?? ''
   if (!raw) return 0
   const local = raw.startsWith('local-')
@@ -587,6 +587,7 @@ export class LocalStore {
   private db: DatabaseSync
   private transcriptRevision = 0
   private transcriptMutationListener?: (mutation: TranscriptMutation) => void
+  private transcriptReplica?: import('./postgres-transcript-store.js').TranscriptReplicaSink
 
   constructor(dbPath: string) {
     // This database holds every platform message body, agent reply, tool payload and
@@ -1278,6 +1279,11 @@ export class LocalStore {
 
   setTranscriptMutationListener(listener?: (mutation: TranscriptMutation) => void): void {
     this.transcriptMutationListener = listener
+  }
+
+  /** Cloud persistence seam; SQLite remains the synchronous local/self-hosted driver. */
+  setTranscriptReplica(replica?: import('./postgres-transcript-store.js').TranscriptReplicaSink): void {
+    this.transcriptReplica = replica
   }
 
   /**
@@ -2645,6 +2651,7 @@ export class LocalStore {
       ).map((r) => r.agentId)
       this.notifyTranscriptMutation(e.channel, e.thread, [e.sender, e.recipient, ...sharedRecipients], deliveryRevision)
     }
+    this.transcriptReplica?.appendTranscript(e)
   }
 
   /** First sight of a tool call: insert its kind='tool' row (title in `text`, the
@@ -2682,6 +2689,7 @@ export class LocalStore {
       this.transcriptRevision = revision
       this.notifyTranscriptMutation(e.channel, e.thread, [e.sender], revision)
     }
+    this.transcriptReplica?.insertToolCall(e)
   }
 
   /** Later update for one agent's tool call. `seq`/`ts` keep their first-seen
@@ -2705,6 +2713,7 @@ export class LocalStore {
       this.transcriptRevision = revision
       this.notifyTranscriptMutation(channel, thread, [agentId], revision)
     }
+    this.transcriptReplica?.updateToolCall(channel, thread, agentId, toolCallId, patch)
   }
 
   private notifyTranscriptMutation(

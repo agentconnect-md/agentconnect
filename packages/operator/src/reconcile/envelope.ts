@@ -1,9 +1,5 @@
-import {
-  CREDENTIAL_REVISION_ANNOTATION,
-  NAMESPACE_CLAIM_LABEL,
-  ORG_LABEL,
-  type AgentConnectOrgSpec
-} from '../crd/types.js'
+import { CP_IDENTITY_TOKEN_PATH, CP_TOKEN_AUDIENCE, CP_URL_ENV } from '@agentconnect.md/protocol'
+import { NAMESPACE_CLAIM_LABEL, ORG_LABEL, type AgentConnectOrgSpec } from '../crd/types.js'
 import type { Observations, ReconcileContext } from './context.js'
 import { namespaceFault, orgNamespace } from './namespace.js'
 import {
@@ -54,6 +50,15 @@ const DAEMON_TIERS: Record<string, { requests: Record<string, string>; limits: R
 function envelopeLabels(orgName: string, extra: Record<string, string> = {}): Record<string, string> {
   return { [ORG_LABEL]: orgName, ...extra }
 }
+
+// A projected volume names a mount directory and a path within it; the daemon reads one
+// absolute path. Split the shared constant rather than restate it, so the two cannot drift.
+const identityTokenDir = CP_IDENTITY_TOKEN_PATH.slice(0, CP_IDENTITY_TOKEN_PATH.lastIndexOf('/'))
+const identityTokenFile = CP_IDENTITY_TOKEN_PATH.slice(CP_IDENTITY_TOKEN_PATH.lastIndexOf('/') + 1)
+
+/** One hour, the kubelet's own default: it refreshes at 80% of this, so the daemon's
+ *  read-per-connect always finds a token with well over ten minutes left. */
+const IDENTITY_TOKEN_EXPIRATION_SECONDS = 3600
 
 /** Create-or-adopt the resolved namespace: claim by label, reject a label-mismatched existing namespace as Degraded. */
 export async function ensureNamespace(ctx: ReconcileContext, input: EnvelopeInputs, obs: Observations): Promise<void> {
@@ -188,10 +193,18 @@ export async function ensureNetworkPolicies(
             { protocol: 'TCP', port: 53 }
           ]
         },
-        // The control plane and relay live in the control namespace and are reached on their own
-        // service ports, so 443 alone strands an in-cluster deployment — the daemon's registration
-        // WebSocket never completes and the org is orphaned from its control plane.
-        { to: [{ namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': ctx.controlNamespace } } }] },
+        // In-cluster peers — the control plane and relay — are reached on their own service
+        // ports, so 443 alone strands them: the daemon's registration WebSocket never completes
+        // and the org is orphaned from its control plane. Which namespaces those are is an
+        // install-time value, because a control plane may not live in the control namespace and
+        // a policy selects namespaces, not the DNS name the CR carries.
+        ...ctx.config.daemonEgressNamespaces.map((namespace) => ({
+          to: [{ namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': namespace } } }]
+        })),
+        {
+          to: [{ podSelector: { matchExpressions: [{ key: 'agentconnect.md/agent', operator: 'Exists' }] } }],
+          ports: [{ protocol: 'TCP', port: SHIM_PORT }]
+        },
         // 443 covers platform and provider APIs, plus a CP reached over public HTTPS.
         { ports: [{ protocol: 'TCP', port: 443 }] },
         { ports: [{ protocol: 'TCP', port: 6443 }] }
@@ -205,14 +218,7 @@ export async function ensureNetworkPolicies(
     spec: {
       ...daemonPods,
       policyTypes: ['Ingress'],
-      ingress: [
-        // Shim dial-in from this org's sandboxes plus relay forward from the control namespace.
-        { from: [{ podSelector: {} }], ports: [{ protocol: 'TCP', port: SHIM_PORT }] },
-        {
-          from: [{ namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': ctx.controlNamespace } } }],
-          ports: [{ protocol: 'TCP', port: SHIM_PORT }]
-        }
-      ]
+      ingress: []
     }
   })
   void obs
@@ -268,7 +274,14 @@ interface SandboxTemplateResource extends K8sResource {
   spec?: {
     networkPolicy?: unknown
     podTemplate?: {
-      spec?: { containers?: Array<{ name?: string; image?: string; env?: Array<{ name: string; value?: string }> }> }
+      spec?: {
+        containers?: Array<{
+          name?: string
+          image?: string
+          env?: Array<{ name: string; value?: string }>
+          ports?: Array<{ name?: string; containerPort: number; protocol?: string }>
+        }>
+      }
     }
     [key: string]: unknown
   }
@@ -276,11 +289,7 @@ interface SandboxTemplateResource extends K8sResource {
 
 /** The sandbox egress rule set for one org, keyed by spec.egressPolicy. */
 function sandboxEgress(policy: AgentConnectOrgSpec['egressPolicy']): unknown[] {
-  const daemonAndDns = [
-    {
-      to: [{ podSelector: { matchLabels: { [APP_LABEL_KEY]: DAEMON_NAME } } }],
-      ports: [{ protocol: 'TCP', port: SHIM_PORT }]
-    },
+  const dns = [
     {
       ports: [
         { protocol: 'UDP', port: 53 },
@@ -288,8 +297,8 @@ function sandboxEgress(policy: AgentConnectOrgSpec['egressPolicy']): unknown[] {
       ]
     }
   ]
-  if (policy === 'locked') return daemonAndDns
-  if (policy === 'curated') return [...daemonAndDns, { ports: [{ protocol: 'TCP', port: 443 }] }]
+  if (policy === 'locked') return dns
+  if (policy === 'curated') return [...dns, { ports: [{ protocol: 'TCP', port: 443 }] }]
   return [{}]
 }
 
@@ -314,14 +323,34 @@ export async function ensureSandboxTemplates(
     const container = spec.podTemplate?.spec?.containers?.[0]
     if (container) {
       container.image = input.spec.runtime.image
-      const endpoint = `ws://${SHIM_SERVICE_NAME}.${ns}.svc.cluster.local:${SHIM_PORT}`
-      const env = (container.env ??= [])
-      const shim = env.find((entry) => entry.name === 'AC_SHIM_ENDPOINT')
-      if (shim) shim.value = endpoint
-      else env.push({ name: 'AC_SHIM_ENDPOINT', value: endpoint })
+      const env = (container.env ??= []).filter((entry) => entry.name !== 'AC_SHIM_ENDPOINT')
+      container.env = env
+      const shimPort = env.find((entry) => entry.name === 'AC_SHIM_PORT')
+      if (shimPort) shimPort.value = String(SHIM_PORT)
+      else env.push({ name: 'AC_SHIM_PORT', value: String(SHIM_PORT) })
+      const ports = (container.ports ??= [])
+      const declared = ports.find((entry) => entry.name === 'shim')
+      if (declared) declared.containerPort = SHIM_PORT
+      else ports.push({ name: 'shim', containerPort: SHIM_PORT, protocol: 'TCP' })
     }
-    // The org's egress tier overrides the master's networkPolicy wholesale — deterministic, not merged.
-    spec.networkPolicy = { egress: sandboxEgress(input.spec.egressPolicy) }
+    // Transitional policy: dedicated daemon or install-level pool, always daemon-labelled and port-scoped.
+    spec.networkPolicy = {
+      ingress: [
+        {
+          from: [
+            { podSelector: { matchLabels: { [APP_LABEL_KEY]: DAEMON_NAME } } },
+            {
+              namespaceSelector: {
+                matchLabels: { 'kubernetes.io/metadata.name': ctx.controlNamespace }
+              },
+              podSelector: { matchLabels: { [APP_LABEL_KEY]: DAEMON_NAME } }
+            }
+          ],
+          ports: [{ protocol: 'TCP', port: SHIM_PORT }]
+        }
+      ],
+      egress: sandboxEgress(input.spec.egressPolicy)
+    }
     const name = runtimeTierName(tier.name)
     await applyObject(ctx.http, groupPath(SANDBOX_EXTENSIONS_GROUP, ns, 'sandboxtemplates', name), {
       apiVersion: SANDBOX_EXTENSIONS_GROUP,
@@ -383,7 +412,8 @@ export async function ensureDaemonPvc(ctx: ReconcileContext, input: EnvelopeInpu
   void obs
 }
 
-/** Daemon Deployment: strategy Recreate, required credential Secret volume, credentialRevision annotation. */
+/** Daemon Deployment: strategy Recreate; the pod is born able to dial — a projected
+ *  control-plane-audience token to present, and the control plane's URL as env. */
 export async function ensureDaemonDeployment(
   ctx: ReconcileContext,
   input: EnvelopeInputs,
@@ -397,9 +427,10 @@ export async function ensureDaemonDeployment(
   const firstTier = input.spec.runtime.tiers[0]
   if (!firstTier) obs.warnings.push('spec.runtime.tiers is empty; the daemon will refuse to start without a warm pool')
   const stateRoot = '/var/lib/agentconnect'
-  const annotations = daemon.credentialRevision
-    ? { [CREDENTIAL_REVISION_ANNOTATION]: daemon.credentialRevision }
-    : undefined
+  const controlPlaneUrl = input.spec.controlPlane?.url
+  // Nothing here can supply one: the control plane is the authority on its own address, so
+  // a missing URL is reported and the pod runs without ever registering.
+  if (!controlPlaneUrl) obs.warnings.push('spec.controlPlane.url is unset; the daemon cannot reach a control plane')
   await applyObject(ctx.http, groupPath('apps/v1', ns, 'deployments', DAEMON_NAME), {
     apiVersion: 'apps/v1',
     kind: 'Deployment',
@@ -415,55 +446,52 @@ export async function ensureDaemonDeployment(
       selector: { matchLabels: { [APP_LABEL_KEY]: DAEMON_NAME } },
       template: {
         metadata: {
-          labels: envelopeLabels(input.orgName, { [APP_LABEL_KEY]: DAEMON_NAME }),
-          ...(annotations ? { annotations } : {})
+          labels: envelopeLabels(input.orgName, { [APP_LABEL_KEY]: DAEMON_NAME })
         },
         spec: {
           serviceAccountName: DAEMON_NAME,
           // Must exceed the daemon's shutdown drain or the kubelet SIGKILLs mid-drain.
           terminationGracePeriodSeconds: 60,
           securityContext: { runAsNonRoot: true, runAsUser: 10002, runAsGroup: 10002, fsGroup: 10002 },
-          initContainers: [
-            {
-              // Copies the root-owned read-only Secret file onto the writable state volume at 0600.
-              name: 'install-config',
-              image: daemon.image,
-              command: ['sh', '-c', `install -m 0600 /etc/agentconnect-secret/config.json ${stateRoot}/config.json`],
-              volumeMounts: [
-                { name: 'config', mountPath: '/etc/agentconnect-secret', readOnly: true },
-                { name: 'state', mountPath: stateRoot }
-              ]
-            }
-          ],
           containers: [
             {
               name: 'daemon',
               image: daemon.image,
-              // tini is ENTRYPOINT, so args must name the interpreter.
-              args: [
-                'node',
-                'dist/index.js',
-                'run',
-                '--k8s',
-                '--root',
-                stateRoot,
-                '--config',
-                `${stateRoot}/config.json`
-              ],
+              // tini is ENTRYPOINT, so args must name the interpreter. No `--config`: there is
+              // no credential file to read, and the state volume supplies its own.
+              args: ['node', 'dist/index.js', 'run', '--k8s', '--root', stateRoot],
               env: [
                 { name: 'AC_K8S_ORG_ID', value: input.orgName },
                 ...(firstTier ? [{ name: 'AC_K8S_WARM_POOL', value: runtimeTierName(firstTier.name) }] : []),
-                { name: 'AC_K8S_SHIM_PORT', value: String(SHIM_PORT) }
+                { name: 'AC_K8S_SHIM_PORT', value: String(SHIM_PORT) },
+                ...(controlPlaneUrl ? [{ name: CP_URL_ENV, value: controlPlaneUrl }] : [])
               ],
-              ports: [{ name: 'shim', containerPort: SHIM_PORT }],
-              volumeMounts: [{ name: 'state', mountPath: stateRoot }],
+              volumeMounts: [
+                { name: 'state', mountPath: stateRoot },
+                { name: 'cp-identity', mountPath: identityTokenDir, readOnly: true }
+              ],
               resources
             }
           ],
           volumes: [
-            // Non-optional: the kubelet gates pod startup on this mount; the operator never reads the Secret.
-            { name: 'config', secret: { secretName: daemon.credentialSecretName, optional: false } },
-            { name: 'state', persistentVolumeClaim: { claimName: DAEMON_PVC_NAME } }
+            { name: 'state', persistentVolumeClaim: { claimName: DAEMON_PVC_NAME } },
+            // The daemon's whole credential: an audience-scoped token the kubelet keeps
+            // current, the same mechanism the sandbox template uses one hop down.
+            {
+              name: 'cp-identity',
+              projected: {
+                defaultMode: 0o444,
+                sources: [
+                  {
+                    serviceAccountToken: {
+                      path: identityTokenFile,
+                      audience: CP_TOKEN_AUDIENCE,
+                      expirationSeconds: IDENTITY_TOKEN_EXPIRATION_SECONDS
+                    }
+                  }
+                ]
+              }
+            }
           ]
         }
       }
@@ -471,23 +499,9 @@ export async function ensureDaemonDeployment(
   })
 }
 
-/** Daemon Service for relay ingress and shim dial-in. */
-export async function ensureDaemonService(
-  ctx: ReconcileContext,
-  input: EnvelopeInputs,
-  obs: Observations
-): Promise<void> {
-  const ns = input.namespace
-  await applyObject(ctx.http, corePath(ns, 'services', SHIM_SERVICE_NAME), {
-    apiVersion: 'v1',
-    kind: 'Service',
-    metadata: { name: SHIM_SERVICE_NAME, namespace: ns, labels: envelopeLabels(input.orgName) },
-    spec: {
-      selector: { [APP_LABEL_KEY]: DAEMON_NAME },
-      ports: [{ name: 'shim', port: SHIM_PORT, targetPort: 'shim', protocol: 'TCP' }]
-    }
-  })
-  void obs
+/** Remove the dial-out callback Service left by an older envelope. */
+export async function removeLegacyDaemonService(ctx: ReconcileContext, input: EnvelopeInputs): Promise<void> {
+  await deleteIgnoreMissing(ctx.http, corePath(input.namespace, 'services', SHIM_SERVICE_NAME))
 }
 
 /** The full envelope inventory in its policy-before-workload order (see the operator design doc). */
@@ -507,5 +521,5 @@ export async function reconcileEnvelope(
   await ensureSandboxTemplates(ctx, input, obs)
   await ensureDaemonPvc(ctx, input, obs)
   await ensureDaemonDeployment(ctx, input, obs)
-  await ensureDaemonService(ctx, input, obs)
+  await removeLegacyDaemonService(ctx, input)
 }

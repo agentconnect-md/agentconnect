@@ -48,7 +48,7 @@ export interface TunnelHostDeps {
  * which of its own sockets each reaches; this side only knows that something in the pod
  * connected and that its bytes belong to a stream id.
  *
- * Listeners outlive the channel deliberately. The shim re-dials at half the credential TTL, and
+ * Listeners outlive the channel deliberately. The channel reconnects at half the credential TTL, and
  * a listener torn down on every renewal would break any client that happened to be mid-request
  * — so `listen` is idempotent and the socket belongs to the pod's lifetime.
  */

@@ -1269,14 +1269,15 @@ export class CpClient {
         return
       }
       case 'session/history': {
-        try {
-          const req = frame.payload as SessionHistoryReq
-          if (!req.agentId)
-            this.deps.log.warn('cp: legacy session/history request omitted agentId; owner binding is unavailable')
-          this.reply(frame, 'session/history/page', this.deps.sessionRead.history(req))
-        } catch (err) {
-          this.sendError(frame.id, 'INTERNAL', `session/history failed: ${(err as Error).message}`, false)
-        }
+        const req = frame.payload as SessionHistoryReq
+        if (!req.agentId)
+          this.deps.log.warn('cp: legacy session/history request omitted agentId; owner binding is unavailable')
+        Promise.resolve()
+          .then(() => this.deps.sessionRead.history(req))
+          .then((page) => this.reply(frame, 'session/history/page', page))
+          .catch((err) =>
+            this.sendError(frame.id, 'INTERNAL', `session/history failed: ${(err as Error).message}`, false)
+          )
         return
       }
       case 'session/child-status/probe': {
@@ -1292,14 +1293,15 @@ export class CpClient {
         return
       }
       case 'session/tool-body': {
-        try {
-          const req = frame.payload as SessionToolBodyReq
-          if (!req.agentId)
-            this.deps.log.warn('cp: legacy session/tool-body request omitted agentId; owner binding is unavailable')
-          this.reply(frame, 'session/tool-body/chunk', this.deps.sessionRead.toolBody(req))
-        } catch (err) {
-          this.sendError(frame.id, 'INTERNAL', `session/tool-body failed: ${(err as Error).message}`, false)
-        }
+        const req = frame.payload as SessionToolBodyReq
+        if (!req.agentId)
+          this.deps.log.warn('cp: legacy session/tool-body request omitted agentId; owner binding is unavailable')
+        Promise.resolve()
+          .then(() => this.deps.sessionRead.toolBody(req))
+          .then((chunk) => this.reply(frame, 'session/tool-body/chunk', chunk))
+          .catch((err) =>
+            this.sendError(frame.id, 'INTERNAL', `session/tool-body failed: ${(err as Error).message}`, false)
+          )
         return
       }
       case 'workspace/list': {

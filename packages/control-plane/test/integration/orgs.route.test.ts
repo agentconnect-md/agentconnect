@@ -3,8 +3,11 @@
  * the org-scoping seams the multi-tenant model hangs off: cross-org reads come
  * back empty/404 and the RBAC guards bite on write routes.
  */
-import { describe, it, expect } from 'vitest'
+import { createServer, type Server } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { randomUUID } from 'node:crypto'
+import { exportJWK, generateKeyPair, SignJWT } from 'jose'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { prisma } from '../setup.db.js'
 import { buildHttpApp } from '../fakes/build-http.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
@@ -13,6 +16,51 @@ import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 
 // Console routes are org-scoped: /orgs/:orgId/… (devAuth = seeded owner of the default org).
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
+const OIDC_AUDIENCE = 'org-quota-test'
+
+let oidcServer: Server
+let oidcIssuer = ''
+let mintBearer: (subject: string, claims?: Record<string, unknown>) => Promise<string>
+
+beforeAll(async () => {
+  const { privateKey, publicKey } = await generateKeyPair('RS256')
+  const jwk = { ...(await exportJWK(publicKey)), alg: 'RS256', kid: 'org-quota-test', use: 'sig' }
+  oidcServer = createServer((req, res) => {
+    res.setHeader('content-type', 'application/json')
+    if (req.url === '/.well-known/openid-configuration') {
+      res.end(JSON.stringify({ issuer: oidcIssuer, jwks_uri: `${oidcIssuer}/jwks` }))
+      return
+    }
+    if (req.url === '/jwks') {
+      res.end(JSON.stringify({ keys: [jwk] }))
+      return
+    }
+    res.statusCode = 404
+    res.end('{}')
+  })
+  await new Promise<void>((resolve, reject) => {
+    oidcServer.once('error', reject)
+    oidcServer.listen(0, '127.0.0.1', resolve)
+  })
+  const { port } = oidcServer.address() as AddressInfo
+  oidcIssuer = `http://127.0.0.1:${port}`
+  mintBearer = (subject, claims = {}) =>
+    new SignJWT(claims)
+      .setProtectedHeader({ alg: 'RS256', kid: 'org-quota-test' })
+      .setIssuer(oidcIssuer)
+      .setAudience(OIDC_AUDIENCE)
+      .setSubject(subject)
+      .setIssuedAt()
+      .setExpirationTime('10m')
+      .sign(privateKey)
+})
+
+afterAll(
+  () =>
+    new Promise<void>((resolve, reject) => {
+      oidcServer.close((err) => (err ? reject(err) : resolve()))
+    })
+)
 
 interface OrgBody {
   id: string
@@ -75,6 +123,39 @@ describe('GET /orgs', () => {
 })
 
 describe('POST /orgs', () => {
+  it('enforces the deployment quota for non-admins while ADMIN accounts bypass it', async () => {
+    const { app, close } = buildHttpApp(prisma, { OIDC_ISSUER: oidcIssuer, OIDC_AUDIENCE }, undefined, undefined, {
+      maxOrgsPerNonAdminUser: 0
+    })
+    try {
+      const denied = await app.inject({
+        method: 'POST',
+        url: '/api/v1/orgs',
+        headers: {
+          authorization: `Bearer ${await mintBearer('org-quota-user', { email: 'quota-route@example.com' })}`
+        },
+        payload: { slug: 'quota-route-denied' }
+      })
+      expect(denied.statusCode).toBe(403)
+      expect(denied.json()).toMatchObject({ code: 'ORG_CREATION_LIMIT_REACHED' })
+
+      const allowed = await app.inject({
+        method: 'POST',
+        url: '/api/v1/orgs',
+        headers: {
+          authorization: `Bearer ${await mintBearer('org-admin-user', {
+            email: 'admin-route@example.com',
+            roles: ['ADMIN']
+          })}`
+        },
+        payload: { slug: 'quota-route-admin' }
+      })
+      expect(allowed.statusCode).toBe(201)
+    } finally {
+      await close()
+    }
+  })
+
   it('creates an org owned by the caller; duplicate slug → 409', async () => {
     const { app, close } = buildHttpApp(prisma)
     try {
@@ -304,7 +385,7 @@ describe('DELETE /orgs/:orgId', () => {
     const disabled: string[] = []
     const { app, close } = buildHttpApp(prisma, undefined, undefined, undefined, {
       clusterExecution: {
-        settings: async () => ({ credentialDaemonId: envelopeDaemonId }),
+        envelopeDaemonIds: async () => [envelopeDaemonId],
         configure: async (orgId: string) => void disabled.push(orgId),
         drainTeardowns: async () => 0
       } as never
@@ -326,7 +407,7 @@ describe('DELETE /orgs/:orgId', () => {
     }
     const { app, close } = buildHttpApp(prisma, undefined, undefined, undefined, {
       clusterExecution: {
-        settings: async () => ({ credentialDaemonId: envelopeDaemonId }),
+        envelopeDaemonIds: async () => [envelopeDaemonId],
         configure: async () => {},
         drainTeardowns: async () => 0
       } as never
