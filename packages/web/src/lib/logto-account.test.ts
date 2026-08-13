@@ -2,7 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const auth = vi.hoisted(() => ({
   getAccountToken: vi.fn(),
-  getLogtoPublicConfig: vi.fn()
+  getLogtoPublicConfig: vi.fn(),
+  refreshTokenAfterUnauthorized: vi.fn(),
+  redirectExpiredSession: vi.fn()
 }))
 
 vi.mock('@/lib/auth', () => auth)
@@ -10,6 +12,8 @@ vi.mock('@/lib/auth', () => auth)
 describe('Logto Account API', () => {
   beforeEach(() => {
     auth.getAccountToken.mockReset().mockResolvedValue('opaque-account-token')
+    auth.refreshTokenAfterUnauthorized.mockReset().mockResolvedValue('refreshed-account-token')
+    auth.redirectExpiredSession.mockReset().mockResolvedValue(undefined)
     auth.getLogtoPublicConfig.mockReset().mockReturnValue({
       endpoint: 'https://login.example.test/',
       appId: 'web-app'
@@ -65,6 +69,55 @@ describe('Logto Account API', () => {
       })
     )
     expect(new Headers(fetchImpl.mock.calls[0]?.[1]?.headers).get('authorization')).toBe('Bearer opaque-account-token')
+  })
+
+  it('refreshes and retries once when the Account API rejects a cached token', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(new Response('{}', { status: 401, headers: { 'content-type': 'application/json' } }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ verificationRecordId: 'verification-2' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        })
+      )
+    vi.stubGlobal('fetch', fetchImpl)
+    const { verifySocialVerification } = await import('./logto-account')
+
+    await expect(verifySocialVerification('verification-1', { code: 'provider-code' })).resolves.toBe('verification-2')
+
+    expect(auth.refreshTokenAfterUnauthorized).toHaveBeenCalledWith('opaque-account-token', 'account')
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+    expect(new Headers(fetchImpl.mock.calls[1]?.[1]?.headers).get('authorization')).toBe(
+      'Bearer refreshed-account-token'
+    )
+    expect(auth.redirectExpiredSession).not.toHaveBeenCalled()
+  })
+
+  it('returns to sign-in when the refreshed Account API token is also rejected', async () => {
+    const fetchImpl = vi.fn(async () =>
+      Promise.resolve(new Response('{}', { status: 401, headers: { 'content-type': 'application/json' } }))
+    )
+    vi.stubGlobal('fetch', fetchImpl)
+    const { verifySocialVerification } = await import('./logto-account')
+
+    await expect(verifySocialVerification('verification-1', { code: 'provider-code' })).rejects.toMatchObject({
+      status: 401
+    })
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+    expect(auth.redirectExpiredSession).toHaveBeenCalledOnce()
+  })
+
+  it('returns to sign-in when no Account API token remains', async () => {
+    auth.getAccountToken.mockResolvedValue(undefined)
+    const { verifySocialVerification } = await import('./logto-account')
+
+    await expect(verifySocialVerification('verification-1', { code: 'provider-code' })).rejects.toMatchObject({
+      status: 401
+    })
+
+    expect(auth.redirectExpiredSession).toHaveBeenCalledOnce()
   })
 
   it('explains identity conflicts without offering account merging', async () => {

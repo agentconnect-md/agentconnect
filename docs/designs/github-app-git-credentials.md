@@ -229,8 +229,9 @@ The singleton deployment document is the source of truth. Setup Server stores:
 Clearing the GitHub provider removes its stored identity and secrets, disables
 the module, and hides the picker. The private key is decoded and validated when
 the Control Plane assembles the GitHub service, without logging the key. Public
-Web, Control Plane, and Relay origins remain startup topology because Setup
-Server uses them to build the App manifest callbacks.
+Web, Control Plane, and Relay service base URLs remain startup topology because
+Setup Server uses them to build the App manifest callbacks. Control Plane and
+Relay bases may include ingress path prefixes.
 
 `GithubInstallation` separately stores App installation metadata; repository
 lists are fetched from GitHub on demand. An installation is
