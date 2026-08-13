@@ -33,6 +33,7 @@ import type { PromptLogEntry, ScriptedSessionHandler } from './webchat-referee.j
 import {
   GAME_OVER_PATTERN,
   HOST_CUE_PATTERN,
+  ROUND_LIMIT_PATTERN,
   WebchatWerewolfReferee,
   hostKickoffText,
   hostNightCueText,
@@ -159,7 +160,7 @@ export async function runWebchatWerewolf(options: WebchatWerewolfRunOptions): Pr
       // React to the referee's public asks, newest state first.
       const refereePosts = arena.posts.filter((post) => post.agentId === refereeSeat.agentId)
       const over = refereePosts.some(
-        (post) => GAME_OVER_PATTERN.test(post.post.text) || /Round limit reached\./.test(post.post.text)
+        (post) => GAME_OVER_PATTERN.test(post.post.text) || ROUND_LIMIT_PATTERN.test(post.post.text)
       )
       if (over || brain.phase === 'done') {
         terminalReason = brain.terminalReason ?? 'stalled'

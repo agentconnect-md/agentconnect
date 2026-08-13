@@ -15,6 +15,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   MARKERS,
+  NIGHT_ALIASES,
   NIGHT_START_TEXT,
   NightCollectionReferee,
   scoreNightCollection,
@@ -30,7 +31,7 @@ import {
 } from '../games/webchat-referee.js'
 import { callDaemonTool } from '../games/mcp-client.js'
 
-const ALIASES = ['referee', 'wolf-a', 'wolf-b', 'seer', 'doctor', 'villager'] as const
+const ALIASES = NIGHT_ALIASES
 
 interface NightRun {
   arena: WebchatArena

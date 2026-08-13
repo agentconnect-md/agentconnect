@@ -26,6 +26,7 @@ import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import { atomicWrite, redactEvaluationValue } from '../../packages/daemon/src/evaluation/index.js'
 import {
+  NIGHT_ALIASES,
   NIGHT_START_TEXT,
   NightCollectionReferee,
   scoreNightCollection,
@@ -45,7 +46,7 @@ const TRIALS = Number(process.env.AGENTCONNECT_EVAL_TRIALS ?? '3')
 const TRIAL_BUDGET_MS = Number(process.env.AGENTCONNECT_EVAL_TRIAL_BUDGET_MS ?? '480000')
 const ARTIFACT_DIR = join(process.cwd(), '.artifacts', 'evaluation', 'night-collection')
 
-const ALIASES = ['referee', 'wolf-a', 'wolf-b', 'seer', 'doctor', 'villager'] as const
+const ALIASES = NIGHT_ALIASES
 
 interface TrialRecord {
   trial: number
