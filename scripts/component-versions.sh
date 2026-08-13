@@ -53,7 +53,7 @@ SETUP_PATHS="$CP_PATHS"
 WEB_PATHS="packages/web packages/protocol $COMMON"
 RELAY_PATHS="packages/relay packages/message packages/protocol packages/connection packages/observability $COMMON"
 MEM0_PATHS="packages/memory-plugin-mem0 packages/protocol $COMMON"
-DAEMON_PATHS="packages/daemon packages/message packages/protocol packages/connection packages/observability packages/k8s-client $COMMON"
+DAEMON_PATHS="packages/daemon packages/activation-policy packages/message packages/protocol packages/connection packages/observability packages/k8s-client $COMMON"
 OPERATOR_PATHS="packages/operator packages/k8s-client packages/connection packages/protocol packages/observability $COMMON"
 # The backend's application source is the immutable external context declared in
 # docker-bake.hcl. Changes to that pin, its owned Dockerfile, or this resolver
