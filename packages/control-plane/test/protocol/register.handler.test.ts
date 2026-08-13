@@ -192,6 +192,7 @@ describe('register handler — authoritative reconcile snapshot + idempotency + 
     expect(snap.agents).toHaveLength(1)
     expect(snap.agents[0]!).toEqual({
       agentId: AGENT,
+      orgId: DEFAULT_ORG_ID,
       name: 'agent-1',
       displayName: null,
       // Always shipped value-or-null (like displayName): null here — no icon set and no
