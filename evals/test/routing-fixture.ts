@@ -287,6 +287,38 @@ export class RoutingFixture {
     return { messageId, handles }
   }
 
+  /** Inject one THIRD-PARTY bot platform message — a bot user this deployment
+   *  does not manage, carrying NO AgentConnect authorship claim. What (if
+   *  anything) it activates is the daemon's decision, the thing under test. */
+  injectThirdPartyBot(
+    text: string,
+    options: { thread?: string; mentions?: string[]; sender?: string } = {}
+  ): { messageId: string; handles: DeliveryHandle[] } {
+    const sender = options.sender ?? 'UEXTBOT9'
+    const messageId = this.world.mintMessageId('slack')
+    this.world.registerRoomMessage(this.room.channel, messageId)
+    this.world.recordThreadMessage(this.room.channel, options.thread ?? messageId, {
+      ts: messageId,
+      text,
+      sender,
+      isBot: true
+    })
+    const handles = this.room.memberIntegrationIds.map((integrationId) =>
+      this.harness.inject({
+        integrationId,
+        payload: {
+          channel: this.room.channel,
+          thread: options.thread ?? messageId,
+          messageId,
+          text,
+          sender: { id: sender, isBot: true },
+          ...(options.mentions !== undefined ? { mentions: options.mentions } : {})
+        }
+      })
+    )
+    return { messageId, handles }
+  }
+
   /** Settle everything in flight: await injected handles, drain echo cascades
    *  generation by generation, then wait for daemon idleness. */
   async settle(handles: DeliveryHandle[] = []): Promise<void> {

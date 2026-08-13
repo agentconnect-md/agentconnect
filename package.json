@@ -15,6 +15,7 @@
     "eval:collab:routing": "vitest run evals/test/routing-acceptance.test.ts evals/test/connection-surface.test.ts",
     "eval:collab:view": "promptfoo view -n",
     "eval:contracts": "vitest run packages/daemon/test/evaluation-events.test.ts packages/daemon/test/evaluation-atif.test.ts packages/daemon/test/evaluation-permission.test.ts packages/daemon/test/evaluation-runner.test.ts packages/daemon/test/daemon-evaluation.test.ts evals/test/outcome.test.ts evals/test/provider.test.ts evals/test/paired-summary.test.ts",
+    "eval:parity": "vitest run evals/test/parity-spec.test.ts evals/test/parity-slack.test.ts evals/test/parity-webchat.test.ts",
     "eval:validate": "node evals/run-validate.mjs && tsc -p evals/tsconfig.json",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
