@@ -187,8 +187,23 @@ function previewBody(full: ToolBody): ToolBody {
 
 export interface SessionReader {
   list(req: SessionListReq): SessionListPage
-  history(req: SessionHistoryReq): SessionHistoryPage
-  toolBody(req: SessionToolBodyReq): SessionToolBodyChunk
+  history(req: SessionHistoryReq): SessionHistoryPage | Promise<SessionHistoryPage>
+  toolBody(req: SessionToolBodyReq): SessionToolBodyChunk | Promise<SessionToolBodyChunk>
+}
+
+type TranscriptReadStore = Pick<
+  LocalStore,
+  | 'transcriptTailForAgent'
+  | 'transcriptPageForAgentByEventTime'
+  | 'transcriptPageForAgent'
+  | 'currentTranscriptRevision'
+  | 'getToolBodyForAgent'
+>
+
+type AsyncTranscriptReadStore = {
+  [Method in keyof TranscriptReadStore]: (
+    ...args: Parameters<TranscriptReadStore[Method]>
+  ) => Promise<ReturnType<TranscriptReadStore[Method]>>
 }
 
 /**
@@ -198,7 +213,8 @@ export interface SessionReader {
  */
 export function createSessionReader(
   store: LocalStore,
-  threadUrlFor?: (session: SessionRecord) => string | undefined
+  threadUrlFor?: (session: SessionRecord) => string | undefined,
+  transcriptRead: TranscriptReadStore | AsyncTranscriptReadStore = store
 ): SessionReader {
   return {
     list(req) {
@@ -251,7 +267,7 @@ export function createSessionReader(
       })
       return { sessions }
     },
-    history(req) {
+    async history(req) {
       const rec = sessionForRead(store, req.agentId, req.sessionId)
       if (!rec) return { sessionId: req.sessionId, messages: [] }
       const tailing = req.after !== undefined
@@ -275,16 +291,28 @@ export function createSessionReader(
       // to it (context isolation), so the view must not leak other participants' cross-talk.
       const page =
         afterRevision !== null
-          ? store.transcriptTailForAgent(transcriptChannel, rec.thread, rec.agentId, afterRevision, req.limit)
+          ? await transcriptRead.transcriptTailForAgent(
+              transcriptChannel,
+              rec.thread,
+              rec.agentId,
+              afterRevision,
+              req.limit
+            )
           : chronological
-            ? store.transcriptPageForAgentByEventTime(
+            ? await transcriptRead.transcriptPageForAgentByEventTime(
                 transcriptChannel,
                 rec.thread,
                 rec.agentId,
                 eventCursor,
                 req.limit
               )
-            : store.transcriptPageForAgent(transcriptChannel, rec.thread, rec.agentId, legacyBefore, req.limit)
+            : await transcriptRead.transcriptPageForAgent(
+                transcriptChannel,
+                rec.thread,
+                rec.agentId,
+                legacyBefore,
+                req.limit
+              )
       const { rows, hasMore } = page
       // rows are newest-first; the page itself is oldest→newest.
       const ordered = tailing ? rows : rows.slice().reverse()
@@ -357,7 +385,7 @@ export function createSessionReader(
         const liveCursor =
           liveMore && lastMutationRow
             ? lastMutationRow.revision
-            : (page as ReturnType<LocalStore['transcriptTailForAgent']>).cursor
+            : (page as Awaited<ReturnType<AsyncTranscriptReadStore['transcriptTailForAgent']>>).cursor
         // Mutation order and display order differ when a warm-thread backfill inserts
         // an older platform message — possible only where message ids order natively.
         // Return a chronological page while the revision cursor above remains anchored
@@ -404,7 +432,7 @@ export function createSessionReader(
       return {
         sessionId: req.sessionId,
         messages: kept,
-        liveCursor: String(store.currentTranscriptRevision()),
+        liveCursor: String(await transcriptRead.currentTranscriptRevision()),
         ...(hasOlder && oldestKept
           ? {
               nextCursor:
@@ -415,7 +443,7 @@ export function createSessionReader(
           : {})
       }
     },
-    toolBody(req) {
+    async toolBody(req) {
       const rec = sessionForRead(store, req.agentId, req.sessionId)
       const empty: SessionToolBodyChunk = {
         sessionId: req.sessionId,
@@ -424,7 +452,7 @@ export function createSessionReader(
         totalBytes: 0
       }
       if (!rec) return empty
-      const body = store.getToolBodyForAgent(
+      const body = await transcriptRead.getToolBodyForAgent(
         transcriptChannelKey(rec.channel, rec.transportScope),
         rec.thread,
         rec.agentId,
