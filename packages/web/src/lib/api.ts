@@ -1352,11 +1352,11 @@ async function readSessionEventStream(
   }, SESSION_STREAM_REAUTH_MS)
   const path = `/orgs/${encodeURIComponent(orgId)}/stream`
   try {
-    const res = await fetch(`${cpBase()}${path}`, {
-      headers: await authHeaders({ accept: 'text/event-stream' }),
-      cache: 'no-store',
-      signal: request.signal
-    })
+    const res = await authenticatedFetch(
+      path,
+      { cache: 'no-store', signal: request.signal },
+      { accept: 'text/event-stream' }
+    )
     if (!res.ok) throw new ApiError(`GET ${path} → ${res.status} ${res.statusText}`, res.status)
     if (!res.body) throw new Error('session event stream is not readable')
 
@@ -3434,18 +3434,18 @@ export interface IconResult {
 // object store, so we send the resized blob directly (not JSON). Returns the new
 // icon descriptor + resolved store URL, reassembled into {kind:'image',url} for callers.
 async function putIconBlob(path: string, blob: Blob): Promise<IconResult> {
-  const res = await fetch(`${cpBase()}${path}`, {
-    method: 'PUT',
-    headers: await authHeaders({ 'content-type': blob.type || 'application/octet-stream' }),
-    body: blob
-  })
+  const res = await authenticatedFetch(
+    path,
+    { method: 'PUT', body: blob },
+    { 'content-type': blob.type || 'application/octet-stream' }
+  )
   if (!res.ok) throw await apiErrorFromResponse('PUT', path, res)
   const d = (await res.json()) as IconResult
   return { icon: withIconUrl(d.icon, d.iconUrl), iconUrl: d.iconUrl }
 }
 
 async function deleteIcon(path: string): Promise<IconResult> {
-  const res = await fetch(`${cpBase()}${path}`, { method: 'DELETE', headers: await authHeaders() })
+  const res = await authenticatedFetch(path, { method: 'DELETE' })
   if (!res.ok) throw await apiErrorFromResponse('DELETE', path, res)
   const d = (await res.json()) as IconResult
   return { icon: withIconUrl(d.icon, d.iconUrl), iconUrl: d.iconUrl }
@@ -3992,11 +3992,11 @@ export async function refreshMySocialIdentities(): Promise<void> {
 
 async function putMyProfilePicture(blob: Blob): Promise<MeDto> {
   const path = '/me/picture'
-  const res = await fetch(`${cpBase()}${path}`, {
-    method: 'PUT',
-    headers: await authHeaders({ 'content-type': blob.type || 'application/octet-stream' }),
-    body: blob
-  })
+  const res = await authenticatedFetch(
+    path,
+    { method: 'PUT', body: blob },
+    { 'content-type': blob.type || 'application/octet-stream' }
+  )
   if (!res.ok) throw await apiErrorFromResponse('PUT', path, res)
   return (await res.json()) as MeDto
 }
@@ -4819,7 +4819,7 @@ export async function fetchGithubRepos(
   const path = `${orgBase()}/github/installations/${encodeURIComponent(installationId)}/repositories?page=${page}&perPage=${GITHUB_REPO_PAGE_SIZE}`
   return withGithubRepoRequestLimit(async () => {
     for (let attempt = 0; ; attempt++) {
-      const res = await fetch(`${cpBase()}${path}`, { headers: await authHeaders(), cache: 'no-store', signal })
+      const res = await authenticatedFetch(path, { cache: 'no-store', signal })
       if (res.ok) {
         const body = (await res.json()) as Omit<GithubRepoPage, 'privateReposHidden'> & {
           privateReposHidden?: boolean
@@ -4951,11 +4951,7 @@ export async function fetchGithubInstallationRepo(
 ): Promise<GithubRepoDto> {
   const path = `${orgBase()}/github/installations/${encodeURIComponent(installationId)}/repositories/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`
   return withGithubRepoRequestLimit(async () => {
-    const res = await fetch(`${cpBase()}${path}`, {
-      headers: await authHeaders(),
-      cache: 'no-store',
-      signal
-    })
+    const res = await authenticatedFetch(path, { cache: 'no-store', signal })
     if (!res.ok) {
       const body = (await res.json().catch(() => ({}))) as { code?: string; message?: string }
       throw new ApiError(body.message ?? `GET ${path} → ${res.status}`, res.status, body.code)
@@ -4990,7 +4986,7 @@ export async function fetchGithubRepoAccess(
   repo: string
 ): Promise<GithubRepoAccess> {
   const path = `${orgBase()}/github/installations/${encodeURIComponent(installationId)}/repositories/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/access`
-  const res = await fetch(`${cpBase()}${path}`, { headers: await authHeaders(), cache: 'no-store' })
+  const res = await authenticatedFetch(path, { cache: 'no-store' })
   if (res.status === 404) return { gated: false, canRead: true, canWrite: true, identityRequired: false }
   if (res.status === 403) {
     const body = (await res.json().catch(() => ({}))) as { code?: string; message?: string }
@@ -5047,11 +5043,11 @@ export async function createAgentRepo(
   input: { repoFullName: string; access: RepoAccess }
 ): Promise<AgentRepoAuthDto> {
   const path = `${orgBase()}/agents/${encodeURIComponent(agentId)}/repos`
-  const res = await fetch(`${cpBase()}${path}`, {
-    method: 'POST',
-    headers: await authHeaders({ 'content-type': 'application/json' }),
-    body: JSON.stringify(input)
-  })
+  const res = await authenticatedFetch(
+    path,
+    { method: 'POST', body: JSON.stringify(input) },
+    { 'content-type': 'application/json' }
+  )
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { code?: string; message?: string }
     throw new ApiError(body.message ?? `POST ${path} → ${res.status} ${res.statusText}`, res.status, body.code)
@@ -5065,11 +5061,11 @@ export async function updateAgentRepo(
   input: { access: RepoAccess }
 ): Promise<AgentRepoAuthDto> {
   const path = `${orgBase()}/agents/${encodeURIComponent(agentId)}/repos/${encodeURIComponent(repoAuthId)}`
-  const res = await fetch(`${cpBase()}${path}`, {
-    method: 'PATCH',
-    headers: await authHeaders({ 'content-type': 'application/json' }),
-    body: JSON.stringify(input)
-  })
+  const res = await authenticatedFetch(
+    path,
+    { method: 'PATCH', body: JSON.stringify(input) },
+    { 'content-type': 'application/json' }
+  )
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { code?: string; message?: string }
     throw new ApiError(body.message ?? `PATCH ${path} → ${res.status} ${res.statusText}`, res.status, body.code)
