@@ -49,11 +49,16 @@ export interface VerifiedClusterDaemon {
 
 /**
  * Verifier for an in-cluster daemon's projected ServiceAccount token. Null ⇒ the token is
- * not a usable envelope-daemon identity, for any reason: the auth path answers one coarse
+ * not a usable in-cluster daemon identity, for any reason: the auth path answers one coarse
  * `AUTH_FAILED` either way, so the caller never learns which check refused it.
+ *
+ * `claim` is what the CALLER said this connection is for, never trusted on its own. An
+ * envelope daemon's namespace already names its org, so a claim may only agree with it. A
+ * cloud daemon's identity names no org — it serves every one — so its claim is what selects
+ * which org this connection serves, and the identity is what makes that selection legitimate.
  */
 export interface ClusterDaemonIdentity {
-  verify(token: string): Promise<VerifiedClusterDaemon | null>
+  verify(token: string, claim?: { orgId?: string; daemonId?: string }): Promise<VerifiedClusterDaemon | null>
 }
 
 /** A freshly minted key — the one-time plaintext returned to the operator. */

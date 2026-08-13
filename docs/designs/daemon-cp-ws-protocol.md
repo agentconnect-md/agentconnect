@@ -96,8 +96,15 @@ First frame after the socket opens. Establishes **who this daemon is** before an
 ```ts
 const AuthReq = z.object({
   // Long-lived, revocable API key — a bare opaque `<secret><crc>`, hashed at rest and looked
-  // up by that unique hash (daemon-api-key-auth.md).
-  apiKey: z.string(),
+  // up by that unique hash (daemon-api-key-auth.md). Absent on an in-cluster daemon.
+  apiKey: z.string().optional(),
+  // An in-cluster daemon's projected ServiceAccount token, verified by TokenReview and
+  // taking precedence over `apiKey` (agentconnect-org-operator.md, "Daemon identity").
+  serviceAccountToken: z.string().optional(),
+  // The org this connection serves. Only a CLOUD daemon may name it — it serves every org,
+  // so its identity names none; an envelope daemon's namespace decides and a disagreeing
+  // claim is refused.
+  orgId: z.string().optional(),
   daemonId: z.string().uuid().optional(), // OPTIONAL echo; if present must equal the daemonId the ApiKey row resolves to. The daemon adopts its id from `auth/ok`.
   machineId: z.string().uuid().optional(), // reserved scope-attestation identity (§3.2), not the auth credential
   attestation: z.string().optional(), // reserved signed proof (JWS), see §3.2

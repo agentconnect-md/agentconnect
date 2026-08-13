@@ -373,6 +373,56 @@ the daemon with an audience-scoped projected token the daemon verifies
 the same way. The audience differs so a token minted for one hop cannot
 authenticate at the other.
 
+#### The cloud daemon, which serves every org
+
+A **cloud daemon** is not an envelope's pod. The deployment runs it in the
+install's own namespace and it serves _every_ org, so neither credential the
+per-org shapes use can name it: an API key is bound to one org and one daemon,
+and there is no namespace to map back to an org. It authenticates with the same
+mechanism anyway — a projected token, audience `ac-control-plane` — and the
+**ServiceAccount name is the discriminator**: `ac-cloud-daemon` in the
+`CLUSTER_CLOUD_DAEMON_NAMESPACE` (default: the control plane's own namespace),
+versus `ac-daemon` in an org namespace. A cloud identity presented from any
+other namespace is refused, so "may serve any org" never follows from a pod
+merely holding the ServiceAccount name.
+
+What differs after verification is only **who names the org**:
+
+|                     | envelope daemon                       | cloud daemon                      |
+| ------------------- | ------------------------------------- | --------------------------------- |
+| org comes from      | the namespace, via `status.namespace` | the connection's own `auth.orgId` |
+| a disagreeing claim | refused                               | is the selection                  |
+| daemon records      | one                                   | one per org served                |
+
+Letting the connection choose is safe here and only here: the identity is an
+install-level principal, so "which org" is a routing choice rather than a
+privilege — the token already authorizes all of them. On an envelope daemon the
+same claim would be an escalation, which is why it is refused rather than
+ignored.
+
+Each `(cloud identity, org)` pair gets its own daemon record, keyed by
+`system:serviceaccount:<ns>:ac-cloud-daemon/org/<orgId>`. `clusterIdentity` is
+globally unique, so one row per org is what a principal serving many needs;
+qualifying the reported subject with the org also makes crossing tenants
+structurally impossible, since one org's connection cannot name a string that
+resolves to another's row. Everything downstream — placements, `sessionEpoch`,
+routing, visibility — therefore stays org-scoped exactly as before.
+
+The relay hop runs the same check from the other end. `rd/hello` already carries
+the daemonId the daemon adopted from `auth/ok`, so the relay forwards it with
+the token on `rc/verify(daemon-token)`; the control plane resolves that id back
+to its org and requires the record's `clusterIdentity` to be one this identity
+owns. Forwarding an unverified id is safe because the identity, not the claim,
+decides — and that door never creates a record: an org's first one is minted on
+the control socket, which is where the org is stated outright.
+
+The org id reaches the daemon through the data-plane mount
+(`/var/run/ac-data-plane/config.json`, cloud-data-plane-postgres.md), beside the
+schema locator the same orchestration already supplies. A daemon that mount
+identifies as a cloud daemon refuses to connect with an API key at all: a key
+reaching it is a leftover from another deployment shape and would authenticate
+as some other daemon entirely.
+
 What the control plane writes is therefore **one object**: the
 `AgentConnectOrg`, carrying its own WebSocket URL in plain text because a URL is
 not a secret. It needs no permission in any org namespace, and nothing has to

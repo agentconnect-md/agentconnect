@@ -372,11 +372,14 @@ model Daemon {
   agentVersion  String?
   machineId     String? @db.Uuid // 🅼 AuthReq.machineId (stored, stub-enforced)
   tokenFp       String? // `id` of the authenticating ApiKey (audit; written by upsertOnAuth)
-  /// The Kubernetes identity an in-cluster daemon authenticates as, exactly as TokenReview
-  /// reports it (`system:serviceaccount:<org namespace>:ac-daemon`). Unique, so one envelope
-  /// can never end up with two records competing for its placements. The namespace is derived
-  /// from the org, so an envelope torn down and rebuilt presents the same identity and resolves
-  /// back to this row — its placements and session history survive re-provisioning.
+  /// The Kubernetes identity an in-cluster daemon authenticates as. An ENVELOPE daemon stores
+  /// exactly what TokenReview reports (`system:serviceaccount:<org namespace>:ac-daemon`); a
+  /// CLOUD daemon serves every org, so its subject is qualified with the one this row is for
+  /// (`system:serviceaccount:<ns>:ac-cloud-daemon/org/<orgId>`). Unique either way, so one
+  /// envelope can never end up with two records competing for its placements and one org's
+  /// connection can never resolve to another's row. The identity is derived, not stored
+  /// anywhere else, so a pod torn down and rebuilt presents the same one and resolves back to
+  /// this row — its placements and session history survive re-provisioning.
   clusterIdentity String? @unique
   attestationFp String? // 🅼 last accepted attestation digest
   capabilities  Json    @default("{}") @db.JsonB // {platforms[],runtimes[],acp,features[]}

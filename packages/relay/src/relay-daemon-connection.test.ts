@@ -67,7 +67,7 @@ describe('RelayDaemonConnection (rd/* accept FSM)', () => {
     transport.feed('rd/hello', { apiKey: 'the-key', daemonId: DAEMON_ID })
     await Promise.resolve()
     await Promise.resolve()
-    expect(verify).toHaveBeenCalledWith('daemon-key', 'the-key')
+    expect(verify).toHaveBeenCalledWith('daemon-key', 'the-key', DAEMON_ID)
     expect(transport.lastRep('rd/hello/ok')!.payload).toEqual({ relayId: RELAY_ID })
     expect(conn.state).toBe('READY')
     expect(conn.daemonId).toBe(DAEMON_ID)
@@ -80,7 +80,9 @@ describe('RelayDaemonConnection (rd/* accept FSM)', () => {
     await Promise.resolve()
     await Promise.resolve()
     // The token wins: a stale key must never pick a different identity than the CP socket did.
-    expect(verify).toHaveBeenCalledWith('daemon-token', 'projected')
+    // The claimed id rides along — a cloud daemon holds one record per org, so it is what
+    // tells the CP which of them this token is presented for.
+    expect(verify).toHaveBeenCalledWith('daemon-token', 'projected', DAEMON_ID)
     expect(conn.state).toBe('READY')
   })
 

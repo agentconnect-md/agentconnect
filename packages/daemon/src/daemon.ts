@@ -296,7 +296,7 @@ import { nodeExecArgvModuleEntries } from './runtimes/node-exec-argv.js'
 import { makeLogger, type Logger } from './log.js'
 import { CpClient, CP_SUBPROTOCOL, CP_WS_PATH, type BootstrapUpgradeOutcome } from './cp/client.js'
 import { RelayManager } from './cp/relay-manager.js'
-import { readClusterIdentityToken } from './cp/cluster-identity.js'
+import { CP_IDENTITY_TOKEN_PATH, readClusterIdentityToken } from './cp/cluster-identity.js'
 import { CpCollabRoutes } from './cp/cp-collab-routes.js'
 import { ClientTransport, systemClock, type Clock, type TimerHandle } from '@agentconnect.md/connection'
 import {
@@ -20475,6 +20475,16 @@ export class Daemon {
       }
       return
     }
+    // A cloud daemon's credential is its Kubernetes identity, full stop. It serves an org it
+    // was never issued a key for, so a key reaching this far is a leftover from another
+    // deployment shape and would authenticate as some other daemon entirely — refuse rather
+    // than connect as the wrong one.
+    if (this.dataPlane?.orgId && !this.clusterIdentityToken) {
+      this.log.error(
+        `cp: not connecting — a cloud daemon authenticates with its projected identity token, expected at ${CP_IDENTITY_TOKEN_PATH}`
+      )
+      return
+    }
     if (this.clusterIdentityToken) this.log.info("cp: authenticating with this pod's projected identity token")
     // Start host-load sampling only now — the snapshot exists solely to feed the CP
     // heartbeat below (no CP ⇒ no sampler, so CP-less runs never probe the system).
@@ -20558,6 +20568,9 @@ export class Daemon {
       url,
       ...(cp.key ? { token: cp.key } : {}),
       ...(this.clusterIdentityToken ? { clusterIdentityToken: this.clusterIdentityToken } : {}),
+      // A cloud daemon serves every org, so its identity names none and the data-plane mount
+      // is what says which org this daemon runs for.
+      ...(this.dataPlane?.orgId ? { orgId: this.dataPlane.orgId } : {}),
       ...(echoDaemonId ? { daemonId: echoDaemonId } : {}),
       onDaemonId: (id) => {
         this.cfg.daemonId = id

@@ -22,6 +22,10 @@ export const DataPlaneConfigSchema = z
     databaseUrl: PostgresUrl,
     /** CP-issued org locator; schema isolation makes a missing org predicate impossible. */
     schema: z.string().regex(/^[a-z][a-z0-9_]{0,62}$/),
+    /** The org's control-plane id, which the same deployment orchestration already knows.
+     *  A cloud daemon's Kubernetes identity names no org — it serves every one — so this is
+     *  what its control socket declares. Absent on an envelope daemon, whose namespace says it. */
+    orgId: z.string().min(1).max(64).optional(),
     maxConnections: z.number().int().min(1).max(32).default(4)
   })
   .strict()

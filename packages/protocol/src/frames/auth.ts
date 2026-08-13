@@ -17,6 +17,10 @@ export const AuthReq = z.object({
   // CP_TOKEN_AUDIENCE and verified by TokenReview against the org's cluster (see "Daemon
   // identity" in docs/designs/agentconnect-org-operator.md). Takes precedence over `apiKey`.
   serviceAccountToken: z.string().optional(),
+  // The org this connection serves. Only a cloud daemon — an install-level principal that
+  // serves every org, whose identity therefore names none — may choose it; an envelope
+  // daemon's org comes from its namespace and a mismatching echo here is refused.
+  orgId: z.string().min(1).max(64).optional(),
   // Optional echo of the daemonId. If present it must equal the daemonId the ApiKey row
   // resolves to; otherwise the daemon adopts the authoritative id from `auth/ok`.
   daemonId: z.string().uuid().optional(),

@@ -212,6 +212,18 @@ export const CP_TOKEN_AUDIENCE = 'ac-control-plane'
  *  same namespace. Shared for the same reason as {@link CP_TOKEN_AUDIENCE}. */
 export const ENVELOPE_DAEMON_SA_NAME = 'ac-daemon'
 
+/**
+ * ServiceAccount a cloud daemon runs as. A cloud daemon serves EVERY org, so it lives in the
+ * install's control namespace rather than in an org namespace, and no namespace⇒org mapping
+ * can name its org — the org is a per-connection selector it declares in `auth`, which is
+ * safe precisely because this ServiceAccount is an install-level principal. The
+ * ServiceAccount name is therefore the discriminator between the two in-cluster identities:
+ * an envelope daemon may only ever be its own namespace's org. Same two-sided agreement as
+ * {@link ENVELOPE_DAEMON_SA_NAME}, except the party stamping it is the deployment rather
+ * than the operator.
+ */
+export const CLOUD_DAEMON_SA_NAME = 'ac-cloud-daemon'
+
 /** Where the operator projects that token into the daemon pod, and where the daemon reads it
  *  from. Not part of the verification, but the same two-sided agreement: the mounter and the
  *  reader are both in this repo, so one definition beats a comment asking them to match. */

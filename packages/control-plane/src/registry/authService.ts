@@ -15,8 +15,10 @@
  *   3. on success → mint the next monotonic `sessionEpoch` via `EpochService`
  *      (persisted in C6) and return the `auth/ok` frame.
  *
- * The token path replaces steps 1–2 with one TokenReview against the org's cluster
- * (`ClusterDaemonIdentity`), which yields the same `{daemonId, orgId}` and joins step 3.
+ * The token path replaces steps 1–2 with one TokenReview against the cluster
+ * (`ClusterDaemonIdentity`), which yields the same `{daemonId, orgId}` and joins step 3. An
+ * envelope daemon's org comes from its namespace; a cloud daemon serves every org, so the
+ * `orgId` on the frame is what picks the one this connection is for.
  *
  * A DB error during lookup or the epoch bump closes `1011` (SERVER_INTERNAL) so the
  * daemon backs off and retries rather than treating a transient blip as a dead
@@ -67,7 +69,13 @@ export class DaemonAuthService implements DaemonAuth {
     if (!this.clusterIdentity) return { ok: false, closeCode: 4401, reason: 'AUTH_FAILED' }
     let verified: VerifiedClusterDaemon | null
     try {
-      verified = await this.clusterIdentity.verify(req.serviceAccountToken!)
+      // The claim is the connection's own statement of what it is for: a cloud daemon serves
+      // every org and so must say which one this socket is, while an envelope daemon's
+      // namespace already answered and its claim may only agree. The verifier decides which.
+      verified = await this.clusterIdentity.verify(req.serviceAccountToken!, {
+        ...(req.orgId ? { orgId: req.orgId } : {}),
+        ...(req.daemonId ? { daemonId: req.daemonId } : {})
+      })
     } catch {
       // The API server or the database blinked. Transient, like a failed key lookup: 1011
       // makes the daemon back off and retry instead of treating it as a dead identity.

@@ -24,6 +24,18 @@ describe('mounted data-plane configuration', () => {
     })
   })
 
+  it('carries the org id a cloud daemon declares, since its Kubernetes identity names none', () => {
+    const config = readDataPlaneConfig(
+      configFile({
+        version: 1,
+        databaseUrl: 'postgresql://daemon:secret@postgres/data_plane',
+        schema: 'org_a1',
+        orgId: 'org_a1b2c3'
+      })
+    )
+    expect(config.orgId).toBe('org_a1b2c3')
+  })
+
   it('rejects non-PostgreSQL URLs and unsafe schema identifiers', () => {
     expect(() =>
       readDataPlaneConfig(configFile({ version: 1, databaseUrl: 'https://postgres/data_plane', schema: 'org-a' }))

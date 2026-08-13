@@ -386,6 +386,9 @@ export class PostgresTranscriptStore implements TranscriptReplicaSink {
 
 export class PostgresDataPlane {
   readonly transcripts: PostgresTranscriptStore
+  /** The org this daemon runs for, as the mount named it — what a cloud daemon's control
+   *  socket declares, since its Kubernetes identity names no org. */
+  readonly orgId?: string
 
   private constructor(
     private readonly pool: Pool,
@@ -393,6 +396,7 @@ export class PostgresDataPlane {
     onFailure?: (error: Error) => void
   ) {
     this.transcripts = new PostgresTranscriptStore(pool, config.schema, onFailure)
+    if (config.orgId) this.orgId = config.orgId
   }
 
   static async open(config: DataPlaneConfig, onFailure?: (error: Error) => void): Promise<PostgresDataPlane> {

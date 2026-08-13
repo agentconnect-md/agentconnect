@@ -115,6 +115,14 @@ export class PgDaemonRepo implements DaemonRepo {
     }
   }
 
+  async findClusterIdentity(daemonId: DaemonId): Promise<{ orgId: string; clusterIdentity: string } | null> {
+    const row = await this.db.daemon.findUnique({
+      where: { id: daemonId },
+      select: { orgId: true, clusterIdentity: true }
+    })
+    return row?.clusterIdentity ? { orgId: row.orgId, clusterIdentity: row.clusterIdentity } : null
+  }
+
   async clusterBoundIds(orgId: OrgId): Promise<string[]> {
     const rows = await this.db.daemon.findMany({
       where: { orgId, clusterIdentity: { not: null } },

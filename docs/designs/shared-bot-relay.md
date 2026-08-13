@@ -254,7 +254,7 @@ rc/thread-lookup/ok { botId, sessionKey, target }
 rc/bot-channels      { botId, channels }
 rc/set-channel-agent { botId, channelId, agentId }
 rc/daemon-revoke     { daemonId }
-rc/verify            { kind: 'daemon-key' | 'webchat-token', credential, conversationBinding?: 'v1' }
+rc/verify            { kind: 'daemon-key' | 'daemon-token' | 'webchat-token', credential, daemonId?, conversationBinding?: 'v1' }
 ```
 
 `rc/bot-assign`, `rc/routes`, and `rc/assign` are broadcast to the pool.
@@ -352,10 +352,17 @@ configuration and must never be logged.
 
 ## 9. Daemon-to-Relay Authentication
 
-The daemon presents its existing daemon API key in `rd/hello`. Because the
-relay has no database, it delegates verification to CP with
-`rc/verify(kind = 'daemon-key')` and caches the successful identity for the
-life of that socket.
+The daemon presents in `rd/hello` whatever it presents on its control socket:
+its daemon API key, or — for an in-cluster daemon — the projected ServiceAccount
+token, which wins when both are present. Because the relay has no database, it
+delegates verification to CP with `rc/verify(kind = 'daemon-key' |
+'daemon-token')` and caches the successful identity for the life of that socket.
+
+The claimed `daemonId` travels with the token so the CP can resolve which record
+it names — a cloud daemon holds one per org it serves (see "Daemon identity" in
+[agentconnect-org-operator.md](agentconnect-org-operator.md)) — and a claim on a
+record that identity does not own is refused. Forwarding it unverified is safe
+because the identity, never the claim, decides.
 
 The claimed `daemonId` must match the identity resolved from the credential.
 CP can send `rc/daemon-revoke` when authority or placement changes; each relay

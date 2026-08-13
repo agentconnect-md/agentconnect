@@ -9,11 +9,12 @@ The daemon accepts no database CLI flag or environment variable. The deployment 
   "version": 1,
   "databaseUrl": "postgresql://daemon:password@data-plane-postgres:5432/agentconnect",
   "schema": "org_01abc234",
+  "orgId": "org_01abc234",
   "maxConnections": 4
 }
 ```
 
-`databaseUrl` is an install-level execution-data credential. `schema` is the org locator supplied by deployment orchestration. Every daemon may connect to the same database, but each org uses a separate schema; store queries set `search_path` to exactly that validated schema. The connection file should therefore be mounted from a Secret, not a ConfigMap.
+`databaseUrl` is an install-level execution-data credential. `schema` is the org locator supplied by deployment orchestration. `orgId` is that org's control-plane id, which the daemon states on its control socket: a cloud daemon's Kubernetes identity serves every org and so names none, and the mount is where the same orchestration already says which org this daemon runs for (see "Daemon identity" in [agentconnect-org-operator.md](agentconnect-org-operator.md)). Present ⇒ this is a cloud daemon, and it will not fall back to an API key. Every daemon may connect to the same database, but each org uses a separate schema; store queries set `search_path` to exactly that validated schema. The connection file should therefore be mounted from a Secret, not a ConfigMap.
 
 The daemon refuses `--k8s` startup when the file is absent, invalid, unreachable, or cannot be migrated. Non-Kubernetes startup does not inspect the file, even if it exists.
 

@@ -206,6 +206,11 @@ export interface DaemonRepo {
     clusterIdentity: string,
     opts?: { adoptDaemonId?: string }
   ): Promise<DaemonRecord | null>
+  /** The org and Kubernetes identity a daemon record is bound to, unscoped by org because
+   *  the caller is asking which org it IS. Null for an unknown id or a key-bound daemon.
+   *  Read by the relay hop, where a cloud daemon claims a daemonId and the identity string
+   *  is what decides whether that claim is its own record (`cloudIdentityOf`). */
+  findClusterIdentity(daemonId: DaemonId): Promise<{ orgId: string; clusterIdentity: string } | null>
   /** Ids of the org's daemons bound to a Kubernetes identity — the ones the control
    *  plane provisioned for a cluster envelope rather than a human attaching a machine. */
   clusterBoundIds(orgId: OrgId): Promise<string[]>

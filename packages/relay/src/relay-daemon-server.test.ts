@@ -79,7 +79,7 @@ describe('createRelayDaemonServer (rd/* accept edge)', () => {
     ws.send(JSON.stringify(buildRelayDaemonFrame('rd/hello', { apiKey: 'k', daemonId: DAEMON_ID })))
     const ok = await nextFrame(ws, 'rd/hello/ok')
     expect(ok.payload).toEqual({ relayId: RELAY_ID })
-    expect(verify).toHaveBeenCalledWith('daemon-key', 'k')
+    expect(verify).toHaveBeenCalledWith('daemon-key', 'k', DAEMON_ID)
     await tick()
     expect(rd!.size()).toBe(1)
 

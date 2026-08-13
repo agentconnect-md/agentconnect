@@ -339,7 +339,7 @@ export class RelayConnection implements RelayChannel {
         req.kind === 'daemon-key'
           ? await this.verifyDaemonCredential('daemon-key', req.credential)
           : req.kind === 'daemon-token'
-            ? await this.verifyDaemonCredential('daemon-token', req.credential)
+            ? await this.verifyDaemonCredential('daemon-token', req.credential, req.daemonId)
             : req.conversationBinding === 'v1'
               ? await this.deps.verifyWebchatToken(req.credential)
               : { ok: false, reason: 'unsupported webchat binding' }
@@ -354,12 +354,13 @@ export class RelayConnection implements RelayChannel {
    *  refusal — the relay learns which daemon dialed, never why one did not. */
   private async verifyDaemonCredential(
     kind: 'daemon-key' | 'daemon-token',
-    credential: string
+    credential: string,
+    claimedDaemonId?: string
   ): Promise<RcVerifyResult> {
     const id =
       kind === 'daemon-key'
         ? await this.deps.auth.verifyDaemonKey(credential)
-        : await this.deps.auth.verifyDaemonToken(credential)
+        : await this.deps.auth.verifyDaemonToken(credential, claimedDaemonId)
     return id ? { ok: true, daemonId: id.daemonId, orgId: id.orgId } : { ok: false, reason: 'invalid credential' }
   }
 
