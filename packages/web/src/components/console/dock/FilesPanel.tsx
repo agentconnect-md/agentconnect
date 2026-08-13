@@ -8,7 +8,6 @@ import { Spinner } from '@/components/marks'
 import { Icon } from '@/components/ui'
 import { FileBrowserRow, formatFileMtime, formatFileSize } from '@/components/console/FileBrowser'
 import {
-  SANDBOX_ASLEEP_CODE,
   StatusBadge,
   useWorkspaceGitStatus,
   useWorkspaceTree,
@@ -23,13 +22,8 @@ export function filesTabStatus(rootSettled: boolean): DockTabStatus {
   return rootSettled ? 'ready' : 'loading'
 }
 
-// The root listing failed. 409, 404 and a sandbox that is asleep are distinguishable answers; everything else (503 for both an offline daemon and an unplaced agent, plus network failures) is the offline story.
-function rootNoticeText(status: number | null, scoped: boolean, code?: string | null): string {
-  // Ahead of the status checks: this one arrives as a 503 and would otherwise read as an outage, when
-  // in fact the files are fine and reachable again on the agent's next turn.
-  if (code === SANDBOX_ASLEEP_CODE) {
-    return 'Files are not available right now — this agent runs in a cluster sandbox and its pod is not running. It starts again on the agent’s next turn, and the workspace comes back with it.'
-  }
+// The root listing failed. Only 409 and 404 are distinguishable answers; everything else (503 for both an offline daemon and an unplaced agent, plus network failures) is the offline story.
+function rootNoticeText(status: number | null, scoped: boolean): string {
   if (status === 409) {
     return 'This agent runs a daemon version that cannot browse a session worktree. Update the agent, or read the files from its workspace page.'
   }
@@ -179,7 +173,7 @@ export function FilesPanel({
   // Which of the tree's states the body draws. Every branch here is data — none of them may take the panel, the dock or the transcript down (§2).
   const body = (): ReactNode => {
     if (root?.err && !root.entries)
-      return <PanelNotice warn text={rootNoticeText(root.errStatus, Boolean(sessionId), root.errCode)} />
+      return <PanelNotice warn text={rootNoticeText(root.errStatus, Boolean(sessionId))} />
     if (root && !root.loading && !root.err && !root.exists) {
       return (
         <PanelNotice

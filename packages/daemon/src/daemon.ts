@@ -209,7 +209,7 @@ import { ChannelNameResolver } from './messages/channel-name-resolver.js'
 import {
   cleanupStaleWorkspaceClones,
   clusterWorkspaceCwd,
-  consoleWorkspaceGitRoot,
+  consoleWorkspaceRoot,
   convergeGithubAppWorkspaceRename,
   ensureWorkspaceMaterialization,
   isWorkspaceEmpty,
@@ -20550,7 +20550,7 @@ export class Daemon {
     const workspaceGitRoot = (id: string, sessionId?: string): string | undefined => {
       const agent = this.agents.get(id)
       if (!agent) return undefined
-      return consoleWorkspaceGitRoot(
+      return consoleWorkspaceRoot(
         agent,
         workspaceLocation(id, sessionId)?.root,
         this.k8sPlane?.workspaceRootFor(id),

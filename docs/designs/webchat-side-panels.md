@@ -62,9 +62,11 @@ put in both modes. No work is planned there.
   state, and a cluster agent whose sandbox pod is not running is a 503 carrying
   `WORKSPACE_SANDBOX_UNAVAILABLE`. None of these may take down the dock, the
   viewer, or the transcript — and none may be drawn as another one. That last
-  clause is not decoration: a suspended pod once answered `isRepo:false` and an
-  empty file tree, so both panels described an intact workspace as absent, which
-  is the one degraded answer a reader cannot act on.
+  clause is not decoration: a suspended pod once answered `isRepo:false`, so the
+  Git panel described an intact checkout as absent, which is the one degraded
+  answer a reader cannot act on. (The Files tree still reports empty for a cluster
+  agent — its reads have no pod-side channel yet, see §2.6 — so it has no
+  distinguishable answer to draw until that lands.)
 - **No raw hex in console styles.** The prototype is written in inline hex; the
   console is Tailwind-utility-first over CSS variables
   ([`packages/web/STYLE.md`](../../packages/web/STYLE.md)). See §8 for the map.

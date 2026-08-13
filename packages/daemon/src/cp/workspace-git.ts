@@ -63,11 +63,7 @@ import {
   workspaceGitPullTarget,
   workspaceGitPushTarget
 } from '../workspace/git-injection.js'
-import {
-  sandboxWorkspaceMode,
-  sandboxWorkspaceUnreachable,
-  workspaceGitRunnerFor
-} from '../workspace/workspace-manager.js'
+import { consoleWorkspaceGitRunner, sandboxWorkspaceMode } from '../workspace/workspace-manager.js'
 import { type GitRunner } from '../workspace/git-runner.js'
 import { authorizeWorkspaceGitUrl } from '../workspace/git-origin-policy.js'
 import { canonicalWorkspacePath, containedWorkspacePath, WorkspaceViolationError } from './workspace-reader.js'
@@ -114,9 +110,21 @@ const STAGE_PATHSPEC_CHUNK = 50
 /** Cap the changed-file list so a huge working tree can't overflow the frame. */
 /** Where this surface gets its git: the SAME per-agent resolution the workspace manager uses, so a
  *  cluster-backed workspace runs git in its own sandbox instead of on a disk this daemon cannot see
- *  — for a write, that is the difference between staging the agent's tree and mutating the wrong one. */
+ *  — for a write, that is the difference between staging the agent's tree and mutating the wrong one.
+ *
+ *  The refusal rides on the RESOLUTION rather than being a check before it. Every operation below
+ *  resolves exactly once and derives every other runner from that one, so this is also the whole of
+ *  how an unreachable sandbox is detected: there is no window in which a check said "reachable" and a
+ *  later resolution answered with this daemon's filesystem. */
 function runnerFor(agentId: string, cwd: string, abort?: AbortSignal): GitRunner {
-  return workspaceGitRunnerFor(agentId, cwd, abort)
+  const runner = consoleWorkspaceGitRunner(agentId, cwd, abort)
+  if (!runner) {
+    throw new WorkspaceViolationError(
+      `agent "${agentId}" has no running sandbox, so its workspace cannot be reached`,
+      'sandbox-unavailable'
+    )
+  }
+  return runner
 }
 
 const MAX_STATUS_FILES = 500
@@ -176,19 +184,9 @@ export function createWorkspaceGit(
   /** The daemon's model pass. Absent ⇒ the wand answers `ok:false` as data instead of pretending. */
   commitMessagePass?: CommitMessagePass
 ): WorkspaceGit {
-  // Every operation starts here, reads AND writes. Without the reachability half, an unbound cluster
-  // agent fell through to a daemon-local runner pointed at a path in the POD's coordinates: git
-  // failed, `isRepo` swallowed it, and the panel reported "not a git checkout" — the same wrong
-  // answer for a suspended pod that it used to give for a bound one.
   function rootFor(agentId: string, sessionId?: string): string {
     const root = workspaceRootByAgent(agentId, sessionId)
     if (!root) throw new WorkspaceViolationError(`unknown agent "${agentId}"`, 'unknown-agent')
-    if (sandboxWorkspaceUnreachable(agentId)) {
-      throw new WorkspaceViolationError(
-        `agent "${agentId}" has no running sandbox, so its workspace cannot be reached`,
-        'sandbox-unavailable'
-      )
-    }
     return root
   }
 
@@ -263,10 +261,9 @@ export function createWorkspaceGit(
     bound?: { base: GitRunner; root: string }
   ): Promise<WorkspaceGitStatus> {
     const root = bound?.root ?? rootFor(agentId, sessionId)
-    // Resolved ONCE per request. `workspaceGitRunnerFor` falls back to a daemon-local runner when
-    // the sandbox session is not attached, so re-resolving after the preflight means a channel that
-    // drops in between proves the sandbox checkout and then mutates the daemon's own disk — the exact
-    // cross-filesystem write this seam exists to prevent. Every runner below derives from this one.
+    // Resolved ONCE per request, and `runnerFor` refuses rather than falling back in sandbox mode:
+    // re-resolving would let a channel that drops in between prove the sandbox checkout and then
+    // mutate this daemon's own disk. Every runner below derives from this one.
     const base = bound?.base ?? runnerFor(agentId, root)
     if (!(await isRepo(base))) return { agentId, isRepo: false, clean: true }
 
@@ -321,10 +318,9 @@ export function createWorkspaceGit(
    *  is data here. The fresh status is the whole answer either way. */
   async function writeIndex(kind: 'stage' | 'unstage', req: WorkspaceGitStageReq): Promise<WorkspaceGitStatus> {
     const root = rootFor(req.agentId, req.sessionId)
-    // Resolved ONCE per request. `workspaceGitRunnerFor` falls back to a daemon-local runner when
-    // the sandbox session is not attached, so re-resolving after the preflight means a channel that
-    // drops in between proves the sandbox checkout and then mutates the daemon's own disk — the exact
-    // cross-filesystem write this seam exists to prevent. Every runner below derives from this one.
+    // Resolved ONCE per request, and `runnerFor` refuses rather than falling back in sandbox mode:
+    // re-resolving would let a channel that drops in between prove the sandbox checkout and then
+    // mutate this daemon's own disk. Every runner below derives from this one.
     const base = runnerFor(req.agentId, root)
     if (!(await isRepo(base))) return { agentId: req.agentId, isRepo: false, clean: true }
     const wanted = new Set(req.paths.map((requested) => relativeWorkspacePath(root, requested)))
@@ -381,10 +377,9 @@ export function createWorkspaceGit(
 
     async diff(req) {
       const root = rootFor(req.agentId, req.sessionId)
-      // Resolved ONCE per request. `workspaceGitRunnerFor` falls back to a daemon-local runner when
-      // the sandbox session is not attached, so re-resolving after the preflight means a channel that
-      // drops in between proves the sandbox checkout and then mutates the daemon's own disk — the exact
-      // cross-filesystem write this seam exists to prevent. Every runner below derives from this one.
+      // Resolved ONCE per request, and `runnerFor` refuses rather than falling back in sandbox mode:
+      // re-resolving would let a channel that drops in between prove the sandbox checkout and then
+      // mutate this daemon's own disk. Every runner below derives from this one.
       const base = runnerFor(req.agentId, root)
       if (!(await isRepo(base))) return { agentId: req.agentId, path: req.path, isRepo: false, exists: false }
       // Through the runner, so a cluster-backed workspace answers by running git in its own sandbox rather than on a disk this daemon cannot see.
@@ -436,10 +431,9 @@ export function createWorkspaceGit(
 
     async log(req) {
       const root = rootFor(req.agentId, req.sessionId)
-      // Resolved ONCE per request. `workspaceGitRunnerFor` falls back to a daemon-local runner when
-      // the sandbox session is not attached, so re-resolving after the preflight means a channel that
-      // drops in between proves the sandbox checkout and then mutates the daemon's own disk — the exact
-      // cross-filesystem write this seam exists to prevent. Every runner below derives from this one.
+      // Resolved ONCE per request, and `runnerFor` refuses rather than falling back in sandbox mode:
+      // re-resolving would let a channel that drops in between prove the sandbox checkout and then
+      // mutate this daemon's own disk. Every runner below derives from this one.
       const base = runnerFor(req.agentId, root)
       if (!(await isRepo(base))) return { agentId: req.agentId, isRepo: false, commits: [], truncated: false }
       // Through the runner, so a cluster-backed workspace answers by running git in its own sandbox rather than on a disk this daemon cannot see.
@@ -496,10 +490,9 @@ export function createWorkspaceGit(
       // so the one runner this request uses already carries the signal.
       let timer: ReturnType<typeof setTimeout> | undefined
       const abort = new AbortController()
-      // Resolved ONCE per request. `workspaceGitRunnerFor` falls back to a daemon-local runner when
-      // the sandbox session is not attached, so re-resolving after the preflight means a channel that
-      // drops in between proves the sandbox checkout and then mutates the daemon's own disk — the
-      // exact cross-filesystem write this seam exists to prevent.
+      // Resolved ONCE per request, and `runnerFor` refuses rather than falling back in sandbox mode:
+      // re-resolving would let a channel that drops in between prove the sandbox checkout and then
+      // mutate this daemon's own disk.
       const base = runnerFor(agentId, root, abort.signal)
       if (!(await isRepo(base))) return { agentId, isRepo: false, ok: false, detail: 'workspace is not a git checkout' }
 
@@ -544,10 +537,9 @@ export function createWorkspaceGit(
     async commit(req) {
       const { agentId } = req
       const root = rootFor(agentId, req.sessionId)
-      // Resolved ONCE per request. `workspaceGitRunnerFor` falls back to a daemon-local runner when
-      // the sandbox session is not attached, so re-resolving after the preflight means a channel that
-      // drops in between proves the sandbox checkout and then mutates the daemon's own disk — the exact
-      // cross-filesystem write this seam exists to prevent. Every runner below derives from this one.
+      // Resolved ONCE per request, and `runnerFor` refuses rather than falling back in sandbox mode:
+      // re-resolving would let a channel that drops in between prove the sandbox checkout and then
+      // mutate this daemon's own disk. Every runner below derives from this one.
       const base = runnerFor(agentId, root)
       if (!(await isRepo(base))) return commitRefusal(agentId, false, 'not-a-repo', 'workspace is not a git checkout')
       const message = req.message.trim()
@@ -607,10 +599,9 @@ export function createWorkspaceGit(
       const root = rootFor(agentId, req.sessionId)
       let timer: ReturnType<typeof setTimeout> | undefined
       const abort = new AbortController()
-      // Resolved ONCE per request, with the signal already attached. `workspaceGitRunnerFor` falls
-      // back to a daemon-local runner when the sandbox session is not attached, so re-resolving after
-      // the preflight means a channel that drops in between proves the sandbox checkout and then
-      // mutates the daemon's own disk — the exact cross-filesystem write this seam prevents.
+      // Resolved ONCE per request, with the signal already attached, and `runnerFor` refuses rather
+      // than falling back in sandbox mode: re-resolving would let a channel that drops in between
+      // prove the sandbox checkout and then mutate this daemon's own disk.
       const base = runnerFor(agentId, root, abort.signal)
       if (!(await isRepo(base))) return pushRefusal(agentId, false, 'not-a-repo', 'workspace is not a git checkout')
       try {
@@ -716,10 +707,9 @@ export function createWorkspaceGit(
     async message(req) {
       const { agentId } = req
       const root = rootFor(agentId, req.sessionId)
-      // Resolved ONCE per request. `workspaceGitRunnerFor` falls back to a daemon-local runner when
-      // the sandbox session is not attached, so re-resolving after the preflight means a channel that
-      // drops in between proves the sandbox checkout and then mutates the daemon's own disk — the exact
-      // cross-filesystem write this seam exists to prevent. Every runner below derives from this one.
+      // Resolved ONCE per request, and `runnerFor` refuses rather than falling back in sandbox mode:
+      // re-resolving would let a channel that drops in between prove the sandbox checkout and then
+      // mutate this daemon's own disk. Every runner below derives from this one.
       const base = runnerFor(agentId, root)
       if (!(await isRepo(base))) {
         return { agentId, ok: false, detail: 'This workspace is not a git checkout, so there is no staged diff.' }

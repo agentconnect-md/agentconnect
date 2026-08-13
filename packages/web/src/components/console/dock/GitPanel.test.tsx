@@ -447,7 +447,7 @@ describe('GitPanel', () => {
     expect(text()).not.toContain('daemon may be offline')
     expect(text()).not.toContain('Not a git checkout')
     // Still data: the tab settles and the panel stays mounted, like every other degraded answer.
-    expect(verdicts.at(-1)).toEqual({ settled: true, changed: null })
+    expect(verdicts.at(-1)).toEqual({ settled: true, changed: null, branch: null, tracking: null, base: null })
     expect(container?.querySelector('[data-git-panel]')).not.toBeNull()
   })
 
