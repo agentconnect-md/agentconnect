@@ -105,21 +105,22 @@ check('declares the kubelet as its supervisor', () => {
   return 'AGENTCONNECT_SUPERVISOR=k8s'
 })
 
-check('REFUSES to start outside a pod rather than running runtimes locally', () => {
+check('REFUSES to start without the mandatory data-plane Secret mount', () => {
   const { code, output } = runEntrypoint({ AC_K8S_ORG_ID: 'org-1', AC_K8S_WARM_POOL: 'pool' })
   if (code === 0) throw new Error('the daemon started outside a cluster, so runtimes would run on this host')
-  if (!/not running inside a Kubernetes pod/.test(output)) {
+  if (!/data-plane configuration is not readable at \/var\/run\/ac-data-plane\/config\.json/.test(output)) {
     throw new Error(`refused, but not for the expected reason: ${output.slice(-300)}`)
   }
-  return 'exits with the in-cluster config error'
+  return 'exits before opening the execution plane'
 })
 
 check('names the missing deployment settings instead of guessing them', () => {
-  // A guessed org labels another tenant's claims; a guessed pool yields sandboxes that never bind.
   const { code, output } = runEntrypoint()
-  if (code === 0) throw new Error('started without an org id')
-  if (!/AC_K8S_ORG_ID/.test(output)) throw new Error(`did not name the missing setting: ${output.slice(-300)}`)
-  return 'reports AC_K8S_ORG_ID'
+  if (code === 0) throw new Error('started without the data-plane Secret')
+  if (!/\/var\/run\/ac-data-plane\/config\.json/.test(output)) {
+    throw new Error(`did not name the missing setting: ${output.slice(-300)}`)
+  }
+  return 'reports /var/run/ac-data-plane/config.json'
 })
 
 // The Control Plane persists what this reports as `agentVersion` and drives fleet and upgrade

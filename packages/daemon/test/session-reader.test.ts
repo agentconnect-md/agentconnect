@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -29,7 +29,23 @@ function seedHistorySession(s: LocalStore, { platform = 'slack', channel = 'C1',
 }
 
 describe('SessionReader', () => {
-  it('reads only the transcript namespace persisted on the session', () => {
+  it('uses the history page snapshot watermark as the initial live cursor', async () => {
+    const s = store()
+    seedHistorySession(s)
+    const currentTranscriptRevision = vi.fn(async () => 99)
+    const history = await createSessionReader(s, undefined, {
+      transcriptPageForAgentByEventTime: async () => ({ rows: [], hasMore: false, cursor: 17 }),
+      transcriptPageForAgent: async () => ({ rows: [], hasMore: false, cursor: 17 }),
+      transcriptTailForAgent: async () => ({ rows: [], hasMore: false, cursor: 17 }),
+      currentTranscriptRevision,
+      getToolBodyForAgent: async () => undefined
+    } as never).history({ agentId: AGENT, sessionId: 'acp-1', limit: 20 })
+    expect(history.liveCursor).toBe('17')
+    expect(currentTranscriptRevision).not.toHaveBeenCalled()
+    s.close()
+  })
+
+  it('reads only the transcript namespace persisted on the session', async () => {
     const s = store()
     s.upsertSession({
       key: sessionKey('telegram', '42', 'dm', AGENT),
@@ -62,7 +78,7 @@ describe('SessionReader', () => {
       text: 'private to bot B'
     })
 
-    const history = createSessionReader(s).history({
+    const history = await createSessionReader(s).history({
       agentId: AGENT,
       sessionId: 'acp-scoped',
       limit: 20
@@ -71,7 +87,7 @@ describe('SessionReader', () => {
     s.close()
   })
 
-  it('list joins cached channel/triggeredBy names; unresolved ids omit the fields', () => {
+  it('list joins cached channel/triggeredBy names; unresolved ids omit the fields', async () => {
     const s = store()
     s.upsertSession({
       key: sessionKey('slack', 'C1', 'T1', AGENT),
@@ -121,7 +137,7 @@ describe('SessionReader', () => {
     s.close()
   })
 
-  it('falls back to the first user message as the title when the runtime pushed none', () => {
+  it('falls back to the first user message as the title when the runtime pushed none', async () => {
     const s = store()
     // A webchat/playground session: the runtime never pushed a session/info title.
     s.upsertSession({
@@ -181,7 +197,7 @@ describe('SessionReader', () => {
     s.close()
   })
 
-  it('first-message fallback takes one line, caps length, and rewrites <@U…> mentions', () => {
+  it('first-message fallback takes one line, caps length, and rewrites <@U…> mentions', async () => {
     const s = store()
     s.upsertSession({
       key: sessionKey('slack', 'C1', 'T1', AGENT),
@@ -214,7 +230,7 @@ describe('SessionReader', () => {
     s.close()
   })
 
-  it('uses persisted source URLs and derives the Slack fallback from the owning workspace', () => {
+  it('uses persisted source URLs and derives the Slack fallback from the owning workspace', async () => {
     const s = store()
     // Slack session with a realistic thread-root ts.
     s.upsertSession({
@@ -281,7 +297,7 @@ describe('SessionReader', () => {
     s.close()
   })
 
-  it('history labels senders with cached names and leaves unknown ids raw', () => {
+  it('history labels senders with cached names and leaves unknown ids raw', async () => {
     const s = store()
     const transportScope = 'slack:one'
     const transcriptChannel = transcriptChannelKey('C1', transportScope)
@@ -319,7 +335,7 @@ describe('SessionReader', () => {
     s.setProfileAvatar(transportScope, 'U1', 'https://avatars.example.test/dana.png', 1)
 
     const reader = createSessionReader(s)
-    const { messages } = reader.history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 })
+    const { messages } = await reader.history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 })
     expect(messages.map((m) => [m.sender, m.senderName, m.senderAvatarUrl])).toEqual([
       ['U1', 'Dana Reyes', 'https://avatars.example.test/dana.png'],
       [AGENT, undefined, undefined] // agent-id senders have no cached provider profile → omitted
@@ -327,7 +343,7 @@ describe('SessionReader', () => {
     s.close()
   })
 
-  it('history restores a daemon-local webchat image without the synthetic attachment suffix', () => {
+  it('history restores a daemon-local webchat image without the synthetic attachment suffix', async () => {
     const s = store()
     seedHistorySession(s, { platform: 'webchat', channel: 'conv-1', thread: 'webchat:conv-1' })
     s.appendTranscript({
@@ -341,7 +357,7 @@ describe('SessionReader', () => {
       attachments: [{ name: 'screen.webp', mimeType: 'image/webp', data: 'aW1hZ2U=' }]
     })
 
-    expect(createSessionReader(s).history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 }).messages).toEqual([
+    expect((await createSessionReader(s).history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 })).messages).toEqual([
       expect.objectContaining({
         text: 'Identify this',
         attachments: [{ name: 'screen.webp', mimeType: 'image/webp', data: 'aW1hZ2U=' }]
@@ -350,7 +366,7 @@ describe('SessionReader', () => {
     s.close()
   })
 
-  it('strips a label the row does not literally agree with (observer wrote it pre-download)', () => {
+  it('strips a label the row does not literally agree with (observer wrote it pre-download)', async () => {
     // recordObservedInbound recorded the Feishu label before any download settled the
     // type, so the row says application/octet-stream while the stored image is a PNG.
     const s = store()
@@ -366,7 +382,7 @@ describe('SessionReader', () => {
       attachments: [{ name: 'img_v3_abc', mimeType: 'image/png', data: 'aW1hZ2U=' }]
     })
 
-    expect(createSessionReader(s).history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 }).messages).toEqual([
+    expect((await createSessionReader(s).history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 })).messages).toEqual([
       expect.objectContaining({
         text: 'look',
         attachments: [{ name: 'img_v3_abc', mimeType: 'image/png', data: 'aW1hZ2U=' }]
@@ -375,7 +391,7 @@ describe('SessionReader', () => {
     s.close()
   })
 
-  it('keeps the label for files it could not inline beside the one image it did', () => {
+  it('keeps the label for files it could not inline beside the one image it did', async () => {
     // Only the first small image is stored; the PDF and the over-cap second image must
     // still be visible as their labels rather than vanishing with the whole suffix.
     const s = store()
@@ -391,7 +407,7 @@ describe('SessionReader', () => {
       attachments: [{ name: 'small.png', mimeType: 'image/png', data: 'aW1hZ2U=' }]
     })
 
-    expect(createSessionReader(s).history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 }).messages).toEqual([
+    expect((await createSessionReader(s).history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 })).messages).toEqual([
       // The comma inside `report, final.pdf` is part of the file NAME, not a separator.
       expect.objectContaining({
         text: 'review these\n[attached: report, final.pdf (application/pdf), huge.png (image/png)]',
@@ -401,7 +417,7 @@ describe('SessionReader', () => {
     s.close()
   })
 
-  it('leaves the row alone when the label names nothing the attachment matches', () => {
+  it('leaves the row alone when the label names nothing the attachment matches', async () => {
     const s = store()
     seedHistorySession(s)
     s.appendTranscript({
@@ -415,13 +431,13 @@ describe('SessionReader', () => {
       attachments: [{ name: 'shot.png', mimeType: 'image/png', data: 'aW1hZ2U=' }]
     })
 
-    expect(createSessionReader(s).history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 }).messages).toEqual([
+    expect((await createSessionReader(s).history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 })).messages).toEqual([
       expect.objectContaining({ text: 'see\n[attached: other.pdf (application/pdf)]' })
     ])
     s.close()
   })
 
-  it('carries daemon-verified Slack bot provenance to the session DTO', () => {
+  it('carries daemon-verified Slack bot provenance to the session DTO', async () => {
     const s = store()
     seedHistorySession(s)
     s.appendTranscript({
@@ -435,13 +451,13 @@ describe('SessionReader', () => {
       text: 'legacy agent reply'
     })
 
-    expect(createSessionReader(s).history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 }).messages).toEqual([
+    expect((await createSessionReader(s).history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 })).messages).toEqual([
       expect.objectContaining({ sender: 'UAPPBOT', trustedAgentBot: true })
     ])
     s.close()
   })
 
-  it('binds session and tool-body reads to the authorized agent in a shared thread', () => {
+  it('binds session and tool-body reads to the authorized agent in a shared thread', async () => {
     const s = store()
     seedHistorySession(s)
     s.upsertSession({
@@ -469,20 +485,22 @@ describe('SessionReader', () => {
     const reader = createSessionReader(s)
     // A peer's private tool row is absent from both the visible agent's history
     // and its direct full-body lookup, even though the sessions share a thread.
-    expect(reader.history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 }).messages).toEqual([])
-    expect(reader.toolBody({ agentId: AGENT, sessionId: 'acp-1', toolCallId: 'peer-tc', offset: 0 }).data).toBe('')
-    // The session itself is also bound to its agent, while the peer owner can read its body.
-    expect(reader.history({ agentId: OTHER_AGENT, sessionId: 'acp-1', limit: 50 }).messages).toEqual([])
-    expect(reader.toolBody({ agentId: OTHER_AGENT, sessionId: 'acp-1', toolCallId: 'peer-tc', offset: 0 }).data).toBe(
+    expect((await reader.history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 })).messages).toEqual([])
+    expect((await reader.toolBody({ agentId: AGENT, sessionId: 'acp-1', toolCallId: 'peer-tc', offset: 0 })).data).toBe(
       ''
     )
+    // The session itself is also bound to its agent, while the peer owner can read its body.
+    expect((await reader.history({ agentId: OTHER_AGENT, sessionId: 'acp-1', limit: 50 })).messages).toEqual([])
     expect(
-      reader.toolBody({ agentId: OTHER_AGENT, sessionId: 'acp-peer', toolCallId: 'peer-tc', offset: 0 }).data
+      (await reader.toolBody({ agentId: OTHER_AGENT, sessionId: 'acp-1', toolCallId: 'peer-tc', offset: 0 })).data
+    ).toBe('')
+    expect(
+      (await reader.toolBody({ agentId: OTHER_AGENT, sessionId: 'acp-peer', toolCallId: 'peer-tc', offset: 0 })).data
     ).toBe(body)
     s.close()
   })
 
-  it('keeps session reads available for a rolling upgrade from a legacy CP', () => {
+  it('keeps session reads available for a rolling upgrade from a legacy CP', async () => {
     const s = store()
     seedHistorySession(s)
     const body = JSON.stringify({ toolCallId: 'tc-1', rawOutput: 'ok' })
@@ -497,12 +515,12 @@ describe('SessionReader', () => {
     })
 
     const reader = createSessionReader(s)
-    expect(reader.history({ sessionId: 'acp-1', limit: 50 }).messages).toHaveLength(1)
-    expect(reader.toolBody({ sessionId: 'acp-1', toolCallId: 'tc-1', offset: 0 }).data).toBe(body)
+    expect((await reader.history({ sessionId: 'acp-1', limit: 50 })).messages).toHaveLength(1)
+    expect((await reader.toolBody({ sessionId: 'acp-1', toolCallId: 'tc-1', offset: 0 })).data).toBe(body)
     s.close()
   })
 
-  it('history scopes to what THIS agent received or produced (no peer cross-talk)', () => {
+  it('history scopes to what THIS agent received or produced (no peer cross-talk)', async () => {
     const s = store()
     s.upsertSession({
       key: sessionKey('slack', 'C1', 'T1', AGENT),
@@ -555,16 +573,16 @@ describe('SessionReader', () => {
     })
 
     const reader = createSessionReader(s)
-    const { messages } = reader.history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 })
+    const { messages } = await reader.history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 })
     expect(messages.map((m) => m.text)).toEqual(['to-me', 'my-reply'])
     s.close()
   })
 
-  it('tails inserts, same-seq tool updates, and newly visible shared deliveries', () => {
+  it('tails inserts, same-seq tool updates, and newly visible shared deliveries', async () => {
     const s = store()
     seedHistorySession(s)
     const reader = createSessionReader(s)
-    const initial = reader.history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 })
+    const initial = await reader.history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 })
     expect(initial.liveCursor).toBe('0')
 
     s.appendTranscript({
@@ -586,7 +604,7 @@ describe('SessionReader', () => {
       body: JSON.stringify({ toolCallId: 'tc-live', status: 'in_progress' })
     })
 
-    const inserted = reader.history({
+    const inserted = await reader.history({
       agentId: AGENT,
       sessionId: 'acp-1',
       after: initial.liveCursor!,
@@ -600,7 +618,7 @@ describe('SessionReader', () => {
       title: 'Complete',
       body: JSON.stringify({ toolCallId: 'tc-live', status: 'completed' })
     })
-    const updated = reader.history({
+    const updated = await reader.history({
       agentId: AGENT,
       sessionId: 'acp-1',
       after: inserted.liveCursor!,
@@ -618,7 +636,7 @@ describe('SessionReader', () => {
       kind: 'reasoning',
       text: 'peer-private'
     })
-    const privateAdvance = reader.history({
+    const privateAdvance = await reader.history({
       agentId: AGENT,
       sessionId: 'acp-1',
       after: updated.liveCursor!,
@@ -637,7 +655,7 @@ describe('SessionReader', () => {
         text: 'shared-later'
       })
     }
-    const shared = reader.history({
+    const shared = await reader.history({
       agentId: AGENT,
       sessionId: 'acp-1',
       after: privateAdvance.liveCursor!,
@@ -647,7 +665,7 @@ describe('SessionReader', () => {
     s.close()
   })
 
-  it('orders Slack history by event time when older thread rows are backfilled after the trigger', () => {
+  it('orders Slack history by event time when older thread rows are backfilled after the trigger', async () => {
     const s = store()
     seedHistorySession(s)
 
@@ -669,7 +687,7 @@ describe('SessionReader', () => {
       })
     }
 
-    const { messages } = createSessionReader(s).history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 })
+    const { messages } = await createSessionReader(s).history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 })
     expect(messages.map((m) => m.text)).toEqual([
       'first request',
       'first backfilled reply',
@@ -680,7 +698,7 @@ describe('SessionReader', () => {
     s.close()
   })
 
-  it('keeps chronological Slack order across history page boundaries', () => {
+  it('keeps chronological Slack order across history page boundaries', async () => {
     const s = store()
     seedHistorySession(s)
 
@@ -702,7 +720,12 @@ describe('SessionReader', () => {
     const all: string[] = []
     let cursor: string | undefined
     for (let pageNo = 0; pageNo < 10; pageNo++) {
-      const page = reader.history({ agentId: AGENT, sessionId: 'acp-1', limit: 2, ...(cursor ? { cursor } : {}) })
+      const page = await reader.history({
+        agentId: AGENT,
+        sessionId: 'acp-1',
+        limit: 2,
+        ...(cursor ? { cursor } : {})
+      })
       all.unshift(...page.messages.map((m) => m.text))
       if (!page.nextCursor) break
       cursor = page.nextCursor
@@ -712,7 +735,7 @@ describe('SessionReader', () => {
     s.close()
   })
 
-  it('uses seq as a deterministic cross-page tie-breaker for equal event times', () => {
+  it('uses seq as a deterministic cross-page tie-breaker for equal event times', async () => {
     const s = store()
     seedHistorySession(s)
     for (const text of ['same-time-1', 'same-time-2', 'same-time-3']) {
@@ -730,7 +753,12 @@ describe('SessionReader', () => {
     const all: string[] = []
     let cursor: string | undefined
     do {
-      const page = reader.history({ agentId: AGENT, sessionId: 'acp-1', limit: 1, ...(cursor ? { cursor } : {}) })
+      const page = await reader.history({
+        agentId: AGENT,
+        sessionId: 'acp-1',
+        limit: 1,
+        ...(cursor ? { cursor } : {})
+      })
       all.unshift(...page.messages.map((m) => m.text))
       cursor = page.nextCursor
     } while (cursor)
@@ -739,7 +767,7 @@ describe('SessionReader', () => {
     s.close()
   })
 
-  it('finishes an in-flight legacy numeric-cursor walk in seq order', () => {
+  it('finishes an in-flight legacy numeric-cursor walk in seq order', async () => {
     const s = store()
     seedHistorySession(s)
     for (const n of [1, 4, 2, 3]) {
@@ -756,13 +784,18 @@ describe('SessionReader', () => {
 
     // Cursor "3" means the old client already saw seq >= 3. Do not reinterpret it
     // as an event-time cursor partway through that request's pagination loop.
-    const page = createSessionReader(s).history({ agentId: AGENT, sessionId: 'acp-1', cursor: '3', limit: 50 })
+    const page = await createSessionReader(s).history({
+      agentId: AGENT,
+      sessionId: 'acp-1',
+      cursor: '3',
+      limit: 50
+    })
     expect(page.messages.map((m) => m.text)).toEqual(['seq-1', 'seq-4'])
     expect(page.nextCursor).toBeUndefined()
     s.close()
   })
 
-  it('preserves insertion ordering for non-Slack platform message ids', () => {
+  it('preserves insertion ordering for non-Slack platform message ids', async () => {
     const s = store()
     seedHistorySession(s, { platform: 'telegram', channel: 'chat-1', thread: 'T1' })
     for (const row of [
@@ -779,22 +812,22 @@ describe('SessionReader', () => {
     }
 
     expect(
-      createSessionReader(s)
-        .history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 })
-        .messages.map((m) => m.text)
+      (await createSessionReader(s).history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 })).messages.map(
+        (m) => m.text
+      )
     ).toEqual(['telegram message 100', 'reasoning after 100', 'telegram message 101'])
     s.close()
   })
 
-  it('tails in mutation order where message ids are opaque, in event order where they are not', () => {
+  it('tails in mutation order where message ids are opaque, in event order where they are not', async () => {
     // Same two rows, observed newest-first, on two platforms. Mutation order and
     // display order can only diverge where the ids carry a native order — which is
     // exactly what platforms/message-ordering.ts answers.
-    const tailFor = (platform: string): string[] => {
+    const tailFor = async (platform: string): Promise<string[]> => {
       const s = store()
       seedHistorySession(s, { platform, channel: 'chat-1', thread: 'T1' })
       const reader = createSessionReader(s)
-      const initial = reader.history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 })
+      const initial = await reader.history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 })
       for (const [ts, text] of [
         ['101', 'observed first'],
         ['100', 'older, backfilled after']
@@ -809,12 +842,17 @@ describe('SessionReader', () => {
           text: text!
         })
       }
-      const tail = reader.history({ agentId: AGENT, sessionId: 'acp-1', after: initial.liveCursor!, limit: 50 })
+      const tail = await reader.history({
+        agentId: AGENT,
+        sessionId: 'acp-1',
+        after: initial.liveCursor!,
+        limit: 50
+      })
       s.close()
       return tail.messages.map((m) => m.text)
     }
 
-    expect(tailFor('telegram')).toEqual(['observed first', 'older, backfilled after'])
-    expect(tailFor('slack')).toEqual(['older, backfilled after', 'observed first'])
+    expect(await tailFor('telegram')).toEqual(['observed first', 'older, backfilled after'])
+    expect(await tailFor('slack')).toEqual(['older, backfilled after', 'observed first'])
   })
 })

@@ -24,9 +24,16 @@ function daemon(opts: { k8s?: boolean; supervisor?: string; requestExit?: (code:
     ...(opts.k8s
       ? {
           k8s: true,
-          // k8s-mode POLICY is what this file tests; the execution plane needs a cluster and has
-          // its own suite. Stubbing it keeps the refusal-to-boot-without-a-cluster behaviour
-          // real everywhere else.
+          // This suite tests k8s lifecycle policy; cluster and data-plane behavior have dedicated suites.
+          openDataPlane: async () =>
+            ({
+              transcripts: {
+                appendTranscript: () => {},
+                insertToolCall: () => {},
+                updateToolCall: () => {}
+              },
+              close: async () => {}
+            }) as never,
           startK8sPlane: async () =>
             ({
               driver: {} as never,

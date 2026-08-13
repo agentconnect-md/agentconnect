@@ -376,6 +376,7 @@ import { CpMcpDefs } from './mcp/cp-mcp-defs.js'
 import { CpMemoryConnectionRegistry, type MemoryPluginConnector } from './cp/memory-connection-registry.js'
 import { MemoryCaptureOutbox } from './memory-plugin/outbox.js'
 import { defaultMemoryPluginMetrics } from './memory-plugin/metrics.js'
+import { openMountedPostgresDataPlane, type PostgresDataPlane } from './store/postgres-transcript-store.js'
 import {
   EvaluationCapabilityProfileSchema,
   EvaluationEventEmitter,
@@ -1872,6 +1873,7 @@ export class Daemon {
   private readonly evaluation: EvaluationEventEmitter
   private readonly evaluationProfile: EvaluationCapabilityProfile
   private store!: LocalStore
+  private dataPlane?: PostgresDataPlane
   private mcp!: McpControlServer
   // The agent memory provider. Per-agent: it dispatches each call to the agent's
   // configured backend (managed = our <agent-root>/memory/ dir; native = the
@@ -2412,6 +2414,8 @@ export class Daemon {
        *  outcome the mode exists to prevent, so it must not be a fallback. Tests override this
        *  to exercise k8s-mode policy without a cluster. */
       startK8sPlane?: typeof startK8sRuntimePlane
+      /** Test seam only; production `--k8s` always reads the fixed Secret mount. */
+      openDataPlane?: typeof openMountedPostgresDataPlane
       /** Test seams for local catalog resolution and executable/state filtering. */
       resolveCatalog?: typeof resolveRuntimeCatalog
       installed?: typeof installedRuntimes
@@ -2802,6 +2806,12 @@ export class Daemon {
       )
     }
     if (this.k8s) {
+      const openDataPlane = this.opts.openDataPlane ?? openMountedPostgresDataPlane
+      this.dataPlane = await openDataPlane((error) => {
+        this.log.error(`data-plane: PostgreSQL persistence failed — ${formatErr(error)}`)
+        this.draining = true
+        this.requestExit(1)
+      })
       // A pod's terminationGracePeriodSeconds must exceed this, or the kubelet SIGKILLs
       // mid-drain and the graceful window is a promise the deployment cannot keep. The
       // daemon cannot read its own grace period (it has no pod read), so it states the
@@ -2815,21 +2825,27 @@ export class Daemon {
       // ever created and runtimes still spawn on this host, which is the one outcome the mode
       // exists to prevent, so a failure here refuses the boot rather than degrading.
       const startPlane = this.opts.startK8sPlane ?? startK8sRuntimePlane
-      this.k8sPlane = await startPlane({
-        // Which sockets this agent's pod needs, and where this daemon serves them. A GitHub-App
-        // workspace is the one case today: its git reaches the credential helper over a unix
-        // socket that, without a tunnel, exists only on the daemon's own filesystem. MCP is
-        // deliberately absent — the in-pod bridge that would dial it is not in the image yet, so
-        // a listener for it would be a socket nobody can use.
-        tunnelsFor: (agentId) =>
-          this.agents.get(agentId)?.workspace.gitCredential === 'github-app' ? ['gitcred'] : [],
-        tunnelSocketPath: (tunnel) => (tunnel === 'gitcred' ? gitcredSocketPath(root) : undefined),
-        log: {
-          info: (message) => this.log.info(message),
-          warn: (message) => this.log.warn(message),
-          debug: (message) => this.log.debug?.(message)
-        }
-      })
+      try {
+        this.k8sPlane = await startPlane({
+          // Which sockets this agent's pod needs, and where this daemon serves them. A GitHub-App
+          // workspace is the one case today: its git reaches the credential helper over a unix
+          // socket that, without a tunnel, exists only on the daemon's own filesystem. MCP is
+          // deliberately absent — the in-pod bridge that would dial it is not in the image yet, so
+          // a listener for it would be a socket nobody can use.
+          tunnelsFor: (agentId) =>
+            this.agents.get(agentId)?.workspace.gitCredential === 'github-app' ? ['gitcred'] : [],
+          tunnelSocketPath: (tunnel) => (tunnel === 'gitcred' ? gitcredSocketPath(root) : undefined),
+          log: {
+            info: (message) => this.log.info(message),
+            warn: (message) => this.log.warn(message),
+            debug: (message) => this.log.debug?.(message)
+          }
+        })
+      } catch (error) {
+        await this.dataPlane.close().catch(() => undefined)
+        this.dataPlane = undefined
+        throw error
+      }
       // Workspace git then runs where the workspace actually is. Registered for ALL agents; the
       // resolver answers undefined for any without a bound channel, so an agent this daemon has
       // not launched into a sandbox keeps its local behaviour.
@@ -3038,6 +3054,7 @@ export class Daemon {
     })
 
     this.store = new LocalStore(statePath(root))
+    this.store.setTranscriptReplica(this.dataPlane?.transcripts)
     this.store.setTranscriptMutationListener((mutation) => this.scheduleSessionActivity(mutation))
     this.memoryOutbox = new MemoryCaptureOutbox(this.store, this.memoryConnections, {
       log: { warn: (message) => this.log.warn(message) }
@@ -20591,7 +20608,11 @@ export class Daemon {
       activeSessions: () => this.pending.size,
       degradedScopes: () => this.cpDegradedScopes(),
       configApply: this.cpConfigApply(),
-      sessionRead: createSessionReader(this.store, (session) => this.sessionThreadUrl(session)),
+      sessionRead: createSessionReader(
+        this.store,
+        (session) => this.sessionThreadUrl(session),
+        this.dataPlane?.transcripts
+      ),
       // §5.4: serve a CP-forwarded status probe for a child session we own. Authorization is
       // re-done here (the lineage rule lives where the session lives), not trusted from the CP.
       childSessionStatusProbe: (probe) => this.childSessionStatusProbe(probe),
@@ -21295,6 +21316,8 @@ export class Daemon {
     // so server.close() isn't left waiting on a live bridge connection.
     await Promise.resolve(this.mcp?.stop()).catch((e) => errors.push(e))
     this.gitCredServer?.stop()
+    this.store?.setTranscriptReplica()
+    await this.dataPlane?.close().catch((e) => errors.push(e))
     this.store?.close()
     if (errors.length) throw new AggregateError(errors, 'stop: partial failure')
   }

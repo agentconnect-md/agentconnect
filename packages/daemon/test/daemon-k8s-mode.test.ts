@@ -54,6 +54,8 @@ function daemon(opts: {
   supervisor?: string
   /** Extra plane members for the rows that are ABOUT the plane the mode installs. */
   plane?: Record<string, unknown>
+  dataPlane?: boolean
+  openDataPlane?: ReturnType<typeof vi.fn>
 }): Daemon {
   return new Daemon({
     root: opts.root,
@@ -62,6 +64,24 @@ function daemon(opts: {
     // Stubbing it here keeps the refuse-to-boot-without-a-cluster behaviour real everywhere else.
     ...(opts.k8s
       ? {
+          ...(opts.dataPlane === false
+            ? {}
+            : {
+                openDataPlane: async () =>
+                  ({
+                    transcripts: {
+                      appendTranscript: () => {},
+                      insertToolCall: () => {},
+                      updateToolCall: () => {},
+                      transcriptTailForAgent: async () => ({ rows: [], hasMore: false, cursor: 0 }),
+                      transcriptPageForAgentByEventTime: async () => ({ rows: [], hasMore: false }),
+                      transcriptPageForAgent: async () => ({ rows: [], hasMore: false }),
+                      currentTranscriptRevision: async () => 0,
+                      getToolBodyForAgent: async () => undefined
+                    },
+                    close: async () => {}
+                  }) as never
+              }),
           startK8sPlane: async () =>
             ({
               driver: { claimName: (id: string) => `agent-${id}` } as never,
@@ -75,6 +95,7 @@ function daemon(opts: {
             }) as never
         }
       : {}),
+    ...(opts.openDataPlane ? { openDataPlane: opts.openDataPlane as never } : {}),
     ...(opts.supervisor ? { supervisor: opts.supervisor } : {}),
     resolveCatalog: async () => catalog(),
     ...(opts.probe ? { probeRuntimes: opts.probe as never } : {}),
@@ -83,6 +104,22 @@ function daemon(opts: {
 }
 
 describe('daemon --k8s mode', () => {
+  it('does not inspect or open the PostgreSQL data plane outside k8s mode', async () => {
+    const openDataPlane = vi.fn()
+    const local = daemon({ root: root(), k8s: false, openDataPlane })
+    try {
+      await local.start()
+      expect(openDataPlane).not.toHaveBeenCalled()
+    } finally {
+      await local.stop()
+    }
+  })
+
+  it('requires the mounted PostgreSQL configuration before starting the execution plane', async () => {
+    const k8sDaemon = daemon({ root: root(), k8s: true, dataPlane: false })
+    await expect(k8sDaemon.start()).rejects.toThrow(/data-plane configuration is not readable/)
+  })
+
   it('advertises the runtimes the image declares, not what is installed on the host', async () => {
     const probe = vi.fn(async () => [])
     const k8sDaemon = daemon({
