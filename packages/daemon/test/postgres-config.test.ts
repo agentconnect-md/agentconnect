@@ -11,26 +11,23 @@ function configFile(value: unknown): string {
 }
 
 describe('mounted data-plane configuration', () => {
-  it('accepts a PostgreSQL DSN and an isolated org schema', () => {
+  it('accepts one install-wide PostgreSQL DSN', () => {
     expect(
-      readDataPlaneConfig(
-        configFile({ version: 1, databaseUrl: 'postgresql://daemon:secret@postgres/data_plane', schema: 'org_a1' })
-      )
+      readDataPlaneConfig(configFile({ version: 1, databaseUrl: 'postgresql://daemon:secret@postgres/data_plane' }))
     ).toEqual({
       version: 1,
       databaseUrl: 'postgresql://daemon:secret@postgres/data_plane',
-      schema: 'org_a1',
       maxConnections: 4
     })
   })
 
-  it('rejects non-PostgreSQL URLs and unsafe schema identifiers', () => {
-    expect(() =>
-      readDataPlaneConfig(configFile({ version: 1, databaseUrl: 'https://postgres/data_plane', schema: 'org-a' }))
-    ).toThrow(/databaseUrl must be a PostgreSQL URL/)
+  it('rejects non-PostgreSQL URLs and per-org schema configuration', () => {
+    expect(() => readDataPlaneConfig(configFile({ version: 1, databaseUrl: 'https://postgres/data_plane' }))).toThrow(
+      /databaseUrl must be a PostgreSQL URL/
+    )
     expect(() =>
       readDataPlaneConfig(configFile({ version: 1, databaseUrl: 'postgresql://postgres/data_plane', schema: 'org-a' }))
-    ).toThrow(/schema/)
+    ).toThrow(/unrecognized key/i)
   })
 
   it('does not include a missing file error or credential material in its message', () => {

@@ -14,10 +14,10 @@ function clientWithVersions(versions: number[]) {
 describe('PostgreSQL data-plane migrations', () => {
   it('serializes first touch and records every migration before commit', async () => {
     const { client, queries } = clientWithVersions([])
-    await migrateDataPlaneSchema(client, 'org_a')
+    await migrateDataPlaneSchema(client)
     expect(queries.map(({ text }) => text.trim().split(/\s+/, 2).join(' '))).toEqual([
       'BEGIN',
-      'SELECT pg_advisory_xact_lock(hashtext($1),',
+      "SELECT pg_advisory_xact_lock(hashtext('agentconnect-data-plane-migration'))",
       'CREATE SCHEMA',
       'SET LOCAL',
       'CREATE TABLE',
@@ -26,20 +26,19 @@ describe('PostgreSQL data-plane migrations', () => {
       'INSERT INTO',
       'COMMIT'
     ])
-    expect(queries[1]?.values).toEqual(['org_a'])
     expect(queries.at(-2)?.values).toEqual([DATA_PLANE_SCHEMA_VERSION])
   })
 
   it('is idempotent when the current version is already installed', async () => {
     const { client, queries } = clientWithVersions([DATA_PLANE_SCHEMA_VERSION])
-    await migrateDataPlaneSchema(client, 'org_a')
+    await migrateDataPlaneSchema(client)
     expect(queries.some(({ text }) => text.includes('CREATE SEQUENCE transcript_revision_seq'))).toBe(false)
     expect(queries.at(-1)?.text).toBe('COMMIT')
   })
 
   it('rolls back instead of opening a schema written by a newer daemon', async () => {
     const { client, queries } = clientWithVersions([DATA_PLANE_SCHEMA_VERSION + 1])
-    await expect(migrateDataPlaneSchema(client, 'org_a')).rejects.toThrow(/newer than supported/)
+    await expect(migrateDataPlaneSchema(client)).rejects.toThrow(/newer than supported/)
     expect(queries.at(-1)?.text).toBe('ROLLBACK')
   })
 })
