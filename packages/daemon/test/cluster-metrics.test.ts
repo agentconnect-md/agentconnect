@@ -69,7 +69,7 @@ function fakeApi(options: { claimExists: boolean; mode: 'Running' | 'Suspended' 
         ({
           metadata: { name: 'sb-1', uid: 'sandbox-uid-1' },
           spec: { operatingMode: state.mode },
-          status: { conditions: [{ type: 'Ready', status: 'True' }] }
+          status: { conditions: [{ type: 'Ready', status: 'True' }], podIPs: ['10.0.0.8'] }
         }) as Sandbox,
       setOperatingMode: async (_name: string, desired: 'Running' | 'Suspended') => {
         state.mode = desired
@@ -132,8 +132,9 @@ function driverFor(
     api: api.api as never,
     orgId: 'org-1',
     warmPoolName: 'pool',
-    publishSpawnRecord: () => {},
-    awaitChannel: awaitChannel ?? (async () => respondingConnection(open) as never),
+    connectChannel: awaitChannel
+      ? async (record, _podIp, timeoutMs) => await awaitChannel(record.agentId, record.generation, timeoutMs)
+      : async () => respondingConnection(open) as never,
     clock,
     metrics,
     readyTimeoutMs: 5_000,
@@ -380,7 +381,7 @@ describe('cluster launch metrics', () => {
     const churn = recorder()
     const driver = driverFor(churn.metrics, fakeApi({ claimExists: true, mode: 'Suspended' }))
     await driver.launch(launchRequest)
-    // The routine half-TTL renewal: the shim re-dials and the listener hands the SAME launch its
+    // The routine half-TTL renewal: the daemon reconnects and hands the SAME launch its
     // replacement socket, with no loss reported in between. A re-establishment rate is the signal
     // that renewals or pod churn exceed expectations, which pooling it with the first bind hides.
     driver.onChannelBound(rebind())

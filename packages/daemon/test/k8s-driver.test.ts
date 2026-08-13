@@ -14,7 +14,10 @@ function fakeApi(options: { ready?: boolean; mode?: 'Running' | 'Suspended' } = 
     sandbox: {
       metadata: { name: 'sb-1', uid: 'sandbox-uid-1' },
       spec: { operatingMode: options.mode ?? 'Running' },
-      status: { conditions: [{ type: 'Ready', status: options.ready === false ? 'False' : 'True' }] }
+      status: {
+        conditions: [{ type: 'Ready', status: options.ready === false ? 'False' : 'True' }],
+        podIPs: ['10.0.0.8']
+      }
     } as Sandbox,
     modeWrites: [] as Array<{ desired: string; observed: string }>,
     rejectNextModeWrites: 0,
@@ -103,15 +106,19 @@ function driver(api: ReturnType<typeof fakeApi>['api'], overrides: Record<string
   const records: SpawnRecord[] = []
   const clock = new FakeClock()
   let generation = 0
+  const customConnect = overrides.connectChannel as
+    ((record: SpawnRecord, podIp: string, timeoutMs: number) => Promise<ShimConnection>) | undefined
   const instance = new K8sDriver({
     api: api as never,
     orgId: 'org-1',
     warmPoolName: 'ac-runtime-standard-pool',
-    awaitChannel: async () => stubConnection(++generation),
-    publishSpawnRecord: (record) => records.push(record),
     clock,
     log: { info: () => {}, warn: () => {}, debug: () => {} },
-    ...overrides
+    ...overrides,
+    connectChannel: async (record: SpawnRecord, podIp: string, timeoutMs: number) => {
+      records.push(record)
+      return customConnect ? await customConnect(record, podIp, timeoutMs) : stubConnection(++generation)
+    }
   })
   return { instance, records, clock }
 }
@@ -132,15 +139,12 @@ describe('cluster spawn driver', () => {
     expect((claim.spec as Record<string, unknown>).volumeClaimTemplates).toBeUndefined()
   })
 
-  it('publishes a spawn record naming the POD, as soon as the Sandbox names one', async () => {
-    // The record is how a dialing pod is resolved back to its launch, and a TokenReview yields
-    // only a pod name and uid — so a record that does not name the pod cannot be found at all.
-    // It is published when the pod is first named rather than at claim time, because at claim
-    // time the name still belongs to the previous incarnation.
+  it('dials the ready pod IP with a launch record naming that pod', async () => {
     const { api } = fakeApi()
-    const { instance, records } = driver(api)
+    const connectChannel = vi.fn(async (record: SpawnRecord) => stubConnection(record.generation))
+    const { instance, records } = driver(api, { connectChannel })
     expect(await instance.ensureSandbox('agent-a')).toMatchObject({ sandboxName: 'sb-1' })
-    // ensureSandbox alone publishes nothing: no pod is bound yet.
+    // ensureSandbox alone dials nothing: the backing pod is not ready yet.
     expect(records).toEqual([])
 
     await instance.launch(launchRequest)
@@ -154,17 +158,16 @@ describe('cluster spawn driver', () => {
         podName: 'sb-1'
       }
     ])
+    expect(connectChannel).toHaveBeenCalledWith(expect.objectContaining({ podName: 'sb-1' }), '10.0.0.8', 90_000)
   })
 
   it('names the ADOPTED warm-pool pod, not the Sandbox, when one was adopted', async () => {
-    // Our normal path is warm-pool adoption, and an adopted pod carries a pool-generated name
-    // that has nothing to do with the Sandbox's. Falling back to the Sandbox name there would
-    // publish a record no dialing pod could ever match.
+    // An adopted pod's pool-generated name is the identity TokenReview must return.
     const { api } = fakeApi()
     api.getSandbox = async () => ({
       metadata: { name: 'sb-1', uid: 'sandbox-uid-1', annotations: { 'agents.x-k8s.io/pod-name': 'pool-xyz-7' } },
       spec: { operatingMode: 'Running' },
-      status: { conditions: [{ type: 'Ready', status: 'True' }] }
+      status: { conditions: [{ type: 'Ready', status: 'True' }], podIPs: ['10.0.0.9'] }
     })
     const { instance, records } = driver(api)
     await instance.launch(launchRequest)
@@ -226,7 +229,7 @@ describe('cluster spawn driver', () => {
     // to end the launch, which is what makes the next turn claim a fresh generation.
     const { api } = fakeApi()
     const { instance } = driver(api, {
-      awaitChannel: async (_a: string, generation: number) => stubConnection(generation)
+      connectChannel: async (record: SpawnRecord) => stubConnection(record.generation)
     })
     await instance.ensureBoundChannel('agent-a')
     expect(instance.sessionFor('agent-a')?.isAttached()).toBe(true)
@@ -241,7 +244,7 @@ describe('cluster spawn driver', () => {
   it('suspends an idle agent, keeps its claim, and resumes it at a new generation', async () => {
     const { api, state } = fakeApi()
     const { instance, records } = driver(api, {
-      awaitChannel: async (_a: string, generation: number) => stubConnection(generation)
+      connectChannel: async (record: SpawnRecord) => stubConnection(record.generation)
     })
     await instance.ensureBoundChannel('agent-a')
 
@@ -283,7 +286,7 @@ describe('cluster spawn driver', () => {
       return setOperatingMode(name as never, desired as never, observed as never)
     }) as never
     const { instance, records } = driver(api, {
-      awaitChannel: async (_a: string, generation: number) => stubConnection(generation)
+      connectChannel: async (record: SpawnRecord) => stubConnection(record.generation)
     })
     await instance.ensureBoundChannel('agent-a')
 
@@ -449,7 +452,7 @@ describe('cluster spawn driver', () => {
     const { api } = fakeApi()
     let generation = 0
     const { instance } = driver(api, {
-      awaitChannel: async () => stubConnection(++generation, '/agent')
+      connectChannel: async () => stubConnection(++generation, '/agent')
     })
     // Unknown before any bind: the daemon cannot name a path on a machine it has not heard from.
     expect(instance.workspaceRootFor('agent-a')).toBeUndefined()
@@ -476,7 +479,7 @@ describe('cluster spawn driver', () => {
     const { api } = fakeApi()
     let generation = 0
     const { instance } = driver(api, {
-      awaitChannel: async () => stubConnection(++generation, '/mnt/agent')
+      connectChannel: async () => stubConnection(++generation, '/mnt/agent')
     })
     await instance.launch(launchRequest)
     expect(instance.workspaceRootFor('agent-a')).toBe('/mnt/agent')

@@ -140,7 +140,7 @@ plus the Deployment/Pod secondary watches that keep status conditions prompt.
 Everything is stamped by server-side apply (field manager
 `agentconnect-operator`, force) — one PATCH per object per pass, no read-back
 diffing. Object names are fixed per-namespace constants (`ac-daemon`,
-`ac-daemon-shim`, `ac-daemon-state`, `ac-runtime-<tier>`, `ac-quota`,
+`ac-daemon-state`, `ac-runtime-<tier>`, `ac-quota`,
 `ac-limits`); the namespace is per-org, so they never collide. Master
 SandboxTemplates live in the control namespace as
 `<AC_MASTER_TEMPLATE_PREFIX><tier>` (default `ac-runtime-<tier>`), rendered by
@@ -161,8 +161,10 @@ reconcile pass:
    release-prefixed tokenreview ClusterRole (TokenReview is cluster-scoped;
    a namespaced Role cannot grant it). No namespace ownerReference — the
    finalizer deletes it explicitly.
-5. `ensureNetworkPolicies` — sandbox egress (gateway + git only) and daemon
-   egress (control plane/relay/platform APIs + kube-apiserver + DNS).
+5. `ensureNetworkPolicies` — sandbox ingress from daemon-labelled pods in either
+   the current dedicated namespace or the install's control/pool namespace, plus configured
+   egress, and daemon egress (sandboxes + control plane/relay/platform APIs +
+   kube-apiserver + DNS). Daemon ingress stays closed.
 6. `ensureQuotaAndLimitRange` — from `spec.quota`; omit when unlimited.
 7. `ensureSandboxTemplates` — stamp per-org SandboxTemplate + one
    SandboxWarmPool per tier from the cluster master templates.
@@ -175,11 +177,11 @@ reconcile pass:
    install, and the token is a file the kubelet keeps current. The pod therefore
    starts whether or not it can authenticate, which is the trade the key path's
    kubelet gate bought and this one gives back.
-10. `ensureDaemonService` — ClusterIP for relay ingress and shim dial-in.
-
-Deletion (finalizer `agentconnect.md/org-envelope`): quiesce → delete
-workloads → (future: archive) → delete namespace + cluster-scoped bindings →
-remove finalizer. Steps must be idempotent.
+10. `removeLegacyDaemonService` — delete the callback Service from the old shim
+    dial-out topology; relay traffic already uses daemon-initiated WebSockets.
+    Deletion (finalizer `agentconnect.md/org-envelope`): quiesce → delete
+    workloads → (future: archive) → delete namespace + cluster-scoped bindings →
+    remove finalizer. Steps must be idempotent.
 
 ## 5. Chart (`charts/operator`, name `agentconnect-operator`)
 
@@ -193,7 +195,7 @@ the vendored stack is the controller's label-domain allowlist, which replaces
 rather than extends its default and without which every SandboxClaim is
 rejected. Everything else is per-install: the master SandboxTemplates rendered
 from `runtimeTiers` (blueprints in the control namespace — the operator inherits
-each one wholesale except the image, the shim endpoint and the network policy),
+each one wholesale except the image, shim listen port and network policy),
 operator Deployment (2 replicas) +
 SA/RBAC, the release-prefixed tokenreview ClusterRole, two
 ValidatingAdmissionPolicies, and a pre-delete hook that refuses uninstall while

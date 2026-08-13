@@ -38,7 +38,7 @@ function fakeApi() {
         ({
           metadata: { name: 'sb-1', uid: 'sandbox-uid-1' },
           spec: { operatingMode: 'Running' },
-          status: { conditions: [{ type: 'Ready', status: 'True' }] }
+          status: { conditions: [{ type: 'Ready', status: 'True' }], podIPs: ['10.0.0.8'] }
         }) as Sandbox,
       setOperatingMode: async () => ({}) as Sandbox,
       watchClaims: vi.fn(),
@@ -55,8 +55,7 @@ describe('provider credentials in the direct-connect stage', () => {
       api: api as never,
       orgId: 'org-1',
       warmPoolName: 'pool',
-      awaitChannel: async () => ({}) as ShimConnection,
-      publishSpawnRecord: () => {},
+      connectChannel: async () => ({}) as ShimConnection,
       log: { info: () => {}, warn: () => {}, debug: () => {} }
     })
     // launch() must be what creates the claim: pre-creating it would take the existing-launch

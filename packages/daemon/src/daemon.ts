@@ -2178,7 +2178,7 @@ export class Daemon {
   /** Reads this pod's projected CP-audience token; undefined unless the daemon runs
    *  in-cluster AND the volume is actually mounted (decided once, at boot). */
   private readonly clusterIdentityToken?: () => string | undefined
-  // The k8s execution plane: shim endpoint + driver + workspace seam. Undefined outside --k8s.
+  // The k8s execution plane: shim dialer + driver + workspace seam. Undefined outside --k8s.
   private k8sPlane?: K8sRuntimePlane
   // The resolved catalog the probed table is projected onto; it supplies command/args, which the
   // table never does — the table only says which ids this image provides.
@@ -2840,7 +2840,7 @@ export class Daemon {
       // And the mode itself, which decides what workspace operations are available at all: an
       // in-place conversion has no pod-side implementation of its rollback contract.
       setSandboxWorkspaceMode(true)
-      this.log.info(`k8s: execution plane ready — shim endpoint on :${this.k8sPlane.listener.listeningPort()}`)
+      this.log.info('k8s: execution plane ready — daemon-to-sandbox shim dialing enabled')
     }
     // Sandbox-optional principle (#36): skills are NOT force-sandboxed fleet-wide.
     // A skill runs sandboxed only when its agent does (agentRunsInSandbox), so the

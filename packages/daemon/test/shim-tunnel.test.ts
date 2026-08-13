@@ -4,9 +4,10 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { createConnection, createServer, Socket, type Server } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { Backoff, ClientTransport, FakeClock } from '@agentconnect.md/connection'
+import { Backoff, FakeClock } from '@agentconnect.md/connection'
 import { startK8sRuntimePlane, type K8sRuntimePlane } from '../src/k8s/runtime-plane.js'
 import { ShimClient, type ShimTransport } from '../src/shim/client.js'
+import { ShimServer } from '../src/shim/server.js'
 import { TunnelHost } from '../src/shim/tunnel-host.js'
 import { TunnelProxy } from '../src/shim/tunnel-proxy.js'
 import { K8sApiError } from '@agentconnect.md/k8s-client'
@@ -31,17 +32,17 @@ import type { TunnelName } from '../src/shim/tunnel.js'
 const planes: K8sRuntimePlane[] = []
 const clients: ShimClient[] = []
 const servers: Server[] = []
+const shimServers: ShimServer[] = []
 const hosts: TunnelHost[] = []
 const sockets: Socket[] = []
 const dirs: string[] = []
-const intervals: NodeJS.Timeout[] = []
 
 afterEach(async () => {
-  for (const timer of intervals.splice(0)) clearInterval(timer)
   for (const socket of sockets.splice(0)) socket.destroy()
   for (const host of hosts.splice(0)) host.close()
   for (const client of clients.splice(0)) client.stop()
   for (const plane of planes.splice(0)) await plane.stop()
+  for (const server of shimServers.splice(0)) await server.stop()
   await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve()))))
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
@@ -62,7 +63,7 @@ function fakeApi() {
   const sandbox = {
     metadata: { name: 'sb-1', uid: 'sandbox-uid-1', annotations: { 'agents.x-k8s.io/pod-name': 'pool-pod-9' } },
     spec: { operatingMode: 'Running' as const },
-    status: { conditions: [{ type: 'Ready', status: 'True' }] }
+    status: { conditions: [{ type: 'Ready', status: 'True' }], podIPs: ['127.0.0.1'] }
   } satisfies Sandbox
   let claim: SandboxClaim | undefined
   return {
@@ -128,11 +129,13 @@ async function clusterWithTunnel(
   const warnings: string[] = []
   const shimClock = new FakeClock()
   const podSocketPath = join(scratchDir(), 'pod-gitcred.sock')
+  const shimServer = new ShimServer()
+  const shimPort = await shimServer.start(0, '127.0.0.1')
+  shimServers.push(shimServer)
   const plane = await startK8sRuntimePlane({
     orgId: 'org-1',
     warmPoolName: 'pool',
-    shimPort: 0,
-    shimHost: '127.0.0.1',
+    shimPort,
     readyTimeoutMs: 15_000,
     api: fakeApi() as never,
     tunnelsFor: () => options.tunnels ?? ['gitcred'],
@@ -141,7 +144,12 @@ async function clusterWithTunnel(
     log: { info: () => {}, warn: (message) => warnings.push(message), debug: () => {} }
   })
   planes.push(plane)
-  const port = plane.listener.listeningPort()!
+  let binds = 0
+  const onBound = plane.driver.onChannelBound.bind(plane.driver)
+  plane.driver.onChannelBound = (connection) => {
+    binds += 1
+    onBound(connection)
+  }
 
   const ensuring = plane.ensureChannel('agent-a')
   const host = new TunnelHost({
@@ -151,9 +159,9 @@ async function clusterWithTunnel(
   })
   hosts.push(host)
   const client = new ShimClient({
-    endpoint: `ws://127.0.0.1:${port}`,
-    dial: (url, opts) =>
-      ClientTransport.dial(url, { subprotocol: opts.subprotocol, path: opts.path }) as Promise<ShimTransport>,
+    endpoint: 'accepted-daemon-channel',
+    acceptDialIn: true,
+    dial: () => shimServer.nextTransport() as Promise<ShimTransport>,
     readToken: () => 'projected-token',
     handle: async (capability, payload) => {
       if (capability !== 'tunnel') throw new Error(`unexpected capability ${capability}`)
@@ -169,18 +177,7 @@ async function clusterWithTunnel(
   clients.push(client)
   void client.start()
   await ensuring
-  // Whoever owns the listener re-attaches a rebound channel; the daemon does that in production,
-  // and this stands in for it so a renewal reaches the driver's session.
-  const seen: unknown[] = []
-  const watch = setInterval(() => {
-    for (const connection of plane.listener.connectionsFor('agent-a')) {
-      if (seen.includes(connection)) continue
-      seen.push(connection)
-      plane.driver.onChannelBound(connection)
-    }
-  }, 10)
-  intervals.push(watch)
-  return { plane, podSocketPath, warnings, shimClock, bindCount: () => seen.length }
+  return { plane, podSocketPath, warnings, shimClock, bindCount: () => binds }
 }
 
 /**
@@ -289,7 +286,7 @@ describe('the shim tunnel', () => {
 
   it('keeps a live connection working across a real credential renewal', async () => {
     // The pod's listener and its open connections belong to the POD, not to a channel: the shim
-    // re-dials at half the credential TTL, and a helper that was mid-conversation must not care.
+    // reconnects at half the credential TTL, and a helper that was mid-conversation must not care.
     const daemonSocketPath = daemonSideServer((chunk, socket) => socket.write(`echo:${chunk.toString('utf8')}`))
     const { podSocketPath, shimClock, bindCount } = await clusterWithTunnel({
       daemonSocketPath,
@@ -311,7 +308,7 @@ describe('the shim tunnel', () => {
   }, 40_000)
 
   it('ends an interrupted stream through the real renewal, so the pod client sees EOF', async () => {
-    // The production ordering, which a stubbed session cannot show: `ShimListener` used to announce
+    // The production ordering, which a stubbed session cannot show: the old listener announced
     // a new connection BEFORE sending `shim/bound`, so the daemon's cleanup of an interrupted
     // stream reached a shim that had no binding yet and was refused as `not bound` — with the
     // stream already dropped on this side, leaving the in-pod client waiting on nothing.
