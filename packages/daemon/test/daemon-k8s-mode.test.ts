@@ -55,6 +55,7 @@ function daemon(opts: {
   /** Extra plane members for the rows that are ABOUT the plane the mode installs. */
   plane?: Record<string, unknown>
   dataPlane?: boolean
+  openDataPlane?: ReturnType<typeof vi.fn>
 }): Daemon {
   return new Daemon({
     root: opts.root,
@@ -94,6 +95,7 @@ function daemon(opts: {
             }) as never
         }
       : {}),
+    ...(opts.openDataPlane ? { openDataPlane: opts.openDataPlane as never } : {}),
     ...(opts.supervisor ? { supervisor: opts.supervisor } : {}),
     resolveCatalog: async () => catalog(),
     ...(opts.probe ? { probeRuntimes: opts.probe as never } : {}),
@@ -102,6 +104,17 @@ function daemon(opts: {
 }
 
 describe('daemon --k8s mode', () => {
+  it('does not inspect or open the PostgreSQL data plane outside k8s mode', async () => {
+    const openDataPlane = vi.fn()
+    const local = daemon({ root: root(), k8s: false, openDataPlane })
+    try {
+      await local.start()
+      expect(openDataPlane).not.toHaveBeenCalled()
+    } finally {
+      await local.stop()
+    }
+  })
+
   it('requires the mounted PostgreSQL configuration before starting the execution plane', async () => {
     const k8sDaemon = daemon({ root: root(), k8s: true, dataPlane: false })
     await expect(k8sDaemon.start()).rejects.toThrow(/data-plane configuration is not readable/)
