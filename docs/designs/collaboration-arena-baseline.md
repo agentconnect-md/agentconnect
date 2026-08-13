@@ -92,6 +92,13 @@ pins the behavior rather than the design's wording.
 Every suite also carries a regression pin that no turn is lost to
 `session_source_mismatch` (issue #583, fixed by #568).
 
+The same activation invariants are additionally pinned **per surface** by the
+cross-surface parity suite ([`activation-parity.md`](activation-parity.md)):
+one scenario spec (`evals/parity/spec.ts`), a Slack-shaped leg reusing this
+routing fixture, and a webchat leg — with the governance rule that any
+activation/routing change either keeps every leg green or declares the
+divergence in the spec.
+
 ## 3. The games
 
 ### 3.1 Peer-driven counting (§10.1 / §3.3)
