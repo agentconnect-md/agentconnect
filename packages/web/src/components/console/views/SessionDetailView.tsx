@@ -1832,8 +1832,11 @@ export default function SessionDetailView() {
 
     // Live parity with relatedTranscriptAgentIds: a visible agent that spoke via a live
     // agent-initiated post (#753) joins the roster now, not on the next full refresh.
-    if (session?.platform === 'webchat' && session.id) {
-      for (const step of getLiveSteps(session.id)) {
+    // Adopted webchat keeps its live tail in getLiveSteps; a synthetic Playground
+    // session carries its steps on the session row itself.
+    if (session && (session.platform === 'webchat' || session.platform === 'playground')) {
+      const liveTail = session.platform === 'webchat' ? getLiveSteps(session.id) : session.steps
+      for (const step of liveTail) {
         if (step.agentId && agentById.has(step.agentId)) candidates.push({ agentId: step.agentId })
       }
     }
