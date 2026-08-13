@@ -235,6 +235,19 @@ describe('DaemonAuthService.authenticate — the in-cluster token path', () => {
     expect(r).toMatchObject({ ok: false, closeCode: 1011 })
   })
 
+  it('forwards the connection’s claim, so a cloud daemon’s socket can name its org', async () => {
+    const claims: unknown[] = []
+    const r = await withIdentity(async (_token, claim) => {
+      claims.push(claim)
+      return verified
+    }).authenticate(
+      { serviceAccountToken: 'projected', orgId: 'org_cluster', daemonId: verified.daemonId, agentVersion: '1' },
+      ctx
+    )
+    expect(r).toMatchObject({ ok: true, daemonId: verified.daemonId })
+    expect(claims).toEqual([{ orgId: 'org_cluster', daemonId: verified.daemonId }])
+  })
+
   it('an echoed daemonId that disagrees with the identity → 4401', async () => {
     const r = await withIdentity(async () => verified).authenticate(
       { serviceAccountToken: 'projected', daemonId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', agentVersion: '1' },

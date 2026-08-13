@@ -137,6 +137,24 @@ describe('RelayAuthService.verifyDaemonToken (rc/verify daemon-token)', () => {
     const svc = new RelayAuthService(codec, repo(null), clock, { HEARTBEAT_SEC: 15 })
     expect(await svc.verifyDaemonToken('projected')).toBeNull()
   })
+
+  it('forwards the claimed daemonId, which is how a cloud daemon names its record', async () => {
+    const claims: unknown[] = []
+    const svc = new RelayAuthService(
+      codec,
+      repo(null),
+      clock,
+      { HEARTBEAT_SEC: 15 },
+      {
+        verify: async (_token, claim) => {
+          claims.push(claim)
+          return identity
+        }
+      }
+    )
+    expect(await svc.verifyDaemonToken('projected', identity.daemonId)).toEqual(identity)
+    expect(claims).toEqual([{ daemonId: identity.daemonId }])
+  })
 })
 
 describe('RelayAuthService.verifyDaemonKey (rc/verify daemon-key, read-only)', () => {

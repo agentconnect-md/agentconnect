@@ -81,10 +81,23 @@ export class RelayAuthService {
    * control socket. Null when this deployment provisions no clusters, or the token fails
    * any of the audience / ServiceAccount / namespace checks; a cluster or store error
    * PROPAGATES so the caller answers retryable rather than "invalid credential".
+   *
+   * `claimedDaemonId` is the id the daemon put on `rd/hello`, forwarded unverified. A cloud
+   * daemon holds one record per org, so it is the only thing that says which record this
+   * token is being presented for — and the verifier refuses a claim on a record the identity
+   * does not own, which is why forwarding an unverified id is safe. This never CREATES a
+   * record: an org's first record is minted on the CP socket, which is the one door that
+   * knows the org outright.
    */
-  async verifyDaemonToken(credential: string): Promise<{ daemonId: string; orgId: string } | null> {
+  async verifyDaemonToken(
+    credential: string,
+    claimedDaemonId?: string
+  ): Promise<{ daemonId: string; orgId: string } | null> {
     if (!this.clusterIdentity) return null
-    const verified = await this.clusterIdentity.verify(credential)
+    const verified = await this.clusterIdentity.verify(
+      credential,
+      claimedDaemonId ? { daemonId: claimedDaemonId } : undefined
+    )
     return verified ? { daemonId: verified.daemonId, orgId: verified.orgId } : null
   }
 

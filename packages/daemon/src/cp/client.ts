@@ -162,6 +162,10 @@ export interface CpClientDeps {
   /** This pod's projected ServiceAccount token, re-read per connect because the kubelet
    *  rotates it roughly hourly. Present ⇒ it is the credential and the API key is not sent. */
   clusterIdentityToken?: () => string | undefined
+  /** The org this connection serves. Set only on a cloud daemon, whose Kubernetes identity
+   *  names no org because it serves every one; an envelope daemon's namespace already
+   *  answers and the CP refuses a disagreeing claim. */
+  orgId?: string
   /** Optional: when unset, the token's `sub` is the authoritative daemonId and
    *  the CP assigns it. The adopted id is surfaced via `onDaemonId`. */
   daemonId?: string
@@ -372,6 +376,8 @@ export class CpClient {
     const identityToken = this.deps.clusterIdentityToken?.()
     const authPayload: Record<string, unknown> = {
       ...(identityToken ? { serviceAccountToken: identityToken } : { apiKey: this.deps.token }),
+      // A cloud daemon's org: its identity serves every org, so the socket says which one.
+      ...(identityToken && this.deps.orgId ? { orgId: this.deps.orgId } : {}),
       agentVersion: this.deps.agentVersion,
       ...(this.deps.onBootstrapUpgrade ? { bootstrapProtocolVersion: DAEMON_BOOTSTRAP_PROTOCOL_VERSION } : {})
     }

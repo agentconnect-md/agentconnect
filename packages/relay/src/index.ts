@@ -285,7 +285,7 @@ async function main(): Promise<void> {
   // rd/hello delegates the daemon's key to the CP via the CP client's `verify`; each
   // inbound rd/chat is routed to the browser owning its chatId.
   const rdServer = createRelayDaemonServer(server, {
-    verify: (kind, credential) => client.verify(kind, credential),
+    verify: (kind, credential, daemonId) => client.verify(kind, credential, daemonId),
     relayId: () => client.relayId,
     clock: systemClock,
     onChat: (chat) => router.deliver(chat),

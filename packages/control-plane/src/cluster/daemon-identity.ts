@@ -4,22 +4,27 @@
  *
  * The daemon presents the audience-scoped ServiceAccount token the kubelet projects into
  * its pod; this reviews it against the cluster that issued it and maps the reviewed subject
- * back to an org. Three things must hold, and the token is refused unless all three do:
- * the audience is {@link CP_TOKEN_AUDIENCE}, the ServiceAccount is
- * {@link ENVELOPE_DAEMON_SA_NAME}, and the subject's namespace is the one the operator
- * published on that org's `status.namespace`. The audience is the real gate — a sandbox's
- * token carries the shim audience and is refused here — and the rest keep a token from a
- * neighbouring pod or a neighbouring org from standing in for the daemon.
+ * back to an org. The audience is the gate both shapes share — a sandbox's token carries the
+ * shim audience and is refused here — and the ServiceAccount name then says which shape it is:
+ *
+ *  - {@link ENVELOPE_DAEMON_SA_NAME}: an ENVELOPE daemon, one org's own pod. Its namespace
+ *    must be the one the operator published on that org's `status.namespace`, and that
+ *    namespace IS the org — a claim to serve another one is refused.
+ *  - {@link CLOUD_DAEMON_SA_NAME} in the install's cloud-daemon namespace: a CLOUD daemon,
+ *    which serves EVERY org and whose identity therefore names none. The org comes from the
+ *    connection's own claim, which is safe here and only here: this ServiceAccount is an
+ *    install-level principal, so "which org" is a routing choice rather than a privilege.
  *
  * The daemon record is resolved-or-provisioned from the verified identity, the same
  * just-in-time shape `UserRepo` runs for an OIDC subject: an envelope has exactly one
- * daemon, so cluster + namespace + ServiceAccount designates exactly one record.
+ * daemon, so cluster + namespace + ServiceAccount designates exactly one record, and a
+ * cloud daemon gets one record per org it serves.
  */
-import { CP_TOKEN_AUDIENCE, ENVELOPE_DAEMON_SA_NAME } from '@agentconnect.md/protocol'
+import { CLOUD_DAEMON_SA_NAME, CP_TOKEN_AUDIENCE, ENVELOPE_DAEMON_SA_NAME } from '@agentconnect.md/protocol'
 import type { K8sHttp } from '@agentconnect.md/k8s-client'
 import { DaemonId, OrgId } from '../domain/ids.js'
 import type { ClusterDaemonIdentity, VerifiedClusterDaemon } from '../ports.js'
-import type { DaemonRepo, OrgClusterExecutionRepo } from '../persistence/ports.js'
+import type { DaemonRepo, OrgClusterExecutionRepo, OrgRepo } from '../persistence/ports.js'
 import type { OrgResourceApi } from './org-api.js'
 
 /** What TokenReview answers, narrowed to the fields verification reads. */
@@ -44,10 +49,19 @@ export function parseServiceAccountSubject(username: string | undefined): {
   return { namespace, serviceAccount }
 }
 
-/** The identity string a daemon record is bound to; exactly what TokenReview reported, so
- *  the binding is the API server's answer rather than a re-derivation of it. */
+/** The identity string an envelope daemon's record is bound to; exactly what TokenReview
+ *  reported, so the binding is the API server's answer rather than a re-derivation of it. */
 export function clusterIdentityOf(namespace: string, serviceAccount: string): string {
   return `system:serviceaccount:${namespace}:${serviceAccount}`
+}
+
+/** The identity string ONE org's record of a cloud daemon is bound to. `Daemon.clusterIdentity`
+ *  is globally unique, so a principal serving many orgs needs one row — and so one distinct
+ *  identity string — per org; qualifying the reported subject with the org is what gives it
+ *  that while keeping the two halves readable. It also makes crossing tenants structurally
+ *  impossible: org A's connection cannot name a string that resolves to org B's row. */
+export function cloudIdentityOf(namespace: string, serviceAccount: string, orgId: string): string {
+  return `${clusterIdentityOf(namespace, serviceAccount)}/org/${orgId}`
 }
 
 export class ClusterDaemonIdentityService implements ClusterDaemonIdentity {
@@ -55,12 +69,17 @@ export class ClusterDaemonIdentityService implements ClusterDaemonIdentity {
     private readonly http: K8sHttp,
     private readonly api: OrgResourceApi,
     private readonly cluster: Pick<OrgClusterExecutionRepo, 'getByResourceName'>,
-    private readonly daemons: Pick<DaemonRepo, 'resolveClusterIdentity'>,
+    private readonly daemons: Pick<DaemonRepo, 'resolveClusterIdentity' | 'findClusterIdentity'>,
     /** The install's org-namespace prefix — how a namespace names its CR. */
-    private readonly namespacePrefix: string
+    private readonly namespacePrefix: string,
+    /** Existence of the org a cloud daemon's connection claims; the cloud path only. */
+    private readonly orgs: Pick<OrgRepo, 'slugById'>,
+    /** Namespace the install runs its cloud daemons in. A cloud identity from anywhere else
+     *  is refused, so the claim-your-own-org rule stays confined to pods the install placed. */
+    private readonly cloudNamespace: string
   ) {}
 
-  async verify(token: string): Promise<VerifiedClusterDaemon | null> {
+  async verify(token: string, claim?: { orgId?: string; daemonId?: string }): Promise<VerifiedClusterDaemon | null> {
     const review = await this.http.json<TokenReviewResponse>({
       method: 'POST',
       path: '/apis/authentication.k8s.io/v1/tokenreviews',
@@ -76,8 +95,52 @@ export class ClusterDaemonIdentityService implements ClusterDaemonIdentity {
     // audiences the token is actually valid for, and only ours may authenticate here.
     if (!status.audiences?.includes(CP_TOKEN_AUDIENCE)) return null
     const subject = parseServiceAccountSubject(status.user?.username)
-    if (!subject || subject.serviceAccount !== ENVELOPE_DAEMON_SA_NAME) return null
-    return this.bind(subject.namespace, subject.serviceAccount)
+    if (!subject) return null
+    if (subject.serviceAccount === ENVELOPE_DAEMON_SA_NAME) {
+      const verified = await this.bind(subject.namespace, subject.serviceAccount)
+      // An envelope daemon's namespace already decided its org, so a claim may only agree.
+      if (!verified) return null
+      if (claim?.orgId && claim.orgId !== verified.orgId) return null
+      if (claim?.daemonId && claim.daemonId !== verified.daemonId) return null
+      return verified
+    }
+    if (subject.serviceAccount === CLOUD_DAEMON_SA_NAME && subject.namespace === this.cloudNamespace) {
+      return this.bindCloud(subject.namespace, subject.serviceAccount, claim)
+    }
+    return null
+  }
+
+  /**
+   * A cloud daemon's record FOR THE ORG THIS CONNECTION IS FOR. Two callers name that org
+   * differently and neither may guess: the CP socket states it outright (`auth.orgId`, the
+   * only place a new org's record can be created), and the relay hop instead forwards the
+   * daemonId the daemon claimed, which is resolved back to its org and then required to be a
+   * record this very identity owns. A claimed id belonging to a key-bound daemon, to an
+   * envelope, or to another principal's record matches nothing and is refused.
+   */
+  private async bindCloud(
+    namespace: string,
+    serviceAccount: string,
+    claim?: { orgId?: string; daemonId?: string }
+  ): Promise<VerifiedClusterDaemon | null> {
+    let orgId = claim?.orgId
+    if (!orgId && claim?.daemonId) {
+      const bound = await this.daemons.findClusterIdentity(DaemonId(claim.daemonId))
+      if (!bound) return null
+      if (bound.clusterIdentity !== cloudIdentityOf(namespace, serviceAccount, bound.orgId)) return null
+      orgId = bound.orgId
+    }
+    if (!orgId) return null
+    // Existence only: a cloud daemon serves every org, including those with no cluster
+    // envelope of their own, so there is no per-org enablement to consult here.
+    if (!(await this.orgs.slugById(orgId))) return null
+    const daemon = await this.daemons.resolveClusterIdentity(
+      OrgId(orgId),
+      cloudIdentityOf(namespace, serviceAccount, orgId)
+    )
+    if (!daemon) return null
+    if (claim?.daemonId && claim.daemonId !== daemon.id) return null
+    return { daemonId: DaemonId(daemon.id), orgId: OrgId(orgId) }
   }
 
   /** The org that owns a verified namespace, and the daemon record bound to that identity. */

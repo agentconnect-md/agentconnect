@@ -42,7 +42,7 @@ const ACK_TIMEOUT_MS = 5000
 export interface RelayDaemonConnDeps {
   /** Delegate a credential check to the CP (`RelayCpClient.verify`). Throws when the
    *  relay↔CP link is not READY or the CP answers an error → treat as transient. */
-  verify: (kind: 'daemon-key' | 'daemon-token', credential: string) => Promise<RcVerifyResult>
+  verify: (kind: 'daemon-key' | 'daemon-token', credential: string, daemonId?: string) => Promise<RcVerifyResult>
   /** This relay's CP-assigned id (undefined until it has registered with the CP). */
   relayId: () => string | undefined
   clock: Clock
@@ -220,7 +220,10 @@ export class RelayDaemonConnection {
     }
     let result: RcVerifyResult
     try {
-      result = await this.deps.verify(presented.kind, presented.credential)
+      // The claimed id travels with the token: a cloud daemon's identity names no org, so
+      // this is what says which of its per-org records it is dialing as. Unverified here —
+      // the CP owns that check, and the id it answers with is still what wins below.
+      result = await this.deps.verify(presented.kind, presented.credential, hello.daemonId)
     } catch {
       // Link not READY / CP error → transient; the daemon backs off and retries.
       this.sendError(frame.id, 'INTERNAL', 'verify unavailable', true)

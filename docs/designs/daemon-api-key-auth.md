@@ -9,6 +9,13 @@ revocable API key in the WebSocket `auth` frame. The same credential primitive
 also supports personal, relay, and OAuth access tokens, while each principal
 type remains confined to its intended trust boundary.
 
+In-cluster daemons do not use this credential. An envelope daemon and a cloud
+daemon each authenticate with the projected ServiceAccount token their pod
+carries, verified by TokenReview — see "Daemon identity" in
+[agentconnect-org-operator.md](agentconnect-org-operator.md). A cloud daemon
+could not use a key even in principle: it serves every org, and a daemon key is
+bound to one.
+
 Companion references:
 
 - [daemon-cp-ws-protocol.md](daemon-cp-ws-protocol.md) for the WebSocket

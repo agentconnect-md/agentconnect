@@ -26,6 +26,7 @@ import { createFeishuCpProvider } from './feishu/provider.js'
 const EXPECTED_KEYS = [
   'ACK_TIMEOUT_MS',
   'API_KEY_PEPPER',
+  'CLUSTER_CLOUD_DAEMON_NAMESPACE',
   'CLUSTER_DAEMON_IMAGE',
   'CLUSTER_DEFAULT_RUNTIME_TIER',
   'CLUSTER_DEFAULT_TIER',

@@ -600,19 +600,27 @@ describe('RelayConnection FSM', () => {
   })
 
   it('rc/verify(daemon-token) resolves an in-cluster daemon through the same door', async () => {
+    const claimed: (string | undefined)[] = []
     const { transport } = build({
       auth: {
         authenticate: async () => ({ ok: true, identity: 'shared-token' }),
         verifyDaemonKey: async () => null,
-        verifyDaemonToken: async () => ({ daemonId: 'daemon-9', orgId: 'org-9' }),
+        verifyDaemonToken: async (_credential: string, daemonId?: string) => {
+          claimed.push(daemonId)
+          return { daemonId: 'daemon-9', orgId: 'org-9' }
+        },
         heartbeatSec: 15
       }
     })
     await toReady(transport)
-    transport.feed('rc/verify', { kind: 'daemon-token', credential: 'projected' })
+    // The claimed id travels with the token: a cloud daemon's identity names no org, so it
+    // is what says which of its per-org records this hop is for.
+    const claimedId = '99999999-9999-4999-8999-999999999999'
+    transport.feed('rc/verify', { kind: 'daemon-token', credential: 'projected', daemonId: claimedId })
     await Promise.resolve()
     await Promise.resolve()
     expect(transport.lastRep('rc/verify/ok')!.payload).toEqual({ ok: true, daemonId: 'daemon-9', orgId: 'org-9' })
+    expect(claimed).toEqual([claimedId])
   })
 
   it('rc/verify(daemon-key) → rc/verify/ok{ok:false} for an invalid key', async () => {

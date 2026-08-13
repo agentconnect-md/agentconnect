@@ -100,7 +100,12 @@ export const RcVerify = z.discriminatedUnion('kind', [
   // cluster. Resolves to the same daemonId + orgId a key would.
   z.object({
     kind: z.literal('daemon-token'),
-    credential: z.string().min(1)
+    credential: z.string().min(1),
+    // The daemonId the dialing daemon claimed on `rd/hello`, forwarded unverified. A cloud
+    // daemon's identity names no org, so this is what selects which of its per-org daemon
+    // records the token is being presented for; the CP refuses a claim the identity does
+    // not own. Absent ⇒ an envelope daemon, whose namespace already names exactly one.
+    daemonId: z.string().uuid().optional()
   }),
   z.object({
     kind: z.literal('webchat-token'),
