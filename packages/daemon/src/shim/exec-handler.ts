@@ -144,34 +144,31 @@ function assertInsideRoot(root: string, requested: string): void {
 }
 
 /**
- * Validate a workspace root and RETURN the path the operations must use as their boundary.
+ * Validate a workspace root and RETURN the CANONICAL path the operations must bound their work with,
+ * or `undefined` when the root is not there.
  *
- * It returns rather than asserts because the two have to be one fact. `assertInsideRoot` is lexical
- * on purpose — its other caller is a clone target, a path deliberately not there yet — so on its own
- * it accepts `<mount>/repo` after something in this pod replaced `repo` with a symlink. Canonicalising
- * and then handing the ORIGINAL string onward is barely better: the shared implementation `realpath`s
- * whatever root it is given to derive its own inner boundary, so the path this check approved and the
- * path that becomes the boundary would be two separate resolutions, and the runtime owns `/agent` and
- * can change the answer between them. Returning the resolved value collapses them into one.
+ * It returns rather than asserts because a validated name is not a validated directory. The lexical
+ * form (`assertInsideRoot`, which is lexical on purpose — its other caller is a clone target, a path
+ * deliberately not there yet) accepts `<mount>/repo` after something in this pod replaced `repo` with
+ * a symlink. But canonicalising and then passing the ORIGINAL string onward is barely better: the
+ * operations resolve whatever root they are handed to derive their own inner boundary, so the path
+ * this check approved and the path that bounds the work would be two resolutions of one name, and the
+ * runtime owns this volume — it can change the answer in between. Handing over the resolved value,
+ * which the operations then require to still resolve to itself, is what binds them to the directory
+ * that was checked.
  *
- * Absence stays permitted, and unresolved is returned as-is: `realpath` also fails while a workspace
- * is still being materialized, there is nothing to escape through yet, and the operations report a
- * missing root as `exists:false` — the answer a console read wants, where a refusal would read as a
- * broken daemon.
- *
- * What remains is the window every path-based check in this file shares, `resolveCwd` included: a
- * component swapped for a symlink between the resolution and the I/O that follows it. Node offers no
- * fd-relative form of these operations, so it is bounded rather than closed — and bounded to the root
- * alone, since the operations canonicalise and re-verify every TARGET against the boundary they were
- * given.
+ * `undefined` rather than the unresolved name, and that distinction is the whole of the second half:
+ * `realpath` also fails while a workspace is still being materialized, and returning the name would
+ * let the operations resolve it on their first `await` — long enough for the runtime to create it as a
+ * symlink and have them adopt the target as their boundary. The caller answers absence itself instead.
  */
-function readableRoot(root: string, requested: string): string {
+function readableRoot(root: string, requested: string): string | undefined {
   assertInsideRoot(root, requested)
   let resolved: string
   try {
     resolved = realpathSync(normalize(resolve(requested)))
   } catch {
-    return requested
+    return undefined
   }
   // Canonical vs canonical: `assertInsideRoot` canonicalizes the base, and the target is already
   // resolved, so this comparison is the one the lexical check could not make.

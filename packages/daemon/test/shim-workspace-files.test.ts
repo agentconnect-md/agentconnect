@@ -11,6 +11,7 @@ import {
 } from '../src/shim/workspace-files-channel.js'
 import type { ShimRequester } from '../src/shim/channels.js'
 import {
+  createWorkspaceFiles,
   localWorkspaceFiles,
   WorkspaceConflictError,
   WorkspaceViolationError
@@ -224,15 +225,66 @@ describe('the shim read capability', () => {
     ).rejects.toThrow(/escapes the workspace root/)
   })
 
-  it('still serves a root that is not there yet, because materialization races the first read', async () => {
+  it('answers a not-yet-materialized root without letting the operations resolve the name', async () => {
     const { mount, checkout } = volume()
-    // `realpath` fails while the workspace is still being cloned, and there is nothing to escape
-    // through yet. Refusing would surface as a broken daemon; absence is the answer a reader wants.
+    // `realpath` fails while the workspace is still being cloned, and absence is the answer a reader
+    // wants — but the name must not travel onward for the operations to resolve on their first
+    // `await`. That window is long enough for the runtime, which owns this volume, to create
+    // `<mount>/repo` as a symlink to `<mount>` and have them adopt the config directory as their own
+    // containment root. So the reply is produced HERE, and the operations are never called.
     rmSync(checkout, { recursive: true, force: true })
-    const reply = WorkspaceFilesReplySchema.parse(
-      await handlerFor(mount)('read', { op: 'list', root: checkout, req: { agentId: AGENT, path: '', limit: 50 } })
+    let asked = 0
+    const spy = {
+      ...localWorkspaceFiles,
+      list: async (root: string, req: Parameters<typeof localWorkspaceFiles.list>[1]) => {
+        asked += 1
+        return localWorkspaceFiles.list(root, req)
+      }
+    }
+    const reply = await applyWorkspaceFilesPayload(
+      { op: 'list', root: checkout, req: { agentId: AGENT, path: '', limit: 50 } },
+      (requested) => (requested === checkout ? undefined : requested),
+      spy
     )
     expect(reply).toMatchObject({ ok: true, value: { exists: false, entries: [] } })
+    expect(asked).toBe(0)
+    // And through the real handler, whose fence answers `undefined` for the same reason.
+    expect(
+      WorkspaceFilesReplySchema.parse(
+        await handlerFor(mount)('read', { op: 'list', root: checkout, req: { agentId: AGENT, path: '', limit: 50 } })
+      )
+    ).toMatchObject({ ok: true, value: { exists: false, entries: [] } })
+  })
+
+  it('refuses when the root stops resolving to itself between the fence and the work', async () => {
+    const { mount, checkout } = volume()
+    // The fence approved a canonical `<mount>/repo`; by the time the operation resolves that same name
+    // the runtime has replaced the directory with a symlink pointing at the mount, whose materialized
+    // config would then be the containment root. A canonical path resolves to itself, so the mismatch
+    // is the detection — this is the check that binds the work to the directory that was validated.
+    const pinned = createWorkspaceFiles({ pinnedRoot: true })
+    rmSync(checkout, { recursive: true, force: true })
+    symlinkSync(mount, checkout, 'dir')
+    await expect(pinned.list(checkout, { agentId: AGENT, path: '', limit: 50 })).rejects.toMatchObject({
+      name: 'WorkspaceViolationError',
+      reason: 'path-escape'
+    })
+    // The daemon's own instance keeps resolving its root, whose path may legitimately be a symlink.
+    await expect(localWorkspaceFiles.list(checkout, { agentId: AGENT, path: '', limit: 50 })).resolves.toMatchObject({
+      exists: true
+    })
+  })
+
+  it('refuses a pinned root that disappears between the fence and the work', async () => {
+    const { mount, checkout } = volume()
+    // Proven to exist a moment ago, so its absence now is the same event as its replacement — not the
+    // "nothing to escape through" case, which only applies to a root nobody has resolved yet.
+    const pinned = createWorkspaceFiles({ pinnedRoot: true })
+    rmSync(checkout, { recursive: true, force: true })
+    await expect(pinned.list(checkout, { agentId: AGENT, path: '', limit: 50 })).rejects.toMatchObject({
+      reason: 'path-escape'
+    })
+    expect(mount).toBeTruthy()
   })
 
   it('hands the operations the RESOLVED root, so the fence and the boundary are one resolution', async () => {

@@ -11,8 +11,10 @@
  * 200-entry listing would be 200 round trips, and the atomic publish's checks would straddle a
  * WebSocket instead of sitting adjacent to their rename.
  *
- * `root` is daemon-supplied and pod-coordinate, and the shim fences it against its own workspace
- * root before touching anything: a root the daemon names is still a path on THIS filesystem.
+ * `root` is daemon-supplied and pod-coordinate, and the shim fences it against its own workspace root
+ * before touching anything: a root the daemon names is still a path on THIS filesystem. The fence
+ * RESOLVES it and the operations run on that value, pinned — see {@link applyWorkspaceFilesPayload},
+ * because the runtime owns this volume and two resolutions of one name can disagree.
  */
 import { z } from 'zod'
 import type {
@@ -23,12 +25,16 @@ import type {
 } from '@agentconnect.md/protocol'
 import { WorkspaceErrorReason } from '@agentconnect.md/protocol'
 import {
-  localWorkspaceFiles,
+  createWorkspaceFiles,
   WorkspaceConflictError,
   WorkspaceViolationError,
   type WorkspaceFiles
 } from '../workspace/workspace-files.js'
 import type { ShimRequester } from './channels.js'
+
+/** The sandbox-side instance: its root arrives already resolved and validated by the shim's fence, so
+ *  the operations verify it still resolves to itself instead of re-deriving a boundary from the name. */
+const pinnedWorkspaceFiles: WorkspaceFiles = createWorkspaceFiles({ pinnedRoot: true })
 
 /** The requests carry the CP's own zod-validated shapes, re-validated here because a payload that
  *  crossed a channel is unvalidated input again. Only the fields the operations read are named —
@@ -103,18 +109,26 @@ export type WorkspaceFilesReply = z.infer<typeof WorkspaceFilesReplySchema>
  * Apply one operation inside the sandbox.
  *
  * `resolveRoot` is the caller's fence (the exec handler's workspace-root check), passed in rather
- * than imported so this module keeps no opinion about where the sandbox mounts things. It RETURNS the
- * root to operate on, and that return value is what the operation receives: the path the fence
- * approved and the path that becomes the operations' own containment boundary have to be the same
- * resolution, or the runtime — which owns the volume — can change the answer between the two.
+ * than imported so this module keeps no opinion about where the sandbox mounts things. It returns the
+ * RESOLVED root, or `undefined` when the root is not there — and each of those matters:
+ *
+ * - The returned value is what the operation receives, because the path the fence approved and the
+ *   path that bounds the work have to be one resolution. `pinnedWorkspaceFiles` then verifies that
+ *   root still resolves to itself, which is what binds the work to the directory that was checked.
+ * - An absent root is answered HERE, without the operations ever seeing the name. They would resolve
+ *   it themselves on their first `await`, and the runtime owns this volume: it can create
+ *   `<mount>/repo` as a symlink to `<mount>` in that window, and the operations would then adopt the
+ *   materialized-config directory as their own containment root. The reply is what they would have
+ *   answered for a missing root anyway, minus the race.
  */
 export async function applyWorkspaceFilesPayload(
   payload: unknown,
-  resolveRoot: (root: string) => string,
-  files: WorkspaceFiles = localWorkspaceFiles
+  resolveRoot: (root: string) => string | undefined,
+  files: WorkspaceFiles = pinnedWorkspaceFiles
 ): Promise<WorkspaceFilesReply> {
   const parsed = WorkspaceFilesPayloadSchema.parse(payload)
   const root = resolveRoot(parsed.root)
+  if (root === undefined) return absentRootReply(parsed)
   try {
     const value = await run({ ...parsed, root }, files)
     return { ok: true, value }
@@ -126,6 +140,24 @@ export async function applyWorkspaceFilesPayload(
       return { ok: false, refusal: { kind: 'conflict', message: err.message.slice(0, 500) } }
     }
     throw err
+  }
+}
+
+/**
+ * What a workspace whose root is not there answers, decided without touching the filesystem.
+ *
+ * Reads report absence, which is what the operations report for a missing root and what a console
+ * browsing a workspace mid-materialization should see. A mutation cannot be answered that way — it
+ * would have created the root — so it is the conflict a caller retries, since by the time it does the
+ * root either exists or the agent has no sandbox and the daemon refuses earlier.
+ */
+function absentRootReply(parsed: WorkspaceFilesPayload): WorkspaceFilesReply {
+  const { agentId, path } = parsed.req
+  if (parsed.op === 'list') return { ok: true, value: { agentId, path, exists: false, entries: [] } }
+  if (parsed.op === 'read') return { ok: true, value: { agentId, path, exists: false } }
+  return {
+    ok: false,
+    refusal: { kind: 'conflict', message: 'the workspace is not materialized yet; reload and retry' }
   }
 }
 
