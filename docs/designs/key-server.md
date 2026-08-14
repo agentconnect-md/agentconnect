@@ -39,7 +39,7 @@ implement the server without speaking AgentConnect's wire protocol.
 
 | Operation   | Route                 | Body → Response                                                                                                       |
 | ----------- | --------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `GetKey`    | `POST /v1/get-key`    | `{orgId, agentId, sessionId, provider, ttlSeconds?}` → `{keyId, key, baseUrl?, expiresInSeconds?, refreshInSeconds?}` |
+| `IssueKey`  | `POST /v1/issue-key`  | `{orgId, agentId, sessionId, provider, ttlSeconds?}` → `{keyId, key, baseUrl?, expiresInSeconds?, refreshInSeconds?}` |
 | `RevokeKey` | `POST /v1/revoke-key` | `{keyId}` → `{}`                                                                                                      |
 
 **Caller authentication rides the transport, never the body.** Configured with a
@@ -99,7 +99,7 @@ public endpoint 401s; a real key aimed at a gateway bypasses whatever the
 deployment put there). The daemon resolves the pair for a spawn top-down and takes
 the first layer that yields a key, whole:
 
-1. `GetKey` response — when a key-server address is configured;
+1. `IssueKey` response — when a key-server address is configured;
 2. the daemon's static config pair — when no key-server is configured;
 3. the runtime's default public endpoint with whatever credential the runtime
    environment already carries.
@@ -111,7 +111,7 @@ gateway needs no URL opinion.
 ## 5. Caching, rotation, and revocation
 
 - **Cache within a session, re-fetch per session.** `sessionId` is a request
-  field, so a new session is structurally a new `GetKey`. Long-lived keys thus
+  field, so a new session is structurally a new `IssueKey`. Long-lived keys thus
   rotate with **session granularity and no push mechanism**: the issuer swaps
   what it hands out, and daemons converge as sessions turn over.
 - **Expiring keys just lapse**; the refresh loop replaces them in place while a

@@ -18,7 +18,7 @@ import { z } from 'zod'
 export const KEY_SERVER_PROFILE = 'agentconnect.key-server/v1' as const
 
 // RPC-style POST routes, mirroring the operation names. JSON bodies both ways.
-export const KEY_SERVER_GET_KEY_PATH = '/v1/get-key' as const
+export const KEY_SERVER_ISSUE_KEY_PATH = '/v1/issue-key' as const
 export const KEY_SERVER_REVOKE_KEY_PATH = '/v1/revoke-key' as const
 
 // `Authorization: Bearer <token>`, sent only when a token source is configured; with none,
@@ -31,7 +31,7 @@ export type KeyProvider = z.infer<typeof KeyProvider>
 
 // No `daemonId` field: caller identity belongs to the transport, and a server able to
 // verify the bearer derives it there — a body-asserted one would be untrusted input.
-export const GetKeyRequest = z
+export const IssueKeyRequest = z
   .object({
     orgId: z.string().min(1),
     agentId: z.string().min(1),
@@ -42,9 +42,9 @@ export const GetKeyRequest = z
     ttlSeconds: z.number().int().positive().optional()
   })
   .strict()
-export type GetKeyRequest = z.infer<typeof GetKeyRequest>
+export type IssueKeyRequest = z.infer<typeof IssueKeyRequest>
 
-export const GetKeyResponse = z
+export const IssueKeyResponse = z
   .object({
     // Opaque handle for RevokeKey and audit; the key value never travels again.
     keyId: z.string().min(1),
@@ -71,7 +71,7 @@ export const GetKeyResponse = z
       r.refreshInSeconds === undefined || r.expiresInSeconds === undefined || r.refreshInSeconds < r.expiresInSeconds,
     { message: 'refreshInSeconds must precede expiresInSeconds' }
   )
-export type GetKeyResponse = z.infer<typeof GetKeyResponse>
+export type IssueKeyResponse = z.infer<typeof IssueKeyResponse>
 
 // Idempotent: unknown and already-revoked ids both succeed — the caller wants
 // "ensure it is dead", not an existence probe.
@@ -98,7 +98,7 @@ export type KeyServerErrorBody = z.infer<typeof KeyServerErrorBody>
  * Returns a violation description, or null for a conforming grant. Both sides
  * are durations, so the check reads no clock and cannot be skewed by one.
  */
-export function keyGrantViolation(request: GetKeyRequest, response: GetKeyResponse): string | null {
+export function keyGrantViolation(request: IssueKeyRequest, response: IssueKeyResponse): string | null {
   if (request.ttlSeconds === undefined) return null
   if (response.expiresInSeconds === undefined) return 'bounded request answered with an unbounded key'
   if (response.expiresInSeconds > request.ttlSeconds) return 'granted validity exceeds requested ttlSeconds'
