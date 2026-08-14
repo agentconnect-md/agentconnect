@@ -67,6 +67,7 @@ function registryFor(client: MemoryPluginClient): MemoryCaptureConnectionRegistr
   markDegraded: ReturnType<typeof vi.fn>
 } {
   return {
+    connectionIds: () => [connectionId],
     clientFor: (id) => (id === connectionId ? client : undefined),
     specFor: (id) => (id === connectionId ? spec() : undefined),
     markRecovered: vi.fn(),
@@ -221,6 +222,45 @@ describe('MemoryCaptureOutbox', () => {
     db.close()
   })
 
+  it('processes only connections owned by this daemon registry', async () => {
+    const capture = vi.fn(async () => ({ state: 'completed' as const }))
+    const db = store()
+    const foreign: MemoryCaptureOutboxRow = {
+      operationId: 'foreign-operation',
+      turnId: 'foreign-turn',
+      agentId: 'bot-b',
+      connectionId: '22222222-2222-4222-8222-222222222222',
+      connectionRevision: 1,
+      pluginId: 'ai.example.memory',
+      config: '{}',
+      scopeKey: 'ac:agent:bot-b',
+      input: 'foreign input',
+      output: 'foreign output',
+      payloadHash: 'sha256:' + 'd'.repeat(64),
+      payloadBytes: 27,
+      idempotency: 'operation-id',
+      state: 'pending',
+      attempts: 0,
+      nextAttemptAt: 0,
+      createdAt: 0,
+      updatedAt: 0
+    }
+    expect(db.appendMemoryCapture(foreign)).toBe('inserted')
+    const outbox = new MemoryCaptureOutbox(db, registryFor(fakeClient({ idempotency: 'operation-id', capture })), {
+      metrics
+    })
+    try {
+      outbox.start()
+      const queued = outbox.enqueue({ ...input(), idempotency: 'operation-id' })
+      await vi.waitFor(() => expect(db.getMemoryCapture(queued.operationId)?.state).toBe('completed'))
+      expect(db.getMemoryCapture(foreign.operationId)).toMatchObject({ state: 'pending', nextAttemptAt: 0 })
+      expect(capture).toHaveBeenCalledTimes(1)
+    } finally {
+      await outbox.stop()
+      db.close()
+    }
+  })
+
   it('marks an explicit failed receipt degraded and redacts its persisted body', async () => {
     const capture = vi.fn(async () => ({ state: 'failed' as const }))
     const registry = registryFor(fakeClient({ idempotency: 'none', capture }))
@@ -302,6 +342,7 @@ describe('MemoryCaptureOutbox', () => {
   it('schedules age expiry and terminal-body cleanup even while the queue is otherwise quiet', async () => {
     const db = store()
     const unavailable: MemoryCaptureConnectionRegistry = {
+      connectionIds: () => [connectionId],
       clientFor: () => undefined,
       specFor: () => spec(),
       markRecovered: vi.fn(),

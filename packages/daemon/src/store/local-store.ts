@@ -35,9 +35,16 @@ export interface StoreDatabase {
   close(): void
 }
 
-export type LocalStoreSource = string | { database: StoreDatabase; shared?: boolean }
+export type LocalStoreSource = string | { database: StoreDatabase; shared?: boolean; ownerId?: string }
 
 const SHARED_MEMORY_CAPTURE_LEASE_MS = 2 * 60 * 1_000
+
+function idScope(column: string, values: readonly string[] | undefined): { sql: string; params: SqlParams } {
+  if (values === undefined) return { sql: '', params: {} }
+  if (values.length === 0) return { sql: ' AND 0 = 1', params: {} }
+  const params = Object.fromEntries(values.map((value, index) => [`scopeId${index}`, value])) as SqlParams
+  return { sql: ` AND ${column} IN (${values.map((_value, index) => `@scopeId${index}`).join(', ')})`, params }
+}
 
 /**
  * Normalize the timestamp forms stored in transcript rows onto one epoch-microsecond
@@ -578,7 +585,7 @@ function restrictPath(path: string, mode: number): void {
  * change that edits a `CREATE TABLE` below, and append the matching step to
  * {@link SCHEMA_MIGRATIONS}.
  */
-const SCHEMA_VERSION = 1
+const SCHEMA_VERSION = 2
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -601,11 +608,14 @@ const SCHEMA_VERSION = 1
  * in the `CREATE` block, which runs afterwards and is `IF NOT EXISTS`, so it
  * covers fresh and upgraded stores from the one description.
  */
-const SCHEMA_MIGRATIONS: ((db: StoreDatabase) => void)[] = []
+const SCHEMA_MIGRATIONS: ((db: StoreDatabase) => void)[] = [
+  (db) => db.exec('ALTER TABLE permission_requests ADD COLUMN ownerId TEXT')
+]
 
 export class LocalStore {
   private db: StoreDatabase
   private readonly shared: boolean
+  private readonly ownerId?: string
   private transcriptRevision = 0
   private transcriptMutationListener?: (mutation: TranscriptMutation) => void
 
@@ -621,6 +631,7 @@ export class LocalStore {
     // and chmod after creation so a loose umask cannot widen either.
     if (typeof source === 'string') {
       this.shared = false
+      this.ownerId = undefined
       const dir = dirname(source)
       mkdirSync(dir, { recursive: true, mode: 0o700 })
       restrictPath(dir, 0o700)
@@ -632,6 +643,8 @@ export class LocalStore {
     } else {
       this.db = source.database
       this.shared = source.shared === true
+      this.ownerId = source.ownerId
+      if (this.shared && !this.ownerId) throw new Error('shared LocalStore requires an ownerId')
     }
     // Decided BEFORE the CREATE block, which is what makes an empty file
     // indistinguishable from an old one a moment later.
@@ -751,7 +764,8 @@ export class LocalStore {
         requesterName TEXT,
         command TEXT NOT NULL,
         status TEXT NOT NULL CHECK (status IN ('pending', 'allowed', 'denied', 'expired')),
-        resolvedAt INTEGER
+        resolvedAt INTEGER,
+        ownerId TEXT
       );
       CREATE INDEX IF NOT EXISTS permission_requests_agent_created
         ON permission_requests (agentId, createdAt DESC);
@@ -1080,11 +1094,11 @@ export class LocalStore {
     this.db
       .prepare(
         `INSERT INTO permission_requests
-           (id, agentId, sessionId, createdAt, requesterId, requesterName, command, status, resolvedAt)
+           (id, agentId, sessionId, createdAt, requesterId, requesterName, command, status, resolvedAt, ownerId)
          VALUES
-           (@id, @agentId, @sessionId, @createdAt, @requesterId, @requesterName, @command, @status, @resolvedAt)`
+           (@id, @agentId, @sessionId, @createdAt, @requesterId, @requesterName, @command, @status, @resolvedAt, @ownerId)`
       )
-      .run(record as unknown as SqlParams)
+      .run({ ...record, ownerId: this.ownerId ?? null } as unknown as SqlParams)
     this.prunePermissionRequestHistory(record.agentId)
   }
 
@@ -1129,6 +1143,20 @@ export class LocalStore {
     const changed = Number(result.changes) === 1
     if (changed) this.prunePermissionRequestHistory(agentId)
     return changed
+  }
+
+  /** Expire orphaned resolvers only after this process authoritatively takes ownership of their agents. */
+  recoverPermissionRequests(agentIds: readonly string[], resolvedAt: number): number {
+    if (!this.shared || agentIds.length === 0) return 0
+    const scope = idScope('agentId', agentIds)
+    return Number(
+      this.db
+        .prepare(
+          `UPDATE permission_requests SET status = 'expired', resolvedAt = @resolvedAt
+           WHERE status = 'pending' AND (ownerId IS NULL OR ownerId != @ownerId)${scope.sql}`
+        )
+        .run({ resolvedAt, ownerId: this.ownerId!, ...scope.params }).changes
+    )
   }
 
   /** All sessions that have an ACP id (i.e. are addressable by sessionId), newest
@@ -3327,30 +3355,37 @@ export class LocalStore {
       .all() as unknown as MemoryCaptureOutboxRow[]
   }
 
-  nextDueMemoryCapture(now: number): MemoryCaptureOutboxRow | undefined {
+  nextDueMemoryCapture(now: number, connectionIds?: readonly string[]): MemoryCaptureOutboxRow | undefined {
+    const scope = idScope('connectionId', connectionIds)
     return this.db
       .prepare(
         `SELECT * FROM memory_capture_outbox
-         WHERE state IN ('pending', 'accepted') AND nextAttemptAt <= ?
+         WHERE state IN ('pending', 'accepted') AND nextAttemptAt <= @now${scope.sql}
          ORDER BY nextAttemptAt ASC, createdAt ASC, operationId ASC
          LIMIT 1`
       )
-      .get(now) as MemoryCaptureOutboxRow | undefined
+      .get({ now, ...scope.params }) as MemoryCaptureOutboxRow | undefined
   }
 
-  nextMemoryCaptureDueAt(): number | undefined {
+  nextMemoryCaptureDueAt(connectionIds?: readonly string[]): number | undefined {
+    const scope = idScope('connectionId', connectionIds)
     const row = this.db
       .prepare(
         `SELECT MIN(nextAttemptAt) AS dueAt FROM memory_capture_outbox
-         WHERE state IN ('pending', 'accepted')`
+         WHERE state IN ('pending', 'accepted')${scope.sql}`
       )
-      .get() as { dueAt: number | null } | undefined
+      .get(scope.params) as { dueAt: number | null } | undefined
     return row?.dueAt ?? undefined
   }
 
   /** Next age/retention deadline even when there is no due send. This keeps a
    * quiet daemon from retaining terminal dedup receipts indefinitely. */
-  nextMemoryCaptureMaintenanceAt(activeAgeMs: number, terminalRetentionMs: number): number | undefined {
+  nextMemoryCaptureMaintenanceAt(
+    activeAgeMs: number,
+    terminalRetentionMs: number,
+    connectionIds?: readonly string[]
+  ): number | undefined {
+    const scope = idScope('connectionId', connectionIds)
     const row = this.db
       .prepare(
         `SELECT
@@ -3358,12 +3393,14 @@ export class LocalStore {
            MIN(CASE WHEN state IN ('completed', 'failed', 'ambiguous')
                     THEN updatedAt + @terminalRetentionMs END) AS terminalAt,
            MIN(CASE WHEN state = 'sending' THEN updatedAt + @recoveryLeaseMs END) AS recoveryAt
-         FROM memory_capture_outbox`
+         FROM memory_capture_outbox
+         WHERE 1 = 1${scope.sql}`
       )
       .get({
         activeAgeMs,
         terminalRetentionMs,
-        recoveryLeaseMs: this.shared ? SHARED_MEMORY_CAPTURE_LEASE_MS : 0
+        recoveryLeaseMs: this.shared ? SHARED_MEMORY_CAPTURE_LEASE_MS : 0,
+        ...scope.params
       }) as { activeAt: number | null; terminalAt: number | null; recoveryAt: number | null } | undefined
     const deadlines = [row?.activeAt, row?.terminalAt, row?.recoveryAt].filter(
       (value): value is number => value !== null && value !== undefined
@@ -3454,16 +3491,23 @@ export class LocalStore {
   }
 
   /** Recover only abandoned shared claims; local stores remain exclusively owned across restart. */
-  recoverMemoryCaptures(now: number, staleOnly = false): { retried: number; ambiguous: number } {
+  recoverMemoryCaptures(
+    now: number,
+    staleOnly = false,
+    connectionIds?: readonly string[]
+  ): { retried: number; ambiguous: number } {
     if (staleOnly && !this.shared) return { retried: 0, ambiguous: 0 }
+    const scope = idScope('connectionId', connectionIds)
     const staleClause = this.shared ? ' AND updatedAt <= @staleBefore' : ''
-    const params = this.shared ? { now, staleBefore: now - SHARED_MEMORY_CAPTURE_LEASE_MS } : { now }
+    const params = this.shared
+      ? { now, staleBefore: now - SHARED_MEMORY_CAPTURE_LEASE_MS, ...scope.params }
+      : { now, ...scope.params }
     const retried = this.db
       .prepare(
         `UPDATE memory_capture_outbox
          SET state = 'pending', nextAttemptAt = @now, updatedAt = @now,
              reasonCode = 'restart_retry'
-         WHERE state = 'sending' AND idempotency = 'operation-id'${staleClause}`
+         WHERE state = 'sending' AND idempotency = 'operation-id'${staleClause}${scope.sql}`
       )
       .run(params).changes
     const ambiguous = this.db
@@ -3472,40 +3516,47 @@ export class LocalStore {
          SET state = 'ambiguous', nextAttemptAt = @now, updatedAt = @now,
              reasonCode = 'restart_after_send', config = '{}', input = '', output = '',
              sessionId = NULL, payloadBytes = 0
-         WHERE state = 'sending' AND idempotency = 'none'${staleClause}`
+         WHERE state = 'sending' AND idempotency = 'none'${staleClause}${scope.sql}`
       )
       .run(params).changes
     return { retried: Number(retried), ambiguous: Number(ambiguous) }
   }
 
-  expireMemoryCaptures(activeBefore: number, terminalBefore: number, now: number): { expired: number; purged: number } {
+  expireMemoryCaptures(
+    activeBefore: number,
+    terminalBefore: number,
+    now: number,
+    connectionIds?: readonly string[]
+  ): { expired: number; purged: number } {
+    const scope = idScope('connectionId', connectionIds)
     const expired = this.db
       .prepare(
         `UPDATE memory_capture_outbox
          SET state = 'failed', nextAttemptAt = @now, updatedAt = @now,
              reasonCode = 'retention_expired', config = '{}', input = '', output = '',
              sessionId = NULL, payloadBytes = 0
-         WHERE state IN ('pending', 'accepted') AND createdAt <= @activeBefore`
+         WHERE state IN ('pending', 'accepted') AND createdAt <= @activeBefore${scope.sql}`
       )
-      .run({ now, activeBefore }).changes
+      .run({ now, activeBefore, ...scope.params }).changes
     const purged = this.db
       .prepare(
         `DELETE FROM memory_capture_outbox
-         WHERE state IN ('completed', 'failed', 'ambiguous') AND updatedAt <= ?`
+         WHERE state IN ('completed', 'failed', 'ambiguous') AND updatedAt <= @terminalBefore${scope.sql}`
       )
-      .run(terminalBefore).changes
+      .run({ terminalBefore, ...scope.params }).changes
     return { expired: Number(expired), purged: Number(purged) }
   }
 
-  memoryCaptureStats(): MemoryCaptureOutboxStats {
+  memoryCaptureStats(connectionIds?: readonly string[]): MemoryCaptureOutboxStats {
+    const scope = idScope('connectionId', connectionIds)
     const row = this.db
       .prepare(
         `SELECT COUNT(*) AS activeCount, COALESCE(SUM(payloadBytes), 0) AS activeBytes,
                 MIN(createdAt) AS oldestActiveAt
          FROM memory_capture_outbox
-         WHERE state IN ('pending', 'sending', 'accepted')`
+         WHERE state IN ('pending', 'sending', 'accepted')${scope.sql}`
       )
-      .get() as { activeCount: number; activeBytes: number; oldestActiveAt: number | null }
+      .get(scope.params) as { activeCount: number; activeBytes: number; oldestActiveAt: number | null }
     return {
       activeCount: row.activeCount,
       activeBytes: row.activeBytes,
@@ -3830,26 +3881,30 @@ export class LocalStore {
     /** Durable inbox id used to reconcile a crash between claim and admission. */
     dispatchId?: string
   ): { dispatch: boolean; record: ActivationRecord } {
-    const inserted = this.db
-      .prepare(
-        `INSERT OR IGNORE INTO activation_rendezvous
-           (activationKey, callEnvelope, dispatchId, state, expiresAt)
-         VALUES (?, ?, ?, 'pending', ?)`
-      )
-      .run(activationKey, callEnvelope, dispatchId ?? null, expiresAt)
-    const claimed =
-      Number(inserted.changes) === 1
-        ? true
-        : Number(
-            this.db
-              .prepare(
-                `UPDATE activation_rendezvous
-                 SET callEnvelope = ?, dispatchId = ?, expiresAt = ?
-                 WHERE activationKey = ? AND state = 'pending' AND callEnvelope IS NULL`
-              )
-              .run(callEnvelope, dispatchId ?? null, expiresAt, activationKey).changes
-          ) === 1
-    return { dispatch: claimed, record: this.getActivation(activationKey)! }
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const inserted = this.db
+        .prepare(
+          `INSERT OR IGNORE INTO activation_rendezvous
+             (activationKey, callEnvelope, dispatchId, state, expiresAt)
+           VALUES (?, ?, ?, 'pending', ?)`
+        )
+        .run(activationKey, callEnvelope, dispatchId ?? null, expiresAt)
+      const claimed =
+        Number(inserted.changes) === 1
+          ? true
+          : Number(
+              this.db
+                .prepare(
+                  `UPDATE activation_rendezvous
+                   SET callEnvelope = ?, dispatchId = ?, expiresAt = ?
+                   WHERE activationKey = ? AND state = 'pending' AND callEnvelope IS NULL`
+                )
+                .run(callEnvelope, dispatchId ?? null, expiresAt, activationKey).changes
+            ) === 1
+      const record = this.getActivation(activationKey)
+      if (record) return { dispatch: claimed, record }
+    }
+    throw new Error(`activation claim for "${activationKey}" changed too often`)
   }
 
   /**

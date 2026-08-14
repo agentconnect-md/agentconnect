@@ -53,11 +53,14 @@ protocol-envelope scope. A platform channel/user identifier alone is never a ten
 identity. Cloud replicas share the tables, so durable state transitions use the
 same conditional updates and explicit transactions exposed by the store contract.
 
-Replica startup never applies process-lifecycle recovery globally. Pending permission
-rows are expired only by the process that owns their live resolver. A memory-capture
-`sending` claim becomes recoverable after a two-minute lease, which exceeds the
-plugin transport's maximum call timeout, and activation dispatch claims use a
-database compare-and-set so exactly one replica receives the dispatch right.
+Replica startup never applies process-lifecycle recovery globally. Permission rows
+carry a process owner, and a daemon expires another owner's pending rows only after
+the authoritative CP roster assigns their agent to that daemon. Each memory pump
+selects, recovers, expires, and measures only the connection ids in its live CP
+registry; a `sending` claim becomes recoverable after a two-minute lease, which
+exceeds the plugin transport's maximum call timeout. Activation dispatch claims use
+a database compare-and-set, and retry if a concurrent release removes the claimed
+row before it can be read back.
 
 The daemon refuses `--k8s` startup when the file is absent, invalid, unreachable, or cannot be migrated. Non-Kubernetes startup does not inspect the file, even if it exists.
 

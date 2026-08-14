@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { Pool, type PoolClient, type QueryResultRow } from 'pg'
 import { SESSION_TITLE_TOOL_TITLES } from '../mcp/session-title-tool.js'
 import {
@@ -446,7 +447,7 @@ export class PostgresDataPlane {
     this.transcripts = new PostgresTranscriptStore(pool, orgForAgent, onFailure)
     const database = new PostgresSyncDatabase(config, onFailure)
     try {
-      this.store = new LocalStore({ database, shared: true })
+      this.store = new LocalStore({ database, shared: true, ownerId: randomUUID() })
       database.finishSchemaInitialization()
     } catch (error) {
       database.close()

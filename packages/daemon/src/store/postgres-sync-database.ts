@@ -82,6 +82,7 @@ const canonicalColumns = [
   'orchestrationId',
   'organizationSuggestions',
   'originSessionId',
+  'ownerId',
   'outputModeOverride',
   'parentId',
   'payloadBytes',

@@ -20,6 +20,7 @@ const MAX_CAPTURE_ATTEMPTS = 8
 const DRAIN_BATCH = 100
 
 export interface MemoryCaptureConnectionRegistry {
+  connectionIds(): readonly string[]
   clientFor(connectionId: string): MemoryPluginClient | undefined
   specFor(connectionId: string): MemoryConnectionSpec | undefined
   markDegraded(connectionId: string, reasonCode?: string): void
@@ -162,7 +163,7 @@ export class MemoryCaptureOutbox {
     if (this.running) return
     this.running = true
     const now = this.now()
-    this.observeRecovery(this.store.recoverMemoryCaptures(now))
+    this.observeRecovery(this.store.recoverMemoryCaptures(now, false, this.registry.connectionIds()))
     this.expire(now)
     this.observe(now)
     this.wake()
@@ -224,7 +225,7 @@ export class MemoryCaptureOutbox {
       updatedAt: now
     }
     if (!existing) {
-      const stats = this.store.memoryCaptureStats()
+      const stats = this.store.memoryCaptureStats(this.registry.connectionIds())
       const maxItems = this.options.maxActiveItems ?? MEMORY_CAPTURE_MAX_ACTIVE_ITEMS
       const maxBytes = this.options.maxActiveBytes ?? MEMORY_CAPTURE_MAX_ACTIVE_BYTES
       if (stats.activeCount >= maxItems || stats.activeBytes + row.payloadBytes > maxBytes) {
@@ -239,7 +240,7 @@ export class MemoryCaptureOutbox {
   }
 
   snapshot() {
-    return this.store.memoryCaptureStats()
+    return this.store.memoryCaptureStats(this.registry.connectionIds())
   }
 
   wake(): void {
@@ -271,7 +272,7 @@ export class MemoryCaptureOutbox {
     for (let i = 0; this.running && i < DRAIN_BATCH; i += 1) {
       const now = this.now()
       this.expire(now)
-      const row = this.store.nextDueMemoryCapture(now)
+      const row = this.store.nextDueMemoryCapture(now, this.registry.connectionIds())
       if (!row) break
       if (row.state === 'accepted') await this.pollAccepted(row)
       else await this.sendPending(row)
@@ -281,10 +282,12 @@ export class MemoryCaptureOutbox {
 
   private scheduleNext(): void {
     if (!this.running || this.timer || this.inFlight) return
-    const dueAt = this.store.nextMemoryCaptureDueAt()
+    const connectionIds = this.registry.connectionIds()
+    const dueAt = this.store.nextMemoryCaptureDueAt(connectionIds)
     const maintenanceAt = this.store.nextMemoryCaptureMaintenanceAt(
       this.options.maxAgeMs ?? MEMORY_CAPTURE_MAX_AGE_MS,
-      this.options.terminalRetentionMs ?? MEMORY_CAPTURE_TERMINAL_RETENTION_MS
+      this.options.terminalRetentionMs ?? MEMORY_CAPTURE_TERMINAL_RETENTION_MS,
+      connectionIds
     )
     const nextAt =
       dueAt === undefined ? maintenanceAt : maintenanceAt === undefined ? dueAt : Math.min(dueAt, maintenanceAt)
@@ -494,15 +497,17 @@ export class MemoryCaptureOutbox {
   }
 
   private observe(now: number): void {
-    this.metrics.outbox(this.store.memoryCaptureStats(), now)
+    this.metrics.outbox(this.store.memoryCaptureStats(this.registry.connectionIds()), now)
   }
 
   private expire(now: number): void {
-    this.observeRecovery(this.store.recoverMemoryCaptures(now, true))
+    const connectionIds = this.registry.connectionIds()
+    this.observeRecovery(this.store.recoverMemoryCaptures(now, true, connectionIds))
     const expired = this.store.expireMemoryCaptures(
       now - (this.options.maxAgeMs ?? MEMORY_CAPTURE_MAX_AGE_MS),
       now - (this.options.terminalRetentionMs ?? MEMORY_CAPTURE_TERMINAL_RETENTION_MS),
-      now
+      now,
+      connectionIds
     )
     if (expired.expired > 0) {
       this.metrics.captureState('failed', { count: expired.expired, reason: 'retention_expired' })

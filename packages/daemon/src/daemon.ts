@@ -1922,6 +1922,7 @@ export class Daemon {
     },
     {
       registry: {
+        connectionIds: () => this.memoryConnections?.connectionIds() ?? [],
         clientFor: (connectionId) => this.memoryConnections?.clientFor(connectionId),
         specFor: (connectionId) => this.memoryConnections?.specFor(connectionId),
         markDegraded: (connectionId, reasonCode) => this.memoryConnections?.markDegraded(connectionId, reasonCode),
@@ -3569,6 +3570,12 @@ export class Daemon {
       throw new Error('daemon startup refused: --k8s requires an authoritative CP organization registry')
     if (cloudCpReady) this.log.info('data-plane: waiting for the initial CP organization registry before ingress')
     await cloudCpReady
+    if (this.k8s) {
+      this.store.recoverPermissionRequests(
+        (this.cpAgents?.agents() ?? []).map((agent) => agent.id),
+        this.clock.now()
+      )
+    }
     // open consolidated Slack connections, resolve bot user ids (merged rules are per-message)
     if (groups.size === 0) this.log.info('slack: no slack integrations configured')
     else this.log.info(`slack: opening ${groups.size} socket connection(s)`)
@@ -20197,6 +20204,7 @@ export class Daemon {
           // authoritative re-add commit point.
           const replacingDroppedAuthority =
             this.removedAgentTombstones.has(agentId) || this.cpDroppedAgents.has(agentId)
+          const takingOwnership = !this.cpAgents.has(agentId)
           const applied = this.cpAgents.upsert(agentId, spec)
           // The revision fence applied nothing (organization-secrets-and-variables.md
           // §7). A stale/idempotent snapshot is ACKed as a no-op — a newer revision
@@ -20207,6 +20215,7 @@ export class Daemon {
             return { ok: false, reason: 'agent config revision already applied with different content' }
           }
           if (applied !== 'apply') return { ok: true }
+          if (takingOwnership) this.store.recoverPermissionRequests([agentId], this.clock.now())
           if (replacingDroppedAuthority) {
             // A standalone upsert has no dependent bundle. Scrub every stale CP
             // integration/cron now; subsequent live frames may repopulate them.
@@ -20406,6 +20415,7 @@ export class Daemon {
             if (activation === 'missing') {
               return { ok: false, reason: `agent/activate: unknown agent ${agentId}` }
             }
+            this.store.recoverPermissionRequests([agentId], this.clock.now())
             if (this.agentRemovalPending(agentId)) {
               return { ok: false, reason: 'agent/activate: superseded by a newer agent removal' }
             }
@@ -21830,6 +21840,7 @@ export class Daemon {
    * recall/capture policy changes live on AgentSpec and use the normal agent
    * signature; connection changes always rebuild before the next turn. */
   private onMemoryConnectionDefinitionChange(connectionId: string): void {
+    this.memoryOutbox?.wake()
     for (const agent of this.agents.values()) {
       if (agent.memory?.provider !== 'external' || agent.memory.connectionId !== connectionId) continue
       void this.stopHost(agent.id).catch((error) =>

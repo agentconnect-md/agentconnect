@@ -38,6 +38,23 @@ describe('LocalStore schema versioning', () => {
     expect(userVersion(path)).toBe(stamped)
   })
 
+  it('adds permission ownership when upgrading a v1 store', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v1-')), 'local.sqlite')
+    new LocalStore(path).close()
+    const old = new DatabaseSync(path)
+    old.exec('ALTER TABLE permission_requests DROP COLUMN ownerId')
+    old.exec('PRAGMA user_version = 1')
+    old.close()
+
+    new LocalStore(path).close()
+
+    const upgraded = new DatabaseSync(path)
+    const columns = upgraded.prepare('PRAGMA table_info(permission_requests)').all() as { name: string }[]
+    upgraded.close()
+    expect(columns.map((column) => column.name)).toContain('ownerId')
+    expect(userVersion(path)).toBe(2)
+  })
+
   it('refuses a store written by a newer daemon WITHOUT touching it first', () => {
     // Rolling a daemon back must fail loudly: this build cannot know what the newer
     // schema did, so "upgrading" it would corrupt more than it fixed. The refusal

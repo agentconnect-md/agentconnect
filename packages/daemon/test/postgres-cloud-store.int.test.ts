@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { PostgresDataPlane } from '../src/store/postgres-transcript-store.js'
 
 const databaseUrl = process.env.DATA_PLANE_TEST_DATABASE_URL
@@ -182,10 +182,44 @@ describe.skipIf(!databaseUrl)('PostgreSQL cloud daemon store', () => {
       expect(second.store.listPermissionRequests(agentId)).toMatchObject([
         { id: `permission-${suffix}`, status: 'pending', resolvedAt: null }
       ])
+      expect(second.store.recoverPermissionRequests([`other-${suffix}`], 200)).toBe(0)
+      expect(second.store.listPermissionRequests(agentId)[0]?.status).toBe('pending')
+      expect(second.store.recoverPermissionRequests([agentId], 201)).toBe(1)
+      expect(second.store.listPermissionRequests(agentId)[0]).toMatchObject({ status: 'expired', resolvedAt: 201 })
       expect(second.store.recoverMemoryCaptures(101)).toEqual({ retried: 0, ambiguous: 0 })
       expect(first.store.attachActivationEnvelope(`activation-${suffix}`, '{}', 10_000).dispatch).toBe(true)
       expect(second.store.attachActivationEnvelope(`activation-${suffix}`, '{}', 10_000).dispatch).toBe(false)
-      expect(second.store.recoverMemoryCaptures(120_101)).toEqual({ retried: 1, ambiguous: 0 })
+      expect(second.store.recoverMemoryCaptures(120_101, true, [`other-connection-${suffix}`])).toEqual({
+        retried: 0,
+        ambiguous: 0
+      })
+      expect(second.store.getMemoryCapture(`capture-${suffix}`)?.state).toBe('sending')
+      expect(second.store.recoverMemoryCaptures(120_101, true, [`connection-${suffix}`])).toEqual({
+        retried: 1,
+        ambiguous: 0
+      })
+
+      const raceKey = `activation-race-${suffix}`
+      first.store.claimActivationObservation(
+        raceKey,
+        { platformMessageId: `race-message-${suffix}`, transcriptCoordinates: `race-${suffix}` },
+        Number.MAX_SAFE_INTEGER
+      )
+      const getActivation = second.store.getActivation.bind(second.store)
+      let disappeared = false
+      const getSpy = vi.spyOn(second.store, 'getActivation').mockImplementation((key) => {
+        if (key === raceKey && !disappeared) {
+          disappeared = true
+          expect(first.store.releaseActivation(key)).toBe(true)
+          return undefined
+        }
+        return getActivation(key)
+      })
+      try {
+        expect(second.store.attachActivationEnvelope(raceKey, '{}', 10_000)).toMatchObject({ dispatch: true })
+      } finally {
+        getSpy.mockRestore()
+      }
     } finally {
       await second.close()
       await first.close()
