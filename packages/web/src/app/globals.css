@@ -3195,3 +3195,31 @@
     animation-duration: 0.01ms;
   }
 }
+
+/* Live work line (SessionDetailView toggle row) — the running command rises in once,
+   then a looping text shimmer says "still running" until the step finishes. */
+.work-live {
+  background: linear-gradient(90deg, var(--text-tertiary) 0%, var(--text-primary) 50%, var(--text-tertiary) 100%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation:
+    acRise 0.34s var(--ease-out, cubic-bezier(0.2, 0.8, 0.3, 1)) both,
+    workShimmer 1.8s linear infinite;
+}
+@keyframes workShimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .work-live {
+    animation: none;
+    background: none;
+    color: inherit;
+  }
+}
