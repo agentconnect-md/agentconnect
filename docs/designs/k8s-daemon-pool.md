@@ -309,9 +309,13 @@ and that member claims the group on receipt.
   grant never replays a stale refusal.
 
 When the ledger still names a holder that has died but not yet gone vacant,
-the re-route fails until T_reassign and the router retries — accepted window 2
-(§13), not a new one. Crons never reach this rendezvous: a cron-bearing group
-is proactively claimable, so it always has a holder by the time a fire is due.
+a re-route lands on a dead connection and fails the same way — a counted drop,
+part of accepted window 2 (§13), bounded by T_reassign plus the recompute. No
+internal retry exists behind that drop; if the window ever needs to be
+narrower than the platforms' own buffering makes it, the close is a
+relay-owned durable retry, which is deliberately future work rather than an
+implied property. Crons never reach this rendezvous: a cron-bearing group is
+proactively claimable, so it always has a holder by the time a fire is due.
 
 ## 7. Ownership and dial-in binding (D3)
 
@@ -493,11 +497,16 @@ The pool Deployment rolls with **maxSurge ≥ 1, maxUnavailable = 0**:
 successors exist before predecessors drain. Drain, per member: stop claiming →
 **sleep-as-migration** (sleeping agents cost zero — they wake wherever their
 duty is next claimed; idle-awake agents are force-slept through the existing
-suspension path) → graceful `duty/release` (successors claim on their next
-beat and re-dial live sandboxes at a fresh term; the shim's highest-term-wins
-handshake makes the cutover atomic per sandbox) → a bounded grace window for
-agents mid-turn. There are no reconnect storms in either direction: successors
-pace their own dials, and sandboxes never dial anyone.
+suspension path) → a bounded grace window for agents mid-turn, ending with
+in-flight turns drained or cancelled and runtime authority stopped → only then
+the graceful `duty/release` (successors claim on their next beat and re-dial
+sandboxes at a fresh term; the shim's highest-term-wins handshake makes the
+cutover atomic per sandbox). The order is load-bearing: releasing before the
+grace would let a successor bind at a higher term while the predecessor still
+owns admitted work — which is why the shipped drain (`runDrain` in
+`packages/daemon/src/daemon.ts`) stops turn hosts before `releaseAllDuties`.
+There are no reconnect storms in either direction: successors pace their own
+dials, and sandboxes never dial anyone.
 
 ## 13. Failure model (D13)
 
