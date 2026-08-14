@@ -257,6 +257,21 @@ export interface DaemonRepo {
    * exactly like an absent row (→ 404).
    */
   delete(orgId: OrgId, daemonId: DaemonId): Promise<void>
+  /**
+   * Install-wide cloud members nothing has been heard from since `cutoff` — the rows left
+   * behind by replaced Pods, which no org's DELETE can reach because no org owns them
+   * (agentconnect-org-operator.md §"The cloud daemon, which serves every org": a replacement
+   * Pod gets a new daemon ID). System-tier and deliberately fleet-wide, like
+   * {@link DaemonRepo.findReassignable}. Never-connected rows are judged by `createdAt`.
+   */
+  findRetiredCloudMembers(cutoff: Date): Promise<DaemonRecord[]>
+  /**
+   * Hard-delete ONE install-wide cloud member, cascading exactly like {@link DaemonRepo.delete}.
+   * The org-less-cloud shape is the fence — the statement cannot touch an org's own daemon —
+   * so a row that stopped matching (a member that reconnected, an id that never was one)
+   * yields false rather than an error.
+   */
+  deleteCloudMember(daemonId: DaemonId): Promise<boolean>
   /** Bump THIS daemon's `routingEpoch` atomically; returns the new value (§4.11).
    *  System-tier: the orchestrator drives it from a routing decision it already
    *  resolved, so an org parameter would be tautological (§3.4). */

@@ -206,6 +206,10 @@ export class DaemonRegistryService implements DaemonRegistry {
     await this.daemons.delete(orgId, daemonId)
   }
 
+  async removeCloudMember(daemonId: DaemonId): Promise<boolean> {
+    return this.daemons.deleteCloudMember(daemonId)
+  }
+
   /** Org-fenced (org-scoped-data-layer.md §3): the repo read is filtered, so a
    *  cross-org id yields null exactly like an unknown one. The runtime-profile
    *  fetch below is reached only after that fence admits the row. */

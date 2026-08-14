@@ -145,3 +145,57 @@ describe('DaemonRepo.resolveClusterIdentity', () => {
     expect(await prisma.daemon.count({ where: { clusterIdentity: INSTALL_IDENTITY } })).toBe(2)
   })
 })
+
+describe('DaemonRepo cloud-member retirement', () => {
+  const HOUR_AGO = new Date(Date.now() - 60 * 60_000)
+  const CUTOFF = new Date(Date.now() - 15 * 60_000)
+
+  it('finds only the org-less cloud rows silent past the cutoff', async () => {
+    const repo = new PgDaemonRepo(prisma)
+    const gone = await repo.resolveCloudClusterIdentity(INSTALL_IDENTITY, POD_UID_A)
+    const serving = await repo.resolveCloudClusterIdentity(INSTALL_IDENTITY, POD_UID_B)
+    await prisma.daemon.update({ where: { id: gone.id }, data: { lastSeenAt: HOUR_AGO } })
+    await prisma.daemon.update({ where: { id: serving.id }, data: { lastSeenAt: new Date() } })
+    // Neither of these is a cloud member: an envelope daemon is bound to a namespace rather
+    // than a Pod, and a laptop has no identity at all. Both are long silent regardless.
+    const envelope = await repo.resolveClusterIdentity(DEF_ORG, IDENTITY)
+    const laptop = DaemonId('77777777-7777-4777-8777-777777777777')
+    await repo.provision(laptop, DEF_ORG)
+    for (const id of [envelope!.id, laptop]) {
+      await prisma.daemon.update({ where: { id }, data: { lastSeenAt: HOUR_AGO } })
+    }
+
+    const retired = await repo.findRetiredCloudMembers(CUTOFF)
+
+    expect(retired.map((daemon) => daemon.id)).toEqual([gone.id])
+  })
+
+  it('judges a member that never heartbeated by its own age', async () => {
+    const repo = new PgDaemonRepo(prisma)
+    const fresh = await repo.resolveCloudClusterIdentity(INSTALL_IDENTITY, POD_UID_A)
+
+    // Authenticated and died before its first beat: `lastSeenAt` stays null forever, so a
+    // brand-new row must survive the sweep and an old one must not.
+    expect(await repo.findRetiredCloudMembers(CUTOFF)).toEqual([])
+    await prisma.daemon.update({ where: { id: fresh.id }, data: { createdAt: HOUR_AGO } })
+
+    expect((await repo.findRetiredCloudMembers(CUTOFF)).map((daemon) => daemon.id)).toEqual([fresh.id])
+  })
+
+  it('deletes a cloud member and refuses anything that is not one', async () => {
+    const repo = new PgDaemonRepo(prisma)
+    const pod = await repo.resolveCloudClusterIdentity(INSTALL_IDENTITY, POD_UID_A)
+    const envelope = await repo.resolveClusterIdentity(DEF_ORG, IDENTITY)
+    const laptop = DaemonId('88888888-8888-4888-8888-888888888888')
+    await repo.provision(laptop, DEF_ORG)
+
+    expect(await repo.deleteCloudMember(pod.id)).toBe(true)
+    // Gone, so a repeat (a peer replica sweeping the same row) is a no-op, not an error.
+    expect(await repo.deleteCloudMember(pod.id)).toBe(false)
+    expect(await repo.deleteCloudMember(envelope!.id)).toBe(false)
+    expect(await repo.deleteCloudMember(laptop)).toBe(false)
+    expect(await prisma.daemon.findUnique({ where: { id: pod.id } })).toBeNull()
+    expect(await prisma.daemon.findUnique({ where: { id: envelope!.id } })).not.toBeNull()
+    expect(await prisma.daemon.findUnique({ where: { id: laptop } })).not.toBeNull()
+  })
+})

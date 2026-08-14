@@ -63,6 +63,10 @@ function toRecord(d: DaemonWithUsers): DaemonRecord {
   }
 }
 
+// What an install-wide cloud member is, as a where-clause: org-less, cluster-reviewed, and
+// bound to one Pod UID. An envelope daemon carries an identity but no Pod, so it never matches.
+const CLOUD_MEMBER_WHERE = { orgId: null, clusterIdentity: { not: null }, clusterPodUid: { not: null } } as const
+
 export class PgDaemonRepo implements DaemonRepo {
   constructor(private readonly db: PrismaLike) {}
 
@@ -336,6 +340,28 @@ export class PgDaemonRepo implements DaemonRepo {
     // the org fence rides the same statement, so a cross-org id is refused with
     // exactly that error (org-scoped-data-layer.md §3).
     await this.db.daemon.delete({ where: { id: daemonId, orgId } })
+  }
+
+  /** The org-less-cloud shape rides every clause, so neither the worklist nor the delete can
+   *  name an org's own daemon. A member still inside the window is left alone even if its Pod
+   *  is long gone: only silence past `cutoff` retires a row. */
+  async findRetiredCloudMembers(cutoff: Date): Promise<DaemonRecord[]> {
+    const rows = await this.db.daemon.findMany({
+      where: {
+        ...CLOUD_MEMBER_WHERE,
+        // A row that never heartbeated is judged by its own age — `lastSeenAt` stays null
+        // for a Pod that authenticated and died before its first beat.
+        OR: [{ lastSeenAt: { lt: cutoff } }, { lastSeenAt: null, createdAt: { lt: cutoff } }]
+      },
+      orderBy: { createdAt: 'asc' },
+      include: withUsers
+    })
+    return rows.map(toRecord)
+  }
+
+  async deleteCloudMember(daemonId: DaemonId): Promise<boolean> {
+    const { count } = await this.db.daemon.deleteMany({ where: { id: daemonId, ...CLOUD_MEMBER_WHERE } })
+    return count === 1
   }
 
   async bumpRoutingEpoch(daemonId: DaemonId): Promise<bigint> {

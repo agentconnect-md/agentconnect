@@ -7,10 +7,10 @@
  * that name a dead daemon, and compiled hook rules that fail every delivery with
  * `daemon_offline` until a re-register replays them.
  *
- * Two callers need the whole sequence — `DELETE /daemons/:id`, and organization
- * deletion, which retires the cluster envelope's own daemon — and a partial copy
- * in either is a bug that only shows up in the console days later. So it lives
- * here rather than in whichever route wrote it first.
+ * Three callers need the whole sequence — `DELETE /daemons/:id`, organization deletion
+ * (which retires the cluster envelope's own daemon), and the cloud-member reaper — and a
+ * partial copy in any of them is a bug that only shows up in the console days later. So it
+ * lives here rather than in whichever route wrote it first.
  */
 import type { FastifyBaseLogger } from 'fastify'
 import type { DaemonId, OrgId } from '../domain/ids.js'
@@ -30,6 +30,42 @@ export async function detachDaemon(
   daemonId: DaemonId,
   log: FastifyBaseLogger
 ): Promise<void> {
+  await removeAndSettle(deps, daemonId, () => deps.registry.remove(orgId, daemonId), log)
+}
+
+/**
+ * Retire one install-wide cloud member whose Pod is gone (`orchestrator/cloudDaemonReaper.ts`).
+ * No org owns the row, so the org-fenced delete cannot reach it — and its placements may span
+ * every organization, which is the whole reason it goes through the same settle sequence
+ * instead of a bare delete. False ⇒ the row was no longer a retired member; nothing was
+ * deleted, and the unplacements it did first are what an operator would have wanted anyway.
+ */
+export async function retireCloudDaemonMember(
+  deps: DaemonRemovalDeps,
+  daemonId: DaemonId,
+  log: FastifyBaseLogger
+): Promise<boolean> {
+  let deleted = false
+  await removeAndSettle(
+    deps,
+    daemonId,
+    async () => {
+      deleted = await deps.registry.removeCloudMember(daemonId)
+    },
+    log
+  )
+  return deleted
+}
+
+/** The sequence itself. `remove` performs the delete; which organizations need a fresh
+ *  collaboration snapshot is derived from the placements the row held, because a cloud
+ *  member's agents are not one org's. */
+async function removeAndSettle(
+  deps: DaemonRemovalDeps,
+  daemonId: DaemonId,
+  remove: () => Promise<void>,
+  log: FastifyBaseLogger
+): Promise<void> {
   // Captured BEFORE the delete: the FK is SetNull, so the placement disappears
   // with the row and nothing afterwards could name these agents.
   const placedAgents = await deps.repos.agent.listForDaemon(daemonId)
@@ -38,7 +74,7 @@ export async function detachDaemon(
   // the agents' webchat MCP delegations and bumps their hook dispatchRevision,
   // exactly as an operator-initiated unplacement would.
   for (const agent of placedAgents) await deps.repos.agent.setPlacement(agent.id, null)
-  await deps.registry.remove(orgId, daemonId)
+  await remove()
   // The daemon (and its FK-cascaded keys) is gone — tell relays to drop it (§9).
   deps.relayControl.daemonRevoke(daemonId)
   // Those agents just left the collaboration snapshot — but only if we push one.
@@ -46,7 +82,7 @@ export async function detachDaemon(
   // entries naming this dead daemonId, and `admits()` keeps admitting wakes the
   // relay can only answer 'offline' to. Best-effort, after the row is already
   // gone; `register/ok` carries the corrected directory as the reconnect backstop.
-  if (placedAgents.length > 0) {
+  for (const orgId of new Set(placedAgents.map((agent) => agent.orgId))) {
     try {
       await deps.collabRoutes.broadcast(orgId)
     } catch (err) {
