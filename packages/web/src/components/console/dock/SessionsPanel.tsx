@@ -77,6 +77,37 @@ export function sessionsTabStatus(wouldHide: boolean | null, inputsSettled: bool
   return wouldHide !== null && inputsSettled ? 'empty' : 'loading'
 }
 
+// First-load placeholder the dock draws while the tab is `loading`: same box and
+// row geometry as the real panel, so the swap to rows causes no layout shift.
+// Title widths cycle deterministically (no Math.random) so SSR and client match.
+const SKEL_TITLE_WIDTHS = ['w-3/5', 'w-2/5', 'w-1/2', 'w-3/4', 'w-1/3']
+export function SessionsPanelSkeleton({ rows = 8 }: { rows?: number }) {
+  return (
+    <div aria-hidden="true" className="flex min-h-0 flex-1 flex-col px-[13px] pt-3 pb-[10px]">
+      {/* Header: the "All sessions" escape link's footprint. */}
+      <div className="mb-[9px] flex flex-none items-center justify-end px-[9px] py-[3px]">
+        <span className="h-[12px] w-20 animate-pulse rounded-full bg-(--surface-active)" />
+      </div>
+      {/* Agent filter row: one chip plus the "+" picker button. */}
+      <div className="mb-[7px] flex flex-none items-center gap-[5px] px-[9px]">
+        <span className="h-[22px] w-24 animate-pulse rounded-md bg-(--surface-active)" />
+        <span className="h-[22px] w-[22px] flex-none animate-pulse rounded-sm bg-(--surface-active)" />
+      </div>
+      <div className="flex min-h-0 flex-1 flex-col gap-px overflow-hidden">
+        {Array.from({ length: rows }, (_, i) => (
+          <div key={i} className="flex w-full flex-none items-center gap-2 px-[9px] py-[6px]">
+            <span className="h-[18px] w-[18px] flex-none animate-pulse rounded-xs bg-(--surface-active)" />
+            <span
+              className={`h-[13px] ${SKEL_TITLE_WIDTHS[i % SKEL_TITLE_WIDTHS.length]} animate-pulse rounded-full bg-(--surface-active)`}
+            />
+            <span className="ml-auto h-[11px] w-10 flex-none animate-pulse rounded-full bg-(--surface-active)" />
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export function SessionsPanel({
   sessions,
   current,

@@ -55,6 +55,8 @@ export interface DockTab {
   actionLabel?: string
   /** Content state; absent = `ready`. The dock draws the body for a non-ready tab, and withholds its chrome — never the reserved track — when every tab is non-ready. */
   status?: DockTabStatus
+  /** Custom `loading`-state body (e.g. a skeleton mirroring this tab's rows); the dock's generic spinner otherwise. */
+  loadingPlaceholder?: ReactNode
 }
 
 const TAB_BASE =
@@ -220,8 +222,9 @@ export function SessionDock({
 
   const active = tabs.find((tab) => tab.key === activeKey)
   const activeStatus = active?.status ?? 'ready'
+  const activeLoadingPlaceholder = activeStatus === 'loading' && Boolean(active?.loadingPlaceholder)
   // Nothing in any tab is nothing to open: withhold every control that opens a void, and draw no panel. The TRACK is still reserved — only the resize handle stays reachable in it.
-  const vacant = tabs.every((tab) => (tab.status ?? 'ready') !== 'ready')
+  const vacant = !activeLoadingPlaceholder && tabs.every((tab) => (tab.status ?? 'ready') !== 'ready')
   // Where the panel IS an overlay, and therefore a modal dialog: the same viewport read `dockWidthCeiling` gates the inline ceiling on, so both agree on the band.
   const overlayBand = viewportWidth > 0 && viewportWidth < DOCK_WIDE_MIN
 
@@ -525,10 +528,16 @@ export function SessionDock({
           >
             {/* Which of the two it is, is the whole difference between "wait" and "there is nothing here". */}
             {!vacant && activeStatus === 'loading' ? (
-              <div role="status" data-dock-loading="" className={PLACEHOLDER}>
-                <Icon name="loader" size={15} className="animate-spin" />
-                Loading…
-              </div>
+              active?.loadingPlaceholder ? (
+                <div role="status" aria-label="Loading" data-dock-loading="" className="flex min-h-0 flex-1 flex-col">
+                  {active.loadingPlaceholder}
+                </div>
+              ) : (
+                <div role="status" data-dock-loading="" className={PLACEHOLDER}>
+                  <Icon name="loader" size={15} className="animate-spin" />
+                  Loading…
+                </div>
+              )
             ) : null}
             {!vacant && activeStatus === 'empty' ? (
               <div data-dock-empty="" className={PLACEHOLDER}>

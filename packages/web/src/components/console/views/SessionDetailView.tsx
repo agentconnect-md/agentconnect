@@ -99,7 +99,7 @@ import { SessionVisibilityControl } from '@/components/console/SessionVisibility
 import { SessionAgentFocusMenu, type SessionAgentFocusOption } from '@/components/console/SessionAgentFocusMenu'
 import { useCrumbSlot } from '@/components/console/Shell'
 import { DockPanel, SessionDock, SessionDockSlot, type DockTab } from '@/components/console/dock/SessionDock'
-import { SessionsPanel, sessionsTabStatus } from '@/components/console/dock/SessionsPanel'
+import { SessionsPanel, SessionsPanelSkeleton, sessionsTabStatus } from '@/components/console/dock/SessionsPanel'
 import { FilesPanel, filesTabStatus } from '@/components/console/dock/FilesPanel'
 import { GitPanel, gitTabStatus, type GitPanelVerdict } from '@/components/console/dock/GitPanel'
 import { TasksPanel, tasksTabStatus, type TasksPanelVerdict } from '@/components/console/dock/TasksPanel'
@@ -2091,7 +2091,7 @@ export default function SessionDetailView() {
               (prSessionId !== null && (prVerdict.answer !== 'none' || (prBranchScoped && gitVerdict.changed !== null)))
       ).map((tab) =>
         tab.key === 'sessions'
-          ? { ...tab, status: sessionsStatus }
+          ? { ...tab, status: sessionsStatus, loadingPlaceholder: <SessionsPanelSkeleton /> }
           : tab.key === 'files'
             ? { ...tab, status: filesStatus }
             : tab.key === 'git'
