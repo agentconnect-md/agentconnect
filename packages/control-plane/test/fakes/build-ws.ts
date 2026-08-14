@@ -33,7 +33,8 @@ import {
   PgMemoryPluginInstallationRepo,
   PgExternalMemoryConnectionRepo,
   PgExternalMemoryConnectionSecretStore,
-  PgExternalMemoryGrantRepo
+  PgExternalMemoryGrantRepo,
+  PgDutyGroupRepo
 } from '../../src/persistence/index.js'
 import { PlaintextSecretCipher } from '../../src/secrets/cipher.js'
 import { EpochService } from '../../src/orchestrator/epoch.js'
@@ -47,7 +48,6 @@ import { ConnectionRegistry } from '../../src/ws/registry.js'
 import { AgentMutationGate } from '../../src/orchestrator/agentMutationGate.js'
 import { CollabRoutesService } from '../../src/orchestrator/collabRoutes.service.js'
 import { DutyLeaseService, type DutyLeaseConfig } from '../../src/orchestrator/dutyLease.js'
-import { PgDutyGroupRepo } from '../../src/persistence/index.js'
 import { RelayControlSender } from '../../src/orchestrator/relayControl.js'
 import { FrameRouter } from '../../src/ws/handlers/index.js'
 import { DaemonConnection } from '../../src/ws/connection.js'
