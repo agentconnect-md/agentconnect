@@ -18,6 +18,7 @@
  * per-agent nack.
  */
 import { randomUUID } from 'node:crypto'
+import { selectTurnTargets } from '@agentconnect.md/activation-policy'
 import {
   ErrorCode,
   RelayWebchatOp,
@@ -174,35 +175,16 @@ export function parseBrowserFrame(msg: unknown, user: string): ParsedBrowserOp |
 }
 
 /**
- * Which participants one user turn ACTIVATES (pure — the production choice,
- * exported so the activation parity suite exercises this exact seam rather
- * than a re-implementation; evals/parity/spec.ts `human-kickoff-activation`).
- *
- * Conversation membership is a STANDING mention (webchat-multi-agents.md
- * §4.2): an unmentioned message activates the WHOLE roster — each agent may
- * still decline via the no-response contract — while explicit @mentions (or an
- * explicit `targets` list) narrow the turn to the named participants.
- *
- * `valid` preserves the chosen list's order filtered to roster members;
- * `invalid` are the chosen non-members, each of which is nacked
- * `not_participant`. Roster members outside `valid` receive the turn as a
- * transcript-only `context` copy instead.
+ * Which participants one user turn ACTIVATES: since the webchat fold-in this
+ * is `@agentconnect.md/activation-policy`'s `selectTurnTargets` — the
+ * roster/standing-mention semantics are package-owned policy alongside the
+ * platform ladder, and this module is the thin adapter supplying the relay's
+ * context (the verified roster and the turn's mentions/targets). Re-exported
+ * here so existing consumers (the activation parity suite exercises this
+ * exact production seam) keep their import path, mirroring the daemon's
+ * `router/routing-table.ts` adapter.
  */
-export function selectTurnTargets(
-  roster: readonly string[],
-  options: { mentions?: readonly string[]; requestedTargets?: readonly string[] } = {}
-): { valid: string[]; invalid: string[] } {
-  const chosen = options.requestedTargets?.length
-    ? options.requestedTargets
-    : options.mentions?.length
-      ? options.mentions
-      : roster
-  const members = new Set(roster)
-  return {
-    valid: chosen.filter((agentId) => members.has(agentId)),
-    invalid: chosen.filter((agentId) => !members.has(agentId))
-  }
-}
+export { selectTurnTargets }
 
 export class RelayBrowserConnection implements ChatSink {
   private closed = false

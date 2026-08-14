@@ -26,7 +26,11 @@ suite** and the governance rule attached to it.
    already-attributed routes.
 3. **Webchat multi-agent activation** — roster/standing-mention semantics
    (webchat-multi-agents.md §4.2), with agent-continuation parity added by
-   PR #906 (`maybeActivateWebchatContinuation`, §5.2a).
+   PR #906 (`maybeActivateWebchatContinuation`, §5.2a). Since the webchat
+   fold-in these decisions are package-owned too: the relay consumes
+   `selectTurnTargets` (human-turn roster targeting) and the daemon consumes
+   `webchatContinuationDecision` (the §5.2a edge) from
+   `@agentconnect.md/activation-policy`, each through a thin adapter.
 
 Copy 3 missed the #549 policy change **for months**: after #549 flipped the
 platform ladders to conversation continuation, webchat kept treating agent
@@ -57,7 +61,8 @@ One surface-agnostic scenario spec, several per-surface legs:
   the #906 tests drive (`handleRelayMsg` + played relay fan-out), via the
   shared fixture `packages/daemon/test/webchat-continuation-fixture.ts`. The
   kickoff scenario computes its turn-vs-context split with the relay's
-  PRODUCTION target choice (`selectTurnTargets`,
+  PRODUCTION target choice (`selectTurnTargets` — package-owned in
+  `@agentconnect.md/activation-policy`, re-exported by
   `packages/relay/src/relay-browser-connection.ts`), so the roster-wide vs
   mention-narrowed decision is the deployed code, not a re-implementation.
 - **Spec guard:** `evals/test/parity-spec.test.ts` — the spec itself stays

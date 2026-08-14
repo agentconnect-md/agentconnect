@@ -32,6 +32,7 @@
   },
   "types": "dist/index.d.ts",
   "dependencies": {
+    "@agentconnect.md/activation-policy": "workspace:*",
     "@agentconnect.md/connection": "workspace:*",
     "@agentconnect.md/message": "workspace:*",
     "@agentconnect.md/observability": "workspace:*",
