@@ -771,6 +771,16 @@ describe('SessionDock with nothing to draw', () => {
     expect(mobileActions.filter((a) => a !== null)).toEqual([])
   })
 
+  it('draws an active custom loading placeholder even while every tab is loading', () => {
+    const tabs = withStatus('loading').map((tab) =>
+      tab.key === 'sessions' ? { ...tab, loadingPlaceholder: <div data-session-skeleton="" /> } : tab
+    )
+    render(dock({ tabs, activeKey: 'sessions' }))
+    expect(container.querySelector('[data-session-skeleton]')).not.toBeNull()
+    expect(container.querySelector('[data-dock-loading]')).not.toBeNull()
+    expect(container.querySelector('[role="tablist"]')).not.toBeNull()
+  })
+
   it('withholds them the same way once that tab has settled empty', () => {
     render(dock({ tabs: withStatus('empty') }))
     expect(container.querySelector('[role="tablist"]')).toBeNull()

@@ -99,7 +99,7 @@ import { SessionVisibilityControl } from '@/components/console/SessionVisibility
 import { SessionAgentFocusMenu, type SessionAgentFocusOption } from '@/components/console/SessionAgentFocusMenu'
 import { useCrumbSlot } from '@/components/console/Shell'
 import { DockPanel, SessionDock, SessionDockSlot, type DockTab } from '@/components/console/dock/SessionDock'
-import { SessionsPanel, sessionsTabStatus } from '@/components/console/dock/SessionsPanel'
+import { SessionsPanel, SessionsPanelSkeleton, sessionsTabStatus } from '@/components/console/dock/SessionsPanel'
 import { FilesPanel, filesTabStatus } from '@/components/console/dock/FilesPanel'
 import { GitPanel, gitTabStatus, type GitPanelVerdict } from '@/components/console/dock/GitPanel'
 import { TasksPanel, tasksTabStatus, type TasksPanelVerdict } from '@/components/console/dock/TasksPanel'
@@ -561,7 +561,8 @@ function stripMdMarkers(s: string): string {
 function WorkStepRow({ step, sessionId, divider }: { step: FmtStep; sessionId?: string; divider: boolean }) {
   const [open, setOpen] = useState(false)
   // Tool rows keep their title in `code` (msgStep), so fall back to its first line.
-  const rawTitle = (step.text || step.code || '').split('\n', 1)[0]?.trim() || step.lane || 'Step'
+  // trimStart: reasoning text can open with blank lines, which must not blank the title.
+  const rawTitle = (step.text || step.code || '').trimStart().split('\n', 1)[0]?.trim() || step.lane || 'Step'
   const title = step.text ? stripMdMarkers(rawTitle) : rawTitle
   // Single-line code with no text IS the title — expanding must not repeat it.
   const codeBeyondTitle = !!step.code && (!!step.text || step.code.includes('\n'))
@@ -2090,7 +2091,7 @@ export default function SessionDetailView() {
               (prSessionId !== null && (prVerdict.answer !== 'none' || (prBranchScoped && gitVerdict.changed !== null)))
       ).map((tab) =>
         tab.key === 'sessions'
-          ? { ...tab, status: sessionsStatus }
+          ? { ...tab, status: sessionsStatus, loadingPlaceholder: <SessionsPanelSkeleton /> }
           : tab.key === 'files'
             ? { ...tab, status: filesStatus }
             : tab.key === 'git'
@@ -2603,6 +2604,20 @@ export default function SessionDetailView() {
     setComposerMenuOpen(null)
   }, [id])
 
+  // Continuable sessions have no image affordance — drop any staged attachment.
+  // Lives ABOVE the early returns (Rules of Hooks), so it re-derives `isContinuable`
+  // from raw values instead of the post-return flags below.
+  const continuableSessionId =
+    session &&
+    session.platform !== 'playground' &&
+    session.platform !== 'webchat' &&
+    currentSessionDetail?.canContinue === true
+      ? session.id
+      : null
+  useEffect(() => {
+    if (continuableSessionId) setPgImage(continuableSessionId)
+  }, [continuableSessionId, setPgImage])
+
   // A multi-participant conversation is surfaced ONLY at /conversations/:key
   // (merged-conversation-view.md §5.3): a session deep link into one redirects,
   // preserving whose perspective was linked as ?focus.
@@ -2818,9 +2833,6 @@ export default function SessionDetailView() {
   const pgBusy = sessionBusy
   const pgImage = getPgImage(session.id)
   const attachmentsEnabled = !isContinuable
-  useEffect(() => {
-    if (isContinuable) setPgImage(session.id)
-  }, [isContinuable, session.id, setPgImage])
   const pgQueue = getPgQueue(session.id)
   const hasSessionWorktree =
     focusedAgent?.workspace.mode === 'github' &&
@@ -4110,10 +4122,13 @@ export default function SessionDetailView() {
                         // While work runs, the toggle line also carries what is running RIGHT
                         // NOW — the live step's first line (tool rows keep the command in
                         // `code`) — so a collapsed panel still shows live progress.
-                        const liveLine =
+                        // trimStart skips the blank lines reasoning text can open with; a
+                        // reasoning line also drops its markdown markers (same as the row title).
+                        const liveRaw =
                           workRunning && liveStep
-                            ? (liveStep.text || liveStep.code)?.split('\n', 1)[0]?.trim()
+                            ? (liveStep.text || liveStep.code)?.trimStart().split('\n', 1)[0]?.trim()
                             : undefined
+                        const liveLine = liveRaw && liveStep?.text ? stripMdMarkers(liveRaw) : liveRaw
                         // Step identity for the fade-in key: two consecutive steps can show
                         // the SAME first line, and a keyed-by-text span would keep its DOM
                         // node and never replay the animation.
@@ -4189,7 +4204,7 @@ export default function SessionDetailView() {
                                         // Keyed by step identity + content: a new step (or a new
                                         // first line within one) remounts the span, replaying the
                                         // ac-rise fade-in (honors reduced-motion in globals.css).
-                                        <span key={liveKey} className="ac-rise min-w-0 truncate">
+                                        <span key={liveKey} className="work-live min-w-0 truncate">
                                           · {liveLine}
                                         </span>
                                       )}
