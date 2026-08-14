@@ -296,6 +296,10 @@ export interface HttpDeps {
   hooks: HookService
   /** Best-effort latency kick for durable GitHub projection cleanup. */
   kickGithubRunReporter?: () => void
+  /** Recompute an org's duty groups now that their inputs changed (integrations,
+   *  cron enablement, bot credentials, placement). Fire-and-forget: the periodic
+   *  rotation is the backstop, so this only buys latency. */
+  recomputeDuties?: (orgId: string) => void
   auth: DaemonAuth
   /** API-key lifecycle (onboarding / rotation / revocation). */
   apiKeys: ApiKeyAdmin

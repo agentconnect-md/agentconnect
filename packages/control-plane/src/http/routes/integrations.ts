@@ -378,6 +378,8 @@ export function integrationRoutes(deps: HttpDeps) {
               ...(bot.feishuRegion ? { feishuRegion: bot.feishuRegion } : {}),
               ...(req.principal ? { createdByUserId: req.principal.userId } : {})
             })
+            // A socket-transport install is a new duty edge (design §4.4).
+            deps.recomputeDuties?.(orgId)
             await replicateUpsert(integration, daemonId)
             return reply.code(201).send(toDto(integration))
           }
@@ -1163,6 +1165,7 @@ export function integrationRoutes(deps: HttpDeps) {
             await deps.httpBot.prepareIntegrationRemoval(existing.botId)
           }
           await deps.repos.integration.delete(orgIdOf(req), existing.id)
+          deps.recomputeDuties?.(orgIdOf(req))
           // "Freed" now means NO active integration remains (a shareable bot may still
           // serve other agents — don't stamp it freed while it does, §6).
           const remaining = await deps.repos.integration.listForBot(existing.botId)

@@ -1,7 +1,7 @@
 // DutyRecomputeSweep + the soak-phase incumbent grant policy (real Postgres):
 // the sweep derives duty groups from Integration/CronDef rows, and claimVacant's
 // incumbent gate pins grants to the member the group's agents already live on.
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { prisma } from '../setup.db.js'
 import { PgDutyGroupRepo } from '../../src/persistence/index.js'
 import { DutyRecomputeSweep } from '../../src/orchestrator/dutyRecompute.js'
@@ -30,7 +30,8 @@ function sweep(clock = new FakeClock(1_700_000_000_000)) {
       intervalMs: 30_000,
       orgsPerTick: 25,
       leaseMs: LEASE_MS,
-      incumbentFence: true
+      incumbentFence: true,
+      kickDelayMs: 0
     })
   }
 }
@@ -225,5 +226,66 @@ describe('incumbent grant policy (real Postgres)', () => {
 
     expect(await repo.claimVacant(M1, 5, now, LEASE_MS, { incumbentOnly: true })).toEqual([])
     expect(await repo.claimVacant(M1, 5, now, LEASE_MS)).toHaveLength(1)
+  })
+})
+
+describe('duty recompute kick (real Postgres)', () => {
+  it('a kick recomputes one org immediately instead of waiting for its slice', async () => {
+    await seedDaemons()
+    await seedAgent(AGENT, 'agent-1', M1)
+    await seedBot(BOT, 'socket')
+    await seedIntegration(INTEG, AGENT, BOT)
+    const { repo, clock, sweep: s } = sweep()
+
+    s.kick(DEFAULT_ORG_ID)
+    clock.advance(1)
+    await vi.waitFor(async () => {
+      const groups = await repo.listForOrg(DEFAULT_ORG_ID as Parameters<typeof repo.listForOrg>[0])
+      expect(groups).toHaveLength(1)
+    })
+  })
+
+  it('a burst against one org collapses into a single recompute', async () => {
+    await seedDaemons()
+    await seedAgent(AGENT, 'agent-1', M1)
+    const repo = new PgDutyGroupRepo(prisma)
+    const clock = new FakeClock(1_700_000_000_000)
+    const recomputes: string[] = []
+    const spy = {
+      listDutyOrgs: repo.listDutyOrgs.bind(repo),
+      computeInputs: async (orgId: Parameters<typeof repo.computeInputs>[0]) => {
+        recomputes.push(orgId)
+        return repo.computeInputs(orgId)
+      },
+      applyReconcile: repo.applyReconcile.bind(repo),
+      vacateNonIncumbent: repo.vacateNonIncumbent.bind(repo)
+    }
+    const s = new DutyRecomputeSweep(spy, clock, {
+      intervalMs: 30_000,
+      orgsPerTick: 25,
+      leaseMs: LEASE_MS,
+      incumbentFence: true,
+      kickDelayMs: 10
+    })
+
+    s.kick(DEFAULT_ORG_ID)
+    s.kick(DEFAULT_ORG_ID)
+    s.kick(DEFAULT_ORG_ID)
+    clock.advance(10)
+    await vi.waitFor(() => expect(recomputes).toEqual([DEFAULT_ORG_ID]))
+  })
+
+  it('stop() cancels a pending kick', async () => {
+    await seedDaemons()
+    await seedAgent(AGENT, 'agent-1', M1)
+    await seedBot(BOT, 'socket')
+    await seedIntegration(INTEG, AGENT, BOT)
+    const { repo, clock, sweep: s } = sweep()
+
+    s.kick(DEFAULT_ORG_ID)
+    s.stop()
+    clock.advance(1_000)
+    await new Promise((r) => setTimeout(r, 20))
+    expect(await repo.listForOrg(DEFAULT_ORG_ID as Parameters<typeof repo.listForOrg>[0])).toEqual([])
   })
 })

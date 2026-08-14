@@ -211,6 +211,9 @@ export function cronRoutes(deps: HttpDeps) {
               ? { createdByUserId: req.principal.userId, lastModifiedByUserId: req.principal.userId }
               : {})
           })
+          // An enabled cron is a duty edge (design §4.7), so enabling or
+          // disabling one changes the group's claimability.
+          deps.recomputeDuties?.(orgId)
           void deps.repos.audit
             .append({
               kind: 'cron_change',
@@ -434,6 +437,7 @@ export function cronRoutes(deps: HttpDeps) {
           }
           agent = current
           await deps.repos.cron.remove(orgId, existing.id)
+          deps.recomputeDuties?.(orgId)
           void deps.repos.audit
             .append({
               kind: 'cron_change',

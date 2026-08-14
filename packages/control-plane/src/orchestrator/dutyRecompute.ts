@@ -20,6 +20,9 @@ export interface DutyRecomputeConfig {
    *  move must also move the duty, so each tick vacates leases whose holder no
    *  longer hosts any of the group's agents. Flip together with the policy. */
   incumbentFence: boolean
+  /** Coalescing window for {@link DutyRecomputeSweep.kick}: a burst of writes to
+   *  one org (an install touching several rows) costs one recompute. */
+  kickDelayMs: number
 }
 
 export interface DutyRecomputeLog {
@@ -31,6 +34,8 @@ export class DutyRecomputeSweep {
   private timer: TimerHandle | undefined
   private stopped = false
   private cursor: string | null = null
+  private readonly kicked = new Set<string>()
+  private kickTimer: TimerHandle | undefined
 
   constructor(
     private readonly repo: Pick<
@@ -53,6 +58,33 @@ export class DutyRecomputeSweep {
       this.clock.clearTimeout(this.timer)
       this.timer = undefined
     }
+    if (this.kickTimer !== undefined) {
+      this.clock.clearTimeout(this.kickTimer)
+      this.kickTimer = undefined
+    }
+    this.kicked.clear()
+  }
+
+  /**
+   * Recompute one org promptly instead of waiting for its rotation slice — the
+   * ledger's inputs just changed (an integration, a cron's enabled flag, a bot
+   * credential, a placement move). Fire-and-forget and coalescing: callers on
+   * the request path never await it, and a burst against one org collapses into
+   * a single recompute. The rotation remains the backstop, so a dropped kick
+   * costs latency, never correctness.
+   */
+  kick(orgId: string): void {
+    if (this.stopped) return
+    this.kicked.add(orgId)
+    if (this.kickTimer !== undefined) return
+    this.kickTimer = this.clock.setTimeout(() => {
+      this.kickTimer = undefined
+      const orgs = [...this.kicked]
+      this.kicked.clear()
+      for (const org of orgs) {
+        void this.recomputeOrg(org).catch((err) => this.log?.error({ err, orgId: org }, 'duty recompute kick failed'))
+      }
+    }, this.cfg.kickDelayMs)
   }
 
   private arm(): void {
