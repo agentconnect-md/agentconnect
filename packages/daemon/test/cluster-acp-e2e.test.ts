@@ -71,7 +71,6 @@ function fakeApi() {
         return state.sandbox
       },
       watchClaims: vi.fn(),
-      watchSandboxes: vi.fn(),
       reviewToken: vi.fn()
     }
   }

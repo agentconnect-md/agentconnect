@@ -1,6 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Backoff, FakeClock } from '@agentconnect.md/connection'
-import { startK8sRuntimePlane, k8sPlaneSettings, type K8sRuntimePlane } from '../src/k8s/runtime-plane.js'
+import {
+  PROBE_CLAIM_EXPIRES_ANNOTATION,
+  PROBE_CLAIM_LABEL,
+  k8sPlaneSettings,
+  probeAgentId,
+  reapExpiredProbeClaims,
+  startK8sRuntimePlane,
+  type K8sRuntimePlane
+} from '../src/k8s/runtime-plane.js'
 import { ShimClient, type ShimTransport } from '../src/shim/client.js'
 import { ShimServer } from '../src/shim/server.js'
 import { K8sApiError } from '@agentconnect.md/k8s-client'
@@ -30,13 +38,10 @@ afterEach(async () => {
   serverByPort.clear()
   delete process.env.AC_K8S_ORG_ID
   delete process.env.AC_K8S_WARM_POOL
+  delete process.env.AC_K8S_SANDBOX_NAMESPACE
+  delete process.env.AC_K8S_MEMBER_ID
   delete process.env.AC_K8S_SHIM_PORT
 })
-
-/** A sandbox watch that reports nothing and ends when the plane aborts it. */
-async function* idleSandboxWatch(signal?: AbortSignal): AsyncGenerator<never> {
-  await new Promise<void>((resolve) => signal?.addEventListener('abort', () => resolve(), { once: true }))
-}
 
 /** A Sandbox that binds, adopts a pool pod, and reports Ready. */
 function fakeApi(options: { podName?: string; adopt?: boolean } = {}) {
@@ -64,11 +69,10 @@ function fakeApi(options: { podName?: string; adopt?: boolean } = {}) {
         return claim
       },
       deleteClaim: async () => undefined,
+      listClaims: async () => [],
       getSandbox: async () => sandbox,
       setOperatingMode: async () => sandbox,
       watchClaims: vi.fn(),
-      // The plane follows Sandboxes for a rollout's drain requests; this one reports none.
-      watchSandboxes: ({ signal }: { signal?: AbortSignal }) => idleSandboxWatch(signal),
       // The dialer verifies through this, so the handshake exercises the real path.
       reviewToken: async (token: string) =>
         token === 'projected-token'
@@ -87,6 +91,8 @@ async function planeUnderTest(api: ReturnType<typeof fakeApi>): Promise<K8sRunti
   const plane = await startK8sRuntimePlane({
     orgId: 'org-1',
     warmPoolName: 'pool',
+    sandboxNamespace: 'agent-sandboxes',
+    memberId: 'member-a',
     shimPort: port,
     readyTimeoutMs: 15_000,
     api: api.api as never,
@@ -143,24 +149,75 @@ async function until(predicate: () => boolean, timeoutMs = 10_000): Promise<bool
 }
 
 describe('k8s plane settings', () => {
-  it('requires a pool but permits an install-wide daemon without an org', () => {
+  it('requires the shared sandbox namespace and member identity but permits no org', () => {
     // The pool is deployment-owned, while an install-wide daemon resolves the tenant per agent.
     expect(() => k8sPlaneSettings({})).toThrow(/AC_K8S_WARM_POOL/)
-    expect(k8sPlaneSettings({ AC_K8S_WARM_POOL: 'pool' })).toEqual({
+    expect(() => k8sPlaneSettings({ AC_K8S_WARM_POOL: 'pool' })).toThrow(/AC_K8S_SANDBOX_NAMESPACE/)
+    expect(() => k8sPlaneSettings({ AC_K8S_WARM_POOL: 'pool', AC_K8S_SANDBOX_NAMESPACE: 'agent-sandboxes' })).toThrow(
+      /AC_K8S_MEMBER_ID/
+    )
+    const base = {
+      AC_K8S_WARM_POOL: 'pool',
+      AC_K8S_SANDBOX_NAMESPACE: 'agent-sandboxes',
+      AC_K8S_MEMBER_ID: 'member-a'
+    }
+    expect(k8sPlaneSettings(base)).toEqual({
       warmPoolName: 'pool',
+      sandboxNamespace: 'agent-sandboxes',
+      memberId: 'member-a',
       shimPort: 8085
     })
-    expect(k8sPlaneSettings({ AC_K8S_ORG_ID: 'org-1', AC_K8S_WARM_POOL: 'pool' })).toEqual({
+    expect(k8sPlaneSettings({ ...base, AC_K8S_ORG_ID: 'org-1' })).toEqual({
       orgId: 'org-1',
       warmPoolName: 'pool',
+      sandboxNamespace: 'agent-sandboxes',
+      memberId: 'member-a',
       shimPort: 8085
     })
-    expect(() =>
-      k8sPlaneSettings({ AC_K8S_ORG_ID: 'org-1', AC_K8S_WARM_POOL: 'pool', AC_K8S_SHIM_PORT: 'http' })
-    ).toThrow(/not a valid port/)
-    expect(() => k8sPlaneSettings({ AC_K8S_ORG_ID: 'org-1', AC_K8S_WARM_POOL: 'pool', AC_K8S_SHIM_PORT: '0' })).toThrow(
-      /not a valid port/
+    expect(() => k8sPlaneSettings({ ...base, AC_K8S_SHIM_PORT: 'http' })).toThrow(/not a valid port/)
+    expect(() => k8sPlaneSettings({ ...base, AC_K8S_SHIM_PORT: '0' })).toThrow(/not a valid port/)
+  })
+
+  it('derives a distinct DNS-safe probe identity for each member', () => {
+    expect(probeAgentId('member-a')).toMatch(/^ac-runtime-probe-[a-f0-9]{16}$/)
+    expect(probeAgentId('member-a')).not.toBe(probeAgentId('member-b'))
+  })
+
+  it('reaps only expired probe claims from previous members', async () => {
+    const deleted: string[] = []
+    const current = `agent-${probeAgentId('member-a')}`
+    const expired = `agent-${probeAgentId('member-old')}`
+    const live = `agent-${probeAgentId('member-b')}`
+    const ordinary = 'agent-customer'
+    const expiry = (name: string, at: string, probe = true): SandboxClaim => ({
+      metadata: {
+        name,
+        uid: `uid-${name}`,
+        resourceVersion: `rv-${name}`,
+        labels: probe ? { [PROBE_CLAIM_LABEL]: 'true' } : {},
+        annotations: { [PROBE_CLAIM_EXPIRES_ANNOTATION]: at }
+      }
+    })
+    await reapExpiredProbeClaims(
+      {
+        listClaims: async (selector?: string) => {
+          expect(selector).toBe(`${PROBE_CLAIM_LABEL}=true`)
+          return [
+            expiry(current, '2026-08-14T11:00:00.000Z'),
+            expiry(expired, '2026-08-14T09:00:00.000Z'),
+            expiry(live, '2026-08-14T11:00:00.000Z'),
+            expiry(ordinary, '2026-08-14T09:00:00.000Z', false)
+          ]
+        },
+        deleteClaimIfCurrent: async (name: string, preconditions) => {
+          expect(preconditions).toEqual({ uid: `uid-${name}`, resourceVersion: `rv-${name}` })
+          deleted.push(name)
+          return true
+        }
+      },
+      Date.parse('2026-08-14T10:00:00.000Z')
     )
+    expect(deleted).toEqual([expired])
   })
 })
 
@@ -172,8 +229,14 @@ describe('k8s runtime plane assembly', () => {
     // run and looks healthy.
     const api = fakeApi()
     const deleted: string[] = []
+    const ensured: SandboxClaim[] = []
     api.api.deleteClaim = async (name: string) => {
       deleted.push(name)
+    }
+    const ensureClaim = api.api.ensureClaim
+    api.api.ensureClaim = async (claim) => {
+      ensured.push(claim)
+      return ensureClaim(claim)
     }
     const plane = await planeUnderTest(api)
     const port = shimPort(plane)
@@ -190,13 +253,17 @@ describe('k8s runtime plane assembly', () => {
       }
     })
     await inFlight
-    expect(plane.dialer.connectionsFor('ac-runtime-probe')[0]?.binding.grants ?? []).toEqual(['probe'])
+    expect(plane.dialer.connectionsFor(probeAgentId('member-a'))[0]?.binding.grants ?? []).toEqual(['probe'])
     answer({ runtimes: [{ id: 'claude-acp', version: '0.66.0', acp: { protocolVersion: 1 } }] })
     const table = await probing
     expect(table.runtimes.map((entry) => `${entry.id}@${entry.version}`)).toEqual(['claude-acp@0.66.0'])
+    expect(ensured[0]?.metadata?.labels).toEqual({ [PROBE_CLAIM_LABEL]: 'true' })
+    expect(Date.parse(ensured[0]?.metadata?.annotations?.[PROBE_CLAIM_EXPIRES_ANNOTATION] ?? '')).toBeGreaterThan(
+      Date.now()
+    )
     // And the probe sandbox is gone: one leaked pod per daemon restart would be a slow leak that
     // nothing else cleans up.
-    expect(deleted).toContain('agent-ac-runtime-probe')
+    expect(deleted).toContain(`agent-${probeAgentId('member-a')}`)
   })
 
   it('holds the probe sandbox across the request, not just across the bind', async () => {
@@ -208,6 +275,7 @@ describe('k8s runtime plane assembly', () => {
     const port = shimPort(plane)
 
     const probing = plane.probeRuntimes()
+    expect(plane.probeRuntimes()).toBe(probing)
     // A shim that has dialled in and is still generating its table. Waiting for the REQUEST rather
     // than for the connection is the whole point: during the bind the sandbox is held anyway, so
     // an assertion there would hold with or without the lease this test is about.
@@ -223,7 +291,7 @@ describe('k8s runtime plane assembly', () => {
     })
     await inFlight
 
-    expect(await plane.suspendIdle('ac-runtime-probe')).toBe('busy')
+    expect(await plane.suspendIdle(probeAgentId('member-a'))).toBe('busy')
 
     answer({ runtimes: [{ id: 'claude-acp', version: '0.66.0' }] })
     await probing

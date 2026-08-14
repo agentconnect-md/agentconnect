@@ -129,6 +129,17 @@ WebSocket is install-wide with `orgId` carried per frame (`organizationMode:
 'frame'`); there is no org room, org-specific connection, or per-org
 subscription (D9).
 
+**The pool and sandboxes occupy two explicit namespaces.** The daemon Pod's
+ServiceAccount namespace identifies the member pool only; `AC_K8S_SANDBOX_NAMESPACE`
+names the shared namespace where the runtime plane reads and writes SandboxClaims
+and Sandboxes. Each member also receives its Pod UID through the Downward API as
+`AC_K8S_MEMBER_ID`; the runtime probe hashes it into
+`agent-ac-runtime-probe-<member-hash>`, so simultaneous member startup never races
+on one probe claim. Probe claims carry a dedicated label and a 15-minute expiry;
+members periodically delete expired claims, so a missed teardown cannot retain a
+Sandbox and volume forever. Each GC delete carries the UID and resourceVersion from
+its LIST snapshot, so a same-name replacement cannot be deleted by a stale sweep.
+
 **Org-threading is the end state; instantiation is scaffolding.** The wire
 carries the org, the data plane carries the org, and the process interior
 converges on the same axis: subsystems take the org as an explicit parameter,

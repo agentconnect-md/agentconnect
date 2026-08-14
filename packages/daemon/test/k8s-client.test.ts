@@ -83,6 +83,39 @@ describe('SandboxApi', () => {
     await expect(api.deleteClaim('gone')).resolves.toBeUndefined()
   })
 
+  it('fences a GC delete to the listed claim incarnation', async () => {
+    let received: any
+    const { config } = await fakeApiServer(({ body }) => {
+      received = JSON.parse(body)
+      return { json: {} }
+    })
+    const api = new SandboxApi(new K8sHttp(config), 'org-test')
+    await expect(api.deleteClaimIfCurrent('probe-old', { uid: 'uid-old', resourceVersion: '17' })).resolves.toBe(true)
+    expect(received).toEqual({
+      apiVersion: 'v1',
+      kind: 'DeleteOptions',
+      preconditions: { uid: 'uid-old', resourceVersion: '17' }
+    })
+  })
+
+  it('does not delete a replacement claim after the listed UID goes stale', async () => {
+    const { config } = await fakeApiServer(() => ({
+      status: 409,
+      json: { kind: 'Status', reason: 'Conflict', message: 'UID precondition failed' }
+    }))
+    const api = new SandboxApi(new K8sHttp(config), 'org-test')
+    await expect(api.deleteClaimIfCurrent('probe-replaced', { uid: 'uid-old' })).resolves.toBe(false)
+  })
+
+  it('lists claims with a server-side label selector', async () => {
+    const { config, requests } = await fakeApiServer(() => ({
+      json: { items: [{ metadata: { name: 'agent-ac-runtime-probe-old' } }] }
+    }))
+    const api = new SandboxApi(new K8sHttp(config), 'org-test')
+    await expect(api.listClaims('agentconnect.md/runtime-probe=true')).resolves.toHaveLength(1)
+    expect(requests[0]?.searchParams.get('labelSelector')).toBe('agentconnect.md/runtime-probe=true')
+  })
+
   it('guards an operatingMode patch with a test op on the value it observed', async () => {
     let patch: any
     let contentType: string | undefined

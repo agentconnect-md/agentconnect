@@ -11,6 +11,7 @@ import {
   isSandboxReady,
   type OperatingMode,
   type Sandbox,
+  type SandboxClaim,
   type SandboxApi
 } from './sandbox-api.js'
 import { K8sApiError } from '@agentconnect.md/k8s-client'
@@ -18,10 +19,6 @@ import { K8sApiError } from '@agentconnect.md/k8s-client'
 /** Label domain the claim controller must be configured to allow. */
 export const AC_LABEL_ORG = 'agentconnect.md/org'
 export const AC_LABEL_AGENT = 'agentconnect.md/agent'
-
-/** Annotation an image rollout writes to ask a daemon to quiesce a Sandbox (`<rolloutId>/<image>`).
- *  The rollout is the producer; this is the consumer. */
-export const DRAIN_REQUESTED_ANNOTATION = 'agentconnect.md/drain-requested'
 
 /**
  * Where agent-sandbox records the pod a Sandbox is currently backed by.
@@ -64,6 +61,10 @@ export interface K8sDriverDeps {
   orgForAgent: (agentId: string) => string | undefined
   /** Pool the claim references; v1beta1 requires one, and a cold pool is `replicas: 0`. */
   warmPoolName: string
+  /** Optional claim metadata for host-owned synthetic agents such as runtime probes. */
+  claimMetadataForAgent?: (
+    agentId: string
+  ) => Pick<NonNullable<SandboxClaim['metadata']>, 'annotations' | 'labels'> | undefined
   /** Dials the ready pod and binds the shim channel for this launch. */
   connectChannel: (record: SpawnRecord, podIp: string, timeoutMs: number) => Promise<ShimConnection>
   /** Stops any outbound channel when a launch is forgotten or deliberately suspended. */
@@ -94,21 +95,8 @@ export class LaunchTimeoutError extends Error {
   }
 }
 
-/** Work refused because its Sandbox is draining for an image rollout. Typed for the same reason:
- *  a deliberate hold is not a missed target, and pooling the two makes a rollout look like an outage. */
-export class SandboxDrainingError extends Error {
-  constructor(agentId: string) {
-    super(`agent ${agentId} is draining for an image rollout — retry once it clears`)
-    this.name = 'SandboxDrainingError'
-  }
-}
-
 const DEFAULT_READY_TIMEOUT_MS = 90_000
 const MAX_MODE_ATTEMPTS = 5
-/** Restart delay bounds for the sandbox watch; watchCollection handles its own reconnects, so
- *  this only covers a stream that ended some other way. */
-const WATCH_RESTART_BASE_MS = 500
-const WATCH_RESTART_CAP_MS = 30_000
 
 /** Per-agent launch state the driver keeps: the Sandbox it bound and which launch it is. */
 interface Launch {
@@ -129,12 +117,7 @@ export class K8sDriver implements SpawnDriver {
   private readonly metrics: ClusterMetrics
   private readonly launches = new Map<string, Launch>()
   private readonly generations = new Map<string, number>()
-  /** Sandboxes carrying a drain request, by name → the value that requested it. New work stays
-   *  off them, and each is suspended as soon as the work already on it ends. */
-  private readonly draining = new Map<string, string>()
-  /** Live work per Sandbox: binds in flight, workspace preparation, and runtimes that have not
-   *  exited. A drain waits for this to reach zero — that is what keeps a rollout from pulling a
-   *  pod out mid-turn. */
+  /** Live work per Sandbox: binds, workspace preparation, and runtimes that have not exited. */
   private readonly busy = new Map<string, number>()
   /** Per-SANDBOX transition queue. A guarded write protects competing writes, but it cannot
    *  protect a decision that performs NO write: a later wake could observe Running and
@@ -145,8 +128,6 @@ export class K8sDriver implements SpawnDriver {
    *  dispatch admitted while the suspend was mid-write would otherwise lose its pod. Acquisition
    *  waits this out and then re-claims, which is the ordinary resume path. */
   private readonly suspending = new Map<string, Promise<void>>()
-  /** Term of the sandbox watch, so the plane can stop following on shutdown. */
-  private watch?: AbortController
   /** Logical channels per agent, which survive the shim's credential renewals. */
   private readonly sessions = new Map<string, ShimSession>()
   /** Workspace mount per agent, as the bound pod's shim reported it. */
@@ -181,11 +162,13 @@ export class K8sDriver implements SpawnDriver {
     const name = this.claimName(agentId)
     const orgId = this.deps.orgForAgent(agentId)
     if (!orgId) throw new Error(`cannot resolve sandbox organization for agent ${agentId}`)
+    const claimMetadata = this.deps.claimMetadataForAgent?.(agentId)
     const ensured = await this.deps.api.ensureClaim({
       metadata: {
         name,
-        annotations: undefined
-      } as { name: string },
+        ...(claimMetadata?.annotations ? { annotations: claimMetadata.annotations } : {}),
+        ...(claimMetadata?.labels ? { labels: claimMetadata.labels } : {})
+      },
       spec: {
         warmPoolRef: { name: this.deps.warmPoolName },
         additionalPodMetadata: { labels: { [AC_LABEL_ORG]: orgId, [AC_LABEL_AGENT]: agentId } }
@@ -243,12 +226,6 @@ export class K8sDriver implements SpawnDriver {
   /** Wake a suspended Sandbox, or confirm it is already running. Reports the mode it found, which
    *  is the only place a CACHED launch can learn whether it is resuming or already warm. */
   async wake(agentId: string): Promise<OperatingMode | undefined> {
-    if (this.isDraining(agentId)) {
-      // A drain request is in flight: new messages queue rather than reviving the instance,
-      // or one message would resurrect the image the rollout is replacing.
-      this.deps.log.info(`cluster: holding agent ${agentId} suspended — a drain request is pending`)
-      return undefined
-    }
     return await this.setMode(agentId, 'Running')
   }
 
@@ -318,8 +295,7 @@ export class K8sDriver implements SpawnDriver {
     return this.queueMode(launch.sandboxName, desired)
   }
 
-  /** Queued per SANDBOX rather than per agent: the drain path writes without an agent in hand,
-   *  and the object being serialized is the one both decisions patch. */
+  /** Queued per Sandbox because it is the object both decisions patch. */
   private queueMode(sandboxName: string, desired: OperatingMode): Promise<OperatingMode | undefined> {
     const previous = this.modeQueue.get(sandboxName) ?? Promise.resolve()
     const next = previous.catch(() => undefined).then(() => this.applyMode(sandboxName, desired))
@@ -359,145 +335,14 @@ export class K8sDriver implements SpawnDriver {
     )
   }
 
-  /**
-   * Follow this namespace's Sandboxes, which is how a drain request is noticed without polling.
-   *
-   * Started by the runtime plane rather than the constructor: a driver a test builds by hand has
-   * no cluster to watch, and the watch is a term with an end (`stopSandboxWatch`) rather than a
-   * side effect of existing.
-   */
-  startSandboxWatch(): void {
-    if (this.watch) return
-    const controller = new AbortController()
-    this.watch = controller
-    void this.runSandboxWatch(controller.signal)
-  }
-
-  stopSandboxWatch(): void {
-    this.watch?.abort()
-    this.watch = undefined
-  }
-
-  // `watchCollection` reconnects and re-LISTs on its own, so this only covers a stream that ended
-  // some other way — and it must be covered, because a daemon that quietly stopped watching would
-  // stall every rollout until the operator's drain deadline failed each instance in turn.
-  private async runSandboxWatch(signal: AbortSignal): Promise<void> {
-    const backoff = new Backoff({ baseMs: WATCH_RESTART_BASE_MS, capMs: WATCH_RESTART_CAP_MS })
-    while (!signal.aborted) {
-      try {
-        const source = this.deps.api.watchSandboxes({
-          signal,
-          clock: this.clock,
-          metrics: this.metrics,
-          log: this.deps.log
-        })
-        for await (const event of source) {
-          backoff.reset()
-          if (event.kind === 'synced') this.onSandboxesSynced(event.items)
-          else if (event.kind === 'deleted') this.onSandboxGone(event.object)
-          else this.onSandboxObserved(event.object)
-        }
-      } catch (err) {
-        if (signal.aborted) return
-        this.deps.log.warn(`cluster: sandbox watch failed (${(err as Error).message})`)
-      }
-      if (signal.aborted) return
-      await this.pause(backoff.next(), signal)
-    }
-  }
-
-  /** A snapshot decides the whole drain set: a watch gap can drop a request or its removal, so
-   *  what the list says wins over the events we happened to see. */
-  private onSandboxesSynced(items: Sandbox[]): void {
-    const seen = new Set<string>()
-    for (const sandbox of items) {
-      const name = sandbox.metadata?.name
-      if (name) seen.add(name)
-      this.onSandboxObserved(sandbox)
-    }
-    for (const name of [...this.draining.keys()]) if (!seen.has(name)) this.clearDrain(name)
-  }
-
-  /**
-   * Observe a Sandbox's drain annotation. While it is present the daemon must not wake the
-   * instance: the rollout is waiting for it to stay down long enough to change its image,
-   * and a single arriving message would otherwise revive the old one. An instance with no work
-   * left on it is suspended right here — that suspension is what lets the rollout proceed.
-   */
-  onSandboxObserved(sandbox: Sandbox): void {
-    const name = sandbox.metadata?.name
-    if (!name) return
-    const requested = sandbox.metadata?.annotations?.[DRAIN_REQUESTED_ANNOTATION]
-    if (!requested) {
-      this.clearDrain(name)
-      return
-    }
-    if (this.draining.get(name) !== requested) {
-      this.draining.set(name, requested)
-      this.deps.log.info(`cluster: drain requested for sandbox ${name} (${requested})`)
-    }
-    // Already down — including the object our own suspend just produced — so nothing to quiesce.
-    if ((sandbox.spec?.operatingMode ?? 'Running') === 'Suspended') return
-    void this.quiesceIfIdle(name)
-  }
-
-  /** A Sandbox that is gone takes its drain request with it; nothing may be written to it again. */
-  private onSandboxGone(sandbox: Sandbox): void {
-    const name = sandbox.metadata?.name
-    if (!name) return
-    this.forgetSandbox(name)
-  }
-
-  /** Whether this agent's bound Sandbox is holding a drain request. */
-  isDraining(agentId: string): boolean {
-    const launch = this.launches.get(agentId)
-    return launch !== undefined && this.draining.has(launch.sandboxName)
-  }
-
-  private clearDrain(name: string): void {
-    if (this.draining.delete(name)) {
-      this.deps.log.info(`cluster: drain request cleared for sandbox ${name} — waking normally again`)
-    }
-  }
-
   private forgetSandbox(name: string): void {
-    this.clearDrain(name)
     this.busy.delete(name)
     this.modeQueue.delete(name)
   }
 
-  /**
-   * Suspend a draining Sandbox once nothing this daemon started is still running on it.
-   *
-   * Suspension is what lets the rollout swap the image, and it is never forced: a live turn keeps
-   * its instance up until the work ends, and an instance that never goes quiet is the rollout's
-   * own deadline to give up on, not ours to kill.
-   */
-  private async quiesceIfIdle(sandboxName: string): Promise<void> {
-    if (!this.draining.has(sandboxName) || (this.busy.get(sandboxName) ?? 0) > 0) return
-    try {
-      await this.queueMode(sandboxName, 'Suspended')
-    } catch (err) {
-      // applyMode already spent its bounded re-read/re-decide budget, so this is a drain that did
-      // not land — say so and let the rollout's deadline report the instance failed.
-      this.metrics.drainTimeout()
-      this.deps.log.warn(
-        `cluster: sandbox ${sandboxName} did not suspend for its drain request — ${(err as Error).message}`
-      )
-    }
-  }
-
-  /**
-   * Hold the agent's Sandbox for the duration of `work` — it is bound first, and a drain request
-   * then waits for the work instead of suspending the pod underneath it.
-   *
-   * The daemon's cold workspace preparation is exactly this case: the clone, pull and skill
-   * materialization all run IN the pod over the shim, between the bind and the launch they are
-   * preparing for, and a bind-scoped hold would leave that whole stretch drainable.
-   */
+  /** Hold the agent's Sandbox for `work`, including workspace preparation before launch. */
   async withSandbox<T>(agentId: string, work: () => Promise<T>): Promise<T> {
     const launch = await this.ensureSandbox(agentId)
-    this.refuseWhenDraining(agentId, launch.sandboxName)
     this.retain(launch.sandboxName)
     try {
       return await work()
@@ -506,7 +351,7 @@ export class K8sDriver implements SpawnDriver {
     }
   }
 
-  /** Count work on a Sandbox, so a drain request waits for it instead of pulling the pod out. */
+  /** Count work on a Sandbox so the idle sweep cannot suspend it. */
   private retain(sandboxName: string): void {
     this.busy.set(sandboxName, (this.busy.get(sandboxName) ?? 0) + 1)
   }
@@ -518,23 +363,6 @@ export class K8sDriver implements SpawnDriver {
       return
     }
     this.busy.delete(sandboxName)
-    // The last work on it just ended, which is when a pending drain gets its suspend.
-    void this.quiesceIfIdle(sandboxName)
-  }
-
-  /** Abortable delay on the driver's clock, so shutdown does not wait out a watch restart. */
-  private pause(ms: number, signal: AbortSignal): Promise<void> {
-    return new Promise<void>((resolve) => {
-      const onAbort = (): void => {
-        this.clock.clearTimeout(handle)
-        resolve()
-      }
-      const handle = this.clock.setTimeout(() => {
-        signal.removeEventListener('abort', onAbort)
-        resolve()
-      }, ms)
-      signal.addEventListener('abort', onAbort, { once: true })
-    })
   }
 
   /** Forget an agent and delete its claim; the volume goes with it, which is the intent. */
@@ -603,10 +431,6 @@ export class K8sDriver implements SpawnDriver {
     grants: ShimCapability[] = RUNTIME_GRANTS
   ): Promise<ShimConnection> {
     const launch = await this.ensureSandbox(agentId, timer)
-    // Checked against the SANDBOX, and only once it is known: an agent this daemon has not bound
-    // yet cannot be matched to a drain request any earlier. Held across the bind so a request
-    // arriving mid-flight waits for it rather than suspending the pod we are waiting on.
-    this.refuseWhenDraining(agentId, launch.sandboxName)
     this.retain(launch.sandboxName)
     try {
       return await this.bindChannel(agentId, launch, timer, grants)
@@ -621,10 +445,7 @@ export class K8sDriver implements SpawnDriver {
     timer: LaunchTimer | undefined,
     grants: ShimCapability[]
   ): Promise<ShimConnection> {
-    // Resume BEFORE waiting: suspension deleted the pod, so readiness cannot arrive until
-    // something asks for Running. Deliberately not `wake()`: this bind already passed the drain
-    // gate and holds the Sandbox, so a request landing mid-flight waits for the work instead of
-    // stranding it against a pod nothing will resume.
+    // Resume before waiting because suspension deleted the pod and readiness cannot arrive first.
     const modeBeforeWake = await this.setMode(agentId, 'Running')
     // A launch this daemon already has cached returns from ensureSandbox before any sandbox
     // read, so this is where the ordinary `launch → suspend → launch` resume learns what it is.
@@ -708,12 +529,10 @@ export class K8sDriver implements SpawnDriver {
     const agentId = request.env.AC_AGENT_ID
     if (!agentId) throw new Error('cluster launch requires AC_AGENT_ID in the runtime environment')
     const timer = new LaunchTimer(this.metrics, () => this.clock.now())
-    // The Sandbox this launch holds, from before the bind until the runtime exits. Released on
-    // every failure path too, or one failed launch would hold a drain open forever.
+    // The Sandbox is held from before bind until runtime exit and released on every failure path.
     let held: string | undefined
     try {
       const bound = await this.ensureSandbox(agentId, timer)
-      this.refuseWhenDraining(agentId, bound.sandboxName)
       this.retain(bound.sandboxName)
       held = bound.sandboxName
       await this.ensureBoundChannel(agentId, timer)
@@ -736,29 +555,16 @@ export class K8sDriver implements SpawnDriver {
           timer.finish(outcome)
         }
       })
-      // The runtime's exit is what makes the Sandbox idle, so it is where a pending drain lands.
+      // Runtime exit releases the hold so the next idle sweep can suspend the Sandbox.
       const sandboxName = held
       held = undefined
       runtime.onExit(() => this.release(sandboxName))
       return runtime
     } catch (err) {
       if (held) this.release(held)
-      // Timeouts are the interesting failure — they are what a missed target looks like — so they
-      // are distinguished from an outright error. By TYPE: all three launch deadlines (claim bind,
-      // pod readiness, channel bind) throw LaunchTimeoutError, and the message regex this replaced
-      // silently stopped covering the channel wait the moment its wording changed. A held-for-
-      // rollout refusal is neither: pooling it with errors would make a rollout look like an outage.
-      timer.finish(
-        err instanceof SandboxDrainingError ? 'draining' : err instanceof LaunchTimeoutError ? 'timeout' : 'error'
-      )
+      timer.finish(err instanceof LaunchTimeoutError ? 'timeout' : 'error')
       throw err
     }
-  }
-
-  private refuseWhenDraining(agentId: string, sandboxName: string): void {
-    // Launching now would wait out the readiness timeout against a sandbox we are deliberately
-    // holding down. Say so instead of timing out.
-    if (this.draining.has(sandboxName)) throw new SandboxDrainingError(agentId)
   }
 
   /** Re-attach a renewed or replacement connection to the launch it belongs to. */
