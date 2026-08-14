@@ -3,7 +3,7 @@
 // the lease. Every grant path bumps `term` (the fencing token); renewal never
 // does. Vacancy is temporal: `holder IS NULL` or a lapsed `expiresAt`.
 import { Prisma, type PrismaClient } from '../../generated/prisma/client.js'
-import type { DutyMemberKey, DutyReconcilePlan } from '../../domain/duty.js'
+import type { DutyMemberKey, DutyReconcilePlan, DutyEdge, CronSeed } from '../../domain/duty.js'
 import type { AgentHomeClaim, DutyGrantRecord, DutyGroupRecord, DutyGroupRepo, DutyReconcilePlanner } from '../ports.js'
 import type { AgentId, DaemonId, OrgId } from '../../domain/ids.js'
 import { withTx } from '../prisma.js'
@@ -88,6 +88,38 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
     return rows.map((r) => toRecord(r, members.get(r.id) ?? []))
   }
 
+  async computeInputs(orgId: OrgId): Promise<{ edges: DutyEdge[]; seeds: CronSeed[] }> {
+    const [integrations, crons] = await Promise.all([
+      this.prisma.integration.findMany({
+        where: { orgId, status: 'active', bot: { transport: 'socket', revokedAt: null } },
+        select: { agentId: true, botId: true }
+      }),
+      this.prisma.cronDef.findMany({
+        where: { orgId, enabled: true, agentId: { not: null } },
+        select: { agentId: true }
+      })
+    ])
+    return {
+      edges: integrations.map((i) => ({ agentId: i.agentId, botId: i.botId })),
+      seeds: crons.flatMap((c) => (c.agentId ? [{ agentId: c.agentId }] : []))
+    }
+  }
+
+  async listDutyOrgs(afterOrgId: string | null, limit: number): Promise<string[]> {
+    const after = afterOrgId ?? ''
+    const rows = await this.prisma.$queryRaw<{ orgId: string }[]>(Prisma.sql`
+      SELECT DISTINCT "orgId" FROM (
+        SELECT "orgId" FROM "integration"
+        UNION SELECT "orgId" FROM "cron_def" WHERE "enabled"
+        UNION SELECT "orgId" FROM "duty_group"
+      ) orgs
+      WHERE "orgId" > ${after}
+      ORDER BY "orgId" ASC
+      LIMIT ${limit}
+    `)
+    return rows.map((r) => r.orgId)
+  }
+
   async getByIds(groupIds: string[]): Promise<DutyGroupRecord[]> {
     if (groupIds.length === 0) return []
     const rows = await this.prisma.dutyGroup.findMany({ where: { id: { in: groupIds } }, orderBy: { id: 'asc' } })
@@ -158,7 +190,7 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
     max: number,
     now: Date,
     leaseMs: number,
-    maxMembers?: number
+    opts: { maxMembers?: number; incumbentOnly?: boolean } = {}
   ): Promise<DutyGrantRecord[]> {
     if (max <= 0) return []
     const expiresAt = new Date(now.getTime() + leaseMs)
@@ -166,9 +198,17 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
     // vacancy sitting early in scan order must not be claimed-and-released on
     // every beat, starving the valid vacancies behind it.
     const sizeGate =
-      maxMembers === undefined
+      opts.maxMembers === undefined
         ? Prisma.empty
-        : Prisma.sql`AND (SELECT count(*) FROM "duty_group_member" m WHERE m."groupId" = "duty_group".id) <= ${maxMembers}`
+        : Prisma.sql`AND (SELECT count(*) FROM "duty_group_member" m WHERE m."groupId" = "duty_group".id) <= ${opts.maxMembers}`
+    // Soak-phase policy: only groups whose agents already live on the claimant.
+    const incumbentGate = !opts.incumbentOnly
+      ? Prisma.empty
+      : Prisma.sql`AND EXISTS (
+          SELECT 1 FROM "duty_group_member" m
+          JOIN "agent" a ON a.id = m."refId"
+          WHERE m."groupId" = "duty_group".id AND m."kind" = 'agent' AND a."daemonId" = ${holder}::uuid
+        )`
     // One transaction, so the grant's row locks hold until the returned
     // (term, members) snapshot is assembled — a reconcile cannot interleave and
     // pair the old term with rewritten membership. First valid claim wins;
@@ -178,7 +218,7 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
       const granted = await tx.$queryRaw<Row[]>(Prisma.sql`
         WITH picked AS (
           SELECT id FROM "duty_group"
-          WHERE ("holder" IS NULL OR "expiresAt" IS NULL OR "expiresAt" < ${now}) ${sizeGate}
+          WHERE ("holder" IS NULL OR "expiresAt" IS NULL OR "expiresAt" < ${now}) ${sizeGate} ${incumbentGate}
           ORDER BY "orgId", id
           LIMIT ${max}
           FOR UPDATE SKIP LOCKED

@@ -28,6 +28,11 @@ export interface DutyLeaseConfig {
   grantMembersPerFrame: number
   /** Revocations per duty/revoke frame (schema caps at 1000). */
   revocationsPerFrame: number
+  /** Vacancy grant policy. `incumbent` (the soak default until the shared data
+   *  plane lands) pins grants to groups whose agents already live on the
+   *  claimant, so the machinery runs without moving anyone; `any` is the target
+   *  pool behavior. */
+  grantPolicy: 'incumbent' | 'any'
 }
 
 export const DUTY_LEASE_DEFAULTS: DutyLeaseConfig = {
@@ -36,7 +41,8 @@ export const DUTY_LEASE_DEFAULTS: DutyLeaseConfig = {
   grantMaxPerTick: 32,
   grantsPerFrame: 50,
   grantMembersPerFrame: 2000,
-  revocationsPerFrame: 500
+  revocationsPerFrame: 500,
+  grantPolicy: 'incumbent'
 }
 
 type Send = (type: 'duty/grant' | 'duty/revoke', payload: unknown) => void
@@ -160,7 +166,10 @@ export class DutyLeaseService {
         Math.min(budget, this.config.grantMaxPerTick),
         now,
         this.config.leaseMs,
-        DUTY_GRANT_MEMBERS_MAX
+        {
+          maxMembers: DUTY_GRANT_MEMBERS_MAX,
+          incumbentOnly: this.config.grantPolicy === 'incumbent'
+        }
       )
     }
 
