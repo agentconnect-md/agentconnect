@@ -114,30 +114,33 @@ export class DutyLeaseService {
       return claimed !== undefined && claimed.term !== String(g.term)
     })
 
+    // A lease the ledger holds for this member that the member does not serve
+    // (missing from the digest) and can never be told about (oversized) must
+    // vacate — renewing it forever would wedge the group held-but-unserved.
+    const missingOversized = missing.filter((g) => g.members.length > DUTY_GRANT_MEMBERS_MAX)
+    if (missingOversized.length > 0) {
+      await this.repo.release(
+        daemonId,
+        missingOversized.map((g) => g.groupId)
+      )
+      this.log?.warn(
+        { daemonId, groupIds: missingOversized.map((g) => g.groupId) },
+        'held duty groups exceed the grant member cap and are not served; released — move them to a dedicated tier'
+      )
+    }
+
     let granted: DutyGrantRecord[] = []
     const budget = Math.max(0, duties.headroom - deliverable(missing).length)
     if (budget > 0 && this.clock.now() >= this.bootedAtMs + this.config.recoveryGraceMs) {
+      // Oversized groups are excluded at the claim boundary (the size gate), so
+      // a claim never lands on a group it would immediately have to release.
       granted = await this.repo.claimVacant(
         daemonId,
         Math.min(budget, this.config.grantMaxPerTick),
         now,
-        this.config.leaseMs
+        this.config.leaseMs,
+        DUTY_GRANT_MEMBERS_MAX
       )
-      // A component past the wire's per-entry member cap cannot be delivered at
-      // all — that size is the dedicated-tier signal (it should not be pooled).
-      // Release it right away so the claim never wedges it held-but-unserved.
-      const oversized = granted.filter((g) => g.members.length > DUTY_GRANT_MEMBERS_MAX)
-      if (oversized.length > 0) {
-        await this.repo.release(
-          daemonId,
-          oversized.map((g) => g.groupId)
-        )
-        this.log?.warn(
-          { daemonId, groupIds: oversized.map((g) => g.groupId) },
-          'duty groups exceed the grant member cap; released undelivered — move them to a dedicated tier'
-        )
-        granted = granted.filter((g) => g.members.length <= DUTY_GRANT_MEMBERS_MAX)
-      }
     }
 
     // Classified AFTER the claim so the grant and revoke sets are disjoint by
@@ -155,12 +158,12 @@ export class DutyLeaseService {
     // Chunked emission: each chunk is independently applicable (a grant entry
     // REPLACES its group), so a reconnect restoring hundreds of groups converges
     // over several frames instead of assembling one the daemon must reject.
-    // Oversized re-grants are skipped for the same reason: the incumbent keeps
-    // renewing what it already serves, but a restore can never ride this wire.
-    const undeliverable = [...missing, ...stale].filter((g) => g.members.length > DUTY_GRANT_MEMBERS_MAX)
-    if (undeliverable.length > 0)
+    // An oversized STALE-TERM lease stays: the incumbent still serves it from
+    // its digest, only the term-refresh cannot ride this wire. Warn and keep.
+    const staleOversized = stale.filter((g) => g.members.length > DUTY_GRANT_MEMBERS_MAX)
+    if (staleOversized.length > 0)
       this.log?.warn(
-        { daemonId, groupIds: undeliverable.map((g) => g.groupId) },
+        { daemonId, groupIds: staleOversized.map((g) => g.groupId) },
         'held duty groups exceed the grant member cap; re-grant skipped — move them to a dedicated tier'
       )
     const grants = [

@@ -305,8 +305,10 @@ describe('duty lease exchange — wire safety', () => {
     expect(sizes).toEqual([1, 2])
   })
 
-  it('an oversized group is never granted: released back to vacant instead of an invalid frame', async () => {
-    // 1001 members exceeds DutyGrantEntry.members.max — undeliverable by design.
+  it('an oversized vacancy is never claimed and never starves the valid one behind it', async () => {
+    // 1001 members exceeds DutyGrantEntry.members.max — excluded at the claim
+    // boundary. GROUP sorts BEFORE GROUP2, so without the size gate it would
+    // consume the claim budget every beat.
     await prisma.dutyGroup.create({ data: { id: GROUP, orgId: DEFAULT_ORG_ID, term: 0n } })
     await prisma.dutyGroupMember.createMany({
       data: Array.from({ length: 1001 }, (_, i) => ({
@@ -316,14 +318,52 @@ describe('duty lease exchange — wire safety', () => {
         orgId: DEFAULT_ORG_ID
       }))
     })
+    await prisma.dutyGroup.create({ data: { id: GROUP2, orgId: DEFAULT_ORG_ID, term: 0n } })
+    await prisma.dutyGroupMember.create({
+      data: { kind: 'agent', refId: AGENT2, groupId: GROUP2, orgId: DEFAULT_ORG_ID }
+    })
     const h = buildWsHarness(prisma)
     const { stub } = await ready(h)
 
-    stub.inject('heartbeat', heartbeat({ held: [], headroom: 4 }))
+    stub.inject('heartbeat', heartbeat({ held: [], headroom: 1 }))
+    const grant = await stub.expectFrame('duty/grant')
+    if (!isFrame('duty/grant')(grant)) throw new Error('expected duty/grant')
+    expect(grant.payload.grants).toHaveLength(1)
+    expect(grant.payload.grants[0]).toMatchObject({ groupId: GROUP2 })
+    const oversized = await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })
+    expect(oversized.holder).toBeNull()
+    expect(oversized.term).toBe(0n)
+  })
+
+  it('an oversized lease the member does not serve vacates instead of renewing forever', async () => {
+    const h = buildWsHarness(prisma)
+    const start = new Date(h.clock.now())
+    await prisma.dutyGroup.create({
+      data: {
+        id: GROUP,
+        orgId: DEFAULT_ORG_ID,
+        holder: DAEMON,
+        term: 1n,
+        expiresAt: new Date(start.getTime() + LEASE_MS)
+      }
+    })
+    await prisma.dutyGroupMember.createMany({
+      data: Array.from({ length: 1001 }, (_, i) => ({
+        kind: 'agent' as const,
+        refId: `aaaaaaaa-aaaa-4aaa-8aaa-${String(i).padStart(12, '0')}`,
+        groupId: GROUP,
+        orgId: DEFAULT_ORG_ID
+      }))
+    })
+    const { stub } = await ready(h)
+
+    stub.inject('heartbeat', heartbeat({ held: [], headroom: 0 }))
     await new Promise((r) => setTimeout(r, 100))
     expect(stub.sent.filter((f) => f.type === 'duty/grant')).toEqual([])
     const row = await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })
     expect(row.holder).toBeNull()
+    expect(row.expiresAt).toBeNull()
+    expect(row.term).toBe(1n)
   })
 
   it('an overlapping beat cannot double-spend headroom (single-flight per daemon)', async () => {

@@ -5114,8 +5114,16 @@ export interface DutyGroupRepo {
     opts: { now: Date; leaseMs: number }
   ): Promise<DutyReconcilePlan>
   /** "Grant me up to `max` vacant groups": first valid claim wins (SKIP LOCKED),
-   *  each grant bumps the term. Install-wide — capacity gating is the caller's. */
-  claimVacant(holder: DaemonId, max: number, now: Date, leaseMs: number): Promise<DutyGrantRecord[]>
+   *  each grant bumps the term. Install-wide — capacity gating is the caller's.
+   *  `maxMembers` excludes undeliverable (oversized) groups at the claim
+   *  boundary, so they never churn or starve the vacancies behind them. */
+  claimVacant(
+    holder: DaemonId,
+    max: number,
+    now: Date,
+    leaseMs: number,
+    maxMembers?: number
+  ): Promise<DutyGrantRecord[]>
   /** Batched renewal — one write per heartbeat covering every held group.
    *  Term-preserving; a reassigned group simply stops matching. Returns the
    *  renewed groupIds for digest comparison. */

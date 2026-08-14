@@ -153,9 +153,22 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
     })
   }
 
-  async claimVacant(holder: DaemonId, max: number, now: Date, leaseMs: number): Promise<DutyGrantRecord[]> {
+  async claimVacant(
+    holder: DaemonId,
+    max: number,
+    now: Date,
+    leaseMs: number,
+    maxMembers?: number
+  ): Promise<DutyGrantRecord[]> {
     if (max <= 0) return []
     const expiresAt = new Date(now.getTime() + leaseMs)
+    // Undeliverable groups are excluded AT THE CLAIM BOUNDARY: an oversized
+    // vacancy sitting early in scan order must not be claimed-and-released on
+    // every beat, starving the valid vacancies behind it.
+    const sizeGate =
+      maxMembers === undefined
+        ? Prisma.empty
+        : Prisma.sql`AND (SELECT count(*) FROM "duty_group_member" m WHERE m."groupId" = "duty_group".id) <= ${maxMembers}`
     // One transaction, so the grant's row locks hold until the returned
     // (term, members) snapshot is assembled — a reconcile cannot interleave and
     // pair the old term with rewritten membership. First valid claim wins;
@@ -165,7 +178,7 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
       const granted = await tx.$queryRaw<Row[]>(Prisma.sql`
         WITH picked AS (
           SELECT id FROM "duty_group"
-          WHERE "holder" IS NULL OR "expiresAt" IS NULL OR "expiresAt" < ${now}
+          WHERE ("holder" IS NULL OR "expiresAt" IS NULL OR "expiresAt" < ${now}) ${sizeGate}
           ORDER BY "orgId", id
           LIMIT ${max}
           FOR UPDATE SKIP LOCKED
