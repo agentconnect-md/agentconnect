@@ -321,6 +321,21 @@ export function transcriptChannelKey(channel: string, transportScope?: string | 
 }
 
 /**
+ * The per-agent delivery scope shared by every agent-scoped transcript read: a
+ * row is visible to an agent when the agent SENT it (`sender`), was the row's
+ * first-recorded recipient (`recipient`), or the message was delivered to it
+ * per `transcript_recipient` (which captures deliveries the text-row dedup
+ * would otherwise drop when several co-daemon agents catch up on the same
+ * message). The delivery-table match is gated on `kind = 'text'` because
+ * internal rows (reasoning/tool) are not deduped by ts and can share a ts with
+ * a delivered text row. Binds three parameters: (agentId, agentId, agentId).
+ */
+const AGENT_DELIVERY_SCOPE_SQL = `(sender = ? OR recipient = ? OR (transcript.kind = 'text' AND EXISTS (
+        SELECT 1 FROM transcript_recipient tr
+        WHERE tr.channel = transcript.channel AND tr.thread = transcript.thread
+          AND tr.ts = transcript.ts AND tr.agentId = ?)))`
+
+/**
  * A durably-persisted admitted-but-not-yet-completed inbox message (§6.9 #353). Holds the
  * bits needed to reconstruct a QueueEntry's DispatchContext on replay — everything EXCEPT
  * the live `resolve`/`reject` (freshly minted by the replay `dispatch()`) and the webchat
@@ -1400,10 +1415,7 @@ export class LocalStore {
     // so gate the delivery match on `kind = 'text'`, else a peer's reasoning/tool row at the
     // same ts would be pulled back in. Deliveries only ever concern conversational messages;
     // own internal rows still surface via `sender`.
-    const scope = `(sender = ? OR recipient = ? OR (transcript.kind = 'text' AND EXISTS (
-        SELECT 1 FROM transcript_recipient tr
-        WHERE tr.channel = transcript.channel AND tr.thread = transcript.thread
-          AND tr.ts = transcript.ts AND tr.agentId = ?)))`
+    const scope = AGENT_DELIVERY_SCOPE_SQL
     const hiddenToolTitles = [...SESSION_TITLE_TOOL_TITLES]
     const rows = (beforeSeq !== null
       ? this.db
@@ -1451,10 +1463,7 @@ export class LocalStore {
     before: TranscriptEventCursor | null,
     limit: number
   ): { rows: TranscriptRow[]; hasMore: boolean } {
-    const scope = `(sender = ? OR recipient = ? OR (transcript.kind = 'text' AND EXISTS (
-        SELECT 1 FROM transcript_recipient tr
-        WHERE tr.channel = transcript.channel AND tr.thread = transcript.thread
-          AND tr.ts = transcript.ts AND tr.agentId = ?)))`
+    const scope = AGENT_DELIVERY_SCOPE_SQL
     const hiddenToolTitles = [...SESSION_TITLE_TOOL_TITLES]
     const rows = (before !== null
       ? this.db
@@ -1509,10 +1518,7 @@ export class LocalStore {
     afterRevision: number,
     limit: number
   ): { rows: TranscriptRow[]; hasMore: boolean; cursor: number } {
-    const scope = `(sender = ? OR recipient = ? OR (transcript.kind = 'text' AND EXISTS (
-        SELECT 1 FROM transcript_recipient tr
-        WHERE tr.channel = transcript.channel AND tr.thread = transcript.thread
-          AND tr.ts = transcript.ts AND tr.agentId = ?)))`
+    const scope = AGENT_DELIVERY_SCOPE_SQL
     const rows = this.db
       .prepare(
         `SELECT * FROM transcript
@@ -2812,6 +2818,31 @@ export class LocalStore {
   }
 
   /**
+   * `transcriptSince`, scoped to what ONE agent sent or received — the same
+   * delivery predicate the console session views use. For a synthetic pairwise
+   * `a2a:<caller>` thread (see `isSyntheticA2aChannel` in cp-collab-routes),
+   * every child of one caller shares the physical thread while each row is a
+   * private pairwise delivery: the §8.5 model catch-up must read only this
+   * pair's rows, or siblings see each other's private deliveries (#967).
+   */
+  transcriptSinceForAgent(channel: string, thread: string, sinceTs: string | null, agentId: string): TranscriptEntry[] {
+    if (sinceTs === null) {
+      return this.db
+        .prepare(
+          `SELECT * FROM transcript WHERE channel = ? AND thread = ? AND kind = 'text'
+             AND ${AGENT_DELIVERY_SCOPE_SQL} ORDER BY ts ASC`
+        )
+        .all(channel, thread, agentId, agentId, agentId) as unknown as TranscriptEntry[]
+    }
+    return this.db
+      .prepare(
+        `SELECT * FROM transcript WHERE channel = ? AND thread = ? AND kind = 'text' AND ts > ?
+           AND ${AGENT_DELIVERY_SCOPE_SQL} ORDER BY ts ASC`
+      )
+      .all(channel, thread, sinceTs, agentId, agentId, agentId) as unknown as TranscriptEntry[]
+  }
+
+  /**
    * Provider-neutral context fence for one physical conversation thread. Unlike
    * `transcriptSince`, this never compares provider message ids from different
    * ordering domains; it follows the daemon's monotonic observation revision.
@@ -2832,6 +2863,25 @@ export class LocalStore {
          ORDER BY revision ASC, seq ASC`
       )
       .all(channel, thread, afterRevision) as unknown as TranscriptRow[]
+  }
+
+  /** `transcriptSinceRevision`, scoped to one agent's sent/received rows — the
+   *  turn-context refresh's read on a synthetic pairwise `a2a:<caller>` thread,
+   *  for the same reason as {@link transcriptSinceForAgent} (#967). */
+  transcriptSinceRevisionForAgent(
+    channel: string,
+    thread: string,
+    afterRevision: number,
+    agentId: string
+  ): TranscriptRow[] {
+    return this.db
+      .prepare(
+        `SELECT * FROM transcript
+         WHERE channel = ? AND thread = ? AND revision > ?
+           AND ${AGENT_DELIVERY_SCOPE_SQL}
+         ORDER BY revision ASC, seq ASC`
+      )
+      .all(channel, thread, afterRevision, agentId, agentId, agentId) as unknown as TranscriptRow[]
   }
 
   /** The earliest inbound (non-agent) `text` message in a thread — the triggering user

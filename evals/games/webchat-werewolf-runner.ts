@@ -85,6 +85,12 @@ export interface WebchatWerewolfRunResult {
    *  into the conversation view, so webchat "private" night traffic is
    *  visible to the whole room. Measured, not failed. */
   privateReportsPostedPublicly: number
+  /** Scripted subjects only: canary sightings in prompts of players whose ROLE
+   *  does not hold that canary (wolf canary outside the wolves, seer canary
+   *  outside the seer) — the #967 pairwise-transcript regression probe. Every
+   *  prompt of every player session (conversation + pairwise) is scanned.
+   *  Undefined for real subjects (their prompts are not observable). */
+  canaryCrossVisibility?: number
   stalledAt?: string
   posts: { author: string; text: string }[]
 }
@@ -207,6 +213,21 @@ export async function runWebchatWerewolf(options: WebchatWerewolfRunOptions): Pr
 
   const posts = arena.posts.map((post) => ({ author: aliasOf(post.agentId), text: post.post.text }))
   const wakeEvidence = agentReplyWakeEvidence(arena.events(), refereeSeat.agentId)
+  // #967 regression probe (scripted only — real players' prompts are not
+  // observable): a role canary must never surface in a prompt of a player
+  // whose role does not hold it, on ANY of that player's sessions.
+  let canaryCrossVisibility: number | undefined
+  if (subjectSpec.kind === 'scripted') {
+    canaryCrossVisibility = 0
+    for (const seat of playerSeats) {
+      const role = brain.roleOf(seat.alias)
+      const promptTexts = log.filter((entry) => entry.agentId === seat.agentId).map((entry) => entry.text)
+      for (const text of promptTexts) {
+        if (role !== 'werewolf' && text.includes(brain.canaries.wolf)) canaryCrossVisibility += 1
+        if (role !== 'seer' && text.includes(brain.canaries.seer)) canaryCrossVisibility += 1
+      }
+    }
+  }
   const canaryLeaks = [...posts.map((post) => post.text), ...transcriptTexts].filter(
     (text) => text.includes(brain.canaries.wolf) || text.includes(brain.canaries.seer)
   ).length
@@ -225,6 +246,7 @@ export async function runWebchatWerewolf(options: WebchatWerewolfRunOptions): Pr
     replyLoss: brain.needsReplyLog.map((row) => ({ ...row, to: aliasOf(row.to) })),
     replyWakesAccepted: wakeEvidence.accepted.size,
     replyWakesCoalesced: wakeEvidence.coalesced.size,
+    ...(canaryCrossVisibility !== undefined ? { canaryCrossVisibility } : {}),
     canaryLeaks,
     privateReportsPostedPublicly,
     ...(terminalReason === 'stalled' || terminalReason === 'budget_exhausted' ? { stalledAt: brain.stallState() } : {}),

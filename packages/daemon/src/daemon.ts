@@ -301,7 +301,7 @@ import { makeLogger, type Logger } from './log.js'
 import { CpClient, CP_SUBPROTOCOL, CP_WS_PATH, type BootstrapUpgradeOutcome } from './cp/client.js'
 import { RelayManager } from './cp/relay-manager.js'
 import { CP_IDENTITY_TOKEN_PATH, readClusterIdentityToken } from './cp/cluster-identity.js'
-import { CpCollabRoutes } from './cp/cp-collab-routes.js'
+import { CpCollabRoutes, isSyntheticA2aChannel } from './cp/cp-collab-routes.js'
 import { ClientTransport, systemClock, type Clock, type TimerHandle } from '@agentconnect.md/connection'
 import {
   AgentActivate as AgentActivateSchema,
@@ -11703,6 +11703,9 @@ export class Daemon {
       transcriptChannel: pending.transcriptChannel,
       thread: pending.statusThread,
       afterRevision,
+      // Pairwise a2a threads are shared storage but private conversations:
+      // scope the refresh to this agent's own rows (#967).
+      ...(isSyntheticA2aChannel(pending.transcriptChannel) ? { scopeReadsToAgent: true } : {}),
       ...(providerCheckpoint ? { providerCheckpoint } : {}),
       ...(snapshot ? { snapshot } : {})
     })
@@ -11723,8 +11726,17 @@ export class Daemon {
   }
 
   private localInvalidatingEvents(pending: Pending, afterRevision: number): TranscriptRow[] {
-    return this.store
-      .transcriptSinceRevision(pending.transcriptChannel, pending.statusThread, afterRevision)
+    const rows = isSyntheticA2aChannel(pending.transcriptChannel)
+      ? // Pairwise a2a threads: only this agent's own rows may invalidate its
+        // turn — a sibling's private delivery is not its context (#967).
+        this.store.transcriptSinceRevisionForAgent(
+          pending.transcriptChannel,
+          pending.statusThread,
+          afterRevision,
+          pending.agentId
+        )
+      : this.store.transcriptSinceRevision(pending.transcriptChannel, pending.statusThread, afterRevision)
+    return rows
       .filter((row) => row.kind === 'text' && row.sender !== pending.agentId)
       .sort((a, b) => a.eventTimeUs - b.eventTimeUs || a.seq - b.seq)
   }

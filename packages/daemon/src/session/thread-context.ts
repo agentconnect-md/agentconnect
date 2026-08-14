@@ -27,6 +27,11 @@ export interface ThreadContextRefreshInput {
   /** Provider I/O is deliberately supplied by the daemon edge. The coordinator
    * remains independent of Slack/Discord/Feishu SDKs and owns only reconciliation. */
   snapshot?: () => Promise<ThreadContextSnapshot>
+  /** Read only rows this agent sent or received. Set by the daemon for sessions
+   * on a synthetic pairwise `a2a:<caller>` thread, where every child of one
+   * caller shares the physical thread but each row is a private pairwise
+   * delivery — an unscoped refresh would show siblings' deliveries (#967). */
+  scopeReadsToAgent?: boolean
 }
 
 const SNAPSHOT_ATTEMPTS = 3
@@ -82,8 +87,16 @@ export class ThreadContextCoordinator {
     // No await is allowed between these reads. One JavaScript turn therefore forms
     // the daemon-local observation fence: an ingress callback runs either before both
     // reads (and is included) or after both reads (and belongs to the next turn).
-    const rows = this.store
-      .transcriptSinceRevision(input.transcriptChannel, input.thread, input.afterRevision)
+    const rows = (
+      input.scopeReadsToAgent
+        ? this.store.transcriptSinceRevisionForAgent(
+            input.transcriptChannel,
+            input.thread,
+            input.afterRevision,
+            input.agentId
+          )
+        : this.store.transcriptSinceRevision(input.transcriptChannel, input.thread, input.afterRevision)
+    )
       .filter((row) => row.kind === 'text' && row.sender !== input.agentId)
       .sort((a, b) => a.eventTimeUs - b.eventTimeUs || a.seq - b.seq)
     const revision = this.store.threadTranscriptRevision(input.transcriptChannel, input.thread)

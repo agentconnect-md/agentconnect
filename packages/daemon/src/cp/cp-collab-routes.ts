@@ -44,6 +44,23 @@ export function a2aCoordChannel(callerAgentId: string): string {
   return `a2a:${callerAgentId}`
 }
 
+/**
+ * Is `channel` (or a transcript channel key derived from it — the key is a
+ * prefix-preserving suffix scheme) a synthetic pairwise coordinate minted by
+ * {@link a2aCoordChannel}?
+ *
+ * Load-bearing for transcript privacy (#967): every postless child of ONE
+ * caller shares this synthetic channel + the caller's thread, so their rows
+ * land in one physical transcript thread. The sessions are pairwise; the
+ * transcript reads must be too — the context seams use this predicate to
+ * scope §8.5 catch-up and turn-context refresh to the session's own agent
+ * (sender/recipient), so siblings can never read each other's private
+ * deliveries or reports through ordinary context refresh.
+ */
+export function isSyntheticA2aChannel(channel: string): boolean {
+  return channel.startsWith('a2a:')
+}
+
 export class CpCollabRoutes {
   private generation = -1
   private readonly channels = new Map<string, Map<string, CollabResolved>>()
