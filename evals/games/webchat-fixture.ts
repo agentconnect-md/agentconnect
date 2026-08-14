@@ -445,3 +445,58 @@ export class WebchatArena {
     await this.daemon.stop()
   }
 }
+
+// ── reply-wake evidence ─────────────────────────────────────────────────────
+
+const BARE_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+
+/**
+ * The daemon-side admission evidence for `sendMessage {sessionId}` reply wakes
+ * into one agent's sessions — what lets a scorer tell "the reply's wake was
+ * admitted (and either started a turn or was coalesced into one)" apart from
+ * "the reply's body merely became VISIBLE somewhere" (which, under #926, any
+ * committed public copy can do via a later, unrelated context refresh).
+ *
+ * The discriminator: a reply wake's evaluation `turnId` is
+ * `<agentId>:<deliveryId>` with a BARE-UUID deliveryId and `source: 'agent'`
+ * at admission. The other webchat wake shapes cannot collide — a §5.2a
+ * continuation wake's id is `<postId>#<target>` (never a bare UUID), a host
+ * user turn is `source: 'user'`, and a `messageAgent` call's deliveryId is a
+ * monotonic timestamp. Validated against real-run artifacts: the stage-2
+ * Werewolf game shows exactly one accepted id per answered needsReply call,
+ * and the all-lost night-collection trials show zero.
+ */
+export interface ReplyWakeEvidence {
+  /** Reply-wake deliveryIds ADMITTED into the agent's sessions. */
+  accepted: Set<string>
+  /** Turn inputs of reply wakes that STARTED their own turn, by deliveryId. */
+  startedInputs: Map<string, string>
+  /** Reply-wake deliveryIds whose queued activation was COALESCED into an
+   *  in-flight turn (the turn's refreshed input represents the reply). */
+  coalesced: Set<string>
+}
+
+export function agentReplyWakeEvidence(events: readonly EvaluationEvent[], agentId: string): ReplyWakeEvidence {
+  const suffixOf = (event: EvaluationEvent): string | undefined => {
+    if (event.agentId !== agentId || typeof event.turnId !== 'string') return undefined
+    const prefix = `${agentId}:`
+    if (!event.turnId.startsWith(prefix)) return undefined
+    const suffix = event.turnId.slice(prefix.length)
+    return BARE_UUID.test(suffix) ? suffix : undefined
+  }
+  const accepted = new Set<string>()
+  for (const event of events) {
+    if (event.type !== 'turn.accepted' || event.data.source !== 'agent') continue
+    const suffix = suffixOf(event)
+    if (suffix !== undefined) accepted.add(suffix)
+  }
+  const startedInputs = new Map<string, string>()
+  const coalesced = new Set<string>()
+  for (const event of events) {
+    const suffix = suffixOf(event)
+    if (suffix === undefined || !accepted.has(suffix)) continue
+    if (event.type === 'turn.started') startedInputs.set(suffix, String(event.data.input ?? ''))
+    if (event.type === 'turn.cancelled' && event.data.reason === 'coalesced_into_turn') coalesced.add(suffix)
+  }
+  return { accepted, startedInputs, coalesced }
+}

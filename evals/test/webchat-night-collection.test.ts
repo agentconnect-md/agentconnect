@@ -155,6 +155,11 @@ describe('webchat night collection (scripted)', () => {
       expect(byChild.get('seer')!.mode).toBe('lost')
       expect(score.lost).toEqual(['seer'])
 
+      // Daemon-side ground truth: exactly the three correct replies were
+      // admitted as reply wakes — the prose answer produced none, and no
+      // verdict above rests on content visibility alone.
+      expect(score.acceptedReplyWakes).toBe(3)
+
       // The referee-mediated relay leg, end to end: wolf-B was woken with
       // wolf-A's proposal, and its verdict came back.
       const wolfBPrompts = run.log
@@ -205,6 +210,10 @@ describe('webchat night collection (scripted)', () => {
       const doctor = score.replies.find((reply) => reply.child === 'doctor')!
       // The invariant: never swallowed. Either shape is legal; both are
       // recorded — and the referee saw the reply exactly once either way.
+      // A 'coalesced' verdict is only reachable through an admitted wake the
+      // scorer's evidence budget vouches for — content visibility alone
+      // (a #926 public-copy echo) scores 'lost'.
+      expect(score.acceptedReplyWakes).toBeGreaterThanOrEqual(3)
       expect(doctor.mode).not.toBe('lost')
       expect(doctor.ownTurnStarts).toBeLessThanOrEqual(1)
       expect(doctor.deliveredPromptSightings + doctor.contextRowSightings).toBeGreaterThanOrEqual(1)

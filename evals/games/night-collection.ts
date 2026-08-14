@@ -21,7 +21,7 @@
  */
 import type { EvaluationEvent } from '../../packages/daemon/src/evaluation/index.js'
 import type { RdWebchatPost } from '../../packages/protocol/src/index.js'
-import { NO_RESPONSE, type WebchatSeat } from './webchat-fixture.js'
+import { NO_RESPONSE, agentReplyWakeEvidence, type WebchatSeat } from './webchat-fixture.js'
 import type { BrainCallOutcome, BrainTurn, ScriptedBrain } from './webchat-referee.js'
 
 export const NIGHT_ALIASES = ['referee', 'wolf-a', 'wolf-b', 'seer', 'doctor', 'villager'] as const
@@ -180,17 +180,23 @@ function parseToolResult(result: unknown): Record<string, unknown> | undefined {
 export type ReplyMode = 'own-turn' | 'coalesced' | 'lost'
 
 /**
- * The two shapes a child reply takes inside a referee prompt, and why the
- * distinction is load-bearing:
+ * Classification is grounded in the DAEMON'S OWN wake evidence
+ * (`agentReplyWakeEvidence`), never in content visibility alone: under #926 a
+ * child's report is also committed as a conversation post whose `context` copy
+ * fans back to the referee, so the marker can surface in a LATER, unrelated
+ * referee prompt even if the reply's own queued wake was dropped. Visibility
+ * without an admitted reply wake therefore scores LOST.
+ *
+ * The two shapes an ADMITTED reply then takes inside a referee prompt:
  *
  *  - DELIVERED form — the reply body as the wake's own message (a raw line
- *    starting with the marker, or `From <agent>: MARKER …`). One of these in a
- *    `turn.started` input means the reply STARTED that referee turn.
- *  - CONTEXT-ROW form — `[<sender>] MARKER …`, a shared-transcript row shown
- *    by a context refresh. This is how a reply that was COALESCED into an
- *    in-flight referee turn is represented (its queued wake is absorbed, the
- *    regenerated turn input carries the row), and also how LATER turns re-show
- *    catch-up context — which is why context rows never count as wakes.
+ *    starting with the marker, or `From <agent>: MARKER …`) in the input of a
+ *    turn that STARTED on an admitted reply wake;
+ *  - CONTEXT-ROW form — `[<sender>] MARKER …`: how a reply whose admitted
+ *    wake was COALESCED into an in-flight turn is represented (the regenerated
+ *    turn input carries the row). Later catch-up context re-shows the same row
+ *    shape, which is exactly why a `coalesced` verdict additionally requires an
+ *    unconsumed coalesced reply wake in the evidence.
  */
 export interface ReplyOutcome {
   child: string
@@ -200,11 +206,13 @@ export interface ReplyOutcome {
    *  row of a coalesced wake); 'lost': the referee never saw it at all — the
    *  headless prose-reply loss. */
   mode: ReplyMode
-  /** Referee `turn.started` inputs carrying the DELIVERED form. Must be ≤ 1. */
+  /** Turns STARTED on an admitted reply wake whose input carries the
+   *  DELIVERED form. Must be ≤ 1. */
   ownTurnStarts: number
   /** Referee prompt deliveries (incl. regenerations) with the delivered form. */
   deliveredPromptSightings: number
-  /** Referee prompt deliveries carrying the context-row form. */
+  /** Referee prompt deliveries carrying the context-row form (observational —
+   *  never delivery proof by itself). */
   contextRowSightings: number
   /** Whether the reply body surfaced as a committed conversation post — the
    *  #926 agent-wake inbound live post. Recorded, since it means a "private"
@@ -215,6 +223,11 @@ export interface ReplyOutcome {
 export interface NightCollectionScore {
   replies: ReplyOutcome[]
   lost: string[]
+  /** Admitted `sendMessage {sessionId}` reply wakes at the referee — the
+   *  daemon-side ground truth the per-marker verdicts are bound to. */
+  acceptedReplyWakes: number
+  /** Of those, wakes coalesced into an in-flight referee turn. */
+  coalescedReplyWakes: number
   /** Public filler posts observed during the night. */
   fillerPosts: number
   /** The referee's closing public post landed. */
@@ -243,24 +256,35 @@ export function contextRowPattern(marker: NightMarker): RegExp {
 }
 
 export function scoreNightCollection(inputs: ScoreInputs): NightCollectionScore {
-  const refereeTurnInputs = inputs.events
-    .filter((event) => event.type === 'turn.started' && event.agentId === inputs.refereeAgentId)
-    .map((event) => String(event.data.input ?? ''))
+  const evidence = agentReplyWakeEvidence(inputs.events, inputs.refereeAgentId)
+  const replyWakeTurnInputs = [...evidence.startedInputs.values()]
+  // Coalesced wakes are a budget consumed one per marker: a `coalesced`
+  // verdict needs BOTH visible content and an unconsumed coalesced reply wake
+  // (content alone can be a #926 public-copy echo of a dropped wake).
+  let coalescedBudget = evidence.coalesced.size
   const replies: ReplyOutcome[] = inputs.children.map(({ alias, marker }) => {
     const token = MARKERS[marker]
     const delivered = deliveredFormPattern(marker)
     const contextRow = contextRowPattern(marker)
-    const ownTurnStarts = refereeTurnInputs.filter((input) => delivered.test(input)).length
+    const ownTurnStarts = replyWakeTurnInputs.filter((input) => delivered.test(input)).length
     const deliveredPromptSightings = inputs.refereePrompts.filter((text) => delivered.test(text)).length
     const contextRowSightings = inputs.refereePrompts.filter((text) => contextRow.test(text)).length
-    const mode: ReplyMode =
-      ownTurnStarts > 0 ? 'own-turn' : deliveredPromptSightings + contextRowSightings > 0 ? 'coalesced' : 'lost'
+    const contentVisible = deliveredPromptSightings + contextRowSightings > 0
+    let mode: ReplyMode = 'lost'
+    if (ownTurnStarts > 0) {
+      mode = 'own-turn'
+    } else if (contentVisible && coalescedBudget > 0) {
+      coalescedBudget -= 1
+      mode = 'coalesced'
+    }
     const postedPublicly = inputs.posts.some((post) => post.agentId !== 'host' && post.post.text.includes(token))
     return { child: alias, marker, mode, ownTurnStarts, deliveredPromptSightings, contextRowSightings, postedPublicly }
   })
   return {
     replies,
     lost: replies.filter((reply) => reply.mode === 'lost').map((reply) => reply.child),
+    acceptedReplyWakes: evidence.accepted.size,
+    coalescedReplyWakes: evidence.coalesced.size,
     fillerPosts: inputs.posts.filter((post) => post.agentId !== 'host' && /^Waiting\./.test(post.post.text)).length,
     nightResolvedPosted: inputs.posts.some(
       (post) => post.agentId === inputs.refereeAgentId && post.post.text.includes('The night is resolved.')

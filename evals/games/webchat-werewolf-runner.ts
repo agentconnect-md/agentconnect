@@ -23,6 +23,7 @@ import { PuppetDriver } from './puppet.js'
 import { preflightRealSubject } from './subject.js'
 import {
   WebchatArena,
+  agentReplyWakeEvidence,
   mintSeats,
   prepareRealWebchatRoot,
   prepareScriptedWebchatRoot,
@@ -67,6 +68,14 @@ export interface WebchatWerewolfRunResult {
   /** Every needsReply call the referee issued, with whether an answer ever
    *  came back — the pending rows of a finished run ARE the reply losses. */
   replyLoss: (Omit<NeedsReplyLogRow, 'to'> & { to: string })[]
+  /** Admitted `sendMessage {sessionId}` reply wakes at the referee — the
+   *  daemon-side ground truth for `answered` rows. The brain also absorbs
+   *  #926 public-copy CONTEXT rows (a model referee reads the room too), so
+   *  the CI gate asserts this count equals the answered rows: an `answered`
+   *  verdict fed only by a context echo of a DROPPED wake cannot pass. */
+  replyWakesAccepted: number
+  /** Of those, wakes coalesced into an in-flight referee turn. */
+  replyWakesCoalesced: number
   /** Canary strings observed in the shared conversation (posts or transcript).
    *  Must be zero: canaries ride only the private role calls. */
   canaryLeaks: number
@@ -197,6 +206,7 @@ export async function runWebchatWerewolf(options: WebchatWerewolfRunOptions): Pr
   }
 
   const posts = arena.posts.map((post) => ({ author: aliasOf(post.agentId), text: post.post.text }))
+  const wakeEvidence = agentReplyWakeEvidence(arena.events(), refereeSeat.agentId)
   const canaryLeaks = [...posts.map((post) => post.text), ...transcriptTexts].filter(
     (text) => text.includes(brain.canaries.wolf) || text.includes(brain.canaries.seer)
   ).length
@@ -213,6 +223,8 @@ export async function runWebchatWerewolf(options: WebchatWerewolfRunOptions): Pr
     nights: brain.nights,
     days: brain.days,
     replyLoss: brain.needsReplyLog.map((row) => ({ ...row, to: aliasOf(row.to) })),
+    replyWakesAccepted: wakeEvidence.accepted.size,
+    replyWakesCoalesced: wakeEvidence.coalesced.size,
     canaryLeaks,
     privateReportsPostedPublicly,
     ...(terminalReason === 'stalled' || terminalReason === 'budget_exhausted' ? { stalledAt: brain.stallState() } : {}),

@@ -63,6 +63,10 @@ describe('webchat werewolf (scripted)', () => {
     )
     expect(result.replyLoss.every((row) => row.delivered)).toBe(true)
     expect(result.replyLoss.every((row) => row.answered)).toBe(true)
+    // Daemon-side cross-check: every `answered` verdict is backed by an
+    // ADMITTED reply wake — a #926 context echo of a dropped wake cannot
+    // masquerade as an answer.
+    expect(result.replyWakesAccepted).toBe(result.replyLoss.filter((row) => row.answered).length)
 
     // Leak assertions, adapted to the conversation shape: the canaries ride
     // ONLY the private role calls and must never surface in the shared
@@ -90,5 +94,9 @@ describe('webchat werewolf (scripted)', () => {
       if (night.kill !== undefined) expect(night.proposal).toBeDefined()
     }
     expect(result.replyLoss.every((row) => row.answered)).toBe(true)
+    // Daemon-side cross-check: every `answered` verdict is backed by an
+    // ADMITTED reply wake — a #926 context echo of a dropped wake cannot
+    // masquerade as an answer.
+    expect(result.replyWakesAccepted).toBe(result.replyLoss.filter((row) => row.answered).length)
   }, 180_000)
 })

@@ -239,7 +239,11 @@ scripted cells pin, on current `main`:
 
 - a child reply sent correctly (`sendMessage {sessionId}`) wakes the referee's
   session **exactly once**, whether as its own turn or coalesced into an
-  in-flight turn whose input then still carries it (both shapes are recorded);
+  in-flight turn whose input then still carries it (both shapes are recorded).
+  Verdicts are bound to the daemon's own wake-admission evidence
+  (`agentReplyWakeEvidence`): under #926 a reply's public copy can surface in
+  a later unrelated context refresh, so content visibility alone never counts
+  as delivery — a visible marker with no admitted reply wake scores LOST;
 - a child that answers its delegation in **prose** (headless, no tool call) is
   a **lost** reply — the #905 validation cell, pinned `lost` because that IS
   current main;
