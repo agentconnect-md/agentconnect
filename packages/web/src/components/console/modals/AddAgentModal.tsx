@@ -8,6 +8,7 @@ import { useProfile } from '@/lib/profile'
 import { useOrgs } from '@/lib/org-context'
 import {
   FALLBACK_RUNTIME_IDS,
+  CLOUD_DAEMON_LABEL,
   approvalsReviewerDefault,
   loginRequiredRuntimeIds,
   agentSlugFinalize,
@@ -31,6 +32,7 @@ import {
   type ApprovalsReviewer,
   supportsModes
 } from '@/lib/data'
+import { addAgentDaemonChoice } from './add-agent-daemon-choice'
 import {
   fetchGithubBranches,
   fetchGithubInstallations,
@@ -332,13 +334,11 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
     return () => el.removeEventListener('scroll', sync)
   }, [])
 
-  // Online daemons first (the ones that can host now); otherwise keep fetch order.
-  const sortedDaemons = [...daemons].sort((a, b) => Number(b.status === 'online') - Number(a.status === 'online'))
-  // Daemon is required — no "assign later". Default to (and self-correct to) the first
-  // available daemon (online ones sort first), so a valid one is always preselected.
-  const effectiveDaemonId = daemons.some((d) => d.daemonId === daemonId) ? daemonId : (sortedDaemons[0]?.daemonId ?? '')
-  const daemon = daemons.find((d) => d.daemonId === effectiveDaemonId)
-  const daemonLabel = daemon ? daemon.name : 'No daemons connected'
+  // Cloud is one null-valued UI choice; the server still receives one serving pool member.
+  const daemonChoice = addAgentDaemonChoice(daemons, daemonId)
+  const { cloudAvailable, daemon, localDaemons, placementDaemonId, value: effectiveDaemonId } = daemonChoice
+  const cloudSelected = cloudAvailable && effectiveDaemonId === ''
+  const daemonLabel = cloudSelected ? CLOUD_DAEMON_LABEL : daemon ? daemon.name : 'No daemons connected'
   const sandboxRequired = daemon?.caps.features.includes('sandbox-required') ?? false
   const sandboxSupported = sandboxRequired || (daemon?.caps.features.includes('sandbox') ?? false)
   const effectiveRunInSandbox = sandboxRequired || (sandboxSupported && runInSandbox)
@@ -803,7 +803,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
         runtime: effectiveRuntime,
         ...(selectedModel ? { model: selectedModel } : {}),
         ...(description.trim() ? { description: description.trim() } : {}),
-        daemonId: daemon.daemonId,
+        ...(placementDaemonId !== null ? { daemonId: placementDaemonId } : {}),
         outputMode,
         showFooter,
         showStatusBar,
@@ -965,8 +965,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                   onChange={(e) => setDescription(e.target.value)}
                 />
               </div>
-              {/* Daemon / Runtime / Model share one row: a 3-up sub-grid inside
-                  the 2-up Basics grid. */}
+              {/* Daemon / Runtime / Model share one 3-up row inside the Basics grid. */}
               <div className="desktop:col-span-2 grid grid-cols-1 gap-[14px] desktop:grid-cols-3">
                 <div className="fld">
                   <span className="fldlbl">Daemon</span>
@@ -981,7 +980,8 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                       className="absolute inset-0 cursor-pointer opacity-0"
                       aria-label="Daemon"
                     >
-                      {sortedDaemons.map((d) => (
+                      {cloudAvailable && <option value="">{CLOUD_DAEMON_LABEL}</option>}
+                      {localDaemons.map((d) => (
                         <option key={d.daemonId} value={d.daemonId}>
                           {d.name}
                           {d.status !== 'online' ? ` (${d.status})` : ''}
