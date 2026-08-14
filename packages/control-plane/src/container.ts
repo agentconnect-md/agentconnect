@@ -35,18 +35,7 @@ import { LogtoIdentityService, resolveLogtoMgmtConfig } from './github/logto-ide
 import { GithubUserAuthzService } from './github/user-authz.js'
 import { type Clock, systemClock } from './domain/clock.js'
 import { K8sHttp } from '@agentconnect.md/k8s-client'
-import {
-  AgentConnectOrgApi,
-  ClusterDaemonIdentityService,
-  ClusterExecutionService,
-  ClusterMaintenanceLoop,
-  loadClusterAccess
-} from './cluster/index.js'
-import { daemonWsUrl } from './http/onboarding.js'
-
-/** How often owed envelope teardowns and key revocations are swept; the request
- *  paths also kick their own work inline, so this is the backstop interval. */
-const CLUSTER_MAINTENANCE_INTERVAL_MS = 5 * 60 * 1000
+import { ClusterDaemonIdentityService, loadClusterAccess } from './cluster/index.js'
 
 import {
   PgDaemonRepo,
@@ -76,7 +65,6 @@ import {
   PgMcpProviderSecretStore,
   PgMcpGrantRepo,
   PgSkillSourceRepo,
-  PgOrgClusterExecutionRepo,
   PgOrganizationKnowledgeRepo,
   PgOrganizationEnvironmentRepo,
   PgOrganizationEnvironmentResolver,
@@ -347,7 +335,6 @@ export function buildContainer(
     mcpProviderSecret: new PgMcpProviderSecretStore(prisma, secretCipher),
     mcpGrant: new PgMcpGrantRepo(prisma, secretCipher),
     skillSource: new PgSkillSourceRepo(prisma),
-    orgClusterExecution: new PgOrgClusterExecutionRepo(prisma),
     organizationKnowledge: new PgOrganizationKnowledgeRepo(prisma),
     // Owns its transactions: every organization-environment write runs the design
     // §5 fence (org row → agent rows → re-read → validate → persist + bump
@@ -396,26 +383,18 @@ export function buildContainer(
 
   const codec = new ApiKeyCodec({ API_KEY_PEPPER: config.API_KEY_PEPPER })
   const webAppUrl = resolveWebAppUrl(config)
-  // Managed cluster execution (docs/designs/agentconnect-org-operator.md): assembled ONLY
-  // when the switch is on. Unlike the forgiving S3 group further down, the env schema
-  // already fail-fasts on a half-configured credential source, so reaching here with the
-  // feature enabled means the credentials loaded. Hoisted above the auth service because an
-  // in-cluster daemon authenticates against this same cluster client.
+  // In-cluster Kubernetes access: assembled ONLY when the switch is on. Hoisted above the
+  // auth service because an in-cluster daemon authenticates against this same cluster client.
   const clusterAccess = loadClusterAccess(config)
   const clusterHttp = clusterAccess ? new K8sHttp(clusterAccess) : undefined
-  const clusterOrgApi =
-    clusterAccess && clusterHttp ? new AgentConnectOrgApi(clusterHttp, clusterAccess.namespace) : undefined
   // The in-cluster daemon's token path; undefined ⇒ this deployment only accepts API keys.
   // Shared by both doors a daemon can knock on — the CP socket and, through `rc/verify`,
   // the relay — so the relay hop can never be the weaker one.
   const clusterIdentity =
-    clusterAccess && clusterHttp && clusterOrgApi
+    clusterAccess && clusterHttp
       ? new ClusterDaemonIdentityService(
           clusterHttp,
-          clusterOrgApi,
-          repos.orgClusterExecution,
           repos.daemon,
-          config.CLUSTER_ORG_NAMESPACE_PREFIX,
           // Where this install's cloud daemons live; its own namespace unless told otherwise.
           config.CLUSTER_CLOUD_DAEMON_NAMESPACE ?? clusterAccess.namespace
         )
@@ -485,31 +464,6 @@ export function buildContainer(
           region: config.S3_REGION,
           publicBaseUrl: config.S3_PUBLIC_BASE_URL
         })
-      : undefined
-  const clusterExecution =
-    clusterAccess && clusterHttp && clusterOrgApi
-      ? new ClusterExecutionService(
-          repos.orgClusterExecution,
-          clusterOrgApi,
-          repos.org,
-          {
-            namespacePrefix: config.CLUSTER_ORG_NAMESPACE_PREFIX,
-            daemonImage: config.CLUSTER_DAEMON_IMAGE!,
-            runtimeImage: config.CLUSTER_RUNTIME_IMAGE!,
-            daemonTier: config.CLUSTER_DEFAULT_TIER,
-            // Falls back to the daemon tier only because that is what this was before the
-            // two were told apart; an install whose master templates are not named after
-            // the daemon tiers must set CLUSTER_DEFAULT_RUNTIME_TIER (see config/env.ts).
-            runtimeTiers: [
-              { name: config.CLUSTER_DEFAULT_RUNTIME_TIER ?? config.CLUSTER_DEFAULT_TIER, warmReplicas: 0 }
-            ],
-            // The same URL onboarding renders into the `npx … run` command, so an
-            // envelope daemon and a hand-run one dial exactly the same endpoint.
-            controlPlaneUrl: daemonWsUrl(httpServerConfigFrom(config, { DEFAULT_OWNER_ID, relayStaleMs }))
-          },
-          repos.daemon,
-          clock
-        )
       : undefined
   // Bases the reconcile roster + DTOs resolve avatar URLs against: `cp` for the
   // glyph/runtime PNG endpoint, `store` for uploaded `image` icons.
@@ -997,7 +951,6 @@ export function buildContainer(
       mcpProviderSecret: repos.mcpProviderSecret,
       mcpGrant: repos.mcpGrant,
       skillSource: repos.skillSource,
-      orgClusterExecution: repos.orgClusterExecution,
       organizationKnowledge: repos.organizationKnowledge,
       organizationEnvironment: repos.organizationEnvironment,
       organizationEnvironmentSecret: repos.organizationEnvironmentSecret,
@@ -1058,7 +1011,6 @@ export function buildContainer(
     ...(logtoIdentity ? { logtoIdentity } : {}),
     sessionAccessPlugins: [slackSessionAccess, githubSessionAccess, feishuSessionAccess],
     ...(iconStore ? { iconStore } : {}),
-    ...(clusterExecution ? { clusterExecution } : {}),
     ...(connectors ? { connectors } : {}),
     config: httpServerConfigFrom(config, { DEFAULT_OWNER_ID, relayStaleMs })
   }
@@ -1086,20 +1038,6 @@ export function buildContainer(
       intervalMs: config.CRON_RUN_REAP_INTERVAL_SEC * 1000,
       label: 'hook-run-reaper'
     },
-    http.log
-  )
-
-  // Retires deleted organizations' AgentConnectOrgs. The intent is recorded
-  // durably before the act, so this loop is the backstop for a cluster that was
-  // unreachable, a process that died between the two, or a deployment that had
-  // cluster execution switched off at the time; the delete route kicks the same
-  // work inline for latency. It also re-applies a slice of the live envelopes
-  // each pass, so a spec field rendered from THIS process's configuration
-  // converges on envelopes written before that configuration. Inert when off.
-  const clusterMaintenance = new ClusterMaintenanceLoop(
-    clusterExecution,
-    clock,
-    CLUSTER_MAINTENANCE_INTERVAL_MS,
     http.log
   )
 
@@ -1677,7 +1615,6 @@ export function buildContainer(
     remoteGrantAuth,
     internalInvocationAuth,
     startBackground() {
-      clusterMaintenance.start()
       cronRunReaper.start()
       hookRunReaper.start()
       cloudDaemonReaper?.start()
@@ -1694,7 +1631,6 @@ export function buildContainer(
       void presetBackfill?.run().catch((err) => http.log.error({ err }, 'preset-backfill: sweep failed'))
     },
     async shutdown() {
-      clusterMaintenance.stop()
       cronRunReaper.stop()
       hookRunReaper.stop()
       cloudDaemonReaper?.stop()

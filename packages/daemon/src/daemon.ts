@@ -21008,16 +21008,16 @@ export class Daemon {
   private startCpClient(root: string): Promise<void> | undefined {
     const cp = this.cfg.controlPlane
     if (!configuredControlPlane(cp, !!this.clusterIdentityToken)) {
-      // Url first: an envelope daemon has no config file, so a missing address is
+      // Url first: an in-cluster daemon has no config file, so a missing address is
       // ALSO why the connection reads disabled, and naming the cause beats the effect.
       const missing = !cp.url ? 'no url' : !cp.enabled ? 'disabled' : 'no key and no projected identity'
-      // Local mode is a CHOICE on a host and a FAULT in a cluster: `--k8s` says this
-      // process is an envelope the control plane provisioned, so a missing address is
-      // a CR that never carried `spec.controlPlane.url`, not an operator's decision.
+      // Local mode is a CHOICE on a host and a FAULT in a cluster: `--k8s` says the
+      // deployment placed this pod, so a missing address is a Pod spec that never
+      // carried the control-plane URL, not a decision anyone made.
       // At info it reads as normal, which is how a whole fleet of them goes unnoticed.
       if (this.k8s) {
         this.log.error(
-          `cp: not connecting (${missing}) — an in-cluster daemon has no local mode; expected ${CP_URL_ENV} from its AgentConnectOrg spec.controlPlane.url`
+          `cp: not connecting (${missing}) — an in-cluster daemon has no local mode; expected ${CP_URL_ENV} in its Pod environment`
         )
       } else {
         this.log.info(`cp: not connecting (${missing}) — running local`)

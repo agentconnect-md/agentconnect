@@ -54,7 +54,6 @@ WEB_PATHS="packages/web packages/protocol $COMMON"
 RELAY_PATHS="packages/relay packages/activation-policy packages/message packages/protocol packages/connection packages/observability $COMMON"
 MEM0_PATHS="packages/memory-plugin-mem0 packages/protocol $COMMON"
 DAEMON_PATHS="packages/daemon packages/activation-policy packages/message packages/protocol packages/connection packages/observability packages/k8s-client $COMMON"
-OPERATOR_PATHS="packages/operator packages/k8s-client packages/connection packages/protocol packages/observability $COMMON"
 # The backend's application source is the immutable external context declared in
 # docker-bake.hcl. Changes to that pin, its owned Dockerfile, or this resolver
 # rebuild the image; unrelated app/package changes leave it on its effective tag.
@@ -112,4 +111,3 @@ printf 'mem0Backend=%s\n' "$(effective "$MEM0_BACKEND_PATHS")"
 printf 'setup=%s\n' "$(effective "$SETUP_PATHS")"
 printf 'runtimeSandbox=%s\n' "$(effective "$RUNTIME_SANDBOX_PATHS")"
 printf 'daemon=%s\n' "$(effective "$DAEMON_PATHS")"
-printf 'operator=%s\n' "$(effective "$OPERATOR_PATHS")"

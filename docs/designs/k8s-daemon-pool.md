@@ -9,12 +9,14 @@ claim can be checked against the code.
 
 ## 1. Problem
 
-The current cluster deployment provisions **one daemon Deployment plus one
-ReadWriteOncePod PVC per org**. The operator reconciles an `AgentConnectOrg`
-CR into a roughly fifteen-object envelope per org — per-tier warm pools add
-more (`packages/operator/src/reconcile/envelope.ts`): namespace, service
-accounts, RBAC, NetworkPolicies, quota, warm pools, the state PVC, the
-`replicas: 1, strategy: Recreate` Deployment, and the shim Service.
+The model this replaces provisioned **one daemon Deployment plus one
+ReadWriteOncePod PVC per org**: an operator reconciled an `AgentConnectOrg` CR
+into a roughly fifteen-object envelope per org — namespace, service accounts,
+RBAC, NetworkPolicies, quota, warm pools, the state PVC, the `replicas: 1,
+strategy: Recreate` Deployment, and the shim Service — and per-tier warm pools
+added more. That machinery has since been removed
+([agentconnect-org-operator.md](agentconnect-org-operator.md)); the costs below
+are why.
 
 Four costs grow with org count:
 

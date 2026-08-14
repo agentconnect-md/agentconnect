@@ -106,11 +106,11 @@ simply presents its own token. There is no one-shot token that can be revived.
 
 Rejections carry one coarse reason and a message that names no pod, token, or agent.
 
-The same proof runs in the other direction one hop up: a daemon the operator
-provisioned authenticates to the control plane with its own audience-scoped
-projected token, verified there rather than here. See "Daemon identity" in
-[agentconnect-org-operator.md](agentconnect-org-operator.md) — the audiences
-differ, so neither token is accepted at the other end.
+The same proof runs in the other direction one hop up: a daemon Pod the
+deployment placed authenticates to the control plane with its own
+audience-scoped projected token, verified there rather than here. See "Identity
+is per Pod, not per org" in [k8s-daemon-pool.md](k8s-daemon-pool.md) — the
+audiences differ, so neither token is accepted at the other end.
 
 ## 4. The five invariants, and where they are enforced
 
@@ -220,11 +220,10 @@ CLI helper and differs only in which socket it dials.
 ## 7. Draining for a runtime-image rollout
 
 The daemon owns when an agent's pod runs, so an image rollout cannot simply replace it — a
-forced suspend would kill whatever turn is in flight. Instead the operator _asks_, by writing
-`agentconnect.md/drain-requested` on the Sandbox
-([`agentconnect-org-operator.md`](agentconnect-org-operator.md)), and the daemon answers with
+forced suspend would kill whatever turn is in flight. Instead the rollout _asks_, by writing
+`agentconnect.md/drain-requested` on the Sandbox, and the daemon answers with
 the one action that is its to take: it stops placing new work on that instance and suspends it
-once the work already there ends — immediately when there is none. The operator's conditioned
+once the work already there ends — immediately when there is none. The rollout's conditioned
 image patch then applies, because the instance is Suspended.
 
 The consumer is a list-then-watch over the namespace's Sandboxes, started with the runtime
@@ -249,7 +248,7 @@ Three properties this shape buys:
   rollout wins that decision and the caller retries once the request clears.
 
 A drain the daemon never completes is the rollout's to give up on, not the daemon's to force:
-the operator marks the instance `failed` after its own deadline, and the pod keeps serving.
+the rollout marks the instance `failed` after its own deadline, and the pod keeps serving.
 
 ## 8. The lifecycle of an idle agent: suspend, resume, discard
 

@@ -41,7 +41,6 @@ export {
 export { PgMcpProviderRepo, PgMcpProviderSecretStore, PgMcpGrantRepo } from './repositories/mcp.repo.js'
 export { PgSkillSourceRepo } from './repositories/skill-source.repo.js'
 export { PgOrganizationKnowledgeRepo } from './repositories/organization-knowledge.repo.js'
-export { PgOrgClusterExecutionRepo } from './repositories/org-cluster-execution.repo.js'
 export {
   PgOrganizationEnvironmentRepo,
   PgOrganizationEnvironmentResolver,

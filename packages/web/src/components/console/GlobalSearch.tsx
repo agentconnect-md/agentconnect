@@ -19,7 +19,7 @@ import { useOrgs } from '@/lib/org-context'
 import { agentLabel, effectiveAgentStatus, presentedDaemonStatus, status } from '@/lib/data'
 import { cronHuman } from '@/lib/cron'
 import { isAuthConfigured } from '@/lib/auth'
-import { ApiError, fetchClusterExecution, fetchSessionExternalAccess, type SessionAccessProvider } from '@/lib/api'
+import { fetchSessionExternalAccess, type SessionAccessProvider } from '@/lib/api'
 import { consoleKeys } from '@/lib/swr-keys'
 import { Icon } from '@/components/ui'
 import { AgentIconView } from '@/components/marks'
@@ -122,14 +122,6 @@ export function GlobalSearch({
     ({ data }) => data === undefined || data.available || data.enabled
   )
 
-  // Same shape for Cluster execution: a deployment that runs no cluster mounts
-  // none of its routes, so the card renders nothing there. Only a KNOWN 404
-  // hides the entry — a pending or transiently failing read keeps it, as the
-  // card also renders then.
-  const clusterKey = open && authed && myRole === 'owner' ? consoleKeys.clusterExecution(activeOrg?.id) : null
-  const { error: clusterError } = useSWR(clusterKey, ([, scopedOrgId]) => fetchClusterExecution(scopedOrgId))
-  const clusterExecutionRenders = !(clusterError instanceof ApiError && clusterError.status === 404)
-
   const groups = useMemo<SearchGroup[]>(() => {
     // `hit('')` matches everything, so an empty query yields every entity. That's
     // deliberate: the chip COUNTS use it (a filter row you can see before typing,
@@ -223,7 +215,6 @@ export function GlobalSearch({
             p.kind === 'setting' &&
             (!p.ownerOnly || myRole === 'owner') &&
             (p.href !== '/settings#session-access' || sessionAccessRenders) &&
-            (p.href !== '/settings#cluster-execution' || clusterExecutionRenders) &&
             pageHit(p)
         )
       : []
@@ -248,20 +239,7 @@ export function GlobalSearch({
         items: settingMatches.slice(0, CAP).map(toItem)
       }
     ]
-  }, [
-    query,
-    agents,
-    daemons,
-    crons,
-    allSessions,
-    daemonById,
-    agentById,
-    orgPath,
-    authed,
-    myRole,
-    sessionAccessRenders,
-    clusterExecutionRenders
-  ])
+  }, [query, agents, daemons, crons, allSessions, daemonById, agentById, orgPath, authed, myRole, sessionAccessRenders])
 
   const totalCount = useMemo(() => groups.reduce((n, g) => n + g.count, 0), [groups])
   // Chips: "All" + every kind with at least one match.

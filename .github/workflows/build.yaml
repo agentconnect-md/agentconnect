@@ -68,7 +68,6 @@ jobs:
       mem0Backend: ${{ steps.build-matrix.outputs.mem0Backend }}
       runtimeSandbox: ${{ steps.build-matrix.outputs.runtimeSandbox }}
       daemon: ${{ steps.build-matrix.outputs.daemon }}
-      operator: ${{ steps.build-matrix.outputs.operator }}
     steps:
       # Reusable calls receive the tag semantic-release just published. Manual
       # runs still derive it from the selected ref and reject branch refs, which
@@ -151,7 +150,6 @@ jobs:
           MEM0_BACKEND_EFFECTIVE: ${{ steps.components.outputs.mem0Backend }}
           RUNTIME_SANDBOX_EFFECTIVE: ${{ steps.components.outputs.runtimeSandbox }}
           DAEMON_EFFECTIVE: ${{ steps.components.outputs.daemon }}
-          OPERATOR_EFFECTIVE: ${{ steps.components.outputs.operator }}
           SETUP_VERSION: ${{ steps.components.outputs.setup }}
         run: |
           set -euo pipefail
@@ -191,8 +189,6 @@ jobs:
           # The daemon pod image. Separate from the runtime sandbox: this runs the daemon, that
           # one is what an agent runtime executes inside.
           resolve_effective daemon daemon daemon "$DAEMON_EFFECTIVE"
-          # The cluster operator image, installed by charts/operator.
-          resolve_effective operator operator operator "$OPERATOR_EFFECTIVE"
 
           # Render the existing Bake definition so image-specific configuration
           # stays centralized even though each target builds in its own job.
@@ -324,7 +320,6 @@ jobs:
       mem0Backend: ${{ needs.prepare.outputs.mem0Backend }}
       runtimeSandbox: ${{ needs.prepare.outputs.runtimeSandbox }}
       daemon: ${{ needs.prepare.outputs.daemon }}
-      operator: ${{ needs.prepare.outputs.operator }}
     steps:
       - name: Log in to GHCR
         uses: docker/login-action@v4
@@ -369,7 +364,6 @@ jobs:
           MEM0_BACKEND_EFFECTIVE: ${{ needs.prepare.outputs.mem0Backend }}
           RUNTIME_SANDBOX_EFFECTIVE: ${{ needs.prepare.outputs.runtimeSandbox }}
           DAEMON_EFFECTIVE: ${{ needs.prepare.outputs.daemon }}
-          OPERATOR_EFFECTIVE: ${{ needs.prepare.outputs.operator }}
           OWNER: ${{ github.repository_owner }}
         run: |
           set -eu
@@ -392,7 +386,6 @@ jobs:
           alias_unchanged mem0-server "$MEM0_BACKEND_EFFECTIVE"
           alias_unchanged runtime-sandbox "$RUNTIME_SANDBOX_EFFECTIVE"
           alias_unchanged daemon "$DAEMON_EFFECTIVE"
-          alias_unchanged operator "$OPERATOR_EFFECTIVE"
 
   notify-workflow:
     name: Notify workflow
@@ -444,11 +437,10 @@ jobs:
           MEM0_BACKEND: ${{ needs.finalize.outputs.mem0Backend }}
           RUNTIME_SANDBOX: ${{ needs.finalize.outputs.runtimeSandbox }}
           DAEMON: ${{ needs.finalize.outputs.daemon }}
-          OPERATOR: ${{ needs.finalize.outputs.operator }}
         run: |
           curl --fail-with-body -sS -X POST \
             -H "Authorization: Bearer ${DISPATCH_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "https://api.github.com/repos/${WORKFLOW_REPOSITORY}/dispatches" \
-            -d "{\"event_type\":\"images-pushed\",\"client_payload\":{\"version\":\"${VERSION}\",\"sha\":\"${SHA}\",\"components\":{\"controlPlane\":\"${CP}\",\"web\":\"${WEB}\",\"relay\":\"${RELAY}\",\"mem0\":\"${MEM0}\",\"mem0Backend\":\"${MEM0_BACKEND}\",\"runtimeSandbox\":\"${RUNTIME_SANDBOX}\",\"daemon\":\"${DAEMON}\",\"operator\":\"${OPERATOR}\"}}}"
+            -d "{\"event_type\":\"images-pushed\",\"client_payload\":{\"version\":\"${VERSION}\",\"sha\":\"${SHA}\",\"components\":{\"controlPlane\":\"${CP}\",\"web\":\"${WEB}\",\"relay\":\"${RELAY}\",\"mem0\":\"${MEM0}\",\"mem0Backend\":\"${MEM0_BACKEND}\",\"runtimeSandbox\":\"${RUNTIME_SANDBOX}\",\"daemon\":\"${DAEMON}\"}}}"

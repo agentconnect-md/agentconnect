@@ -359,8 +359,8 @@ delegates verification to CP with `rc/verify(kind = 'daemon-key' |
 'daemon-token')` and caches the successful identity for the life of that socket.
 
 The claimed `daemonId` travels with the token so the CP can require it to match
-the cloud member record bound to the TokenReview-attested Pod UID (see "Daemon identity" in
-[agentconnect-org-operator.md](agentconnect-org-operator.md)). Forwarding it
+the cloud member record bound to the TokenReview-attested Pod UID (see "Identity is per Pod,
+not per org" in [k8s-daemon-pool.md](k8s-daemon-pool.md)). Forwarding it
 unverified is safe because the reviewed identity, never the claim, decides.
 
 The claimed `daemonId` must match the identity resolved from the credential.

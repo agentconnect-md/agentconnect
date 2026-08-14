@@ -20,7 +20,7 @@ export const AC_LABEL_ORG = 'agentconnect.md/org'
 export const AC_LABEL_AGENT = 'agentconnect.md/agent'
 
 /** Annotation an image rollout writes to ask a daemon to quiesce a Sandbox (`<rolloutId>/<image>`).
- *  The operator is the producer (`packages/operator/src/crd/types.ts`); this is the consumer. */
+ *  The rollout is the producer; this is the consumer. */
 export const DRAIN_REQUESTED_ANNOTATION = 'agentconnect.md/drain-requested'
 
 /**

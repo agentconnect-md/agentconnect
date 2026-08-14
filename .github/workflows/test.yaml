@@ -119,22 +119,6 @@ jobs:
       - name: Verify the image properties
         run: node scripts/verify-daemon-image.mjs ac-daemon:ci v9.9.9-ci
 
-  operator-image:
-    name: Operator Image
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-      # A local tag only: this job proves the image is sound, publication is build.yaml's job.
-      - name: Build the operator image
-        run: docker build -f docker/Dockerfile --target operator --build-arg OPERATOR_VERSION=v9.9.9-ci -t ac-operator:ci .
-      # Against the BUILT image: non-root, tini as PID 1, CA certs, production-only
-      # bundle, stamped version, fail-fast on missing config and outside a cluster.
-      - name: Verify the image properties
-        run: node scripts/verify-operator-image.mjs ac-operator:ci v9.9.9-ci
-
   runtime-sandbox-image:
     name: Runtime Sandbox Image
     runs-on: ubuntu-latest
@@ -239,8 +223,7 @@ jobs:
             'daemon=@agentconnect.md/daemon' \
             'cli=@agentconnect.md/cli' \
             'setup=@agentconnect.md/setup' \
-            'k8s-client=@agentconnect.md/k8s-client' \
-            'operator=@agentconnect.md/operator'
+            'k8s-client=@agentconnect.md/k8s-client'
       - name: Publish unit test summary
         if: ${{ !cancelled() && !inputs.defer_summaries }}
         env:

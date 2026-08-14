@@ -5,18 +5,14 @@
  *   GET  /orgs → every org the caller belongs to + their role (the picker).
  *                Self-heals an interrupted signup: a user with no memberships
  *                gets their personal org (re)created here.
- *   POST /orgs → create an org; the caller becomes its first owner. Where the
- *                deployment runs managed execution, its cluster envelope is
- *                provisioned here too.
+ *   POST /orgs → create an org; the caller becomes its first owner.
  *
  * Org surface (mounted under `/orgs/:orgId` behind the org-scope guard):
  *   GET    / → the org itself, from the caller's perspective
  *   PUT    /selection → remember it as the caller's active org
  *   PATCH  / → update identity / new-agent visibility default (owner-only)
  *   DELETE / → delete the org (owner-only; refused while it still has
- *              daemons — physical machines are detached explicitly first,
- *              though the cluster envelope's own daemon is retired here;
- *              everything else cascades)
+ *              daemons — remove them first; everything else cascades)
  *
  * Personal orgs are created at signup by the JIT provisioner. In no-auth mode
  * (devAuth) the fixed principal owns the seeded default org, so `GET /orgs`
@@ -27,9 +23,7 @@ import { z } from 'zod'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
 import type { OrgRecord } from '../../persistence/ports.js'
-import { DaemonId, OrgId } from '../../domain/ids.js'
 import { denyNonOwner, orgOf } from '../rbac.js'
-import { detachDaemon } from '../daemon-removal.js'
 import { Tag } from '../plugins/openapi.js'
 import { resolveOrgIconUrl, type IconUrlBases } from '../../agents/agent-icon.js'
 import { OrgDto, OrgListDto, CreateOrgBody, UpdateOrgBody, ErrorDto, type OrgDtoT } from '../dto/index.js'
@@ -141,19 +135,6 @@ export function orgRoutes(deps: HttpDeps) {
           }
           throw error
         }
-        // Managed execution, where the deployment runs it: the envelope is part
-        // of what an organization IS here, so it is provisioned with the org
-        // rather than waiting for an owner to find a toggle. Deliberately NOT
-        // awaited — this is Kubernetes I/O with no bound, and an API server that
-        // has stopped answering must not hold open a creation whose row already
-        // committed, leaving the caller with neither an org nor a safe retry.
-        // The console's Daemons page ensures the same thing, so a dropped attempt
-        // costs a page visit rather than an envelope.
-        if (deps.clusterExecution) {
-          void deps.clusterExecution.ensureProvisioned(OrgId(org.id)).catch((err: unknown) => {
-            req.log.warn({ err, orgId: org.id }, 'cluster-execution: envelope provisioning deferred to the next ensure')
-          })
-        }
         return reply.code(201).send(toDto(org, deps))
       }
     )
@@ -242,7 +223,7 @@ export function orgScopedRoutes(deps: HttpDeps) {
           tags: [Tag.Organizations],
           summary: 'Delete the organization',
           description:
-            'Delete the organization (owner only). Refused with 409 while it still has daemons — the managed-execution envelope’s own daemon excepted, since the control plane provisioned it rather than an operator attaching it, and this request retires it. A managed-execution envelope is recorded for teardown inside the delete transaction and its AgentConnectOrg resource is removed right afterwards — a cluster that is unreachable only delays that, it does not fail or skip the deletion. If a GitHub Check may already exist, the first DELETE permanently tombstones and disables the current hook lifecycles, starts asynchronous non-passing cleanup, and returns 409; retry DELETE after cleanup converges to complete the metadata purge and cascade.',
+            'Delete the organization (owner only). Refused with 409 while it still has daemons — remove them first. If a GitHub Check may already exist, the first DELETE permanently tombstones and disables the current hook lifecycles, starts asynchronous non-passing cleanup, and returns 409; retry DELETE after cleanup converges to complete the metadata purge and cascade.',
           operationId: 'deleteOrganization',
           response: { 204: z.null(), 403: ErrorDto, 409: ErrorDto }
         }
@@ -250,43 +231,13 @@ export function orgScopedRoutes(deps: HttpDeps) {
       async (req, reply) => {
         if (denyNonOwner(req, reply)) return
         const orgId = orgOf(req)
-        // The envelope's daemon is the control plane's OWN — provisioned with the
-        // organization, not a machine an operator attached — so the guard below
-        // must not ask anyone to go detach it, and nobody could: the Daemons page
-        // is for the fleet a human built. It is retired here instead.
-        const envelopeDaemonIds = new Set(
-          deps.clusterExecution ? await deps.clusterExecution.envelopeDaemonIds(orgId) : []
-        )
         const daemons = await deps.registry.list(orgId)
-        if (daemons.some((daemon) => !envelopeDaemonIds.has(daemon.daemonId))) {
+        if (daemons.length > 0) {
           return reply.code(409).send({
             error: 'Conflict',
             statusCode: 409,
             message: 'the organization still has daemons — remove them first'
           })
-        }
-        // Before the delete, because its daemon row is a RESTRICT FK the delete
-        // transaction refuses to cross. Switching cluster execution off hands the
-        // envelope to the operator's finalizer; a cluster that refuses only delays
-        // that, since the tombstone written inside the delete transaction is what
-        // the drain below acts on.
-        //
-        // The delete can still answer 409 after this — `review_cleanup_pending`,
-        // or losing the preflight race to a daemon registered in between — so
-        // the removal goes through the SAME sequence `DELETE /daemons/:id` uses
-        // rather than a bare row delete. What survives such a 409 is then an
-        // organization with cluster execution switched off and its agents
-        // properly unplaced: the state a manual disable produces, which the
-        // owner can re-enable, and not live-looking agents pointing at a daemon
-        // that no longer exists.
-        const attached = daemons.filter((daemon) => envelopeDaemonIds.has(daemon.daemonId))
-        if (attached.length > 0) {
-          try {
-            await deps.clusterExecution!.configure(orgId, { enabled: false })
-          } catch (err) {
-            req.log.warn({ err, orgId }, 'cluster-execution: envelope retirement deferred to the periodic drain')
-          }
-          for (const daemon of attached) await detachDaemon(deps, orgId, DaemonId(daemon.daemonId), req.log)
         }
         const deleted = await deps.repos.org.delete(req.orgCtx!.orgId)
         for (const hookId of deleted.removedHookIds) deps.hooks.remove(hookId)
@@ -304,17 +255,6 @@ export function orgScopedRoutes(deps: HttpDeps) {
             statusCode: 409,
             message: 'GitHub Check cleanup is pending — retry organization deletion after cleanup converges'
           })
-        }
-        // The delete transaction recorded the envelope's namespace, so cleanup
-        // authority no longer depends on this request: retire it now for
-        // latency, and let the periodic drain cover an unreachable cluster or a
-        // process that had cluster execution switched off at delete time.
-        if (deps.clusterExecution) {
-          try {
-            await deps.clusterExecution.drainTeardowns()
-          } catch (err) {
-            req.log.warn({ err }, 'cluster-execution: envelope teardown deferred to the periodic drain')
-          }
         }
         return reply.code(204).send(null)
       }
