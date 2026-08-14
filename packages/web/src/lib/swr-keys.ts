@@ -20,10 +20,6 @@ export const consoleKeys = {
   managedSkills: (orgId: string | null | undefined, includeArchived: boolean) =>
     consoleKey(orgId, 'managed-skills', includeArchived ? 'include-archived' : 'active'),
   organizationEnvironment: (orgId: string | null | undefined) => consoleKey(orgId, 'organization-environment'),
-  /** The org's managed-execution envelope: settings from the row, status from the
-   *  cluster. Separate keys because they have different owners and lifetimes. */
-  clusterExecution: (orgId: string | null | undefined) => consoleKey(orgId, 'cluster-execution'),
-  clusterExecutionStatus: (orgId: string | null | undefined) => consoleKey(orgId, 'cluster-execution-status'),
   /** The install wizard's deployment-capability probe (`GET /slack/config`) —
    *  Slack-NAMED but answered per organization AND per caller, so it is
    *  org-scoped like every other row here. */

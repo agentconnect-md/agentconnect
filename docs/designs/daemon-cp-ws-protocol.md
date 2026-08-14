@@ -102,7 +102,7 @@ const AuthReq = z.object({
   // up by that unique hash (daemon-api-key-auth.md). Absent on an in-cluster daemon.
   apiKey: z.string().optional(),
   // An in-cluster daemon's projected ServiceAccount token, verified by TokenReview and
-  // taking precedence over `apiKey` (agentconnect-org-operator.md, "Daemon identity").
+  // taking precedence over `apiKey` (k8s-daemon-pool.md, "Identity is per Pod, not per org").
   serviceAccountToken: z.string().optional(),
   daemonId: z.string().uuid().optional(), // OPTIONAL echo; if present must equal the daemonId the ApiKey row resolves to. The daemon adopts its id from `auth/ok`.
   machineId: z.string().uuid().optional(), // reserved scope-attestation identity (§3.2), not the auth credential

@@ -223,25 +223,18 @@ const CoreConfigShape = {
   OPEN_CONNECTOR_PROVIDER_BLOCKLIST: z
     .string()
     .default('github,slack,telegram,discord,discordbot,feishu,feishu_app_bot,feishu_custom_bot'),
-  // ── managed cluster execution (agentconnect-org-operator.md) — opt-in ──
-  // The switch for the whole feature, and the ONLY access knob: turning it on
-  // asserts that this control plane runs inside the cluster it provisions, so
-  // the pod's ServiceAccount is the credential and the pod's own namespace is
-  // where every AgentConnectOrg lands. 'false' (default) ⇒ no cluster module, no
-  // routes, no behavior change for an existing deployment. Explicit rather than
-  // sniffed: a control plane that merely happens to run on Kubernetes must not
-  // start claiming an operator install. EXPLICIT enum, not z.coerce.boolean().
+  // ── in-cluster Kubernetes access — opt-in ──
+  // The switch for the cluster surface, and the ONLY access knob: turning it on
+  // asserts that this control plane runs inside the cluster, so the pod's
+  // ServiceAccount is the credential and the pod's own namespace is the control
+  // namespace. 'false' (default) ⇒ no cluster module and no behavior change for
+  // an existing deployment. Explicit rather than sniffed: a control plane that
+  // merely happens to run on Kubernetes must not start claiming cluster access.
+  // EXPLICIT enum, not z.coerce.boolean().
   CLUSTER_EXECUTION_ENABLED: z
     .enum(['true', 'false'])
     .default('false')
     .transform((v) => v === 'true'),
-  // Install-time constant shared with the operator's AC_ORG_NAMESPACE_PREFIX: every
-  // org namespace this install owns starts with it, and admission refuses the rest.
-  // A mismatch means the operator will not adopt what the control plane asks for.
-  CLUSTER_ORG_NAMESPACE_PREFIX: z
-    .string()
-    .regex(/^[a-z0-9]([a-z0-9-]{0,30})?$/, 'must be a lowercase alphanumeric/dash namespace prefix')
-    .default('ac-org-'),
   // Namespace the install runs its CLOUD daemons in — the pods that serve every org rather
   // than one, and whose identity therefore names no org. Unset ⇒ the control plane's own
   // namespace, which is where a single-namespace install puts them. A cloud identity from
@@ -249,24 +242,7 @@ const CoreConfigShape = {
   CLUSTER_CLOUD_DAEMON_NAMESPACE: z
     .string()
     .regex(/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/, 'must be a DNS label')
-    .optional(),
-  // Images an org's envelope is created with; the stored per-org settings own them
-  // afterwards. Both are required when cluster execution is on — an install must
-  // name its own registry, and there is no safe default to guess.
-  CLUSTER_DAEMON_IMAGE: z.string().optional(),
-  CLUSTER_RUNTIME_IMAGE: z.string().optional(),
-  // Resource tier a new org's DAEMON starts on, from the operator's built-in table
-  // (small/medium/large). An unknown name there is survivable — the operator falls back
-  // to `small` and records a warning.
-  CLUSTER_DEFAULT_TIER: z.string().default('small'),
-  // Resource tier a new org's sandbox pool starts on. A DIFFERENT namespace from the
-  // daemon tier above, which is why it is a separate knob: a runtime tier names a master
-  // SandboxTemplate the operator install defines (`<AC_MASTER_TEMPLATE_PREFIX><tier>`),
-  // and one that names no master is not survivable — the operator skips the tier, so the
-  // org is created with no SandboxTemplate and no warm pool and can never launch a
-  // sandbox. Unset ⇒ CLUSTER_DEFAULT_TIER, which only lines up on an install whose
-  // master templates happen to be named after the daemon tiers.
-  CLUSTER_DEFAULT_RUNTIME_TIER: z.string().optional()
+    .optional()
 } as const
 
 /**
@@ -343,35 +319,9 @@ function validateSessionAccess(
   }
 }
 
-// Cluster execution is opt-in and all-or-nothing: a deployment that switched it
-// on but left the images unset would mount a surface whose every write fails at
-// the API server. Fail at boot instead. Credentials need no check — they are the
-// pod's ServiceAccount, and `loadClusterAccess` refuses to boot without one.
-function validateClusterExecution(
-  config: {
-    CLUSTER_EXECUTION_ENABLED: boolean
-    CLUSTER_DAEMON_IMAGE?: string
-    CLUSTER_RUNTIME_IMAGE?: string
-  },
-  ctx: z.RefinementCtx
-): void {
-  if (!config.CLUSTER_EXECUTION_ENABLED) return
-  for (const key of ['CLUSTER_DAEMON_IMAGE', 'CLUSTER_RUNTIME_IMAGE'] as const) {
-    if (!config[key]) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: [key],
-        message: `cluster execution requires ${key}`
-      })
-    }
-  }
-}
-
 /** Cross-field checks the flat schema can't express — fail-fast at boot, before
  *  the first secret write could silently land plaintext next to sealed rows. */
-const AppConfigChecked = AppConfigSchema.superRefine(validateSecretCipher)
-  .superRefine(validateSessionAccess)
-  .superRefine(validateClusterExecution)
+const AppConfigChecked = AppConfigSchema.superRefine(validateSecretCipher).superRefine(validateSessionAccess)
 
 const BootstrapConfigSchema = z
   .object({

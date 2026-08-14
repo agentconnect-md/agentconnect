@@ -46,7 +46,6 @@ import {
   PgMcpProviderSecretStore,
   PgMcpGrantRepo,
   PgSkillSourceRepo,
-  PgOrgClusterExecutionRepo,
   PgOrganizationKnowledgeRepo,
   PgOrganizationEnvironmentRepo,
   PgOrganizationEnvironmentResolver,
@@ -256,7 +255,6 @@ export function buildHttpApp(
   const webchatMcpOperationRepo = new PgWebchatMcpOperationRepo(prisma)
   const sessionRepo = new PgSessionRepo(prisma)
   const skillSourceRepo = new PgSkillSourceRepo(prisma)
-  const orgClusterExecutionRepo = new PgOrgClusterExecutionRepo(prisma)
   const organizationKnowledgeRepo = new PgOrganizationKnowledgeRepo(prisma)
   // The organization environment registry + its ONE cipher seam, shared by the
   // resolver and the spec assembler exactly as the production graph wires them.
@@ -366,7 +364,6 @@ export function buildHttpApp(
       mcpProviderSecret: new PgMcpProviderSecretStore(prisma, cipher),
       mcpGrant: new PgMcpGrantRepo(prisma, cipher),
       skillSource: skillSourceRepo,
-      orgClusterExecution: orgClusterExecutionRepo,
       organizationKnowledge: organizationKnowledgeRepo,
       organizationEnvironment: organizationEnvironmentRepo,
       organizationEnvironmentSecret: organizationEnvironmentSecretStore,
