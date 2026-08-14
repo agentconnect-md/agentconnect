@@ -3497,7 +3497,7 @@ export class LocalStore {
     connectionIds?: readonly string[]
   ): { retried: number; ambiguous: number } {
     if (staleOnly && !this.shared) return { retried: 0, ambiguous: 0 }
-    const scope = idScope('connectionId', connectionIds)
+    const scope = idScope('connectionId', !this.shared && !staleOnly ? undefined : connectionIds)
     const staleClause = this.shared ? ' AND updatedAt <= @staleBefore' : ''
     const params = this.shared
       ? { now, staleBefore: now - SHARED_MEMORY_CAPTURE_LEASE_MS, ...scope.params }

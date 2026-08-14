@@ -174,7 +174,7 @@ describe('MemoryCaptureOutbox', () => {
     db.close()
   })
 
-  it('recovers a sending row asymmetrically across restart', () => {
+  it('recovers a sending row across restart before the connection registry converges', async () => {
     const path = join(mkdtempSync(join(tmpdir(), 'ac-memory-restart-')), 'local.sqlite')
     let db = store(path)
     const base: MemoryCaptureOutboxRow = {
@@ -210,7 +210,18 @@ describe('MemoryCaptureOutbox', () => {
     db.close()
 
     db = store(path)
-    expect(db.recoverMemoryCaptures(10)).toEqual({ retried: 1, ambiguous: 1 })
+    const outbox = new MemoryCaptureOutbox(
+      db,
+      {
+        connectionIds: () => [],
+        clientFor: () => undefined,
+        specFor: () => undefined,
+        markRecovered: vi.fn(),
+        markDegraded: vi.fn()
+      },
+      { metrics, now: () => 10 }
+    )
+    outbox.start()
     expect(db.getMemoryCapture('op-idempotent')?.state).toBe('pending')
     expect(db.getMemoryCapture('op-none')).toMatchObject({
       state: 'ambiguous',
@@ -219,6 +230,7 @@ describe('MemoryCaptureOutbox', () => {
       output: '',
       payloadBytes: 0
     })
+    await outbox.stop()
     db.close()
   })
 
