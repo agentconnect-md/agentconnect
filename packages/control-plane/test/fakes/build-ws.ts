@@ -33,7 +33,8 @@ import {
   PgMemoryPluginInstallationRepo,
   PgExternalMemoryConnectionRepo,
   PgExternalMemoryConnectionSecretStore,
-  PgExternalMemoryGrantRepo
+  PgExternalMemoryGrantRepo,
+  PgDutyGroupRepo
 } from '../../src/persistence/index.js'
 import { PlaintextSecretCipher } from '../../src/secrets/cipher.js'
 import { EpochService } from '../../src/orchestrator/epoch.js'
@@ -46,6 +47,7 @@ import { DaemonRegistryService } from '../../src/registry/registryService.js'
 import { ConnectionRegistry } from '../../src/ws/registry.js'
 import { AgentMutationGate } from '../../src/orchestrator/agentMutationGate.js'
 import { CollabRoutesService } from '../../src/orchestrator/collabRoutes.service.js'
+import { DutyLeaseService, type DutyLeaseConfig } from '../../src/orchestrator/dutyLease.js'
 import { RelayControlSender } from '../../src/orchestrator/relayControl.js'
 import { FrameRouter } from '../../src/ws/handlers/index.js'
 import { DaemonConnection } from '../../src/ws/connection.js'
@@ -81,6 +83,9 @@ export interface WsHarness {
   codec: ApiKeyCodec
   /** Provision a daemon row + mint an API key for `daemonId`; returns the plaintext `apiKey`. */
   mintToken(daemonId: string): Promise<string>
+  /** Provision an org-less (install-wide, frame-mode) daemon row + a fake cluster
+   *  ServiceAccount token for it; auth with `{ serviceAccountToken }`. */
+  mintCloudDaemon(daemonId: string): Promise<string>
   /** Open a fresh connection (started) over a new stub. */
   connect(stub?: InMemoryDaemonStub): { conn: DaemonConnection; stub: InMemoryDaemonStub }
 }
@@ -93,6 +98,8 @@ export interface HarnessOpts {
   orgId?: string
   /** Relay roster exposed in register snapshots (including memory-plugin proxy specs). */
   relays?: RelayRosterEntry[]
+  /** Duty lease knobs (defaults suit tests; recoveryGraceMs 0 so grants flow immediately). */
+  dutyLease?: Partial<DutyLeaseConfig>
 }
 
 export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): WsHarness {
@@ -126,13 +133,21 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
   const codec = new ApiKeyCodec({ API_KEY_PEPPER: TEST_API_KEY_PEPPER })
 
   const epoch = new EpochService(repos.daemon, clock)
+  // Fake in-cluster identity: token → install-wide daemon, no TokenReview.
+  const cloudTokens = new Map<string, string>()
   const auth = new DaemonAuthService(
     codec,
     repos.apiKey,
     epoch,
     clock,
     { HEARTBEAT_SEC: opts.heartbeatSec ?? 15 },
-    new PgOrgRepo(prisma)
+    new PgOrgRepo(prisma),
+    {
+      verify: async (token: string) => {
+        const daemonId = cloudTokens.get(token)
+        return daemonId ? { daemonId: DaemonId(daemonId), scope: 'install' as const } : null
+      }
+    }
   )
   const registry = new DaemonRegistryService(repos.daemon, repos.runtimeProfile, repos.daemonLifecycleOp, clock)
   const connReg = new ConnectionRegistry()
@@ -176,6 +191,15 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
     }
   )
 
+  const dutyLease = new DutyLeaseService(new PgDutyGroupRepo(prisma), clock, {
+    leaseMs: opts.dutyLease?.leaseMs ?? 120_000,
+    recoveryGraceMs: opts.dutyLease?.recoveryGraceMs ?? 0,
+    grantMaxPerTick: opts.dutyLease?.grantMaxPerTick ?? 32,
+    grantsPerFrame: opts.dutyLease?.grantsPerFrame ?? 50,
+    grantMembersPerFrame: opts.dutyLease?.grantMembersPerFrame ?? 2000,
+    revocationsPerFrame: opts.dutyLease?.revocationsPerFrame ?? 500
+  })
+
   const deps: DaemonWsDeps = {
     auth,
     lifecycleOps: repos.daemonLifecycleOp,
@@ -191,6 +215,7 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
     agentMutations: new AgentMutationGate(),
     recoverStagedAgent: async () => {},
     collabRoutes,
+    dutyLease,
     cron: repos.cron,
     hook: repos.hook,
     externalMemoryConnection: repos.externalMemoryConnection,
@@ -209,6 +234,12 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
     deps,
     clock,
     codec,
+    mintCloudDaemon: async (daemonId: string) => {
+      await prisma.daemon.create({ data: { id: daemonId, orgId: null, maxAgents: 8, status: 'ready' } })
+      const token = `fake-sa-token-${daemonId}`
+      cloudTokens.set(token, daemonId)
+      return token
+    },
     mintToken: async (daemonId: string) => {
       if (!(await repos.daemon.getUnscoped(DaemonId(daemonId)))) await repos.daemon.provision(DaemonId(daemonId), org)
       const minted = codec.mint()

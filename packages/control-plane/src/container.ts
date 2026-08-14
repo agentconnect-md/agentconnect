@@ -97,6 +97,7 @@ import {
   PgAgentRepoAuthorizationRepo,
   PgSocialIdentityMutationGate,
   PgCronRepo,
+  PgDutyGroupRepo,
   PgHookRepo,
   PgHookSecretStore,
   PgRuntimeProfileRepo,
@@ -157,6 +158,7 @@ import { replayMcpTo } from './orchestrator/mcpReplay.js'
 import { replayMemoryConnectionsTo, syncMemoryConnectionsToDaemons } from './orchestrator/memoryConnectionReplay.js'
 import { relayHttpOrigin } from './orchestrator/mcpProvider.js'
 import { CollabRoutesService } from './orchestrator/collabRoutes.service.js'
+import { DutyLeaseService } from './orchestrator/dutyLease.js'
 import { AgentMutationGate } from './orchestrator/agentMutationGate.js'
 import { AgentMoveService } from './orchestrator/agentMove.js'
 import { createDaemonWsServer } from './ws/gateway.js'
@@ -361,6 +363,7 @@ export function buildContainer(
     slackUserConfig: new PgSlackUserConfigStore(prisma, secretCipher),
     presetAgent: new PgPresetAgentStore(prisma),
     cron: new PgCronRepo(prisma),
+    dutyGroup: new PgDutyGroupRepo(prisma),
     hook: new PgHookRepo(prisma),
     hookSecret: new PgHookSecretStore(prisma, secretCipher),
     runtimeProfile: new PgRuntimeProfileRepo(prisma),
@@ -649,6 +652,11 @@ export function buildContainer(
   // Bot-agnostic collaboration routing snapshot fan-out (agent-collaboration
   // §2.3/§6.2): relays get the all-org table; daemons get their org-scoped copy.
   const collabRoutes = new CollabRoutesService(repos.daemon, repos.integration, repos.agent, relayControl, sender)
+
+  // Duty lease exchange riding the heartbeat (k8s daemons; orchestrator/dutyLease.ts).
+  const dutyLease = new DutyLeaseService(repos.dutyGroup, clock, undefined, {
+    warn: (o, m) => http.log.warn(o, m)
+  })
   const agentMutations = new AgentMutationGate()
 
   // Relay roster (shared-bot-relay.md §5): computed from the durable `relay` table
@@ -1311,6 +1319,7 @@ export function buildContainer(
     agentMutations,
     recoverStagedAgent: (agentId, daemonId, moveId) => stagedAgentMoves.recoverStaged(agentId, daemonId, moveId),
     collabRoutes,
+    dutyLease,
     cron: repos.cron,
     hook: repos.hook,
     agent: repos.agent,

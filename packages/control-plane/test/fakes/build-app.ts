@@ -137,6 +137,10 @@ export function buildDaemonApp(prisma: PrismaClient): DaemonApp {
       agentMutations: new AgentMutationGate(),
       recoverStagedAgent: async () => {},
       collabRoutes: { broadcast: async () => undefined } as unknown as DaemonWsDeps['collabRoutes'],
+      dutyLease: {
+        onHeartbeat: async () => undefined,
+        release: async () => undefined
+      } as unknown as DaemonWsDeps['dutyLease'],
       cron: repos.cron,
       hook: repos.hook,
       relayRoster: async () => [],

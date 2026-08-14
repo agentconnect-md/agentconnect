@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { SessionUsage } from './session.js'
 import { Platform } from './route.js'
+import { HeartbeatDuties } from './duty.js'
 
 /**
  * Telemetry & facts (D→C) — protocol §7.
@@ -18,7 +19,10 @@ export const Heartbeat = z.object({
   }),
   health: z.enum(['ok', 'degraded']),
   activeSessions: z.number().int(),
-  degradedScopes: z.array(z.string()).default([]) // e.g. expired-lease bindings (§6)
+  degradedScopes: z.array(z.string()).default([]), // e.g. expired-lease bindings (§6)
+  // Duty lease exchange (k8s daemons only; frames/duty.ts). Absent ⇒ this daemon
+  // does not participate in the duty ledger and the CP-side path stays dormant.
+  duties: HeartbeatDuties.optional()
 })
 export type Heartbeat = z.infer<typeof Heartbeat>
 

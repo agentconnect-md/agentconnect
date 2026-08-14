@@ -140,6 +140,7 @@ function build(): Built {
     agentMutations: new AgentMutationGate(),
     recoverStagedAgent: async () => {},
     collabRoutes: {} as DaemonWsDeps['collabRoutes'],
+    dutyLease: {} as DaemonWsDeps['dutyLease'],
     cron: {} as DaemonWsDeps['cron'],
     hook: {} as DaemonWsDeps['hook'],
     relayRoster: async () => [],
