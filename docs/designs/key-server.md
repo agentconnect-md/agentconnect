@@ -37,39 +37,29 @@ This is deliberately not the daemon↔CP WebSocket or a frame group: issuance is
 low-frequency, stateless exchange, and a bare REST surface lets any deployment
 implement the server without speaking AgentConnect's wire protocol.
 
-| Operation   | Route                 | Body → Response                                                                                            |
-| ----------- | --------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `GetKey`    | `POST /v1/get-key`    | `{orgId, agentId, sessionId, provider, ttlSeconds?}` → `{keyId, key, baseUrl?, expiresAt?, refreshAfter?}` |
-| `RevokeKey` | `POST /v1/revoke-key` | `{keyId}` → `{}`                                                                                           |
+| Operation   | Route                 | Body → Response                                                                                                       |
+| ----------- | --------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `GetKey`    | `POST /v1/get-key`    | `{orgId, agentId, sessionId, provider, ttlSeconds?}` → `{keyId, key, baseUrl?, expiresInSeconds?, refreshInSeconds?}` |
+| `RevokeKey` | `POST /v1/revoke-key` | `{keyId}` → `{}`                                                                                                      |
 
-**Caller authentication rides the transport, never the body**, and is optional at
-both ends. When configured with a token source the daemon sends
-`Authorization: Bearer <token>`; with none it sends no such header. To the daemon
-the token is an opaque string from a configured source — a file it re-reads per
-request (so a credential something else rotates underneath it stays current), or
+**Caller authentication rides the transport, never the body.** Configured with a
+token source, the daemon sends `Authorization: Bearer <token>`; configured with
+none, the request carries no auth header at all — which is the shape for a key
+server the daemon already reaches inside one trust boundary. To the daemon the
+token is an opaque string from a configured source: a file it re-reads per
+request, so a credential something else rotates underneath it stays current, or
 an inline config value. It parses nothing, asserts nothing about what the token
-means, and holds no verification logic. Symmetrically, a server may verify
-nothing.
+means, and holds no verification logic.
 
 `daemonId` is deliberately not a body field: a client-asserted identity would be
 untrusted input, and a server that can verify the bearer at all can derive the
 caller from it. `orgId` IS in the body, and a server that resolves an
 organization from the token should cross-check the two.
 
-Configuring no authentication is itself a statement: that the daemon and the key
-server sit in **one trust domain**, where reaching the endpoint is already proof
-enough of who is calling. The request's `orgId` is then trusted as given, exactly
-as the bearer would have made it. What the deployment owes in exchange is the
-boundary it is claiming — a listener that is genuinely loopback, in-pod, or
-behind an authenticated mesh, rather than one merely assumed to be unreachable.
-
-**What the token is, and how a server verifies it, are otherwise outside this
-contract.** They are properties of a deployment: which credential the daemon is
-given, what proves it, and what the server must hold to check it are decided
-together by the key server's own design and the deployment that installs both.
-This document stops at the header. A server may accept only the credential kinds
-it is built for and answer `unauthorized` for anything else; saying which is that
-server's documentation, not this one's.
+**What the token is, and what a server does with it, are outside this contract.**
+Which credential the daemon is given, what proves it, and what the server must
+hold to check it are decided together by the key server's own design and the
+deployment that installs both. This document stops at the header.
 
 `provider` names the API dialect the credential must speak (`anthropic` /
 `openai`) and selects which `(key, baseUrl)` pair comes back. There is
@@ -78,20 +68,28 @@ whatever observes actual requests (a gateway data path, or the runtime's own usa
 reports), and a spawn-time hint would invite implementations to treat it as truth
 the daemon does not have — a runtime switches models mid-session.
 
-## 3. Validity: the narrowing rule
+## 3. Validity: durations, and the narrowing rule
 
-`ttlSeconds` is the caller's desired validity, relative to avoid clock skew;
-absent means the caller asks for a **long-lived key** it will manage explicitly.
-The server may only narrow, never widen:
+**Both directions state validity as a duration in seconds, never as an instant.**
+An absolute expiry is only meaningful on the clock that produced it: the server
+stamps it after the request lands, so a caller subtracting its own request time
+measures the round trip as if it were granted validity, and any skew between the
+two clocks lands directly in the result. Durations remove both — the daemon
+starts the countdown when the response arrives, which is conservative by exactly
+the flight time, and the narrowing rule below becomes arithmetic on one scale
+rather than a comparison between two clocks.
 
-- request with `ttlSeconds` ⇒ response MUST carry `expiresAt`, at or before the
-  requested horizon (`keyGrantViolation` in the contract makes this executable);
-- request without `ttlSeconds` ⇒ response MAY omit `expiresAt`; an omitted
-  `expiresAt` means no refresh loop runs and the degradation window below does
-  not apply;
-- `refreshAfter` is a renew-from hint and is only legal alongside `expiresAt`,
-  strictly before it. Daemons renew inside `[refreshAfter, expiresAt)` instead of
-  inventing their own margin.
+`ttlSeconds` is the caller's desired validity; absent means it asks for a
+**long-lived key** it will manage explicitly. The server may only narrow:
+
+- request with `ttlSeconds` ⇒ response MUST carry `expiresInSeconds`, at most the
+  requested value (`keyGrantViolation` in the contract makes this executable, and
+  reads no clock to do it);
+- request without `ttlSeconds` ⇒ response MAY omit `expiresInSeconds`; omitting it
+  means no refresh loop runs and the degradation window below does not apply;
+- `refreshInSeconds` is a renew-from hint on the same scale, legal only alongside
+  `expiresInSeconds` and strictly less than it. Daemons renew inside that window
+  instead of inventing their own margin.
 
 ## 4. Injection: one precedence chain, pairs never split
 
@@ -141,8 +139,9 @@ suspended", never as a generic internal error:
 | `unauthorized`  | 401  | Credential problem between daemon and key server; operator-facing.     |
 | `unavailable`   | 503  | Enter the degradation window below; retry with backoff.                |
 
-**Degradation window.** An issued credential stays valid until its `expiresAt`
-even when the key server is unreachable — the TTL is the contractual answer to
+**Degradation window.** An issued credential stays valid for its granted
+`expiresInSeconds` even when the key server is unreachable — the TTL is the
+contractual answer to
 "how long do sessions keep working through an issuer outage", and implementations
 size it as the tradeoff between revocation latency and outage tolerance. Only
 starting or refreshing past the horizon needs the server back.

@@ -21,19 +21,16 @@ export const KEY_SERVER_PROFILE = 'agentconnect.key-server/v1' as const
 export const KEY_SERVER_GET_KEY_PATH = '/v1/get-key' as const
 export const KEY_SERVER_REVOKE_KEY_PATH = '/v1/revoke-key' as const
 
-// `Authorization: Bearer <token>`, sent only when a token source is configured. Auth is
-// optional at both ends: omitting it declares daemon and server one trust domain, where the
-// request's org context is trusted as given because reaching the endpoint already proved it.
+// `Authorization: Bearer <token>`, sent only when a token source is configured; with none,
+// the request carries no auth header at all. The token is opaque to the daemon.
 export const KEY_SERVER_AUTH_HEADER = 'authorization' as const
 
 /** Provider API dialect the credential must speak; selects the (key, baseUrl) pair. */
 export const KeyProvider = z.enum(['anthropic', 'openai'])
 export type KeyProvider = z.infer<typeof KeyProvider>
 
-// Caller identity (which daemon) comes from transport auth, never from the body:
-// the daemon authenticates with the same credential it presents to its CP (org
-// API key, or the projected ServiceAccount token for in-cluster daemons), and
-// the server cross-checks `orgId` against that identity.
+// No `daemonId` field: caller identity belongs to the transport, and a server able to
+// verify the bearer derives it there — a body-asserted one would be untrusted input.
 export const GetKeyRequest = z
   .object({
     orgId: z.string().min(1),
@@ -55,19 +52,25 @@ export const GetKeyResponse = z
     // Atomic with `key` — inject both or neither. Absent ⇒ the daemon falls
     // through to its next base-URL layer (static config, then runtime default).
     baseUrl: z.string().url().optional(),
-    // Absent ⇒ long-lived: no refresh loop, revoked explicitly or superseded
-    // by the re-fetch every new session performs.
-    expiresAt: z.string().datetime().optional(),
-    // Renew-from hint; meaningless without an expiry, so it requires one.
-    refreshAfter: z.string().datetime().optional()
+    // Validity as a DURATION, measured from when the server issued it, for the same
+    // reason the request states one: an absolute instant would be the server's clock,
+    // and every reader of it would be a different one. The daemon starts the countdown
+    // at receipt, which is conservative by exactly the response's flight time. Absent
+    // ⇒ long-lived: no refresh loop, ended by RevokeKey or superseded by the re-fetch
+    // every new session performs.
+    expiresInSeconds: z.number().int().positive().optional(),
+    // Renew-from hint on the same scale; meaningless without an expiry, so it needs one.
+    refreshInSeconds: z.number().int().positive().optional()
   })
   .strict()
-  .refine((r) => r.refreshAfter === undefined || r.expiresAt !== undefined, {
-    message: 'refreshAfter requires expiresAt'
+  .refine((r) => r.refreshInSeconds === undefined || r.expiresInSeconds !== undefined, {
+    message: 'refreshInSeconds requires expiresInSeconds'
   })
-  .refine((r) => r.refreshAfter === undefined || r.expiresAt === undefined || r.refreshAfter < r.expiresAt, {
-    message: 'refreshAfter must precede expiresAt'
-  })
+  .refine(
+    (r) =>
+      r.refreshInSeconds === undefined || r.expiresInSeconds === undefined || r.refreshInSeconds < r.expiresInSeconds,
+    { message: 'refreshInSeconds must precede expiresInSeconds' }
+  )
 export type GetKeyResponse = z.infer<typeof GetKeyResponse>
 
 // Idempotent: unknown and already-revoked ids both succeed — the caller wants
@@ -92,13 +95,12 @@ export type KeyServerErrorBody = z.infer<typeof KeyServerErrorBody>
 /**
  * The narrowing rule, executable: a server may shorten a requested validity but
  * never extend it, and may go unbounded only when the caller asked for that.
- * Returns a violation description, or null for a conforming grant. `issuedAt`
- * is the caller's clock at request time — expiry math stays caller-relative.
+ * Returns a violation description, or null for a conforming grant. Both sides
+ * are durations, so the check reads no clock and cannot be skewed by one.
  */
-export function keyGrantViolation(request: GetKeyRequest, response: GetKeyResponse, issuedAt: Date): string | null {
+export function keyGrantViolation(request: GetKeyRequest, response: GetKeyResponse): string | null {
   if (request.ttlSeconds === undefined) return null
-  if (response.expiresAt === undefined) return 'bounded request answered with an unbounded key'
-  const grantedMs = Date.parse(response.expiresAt) - issuedAt.getTime()
-  if (grantedMs > request.ttlSeconds * 1000) return 'granted validity exceeds requested ttlSeconds'
+  if (response.expiresInSeconds === undefined) return 'bounded request answered with an unbounded key'
+  if (response.expiresInSeconds > request.ttlSeconds) return 'granted validity exceeds requested ttlSeconds'
   return null
 }

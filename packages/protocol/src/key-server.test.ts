@@ -10,25 +10,29 @@ const request = GetKeyRequest.parse({
 })
 
 describe('agentconnect.key-server/v1 schemas', () => {
-  it('accepts a bounded grant and an unbounded one, but not refreshAfter without expiry', () => {
+  it('accepts a bounded grant and an unbounded one, but not a refresh without or after its expiry', () => {
     const bounded = {
       keyId: 'k-1',
       key: 'jwt…',
       baseUrl: 'https://gateway.example.test',
-      expiresAt: '2026-08-14T13:00:00Z',
-      refreshAfter: '2026-08-14T12:45:00Z'
+      expiresInSeconds: 3600,
+      refreshInSeconds: 2880
     }
     expect(GetKeyResponse.parse(bounded)).toEqual(bounded)
     expect(GetKeyResponse.parse({ keyId: 'k-2', key: 'sk-…' })).toEqual({ keyId: 'k-2', key: 'sk-…' })
-    expect(() => GetKeyResponse.parse({ keyId: 'k-3', key: 'x', refreshAfter: '2026-08-14T12:45:00Z' })).toThrow()
+    expect(() => GetKeyResponse.parse({ keyId: 'k-3', key: 'x', refreshInSeconds: 60 })).toThrow()
     expect(() =>
-      GetKeyResponse.parse({
-        keyId: 'k-4',
-        key: 'x',
-        expiresAt: '2026-08-14T12:00:00Z',
-        refreshAfter: '2026-08-14T13:00:00Z'
-      })
+      GetKeyResponse.parse({ keyId: 'k-4', key: 'x', expiresInSeconds: 60, refreshInSeconds: 3600 })
     ).toThrow()
+  })
+
+  it('states validity as durations, so ordering never depends on timestamp spelling', () => {
+    // An absolute-instant contract compared as text ordered `…00.001Z` before `…00Z`, which
+    // let a refresh land after its own expiry. Durations have one ordering, and it is numeric.
+    expect(() => GetKeyResponse.parse({ keyId: 'k', key: 'x', expiresInSeconds: 60, refreshInSeconds: 60 })).toThrow()
+    expect(GetKeyResponse.parse({ keyId: 'k', key: 'x', expiresInSeconds: 60, refreshInSeconds: 59 })).toMatchObject({
+      refreshInSeconds: 59
+    })
   })
 
   it('requests omit ttlSeconds to ask for a long-lived key, and reject unknown fields', () => {
@@ -37,14 +41,15 @@ describe('agentconnect.key-server/v1 schemas', () => {
     expect(() => RevokeKeyRequest.parse({ keyId: '' })).toThrow()
   })
 
-  it('keyGrantViolation enforces narrow-only validity', () => {
-    const issuedAt = new Date('2026-08-14T12:00:00Z')
-    const grant = (expiresAt?: string) => ({ keyId: 'k', key: 'v', ...(expiresAt ? { expiresAt } : {}) })
-    expect(keyGrantViolation(request, GetKeyResponse.parse(grant('2026-08-14T13:00:00Z')), issuedAt)).toBeNull()
-    expect(keyGrantViolation(request, GetKeyResponse.parse(grant('2026-08-14T12:30:00Z')), issuedAt)).toBeNull()
-    expect(keyGrantViolation(request, GetKeyResponse.parse(grant('2026-08-14T14:00:00Z')), issuedAt)).toMatch(/exceeds/)
-    expect(keyGrantViolation(request, GetKeyResponse.parse(grant()), issuedAt)).toMatch(/unbounded/)
+  it('keyGrantViolation enforces narrow-only validity without reading a clock', () => {
+    const grant = (expiresInSeconds?: number) =>
+      GetKeyResponse.parse({ keyId: 'k', key: 'v', ...(expiresInSeconds ? { expiresInSeconds } : {}) })
+    expect(keyGrantViolation(request, grant(3600))).toBeNull()
+    expect(keyGrantViolation(request, grant(1800))).toBeNull()
+    expect(keyGrantViolation(request, grant(7200))).toMatch(/exceeds/)
+    expect(keyGrantViolation(request, grant())).toMatch(/unbounded/)
     const unbounded = GetKeyRequest.parse({ ...request, ttlSeconds: undefined })
-    expect(keyGrantViolation(unbounded, GetKeyResponse.parse(grant()), issuedAt)).toBeNull()
+    expect(keyGrantViolation(unbounded, grant())).toBeNull()
+    expect(keyGrantViolation(unbounded, grant(60))).toBeNull()
   })
 })
