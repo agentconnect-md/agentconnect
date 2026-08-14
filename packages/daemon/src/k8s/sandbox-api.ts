@@ -127,6 +127,29 @@ export class SandboxApi {
     }
   }
 
+  /** Delete only the listed claim incarnation; false means the name now belongs to a replacement. */
+  async deleteClaimIfCurrent(name: string, preconditions: { uid: string; resourceVersion?: string }): Promise<boolean> {
+    try {
+      await this.http.json({
+        method: 'DELETE',
+        path: `${this.claims()}/${name}`,
+        body: {
+          apiVersion: 'v1',
+          kind: 'DeleteOptions',
+          preconditions: {
+            uid: preconditions.uid,
+            ...(preconditions.resourceVersion ? { resourceVersion: preconditions.resourceVersion } : {})
+          }
+        }
+      })
+      return true
+    } catch (err) {
+      if (err instanceof K8sApiError && err.isNotFound) return true
+      if (err instanceof K8sApiError && err.isConflict) return false
+      throw err
+    }
+  }
+
   getSandbox(name: string): Promise<Sandbox> {
     return this.http.json<Sandbox>({ method: 'GET', path: `${this.sandboxes()}/${name}` })
   }

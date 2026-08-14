@@ -192,6 +192,8 @@ describe('k8s plane settings', () => {
     const expiry = (name: string, at: string, probe = true): SandboxClaim => ({
       metadata: {
         name,
+        uid: `uid-${name}`,
+        resourceVersion: `rv-${name}`,
         labels: probe ? { [PROBE_CLAIM_LABEL]: 'true' } : {},
         annotations: { [PROBE_CLAIM_EXPIRES_ANNOTATION]: at }
       }
@@ -207,7 +209,11 @@ describe('k8s plane settings', () => {
             expiry(ordinary, '2026-08-14T09:00:00.000Z', false)
           ]
         },
-        deleteClaim: async (name: string) => void deleted.push(name)
+        deleteClaimIfCurrent: async (name: string, preconditions) => {
+          expect(preconditions).toEqual({ uid: `uid-${name}`, resourceVersion: `rv-${name}` })
+          deleted.push(name)
+          return true
+        }
       },
       Date.parse('2026-08-14T10:00:00.000Z')
     )

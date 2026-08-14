@@ -35,7 +35,7 @@ export function probeAgentId(memberId: string): string {
 
 /** Delete only expired probe claims; ordinary agent claims never match. */
 export async function reapExpiredProbeClaims(
-  api: Pick<SandboxApi, 'deleteClaim' | 'listClaims'>,
+  api: Pick<SandboxApi, 'deleteClaimIfCurrent' | 'listClaims'>,
   now: number,
   log: { warn: (message: string) => void } = SILENT
 ): Promise<void> {
@@ -44,12 +44,19 @@ export async function reapExpiredProbeClaims(
     claims.map(async (claim) => {
       const name = claim.metadata?.name
       if (!name || claim.metadata?.labels?.[PROBE_CLAIM_LABEL] !== 'true') return
+      const uid = claim.metadata.uid
+      if (!uid) return
       const rawExpiry = claim.metadata?.annotations?.[PROBE_CLAIM_EXPIRES_ANNOTATION]
       const expiresAt = rawExpiry ? Date.parse(rawExpiry) : Number.NaN
       if (!Number.isFinite(expiresAt) || expiresAt > now) return
-      await api.deleteClaim(name).catch((err: unknown) => {
-        log.warn(`k8s: expired probe claim ${name} teardown failed: ${(err as Error).message}`)
-      })
+      await api
+        .deleteClaimIfCurrent(name, {
+          uid,
+          ...(claim.metadata.resourceVersion ? { resourceVersion: claim.metadata.resourceVersion } : {})
+        })
+        .catch((err: unknown) => {
+          log.warn(`k8s: expired probe claim ${name} teardown failed: ${(err as Error).message}`)
+        })
     })
   )
 }

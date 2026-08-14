@@ -137,7 +137,8 @@ and Sandboxes. Each member also receives its Pod UID through the Downward API as
 `agent-ac-runtime-probe-<member-hash>`, so simultaneous member startup never races
 on one probe claim. Probe claims carry a dedicated label and a 15-minute expiry;
 members periodically delete expired claims, so a missed teardown cannot retain a
-Sandbox and volume forever.
+Sandbox and volume forever. Each GC delete carries the UID and resourceVersion from
+its LIST snapshot, so a same-name replacement cannot be deleted by a stale sweep.
 
 **Org-threading is the end state; instantiation is scaffolding.** The wire
 carries the org, the data plane carries the org, and the process interior

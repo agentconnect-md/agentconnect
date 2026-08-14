@@ -74,7 +74,8 @@ defaults to the namespace mounted into the daemon Pod's ServiceAccount.
 
 Runtime probes use a member-hashed claim name plus an expiry annotation. A label-filtered daemon
 sweep deletes expired claims, bounding resources left by a crash or failed teardown without reading
-daemon-local storage or touching ordinary agent claims.
+daemon-local storage or touching ordinary agent claims. UID/resourceVersion delete preconditions
+prevent a stale sweep from deleting a same-name claim recreated by a container restart.
 
 ## 3. Binding: proving which pod accepted the connection
 
