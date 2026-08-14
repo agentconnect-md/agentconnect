@@ -115,6 +115,11 @@ import { AgentSpecAssembler } from './orchestrator/agentSpecAssembler.js'
 import { Placement } from './orchestrator/placement.js'
 import { Watchdog } from './orchestrator/watchdog.js'
 import { CronRunReaper } from './orchestrator/cronRunReaper.js'
+import {
+  CloudDaemonReaper,
+  CLOUD_DAEMON_REAP_AFTER_MS,
+  CLOUD_DAEMON_REAP_INTERVAL_MS
+} from './orchestrator/cloudDaemonReaper.js'
 import { RelaySweeper } from './orchestrator/relaySweeper.js'
 import { RelayRoster } from './orchestrator/relayRoster.js'
 import { WebchatMcpOperationReaper } from './orchestrator/webchatMcpOperationReaper.js'
@@ -170,6 +175,7 @@ import type { RelayWsServerDeps } from './ws/relay-gateway.js'
 import { buildHttpServer } from './http/server.js'
 import type { HttpDeps } from './http/deps.js'
 import { createReadiness, type Readiness } from './http/readiness.js'
+import { retireCloudDaemonMember } from './http/daemon-removal.js'
 import { McpRateLimiter } from './http/mcp/rate-limit.js'
 import { RemoteGrantAuthenticator } from './http/mcp/remote-grant-authenticator.js'
 import { InternalInvocationAuth } from './http/mcp/internal-invocation-auth.js'
@@ -1108,6 +1114,21 @@ export function buildContainer(
     defaultWebchatMcpMetrics
   )
 
+  // Retires the daemon rows replaced cloud Pods leave behind (a cloud member is bound to
+  // its Pod UID, so a new Pod means a new record). Org-less rows no `DELETE /daemons/:id`
+  // can reach, which is why they accumulate in every org's fleet. Only where cluster tokens
+  // are accepted at all: nowhere else can a cloud member exist.
+  const cloudDaemonReaper = clusterIdentity
+    ? new CloudDaemonReaper(
+        repos.daemon,
+        (member, retiredBefore) => retireCloudDaemonMember(httpDeps, member, retiredBefore, http.log),
+        connReg,
+        clock,
+        { retireAfterMs: CLOUD_DAEMON_REAP_AFTER_MS, intervalMs: CLOUD_DAEMON_REAP_INTERVAL_MS },
+        http.log
+      )
+    : undefined
+
   // Redelivery reconciliation (webhook-triggers P2.5): recovers github events
   // lost to a relay-pool outage by asking GitHub to redeliver GUIDs that never
   // produced a HookRun. Only exists when the App is configured; same lifecycle
@@ -1659,6 +1680,7 @@ export function buildContainer(
       clusterMaintenance.start()
       cronRunReaper.start()
       hookRunReaper.start()
+      cloudDaemonReaper?.start()
       webchatMcpOperationReaper.start()
       githubRunReporter?.start()
       hookRedeliveryReconciler?.start()
@@ -1675,6 +1697,7 @@ export function buildContainer(
       clusterMaintenance.stop()
       cronRunReaper.stop()
       hookRunReaper.stop()
+      cloudDaemonReaper?.stop()
       const webchatMcpOperationSettled = webchatMcpOperationReaper.stopAndSettle()
       githubRunReporter?.stop()
       hookRedeliveryReconciler?.stop()

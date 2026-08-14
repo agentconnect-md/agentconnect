@@ -191,7 +191,7 @@ export default function DaemonDetailView() {
         {/* action bar — status-aware: online ⇒ restart/upgrade, offline ⇒ reconnect;
             hidden while a lifecycle op is in flight (the pending badge above shows it). */}
         <div className="flex gap-2 bg-(--surface-card) px-4 pb-4">
-          {offline && !pending && (
+          {offline && !pending && daemon.canEdit && (
             <button
               onClick={() => openModal('reconnectDaemon', daemon)}
               className="flex h-11 flex-1 cursor-pointer items-center justify-center gap-2 rounded-md border border-(--border-default) bg-(--surface-card) font-sans text-[14px] font-semibold leading-normal text-(--text-primary)"
@@ -468,7 +468,7 @@ export default function DaemonDetailView() {
         </div>
 
         {/* delete — offline-only, matching the desktop menu's guard */}
-        {offline && !pending && (
+        {offline && !pending && daemon.canEdit && (
           <div className="mx-4 mt-3">
             <button
               onClick={() => openModal('deleteDaemon', daemon)}
@@ -533,7 +533,9 @@ export default function DaemonDetailView() {
             </span>
           </div>
         </div>
-        <div className="relative flex-none">
+        {/* No menu at all when the caller may do none of it (a cloud member is nobody's to
+            edit, restart or detach) — an empty popover is worse than a missing button. */}
+        <div className={daemon.canEdit || canRestart ? 'relative flex-none' : 'hidden'}>
           <button className="iconbtn" onClick={() => setMenuOpen((v) => !v)} title="Daemon actions">
             <Icon name="ellipsis" size={16} />
           </button>
@@ -565,7 +567,7 @@ export default function DaemonDetailView() {
                     Restart
                   </button>
                 )}
-                {offline && !pending && (
+                {offline && !pending && daemon.canEdit && (
                   <>
                     <button
                       className="dmi"

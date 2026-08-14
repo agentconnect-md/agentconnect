@@ -2,8 +2,10 @@
 import { describe, it, expect } from 'vitest'
 import { prisma } from '../setup.db.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
+import { seedAgent } from '../fixtures/seed.js'
 import { PgDaemonRepo } from '../../src/persistence/repositories/daemon.repo.js'
-import { DaemonId, OrgId } from '../../src/domain/ids.js'
+import { PgAgentRepo } from '../../src/persistence/repositories/agent.repo.js'
+import { AgentId, DaemonId, OrgId } from '../../src/domain/ids.js'
 
 const IDENTITY = 'system:serviceaccount:ac-org-example:ac-daemon'
 const INSTALL_IDENTITY = 'system:serviceaccount:agentconnect:ac-cloud-daemon'
@@ -143,5 +145,101 @@ describe('DaemonRepo.resolveClusterIdentity', () => {
     )
     await expect(repo.rename(DEF_ORG, first.id, 'tenant must not rename shared infrastructure')).rejects.toThrow()
     expect(await prisma.daemon.count({ where: { clusterIdentity: INSTALL_IDENTITY } })).toBe(2)
+  })
+})
+
+describe('DaemonRepo cloud-member retirement', () => {
+  const HOUR_AGO = new Date(Date.now() - 60 * 60_000)
+  const CUTOFF = new Date(Date.now() - 15 * 60_000)
+
+  it('finds only the org-less cloud rows silent past the cutoff', async () => {
+    const repo = new PgDaemonRepo(prisma)
+    const gone = await repo.resolveCloudClusterIdentity(INSTALL_IDENTITY, POD_UID_A)
+    const serving = await repo.resolveCloudClusterIdentity(INSTALL_IDENTITY, POD_UID_B)
+    await prisma.daemon.update({ where: { id: gone.id }, data: { lastSeenAt: HOUR_AGO } })
+    await prisma.daemon.update({ where: { id: serving.id }, data: { lastSeenAt: new Date() } })
+    // Neither of these is a cloud member: an envelope daemon is bound to a namespace rather
+    // than a Pod, and a laptop has no identity at all. Both are long silent regardless.
+    const envelope = await repo.resolveClusterIdentity(DEF_ORG, IDENTITY)
+    const laptop = DaemonId('77777777-7777-4777-8777-777777777777')
+    await repo.provision(laptop, DEF_ORG)
+    for (const id of [envelope!.id, laptop]) {
+      await prisma.daemon.update({ where: { id }, data: { lastSeenAt: HOUR_AGO } })
+    }
+
+    const retired = await repo.findRetiredCloudMembers(CUTOFF)
+
+    expect(retired.map((daemon) => daemon.id)).toEqual([gone.id])
+  })
+
+  it('judges a member that never heartbeated by its own age', async () => {
+    const repo = new PgDaemonRepo(prisma)
+    const fresh = await repo.resolveCloudClusterIdentity(INSTALL_IDENTITY, POD_UID_A)
+
+    // Authenticated and died before its first beat: `lastSeenAt` stays null forever, so a
+    // brand-new row must survive the sweep and an old one must not.
+    expect(await repo.findRetiredCloudMembers(CUTOFF)).toEqual([])
+    await prisma.daemon.update({ where: { id: fresh.id }, data: { createdAt: HOUR_AGO } })
+
+    expect((await repo.findRetiredCloudMembers(CUTOFF)).map((daemon) => daemon.id)).toEqual([fresh.id])
+  })
+
+  it('retires a member and settles its agents in one transaction, refusing anything else', async () => {
+    const repo = new PgDaemonRepo(prisma)
+    const pod = await repo.resolveCloudClusterIdentity(INSTALL_IDENTITY, POD_UID_A)
+    await prisma.daemon.update({ where: { id: pod.id }, data: { lastSeenAt: HOUR_AGO } })
+    // An agent from an ordinary org, hosted on install-wide infrastructure — the shape only a
+    // cloud member has, and the reason the settlement cannot be org-scoped.
+    const hosted = AgentId('a9999999-9999-4999-8999-999999999999')
+    await seedAgent(prisma, hosted, { daemonId: pod.id })
+    await new PgAgentRepo(prisma).setPlacement(hosted, pod.id)
+    const envelope = await repo.resolveClusterIdentity(DEF_ORG, IDENTITY)
+    const laptop = DaemonId('88888888-8888-4888-8888-888888888888')
+    await repo.provision(laptop, DEF_ORG)
+    for (const id of [envelope!.id, laptop]) {
+      await prisma.daemon.update({ where: { id }, data: { lastSeenAt: HOUR_AGO } })
+    }
+    const fence = { retiredBefore: CUTOFF, sessionEpoch: pod.sessionEpoch }
+
+    expect(await repo.retireCloudMember(pod.id, fence)).toEqual({
+      deleted: true,
+      settled: [{ id: hosted, orgId: DEFAULT_ORG_ID }]
+    })
+    // The agent left the same commit as the row: unplaced AND no longer claiming to run.
+    expect(await prisma.agent.findUnique({ where: { id: hosted } })).toMatchObject({
+      daemonId: null,
+      status: 'inactive'
+    })
+    // Gone, so a repeat (a peer replica sweeping the same row) is a no-op, not an error.
+    expect(await repo.retireCloudMember(pod.id, fence)).toMatchObject({ deleted: false })
+    expect(await repo.retireCloudMember(envelope!.id, fence)).toMatchObject({ deleted: false })
+    expect(await repo.retireCloudMember(laptop, fence)).toMatchObject({ deleted: false })
+    expect(await prisma.daemon.findUnique({ where: { id: pod.id } })).toBeNull()
+    expect(await prisma.daemon.findUnique({ where: { id: envelope!.id } })).not.toBeNull()
+    expect(await prisma.daemon.findUnique({ where: { id: laptop } })).not.toBeNull()
+  })
+
+  it('refuses a member that came back between the worklist read and the delete', async () => {
+    const repo = new PgDaemonRepo(prisma)
+    const pod = await repo.resolveCloudClusterIdentity(INSTALL_IDENTITY, POD_UID_A)
+    await prisma.daemon.update({ where: { id: pod.id }, data: { lastSeenAt: HOUR_AGO } })
+    const observed = (await repo.findRetiredCloudMembers(CUTOFF))[0]!
+
+    // Re-auth is the case `lastSeenAt` alone cannot catch: it bumps the epoch atomically,
+    // while the clock only moves on the first heartbeat AFTER it.
+    await repo.upsertOnAuth({ daemonId: pod.id, orgId: null, agentVersion: '1.0.0' })
+
+    expect(
+      await repo.retireCloudMember(pod.id, { retiredBefore: CUTOFF, sessionEpoch: observed.sessionEpoch })
+    ).toMatchObject({ deleted: false })
+    expect(await prisma.daemon.findUnique({ where: { id: pod.id } })).not.toBeNull()
+
+    // A heartbeat is caught by the cutoff half of the same fence.
+    await prisma.daemon.update({ where: { id: pod.id }, data: { lastSeenAt: new Date() } })
+    const current = await repo.getUnscoped(pod.id)
+    expect(
+      await repo.retireCloudMember(pod.id, { retiredBefore: CUTOFF, sessionEpoch: current!.sessionEpoch })
+    ).toMatchObject({ deleted: false })
+    expect(await prisma.daemon.findUnique({ where: { id: pod.id } })).not.toBeNull()
   })
 })

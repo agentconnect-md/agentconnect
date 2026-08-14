@@ -257,6 +257,31 @@ export interface DaemonRepo {
    * exactly like an absent row (→ 404).
    */
   delete(orgId: OrgId, daemonId: DaemonId): Promise<void>
+  /**
+   * Install-wide cloud members nothing has been heard from since `cutoff` — the rows left
+   * behind by replaced Pods, which no org's DELETE can reach because no org owns them
+   * (agentconnect-org-operator.md §"The cloud daemon, which serves every org": a replacement
+   * Pod gets a new daemon ID). System-tier and deliberately fleet-wide, like
+   * {@link DaemonRepo.findReassignable}. Never-connected rows are judged by `createdAt`.
+   */
+  findRetiredCloudMembers(cutoff: Date): Promise<DaemonRecord[]>
+  /**
+   * Retire ONE install-wide cloud member: the fenced delete (cascading exactly like
+   * {@link DaemonRepo.delete}) plus the database-side settlement of every agent it hosted, in
+   * one transaction — so no crash can leave an agent unplaced but still `active`.
+   *
+   * A compare-and-delete, not a delete: the whole fence rides one statement — the org-less
+   * cloud shape (so it cannot touch an org's own daemon), the same `retiredBefore` cutoff the
+   * worklist selected on, and the `sessionEpoch` observed there, which a (re)auth bumps before
+   * the first heartbeat moves `lastSeenAt`. A row that stopped matching yields
+   * `deleted: false`, having written nothing, so nothing downstream runs for a member that
+   * came back. `settled` is the agents this call actually unplaced — the audience for the
+   * out-of-database pushes that follow, excluding any a concurrent writer had already moved.
+   */
+  retireCloudMember(
+    daemonId: DaemonId,
+    fence: { retiredBefore: Date; sessionEpoch: bigint }
+  ): Promise<{ deleted: boolean; settled: { id: AgentId; orgId: OrgId }[] }>
   /** Bump THIS daemon's `routingEpoch` atomically; returns the new value (§4.11).
    *  System-tier: the orchestrator drives it from a routing decision it already
    *  resolved, so an org parameter would be tautological (§3.4). */

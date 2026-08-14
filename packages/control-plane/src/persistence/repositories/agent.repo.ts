@@ -31,6 +31,7 @@ import { lockResourceWriteMemberships } from '../resource-membership-lock.js'
 import { lockSkillSourceNameScopes } from '../skill-source-lock.js'
 import { tryLockMemoryConnectionScopes } from '../memory-connection-lock.js'
 import { PgHookRepo } from './hook.repo.js'
+import { lockAgentPlacement, revokeActiveWebchatMcpDelegations } from './agent-placement.js'
 import { fenceAgentLocalConfigWrite, lockOrgForConfigWrite, orgIdOfAgent } from './organization-environment-fence.js'
 import {
   AgentMissing,
@@ -167,34 +168,6 @@ async function settlePresetPlacement(tx: Prisma.TransactionClient, agentId: stri
   await tx.presetAgent.updateMany({
     where: { agentId, placementSettledAt: null },
     data: { placementSettledAt: new Date() }
-  })
-}
-
-/**
- * Placement/delegation lock order:
- *   Agent FOR UPDATE → active WebchatMcpDelegation rows.
- * Establishment joins the same order with a compatible Agent FOR SHARE, then
- * locks its Conversation FOR UPDATE before touching Delegation. Agent is
- * always first, so placement and agent deletion cannot form an inverse cycle.
- */
-async function lockAgentPlacement(
-  tx: Prisma.TransactionClient,
-  agentId: string
-): Promise<{ daemonId: string | null } | null> {
-  const [row] = await tx.$queryRaw<{ daemonId: string | null }[]>(
-    Prisma.sql`SELECT "daemonId" FROM "agent" WHERE "id" = ${agentId} FOR UPDATE`
-  )
-  return row ?? null
-}
-
-async function revokeActiveWebchatMcpDelegations(
-  tx: Prisma.TransactionClient,
-  agentId: string,
-  revokedAt: Date
-): Promise<void> {
-  await tx.webchatMcpDelegation.updateMany({
-    where: { agentId, revokedAt: null },
-    data: { revokedAt, revokedReason: 'agent_placement_changed' }
   })
 }
 

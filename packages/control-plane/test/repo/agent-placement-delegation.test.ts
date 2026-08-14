@@ -3,6 +3,7 @@ import { prisma } from '../setup.db.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 import { PgAgentRepo } from '../../src/persistence/repositories/agent.repo.js'
+import { settleCascadedUnplacement } from '../../src/persistence/repositories/agent-placement.js'
 import { PgWebchatMcpDelegationRepo } from '../../src/persistence/repositories/webchat-mcp-delegation.repo.js'
 import { AgentId, DaemonId, OrgId } from '../../src/domain/ids.js'
 
@@ -244,6 +245,39 @@ describe('agent placement and webchat MCP delegation serialization (real Postgre
         revokedAt: expect.any(Date)
       })
     }
+  })
+
+  it('finishes what a daemon delete cascaded, and leaves an agent placed elsewhere alone', async () => {
+    // Retiring a cloud member has to delete FIRST to claim the row atomically, so the FK gets
+    // there before any repo write: `daemonId` null, `status` untouched. Settling that is
+    // conditional, because a placement that landed elsewhere is not the removal's to undo.
+    await fixtures()
+    const agents = new PgAgentRepo(prisma)
+    // Genuinely placed and serving — the seed leaves the row inactive, and `active` is the
+    // half of the state the cascade cannot touch and this helper exists to correct.
+    await agents.setPlacement(AGENT, DAEMON)
+    const before = (await prisma.agent.findUnique({ where: { id: AGENT } }))!
+
+    await prisma.daemon.delete({ where: { id: DAEMON } })
+    expect(await prisma.agent.findUnique({ where: { id: AGENT } })).toMatchObject({
+      daemonId: null,
+      status: 'active'
+    })
+
+    expect(await prisma.$transaction((tx) => settleCascadedUnplacement(tx, AGENT))).toBe(true)
+    expect(await prisma.agent.findUnique({ where: { id: AGENT } })).toMatchObject({
+      daemonId: null,
+      status: 'inactive',
+      configRevision: before.configRevision + 1n
+    })
+
+    // Placed again (a peer control plane, an operator) before the sweep got here.
+    await agents.setPlacement(AGENT, OTHER_DAEMON)
+    expect(await prisma.$transaction((tx) => settleCascadedUnplacement(tx, AGENT))).toBe(false)
+    expect(await prisma.agent.findUnique({ where: { id: AGENT } })).toMatchObject({
+      daemonId: OTHER_DAEMON,
+      status: 'active'
+    })
   })
 
   it('rolls placement and delegation revocation back together on transaction failure', async () => {

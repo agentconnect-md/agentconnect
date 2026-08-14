@@ -147,6 +147,8 @@ function toDto(
         }
       : null,
     status: liveStatus(view, liveness, graceMs, nowMs),
+    // Org-less ⇒ an install-wide cloud member; the console groups the pool under one entry.
+    cloud: !orgOwned,
     health: view.health,
     capabilities: view.capabilities,
     runtimeProfiles: view.runtimeProfiles.map((p) => ({ ...p, observedAt: p.observedAt.toISOString() })),
