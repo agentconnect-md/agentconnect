@@ -51,9 +51,16 @@ export const IssueKeyResponse = z
     // credential, and only it knows whether revoking a keyId may touch other holders.
     keyId: z.string().min(1),
     key: z.string().min(1),
-    // Atomic with `key` — inject both or neither. Absent ⇒ the daemon falls
-    // through to its next base-URL layer (static config, then runtime default).
-    baseUrl: z.string().url().optional(),
+    // Atomic with `key` — inject both or neither. Absent ⇒ the daemon falls through to its
+    // next base-URL layer (static config, then runtime default). Restricted to http(s): it
+    // becomes a runtime's API base, so any other scheme is a value the daemon would inject
+    // and only fail on at request time. Plain http stays legal for a loopback or in-pod
+    // gateway, which is where it is the normal choice.
+    baseUrl: z
+      .string()
+      .url()
+      .refine((u) => ['http:', 'https:'].includes(new URL(u).protocol), { message: 'baseUrl must be http(s)' })
+      .optional(),
     // Validity as a DURATION from the server's issuance instant, for the same reason the
     // request states one: an absolute instant would be the server's clock, and every reader
     // of it would be a different one. The daemon cannot observe that instant, so it anchors

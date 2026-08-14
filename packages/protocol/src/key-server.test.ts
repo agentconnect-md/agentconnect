@@ -26,6 +26,14 @@ describe('agentconnect.key-server/v1 schemas', () => {
     ).toThrow()
   })
 
+  it('takes an http(s) baseUrl and nothing else, since it becomes a runtime API base', () => {
+    const withUrl = (baseUrl: string) => () => IssueKeyResponse.parse({ keyId: 'k', key: 'x', baseUrl })
+    // Loopback http is the normal shape for an in-pod gateway, so it stays legal.
+    expect(withUrl('http://localhost:8080')()).toMatchObject({ baseUrl: 'http://localhost:8080' })
+    expect(withUrl('file:///etc/passwd')).toThrow()
+    expect(withUrl('not a url')).toThrow()
+  })
+
   it('states validity as durations, so ordering never depends on timestamp spelling', () => {
     // An absolute-instant contract compared as text ordered `…00.001Z` before `…00Z`, which
     // let a refresh land after its own expiry. Durations have one ordering, and it is numeric.
