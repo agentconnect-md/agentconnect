@@ -45,7 +45,7 @@ export const DUTY_LEASE_DEFAULTS: DutyLeaseConfig = {
   grantPolicy: 'incumbent'
 }
 
-type Send = (type: 'duty/grant' | 'duty/revoke', payload: unknown) => void
+type Send = (type: 'duty/grant' | 'duty/revoke' | 'duty/renewed', payload: unknown) => void
 
 function toGrantEntry(g: Pick<DutyGrantRecord, 'groupId' | 'orgId' | 'term' | 'members'>): DutyGrantEntry {
   return { groupId: g.groupId, orgId: g.orgId, term: String(g.term), members: g.members }
@@ -217,6 +217,15 @@ export class DutyLeaseService {
     for (let i = 0; i < revocations.length; i += this.config.revocationsPerFrame) {
       send('duty/revoke', { revocations: revocations.slice(i, i + this.config.revocationsPerFrame) })
     }
+    // LAST, and the ordering is load-bearing. The member's self-fence anchors on receipt of this
+    // frame, and the fence is global while renewal is per-group — so a delivered PREFIX of this
+    // exchange must never extend the countdown without also carrying what invalidated the
+    // member's holdings. Every digest entry `renewHeld` did not renew is answered above, in this
+    // same exchange, by a revocation (or by a grant that re-took it), and one socket delivers in
+    // order: "the confirmation arrived" therefore implies "everything that supersedes what I hold
+    // arrived first". A truncated exchange simply leaves the fence running, which is the safe
+    // direction, as does any throw before this line. Relative, never a timestamp — no shared clock.
+    send('duty/renewed', { leaseMs: this.config.leaseMs })
   }
 
   /**

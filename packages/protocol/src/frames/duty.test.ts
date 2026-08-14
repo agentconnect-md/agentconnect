@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   HeartbeatDuties,
   DutyGrant,
+  DutyRenewed,
   DutyRevoke,
   DutyRelease,
   DutyClaim,
@@ -61,6 +62,17 @@ describe('duty frames', () => {
     expect(DutyRevoke.safeParse({ revocations: [{ groupId: GROUP, reason: 'superseded' }] }).success).toBe(true)
     expect(DutyRevoke.safeParse({ revocations: [{ groupId: GROUP, reason: 'evicted' }] }).success).toBe(false)
     expect(DutyRevoke.safeParse({ revocations: [] }).success).toBe(false)
+  })
+
+  it('duty/renewed carries a RELATIVE horizon and round-trips through the codec', () => {
+    const decoded = decodeEnvelope(encode(buildEnvelope('duty/renewed', { leaseMs: 120_000 })))
+    if (!decoded.ok) throw new Error(`decode failed: ${decoded.msg}`)
+    expect(decoded.frame.payload).toEqual({ leaseMs: 120_000 })
+    // A duration, so the member measures from receipt on its own clock — never a shared wall clock,
+    // and never zero or negative, which would make a fence deadline meaningless.
+    expect(DutyRenewed.safeParse({ leaseMs: 0 }).success).toBe(false)
+    expect(DutyRenewed.safeParse({ leaseMs: -1 }).success).toBe(false)
+    expect(DutyRenewed.safeParse({ renewedAt: '2026-08-14T00:00:00.000Z' }).success).toBe(false)
   })
 
   it('duty/release requires at least one group', () => {

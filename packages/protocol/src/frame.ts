@@ -19,7 +19,16 @@ import {
   AgentPermissionDecision
 } from './frames/agent.js'
 import { CronUpsert, CronRemove, CronReport, CronRunNow } from './frames/cron.js'
-import { DutyGrant, DutyRevoke, DutyRelease, DutyClaim, DutyClaimOk, DutyFetch, DutyFetchOk } from './frames/duty.js'
+import {
+  DutyGrant,
+  DutyRenewed,
+  DutyRevoke,
+  DutyRelease,
+  DutyClaim,
+  DutyClaimOk,
+  DutyFetch,
+  DutyFetchOk
+} from './frames/duty.js'
 import {
   GithubReviewAuthorize,
   GithubReviewAuthorized,
@@ -197,6 +206,7 @@ export const FRAME_SCHEMAS = {
   // ── telemetry ──
   heartbeat: Heartbeat,
   'duty/grant': DutyGrant,
+  'duty/renewed': DutyRenewed,
   'duty/revoke': DutyRevoke,
   'duty/release': DutyRelease,
   'duty/claim': DutyClaim,
@@ -456,6 +466,7 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('collaboration/routes', FRAME_SCHEMAS['collaboration/routes']),
   frame('heartbeat', FRAME_SCHEMAS['heartbeat']),
   frame('duty/grant', FRAME_SCHEMAS['duty/grant']),
+  frame('duty/renewed', FRAME_SCHEMAS['duty/renewed']),
   frame('duty/revoke', FRAME_SCHEMAS['duty/revoke']),
   frame('duty/release', FRAME_SCHEMAS['duty/release']),
   frame('duty/claim', FRAME_SCHEMAS['duty/claim']),

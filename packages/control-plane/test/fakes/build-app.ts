@@ -31,6 +31,7 @@ import {
 } from '../../src/persistence/index.js'
 import { PlaintextSecretCipher } from '../../src/secrets/cipher.js'
 import { EpochService } from '../../src/orchestrator/epoch.js'
+import { DUTY_LEASE_DEFAULTS } from '../../src/orchestrator/dutyLease.js'
 import { Placement } from '../../src/orchestrator/placement.js'
 import { AgentSpecAssembler } from '../../src/orchestrator/agentSpecAssembler.js'
 import { buildCpPlatformRegistry } from '../../src/platforms/registry.js'
@@ -100,7 +101,14 @@ export function buildDaemonApp(prisma: PrismaClient): DaemonApp {
 
   const codec = new ApiKeyCodec({ API_KEY_PEPPER: TEST_API_KEY_PEPPER })
   const epoch = new EpochService(repos.daemon, clock)
-  const auth = new DaemonAuthService(codec, repos.apiKey, epoch, clock, { HEARTBEAT_SEC: 15 }, new PgOrgRepo(prisma))
+  const auth = new DaemonAuthService(
+    codec,
+    repos.apiKey,
+    epoch,
+    clock,
+    { HEARTBEAT_SEC: 15, DUTY_LEASE_MS: DUTY_LEASE_DEFAULTS.leaseMs },
+    new PgOrgRepo(prisma)
+  )
   const registry = new DaemonRegistryService(repos.daemon, repos.runtimeProfile, repos.daemonLifecycleOp, clock)
   const orchestrator = new Placement(
     repos.daemon,

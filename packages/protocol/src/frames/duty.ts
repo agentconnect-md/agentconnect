@@ -50,6 +50,21 @@ export const DutyGrant = z.object({
 })
 export type DutyGrant = z.infer<typeof DutyGrant>
 
+/**
+ * C→D EVT: the renewal the CP just performed for this member, emitted on every
+ * duty-carrying heartbeat it actually processed. `leaseMs` is RELATIVE — "the
+ * leases I hold for you live this much longer, measured from when I renewed
+ * them" — so the daemon anchors its self-fence on RECEIPT and the two sides
+ * never compare wall clocks. Receipt is strictly after the CP's renew, which is
+ * what makes the daemon's deadline conservative and `T_reassign > T_fence`
+ * sound. A beat the CP dropped produces no confirmation, so a member's fence
+ * countdown keeps running — sending a beat is not renewing a lease.
+ */
+export const DutyRenewed = z.object({
+  leaseMs: z.number().int().positive()
+})
+export type DutyRenewed = z.infer<typeof DutyRenewed>
+
 /** Why a held group is being taken away: `superseded` = another member holds it
  *  now (term reassigned), `gone` = the group no longer exists (edges removed). */
 export const DutyRevokeReason = z.enum(['superseded', 'gone'])
