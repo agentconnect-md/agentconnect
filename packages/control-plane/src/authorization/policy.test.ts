@@ -6,6 +6,7 @@ import {
   canEdit,
   canManageSharing,
   canChangeSessionVisibility,
+  canContinueSession,
   canViewSession,
   identitySetOf,
   visibilityWhere,
@@ -315,6 +316,55 @@ describe('canChangeSessionVisibility', () => {
         identitySetOf(principal)
       )
     ).toBe(false)
+  })
+})
+
+describe('canContinueSession (webchat-cross-integration-continuation.md §5.1)', () => {
+  const owned = (visibility: SessionViewable['visibility'], ownerIdentity: string | null): SessionViewable => ({
+    visibility,
+    ownerIdentity
+  })
+  const idsOf = (c: ViewCtx) => identitySetOf(c)
+
+  it('org session: collaborators and owners may continue; viewers never', () => {
+    const s = owned('org', `user:${CREATOR}`)
+    expect(canContinueSession(s, ctx(OTHER, 'viewer'), idsOf(ctx(OTHER, 'viewer')))).toBe(false)
+    expect(canContinueSession(s, ctx(OTHER, 'collaborator'), idsOf(ctx(OTHER, 'collaborator')))).toBe(true)
+    expect(canContinueSession(s, ctx(OTHER, 'owner'), idsOf(ctx(OTHER, 'owner')))).toBe(true)
+  })
+
+  it('private session: owner-identity AND a writing role — viewers refused even for their own', () => {
+    const s = owned('private', `user:${CREATOR}`)
+    expect(canContinueSession(s, ctx(CREATOR, 'collaborator'), idsOf(ctx(CREATOR, 'collaborator')))).toBe(true)
+    // The viewer role is refused uniformly (continuation posts through the org's
+    // bot) — matching the verify-time gate so a minted composer can always dial.
+    expect(canContinueSession(s, ctx(CREATOR, 'viewer'), idsOf(ctx(CREATOR, 'viewer')))).toBe(false)
+    expect(canContinueSession(s, ctx(OTHER, 'owner'), idsOf(ctx(OTHER, 'owner')))).toBe(false)
+    expect(canContinueSession(s, ctx(OTHER, 'collaborator'), idsOf(ctx(OTHER, 'collaborator')))).toBe(false)
+  })
+
+  it('private session with no recorded owner is continuable by no one', () => {
+    const s = owned('private', null)
+    expect(canContinueSession(s, ctx(CREATOR, 'owner'), idsOf(ctx(CREATOR, 'owner')))).toBe(false)
+  })
+
+  it('external-provider session requires the ordinary session-view policy to admit the caller', () => {
+    const s: SessionViewable = {
+      visibility: 'external',
+      ownerIdentity: null,
+      externalProvider: 'slack',
+      externalScopeId: 'scope-1',
+      externalResolution: 'settled'
+    }
+    // No external-access snapshot ⇒ not viewable ⇒ not continuable, any role.
+    expect(canContinueSession(s, ctx(OTHER, 'owner'), idsOf(ctx(OTHER, 'owner')))).toBe(false)
+    const snapshot = {
+      policies: [{ provider: 'slack', readFenceRev: null }],
+      allowedScopes: [{ id: 'scope-1' }],
+      decisionAt: new Date()
+    } as never
+    expect(canContinueSession(s, ctx(OTHER, 'collaborator'), idsOf(ctx(OTHER, 'collaborator')), snapshot)).toBe(true)
+    expect(canContinueSession(s, ctx(OTHER, 'viewer'), idsOf(ctx(OTHER, 'viewer')), snapshot)).toBe(false)
   })
 })
 

@@ -50,6 +50,7 @@ function build(
     remoteMcp?: WebchatRemoteMcpEntitlement
     log?: Logger
     participants?: Array<{ agentId: string; daemonId?: string; primary?: boolean }>
+    targetSessionId?: string
   } = {}
 ) {
   const sent: RdMsgWebchat[] = []
@@ -66,6 +67,7 @@ function build(
     agentId: AGENT,
     participants: over.participants ?? [{ agentId: AGENT, daemonId: DAEMON, primary: true }],
     user: USER,
+    ...(over.targetSessionId ? { targetSessionId: over.targetSessionId } : {}),
     ...(over.remoteMcp ? { remoteMcp: over.remoteMcp } : {}),
     daemonConnFor: () => daemon,
     register,
@@ -176,6 +178,18 @@ describe('RelayBrowserConnection', () => {
       agentId: AGENT,
       participants: [{ agentId: AGENT, primary: true }]
     })
+  })
+
+  it('stamps the verdict targetSessionId verbatim onto every rd/msg — turn and close alike', async () => {
+    const TARGET = 'acp-session-cont-1'
+    const { conn, transport, sent } = build({ targetSessionId: TARGET })
+    transport.feed(JSON.stringify({ text: 'continue this' }))
+    await tick()
+    expect(sent).toHaveLength(1)
+    expect(sent[0]).toMatchObject({ chatId: CHAT, targetSessionId: TARGET, payload: { op: 'turn' } })
+    conn['onClose']()
+    await tick()
+    expect(sent.at(-1)).toMatchObject({ targetSessionId: TARGET, payload: { op: 'close' } })
   })
 
   it('forwards structured mentions inside every per-target rd/msg(turn) payload', async () => {

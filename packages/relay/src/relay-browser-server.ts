@@ -103,6 +103,8 @@ export function createRelayBrowserServer(app: FastifyInstance, deps: RelayBrowse
           agentId,
           participants,
           user,
+          // Session-targeted continuation: verdict-only, never browser input.
+          ...(result.targetSessionId ? { targetSessionId: result.targetSessionId } : {}),
           ...(result.remoteMcp ? { remoteMcp: result.remoteMcp } : {}),
           daemonConnFor: (id) => deps.daemons.get(id),
           register: (c, sink) => deps.router.register(c, sink),

@@ -14,11 +14,16 @@
 import type { FastifyInstance } from 'fastify'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
-import { WEBCHAT_MULTI_AGENT_FEATURE } from '@agentconnect.md/protocol'
+import {
+  originKindOf,
+  WEBCHAT_MULTI_AGENT_FEATURE,
+  WEBCHAT_SESSION_CONTINUATION_FEATURE
+} from '@agentconnect.md/protocol'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
-import { AgentId, type OrgId } from '../../domain/ids.js'
-import { canView } from '../../authorization/policy.js'
+import { AgentId, SessionId, type OrgId } from '../../domain/ids.js'
+import { canContinueSession, canView } from '../../authorization/policy.js'
+import { makeSessionAccessResolver } from '../session-access.js'
 import { ctxOf, orgOf } from '../rbac.js'
 import { ErrorDto } from '../dto/index.js'
 import { Tag } from '../plugins/openapi.js'
@@ -55,6 +60,7 @@ const ConversationBody = z
 export function webchatTokenRoutes(deps: HttpDeps) {
   return async function webchatTokenRoutesPlugin(app: FastifyInstance): Promise<void> {
     const r = app.withTypeProvider<ZodTypeProvider>()
+    const sessionAccess = makeSessionAccessResolver(deps)
 
     /** The display handle the token attests — the transcript author line AND the name
      *  the daemon puts in a session worktree's branch, so the profile's full name wins
@@ -127,6 +133,84 @@ export function webchatTokenRoutes(deps: HttpDeps) {
           agentId: agent.id,
           orgId: agent.orgId,
           conversationId
+        })
+        return reply.send({ token, relayUrl, conversationId })
+      }
+    )
+
+    // Session-targeted mint (webchat-cross-integration-continuation.md §6.2):
+    // adopt an existing chat-origin session so the console composer can send a
+    // human turn into it. The token claims stay standard — the target is
+    // resolved server-side at verify time, never claimed by the browser.
+    r.post(
+      '/sessions/:sessionId/webchat/token',
+      {
+        preHandler: app.humanAuth,
+        schema: {
+          tags: [Tag.Sessions],
+          summary: 'Mint a session-continuation webchat token',
+          description:
+            'Mints a short-lived token the browser presents to the relay pool to continue an existing chat-origin session from the console composer. Requires continuation authorization, un-purged content, the owning agent still placed on the session daemon, and continuation-capable daemon and relay pool.',
+          operationId: 'mintWebchatSessionToken',
+          params: z.object({ orgId: z.string(), sessionId: z.string() }),
+          response: { 200: WebchatTokenDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const relayUrl = deps.config.PUBLIC_RELAY_URL
+        if (!relayUrl) {
+          return reply
+            .code(503)
+            .send({ error: 'Service Unavailable', statusCode: 503, message: 'webchat relay pool not configured' })
+        }
+        const refuse = (code: 403 | 404 | 409 | 503, message: string) =>
+          reply.code(code).send({
+            error:
+              code === 403
+                ? 'Forbidden'
+                : code === 404
+                  ? 'Not Found'
+                  : code === 409
+                    ? 'Conflict'
+                    : 'Service Unavailable',
+            statusCode: code,
+            message
+          })
+        const s = await deps.repos.session.get(orgOf(req), SessionId(req.params.sessionId))
+        if (!s) return refuse(404, 'session not found')
+        const ctx = ctxOf(req)
+        const access = await sessionAccess.forSessions(req, [s])
+        if (!canContinueSession(s, ctx, access.identitySet, access.externalAccess)) {
+          return refuse(403, 'not authorized to continue this session')
+        }
+        if (s.contentPurgedAt) return refuse(409, 'session content was purged')
+        if (originKindOf(s.platform ?? '') !== 'chat') return refuse(409, 'only chat sessions can be continued')
+        const agent = await deps.repos.agent.get(orgOf(req), s.agentId)
+        if (!agent || !canView(agent, ctx)) return refuse(404, 'session not found')
+        if (!s.daemonId || agent.daemonId !== s.daemonId) return refuse(409, 'the agent moved since this session ran')
+        const daemon = deps.daemonConns.get(s.daemonId)
+        if (daemon?.state !== 'READY') return refuse(409, 'the session host is offline')
+        if (!daemon.capabilities?.features?.includes(WEBCHAT_SESSION_CONTINUATION_FEATURE)) {
+          return refuse(409, 'session continuation is not available yet')
+        }
+        // Fail-closed rollout: EVERY live relay behind the public pool must
+        // preserve targetSessionId; one old member keeps the feature off.
+        const alive = await deps.repos.relay.listAlive(new Date(Date.now() - (deps.config.RELAY_STALE_MS ?? 45_000)))
+        if (alive.length === 0 || alive.some((r) => !r.features.includes(WEBCHAT_SESSION_CONTINUATION_FEATURE))) {
+          return refuse(409, 'session continuation is not available yet')
+        }
+        const userId = req.principal!.userId
+        const { conversationId } = await deps.repos.webchatConversation.upsertSessionTargeted(
+          { orgId: agent.orgId, agentId: agent.id, userId },
+          s.id
+        )
+        const token = await deps.webchatTokens.mint({
+          userId,
+          user: await authorHandle(userId, req.principal!.email),
+          agentId: agent.id,
+          orgId: agent.orgId,
+          conversationId,
+          ...(s.visibility === 'private' && s.ownerIdentity ? { privateSessionOwnerIdentity: s.ownerIdentity } : {})
         })
         return reply.send({ token, relayUrl, conversationId })
       }
@@ -257,6 +341,14 @@ export function webchatTokenRoutes(deps: HttpDeps) {
         const owned = await deps.repos.webchatConversation.ownedBy(conversationId, orgId, userId)
         if (!owned) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'conversation not found' })
+        }
+        // A session-targeted conversation has exactly one participant — no
+        // roster growth (webchat-cross-integration-continuation.md §6.2).
+        const target = await deps.repos.webchatConversation.target(conversationId)
+        if (target?.targetSessionId) {
+          return reply
+            .code(409)
+            .send({ error: 'Conflict', statusCode: 409, message: 'a session continuation has a fixed participant' })
         }
         const agent = await deps.repos.agent.get(orgOf(req), AgentId(req.body.agentId))
         if (!agent || !canView(agent, ctxOf(req))) {

@@ -539,6 +539,8 @@ export interface RelayRecord {
   name: string
   /** Per-instance-routable address daemons dial (never a pool LB — design §5). */
   daemonUrl: string
+  /** Advertised relay features (rc/register.features), refreshed on register. */
+  features: string[]
   lastSeenAt: Date | null
   createdAt: Date
 }
@@ -547,7 +549,7 @@ export interface RelayRepo {
   /** Upsert by the unique `name` (the relay's stable identity): create with a fresh
    *  id or reclaim the existing row, refreshing `daemonUrl` + `lastSeenAt` to `at`.
    *  Atomic on the unique name so a restart racing the sweeper can't duplicate a pod. */
-  upsertByName(name: string, daemonUrl: string, at: Date): Promise<RelayRecord>
+  upsertByName(name: string, daemonUrl: string, at: Date, features?: string[]): Promise<RelayRecord>
   /** Bump `lastSeenAt` on `rc/heartbeat` (liveness for the failover sweeper). Returns
    *  false when the row is gone (already swept) — the caller forces a re-register so a
    *  relay swept during a stall doesn't linger connected-but-absent from the roster. */
@@ -1422,6 +1424,18 @@ export interface WebchatConversationRepo {
   /** Owner check for the conversation-scoped mint path: returns the primary
    *  agent when (conversationId, orgId, userId) matches, else null. */
   ownedBy(conversationId: string, orgId: OrgId, userId: string): Promise<{ primaryAgentId: AgentId } | null>
+  /** Session-targeted continuation (webchat-cross-integration-continuation.md
+   *  §6.2): find-or-create the caller's ONE conversation adopting
+   *  `targetSessionId` — concurrent mints converge on the
+   *  `(userId, targetSessionId)` unique row. Creation atomically installs the
+   *  adopted session as `currentSessionId` and the single primary participant. */
+  upsertSessionTargeted(
+    binding: Omit<WebchatConversationBinding, 'conversationId'>,
+    targetSessionId: string
+  ): Promise<{ conversationId: string }>
+  /** The conversation's continuation target (null target = ordinary webchat
+   *  conversation; null return = unknown/foreign conversation). */
+  target(conversationId: string): Promise<{ targetSessionId: string | null } | null>
 }
 
 // ───────────────────────────────────────────────────────────────────────────

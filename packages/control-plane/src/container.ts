@@ -1374,6 +1374,8 @@ export function buildContainer(
       agents: repos.agent,
       daemons: connReg,
       conversations: repos.webchatConversation,
+      sessions: repos.session,
+      orgs: repos.org,
       remoteMcp: webchatRemoteMcp
     }),
     // Current-permission fallback for GitHub comment webhooks whose

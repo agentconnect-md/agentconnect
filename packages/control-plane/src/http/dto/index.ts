@@ -2529,6 +2529,14 @@ export const SessionDetailDto = z.object({
   /** Whether THIS caller may use `PUT /sessions/:id/visibility` (§4.3). Computed
    *  server-side; the console never re-derives permissions from identity. */
   canChangeVisibility: z.boolean(),
+  /** Whether THIS caller may continue this session from the console composer
+   *  (webchat-cross-integration-continuation.md §6.5). Server-computed. */
+  canContinue: z.boolean(),
+  /** Bounded product-language reason when `canContinue` is false; null when
+   *  continuable. Never exposes component names. */
+  continuationUnavailableReason: z
+    .enum(['unauthorized', 'content_purged', 'unsupported_platform', 'agent_moved', 'daemon_offline', 'unavailable'])
+    .nullable(),
   accessSyncDegraded: z.boolean(),
   accessIssues: z.array(SessionAccessIssueDto).optional(),
   /** Multi-agent webchat conversation roster, in pick order (webchat-multi-agents.md

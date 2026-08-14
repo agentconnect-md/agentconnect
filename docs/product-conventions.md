@@ -87,6 +87,15 @@ transcript but replaces the composer with a disabled explanation. In a multi-Age
 webchat conversation, every participating Agent must still be on the daemon that owns
 its corresponding session or the shared composer is disabled.
 
+The same placement gate applies to **continuing an integration-origin session from the
+console** (webchat-cross-integration-continuation.md): the composer appears only while
+the owning Agent is still on the session's daemon and the deployment supports
+continuation. Continuing a platform session from the console **posts the attributed
+human input to the origin thread before dispatch** (`[<user> via console] …`); the agent
+reply keeps the session's existing output mode, and agents already participating in the
+origin thread receive the mirror under its ordinary routing rules. The session remains
+the single source of truth; console and platform are both projections of it.
+
 ## Where a streamed reply may be split
 
 A long reply may be delivered as more than one chat message, but a split must always fall

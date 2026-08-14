@@ -46,7 +46,21 @@ export const WebchatAck = z.object({
   accepted: z.boolean(),
   turnId: z.string().uuid(), // correlates the streamed output to this turn
   agentId: z.string().uuid().optional(),
-  reason: z.enum(['queued', 'no_agent', 'busy', 'paused', 'draining', 'not_participant']).optional()
+  // The last three are session-continuation refusals
+  // (webchat-cross-integration-continuation.md §5.2/§6.4).
+  reason: z
+    .enum([
+      'queued',
+      'no_agent',
+      'busy',
+      'paused',
+      'draining',
+      'not_participant',
+      'not_found',
+      'integration_offline',
+      'integration_delivery_failed'
+    ])
+    .optional()
 })
 export type WebchatAck = z.infer<typeof WebchatAck>
 

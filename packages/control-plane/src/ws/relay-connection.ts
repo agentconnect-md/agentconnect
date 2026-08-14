@@ -245,7 +245,12 @@ export class RelayConnection implements RelayChannel {
   }
 
   private async handleRegister(frame: RelayCpFrame, req: RcRegister): Promise<void> {
-    const row = await this.deps.relays.upsertByName(req.name, req.daemonUrl, new Date(this.deps.clock.now()))
+    const row = await this.deps.relays.upsertByName(
+      req.name,
+      req.daemonUrl,
+      new Date(this.deps.clock.now()),
+      req.features
+    )
     // The socket may have closed during the upsert. onClose ran with relayId still ''
     // (so it skipped the registry remove) — proceeding to relayReg.add would register a
     // dead connection. Bail: the durable row is harmless (the sweeper ages it out).

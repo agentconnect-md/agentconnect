@@ -84,6 +84,9 @@ export interface RelayBrowserConnDeps {
   participants: BrowserConnParticipant[]
   /** Display handle for the transcript author line (from the verified token). */
   user: string
+  /** Session-targeted continuation: the CP-verified target ACP session id from
+   *  the verdict, stamped verbatim onto every rd/msg. Never browser input. */
+  targetSessionId?: string
   /** Non-secret MCP entitlement from the verified CP result, never browser input. */
   remoteMcp?: WebchatRemoteMcpEntitlement
   /** Resolve a live rd/* connection to a participant's daemon (absent if it dropped). */
@@ -334,6 +337,7 @@ export class RelayBrowserConnection implements ChatSink {
           sessionKey: this.deps.chatId,
           msgId: randomUUID(),
           chatId: this.deps.chatId,
+          ...(this.deps.targetSessionId ? { targetSessionId: this.deps.targetSessionId } : {}),
           payload: { op: 'context', post: contextPost }
         })
         .catch((error) => {
@@ -372,6 +376,7 @@ export class RelayBrowserConnection implements ChatSink {
       sessionKey: this.deps.chatId,
       msgId: randomUUID(),
       chatId: this.deps.chatId,
+      ...(this.deps.targetSessionId ? { targetSessionId: this.deps.targetSessionId } : {}),
       ...(this.remoteMcp ? { remoteMcp: this.remoteMcp } : {}),
       payload: op
     }
@@ -432,6 +437,7 @@ export class RelayBrowserConnection implements ChatSink {
         sessionKey: this.deps.chatId,
         msgId: randomUUID(),
         chatId: this.deps.chatId,
+        ...(this.deps.targetSessionId ? { targetSessionId: this.deps.targetSessionId } : {}),
         ...(this.remoteMcp ? { remoteMcp: this.remoteMcp } : {}),
         payload: { op: 'close' }
       })

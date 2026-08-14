@@ -178,6 +178,26 @@ export function mintWebchatConversationToken(
 }
 
 /**
+ * Session-targeted mint (webchat-cross-integration-continuation.md §6.5): mint a
+ * token whose conversation adopts an existing chat-origin session, so the console
+ * composer can continue it. 403/409 per the server-computed continuation gates.
+ */
+export function mintWebchatSessionToken(orgId: string, sessionId: string): Promise<WebchatTokenDto> {
+  return apiPost<WebchatTokenDto>(
+    `/orgs/${encodeURIComponent(orgId)}/sessions/${encodeURIComponent(sessionId)}/webchat/token`,
+    {}
+  )
+}
+
+/** `webchatWsUrl` for a session continuation: mint the session-target token, dial the relay. */
+export async function webchatSessionWsUrl(orgId: string, sessionId: string): Promise<string> {
+  const minted = await mintWebchatSessionToken(orgId, sessionId)
+  const base = minted.relayUrl.replace(/^http/, 'ws').replace(/\/+$/, '')
+  const params = new URLSearchParams({ token: minted.token, conversation_id: minted.conversationId })
+  return `${base}/webchat?${params.toString()}`
+}
+
+/**
  * Build the client-facing webchat WebSocket URL for an agent (milestone A4: the relay
  * pool is the ONLY webchat path — the CP is never on the message hot path). Mint a
  * CP token, then dial `${relayUrl}/webchat?token=…&conversation_id=…`; content never
@@ -547,6 +567,12 @@ export interface SessionDetailDto {
   visibility?: SessionVisibility | null
   visibilityState?: 'pending' | 'applied' | null
   canChangeVisibility?: boolean | null
+  /** Server-computed continuation gate (webchat-cross-integration-continuation.md
+   *  §6.5): whether THIS caller may continue the session from the console
+   *  composer. Absent on a CP that predates the feature (⇒ read-only). */
+  canContinue?: boolean | null
+  continuationUnavailableReason?:
+    'unauthorized' | 'content_purged' | 'unsupported_platform' | 'agent_moved' | 'daemon_offline' | 'unavailable' | null
   externalProvider?: string | null
   externalResolution?: 'pending' | 'settled' | 'invalid' | null
   /** Actual source gateway for Feishu/Lark external sessions. Absent on older CPs. */
