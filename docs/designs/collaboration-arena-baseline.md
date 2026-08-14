@@ -272,16 +272,36 @@ measured, recorded in the run artifacts, and — where deterministic — pinned)
   observed-state discipline the Slack scripted host documents, plus an explicit
   regeneration escape hatch.
 
-**Stage-1 real-model baseline.** The real-model night-collection variant
-(`evals/test/webchat-night-collection-real.test.ts`; scripted referee via the
-puppet adapter, real local Claude Code children) measures the reply-loss rate.
-With PR #905 deliberately parked pending exactly this coverage, the loss rate it
-measures — children answering the delegation in prose instead of
-`sendMessage {sessionId}` — **is the pre-#905 baseline** (historically 2/5–3/5
-lost in the delegate-and-forward measurements). A webchat Werewolf real run
-(`evals/test/webchat-werewolf-real.test.ts`) that stalls at a night is therefore
-a VALID result: the runner records `stalledAt` and the unanswered `needsReply`
-rows instead of failing.
+**Stage-1 real-model baseline — measured (2026-08-14).** The real-model
+night-collection variant (`evals/test/webchat-night-collection-real.test.ts`;
+scripted referee via the puppet adapter, real local Claude Code children over
+ACP — the §4.1 recipe: node-launched claude-agent-acp, model pinned sonnet,
+`permissionMode: default`, memory off) ran three trials. With PR #905
+deliberately parked pending exactly this coverage, the loss rate measured here
+**is the pre-#905 baseline** (the delegate-and-forward measurements ran
+2/5–3/5 lost):
+
+| Trial | Scoreable | needsReply replies owed (wolf-A / seer / doctor) | Lost    | Wolf-B relay reached  | Referee wakes |
+| ----- | --------- | ------------------------------------------------ | ------- | --------------------- | ------------- |
+| 1     | yes       | 3                                                | **3/3** | never (proposal lost) | 0             |
+| 2     | yes       | 3                                                | **3/3** | never                 | 0             |
+| 3     | yes       | 3                                                | **3/3** | never                 | 0             |
+
+Every loss has the same shape, and it is exactly the live night-1 failure: the
+child session runs, usually explores first (`ListAgents` in all nine cases,
+once `ToolSearch`, once a terminal probe), and then answers the delegation as
+its ORDINARY ASSISTANT RESPONSE — a correctly formatted single line
+("`DOCTOR-REPORT: …`", "`SEER-REPORT: …`", "`WOLF-PROPOSAL: …`") that a
+headless child delivers to nobody. Zero `sendMessage` calls, zero permission
+requests, zero failed turns; the referee's session was never woken again, so
+the mediated wolf-B relay never fired. 9/9 owed replies lost across the three
+trials — at or above the historical baseline; the marker-formatted instruction
+("answer with a single line starting …") plausibly biases the child further
+toward prose than the free-form delegations of the earlier measurements.
+
+A webchat Werewolf real run (`evals/test/webchat-werewolf-real.test.ts`) that
+stalls at a night is therefore a VALID result: the runner records `stalledAt`
+and the unanswered `needsReply` rows instead of failing.
 
 ## 4. Reproducing every result
 
