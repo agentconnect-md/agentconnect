@@ -1,10 +1,13 @@
 import { describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DAEMON_BOOTSTRAP_UPGRADE_FEATURE } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
 import type { ResolvedRuntimeCatalog } from '../src/runtimes/registry.js'
+import { LocalStore } from '../src/store/local-store.js'
+import { statePath } from '../src/paths.js'
+import { K8S_ORG_ID_ENV } from '../src/k8s/runtime-plane.js'
 
 /** The behavior matrix for `--k8s`: each assertion here is one row of the mode
  *  contract, so k8s and self-hosted behavior cannot drift apart unnoticed. */
@@ -70,6 +73,7 @@ function daemon(opts: {
             : {
                 openDataPlane: async () =>
                   ({
+                    store: new LocalStore(':memory:'),
                     transcripts: {
                       appendTranscript: () => {},
                       insertToolCall: () => {},
@@ -120,6 +124,32 @@ describe('daemon --k8s mode', () => {
   it('requires the mounted PostgreSQL configuration before starting the execution plane', async () => {
     const k8sDaemon = daemon({ root: root(), k8s: true, dataPlane: false })
     await expect(k8sDaemon.start()).rejects.toThrow(/data-plane configuration is not readable/)
+  })
+
+  it('uses the mounted PostgreSQL store without creating a cloud SQLite database', async () => {
+    const rootDir = root()
+    const instance = daemon({ root: rootDir, k8s: true })
+    try {
+      await instance.start()
+      expect(existsSync(statePath(rootDir))).toBe(false)
+    } finally {
+      await instance.stop()
+    }
+  })
+
+  it('keeps the single-organization envelope store local', async () => {
+    vi.stubEnv(K8S_ORG_ID_ENV, 'org-envelope')
+    const rootDir = root()
+    const openDataPlane = vi.fn()
+    const instance = daemon({ root: rootDir, k8s: true, openDataPlane })
+    try {
+      await instance.start()
+      expect(openDataPlane).not.toHaveBeenCalled()
+      expect(existsSync(statePath(rootDir))).toBe(true)
+    } finally {
+      await instance.stop()
+      vi.unstubAllEnvs()
+    }
   })
 
   it('waits for the initial CP organization registry before completing cloud startup', async () => {

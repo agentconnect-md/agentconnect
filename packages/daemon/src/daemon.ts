@@ -2179,6 +2179,7 @@ export class Daemon {
   // `--k8s`: this daemon supervises runtimes in sandbox pods instead of local
   // subprocesses, so every "daemon and runtime share one machine" behavior is off.
   private readonly k8s: boolean
+  private readonly cloud: boolean
   /** Reads this pod's projected CP-audience token; undefined unless the daemon runs
    *  in-cluster AND the volume is actually mounted (decided once, at boot). */
   private readonly clusterIdentityToken?: () => string | undefined
@@ -2433,6 +2434,7 @@ export class Daemon {
     } = {}
   ) {
     this.k8s = opts.k8s === true
+    this.cloud = this.k8s && !process.env[K8S_ORG_ID_ENV]?.trim()
     // The mount either exists for this pod's whole life or never does, so availability is
     // decided once here; the VALUE is re-read per connect, because the kubelet rotates it.
     this.clusterIdentityToken = this.k8s && readClusterIdentityToken() ? () => readClusterIdentityToken() : undefined
@@ -2806,7 +2808,7 @@ export class Daemon {
           : 'daemon startup refused: security.requireSandbox is true but this host has no supported Linux SRT/bwrap mechanism'
       )
     }
-    if (this.k8s) {
+    if (this.cloud) {
       const openDataPlane = this.opts.openDataPlane ?? openMountedPostgresDataPlane
       this.dataPlane = await openDataPlane(
         (agentId) => this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId),
@@ -2816,6 +2818,8 @@ export class Daemon {
           this.requestExit(1)
         }
       )
+    }
+    if (this.k8s) {
       // A pod's terminationGracePeriodSeconds must exceed this, or the kubelet SIGKILLs
       // mid-drain and the graceful window is a promise the deployment cannot keep. The
       // daemon cannot read its own grace period (it has no pod read), so it states the
@@ -2847,7 +2851,7 @@ export class Daemon {
           }
         })
       } catch (error) {
-        await this.dataPlane.close().catch(() => undefined)
+        await this.dataPlane?.close().catch(() => undefined)
         this.dataPlane = undefined
         throw error
       }
@@ -3058,8 +3062,7 @@ export class Daemon {
       onDefinitionChange: (connectionId) => this.onMemoryConnectionDefinitionChange(connectionId)
     })
 
-    this.store = new LocalStore(statePath(root))
-    this.store.setTranscriptReplica(this.dataPlane?.transcripts)
+    this.store = this.dataPlane?.store ?? new LocalStore(statePath(root))
     this.store.setTranscriptMutationListener((mutation) => this.scheduleSessionActivity(mutation))
     this.memoryOutbox = new MemoryCaptureOutbox(this.store, this.memoryConnections, {
       log: { warn: (message) => this.log.warn(message) }
@@ -20716,11 +20719,7 @@ export class Daemon {
       },
       degradedScopes: () => this.cpDegradedScopes(),
       configApply: this.cpConfigApply(),
-      sessionRead: createSessionReader(
-        this.store,
-        (session) => this.sessionThreadUrl(session),
-        this.dataPlane?.transcripts
-      ),
+      sessionRead: createSessionReader(this.store, (session) => this.sessionThreadUrl(session)),
       // §5.4: serve a CP-forwarded status probe for a child session we own. Authorization is
       // re-done here (the lineage rule lives where the session lives), not trusted from the CP.
       childSessionStatusProbe: (probe) => this.childSessionStatusProbe(probe),
@@ -21437,9 +21436,8 @@ export class Daemon {
     // so server.close() isn't left waiting on a live bridge connection.
     await Promise.resolve(this.mcp?.stop()).catch((e) => errors.push(e))
     this.gitCredServer?.stop()
-    this.store?.setTranscriptReplica()
-    await this.dataPlane?.close().catch((e) => errors.push(e))
-    this.store?.close()
+    if (this.dataPlane) await this.dataPlane.close().catch((e) => errors.push(e))
+    else this.store?.close()
     if (errors.length) throw new AggregateError(errors, 'stop: partial failure')
   }
 }

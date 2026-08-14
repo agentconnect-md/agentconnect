@@ -19,6 +19,24 @@ const DREAM_TOOL_INPUT_CHARS = 300
 // no index signature, so we widen at the DB boundary.
 type SqlParams = Record<string, SQLInputValue>
 
+export interface StoreRunResult {
+  changes: number | bigint
+}
+
+export interface StoreStatement {
+  run(...params: unknown[]): StoreRunResult
+  get(...params: unknown[]): unknown
+  all(...params: unknown[]): unknown[]
+}
+
+export interface StoreDatabase {
+  exec(sql: string): void
+  prepare(sql: string): StoreStatement
+  close(): void
+}
+
+export type LocalStoreSource = string | { database: StoreDatabase }
+
 /**
  * Normalize the timestamp forms stored in transcript rows onto one epoch-microsecond
  * axis for chronological Slack history reads:
@@ -581,15 +599,14 @@ const SCHEMA_VERSION = 1
  * in the `CREATE` block, which runs afterwards and is `IF NOT EXISTS`, so it
  * covers fresh and upgraded stores from the one description.
  */
-const SCHEMA_MIGRATIONS: ((db: DatabaseSync) => void)[] = []
+const SCHEMA_MIGRATIONS: ((db: StoreDatabase) => void)[] = []
 
 export class LocalStore {
-  private db: DatabaseSync
+  private db: StoreDatabase
   private transcriptRevision = 0
   private transcriptMutationListener?: (mutation: TranscriptMutation) => void
-  private transcriptReplica?: import('./postgres-transcript-store.js').TranscriptReplicaSink
 
-  constructor(dbPath: string) {
+  constructor(source: LocalStoreSource) {
     // This database holds every platform message body, agent reply, tool payload and
     // durable inbox blob the daemon has seen — the same material the console serves
     // behind authorization. Every other secret-bearing artifact the daemon writes is
@@ -599,14 +616,18 @@ export class LocalStore {
     // systemd `StateDirectory=` (0755), an operator-created path — a second local
     // account could read the lot. Restrict the directory and the database explicitly,
     // and chmod after creation so a loose umask cannot widen either.
-    const dir = dirname(dbPath)
-    mkdirSync(dir, { recursive: true, mode: 0o700 })
-    restrictPath(dir, 0o700)
-    this.db = new DatabaseSync(dbPath)
-    this.db.exec('PRAGMA journal_mode = WAL')
-    // WAL mode publishes two siblings alongside the database; they carry the same
-    // rows, so restricting only the main file would leave the content readable.
-    for (const p of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) restrictPath(p, 0o600)
+    if (typeof source === 'string') {
+      const dir = dirname(source)
+      mkdirSync(dir, { recursive: true, mode: 0o700 })
+      restrictPath(dir, 0o700)
+      this.db = new DatabaseSync(source) as StoreDatabase
+      this.db.exec('PRAGMA journal_mode = WAL')
+      // WAL mode publishes two siblings alongside the database; they carry the same
+      // rows, so restricting only the main file would leave the content readable.
+      for (const p of [source, `${source}-wal`, `${source}-shm`]) restrictPath(p, 0o600)
+    } else {
+      this.db = source.database
+    }
     // Decided BEFORE the CREATE block, which is what makes an empty file
     // indistinguishable from an old one a moment later.
     const freshDatabase =
@@ -1274,16 +1295,15 @@ export class LocalStore {
   }
 
   currentTranscriptRevision(_agentId?: string): number {
-    return this.transcriptRevision
+    const row = this.db.prepare('SELECT COALESCE(MAX(revision), 0) AS revision FROM transcript').get() as {
+      revision: number
+    }
+    this.transcriptRevision = row.revision
+    return row.revision
   }
 
   setTranscriptMutationListener(listener?: (mutation: TranscriptMutation) => void): void {
     this.transcriptMutationListener = listener
-  }
-
-  /** Cloud persistence seam; SQLite remains the synchronous local/self-hosted driver. */
-  setTranscriptReplica(replica?: import('./postgres-transcript-store.js').TranscriptReplicaSink): void {
-    this.transcriptReplica = replica
   }
 
   /**
@@ -1482,7 +1502,7 @@ export class LocalStore {
     return {
       rows: kept,
       hasMore,
-      cursor: hasMore ? kept[kept.length - 1]!.revision : this.transcriptRevision
+      cursor: hasMore ? kept[kept.length - 1]!.revision : this.currentTranscriptRevision()
     }
   }
 
@@ -2535,7 +2555,7 @@ export class LocalStore {
         trustedAgentBot: trustedAgentBot ? 1 : null,
         revision
       } as unknown as SqlParams)
-    if (Number(inserted.changes) === 1) this.transcriptRevision = revision
+    if (Number(inserted.changes) === 1) this.transcriptRevision = this.threadTranscriptRevision(e.channel, e.thread)
     // The closing edit of a streamed reply lands on the row its own post created, so the
     // text is refreshed in place rather than lost to INSERT OR IGNORE. Scoped to text
     // rows on identical coordinates, and only ever toward the authoritative version.
@@ -2548,8 +2568,8 @@ export class LocalStore {
         )
         .run(e.text, rev, e.channel, e.thread, e.ts, e.text)
       if (Number(refreshed.changes) === 1) {
-        this.transcriptRevision = rev
-        this.notifyTranscriptMutation(e.channel, e.thread, e.recipient ? [e.recipient] : [], rev)
+        this.transcriptRevision = this.threadTranscriptRevision(e.channel, e.thread)
+        this.notifyTranscriptMutation(e.channel, e.thread, e.recipient ? [e.recipient] : [], this.transcriptRevision)
       }
     }
     // A row may predate this column and later be re-observed in an authoritative Slack
@@ -2626,7 +2646,7 @@ export class LocalStore {
         : undefined
 
     if (Number(inserted.changes) === 1) {
-      this.notifyTranscriptMutation(e.channel, e.thread, [e.sender, e.recipient], revision)
+      this.notifyTranscriptMutation(e.channel, e.thread, [e.sender, e.recipient], this.transcriptRevision)
     } else if (
       Number(provenanceUpgraded?.changes ?? 0) === 1 ||
       Number(attachmentsUpgraded?.changes ?? 0) === 1 ||
@@ -2639,7 +2659,7 @@ export class LocalStore {
       this.db
         .prepare("UPDATE transcript SET revision = ? WHERE channel = ? AND thread = ? AND ts = ? AND kind = 'text'")
         .run(deliveryRevision, e.channel, e.thread, e.ts)
-      this.transcriptRevision = deliveryRevision
+      this.transcriptRevision = this.threadTranscriptRevision(e.channel, e.thread)
       // An in-place upgrade mutates the SHARED row: every agent whose scoped
       // view already contains it must be invalidated, not just this append's
       // sender/recipient — a co-hosted participant delivered earlier would
@@ -2649,9 +2669,13 @@ export class LocalStore {
           .prepare('SELECT agentId FROM transcript_recipient WHERE channel = ? AND thread = ? AND ts = ?')
           .all(e.channel, e.thread, e.ts) as { agentId: string }[]
       ).map((r) => r.agentId)
-      this.notifyTranscriptMutation(e.channel, e.thread, [e.sender, e.recipient, ...sharedRecipients], deliveryRevision)
+      this.notifyTranscriptMutation(
+        e.channel,
+        e.thread,
+        [e.sender, e.recipient, ...sharedRecipients],
+        this.transcriptRevision
+      )
     }
-    this.transcriptReplica?.appendTranscript(e)
   }
 
   /** First sight of a tool call: insert its kind='tool' row (title in `text`, the
@@ -2686,10 +2710,9 @@ export class LocalStore {
         revision
       })
     if (Number(inserted.changes) === 1) {
-      this.transcriptRevision = revision
-      this.notifyTranscriptMutation(e.channel, e.thread, [e.sender], revision)
+      this.transcriptRevision = this.threadTranscriptRevision(e.channel, e.thread)
+      this.notifyTranscriptMutation(e.channel, e.thread, [e.sender], this.transcriptRevision)
     }
-    this.transcriptReplica?.insertToolCall(e)
   }
 
   /** Later update for one agent's tool call. `seq`/`ts` keep their first-seen
@@ -2710,10 +2733,9 @@ export class LocalStore {
       )
       .run(patch.title, patch.body, revision, channel, thread, agentId, toolCallId, patch.title, patch.body)
     if (Number(updated.changes) === 1) {
-      this.transcriptRevision = revision
-      this.notifyTranscriptMutation(channel, thread, [agentId], revision)
+      this.transcriptRevision = this.threadTranscriptRevision(channel, thread)
+      this.notifyTranscriptMutation(channel, thread, [agentId], this.transcriptRevision)
     }
-    this.transcriptReplica?.updateToolCall(channel, thread, agentId, toolCallId, patch)
   }
 
   private notifyTranscriptMutation(

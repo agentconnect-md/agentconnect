@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { K8S_SUPERVISOR, RESERVED_RESTART_CODE } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
+import { LocalStore } from '../src/store/local-store.js'
 
 /** Kubernetes supervises restart but not upgrade, so the lifecycle contract has to
  *  distinguish them rather than gate both on "is there a supervisor at all". */
@@ -27,6 +28,7 @@ function daemon(opts: { k8s?: boolean; supervisor?: string; requestExit?: (code:
           // This suite tests k8s lifecycle policy; cluster and data-plane behavior have dedicated suites.
           openDataPlane: async () =>
             ({
+              store: new LocalStore(':memory:'),
               transcripts: {
                 appendTranscript: () => {},
                 insertToolCall: () => {},

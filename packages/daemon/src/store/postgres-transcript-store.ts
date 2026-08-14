@@ -1,6 +1,7 @@
 import { Pool, type PoolClient, type QueryResultRow } from 'pg'
 import { SESSION_TITLE_TOOL_TITLES } from '../mcp/session-title-tool.js'
 import {
+  LocalStore,
   transcriptEventTimeUs,
   type TranscriptEntry,
   type TranscriptEventCursor,
@@ -8,6 +9,7 @@ import {
 } from './local-store.js'
 import { readDataPlaneConfig, type DataPlaneConfig } from './postgres-config.js'
 import { DATA_PLANE_SCHEMA, migrateDataPlaneSchema } from './postgres-migrations.js'
+import { PostgresSyncDatabase } from './postgres-sync-database.js'
 
 export type OrgForAgent = (agentId: string) => string | undefined
 
@@ -19,18 +21,6 @@ export interface TranscriptToolCall {
   toolCallId: string
   title: string
   body: string
-}
-
-export interface TranscriptReplicaSink {
-  appendTranscript(entry: TranscriptEntry): void
-  insertToolCall(entry: TranscriptToolCall): void
-  updateToolCall(
-    channel: string,
-    thread: string,
-    agentId: string,
-    toolCallId: string,
-    patch: { title: string; body: string }
-  ): void
 }
 
 type PgTranscriptRow = QueryResultRow & {
@@ -79,7 +69,7 @@ function transcriptRow(row: PgTranscriptRow): TranscriptRow {
   }
 }
 
-export class PostgresTranscriptStore implements TranscriptReplicaSink {
+export class PostgresTranscriptStore {
   private tail: Promise<void> = Promise.resolve()
   private failure?: Error
 
@@ -442,6 +432,7 @@ export class PostgresTranscriptStore implements TranscriptReplicaSink {
 
 export class PostgresDataPlane {
   readonly transcripts: PostgresTranscriptStore
+  readonly store: LocalStore
   /** The org this daemon runs for, as the mount named it — what a cloud daemon's control
    *  socket declares, since its Kubernetes identity names no org. */
   readonly orgId?: string
@@ -453,6 +444,14 @@ export class PostgresDataPlane {
     onFailure?: (error: Error) => void
   ) {
     this.transcripts = new PostgresTranscriptStore(pool, orgForAgent, onFailure)
+    const database = new PostgresSyncDatabase(config, onFailure)
+    try {
+      this.store = new LocalStore({ database })
+      database.finishSchemaInitialization()
+    } catch (error) {
+      database.close()
+      throw error
+    }
   }
 
   static async open(
@@ -478,10 +477,16 @@ export class PostgresDataPlane {
       await pool.end().catch(() => undefined)
       throw error
     }
-    return new PostgresDataPlane(pool, config, orgForAgent, onFailure)
+    try {
+      return new PostgresDataPlane(pool, config, orgForAgent, onFailure)
+    } catch (error) {
+      await pool.end().catch(() => undefined)
+      throw error
+    }
   }
 
   async close(): Promise<void> {
+    this.store.close()
     await this.transcripts.flush()
     await this.pool.end()
   }
