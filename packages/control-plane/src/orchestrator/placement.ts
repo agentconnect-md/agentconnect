@@ -66,7 +66,7 @@ import type {
 import type { CpPlatformRegistry } from '../platforms/provider.js'
 import { mcpProxyDef, relayHttpOrigin } from './mcpProvider.js'
 import { memoryConnectionSpec, stdioMemoryConnectionSpec } from './memoryConnection.js'
-import type { DaemonId } from '../domain/ids.js'
+import type { AgentId, DaemonId } from '../domain/ids.js'
 import { AgentId as toAgentId, DaemonId as toDaemonId, IntegrationId as toIntegrationId } from '../domain/ids.js'
 import { sessionKeyStr, type SessionKey } from '../domain/sessionKey.js'
 import { toDbPlatform } from '../persistence/platform.js'
@@ -106,6 +106,9 @@ export interface PlacementOrchDeps {
     grants: ExternalMemoryGrantRepo
     relayRoster: RelayRosterView
   }
+  /** The duty ledger read that makes the reconcile roster `pinned-to-me ∪ agents
+   *  in the duties I hold`. Absent (tests / no pool) ⇒ placement alone. */
+  duties?: { heldAgentIds(holder: DaemonId, now: Date): Promise<AgentId[]> }
   /** Optional structured logger for reconcile-time skips (no live relay). */
   log?: { warn(obj: object, msg: string): void }
   // NOTE: icon URL bases moved into the AgentSpecAssembler (it owns spec assembly).
@@ -330,6 +333,14 @@ async function projectSpec(
   return { orgId: i.orgId, integrationId: i.id, agentId: i.agentId, platform: i.platform, core, config }
 }
 
+/** Union two roster halves by row id, keeping the first occurrence — the placement
+ *  half and the duty half legitimately overlap when a member holds what it hosts. */
+function dedupeById<T extends { id: string }>(first: readonly T[], second: readonly T[]): T[] {
+  const byId = new Map<string, T>()
+  for (const row of [...first, ...second]) if (!byId.has(row.id)) byId.set(row.id, row)
+  return [...byId.values()]
+}
+
 /** A session to re-home: its key + the agent/workspace that should own it. */
 function recordToSessionKey(a: AssignmentRecord): SessionKey {
   return {
@@ -368,6 +379,14 @@ export class Placement implements ReconcileService {
     return this.orch
   }
 
+  /** The agents this member currently holds a duty for. No ledger wired ⇒ none,
+   *  which is exactly the pre-duty roster. */
+  private async dutyHeldAgentIds(daemonId: DaemonId): Promise<AgentId[]> {
+    const duties = this.orch?.duties
+    if (!duties || !this.orch) return []
+    return duties.heldAgentIds(daemonId, new Date(this.orch.clock.now()))
+  }
+
   async reconcile(daemonId: DaemonId, req: RegisterReq): Promise<RegisterOk> {
     // Daemon trust domain: reconcile runs for the registering connection's own
     // daemon (org-scoped-data-layer.md §4).
@@ -377,13 +396,35 @@ export class Placement implements ReconcileService {
       throw new Error(`reconcile: unknown daemon ${daemonId}`)
     }
 
-    const [activeAssignments, ownedAgents, daemonCrons, activeLeases, activeIntegrations] = await Promise.all([
+    // The roster is `pinned-to-me ∪ agents in the duties I hold`. A duty grant is
+    // how a pool member comes to serve an agent it is not the placement of, and
+    // its install (`duty/fetch`) has to survive a reconnect: an agent absent from
+    // the desired set is a stale-replica candidate below and would be PRUNED,
+    // undoing the install. Its integrations and crons ride along for the same
+    // reason — a served group whose sockets the reconcile dropped serves nothing.
+    const heldAgentIds = await this.dutyHeldAgentIds(daemonId)
+    const [
+      activeAssignments,
+      placedAgents,
+      heldAgents,
+      daemonCrons,
+      heldCrons,
+      activeLeases,
+      daemonIntegrations,
+      heldIntegrations
+    ] = await Promise.all([
       this.assignments.activeForDaemon(daemonId),
       this.agents.listForDaemon(daemonId),
+      this.agents.listByIds(heldAgentIds),
       this.crons.listForDaemon(daemonId),
+      this.crons.listForAgents(heldAgentIds),
       this.leases.activeForDaemon(daemonId),
-      this.integrations.activeForDaemon(daemonId)
+      this.integrations.activeForDaemon(daemonId),
+      this.integrations.activeForAgents(heldAgentIds)
     ])
+    const ownedAgents = dedupeById(placedAgents, heldAgents)
+    const activeIntegrations = dedupeById(daemonIntegrations, heldIntegrations)
+    const ownedCrons = dedupeById(daemonCrons, heldCrons)
 
     const quarantinedAgentIds = new Set<string>()
     // Conversation gating (§14): derived per-agent from restricted visibility. This
@@ -421,8 +462,10 @@ export class Placement implements ReconcileService {
       )
     ])
 
-    // Integrations FILTERED to this daemon (via agent.daemonId) — each carries
-    // plaintext tokens, so this must never be the org-wide set. Tokens are pulled
+    // Integrations FILTERED to the agents this daemon serves (placed on it or held
+    // by it) — each carries plaintext tokens, so this must never be the org-wide
+    // set, and the duty half is exactly what the ledger says this member won.
+    // Tokens are pulled
     // from the secret store (the only decrypt/read seam); NEVER log this array.
     // ALL platforms belong in the roster (Slack + Telegram): the roster is the
     // backstop when the live integration/upsert was skipped (daemon offline) or
@@ -436,18 +479,17 @@ export class Placement implements ReconcileService {
     const desiredAssignments = activeAssignments
       .filter((assignment) => !quarantinedAgentIds.has(assignment.agentId))
       .map(assignmentToRoute)
-    // The agent-config replica for THIS daemon: only the agents placed on it
-    // (1 agent : 1 machine). A daemon never receives specs for agents owned by
-    // other machines. Unplaced agents (daemonId null) go to no daemon. The daemon
-    // converges its replica to this set (CP wins); live edits ride
-    // `agent/upsert`/`agent/remove`; this snapshot is the reconnect backstop.
+    // The agent-config replica for THIS daemon: the agents placed on it, plus the
+    // agents whose duty it holds. A daemon never receives specs for agents that
+    // are neither. Unplaced, unheld agents go to no daemon. The daemon converges
+    // its replica to this set (CP wins); live edits ride `agent/upsert`/
+    // `agent/remove` over the same union; this snapshot is the reconnect backstop.
     // The assembler owns secret loading + icon bases — same spec shape as the
     // live agent/upsert emit, structurally. Historical unsafe repository rows
     // are quarantined above without stranding the rest of this daemon's roster.
-    // Crons FILTERED to this daemon (via agent.daemonId) — a cron drives one
-    // agent, so its def lands only on that agent's daemon (same rule as
-    // integrations above). Orphaned rows map to null and are never pushed.
-    const desiredCrons = daemonCrons
+    // Crons scoped the same way — a cron drives one agent, so its def lands on the
+    // daemons that serve that agent. Orphaned rows map to null and are never pushed.
+    const desiredCrons = ownedCrons
       .map(cronToUpsert)
       .filter((cron): cron is CronUpsert => cron !== null && !quarantinedAgentIds.has(cron.agentId))
     const desiredLeases = activeLeases.map(leaseToGrant)
@@ -482,6 +524,12 @@ export class Placement implements ReconcileService {
     // belongs elsewhere (the backstop for moves missed while this daemon was
     // disconnected). New replicas carry origin=cp and can also converge a missed
     // delete after the durable row is gone.
+    // The desired sets are the UNION computed above, so a duty-held replica is
+    // never a candidate here at all — its CP row names another daemon, which is
+    // exactly the `record.daemonId !== daemonId` detach below. That is the whole
+    // pruning bug: subtracting from the placement-only set undid the install.
+    // An agent the ledger still names but whose row is gone stays a candidate and
+    // is removed on its own merits — a deleted agent must not keep being served.
     const desiredKeySet = new Set(desiredAssignments.map((a) => sessionKeyStr(a.sessionKey)))
     const desiredCronSet = new Set(desiredCrons.map((c) => c.cronId))
     const desiredAgentSet = new Set(desiredAgents.map((a) => a.agentId))

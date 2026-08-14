@@ -298,6 +298,29 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
     return rows.length > 0
   }
 
+  async holdersOf(agentId: AgentId, now: Date): Promise<DaemonId[]> {
+    // Same unexpired-lease join as holdsAgent, read from the agent's side: an
+    // update must reach every member actually serving it. Membership survives an
+    // agent delete (no FK), so `agent/remove` still finds the holder.
+    const rows = await this.prisma.$queryRaw<{ holder: string }[]>(Prisma.sql`
+      SELECT DISTINCT g."holder" AS holder FROM "duty_group_member" m
+      JOIN "duty_group" g ON g.id = m."groupId"
+      WHERE m."kind" = 'agent' AND m."refId" = ${agentId}
+        AND g."holder" IS NOT NULL AND g."expiresAt" IS NOT NULL AND g."expiresAt" > ${now}
+    `)
+    return rows.map((r) => r.holder as DaemonId).sort()
+  }
+
+  async heldAgentIds(holder: DaemonId, now: Date): Promise<AgentId[]> {
+    const rows = await this.prisma.$queryRaw<{ refId: string }[]>(Prisma.sql`
+      SELECT DISTINCT m."refId" FROM "duty_group_member" m
+      JOIN "duty_group" g ON g.id = m."groupId"
+      WHERE m."kind" = 'agent'
+        AND g."holder" = ${holder}::uuid AND g."expiresAt" IS NOT NULL AND g."expiresAt" > ${now}
+    `)
+    return rows.map((r) => r.refId as AgentId).sort()
+  }
+
   async claimAgentHome(
     orgId: OrgId,
     agentId: AgentId,

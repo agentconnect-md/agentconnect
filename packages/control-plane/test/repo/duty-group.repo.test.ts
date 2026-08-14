@@ -282,6 +282,36 @@ describe('DutyGroupRepo — agent-home claims (real Postgres)', () => {
     expect(await repo.holdsAgent(M1, AgentId(A2), T0)).toBe(true)
   })
 
+  it('holdersOf and heldAgentIds are the delivery/roster halves of holdsAgent', async () => {
+    const repo = new PgDutyGroupRepo(prisma, minter())
+    await reconcile(
+      repo,
+      [
+        { agentId: A1, botId: B1 },
+        { agentId: A2, botId: B2 }
+      ],
+      [],
+      T0
+    )
+    const [first] = await repo.listForOrg(ORG)
+    await repo.claimVacant(M1, 1, T0, LEASE_MS)
+    const heldAgent = first!.members.find((m) => m.kind === 'agent')!.refId
+
+    expect(await repo.holdersOf(AgentId(heldAgent), T0)).toEqual([M1])
+    expect(await repo.heldAgentIds(M1, T0)).toEqual([heldAgent])
+    // A lapsed lease is not a holding on either side — the same fence as holdsAgent.
+    expect(await repo.holdersOf(AgentId(heldAgent), after(LEASE_MS + 1))).toEqual([])
+    expect(await repo.heldAgentIds(M1, after(LEASE_MS + 1))).toEqual([])
+  })
+
+  it('holdersOf survives the agent row it names — a delete must still reach the holder', async () => {
+    const repo = new PgDutyGroupRepo(prisma, minter())
+    await repo.claimAgentHome(ORG, AgentId(A1), M1, T0, LEASE_MS)
+    // No FK from membership to `agent`: the projection owns that lifecycle, so a
+    // cascade cannot strand `agent/remove` with nowhere to send it.
+    expect(await repo.holdersOf(AgentId(A1), T0)).toEqual([M1])
+  })
+
   it('racing first claims resolve to exactly one home and one winner', async () => {
     const repo = new PgDutyGroupRepo(prisma, minter())
     const [c1, c2] = await Promise.all([

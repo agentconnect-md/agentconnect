@@ -60,7 +60,8 @@ import {
   PgThreadAffinityStore,
   PgSlackUserConfigStore,
   PgPresetAgentStore,
-  PgIntegrationChannelRepo
+  PgIntegrationChannelRepo,
+  PgDutyGroupRepo
 } from '../../src/persistence/index.js'
 import { PlaintextSecretCipher } from '../../src/secrets/cipher.js'
 import { runWithSharedTx, withSharedTxRouting } from '../../src/persistence/ambient-tx.js'
@@ -78,6 +79,7 @@ import { WaitlistService } from '../../src/registry/waitlistService.js'
 import { EpochService } from '../../src/orchestrator/epoch.js'
 import { DUTY_LEASE_DEFAULTS } from '../../src/orchestrator/dutyLease.js'
 import { ControlSender } from '../../src/orchestrator/outbound.js'
+import { AgentDelivery } from '../../src/orchestrator/agentDelivery.js'
 import { RelayControlSender } from '../../src/orchestrator/relayControl.js'
 import { HttpBotOrchestrator } from '../../src/orchestrator/httpBot.js'
 import { CollabRoutesService } from '../../src/orchestrator/collabRoutes.service.js'
@@ -236,6 +238,8 @@ export function buildHttpApp(
   const connReg = new ConnectionRegistry()
   const sender = control ?? new ControlSender(connReg, new PgLaunchRepo(prisma))
 
+  const dutyGroupRepo = new PgDutyGroupRepo(prisma)
+
   const cipher = new PlaintextSecretCipher()
   const agentSecretStore = new PgAgentSecretStore(prisma, cipher)
   const integrationRepo = new PgIntegrationRepo(prisma)
@@ -289,6 +293,18 @@ export function buildHttpApp(
       isCuratedTool: (toolName) => findTool(toolName) !== undefined
     })
   const internalInvocationAuth = depsOverrides?.internalInvocationAuth ?? new InternalInvocationAuth()
+
+  const agentSpecs = new AgentSpecAssembler(
+    agentSecretStore,
+    {},
+    skillSourceRepo,
+    organizationKnowledgeRepo,
+    undefined,
+    organizationEnvironmentResolver
+  )
+  // Same graph as prod: every replicate site resolves its targets here, so the
+  // duty ledger is a real repo and a holder actually receives the pushes.
+  const agentDelivery = new AgentDelivery({ control: sender, specs: agentSpecs, duties: dutyGroupRepo, clock })
 
   // LATE-BOUND exactly as `buildContainer` binds it (§9): the providers below are
   // constructed WITH this dep bundle, because their funnel plugins are route
@@ -386,19 +402,13 @@ export function buildHttpApp(
     },
     registry: new DaemonRegistryService(daemonRepo, new PgRuntimeProfileRepo(prisma), daemonLifecycleOpRepo, clock),
     platforms,
-    agentSpecs: new AgentSpecAssembler(
-      agentSecretStore,
-      {},
-      skillSourceRepo,
-      organizationKnowledgeRepo,
-      undefined,
-      organizationEnvironmentResolver
-    ),
+    agentSpecs,
     liveness,
     // Capability reads share the liveness fake: a test that needs a capable
     // daemon overrides `liveness` with one whose entries carry `capabilities`.
     daemonConns: liveness as HttpDeps['daemonConns'],
     control: sender,
+    agentDelivery,
     relayControl,
     httpBot: new HttpBotOrchestrator(
       botRepo,

@@ -498,6 +498,7 @@ import type {
   TaskList,
   TaskListReq,
   DutyGrantEntry,
+  DutyMemberRef,
   DutyRevoke,
   HeartbeatDuties
 } from '@agentconnect.md/protocol'
@@ -12840,10 +12841,11 @@ export class Daemon {
   }
 
   /**
-   * Install every agent these grants cover that this daemon does not already
-   * have. Grants are thin by design, so the member pulls exactly what it lacks
-   * (`duty/fetch`) and applies the bundle the way an activation would — minus
-   * the move token, the staging fence, and workspace preparation.
+   * Install every agent these grants cover that this daemon does not already have
+   * AT THE GRANTED REVISION. Grants are thin by design, so the member pulls
+   * exactly what it lacks or what has moved on (`duty/fetch`) and applies the
+   * bundle the way an activation would — minus the move token, the staging fence,
+   * and workspace preparation.
    *
    * Returns the granted groups it could NOT install. A group is served as a
    * unit, so its bots wait on its agents too — that is the point, not a cost.
@@ -12852,7 +12854,7 @@ export class Daemon {
     const wanted = new Map<string, { orgId: string; groupId: string }>()
     for (const entry of entries) {
       for (const member of entry.members) {
-        if (member.kind !== 'agent' || this.cpAgents?.has(member.refId)) continue
+        if (member.kind !== 'agent' || !this.dutyBundleIsStale(member)) continue
         // A duty grant must never resurrect an agent a move or removal is tearing down.
         if (this.moveStagedAgents.has(member.refId) || this.agentRemovalPending(member.refId)) continue
         wanted.set(member.refId, { orgId: entry.orgId, groupId: entry.groupId })
@@ -12873,6 +12875,23 @@ export class Daemon {
     })
     await Promise.all(installs)
     return failed
+  }
+
+  /**
+   * Does this granted agent need a (re)fetch? Presence is not freshness: an agent
+   * this member installed under a duty it later lost keeps its replica (#948 — a
+   * release is never a removal) while the CP goes on editing a spec this member is
+   * no longer a delivery target for. A regrant that skipped on presence alone
+   * would serve that frozen bundle forever. So the grant carries the CP's current
+   * `configRevision` and it is compared against the applied one — the same fence
+   * the install itself re-applies, never a second notion of freshness. Unstamped
+   * (an older CP, a bot member's group) falls back to presence.
+   */
+  private dutyBundleIsStale(member: DutyMemberRef): boolean {
+    if (!this.cpAgents?.has(member.refId)) return true
+    if (member.configRevision === undefined) return false
+    const applied = this.cpAgents.appliedRevision(member.refId)
+    return applied === undefined || BigInt(member.configRevision) > applied
   }
 
   /** Join the in-flight install for this agent, or start one. A failure is

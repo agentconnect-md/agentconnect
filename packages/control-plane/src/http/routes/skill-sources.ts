@@ -140,25 +140,21 @@ export function skillSourceRoutes(deps: HttpDeps) {
     // reconnect backstop), mirroring the agents route's replicateUpsert.
     const fanOutToReferrers = async (orgId: OrgId, sourceName: string): Promise<void> => {
       const agents = await deps.repos.agent.list(orgId)
-      const referrers = agents.filter(
-        (a) => a.daemonId && a.skills.some((ref) => parseSkillRef(ref).source === sourceName)
-      )
+      const referrers = agents.filter((a) => a.skills.some((ref) => parseSkillRef(ref).source === sourceName))
       for (const a of referrers) await replicate(a)
     }
 
-    const replicate = async (agent: AgentRecord): Promise<void> => {
-      if (!agent.daemonId) return
-      const spec = await deps.agentSpecs.assemble(agent)
-      try {
-        await deps.control.agentUpsert(agent.daemonId, { agentId: agent.id, spec }, agent.orgId)
-      } catch (err) {
+    const replicate = (agent: AgentRecord): Promise<void> =>
+      deps.agentDelivery.upsert(agent, (err, daemonId) => {
         if (err instanceof NoConnection) {
-          app.log.debug({ agentId: agent.id, daemonId: agent.daemonId }, 'skill fan-out: daemon offline')
+          app.log.debug({ agentId: agent.id, daemonId }, 'skill fan-out: daemon offline')
         } else {
-          app.log.warn({ err, agentId: agent.id }, 'skill fan-out agent/upsert failed (backstop: reconnect roster)')
+          app.log.warn(
+            { err, agentId: agent.id, daemonId },
+            'skill fan-out agent/upsert failed (backstop: reconnect roster)'
+          )
         }
-      }
-    }
+      })
 
     r.get(
       '/skill-sources',

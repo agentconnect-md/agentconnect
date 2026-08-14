@@ -915,6 +915,25 @@ export class PgAgentRepo implements AgentRepo {
     return rows.map(toRecord)
   }
 
+  async listByIds(agentIds: readonly AgentId[]): Promise<AgentRecord[]> {
+    if (agentIds.length === 0) return []
+    const rows = await this.db.agent.findMany({
+      where: { id: { in: [...agentIds] } },
+      orderBy: { createdAt: 'asc' },
+      include: withUsers
+    })
+    return rows.map(toRecord)
+  }
+
+  async configRevisions(agentIds: readonly AgentId[]): Promise<Map<string, bigint>> {
+    if (agentIds.length === 0) return new Map()
+    const rows = await this.db.agent.findMany({
+      where: { id: { in: [...agentIds] } },
+      select: { id: true, configRevision: true }
+    })
+    return new Map(rows.map((r) => [r.id, r.configRevision]))
+  }
+
   async listForDaemon(daemonId: DaemonId): Promise<AgentRecord[]> {
     const rows = await this.db.agent.findMany({
       where: { daemonId },

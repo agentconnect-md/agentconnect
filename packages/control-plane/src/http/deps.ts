@@ -63,6 +63,7 @@ import type { WebchatTokenService } from '../registry/webchatToken.js'
 import type { OrgInviteLinkService } from '../registry/orgInviteLinkService.js'
 import type { WaitlistService } from '../registry/waitlistService.js'
 import type { ControlSender } from '../orchestrator/outbound.js'
+import type { AgentDelivery } from '../orchestrator/agentDelivery.js'
 import type { SessionVisibilityPushService } from '../orchestrator/visibilityPush.js'
 import type { AgentSpecAssembler } from '../orchestrator/agentSpecAssembler.js'
 import type { RelayControlSender } from '../orchestrator/relayControl.js'
@@ -265,6 +266,10 @@ export interface HttpDeps {
   /** The fencing site for C→D control. REST agent CRUD pushes `agent/upsert`/
    *  `agent/remove` through it to replicate config to the owning daemon. */
   control: ControlSender
+  /** Resolves an agent's delivery set — placement ∪ current duty holders — and
+   *  fans `agent/upsert`/`agent/remove` out over it. EVERY replicate site routes
+   *  through this; none of them reads `agent.daemonId` to decide delivery. */
+  agentDelivery: AgentDelivery
   /** Pushes the per-session memory-capture gate to the owning daemons after a
    *  §4.3 visibility change, and answers the pending/applied cutover state
    *  (session-visibility.md §5.1). Absent ⇒ changes converge on register. */

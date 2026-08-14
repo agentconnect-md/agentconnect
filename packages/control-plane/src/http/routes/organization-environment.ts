@@ -119,19 +119,15 @@ export function organizationEnvironmentRoutes(deps: HttpDeps) {
       const agents = await deps.repos.agent.list(orgId)
       const affected = agents.filter((agent) => agentIds.includes(agent.id))
       await Promise.all(
-        affected.map(async (agent) => {
-          // An unplaced agent needs no event; it will be assembled at placement.
-          if (!agent.daemonId) return
-          try {
-            const spec = await deps.agentSpecs.assemble(agent)
-            await deps.control.agentUpsert(agent.daemonId, { agentId: agent.id, spec }, agent.orgId)
-          } catch (err) {
+        affected.map((agent) =>
+          // An agent that reaches no daemon needs no event; it will be assembled at placement.
+          deps.agentDelivery.upsert(agent, (err, daemonId) => {
             app.log.warn(
-              { err, orgId, agentId: agent.id, reason },
+              { err, orgId, agentId: agent.id, daemonId, reason },
               'organization environment fan-out deferred to reconnect roster'
             )
-          }
-        })
+          })
+        )
       )
     }
 

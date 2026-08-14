@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   HeartbeatDuties,
   DutyGrant,
+  DutyGrantEntry,
   DutyRenewed,
   DutyRevoke,
   DutyRelease,
@@ -56,6 +57,36 @@ describe('duty frames', () => {
     if (!decoded.ok) throw new Error(`decode failed: ${decoded.msg}`)
     expect(decoded.frame.type).toBe('duty/grant')
     expect(decoded.frame.payload).toEqual(payload)
+  })
+
+  it("an agent member may carry the CP's current configRevision — the freshness signal", () => {
+    const stamped: DutyGrant = {
+      grants: [
+        {
+          groupId: GROUP,
+          orgId: 'org-1',
+          term: '4',
+          members: [
+            { kind: 'agent', refId: AGENT, configRevision: '12' },
+            { kind: 'bot', refId: BOT }
+          ]
+        }
+      ]
+    }
+    const decoded = decodeEnvelope(encode(buildEnvelope('duty/grant', stamped)))
+    if (!decoded.ok) throw new Error(`decode failed: ${decoded.msg}`)
+    expect(decoded.frame.payload).toEqual(stamped)
+    // Optional (an older CP omits it) but never a free-form string: it is compared
+    // as a bigint against the applied revision.
+    expect(DutyGrantEntry.safeParse({ ...stamped.grants[0], members: [{ kind: 'agent', refId: AGENT }] }).success).toBe(
+      true
+    )
+    expect(
+      DutyGrantEntry.safeParse({
+        ...stamped.grants[0],
+        members: [{ kind: 'agent', refId: AGENT, configRevision: 'v12' }]
+      }).success
+    ).toBe(false)
   })
 
   it('duty/revoke carries only the closed reason vocabulary', () => {

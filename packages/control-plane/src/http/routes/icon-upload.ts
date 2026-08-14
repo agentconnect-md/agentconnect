@@ -56,24 +56,14 @@ export function iconUploadRoutes(deps: HttpDeps) {
       (_req, body, done) => done(null, body)
     )
 
-    // Best-effort: replicate the agent's new icon to its owning daemon so the Slack
-    // per-message avatar refreshes now (the reconnect roster is the backstop).
+    // Best-effort: replicate the agent's new icon to every daemon serving it so the
+    // Slack per-message avatar refreshes now (the reconnect roster is the backstop).
     const replicateAgent = async (orgId: OrgId, agentId: string): Promise<void> => {
       const agent = await deps.repos.agent.get(orgId, AgentId(agentId))
-      if (!agent?.daemonId) return
-      try {
-        await deps.control.agentUpsert(
-          agent.daemonId,
-          {
-            agentId: agent.id,
-            // The assembler owns secret loading + icon bases — full spec per upsert.
-            spec: await deps.agentSpecs.assemble(agent)
-          },
-          agent.orgId
-        )
-      } catch (err) {
-        app.log.warn({ err, agentId }, 'icon replicate agent/upsert failed (backstop: reconnect roster)')
-      }
+      if (!agent) return
+      await deps.agentDelivery.upsert(agent, (err, daemonId) => {
+        app.log.warn({ err, agentId, daemonId }, 'icon replicate agent/upsert failed (backstop: reconnect roster)')
+      })
     }
 
     // ── Agent icon ────────────────────────────────────────────────────────────

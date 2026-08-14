@@ -163,6 +163,7 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
     sender
   )
   const relays = opts.relays ?? []
+  const dutyGroupRepo = new PgDutyGroupRepo(prisma)
   const orchestrator = new Placement(
     repos.daemon,
     repos.agent,
@@ -190,21 +191,28 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
         secrets: repos.externalMemoryConnectionSecret,
         grants: repos.externalMemoryGrant,
         relayRoster: { entries: async () => relays }
-      }
+      },
+      duties: dutyGroupRepo
     }
   )
 
-  const dutyLease = new DutyLeaseService(new PgDutyGroupRepo(prisma), clock, {
-    leaseMs: dutyLeaseMs,
-    recoveryGraceMs: opts.dutyLease?.recoveryGraceMs ?? 0,
-    grantMaxPerTick: opts.dutyLease?.grantMaxPerTick ?? 32,
-    grantsPerFrame: opts.dutyLease?.grantsPerFrame ?? 50,
-    grantMembersPerFrame: opts.dutyLease?.grantMembersPerFrame ?? 2000,
-    revocationsPerFrame: opts.dutyLease?.revocationsPerFrame ?? 500,
-    // Wire tests use synthetic member refs with no agent rows; the incumbent
-    // policy is exercised by its own repo tests against real placements.
-    grantPolicy: opts.dutyLease?.grantPolicy ?? 'any'
-  })
+  const dutyLease = new DutyLeaseService(
+    dutyGroupRepo,
+    clock,
+    {
+      leaseMs: dutyLeaseMs,
+      recoveryGraceMs: opts.dutyLease?.recoveryGraceMs ?? 0,
+      grantMaxPerTick: opts.dutyLease?.grantMaxPerTick ?? 32,
+      grantsPerFrame: opts.dutyLease?.grantsPerFrame ?? 50,
+      grantMembersPerFrame: opts.dutyLease?.grantMembersPerFrame ?? 2000,
+      revocationsPerFrame: opts.dutyLease?.revocationsPerFrame ?? 500,
+      // Wire tests use synthetic member refs with no agent rows; the incumbent
+      // policy is exercised by its own repo tests against real placements.
+      grantPolicy: opts.dutyLease?.grantPolicy ?? 'any'
+    },
+    undefined,
+    repos.agent
+  )
 
   const deps: DaemonWsDeps = {
     auth,

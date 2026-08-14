@@ -895,16 +895,14 @@ export function agentRoutes(deps: HttpDeps) {
         agents.map((agent) => agent.id)
       )) ?? new Map()
 
-    // Replicate a spec change to the agent's owning daemon so its local config
-    // replica stays current (direct Slack→daemon launch reads the replica, not
-    // the CP). Best-effort: if the agent isn't placed or the daemon is offline,
-    // the `register/ok` reconcile roster is the backstop on its next connect.
-    const replicateUpsert = async (agent: AgentRecord): Promise<void> => {
-      if (!agent.daemonId) return
-      const spec = await deps.agentSpecs.assemble(agent)
-      try {
-        await deps.control.agentUpsert(agent.daemonId, { agentId: agent.id, spec }, agent.orgId)
-      } catch (err) {
+    // Replicate a spec change to every daemon that serves this agent — its
+    // placement AND any member currently holding its duty (deps.agentDelivery is
+    // the one resolver). The daemon's local config replica must stay current
+    // because a direct Slack→daemon launch reads the replica, not the CP.
+    // Best-effort: if the agent reaches no daemon or a daemon is offline, the
+    // `register/ok` reconcile roster is the backstop on its next connect.
+    const replicateUpsert = (agent: AgentRecord): Promise<void> =>
+      deps.agentDelivery.upsert(agent, (err, daemonId) => {
         // Best-effort (see the register/ok reconcile backstop above): the agent update is
         // ALREADY persisted, so a daemon-side hiccup must not fail the HTTP write — not just
         // an offline daemon (NoConnection) but also a rejected/failed live reconcile or a
@@ -912,25 +910,20 @@ export function agentRoutes(deps: HttpDeps) {
         // reconcile hiccup was silent). The daemon re-syncs from the register/ok roster on its
         // next (re)connect. Matches the icon route's replicate handler.
         if (err instanceof NoConnection) {
-          app.log.debug({ agentId: agent.id, daemonId: agent.daemonId }, 'agent/upsert skipped: daemon offline')
+          app.log.debug({ agentId: agent.id, daemonId }, 'agent/upsert skipped: daemon offline')
         } else {
           app.log.warn(
-            { err, agentId: agent.id, daemonId: agent.daemonId },
+            { err, agentId: agent.id, daemonId },
             'agent/upsert live reconcile failed (backstop: reconnect roster)'
           )
         }
-      }
-    }
+      })
 
-    const replicateRemove = async (agentId: string, daemonId: string | null, orgId: string): Promise<void> => {
-      if (!daemonId) return
-      try {
-        await deps.control.agentRemove(daemonId, { agentId }, orgId)
-      } catch (err) {
+    const replicateRemove = (agentId: string, daemonId: string | null, orgId: string): Promise<void> =>
+      deps.agentDelivery.remove(agentId, daemonId, orgId, (err, target) => {
         if (!(err instanceof NoConnection)) throw err
-        app.log.debug({ agentId, daemonId }, 'agent/remove skipped: daemon offline')
-      }
-    }
+        app.log.debug({ agentId, daemonId: target }, 'agent/remove skipped: daemon offline')
+      })
 
     // The alive relay's HTTP origin for MCP proxy defs (ws→http/wss→https), or null
     // when no relay is live. Mirrors the mcp-providers route's relayBaseUrl.

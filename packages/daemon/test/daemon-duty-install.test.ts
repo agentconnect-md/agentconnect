@@ -36,12 +36,19 @@ const grant = (agents: string[] = [AGENT]): DutyGrantEntry => ({
   members: agents.map((refId) => ({ kind: 'agent' as const, refId }))
 })
 
-const bundle = () => ({
+/** A grant that states what the CP currently holds for the agent — the freshness signal. */
+const grantAt = (configRevision: string): DutyGrantEntry => ({
+  ...grant(),
+  members: [{ kind: 'agent', refId: AGENT, configRevision }]
+})
+
+const bundle = (configRevision?: string) => ({
   agentId: AGENT,
   spec: {
     orgId: ORG,
     name: 'scout',
     runtime: 'claude',
+    ...(configRevision !== undefined ? { configRevision } : {}),
     workspace: { mode: 'scratch' as const, isolation: 'shared' as const }
   },
   integrations: [
@@ -127,6 +134,77 @@ describe('installing an agent a duty grant covers', () => {
     await (daemon as any).installGrantedAgents([grant()])
 
     expect(fetchDutyAgent).toHaveBeenCalledTimes(1)
+    await daemon.stop()
+  })
+
+  it('REFETCHES an agent it already has when the grant names a newer revision', async () => {
+    // The stale-bundle case: this member installed the agent under a duty, lost
+    // that duty (which is not a removal — #948 — so the replica survived), the CP
+    // went on editing a spec this member was no longer a delivery target for, and
+    // now the duty comes back. Presence alone would serve the frozen bundle forever.
+    const fetchDutyAgent = vi.fn(async () => ({ bundle: bundle('7') }))
+    const daemon = await boot({ fetchDutyAgent })
+    const cp = registries(daemon)
+
+    cp.agents.upsert(AGENT, { ...bundle('3').spec })
+    expect(cp.agents.appliedRevision(AGENT)).toBe(3n)
+
+    await (daemon as any).installGrantedAgents([grantAt('7')])
+
+    expect(fetchDutyAgent).toHaveBeenCalledWith(AGENT, ORG)
+    expect(cp.agents.appliedRevision(AGENT)).toBe(7n)
+    await daemon.stop()
+  })
+
+  it('does NOT refetch when the grant names the revision it already applied', async () => {
+    const fetchDutyAgent = vi.fn(async () => ({ bundle: bundle('7') }))
+    const daemon = await boot({ fetchDutyAgent })
+    const cp = registries(daemon)
+
+    cp.agents.upsert(AGENT, { ...bundle('7').spec })
+
+    await (daemon as any).installGrantedAgents([grantAt('7')])
+
+    // The common path stays free: a regrant of a current replica costs no round trip.
+    expect(fetchDutyAgent).not.toHaveBeenCalled()
+    await daemon.stop()
+  })
+
+  it('a grant naming an OLDER revision than the applied one costs no round trip', async () => {
+    // Directional, like the fence itself: only "the CP has moved on" is a reason to
+    // pull. A lagging grant would be refused by the revision fence anyway, so
+    // fetching it would only burn a round trip on a bundle we must not apply.
+    const fetchDutyAgent = vi.fn(async () => ({ bundle: bundle('3') }))
+    const daemon = await boot({ fetchDutyAgent })
+    registries(daemon).agents.upsert(AGENT, { ...bundle('7').spec })
+
+    await (daemon as any).installGrantedAgents([grantAt('3')])
+
+    expect(fetchDutyAgent).not.toHaveBeenCalled()
+    await daemon.stop()
+  })
+
+  it('a refetched bundle goes through the same withdrawal guard as any other admission', async () => {
+    // Load-bearing: a refetch is an admission like any other, so a revoke landing
+    // mid-flight must stop it — otherwise the refresh path is a hole in the guard.
+    let releaseFetch!: () => void
+    const fetched = new Promise<void>((resolve) => {
+      releaseFetch = resolve
+    })
+    const fetchDutyAgent = vi.fn(async () => {
+      await fetched
+      return { bundle: bundle('7') }
+    })
+    const daemon = await boot({ fetchDutyAgent })
+    registries(daemon).agents.upsert(AGENT, { ...bundle('3').spec })
+
+    const admission = (daemon as any).admitDutyGrants([grantAt('7')])
+    await vi.waitFor(() => expect(fetchDutyAgent).toHaveBeenCalled())
+    ;(daemon as any).applyDutyRevoke([{ groupId: GROUP, reason: 'gone' }])
+    releaseFetch()
+
+    await expect(admission).resolves.toEqual(new Set([GROUP]))
+    expect(duties(daemon).digest()).toEqual([])
     await daemon.stop()
   })
 

@@ -16,7 +16,7 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
-import { seedDaemon, seedAgent } from '../fixtures/seed.js'
+import { seedDaemon, seedAgent, seedDutyGroup } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { ControlSender, NoConnection } from '../../src/orchestrator/outbound.js'
 import type { AgentUpsert, AgentRemove, CollabRoutesSnapshot } from '@agentconnect.md/protocol'
@@ -470,5 +470,105 @@ describe('agent MCP enable-list → daemon proxy-def push (REST → mcpserver/up
     expect(disable.statusCode).toBe(200)
     expect(spy.mcpRemoves).toEqual([{ daemonId: DAEMON, orgId: DEFAULT_ORG_ID, name: 'fakemcp' }])
     expect(spy.mcpUpserts).toHaveLength(1) // no further upsert on disable
+  })
+})
+
+/**
+ * Delivery follows the DUTY HOLDER, not just the placement (#973). A pool member
+ * that wins a duty for an agent it is not the placement of installs one bundle
+ * (`duty/fetch`) and — before this — served it frozen, because every replicate
+ * site resolved its target from `agent.daemonId`. The delivery set is now
+ * `placement ∪ current holders`, resolved in ONE seam (orchestrator/agentDelivery.ts).
+ */
+describe('agent updates follow the duty holder', () => {
+  const HOLDER = 'd1111111-1111-4111-8111-111111111111'
+  const GROUP = '00000000-0000-4000-8000-0000000009a1'
+
+  it('a spec edit reaches a holder that is NOT the placement', async () => {
+    await seedDaemon(prisma, DAEMON)
+    await seedDaemon(prisma, HOLDER)
+    const agentId = randomUUID()
+    // Placed nowhere: the ONLY reason this agent reaches a daemon is the duty.
+    await seedAgent(prisma, agentId)
+    await seedDutyGroup(prisma, GROUP, HOLDER, [agentId])
+    const { app, spy } = withSpy()
+
+    const patch = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/agents/${agentId}`,
+      payload: { description: 'You triage alerts.' }
+    })
+    expect(patch.statusCode).toBe(200)
+
+    expect(spy.upserts.map((u) => u.daemonId)).toEqual([HOLDER])
+    expect(spy.upserts[0]!.u.spec).toMatchObject({ description: 'You triage alerts.' })
+  })
+
+  it('an EXPIRED lease is not a holding — the update goes nowhere', async () => {
+    await seedDaemon(prisma, HOLDER)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId)
+    await seedDutyGroup(prisma, GROUP, HOLDER, [agentId], { expiresAt: new Date(Date.now() - 1000) })
+    const { app, spy } = withSpy()
+
+    const patch = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/agents/${agentId}`,
+      payload: { description: 'stale' }
+    })
+    expect(patch.statusCode).toBe(200)
+    expect(spy.upserts).toHaveLength(0)
+  })
+
+  it('agent/remove reaches the holder, so a deleted agent stops being served', async () => {
+    await seedDaemon(prisma, HOLDER)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId)
+    await seedDutyGroup(prisma, GROUP, HOLDER, [agentId])
+    const { app, spy } = withSpy()
+
+    const del = await app.app.inject({ method: 'DELETE', url: `${ORG}/agents/${agentId}` })
+    expect(del.statusCode).toBe(204)
+
+    // Duty membership has no FK to the agent row, so the holder is still
+    // resolvable AFTER the cascade — which is what makes this reachable at all.
+    expect(spy.removes).toEqual([{ daemonId: HOLDER, r: { agentId } }])
+  })
+
+  it('a placement AND a different holder each get the update exactly once', async () => {
+    await seedDaemon(prisma, DAEMON)
+    await seedDaemon(prisma, HOLDER)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: DAEMON })
+    await seedDutyGroup(prisma, GROUP, HOLDER, [agentId])
+    const { app, spy } = withSpy()
+
+    const patch = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/agents/${agentId}`,
+      payload: { description: 'both' }
+    })
+    expect(patch.statusCode).toBe(200)
+
+    // Placement first, holder second, no duplicate — and ONE assembled spec, so
+    // the two replicas cannot disagree about what revision they applied.
+    expect(spy.upserts.map((u) => u.daemonId)).toEqual([DAEMON, HOLDER])
+    expect(spy.upserts[0]!.u.spec).toEqual(spy.upserts[1]!.u.spec)
+  })
+
+  it('the placement holding its own agent is one target, not two', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: DAEMON })
+    await seedDutyGroup(prisma, GROUP, DAEMON, [agentId])
+    const { app, spy } = withSpy()
+
+    const patch = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/agents/${agentId}`,
+      payload: { description: 'incumbent' }
+    })
+    expect(patch.statusCode).toBe(200)
+    expect(spy.upserts.map((u) => u.daemonId)).toEqual([DAEMON])
   })
 })
