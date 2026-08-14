@@ -55,6 +55,16 @@ export function presentedDaemonStatus(daemon: Pick<DaemonRow, 'status' | 'lifecy
   return daemon.lifecycleStatus ?? daemon.status
 }
 
+/** What every surface calls an install-wide cloud member. The CP names those rows after the
+ *  Pod they run in, which is churn nobody outside the cluster should read: the pool is one
+ *  managed thing, so `daemonFromDto` labels each member with this instead. */
+export const CLOUD_DAEMON_LABEL = 'AgentConnect Cloud'
+
+/** The Cloud entry stands in for the whole pool: online while any member is serving. */
+export function cloudFleetStatus(members: Pick<DaemonRow, 'status'>[]): ConnectionStatusKey {
+  return members.some((m) => m.status === 'online') ? 'online' : 'offline'
+}
+
 // An agent runs *inside* its owning daemon, so it can't really be online when that
 // daemon is offline. A planned restart/upgrade is different: placement and sessions
 // remain intact while the daemon drains and relaunches, so carry that explicit amber
@@ -1847,6 +1857,10 @@ export interface DaemonRow {
   canManageLifecycle: boolean
   /** Actual daemon connection/readiness. Never replaced by a presentation-only lifecycle state. */
   status: ConnectionStatusKey
+  /** An install-wide cloud member: managed infrastructure every org shares, one row per
+   *  cloud-daemon Pod. The daemons page collapses the whole pool into one Cloud entry, and
+   *  nothing here is the org's to rename, restart, or detach (`canEdit` is false). */
+  cloud: boolean
   /** Planned lifecycle presentation while the durable operation is pending. */
   lifecycleStatus: LifecycleStatusKey | null
   host: string

@@ -15,7 +15,7 @@ import type {
   SessionImage,
   Workspace
 } from '@/lib/data'
-import { isSelfSender, lifecycleStatus, MOCK_MODE } from '@/lib/data'
+import { CLOUD_DAEMON_LABEL, isSelfSender, lifecycleStatus, MOCK_MODE } from '@/lib/data'
 import type { AgentIcon } from '@/lib/agent-icon'
 import { withIconUrl } from '@/lib/agent-icon'
 import {
@@ -1038,6 +1038,9 @@ export interface DaemonViewDto {
    *  `status` is expiry-projected server-side. The console tracks its OWN command by `id`. */
   lifecycleOp: DaemonLifecycleOpDto | null
   status: string
+  /** An install-wide cloud member — managed infrastructure shared by every org, one row
+   *  per cloud-daemon Pod. Absent from an older CP ⇒ treat as a plain daemon. */
+  cloud?: boolean
   health: string
   capabilities: DaemonCapabilitiesDto
   runtimeProfiles: RuntimeProfileDto[]
@@ -2028,12 +2031,16 @@ export function mergeSessionDetailUsage(local: Session, detail: Session | null):
 }
 
 export function daemonFromDto(d: DaemonViewDto): DaemonRow {
+  const cloud = d.cloud ?? false
   return {
     daemonId: d.daemonId,
+    cloud,
     // Display label: the daemon name (the CP seeds it from the hostname on first
     // register, so a connected daemon always has one), else a short id for a
-    // provisioned-but-never-connected row. Never the raw hostname.
-    name: d.name || d.daemonId.slice(0, 8),
+    // provisioned-but-never-connected row. Never the raw hostname. A cloud member's
+    // name is its Pod, which is meaningless outside the cluster and changes on every
+    // roll — the pool is one managed thing everywhere it is named, so use that label.
+    name: cloud ? CLOUD_DAEMON_LABEL : d.name || d.daemonId.slice(0, 8),
     version: d.agentVersion || PLACEHOLDER,
     latestVersion: d.latestVersion,
     releaseChannel: d.releaseChannel,
