@@ -195,8 +195,16 @@ export function useWorkspaceTree(agentId: string, sessionId?: string, refreshTic
   return { dirs, root: dirs[''], expanded, toggleDir, loadMoreDir, openPath }
 }
 
-/** What the scoped git status resolved to. `none` is a from-scratch workspace and `unavailable` an offline daemon or unplaced agent — a null status alone cannot tell those two apart. */
-export type WorkspaceGitOutcome = 'pending' | 'repo' | 'none' | 'unavailable'
+/** What the scoped git status resolved to. `none` is a from-scratch workspace, `asleep` a cluster agent whose sandbox is not running, and `unavailable` an offline daemon or unplaced agent — a null status alone cannot tell the three apart. `asleep` is its own outcome because it is the only one that resolves itself: the workspace is there and reachable again on the agent's next turn, so the copy must not read as an outage or as an empty checkout. */
+export type WorkspaceGitOutcome = 'pending' | 'repo' | 'none' | 'asleep' | 'unavailable'
+
+/** The CP's code for "this agent's sandbox is not running". A 503 like an offline daemon — the code is the only thing that separates the two, and a plain 503 keeps the offline story. */
+export const SANDBOX_ASLEEP_CODE = 'WORKSPACE_SANDBOX_UNAVAILABLE'
+
+/** Whether a failed workspace read was the sandbox being asleep rather than anything being wrong. */
+export function isSandboxAsleep(err: unknown): boolean {
+  return err instanceof ApiError && err.code === SANDBOX_ASLEEP_CODE
+}
 
 export interface WorkspaceGitRead {
   /** The live status, or null for a non-repo workspace, an offline daemon, and the window before the first answer. */
@@ -222,10 +230,10 @@ export function useWorkspaceGitStatus(agentId: string, sessionId?: string, refre
         setOutcome(s.isRepo ? 'repo' : 'none')
         if (!sessionId) setPrimaryBranch(s.isRepo ? s.branch : null)
       },
-      () => {
+      (e: unknown) => {
         if (!active) return
         setGit(null)
-        setOutcome('unavailable')
+        setOutcome(isSandboxAsleep(e) ? 'asleep' : 'unavailable')
         if (!sessionId) setPrimaryBranch(null)
       }
     )

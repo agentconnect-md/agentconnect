@@ -41,7 +41,12 @@ export const WorkspaceErrorReason = z.enum([
   'too-large', // the edit exceeds MAX_WORKSPACE_EDIT_BYTES
   'binary', // the target is not UTF-8 text
   'not-utf8', // the supplied content is not valid UTF-8
-  'stale' // optimistic-concurrency failure (CONFLICT)
+  'stale', // optimistic-concurrency failure (CONFLICT)
+  // The workspace is on a sandbox volume no bound channel can reach right now (a suspended or
+  // not-yet-launched pod). The one reason here that is TRANSIENT rather than a bad request, so the
+  // CP answers it 503-with-a-code: retrying is the right move, and it must not read as "there is no
+  // repository here" or "this directory is empty", which is what the panels said before it existed.
+  'sandbox-unavailable'
 ])
 export type WorkspaceErrorReason = z.infer<typeof WorkspaceErrorReason>
 

@@ -345,6 +345,14 @@ export function GitPanel({
 
   // Which of the status reads' answers the file half draws. Every branch is data — none may take the panel, the dock or the transcript down (§2).
   const files = (): ReactNode => {
+    // Ahead of `unavailable`, which it arrives as (both are 503): the workspace is fine and comes
+    // back on the agent's next turn, so this must not read as an outage — and must not read as "not
+    // a git checkout" either, which is what a suspended pod used to answer.
+    if (outcome === 'asleep') {
+      return (
+        <PanelNotice text="Git status is not available right now — this agent runs in a cluster sandbox and its pod is not running. It starts again on the agent's next turn, and the checkout comes back with it." />
+      )
+    }
     if (outcome === 'unavailable') {
       return (
         <PanelNotice
@@ -461,7 +469,11 @@ export function GitPanel({
           </span>
         ) : (
           <span className="min-w-0 flex-1 font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
-            {outcome === 'none' ? 'Not a git checkout' : 'Git status unavailable'}
+            {outcome === 'none'
+              ? 'Not a git checkout'
+              : outcome === 'asleep'
+                ? 'Sandbox not running'
+                : 'Git status unavailable'}
           </span>
         )}
         {/* Ahead/behind describe the branch against its upstream, so they are withheld when there is none — a `↑0 ↓0` beside an untracked branch reads as "in sync with a remote" and there is no remote. */}

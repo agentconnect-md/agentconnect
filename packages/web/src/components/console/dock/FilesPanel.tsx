@@ -223,9 +223,11 @@ export function FilesPanel({
   const gitNote =
     outcome === 'none'
       ? 'Not a git checkout — no branch or file status'
-      : outcome === 'unavailable'
-        ? 'Git status unavailable — the daemon may be offline'
-        : null
+      : outcome === 'asleep'
+        ? 'Git status not available — this agent’s sandbox is not running'
+        : outcome === 'unavailable'
+          ? 'Git status unavailable — the daemon may be offline'
+          : null
 
   return (
     <div data-files-panel="" className="flex min-h-0 flex-1 flex-col">

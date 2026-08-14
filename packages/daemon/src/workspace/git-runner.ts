@@ -53,6 +53,25 @@ export interface GitRunner {
   readBounded(args: string[], maxBytes: number): Promise<{ out: Buffer; overflow: boolean }>
 }
 
+/**
+ * Raised when an invocation never reached git — as opposed to git running and failing.
+ *
+ * The distinction is load-bearing for every caller that treats a git failure as an ANSWER. The
+ * console's `isRepo` preflight is the sharp case: a request the transport dropped is not evidence
+ * that the cwd is outside a repository, and reading it as such reports "not a git checkout" for a
+ * checkout that is there. Only the remote runner raises it — a local child either runs or reports a
+ * spawn failure, and there is no channel in between to lose.
+ */
+export class GitTransportError extends Error {
+  constructor(
+    message: string,
+    readonly cause?: unknown
+  ) {
+    super(message)
+    this.name = 'GitTransportError'
+  }
+}
+
 /** The pull result the BFF surfaces to the console; nothing here is decorative. */
 export interface GitPullSummary {
   files: string[]

@@ -5,9 +5,12 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import {
+  clusterWorkspaceCwd,
+  consoleWorkspaceRoot,
   prefetchWorkspace,
   removeSessionWorktree,
   sessionWorktreeRoot,
+  setSandboxWorkspaceMode,
   setWorkspaceGitRunnerResolver,
   type WorkspaceGitRunnerResolver
 } from '../src/workspace/workspace-manager.js'
@@ -23,6 +26,7 @@ const roots: string[] = []
 
 afterEach(() => {
   setWorkspaceGitRunnerResolver(undefined)
+  setSandboxWorkspaceMode(false)
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
@@ -260,5 +264,69 @@ describe('workspace-manager git runner seam', () => {
       .map((line, index) => ({ line, number: index + 1 }))
       .filter(({ line }) => /\bgitFor\(|new LocalGitRunner\(/.test(line))
     expect(offenders.map((entry) => `${entry.number}: ${entry.line.trim()}`)).toEqual([])
+  })
+})
+
+// The other half of the same seam: WHERE the console's git runs, not just which runner runs it.
+// A resolver that routes into the sandbox is worthless if it is handed a path from this daemon's
+// filesystem — the shim's cwd fence refuses it, `isRepo` swallows the refusal, and the Git panel
+// reports "not a git checkout" over a checkout that is there.
+describe('consoleWorkspaceRoot', () => {
+  const agentAt = (path: string, workspace: Partial<Agent['workspace']> = {}): Agent =>
+    ({
+      ...clusterAgent('bot-root', path),
+      workspace: { ...clusterAgent('bot-root', path).workspace, ...workspace }
+    }) as Agent
+
+  it('is the daemon-local path for a self-hosted daemon', () => {
+    expect(
+      consoleWorkspaceRoot(agentAt('/var/lib/ac/agents/bot/workspace'), '/var/lib/ac/agents/bot/workspace', undefined)
+    ).toBe('/var/lib/ac/agents/bot/workspace')
+  })
+
+  it('is the POD checkout under --k8s, never the daemon path the runtime cannot see', () => {
+    setSandboxWorkspaceMode(true)
+    const local = '/var/lib/agentconnect/agents/bot/workspace'
+    expect(consoleWorkspaceRoot(agentAt(local), local, '/agent')).toBe('/agent/repo')
+  })
+
+  it('falls back to the legacy mount when the bound shim reported no root', () => {
+    setSandboxWorkspaceMode(true)
+    expect(consoleWorkspaceRoot(agentAt('/local/ws'), '/local/ws', undefined)).toBe('/agent/repo')
+  })
+
+  it('is the mounted volume itself for a from-scratch workspace', () => {
+    setSandboxWorkspaceMode(true)
+    expect(consoleWorkspaceRoot(agentAt('/local/ws', { mode: 'from-scratch' }), '/local/ws', '/agent')).toBe('/agent')
+  })
+
+  it('stops at the CHECKOUT root, not the runtime cwd, when a working subdirectory is configured', () => {
+    setSandboxWorkspaceMode(true)
+    // The distinction is the local path's: it has always addressed `workspace.path` (the clone root)
+    // while the ACP cwd went one level in. Routing the console through `clusterWorkspaceCwd` instead
+    // put every agentDir-configured cluster agent on "not a git checkout" — `isRepo` accepts only an
+    // empty `--show-prefix`, so a descendant cwd is rejected before any operation runs, and no status
+    // ever reaches the panel to be corrected downstream.
+    expect(consoleWorkspaceRoot(agentAt('/local/ws', { agentDir: 'services/api' }), '/local/ws', '/agent')).toBe(
+      '/agent/repo'
+    )
+    // The RUNTIME still gets the subdirectory — the two answers differ on purpose.
+    expect(clusterWorkspaceCwd(agentAt('/local/ws', { agentDir: 'services/api' }), '/agent')).toBe(
+      '/agent/repo/services/api'
+    )
+  })
+
+  it('keeps an absent workspace absent, so a shared-workspace sessionId stays refused', () => {
+    setSandboxWorkspaceMode(true)
+    // The local resolver answers undefined for a sessionId naming a session that is NOT isolated.
+    // Turning that into the shared checkout would answer a question about a worktree that has none.
+    expect(consoleWorkspaceRoot(agentAt('/local/ws'), undefined, '/agent')).toBeUndefined()
+  })
+
+  it('refuses a session-isolated worktree loudly rather than naming the shared checkout', () => {
+    setSandboxWorkspaceMode(true)
+    expect(() =>
+      consoleWorkspaceRoot(agentAt('/local/ws'), '/local/ws/.sessions/abc', '/agent', { isolation: 'session' })
+    ).toThrow(/session-isolated/)
   })
 })

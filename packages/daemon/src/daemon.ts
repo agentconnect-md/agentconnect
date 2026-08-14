@@ -210,6 +210,7 @@ import { ChannelNameResolver } from './messages/channel-name-resolver.js'
 import {
   cleanupStaleWorkspaceClones,
   clusterWorkspaceCwd,
+  consoleWorkspaceRoot,
   convergeGithubAppWorkspaceRename,
   ensureWorkspaceMaterialization,
   isWorkspaceEmpty,
@@ -20567,6 +20568,8 @@ export class Daemon {
       resolveInitialRegistry = resolve
     })
 
+    // This daemon's own coordinates. The file reader below has no other option — the shim serves no
+    // read or list — so a cluster agent's Files panel stays empty until that channel exists.
     const workspaceLocation = (id: string, sessionId?: string) => {
       const agent = this.agents.get(id)
       if (!agent) return undefined
@@ -20578,8 +20581,22 @@ export class Daemon {
       return { root: sessionWorktreePath(agent, session.key), scratch: false }
     }
 
+    // The console's git seam runs git where the agent's work happens, which under --k8s is the pod.
+    // A defined location for a sessionId means that session IS isolated, which --k8s refuses —
+    // passed through so it is refused loudly rather than silently naming the shared checkout.
+    const workspaceGitRoot = (id: string, sessionId?: string): string | undefined => {
+      const agent = this.agents.get(id)
+      if (!agent) return undefined
+      return consoleWorkspaceRoot(
+        agent,
+        workspaceLocation(id, sessionId)?.root,
+        this.k8sPlane?.workspaceRootFor(id),
+        sessionId ? { isolation: 'session' } : undefined
+      )
+    }
+
     const workspaceGit = createWorkspaceGit(
-      (id, sessionId) => workspaceLocation(id, sessionId)?.root,
+      workspaceGitRoot,
       (id) => {
         const workspace = this.agents.get(id)?.workspace
         return workspace?.mode === 'git-repo' && workspace.gitCredential === 'github-app' ? gitCredentialEnv(id) : {}

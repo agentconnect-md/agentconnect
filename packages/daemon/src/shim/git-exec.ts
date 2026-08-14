@@ -1,6 +1,12 @@
 import { z } from 'zod'
-import type { GitLogEntry, GitPullSummary, GitRunner, GitStatusSummary } from '../workspace/git-runner.js'
-import type { ShimRequester } from './channels.js'
+import {
+  GitTransportError,
+  type GitLogEntry,
+  type GitPullSummary,
+  type GitRunner,
+  type GitStatusSummary
+} from '../workspace/git-runner.js'
+import { ShimChannelLostError, type ShimRequester } from './channels.js'
 
 /**
  * The `exec` payload for a git invocation inside the sandbox.
@@ -109,6 +115,22 @@ export function parseShortstat(stdout: string): { insertions: number; deletions:
 
 /** Subcommands whose duration is set by a remote rather than by local work. */
 const NETWORK_SUBCOMMANDS = new Set(['clone', 'fetch', 'pull', 'push'])
+
+/** Invocations that may be sent twice: they read, so a first attempt that may or may not have landed
+ *  changes nothing. Deliberately a list of READS rather than of "idempotent" commands — `add` is
+ *  idempotent and still excluded, because the question here is what a repeat can cost, and the
+ *  cheapest way to never get that wrong is to repeat nothing that writes. */
+const REPEATABLE_SUBCOMMANDS = new Set([
+  'check-ref-format',
+  'diff',
+  'log',
+  'ls-files',
+  'remote',
+  'rev-list',
+  'rev-parse',
+  'status',
+  'symbolic-ref'
+])
 const NETWORK_DEADLINE_MS = 10 * 60_000
 const LOCAL_DEADLINE_MS = 120_000
 /** The requester outwaits the child so a terminated result is delivered rather than raced. */
@@ -231,6 +253,34 @@ export class ShimGitRunner implements GitRunner {
       })
   }
 
+  /**
+   * Send one invocation, retrying a channel that went away IF the invocation is safe to repeat.
+   *
+   * The shim re-dials at half its credential TTL and `ShimSession.attach` fails the requests in
+   * flight, documenting that the session continues and a caller may simply ask again. This is that
+   * caller. It retries ONCE, and only for a read: the abort says a reply was lost, not whether the
+   * request ever landed, so repeating `commit` risks a second commit and repeating `add` after a
+   * partial one is merely harmless. Anything left over — a retry that also lost its channel, a
+   * mutation, a timeout — becomes a {@link GitTransportError}, which callers must not read as git's
+   * answer about the checkout.
+   */
+  private async send(payload: GitExecPayload, deadlineMs: number, args: string[]): Promise<unknown> {
+    const options = { timeoutMs: deadlineMs + REQUEST_MARGIN_MS, ...(this.abort ? { abort: this.abort } : {}) }
+    try {
+      return await this.requester.request('exec', payload, options)
+    } catch (err) {
+      if (!(err instanceof ShimChannelLostError)) throw err
+      if (!REPEATABLE_SUBCOMMANDS.has(args[0] ?? '')) {
+        throw new GitTransportError(`git ${args[0] ?? ''} lost its sandbox channel: ${err.message}`, err)
+      }
+      try {
+        return await this.requester.request('exec', payload, options)
+      } catch (retry) {
+        throw new GitTransportError(`git ${args[0] ?? ''} lost its sandbox channel: ${(retry as Error).message}`, retry)
+      }
+    }
+  }
+
   private async exec(args: string[]): Promise<GitExecResult> {
     // A subcommand that talks to a remote is bounded by the network, not by local work, and the
     // requester's 30s default cannot clone a real repository. The child's deadline is the
@@ -246,10 +296,7 @@ export class ShimGitRunner implements GitRunner {
       // nothing" is a meaningful instruction and must not be indistinguishable from "unset".
       ...(this.env !== undefined ? { env: this.env } : {})
     }
-    const raw = await this.requester.request('exec', payload, {
-      timeoutMs: deadlineMs + REQUEST_MARGIN_MS,
-      ...(this.abort ? { abort: this.abort } : {})
-    })
+    const raw = await this.send(payload, deadlineMs, args)
     const result = GitExecResultSchema.parse(raw)
     if (result.code !== 0) throw new GitExecError(result.code, result.stdout, result.stderr, args)
     return result
