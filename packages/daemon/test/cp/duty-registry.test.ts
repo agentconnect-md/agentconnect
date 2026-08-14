@@ -72,19 +72,6 @@ describe('DutyRegistry', () => {
     expect([...r.agents()]).toEqual([A2])
   })
 
-  it('drop is a local revoke — the group leaves the digest with no CP frame', () => {
-    const r = new DutyRegistry()
-    r.applyGrant([grant(G1, '1', [A1]), grant(G2, '1', [A2])])
-    const result = r.drop([G1])
-
-    expect(result.agentsLost).toEqual([A1])
-    expect(r.digest()).toEqual([{ groupId: G2, term: '1' }])
-    expect(r.holdsAgent(A1)).toBe(false)
-    // Dropping what is not held changes nothing — a repeated drop is a no-op.
-    expect(r.drop([G1]).agentsLost).toEqual([])
-    expect(r.drop([]).agentsLost).toEqual([])
-  })
-
   it('an agent in two groups survives losing one of them', () => {
     const r = new DutyRegistry()
     r.applyGrant([grant(G1, '1', [A1]), grant(G2, '1', [A1])])

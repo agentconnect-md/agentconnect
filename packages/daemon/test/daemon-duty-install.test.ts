@@ -153,16 +153,7 @@ describe('installing an agent a duty grant covers', () => {
     await daemon.stop()
   })
 
-  it('an empty reply installs nothing — "you do not hold it, or it is gone"', async () => {
-    const daemon = await boot({ fetchDutyAgent: vi.fn(async () => ({})) })
-
-    await (daemon as any).installGrantedAgents([grant()])
-
-    expect(registries(daemon).agents.has(AGENT)).toBe(false)
-    await daemon.stop()
-  })
-
-  it('a failed fetch is logged, never thrown into frame dispatch', async () => {
+  it('a failed fetch is reported as a refused group, never thrown into frame dispatch', async () => {
     const daemon = await boot({
       fetchDutyAgent: vi.fn(async () => {
         throw new Error('control plane unreachable')
@@ -175,58 +166,92 @@ describe('installing an agent a duty grant covers', () => {
   })
 })
 
-describe('a duty this member cannot serve is not held', () => {
-  it('a failed fetch drops the group, so the digest stops reporting it', async () => {
+describe('a group is not held until it is servable', () => {
+  it('the grant is invisible in the digest for the whole install round trip', async () => {
+    let releaseFetch!: () => void
+    const fetched = new Promise<void>((resolve) => {
+      releaseFetch = resolve
+    })
+    const fetchDutyAgent = vi.fn(async () => {
+      await fetched
+      return { bundle: bundle() }
+    })
+    const daemon = await boot({ fetchDutyAgent })
+
+    // The EVT entry point, exactly as ConfigApply calls it — returns immediately.
+    ;(daemon as any).applyDutyGrant([grant()])
+    await vi.waitFor(() => expect(fetchDutyAgent).toHaveBeenCalled())
+
+    // Load-bearing: this is the routing window. A digest that already advertised
+    // the group would make the CP and the relay resolve triggers to this member
+    // while the agent is still absent — and they could not even re-route, because
+    // the holder they resolve to IS this member.
+    expect(duties(daemon).digest()).toEqual([])
+    expect(duties(daemon).holdsAgent(AGENT)).toBe(false)
+
+    releaseFetch()
+    await vi.waitFor(() => expect(duties(daemon).digest()).toEqual([{ groupId: GROUP, term: '1' }]))
+    expect(registries(daemon).agents.has(AGENT)).toBe(true)
+    await daemon.stop()
+  })
+
+  it('a failed fetch never applies the grant at all', async () => {
     const daemon = await boot({
       fetchDutyAgent: vi.fn(async () => {
         throw new Error('control plane unreachable')
       })
     })
-    ;(daemon as any).applyDutyGrant([grant()], 'caller')
-    expect(duties(daemon).digest()).toEqual([{ groupId: GROUP, term: '1' }])
 
-    await (daemon as any).installGrantedAgents([grant()])
+    await (daemon as any).admitDutyGrants([grant()])
 
-    // Load-bearing: an unheld group is exactly what makes the CP's missing-
-    // regrant path reissue it. Still holding it would wedge the agent absent
-    // forever, because the lease exchange has nothing to say about a group whose
-    // term the member already reports.
+    // Not held ⇒ absent from the digest ⇒ the CP sees a lease this member does
+    // not report and reissues it through its missing-regrant path. Holding it
+    // would wedge the agent absent forever, because the lease exchange has
+    // nothing to say about a group whose term the member already reports.
     expect(duties(daemon).digest()).toEqual([])
     expect(duties(daemon).holdsAgent(AGENT)).toBe(false)
     expect(registries(daemon).agents.has(AGENT)).toBe(false)
     await daemon.stop()
   })
 
-  it('an APPLY failure drops the group too — not just a failed fetch', async () => {
-    const daemon = await boot({ fetchDutyAgent: vi.fn(async () => ({ bundle: bundle() })) })
-    ;(daemon as any).applyDutyGrant([grant()], 'caller')
-    vi.spyOn(registries(daemon).agents, 'upsert').mockImplementation(() => {
-      throw new Error('agent root is not writable')
-    })
+  it('an EMPTY reply refuses the group — the CP is saying we do not hold it', async () => {
+    const daemon = await boot({ fetchDutyAgent: vi.fn(async () => ({})) })
 
-    await (daemon as any).installGrantedAgents([grant()])
+    await expect((daemon as any).admitDutyGrants([grant()])).resolves.toEqual(new Set([GROUP]))
 
     expect(duties(daemon).digest()).toEqual([])
     expect(registries(daemon).agents.has(AGENT)).toBe(false)
     await daemon.stop()
   })
 
-  it('a group covering several agents is dropped whole when one of them fails', async () => {
+  it('an APPLY failure refuses the group too — not just a failed fetch', async () => {
+    const daemon = await boot({ fetchDutyAgent: vi.fn(async () => ({ bundle: bundle() })) })
+    vi.spyOn(registries(daemon).agents, 'upsert').mockImplementation(() => {
+      throw new Error('agent root is not writable')
+    })
+
+    await (daemon as any).admitDutyGrants([grant()])
+
+    expect(duties(daemon).digest()).toEqual([])
+    expect(registries(daemon).agents.has(AGENT)).toBe(false)
+    await daemon.stop()
+  })
+
+  it('a group covering several agents is refused whole when one of them fails', async () => {
     const other = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2'
     const daemon = await boot({
       fetchDutyAgent: vi.fn(async (agentId: string) =>
         agentId === AGENT ? { bundle: bundle() } : Promise.reject(new Error('gone'))
       )
     })
-    ;(daemon as any).applyDutyGrant([grant([AGENT, other])], 'caller')
 
-    await (daemon as any).installGrantedAgents([grant([AGENT, other])])
+    await (daemon as any).admitDutyGrants([grant([AGENT, other])])
 
     expect(duties(daemon).digest()).toEqual([])
     await daemon.stop()
   })
 
-  it('a regrant retries the install and succeeds, once the retry window has passed', async () => {
+  it('a regrant retries the install and takes the group, once the retry window has passed', async () => {
     let broken = true
     const fetchDutyAgent = vi.fn(async () => {
       if (broken) throw new Error('control plane unreachable')
@@ -234,25 +259,36 @@ describe('a duty this member cannot serve is not held', () => {
     })
     const daemon = await boot({ fetchDutyAgent })
     const advance = shiftClock(daemon)
-    ;(daemon as any).applyDutyGrant([grant()], 'caller')
-    await (daemon as any).installGrantedAgents([grant()])
+
+    await (daemon as any).admitDutyGrants([grant()])
     expect(duties(daemon).digest()).toEqual([])
 
-    // Inside the retry window a regrant is dropped again WITHOUT another fetch —
+    // Inside the retry window a regrant is refused again WITHOUT another fetch —
     // a permanently failing agent cannot outpace the beat that regrants it.
     broken = false
-    ;(daemon as any).applyDutyGrant([grant()], 'caller')
-    await (daemon as any).installGrantedAgents([grant()])
+    await (daemon as any).admitDutyGrants([grant()])
     expect(fetchDutyAgent).toHaveBeenCalledTimes(1)
     expect(duties(daemon).digest()).toEqual([])
 
     advance(20_000)
-    ;(daemon as any).applyDutyGrant([grant()], 'caller')
-    await (daemon as any).installGrantedAgents([grant()])
+    await (daemon as any).admitDutyGrants([grant()])
 
     expect(fetchDutyAgent).toHaveBeenCalledTimes(2)
     expect(duties(daemon).digest()).toEqual([{ groupId: GROUP, term: '1' }])
     expect(registries(daemon).agents.has(AGENT)).toBe(true)
+    await daemon.stop()
+  })
+
+  it('a re-grant for an agent already installed is applied with no fetch at all', async () => {
+    const fetchDutyAgent = vi.fn(async () => ({ bundle: bundle() }))
+    const daemon = await boot({ fetchDutyAgent })
+
+    await (daemon as any).admitDutyGrants([grant()])
+    await (daemon as any).admitDutyGrants([{ ...grant(), term: '2' }])
+
+    // The common path is unchanged: only a genuinely new agent waits.
+    expect(fetchDutyAgent).toHaveBeenCalledTimes(1)
+    expect(duties(daemon).digest()).toEqual([{ groupId: GROUP, term: '2' }])
     await daemon.stop()
   })
 })
@@ -280,14 +316,16 @@ describe('the rendezvous claim ordering', () => {
     })
     await vi.waitFor(() => expect(fetchDutyAgent).toHaveBeenCalled())
 
-    // The duty is already held, but the agent is not installed yet — answering
-    // `granted` here is exactly the bug this pull closes.
+    // The CP has leased the group, but this member neither serves nor advertises
+    // it yet — answering `granted` here is exactly the bug this pull closes.
     expect(cp.agents.has(AGENT)).toBe(false)
+    expect(duties(daemon).digest()).toEqual([])
     expect(settled).toBe(false)
 
     releaseFetch()
     await expect(claim).resolves.toEqual({ granted: true })
     expect(cp.agents.has(AGENT)).toBe(true)
+    expect(duties(daemon).holdsAgent(AGENT)).toBe(true)
     await daemon.stop()
   })
 
@@ -301,10 +339,24 @@ describe('the rendezvous claim ordering', () => {
 
     await expect((daemon as any).claimDutyForTrigger(AGENT)).resolves.toEqual({ granted: false })
 
-    // The answer and the local state agree: saying "not me" while still holding
-    // the lease is the split brain this mechanism exists to avoid.
+    // The grant was never applied, so the answer and the local state agree:
+    // saying "not me" while still holding the lease is the split brain this
+    // mechanism exists to avoid.
     expect(duties(daemon).digest()).toEqual([])
     expect(duties(daemon).holdsAgent(AGENT)).toBe(false)
+    expect(registries(daemon).agents.has(AGENT)).toBe(false)
+    await daemon.stop()
+  })
+
+  it('answers granted:false on an empty reply, without ever holding the group', async () => {
+    const daemon = await boot({
+      claimDuty: vi.fn(async () => ({ granted: true, grant: grant() })),
+      fetchDutyAgent: vi.fn(async () => ({}))
+    })
+
+    await expect((daemon as any).claimDutyForTrigger(AGENT)).resolves.toEqual({ granted: false })
+
+    expect(duties(daemon).digest()).toEqual([])
     expect(registries(daemon).agents.has(AGENT)).toBe(false)
     await daemon.stop()
   })

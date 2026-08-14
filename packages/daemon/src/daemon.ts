@@ -12704,21 +12704,38 @@ export class Daemon {
     return this.cfg?.features?.dutyEnforcement === true && this.cpClient?.organizationScope() === 'frame'
   }
 
-  /** Apply a `duty/grant` EVT: bookkeeping first, then converge what we serve.
-   *  `install: 'detached'` pulls missing agents off the frame-dispatch path; the
-   *  rendezvous claim passes `'caller'` because it awaits that pull itself. */
-  private applyDutyGrant(grants: DutyGrantEntry[], install: 'detached' | 'caller' = 'detached'): void {
-    const result = this.duties.applyGrant(grants)
+  /** `duty/grant` EVT: admit the grants off the frame-dispatch path, so a slow
+   *  CP cannot stall the socket. */
+  private applyDutyGrant(grants: DutyGrantEntry[]): void {
+    void this.admitDutyGrants(grants)
+  }
+
+  /**
+   * Install first, open the serving gate second. Applying the grant is what
+   * makes this member routable for its agents — the CP and the relay resolve
+   * triggers to whoever holds the group — so a grant applied while its install
+   * is still in flight advertises service the daemon cannot yet give, and a
+   * trigger landing in that window is dropped without even being re-routable.
+   *
+   * A group whose install fails or comes back empty is therefore never applied
+   * at all. The digest omits it, the CP sees a lease this member does not
+   * report, and its existing missing-regrant path reissues it — that IS the
+   * retry, paced by the heartbeat rather than a private loop. Nothing needs the
+   * group present in the meantime: `renewHeld` renews by holder alone.
+   *
+   * Returns the groupIds it refused.
+   */
+  private async admitDutyGrants(entries: DutyGrantEntry[]): Promise<Set<string>> {
+    const failed = await this.installGrantedAgents(entries)
+    const servable = entries.filter((entry) => !failed.has(entry.groupId))
+    if (servable.length === 0) return failed
+    const result = this.duties.applyGrant(servable)
     this.log.info(
       `duty: granted ${result.added.length} + re-granted ${result.updated.length} group(s); ` +
         `holding ${this.duties.size()} covering ${this.duties.agents().size} agent(s)`
     )
     if (result.agentsGained.length > 0 || result.added.length > 0) this.onDutyChanged()
-    // A grant only opens the serving gate; it does not install. Pull anything we
-    // now owe service for but have never had — off the frame-dispatch path, so a
-    // slow CP cannot stall the socket. A group whose install fails is dropped
-    // locally so the CP's missing-regrant path reissues it on the next beat.
-    if (install === 'detached') void this.installGrantedAgents(grants)
+    return failed
   }
 
   /**
@@ -12727,8 +12744,8 @@ export class Daemon {
    * (`duty/fetch`) and applies the bundle the way an activation would — minus
    * the move token, the staging fence, and workspace preparation.
    *
-   * Returns the granted groups it could NOT install, already dropped from the
-   * local ledger: a duty this member cannot serve must not be held.
+   * Returns the granted groups it could NOT install. A group is served as a
+   * unit, so its bots wait on its agents too — that is the point, not a cost.
    */
   private async installGrantedAgents(entries: DutyGrantEntry[]): Promise<Set<string>> {
     const wanted = new Map<string, { orgId: string; groupId: string }>()
@@ -12754,28 +12771,7 @@ export class Daemon {
       }
     })
     await Promise.all(installs)
-    this.dropUnservableDuties([...failed])
     return failed
-  }
-
-  /**
-   * Stop holding groups this member cannot serve. The local effect is exactly a
-   * `duty/revoke`'s — platform connections and schedules stop, while workspace,
-   * sessions, and the registry entry survive (#948: releasing a duty is never a
-   * removal). Dropping them from the digest is what triggers the retry: the CP
-   * still leases them to us, sees them missing from the next heartbeat, and
-   * reissues the grant through its existing missing-regrant path. That paces
-   * retries at the heartbeat cadence instead of a private loop.
-   */
-  private dropUnservableDuties(groupIds: string[]): void {
-    const held = groupIds.filter((groupId) => this.duties.get(groupId) !== undefined)
-    if (held.length === 0) return
-    const result = this.duties.drop(held)
-    this.log.warn(
-      `duty: dropping ${held.length} group(s) this daemon cannot serve — the CP regrants them on the next heartbeat`
-    )
-    for (const agentId of result.agentsLost) this.stopServingAgent(agentId)
-    this.onDutyChanged()
   }
 
   /** Join the in-flight install for this agent, or start one. A failure is
@@ -12808,8 +12804,10 @@ export class Daemon {
   private async runDutyAgentInstall(agentId: string, orgId: string): Promise<void> {
     const reply = await this.cpClient?.fetchDutyAgent(agentId, orgId)
     const bundle = reply?.bundle
-    // Absent ⇒ the CP says we do not hold it, or it is gone. Install nothing.
-    if (!bundle) return
+    // An absent bundle is the CP saying "you do not hold this duty, or the agent
+    // is gone" — the strongest signal of all that our local state disagrees with
+    // the ledger. Refuse the group rather than hold one we cannot serve.
+    if (!bundle) throw new Error('the control plane returned no bundle for this agent')
     await this.queueAgentLifecycle(agentId, async () => {
       if (this.moveStagedAgents.has(agentId) || this.agentRemovalPending(agentId)) {
         this.log.info(`duty: skipping install of ${agentId} — a move or removal owns it`)
@@ -12892,16 +12890,15 @@ export class Daemon {
           .catch((err) => this.log.warn(`duty: handing back ${grant.groupId} failed (it will lapse): ${err}`))
         return { granted: false }
       }
-      this.applyDutyGrant([grant], 'caller')
       // Load-bearing await: the rendezvous claim exists BECAUSE a trigger arrived
       // for an agent this member does not serve, and the turn is dispatched right
-      // after. Answering `granted` before the agent is installed would reproduce
-      // the "no agent on this daemon" drop the claim is meant to prevent.
-      const failed = await this.installGrantedAgents([grant])
-      // The group is already dropped locally by the line above, so answering
-      // `false` here leaves the answer and the local state agreeing — a member
-      // that says "not me" while still holding the lease is the split brain this
-      // whole mechanism exists to avoid.
+      // after. Install, then hold, then answer — answering `granted` before the
+      // agent is there reproduces the "no agent on this daemon" drop the claim is
+      // meant to prevent.
+      const failed = await this.admitDutyGrants([grant])
+      // Never applied, so the answer and the local state agree — a member that
+      // says "not me" while still holding the lease is the split brain this whole
+      // mechanism exists to avoid.
       if (failed.has(grant.groupId)) {
         this.log.warn(`duty: claimed ${grant.groupId} but could not install ${agentId} — handing the trigger back`)
         return { granted: false }
