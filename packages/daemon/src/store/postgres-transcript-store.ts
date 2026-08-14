@@ -446,7 +446,7 @@ export class PostgresDataPlane {
     this.transcripts = new PostgresTranscriptStore(pool, orgForAgent, onFailure)
     const database = new PostgresSyncDatabase(config, onFailure)
     try {
-      this.store = new LocalStore({ database })
+      this.store = new LocalStore({ database, shared: true })
       database.finishSchemaInitialization()
     } catch (error) {
       database.close()

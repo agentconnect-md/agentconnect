@@ -35,7 +35,9 @@ export interface StoreDatabase {
   close(): void
 }
 
-export type LocalStoreSource = string | { database: StoreDatabase }
+export type LocalStoreSource = string | { database: StoreDatabase; shared?: boolean }
+
+const SHARED_MEMORY_CAPTURE_LEASE_MS = 2 * 60 * 1_000
 
 /**
  * Normalize the timestamp forms stored in transcript rows onto one epoch-microsecond
@@ -603,6 +605,7 @@ const SCHEMA_MIGRATIONS: ((db: StoreDatabase) => void)[] = []
 
 export class LocalStore {
   private db: StoreDatabase
+  private readonly shared: boolean
   private transcriptRevision = 0
   private transcriptMutationListener?: (mutation: TranscriptMutation) => void
 
@@ -617,6 +620,7 @@ export class LocalStore {
     // account could read the lot. Restrict the directory and the database explicitly,
     // and chmod after creation so a loose umask cannot widen either.
     if (typeof source === 'string') {
+      this.shared = false
       const dir = dirname(source)
       mkdirSync(dir, { recursive: true, mode: 0o700 })
       restrictPath(dir, 0o700)
@@ -627,6 +631,7 @@ export class LocalStore {
       for (const p of [source, `${source}-wal`, `${source}-shm`]) restrictPath(p, 0o600)
     } else {
       this.db = source.database
+      this.shared = source.shared === true
     }
     // Decided BEFORE the CREATE block, which is what makes an empty file
     // indistinguishable from an old one a moment later.
@@ -1014,13 +1019,14 @@ export class LocalStore {
     this.transcriptRevision = (
       this.db.prepare('SELECT COALESCE(MAX(revision), 0) AS revision FROM transcript').get() as { revision: number }
     ).revision
-    // A daemon restart loses the in-memory ACP resolver. Retain the audit row but
-    // never present it as actionable after recovery.
-    this.db
-      .prepare(
-        "UPDATE permission_requests SET status = 'expired', resolvedAt = COALESCE(resolvedAt, ?) WHERE status = 'pending'"
-      )
-      .run(Date.now())
+    // Only an exclusively owned store proves that every old in-memory resolver died.
+    if (!this.shared) {
+      this.db
+        .prepare(
+          "UPDATE permission_requests SET status = 'expired', resolvedAt = COALESCE(resolvedAt, ?) WHERE status = 'pending'"
+        )
+        .run(Date.now())
+    }
   }
 
   /**
@@ -3074,7 +3080,11 @@ export class LocalStore {
         enqueuedAt: row.enqueuedAt
       })
     if (inserted.changes === 0 && row.loopGuardCounted === 1) {
-      this.db.prepare('UPDATE inbox SET loopGuardCounted = MAX(loopGuardCounted, 1) WHERE id = ?').run(row.id)
+      this.db
+        .prepare(
+          'UPDATE inbox SET loopGuardCounted = CASE WHEN loopGuardCounted < 1 THEN 1 ELSE loopGuardCounted END WHERE id = ?'
+        )
+        .run(row.id)
     }
     return inserted.changes === 1
   }
@@ -3346,11 +3356,16 @@ export class LocalStore {
         `SELECT
            MIN(CASE WHEN state IN ('pending', 'accepted') THEN createdAt + @activeAgeMs END) AS activeAt,
            MIN(CASE WHEN state IN ('completed', 'failed', 'ambiguous')
-                    THEN updatedAt + @terminalRetentionMs END) AS terminalAt
+                    THEN updatedAt + @terminalRetentionMs END) AS terminalAt,
+           MIN(CASE WHEN state = 'sending' THEN updatedAt + @recoveryLeaseMs END) AS recoveryAt
          FROM memory_capture_outbox`
       )
-      .get({ activeAgeMs, terminalRetentionMs }) as { activeAt: number | null; terminalAt: number | null } | undefined
-    const deadlines = [row?.activeAt, row?.terminalAt].filter(
+      .get({
+        activeAgeMs,
+        terminalRetentionMs,
+        recoveryLeaseMs: this.shared ? SHARED_MEMORY_CAPTURE_LEASE_MS : 0
+      }) as { activeAt: number | null; terminalAt: number | null; recoveryAt: number | null } | undefined
+    const deadlines = [row?.activeAt, row?.terminalAt, row?.recoveryAt].filter(
       (value): value is number => value !== null && value !== undefined
     )
     return deadlines.length ? Math.min(...deadlines) : undefined
@@ -3438,27 +3453,28 @@ export class LocalStore {
     )
   }
 
-  /** Crash recovery is deliberately asymmetric. A sending idempotent operation
-   * may be replayed with the same id; a non-idempotent one may already have
-   * reached the plugin and therefore becomes terminal ambiguous. */
-  recoverMemoryCaptures(now: number): { retried: number; ambiguous: number } {
+  /** Recover only abandoned shared claims; local stores remain exclusively owned across restart. */
+  recoverMemoryCaptures(now: number, staleOnly = false): { retried: number; ambiguous: number } {
+    if (staleOnly && !this.shared) return { retried: 0, ambiguous: 0 }
+    const staleClause = this.shared ? ' AND updatedAt <= @staleBefore' : ''
+    const params = this.shared ? { now, staleBefore: now - SHARED_MEMORY_CAPTURE_LEASE_MS } : { now }
     const retried = this.db
       .prepare(
         `UPDATE memory_capture_outbox
          SET state = 'pending', nextAttemptAt = @now, updatedAt = @now,
              reasonCode = 'restart_retry'
-         WHERE state = 'sending' AND idempotency = 'operation-id'`
+         WHERE state = 'sending' AND idempotency = 'operation-id'${staleClause}`
       )
-      .run({ now }).changes
+      .run(params).changes
     const ambiguous = this.db
       .prepare(
         `UPDATE memory_capture_outbox
          SET state = 'ambiguous', nextAttemptAt = @now, updatedAt = @now,
              reasonCode = 'restart_after_send', config = '{}', input = '', output = '',
              sessionId = NULL, payloadBytes = 0
-         WHERE state = 'sending' AND idempotency = 'none'`
+         WHERE state = 'sending' AND idempotency = 'none'${staleClause}`
       )
-      .run({ now }).changes
+      .run(params).changes
     return { retried: Number(retried), ambiguous: Number(ambiguous) }
   }
 
@@ -3806,61 +3822,34 @@ export class LocalStore {
     }
   }
 
-  /**
-   * Attach the AUTHORITATIVE call envelope and atomically decide whether THIS caller
-   * owns the dispatch (§8.6).
-   *
-   * Returns `dispatch: true` exactly once per key. A second arrival — a retry, a
-   * redelivered wake, a replay after restart — reads back the stored `childSessionId`
-   * with `dispatch: false`, which is what keeps "the internal wake and the platform echo
-   * are two observations of ONE delivery" true across every arrival order and failure.
-   *
-   * A record already in `transcript-only` (its envelope expired) stays there: reviving it
-   * would dispatch a child for a delivery already reported failed.
-   */
+  /** Atomically attach the authoritative envelope; exactly one replica receives the dispatch claim. */
   attachActivationEnvelope(
     activationKey: string,
     callEnvelope: string,
     expiresAt: number,
-    /** The durable inbox row id the dispatch this claim authorizes will write. Recorded
-     *  now so a crash before admission is RECONCILABLE: the sweep can ask whether that
-     *  turn is durably queued instead of guessing. Omitted ⇒ not reconcilable, and the
-     *  sweep releases the claim rather than risk a double delivery. */
+    /** Durable inbox id used to reconcile a crash between claim and admission. */
     dispatchId?: string
   ): { dispatch: boolean; record: ActivationRecord } {
-    this.db.exec('BEGIN')
-    try {
-      const existing = this.getActivation(activationKey)
-      if (existing?.state === 'admitted' || existing?.state === 'transcript-only') {
-        this.db.exec('COMMIT')
-        return { dispatch: false, record: existing }
-      }
-      // The ENVELOPE is the claim, and it is granted once. A record that already has one
-      // has a dispatch in flight — admission settles asynchronously, so "not yet admitted"
-      // is not the same as "nobody is handling it". Without this, two arrivals inside the
-      // dispatch window would both be told to dispatch and the delivery would double.
-      // A dispatch that fails releases the record (deleting it), so a genuine retry
-      // re-enters here as a first claim.
-      if (existing?.callEnvelope) {
-        this.db.exec('COMMIT')
-        return { dispatch: false, record: existing }
-      }
-      this.db
-        .prepare(
-          `INSERT INTO activation_rendezvous (activationKey, callEnvelope, dispatchId, state, expiresAt)
-           VALUES (?, ?, ?, 'pending', ?)
-           ON CONFLICT(activationKey) DO UPDATE SET
-             callEnvelope = excluded.callEnvelope,
-             dispatchId = excluded.dispatchId`
-        )
-        .run(activationKey, callEnvelope, dispatchId ?? null, expiresAt)
-      const record = this.getActivation(activationKey)!
-      this.db.exec('COMMIT')
-      return { dispatch: true, record }
-    } catch (err) {
-      this.db.exec('ROLLBACK')
-      throw err
-    }
+    const inserted = this.db
+      .prepare(
+        `INSERT OR IGNORE INTO activation_rendezvous
+           (activationKey, callEnvelope, dispatchId, state, expiresAt)
+         VALUES (?, ?, ?, 'pending', ?)`
+      )
+      .run(activationKey, callEnvelope, dispatchId ?? null, expiresAt)
+    const claimed =
+      Number(inserted.changes) === 1
+        ? true
+        : Number(
+            this.db
+              .prepare(
+                `UPDATE activation_rendezvous
+                 SET callEnvelope = ?, dispatchId = ?, expiresAt = ?
+                 WHERE activationKey = ? AND state = 'pending' AND callEnvelope IS NULL`
+              )
+              .run(callEnvelope, dispatchId ?? null, expiresAt, activationKey).changes
+          ) === 1
+    return { dispatch: claimed, record: this.getActivation(activationKey)! }
   }
 
   /**

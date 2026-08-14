@@ -205,6 +205,7 @@ describe('MemoryCaptureOutbox', () => {
         idempotency: 'none'
       })
     ).toBe('inserted')
+    expect(db.recoverMemoryCaptures(10, true)).toEqual({ retried: 0, ambiguous: 0 })
     db.close()
 
     db = store(path)

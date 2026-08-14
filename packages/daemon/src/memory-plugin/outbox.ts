@@ -162,13 +162,7 @@ export class MemoryCaptureOutbox {
     if (this.running) return
     this.running = true
     const now = this.now()
-    const recovered = this.store.recoverMemoryCaptures(now)
-    if (recovered.retried > 0) {
-      this.metrics.captureState('retry', { count: recovered.retried, reason: 'restart_retry' })
-    }
-    if (recovered.ambiguous > 0) {
-      this.metrics.captureState('ambiguous', { count: recovered.ambiguous, reason: 'restart_after_send' })
-    }
+    this.observeRecovery(this.store.recoverMemoryCaptures(now))
     this.expire(now)
     this.observe(now)
     this.wake()
@@ -504,6 +498,7 @@ export class MemoryCaptureOutbox {
   }
 
   private expire(now: number): void {
+    this.observeRecovery(this.store.recoverMemoryCaptures(now, true))
     const expired = this.store.expireMemoryCaptures(
       now - (this.options.maxAgeMs ?? MEMORY_CAPTURE_MAX_AGE_MS),
       now - (this.options.terminalRetentionMs ?? MEMORY_CAPTURE_TERMINAL_RETENTION_MS),
@@ -511,6 +506,15 @@ export class MemoryCaptureOutbox {
     )
     if (expired.expired > 0) {
       this.metrics.captureState('failed', { count: expired.expired, reason: 'retention_expired' })
+    }
+  }
+
+  private observeRecovery(recovered: { retried: number; ambiguous: number }): void {
+    if (recovered.retried > 0) {
+      this.metrics.captureState('retry', { count: recovered.retried, reason: 'restart_retry' })
+    }
+    if (recovered.ambiguous > 0) {
+      this.metrics.captureState('ambiguous', { count: recovered.ambiguous, reason: 'restart_after_send' })
     }
   }
 }
