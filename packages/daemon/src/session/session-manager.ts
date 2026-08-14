@@ -1,5 +1,6 @@
 import type { ContentBlock, McpServer } from '@agentclientprotocol/sdk'
 import { LocalStore, sessionKey, transcriptChannelKey, type TranscriptEntry } from '../store/local-store.js'
+import { isSyntheticA2aChannel } from '../cp/cp-collab-routes.js'
 import { monotonicTs } from '../store/monotonic-ts.js'
 import { SLACK_RESPONSE_FINAL_EVENT_TAG } from '@agentconnect.md/message'
 import { additionalWorkspaceDirectories, prepareWorkspace } from '../workspace/workspace-manager.js'
@@ -1098,13 +1099,20 @@ export class SessionManager {
     // conversation log. `messageAgent` determines who wakes NOW, not who may see the row;
     // every participant catches up all thread events through its own stable cutoff when it
     // next wakes. Workflow correlation remains out-of-band in trusted CallMeta.
+    //
+    // EXCEPT on a synthetic pairwise `a2a:<caller>` thread (#967): every postless child
+    // of one caller shares that physical thread while each row is a private pairwise
+    // delivery, so the catch-up there reads only rows THIS agent sent or received —
+    // a sibling must never see another child's role/task delivery or report.
     const blocks: ContentBlock[] = []
     let contextEventTs: string[] = []
     let contextRevision = this.deps.store.threadTranscriptRevision(transcriptChannel, thread)
     {
-      const gap = this.deps.store
-        .transcriptSince(transcriptChannel, thread, markerBefore)
-        .filter((e) => withinSnapshot(e.ts))
+      const gap = (
+        isSyntheticA2aChannel(transcriptChannel)
+          ? this.deps.store.transcriptSinceForAgent(transcriptChannel, thread, markerBefore, agentId)
+          : this.deps.store.transcriptSince(transcriptChannel, thread, markerBefore)
+      ).filter((e) => withinSnapshot(e.ts))
       // SQLite's text order puts UUID-like legacy coordinates after real platform
       // ids. Keep those old rows as context, but before the real timeline — which
       // only a platform whose ids carry a native order can express.

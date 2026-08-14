@@ -73,6 +73,11 @@ describe('webchat werewolf (scripted)', () => {
     // conversation (posts or transcript).
     expect(result.canaryLeaks).toBe(0)
 
+    // #967 regression pin: pairwise a2a transcripts are private per
+    // (caller, child) pair — a role canary never surfaces in any prompt of a
+    // player whose role does not hold it.
+    expect(result.canaryCrossVisibility).toBe(0)
+
     // Current-main surface truth (#926), measured and pinned: a child's
     // needsReply REPORT into the conversation-origin parent session is
     // posted live into the conversation view — webchat "private" night
@@ -87,6 +92,7 @@ describe('webchat werewolf (scripted)', () => {
     expect(result.rounds).toBeGreaterThanOrEqual(2)
     expect(result.winner).toBeDefined()
     expect(result.canaryLeaks).toBe(0)
+    expect(result.canaryCrossVisibility).toBe(0)
     // Multi-round means at least two night cue round-trips through the host.
     expect(result.nights.length).toBeGreaterThanOrEqual(2)
     // Every night's kill was mediated: a proposal preceded the kill.
