@@ -21,8 +21,9 @@ export const KEY_SERVER_PROFILE = 'agentconnect.key-server/v1' as const
 export const KEY_SERVER_GET_KEY_PATH = '/v1/get-key' as const
 export const KEY_SERVER_REVOKE_KEY_PATH = '/v1/revoke-key' as const
 
-// `Authorization: Bearer <token>`, sent only when a token source is configured — auth is
-// optional at both ends, and an unverified caller's request context is not attribution.
+// `Authorization: Bearer <token>`, sent only when a token source is configured. Auth is
+// optional at both ends: omitting it declares daemon and server one trust domain, where the
+// request's org context is trusted as given because reaching the endpoint already proved it.
 export const KEY_SERVER_AUTH_HEADER = 'authorization' as const
 
 /** Provider API dialect the credential must speak; selects the (key, baseUrl) pair. */

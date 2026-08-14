@@ -49,22 +49,19 @@ the token is an opaque string from a configured source — a file it re-reads pe
 request (so a credential something else rotates underneath it stays current), or
 an inline config value. It parses nothing, asserts nothing about what the token
 means, and holds no verification logic. Symmetrically, a server may verify
-nothing: a key server reachable only over loopback, inside one pod, or across an
-already-authenticated mesh has its boundary elsewhere, and this contract does not
-impose ceremony on that deployment.
+nothing.
 
 `daemonId` is deliberately not a body field: a client-asserted identity would be
 untrusted input, and a server that can verify the bearer at all can derive the
 caller from it. `orgId` IS in the body, and a server that resolves an
 organization from the token should cross-check the two.
 
-**One consequence to state plainly, since skipping auth is allowed: an
-unauthenticated caller supplies unverified context.** `orgId`, `agentId`, and
-`sessionId` are then claims by whoever reached the port, so a server that meters
-or bills on them is attributing usage to a caller it never identified. Verifying
-the bearer is what turns that context into attribution; a server that verifies
-nothing should be one whose issued credentials do not need it — a fixed key it
-would have handed to anyone reaching that endpoint anyway.
+Configuring no authentication is itself a statement: that the daemon and the key
+server sit in **one trust domain**, where reaching the endpoint is already proof
+enough of who is calling. The request's `orgId` is then trusted as given, exactly
+as the bearer would have made it. What the deployment owes in exchange is the
+boundary it is claiming — a listener that is genuinely loopback, in-pod, or
+behind an authenticated mesh, rather than one merely assumed to be unreachable.
 
 **What the token is, and how a server verifies it, are otherwise outside this
 contract.** They are properties of a deployment: which credential the daemon is
