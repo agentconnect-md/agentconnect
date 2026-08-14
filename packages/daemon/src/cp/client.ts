@@ -11,6 +11,7 @@ import type {
   HeartbeatDuties,
   DutyGrant,
   DutyRevoke,
+  DutyClaimOk,
   FactsRuntimeProfile,
   FactsMcpServer,
   UsageReport,
@@ -150,7 +151,9 @@ const INSTALL_WIDE_FRAME_TYPES = new Set([
   'config/push',
   'duty/grant',
   'duty/revoke',
-  'duty/release'
+  'duty/release',
+  'duty/claim',
+  'duty/claim/ok'
 ])
 
 const ACK_TIMEOUT_MS = 5000
@@ -828,6 +831,23 @@ export class CpClient {
     }
     const rep = await this.request('duty/release', { groupIds })
     if (rep.type !== 'ack') throw new WireError('INTERNAL', `expected ack, got ${rep.type}`, false)
+  }
+
+  /**
+   * `duty/claim` (D→C REQ → `duty/claim/ok`) — the activation rendezvous: claim
+   * the agent's duty because a trigger for it landed here. Install-wide, like
+   * every other duty frame. A win carries the grant to install verbatim; a loss
+   * names the incumbent so the caller can NAK with a re-route target.
+   */
+  async claimDuty(agentId: string): Promise<DutyClaimOk> {
+    if ((this.state !== 'READY' && this.state !== 'DRAINING') || !this.transport) {
+      throw new WireError('INTERNAL', `control plane unreachable (client ${this.state})`, true)
+    }
+    const rep = await this.request('duty/claim', { agentId })
+    if (rep.type !== 'duty/claim/ok') {
+      throw new WireError('INTERNAL', `expected duty/claim/ok, got ${rep.type}`, false)
+    }
+    return rep.payload as DutyClaimOk
   }
 
   /** How this connection is tenanted: `connection` = one org (an API-key daemon),

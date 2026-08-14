@@ -344,6 +344,7 @@ import {
   manifestFor,
   originKindOf,
   SessionPurgeReason,
+  RD_ACK_NOT_HOLDER,
   EventSession as EventSessionSchema
 } from '@agentconnect.md/protocol'
 import { isNoResponseBody, isNoResponsePrefix } from './session/no-response.js'
@@ -8024,6 +8025,25 @@ export class Daemon {
     const pending = this.pendingRelayMsgAcks.get(dedupKey)
     if (pending) return pending
 
+    // Activation rendezvous (design §4.4): a trigger for an agent whose duty
+    // this member does not hold is claimed on receipt — winning serves it here,
+    // losing answers `not_holder` so the router re-routes. The verdict is NOT
+    // cached in relayMsgAcks: a later grant must not keep replaying a refusal.
+    if (this.dutyEnforced() && !this.duties.holdsAgent(msg.agentId)) {
+      const task = this.claimDutyForTrigger(msg.agentId).then((claimed) => {
+        this.pendingRelayMsgAcks.delete(dedupKey)
+        if (claimed.granted) return this.handleRelayMsg(msg, chat, post)
+        return {
+          msgId: msg.msgId,
+          accepted: false,
+          reason: RD_ACK_NOT_HOLDER,
+          ...(claimed.holder ? { holderDaemonId: claimed.holder } : {})
+        }
+      })
+      this.pendingRelayMsgAcks.set(dedupKey, task)
+      return task
+    }
+
     if (msg.source === 'hook') {
       const task = this.dispatchRelayHook(msg)
         .catch((err): RdAck => {
@@ -12637,6 +12657,25 @@ export class Daemon {
     )
     for (const agentId of result.agentsLost) this.stopServingAgent(agentId)
     this.onDutyChanged()
+  }
+
+  /** Claim one agent's duty because a trigger for it arrived here. A win is
+   *  installed exactly like a `duty/grant`, so the same converge path runs. */
+  private async claimDutyForTrigger(agentId: string): Promise<{ granted: boolean; holder?: string }> {
+    try {
+      const claim = await this.cpClient?.claimDuty(agentId)
+      if (!claim) return { granted: false }
+      if (claim.granted && claim.grant) {
+        this.applyDutyGrant([claim.grant])
+        return { granted: true }
+      }
+      return claim.holder ? { granted: false, holder: claim.holder } : { granted: false }
+    } catch (err) {
+      // A CP blip must not look like "someone else holds it" — answering with no
+      // holder makes the router retry instead of re-routing into the void.
+      this.log.warn(`duty: claiming ${agentId} for an inbound trigger failed: ${err}`)
+      return { granted: false }
+    }
   }
 
   /** Re-derive platform connections and schedules from the new duty set. */

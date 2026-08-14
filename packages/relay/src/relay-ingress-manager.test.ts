@@ -1,7 +1,9 @@
 import { createHmac } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
+import { RD_ACK_NOT_HOLDER } from '@agentconnect.md/protocol'
 import type {
   RdAck,
+  RdMsg,
   RdMsgPlatformAction,
   RdMsgIm,
   RcBotChannels,
@@ -2195,5 +2197,102 @@ describe('RelayIngressManager lifecycle is registry-driven (a third platform)', 
     await manager.unassign(BOT_ID)
     expect(internals.feishuPool.get(BOT_ID)).toBeUndefined()
     expect(internals.entryFor('feishu').demux.indexes.byApp.size).toBe(0)
+  })
+})
+
+describe('RelayIngressManager — activation rendezvous', () => {
+  const HOLDER_ID = '99999999-9999-4999-8999-999999999999'
+  const rd = { source: 'im', agentId: AGENT_ID, msgId: 'm-1', sessionKey: SESSION_KEY } as unknown as RdMsg
+
+  /** The private send helper both IM paths route through. */
+  const sendVia = (manager: RelayIngressManager, daemon: RelayDaemonConnection) =>
+    (
+      manager as unknown as {
+        sendWithRendezvous(d: RelayDaemonConnection, m: RdMsg, ctx: string): Promise<RdAck | undefined>
+      }
+    ).sendWithRendezvous(daemon, rd, 'test')
+
+  const conn = (sendMsg: ReturnType<typeof vi.fn>) => ({ sendMsg }) as unknown as RelayDaemonConnection
+
+  it('re-sends the SAME msgId to the named holder and returns its verdict', async () => {
+    const first = vi.fn(async () => ({
+      msgId: 'm-1',
+      accepted: false,
+      reason: RD_ACK_NOT_HOLDER,
+      holderDaemonId: HOLDER_ID
+    }))
+    const holderSend = vi.fn(async () => ({ msgId: 'm-1', accepted: true, turnId: undefined }))
+    const holder = conn(holderSend)
+    const manager = new RelayIngressManager(deps({ getDaemon: (id) => (id === HOLDER_ID ? holder : undefined) }))
+
+    const ack = await sendVia(manager, conn(first))
+    expect(ack?.accepted).toBe(true)
+    expect(holderSend).toHaveBeenCalledTimes(1)
+    // The msgId must survive the hop, or the holder's own dedup cannot protect it.
+    expect(holderSend.mock.calls[0]![0]).toBe(rd)
+  })
+
+  it('stops after one hop — a second not_holder is returned, never chased', async () => {
+    const first = vi.fn(async () => ({
+      msgId: 'm-1',
+      accepted: false,
+      reason: RD_ACK_NOT_HOLDER,
+      holderDaemonId: HOLDER_ID
+    }))
+    const holderSend = vi.fn(async () => ({
+      msgId: 'm-1',
+      accepted: false,
+      reason: RD_ACK_NOT_HOLDER,
+      holderDaemonId: DAEMON_ID
+    }))
+    const manager = new RelayIngressManager(
+      deps({ getDaemon: (id) => (id === HOLDER_ID ? conn(holderSend) : undefined) })
+    )
+
+    const ack = await sendVia(manager, conn(first))
+    expect(ack?.reason).toBe(RD_ACK_NOT_HOLDER)
+    expect(holderSend).toHaveBeenCalledTimes(1)
+  })
+
+  it('a not_holder naming nobody is left to the next retry', async () => {
+    const first = vi.fn(async () => ({ msgId: 'm-1', accepted: false, reason: RD_ACK_NOT_HOLDER }))
+    const manager = new RelayIngressManager(deps({ getDaemon: () => undefined }))
+
+    const ack = await sendVia(manager, conn(first))
+    expect(ack?.accepted).toBe(false)
+    expect(first).toHaveBeenCalledTimes(1)
+  })
+
+  it('a holder that is not connected here does not double-send', async () => {
+    const first = vi.fn(async () => ({
+      msgId: 'm-1',
+      accepted: false,
+      reason: RD_ACK_NOT_HOLDER,
+      holderDaemonId: HOLDER_ID
+    }))
+    const manager = new RelayIngressManager(deps({ getDaemon: () => undefined }))
+
+    const ack = await sendVia(manager, conn(first))
+    expect(ack?.reason).toBe(RD_ACK_NOT_HOLDER)
+  })
+
+  it('every other refusal is returned untouched — only not_holder re-routes', async () => {
+    const holderSend = vi.fn()
+    const first = vi.fn(async () => ({ msgId: 'm-1', accepted: false, reason: 'paused' }))
+    const manager = new RelayIngressManager(deps({ getDaemon: () => conn(holderSend) }))
+
+    const ack = await sendVia(manager, conn(first))
+    expect(ack?.reason).toBe('paused')
+    expect(holderSend).not.toHaveBeenCalled()
+  })
+
+  it('an accepted send never consults the router', async () => {
+    const holderSend = vi.fn()
+    const first = vi.fn(async () => ({ msgId: 'm-1', accepted: true }))
+    const manager = new RelayIngressManager(deps({ getDaemon: () => conn(holderSend) }))
+
+    const ack = await sendVia(manager, conn(first))
+    expect(ack?.accepted).toBe(true)
+    expect(holderSend).not.toHaveBeenCalled()
   })
 })

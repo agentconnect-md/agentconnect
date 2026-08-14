@@ -4,6 +4,7 @@ import {
   RdMsg,
   RdMsgWebchat,
   RdAck,
+  RD_ACK_NOT_HOLDER,
   RdChat,
   RdAgentMsg,
   RdAgentMsgAck,
@@ -768,5 +769,29 @@ describe('relay↔daemon wire — union separation (§8 standalone frame union)'
     for (const t of RELAY_DAEMON_FRAME_TYPES) expect(isRelayDaemonFrameType(t)).toBe(true)
     expect(isRelayDaemonFrameType('webchat/output')).toBe(false)
     expect(isRelayDaemonFrameType('rc/verify')).toBe(false)
+  })
+})
+
+describe('RdAck — the not_holder re-route hint', () => {
+  it('carries the duty holder alongside the typed reason', () => {
+    const ack = RdAck.parse({
+      msgId: 'm1',
+      accepted: false,
+      reason: RD_ACK_NOT_HOLDER,
+      holderDaemonId: DAEMON_ID
+    })
+    expect(ack.reason).toBe('not_holder')
+    expect(ack.holderDaemonId).toBe(DAEMON_ID)
+  })
+
+  it('stays optional — every existing ack still parses unchanged', () => {
+    const ack = RdAck.parse({ msgId: 'm1', accepted: false, reason: 'no_agent' })
+    expect(ack.holderDaemonId).toBeUndefined()
+  })
+
+  it('rejects a holder that is not a uuid', () => {
+    expect(
+      RdAck.safeParse({ msgId: 'm1', accepted: false, reason: RD_ACK_NOT_HOLDER, holderDaemonId: 'nope' }).success
+    ).toBe(false)
   })
 })

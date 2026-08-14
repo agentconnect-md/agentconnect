@@ -10,7 +10,7 @@ import {
   type DutyRevoke
 } from '@agentconnect.md/protocol'
 import type { DutyGroupRepo, DutyGroupRecord, DutyGrantRecord } from '../persistence/ports.js'
-import type { DaemonId } from '../domain/ids.js'
+import type { AgentId, DaemonId, OrgId } from '../domain/ids.js'
 import type { Clock } from '../domain/clock.js'
 
 export interface DutyLeaseConfig {
@@ -217,6 +217,33 @@ export class DutyLeaseService {
     for (let i = 0; i < revocations.length; i += this.config.revocationsPerFrame) {
       send('duty/revoke', { revocations: revocations.slice(i, i + this.config.revocationsPerFrame) })
     }
+  }
+
+  /**
+   * The activation rendezvous (design §4.4): claim one agent's home for a member
+   * that was handed a trigger it does not serve. Serialized on the member's lane
+   * like every other ledger touch, so a claim cannot interleave with its own
+   * heartbeat exchange. Returns a grant the member can install verbatim, or the
+   * incumbent it lost to.
+   */
+  async claimAgentHome(
+    orgId: OrgId,
+    agentId: AgentId,
+    holder: DaemonId
+  ): Promise<{ granted: boolean; grant?: DutyGrantEntry; holder?: string }> {
+    return this.serialize(holder, async () => {
+      const now = new Date(this.clock.now())
+      const claim = await this.repo.claimAgentHome(orgId, agentId, holder, now, this.config.leaseMs)
+      if (!claim.granted) return claim.holder ? { granted: false, holder: claim.holder } : { granted: false }
+      const [group] = await this.repo.getByIds([claim.groupId])
+      // An oversized group is undeliverable on this wire (§ member cap), so the
+      // claim is handed straight back rather than wedged held-but-unserved.
+      if (!group || group.members.length > DUTY_GRANT_MEMBERS_MAX) {
+        await this.repo.release(holder, [claim.groupId])
+        return { granted: false }
+      }
+      return { granted: true, grant: toGrantEntry(group) }
+    })
   }
 
   /** Explicit drain release — vacate now instead of waiting out T_reassign.

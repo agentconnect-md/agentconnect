@@ -28,6 +28,7 @@ import { handleUsageReport } from './usage-report.js'
 import { handleIntegrationChannels } from './integration-channels.js'
 import { handleCronReport } from './cron-report.js'
 import { handleDutyRelease } from './duty-release.js'
+import { handleDutyClaim } from './duty-claim.js'
 import { handleHookReport } from './hook-report.js'
 import { handleChannelAgents } from './channel-agents.js'
 import { handleChildSessionStatus } from './child-session-status.js'
@@ -70,6 +71,7 @@ export class FrameRouter {
       'integration/channels': handleIntegrationChannels,
       'cron/report': handleCronReport,
       'duty/release': handleDutyRelease,
+      'duty/claim': handleDutyClaim,
       'hook/report': handleHookReport,
       'hook/start': handleHookStart,
       'github/review-authorize': handleGithubReviewAuthorize,

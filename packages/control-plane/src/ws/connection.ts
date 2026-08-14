@@ -41,7 +41,9 @@ const INSTALL_WIDE_FRAME_TYPES = new Set([
   // Duty lease exchange: groups span orgs on one member; grants carry per-entry orgId.
   'duty/grant',
   'duty/revoke',
-  'duty/release'
+  'duty/release',
+  'duty/claim',
+  'duty/claim/ok'
 ])
 
 export class DaemonConnection implements ConnChannel {

@@ -18,9 +18,12 @@
 import {
   hasReachedAgentCallHopLimit,
   MAX_AGENT_CALL_HOPS,
-  RD_AGENT_IMPLICIT_ROUTING_V1
+  RD_AGENT_IMPLICIT_ROUTING_V1,
+  RD_ACK_NOT_HOLDER
 } from '@agentconnect.md/protocol'
 import type {
+  RdMsg,
+  RdAck,
   RdMsgIm,
   RcBotChannels,
   RcBotConversation,
@@ -620,6 +623,35 @@ export class RelayIngressManager {
    * "Nothing to stop, only to drop" stopped being core's business here: it is
    * `RelayBotIngress.stop()`'s, and a pure decoder implements it as a no-op.
    */
+  /**
+   * Send one pre-addressed item, honouring the activation rendezvous: a daemon
+   * that does not hold the target agent's duty answers `not_holder` naming the
+   * member that does, and the trigger is re-sent there ONCE. The msgId is reused
+   * verbatim so the true holder's own dedup still protects against a double
+   * delivery, and a second refusal terminates rather than chasing a stale
+   * ledger — the router's ordinary retry covers that window (design §4.4).
+   */
+  private async sendWithRendezvous(
+    daemon: RelayDaemonConnection,
+    rd: RdMsg,
+    context: string
+  ): Promise<RdAck | undefined> {
+    const ack = await daemon.sendMsg(rd)
+    if (ack.accepted || ack.reason !== RD_ACK_NOT_HOLDER) return ack
+    const holderId = ack.holderDaemonId
+    if (!holderId) {
+      this.deps.log.warn(`${context}: not_holder with no holder named — leaving it to the next retry`)
+      return ack
+    }
+    const holder = this.deps.getDaemon(holderId)
+    if (!holder) {
+      this.deps.log.warn(`${context}: duty holder ${holderId} is not connected here — dropping`)
+      return ack
+    }
+    this.deps.log.info(`${context}: re-routing to duty holder ${holderId}`)
+    return holder.sendMsg(rd)
+  }
+
   private async stopIngest(botId: string): Promise<void> {
     for (const { pool } of this.ingressPlugins.values()) {
       const cur = pool.get(botId)
@@ -788,7 +820,7 @@ export class RelayIngressManager {
         trustedRouteVia: routeVia
       }
       try {
-        await daemon.sendMsg(rd)
+        await this.sendWithRendezvous(daemon, rd, `relay-ingress(${botId})`)
         this.deps.log.info(
           `relay-ingress(${botId}): agent-authored mention ${claim.authorAgentId} -> ${route.agentId} (hop ${trustedDeliveryHopCount})`
         )
@@ -956,7 +988,7 @@ export class RelayIngressManager {
         trustedRouteVia: via
       }
       try {
-        await daemon.sendMsg(rd)
+        await this.sendWithRendezvous(daemon, rd, `relay-ingress(${botId})`)
       } catch (err) {
         const n = (this.dropped.get(botId) ?? 0) + 1
         this.dropped.set(botId, n)
