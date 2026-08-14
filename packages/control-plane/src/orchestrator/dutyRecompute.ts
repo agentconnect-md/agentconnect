@@ -16,6 +16,10 @@ export interface DutyRecomputeConfig {
   orgsPerTick: number
   /** Renewal horizon for re-grants applied inside the reconcile. */
   leaseMs: number
+  /** Mirrors the lease exchange's grant policy: under `incumbent`, a placement
+   *  move must also move the duty, so each tick vacates leases whose holder no
+   *  longer hosts any of the group's agents. Flip together with the policy. */
+  incumbentFence: boolean
 }
 
 export interface DutyRecomputeLog {
@@ -29,7 +33,10 @@ export class DutyRecomputeSweep {
   private cursor: string | null = null
 
   constructor(
-    private readonly repo: Pick<DutyGroupRepo, 'listDutyOrgs' | 'computeInputs' | 'applyReconcile'>,
+    private readonly repo: Pick<
+      DutyGroupRepo,
+      'listDutyOrgs' | 'computeInputs' | 'applyReconcile' | 'vacateNonIncumbent'
+    >,
     private readonly clock: Clock,
     private readonly cfg: DutyRecomputeConfig,
     private readonly log?: DutyRecomputeLog
@@ -82,5 +89,10 @@ export class DutyRecomputeSweep {
       (existing) => planDutyReconcile(toExistingDutyGroups(existing, now), components),
       { now, leaseMs: this.cfg.leaseMs }
     )
+    if (this.cfg.incumbentFence) {
+      const vacated = await this.repo.vacateNonIncumbent(OrgId(orgId))
+      if (vacated.length > 0)
+        this.log?.warn({ orgId, groupIds: vacated }, 'duty leases vacated after a placement move-away')
+    }
   }
 }

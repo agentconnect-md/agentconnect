@@ -26,7 +26,12 @@ function sweep(clock = new FakeClock(1_700_000_000_000)) {
   return {
     repo,
     clock,
-    sweep: new DutyRecomputeSweep(repo, clock, { intervalMs: 30_000, orgsPerTick: 25, leaseMs: LEASE_MS })
+    sweep: new DutyRecomputeSweep(repo, clock, {
+      intervalMs: 30_000,
+      orgsPerTick: 25,
+      leaseMs: LEASE_MS,
+      incumbentFence: true
+    })
   }
 }
 
@@ -137,6 +142,47 @@ describe('duty recompute sweep (real Postgres)', () => {
     expect(group!.holder).toBe(M1)
     expect(group!.term).toBe(2n)
     expect(group!.members).toHaveLength(3)
+  })
+})
+
+describe('incumbent placement fence (real Postgres)', () => {
+  it('a full placement move-away vacates the lease so the new incumbent can claim', async () => {
+    await seedDaemons()
+    await seedAgent(AGENT, 'agent-1', M1)
+    await seedBot(BOT, 'socket')
+    await seedIntegration(INTEG, AGENT, BOT)
+    const { repo, clock, sweep: s } = sweep()
+    await s.tick()
+    await repo.claimVacant(M1, 1, new Date(clock.now()), LEASE_MS, { incumbentOnly: true })
+
+    // The agent moves to M2: the next tick vacates M1's lease, and only M2 can claim.
+    await prisma.agent.update({ where: { id: AGENT }, data: { daemonId: M2 } })
+    await s.tick()
+    expect(await repo.listHeldBy(M1)).toEqual([])
+    const now = new Date(clock.now())
+    expect(await repo.claimVacant(M1, 5, now, LEASE_MS, { incumbentOnly: true })).toEqual([])
+    const grants = await repo.claimVacant(M2, 5, now, LEASE_MS, { incumbentOnly: true })
+    expect(grants).toHaveLength(1)
+    expect(grants[0]!.term).toBe(2n)
+  })
+
+  it('partial occupancy keeps the lease — a split group never flaps', async () => {
+    await seedDaemons()
+    await seedAgent(AGENT, 'agent-1', M1)
+    await seedAgent(AGENT2, 'agent-2', M1)
+    await seedBot(BOT, 'socket')
+    await seedIntegration(INTEG, AGENT, BOT)
+    await seedIntegration(INTEG2, AGENT2, BOT)
+    const { repo, clock, sweep: s } = sweep()
+    await s.tick()
+    await repo.claimVacant(M1, 1, new Date(clock.now()), LEASE_MS, { incumbentOnly: true })
+
+    // Only one of the two agents moves: M1 still hosts AGENT, so the lease stays.
+    await prisma.agent.update({ where: { id: AGENT2 }, data: { daemonId: M2 } })
+    await s.tick()
+    const [held] = await repo.listHeldBy(M1)
+    expect(held!.holder).toBe(M1)
+    expect(held!.term).toBe(1n)
   })
 })
 

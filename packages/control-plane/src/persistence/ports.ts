@@ -5133,6 +5133,11 @@ export interface DutyGroupRepo {
   /** Keyset rotation over orgs that can need a recompute — any org owning an
    *  integration, an enabled cron, or an existing duty group. */
   listDutyOrgs(afterOrgId: string | null, limit: number): Promise<string[]>
+  /** Soak-phase placement fence: vacate every held group whose holder no longer
+   *  hosts ANY of its agents (a full placement move-away), so the new incumbent
+   *  can claim. Partial occupancy keeps the lease — split groups never flap.
+   *  Returns the vacated groupIds. */
+  vacateNonIncumbent(orgId: OrgId): Promise<string[]>
   /** Batched renewal — one write per heartbeat covering every held group.
    *  Term-preserving; a reassigned group simply stops matching. Returns the
    *  renewed groupIds for digest comparison. */

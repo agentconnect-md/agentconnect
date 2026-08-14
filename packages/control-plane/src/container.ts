@@ -663,7 +663,12 @@ export function buildContainer(
   const dutyRecompute = new DutyRecomputeSweep(
     repos.dutyGroup,
     clock,
-    { intervalMs: 30_000, orgsPerTick: 25, leaseMs: DUTY_LEASE_DEFAULTS.leaseMs },
+    {
+      intervalMs: 30_000,
+      orgsPerTick: 25,
+      leaseMs: DUTY_LEASE_DEFAULTS.leaseMs,
+      incumbentFence: DUTY_LEASE_DEFAULTS.grantPolicy === 'incumbent'
+    },
     { warn: (o, m) => http.log.warn(o, m), error: (o, m) => http.log.error(o, m) }
   )
   const agentMutations = new AgentMutationGate()

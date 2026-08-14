@@ -88,6 +88,28 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
     return rows.map((r) => toRecord(r, members.get(r.id) ?? []))
   }
 
+  async vacateNonIncumbent(orgId: OrgId): Promise<string[]> {
+    // Soak-phase placement fence: a holder keeps a group while it still hosts
+    // AT LEAST ONE of its agents — so a split group cannot flap between two
+    // partial incumbents — but a full move-away vacates the lease, letting the
+    // new incumbent claim on its next beat (the old holder learns via digest
+    // diff as a superseded revocation).
+    const rows = await this.prisma.$queryRaw<{ id: string }[]>(Prisma.sql`
+      UPDATE "duty_group" g SET "holder" = NULL, "expiresAt" = NULL
+      WHERE g."orgId" = ${orgId} AND g."holder" IS NOT NULL
+        AND EXISTS (
+          SELECT 1 FROM "duty_group_member" m WHERE m."groupId" = g.id AND m."kind" = 'agent'
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM "duty_group_member" m
+          JOIN "agent" a ON a.id = m."refId"
+          WHERE m."groupId" = g.id AND m."kind" = 'agent' AND a."daemonId" = g."holder"
+        )
+      RETURNING g.id
+    `)
+    return rows.map((r) => r.id).sort()
+  }
+
   async computeInputs(orgId: OrgId): Promise<{ edges: DutyEdge[]; seeds: CronSeed[] }> {
     const [integrations, crons] = await Promise.all([
       this.prisma.integration.findMany({
