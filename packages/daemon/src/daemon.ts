@@ -2149,6 +2149,17 @@ export class Daemon {
   // rendezvous claims cannot read the same capacity and collectively overshoot,
   // and a drain joins them so none can settle after `drain/done`.
   private readonly inFlightDutyClaims = new Set<Promise<unknown>>()
+  // Installs in flight per granted agent. The EVT path fires one and the
+  // rendezvous claim awaits one for the SAME grant, so both must join a single
+  // fetch+apply rather than race two of them.
+  private readonly dutyInstalls = new Map<string, Promise<void>>()
+  // When each agent's install last failed. A dropped group is regranted on the
+  // next beat, so without this a permanently failing agent would be re-fetched
+  // once per regrant AND once per inbound trigger that claims its group.
+  private readonly dutyInstallFailures = new Map<string, number>()
+  // Retry window for a failed duty install: the default heartbeat cadence, which
+  // is how fast the CP's missing-regrant path can offer the group back.
+  private static readonly DUTY_INSTALL_RETRY_MS = 15_000
   // Latched for the WHOLE drain handoff, including the window after `draining`
   // reopens and before the leases are surrendered — a claim landing there would
   // install a grant the release snapshot has already passed by.
@@ -12693,14 +12704,132 @@ export class Daemon {
     return this.cfg?.features?.dutyEnforcement === true && this.cpClient?.organizationScope() === 'frame'
   }
 
-  /** Apply a `duty/grant` EVT: bookkeeping first, then converge what we serve. */
+  /** `duty/grant` EVT: admit the grants off the frame-dispatch path, so a slow
+   *  CP cannot stall the socket. */
   private applyDutyGrant(grants: DutyGrantEntry[]): void {
-    const result = this.duties.applyGrant(grants)
+    void this.admitDutyGrants(grants)
+  }
+
+  /**
+   * Install first, open the serving gate second. Applying the grant is what
+   * makes this member routable for its agents — the CP and the relay resolve
+   * triggers to whoever holds the group — so a grant applied while its install
+   * is still in flight advertises service the daemon cannot yet give, and a
+   * trigger landing in that window is dropped without even being re-routable.
+   *
+   * A group whose install fails or comes back empty is therefore never applied
+   * at all. The digest omits it, the CP sees a lease this member does not
+   * report, and its existing missing-regrant path reissues it — that IS the
+   * retry, paced by the heartbeat rather than a private loop. Nothing needs the
+   * group present in the meantime: `renewHeld` renews by holder alone.
+   *
+   * Returns the groupIds it refused.
+   */
+  private async admitDutyGrants(entries: DutyGrantEntry[]): Promise<Set<string>> {
+    const failed = await this.installGrantedAgents(entries)
+    const servable = entries.filter((entry) => !failed.has(entry.groupId))
+    if (servable.length === 0) return failed
+    const result = this.duties.applyGrant(servable)
     this.log.info(
       `duty: granted ${result.added.length} + re-granted ${result.updated.length} group(s); ` +
         `holding ${this.duties.size()} covering ${this.duties.agents().size} agent(s)`
     )
     if (result.agentsGained.length > 0 || result.added.length > 0) this.onDutyChanged()
+    return failed
+  }
+
+  /**
+   * Install every agent these grants cover that this daemon does not already
+   * have. Grants are thin by design, so the member pulls exactly what it lacks
+   * (`duty/fetch`) and applies the bundle the way an activation would — minus
+   * the move token, the staging fence, and workspace preparation.
+   *
+   * Returns the granted groups it could NOT install. A group is served as a
+   * unit, so its bots wait on its agents too — that is the point, not a cost.
+   */
+  private async installGrantedAgents(entries: DutyGrantEntry[]): Promise<Set<string>> {
+    const wanted = new Map<string, { orgId: string; groupId: string }>()
+    for (const entry of entries) {
+      for (const member of entry.members) {
+        if (member.kind !== 'agent' || this.cpAgents?.has(member.refId)) continue
+        // A duty grant must never resurrect an agent a move or removal is tearing down.
+        if (this.moveStagedAgents.has(member.refId) || this.agentRemovalPending(member.refId)) continue
+        wanted.set(member.refId, { orgId: entry.orgId, groupId: entry.groupId })
+      }
+    }
+    const failed = new Set<string>()
+    // Registered synchronously, then joined: a concurrent caller for the same
+    // grant finds every in-flight install rather than starting a second one.
+    const installs = [...wanted].map(async ([agentId, { orgId, groupId }]) => {
+      try {
+        await this.installDutyAgent(agentId, orgId)
+      } catch (err) {
+        this.log.warn(`duty: installing granted agent ${agentId} failed: ${err}`)
+        // The whole group goes: an entry may cover several agents, and a member
+        // missing one of them cannot serve that group's work.
+        failed.add(groupId)
+      }
+    })
+    await Promise.all(installs)
+    return failed
+  }
+
+  /** Join the in-flight install for this agent, or start one. A failure is
+   *  remembered for one heartbeat cadence so a permanently broken agent cannot
+   *  make regrants spin faster than the beat that produces them. */
+  private installDutyAgent(agentId: string, orgId: string): Promise<void> {
+    const inFlight = this.dutyInstalls.get(agentId)
+    if (inFlight) return inFlight
+    const failedAt = this.dutyInstallFailures.get(agentId)
+    if (failedAt !== undefined && this.clock.now() - failedAt < Daemon.DUTY_INSTALL_RETRY_MS) {
+      return Promise.reject(new Error('a previous install failed within the retry window'))
+    }
+    const run = this.runDutyAgentInstall(agentId, orgId)
+      .then(
+        () => void this.dutyInstallFailures.delete(agentId),
+        (err) => {
+          this.dutyInstallFailures.set(agentId, this.clock.now())
+          throw err
+        }
+      )
+      .finally(() => {
+        if (this.dutyInstalls.get(agentId) === run) this.dutyInstalls.delete(agentId)
+      })
+    this.dutyInstalls.set(agentId, run)
+    return run
+  }
+
+  /** Fetch and apply one granted agent's bundle inside its lifecycle lane, so it
+   *  serializes against upsert/remove/activate like every other lifecycle write. */
+  private async runDutyAgentInstall(agentId: string, orgId: string): Promise<void> {
+    const reply = await this.cpClient?.fetchDutyAgent(agentId, orgId)
+    const bundle = reply?.bundle
+    // An absent bundle is the CP saying "you do not hold this duty, or the agent
+    // is gone" — the strongest signal of all that our local state disagrees with
+    // the ledger. Refuse the group rather than hold one we cannot serve.
+    if (!bundle) throw new Error('the control plane returned no bundle for this agent')
+    await this.queueAgentLifecycle(agentId, async () => {
+      if (this.moveStagedAgents.has(agentId) || this.agentRemovalPending(agentId)) {
+        this.log.info(`duty: skipping install of ${agentId} — a move or removal owns it`)
+        return
+      }
+      if (!this.cpAgents) return
+      // The revision fence is the target's own (organization-secrets-and-variables.md
+      // §7): a bundle older than what we already applied never overwrites it.
+      const applied = this.cpAgents.upsert(agentId, bundle.spec)
+      if (applied === 'stale' || applied === 'conflict') {
+        this.log.warn(`duty: install of ${agentId} skipped — spec revision is ${applied}`)
+        return
+      }
+      for (const integration of bundle.integrations) this.cpIntegrations?.upsert(integration)
+      for (const cron of bundle.crons) this.cpCrons?.upsert(cron)
+      this.exactCpDependents(agentId, {
+        integrationIds: bundle.integrations.map((integration) => integration.integrationId),
+        cronIds: bundle.crons.map((cron) => cron.cronId)
+      })
+      await this.flushReconcile()
+      this.log.info(`duty: installed granted agent ${agentId} (${bundle.integrations.length} integration(s))`)
+    })
   }
 
   /** Apply a `duty/revoke` EVT. Losing a duty is NOT a removal: the agent's
@@ -12761,7 +12890,19 @@ export class Daemon {
           .catch((err) => this.log.warn(`duty: handing back ${grant.groupId} failed (it will lapse): ${err}`))
         return { granted: false }
       }
-      this.applyDutyGrant([grant])
+      // Load-bearing await: the rendezvous claim exists BECAUSE a trigger arrived
+      // for an agent this member does not serve, and the turn is dispatched right
+      // after. Install, then hold, then answer — answering `granted` before the
+      // agent is there reproduces the "no agent on this daemon" drop the claim is
+      // meant to prevent.
+      const failed = await this.admitDutyGrants([grant])
+      // Never applied, so the answer and the local state agree — a member that
+      // says "not me" while still holding the lease is the split brain this whole
+      // mechanism exists to avoid.
+      if (failed.has(grant.groupId)) {
+        this.log.warn(`duty: claimed ${grant.groupId} but could not install ${agentId} — handing the trigger back`)
+        return { granted: false }
+      }
       return { granted: true }
     } catch (err) {
       // A CP blip must not look like "someone else holds it" — answering with no

@@ -252,6 +252,36 @@ describe('DutyGroupRepo — agent-home claims (real Postgres)', () => {
     expect(claim).toMatchObject({ granted: true, term: 2n, holder: M2 })
   })
 
+  it('holdsAgent answers only for the live holder — the duty/fetch authorization', async () => {
+    const repo = new PgDutyGroupRepo(prisma, minter())
+    await repo.claimAgentHome(ORG, AgentId(A1), M1, T0, LEASE_MS)
+
+    expect(await repo.holdsAgent(M1, AgentId(A1), T0)).toBe(true)
+    // Another member holds nothing here, and neither does the holder for an agent
+    // outside its groups — a member gets exactly the agents it has won.
+    expect(await repo.holdsAgent(M2, AgentId(A1), T0)).toBe(false)
+    expect(await repo.holdsAgent(M1, AgentId(A2), T0)).toBe(false)
+    // A lapsed lease is not a holding.
+    expect(await repo.holdsAgent(M1, AgentId(A1), after(LEASE_MS + 1))).toBe(false)
+  })
+
+  it('holdsAgent covers every agent of a multi-member group', async () => {
+    const repo = new PgDutyGroupRepo(prisma, minter())
+    await reconcile(
+      repo,
+      [
+        { agentId: A1, botId: B1 },
+        { agentId: A2, botId: B1 }
+      ],
+      [],
+      T0
+    )
+    await repo.claimVacant(M1, 10, T0, LEASE_MS)
+
+    expect(await repo.holdsAgent(M1, AgentId(A1), T0)).toBe(true)
+    expect(await repo.holdsAgent(M1, AgentId(A2), T0)).toBe(true)
+  })
+
   it('racing first claims resolve to exactly one home and one winner', async () => {
     const repo = new PgDutyGroupRepo(prisma, minter())
     const [c1, c2] = await Promise.all([

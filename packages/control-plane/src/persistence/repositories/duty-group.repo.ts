@@ -285,6 +285,19 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
     })
   }
 
+  async holdsAgent(holder: DaemonId, agentId: AgentId, now: Date): Promise<boolean> {
+    // Unexpired-lease join only: a lapsed or reassigned group is not a holding,
+    // so a stale member cannot keep pulling definitions it no longer serves.
+    const rows = await this.prisma.$queryRaw<{ one: number }[]>(Prisma.sql`
+      SELECT 1 AS one FROM "duty_group_member" m
+      JOIN "duty_group" g ON g.id = m."groupId"
+      WHERE m."kind" = 'agent' AND m."refId" = ${agentId}
+        AND g."holder" = ${holder}::uuid AND g."expiresAt" IS NOT NULL AND g."expiresAt" > ${now}
+      LIMIT 1
+    `)
+    return rows.length > 0
+  }
+
   async claimAgentHome(
     orgId: OrgId,
     agentId: AgentId,

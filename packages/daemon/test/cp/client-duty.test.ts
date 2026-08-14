@@ -190,6 +190,21 @@ describe('daemon duty lease exchange', () => {
     await expect(done).resolves.toBeUndefined()
   })
 
+  it('duty/fetch carries the granted org and settles on duty/fetch/ok', async () => {
+    const { t, client } = await readyClient({})
+
+    const done = client.fetchDutyAgent(AGENT, 'org-1')
+    await tick()
+    const req = outbound(t).find((f) => f.type === 'duty/fetch')
+    expect(req?.payload).toEqual({ agentId: AGENT })
+    // The frame names its own org: the daemon does not yet know this agent, so
+    // there is nothing local to resolve it from.
+    expect(req?.orgId).toBe('org-1')
+
+    t.pushInbound(JSON.stringify(buildEnvelope('duty/fetch/ok', {}, { corr: req!.id as string })))
+    await expect(done).resolves.toEqual({})
+  })
+
   it('releasing nothing is a no-op — no frame at all', async () => {
     const { t, client } = await readyClient({})
     await client.releaseDuties([])

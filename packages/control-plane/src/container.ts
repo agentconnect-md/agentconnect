@@ -1296,6 +1296,7 @@ export function buildContainer(
     recoverStagedAgent: (agentId, daemonId, moveId) => stagedAgentMoves.recoverStaged(agentId, daemonId, moveId),
     collabRoutes,
     dutyLease,
+    agentBundle: (agent) => stagedAgentMoves.bundleFor(agent),
     cron: repos.cron,
     hook: repos.hook,
     agent: repos.agent,
