@@ -128,10 +128,18 @@ gateway needs no URL opinion.
 - **Long-lived keys are revoked, not expired.** The daemon calls `RevokeKey` when
   a session holding one ends. `RevokeKey` is idempotent — unknown and
   already-revoked ids succeed, because the caller wants "ensure it is dead", not
-  an existence probe. The contract states intent: the server no longer issues or
-  renews the key and makes its best effort to kill it upstream; the enforcement
-  mechanism (deny rule, upstream deactivation, secret rotation) is the
-  implementation's.
+  an existence probe. The contract states intent: the server stops issuing or
+  renewing under that `keyId` and makes its best effort to kill it upstream; the
+  enforcement mechanism (deny rule, upstream deactivation, secret rotation) is
+  the implementation's.
+- **`keyId` names the issuance, not the underlying credential**, and that is what
+  makes the rule above safe to apply unconditionally. A server may answer two
+  issuances with the same secret — a vault fronting one rotating provider key
+  does exactly that — and only it knows whether a given `keyId` has other holders.
+  So the daemon always revokes what it was issued, and a server for which that
+  would kill a shared credential treats the call as a no-op. The alternative,
+  making the daemon decide, requires it to know something the seam deliberately
+  hides from it.
 - Killing an **in-flight** session's credential immediately is a data-path
   concern of the implementation, out of this contract's scope.
 

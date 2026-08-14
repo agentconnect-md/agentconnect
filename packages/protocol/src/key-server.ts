@@ -46,7 +46,9 @@ export type IssueKeyRequest = z.infer<typeof IssueKeyRequest>
 
 export const IssueKeyResponse = z
   .object({
-    // Opaque handle for RevokeKey and audit; the key value never travels again.
+    // Opaque handle for RevokeKey and audit; the key value never travels again. It names
+    // THIS issuance, not the underlying secret — a server may answer two issuances with one
+    // credential, and only it knows whether revoking a keyId may touch other holders.
     keyId: z.string().min(1),
     key: z.string().min(1),
     // Atomic with `key` — inject both or neither. Absent ⇒ the daemon falls
