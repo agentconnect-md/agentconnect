@@ -182,20 +182,49 @@ describe('DaemonRepo cloud-member retirement', () => {
     expect((await repo.findRetiredCloudMembers(CUTOFF)).map((daemon) => daemon.id)).toEqual([fresh.id])
   })
 
-  it('deletes a cloud member and refuses anything that is not one', async () => {
+  it('deletes a retired cloud member and refuses anything that is not one', async () => {
     const repo = new PgDaemonRepo(prisma)
     const pod = await repo.resolveCloudClusterIdentity(INSTALL_IDENTITY, POD_UID_A)
+    await prisma.daemon.update({ where: { id: pod.id }, data: { lastSeenAt: HOUR_AGO } })
     const envelope = await repo.resolveClusterIdentity(DEF_ORG, IDENTITY)
     const laptop = DaemonId('88888888-8888-4888-8888-888888888888')
     await repo.provision(laptop, DEF_ORG)
+    for (const id of [envelope!.id, laptop]) {
+      await prisma.daemon.update({ where: { id }, data: { lastSeenAt: HOUR_AGO } })
+    }
+    const fence = { retiredBefore: CUTOFF, sessionEpoch: pod.sessionEpoch }
 
-    expect(await repo.deleteCloudMember(pod.id)).toBe(true)
+    expect(await repo.deleteCloudMember(pod.id, fence)).toBe(true)
     // Gone, so a repeat (a peer replica sweeping the same row) is a no-op, not an error.
-    expect(await repo.deleteCloudMember(pod.id)).toBe(false)
-    expect(await repo.deleteCloudMember(envelope!.id)).toBe(false)
-    expect(await repo.deleteCloudMember(laptop)).toBe(false)
+    expect(await repo.deleteCloudMember(pod.id, fence)).toBe(false)
+    expect(await repo.deleteCloudMember(envelope!.id, fence)).toBe(false)
+    expect(await repo.deleteCloudMember(laptop, fence)).toBe(false)
     expect(await prisma.daemon.findUnique({ where: { id: pod.id } })).toBeNull()
     expect(await prisma.daemon.findUnique({ where: { id: envelope!.id } })).not.toBeNull()
     expect(await prisma.daemon.findUnique({ where: { id: laptop } })).not.toBeNull()
+  })
+
+  it('refuses a member that came back between the worklist read and the delete', async () => {
+    const repo = new PgDaemonRepo(prisma)
+    const pod = await repo.resolveCloudClusterIdentity(INSTALL_IDENTITY, POD_UID_A)
+    await prisma.daemon.update({ where: { id: pod.id }, data: { lastSeenAt: HOUR_AGO } })
+    const observed = (await repo.findRetiredCloudMembers(CUTOFF))[0]!
+
+    // Re-auth is the case `lastSeenAt` alone cannot catch: it bumps the epoch atomically,
+    // while the clock only moves on the first heartbeat AFTER it.
+    await repo.upsertOnAuth({ daemonId: pod.id, orgId: null, agentVersion: '1.0.0' })
+
+    expect(await repo.deleteCloudMember(pod.id, { retiredBefore: CUTOFF, sessionEpoch: observed.sessionEpoch })).toBe(
+      false
+    )
+    expect(await prisma.daemon.findUnique({ where: { id: pod.id } })).not.toBeNull()
+
+    // A heartbeat is caught by the cutoff half of the same fence.
+    await prisma.daemon.update({ where: { id: pod.id }, data: { lastSeenAt: new Date() } })
+    const current = await repo.getUnscoped(pod.id)
+    expect(await repo.deleteCloudMember(pod.id, { retiredBefore: CUTOFF, sessionEpoch: current!.sessionEpoch })).toBe(
+      false
+    )
+    expect(await prisma.daemon.findUnique({ where: { id: pod.id } })).not.toBeNull()
   })
 })

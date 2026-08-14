@@ -246,6 +246,39 @@ describe('agent placement and webchat MCP delegation serialization (real Postgre
     }
   })
 
+  it('finishes what a daemon delete cascaded, and leaves an agent placed elsewhere alone', async () => {
+    // The cloud-member reaper has to delete FIRST to claim the row atomically, so the FK gets
+    // there before the repo does: `daemonId` null, `status` untouched. Settling that is
+    // conditional, because a placement that landed elsewhere is not the removal's to undo.
+    await fixtures()
+    const agents = new PgAgentRepo(prisma)
+    // Genuinely placed and serving — the seed leaves the row inactive, and `active` is the
+    // half of the state the cascade cannot touch and this method exists to correct.
+    await agents.setPlacement(AGENT, DAEMON)
+    const before = (await prisma.agent.findUnique({ where: { id: AGENT } }))!
+
+    await prisma.daemon.delete({ where: { id: DAEMON } })
+    expect(await prisma.agent.findUnique({ where: { id: AGENT } })).toMatchObject({
+      daemonId: null,
+      status: 'active'
+    })
+
+    expect(await agents.settleCascadedUnplacement(AGENT)).toBe(true)
+    expect(await prisma.agent.findUnique({ where: { id: AGENT } })).toMatchObject({
+      daemonId: null,
+      status: 'inactive',
+      configRevision: before.configRevision + 1n
+    })
+
+    // Placed again (a peer control plane, an operator) before the sweep got here.
+    await agents.setPlacement(AGENT, OTHER_DAEMON)
+    expect(await agents.settleCascadedUnplacement(AGENT)).toBe(false)
+    expect(await prisma.agent.findUnique({ where: { id: AGENT } })).toMatchObject({
+      daemonId: OTHER_DAEMON,
+      status: 'active'
+    })
+  })
+
   it('rolls placement and delegation revocation back together on transaction failure', async () => {
     const { input } = await fixtures()
     const delegations = new PgWebchatMcpDelegationRepo(prisma)

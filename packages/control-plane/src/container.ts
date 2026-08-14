@@ -1121,7 +1121,7 @@ export function buildContainer(
   const cloudDaemonReaper = clusterIdentity
     ? new CloudDaemonReaper(
         repos.daemon,
-        (daemonId) => retireCloudDaemonMember(httpDeps, daemonId, http.log),
+        (member, retiredBefore) => retireCloudDaemonMember(httpDeps, member, retiredBefore, http.log),
         connReg,
         clock,
         { retireAfterMs: CLOUD_DAEMON_REAP_AFTER_MS, intervalMs: CLOUD_DAEMON_REAP_INTERVAL_MS },

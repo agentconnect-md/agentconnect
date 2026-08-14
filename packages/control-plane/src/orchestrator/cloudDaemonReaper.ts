@@ -12,6 +12,10 @@
  * write is common ground. A member connected HERE is skipped as well, which costs nothing
  * and covers the row whose heartbeat write is lagging.
  *
+ * The sweep only nominates. Retiring re-checks the same cutoff and the epoch this read saw
+ * INSIDE the delete statement, so a member that comes back between the two loses nothing:
+ * see `http/daemon-removal.ts#retireCloudDaemonMember`.
+ *
  * Clock-driven via a self-rescheduling `setTimeout` (like {@link RelaySweeper}) so tests
  * advance a `FakeClock`; armed by the container's `startBackground()`, never in tests.
  * Every replica running it is fine — the delete is idempotent and fenced to the org-less
@@ -53,9 +57,13 @@ export class CloudDaemonReaper {
 
   constructor(
     private readonly daemons: Pick<DaemonRepo, 'findRetiredCloudMembers'>,
-    /** The full detach sequence for one member (`http/daemon-removal.ts`); false ⇒ not
-     *  retired after all (a reconnect, or a peer replica got there first). */
-    private readonly retire: (daemonId: DaemonId) => Promise<boolean>,
+    /** The full detach sequence for one member (`http/daemon-removal.ts`), re-fenced on the
+     *  cutoff and epoch this sweep read; false ⇒ not retired after all (a reconnect, or a
+     *  peer replica got there first) and nothing was written. */
+    private readonly retire: (
+      member: { daemonId: DaemonId; sessionEpoch: bigint },
+      retiredBefore: Date
+    ) => Promise<boolean>,
     private readonly liveness: DaemonLiveness,
     private readonly clock: Clock,
     private readonly cfg: CloudDaemonReaperConfig,
@@ -97,10 +105,12 @@ export class CloudDaemonReaper {
       let removed = 0
       for (const member of retired) {
         if (this.stopped) break
-        // Connected here despite a stale `lastSeenAt` — leave it to the heartbeat.
+        // Connected here despite a stale `lastSeenAt` — leave it to the heartbeat. Cheap, and
+        // not the guard that matters: the claim inside `retire` is what a member reconnecting
+        // mid-sweep (or serving a peer replica) is actually fenced by.
         if (this.liveness.get(member.id)) continue
         try {
-          if (await this.retire(member.id)) removed++
+          if (await this.retire({ daemonId: member.id, sessionEpoch: member.sessionEpoch }, cutoff)) removed++
         } catch (err) {
           this.log?.warn({ err, daemonId: member.id }, 'cloud-daemon-reaper: retiring one member failed')
         }

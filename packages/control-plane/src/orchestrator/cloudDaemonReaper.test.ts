@@ -8,7 +8,8 @@ import { FakeClock } from '../../test/fakes/fake-clock.js'
 const RETIRE_AFTER_MS = 15 * 60_000
 const INTERVAL_MS = 5 * 60_000
 
-const member = (id: string): DaemonRecord => ({ id: DaemonId(id), orgId: null }) as DaemonRecord
+const member = (id: string, sessionEpoch = 7n): DaemonRecord =>
+  ({ id: DaemonId(id), orgId: null, sessionEpoch }) as DaemonRecord
 
 /** Only `get` is read; an entry means "connected to THIS control plane right now". */
 const liveness = (...connected: string[]): DaemonLiveness =>
@@ -27,7 +28,44 @@ describe('CloudDaemonReaper', () => {
     await reaper.tick()
 
     expect(findRetiredCloudMembers).toHaveBeenCalledWith(new Date(clock.now() - RETIRE_AFTER_MS))
-    expect(retire.mock.calls.map(([id]) => id)).toEqual(['a', 'b'])
+    expect(retire.mock.calls.map(([m]) => m.daemonId)).toEqual(['a', 'b'])
+    reaper.stop()
+  })
+
+  it('hands retirement the same cutoff and epoch the sweep read, to re-fence on', async () => {
+    // The worklist is a nomination, not a decision: whoever deletes has to prove the row is
+    // still the one that was read, or a member that reconnected mid-sweep loses its agents.
+    const clock = new FakeClock(1_700_000_000_000)
+    const retire = vi.fn(async () => true)
+    const reaper = new CloudDaemonReaper(
+      { findRetiredCloudMembers: async () => [member('a', 12n)] },
+      retire,
+      liveness(),
+      clock,
+      { retireAfterMs: RETIRE_AFTER_MS, intervalMs: INTERVAL_MS }
+    )
+
+    await reaper.tick()
+
+    expect(retire).toHaveBeenCalledWith({ daemonId: 'a', sessionEpoch: 12n }, new Date(clock.now() - RETIRE_AFTER_MS))
+    reaper.stop()
+  })
+
+  it('does not count a member the claim refused — it came back', async () => {
+    const clock = new FakeClock()
+    const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+    const reaper = new CloudDaemonReaper(
+      { findRetiredCloudMembers: async () => [member('back')] },
+      async () => false,
+      liveness(),
+      clock,
+      { retireAfterMs: RETIRE_AFTER_MS, intervalMs: INTERVAL_MS },
+      log
+    )
+
+    await reaper.tick()
+
+    expect(log.info).not.toHaveBeenCalled()
     reaper.stop()
   })
 
@@ -44,14 +82,14 @@ describe('CloudDaemonReaper', () => {
 
     await reaper.tick()
 
-    expect(retire.mock.calls.map(([id]) => id)).toEqual(['gone'])
+    expect(retire.mock.calls.map(([m]) => m.daemonId)).toEqual(['gone'])
     reaper.stop()
   })
 
   it('keeps going through the batch when retiring one member throws', async () => {
     const clock = new FakeClock()
-    const retire = vi.fn(async (id: string) => {
-      if (id === 'boom') throw new Error('cascade failed')
+    const retire = vi.fn(async (m: { daemonId: string }) => {
+      if (m.daemonId === 'boom') throw new Error('cascade failed')
       return true
     })
     const reaper = new CloudDaemonReaper(
@@ -63,7 +101,7 @@ describe('CloudDaemonReaper', () => {
     )
 
     await expect(reaper.tick()).resolves.toBeUndefined()
-    expect(retire.mock.calls.map(([id]) => id)).toEqual(['boom', 'next'])
+    expect(retire.mock.calls.map(([m]) => m.daemonId)).toEqual(['boom', 'next'])
     reaper.stop()
   })
 

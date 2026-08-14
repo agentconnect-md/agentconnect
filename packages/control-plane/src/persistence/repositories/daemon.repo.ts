@@ -67,6 +67,17 @@ function toRecord(d: DaemonWithUsers): DaemonRecord {
 // bound to one Pod UID. An envelope daemon carries an identity but no Pod, so it never matches.
 const CLOUD_MEMBER_WHERE = { orgId: null, clusterIdentity: { not: null }, clusterPodUid: { not: null } } as const
 
+/** ONE definition of "retired", shared by the worklist read and the delete that acts on it: a
+ *  claim fenced on a different predicate than the one that selected the row is not a claim.
+ *  A row that never heartbeated is judged by its own age — `lastSeenAt` stays null for a Pod
+ *  that authenticated and died before its first beat. */
+function retiredCloudMemberWhere(cutoff: Date) {
+  return {
+    ...CLOUD_MEMBER_WHERE,
+    OR: [{ lastSeenAt: { lt: cutoff } }, { lastSeenAt: null, createdAt: { lt: cutoff } }]
+  }
+}
+
 export class PgDaemonRepo implements DaemonRepo {
   constructor(private readonly db: PrismaLike) {}
 
@@ -347,20 +358,29 @@ export class PgDaemonRepo implements DaemonRepo {
    *  is long gone: only silence past `cutoff` retires a row. */
   async findRetiredCloudMembers(cutoff: Date): Promise<DaemonRecord[]> {
     const rows = await this.db.daemon.findMany({
-      where: {
-        ...CLOUD_MEMBER_WHERE,
-        // A row that never heartbeated is judged by its own age — `lastSeenAt` stays null
-        // for a Pod that authenticated and died before its first beat.
-        OR: [{ lastSeenAt: { lt: cutoff } }, { lastSeenAt: null, createdAt: { lt: cutoff } }]
-      },
+      where: retiredCloudMemberWhere(cutoff),
       orderBy: { createdAt: 'asc' },
       include: withUsers
     })
     return rows.map(toRecord)
   }
 
-  async deleteCloudMember(daemonId: DaemonId): Promise<boolean> {
-    const { count } = await this.db.daemon.deleteMany({ where: { id: daemonId, ...CLOUD_MEMBER_WHERE } })
+  /**
+   * The whole fence rides ONE statement, so this is a compare-and-delete and not a delete
+   * that trusts an earlier read: still an org-less cloud member, still silent past the same
+   * cutoff, and still at the `sessionEpoch` the worklist saw. The epoch is what makes it
+   * airtight — `upsertOnAuth` bumps it atomically on every (re)auth, while `lastSeenAt` only
+   * moves on the first heartbeat AFTER one, so a member that just came back is fresh by epoch
+   * before it is fresh by clock.
+   */
+  async deleteCloudMember(daemonId: DaemonId, fence: { retiredBefore: Date; sessionEpoch: bigint }): Promise<boolean> {
+    const { count } = await this.db.daemon.deleteMany({
+      where: {
+        id: daemonId,
+        sessionEpoch: fence.sessionEpoch,
+        ...retiredCloudMemberWhere(fence.retiredBefore)
+      }
+    })
     return count === 1
   }
 

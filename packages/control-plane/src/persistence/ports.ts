@@ -267,11 +267,13 @@ export interface DaemonRepo {
   findRetiredCloudMembers(cutoff: Date): Promise<DaemonRecord[]>
   /**
    * Hard-delete ONE install-wide cloud member, cascading exactly like {@link DaemonRepo.delete}.
-   * The org-less-cloud shape is the fence — the statement cannot touch an org's own daemon —
-   * so a row that stopped matching (a member that reconnected, an id that never was one)
-   * yields false rather than an error.
+   * A compare-and-delete, not a delete: the whole fence rides one statement — the org-less
+   * cloud shape (so it cannot touch an org's own daemon), the same `retiredBefore` cutoff the
+   * worklist selected on, and the `sessionEpoch` observed there, which a (re)auth bumps before
+   * the first heartbeat moves `lastSeenAt`. A row that stopped matching yields false rather
+   * than an error, so nothing downstream runs for a member that came back.
    */
-  deleteCloudMember(daemonId: DaemonId): Promise<boolean>
+  deleteCloudMember(daemonId: DaemonId, fence: { retiredBefore: Date; sessionEpoch: bigint }): Promise<boolean>
   /** Bump THIS daemon's `routingEpoch` atomically; returns the new value (§4.11).
    *  System-tier: the orchestrator drives it from a routing decision it already
    *  resolved, so an org parameter would be tautological (§3.4). */
@@ -888,6 +890,14 @@ export interface AgentRepo {
     daemonId: DaemonId | null,
     byUserId?: string
   ): Promise<AgentRecord | null>
+  /**
+   * Finish the unplacement a daemon DELETE's `SetNull` cascade started — status, revision,
+   * webchat delegations, hook dispatch — for an agent that is STILL unplaced. False means
+   * another writer placed it in the meantime (or the row is gone), so this removal left it
+   * alone. Used where the delete has to come first to be atomic
+   * (`orchestrator/cloudDaemonReaper.ts`); an operator's detach unplaces up front instead.
+   */
+  settleCascadedUnplacement(agentId: AgentId): Promise<boolean>
   /** Atomically enumerate the agent's HookDefs, tombstone their durable review
    *  projections, and delete the Agent (cascading the HookDefs). The returned
    *  snapshots let the route remove the corresponding relay rules.

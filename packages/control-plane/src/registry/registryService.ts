@@ -206,8 +206,8 @@ export class DaemonRegistryService implements DaemonRegistry {
     await this.daemons.delete(orgId, daemonId)
   }
 
-  async removeCloudMember(daemonId: DaemonId): Promise<boolean> {
-    return this.daemons.deleteCloudMember(daemonId)
+  async removeCloudMember(daemonId: DaemonId, fence: { retiredBefore: Date; sessionEpoch: bigint }): Promise<boolean> {
+    return this.daemons.deleteCloudMember(daemonId, fence)
   }
 
   /** Org-fenced (org-scoped-data-layer.md §3): the repo read is filtered, so a

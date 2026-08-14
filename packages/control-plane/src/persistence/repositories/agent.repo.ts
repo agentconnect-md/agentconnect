@@ -848,6 +848,29 @@ export class PgAgentRepo implements AgentRepo {
     })
   }
 
+  /**
+   * Finish an unplacement a daemon DELETE started: the FK sets `daemonId` null and touches
+   * nothing else, so the agent is left reading `active` with nowhere to run, holding live
+   * webchat delegations and compiled hook rules. Conditional by design — a row some other
+   * writer has since placed elsewhere is not this removal's to null, so it is left alone and
+   * reported as unsettled.
+   */
+  async settleCascadedUnplacement(agentId: AgentId): Promise<boolean> {
+    return this.transaction(async (tx) => {
+      const current = await lockAgentPlacement(tx, agentId)
+      if (!current || current.daemonId !== null) return false
+      await tx.agent.update({
+        // No daemonId write — the cascade already did that; what is missing is everything
+        // `setPlacement(null)` pairs with it, including the revision the next owner compares.
+        where: { id: agentId },
+        data: { status: 'inactive', configRevision: { increment: 1 } }
+      })
+      await revokeActiveWebchatMcpDelegations(tx, agentId, new Date())
+      await tx.hookDef.updateMany({ where: { agentId }, data: { dispatchRevision: { increment: 1 } } })
+      return true
+    })
+  }
+
   async movePlacement(
     agentId: AgentId,
     expectedDaemonId: DaemonId | null,
