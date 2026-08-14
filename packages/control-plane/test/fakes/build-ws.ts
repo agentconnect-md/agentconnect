@@ -132,6 +132,9 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
 
   const codec = new ApiKeyCodec({ API_KEY_PEPPER: TEST_API_KEY_PEPPER })
 
+  // One horizon for both halves: auth/ok tells the daemon exactly what the lease service uses.
+  const dutyLeaseMs = opts.dutyLease?.leaseMs ?? 120_000
+
   const epoch = new EpochService(repos.daemon, clock)
   // Fake in-cluster identity: token → install-wide daemon, no TokenReview.
   const cloudTokens = new Map<string, string>()
@@ -140,7 +143,7 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
     repos.apiKey,
     epoch,
     clock,
-    { HEARTBEAT_SEC: opts.heartbeatSec ?? 15 },
+    { HEARTBEAT_SEC: opts.heartbeatSec ?? 15, DUTY_LEASE_MS: dutyLeaseMs },
     new PgOrgRepo(prisma),
     {
       verify: async (token: string) => {
@@ -192,7 +195,7 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
   )
 
   const dutyLease = new DutyLeaseService(new PgDutyGroupRepo(prisma), clock, {
-    leaseMs: opts.dutyLease?.leaseMs ?? 120_000,
+    leaseMs: dutyLeaseMs,
     recoveryGraceMs: opts.dutyLease?.recoveryGraceMs ?? 0,
     grantMaxPerTick: opts.dutyLease?.grantMaxPerTick ?? 32,
     grantsPerFrame: opts.dutyLease?.grantsPerFrame ?? 50,

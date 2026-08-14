@@ -12845,6 +12845,23 @@ export class Daemon {
     this.onDutyChanged()
   }
 
+  // The duty self-fence (`T_reassign > T_fence`): stop serving before the CP can hand these leases to a successor.
+  // A local `duty/revoke`, never a removal — workspace, sessions, and the registry entry all survive it.
+  // Clearing the held groups IS the recovery: on reconnect the CP's missing-regrant reissues and re-installs them.
+  private fenceDuties(): void {
+    // Enforcement off ⇒ duties gate nothing, so a teardown would drop live traffic for no reason.
+    if (!this.dutyEnforced()) return
+    const served = this.duties.agents()
+    const groups = this.duties.releaseAll()
+    if (groups.length === 0) return
+    this.log.warn(
+      `duty: self-fenced ${groups.length} group(s) covering ${served.size} agent(s) — ` +
+        'the CP lease horizon elapsed with the link down'
+    )
+    for (const agentId of served) this.stopServingAgent(agentId)
+    this.onDutyChanged()
+  }
+
   /** Claim one agent's duty because a trigger for it arrived here. A win is
    *  installed exactly like a `duty/grant`, so the same converge path runs.
    *  Refuses without asking the CP when this member must not take new work:
@@ -21385,6 +21402,7 @@ export class Daemon {
       },
       degradedScopes: () => this.cpDegradedScopes(),
       duties: () => this.dutyDigest(),
+      onDutyFence: () => this.fenceDuties(),
       configApply: this.cpConfigApply(),
       sessionRead: createSessionReader(this.store, (session) => this.sessionThreadUrl(session)),
       // §5.4: serve a CP-forwarded status probe for a child session we own. Authorization is

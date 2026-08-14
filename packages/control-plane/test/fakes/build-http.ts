@@ -76,6 +76,7 @@ import { OrgInviteLinkCodec } from '../../src/registry/orgInviteLink.js'
 import { OrgInviteLinkService } from '../../src/registry/orgInviteLinkService.js'
 import { WaitlistService } from '../../src/registry/waitlistService.js'
 import { EpochService } from '../../src/orchestrator/epoch.js'
+import { DUTY_LEASE_DEFAULTS } from '../../src/orchestrator/dutyLease.js'
 import { ControlSender } from '../../src/orchestrator/outbound.js'
 import { RelayControlSender } from '../../src/orchestrator/relayControl.js'
 import { HttpBotOrchestrator } from '../../src/orchestrator/httpBot.js'
@@ -425,7 +426,14 @@ export function buildHttpApp(
       githubInstallationRepo,
       'agentconnect-test'
     ),
-    auth: new DaemonAuthService(codec, apiKeyRepo, epoch, clock, { HEARTBEAT_SEC: 15 }, new PgOrgRepo(prisma)),
+    auth: new DaemonAuthService(
+      codec,
+      apiKeyRepo,
+      epoch,
+      clock,
+      { HEARTBEAT_SEC: 15, DUTY_LEASE_MS: DUTY_LEASE_DEFAULTS.leaseMs },
+      new PgOrgRepo(prisma)
+    ),
     apiKeys: apiKeyService,
     oauth: new OAuthService(oauthRepo, apiKeyService, codec, clock),
     webchatTokens: new WebchatTokenService(TEST_API_KEY_PEPPER),

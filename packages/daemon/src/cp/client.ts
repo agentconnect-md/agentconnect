@@ -160,6 +160,13 @@ const INSTALL_WIDE_FRAME_TYPES = new Set([
 const ACK_TIMEOUT_MS = 5000
 const BACKOFF_BASE_MS = 1000
 const BACKOFF_CAP_MS = 30000
+// No-split invariant `T_reassign > T_fence`: the CP frees a lease at `lastRenew + dutyLeaseMs`, so a member that
+// stopped renewing must be quiet strictly earlier — it fences this fraction of the horizon past its last duty beat.
+// The remaining quarter absorbs clock skew, the beat's in-flight delivery, and a beat the CP dropped.
+const DUTY_FENCE_HORIZON_FRACTION = 0.75
+// Horizon assumed when `auth/ok` carries none (a CP older than the field); mirrors the CP's shipped default.
+// Deliberately a copy: it is a guess about a peer that cannot answer, and guessing beats silently never fencing.
+const DUTY_LEASE_FALLBACK_MS = 120_000
 const REGISTERING_CONTROL_QUEUE_LIMIT = 1024
 const utf8Bytes = (value: string) => new TextEncoder().encode(value).length
 
@@ -211,6 +218,9 @@ export interface CpClientDeps {
    *  an install-wide (frame-mode) connection; absent ⇒ this daemon does not
    *  participate in the ledger and the CP-side exchange stays dormant. */
   duties?: () => HeartbeatDuties | undefined
+  /** Duty self-fence: the link has been down long enough that the ledger is about to hand this member's leases
+   *  to a successor, so stop serving them first. Armed off the last duty beat, never off the disconnect. */
+  onDutyFence?: () => void
   configApply: ConfigApply
   /** Read-only session list/history seam over the local store (§1/§12). */
   sessionRead: SessionReader
@@ -272,6 +282,14 @@ export class CpClient {
   private lastAuthedEpoch = 0 // for resume on reconnect (per-agent seq tail is out of scope)
   private heartbeatTimer?: TimerHandle
   private heartbeatMs = 0
+  /** Lease horizon from `auth/ok`; undefined until a CP that sends one answers. */
+  private dutyLeaseMs?: number
+  /** When the last heartbeat CARRYING DUTIES went out on a live socket — the event the CP renews from, and
+   *  therefore the only sound anchor for the fence deadline. */
+  private lastDutyBeatAt = 0
+  private dutyFenceTimer?: TimerHandle
+  /** Set once the fence fires and cleared by the next duty beat, so a flapping link fences once, not per drop. */
+  private dutyFenced = false
   private connectRun?: Promise<void>
   /** `stop()` must join snapshot convergence after a transport has connected,
    *  but it cannot wait forever for a connector whose dial is not cancellable.
@@ -315,6 +333,9 @@ export class CpClient {
       this.reconnectTimer = undefined
     }
     this.stopHeartbeat()
+    // A local shutdown tears down every agent anyway — a fence timer outliving it would
+    // only fire into a daemon that has already stopped serving.
+    this.clearDutyFence()
     this.correlator.rejectAll(new Error('stopping'))
     this.registerControlBarrier = undefined
     this.transport?.close(1000, 'shutdown')
@@ -422,6 +443,7 @@ export class CpClient {
       daemonId: string
       sessionEpoch: number
       heartbeatSec: number
+      dutyLeaseMs?: number
       webAppUrl?: string
       orgSlug?: string
       organizationMode?: 'connection' | 'frame'
@@ -429,6 +451,13 @@ export class CpClient {
     }
     this.sessionEpoch = ok.sessionEpoch
     this.organizationMode = ok.organizationMode ?? 'connection'
+    this.dutyLeaseMs = ok.dutyLeaseMs
+    // Once per connection, and only where a lease can exist: a member fencing on a guess should say so.
+    if (ok.dutyLeaseMs === undefined && this.organizationMode === 'frame' && this.deps.duties) {
+      this.deps.log.warn(
+        `cp: no duty lease horizon in auth/ok — self-fencing on the built-in ${DUTY_LEASE_FALLBACK_MS}ms default`
+      )
+    }
     this.lastAuthedEpoch = ok.sessionEpoch
     // Adopt the authoritative daemonId the CP assigned (no-op if we already had one).
     if (ok.daemonId && ok.daemonId !== this.deps.daemonId) {
@@ -511,6 +540,9 @@ export class CpClient {
     this.updateCapabilities()
     this.heartbeatMs = ok.heartbeatSec > 0 ? ok.heartbeatSec * 1000 : this.deps.heartbeatDefaultMs
     this.armHeartbeat()
+    // Reconnected with a fence pending: renew the leases now instead of a cadence from now.
+    // The fence lifts on a lease exchange, and a healthy link must not be fenced waiting for one.
+    if (this.state === 'READY' && this.dutyFenceTimer !== undefined) this.sendHeartbeat()
     this.deps.log.info(`cp: READY (epoch=${this.sessionEpoch}, routingEpoch=${this.routingEpoch})`)
 
     // Report the observed runtime snapshot (D→C `facts/daemon-runtimes`,
@@ -1131,6 +1163,9 @@ export class CpClient {
     this.transport = undefined
     if (this.registerControlBarrier?.transport === source) this.registerControlBarrier = undefined
     this.correlator.rejectAll(new WireError('INTERNAL', 'connection closed', true))
+    // Before the fatal/stopped branches: a member whose credential died can never renew
+    // either, and its leases go vacant on exactly the same schedule.
+    if (!this.stopped) this.armDutyFence()
     if (code === 4401) {
       this.fatal = true
       this.state = 'CLOSED'
@@ -1149,30 +1184,67 @@ export class CpClient {
     this.heartbeatTimer = this.deps.clock.setTimeout(() => {
       // Skip the send mid-drain (we report `degraded` differently), but keep the
       // loop alive so heartbeats resume once we transition DRAINING → READY.
-      if (this.state === 'READY') {
-        // The duty lease exchange rides this beat (frames/duty.ts). Absent on a
-        // single-org daemon, which keeps the whole CP-side path dormant.
-        const duties = this.organizationMode === 'frame' ? this.deps.duties?.() : undefined
-        this.transport?.send(
-          encode(
-            buildEnvelope('heartbeat', {
-              load: this.deps.loadSnapshot(),
-              health: 'ok',
-              activeSessions: this.deps.activeSessions(),
-              degradedScopes: this.deps.degradedScopes?.() ?? [],
-              ...(duties ? { duties } : {})
-            })
-          )
-        )
-      }
+      if (this.state === 'READY') this.sendHeartbeat()
       if (this.state === 'READY' || this.state === 'DRAINING') this.armHeartbeat()
     }, this.heartbeatMs)
+  }
+
+  private sendHeartbeat(): void {
+    // The duty lease exchange rides this beat (frames/duty.ts). Absent on a
+    // single-org daemon, which keeps the whole CP-side path dormant.
+    const duties = this.organizationMode === 'frame' ? this.deps.duties?.() : undefined
+    const live = this.transport
+    live?.send(
+      encode(
+        buildEnvelope('heartbeat', {
+          load: this.deps.loadSnapshot(),
+          health: 'ok',
+          activeSessions: this.deps.activeSessions(),
+          degradedScopes: this.deps.degradedScopes?.() ?? [],
+          ...(duties ? { duties } : {})
+        })
+      )
+    )
+    // This beat is what the CP renews from, so it re-anchors the deadline and cancels a fence armed by an
+    // earlier outage — the link is healthy AND the lease exchange ran, which socket-open alone never proves.
+    if (duties && live) {
+      this.lastDutyBeatAt = this.deps.clock.now()
+      this.dutyFenced = false
+      this.clearDutyFence()
+    }
   }
 
   private stopHeartbeat(): void {
     if (this.heartbeatTimer !== undefined) {
       this.deps.clock.clearTimeout(this.heartbeatTimer)
       this.heartbeatTimer = undefined
+    }
+  }
+
+  /** Arm the duty self-fence for a link that just went down. The deadline is absolute (`lastDutyBeat + fraction ×
+   *  horizon`), so disconnecting just before a due beat cannot push it past the CP's expiry and a re-arm across
+   *  several failed reconnects keeps the original deadline instead of restarting the countdown. */
+  private armDutyFence(): void {
+    if (this.lastDutyBeatAt === 0) return // never renewed a lease: nothing the CP could reassign
+    if (this.dutyFenceTimer !== undefined || this.dutyFenced || !this.deps.onDutyFence) return
+    const horizon = this.dutyLeaseMs ?? DUTY_LEASE_FALLBACK_MS
+    const deadline = this.lastDutyBeatAt + Math.floor(horizon * DUTY_FENCE_HORIZON_FRACTION)
+    const delay = Math.max(0, deadline - this.deps.clock.now())
+    this.dutyFenceTimer = this.deps.clock.setTimeout(() => {
+      this.dutyFenceTimer = undefined
+      this.dutyFenced = true
+      this.deps.log.warn(
+        `cp: duty self-fence — no lease renewal for ${this.deps.clock.now() - this.lastDutyBeatAt}ms; ` +
+          'releasing held duties before the CP can reassign them'
+      )
+      this.deps.onDutyFence?.()
+    }, delay)
+  }
+
+  private clearDutyFence(): void {
+    if (this.dutyFenceTimer !== undefined) {
+      this.deps.clock.clearTimeout(this.dutyFenceTimer)
+      this.dutyFenceTimer = undefined
     }
   }
 

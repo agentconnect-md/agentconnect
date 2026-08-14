@@ -44,6 +44,10 @@ export const AuthOk = z.object({
   daemonId: z.string().uuid(),
   sessionEpoch: z.number().int(), // monotonic; bumped each successful (re)auth — fencing token
   heartbeatSec: z.number().int(), // cadence the daemon must emit heartbeat at
+  // How long the CP keeps a duty lease alive past the last heartbeat it renewed from
+  // (T_reassign). The member self-fences strictly earlier, so it must be told the CP's
+  // own value rather than duplicate it. Optional: an older CP omits it.
+  dutyLeaseMs: z.number().int().positive().optional(),
   serverTime: z.string().datetime(),
   // Single-org daemons inherit tenant context from auth; install-wide cloud daemons require
   // every org-scoped post-auth frame to carry `Envelope.orgId`.

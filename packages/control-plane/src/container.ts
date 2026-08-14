@@ -406,6 +406,9 @@ export function buildContainer(
     clock,
     {
       HEARTBEAT_SEC: config.HEARTBEAT_SEC,
+      // Single-sourced from the lease service's own horizon: the daemon derives its duty
+      // self-fence from this, so the two halves of `T_reassign > T_fence` cannot drift.
+      DUTY_LEASE_MS: DUTY_LEASE_DEFAULTS.leaseMs,
       // Web console origin for daemon-built session deep links: explicit PUBLIC_WEB_URL, else
       // a concrete CORS_ORIGIN (the browser console origin a two-origin deploy already lists),
       // else PUBLIC_CP_URL for single-origin deploys. All unset ⇒ no webAppUrl sent (daemon
