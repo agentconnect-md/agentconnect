@@ -292,9 +292,10 @@ export class CpClient {
   /** True when this CP confirms renewals (`auth/ok` carried a horizon ⇒ it also sends `duty/renewed`), so the
    *  anchor is evidence the CP renewed rather than evidence we queued a frame. */
   private dutyRenewalsConfirmed = false
-  /** When the lease countdown last provably restarted: receipt of `duty/renewed`, or — only against a CP that
-   *  confirms nothing — the weaker "we sent a duty beat". Zero ⇒ no lease this member could lose. */
-  private lastLeaseRenewalAt = 0
+  /** When the lease countdown last provably restarted: receipt of `duty/renewed` or of a won `duty/claim/ok`,
+   *  or — only against a CP that confirms nothing — the weaker "we sent a duty beat". Undefined, never 0, so a
+   *  renewal at clock time zero is not read as "no lease this member could lose". */
+  private lastLeaseRenewalAt?: number
   private dutyFenceTimer?: TimerHandle
   private connectRun?: Promise<void>
   /** `stop()` must join snapshot convergence after a transport has connected,
@@ -552,7 +553,7 @@ export class CpClient {
     // A member with a running fence beats immediately instead of a cadence from now: only a CONFIRMED
     // renewal lifts the fence, and a reconnect that waits for the next scheduled beat can be fenced with
     // the link already healthy. The confirmation this elicits is what actually cancels it.
-    if (this.state === 'READY' && this.lastLeaseRenewalAt > 0) this.sendHeartbeat()
+    if (this.state === 'READY' && this.lastLeaseRenewalAt !== undefined) this.sendHeartbeat()
     this.deps.log.info(`cp: READY (epoch=${this.sessionEpoch}, routingEpoch=${this.routingEpoch})`)
 
     // Report the observed runtime snapshot (D→C `facts/daemon-runtimes`,
@@ -890,7 +891,14 @@ export class CpClient {
     if (rep.type !== 'duty/claim/ok') {
       throw new WireError('INTERNAL', `expected duty/claim/ok, got ${rep.type}`, false)
     }
-    return rep.payload as DutyClaimOk
+    const claim = rep.payload as DutyClaimOk
+    // A won claim CREATES this member's lease (`claimAgentHome` writes `expiresAt = now + leaseMs`)
+    // and it starts serving at once — so it is a renewal in every sense the fence cares about, and
+    // often the FIRST one, on a member no heartbeat has confirmed anything for yet. Without this the
+    // rendezvous serves a lease with no countdown running at all. Receipt-anchored like a renewal,
+    // and conservative for the same reason: the CP wrote `expiresAt` strictly before this reply.
+    if (claim.granted) this.noteLeaseRenewed()
+    return claim
   }
 
   /**
@@ -1243,18 +1251,18 @@ export class CpClient {
    *  a half-open socket produces no close event and no renewal either, and only a running deadline fences it.
    *  A healthy member simply re-arms every renewal, long before the deadline it set the time before. */
   private armDutyFence(): void {
-    if (this.lastLeaseRenewalAt === 0) return // no lease was ever renewed here: nothing the CP could reassign
+    const renewedAt = this.lastLeaseRenewalAt
+    if (renewedAt === undefined) return // no lease was ever renewed here: nothing the CP could reassign
     if (!this.deps.onDutyFence) return
     this.clearDutyFence()
     const horizon = this.dutyLeaseMs ?? DUTY_LEASE_FALLBACK_MS
-    const deadline = this.lastLeaseRenewalAt + Math.floor(horizon * DUTY_FENCE_HORIZON_FRACTION)
-    const delay = Math.max(0, deadline - this.deps.clock.now())
+    const delay = Math.max(0, renewedAt + Math.floor(horizon * DUTY_FENCE_HORIZON_FRACTION) - this.deps.clock.now())
     // Fires at most once per renewal: nothing re-arms it but the next confirmed renewal, so a
     // link that flaps for an hour fences (and warns) once, not once per drop.
     this.dutyFenceTimer = this.deps.clock.setTimeout(() => {
       this.dutyFenceTimer = undefined
       this.deps.log.warn(
-        `cp: duty self-fence — no confirmed lease renewal for ${this.deps.clock.now() - this.lastLeaseRenewalAt}ms; ` +
+        `cp: duty self-fence — no confirmed lease renewal for ${this.deps.clock.now() - renewedAt}ms; ` +
           'releasing held duties before the CP can reassign them'
       )
       this.deps.onDutyFence?.()

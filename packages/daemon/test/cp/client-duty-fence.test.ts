@@ -8,6 +8,7 @@ import { FakeClock } from './fake-clock.js'
 
 const DAEMON_ID = '22222222-2222-4222-8222-222222222222'
 const GROUP = '11111111-1111-4111-8111-111111111111'
+const AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1'
 const LEASE_MS = 120_000
 // The shipped fence: 3/4 of the horizon past the last heartbeat that carried duties.
 const FENCE_MS = 90_000
@@ -263,6 +264,49 @@ describe('the duty self-fence deadline', () => {
     link.up = false
     link.current.simulateClose(1006, 'gone')
 
+    await advance(clock, 10 * LEASE_MS)
+    expect(onDutyFence).not.toHaveBeenCalled()
+  })
+
+  it('arms on a won rendezvous claim, which is this member’s first lease', async () => {
+    // The claim CREATES a lease (`claimAgentHome` writes `expiresAt = now + leaseMs`) and the
+    // member serves it immediately — often before any heartbeat has been confirmed, so without
+    // this the rendezvous serves a lease with no countdown running at all.
+    const { client, link, clock, onDutyFence } = await ready()
+    const claim = client.claimDuty(AGENT)
+    await tick()
+    const req = link.current.sent.map((raw) => JSON.parse(raw)).find((f) => f.type === 'duty/claim')
+    link.current.pushInbound(
+      JSON.stringify(
+        buildEnvelope(
+          'duty/claim/ok',
+          { granted: true, grant: { groupId: GROUP, orgId: 'org-1', term: '1', members: [] } },
+          { corr: req.id }
+        )
+      )
+    )
+    await expect(claim).resolves.toMatchObject({ granted: true })
+
+    link.up = false
+    link.current.simulateClose(1006, 'gone')
+    await advance(clock, FENCE_MS - 1)
+    expect(onDutyFence).not.toHaveBeenCalled()
+    await advance(clock, 1)
+    expect(onDutyFence).toHaveBeenCalledTimes(1)
+  })
+
+  it('a LOST rendezvous claim arms nothing — no lease was created here', async () => {
+    const { client, link, clock, onDutyFence } = await ready()
+    const claim = client.claimDuty(AGENT)
+    await tick()
+    const req = link.current.sent.map((raw) => JSON.parse(raw)).find((f) => f.type === 'duty/claim')
+    link.current.pushInbound(
+      JSON.stringify(buildEnvelope('duty/claim/ok', { granted: false, holder: DAEMON_ID }, { corr: req.id }))
+    )
+    await expect(claim).resolves.toMatchObject({ granted: false })
+
+    link.up = false
+    link.current.simulateClose(1006, 'gone')
     await advance(clock, 10 * LEASE_MS)
     expect(onDutyFence).not.toHaveBeenCalled()
   })

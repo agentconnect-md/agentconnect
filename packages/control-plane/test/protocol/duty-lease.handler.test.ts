@@ -156,6 +156,25 @@ describe('duty lease exchange (protocol level, real Postgres)', () => {
     expect(row.expiresAt).toEqual(new Date(h.clock.now() + 90_000))
   })
 
+  it('the renewal confirmation comes LAST, after the revocation it must never outrun', async () => {
+    // The member's fence is global while renewal is per-group, so a delivered PREFIX of this
+    // exchange must not extend the countdown without the revocation that makes it safe. Here
+    // `renewHeld` renews nothing the member reported — the group belongs to OTHER now — and one
+    // socket delivers in order, so a confirmation implies the supersession arrived first.
+    const h = buildWsHarness(prisma)
+    const start = new Date(h.clock.now())
+    await seedGroup({ holder: OTHER, term: 2n, expiresAt: new Date(start.getTime() + LEASE_MS) })
+    const { stub } = await ready(h)
+
+    stub.inject('heartbeat', heartbeat({ held: [{ groupId: GROUP, term: '1' }], headroom: 0 }))
+    await stub.expectFrame('duty/renewed')
+
+    expect(stub.sent.filter((f) => f.type.startsWith('duty/')).map((f) => f.type)).toEqual([
+      'duty/revoke',
+      'duty/renewed'
+    ])
+  })
+
   it('a digest entry the ledger granted elsewhere is revoked as superseded', async () => {
     const h = buildWsHarness(prisma)
     const start = new Date(h.clock.now())

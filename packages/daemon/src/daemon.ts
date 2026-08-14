@@ -2160,6 +2160,11 @@ export class Daemon {
   // Retry window for a failed duty install: the default heartbeat cadence, which
   // is how fast the CP's missing-regrant path can offer the group back.
   private static readonly DUTY_INSTALL_RETRY_MS = 15_000
+  // Backoff for retrying the platform convergence a duty change needs, when the reconcile that
+  // carries it throws. It doubles to a slow poll and never gives up: the state it exists to leave
+  // is a fenced agent whose sockets are still open.
+  private static readonly DUTY_CONVERGE_RETRY_BASE_MS = 1_000
+  private static readonly DUTY_CONVERGE_RETRY_CAP_MS = 30_000
   // Latched for the WHOLE drain handoff, including the window after `draining`
   // reopens and before the leases are surrendered — a claim landing there would
   // install a grant the release snapshot has already passed by.
@@ -3802,11 +3807,13 @@ export class Daemon {
    */
   private reconcileRun?: Promise<void>
   private reconcilePending = false
-  // A duty change moves no agent FILE, so the agent diff is empty and platform convergence
-  // would be skipped — while the serving gate it feeds (`transportAgents`) has just changed.
-  // Set by `onDutyChanged`, consumed by the next pass, so a revoke or a fence actually closes
-  // the sockets it stopped serving.
-  private dutyConnectionsDirty = false
+  // A duty change moves no agent FILE, so the agent diff is empty and platform convergence would
+  // be skipped — while the serving gate it feeds (`transportAgents`) has just changed. Counters,
+  // not a flag: a pass claims the requested value and publishes it only once the sockets are
+  // actually converged, so neither a failed pass nor a duty change landing mid-pass is lost.
+  private dutyConnectionsRequested = 0
+  private dutyConnectionsConverged = 0
+  private dutyConvergeRetryTimer?: TimerHandle
   // Register snapshots publish agents before integrations. Carry newly-owned
   // inbox rows across coalesced passes and retry only after convergence is idle.
   private readonly pendingInboxReplayAgents = new Set<string>()
@@ -3833,10 +3840,11 @@ export class Daemon {
   }
 
   private async runReconcile(): Promise<void> {
-    // Claimed for THIS pass. A duty change landing after this read leaves the flag set, and
-    // the coalesced trailing re-run honours it.
-    const dutyDirty = this.dutyConnectionsDirty
-    this.dutyConnectionsDirty = false
+    // CLAIMED, not consumed: the request is marked satisfied only where the sockets actually
+    // converge. This pass can throw at a dozen places before it reaches the platform layer, and a
+    // fence whose sockets are still open must not be forgotten because one reconcile failed.
+    const dutyClaimed = this.dutyConnectionsRequested
+    const dutyDirty = dutyClaimed !== this.dutyConnectionsConverged
     const snapshot = this.loadAgentList(true)
     const files = snapshot.agents
     const nextFileAgents = new Map(files.map((a) => [a.id, a]))
@@ -4010,6 +4018,10 @@ export class Daemon {
       await this.reconcileTelegramConnections()
       await this.reconcileDiscordConnections()
       await this.reconcileFeishuConnections()
+      // Converged for real: the sockets a duty change invalidated are closed. Publishing the
+      // CLAIMED value (not the current one) leaves a duty change that landed mid-pass outstanding,
+      // so the trailing re-run still converges it.
+      if (dutyDirty) this.dutyConnectionsConverged = dutyClaimed
     }
     // The live roster just changed shape — re-announce any agent-derived register
     // capabilities. No-op when nothing changed. Optional call: tests inject
@@ -12959,8 +12971,27 @@ export class Daemon {
   private onDutyChanged(): void {
     if (!this.dutyEnforced()) return
     for (const agent of this.agents.values()) this.syncAgentSchedules(agent)
-    this.dutyConnectionsDirty = true
-    void this.reconcile().catch((err) => this.log.warn(`duty: reconcile after a duty change failed: ${err}`))
+    this.dutyConnectionsRequested++
+    this.convergeDutyConnections()
+  }
+
+  /** Reconcile until the duty-driven convergence has actually run. A pass that throws (a workspace
+   *  authority conflict, a host teardown, a platform close) leaves the request outstanding, and a
+   *  fence still holding its sockets open is the one state this must never settle in — so it
+   *  retries, backing off to a slow poll rather than giving up. Any other reconcile trigger
+   *  satisfies the same outstanding request and stops the loop. */
+  private convergeDutyConnections(delayMs = Daemon.DUTY_CONVERGE_RETRY_BASE_MS): void {
+    void this.reconcile().catch((err) => {
+      this.log.warn(`duty: reconcile after a duty change failed: ${formatErr(err)}`)
+      if (this.draining || this.dutyConnectionsRequested === this.dutyConnectionsConverged) return
+      this.log.warn(`duty: retrying platform convergence in ${delayMs}ms — a fenced agent may still be served`)
+      if (this.dutyConvergeRetryTimer !== undefined) this.clock.clearTimeout(this.dutyConvergeRetryTimer)
+      this.dutyConvergeRetryTimer = this.clock.setTimeout(() => {
+        this.dutyConvergeRetryTimer = undefined
+        if (this.dutyConnectionsRequested === this.dutyConnectionsConverged) return
+        this.convergeDutyConnections(Math.min(delayMs * 2, Daemon.DUTY_CONVERGE_RETRY_CAP_MS))
+      }, delayMs)
+    })
   }
 
   /** Arm this agent's cron + dream schedules, or disarm them when its duty lives
@@ -22046,6 +22077,10 @@ export class Daemon {
     if (this.runtimeProbeTimer !== undefined) {
       this.clock.clearTimeout(this.runtimeProbeTimer)
       this.runtimeProbeTimer = undefined
+    }
+    if (this.dutyConvergeRetryTimer !== undefined) {
+      this.clock.clearTimeout(this.dutyConvergeRetryTimer)
+      this.dutyConvergeRetryTimer = undefined
     }
     for (const t of this.bgWakeTimers) this.clock.clearTimeout(t)
     this.bgWakeTimers.clear()

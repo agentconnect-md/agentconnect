@@ -173,6 +173,28 @@ describe('the duty self-fence', () => {
     await daemon.stop()
   })
 
+  it('closes it on a retry when the reconcile pass carrying the fence throws', async () => {
+    // A reconcile has a dozen ways to throw before it reaches the platform layer (workspace
+    // authority, host teardown, a platform close). If the request were consumed by that pass, the
+    // fenced agent would keep its socket — and its direct ingress — indefinitely.
+    const { daemon } = await boot()
+    const conn = liveSlackSocket(daemon)
+    const realLoad = (daemon as any).loadAgentList.bind(daemon)
+    let failures = 0
+    ;(daemon as any).loadAgentList = (...args: unknown[]) => {
+      if (failures++ < 1) throw new Error('reconcile blew up before the platform layer')
+      return realLoad(...args)
+    }
+
+    fence(daemon)
+
+    // The pass that carried the fence threw; the retry converges it anyway.
+    await vi.waitFor(() => expect(conn.stop).toHaveBeenCalled(), { timeout: 10_000 })
+    expect(failures).toBeGreaterThan(1) // the first pass really did throw
+    expect(pooled(daemon)).not.toContain(conn)
+    await daemon.stop()
+  })
+
   it('does nothing while enforcement is off — duties gate no service, so there is nothing to fence', async () => {
     const { daemon } = await boot(false)
     expect(served(daemon)).toContain(AGENT)
