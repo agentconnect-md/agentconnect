@@ -14710,7 +14710,9 @@ export class Daemon {
             })
           }
         }
-        if (!p.webchat.doneSent) {
+        // Continuation defers `done` until the platform apply chain settles below —
+        // the browser must not unlock its composer while the reply is still flushing.
+        if (!p.webchat.continuation && !p.webchat.doneSent) {
           p.webchat.doneSent = true
           p.webchat.sink.done({
             conversationId: p.webchat.conversationId,
@@ -14754,6 +14756,18 @@ export class Daemon {
       // through the core surface does not inherit its platform's closure, and a platform
       // that cannot amend a sent message simply registers none.
       await this.turnSurfaces.exact(p.platform)?.closeResponse?.(p)
+      // Continuation `done` fires only now, behind the platform apply/finalization
+      // boundary, so both sinks settle as ONE ordered turn: the console cannot admit
+      // a next turn (whose mirror posts immediately) ahead of this reply's flush.
+      if (p.webchat?.continuation && !p.webchat.doneSent) {
+        p.webchat.doneSent = true
+        p.webchat.sink.done({
+          conversationId: p.webchat.conversationId,
+          turnId: p.webchat.turnId,
+          ...(stopReason ? { stopReason } : {}),
+          ...(usage?.totalTokens !== undefined ? { usage: { used: usage.totalTokens } } : {})
+        })
+      }
       // The user-visible reply is now delivered. Enqueue provider work without
       // awaiting it: managed may distill, while external only commits its durable
       // capture outbox. Webchat carries the canonical per-turn id separately from
@@ -14817,17 +14831,10 @@ export class Daemon {
       failEvaluation(err)
       finalPhase = 'problem'
       if (p.webchat?.continuation) {
-        // Continuation: release any held stream text, close the browser stream with the
-        // terminal error; the platform branch below owns the visible notice + transcript.
+        // Continuation: release any held stream text; the platform branch below owns the
+        // visible notice + transcript, and the terminal-error `done` waits behind its
+        // apply-chain drain so the console cannot admit a next turn mid-flush.
         this.flushHeldWebchatText(p.webchat)
-        if (!p.webchat.doneSent) {
-          p.webchat.doneSent = true
-          p.webchat.sink.done({
-            conversationId: p.webchat.conversationId,
-            turnId: p.webchat.turnId,
-            error: turnFailureReason(err)
-          })
-        }
       } else if (p.webchat) {
         // Reply text (including a runtime's mirrored error text) already streamed to
         // the client via onAcpUpdate; the terminal done frame carries the reason.
@@ -14904,7 +14911,20 @@ export class Daemon {
             })
         }
         this.showActivity(replyConn, msg.channel, statusThread, '') // clear "is thinking…"
-        await p.applyChain
+        try {
+          await p.applyChain
+        } finally {
+          // Continuation closes the browser stream only after the platform failure
+          // actions drain (or terminally fail) — never before, so the sinks stay ordered.
+          if (p.webchat?.continuation && !p.webchat.doneSent) {
+            p.webchat.doneSent = true
+            p.webchat.sink.done({
+              conversationId: p.webchat.conversationId,
+              turnId: p.webchat.turnId,
+              error: turnFailureReason(err)
+            })
+          }
+        }
       }
       if (hookContext && !this.draining) {
         this.emitHookCompletion(hookContext, 'failed', { sessionId, reason: turnFailureCode(err) }, entry)
