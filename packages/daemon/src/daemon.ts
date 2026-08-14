@@ -5603,23 +5603,40 @@ export class Daemon {
     }
   }
 
-  private async ensureModelSessionHost(agent: LoadedAgent, sessionKey: string): Promise<SelectedTurnHost> {
+  private async ensureModelSessionHost(
+    agent: LoadedAgent,
+    sessionKey: string,
+    effectiveModel?: string
+  ): Promise<SelectedTurnHost> {
     const keyServer = this.keyServer
     if (!keyServer) throw new Error('key-server is not configured')
     const runtime = this.runtimes[agent.runtime]
     if (!runtime) throw new Error(`runtime "${agent.runtime}" is unavailable`)
-    const target = modelProviderTarget(agent, runtime)
+    const target = modelProviderTarget(
+      agent,
+      runtime,
+      effectiveModel ?? this.store.getModelOverride(sessionKey) ?? agent.runtimeOverrides?.model
+    )
     if (!target) throw new Error(`runtime "${agent.runtime}" does not support MODEL_TOKEN translation`)
     const now = this.modelKeyNow()
     let entry = this.modelSessionHosts.get(sessionKey)
     if (entry?.stopping) await entry.stopping
-    if (entry && JSON.stringify(entry.target) !== JSON.stringify(target)) {
+    const targetChanged = entry !== undefined && JSON.stringify(entry.target) !== JSON.stringify(target)
+    if (entry && targetChanged && !this.modelSessionSdkQuiescent(entry)) {
+      throw new Error(`cannot change model provider while session ${sessionKey} has live SDK work`)
+    }
+    if (targetChanged) {
       await this.releaseModelSessionHost(sessionKey)
       entry = undefined
     }
 
     const refreshDue = entry?.grant.refreshAtMs !== undefined && now >= entry.grant.refreshAtMs
     const expired = entry?.grant.expiresAtMs !== undefined && now >= entry.grant.expiresAtMs
+    if (entry?.host && (refreshDue || expired) && !this.modelSessionSdkQuiescent(entry)) {
+      if (expired) throw new Error(`model credential expired while session ${sessionKey} has live SDK work`)
+      this.log.debug(`key-server refresh deferred for session ${sessionKey} until SDK work is quiescent`)
+      return this.selectedModelTurnHost(entry, entry.host)
+    }
     if (!entry || refreshDue || expired) {
       let grant: KeyGrant
       try {
@@ -5644,6 +5661,11 @@ export class Daemon {
 
     if (!entry.host) entry.host = await this.startModelSessionRuntime(agent, entry)
     return this.selectedModelTurnHost(entry, entry.host)
+  }
+
+  private modelSessionSdkQuiescent(entry: ModelSessionHost): boolean {
+    const acpSessionId = this.store.getSession(entry.sessionKey)?.acpSessionId
+    return this.sessionSdkQuiescent(entry.agentId, acpSessionId)
   }
 
   private async issueModelKey(
@@ -8041,6 +8063,16 @@ export class Daemon {
   private setModelByKey(key: string, model: string): boolean {
     const rec = this.chatRuntimeSession(key)
     if (!rec) return false
+    const credentialHost = this.modelSessionHosts.get(key)
+    if (credentialHost) {
+      const agent = this.agents.get(rec.agentId)
+      const runtime = agent ? this.runtimes[agent.runtime] : undefined
+      const target = agent && runtime ? modelProviderTarget(agent, runtime, model) : undefined
+      if (!target || JSON.stringify(target) !== JSON.stringify(credentialHost.target)) {
+        this.log.warn(`session ${key}: cross-provider model switch rejected while its credential host is active`)
+        return false
+      }
+    }
     this.store.setModelOverride(key, model)
     this.log.info(`session ${key} model override → "${model}"`)
     const acpSessionId = rec.acpSessionId
@@ -14418,7 +14450,10 @@ export class Daemon {
     let remoteMcpServer: import('@agentclientprotocol/sdk').McpServer | undefined
     try {
       const reviewWorkspace = await this.prepareGithubReviewWorkspace(entry, key, agent)
-      if (this.keyServer) entry.selectedHost = await this.ensureModelSessionHost(agent, key)
+      if (this.keyServer) {
+        const firstTurnModel = agent.allowRuntimeChangesInChat ? webchat?.runtime?.model : undefined
+        entry.selectedHost = await this.ensureModelSessionHost(agent, key, firstTurnModel)
+      }
       // A prior provider post-turn operation is serialized. Managed needs this
       // barrier before reading its index; external recordTurn only durably enqueues.
       await (this.memoryPostTurnChains.get(agentId) ?? Promise.resolve())
@@ -19132,6 +19167,7 @@ export class Daemon {
     return (
       this.drainingAgents.has(rec.agentId) ||
       this.inflight.has(rec.key) ||
+      this.activeDispatchDoneByKey.has(rec.key) ||
       [...this.pending.values()].some((p) => p.sessionKey === rec.key) ||
       this.store.sessionHasPendingInboxRows(rec.key) ||
       !this.sessionSdkQuiescent(rec.agentId, rec.acpSessionId)
@@ -19369,10 +19405,8 @@ export class Daemon {
     const maxLifetime = this.cfg.limits.agentMaxLifetimeMs
     // §7.3 idle→closed: a thread untouched past the TTL stops catching up — UNLESS it
     // still has in-flight background work (the SDK lease), which keeps it open.
-    const closed = this.store.closeIdleSessions(
-      now,
-      ttl,
-      (agentId, acpSessionId) => !this.sessionSdkQuiescent(agentId, acpSessionId)
+    const closed = this.store.closeIdleSessions(now, ttl, (agentId, acpSessionId, key) =>
+      this.sessionRetentionActive({ key, agentId, acpSessionId })
     )
     if (closed.length) this.log.info(`idle: TTL-closed ${closed.length} session(s) (>${Math.round(ttl / 1000)}s)`)
     // A failed remote revoke is queued durably by the grant ledger; the periodic

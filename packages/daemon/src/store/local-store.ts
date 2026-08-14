@@ -2069,17 +2069,12 @@ export class LocalStore {
     return row?.ts ?? null
   }
 
-  /** §7.3 TTL close: move every `idle` session untouched since `now - ttlMs` to
-   *  `closed`, returning the rows closed (for logging). `prompting`/`cancelling`
-   *  sessions are never closed — a live turn keeps the thread open. `isExempt`
-   *  (when given) spares a session from closing — used to keep a session with
-   *  in-flight background work open past the TTL (see the SDK lease in daemon.ts). */
+  /** Close expired idle sessions unless daemon-side work exempts them. */
   closeIdleSessions(
     now: number,
     ttlMs: number,
-    // Both ids: ACP session ids are runtime-local, so an exemption that keys off one alone
-    // (e.g. the daemon's background-task lease) would confuse two agents' `acp-1`.
-    isExempt?: (agentId: string, acpSessionId: string | null) => boolean
+    // ACP ids need agent scope; the logical key also fences work admitted before durable prompting state.
+    isExempt?: (agentId: string, acpSessionId: string | null, key: string) => boolean
   ): {
     key: string
     agentId: string
@@ -2101,7 +2096,7 @@ export class LocalStore {
       thread: string
       acpSessionId: string | null
     }[]
-    const rows = isExempt ? candidates.filter((r) => !isExempt(r.agentId, r.acpSessionId)) : candidates
+    const rows = isExempt ? candidates.filter((r) => !isExempt(r.agentId, r.acpSessionId, r.key)) : candidates
     if (rows.length) {
       const close = this.db.prepare("UPDATE sessions SET state = 'closed' WHERE key = ? AND state = 'idle'")
       this.db.exec('BEGIN')

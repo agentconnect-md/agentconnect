@@ -34,6 +34,13 @@ describe('modelProviderTarget', () => {
       runtime: 'opencode',
       opencodeProvider: 'deepseek'
     })
+    expect(
+      modelProviderTarget(agent('opencode', 'openai/gpt-5'), runtime('opencode', ['acp']), 'anthropic/claude-opus-4')
+    ).toEqual({
+      provider: 'anthropic',
+      runtime: 'opencode',
+      opencodeProvider: 'anthropic'
+    })
   })
 })
 

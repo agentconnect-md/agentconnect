@@ -148,6 +148,9 @@ One logical AgentConnect session owns one ACP host when key-server mode is activ
 Provider credentials are process-level settings, so sharing a runtime would let
 concurrent sessions use whichever key was written last. Internal model jobs use their
 own opaque session identities and revoke their grants when their one-off host stops.
+OpenCode derives the credential provider from the effective session model. A live
+credential-scoped session rejects a model switch to another provider; after the host
+is released, the next activation may select and issue for the new provider.
 
 ## 5. Caching, rotation, and revocation
 
@@ -157,7 +160,10 @@ own opaque session identities and revoke their grants when their one-off host st
   what it hands out, and daemons converge as sessions turn over.
 - **Expiring keys lapse.** The daemon replaces one once its refresh hint has passed,
   before the session's next activation; if refresh fails before expiry, the current
-  host remains usable for the rest of its granted window.
+  host remains usable for the rest of its granted window. Live SDK background work
+  defers a non-expired rotation so refresh never terminates it. At expiry, a new
+  activation fails instead of stopping that work; rotation resumes once the session
+  becomes quiescent.
 - **Long-lived keys are revoked, not expired.** The daemon calls `RevokeKey` when
   a session holding one ends. `RevokeKey` is idempotent — unknown and
   already-revoked ids succeed, because the caller wants "ensure it is dead", not

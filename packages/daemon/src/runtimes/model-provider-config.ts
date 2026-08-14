@@ -57,13 +57,14 @@ function applyCodexBaseUrl(env: Record<string, string>, baseUrl: string): void {
 
 export function modelProviderTarget(
   agent: Pick<Agent, 'runtime' | 'runtimeOverrides'>,
-  runtime: RuntimeDef
+  runtime: RuntimeDef,
+  effectiveModel = agent.runtimeOverrides?.model
 ): ModelProviderTarget | undefined {
   if (isClaudeRuntimeDef(runtime)) return { provider: 'anthropic', runtime: 'claude' }
   if (sharedCredentialProfile(agent.runtime, runtime) === 'codex') return { provider: 'openai', runtime: 'codex' }
   if (!isOpenCodeRuntime(agent.runtime, runtime)) return undefined
 
-  const configuredProvider = agent.runtimeOverrides?.model?.split('/', 1)[0]?.trim()
+  const configuredProvider = effectiveModel?.includes('/') ? effectiveModel.split('/', 1)[0]?.trim() : undefined
   const opencodeProvider = configuredProvider || 'openai'
   return {
     provider: opencodeProvider === 'anthropic' ? 'anthropic' : 'openai',

@@ -1035,6 +1035,36 @@ describe('Daemon idle sweep (#111/#118)', () => {
     await daemon.stop()
   }, 15_000)
 
+  it('does not TTL-close a session while an admitted initialization owns its dispatch fences', async () => {
+    const clock = new FakeClock()
+    const daemon = new Daemon({
+      root: scaffold({ agentIdleTimeoutMs: 1000, idleSweepMs: 10_000_000 }),
+      hostFactory: () => quietHost() as any,
+      clock
+    })
+    await daemon.start()
+    makeRoutable(daemon)
+    await (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
+
+    let releaseActive!: () => void
+    const active = new Promise<void>((resolve) => (releaseActive = resolve))
+    ;(daemon as any).inflight.add(KEY)
+    ;(daemon as any).activeDispatchDoneByKey.set(KEY, active)
+    ;(daemon as any).activeDispatchesByAgent.set('bot-a', new Set([active]))
+    clock.advance(1001)
+    ;(daemon as any).sweepIdle()
+    expect((daemon as any).store.getSession(KEY)?.state).toBe('idle')
+
+    ;(daemon as any).inflight.delete(KEY)
+    ;(daemon as any).activeDispatchDoneByKey.delete(KEY)
+    ;(daemon as any).activeDispatchesByAgent.delete('bot-a')
+    releaseActive()
+    ;(daemon as any).sweepIdle()
+    expect((daemon as any).store.getSession(KEY)?.state).toBe('closed')
+
+    await daemon.stop()
+  }, 15_000)
+
   it('removes the materialized config-file secrets when the host stops', async () => {
     const clock = new FakeClock()
     const host = quietHost()
