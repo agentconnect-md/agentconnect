@@ -5,6 +5,9 @@
 // a draining member returns groups explicitly with the `duty/release` REQ.
 // Single-org daemons never send `duties`, which keeps the whole path dormant.
 import { z } from 'zod'
+import { AgentSpec } from './agent.js'
+import { IntegrationSpec } from './integration.js'
+import { CronUpsert } from './cron.js'
 
 /** A per-group fencing term — bigint as a decimal string (JSON-safe). */
 export const DutyTerm = z.string().regex(/^\d+$/)
@@ -89,3 +92,33 @@ export const DutyClaimOk = z.object({
   holder: z.string().uuid().optional()
 })
 export type DutyClaimOk = z.infer<typeof DutyClaimOk>
+
+/**
+ * D→C REQ (reply: `duty/fetch/ok`) — a grant opens the SERVING gate; it does not
+ * install. A member that wins a duty for an agent it has never had pulls that
+ * agent's definition here, so grants stay thin and a member asks only for what
+ * it lacks. Holding the duty IS the authorization: the CP answers only for an
+ * agent the asking daemon currently holds.
+ */
+export const DutyFetch = z.object({
+  agentId: z.string().uuid()
+})
+export type DutyFetch = z.infer<typeof DutyFetch>
+
+/** One agent's complete installable definition — the same trio `agent/activate`
+ *  carries, without the move token or the staging fence. */
+export const DutyAgentBundle = z.object({
+  agentId: z.string().uuid(),
+  spec: AgentSpec,
+  integrations: z.array(IntegrationSpec),
+  crons: z.array(CronUpsert)
+})
+export type DutyAgentBundle = z.infer<typeof DutyAgentBundle>
+
+/** C→D REP to `duty/fetch`. An absent `bundle` means the asker does not hold
+ *  this agent's duty, or the agent is gone — never an error frame, because
+ *  either way the correct member behavior is to install nothing. */
+export const DutyFetchOk = z.object({
+  bundle: DutyAgentBundle.optional()
+})
+export type DutyFetchOk = z.infer<typeof DutyFetchOk>

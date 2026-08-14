@@ -5062,4 +5062,8 @@ export interface DutyGroupRepo {
    *  exists ("claiming creates the lease"), grants if vacant, otherwise names
    *  the incumbent. Idempotent for the current holder (no term churn). */
   claimAgentHome(orgId: OrgId, agentId: AgentId, holder: DaemonId, now: Date, leaseMs: number): Promise<AgentHomeClaim>
+  /** Does `holder` currently hold an unexpired lease on a group covering this
+   *  agent? The authorization for `duty/fetch`: a member may pull exactly the
+   *  agent definitions it has won, and nothing else. */
+  holdsAgent(holder: DaemonId, agentId: AgentId, now: Date): Promise<boolean>
 }

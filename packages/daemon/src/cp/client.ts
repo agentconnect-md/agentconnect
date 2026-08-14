@@ -12,6 +12,7 @@ import type {
   DutyGrant,
   DutyRevoke,
   DutyClaimOk,
+  DutyFetchOk,
   FactsRuntimeProfile,
   FactsMcpServer,
   UsageReport,
@@ -848,6 +849,25 @@ export class CpClient {
       throw new WireError('INTERNAL', `expected duty/claim/ok, got ${rep.type}`, false)
     }
     return rep.payload as DutyClaimOk
+  }
+
+  /**
+   * `duty/fetch` (D→C REQ → `duty/fetch/ok`) — pull the complete definition of
+   * an agent this member won a duty for but does not have. A grant only opens
+   * the serving gate; installation is this pull. The frame carries the granted
+   * entry's `orgId` rather than joining the install-wide set: it is about ONE
+   * agent in ONE org, and the CP still resolves the owning org from the agent
+   * itself before authorizing on the duty holding.
+   */
+  async fetchDutyAgent(agentId: string, orgId: string): Promise<DutyFetchOk> {
+    if ((this.state !== 'READY' && this.state !== 'DRAINING') || !this.transport) {
+      throw new WireError('INTERNAL', `control plane unreachable (client ${this.state})`, true)
+    }
+    const rep = await this.request('duty/fetch', { agentId }, orgId)
+    if (rep.type !== 'duty/fetch/ok') {
+      throw new WireError('INTERNAL', `expected duty/fetch/ok, got ${rep.type}`, false)
+    }
+    return rep.payload as DutyFetchOk
   }
 
   /** How this connection is tenanted: `connection` = one org (an API-key daemon),

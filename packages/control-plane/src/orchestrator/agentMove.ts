@@ -20,6 +20,7 @@ import {
   gitRepoLabel,
   type Ack,
   type AgentActivate,
+  type DutyAgentBundle,
   type AgentSkillEntry,
   type ManagedSkillEntry,
   type CronUpsert,
@@ -610,6 +611,16 @@ export class AgentMoveService {
       this.deps.log?.warn({ err, agentId: agent.id }, 'workspace edit: repository grant cleanup deferred')
     }
     await this.convergeDerived(agent, httpBotIds)
+  }
+
+  /**
+   * The complete installable definition of one agent — secrets, org environment,
+   * skills, integration specs, and crons — with no move token, staging fence, or
+   * placement assertion attached. Shared with `duty/fetch`, so a member that wins
+   * a duty for an agent it lacks installs exactly what an activation would.
+   */
+  async bundleFor(agent: AgentRecord): Promise<DutyAgentBundle> {
+    return this.activationDefinition(agent, await this.snapshot(agent))
   }
 
   /** Read every placement-dependent wire definition. */

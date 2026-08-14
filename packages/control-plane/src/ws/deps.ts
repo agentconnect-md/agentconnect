@@ -24,10 +24,11 @@ import type {
   OrganizationKnowledgeRepo,
   BotRepo,
   GithubInstallationRepo,
-  DaemonLifecycleOpRepo
+  DaemonLifecycleOpRepo,
+  AgentRecord
 } from '../persistence/ports.js'
 import type { SessionVisibilityPushService } from '../orchestrator/visibilityPush.js'
-import type { RelayRosterEntry } from '@agentconnect.md/protocol'
+import type { DutyAgentBundle, RelayRosterEntry } from '@agentconnect.md/protocol'
 import type { GithubService } from '../github/service.js'
 import type { GithubReviewBrokerService } from '../github/review-broker.service.js'
 import type { GithubRunCoordinator } from '../github/run-reporter.js'
@@ -100,6 +101,10 @@ export interface DaemonWsDeps {
   collabRoutes: CollabRoutesService
   /** The duty lease exchange riding the heartbeat (k8s daemons). */
   dutyLease: DutyLeaseService
+  /** Assembles one agent's complete installable definition for `duty/fetch` —
+   *  the same bundle an `agent/activate` carries; absent ⇒ the fetch answers
+   *  empty and the member installs nothing. */
+  agentBundle?: (agent: AgentRecord) => Promise<DutyAgentBundle>
   /** Stamps `lastRunAt` from the `cron/report` EVT (daemon-scoped, latest-wins). */
   cron: CronRepo
   /** Closes `HookRun` rows from the correlated `hook/report` completion request. */

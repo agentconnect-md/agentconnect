@@ -246,6 +246,14 @@ export class DutyLeaseService {
     })
   }
 
+  /** Does this member currently hold a duty covering the agent? The whole
+   *  authorization story for `duty/fetch`. A pure read against the live lease
+   *  horizon, so it deliberately skips the daemon's serialization lane — waiting
+   *  behind a beat would only make the answer staler, never truer. */
+  holdsAgent(holder: DaemonId, agentId: AgentId): Promise<boolean> {
+    return this.repo.holdsAgent(holder, agentId, new Date(this.clock.now()))
+  }
+
   /** Explicit drain release — vacate now instead of waiting out T_reassign.
    *  Queued behind any earlier beat's exchange (lane order = frame order), so
    *  every grant that exchange emitted reaches the daemon BEFORE this ack, and

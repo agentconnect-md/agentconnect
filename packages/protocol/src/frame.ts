@@ -19,7 +19,7 @@ import {
   AgentPermissionDecision
 } from './frames/agent.js'
 import { CronUpsert, CronRemove, CronReport, CronRunNow } from './frames/cron.js'
-import { DutyGrant, DutyRevoke, DutyRelease, DutyClaim, DutyClaimOk } from './frames/duty.js'
+import { DutyGrant, DutyRevoke, DutyRelease, DutyClaim, DutyClaimOk, DutyFetch, DutyFetchOk } from './frames/duty.js'
 import {
   GithubReviewAuthorize,
   GithubReviewAuthorized,
@@ -201,6 +201,8 @@ export const FRAME_SCHEMAS = {
   'duty/release': DutyRelease,
   'duty/claim': DutyClaim,
   'duty/claim/ok': DutyClaimOk,
+  'duty/fetch': DutyFetch,
+  'duty/fetch/ok': DutyFetchOk,
   // ── agent lifecycle / delivery ──
   'agent/launch': AgentLaunch,
   'agent/launched': AgentLaunched,
@@ -458,6 +460,8 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('duty/release', FRAME_SCHEMAS['duty/release']),
   frame('duty/claim', FRAME_SCHEMAS['duty/claim']),
   frame('duty/claim/ok', FRAME_SCHEMAS['duty/claim/ok']),
+  frame('duty/fetch', FRAME_SCHEMAS['duty/fetch']),
+  frame('duty/fetch/ok', FRAME_SCHEMAS['duty/fetch/ok']),
   frame('agent/launch', FRAME_SCHEMAS['agent/launch']),
   frame('agent/launched', FRAME_SCHEMAS['agent/launched']),
   frame('agent/stop', FRAME_SCHEMAS['agent/stop']),

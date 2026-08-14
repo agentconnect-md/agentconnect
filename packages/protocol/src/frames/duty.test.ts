@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import { HeartbeatDuties, DutyGrant, DutyRevoke, DutyRelease, DutyClaim, DutyClaimOk } from './duty.js'
+import {
+  HeartbeatDuties,
+  DutyGrant,
+  DutyRevoke,
+  DutyRelease,
+  DutyClaim,
+  DutyClaimOk,
+  DutyFetch,
+  DutyFetchOk
+} from './duty.js'
 import { Heartbeat } from './telemetry.js'
 import { decodeEnvelope, encode, buildEnvelope } from '../index.js'
 
@@ -79,5 +88,65 @@ describe('duty/claim — the activation rendezvous', () => {
   it('a lost claim names the incumbent, and may name nobody', () => {
     expect(DutyClaimOk.parse({ granted: false, holder: BOT }).holder).toBe(BOT)
     expect(DutyClaimOk.parse({ granted: false }).holder).toBeUndefined()
+  })
+})
+
+const INTEGRATION = '44444444-4444-4444-8444-444444444444'
+const CRON = '55555555-5555-4555-8555-555555555555'
+
+describe('duty/fetch — installing an agent a duty was won for', () => {
+  it('the request names only the agent; the CP resolves everything else', () => {
+    expect(DutyFetch.safeParse({ agentId: AGENT }).success).toBe(true)
+    expect(DutyFetch.safeParse({}).success).toBe(false)
+    expect(DutyFetch.safeParse({ agentId: 'not-a-uuid' }).success).toBe(false)
+  })
+
+  it('duty/fetch round-trips through the envelope codec', () => {
+    const payload = { agentId: AGENT }
+    const decoded = decodeEnvelope(encode(buildEnvelope('duty/fetch', payload)))
+    if (!decoded.ok) throw new Error(`decode failed: ${decoded.msg}`)
+    expect(decoded.frame.type).toBe('duty/fetch')
+    expect(decoded.frame.payload).toEqual(payload)
+  })
+
+  it('an empty reply is the "you do not hold it, or it is gone" answer', () => {
+    expect(DutyFetchOk.parse({}).bundle).toBeUndefined()
+    const decoded = decodeEnvelope(encode(buildEnvelope('duty/fetch/ok', {})))
+    if (!decoded.ok) throw new Error(`decode failed: ${decoded.msg}`)
+    expect(decoded.frame.payload).toEqual({})
+  })
+
+  it('the bundle carries the same spec/integrations/crons trio as an activation', () => {
+    // Input shape: AgentSpec's list fields default on parse, so this is z.input, not z.output.
+    const payload = {
+      bundle: {
+        agentId: AGENT,
+        spec: { orgId: 'org-1', name: 'scout', runtime: 'claude' },
+        integrations: [
+          {
+            integrationId: INTEGRATION,
+            agentId: AGENT,
+            platform: 'slack',
+            core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false },
+            config: { botToken: 'xoxb-test' }
+          }
+        ],
+        crons: [
+          {
+            cronId: CRON,
+            agentId: AGENT,
+            schedule: '0 9 * * *',
+            timezone: 'UTC',
+            trigger: 'daily standup',
+            enabled: true
+          }
+        ]
+      }
+    }
+    const decoded = decodeEnvelope(encode(buildEnvelope('duty/fetch/ok', payload)))
+    if (!decoded.ok) throw new Error(`decode failed: ${decoded.msg}`)
+    expect(decoded.frame.type).toBe('duty/fetch/ok')
+    // toMatchObject, not toEqual: AgentSpec's zod defaults materialize on decode.
+    expect(decoded.frame.payload).toMatchObject(payload)
   })
 })

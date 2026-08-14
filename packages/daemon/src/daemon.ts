@@ -2149,6 +2149,10 @@ export class Daemon {
   // rendezvous claims cannot read the same capacity and collectively overshoot,
   // and a drain joins them so none can settle after `drain/done`.
   private readonly inFlightDutyClaims = new Set<Promise<unknown>>()
+  // Installs in flight per granted agent. The EVT path fires one and the
+  // rendezvous claim awaits one for the SAME grant, so both must join a single
+  // fetch+apply rather than race two of them.
+  private readonly dutyInstalls = new Map<string, Promise<void>>()
   // Latched for the WHOLE drain handoff, including the window after `draining`
   // reopens and before the leases are surrendered — a claim landing there would
   // install a grant the release snapshot has already passed by.
@@ -12701,6 +12705,78 @@ export class Daemon {
         `holding ${this.duties.size()} covering ${this.duties.agents().size} agent(s)`
     )
     if (result.agentsGained.length > 0 || result.added.length > 0) this.onDutyChanged()
+    // A grant only opens the serving gate; it does not install. Pull anything we
+    // now owe service for but have never had — off the frame-dispatch path, so a
+    // slow CP cannot stall the socket. Failures retry on the next grant/reconnect.
+    void this.installGrantedAgents(grants)
+  }
+
+  /**
+   * Install every agent these grants cover that this daemon does not already
+   * have. Grants are thin by design, so the member pulls exactly what it lacks
+   * (`duty/fetch`) and applies the bundle the way an activation would — minus
+   * the move token, the staging fence, and workspace preparation.
+   */
+  private async installGrantedAgents(entries: DutyGrantEntry[]): Promise<void> {
+    const wanted = new Map<string, string>()
+    for (const entry of entries) {
+      for (const member of entry.members) {
+        if (member.kind !== 'agent' || this.cpAgents?.has(member.refId)) continue
+        // A duty grant must never resurrect an agent a move or removal is tearing down.
+        if (this.moveStagedAgents.has(member.refId) || this.agentRemovalPending(member.refId)) continue
+        wanted.set(member.refId, entry.orgId)
+      }
+    }
+    // Registered synchronously, then joined: a concurrent caller for the same
+    // grant finds every in-flight install rather than starting a second one.
+    const installs = [...wanted].map(([agentId, orgId]) =>
+      this.installDutyAgent(agentId, orgId).catch((err) =>
+        this.log.warn(`duty: installing granted agent ${agentId} failed: ${err}`)
+      )
+    )
+    await Promise.all(installs)
+  }
+
+  /** Join the in-flight install for this agent, or start one. */
+  private installDutyAgent(agentId: string, orgId: string): Promise<void> {
+    const inFlight = this.dutyInstalls.get(agentId)
+    if (inFlight) return inFlight
+    const run = this.runDutyAgentInstall(agentId, orgId).finally(() => {
+      if (this.dutyInstalls.get(agentId) === run) this.dutyInstalls.delete(agentId)
+    })
+    this.dutyInstalls.set(agentId, run)
+    return run
+  }
+
+  /** Fetch and apply one granted agent's bundle inside its lifecycle lane, so it
+   *  serializes against upsert/remove/activate like every other lifecycle write. */
+  private async runDutyAgentInstall(agentId: string, orgId: string): Promise<void> {
+    const reply = await this.cpClient?.fetchDutyAgent(agentId, orgId)
+    const bundle = reply?.bundle
+    // Absent ⇒ the CP says we do not hold it, or it is gone. Install nothing.
+    if (!bundle) return
+    await this.queueAgentLifecycle(agentId, async () => {
+      if (this.moveStagedAgents.has(agentId) || this.agentRemovalPending(agentId)) {
+        this.log.info(`duty: skipping install of ${agentId} — a move or removal owns it`)
+        return
+      }
+      if (!this.cpAgents) return
+      // The revision fence is the target's own (organization-secrets-and-variables.md
+      // §7): a bundle older than what we already applied never overwrites it.
+      const applied = this.cpAgents.upsert(agentId, bundle.spec)
+      if (applied === 'stale' || applied === 'conflict') {
+        this.log.warn(`duty: install of ${agentId} skipped — spec revision is ${applied}`)
+        return
+      }
+      for (const integration of bundle.integrations) this.cpIntegrations?.upsert(integration)
+      for (const cron of bundle.crons) this.cpCrons?.upsert(cron)
+      this.exactCpDependents(agentId, {
+        integrationIds: bundle.integrations.map((integration) => integration.integrationId),
+        cronIds: bundle.crons.map((cron) => cron.cronId)
+      })
+      await this.flushReconcile()
+      this.log.info(`duty: installed granted agent ${agentId} (${bundle.integrations.length} integration(s))`)
+    })
   }
 
   /** Apply a `duty/revoke` EVT. Losing a duty is NOT a removal: the agent's
@@ -12762,6 +12838,11 @@ export class Daemon {
         return { granted: false }
       }
       this.applyDutyGrant([grant])
+      // Load-bearing await: the rendezvous claim exists BECAUSE a trigger arrived
+      // for an agent this member does not serve, and the turn is dispatched right
+      // after. Answering `granted` before the agent is installed would reproduce
+      // the "no agent on this daemon" drop the claim is meant to prevent.
+      await this.installGrantedAgents([grant])
       return { granted: true }
     } catch (err) {
       // A CP blip must not look like "someone else holds it" — answering with no
