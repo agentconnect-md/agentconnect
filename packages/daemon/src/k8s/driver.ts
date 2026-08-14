@@ -60,7 +60,8 @@ export const PROBE_GRANTS: ShimCapability[] = ['probe']
 
 export interface K8sDriverDeps {
   api: SandboxApi
-  orgId: string
+  /** Resolves tenant ownership at claim time; cloud daemons serve more than one org. */
+  orgForAgent: (agentId: string) => string | undefined
   /** Pool the claim references; v1beta1 requires one, and a cold pool is `replicas: 0`. */
   warmPoolName: string
   /** Dials the ready pod and binds the shim channel for this launch. */
@@ -178,6 +179,8 @@ export class K8sDriver implements SpawnDriver {
     const existing = this.launches.get(agentId)
     if (existing) return existing
     const name = this.claimName(agentId)
+    const orgId = this.deps.orgForAgent(agentId)
+    if (!orgId) throw new Error(`cannot resolve sandbox organization for agent ${agentId}`)
     const ensured = await this.deps.api.ensureClaim({
       metadata: {
         name,
@@ -185,7 +188,7 @@ export class K8sDriver implements SpawnDriver {
       } as { name: string },
       spec: {
         warmPoolRef: { name: this.deps.warmPoolName },
-        additionalPodMetadata: { labels: { [AC_LABEL_ORG]: this.deps.orgId, [AC_LABEL_AGENT]: agentId } }
+        additionalPodMetadata: { labels: { [AC_LABEL_ORG]: orgId, [AC_LABEL_AGENT]: agentId } }
       }
     })
     // Resolve the bound Sandbox WITHOUT requiring readiness. A suspended claim still names

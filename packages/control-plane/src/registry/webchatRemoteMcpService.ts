@@ -66,7 +66,7 @@ export class WebchatRemoteMcpService {
       : null
   }
 
-  async issue(input: WebchatMcpGrantIssue & { authenticatedDaemonId: string }) {
+  async issue(input: WebchatMcpGrantIssue & { authenticatedDaemonId: string; authenticatedOrgId?: string }) {
     const now = new Date(this.deps.clock.now())
     const authority = await this.deps.authorities.getCurrent(input.authorityId)
     if (
@@ -74,6 +74,7 @@ export class WebchatRemoteMcpService {
       authority.generation !== input.authorityGeneration ||
       authority.conversationId !== input.conversationId ||
       authority.daemonId !== input.authenticatedDaemonId ||
+      (input.authenticatedOrgId && authority.orgId !== input.authenticatedOrgId) ||
       authority.revokedAt ||
       authority.expiresAt <= now
     ) {
@@ -112,11 +113,17 @@ export class WebchatRemoteMcpService {
       : null
   }
 
-  async accept(input: WebchatMcpGrantAccept & { authenticatedDaemonId: string }) {
+  async accept(input: WebchatMcpGrantAccept & { authenticatedDaemonId: string; authenticatedOrgId?: string }) {
+    const authority = await this.deps.authorities.getCurrent(input.authorityId)
+    if (input.authenticatedOrgId && authority?.orgId !== input.authenticatedOrgId) return null
     return this.deps.grants.accept({ ...input, now: new Date(this.deps.clock.now()) })
   }
 
-  async revoke(input: WebchatMcpGrantRevoke & { authenticatedDaemonId: string }): Promise<boolean> {
+  async revoke(
+    input: WebchatMcpGrantRevoke & { authenticatedDaemonId: string; authenticatedOrgId?: string }
+  ): Promise<boolean> {
+    const authority = await this.deps.authorities.getCurrent(input.authorityId)
+    if (input.authenticatedOrgId && authority?.orgId !== input.authenticatedOrgId) return false
     return this.deps.grants.revokeAuthority({
       ...input,
       now: new Date(this.deps.clock.now())

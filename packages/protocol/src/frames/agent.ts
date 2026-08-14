@@ -253,6 +253,8 @@ export type ManagedSkillEntry = z.infer<typeof ManagedSkillEntry>
  * daemon synthesizes the system prompt locally; `description` IS the prompt.
  */
 export const AgentSpec = z.object({
+  // Owning tenant. Optional only for CP/daemon rolling compatibility; a current CP always sends it.
+  orgId: z.string().min(1).max(64).optional(),
   name: z.string(),
   // Human-readable bot name. CP snapshots/upserts always ship value or null so
   // clearing it removes a stale daemon-local display name; absent remains

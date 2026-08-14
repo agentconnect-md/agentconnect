@@ -92,6 +92,15 @@ describe('decodeEnvelope — first failing test (design §6 Phase 0)', () => {
     expect(AuthReq.safeParse(r.frame.payload).success).toBe(true)
   })
 
+  it('round-trips frame-scoped organization authority in the envelope', () => {
+    const built = buildEnvelope('channel/agents', { platform: 'slack', requesterAgentId: AGENT_ID }, { orgId: 'org-a' })
+    expect(built.orgId).toBe('org-a')
+    const decoded = decodeEnvelope(encode(built))
+    expect(decoded.ok).toBe(true)
+    if (!decoded.ok) throw new Error('expected ok')
+    expect(decoded.frame.orgId).toBe('org-a')
+  })
+
   it('round-trips the frozen auth-time bootstrap upgrade contract', () => {
     const auth = decodeEnvelope(envelope('auth', { ...validAuthPayload, bootstrapProtocolVersion: 1 }))
     expect(auth.ok).toBe(true)

@@ -40,6 +40,7 @@ import type {
   OrgId
 } from '../domain/ids.js'
 import type { SessionKey } from '../domain/sessionKey.js'
+import type { DutyMemberKey, DutyReconcilePlan } from '../domain/duty.js'
 import type {
   OrganizationEnvironmentAudience,
   OrganizationEnvironmentKind,
@@ -127,10 +128,10 @@ export type AuditKind =
 // DaemonRepo (C4) — fleet registry & fencing root (§3.3)
 // ───────────────────────────────────────────────────────────────────────────
 
-/** What `auth` carries that the persistence layer needs (§3.3). `orgId` anchors a fresh row. */
+/** What `auth` carries that the persistence layer needs (§3.3). */
 export interface AuthReqInput {
   daemonId: DaemonId
-  orgId: OrgId
+  orgId: OrgId | null
   agentVersion: AuthReq['agentVersion']
   machineId?: string
   tokenFp?: string
@@ -145,7 +146,8 @@ export interface RegisterReqInput {
 
 export interface DaemonRecord {
   id: DaemonId
-  orgId: OrgId
+  /** Null only for an install-wide cloud-daemon member. */
+  orgId: OrgId | null
   host: string | null
   /** Human-assigned display name (console-set); null until a user names it. */
   name: string | null
@@ -187,7 +189,7 @@ export interface DaemonRepo {
   /**
    * The daemon record bound to a verified Kubernetes identity, JIT-provisioning one on
    * first sight — the same shape as `UserRepo`'s OIDC-subject provisioning. The store's
-   * unique index is what makes the binding one-to-one, so an envelope can never end up
+   * envelope-only unique index makes the binding one-to-one, so an envelope never ends up
    * with two records competing for its placements; the identity is namespace-derived, so
    * a rebuilt envelope resolves back to the same row and keeps its history.
    *
@@ -197,7 +199,7 @@ export interface DaemonRepo {
    * history. Ignored once the identity is bound, or if that record is another org's or
    * already carries an identity.
    *
-   * Null when the identity is already bound to a daemon in ANOTHER org: an identity may
+   * Null when the identity is already bound to a daemon in ANOTHER org: an envelope identity may
    * not move tenants, and refusing is the only answer that cannot leak one org's
    * placements to another.
    */
@@ -206,6 +208,10 @@ export interface DaemonRepo {
     clusterIdentity: string,
     opts?: { adoptDaemonId?: string }
   ): Promise<DaemonRecord | null>
+  /** Resolve one install-wide cloud member by its reviewed ServiceAccount subject and Pod UID. */
+  resolveCloudClusterIdentity(clusterIdentity: string, clusterPodUid: string): Promise<DaemonRecord>
+  /** The Kubernetes identity a daemon record is bound to, or null for an unknown/key daemon. */
+  findClusterIdentity(daemonId: DaemonId): Promise<{ orgId: string | null; clusterIdentity: string } | null>
   /** Ids of the org's daemons bound to a Kubernetes identity — the ones the control
    *  plane provisioned for a cluster envelope rather than a human attaching a machine. */
   clusterBoundIds(orgId: OrgId): Promise<string[]>
@@ -258,19 +264,19 @@ export interface DaemonRepo {
   /** Daemons unreachable for longer than `graceSec` — reassignment candidates (§4.9).
    *  System-tier: the watchdog's worklist is deliberately fleet-wide. */
   findReassignable(graceSec: number, now: Date): Promise<DaemonRecord[]>
-  /** Org-fenced point read (org-scoped-data-layer.md §3): a cross-org id reads
-   *  as absent, exactly like a missing row. The only daemon read the HTTP/MCP
-   *  surface may use. */
+  /** Org-owned point read; shared cloud members are deliberately absent. */
   get(orgId: OrgId, daemonId: DaemonId): Promise<DaemonRecord | null>
+  /** Placement/display read admitting both org-owned daemons and install-wide cloud members. */
+  getAvailable(orgId: OrgId, daemonId: DaemonId): Promise<DaemonRecord | null>
   /** Tenancy-UNSCOPED read for internal trust domains — WS handlers resolving
    *  their own connection's daemon, orchestration/placement resolving a daemon
    *  from a routing row, the watchdog. Never call this from the HTTP surface;
    *  lint enforces it (org-scoped-data-layer.md §6). */
   getUnscoped(daemonId: DaemonId): Promise<DaemonRecord | null>
-  /** The fleet, optionally filtered to one org (console reads pass the org). Every
-   *  supplied human principal is resource-filtered; undefined is reserved for
-   *  unfiltered internal reads (authorization/policy.ts#visibilityWhere). */
+  /** Owned fleet, optionally filtered to one org; undefined is the internal fleet-wide read. */
   list(orgId?: OrgId, viewer?: ViewCtx): Promise<DaemonRecord[]>
+  /** Display/placement fleet including install-wide cloud members. */
+  listAvailable(orgId: OrgId, viewer?: ViewCtx): Promise<DaemonRecord[]>
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -1037,6 +1043,7 @@ export interface SessionVisibilityChange {
 
 /** One entry of the §5.1 register-time gate snapshot. */
 export interface SessionVisibilityState {
+  orgId: OrgId
   sessionId: SessionId
   visibility: SessionVisibility
   sharedMemoryExcluded: boolean
@@ -5055,4 +5062,66 @@ export interface OrgClusterExecutionRepo {
     defaults: ClusterExecutionDefaults,
     patch: ClusterExecutionPatch
   ): Promise<ClusterExecutionSettings>
+}
+
+// DutyGroupRepo (k8s daemons) — the CP-hosted duty ledger
+
+/** A ledger row plus its derived membership projection. */
+export interface DutyGroupRecord {
+  groupId: string
+  orgId: OrgId
+  holder: DaemonId | null
+  /** Monotonic per group; bumped on EVERY grant — the fencing token duty-scoped actions carry. */
+  term: bigint
+  /** Renewal horizon; past (or null with a holder never granted) ⇒ vacant and grantable. */
+  expiresAt: Date | null
+  members: DutyMemberKey[]
+}
+
+/** One freshly granted group as returned by a claim. */
+export interface DutyGrantRecord {
+  groupId: string
+  orgId: OrgId
+  term: bigint
+  members: DutyMemberKey[]
+}
+
+export interface AgentHomeClaim {
+  granted: boolean
+  groupId: string
+  term: bigint
+  /** The live holder — the caller when granted, the incumbent for a `not_holder` answer otherwise. */
+  holder: DaemonId | null
+}
+
+/** Pure plan callback run inside the reconcile transaction's org snapshot (orchestrator/dutyGroup.ts). */
+export type DutyReconcilePlanner = (existing: DutyGroupRecord[]) => DutyReconcilePlan
+
+export interface DutyGroupRepo {
+  /** Recompute input + console/introspection read. */
+  listForOrg(orgId: OrgId): Promise<DutyGroupRecord[]>
+  /** Everything one member currently holds (heartbeat digest reconciliation). */
+  listHeldBy(holder: DaemonId): Promise<DutyGroupRecord[]>
+  /** Snapshot → `planner` → apply, in ONE transaction under a per-org advisory
+   *  scope, so concurrent recomputes serialize CP-instance-wide. Composition
+   *  changes on held groups re-grant the same holder at a bumped term; the
+   *  returned plan carries the supersessions the caller must deliver. */
+  applyReconcile(
+    orgId: OrgId,
+    planner: DutyReconcilePlanner,
+    opts: { now: Date; leaseMs: number }
+  ): Promise<DutyReconcilePlan>
+  /** "Grant me up to `max` vacant groups": first valid claim wins (SKIP LOCKED),
+   *  each grant bumps the term. Install-wide — capacity gating is the caller's. */
+  claimVacant(holder: DaemonId, max: number, now: Date, leaseMs: number): Promise<DutyGrantRecord[]>
+  /** Batched renewal — one write per heartbeat covering every held group.
+   *  Term-preserving; a reassigned group simply stops matching. Returns the
+   *  renewed groupIds for digest comparison. */
+  renewHeld(holder: DaemonId, now: Date, leaseMs: number): Promise<string[]>
+  /** Explicit vacate (drain): holder-conditional, immediate, term kept. */
+  release(holder: DaemonId, groupIds: string[]): Promise<void>
+  /** First-trigger claim for a botless agent: creates the singleton home if none
+   *  exists ("claiming creates the lease"), grants if vacant, otherwise names
+   *  the incumbent. Idempotent for the current holder (no term churn). */
+  claimAgentHome(orgId: OrgId, agentId: AgentId, holder: DaemonId, now: Date, leaseMs: number): Promise<AgentHomeClaim>
 }

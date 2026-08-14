@@ -152,6 +152,7 @@ describe('agent config replication CP→daemon (REST → agent/upsert·remove)',
       agentId,
       spec: {
         agentId,
+        orgId: DEFAULT_ORG_ID,
         name: `agent-${agentId.slice(0, 4)}`, // seeded slug (name is immutable)
         displayName: null,
         // Always shipped value-or-null (like displayName): null here — the agent has no
@@ -398,14 +399,14 @@ describe('agent config replication CP→daemon (REST → agent/upsert·remove)',
 // installs on the daemon and the next session can't resolve it.
 class McpSpyControl {
   readonly mcpUpserts: Array<{ daemonId: string; spec: { name: string; url: string; headers: unknown[] } }> = []
-  readonly mcpRemoves: Array<{ daemonId: string; name: string }> = []
+  readonly mcpRemoves: Array<{ daemonId: string; orgId: string; name: string }> = []
   async agentUpsert(): Promise<void> {}
   async agentRemove(): Promise<void> {}
   async mcpServerUpsert(daemonId: string, spec: { name: string; url: string; headers: unknown[] }): Promise<void> {
     this.mcpUpserts.push({ daemonId, spec })
   }
-  async mcpServerRemove(daemonId: string, name: string): Promise<void> {
-    this.mcpRemoves.push({ daemonId, name })
+  async mcpServerRemove(daemonId: string, orgId: string, name: string): Promise<void> {
+    this.mcpRemoves.push({ daemonId, orgId, name })
   }
 }
 
@@ -467,7 +468,7 @@ describe('agent MCP enable-list → daemon proxy-def push (REST → mcpserver/up
       payload: { mcpServers: [] }
     })
     expect(disable.statusCode).toBe(200)
-    expect(spy.mcpRemoves).toEqual([{ daemonId: DAEMON, name: 'fakemcp' }])
+    expect(spy.mcpRemoves).toEqual([{ daemonId: DAEMON, orgId: DEFAULT_ORG_ID, name: 'fakemcp' }])
     expect(spy.mcpUpserts).toHaveLength(1) // no further upsert on disable
   })
 })

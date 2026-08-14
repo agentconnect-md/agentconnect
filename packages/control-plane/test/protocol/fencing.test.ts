@@ -66,8 +66,24 @@ function readyConn(opts: { sessionEpoch: number }) {
   const conn = new DaemonConnection(stub, deps, new FrameRouter())
   conn.start()
   conn.daemonId = DAEMON
+  conn.orgId = 'org-a'
   conn.sessionEpoch = opts.sessionEpoch
   conn.state = 'READY'
+  deps.connReg.add({
+    daemonId: DAEMON,
+    orgId: conn.orgId,
+    conn,
+    sessionEpoch: opts.sessionEpoch,
+    state: 'READY',
+    maxAgents: 1,
+    load: { cpu: 0, mem: 0, agents: 1 },
+    health: 'ok',
+    lastBeatAt: clock.now(),
+    reachable: true,
+    assignments: new Set(),
+    launches: new Map(),
+    orgByAgent: new Map([[AGENT, 'org-a']])
+  })
   // Establish the per-agent fencing baseline the CP holds (current launch).
   conn.fencing.setLaunch(AGENT, LAUNCH)
   return { conn, stub, clock }
@@ -138,5 +154,70 @@ describe('fencing gate — epoch → launchId, typed error REPs', () => {
     // entirely (no epoch ⇒ not a fenced frame).
     stub.inject('agent/activity', agentActivity())
     expect(stub.lastSent('error')).toBeUndefined()
+  })
+})
+
+describe('organization gate', () => {
+  it('stamps an explicit organization on cloud-daemon downlink frames', () => {
+    const { conn, stub } = readyConn({ sessionEpoch: 5 })
+    conn.orgId = null
+    conn.send('mcpserver/remove', { orgId: 'org-a', name: 'shared-name' }, { epoch: 5 })
+    expect(stub.lastSent('mcpserver/remove')?.orgId).toBe('org-a')
+  })
+
+  it('derives downlink organization from sourceAgentId', () => {
+    const { conn, stub } = readyConn({ sessionEpoch: 5 })
+    conn.orgId = null
+    conn.send(
+      'knowledge/suggestion/review',
+      { sourceAgentId: AGENT, dreamId: 'dream-1', candidateId: LAUNCH, state: 'accepted' },
+      { epoch: 5 }
+    )
+    expect(stub.lastSent('knowledge/suggestion/review')?.orgId).toBe('org-a')
+  })
+
+  it('requires orgId on tenant-scoped frames from an install-wide daemon', () => {
+    const { conn, stub } = readyConn({ sessionEpoch: 5 })
+    conn.orgId = null
+    const id = stub.inject('agent/activity', agentActivity(), {
+      ext: { epoch: 5, agentId: AGENT, launchId: LAUNCH }
+    })
+    const err = stub.lastSent('error')
+    if (!err || !isFrame('error')(err)) throw new Error('expected error frame')
+    expect(err.corr).toBe(id)
+    expect(err.payload.code).toBe('SCOPE_DENIED')
+  })
+
+  it('accepts a tenant-scoped frame carrying orgId from an install-wide daemon', () => {
+    const { conn, stub } = readyConn({ sessionEpoch: 5 })
+    conn.orgId = null
+    stub.inject('agent/activity', agentActivity(), {
+      orgId: 'org-a',
+      ext: { epoch: 5, agentId: AGENT, launchId: LAUNCH }
+    })
+    expect(stub.lastSent('error')).toBeUndefined()
+  })
+
+  it('rejects an orgId that conflicts with the targeted agent on an install-wide daemon', () => {
+    const { conn, stub } = readyConn({ sessionEpoch: 5 })
+    conn.orgId = null
+    stub.inject('agent/activity', agentActivity(), {
+      orgId: 'org-b',
+      ext: { epoch: 5, agentId: AGENT, launchId: LAUNCH }
+    })
+    const err = stub.lastSent('error')
+    if (!err || !isFrame('error')(err)) throw new Error('expected error frame')
+    expect(err.payload.code).toBe('SCOPE_DENIED')
+  })
+
+  it('rejects a conflicting orgId on an organization-scoped connection', () => {
+    const { stub } = readyConn({ sessionEpoch: 5 })
+    stub.inject('agent/activity', agentActivity(), {
+      orgId: 'org-b',
+      ext: { epoch: 5, agentId: AGENT, launchId: LAUNCH }
+    })
+    const err = stub.lastSent('error')
+    if (!err || !isFrame('error')(err)) throw new Error('expected error frame')
+    expect(err.payload.code).toBe('SCOPE_DENIED')
   })
 })

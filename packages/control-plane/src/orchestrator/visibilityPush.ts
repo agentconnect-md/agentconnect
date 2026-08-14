@@ -125,7 +125,7 @@ export class SessionVisibilityPushService {
         continue
       }
       try {
-        const ok = await this.deps.control.sessionVisibility(daemonId, toPush(s))
+        const ok = await this.deps.control.sessionVisibility(daemonId, s.orgId, toPush(s))
         await this.deps.repos.session.recordVisibilityAck(SessionId(ok.sessionId), ok.visibilityRev)
       } catch (err) {
         if (err instanceof NoConnection) continue // offline → the register snapshot carries it
@@ -242,23 +242,30 @@ export class SessionVisibilityPushService {
     daemonId: DaemonId,
     chunk: SessionVisibilityState[]
   ): Promise<'sent' | 'gone' | 'retry'> {
-    try {
-      const ack = await this.deps.control.sessionVisibilitySnapshot(daemonId, chunk)
-      if (!ack.ok) {
-        this.deps.log?.warn({ daemonId, reason: ack.reason }, 'session visibility snapshot rejected')
+    const byOrg = new Map<string, SessionVisibilityState[]>()
+    for (const entry of chunk) {
+      const entries = byOrg.get(entry.orgId) ?? []
+      entries.push(entry)
+      byOrg.set(entry.orgId, entries)
+    }
+    for (const [orgId, entries] of byOrg) {
+      try {
+        const payload = entries.map(({ orgId: _orgId, ...entry }) => entry)
+        const ack = await this.deps.control.sessionVisibilitySnapshot(daemonId, orgId, payload)
+        if (!ack.ok) {
+          this.deps.log?.warn({ daemonId, orgId, reason: ack.reason }, 'session visibility snapshot rejected')
+          return 'retry'
+        }
+        for (const entry of entries) {
+          await this.deps.repos.session.recordVisibilityAck(entry.sessionId, entry.visibilityRev)
+        }
+      } catch (err) {
+        if (err instanceof NoConnection || err instanceof ConnectionClosed) return 'gone'
+        this.deps.log?.warn({ daemonId, orgId, err: (err as Error).message }, 'session visibility snapshot failed')
         return 'retry'
       }
-      // A failure here leaves the rows unacked, so the next page re-sends them;
-      // the daemon answers `superseded` and nothing is applied twice.
-      for (const entry of chunk) {
-        await this.deps.repos.session.recordVisibilityAck(entry.sessionId, entry.visibilityRev)
-      }
-      return 'sent'
-    } catch (err) {
-      if (err instanceof NoConnection || err instanceof ConnectionClosed) return 'gone'
-      this.deps.log?.warn({ daemonId, err: (err as Error).message }, 'session visibility snapshot failed')
-      return 'retry'
     }
+    return 'sent'
   }
 
   /**

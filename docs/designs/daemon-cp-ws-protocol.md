@@ -43,9 +43,12 @@ const Envelope = z.object({
   ts: z.string().datetime(), // RFC3339, sender clock (advisory only)
   type: z.string(), // frame discriminator, e.g. "register"
   corr: z.string().uuid().optional(), // correlation: set on a reply to the request's `id`
+  orgId: z.string().optional(), // required on org-scoped frames over an install-wide cloud connection
   payload: z.unknown() // validated by the per-type schema below
 })
 ```
+
+An API-key or envelope-daemon connection is bound to one organization at auth time, so `orgId` may be omitted for rolling compatibility. Each cloud-daemon Pod has an install-wide connection and must carry `orgId` on every organization-scoped request, event, control frame, and correlated reply. Member-scoped frames such as auth, register, heartbeat, runtime facts, relay roster, collaboration routes, and daemon lifecycle control omit it.
 
 **Reply correlation.** A request-shaped frame (anything expecting an `ack`/result) is answered by a frame whose `corr` == the request's `id`. Fire-and-forget frames (most telemetry) carry no reply. Each frame type below is tagged **REQ** (expects a correlated reply), **REP** (is a reply), or **EVT** (fire-and-forget).
 
@@ -96,8 +99,11 @@ First frame after the socket opens. Establishes **who this daemon is** before an
 ```ts
 const AuthReq = z.object({
   // Long-lived, revocable API key — a bare opaque `<secret><crc>`, hashed at rest and looked
-  // up by that unique hash (daemon-api-key-auth.md).
-  apiKey: z.string(),
+  // up by that unique hash (daemon-api-key-auth.md). Absent on an in-cluster daemon.
+  apiKey: z.string().optional(),
+  // An in-cluster daemon's projected ServiceAccount token, verified by TokenReview and
+  // taking precedence over `apiKey` (agentconnect-org-operator.md, "Daemon identity").
+  serviceAccountToken: z.string().optional(),
   daemonId: z.string().uuid().optional(), // OPTIONAL echo; if present must equal the daemonId the ApiKey row resolves to. The daemon adopts its id from `auth/ok`.
   machineId: z.string().uuid().optional(), // reserved scope-attestation identity (§3.2), not the auth credential
   attestation: z.string().optional(), // reserved signed proof (JWS), see §3.2
@@ -116,6 +122,7 @@ const AuthOk = z.object({
   sessionEpoch: z.number().int(), // monotonic; bumped each successful (re)auth — fencing token
   heartbeatSec: z.number().int(), // cadence the daemon must emit heartbeat at
   serverTime: z.string().datetime(),
+  organizationMode: z.enum(['connection', 'frame']).default('connection'),
   webAppUrl: z.string().optional(), // optional console-base override for session deep links;
   // daemon fallback order is local config, this value, then http://localhost:3000
   orgSlug: z.string().optional(), // org slug for those links (console routes are org-scoped)

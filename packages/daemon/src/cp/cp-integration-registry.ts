@@ -87,6 +87,10 @@ export class CpIntegrationRegistry {
     return [...this.entries.values()].filter((entry) => entry.agentId === agentId).map((entry) => entry.integration)
   }
 
+  agentForIntegration(integrationId: string): string | undefined {
+    return this.entries.get(integrationId)?.agentId
+  }
+
   retainForAgent(agentId: string, desiredIds: ReadonlySet<string>): boolean {
     let changed = false
     for (const [id, entry] of this.entries) {

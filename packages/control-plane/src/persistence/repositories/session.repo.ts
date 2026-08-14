@@ -1610,9 +1610,9 @@ export class PgSessionRepo implements SessionRepo {
     // matter how old it is — a plain newest-first window would drop it past the
     // cap and leave the daemon capturing with a stale `org` gate forever.
     const rows = await this.db.$queryRaw<
-      Array<{ id: string; visibility: string; externalProvider: string | null; visibilityRev: number }>
+      Array<{ id: string; orgId: string; visibility: string; externalProvider: string | null; visibilityRev: number }>
     >(Prisma.sql`
-      SELECT "id", "visibility", "externalProvider", "visibilityRev"
+      SELECT "id", "orgId", "visibility", "externalProvider", "visibilityRev"
       FROM "session_meta"
       WHERE "daemonId" = ${daemonId}::uuid
         AND (${includeExternal} OR "externalProvider" IS NULL)
@@ -1621,6 +1621,7 @@ export class PgSessionRepo implements SessionRepo {
       LIMIT ${limit}
     `)
     return rows.map((r) => ({
+      orgId: OrgId(r.orgId),
       sessionId: SessionId(r.id),
       visibility: r.visibility as SessionVisibility,
       // External-source sessions are no longer memory-excluded just for being

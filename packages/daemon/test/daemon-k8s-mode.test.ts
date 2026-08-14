@@ -56,6 +56,7 @@ function daemon(opts: {
   plane?: Record<string, unknown>
   dataPlane?: boolean
   openDataPlane?: ReturnType<typeof vi.fn>
+  startControlPlane?: ReturnType<typeof vi.fn>
 }): Daemon {
   return new Daemon({
     root: opts.root,
@@ -96,6 +97,7 @@ function daemon(opts: {
         }
       : {}),
     ...(opts.openDataPlane ? { openDataPlane: opts.openDataPlane as never } : {}),
+    startControlPlane: (opts.startControlPlane ?? vi.fn(() => Promise.resolve())) as never,
     ...(opts.supervisor ? { supervisor: opts.supervisor } : {}),
     resolveCatalog: async () => catalog(),
     ...(opts.probe ? { probeRuntimes: opts.probe as never } : {}),
@@ -118,6 +120,39 @@ describe('daemon --k8s mode', () => {
   it('requires the mounted PostgreSQL configuration before starting the execution plane', async () => {
     const k8sDaemon = daemon({ root: root(), k8s: true, dataPlane: false })
     await expect(k8sDaemon.start()).rejects.toThrow(/data-plane configuration is not readable/)
+  })
+
+  it('waits for the initial CP organization registry before completing cloud startup', async () => {
+    let release!: () => void
+    const registryReady = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const startControlPlane = vi.fn(() => registryReady)
+    const instance = daemon({ root: root(), k8s: true, startControlPlane })
+    const starting = instance.start()
+    let settled = false
+    void starting.then(
+      () => {
+        settled = true
+      },
+      () => {
+        settled = true
+      }
+    )
+    await vi.waitFor(() => expect(startControlPlane).toHaveBeenCalledOnce())
+    expect(settled).toBe(false)
+    release()
+    try {
+      await starting
+    } finally {
+      await instance.stop()
+    }
+  })
+
+  it('refuses cloud startup when no authoritative CP organization registry is available', async () => {
+    const instance = daemon({ root: root(), k8s: true, startControlPlane: vi.fn(() => undefined) })
+    await expect(instance.start()).rejects.toThrow(/requires an authoritative CP organization registry/)
+    await instance.stop()
   })
 
   it('advertises the runtimes the image declares, not what is installed on the host', async () => {

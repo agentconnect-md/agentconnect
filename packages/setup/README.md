@@ -30,7 +30,7 @@ more so the refreshed token contains that role.
 
 Google is the shortest local sign-in path because its Web OAuth client accepts
 the bundled bare `localhost` origins. Slack remains disabled until every
-required public origin uses HTTPS.
+required public service URL uses HTTPS.
 
 ## Run from source
 
@@ -45,12 +45,13 @@ default. `HOST` and `PORT` control the binding. `DATABASE_URL` and the
 `SECRET_CIPHER`/`VAULT_*` root settings remain startup environment because they
 are needed before the deployment database can be opened.
 
-The public service origins are also startup environment:
+The public service base URLs are also startup environment. Control Plane and
+Relay URLs may include an ingress path prefix:
 
 ```dotenv
-AGENTCONNECT_PUBLIC_WEB_URL=http://localhost:3000
-AGENTCONNECT_PUBLIC_CP_URL=http://localhost:8080
-AGENTCONNECT_PUBLIC_RELAY_URL=http://localhost:8090
+AGENTCONNECT_PUBLIC_WEB_URL=https://gateway.example.test
+AGENTCONNECT_PUBLIC_CP_URL=https://gateway.example.test/cp
+AGENTCONNECT_PUBLIC_RELAY_URL=https://gateway.example.test/relay
 ```
 
 Setup shows these values at the top because GitHub and Slack manifests

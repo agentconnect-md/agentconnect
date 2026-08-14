@@ -31,6 +31,7 @@ export const CronTarget = z.object({
 export type CronTarget = z.infer<typeof CronTarget>
 
 export const CronUpsert = z.object({
+  orgId: z.string().min(1).max(64).optional(),
   cronId: z.string().uuid(),
   agentId: z.string().uuid(), // the agent this cron drives — routes the def to its daemon
   schedule: z.string(), // croner expression interpreted in `timezone`

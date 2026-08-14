@@ -42,7 +42,7 @@
  * before any repo read (see below) — nothing to leak, so nothing to bind.
  */
 import { isFrame } from '@agentconnect.md/protocol'
-import { DaemonId } from '../../domain/ids.js'
+import { DaemonId, OrgId } from '../../domain/ids.js'
 import { isSessionIdentityPlatform } from '../../persistence/platform.js'
 import type { ChannelAgentRecord } from '../../persistence/ports.js'
 import type { Handler } from './index.js'
@@ -76,6 +76,11 @@ export const handleChannelAgents: Handler = async (frame, conn, deps) => {
   // (org-scoped-data-layer.md §4).
   const daemon = await deps.registry.getUnscoped(DaemonId(conn.daemonId))
   if (!daemon) return // unknown daemon (should not happen post-auth) — drop silently
+  const orgId = frame.orgId ? OrgId(frame.orgId) : daemon.orgId
+  if (!orgId) {
+    conn.sendError(frame.id, 'SCOPE_DENIED', 'organization is required', false)
+    return
+  }
 
   const roster: ChannelAgentRecord[] = await (async () => {
     // A session-identity platform (`webchat`/`hook`/`dream`) has no persisted
@@ -91,7 +96,7 @@ export const handleChannelAgents: Handler = async (frame, conn, deps) => {
     // ONE org-scoped read, feeding both scopes and the bind (see the header). It is also
     // literally the read `buildCollabSnapshot` builds `agents[]` from, which is what keeps
     // "discoverable" and "callable" from disagreeing.
-    const orgRoster = await deps.agent.orgDirectory(daemon.orgId)
+    const orgRoster = await deps.agent.orgDirectory(orgId)
 
     // THE DAEMON-OWNERSHIP BIND (§2.2/§6.1) — the read-side twin of the relay's
     // `claimedFromAgentId` / `caller.daemonId !== fromDaemonId` check. `requesterAgentId`
@@ -123,9 +128,7 @@ export const handleChannelAgents: Handler = async (frame, conn, deps) => {
     if (channel === undefined) return orgRoster
     // The channel scope is a literal INTERSECTION: `agentsInChannel` supplies the membership
     // id set, the org roster supplies the records (and the placement filter).
-    const inChannel = new Set(
-      (await deps.integration.agentsInChannel(daemon.orgId, platform, channel)).map((a) => a.agentId)
-    )
+    const inChannel = new Set((await deps.integration.agentsInChannel(orgId, platform, channel)).map((a) => a.agentId))
     return orgRoster.filter((a) => inChannel.has(a.agentId))
   })()
 

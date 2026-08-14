@@ -74,18 +74,21 @@ export class RelayAuthService {
     return { daemonId: row.daemonId, orgId: row.orgId }
   }
 
-  /**
-   * Resolve an in-cluster daemon's projected ServiceAccount token to the same
-   * `{daemonId, orgId}` for `rc/verify(daemon-token)`. One TokenReview, exactly the check
-   * the daemon's own CP socket runs — the relay hop must not be a weaker door than the
-   * control socket. Null when this deployment provisions no clusters, or the token fails
-   * any of the audience / ServiceAccount / namespace checks; a cluster or store error
-   * PROPAGATES so the caller answers retryable rather than "invalid credential".
-   */
-  async verifyDaemonToken(credential: string): Promise<{ daemonId: string; orgId: string } | null> {
+  /** Verifies a projected daemon token and any untrusted echoed install daemon id for the relay hop. */
+  async verifyDaemonToken(
+    credential: string,
+    claimedDaemonId?: string
+  ): Promise<{ daemonId: string; orgId?: string } | null> {
     if (!this.clusterIdentity) return null
-    const verified = await this.clusterIdentity.verify(credential)
-    return verified ? { daemonId: verified.daemonId, orgId: verified.orgId } : null
+    const verified = await this.clusterIdentity.verify(
+      credential,
+      claimedDaemonId ? { daemonId: claimedDaemonId } : undefined
+    )
+    if (!verified) return null
+    return {
+      daemonId: verified.daemonId,
+      ...(verified.scope === 'org' ? { orgId: verified.orgId } : {})
+    }
   }
 
   private authToken(credential: string): RelayAuthResult {

@@ -413,6 +413,7 @@ describe('feishu projection equivalence with the live integrationToSpec path (di
       { channel: 'oc_1', match: { kind: 'auto' } }
     ]
     expect(spec).toEqual({
+      orgId: INTEGRATION.orgId,
       integrationId: INTEGRATION.id,
       agentId: INTEGRATION.agentId,
       platform: 'feishu',
@@ -486,6 +487,7 @@ describe('feishu projection equivalence with the live httpIntegrationToSpec path
       false
     )
     expect(spec).toEqual({
+      orgId: INTEGRATION.orgId,
       integrationId: INTEGRATION.id,
       agentId: INTEGRATION.agentId,
       platform: 'feishu',

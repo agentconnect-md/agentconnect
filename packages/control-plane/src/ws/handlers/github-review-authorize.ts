@@ -11,7 +11,11 @@ export const handleGithubReviewAuthorize: Handler = async (frame, conn, deps) =>
     return
   }
   try {
-    const authorized = await deps.githubReviewBroker.authorize(frame.payload, DaemonId(conn.daemonId))
+    const authorized = await deps.githubReviewBroker.authorize(
+      frame.payload,
+      DaemonId(conn.daemonId),
+      frame.orgId ?? conn.orgId ?? undefined
+    )
     conn.replyTo(frame, 'github/review-authorized', authorized)
   } catch (error) {
     if (error instanceof GithubReviewBrokerError) {

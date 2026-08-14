@@ -108,6 +108,7 @@ model Org {
   sessionExternalAccess     SessionExternalAccessPolicy[]
   environmentEntries        OrganizationEnvironmentEntry[]
   clusterExecution          OrgClusterExecution?
+  dutyGroups                DutyGroup[]
 
   @@index([createdByUserId])
   @@map("org")
@@ -366,18 +367,16 @@ enum HealthState {
 
 model Daemon {
   id            String  @id @db.Uuid // AuthReq.daemonId (wire UUID)
-  orgId         String
+  orgId         String? // null only for an install-wide cloud-daemon member shared by every org
   host          String? // RegisterReq.host (display)
   name          String? // human-assigned display name (set via the console, never by the daemon)
   agentVersion  String?
   machineId     String? @db.Uuid // 🅼 AuthReq.machineId (stored, stub-enforced)
   tokenFp       String? // `id` of the authenticating ApiKey (audit; written by upsertOnAuth)
-  /// The Kubernetes identity an in-cluster daemon authenticates as, exactly as TokenReview
-  /// reports it (`system:serviceaccount:<org namespace>:ac-daemon`). Unique, so one envelope
-  /// can never end up with two records competing for its placements. The namespace is derived
-  /// from the org, so an envelope torn down and rebuilt presents the same identity and resolves
-  /// back to this row — its placements and session history survive re-provisioning.
-  clusterIdentity String? @unique
+  /// The Kubernetes ServiceAccount subject TokenReview reports. Envelope rows are unique by
+  /// subject; cloud members share the subject and are unique by the bound token's Pod UID.
+  clusterIdentity String?
+  clusterPodUid   String?
   attestationFp String? // 🅼 last accepted attestation digest
   capabilities  Json    @default("{}") @db.JsonB // {platforms[],runtimes[],acp,features[]}
   mcpServers    Json    @default("[]") @db.JsonB // facts/daemon-runtimes MCP-server list (FactsMcpServer[] = {name,transport}); replaced whole per frame
@@ -424,7 +423,7 @@ model Daemon {
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @db.Timestamptz(6)
 
-  org                   Org                    @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  org                   Org?                   @relation(fields: [orgId], references: [id], onDelete: Restrict)
   createdBy             User?                  @relation("DaemonCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
   lastModifiedBy        User?                  @relation("DaemonModifiedBy", fields: [lastModifiedByUserId], references: [id], onDelete: SetNull)
   agents                Agent[]
@@ -437,6 +436,7 @@ model Daemon {
   lifecycleOps          DaemonLifecycleOp[]
   webchatMcpDelegations WebchatMcpDelegation[]
 
+  @@unique([clusterIdentity, clusterPodUid], map: "daemon_cluster_identity_pod_key")
   @@index([orgId])
   @@index([status])
   @@index([lastSeenAt])
@@ -2841,4 +2841,57 @@ model PendingEnvelopeTeardown {
   createdAt    DateTime @default(now()) @db.Timestamptz(6)
 
   @@map("pending_envelope_teardown")
+}
+
+/// K8s duty ledger: one row per connected component of the
+/// agent↔daemon-held-bot graph (an enabled cron is an edge too), the only unit
+/// a k8s daemon ever claims. Deliberately NOT holder columns on Bot or
+/// Integration: per-row leases cannot express an atomic group claim, a botless
+/// cron-bearing agent has no Integration row to carry one, and two held groups
+/// merging need a single surviving holder recorded somewhere.
+///
+/// Vacancy is temporal, not referential: a group is grantable when
+/// `expiresAt` has passed (or it was never claimed / explicitly released), so a
+/// dead member simply stops renewing — `holder` carries no FK on purpose, since
+/// fencing always reads (holder, term) together and a row-level SetNull would
+/// vacate without a term bump.
+model DutyGroup {
+  id        String    @id @db.Uuid
+  orgId     String
+  holder    String?   @db.Uuid // member (daemon) the group is granted to; null ⇒ never claimed or released
+  term      BigInt    @default(0) // monotonic per group; bumped on EVERY grant/re-grant — the fencing token
+  expiresAt DateTime? @db.Timestamptz(6) // renewal horizon written by the granter; past ⇒ vacant and grantable
+  createdAt DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime  @updatedAt @db.Timestamptz(6)
+
+  org     Org               @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  members DutyGroupMember[]
+
+  @@index([orgId])
+  @@index([holder])
+  @@index([expiresAt])
+  @@map("duty_group")
+}
+
+enum DutyMemberKind {
+  agent
+  bot
+}
+
+/// Derived membership projection (agentId|botId → group), recomputed from
+/// Integration and CronDef rows whenever an edge changes — never hand-written,
+/// so it needs no reconciliation of its own. The composite id makes "one home
+/// per agent / per bot" a database invariant, not a code promise.
+model DutyGroupMember {
+  kind    DutyMemberKind
+  refId   String         @db.Uuid // Agent.id or Bot.id, per kind (no FK: recompute owns lifecycle)
+  groupId String         @db.Uuid
+  orgId   String
+
+  group DutyGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@id([kind, refId])
+  @@index([groupId])
+  @@index([orgId])
+  @@map("duty_group_member")
 }

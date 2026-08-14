@@ -45,6 +45,9 @@ export const AuthOk = z.object({
   sessionEpoch: z.number().int(), // monotonic; bumped each successful (re)auth — fencing token
   heartbeatSec: z.number().int(), // cadence the daemon must emit heartbeat at
   serverTime: z.string().datetime(),
+  // Single-org daemons inherit tenant context from auth; install-wide cloud daemons require
+  // every org-scoped post-auth frame to carry `Envelope.orgId`.
+  organizationMode: z.enum(['connection', 'frame']).default('connection'),
   // Base URL of the Web App console (the CP's own public origin), so the daemon can build
   // session deep links without local config. Omitted when the CP has no console URL
   // configured; a daemon-local `webAppUrl` overrides it.

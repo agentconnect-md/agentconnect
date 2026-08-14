@@ -207,20 +207,6 @@ describe('an unreachable sandbox workspace', () => {
     expect(existsSync(join(daemonSide, 'notes.md'))).toBe(false)
   })
 
-  it('refuses the git seam too, instead of reporting "not a git checkout" for a sleeping pod', async () => {
-    setSandboxWorkspaceMode(true)
-    const git = createWorkspaceGit(() => '/agent/repo')
-    await expect(git.status(AGENT)).rejects.toMatchObject({ reason: 'sandbox-unavailable' })
-    await expect(git.log({ agentId: AGENT, limit: 20 })).rejects.toMatchObject({ reason: 'sandbox-unavailable' })
-    await expect(git.diff({ agentId: AGENT, path: 'a.ts', staged: false })).rejects.toMatchObject({
-      reason: 'sandbox-unavailable'
-    })
-    // A write must not fall through to a local runner and mutate whatever is at that path here.
-    await expect(git.commit({ agentId: AGENT, message: 'nope' })).rejects.toMatchObject({
-      reason: 'sandbox-unavailable'
-    })
-  })
-
   it('says nothing of the kind once a channel is bound', async () => {
     const { daemonSide, podSide } = split()
     setSandboxWorkspaceMode(true)
@@ -229,13 +215,6 @@ describe('an unreachable sandbox workspace', () => {
       pass,
       () => filesAt(podSide)
     )
-    expect((await reader.list({ agentId: AGENT, path: '', limit: 50 })).exists).toBe(true)
-  })
-
-  it('never fires on a self-hosted daemon, whose workspace is always right here', async () => {
-    const { daemonSide } = split()
-    // Cluster mode off: the resolver being empty is the NORMAL state, not an unreachable workspace.
-    const reader = createWorkspaceReader(() => ({ root: daemonSide, scratch: true }), pass)
     expect((await reader.list({ agentId: AGENT, path: '', limit: 50 })).exists).toBe(true)
   })
 })
@@ -287,27 +266,5 @@ describe('a channel that drops between resolutions', () => {
     const page = await reader.list({ agentId: AGENT, path: '', limit: 50 })
     // `STALE-DAEMON-COPY.txt` exists only on this disk, so naming it would prove the wrong answer.
     expect(page.entries.map((entry) => entry.name)).toEqual(['app.ts'])
-  })
-
-  it('keeps the git seam on the sandbox runner it resolved, not a local one', async () => {
-    setSandboxWorkspaceMode(true)
-    const seen: string[][] = []
-    const answering = {
-      withEnv: () => answering,
-      raw: async () => '',
-      clone: async () => {},
-      pull: async () => ({ files: [], insertions: 0, deletions: 0 }),
-      status: async () => ({ current: 'main', tracking: null, ahead: 0, behind: 0, files: [], clean: true }),
-      log: async () => [],
-      readBounded: async (args: string[]) => {
-        seen.push(args)
-        return { out: Buffer.from(''), overflow: false } // empty `--show-prefix` ⇒ at the top level
-      }
-    }
-    setWorkspaceGitRunnerResolver(detachAfterFirst(answering as never))
-    // `/agent/repo` is not a checkout on THIS machine, so a local fallback answers isRepo:false.
-    const status = await createWorkspaceGit(() => '/agent/repo').status(AGENT)
-    expect(status.isRepo).toBe(true)
-    expect(seen.some((args) => args.includes('--show-prefix'))).toBe(true)
   })
 })

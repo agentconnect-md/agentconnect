@@ -1,4 +1,9 @@
-import { getAccountToken, getLogtoPublicConfig } from '@/lib/auth'
+import {
+  getAccountToken,
+  getLogtoPublicConfig,
+  redirectExpiredSession,
+  refreshTokenAfterUnauthorized
+} from '@/lib/auth'
 
 export interface SocialLinkFlow {
   /** Existing link flows predate this discriminator and are treated as `link`. */
@@ -76,14 +81,25 @@ async function responseError(response: Response): Promise<LogtoAccountError> {
 }
 
 async function accountRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const token = await getAccountToken()
-  if (!token) throw new LogtoAccountError('Your sign-in session has expired.', 401)
+  let token = await getAccountToken()
+  if (!token) {
+    await redirectExpiredSession()
+    throw new LogtoAccountError('Your sign-in session has expired.', 401)
+  }
 
   const headers = new Headers(init.headers)
   headers.set('authorization', `Bearer ${token}`)
   if (init.body) headers.set('content-type', 'application/json')
 
-  const response = await fetch(tenantUrl(path), { ...init, headers })
+  let response = await fetch(tenantUrl(path), { ...init, headers })
+  if (response.status === 401) {
+    token = await refreshTokenAfterUnauthorized(token, 'account')
+    if (token) {
+      headers.set('authorization', `Bearer ${token}`)
+      response = await fetch(tenantUrl(path), { ...init, headers })
+    }
+    if (response.status === 401) await redirectExpiredSession()
+  }
   if (!response.ok) throw await responseError(response)
   if (response.status === 204) return undefined as T
   return (await response.json()) as T

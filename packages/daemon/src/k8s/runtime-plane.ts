@@ -32,9 +32,10 @@ const PROBE_TIMEOUT_MS = 180_000
  * daemon's own host and no Sandbox was ever created.
  */
 export interface K8sRuntimePlaneOptions {
-  /** Org the claims are labelled with; one daemon serves one org in the managed cluster.
-   *  Resolved from the deployment's env when omitted. */
+  /** Connection-scoped org for an envelope daemon; absent for an install-wide cloud daemon. */
   orgId?: string
+  /** Per-agent tenant lookup used by an install-wide cloud daemon. */
+  orgForAgent?: (agentId: string) => string | undefined
   /** Warm pool the claims reference. v1beta1 requires one; a cold pool is `replicas: 0`. */
   warmPoolName?: string
   /** Port the sandbox shim listens on; the daemon combines it with the ready pod's IP. */
@@ -61,7 +62,7 @@ export interface K8sRuntimePlaneOptions {
 }
 
 export interface K8sPlaneSettings {
-  orgId: string
+  orgId?: string
   warmPoolName: string
   shimPort: number
 }
@@ -78,16 +79,13 @@ export function resolveK8sPlaneSettings(options: K8sRuntimePlaneOptions = {}): K
   const env = options.env ?? process.env
   const orgId = options.orgId ?? env[K8S_ORG_ID_ENV]?.trim()
   const warmPoolName = options.warmPoolName ?? env[K8S_WARM_POOL_ENV]?.trim()
-  // Refused rather than defaulted: a guessed org labels another tenant's claims, and a guessed
-  // pool yields sandboxes that never bind with nothing in the logs saying why.
-  if (!orgId) throw new Error(`--k8s requires ${K8S_ORG_ID_ENV}`)
   if (!warmPoolName) throw new Error(`--k8s requires ${K8S_WARM_POOL_ENV}`)
   const rawPort = options.shimPort ?? env[K8S_SHIM_PORT_ENV] ?? DEFAULT_SHIM_PORT
   const shimPort = Number(rawPort)
   if (!Number.isInteger(shimPort) || shimPort < 1 || shimPort > 65_535) {
     throw new Error(`${K8S_SHIM_PORT_ENV} is not a valid port: ${rawPort}`)
   }
-  return { orgId, warmPoolName, shimPort }
+  return { ...(orgId ? { orgId } : {}), warmPoolName, shimPort }
 }
 
 /** The env contract on its own, which is what a deployment has to satisfy. */
@@ -209,7 +207,8 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
 
   const driver = new K8sDriver({
     api,
-    orgId: settings.orgId,
+    orgForAgent: (agentId) =>
+      agentId === PROBE_AGENT_ID ? (settings.orgId ?? 'install') : (options.orgForAgent?.(agentId) ?? settings.orgId),
     warmPoolName: settings.warmPoolName,
     onChannelReady: ensureTunnels,
     connectChannel: (record, podIp, timeoutMs) =>

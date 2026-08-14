@@ -1,11 +1,21 @@
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { MAX_AGENT_CALL_HOPS } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
 import { transcriptChannelKey } from '../src/store/local-store.js'
-import type { RdChatEvent, RdMsgWebchat, RdWebchatPost, WebchatPost } from '@agentconnect.md/protocol'
+import {
+  NO_RESPONSE,
+  agentPost as agentPostIn,
+  fakeCpClient,
+  fakeRelay as fakeRelayIn,
+  rdFactory,
+  rendezvousKey,
+  scaffold,
+  scriptedHosts,
+  seedCallPolicy,
+  settle,
+  userPost as userPostIn
+} from './webchat-continuation-fixture.js'
+import type { RdChatEvent, WebchatPost } from '@agentconnect.md/protocol'
 
 // #549 parity for multi-agent webchat (webchat-multi-agents.md §5.2a, issue #904):
 // a peer agent's COMMITTED conversation post — delivered to this participant as a
@@ -15,144 +25,22 @@ import type { RdChatEvent, RdMsgWebchat, RdWebchatPost, WebchatPost } from '@age
 // activation rendezvous, final-events-only (structural), author exclusion, and the
 // directional call policy. These tests drive the daemon exactly the way the relay
 // does (handleRelayMsg) and play the relay's roster fan-out themselves.
+//
+// The setup helpers live in `webchat-continuation-fixture.ts`, shared with the
+// cross-surface activation parity leg (`evals/test/parity-webchat.test.ts`).
 
 const P1 = 'bot-a'
 const P2 = 'bot-b'
 const REF = 'bot-ref'
 const CONV = '88888888-8888-4888-8888-888888888888'
 const KICKOFF_TURN = '77777777-7777-4777-8777-777777777777'
-const NO_RESPONSE = 'AC_NO_RESPONSE'
 const WAIT = { timeout: 10_000 }
 
-function scaffold(agentIds: string[]): string {
-  const root = mkdtempSync(join(tmpdir(), 'ac-wc-cont-'))
-  writeFileSync(
-    join(root, 'config.json'),
-    JSON.stringify({
-      version: 1,
-      controlPlane: { enabled: false },
-      features: { turnFinalContextRefresh: true },
-      runtimes: { claude: { command: 'node', args: ['unused'] } }
-    })
-  )
-  for (const id of agentIds) {
-    const adir = join(root, 'agents', id)
-    mkdirSync(adir, { recursive: true })
-    writeFileSync(
-      join(adir, 'agent.json'),
-      JSON.stringify({
-        id,
-        name: id,
-        status: 'active',
-        runtime: 'claude',
-        workspace: { mode: 'from-scratch', path: join(adir, 'workspace') },
-        integrations: [],
-        output: { mode: 'medium' }
-      })
-    )
-  }
-  return root
-}
-
-/** One scripted per-agent ACP host: every prompt resolves immediately with
- *  `reply(promptText)` streamed as a single message chunk. */
-function scriptedHosts(replies: Record<string, (prompt: string) => string | Promise<string>>) {
-  // Eagerly seeded so "was never prompted" asserts read an empty list, not undefined.
-  const prompts = new Map<string, string[]>(Object.keys(replies).map((id) => [id, []]))
-  let sessionSeq = 0
-  const factory = (agent: { id: string }, onUpdate: (sid: string, u: unknown) => void) => {
-    const agentId = agent.id
-    if (!prompts.has(agentId)) prompts.set(agentId, [])
-    return {
-      start: vi.fn(async () => {}),
-      newSession: vi.fn(async () => `acp-cont-${agentId}-${++sessionSeq}`),
-      hasSession: vi.fn(() => true),
-      prompt: vi.fn(async (sid: string, blocks: { text?: string }[]) => {
-        const text = blocks.map((b) => b.text ?? '').join('\n')
-        prompts.get(agentId)!.push(text)
-        const reply = await replies[agentId]!(text)
-        onUpdate(sid, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: reply } })
-        return { stopReason: 'end_turn' }
-      }),
-      cancel: vi.fn(async () => {}),
-      stop: vi.fn(async () => {})
-    } as any
-  }
-  return { factory, prompts }
-}
-
-function fakeCpClient() {
-  return { emitUsageReport: vi.fn(), emitSessionActivity: vi.fn(), stop: vi.fn(async () => {}) }
-}
-
-const rd = (payload: RdMsgWebchat['payload'], over: Partial<RdMsgWebchat> = {}): RdMsgWebchat => ({
-  source: 'webchat',
-  agentId: P1,
-  sessionKey: CONV,
-  msgId: 'm-1',
-  chatId: CONV,
-  payload,
-  ...over
-})
-
-/** Seed the flat org directory so `admits()` (checked per continuation edge, like the
- *  platform ladder) passes for every roster pair. */
-function seedCallPolicy(daemon: Daemon, agentIds: string[], over: Record<string, object> = {}): void {
-  ;(daemon as any).cpCollab.replace({
-    generation: 1,
-    channels: [],
-    agents: agentIds.map((agentId) => ({
-      agentId,
-      orgId: 'org-1',
-      callPolicy: 'all',
-      allowedCallerAgentIds: [],
-      outboundPolicy: 'all',
-      allowedTargetAgentIds: [],
-      ...(over[agentId] ?? {})
-    }))
-  })
-}
-
-/** Play the relay: deliver a committed post to the browser log (posts[]) and fan a
- *  pre-addressed `context` copy to every OTHER roster member — the §5.2 fan-out. */
-function fakeRelay(daemonRef: { current?: Daemon }, roster: string[]) {
-  const posts: RdWebchatPost[] = []
-  let ctxSeq = 0
-  const fanOut = (p: RdWebchatPost): void => {
-    posts.push(p)
-    for (const peer of roster) {
-      if (peer === p.agentId) continue
-      ;(daemonRef.current as any).handleRelayMsg(
-        rd({ op: 'context', post: p.post }, { agentId: peer, msgId: `ctx-${ctxSeq++}` }),
-        () => {}
-      )
-    }
-  }
-  return { posts, fanOut }
-}
-
-const userPost = (text: string, at: number, postId: string): WebchatPost => ({
-  postId,
-  conversationId: CONV,
-  author: { kind: 'user', user: 'owner' },
-  text,
-  at
-})
-
-const agentPost = (agentId: string, text: string, at: number, postId: string, hopCount?: number): WebchatPost => ({
-  postId,
-  conversationId: CONV,
-  author: { kind: 'agent', agentId, ...(hopCount !== undefined ? { hopCount } : {}) },
-  text,
-  at
-})
-
-const settle = () => new Promise((r) => setTimeout(r, 300))
-
-// Mirrors daemon.ts `activationKey(platform, transportScope, platformMessageId, target)`.
-const rendezvousKey = (postId: string, targetAgentId: string): string =>
-  ['webchat', '', postId, targetAgentId].join('\u0000')
-
+const rd = rdFactory(CONV, P1)
+const fakeRelay = (daemonRef: { current?: Daemon }, roster: string[]) => fakeRelayIn(daemonRef, roster, CONV)
+const userPost = (text: string, at: number, postId: string): WebchatPost => userPostIn(CONV, text, at, postId)
+const agentPost = (agentId: string, text: string, at: number, postId: string, hopCount?: number): WebchatPost =>
+  agentPostIn(CONV, agentId, text, at, postId, hopCount)
 describe('webchat multi-agent continuation (#549 parity)', () => {
   it('runs the counting relay: kickoff activates, each committed post wakes roster-minus-author, the silent referee absorbs its wakes', async () => {
     // player-1 counts odds, player-2 evens; both decline past 6; the referee

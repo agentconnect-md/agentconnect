@@ -141,7 +141,7 @@ export function organizationEnvironmentRoutes(deps: HttpDeps) {
      *  never relies on lenient behavior from an unverified daemon. */
     const onCompatibleDaemon = async (orgId: OrgId, daemonId: DaemonId | null): Promise<boolean> => {
       if (daemonId === null) return true
-      const daemon = await deps.registry.get(orgId, daemonId)
+      const daemon = await deps.registry.getAvailable(orgId, daemonId)
       return !!daemon?.capabilities.features.includes(AGENT_CONFIG_REVISION_FEATURE)
     }
 

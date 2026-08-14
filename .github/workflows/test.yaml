@@ -214,6 +214,14 @@ jobs:
         env:
           CAPTURED_JOB_SUMMARY: ${{ runner.temp }}/unit-test-summary.md
         run: GITHUB_STEP_SUMMARY="$CAPTURED_JOB_SUMMARY" pnpm eval:collab:contracts
+      # Cross-surface activation parity (docs/designs/activation-parity.md):
+      # one scenario spec, per-surface legs — a PR that changes "who does this
+      # message activate" on one surface must either keep every leg green or
+      # declare the divergence in evals/parity/spec.ts with a citation.
+      - name: Activation parity contracts
+        env:
+          CAPTURED_JOB_SUMMARY: ${{ runner.temp }}/unit-test-summary.md
+        run: GITHUB_STEP_SUMMARY="$CAPTURED_JOB_SUMMARY" pnpm eval:parity
       - name: Merge unit test summaries
         if: ${{ !cancelled() }}
         env:
@@ -224,6 +232,7 @@ jobs:
             'Unit test report' \
             'message=@agentconnect.md/message' \
             'protocol=@agentconnect.md/protocol' \
+            'activation-policy=@agentconnect.md/activation-policy' \
             'connection=@agentconnect.md/connection' \
             'control-plane=@agentconnect.md/control-plane' \
             'relay=@agentconnect.md/relay' \

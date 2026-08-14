@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const logto = vi.hoisted(() => ({
   isAuthenticated: vi.fn(),
   getAccessToken: vi.fn(),
+  clearAccessToken: vi.fn(),
   clearAllTokens: vi.fn(),
   replace: vi.fn(),
   clientConfig: undefined as unknown
@@ -15,6 +16,7 @@ vi.mock('@logto/browser', () => ({
     }
     isAuthenticated = logto.isAuthenticated
     getAccessToken = logto.getAccessToken
+    clearAccessToken = logto.clearAccessToken
     clearAllTokens = logto.clearAllTokens
   },
   UserScope: {
@@ -35,6 +37,7 @@ describe('getToken', () => {
     vi.resetModules()
     logto.isAuthenticated.mockReset().mockResolvedValue(true)
     logto.getAccessToken.mockReset()
+    logto.clearAccessToken.mockReset().mockResolvedValue(undefined)
     logto.clearAllTokens.mockReset().mockResolvedValue(undefined)
     logto.replace.mockReset()
     logto.clientConfig = undefined
@@ -101,5 +104,28 @@ describe('getToken', () => {
 
     expect(logto.getAccessToken).toHaveBeenCalledWith()
     expect(logto.clientConfig).toMatchObject({ scopes: ['email', 'profile', 'identities', 'roles'] })
+  })
+
+  it('forces a fresh resource token after the Control Plane rejects the cached one', async () => {
+    logto.getAccessToken.mockResolvedValueOnce('rejected-token').mockResolvedValueOnce('fresh-token')
+    const { refreshTokenAfterUnauthorized } = await import('./auth')
+
+    await expect(refreshTokenAfterUnauthorized('rejected-token')).resolves.toBe('fresh-token')
+
+    expect(logto.clearAccessToken).toHaveBeenCalledOnce()
+    expect(logto.getAccessToken).toHaveBeenNthCalledWith(1, 'https://api.example.test')
+    expect(logto.getAccessToken).toHaveBeenNthCalledWith(2, 'https://api.example.test')
+  })
+
+  it('uses the resource-less audience when the Account API rejects its token', async () => {
+    logto.getAccessToken.mockResolvedValueOnce('rejected-account-token').mockResolvedValueOnce('fresh-account-token')
+    const { refreshTokenAfterUnauthorized } = await import('./auth')
+
+    await expect(refreshTokenAfterUnauthorized('rejected-account-token', 'account')).resolves.toBe(
+      'fresh-account-token'
+    )
+
+    expect(logto.getAccessToken).toHaveBeenNthCalledWith(1)
+    expect(logto.getAccessToken).toHaveBeenNthCalledWith(2)
   })
 })

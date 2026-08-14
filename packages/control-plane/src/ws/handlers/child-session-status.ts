@@ -43,7 +43,7 @@ export const handleChildSessionStatus: Handler = async (frame, conn, deps) => {
   // Daemon trust domain: the parent session the asking daemon claims to own —
   // the ownership check below is what admits it (org-scoped-data-layer.md §4).
   const parent = await deps.session.getUnscoped(SessionId(parentSessionId))
-  if (!parent || parent.daemonId !== conn.daemonId) {
+  if (!parent || parent.daemonId !== conn.daemonId || (frame.orgId && frame.orgId !== parent.orgId)) {
     conn.replyTo(frame, 'session/child-status/ok', NOT_FOUND)
     return
   }
@@ -51,7 +51,7 @@ export const handleChildSessionStatus: Handler = async (frame, conn, deps) => {
   // (b) Resolve the child agent's placement. Cross-org is refused outright: a status read must
   // never cross an org boundary even when both daemons are reachable.
   const childAgent = await deps.agent.getUnscoped(AgentId(childAgentId))
-  if (!childAgent || childAgent.orgId !== daemon.orgId || !childAgent.daemonId) {
+  if (!childAgent || childAgent.orgId !== parent.orgId || !childAgent.daemonId) {
     conn.replyTo(frame, 'session/child-status/ok', NOT_FOUND)
     return
   }
@@ -76,7 +76,9 @@ export const handleChildSessionStatus: Handler = async (frame, conn, deps) => {
     const answer = await owner.conn.request<ChildSessionStatus>(
       'session/child-status/probe',
       { parentSessionId, childSessionId },
-      { epoch: owner.sessionEpoch }
+      { epoch: owner.sessionEpoch },
+      undefined,
+      parent.orgId
     )
     conn.replyTo(frame, 'session/child-status/ok', answer)
   } catch {

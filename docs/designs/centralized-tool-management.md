@@ -260,7 +260,7 @@ The provider `url` is arbitrary editor-supplied input that the relay calls—**a
   cross the wire. Tightening visibility does not revoke an already-enabled
   provider.
 - **Call-side isolation remains P3**: push filtering is **not an authorization
-  boundary** because definitions live at daemon scope and a relay request does
+  boundary** because definitions live at organization scope and a relay request does
   not identify the calling agent. The current provider grant is shared across
   the organization. Per-agent isolation requires an independent, revocable
   grant per provider and agent (or narrower session scope), plus relay
@@ -283,16 +283,16 @@ than the upstream URL and API key:
   register snapshot as the convergence backstop.
 - **Daemon application**:
   [`CpMcpDefs`](../../packages/daemon/src/mcp/cp-mcp-defs.ts) keeps CP
-  definitions in memory, layers them over local definitions, and full-replaces
-  the CP set from each reconnect snapshot. It does not rewrite user-authored
-  configuration.
+  definitions in memory keyed by `(orgId, name)`, layers only the owning
+  organization's definitions over local definitions, and full-replaces the CP
+  set from each reconnect snapshot. It does not rewrite user-authored configuration.
 - **Injection requires no special path**:
   [`resolveAgentMcpServers`](../../packages/daemon/src/mcp/resolve-servers.ts)
   converts the effective HTTP definition to the shape attached to
   `session/new`.
-- **Facts are definition-derived**: the daemon reports `{name, transport}` from
-  the effective set without opening an MCP connection. This does not validate
-  relay-to-upstream health.
+- **Facts describe daemon-local definitions**: organization providers already
+  live in CP metadata and are not folded into an install-wide fact set. The
+  daemon does not open an MCP connection when reporting facts.
 
 > **The runtime must support HTTP MCP transport**:
 > [`resolveAgentMcpServers`](../../packages/daemon/src/mcp/resolve-servers.ts)
@@ -300,7 +300,7 @@ than the upstream URL and API key:
 
 ## 8. Local Configuration Precedence (Unchanged)
 
-The daemon retains local `config.mcpServers` entries (offline/pure-local use may connect directly to upstreams and assumes responsibility for secrets). Local definitions and CP-delivered proxy definitions are merged into `mcpServerDefs`; on a name collision, **the CP wins** and emits a warning. Local-only names continue working. This is purely additive and does not change existing deployments.
+The daemon retains local `config.mcpServers` entries (offline/pure-local use may connect directly to upstreams and assumes responsibility for secrets). For each agent, local definitions and that agent organization's CP-delivered proxy definitions are merged; on a name collision, **the CP wins**. Same-named providers in different organizations remain isolated. Local-only names continue working.
 
 ## 9. Security Summary
 

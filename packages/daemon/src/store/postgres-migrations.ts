@@ -1,10 +1,6 @@
 import type { PoolClient } from 'pg'
 
-/** Quote only identifiers already accepted by postgres-config's conservative regex. */
-export function quotePgIdentifier(identifier: string): string {
-  if (!/^[a-z][a-z0-9_]{0,62}$/.test(identifier)) throw new Error('invalid PostgreSQL schema identifier')
-  return `"${identifier}"`
-}
+export const DATA_PLANE_SCHEMA = 'agentconnect_data_plane'
 
 const MIGRATIONS: readonly string[] = [
   `
@@ -12,6 +8,7 @@ const MIGRATIONS: readonly string[] = [
 
     CREATE TABLE transcript (
       seq BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      org_id TEXT NOT NULL,
       channel TEXT NOT NULL,
       thread TEXT NOT NULL,
       ts TEXT,
@@ -28,33 +25,34 @@ const MIGRATIONS: readonly string[] = [
       revision BIGINT NOT NULL DEFAULT nextval('transcript_revision_seq'),
       post_id TEXT
     );
-    CREATE INDEX transcript_thread_seq ON transcript (channel, thread, seq);
-    CREATE UNIQUE INDEX transcript_text_ts ON transcript (channel, thread, ts) WHERE kind = 'text';
+    CREATE INDEX transcript_thread_seq ON transcript (org_id, channel, thread, seq);
+    CREATE UNIQUE INDEX transcript_text_ts ON transcript (org_id, channel, thread, ts) WHERE kind = 'text';
     CREATE UNIQUE INDEX transcript_agent_tool_call
-      ON transcript (channel, thread, sender, tool_call_id) WHERE tool_call_id IS NOT NULL;
-    CREATE INDEX transcript_thread_event_time ON transcript (channel, thread, event_time_us DESC, seq DESC);
-    CREATE INDEX transcript_thread_revision ON transcript (channel, thread, revision);
+      ON transcript (org_id, channel, thread, sender, tool_call_id) WHERE tool_call_id IS NOT NULL;
+    CREATE INDEX transcript_thread_event_time
+      ON transcript (org_id, channel, thread, event_time_us DESC, seq DESC);
+    CREATE INDEX transcript_thread_revision ON transcript (org_id, channel, thread, revision);
 
     CREATE TABLE transcript_recipient (
+      org_id TEXT NOT NULL,
       channel TEXT NOT NULL,
       thread TEXT NOT NULL,
       ts TEXT NOT NULL,
       agent_id TEXT NOT NULL,
-      PRIMARY KEY (channel, thread, ts, agent_id)
+      PRIMARY KEY (org_id, channel, thread, ts, agent_id)
     );
   `
 ]
 
 export const DATA_PLANE_SCHEMA_VERSION = MIGRATIONS.length
 
-/** Upgrade one org schema under a transaction-scoped cross-daemon advisory lock. */
-export async function migrateDataPlaneSchema(client: PoolClient, schema: string): Promise<void> {
-  const quoted = quotePgIdentifier(schema)
+/** Upgrade the install-wide data-plane schema under a cross-daemon advisory lock. */
+export async function migrateDataPlaneSchema(client: PoolClient): Promise<void> {
   await client.query('BEGIN')
   try {
-    await client.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext('agentconnect-data-plane'))", [schema])
-    await client.query(`CREATE SCHEMA IF NOT EXISTS ${quoted}`)
-    await client.query(`SET LOCAL search_path TO ${quoted}, pg_catalog`)
+    await client.query("SELECT pg_advisory_xact_lock(hashtext('agentconnect-data-plane-migration'))")
+    await client.query(`CREATE SCHEMA IF NOT EXISTS ${DATA_PLANE_SCHEMA}`)
+    await client.query(`SET LOCAL search_path TO ${DATA_PLANE_SCHEMA}, pg_catalog`)
     await client.query(`
       CREATE TABLE IF NOT EXISTS _agentconnect_schema_migrations (
         version INTEGER PRIMARY KEY,
@@ -68,18 +66,17 @@ export async function migrateDataPlaneSchema(client: PoolClient, schema: string)
     const newest = Math.max(0, ...applied)
     if (newest > DATA_PLANE_SCHEMA_VERSION) {
       throw new Error(
-        `data-plane schema ${schema} is version ${newest}, newer than supported version ${DATA_PLANE_SCHEMA_VERSION}`
+        `data-plane schema is version ${newest}, newer than supported version ${DATA_PLANE_SCHEMA_VERSION}`
       )
     }
     for (let version = 1; version <= newest; version += 1) {
-      if (!applied.has(version))
-        throw new Error(`data-plane schema ${schema} has a migration gap before version ${newest}`)
+      if (!applied.has(version)) throw new Error(`data-plane schema has a migration gap before version ${newest}`)
     }
     let expected = newest + 1
     for (let index = 0; index < MIGRATIONS.length; index += 1) {
       const version = index + 1
       if (applied.has(version)) continue
-      if (version !== expected) throw new Error(`data-plane schema ${schema} has a migration gap`)
+      if (version !== expected) throw new Error('data-plane schema has a migration gap')
       await client.query(MIGRATIONS[index]!)
       await client.query('INSERT INTO _agentconnect_schema_migrations (version) VALUES ($1)', [version])
       expected += 1

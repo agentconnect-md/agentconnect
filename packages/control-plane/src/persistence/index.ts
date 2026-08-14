@@ -68,6 +68,7 @@ export {
 } from './preset-agents.js'
 export { PresetAgentBackfill } from './preset-agent-backfill.js'
 export { PgCronRepo } from './repositories/cron.repo.js'
+export { PgDutyGroupRepo } from './repositories/duty-group.repo.js'
 export { PgHookRepo, PgHookSecretStore } from './repositories/hook.repo.js'
 export { PgRuntimeProfileRepo } from './repositories/runtime-profile.repo.js'
 export { PgAuditRepo } from './repositories/audit.repo.js'

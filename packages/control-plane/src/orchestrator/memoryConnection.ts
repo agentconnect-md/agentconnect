@@ -76,6 +76,7 @@ export function memoryRcAssign(
   const error = validateMemorySecrets(installation.secretHeaders, secrets)
   if (error) throw new Error(error)
   return {
+    orgId: connection.orgId,
     connectionId: connection.id,
     revision: connection.revision,
     upstreamUrl: installation.endpoint,
@@ -102,6 +103,7 @@ export function memoryConnectionSpec(
     throw new Error('remote memory connection spec requires a Streamable HTTP installation')
   }
   return {
+    orgId: connection.orgId,
     connectionId: connection.id,
     revision: connection.revision,
     transport: 'streamable-http',
@@ -127,6 +129,7 @@ export function stdioMemoryConnectionSpec(
     throw new Error('stdio memory connection spec requires an operator command reference')
   }
   return {
+    orgId: connection.orgId,
     connectionId: connection.id,
     revision: connection.revision,
     transport: 'stdio',

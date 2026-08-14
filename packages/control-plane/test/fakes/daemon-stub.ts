@@ -121,7 +121,7 @@ export class InMemoryDaemonStub implements Transport {
   inject(
     type: FrameType,
     payload: unknown,
-    opts: { id?: string; corr?: string; ts?: string; ext?: ControlExt } = {}
+    opts: { id?: string; corr?: string; ts?: string; ext?: ControlExt; orgId?: string } = {}
   ): string {
     const id = opts.id ?? randomUUID()
     const env: Record<string, unknown> = {
@@ -131,6 +131,7 @@ export class InMemoryDaemonStub implements Transport {
       type,
       payload,
       ...(opts.corr ? { corr: opts.corr } : {}),
+      ...(opts.orgId ? { orgId: opts.orgId } : {}),
       ...(opts.ext ?? {})
     }
     this.injectRaw(JSON.stringify(env))

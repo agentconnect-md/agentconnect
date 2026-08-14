@@ -14,10 +14,12 @@ import type { SessionMetaRecord } from '../persistence/ports.js'
 
 const DAEMON = 'd0d0d0d0-dddd-4ddd-8ddd-dddddddddddd'
 const AGENT = 'a0a0a0a0-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+const ORG = 'org-a'
 
 function session(over: Partial<SessionMetaRecord> = {}): SessionMetaRecord {
   return {
     id: 'acp-1',
+    orgId: ORG,
     agentId: AGENT,
     visibility: 'private',
     ownerIdentity: 'user:u1',
@@ -53,7 +55,7 @@ function deps(
     daemonId?: string | null
     /** Successive snapshot pages the repo hands back, newest call first. */
     snapshotPages?: Array<
-      Array<{ sessionId: string; visibility: 'private' | 'org' | 'external'; visibilityRev: number }>
+      Array<{ orgId: string; sessionId: string; visibility: 'private' | 'org' | 'external'; visibilityRev: number }>
     >
     unackedAfter?: number[]
   } = {}
@@ -61,7 +63,7 @@ function deps(
   const recordVisibilityAck = vi.fn(async () => {})
   const sessionVisibility =
     over.sessionVisibility ??
-    vi.fn(async (_d: string, p: { sessionId: string; visibilityRev: number }) => ({
+    vi.fn(async (_d: string, _orgId: string, p: { sessionId: string; visibilityRev: number }) => ({
       sessionId: p.sessionId,
       visibilityRev: p.visibilityRev,
       status: 'applied' as const
@@ -99,7 +101,7 @@ describe('notifySessions', () => {
     const { push, sessionVisibility, recordVisibilityAck } = deps()
     await push.notifySessions([session()])
 
-    expect(sessionVisibility).toHaveBeenCalledWith(DAEMON, {
+    expect(sessionVisibility).toHaveBeenCalledWith(DAEMON, ORG, {
       sessionId: 'acp-1',
       visibility: 'private',
       sharedMemoryExcluded: true,
@@ -127,6 +129,7 @@ describe('notifySessions', () => {
     // External sessions capture like org now — only `private` excludes memory.
     expect(current.sessionVisibility).toHaveBeenCalledWith(
       DAEMON,
+      ORG,
       expect.objectContaining({ visibility: 'external', sharedMemoryExcluded: false })
     )
   })
@@ -155,10 +158,12 @@ describe('notifySessions', () => {
   })
 
   it('keeps going after one session fails, so a cascade is not truncated', async () => {
-    const sessionVisibility = vi.fn(async (_d: string, p: { sessionId: string; visibilityRev: number }) => {
-      if (p.sessionId === 'acp-bad') throw new Error('boom')
-      return { sessionId: p.sessionId, visibilityRev: p.visibilityRev, status: 'applied' as const }
-    })
+    const sessionVisibility = vi.fn(
+      async (_d: string, _orgId: string, p: { sessionId: string; visibilityRev: number }) => {
+        if (p.sessionId === 'acp-bad') throw new Error('boom')
+        return { sessionId: p.sessionId, visibilityRev: p.visibilityRev, status: 'applied' as const }
+      }
+    )
     const { push, recordVisibilityAck } = deps({ sessionVisibility })
     await push.notifySessions([session({ id: 'acp-bad' }), session({ id: 'acp-good' })])
     expect(recordVisibilityAck).toHaveBeenCalledWith('acp-good', 2)
@@ -168,6 +173,7 @@ describe('notifySessions', () => {
 describe('replayTo — register-time convergence', () => {
   const page = (n: number, from = 0) =>
     Array.from({ length: n }, (_, i) => ({
+      orgId: ORG,
       sessionId: `acp-${from + i}`,
       visibility: 'private' as const,
       visibilityRev: 1
@@ -188,6 +194,17 @@ describe('replayTo — register-time convergence', () => {
     await d.push.replayTo(DAEMON as never)
     expect(d.sessionVisibilitySnapshot).toHaveBeenCalledTimes(1)
     expect(d.visibilitySnapshotForDaemon).toHaveBeenCalledTimes(1)
+  })
+
+  it('splits a shared daemon snapshot into one organization-scoped request per org', async () => {
+    const d = deps({ snapshotPages: [[...page(1), { ...page(1, 1)[0]!, orgId: 'org-b' }]] })
+    await d.push.replayTo(DAEMON as never)
+    expect(d.sessionVisibilitySnapshot).toHaveBeenNthCalledWith(1, DAEMON, ORG, [
+      expect.objectContaining({ sessionId: 'acp-0' })
+    ])
+    expect(d.sessionVisibilitySnapshot).toHaveBeenNthCalledWith(2, DAEMON, 'org-b', [
+      expect.objectContaining({ sessionId: 'acp-1' })
+    ])
   })
 
   it('stops paging when the daemon drops mid-replay — the next register retries', async () => {

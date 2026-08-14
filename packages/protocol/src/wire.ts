@@ -102,6 +102,7 @@ export interface BuildOpts {
   corr?: string
   id?: string
   ts?: string
+  orgId?: string
   ext?: ControlExt
 }
 
@@ -118,6 +119,7 @@ export function buildEnvelopeRaw(type: string, payload: unknown, opts: BuildOpts
     type,
     payload,
     ...(opts.corr ? { corr: opts.corr } : {}),
+    ...(opts.orgId ? { orgId: opts.orgId } : {}),
     ...(opts.ext ?? {})
   }
 }

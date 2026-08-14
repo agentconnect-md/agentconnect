@@ -416,9 +416,9 @@ export class ControlSender {
   }
 
   /** Drop a proxied MCP server def by name from a daemon (live CRUD, epoch-fenced EVT). */
-  async mcpServerRemove(daemonId: string, name: string): Promise<void> {
+  async mcpServerRemove(daemonId: string, orgId: string, name: string): Promise<void> {
     const c = this.must(daemonId)
-    c.conn.send('mcpserver/remove', { name }, { epoch: c.sessionEpoch })
+    c.conn.send('mcpserver/remove', { orgId, name }, { epoch: c.sessionEpoch })
   }
 
   /** Push one daemon-private external-memory connection definition. Relay grants
@@ -444,16 +444,16 @@ export class ControlSender {
    * `superseded` rather than erroring, and the register-time snapshot converges
    * anything this connection never delivered.
    */
-  async sessionVisibility(daemonId: string, p: SessionVisibilityPush): Promise<SessionVisibilityOk> {
+  async sessionVisibility(daemonId: string, orgId: string, p: SessionVisibilityPush): Promise<SessionVisibilityOk> {
     const c = this.must(daemonId)
-    return c.conn.request<SessionVisibilityOk>('session/visibility', p, { epoch: c.sessionEpoch })
+    return c.conn.request<SessionVisibilityOk>('session/visibility', p, { epoch: c.sessionEpoch }, undefined, orgId)
   }
 
   /** Replay the whole gate set to a (re)connecting daemon (§5.1) — a snapshot,
    *  not a diff, so a change made while it was offline cannot stay unapplied. */
-  async sessionVisibilitySnapshot(daemonId: string, entries: SessionVisibilityPush[]): Promise<Ack> {
+  async sessionVisibilitySnapshot(daemonId: string, orgId: string, entries: SessionVisibilityPush[]): Promise<Ack> {
     const c = this.must(daemonId)
-    return c.conn.request<Ack>('session/visibility/snapshot', { entries }, { epoch: c.sessionEpoch })
+    return c.conn.request<Ack>('session/visibility/snapshot', { entries }, { epoch: c.sessionEpoch }, undefined, orgId)
   }
 
   /** Sink a cron def to a running daemon (live CRUD, epoch-fenced REQ → ack, §5.4). */

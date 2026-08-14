@@ -1,54 +1,55 @@
 import { isDeepStrictEqual } from 'node:util'
 import type { McpServerDef } from '../config/config-schema.js'
 
-/**
- * `CpMcpDefs` — merges CP-pushed MCP server defs over the daemon's local
- * `config.mcpServers`, producing the EFFECTIVE def map used at ACP `session/new`
- * and reported to the CP as facts (centralized-tool-management.md §7/§8).
- *
- * Precedence: a CP-pushed def WINS over a same-named local def; when the CP def
- * is removed, the shadowed local def is restored automatically (local is the
- * immutable base, CP layers on top). Names only in local — or only in CP — pass
- * through unchanged.
- *
- * CP defs are MEMORY-ONLY: they are pushed live via `mcpserver/upsert` /
- * `mcpserver/remove` and re-converged whole from the `register/ok` reconcile
- * snapshot, so `converge()` FULL-REPLACES the CP set (a def removed while the
- * daemon was disconnected is pruned on reconnect).
- * `ponytail: memory-only — add cache-file persistence if MCP-proxy must survive a
- * daemon restart while the CP is down (local config still works air-gapped).`
- *
- * Pure + logging-free: the caller strips the reserved bridge name and logs
- * (never the def values — an http proxy def's headers carry a bearer grant key).
- */
+/** Keeps CP MCP definitions tenant-scoped while layering them over daemon-local definitions. */
 export class CpMcpDefs {
-  private cp = new Map<string, McpServerDef>()
+  private cp = new Map<string, Map<string, McpServerDef>>()
 
   constructor(private readonly local: Record<string, McpServerDef>) {}
 
-  /** Add or replace one CP-pushed def (mcpserver/upsert); returns whether the effective set changed. */
-  upsert(name: string, def: McpServerDef): boolean {
-    if (isDeepStrictEqual(this.cp.get(name), def)) return false // idempotent re-push — no re-emit churn
-    this.cp.set(name, def)
+  upsert(orgId: string, name: string, def: McpServerDef): boolean {
+    const definitions = this.cp.get(orgId) ?? new Map<string, McpServerDef>()
+    if (isDeepStrictEqual(definitions.get(name), def)) return false
+    definitions.set(name, def)
+    this.cp.set(orgId, definitions)
     return true
   }
 
-  /** Drop one CP-pushed def by name; returns whether it was present (mcpserver/remove). */
-  remove(name: string): boolean {
-    return this.cp.delete(name)
+  remove(orgId: string, name: string): boolean {
+    const definitions = this.cp.get(orgId)
+    if (!definitions?.delete(name)) return false
+    if (definitions.size === 0) this.cp.delete(orgId)
+    return true
   }
 
-  /** Full-replace the CP set with the reconcile snapshot (register/ok.mcpServers);
-   *  returns whether the set changed. */
-  converge(entries: Array<[string, McpServerDef]>): boolean {
-    const next = new Map(entries)
-    if (next.size === this.cp.size && [...next].every(([k, v]) => isDeepStrictEqual(this.cp.get(k), v))) return false
+  converge(entries: Array<[string, string, McpServerDef]>): boolean {
+    const next = new Map<string, Map<string, McpServerDef>>()
+    for (const [orgId, name, def] of entries) {
+      const definitions = next.get(orgId) ?? new Map<string, McpServerDef>()
+      definitions.set(name, def)
+      next.set(orgId, definitions)
+    }
+    if (
+      next.size === this.cp.size &&
+      [...next].every(([orgId, definitions]) => {
+        const current = this.cp.get(orgId)
+        return (
+          current?.size === definitions.size &&
+          [...definitions].every(([name, def]) => isDeepStrictEqual(current.get(name), def))
+        )
+      })
+    ) {
+      return false
+    }
     this.cp = next
     return true
   }
 
-  /** The effective def map: local config with CP-pushed defs layered on top (CP wins). */
-  effective(): Record<string, McpServerDef> {
-    return { ...this.local, ...Object.fromEntries(this.cp) }
+  effective(orgId: string | undefined): Record<string, McpServerDef> {
+    return { ...this.local, ...Object.fromEntries(orgId ? (this.cp.get(orgId) ?? []) : []) }
+  }
+
+  localDefinitions(): Record<string, McpServerDef> {
+    return { ...this.local }
   }
 }

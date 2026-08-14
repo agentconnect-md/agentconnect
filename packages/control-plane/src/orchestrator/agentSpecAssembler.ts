@@ -206,6 +206,7 @@ export function agentRecordToSpec(
       : { mode: 'scratch', isolation: a.workspace.isolation ?? 'shared', gitCredential: 'github-app' }
   return {
     agentId: a.id,
+    orgId: a.orgId,
     name: a.name,
     // Always ship value or null: explicit null clears a previously replicated
     // daemon-local display name, while an absent wire key means "leave unchanged".

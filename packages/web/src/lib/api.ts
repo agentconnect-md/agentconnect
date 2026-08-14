@@ -18,7 +18,14 @@ import type {
 import { isSelfSender, lifecycleStatus, MOCK_MODE } from '@/lib/data'
 import type { AgentIcon } from '@/lib/agent-icon'
 import { withIconUrl } from '@/lib/agent-icon'
-import { getToken, getIdTokenRaw, getUser, signOutDeletedAccount } from '@/lib/auth'
+import {
+  getToken,
+  getIdTokenRaw,
+  getUser,
+  redirectExpiredSession,
+  refreshTokenAfterUnauthorized,
+  signOutDeletedAccount
+} from '@/lib/auth'
 import { track } from '@/lib/analytics'
 import { createSseParser } from '@/lib/sse'
 import { isUpgradeAvailable } from '@/lib/version'
@@ -1253,8 +1260,44 @@ async function authHeaders(extra?: Record<string, string>): Promise<Record<strin
   return h
 }
 
+function bearerToken(headers: Record<string, string>): string | undefined {
+  return headers.authorization?.replace(/^Bearer\s+/i, '')
+}
+
+async function responseCode(response: Response): Promise<string | undefined> {
+  const body = (await response
+    .clone()
+    .json()
+    .catch(() => ({}))) as Record<string, unknown>
+  return typeof body.code === 'string' ? body.code : undefined
+}
+
+/** Retry one CP request with a forced Logto token refresh. A second 401 means
+ * the browser session cannot recover, so send it back through sign-in instead
+ * of leaving individual panels on a Retry button that replays the same token. */
+async function authenticatedFetch(
+  path: string,
+  init: Omit<RequestInit, 'headers'> = {},
+  extraHeaders?: Record<string, string>
+): Promise<Response> {
+  const url = `${cpBase()}${path}`
+  const firstHeaders = await authHeaders(extraHeaders)
+  const first = await fetch(url, { ...init, headers: firstHeaders })
+  if (first.status !== 401 || (await responseCode(first)) === 'ACCOUNT_GONE') return first
+
+  const refreshed = await refreshTokenAfterUnauthorized(bearerToken(firstHeaders))
+  if (!refreshed) {
+    await redirectExpiredSession()
+    return first
+  }
+
+  const retried = await fetch(url, { ...init, headers: await authHeaders(extraHeaders) })
+  if (retried.status === 401 && (await responseCode(retried)) !== 'ACCOUNT_GONE') await redirectExpiredSession()
+  return retried
+}
+
 async function apiGet<T>(path: string): Promise<T> {
-  const res = await fetch(`${cpBase()}${path}`, { headers: await authHeaders(), cache: 'no-store' })
+  const res = await authenticatedFetch(path, { cache: 'no-store' })
   // Parse the denial body like the write helpers do: reads carry machine-readable
   // `code`s too (e.g. DAEMON_FEATURE_MISSING on a capability-gated route), and a
   // status-only ApiError silently drops them.
@@ -1309,11 +1352,11 @@ async function readSessionEventStream(
   }, SESSION_STREAM_REAUTH_MS)
   const path = `/orgs/${encodeURIComponent(orgId)}/stream`
   try {
-    const res = await fetch(`${cpBase()}${path}`, {
-      headers: await authHeaders({ accept: 'text/event-stream' }),
-      cache: 'no-store',
-      signal: request.signal
-    })
+    const res = await authenticatedFetch(
+      path,
+      { cache: 'no-store', signal: request.signal },
+      { accept: 'text/event-stream' }
+    )
     if (!res.ok) throw new ApiError(`GET ${path} → ${res.status} ${res.statusText}`, res.status)
     if (!res.body) throw new Error('session event stream is not readable')
 
@@ -1402,11 +1445,14 @@ export function subscribeSessionEvents(
 }
 
 async function apiPost<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(`${cpBase()}${path}`, {
-    method: 'POST',
-    headers: await authHeaders({ 'content-type': 'application/json' }),
-    body: JSON.stringify(body)
-  })
+  const res = await authenticatedFetch(
+    path,
+    {
+      method: 'POST',
+      body: JSON.stringify(body)
+    },
+    { 'content-type': 'application/json' }
+  )
   if (!res.ok) throw await apiErrorFromResponse('POST', path, res)
   return (await res.json()) as T
 }
@@ -1426,11 +1472,14 @@ async function apiErrorFromResponse(method: string, path: string, res: Response)
 }
 
 async function apiPatch<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(`${cpBase()}${path}`, {
-    method: 'PATCH',
-    headers: await authHeaders({ 'content-type': 'application/json' }),
-    body: JSON.stringify(body)
-  })
+  const res = await authenticatedFetch(
+    path,
+    {
+      method: 'PATCH',
+      body: JSON.stringify(body)
+    },
+    { 'content-type': 'application/json' }
+  )
   if (!res.ok) {
     // Surface the CP's human-readable denial (e.g. the shared-bot 409s: "no relay
     // is connected…") instead of a bare status line.
@@ -1440,22 +1489,28 @@ async function apiPatch<T>(path: string, body: unknown): Promise<T> {
 }
 
 async function apiPut<T>(path: string, body?: unknown): Promise<T> {
-  const res = await fetch(`${cpBase()}${path}`, {
-    method: 'PUT',
-    headers: await authHeaders(body === undefined ? undefined : { 'content-type': 'application/json' }),
-    ...(body === undefined ? {} : { body: JSON.stringify(body) })
-  })
+  const res = await authenticatedFetch(
+    path,
+    {
+      method: 'PUT',
+      ...(body === undefined ? {} : { body: JSON.stringify(body) })
+    },
+    body === undefined ? undefined : { 'content-type': 'application/json' }
+  )
   if (!res.ok) throw await apiErrorFromResponse('PUT', path, res)
   if (res.status === 204) return undefined as T
   return (await res.json()) as T
 }
 
 async function apiDelete<T>(path: string, body?: unknown): Promise<T> {
-  const res = await fetch(`${cpBase()}${path}`, {
-    method: 'DELETE',
-    headers: await authHeaders(body === undefined ? undefined : { 'content-type': 'application/json' }),
-    ...(body === undefined ? {} : { body: JSON.stringify(body) })
-  })
+  const res = await authenticatedFetch(
+    path,
+    {
+      method: 'DELETE',
+      ...(body === undefined ? {} : { body: JSON.stringify(body) })
+    },
+    body === undefined ? undefined : { 'content-type': 'application/json' }
+  )
   if (!res.ok) throw await apiErrorFromResponse('DELETE', path, res)
   // Some deletes reply 204 No Content (daemon delete); others 200 with a body
   // (key revoke). Parse a body only when there is one.
@@ -3379,18 +3434,18 @@ export interface IconResult {
 // object store, so we send the resized blob directly (not JSON). Returns the new
 // icon descriptor + resolved store URL, reassembled into {kind:'image',url} for callers.
 async function putIconBlob(path: string, blob: Blob): Promise<IconResult> {
-  const res = await fetch(`${cpBase()}${path}`, {
-    method: 'PUT',
-    headers: await authHeaders({ 'content-type': blob.type || 'application/octet-stream' }),
-    body: blob
-  })
+  const res = await authenticatedFetch(
+    path,
+    { method: 'PUT', body: blob },
+    { 'content-type': blob.type || 'application/octet-stream' }
+  )
   if (!res.ok) throw await apiErrorFromResponse('PUT', path, res)
   const d = (await res.json()) as IconResult
   return { icon: withIconUrl(d.icon, d.iconUrl), iconUrl: d.iconUrl }
 }
 
 async function deleteIcon(path: string): Promise<IconResult> {
-  const res = await fetch(`${cpBase()}${path}`, { method: 'DELETE', headers: await authHeaders() })
+  const res = await authenticatedFetch(path, { method: 'DELETE' })
   if (!res.ok) throw await apiErrorFromResponse('DELETE', path, res)
   const d = (await res.json()) as IconResult
   return { icon: withIconUrl(d.icon, d.iconUrl), iconUrl: d.iconUrl }
@@ -3937,11 +3992,11 @@ export async function refreshMySocialIdentities(): Promise<void> {
 
 async function putMyProfilePicture(blob: Blob): Promise<MeDto> {
   const path = '/me/picture'
-  const res = await fetch(`${cpBase()}${path}`, {
-    method: 'PUT',
-    headers: await authHeaders({ 'content-type': blob.type || 'application/octet-stream' }),
-    body: blob
-  })
+  const res = await authenticatedFetch(
+    path,
+    { method: 'PUT', body: blob },
+    { 'content-type': blob.type || 'application/octet-stream' }
+  )
   if (!res.ok) throw await apiErrorFromResponse('PUT', path, res)
   return (await res.json()) as MeDto
 }
@@ -4764,7 +4819,7 @@ export async function fetchGithubRepos(
   const path = `${orgBase()}/github/installations/${encodeURIComponent(installationId)}/repositories?page=${page}&perPage=${GITHUB_REPO_PAGE_SIZE}`
   return withGithubRepoRequestLimit(async () => {
     for (let attempt = 0; ; attempt++) {
-      const res = await fetch(`${cpBase()}${path}`, { headers: await authHeaders(), cache: 'no-store', signal })
+      const res = await authenticatedFetch(path, { cache: 'no-store', signal })
       if (res.ok) {
         const body = (await res.json()) as Omit<GithubRepoPage, 'privateReposHidden'> & {
           privateReposHidden?: boolean
@@ -4896,11 +4951,7 @@ export async function fetchGithubInstallationRepo(
 ): Promise<GithubRepoDto> {
   const path = `${orgBase()}/github/installations/${encodeURIComponent(installationId)}/repositories/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`
   return withGithubRepoRequestLimit(async () => {
-    const res = await fetch(`${cpBase()}${path}`, {
-      headers: await authHeaders(),
-      cache: 'no-store',
-      signal
-    })
+    const res = await authenticatedFetch(path, { cache: 'no-store', signal })
     if (!res.ok) {
       const body = (await res.json().catch(() => ({}))) as { code?: string; message?: string }
       throw new ApiError(body.message ?? `GET ${path} → ${res.status}`, res.status, body.code)
@@ -4935,7 +4986,7 @@ export async function fetchGithubRepoAccess(
   repo: string
 ): Promise<GithubRepoAccess> {
   const path = `${orgBase()}/github/installations/${encodeURIComponent(installationId)}/repositories/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/access`
-  const res = await fetch(`${cpBase()}${path}`, { headers: await authHeaders(), cache: 'no-store' })
+  const res = await authenticatedFetch(path, { cache: 'no-store' })
   if (res.status === 404) return { gated: false, canRead: true, canWrite: true, identityRequired: false }
   if (res.status === 403) {
     const body = (await res.json().catch(() => ({}))) as { code?: string; message?: string }
@@ -4992,11 +5043,11 @@ export async function createAgentRepo(
   input: { repoFullName: string; access: RepoAccess }
 ): Promise<AgentRepoAuthDto> {
   const path = `${orgBase()}/agents/${encodeURIComponent(agentId)}/repos`
-  const res = await fetch(`${cpBase()}${path}`, {
-    method: 'POST',
-    headers: await authHeaders({ 'content-type': 'application/json' }),
-    body: JSON.stringify(input)
-  })
+  const res = await authenticatedFetch(
+    path,
+    { method: 'POST', body: JSON.stringify(input) },
+    { 'content-type': 'application/json' }
+  )
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { code?: string; message?: string }
     throw new ApiError(body.message ?? `POST ${path} → ${res.status} ${res.statusText}`, res.status, body.code)
@@ -5010,11 +5061,11 @@ export async function updateAgentRepo(
   input: { access: RepoAccess }
 ): Promise<AgentRepoAuthDto> {
   const path = `${orgBase()}/agents/${encodeURIComponent(agentId)}/repos/${encodeURIComponent(repoAuthId)}`
-  const res = await fetch(`${cpBase()}${path}`, {
-    method: 'PATCH',
-    headers: await authHeaders({ 'content-type': 'application/json' }),
-    body: JSON.stringify(input)
-  })
+  const res = await authenticatedFetch(
+    path,
+    { method: 'PATCH', body: JSON.stringify(input) },
+    { 'content-type': 'application/json' }
+  )
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { code?: string; message?: string }
     throw new ApiError(body.message ?? `PATCH ${path} → ${res.status} ${res.statusText}`, res.status, body.code)

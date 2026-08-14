@@ -35,6 +35,19 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
     state.capabilities = req.capabilities
     state.maxAgents = req.maxAgents
     state.assignments.clear()
+    state.orgByAgent = new Map(snap.agents.flatMap((agent) => (agent.orgId ? [[agent.agentId, agent.orgId]] : [])))
+    state.orgByIntegration = new Map(
+      snap.integrations.flatMap((integration) =>
+        integration.orgId ? [[integration.integrationId, integration.orgId]] : []
+      )
+    )
+    state.orgByCron = new Map(snap.crons.flatMap((cron) => (cron.orgId ? [[cron.cronId, cron.orgId]] : [])))
+    state.orgByMcpServer = new Map(
+      snap.mcpServers.flatMap((server) => (server.orgId ? [[server.name, server.orgId]] : []))
+    )
+    state.orgByMemoryConnection = new Map(
+      snap.memoryConnections.flatMap((memory) => (memory.orgId ? [[memory.connectionId, memory.orgId]] : []))
+    )
   }
   for (const a of snap.assignments) {
     deps.connReg.bindSession(a.sessionKey, conn.daemonId)

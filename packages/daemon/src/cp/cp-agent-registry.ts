@@ -146,6 +146,7 @@ export class CpAgentRegistry {
   private readonly active = new Map<string, LoadedAgent>()
   private readonly detached = new Map<string, LoadedAgent>()
   private readonly revisions = new Map<string, AppliedConfigRevision>()
+  private readonly organizations = new Map<string, string>()
 
   constructor(
     private readonly agentsDir: string,
@@ -160,6 +161,14 @@ export class CpAgentRegistry {
 
   agents(): LoadedAgent[] {
     return [...this.active.values()]
+  }
+
+  orgForAgent(agentId: string): string | undefined {
+    return this.organizations.get(agentId)
+  }
+
+  organizationIds(): string[] {
+    return [...new Set(this.organizations.values())]
   }
 
   /** CP-owned data roots, including marker-only replicas after daemon restart. */
@@ -191,6 +200,7 @@ export class CpAgentRegistry {
     this.active.delete(agentId)
     this.detached.delete(agentId)
     this.revisions.delete(agentId)
+    this.organizations.delete(agentId)
     this.onChange()
   }
 
@@ -301,6 +311,7 @@ export class CpAgentRegistry {
     rmSync(join(located.dir, '.cp-config-revision.json'), { force: true })
     this.detached.delete(agentId)
     this.active.set(agentId, agent)
+    if (spec.orgId) this.organizations.set(agentId, spec.orgId)
     if (revision !== undefined) this.revisions.set(agentId, { revision, digest })
     return 'apply'
   }

@@ -11,7 +11,11 @@ export const handleGithubReviewResult: Handler = async (frame, conn, deps) => {
     return
   }
   try {
-    await deps.githubReviewBroker.recordResult(frame.payload, DaemonId(conn.daemonId))
+    await deps.githubReviewBroker.recordResult(
+      frame.payload,
+      DaemonId(conn.daemonId),
+      frame.orgId ?? conn.orgId ?? undefined
+    )
     // Only a submitted mutation changes the informational Check. Await that
     // convergence before ACK so a daemon retry can close a crash window. A
     // proved non-effect has no projection edge to converge.

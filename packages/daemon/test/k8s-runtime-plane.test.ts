@@ -143,11 +143,13 @@ async function until(predicate: () => boolean, timeoutMs = 10_000): Promise<bool
 }
 
 describe('k8s plane settings', () => {
-  it('refuses to start without an org or a pool rather than guessing one', () => {
-    // A guessed org labels another tenant's claims; a guessed pool yields sandboxes that never
-    // bind, with nothing in the logs explaining why.
-    expect(() => k8sPlaneSettings({})).toThrow(/AC_K8S_ORG_ID/)
-    expect(() => k8sPlaneSettings({ AC_K8S_ORG_ID: 'org-1' })).toThrow(/AC_K8S_WARM_POOL/)
+  it('requires a pool but permits an install-wide daemon without an org', () => {
+    // The pool is deployment-owned, while an install-wide daemon resolves the tenant per agent.
+    expect(() => k8sPlaneSettings({})).toThrow(/AC_K8S_WARM_POOL/)
+    expect(k8sPlaneSettings({ AC_K8S_WARM_POOL: 'pool' })).toEqual({
+      warmPoolName: 'pool',
+      shimPort: 8085
+    })
     expect(k8sPlaneSettings({ AC_K8S_ORG_ID: 'org-1', AC_K8S_WARM_POOL: 'pool' })).toEqual({
       orgId: 'org-1',
       warmPoolName: 'pool',

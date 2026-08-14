@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { FakeClock } from '@agentconnect.md/connection'
-import { K8sDriver, DRAIN_REQUESTED_ANNOTATION, AC_LABEL_AGENT } from '../src/k8s/driver.js'
+import { K8sDriver, DRAIN_REQUESTED_ANNOTATION, AC_LABEL_AGENT, AC_LABEL_ORG } from '../src/k8s/driver.js'
 import { OperatingModeRejectedError } from '../src/k8s/sandbox-api.js'
 import { K8sApiError, type ResourceEvent } from '@agentconnect.md/k8s-client'
 import type { Sandbox, SandboxClaim } from '../src/k8s/sandbox-api.js'
@@ -110,7 +110,7 @@ function driver(api: ReturnType<typeof fakeApi>['api'], overrides: Record<string
     ((record: SpawnRecord, podIp: string, timeoutMs: number) => Promise<ShimConnection>) | undefined
   const instance = new K8sDriver({
     api: api as never,
-    orgId: 'org-1',
+    orgForAgent: () => 'org-1',
     warmPoolName: 'ac-runtime-standard-pool',
     clock,
     log: { info: () => {}, warn: () => {}, debug: () => {} },
@@ -133,10 +133,24 @@ describe('cluster spawn driver', () => {
     expect(claim.metadata.name).toBe('agent-agent-a')
     expect(claim.spec?.warmPoolRef?.name).toBe('ac-runtime-standard-pool')
     expect(claim.spec?.additionalPodMetadata?.labels?.[AC_LABEL_AGENT]).toBe('agent-a')
+    expect(claim.spec?.additionalPodMetadata?.labels?.[AC_LABEL_ORG]).toBe('org-1')
     // A claim carrying env or volumeClaimTemplates bypasses warm-pool adoption, so identity
     // travels over the handshake instead. This asserts the shape stays clean.
     expect((claim.spec as Record<string, unknown>).env).toBeUndefined()
     expect((claim.spec as Record<string, unknown>).volumeClaimTemplates).toBeUndefined()
+  })
+
+  it('resolves the organization independently for each agent claim', async () => {
+    const { api, state } = fakeApi()
+    const { instance } = driver(api, {
+      orgForAgent: (agentId: string) => (agentId === 'agent-a' ? 'org-a' : 'org-b')
+    })
+    await instance.ensureSandbox('agent-a')
+    await instance.ensureSandbox('agent-b')
+    expect(state.created.map((claim) => claim.spec?.additionalPodMetadata?.labels?.[AC_LABEL_ORG])).toEqual([
+      'org-a',
+      'org-b'
+    ])
   })
 
   it('dials the ready pod IP with a launch record naming that pod', async () => {

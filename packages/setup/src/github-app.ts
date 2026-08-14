@@ -156,7 +156,10 @@ function githubServiceUrl(value: string | undefined, label: string): string {
   if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) {
     throw new Error(`GitHub App ${label} URL must use HTTPS unless it is loopback`)
   }
-  return url.origin
+  if (url.username || url.password || url.search || url.hash) {
+    throw new Error(`GitHub App ${label} URL must not contain credentials, query, or fragment`)
+  }
+  return `${url.origin}${url.pathname.replace(/\/+$/, '')}`
 }
 
 export function githubConfiguredUrls(

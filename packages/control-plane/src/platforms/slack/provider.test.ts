@@ -510,6 +510,7 @@ describe('slack projection equivalence with the live integrationToSpec path (dir
       { channel: 'C1', match: { kind: 'auto' } }
     ]
     expect(spec).toEqual({
+      orgId: INTEGRATION.orgId,
       integrationId: INTEGRATION.id,
       agentId: INTEGRATION.agentId,
       platform: 'slack',
@@ -578,6 +579,7 @@ describe('slack projection equivalence with the live httpIntegrationToSpec path 
       false
     )
     expect(spec).toEqual({
+      orgId: INTEGRATION.orgId,
       integrationId: INTEGRATION.id,
       agentId: INTEGRATION.agentId,
       platform: 'slack',

@@ -193,12 +193,8 @@ export interface SessionReader {
 
 type TranscriptReadStore = Pick<
   LocalStore,
-  | 'transcriptTailForAgent'
-  | 'transcriptPageForAgentByEventTime'
-  | 'transcriptPageForAgent'
-  | 'currentTranscriptRevision'
-  | 'getToolBodyForAgent'
->
+  'transcriptTailForAgent' | 'transcriptPageForAgentByEventTime' | 'transcriptPageForAgent' | 'getToolBodyForAgent'
+> & { currentTranscriptRevision(agentId: string): number }
 
 type AsyncTranscriptReadStore = {
   [Method in keyof TranscriptReadStore]: (
@@ -436,7 +432,7 @@ export function createSessionReader(
       return {
         sessionId: req.sessionId,
         messages: kept,
-        liveCursor: String(transcriptPageCursor(page) ?? (await transcriptRead.currentTranscriptRevision())),
+        liveCursor: String(transcriptPageCursor(page) ?? (await transcriptRead.currentTranscriptRevision(rec.agentId))),
         ...(hasOlder && oldestKept
           ? {
               nextCursor:

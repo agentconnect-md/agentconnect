@@ -215,6 +215,12 @@ export class DaemonRegistryService implements DaemonRegistry {
     return toView(d, await this.runtimeProfiles.forDaemon(daemonId))
   }
 
+  async getAvailable(orgId: OrgId, daemonId: DaemonId): Promise<DaemonView | null> {
+    const d = await this.daemons.getAvailable(orgId, daemonId)
+    if (!d) return null
+    return toView(d, await this.runtimeProfiles.forDaemon(daemonId))
+  }
+
   async getUnscoped(daemonId: DaemonId): Promise<DaemonView | null> {
     const d = await this.daemons.getUnscoped(daemonId)
     if (!d) return null
@@ -222,7 +228,14 @@ export class DaemonRegistryService implements DaemonRegistry {
   }
 
   async list(orgId: OrgId, viewer?: ViewCtx): Promise<DaemonView[]> {
-    const rows = await this.daemons.list(orgId, viewer)
+    return this.views(await this.daemons.list(orgId, viewer))
+  }
+
+  async listAvailable(orgId: OrgId, viewer?: ViewCtx): Promise<DaemonView[]> {
+    return this.views(await this.daemons.listAvailable(orgId, viewer))
+  }
+
+  private async views(rows: DaemonRecord[]): Promise<DaemonView[]> {
     // One batched query for the whole fleet, grouped by daemon (no N+1).
     const profiles = await this.runtimeProfiles.forDaemons(rows.map((d) => d.id))
     const byDaemon = new Map<string, RuntimeProfileRecord[]>()

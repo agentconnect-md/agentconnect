@@ -166,13 +166,19 @@ export class RelayCpClient {
    * relay holds no database, so the daemon-facing `rd/hello` handler (PR 2) and
    * the browser webchat handshake (PR 3) resolve their credentials this way.
    * Usable only while READY; throws a retryable {@link WireError} otherwise.
+   *
+   * `daemonId` is forwarded unverified; CP requires it to match the reviewed install identity.
    */
-  async verify(kind: RcVerify['kind'], credential: string): Promise<RcVerifyResult> {
+  async verify(kind: RcVerify['kind'], credential: string, daemonId?: string): Promise<RcVerifyResult> {
     if (this.state !== 'READY' || !this.transport) {
       throw new WireError('INTERNAL', `relay↔CP link not ready (${this.state})`, true)
     }
     const request: RcVerify =
-      kind === 'webchat-token' ? { kind, credential, conversationBinding: 'v1' } : { kind, credential }
+      kind === 'webchat-token'
+        ? { kind, credential, conversationBinding: 'v1' }
+        : kind === 'daemon-token'
+          ? { kind, credential, ...(daemonId ? { daemonId } : {}) }
+          : { kind, credential }
     const rep = await this.sendRequest(buildRelayCpFrame('rc/verify', request))
     if (rep.type !== 'rc/verify/ok') {
       throw new WireError('INTERNAL', `expected rc/verify/ok, got ${rep.type}`, false)

@@ -100,6 +100,9 @@ type DaemonDto = {
     name: string
     transport: string
   }[]
+  canEdit: boolean
+  canManageSharing: boolean
+  canManageLifecycle: boolean
 }
 
 describe('GET /daemons — live-status overlay', () => {
@@ -111,6 +114,33 @@ describe('GET /daemons — live-status overlay', () => {
     const d = rows.find((r) => r.daemonId === DAEMON)
     expect(d).toBeDefined()
     expect(d!.status).toBe('offline') // durable status is still `ready`, but it is not connected
+  })
+
+  it('lists an install-wide cloud daemon without granting org-owned mutation access', async () => {
+    const cloud = await new PgDaemonRepo(prisma).resolveCloudClusterIdentity(
+      'system:serviceaccount:agentconnect:ac-cloud-daemon',
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    )
+    running = buildHttpApp(prisma)
+
+    const rows = (await running.app.inject({ method: 'GET', url: `${ORG}/daemons` })).json() as DaemonDto[]
+    expect(rows.find((row) => row.daemonId === cloud.id)).toMatchObject({
+      canEdit: false,
+      canManageSharing: false,
+      canManageLifecycle: false
+    })
+
+    const issueKey = await running.app.inject({ method: 'POST', url: `${ORG}/daemons/${cloud.id}/keys` })
+    expect(issueKey.statusCode).toBe(404)
+    expect(await prisma.apiKey.count({ where: { daemonId: cloud.id } })).toBe(0)
+
+    expect((await running.app.inject({ method: 'POST', url: `${ORG}/daemons/${cloud.id}/restart` })).statusCode).toBe(
+      404
+    )
+    expect(
+      (await running.app.inject({ method: 'PATCH', url: `${ORG}/daemons/${cloud.id}`, payload: { name: 'mine' } }))
+        .statusCode
+    ).toBe(404)
   })
 
   it('reads `ready` when the daemon is live + reachable, `unreachable` when frozen', async () => {
