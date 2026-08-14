@@ -2210,7 +2210,6 @@ export class Daemon {
   // `--k8s`: this daemon supervises runtimes in sandbox pods instead of local
   // subprocesses, so every "daemon and runtime share one machine" behavior is off.
   private readonly k8s: boolean
-  private readonly cloud: boolean
   /** Reads this pod's projected CP-audience token; undefined unless the daemon runs
    *  in-cluster AND the volume is actually mounted (decided once, at boot). */
   private readonly clusterIdentityToken?: () => string | undefined
@@ -2465,7 +2464,6 @@ export class Daemon {
     } = {}
   ) {
     this.k8s = opts.k8s === true
-    this.cloud = this.k8s && !process.env[K8S_ORG_ID_ENV]?.trim()
     // The mount either exists for this pod's whole life or never does, so availability is
     // decided once here; the VALUE is re-read per connect, because the kubelet rotates it.
     this.clusterIdentityToken = this.k8s && readClusterIdentityToken() ? () => readClusterIdentityToken() : undefined
@@ -2846,7 +2844,7 @@ export class Daemon {
           : 'daemon startup refused: security.requireSandbox is true but this host has no supported Linux SRT/bwrap mechanism'
       )
     }
-    if (this.cloud) {
+    if (this.k8s) {
       const openDataPlane = this.opts.openDataPlane ?? openMountedPostgresDataPlane
       this.dataPlane = await openDataPlane(
         (agentId) => this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId),

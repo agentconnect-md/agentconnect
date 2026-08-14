@@ -5,10 +5,10 @@ daemon must not open `state/local.sqlite`, use SQLite as a write-through cache, 
 replicate a subset of SQLite rows into PostgreSQL. PostgreSQL is the only durable
 write target and the source of every restart/read-back decision.
 
-This rule applies to the pooled `ac-cloud-daemon` identity, not to every process
-started with `--k8s`. Local, self-hosted, and single-organization envelope daemons
-keep their daemon-local SQLite store and never read the cloud data-plane
-configuration.
+This rule applies to every process started with `--k8s`, including the pooled
+`ac-cloud-daemon` identity and single-organization envelope daemons. Local and
+self-hosted daemons started without `--k8s` keep their daemon-local SQLite store and
+never read the cloud data-plane configuration.
 
 The daemon accepts no database CLI flag or environment variable. The deployment must mount a Kubernetes Secret at `/var/run/ac-data-plane/config.json`:
 
@@ -80,6 +80,6 @@ members.
 
 There is no SQLite-to-PostgreSQL backfill or dual-write cutover inside a running cloud
 daemon. Deployments migrate the PostgreSQL schema first, stop any pre-single-store
-cloud workload, and then start binaries that use PostgreSQL exclusively. Local and
-envelope SQLite files are not imported because they belong to a different deployment
-shape and authority boundary.
+cloud workload, and then start binaries that use PostgreSQL exclusively. Local
+SQLite files are not imported because they belong to a different deployment shape
+and authority boundary.

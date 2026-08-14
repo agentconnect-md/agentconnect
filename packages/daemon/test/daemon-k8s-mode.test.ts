@@ -137,15 +137,13 @@ describe('daemon --k8s mode', () => {
     }
   })
 
-  it('keeps the single-organization envelope store local', async () => {
+  it('uses the mounted PostgreSQL store for a single-organization envelope', async () => {
     vi.stubEnv(K8S_ORG_ID_ENV, 'org-envelope')
     const rootDir = root()
-    const openDataPlane = vi.fn()
-    const instance = daemon({ root: rootDir, k8s: true, openDataPlane })
+    const instance = daemon({ root: rootDir, k8s: true })
     try {
       await instance.start()
-      expect(openDataPlane).not.toHaveBeenCalled()
-      expect(existsSync(statePath(rootDir))).toBe(true)
+      expect(existsSync(statePath(rootDir))).toBe(false)
     } finally {
       await instance.stop()
       vi.unstubAllEnvs()
