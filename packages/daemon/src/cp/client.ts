@@ -390,7 +390,8 @@ export class CpClient {
     if (this.lastAuthedEpoch > 0) {
       authPayload.resume = { lastEpoch: this.lastAuthedEpoch }
     }
-    const authOk = await this.request('auth', authPayload)
+    const auth = buildEnvelope('auth', authPayload)
+    const authOk = await this.correlator.request(auth, (encoded) => expectedTransport.send(encoded))
     const ok = authOk.payload as {
       daemonId: string
       sessionEpoch: number
@@ -775,15 +776,7 @@ export class CpClient {
     return this.correlator.request(frame, (e) => this.transport!.send(e))
   }
 
-  /**
-   * `gitcred/request` (D→C REQ) → grant payload. The FIRST post-handshake
-   * daemon-issued REQ, so unlike the handshake `request()` it is state-GATED:
-   * outside READY/DRAINING it fails immediately (the credential cache degrades
-   * to its unexpired copy or errors) — never queued, never a bare
-   * `transport!.send` on a dead socket. Single send + 10s budget: the default
-   * 5s×5 retransmit would blow every git-side timeout, and CP-side mint
-   * single-flight makes a later fresh request cheap anyway.
-   */
+  /** Request a short-lived git credential only while connected, with one send and a 10s timeout. */
   async requestGitCred(payload: GitCredRequest): Promise<GitCredGrant> {
     if ((this.state !== 'READY' && this.state !== 'DRAINING') || !this.transport) {
       throw new WireError('INTERNAL', `control plane unreachable (client ${this.state})`, true)
