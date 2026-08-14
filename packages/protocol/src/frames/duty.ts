@@ -67,3 +67,25 @@ export const DutyRelease = z.object({
   groupIds: z.array(z.string().uuid()).min(1).max(1000)
 })
 export type DutyRelease = z.infer<typeof DutyRelease>
+
+/**
+ * D→C REQ (reply: `duty/claim/ok`) — the activation rendezvous of the design's
+ * §4.4. A member handed a trigger for an agent it does not serve claims that
+ * agent's group on receipt: winning creates or takes the lease and it serves the
+ * trigger; losing names the incumbent so the router can re-route. Idempotent for
+ * the current holder, so a retry never churns a term.
+ */
+export const DutyClaim = z.object({
+  agentId: z.string().uuid()
+})
+export type DutyClaim = z.infer<typeof DutyClaim>
+
+/** C→D REP to `duty/claim`. `granted` ⇒ `grant` carries the lease exactly as a
+ *  `duty/grant` entry would; otherwise `holder` names the live incumbent (absent
+ *  when the CP cannot resolve one, e.g. an unknown agent). */
+export const DutyClaimOk = z.object({
+  granted: z.boolean(),
+  grant: DutyGrantEntry.optional(),
+  holder: z.string().uuid().optional()
+})
+export type DutyClaimOk = z.infer<typeof DutyClaimOk>

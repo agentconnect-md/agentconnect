@@ -1,5 +1,10 @@
 import { describe, it, expect, vi } from 'vitest'
-import { buildRelayCpFrame, RELAY_CP_SUBPROTOCOL, type RelayCpFrame } from '@agentconnect.md/protocol'
+import {
+  buildRelayCpFrame,
+  RELAY_CP_SUBPROTOCOL,
+  WEBCHAT_SESSION_CONTINUATION_FEATURE,
+  type RelayCpFrame
+} from '@agentconnect.md/protocol'
 import { FakeClock, type Transport } from '@agentconnect.md/connection'
 import { RelayCpClient, type RelayCpClientDeps } from './relay-cp-client.js'
 import type { Logger } from './log.js'
@@ -121,7 +126,11 @@ describe('RelayCpClient', () => {
     const auth = transport.lastReq('rc/auth')!
     expect(auth.payload).toEqual({ method: 'token', credential: TOKEN })
     const reg = transport.lastReq('rc/register')!
-    expect(reg.payload).toEqual({ name: 'relay-0', daemonUrl: 'wss://relay-0.example' })
+    expect(reg.payload).toEqual({
+      name: 'relay-0',
+      daemonUrl: 'wss://relay-0.example',
+      features: [WEBCHAT_SESSION_CONTINUATION_FEATURE]
+    })
 
     expect(client.state).toBe('READY')
     expect(client.relayId).toBe(RELAY_ID)

@@ -30,6 +30,7 @@ import {
 import { useConsoleData } from '@/lib/data-context'
 import {
   webchatWsUrl,
+  webchatSessionWsUrl,
   addWebchatConversationAgent,
   fmtCountCompact,
   fmtCost,
@@ -103,6 +104,11 @@ interface PlaygroundData {
      *  session id in the same tick, before setPgImage state could land. */
     image?: SessionImage
   ) => boolean
+  /** Mark `id` (a CP session id) as a session-targeted continuation: the socket
+   *  mints through the session-target token route and the daemon dispatches
+   *  turns onto that session's own platform coordinates
+   *  (webchat-cross-integration-continuation.md §6.5). */
+  markSessionTarget: (id: string) => void
   /** Messages queued while a turn streams, oldest first. */
   getPgQueue: (id: string) => QueuedTurn[]
   /** Remove one queued message before it is sent. */
@@ -291,6 +297,9 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   const pgQueueRef = useRef<Record<string, QueuedTurn[]>>({})
   const conns = useRef<Map<string, Conn>>(new Map())
   const conversationIds = useRef<Map<string, string>>(new Map())
+  // CP session ids opened as session-targeted continuations — their sockets mint
+  // through the session-target token route instead of the playground mints.
+  const sessionTargets = useRef<Set<string>>(new Set())
   // Creation-time roster per session id (primary first) — drives the
   // conversation-scoped token mint for a multi-agent create.
   const rosterAgentIds = useRef<Map<string, string[]>>(new Map())
@@ -825,7 +834,14 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       const ready = new Promise<WebSocket>((resolve, reject) => {
         const orgId = activeOrg?.id
         if (!orgId) return reject(new Error('no active org'))
-        void webchatWsUrl(orgId, agentId, resumeId, rosterAgentIds.current.get(id))
+        // A session-targeted continuation mints through the session-target route
+        // on every (re)connect — the CP re-runs the continuation gates and
+        // converges on the caller's one adopted conversation.
+        void (
+          sessionTargets.current.has(id)
+            ? webchatSessionWsUrl(orgId, id)
+            : webchatWsUrl(orgId, agentId, resumeId, rosterAgentIds.current.get(id))
+        )
           .then((url) => {
             const ws = new WebSocket(url)
             ws.onopen = () => resolve(ws)
@@ -1386,6 +1402,10 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   )
   const pgSessionList = useMemo(() => Object.values(pgSessions), [pgSessions])
 
+  const markSessionTarget = useCallback((id: string): void => {
+    sessionTargets.current.add(id)
+  }, [])
+
   const value = useMemo<PlaygroundData>(
     () => ({
       getPgInput,
@@ -1399,6 +1419,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       openPlayground,
       pgAddAgent,
       pgSend,
+      markSessionTarget,
       getPgQueue,
       pgCancelQueued,
       pgSetModel,
@@ -1424,6 +1445,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       openPlayground,
       pgAddAgent,
       pgSend,
+      markSessionTarget,
       getPgQueue,
       pgCancelQueued,
       pgSetModel,

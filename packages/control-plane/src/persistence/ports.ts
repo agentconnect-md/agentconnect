@@ -40,7 +40,7 @@ import type {
   OrgId
 } from '../domain/ids.js'
 import type { SessionKey } from '../domain/sessionKey.js'
-import type { DutyMemberKey, DutyReconcilePlan } from '../domain/duty.js'
+import type { DutyMemberKey, DutyReconcilePlan, DutyEdge, CronSeed } from '../domain/duty.js'
 import type {
   OrganizationEnvironmentAudience,
   OrganizationEnvironmentKind,
@@ -257,6 +257,31 @@ export interface DaemonRepo {
    * exactly like an absent row (→ 404).
    */
   delete(orgId: OrgId, daemonId: DaemonId): Promise<void>
+  /**
+   * Install-wide cloud members nothing has been heard from since `cutoff` — the rows left
+   * behind by replaced Pods, which no org's DELETE can reach because no org owns them
+   * (agentconnect-org-operator.md §"The cloud daemon, which serves every org": a replacement
+   * Pod gets a new daemon ID). System-tier and deliberately fleet-wide, like
+   * {@link DaemonRepo.findReassignable}. Never-connected rows are judged by `createdAt`.
+   */
+  findRetiredCloudMembers(cutoff: Date): Promise<DaemonRecord[]>
+  /**
+   * Retire ONE install-wide cloud member: the fenced delete (cascading exactly like
+   * {@link DaemonRepo.delete}) plus the database-side settlement of every agent it hosted, in
+   * one transaction — so no crash can leave an agent unplaced but still `active`.
+   *
+   * A compare-and-delete, not a delete: the whole fence rides one statement — the org-less
+   * cloud shape (so it cannot touch an org's own daemon), the same `retiredBefore` cutoff the
+   * worklist selected on, and the `sessionEpoch` observed there, which a (re)auth bumps before
+   * the first heartbeat moves `lastSeenAt`. A row that stopped matching yields
+   * `deleted: false`, having written nothing, so nothing downstream runs for a member that
+   * came back. `settled` is the agents this call actually unplaced — the audience for the
+   * out-of-database pushes that follow, excluding any a concurrent writer had already moved.
+   */
+  retireCloudMember(
+    daemonId: DaemonId,
+    fence: { retiredBefore: Date; sessionEpoch: bigint }
+  ): Promise<{ deleted: boolean; settled: { id: AgentId; orgId: OrgId }[] }>
   /** Bump THIS daemon's `routingEpoch` atomically; returns the new value (§4.11).
    *  System-tier: the orchestrator drives it from a routing decision it already
    *  resolved, so an org parameter would be tautological (§3.4). */
@@ -539,6 +564,8 @@ export interface RelayRecord {
   name: string
   /** Per-instance-routable address daemons dial (never a pool LB — design §5). */
   daemonUrl: string
+  /** Advertised relay features (rc/register.features), refreshed on register. */
+  features: string[]
   lastSeenAt: Date | null
   createdAt: Date
 }
@@ -547,7 +574,7 @@ export interface RelayRepo {
   /** Upsert by the unique `name` (the relay's stable identity): create with a fresh
    *  id or reclaim the existing row, refreshing `daemonUrl` + `lastSeenAt` to `at`.
    *  Atomic on the unique name so a restart racing the sweeper can't duplicate a pod. */
-  upsertByName(name: string, daemonUrl: string, at: Date): Promise<RelayRecord>
+  upsertByName(name: string, daemonUrl: string, at: Date, features?: string[]): Promise<RelayRecord>
   /** Bump `lastSeenAt` on `rc/heartbeat` (liveness for the failover sweeper). Returns
    *  false when the row is gone (already swept) — the caller forces a re-register so a
    *  relay swept during a stall doesn't linger connected-but-absent from the roster. */
@@ -1422,6 +1449,18 @@ export interface WebchatConversationRepo {
   /** Owner check for the conversation-scoped mint path: returns the primary
    *  agent when (conversationId, orgId, userId) matches, else null. */
   ownedBy(conversationId: string, orgId: OrgId, userId: string): Promise<{ primaryAgentId: AgentId } | null>
+  /** Session-targeted continuation (webchat-cross-integration-continuation.md
+   *  §6.2): find-or-create the caller's ONE conversation adopting
+   *  `targetSessionId` — concurrent mints converge on the
+   *  `(userId, targetSessionId)` unique row. Creation atomically installs the
+   *  adopted session as `currentSessionId` and the single primary participant. */
+  upsertSessionTargeted(
+    binding: Omit<WebchatConversationBinding, 'conversationId'>,
+    targetSessionId: string
+  ): Promise<{ conversationId: string }>
+  /** The conversation's continuation target (null target = ordinary webchat
+   *  conversation; null return = unknown/foreign conversation). */
+  target(conversationId: string): Promise<{ targetSessionId: string | null } | null>
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -5116,14 +5155,28 @@ export interface DutyGroupRepo {
   /** "Grant me up to `max` vacant groups": first valid claim wins (SKIP LOCKED),
    *  each grant bumps the term. Install-wide — capacity gating is the caller's.
    *  `maxMembers` excludes undeliverable (oversized) groups at the claim
-   *  boundary, so they never churn or starve the vacancies behind them. */
+   *  boundary, so they never churn or starve the vacancies behind them.
+   *  `incumbentOnly` restricts vacancies to groups with an agent already placed
+   *  on the claimant (`agent.daemonId`) — the soak-phase grant policy that pins
+   *  duties where state already lives until the shared data plane arrives. */
   claimVacant(
     holder: DaemonId,
     max: number,
     now: Date,
     leaseMs: number,
-    maxMembers?: number
+    opts?: { maxMembers?: number; incumbentOnly?: boolean }
   ): Promise<DutyGrantRecord[]>
+  /** The group-computation inputs for one org: active integrations on
+   *  daemon-held (socket, unrevoked) bots as edges; enabled crons as seeds. */
+  computeInputs(orgId: OrgId): Promise<{ edges: DutyEdge[]; seeds: CronSeed[] }>
+  /** Keyset rotation over orgs that can need a recompute — any org owning an
+   *  integration, an enabled cron, or an existing duty group. */
+  listDutyOrgs(afterOrgId: string | null, limit: number): Promise<string[]>
+  /** Soak-phase placement fence: vacate every held group whose holder no longer
+   *  hosts ANY of its agents (a full placement move-away), so the new incumbent
+   *  can claim. Partial occupancy keeps the lease — split groups never flap.
+   *  Returns the vacated groupIds. */
+  vacateNonIncumbent(orgId: OrgId): Promise<string[]>
   /** Batched renewal — one write per heartbeat covering every held group.
    *  Term-preserving; a reassigned group simply stops matching. Returns the
    *  renewed groupIds for digest comparison. */

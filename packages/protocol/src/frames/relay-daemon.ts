@@ -200,6 +200,10 @@ export const RdMsgWebchat = z.object({
   sessionKey: z.string().min(1),
   msgId: z.string().min(1), // relay-minted idempotency key (unique per op)
   chatId: z.string().uuid(), // == conversationId (SessionKey.channel for 'webchat')
+  // Session-targeted continuation: the CP-verified target ACP session id,
+  // copied verbatim from the rc/verify verdict. Absent ⇒ today's behavior
+  // (conversation-derived webchat session). Never originates in the browser.
+  targetSessionId: z.string().min(1).optional(),
   remoteMcp: WebchatRemoteMcpEntitlement.optional(),
   payload: RelayWebchatOp
 })
@@ -415,11 +419,22 @@ export type RdMsg = z.infer<typeof RdMsg>
 // D→R REP (corr = rd/msg id). Receipt for dedup/ack bookkeeping; for a webchat
 // `turn` it also carries the dispatch verdict the relay forwards to the browser
 // (`turnId` correlates the `rd/chat` stream; `reason` e.g. 'no_agent'|'paused').
+/** The one refusal reason the ROUTER acts on rather than reports: this daemon
+ *  does not hold the target agent's duty, so the trigger must be re-routed to
+ *  `holderDaemonId` (design §4.4). Every other reason stays a free-form string
+ *  the relay forwards or logs — this is deliberately not a closed enum, so a
+ *  daemon can keep minting new descriptive reasons without a wire revision. */
+export const RD_ACK_NOT_HOLDER = 'not_holder'
+
 export const RdAck = z.object({
   msgId: z.string(),
   accepted: z.boolean(),
   turnId: z.string().uuid().optional(),
   reason: z.string().optional(),
+  /** Set with `reason: 'not_holder'`: the member that holds the duty now, as the
+   *  losing claimant learned it from the CP. Absent when even the CP could not
+   *  name one — the router then retries rather than re-routing. */
+  holderDaemonId: z.string().uuid().optional(),
   /** §6.6 opaque interaction response for a `platform_action` — the payload the
    *  relay-side platform module surfaces on the synchronous HTTP body (Feishu
    *  toast, Slack block_suggestion options). Decoded only by the platform

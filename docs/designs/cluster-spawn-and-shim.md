@@ -145,6 +145,45 @@ re-checked on the shim side — a daemon-side check cannot assume anything about
 environment. That re-check covers the `cwd` **and** a clone's target, which is a path in
 argv the cwd fence never looks at.
 
+The `read` channel — the console's workspace file list/read/write/delete — is the one place
+where the rule above inverts, and for a reason that is the rule rather than an exception to
+it. There is no orchestration to keep: the daemon names ONE operation and the file work is
+placement, not policy. So the shim runs the _same_ `localWorkspaceFiles` implementation the
+daemon runs for a local workspace, which means its containment is not a second version of
+the daemon's checks that could drift from them — it is those checks, executing on the side
+that holds the filesystem. The daemon still decides which agent, which root, and whether the
+workspace may be written at all, and sends that answer with the request; the shim fences the
+root it was given against its own workspace root and enforces the write gate again.
+
+Two refusals travel as DATA in the reply rather than as an error frame: a containment
+violation (with its machine-readable reason) and an optimistic-concurrency conflict. An error
+frame carries only a string, and the console needs to tell "that path is not readable" from
+"the daemon may be offline" — flattening them would make a contained path escape look like an
+outage. Everything else stays an error frame, which is what an unexpected `EIO` should read as.
+
+**The pod side holds descriptors, not names.** This is the one place where the two halves run
+different code, and the reason is that they stand on filesystems with different owners. A
+self-hosted daemon's workspace is on its own disk; a cluster agent's is on a volume that agent's
+runtime writes to, and there every "check this path, then act on this path" is a window it can
+open — rename the checkout aside, install a symlink, let the work follow it, restore the original
+before any closing check. No amount of re-validating the name closes that, because a name is not a
+directory. So `shim/fd-workspace-files.ts` resolves exactly one path — the mount, which cannot be
+renamed out from under itself — and takes every step below it from an open descriptor, one
+component at a time with `O_NOFOLLOW`.
+
+Three consequences worth stating plainly:
+
+- It is **Linux-only**: Node exposes no `openat`, so the descent addresses handles through
+  `/proc/self/fd/<n>`. That is fine for an image the deployment controls and is exactly why this
+  lives in `shim/` rather than in the shared placement layer.
+- A **symlinked directory inside the workspace is refused** rather than resolved, which the
+  daemon-local path allows. It is the only behavioural divergence, and it is pinned by a test. A
+  side effect is that the pod side stops distinguishing "absent" from "outside" for such a path,
+  closing an existence oracle the local path still has.
+- What the two DO share is every rule about the answer — the sort, the page, the frame budget, the
+  UTF-8 boundary, the scratch gate, the edit validation — so a console cannot learn which
+  filesystem its agent is on from the shape of a reply.
+
 ## 6. The credential tunnel, and which way it runs
 
 A tunnel exists because a process **inside** the pod wants a daemon-side server, while shim

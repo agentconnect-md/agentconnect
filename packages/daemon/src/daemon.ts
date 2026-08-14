@@ -125,6 +125,7 @@ import {
   hopTransition,
   isUsableSourceDepth,
   routeRules,
+  webchatContinuationDecision,
   type RouteVia
 } from './router/routing-table.js'
 import { parseCommand, type AgentCommand } from './commands/commands.js'
@@ -144,6 +145,7 @@ import {
   slackSharedKey,
   SlackConnection,
   type InteractionActor,
+  type SlackPostOptions,
   type SlackStatusOptions
 } from './slack/connection.js'
 import {
@@ -305,6 +307,7 @@ import {
   AgentActivate as AgentActivateSchema,
   WEBCHAT_MULTI_AGENT_FEATURE,
   WEBCHAT_REMOTE_MCP_FEATURE,
+  WEBCHAT_SESSION_CONTINUATION_FEATURE,
   WebchatMcpGrantRevoke,
   encodeSharedSlackStatusTarget,
   HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED,
@@ -341,11 +344,12 @@ import {
   manifestFor,
   originKindOf,
   SessionPurgeReason,
+  RD_ACK_NOT_HOLDER,
   EventSession as EventSessionSchema
 } from '@agentconnect.md/protocol'
 import { isNoResponseBody, isNoResponsePrefix } from './session/no-response.js'
 import { createSessionReader } from './cp/session-reader.js'
-import { createWorkspaceReader, WorkspaceConflictError } from './cp/workspace-reader.js'
+import { createWorkspaceReader, WorkspaceConflictError, type WorkspaceLocation } from './cp/workspace-reader.js'
 import { TaskViolationError } from './cp/task-reader.js'
 import { createMemoryReader } from './cp/memory-reader.js'
 import {
@@ -361,6 +365,7 @@ import { memoryChannelKey } from './agents/memory.js'
 import { createWorkspaceGit } from './cp/workspace-git.js'
 import { DAEMON_VERSION } from './version.js'
 import { CpCronRegistry } from './cp/cp-cron.js'
+import { DutyRegistry } from './cp/duty-registry.js'
 import { CpAgentRegistry } from './cp/cp-agent-registry.js'
 import {
   agentRemovalTombstones,
@@ -491,7 +496,10 @@ import type {
   ExternalSessionOrigin,
   ChannelAgentsOk,
   TaskList,
-  TaskListReq
+  TaskListReq,
+  DutyGrantEntry,
+  DutyRevoke,
+  HeartbeatDuties
 } from '@agentconnect.md/protocol'
 
 /** Format an error for logs, surfacing a JSON-RPC/ACP RequestError's `code` and
@@ -1496,6 +1504,10 @@ interface QueueEntry {
   cancelledReason?: TurnInterruptReason
   /** Cross-session GitHub coordination must settle before this durable entry can start. */
   coordinationWait?: Promise<void>
+  /** An admitted continuation waits for its platform mirror; false skips only this entry. */
+  admissionWait?: Promise<boolean>
+  /** Record chat observation only after admissionWait succeeds. */
+  deferObservedInbound?: boolean
   posterPublishState?: 'not_started' | 'in_flight' | 'settled'
   /** The live inbox row was redacted into a durable terminal HookReport
    * receipt; removeInbox must retain it for restart-safe redelivery dedup. */
@@ -1794,6 +1806,9 @@ interface WebchatTurnContext {
    *  own to stream to (#753). Carried onto the completed `RdWebchatPost` so the
    *  browser knows this reply never streamed live and needs rendering from the post. */
   initiator?: 'agent'
+  /** Session-targeted continuation (§5.2): the webchat stream is an ADDITIONAL sink —
+   *  turn output/status/failure still follow the origin platform's ordinary rules. */
+  continuation?: true
   runtime?: WebchatRuntimeConfig
   worktree?: boolean
   /** Authority captured only from the relay's validated rd/msg envelope. It is
@@ -2121,6 +2136,22 @@ export class Daemon {
   // Discord/Telegram channel id → display-name resolver (Slack learns names in bulk
   // from its membership snapshot instead — see refreshChannels). Created in start().
   private channelNameResolver?: ChannelNameResolver
+  // Duty leases this daemon holds (k8s pools; cp/duty-registry.ts). Populated
+  // only on an install-wide connection — empty on a single-org daemon, which is
+  // what keeps the whole path dormant there.
+  private readonly duties = new DutyRegistry()
+  // What an unbounded member reports as heartbeat headroom: the CP's own
+  // per-tick grant cap, so the wire carries a finite number without implying a
+  // ceiling. Never used for a local capacity decision.
+  private static readonly DUTY_UNBOUNDED_HEADROOM = 32
+  // Claims in flight to the CP. Each reserves one slot of headroom so concurrent
+  // rendezvous claims cannot read the same capacity and collectively overshoot,
+  // and a drain joins them so none can settle after `drain/done`.
+  private readonly inFlightDutyClaims = new Set<Promise<unknown>>()
+  // Latched for the WHOLE drain handoff, including the window after `draining`
+  // reopens and before the leases are surrendered — a claim landing there would
+  // install a grant the release snapshot has already passed by.
+  private dutyClaimsSuspended = false
   private scheduler!: Scheduler
   private dreamScheduler!: DreamScheduler
   private sessions!: SessionManager
@@ -2477,6 +2508,13 @@ export class Daemon {
    *  (virtual) integrations are excluded so consolidation/reconcile never opens a
    *  real socket for them — and never evicts the installed virtual connections. */
   private transportAgents(agents: LoadedAgent[] = [...this.agents.values()]): LoadedAgent[] {
+    // Duty gate: on a pooled daemon only the agents whose group this member
+    // holds get physical connections — every consolidator derives from here, so
+    // opening and closing sockets on a grant/revoke needs no other change.
+    if (this.dutyEnforced()) {
+      const held = this.duties.agents()
+      agents = agents.filter((agent) => held.has(agent.id))
+    }
     if (this.evaluationIntegrationIds.size === 0) return agents
     return agents.map((agent) =>
       agent.integrations.some((integration) => this.evaluationIntegrationIds.has(integration.id))
@@ -3601,8 +3639,7 @@ export class Daemon {
     )
 
     // register crons (sync per agent — the same converge reconcile re-runs on change)
-    for (const a of agents) this.scheduler.sync(a.id, a.crons)
-    for (const a of agents) this.dreamScheduler.sync(a.id, this.dreamSchedulePolicyFor(a))
+    for (const a of agents) this.syncAgentSchedules(a)
     const cronCount = agents.reduce((n, a) => n + this.scheduler.count(a.id), 0)
     if (cronCount) this.log.info(`registered ${cronCount} cron(s)`)
 
@@ -3887,8 +3924,7 @@ export class Daemon {
       if (!wasPaused && a.pause) this.interruptAgentTurns(a.id, 'pause')
       // crons live in the whole-agent signature, so any change re-syncs the agent's
       // job set (design §5.2: crons change → Scheduler upsert/remove). Idempotent.
-      this.scheduler.sync(a.id, a.crons)
-      this.dreamScheduler.sync(a.id, this.dreamSchedulePolicyFor(a))
+      this.syncAgentSchedules(a)
       // host-spawn or workspace change → evict the cached host (once) so the next
       // session lazily re-spawns it with fresh env and/or re-materializes cwd via
       // prepareWorkspace. Soft-only and integration-only changes never touch the host.
@@ -3939,8 +3975,7 @@ export class Daemon {
       // New agent: warm its git-repo checkout in the background now (e.g. on daemon
       // start every agent is a toStart), so the repo is cloned ahead of the first message.
       this.prefetchClone(a as LoadedAgent)
-      this.scheduler.sync(a.id, a.crons)
-      this.dreamScheduler.sync(a.id, this.dreamSchedulePolicyFor(a))
+      this.syncAgentSchedules(a)
     }
     // Reconcile exactly once from the final live roster. The close phase is strict:
     // detach ACKs only after last-reference connections have actually stopped.
@@ -5462,6 +5497,9 @@ export class Daemon {
       // on turns, the transcript-only context op, agent-attributed stream frames,
       // and rd/webchat-post reply fan-out. Static — no runtime dependency.
       WEBCHAT_MULTI_AGENT_FEATURE,
+      // Session-targeted webchat continuation: RdMsgWebchat.targetSessionId is
+      // resolved onto the target session's own local coordinates. Static.
+      WEBCHAT_SESSION_CONTINUATION_FEATURE,
       // This bit attests to daemon-side grant + ACP descriptor delivery, not to
       // a runtime artifact, capability probe, or sandbox policy. The CP remains
       // authoritative for deciding whether a conversation belongs to the
@@ -7332,6 +7370,145 @@ export class Daemon {
     return { accepted: true, turnId }
   }
 
+  /**
+   * Session-targeted continuation turn (webchat-cross-integration-continuation.md
+   * §5.2/§6.4): dispatch one browser turn INTO an existing chat-origin session on
+   * its own local coordinates — the `replyToSession` local shape with a human
+   * sender — with the webchat stream attached as an additional sink. The human
+   * turn is mirrored to the origin thread BEFORE dispatch, so platform
+   * participants never miss input that changed the agent's context; a failed
+   * mirror refuses the turn. The crash window between a delivered mirror and the
+   * committed dispatch is the ordinary projection-failure boundary (not atomic).
+   */
+  private async dispatchWebchatContinuationTurn(
+    agentId: string,
+    chatId: string,
+    targetSessionId: string,
+    text: string,
+    user: string,
+    sink: WebchatSink,
+    requestedTurnId?: string
+  ): Promise<WebchatAck> {
+    const turnId = requestedTurnId ?? randomUUID()
+    if (!this.agents.has(agentId)) return { accepted: false, turnId, reason: 'no_agent' }
+    // ACP ids are runtime-owned: resolve agent-scoped, and use ONLY the local
+    // row's coordinates. A miss means the CP verdict is stale (retention GC /
+    // metadata replacement) — fail closed.
+    const local = this.store.getSessionByAcpIdForAgent(agentId, targetSessionId)
+    if (!local || originKindOf(local.platform) !== 'chat') return { accepted: false, turnId, reason: 'not_found' }
+    if (this.paused(agentId)) return { accepted: false, turnId, reason: 'paused' }
+    if (this.safetyDrainingAgents.has(agentId)) return { accepted: false, turnId, reason: 'busy' }
+    if (this.draining || this.drainingAgents.has(agentId)) return { accepted: false, turnId, reason: 'draining' }
+    const integrationId = this.integrationIdForSessionTransport(agentId, local.platform, local.transportScope)
+    const conn = integrationId ? this.connForIntegration(integrationId) : undefined
+    if (!integrationId || !conn) return { accepted: false, turnId, reason: 'integration_offline' }
+    const botUserId = this.botUserIds[integrationId] ?? this.resolveCpAgent(agentId, local.platform)?.botUserId
+    const msg: NormalizedMessage = {
+      msgId: `webchat-cont:${chatId}:${turnId}`,
+      traceId: turnId,
+      source: 'user',
+      platform: local.platform,
+      channel: local.channel,
+      ...(local.thread ? { thread: local.thread } : {}),
+      ...(local.transportScope ? { transportScope: local.transportScope } : {}),
+      // Ordered as NEW content in the origin session (the replyToSession rule).
+      transcriptTs: monotonicTs(),
+      sender: { id: user, isBot: false },
+      text,
+      mentionedBots: botUserId ? [botUserId] : [],
+      isDm: local.conversationKind === 'dm',
+      trigger: local.conversationKind === 'dm' ? 'dm' : 'mention'
+    }
+    // The synthesized coordinates must rebuild the EXACT stored key, or dispatch
+    // would mint a sibling session instead of continuing this one.
+    const key = sessionKey(msg.platform, msg.channel, msg.thread ?? msg.msgId, agentId, msg.transportScope)
+    if (key !== local.key) {
+      this.log.warn(`webchat continuation: key mismatch for session ${targetSessionId} (${key} != ${local.key})`)
+      return { accepted: false, turnId, reason: 'not_found' }
+    }
+    // Serial/queue preflight on the TARGET session's own key.
+    if (this.inflight.has(key) && (this.serialQueue.get(key)?.length ?? 0) >= MAX_QUEUED_PER_SESSION) {
+      return { accepted: false, turnId, reason: 'busy' }
+    }
+    this.pruneWebchatStreams()
+    if (this.webchatStreams.has(this.webchatStreamKey(turnId, agentId))) {
+      return { accepted: false, turnId, reason: 'busy' }
+    }
+    const stream = this.createWebchatTurnStream(agentId, chatId, turnId, sink)
+    stream.continuation = true
+    let settleMirror!: (mirrored: boolean) => void
+    const mirrorAdmission = new Promise<boolean>((resolve) => {
+      settleMirror = resolve
+    })
+    let admission: { accepted: boolean; reason?: string } | undefined
+    const turn = this.dispatch(agentId, msg, integrationId, stream, undefined, {
+      admissionWait: mirrorAdmission,
+      deferObservedInbound: true,
+      onAdmission: (result) => {
+        admission = result
+      }
+    })
+    void turn.catch((err) => {
+      if (!(err instanceof LifecycleCleanupBlockedError))
+        this.log.error(`webchat continuation dispatch failed for agent "${agentId}": ${formatErr(err)}`)
+    })
+    if (!admission) throw new Error('continuation admission barrier did not settle synchronously')
+    if (!admission.accepted) {
+      settleMirror(false)
+      this.removeWebchatStream(this.webchatStreamKey(turnId, agentId), stream)
+      return { accepted: false, turnId, reason: admission.reason === 'draining' ? 'draining' : 'busy' }
+    }
+    // Admission owns a serial-queue slot before mirroring and waits for its result before execution.
+    const mirrorText = `[${user} via console] ${text}`
+    // The mirror takes the SAME two-step shape an ordinary agent reply does:
+    // an attributed body post, then a finalizing chat.update stamping the
+    // trusted routing claim (author = the target agent, root depth, unaddressed
+    // final). The `message_changed` finalization is the ONE event every Slack
+    // ingress admits before its own-bot echo suppression, so same-app/shared-bot
+    // participants route it exactly like different-app observers do: thread
+    // peers activate exactly-once via the durable rendezvous under their own
+    // connection-fenced rules, and the author is excluded (it gets the targeted
+    // dispatch). Platforms without a metadata claim degrade to transcript-only
+    // peers, like agent replies there.
+    let slackMirror: { conn: SlackConnection; ts: string } | undefined
+    try {
+      // postMessage resolves undefined when the provider swallows a send failure
+      // (Discord/Feishu) or lands nothing (Slack) — only a returned message id
+      // proves the mirror is visible, so undefined takes the failure path too.
+      const mirrorId =
+        local.platform === 'slack'
+          ? await (conn as SlackConnection).postMessage(local.channel, mirrorText, local.thread || undefined, {
+              agentAuthorId: agentId
+            } satisfies SlackPostOptions)
+          : await conn.postMessage(local.channel, mirrorText, local.thread || undefined)
+      if (!mirrorId) throw new Error('provider returned no message id')
+      if (local.platform === 'slack') slackMirror = { conn: conn as SlackConnection, ts: mirrorId }
+      settleMirror(true)
+    } catch (err) {
+      this.log.warn(`webchat continuation: mirror post failed for ${local.key}: ${formatErr(err)}`)
+      this.removeWebchatStream(this.webchatStreamKey(turnId, agentId), stream)
+      settleMirror(false)
+      return { accepted: false, turnId, reason: 'integration_delivery_failed' }
+    }
+    // Routing finalization is best-effort AFTER the proven post, mirroring
+    // turn-output's contract: a failed update degrades to unrouted peers,
+    // never to a hidden or mis-routed input. Duck-typed for test fakes.
+    if (slackMirror && typeof slackMirror.conn.finalizeResponse === 'function') {
+      const finalized = await slackMirror.conn.finalizeResponse(
+        local.channel,
+        slackMirror.ts,
+        [{ type: 'markdown', text: mirrorText }],
+        mirrorText,
+        agentId,
+        { responseId: msg.msgId, deliveryState: 'final', hopCount: 0, mentionedAgentIds: [] }
+      )
+      if (!finalized)
+        this.log.warn(`webchat continuation: mirror finalization failed for ${local.key} (peers unrouted)`)
+    }
+    this.log.info(`webchat continuation: ${user} → session ${local.key} (conversation ${chatId}, turn ${turnId})`)
+    return { accepted: true, turnId }
+  }
+
   /** Handle a webchat conversation close (relay `close` op). No live resources are
    *  bound per-conversation (the session TTL-closes like any other), so this is
    *  currently just observability — the in-flight turn, if any, runs to completion. */
@@ -7867,6 +8044,25 @@ export class Daemon {
     const pending = this.pendingRelayMsgAcks.get(dedupKey)
     if (pending) return pending
 
+    // Activation rendezvous (design §4.4): a trigger for an agent whose duty
+    // this member does not hold is claimed on receipt — winning serves it here,
+    // losing answers `not_holder` so the router re-routes. The verdict is NOT
+    // cached in relayMsgAcks: a later grant must not keep replaying a refusal.
+    if (this.dutyEnforced() && !this.duties.holdsAgent(msg.agentId)) {
+      const task = this.claimDutyForTrigger(msg.agentId).then((claimed) => {
+        this.pendingRelayMsgAcks.delete(dedupKey)
+        if (claimed.granted) return this.handleRelayMsg(msg, chat, post)
+        return {
+          msgId: msg.msgId,
+          accepted: false,
+          reason: RD_ACK_NOT_HOLDER,
+          ...(claimed.holder ? { holderDaemonId: claimed.holder } : {})
+        }
+      })
+      this.pendingRelayMsgAcks.set(dedupKey, task)
+      return task
+    }
+
     if (msg.source === 'hook') {
       const task = this.dispatchRelayHook(msg)
         .catch((err): RdAck => {
@@ -7889,6 +8085,23 @@ export class Daemon {
         : msg.source === 'platform_action'
           ? this.handleRelayPlatformAction(msg)
           : this.handleRelayIm(msg)
+    // A session-continuation turn settles async (it awaits the platform mirror);
+    // park it like a hook admission so a retransmit joins the same in-flight ack.
+    if (ack instanceof Promise) {
+      const task = ack
+        .catch((err): RdAck => {
+          this.log.error(`webchat continuation admission failed for ${dedupKey}: ${formatErr(err)}`)
+          return { msgId: msg.msgId, accepted: false, reason: 'busy' }
+        })
+        .then((settled) => {
+          this.pendingRelayMsgAcks.delete(dedupKey)
+          if (this.relayMsgAcks.size >= 2000) this.relayMsgAcks.clear()
+          this.relayMsgAcks.set(dedupKey, settled)
+          return settled
+        })
+      this.pendingRelayMsgAcks.set(dedupKey, task)
+      return task
+    }
     if (this.relayMsgAcks.size >= 2000) this.relayMsgAcks.clear() // bound the window
     this.relayMsgAcks.set(dedupKey, ack)
     return ack
@@ -10879,13 +11092,47 @@ export class Daemon {
     msg: RdMsgWebchat,
     chat: (event: RdChatEvent) => void,
     post?: (p: RdWebchatPost) => void
-  ): RdAck {
+  ): RdAck | Promise<RdAck> {
     const sink: WebchatSink = {
       output: (o) => chat({ kind: 'output', output: o }),
       done: (d) => chat({ kind: 'done', done: d })
     }
     const op = msg.payload
     const key = (): string => this.webchatSessionKey(msg.chatId, msg.agentId)
+    // Session-targeted continuation: `turn` dispatches onto the target session's
+    // own coordinates; runtime-set ops are refused (this ingress adds human
+    // input, never session-global administration); a context copy is a no-op
+    // (the roster is fixed at one). resume/cancel/close keep their ordinary
+    // shape — resume is keyed by (turnId, agentId), cancel by the conversation's
+    // own webchat-attached turns.
+    if (msg.targetSessionId !== undefined) {
+      switch (op.op) {
+        case 'turn':
+          return this.dispatchWebchatContinuationTurn(
+            msg.agentId,
+            msg.chatId,
+            msg.targetSessionId,
+            op.text,
+            op.user ?? 'webchat',
+            sink,
+            op.turnId
+          ).then((ack) => ({
+            msgId: msg.msgId,
+            accepted: ack.accepted,
+            turnId: ack.turnId,
+            ...(ack.reason ? { reason: ack.reason } : {})
+          }))
+        case 'set_model':
+        case 'set_effort':
+        case 'set_permission_mode':
+        case 'set_fast':
+          return { msgId: msg.msgId, accepted: false, reason: 'runtime changes are disabled for a continued session' }
+        case 'context':
+          return { msgId: msg.msgId, accepted: true }
+        default:
+          break // resume/cancel/close fall through to the ordinary handlers
+      }
+    }
     switch (op.op) {
       case 'turn': {
         const ack = this.dispatchWebchatTurn(
@@ -11109,30 +11356,26 @@ export class Daemon {
     contextPost: WebchatPost,
     landedTs: string
   ): void {
-    // User turns activate through the relay's pre-addressed `turn` frames; their
-    // context copies stay transcript-only exactly as before.
-    if (contextPost.author.kind !== 'agent') return
-    const authorAgentId = contextPost.author.agentId
-    if (authorAgentId === targetAgentId) return // author-never-self-activates, the one absolute
-    const sourceHopCount = contextPost.author.hopCount
-    if (!isUsableSourceDepth(sourceHopCount)) {
-      this.log.debug(
-        `webchat: peer post ${contextPost.postId} carries no usable depth — transcript-only (pre-parity author daemon)`
-      )
+    // The PURE edge decision is package policy (`webchatContinuationDecision`):
+    // user-post/self/fail-closed-depth exclusions and the §4.1 hop transition.
+    // This adapter supplies the facts and owns the impure remainder below —
+    // liveness, call policy, the exactly-once rendezvous, logging, dispatch.
+    const decision = webchatContinuationDecision(contextPost.author, targetAgentId)
+    if (!decision.activate) {
+      if (decision.reason === 'no_usable_depth') {
+        this.log.debug(
+          `webchat: peer post ${contextPost.postId} carries no usable depth — transcript-only (pre-parity author daemon)`
+        )
+      } else if (decision.reason === 'hop_limit') {
+        this.log.info(
+          `webchat: continuation refused for "${targetAgentId}" in conversation ${chatId} ` +
+            `(hop_limit: source depth ${decision.sourceHopCount} + 1 reaches ${decision.cap}); ` +
+            `peer post ${contextPost.postId} stays transcript-only`
+        )
+      }
       return
     }
-    // §4.1: ONE transition per delivery, against the same cap as an internal call —
-    // the same policy `hopTransition` the platform ladder charges.
-    const transition = hopTransition(sourceHopCount)
-    if (transition.refusal) {
-      this.log.info(
-        `webchat: continuation refused for "${targetAgentId}" in conversation ${chatId} ` +
-          `(hop_limit: source depth ${sourceHopCount} + 1 reaches ${transition.refusal.cap}); ` +
-          `peer post ${contextPost.postId} stays transcript-only`
-      )
-      return
-    }
-    const deliveryHopCount = transition.deliveryHopCount
+    const { authorAgentId, deliveryHopCount } = decision
     if (!this.agents.has(targetAgentId) || this.drainingAgents.has(targetAgentId)) return
     if (!this.cpCollab.admits(authorAgentId, targetAgentId)) {
       this.log.debug(`webchat: agent edge ${authorAgentId} → ${targetAgentId} denied by call policy`)
@@ -12397,6 +12640,160 @@ export class Daemon {
    * Slack integration. (CP agent specs are now written to disk and create a
    * runnable agent.json, so they no longer contribute a "no base" degraded scope.)
    */
+  /** The heartbeat's lease fields: what this daemon holds, and how many more
+   *  groups it will accept. Capacity is the daemon's own call (design D14). */
+  private dutyDigest(): HeartbeatDuties {
+    return { held: this.duties.digest(), headroom: this.dutyHeadroom() }
+  }
+
+  /** How many more duty-covered agents this member will accept. `maxAgents: 0`
+   *  means unbounded, reported as the CP's own per-tick grant cap. */
+  private dutyHeadroom(): number {
+    const max = this.cfg?.limits?.maxAgents ?? 0
+    // `maxAgents: 0` is unbounded, but the WIRE still needs a finite number —
+    // the CP caps a tick's grants at 32 anyway, so that is what an unbounded
+    // member advertises. This sentinel is a batching hint, never a capacity.
+    if (max <= 0) return Daemon.DUTY_UNBOUNDED_HEADROOM
+    return Math.max(0, max - this.duties.agents().size - this.inFlightDutyClaims.size)
+  }
+
+  /** Slots left for a claim that is ITSELF in flight — its own reservation is
+   *  excluded, every other one still counts, and the result is deliberately not
+   *  clamped: a full member must come out negative and refuse, never at zero
+   *  with a slot to spare. Unbounded means unbounded here: a local fit decision
+   *  must not inherit the heartbeat's batching sentinel and reject a group of
+   *  33 agents from a member that was configured with no ceiling at all. */
+  private dutyHeadroomForPendingClaim(): number {
+    const max = this.cfg?.limits?.maxAgents ?? 0
+    if (max <= 0) return Number.POSITIVE_INFINITY
+    return max - this.duties.agents().size - Math.max(0, this.inFlightDutyClaims.size - 1)
+  }
+
+  /** True when duty leases actually gate service. Off (the default) the exchange
+   *  still runs and the registry still tracks — only enforcement is withheld. */
+  private dutyEnforced(): boolean {
+    // `cfg` lands in start(); transportAgents can run before that in tests.
+    return this.cfg?.features?.dutyEnforcement === true && this.cpClient?.organizationScope() === 'frame'
+  }
+
+  /** Apply a `duty/grant` EVT: bookkeeping first, then converge what we serve. */
+  private applyDutyGrant(grants: DutyGrantEntry[]): void {
+    const result = this.duties.applyGrant(grants)
+    this.log.info(
+      `duty: granted ${result.added.length} + re-granted ${result.updated.length} group(s); ` +
+        `holding ${this.duties.size()} covering ${this.duties.agents().size} agent(s)`
+    )
+    if (result.agentsGained.length > 0 || result.added.length > 0) this.onDutyChanged()
+  }
+
+  /** Apply a `duty/revoke` EVT. Losing a duty is NOT a removal: the agent's
+   *  workspace, sessions, and registry entry all survive — only the platform
+   *  connections and schedules this daemon was running for it stop. */
+  private applyDutyRevoke(revocations: DutyRevoke['revocations']): void {
+    const result = this.duties.applyRevoke(revocations)
+    this.log.info(
+      `duty: revoked ${revocations.length} group(s) (${revocations.map((r) => r.reason).join(',')}); ` +
+        `${result.agentsLost.length} agent(s) left service`
+    )
+    for (const agentId of result.agentsLost) this.stopServingAgent(agentId)
+    this.onDutyChanged()
+  }
+
+  /** Claim one agent's duty because a trigger for it arrived here. A win is
+   *  installed exactly like a `duty/grant`, so the same converge path runs.
+   *  Refuses without asking the CP when this member must not take new work:
+   *  capacity is the member's own call (design D14), and a drain in progress
+   *  would either hand the fresh lease straight back or pin it to an agent whose
+   *  gate is about to drop the very turn that triggered the claim.
+   *
+   *  Both gates are checked AFTER the round trip, not instead of it. Refusing to
+   *  ask would suppress the very answer that makes a stale delivery routable —
+   *  the incumbent's identity — turning a re-routable trigger into a drop. So a
+   *  full or draining member still asks, and hands back anything it wins. */
+  private async claimDutyForTrigger(agentId: string): Promise<{ granted: boolean; holder?: string }> {
+    // A drain that has already begun is the one case worth short-circuiting: it
+    // cannot be resolved by learning a holder, because this member is leaving.
+    if (this.dutyClaimsSuspended || this.drainingAgents.has(agentId)) {
+      this.log.debug(`duty: not claiming ${agentId} while draining`)
+      return { granted: false }
+    }
+    // Reserve a slot for the duration of the round trip so concurrent claims
+    // cannot each read the same headroom and collectively overshoot, and so a
+    // drain can join this claim rather than finish while it is still in flight.
+    let markSettled!: () => void
+    const settled = new Promise<void>((resolve) => {
+      markSettled = resolve
+    })
+    this.inFlightDutyClaims.add(settled)
+    try {
+      const claim = await this.cpClient?.claimDuty(agentId)
+      if (!claim) return { granted: false }
+      if (!claim.granted || !claim.grant) {
+        return claim.holder ? { granted: false, holder: claim.holder } : { granted: false }
+      }
+      const grant = claim.grant
+      // The group we were actually given may cover several agents, so capacity
+      // is judged against it — never against the single agent we asked about.
+      const arriving = grant.members.filter((m) => m.kind === 'agent' && !this.duties.holdsAgent(m.refId)).length
+      const draining = this.dutyClaimsSuspended || this.draining || this.drainingAgents.has(agentId)
+      if (draining || arriving > this.dutyHeadroomForPendingClaim()) {
+        const why = draining ? 'a drain started while the claim was in flight' : 'it does not fit remaining capacity'
+        this.log.info(`duty: handing ${grant.groupId} straight back — ${why}`)
+        await this.cpClient
+          ?.releaseDuties([grant.groupId])
+          .catch((err) => this.log.warn(`duty: handing back ${grant.groupId} failed (it will lapse): ${err}`))
+        return { granted: false }
+      }
+      this.applyDutyGrant([grant])
+      return { granted: true }
+    } catch (err) {
+      // A CP blip must not look like "someone else holds it" — answering with no
+      // holder makes the router account it as an unplaceable trigger rather than
+      // re-routing into the void.
+      this.log.warn(`duty: claiming ${agentId} for an inbound trigger failed: ${err}`)
+      return { granted: false }
+    } finally {
+      this.inFlightDutyClaims.delete(settled)
+      markSettled()
+    }
+  }
+
+  /** Wait for every claim already awaiting the CP to settle. Called inside the
+   *  drain latch, so each one sees the latch and hands back what it won —
+   *  without this join a drain can finish and clear the latch while an older
+   *  response is still in flight, installing a grant after `drain/done`. */
+  private async joinInFlightDutyClaims(): Promise<void> {
+    while (this.inFlightDutyClaims.size > 0) {
+      await Promise.allSettled([...this.inFlightDutyClaims])
+    }
+  }
+
+  /** Re-derive platform connections and schedules from the new duty set. */
+  private onDutyChanged(): void {
+    if (!this.dutyEnforced()) return
+    for (const agent of this.agents.values()) this.syncAgentSchedules(agent)
+    void this.reconcile().catch((err) => this.log.warn(`duty: reconcile after a duty change failed: ${err}`))
+  }
+
+  /** Arm this agent's cron + dream schedules, or disarm them when its duty lives
+   *  elsewhere — a cron is an ingress edge, so it fires only at the holder. */
+  private syncAgentSchedules(a: { id: string; crons: CronDef[]; memory?: Agent['memory'] }): void {
+    const serve = !this.dutyEnforced() || this.duties.holdsAgent(a.id)
+    this.scheduler.sync(a.id, serve ? a.crons : [])
+    this.dreamScheduler.sync(a.id, serve ? this.dreamSchedulePolicyFor(a) : undefined)
+  }
+
+  /** Stop serving one agent because its duty moved — the light teardown: no
+   *  workspace deletion, no removal tombstone, no CP-drop latch, so a re-grant
+   *  needs nothing from the CP to revive it. */
+  private stopServingAgent(agentId: string): void {
+    if (!this.dutyEnforced()) return
+    this.interruptAgentTurns(agentId, 'stop')
+    this.scheduler.unregister(agentId)
+    this.dreamScheduler.unregister(agentId)
+    void this.stopHost(agentId).catch((err) => this.log.warn(`duty: stopping host for ${agentId} failed: ${err}`))
+  }
+
   private cpDegradedScopes(): string[] {
     const out = new Set<string>()
     for (const cpRule of this.cpRouting?.effectiveRules() ?? []) {
@@ -12439,7 +12836,8 @@ export class Daemon {
         turnId: ctx.webchat.turnId,
         error: reason
       })
-      return
+      // A continuation turn also surfaces the failure on the origin platform (§5.2).
+      if (!ctx.webchat.continuation) return
     }
     const notice = `⚠️ Agent failed to respond: ${reason}`
     if (ctx.replyConn) {
@@ -12905,6 +13303,10 @@ export class Daemon {
       /** Synchronous admission barrier: called after the durable row is owned,
        * or with a rejection before any turn can start. */
       onAdmission?: (result: { accepted: boolean; reason?: string; duplicate?: boolean }) => void
+      /** Hold an admitted entry before execution; false drops only that entry. */
+      admissionWait?: Promise<boolean>
+      /** Delay observed-inbound persistence until admissionWait succeeds. */
+      deferObservedInbound?: boolean
       /** Best-effort notification once the ACP session exists, before prompt. */
       onSessionReady?: (sessionId: string) => void
     },
@@ -12924,7 +13326,11 @@ export class Daemon {
     }
     if (msg.sender.avatarUrl && msg.transportScope)
       this.store.setProfileAvatar(msg.transportScope, msg.sender.id, msg.sender.avatarUrl, Date.now())
-    if (this.cfg.features.turnFinalContextRefresh && originKindOf(msg.platform) === 'chat') {
+    if (
+      !opts?.deferObservedInbound &&
+      this.cfg.features.turnFinalContextRefresh &&
+      originKindOf(msg.platform) === 'chat'
+    ) {
       this.recordObservedInbound(msg, agentId)
     }
     return new Promise<string | null>((resolve, reject) => {
@@ -13072,6 +13478,8 @@ export class Daemon {
         ...(callMeta ? { callMeta } : {}),
         ...(hookContext ? { hookContext } : {}),
         ...(opts?.onSessionReady ? { onSessionReady: opts.onSessionReady } : {}),
+        ...(opts?.admissionWait ? { admissionWait: opts.admissionWait } : {}),
+        ...(opts?.deferObservedInbound ? { deferObservedInbound: true } : {}),
         ...(opts?.isQueueCmd ? { isQueueCmd: true } : {}),
         ...(githubReply ? { githubReply } : {}),
         ...(posterPublishState ? { posterPublishState } : {}),
@@ -13457,19 +13865,27 @@ export class Daemon {
             await entry.coordinationWait
             entry.coordinationWait = undefined
           }
-          const releaseDispatch = await this.admitActiveDispatch(entry.agentId, key)
-          let sessionId: string | null
-          try {
-            await this.settleGithubReviewBatch(entry)
-            sessionId = await this.dispatchOne(entry, key)
-          } finally {
-            releaseDispatch()
+          const runAdmittedEntry = entry.admissionWait === undefined || (await entry.admissionWait)
+          entry.admissionWait = undefined
+          if (runAdmittedEntry) {
+            if (entry.deferObservedInbound) this.recordObservedInbound(entry.msg, entry.agentId)
+            const releaseDispatch = await this.admitActiveDispatch(entry.agentId, key)
+            let sessionId: string | null
+            try {
+              await this.settleGithubReviewBatch(entry)
+              sessionId = await this.dispatchOne(entry, key)
+            } finally {
+              releaseDispatch()
+            }
+            // A turn that genuinely COMPLETED is done — remove its row even during a shutdown
+            // drain (it must NOT replay). A cold turn explicitly aborted by shutdown is the
+            // exception: it never ran, so retain its admitted row for startup replay.
+            if (!(this.draining && entry.cancelledReason === 'shutdown')) this.removeInbox(entry)
+            entry.resolve(sessionId)
+          } else {
+            this.removeInbox(entry)
+            entry.resolve(null)
           }
-          // A turn that genuinely COMPLETED is done — remove its row even during a shutdown
-          // drain (it must NOT replay). A cold turn explicitly aborted by shutdown is the
-          // exception: it never ran, so retain its admitted row for startup replay.
-          if (!(this.draining && entry.cancelledReason === 'shutdown')) this.removeInbox(entry)
-          entry.resolve(sessionId)
         } catch (err) {
           // On shutdown (`this.draining`) the throw is the deadline-cancel unwinding a blocked
           // ACP prompt (drainForShutdown → host.cancel → dispatchOne throws). That message was
@@ -13627,7 +14043,12 @@ export class Daemon {
     // reply sink as `rd/chat`, so `conv`'s Slack actions never apply.
     // `none` output mode joins them: no status, status-bar, or reply reaches the channel;
     // only the converger's `recordOnly` body posts land in the transcript.
-    const replyConn = msg.headless || webchat || mode === 'none' ? undefined : this.replyConnFor(agentId, integrationId)
+    // A continuation turn keeps its platform reply connection: its webchat stream is
+    // an additional sink, not a replacement (§5.2 dual sinks).
+    const replyConn =
+      msg.headless || (webchat && !webchat.continuation) || mode === 'none'
+        ? undefined
+        : this.replyConnFor(agentId, integrationId)
     // Capture cold/warm BEFORE sessions.handle(), which boots the host via hostFor().
     const wasRunning = this.hostStarts.has(agentId)
     const statusThread = msg.thread ?? msg.msgId
@@ -14452,38 +14873,44 @@ export class Daemon {
           // A real reply that never diverged from the sentinel prefix mid-stream
           // (shorter than the sentinel) is still held — release it before commit.
           this.flushHeldWebchatText(p.webchat)
-          // Shares the strictly-monotonic clock with the inbound user message so a fast
-          // turn can't stamp both with the same ms and lose the reply to the unique index.
-          // The ts the row actually lands on (post-collision-bump) doubles as the reply
-          // post's canonical `at` (minted ONCE here, the origin) carried to every other
-          // participant's copy via rd/webchat-post.
-          const replyPostId = randomUUID()
-          const replyTs = this.appendWebchatTextRow(p.transcriptChannel, statusThread, monotonicTs(), {
-            postId: replyPostId,
-            sender: agentId,
-            text: p.webchat.replyText
-          })
-          // Fan the completed reply out as a canonical conversation post so the
-          // relay delivers it to the browser's message log and to the other
-          // participants' daemons as context (webchat-multi-agents.md §5.2).
-          // `hopCount` is this turn's own chain depth (§4.1: stamped on every body
-          // the author posts), which is what lets a receiving participant charge
-          // the ONE +1 continuation transition (§5.2a) — the same stamp the
-          // platform paths put on their outbound authorship metadata.
-          p.webchat.postSink?.({
-            conversationId: p.webchat.conversationId,
-            agentId,
-            post: {
+          // A continuation turn records its reply at the platform post boundary instead
+          // (appending here would duplicate the row), and its roster is fixed at one.
+          if (!p.webchat.continuation) {
+            // Shares the strictly-monotonic clock with the inbound user message so a fast
+            // turn can't stamp both with the same ms and lose the reply to the unique index.
+            // The ts the row actually lands on (post-collision-bump) doubles as the reply
+            // post's canonical `at` (minted ONCE here, the origin) carried to every other
+            // participant's copy via rd/webchat-post.
+            const replyPostId = randomUUID()
+            const replyTs = this.appendWebchatTextRow(p.transcriptChannel, statusThread, monotonicTs(), {
               postId: replyPostId,
+              sender: agentId,
+              text: p.webchat.replyText
+            })
+            // Fan the completed reply out as a canonical conversation post so the
+            // relay delivers it to the browser's message log and to the other
+            // participants' daemons as context (webchat-multi-agents.md §5.2).
+            // `hopCount` is this turn's own chain depth (§4.1: stamped on every body
+            // the author posts), which is what lets a receiving participant charge
+            // the ONE +1 continuation transition (§5.2a) — the same stamp the
+            // platform paths put on their outbound authorship metadata.
+            p.webchat.postSink?.({
               conversationId: p.webchat.conversationId,
-              author: { kind: 'agent', agentId, hopCount: p.sourceHopCount },
-              text: p.webchat.replyText,
-              at: Number(replyTs)
-            },
-            ...(p.webchat.initiator ? { initiator: p.webchat.initiator } : {})
-          })
+              agentId,
+              post: {
+                postId: replyPostId,
+                conversationId: p.webchat.conversationId,
+                author: { kind: 'agent', agentId, hopCount: p.sourceHopCount },
+                text: p.webchat.replyText,
+                at: Number(replyTs)
+              },
+              ...(p.webchat.initiator ? { initiator: p.webchat.initiator } : {})
+            })
+          }
         }
-        if (!p.webchat.doneSent) {
+        // Continuation defers `done` until the platform apply chain settles below —
+        // the browser must not unlock its composer while the reply is still flushing.
+        if (!p.webchat.continuation && !p.webchat.doneSent) {
           p.webchat.doneSent = true
           p.webchat.sink.done({
             conversationId: p.webchat.conversationId,
@@ -14492,7 +14919,10 @@ export class Daemon {
             ...(usage?.totalTokens !== undefined ? { usage: { used: usage.totalTokens } } : {})
           })
         }
-      } else {
+      }
+      // A continuation turn ALSO flushes the platform finals — its reply posts to the
+      // origin thread under the ordinary output rules (§5.2 dual sinks).
+      if (!p.webchat || p.webchat.continuation) {
         const link = showFooter ? this.sessionLink(sessionId) : undefined
         const finalAttributionInfo = showFooter ? currentAttributionInfo() : undefined
         // A runtime may only publish its final session-scoped model during prompt.
@@ -14524,6 +14954,18 @@ export class Daemon {
       // through the core surface does not inherit its platform's closure, and a platform
       // that cannot amend a sent message simply registers none.
       await this.turnSurfaces.exact(p.platform)?.closeResponse?.(p)
+      // Continuation `done` fires only now, behind the platform apply/finalization
+      // boundary, so both sinks settle as ONE ordered turn: the console cannot admit
+      // a next turn (whose mirror posts immediately) ahead of this reply's flush.
+      if (p.webchat?.continuation && !p.webchat.doneSent) {
+        p.webchat.doneSent = true
+        p.webchat.sink.done({
+          conversationId: p.webchat.conversationId,
+          turnId: p.webchat.turnId,
+          ...(stopReason ? { stopReason } : {}),
+          ...(usage?.totalTokens !== undefined ? { usage: { used: usage.totalTokens } } : {})
+        })
+      }
       // The user-visible reply is now delivered. Enqueue provider work without
       // awaiting it: managed may distill, while external only commits its durable
       // capture outbox. Webchat carries the canonical per-turn id separately from
@@ -14586,7 +15028,12 @@ export class Daemon {
       propagatingTurnError = true
       failEvaluation(err)
       finalPhase = 'problem'
-      if (p.webchat) {
+      if (p.webchat?.continuation) {
+        // Continuation: release any held stream text; the platform branch below owns the
+        // visible notice + transcript, and the terminal-error `done` waits behind its
+        // apply-chain drain so the console cannot admit a next turn mid-flush.
+        this.flushHeldWebchatText(p.webchat)
+      } else if (p.webchat) {
         // Reply text (including a runtime's mirrored error text) already streamed to
         // the client via onAcpUpdate; the terminal done frame carries the reason.
         // Record what streamed so the session reads back with it, like the success
@@ -14632,7 +15079,8 @@ export class Daemon {
             ...(p.webchat.initiator ? { initiator: p.webchat.initiator } : {})
           })
         }
-      } else {
+      }
+      if (!p.webchat || p.webchat.continuation) {
         // Some runtimes narrate their terminal error into the message stream just
         // before rejecting the prompt — codex-acp mirrors quota exhaustion / auth
         // expiry as an agent_message_chunk — and that text is still sitting in the
@@ -14661,7 +15109,20 @@ export class Daemon {
             })
         }
         this.showActivity(replyConn, msg.channel, statusThread, '') // clear "is thinking…"
-        await p.applyChain
+        try {
+          await p.applyChain
+        } finally {
+          // Continuation closes the browser stream only after the platform failure
+          // actions drain (or terminally fail) — never before, so the sinks stay ordered.
+          if (p.webchat?.continuation && !p.webchat.doneSent) {
+            p.webchat.doneSent = true
+            p.webchat.sink.done({
+              conversationId: p.webchat.conversationId,
+              turnId: p.webchat.turnId,
+              error: turnFailureReason(err)
+            })
+          }
+        }
       }
       if (hookContext && !this.draining) {
         this.emitHookCompletion(hookContext, 'failed', { sessionId, reason: turnFailureCode(err) }, entry)
@@ -15666,16 +16127,21 @@ export class Daemon {
     if (p.webchat) {
       // Webchat: skip a truly-empty frame (nothing for the web bar to show); the model /
       // usage lands on a later call. `sessionId` is always present, so exclude it.
-      if (!Object.entries(info).some(([k, v]) => k !== 'sessionId' && v !== undefined)) return
-      p.lastStatusBar = key
-      const wc = p.webchat
-      wc.sink.output({
-        conversationId: wc.conversationId,
-        turnId: wc.turnId,
-        index: wc.index++,
-        status: info
-      })
-    } else if (statusSurface === 'on-demand') {
+      const hasContent = Object.entries(info).some(([k, v]) => k !== 'sessionId' && v !== undefined)
+      if (hasContent) {
+        p.lastStatusBar = key
+        const wc = p.webchat
+        wc.sink.output({
+          conversationId: wc.conversationId,
+          turnId: wc.turnId,
+          index: wc.index++,
+          status: info
+        })
+      }
+      // A continuation turn also drives the origin platform's status surface below.
+      if (!p.webchat.continuation) return
+    }
+    if (statusSurface === 'on-demand') {
       // A declared on-demand platform (Telegram/Discord/Feishu) has no per-turn
       // status bar — session state is queried via `/status` (handleCommand).
       // Record the dedup key so the shared bookkeeping stays consistent, but emit
@@ -15951,7 +16417,9 @@ export class Daemon {
           index: p.webchat.index++,
           event: { kind: 'message', text }
         })
-      } else if (p.conn) {
+      }
+      // A continuation turn notifies the origin platform thread too (§5.2).
+      if ((!p.webchat || p.webchat.continuation) && p.conn) {
         this.enqueueApply(p, { kind: 'notice', text })
       }
     } catch (err) {
@@ -16891,8 +17359,9 @@ export class Daemon {
     // webchat streams its reply through the sink (→ relay `rd/chat`), one WebchatOutput
     // per mapped chunk, instead of driving the Slack renderer — but still records the
     // full activity log below, so a webchat session reads back like any other.
+    // A continuation turn drives BOTH: the browser sink and the platform renderer (§5.2).
     if (p.webchat) this.emitWebchatUpdate(p, update)
-    else if (!isHeadlessGithubFinal && !(p.stageAnswer && isAnswerChunk)) {
+    if ((!p.webchat || p.webchat.continuation) && !isHeadlessGithubFinal && !(p.stageAnswer && isAnswerChunk)) {
       for (const action of p.conv.onUpdate(update)) this.enqueueApply(p, action)
       this.armIdle(p)
       this.armFeishuStream(p)
@@ -18835,6 +19304,15 @@ export class Daemon {
    *  releasing sessions the daemon reclaims hosts and re-opens its gate (a teardown
    *  arrives separately via daemon/restart). */
   private async runDrain(drain: Drain, onProgress: (p: DrainProgress) => void): Promise<DrainDone> {
+    if (drain.scope.kind === 'daemon') this.dutyClaimsSuspended = true
+    try {
+      return await this.runDrainInner(drain, onProgress)
+    } finally {
+      this.dutyClaimsSuspended = false
+    }
+  }
+
+  private async runDrainInner(drain: Drain, onProgress: (p: DrainProgress) => void): Promise<DrainDone> {
     const deadlineMs = Math.max(0, new Date(drain.deadline).getTime() - this.clock.now())
     const { matched, drained, targets } = await this.drainScope(drain.scope, deadlineMs, onProgress)
     // daemon/agent scope force-stop the host(s), so EVERY matched session is truly
@@ -18857,8 +19335,27 @@ export class Daemon {
     } else {
       released = drained
     }
+    // Whole-daemon drain surrenders the duty leases too: the CP can re-grant
+    // them to a survivor immediately instead of waiting out the reassign window.
+    if (drain.scope.kind === 'daemon') await this.releaseAllDuties()
     this.log.info(`drain[${drain.scope.kind}]: done — released ${released.length} session(s)`)
     return { released }
+  }
+
+  /** Hand every held duty back to the CP. Best-effort by contract — on failure
+   *  the leases simply lapse, which is the same outcome one T_reassign later. */
+  private async releaseAllDuties(): Promise<void> {
+    // Join first: a claim still awaiting the CP would otherwise land after the
+    // snapshot below and outlive the drain.
+    await this.joinInFlightDutyClaims()
+    const groupIds = this.duties.releaseAll()
+    if (groupIds.length === 0) return
+    try {
+      await this.cpClient?.releaseDuties(groupIds)
+      this.log.info(`duty: released ${groupIds.length} group(s) on drain`)
+    } catch (err) {
+      this.log.warn(`duty: releasing ${groupIds.length} group(s) failed (leases will lapse): ${err}`)
+    }
   }
 
   /** `agent/stop` (§8.2): drain the agent's in-flight turns, stop its host, and
@@ -19553,6 +20050,8 @@ export class Daemon {
         if (applied.length) this.log.info(`cp: applied config keys: ${applied.join(', ')}`)
         if (ignored.length) this.log.warn(`cp: ignored config keys: ${ignored.join(', ')}`)
       },
+      applyDutyGrant: (grants) => this.applyDutyGrant(grants),
+      applyDutyRevoke: (revocations) => this.applyDutyRevoke(revocations),
       applyReconcileSnapshot: async (snap: RegisterOk) => {
         this.gitCommitIdentity = snap.gitCommitIdentity
         // Console-set finished-session retention — the reconnect baseline for the
@@ -20571,9 +21070,8 @@ export class Daemon {
       resolveInitialRegistry = resolve
     })
 
-    // This daemon's own coordinates. The file reader below has no other option — the shim serves no
-    // read or list — so a cluster agent's Files panel stays empty until that channel exists.
-    const workspaceLocation = (id: string, sessionId?: string) => {
+    // This daemon's own coordinates: `agent.workspace.path` and the session worktrees beside it.
+    const daemonWorkspaceLocation = (id: string, sessionId?: string): WorkspaceLocation | undefined => {
       const agent = this.agents.get(id)
       if (!agent) return undefined
       if (!sessionId) {
@@ -20584,19 +21082,26 @@ export class Daemon {
       return { root: sessionWorktreePath(agent, session.key), scratch: false }
     }
 
-    // The console's git seam runs git where the agent's work happens, which under --k8s is the pod.
+    // Where that workspace actually is, which under --k8s is the sandbox pod's volume. ONE resolver
+    // for the file reader and the git seam: the directory the console browses and the one it commits
+    // are the same directory, and describing them two different ways is what broke both panels.
     // A defined location for a sessionId means that session IS isolated, which --k8s refuses —
     // passed through so it is refused loudly rather than silently naming the shared checkout.
-    const workspaceGitRoot = (id: string, sessionId?: string): string | undefined => {
+    const workspaceLocation = (id: string, sessionId?: string): WorkspaceLocation | undefined => {
       const agent = this.agents.get(id)
-      if (!agent) return undefined
-      return consoleWorkspaceRoot(
+      const local = daemonWorkspaceLocation(id, sessionId)
+      if (!agent || !local) return undefined
+      const root = consoleWorkspaceRoot(
         agent,
-        workspaceLocation(id, sessionId)?.root,
+        local.root,
         this.k8sPlane?.workspaceRootFor(id),
         sessionId ? { isolation: 'session' } : undefined
       )
+      return root === undefined ? undefined : { root, scratch: local.scratch }
     }
+
+    const workspaceGitRoot = (id: string, sessionId?: string): string | undefined =>
+      workspaceLocation(id, sessionId)?.root
 
     const workspaceGit = createWorkspaceGit(
       workspaceGitRoot,
@@ -20718,12 +21223,19 @@ export class Daemon {
         return agentId ? (this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId)) : undefined
       },
       degradedScopes: () => this.cpDegradedScopes(),
+      duties: () => this.dutyDigest(),
       configApply: this.cpConfigApply(),
       sessionRead: createSessionReader(this.store, (session) => this.sessionThreadUrl(session)),
       // §5.4: serve a CP-forwarded status probe for a child session we own. Authorization is
       // re-done here (the lineage rule lives where the session lives), not trusted from the CP.
       childSessionStatusProbe: (probe) => this.childSessionStatusProbe(probe),
-      workspaceRead: createWorkspaceReader(workspaceLocation, (id, write) => this.withWorkspaceFileWrite(id, write)),
+      // The third argument is what makes a cluster agent's files reachable at all: the operations
+      // run inside its pod, on the volume the root above names.
+      workspaceRead: createWorkspaceReader(
+        workspaceLocation,
+        (id, write) => this.withWorkspaceFileWrite(id, write),
+        (id) => this.k8sPlane?.workspaceFilesFor(id)
+      ),
       workspaceGit: {
         status: (id, sessionId) => workspaceGit.status(id, sessionId),
         // diff/log are read-only, so they skip the runtime-quiescence coordinator the pull needs.
@@ -20747,8 +21259,11 @@ export class Daemon {
       memoryReader: createMemoryReader((id) => this.agents.get(id)?.dir, this.memory),
       dreamReader: createDreamReader(this.dreamRunner()),
       localSkillsReader: createLocalSkillsReader(
-        (id) => this.agents.get(id)?.workspace.path,
-        join(this.root, 'skill-installs')
+        // The workspace root in EXECUTION coordinates, like the file reader's: the skill roots the
+        // console lists are the ones the agent's harness loads, and those are in the pod.
+        (id) => workspaceLocation(id)?.root,
+        join(this.root, 'skill-installs'),
+        (id) => this.k8sPlane?.workspaceFilesFor(id)
       ),
       // webchat is no longer a CP control-WS integration (milestone A4) — it rides the
       // relay's rd/* wire, wired through RelayManager.onRelayMsg below.

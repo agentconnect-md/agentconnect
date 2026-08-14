@@ -26,7 +26,7 @@ import type {
   OrganizationSuggestionReviewReq,
   Ack
 } from '@agentconnect.md/protocol'
-import { fitToBudget, utf8Boundary } from './wire-slice.js'
+import { fitToBudget, utf8Boundary } from '../wire-slice.js'
 import type { DreamRunner } from '../agents/dream-runner.js'
 
 export interface DreamReader {

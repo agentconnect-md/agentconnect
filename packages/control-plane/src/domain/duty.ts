@@ -4,6 +4,17 @@
 
 export type DutyMemberKind = 'agent' | 'bot'
 
+/** An active Integration row whose bot the daemon itself connects (socket transport). */
+export interface DutyEdge {
+  agentId: string
+  botId: string
+}
+
+/** An enabled cron: the agent must belong to a claimable group even with no bots. */
+export interface CronSeed {
+  agentId: string
+}
+
 export interface DutyMemberKey {
   kind: DutyMemberKind
   refId: string

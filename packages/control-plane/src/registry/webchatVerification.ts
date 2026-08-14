@@ -1,10 +1,12 @@
 import {
+  originKindOf,
   WEBCHAT_REMOTE_MCP_FEATURE,
+  WEBCHAT_SESSION_CONTINUATION_FEATURE,
   type RcVerifyResult,
   type RcWebchatParticipant,
   type RegisterReq
 } from '@agentconnect.md/protocol'
-import { AgentId, OrgId } from '../domain/ids.js'
+import { AgentId, OrgId, SessionId } from '../domain/ids.js'
 import type { WebchatRemoteMcpService } from './webchatRemoteMcpService.js'
 import type { WebchatTokenService } from './webchatToken.js'
 
@@ -20,7 +22,21 @@ export interface WebchatVerificationDeps {
   /** Roster reads for multi-agent conversations (webchat-multi-agents.md §6.2). */
   conversations: {
     participants(orgId: OrgId, conversationId: string): Promise<Array<{ agentId: AgentId; role: 'primary' | 'member' }>>
+    target(conversationId: string): Promise<{ targetSessionId: string | null } | null>
   }
+  /** Session-targeted continuation re-checks (webchat-cross-integration-continuation.md §6.2). */
+  sessions: {
+    getUnscoped(id: SessionId): Promise<{
+      orgId: string
+      agentId: string
+      platform: string | null
+      daemonId: string | null
+      visibility: string
+      ownerIdentity: string | null
+      contentPurgedAt: Date | null
+    } | null>
+  }
+  orgs: { roleOf(orgId: string, userId: string): Promise<string | null> }
   remoteMcp: Pick<WebchatRemoteMcpService, 'establish'>
 }
 
@@ -33,6 +49,15 @@ export interface WebchatVerificationDeps {
  * no reference; unexpected dependency failures propagate to the relay handler's
  * retryable INTERNAL response instead of being misreported as a successful
  * verification.
+ *
+ * A SESSION-TARGETED conversation (non-null `targetSessionId`) re-checks the
+ * continuation gates on every dial: the target session must exist un-purged and
+ * chat-origin, the signed user must still hold a non-viewer role (private
+ * sessions: console ownership), and the owner agent must still be placed on the
+ * session's content-owning daemon with the continuation capability. Any drift
+ * fails the token instead of degrading into a fresh webchat session. The full
+ * provider-identity expansion ran at mint (≤ token TTL ago); verify re-checks
+ * with the console identity, which fails closed for platform-identity owners.
  */
 export function createWebchatTokenVerifier(deps: WebchatVerificationDeps): (token: string) => Promise<RcVerifyResult> {
   return async (token) => {
@@ -43,6 +68,56 @@ export function createWebchatTokenVerifier(deps: WebchatVerificationDeps): (toke
     if (!agent.daemonId) return { ok: false, reason: 'agent unplaced' }
     const daemon = deps.daemons.get(agent.daemonId)
     if (daemon?.state !== 'READY') return { ok: false, reason: 'daemon offline' }
+
+    // The durable conversation row is required for every dial; a targeted row
+    // additionally re-runs the continuation gates. Purge or metadata deletion
+    // therefore invalidates outstanding tokens instead of silently creating a
+    // fresh webchat session.
+    const conversation = await deps.conversations.target(claims.conversationId)
+    if (!conversation) return { ok: false, reason: 'unknown conversation' }
+    const targetSessionId = conversation.targetSessionId
+
+    const verifiedBase = {
+      ok: true,
+      userId: claims.userId,
+      user: claims.user,
+      agentId: claims.agentId,
+      daemonId: agent.daemonId,
+      orgId: claims.orgId,
+      conversationId: claims.conversationId
+    }
+
+    if (targetSessionId !== null) {
+      const session = await deps.sessions.getUnscoped(SessionId(targetSessionId))
+      if (!session || session.orgId !== claims.orgId || session.agentId !== claims.agentId) {
+        return { ok: false, reason: 'continuation unavailable' }
+      }
+      if (session.contentPurgedAt !== null) return { ok: false, reason: 'continuation unavailable' }
+      if (originKindOf(session.platform ?? '') !== 'chat') return { ok: false, reason: 'continuation unavailable' }
+      const role = await deps.orgs.roleOf(claims.orgId, claims.userId)
+      if (!role || role === 'viewer') return { ok: false, reason: 'continuation unavailable' }
+      // Fence the exact owner proved by mint-time provider-identity expansion against the live row.
+      if (
+        session.visibility === 'private' &&
+        (session.ownerIdentity === null || session.ownerIdentity !== claims.privateSessionOwnerIdentity)
+      ) {
+        return { ok: false, reason: 'continuation unavailable' }
+      }
+      // Content ownership is daemon-local: the agent must still be on the
+      // session's recorded daemon, and that daemon continuation-capable.
+      if (session.daemonId === null || session.daemonId !== agent.daemonId) {
+        return { ok: false, reason: 'continuation unavailable' }
+      }
+      if (!daemon.capabilities?.features.includes(WEBCHAT_SESSION_CONTINUATION_FEATURE)) {
+        return { ok: false, reason: 'continuation unavailable' }
+      }
+      // Single fixed participant; no roster growth, no remote MCP entitlement.
+      return {
+        ...verifiedBase,
+        participants: [{ agentId: claims.agentId, daemonId: agent.daemonId, primary: true }],
+        targetSessionId
+      }
+    }
 
     // Resolve the roster. An empty result (a conversation minted before the
     // participant backfill, or a mid-deploy create) degrades to the token's
@@ -68,16 +143,7 @@ export function createWebchatTokenVerifier(deps: WebchatVerificationDeps): (toke
       participants.push({ agentId: claims.agentId, daemonId: agent.daemonId, primary: true })
     }
 
-    const verified: RcVerifyResult = {
-      ok: true,
-      userId: claims.userId,
-      user: claims.user,
-      agentId: claims.agentId,
-      daemonId: agent.daemonId,
-      orgId: claims.orgId,
-      conversationId: claims.conversationId,
-      participants
-    }
+    const verified: RcVerifyResult = { ...verifiedBase, participants }
     // Delegated admin MCP is a single-participant privilege (webchat-multi-agents.md
     // §10.3): a multi-agent conversation never receives the entitlement.
     if (participants.length > 1) return verified

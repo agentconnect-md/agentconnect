@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { ApiError, ensureClusterExecution } from '@/lib/api'
-import { presentedDaemonStatus, status, type DaemonRow } from '@/lib/data'
+import { CLOUD_DAEMON_LABEL, cloudFleetStatus, presentedDaemonStatus, status, type DaemonRow } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { useModal } from '@/components/console/ModalProvider'
 import { RestrictedLock } from '@/components/console/VisibilityField'
@@ -75,9 +75,24 @@ export default function DaemonsView() {
     return map
   }, [agents])
 
-  // Fleet summary for the mobile-only strip below.
-  const online = daemons.filter((d) => d.status === 'online').length
-  const paused = daemons.length - online
+  // The cloud pool is ONE entry, not one card per Pod: its members are install-wide
+  // infrastructure every org sees, replaced without notice, and nothing here is the
+  // org's to rename or detach. Everything else is a machine someone connected.
+  const cloudMembers = useMemo(() => daemons.filter((d) => d.cloud), [daemons])
+  const ownDaemons = useMemo(() => daemons.filter((d) => !d.cloud), [daemons])
+  const cloudAgents = useMemo(() => {
+    const memberIds = new Set(cloudMembers.map((m) => m.daemonId))
+    return agents.filter((a) => memberIds.has(a.daemon)).length
+  }, [agents, cloudMembers])
+
+  // Fleet summary for the mobile-only strip below — counted over what the page SHOWS,
+  // so the pool contributes one entry rather than one per member.
+  const shownStatuses = [
+    ...(cloudMembers.length > 0 ? [cloudFleetStatus(cloudMembers)] : []),
+    ...ownDaemons.map((d) => d.status)
+  ]
+  const online = shownStatuses.filter((s) => s === 'online').length
+  const paused = shownStatuses.length - online
 
   return (
     <div className="wrap px-4 pt-[14px] pb-1 desktop:p-0">
@@ -123,13 +138,92 @@ export default function DaemonsView() {
               {paused} paused
             </span>
           </div>
-          <div className="grid grid-cols-1 gap-3 desktop:grid-cols-3 desktop:gap-[14px]">
-            {daemons.map((m) => (
-              <DaemonCard key={m.daemonId} m={m} hosted={hostedByDaemon.get(m.daemonId) ?? 0} />
-            ))}
-          </div>
+          {cloudMembers.length > 0 && <CloudFleetCard members={cloudMembers} hosted={cloudAgents} />}
+          {ownDaemons.length > 0 && (
+            <>
+              {/* The section label earns its place only next to the Cloud entry — without
+                  one there is nothing to tell these cards apart from. */}
+              {cloudMembers.length > 0 && (
+                <div className="mt-6 mb-[9px] flex min-h-[26px] items-center gap-[9px]">
+                  <span className="font-sans text-[13px] font-semibold leading-normal">Daemons</span>
+                  <span className="mono text-[11.5px] text-(--text-tertiary)">{ownDaemons.length}</span>
+                </div>
+              )}
+              <div className="grid grid-cols-1 gap-3 desktop:grid-cols-3 desktop:gap-[14px]">
+                {ownDaemons.map((m) => (
+                  <DaemonCard key={m.daemonId} m={m} hosted={hostedByDaemon.get(m.daemonId) ?? 0} />
+                ))}
+              </div>
+            </>
+          )}
         </>
       )}
+    </div>
+  )
+}
+
+/**
+ * The whole cloud pool as one entry (design: the Infra screen's `cloudSlot`).
+ *
+ * Deliberately nothing per-member: a member is a Pod, so its name, host, CPU and memory
+ * are cluster churn no reader outside the cluster can act on, and a card each turned a
+ * rolling deployment into a fleet of look-alike daemons. What is true of the pool is what
+ * shows — is it serving, on what release, and how many agents run there.
+ *
+ * No utilization bar and no "Manage": the design's are a billing plan's included-usage and
+ * upgrade path, and inventing either from load telemetry would read as a real quota.
+ */
+function CloudFleetCard({ members, hosted }: { members: DaemonRow[]; hosted: number }) {
+  const { orgPath } = useOrgs()
+  const router = useRouter()
+  const s = status(cloudFleetStatus(members))
+  const serving = members.filter((m) => m.status === 'online')
+  const online = serving.length > 0
+  // The serving members share a release (they roll together); an idle pool has no version
+  // worth quoting, so the strip drops it rather than naming a Pod that is gone.
+  const meta = online
+    ? `Managed by AgentConnect · ${serving.length} node${serving.length === 1 ? '' : 's'} · ${serving[0]!.version}`
+    : 'Managed by AgentConnect · no nodes serving'
+  // Opens one member's detail for the runtimes, models and MCP servers the pool offers —
+  // a serving one, since a member that stopped answering can no longer describe itself.
+  const target = serving[0] ?? members[members.length - 1]!
+
+  return (
+    <div
+      className="card click flex items-center gap-3 overflow-visible p-[14px] max-desktop:rounded-lg desktop:gap-[14px] desktop:px-4 desktop:py-[15px]"
+      onClick={() => router.push(orgPath(`/daemons/${target.daemonId}`))}
+    >
+      <span className="relative flex h-10 w-10 flex-none items-center justify-center rounded-md bg-(--brand-soft) desktop:h-9 desktop:w-9">
+        <Icon name="cloud" size={20} color={online ? 'var(--brand)' : 'var(--text-tertiary)'} />
+        {/* Mobile puts the status dot on the avatar corner; desktop shows it inline after the name. */}
+        <span
+          className="absolute -right-[3px] -bottom-[3px] h-3 w-3 rounded-full border-2 border-(--surface-card) desktop:hidden"
+          style={{ background: s.dot }}
+        />
+      </span>
+      <div className="flex min-w-0 flex-1 flex-col gap-[2px] desktop:gap-0">
+        <div className="flex min-w-0 items-center gap-[6px] desktop:gap-2">
+          <span className="truncate font-sans text-[14px] font-semibold leading-normal desktop:text-[13.5px]">
+            {CLOUD_DAEMON_LABEL}
+          </span>
+          <span className="dot hidden flex-none desktop:inline-block" style={{ background: s.dot }} />
+        </div>
+        <div className="truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary) desktop:text-[11.5px] desktop:leading-[1.5]">
+          {meta}
+          <span className="desktop:hidden">{` · ${hosted} agent${hosted === 1 ? '' : 's'}`}</span>
+        </div>
+      </div>
+      <div className="hidden flex-none text-right desktop:block">
+        <div className="mono text-[14px] leading-normal font-semibold">{hosted}</div>
+        <div className="font-sans text-[10.5px] font-normal leading-normal text-(--text-tertiary)">agents on Cloud</div>
+      </div>
+      <span
+        className="badge flex-none max-desktop:px-[10px] max-desktop:py-[3px] max-desktop:text-[12px]"
+        style={{ background: s.bg, color: s.text }}
+      >
+        {s.label}
+      </span>
+      <Icon name="chevron-right" size={16} color="var(--text-tertiary)" className="desktop:hidden" />
     </div>
   )
 }
@@ -163,6 +257,7 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
   const pending = m.lifecycleOp?.status === 'pending'
   const canRestart = online && !pending && m.canManageLifecycle
   const canUpgrade = canRestart && m.upgradeAvailable
+  const hasActions = m.canEdit || canRestart
 
   const beginEdit = () => {
     setDraft(m.name)
@@ -228,8 +323,8 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
             ) : (
               <span
                 onClick={(e) => e.stopPropagation()}
-                onDoubleClick={beginEdit}
-                title="Double-click to rename"
+                onDoubleClick={m.canEdit ? beginEdit : undefined}
+                title={m.canEdit ? 'Double-click to rename' : undefined}
                 className="hidden min-w-0 truncate font-sans text-[14px] font-semibold leading-normal desktop:block"
               >
                 {m.name}
@@ -266,7 +361,9 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
           {s.label}
         </span>
         <Icon name="chevron-right" size={16} color="var(--text-tertiary)" className="desktop:hidden" />
-        <div className="relative hidden flex-none desktop:block">
+        {/* Hidden outright when the caller may do none of it — an empty menu is worse than
+            no menu, and every item here is refused by the CP without edit rights. */}
+        <div className={hasActions ? 'relative hidden flex-none desktop:block' : 'hidden'}>
           <button
             className="iconbtn h-7 w-7"
             onClick={(e) => {
@@ -287,16 +384,18 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
                 className="fixed inset-0 z-[45]"
               />
               <div className="dmenu" onClick={(e) => e.stopPropagation()}>
-                <button
-                  className="dmi"
-                  onClick={() => {
-                    setMenuOpen(false)
-                    beginEdit()
-                  }}
-                >
-                  <Icon name="pencil" size={15} />
-                  Rename
-                </button>
+                {m.canEdit && (
+                  <button
+                    className="dmi"
+                    onClick={() => {
+                      setMenuOpen(false)
+                      beginEdit()
+                    }}
+                  >
+                    <Icon name="pencil" size={15} />
+                    Rename
+                  </button>
+                )}
                 {canRestart && (
                   <button
                     className="dmi"
@@ -309,7 +408,7 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
                     Restart
                   </button>
                 )}
-                {offline && !pending && (
+                {offline && !pending && m.canEdit && (
                   <>
                     <button
                       className="dmi"

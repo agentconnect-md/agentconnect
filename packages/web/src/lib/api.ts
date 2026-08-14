@@ -15,7 +15,7 @@ import type {
   SessionImage,
   Workspace
 } from '@/lib/data'
-import { isSelfSender, lifecycleStatus, MOCK_MODE } from '@/lib/data'
+import { CLOUD_DAEMON_LABEL, isSelfSender, lifecycleStatus, MOCK_MODE } from '@/lib/data'
 import type { AgentIcon } from '@/lib/agent-icon'
 import { withIconUrl } from '@/lib/agent-icon'
 import {
@@ -175,6 +175,26 @@ export function mintWebchatConversationToken(
   body: { conversationId?: string; agentIds?: string[] }
 ): Promise<WebchatTokenDto> {
   return apiPost<WebchatTokenDto>(`/orgs/${encodeURIComponent(orgId)}/webchat/conversations/token`, body)
+}
+
+/**
+ * Session-targeted mint (webchat-cross-integration-continuation.md §6.5): mint a
+ * token whose conversation adopts an existing chat-origin session, so the console
+ * composer can continue it. 403/409 per the server-computed continuation gates.
+ */
+export function mintWebchatSessionToken(orgId: string, sessionId: string): Promise<WebchatTokenDto> {
+  return apiPost<WebchatTokenDto>(
+    `/orgs/${encodeURIComponent(orgId)}/sessions/${encodeURIComponent(sessionId)}/webchat/token`,
+    {}
+  )
+}
+
+/** `webchatWsUrl` for a session continuation: mint the session-target token, dial the relay. */
+export async function webchatSessionWsUrl(orgId: string, sessionId: string): Promise<string> {
+  const minted = await mintWebchatSessionToken(orgId, sessionId)
+  const base = minted.relayUrl.replace(/^http/, 'ws').replace(/\/+$/, '')
+  const params = new URLSearchParams({ token: minted.token, conversation_id: minted.conversationId })
+  return `${base}/webchat?${params.toString()}`
 }
 
 /**
@@ -547,6 +567,12 @@ export interface SessionDetailDto {
   visibility?: SessionVisibility | null
   visibilityState?: 'pending' | 'applied' | null
   canChangeVisibility?: boolean | null
+  /** Server-computed continuation gate (webchat-cross-integration-continuation.md
+   *  §6.5): whether THIS caller may continue the session from the console
+   *  composer. Absent on a CP that predates the feature (⇒ read-only). */
+  canContinue?: boolean | null
+  continuationUnavailableReason?:
+    'unauthorized' | 'content_purged' | 'unsupported_platform' | 'agent_moved' | 'daemon_offline' | 'unavailable' | null
   externalProvider?: string | null
   externalResolution?: 'pending' | 'settled' | 'invalid' | null
   /** Actual source gateway for Feishu/Lark external sessions. Absent on older CPs. */
@@ -1012,6 +1038,9 @@ export interface DaemonViewDto {
    *  `status` is expiry-projected server-side. The console tracks its OWN command by `id`. */
   lifecycleOp: DaemonLifecycleOpDto | null
   status: string
+  /** An install-wide cloud member — managed infrastructure shared by every org, one row
+   *  per cloud-daemon Pod. Absent from an older CP ⇒ treat as a plain daemon. */
+  cloud?: boolean
   health: string
   capabilities: DaemonCapabilitiesDto
   runtimeProfiles: RuntimeProfileDto[]
@@ -2002,12 +2031,16 @@ export function mergeSessionDetailUsage(local: Session, detail: Session | null):
 }
 
 export function daemonFromDto(d: DaemonViewDto): DaemonRow {
+  const cloud = d.cloud ?? false
   return {
     daemonId: d.daemonId,
+    cloud,
     // Display label: the daemon name (the CP seeds it from the hostname on first
     // register, so a connected daemon always has one), else a short id for a
-    // provisioned-but-never-connected row. Never the raw hostname.
-    name: d.name || d.daemonId.slice(0, 8),
+    // provisioned-but-never-connected row. Never the raw hostname. A cloud member's
+    // name is its Pod, which is meaningless outside the cluster and changes on every
+    // roll — the pool is one managed thing everywhere it is named, so use that label.
+    name: cloud ? CLOUD_DAEMON_LABEL : d.name || d.daemonId.slice(0, 8),
     version: d.agentVersion || PLACEHOLDER,
     latestVersion: d.latestVersion,
     releaseChannel: d.releaseChannel,

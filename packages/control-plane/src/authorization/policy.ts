@@ -23,7 +23,8 @@ export const AuthorizationAction = {
   ResourceEdit: 'resource.edit',
   ResourceManageSharing: 'resource.sharing.manage',
   SessionView: 'session.view',
-  SessionChangeVisibility: 'session.visibility.change'
+  SessionChangeVisibility: 'session.visibility.change',
+  SessionContinue: 'session.continue'
 } as const
 
 export type AuthorizationAction = (typeof AuthorizationAction)[keyof typeof AuthorizationAction]
@@ -54,7 +55,10 @@ export type AuthorizationRequest =
       resource: Shareable
     }
   | {
-      action: typeof AuthorizationAction.SessionView | typeof AuthorizationAction.SessionChangeVisibility
+      action:
+        | typeof AuthorizationAction.SessionView
+        | typeof AuthorizationAction.SessionChangeVisibility
+        | typeof AuthorizationAction.SessionContinue
       resource: SessionViewable
       identitySet: ReadonlySet<string>
       externalAccess?: SessionExternalAccessSnapshot
@@ -131,6 +135,23 @@ export function can(principal: ViewCtx, request: AuthorizationRequest): boolean 
     // OWNERSHIP, so a viewer-role member keeps control of their own DM.
     case AuthorizationAction.SessionChangeVisibility:
       return !request.resource.externalProvider && identityOwnsSession(request.resource, request.identitySet)
+    // Continuation is an organization WRITE riding on view (webchat-cross-
+    // integration-continuation.md §5.1): viewing a transcript is not authority
+    // to make the bot speak in an external system, so the viewer role is
+    // refused UNIFORMLY — even for a private session the viewer owns (unlike
+    // `session.visibility.change`, this posts through the org's bot). Private
+    // sessions additionally stay owner-only; role never widens that audience.
+    case AuthorizationAction.SessionContinue:
+      if (principal.role === 'viewer') return false
+      if (request.resource.visibility === 'private') {
+        return identityOwnsSession(request.resource, request.identitySet)
+      }
+      return can(principal, {
+        action: AuthorizationAction.SessionView,
+        resource: request.resource,
+        identitySet: request.identitySet,
+        ...(request.externalAccess ? { externalAccess: request.externalAccess } : {})
+      })
   }
 }
 
@@ -178,6 +199,20 @@ export function canChangeSessionVisibility(
     action: AuthorizationAction.SessionChangeVisibility,
     resource,
     identitySet
+  })
+}
+
+export function canContinueSession(
+  resource: SessionViewable,
+  principal: ViewCtx,
+  identitySet: ReadonlySet<string>,
+  externalAccess?: SessionExternalAccessSnapshot
+): boolean {
+  return can(principal, {
+    action: AuthorizationAction.SessionContinue,
+    resource,
+    identitySet,
+    ...(externalAccess ? { externalAccess } : {})
   })
 }
 

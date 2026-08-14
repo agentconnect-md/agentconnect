@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import {
   buildRelayCpFrame,
   WEBCHAT_REMOTE_MCP_FEATURE,
+  WEBCHAT_SESSION_CONTINUATION_FEATURE,
   RELAY_CP_SUBPROTOCOL,
   type RelayCpFrame,
   type RelayCpFrameType,
@@ -184,6 +185,13 @@ function buildWebchatVerifier(
     /** Per-daemon connection state for member placements. */
     daemonById?: Record<string, { state: string; features?: string[] }>
     establish?: WebchatVerificationDeps['remoteMcp']['establish']
+    /** Conversation row (null = unknown conversation). Default: an ordinary
+     *  (untargeted) row, preserving the legacy verification shape. */
+    conversationRow?: { targetSessionId: string | null } | null
+    /** Target session row for the continuation branch. */
+    sessionById?: Record<string, Awaited<ReturnType<WebchatVerificationDeps['sessions']['getUnscoped']>>>
+    /** Signed user's role in the org (default collaborator). */
+    role?: string | null
   } = {}
 ) {
   const verify = vi.fn(async () =>
@@ -240,7 +248,12 @@ function buildWebchatVerifier(
       daemons: { get: getDaemon },
       // Default: pre-participant conversation — the empty roster degrades to the
       // token's primary (single-agent shape), keeping the remote-MCP gate reachable.
-      conversations: { participants: async () => over.participants ?? [] },
+      conversations: {
+        participants: async () => over.participants ?? [],
+        target: async () => (over.conversationRow === undefined ? { targetSessionId: null } : over.conversationRow)
+      },
+      sessions: { getUnscoped: async (id) => over.sessionById?.[id] ?? null },
+      orgs: { roleOf: async () => (over.role === undefined ? 'collaborator' : over.role) },
       remoteMcp: { establish }
     })
   }
@@ -349,7 +362,7 @@ describe('RelayConnection FSM', () => {
 
     transport.feed('rc/register', { name: 'pod-0', daemonUrl: 'wss://pod-0.example.test' })
     await Promise.resolve()
-    expect(upsertByName).toHaveBeenCalledWith('pod-0', 'wss://pod-0.example.test', new Date(NOW))
+    expect(upsertByName).toHaveBeenCalledWith('pod-0', 'wss://pod-0.example.test', new Date(NOW), [])
     expect(transport.lastRep('rc/registered')!.payload).toEqual({ relayId: RELAY_ID })
     expect(conn.state).toBe('READY')
     expect(conn.relayId).toBe(RELAY_ID)
@@ -835,5 +848,118 @@ describe('webchat verification multi-agent roster (webchat-multi-agents.md §6.2
       { agentId: WEBCHAT_AGENT_ID, daemonId: WEBCHAT_DAEMON_ID, primary: true },
       { agentId: MEMBER_AGENT_ID }
     ])
+  })
+})
+
+describe('webchat verification — session-targeted continuation (webchat-cross-integration-continuation.md §6.2)', () => {
+  const TARGET_SESSION_ID = 'acp-session-target-1'
+  const CONTINUATION_FEATURES = [WEBCHAT_REMOTE_MCP_FEATURE, WEBCHAT_SESSION_CONTINUATION_FEATURE]
+  const targetSession = (
+    over: Partial<{
+      orgId: string
+      agentId: string
+      platform: string | null
+      daemonId: string | null
+      visibility: string
+      ownerIdentity: string | null
+      contentPurgedAt: Date | null
+    }> = {}
+  ) => ({
+    orgId: 'org-1',
+    agentId: WEBCHAT_AGENT_ID,
+    platform: 'slack',
+    daemonId: WEBCHAT_DAEMON_ID,
+    visibility: 'org',
+    ownerIdentity: null,
+    contentPurgedAt: null,
+    ...over
+  })
+  const targeted = (
+    sessionOver: Parameters<typeof targetSession>[0] = {},
+    over: Parameters<typeof buildWebchatVerifier>[0] = {}
+  ) =>
+    buildWebchatVerifier({
+      conversationRow: { targetSessionId: TARGET_SESSION_ID },
+      sessionById: { [TARGET_SESSION_ID]: targetSession(sessionOver) },
+      daemonFeatures: CONTINUATION_FEATURES,
+      ...over
+    })
+
+  it('returns targetSessionId + the single fixed participant, and never the remote-MCP entitlement', async () => {
+    const h = targeted()
+    const result = await h.verifier('browser-credential')
+    expect(result).toMatchObject({
+      ok: true,
+      targetSessionId: TARGET_SESSION_ID,
+      participants: [{ agentId: WEBCHAT_AGENT_ID, daemonId: WEBCHAT_DAEMON_ID, primary: true }]
+    })
+    expect(result.remoteMcp).toBeUndefined()
+    expect(h.establish).not.toHaveBeenCalled()
+  })
+
+  it('fails for an unknown conversation row — for targeted AND ordinary tokens alike', async () => {
+    const h = buildWebchatVerifier({ conversationRow: null })
+    await expect(h.verifier('browser-credential')).resolves.toMatchObject({ ok: false })
+  })
+
+  it('fails when the signed user role dropped to viewer (or membership vanished)', async () => {
+    await expect(targeted({}, { role: 'viewer' }).verifier('t')).resolves.toMatchObject({ ok: false })
+    await expect(targeted({}, { role: null }).verifier('t')).resolves.toMatchObject({ ok: false })
+  })
+
+  it('fails after a retention purge, target deletion, or non-chat origin', async () => {
+    await expect(targeted({ contentPurgedAt: new Date() }).verifier('t')).resolves.toMatchObject({ ok: false })
+    const gone = buildWebchatVerifier({
+      conversationRow: { targetSessionId: TARGET_SESSION_ID },
+      sessionById: {},
+      daemonFeatures: CONTINUATION_FEATURES
+    })
+    await expect(gone.verifier('t')).resolves.toMatchObject({ ok: false })
+    await expect(targeted({ platform: 'hook' }).verifier('t')).resolves.toMatchObject({ ok: false })
+  })
+
+  it('keeps private sessions owner-only using the exact mint-time identity proof', async () => {
+    await expect(
+      targeted(
+        { visibility: 'private', ownerIdentity: 'slack:T1:U1' },
+        {
+          tokenClaims: {
+            userId: 'user-1',
+            user: 'user@example.test',
+            agentId: WEBCHAT_AGENT_ID,
+            orgId: 'org-1',
+            conversationId: WEBCHAT_CONVERSATION_ID,
+            privateSessionOwnerIdentity: 'slack:T1:U1'
+          }
+        }
+      ).verifier('t')
+    ).resolves.toMatchObject({
+      ok: true,
+      targetSessionId: TARGET_SESSION_ID
+    })
+    await expect(
+      targeted(
+        { visibility: 'private', ownerIdentity: 'slack:T1:U2' },
+        {
+          tokenClaims: {
+            userId: 'user-1',
+            user: 'user@example.test',
+            agentId: WEBCHAT_AGENT_ID,
+            orgId: 'org-1',
+            conversationId: WEBCHAT_CONVERSATION_ID,
+            privateSessionOwnerIdentity: 'slack:T1:U1'
+          }
+        }
+      ).verifier('t')
+    ).resolves.toMatchObject({ ok: false })
+  })
+
+  it('fails when the agent left the content-owning daemon or the daemon lost the capability', async () => {
+    await expect(targeted({ daemonId: '99999999-9999-4999-8999-999999999999' }).verifier('t')).resolves.toMatchObject({
+      ok: false
+    })
+    await expect(targeted({}, { daemonFeatures: [WEBCHAT_REMOTE_MCP_FEATURE] }).verifier('t')).resolves.toMatchObject({
+      ok: false
+    })
   })
 })

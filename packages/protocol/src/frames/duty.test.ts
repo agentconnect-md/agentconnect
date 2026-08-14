@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { HeartbeatDuties, DutyGrant, DutyRevoke, DutyRelease } from './duty.js'
+import { HeartbeatDuties, DutyGrant, DutyRevoke, DutyRelease, DutyClaim, DutyClaimOk } from './duty.js'
 import { Heartbeat } from './telemetry.js'
 import { decodeEnvelope, encode, buildEnvelope } from '../index.js'
 
@@ -57,5 +57,27 @@ describe('duty frames', () => {
   it('duty/release requires at least one group', () => {
     expect(DutyRelease.safeParse({ groupIds: [GROUP] }).success).toBe(true)
     expect(DutyRelease.safeParse({ groupIds: [] }).success).toBe(false)
+  })
+})
+
+describe('duty/claim — the activation rendezvous', () => {
+  it('the claim names only the agent; the CP resolves its org', () => {
+    expect(DutyClaim.safeParse({ agentId: AGENT }).success).toBe(true)
+    expect(DutyClaim.safeParse({ agentId: AGENT, orgId: 'org-1' }).success).toBe(true)
+    expect(DutyClaim.safeParse({}).success).toBe(false)
+  })
+
+  it('a won claim carries the grant to install verbatim', () => {
+    const ok = DutyClaimOk.parse({
+      granted: true,
+      grant: { groupId: GROUP, orgId: 'org-1', term: '1', members: [{ kind: 'agent', refId: AGENT }] }
+    })
+    expect(ok.grant?.term).toBe('1')
+    expect(ok.holder).toBeUndefined()
+  })
+
+  it('a lost claim names the incumbent, and may name nobody', () => {
+    expect(DutyClaimOk.parse({ granted: false, holder: BOT }).holder).toBe(BOT)
+    expect(DutyClaimOk.parse({ granted: false }).holder).toBeUndefined()
   })
 })

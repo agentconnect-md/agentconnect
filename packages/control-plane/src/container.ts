@@ -115,6 +115,11 @@ import { AgentSpecAssembler } from './orchestrator/agentSpecAssembler.js'
 import { Placement } from './orchestrator/placement.js'
 import { Watchdog } from './orchestrator/watchdog.js'
 import { CronRunReaper } from './orchestrator/cronRunReaper.js'
+import {
+  CloudDaemonReaper,
+  CLOUD_DAEMON_REAP_AFTER_MS,
+  CLOUD_DAEMON_REAP_INTERVAL_MS
+} from './orchestrator/cloudDaemonReaper.js'
 import { RelaySweeper } from './orchestrator/relaySweeper.js'
 import { RelayRoster } from './orchestrator/relayRoster.js'
 import { WebchatMcpOperationReaper } from './orchestrator/webchatMcpOperationReaper.js'
@@ -158,7 +163,8 @@ import { replayMcpTo } from './orchestrator/mcpReplay.js'
 import { replayMemoryConnectionsTo, syncMemoryConnectionsToDaemons } from './orchestrator/memoryConnectionReplay.js'
 import { relayHttpOrigin } from './orchestrator/mcpProvider.js'
 import { CollabRoutesService } from './orchestrator/collabRoutes.service.js'
-import { DutyLeaseService } from './orchestrator/dutyLease.js'
+import { DutyLeaseService, DUTY_LEASE_DEFAULTS } from './orchestrator/dutyLease.js'
+import { DutyRecomputeSweep } from './orchestrator/dutyRecompute.js'
 import { AgentMutationGate } from './orchestrator/agentMutationGate.js'
 import { AgentMoveService } from './orchestrator/agentMove.js'
 import { createDaemonWsServer } from './ws/gateway.js'
@@ -169,6 +175,7 @@ import type { RelayWsServerDeps } from './ws/relay-gateway.js'
 import { buildHttpServer } from './http/server.js'
 import type { HttpDeps } from './http/deps.js'
 import { createReadiness, type Readiness } from './http/readiness.js'
+import { retireCloudDaemonMember } from './http/daemon-removal.js'
 import { McpRateLimiter } from './http/mcp/rate-limit.js'
 import { RemoteGrantAuthenticator } from './http/mcp/remote-grant-authenticator.js'
 import { InternalInvocationAuth } from './http/mcp/internal-invocation-auth.js'
@@ -657,6 +664,20 @@ export function buildContainer(
   const dutyLease = new DutyLeaseService(repos.dutyGroup, clock, undefined, {
     warn: (o, m) => http.log.warn(o, m)
   })
+  // Duty-group projection: derived from Integration/CronDef rows on a rotation;
+  // deltas reach daemons via the heartbeat lease exchange, never from the sweep.
+  const dutyRecompute = new DutyRecomputeSweep(
+    repos.dutyGroup,
+    clock,
+    {
+      intervalMs: 30_000,
+      orgsPerTick: 25,
+      leaseMs: DUTY_LEASE_DEFAULTS.leaseMs,
+      incumbentFence: DUTY_LEASE_DEFAULTS.grantPolicy === 'incumbent',
+      kickDelayMs: 250
+    },
+    { warn: (o, m) => http.log.warn(o, m), error: (o, m) => http.log.error(o, m) }
+  )
   const agentMutations = new AgentMutationGate()
 
   // Relay roster (shared-bot-relay.md §5): computed from the durable `relay` table
@@ -701,6 +722,7 @@ export function buildContainer(
     collabRoutes,
     mutations: agentMutations,
     sessionOwners: connReg,
+    recomputeDuties: (orgId: string) => dutyRecompute.kick(orgId),
     log: { warn: (o, m) => http.log.warn(o, m) }
   })
 
@@ -1012,6 +1034,7 @@ export function buildContainer(
     sessionOwners: connReg,
     hooks: hookService,
     ...(githubRunReporter ? { kickGithubRunReporter: () => githubRunReporter.kick() } : {}),
+    recomputeDuties: (orgId: string) => dutyRecompute.kick(orgId),
     auth,
     apiKeys,
     oauth,
@@ -1090,6 +1113,21 @@ export function buildContainer(
     http.log,
     defaultWebchatMcpMetrics
   )
+
+  // Retires the daemon rows replaced cloud Pods leave behind (a cloud member is bound to
+  // its Pod UID, so a new Pod means a new record). Org-less rows no `DELETE /daemons/:id`
+  // can reach, which is why they accumulate in every org's fleet. Only where cluster tokens
+  // are accepted at all: nowhere else can a cloud member exist.
+  const cloudDaemonReaper = clusterIdentity
+    ? new CloudDaemonReaper(
+        repos.daemon,
+        (member, retiredBefore) => retireCloudDaemonMember(httpDeps, member, retiredBefore, http.log),
+        connReg,
+        clock,
+        { retireAfterMs: CLOUD_DAEMON_REAP_AFTER_MS, intervalMs: CLOUD_DAEMON_REAP_INTERVAL_MS },
+        http.log
+      )
+    : undefined
 
   // Redelivery reconciliation (webhook-triggers P2.5): recovers github events
   // lost to a relay-pool outage by asking GitHub to redeliver GUIDs that never
@@ -1374,6 +1412,8 @@ export function buildContainer(
       agents: repos.agent,
       daemons: connReg,
       conversations: repos.webchatConversation,
+      sessions: repos.session,
+      orgs: repos.org,
       remoteMcp: webchatRemoteMcp
     }),
     // Current-permission fallback for GitHub comment webhooks whose
@@ -1640,11 +1680,13 @@ export function buildContainer(
       clusterMaintenance.start()
       cronRunReaper.start()
       hookRunReaper.start()
+      cloudDaemonReaper?.start()
       webchatMcpOperationReaper.start()
       githubRunReporter?.start()
       hookRedeliveryReconciler?.start()
       for (const reaper of pendingInstallReapers) reaper.start()
       relaySweeper.start()
+      dutyRecompute.start()
       sessionAccessWarmer.start()
       for (const loop of backgroundLoops) loop.start()
       // One-shot (not a re-arming loop): the worklist empties itself; a partially
@@ -1655,12 +1697,14 @@ export function buildContainer(
       clusterMaintenance.stop()
       cronRunReaper.stop()
       hookRunReaper.stop()
+      cloudDaemonReaper?.stop()
       const webchatMcpOperationSettled = webchatMcpOperationReaper.stopAndSettle()
       githubRunReporter?.stop()
       hookRedeliveryReconciler?.stop()
       installationDoorbell?.stop()
       for (const reaper of pendingInstallReapers) reaper.stop()
       relaySweeper.stop()
+      dutyRecompute.stop()
       sessionAccessWarmer.stop()
       for (const loop of backgroundLoops) loop.stop()
       visibilityPush.stop()

@@ -58,6 +58,14 @@
  * — attempted or delivered — is an isolation failure (privateLeaks).
  */
 import { createHash } from 'node:crypto'
+import {
+  ACTION_VERBS as SHARED_ACTION_VERBS,
+  assignWerewolfRoles,
+  parseStatedTarget as parseStatedTargetRule,
+  werewolfWinner,
+  type ParsedIntent,
+  type WerewolfRole
+} from './werewolf-rules.js'
 import type {
   CollaborationGameWorld,
   DaemonEvaluationEnvironment,
@@ -79,7 +87,9 @@ import type { CompiledRoom } from './types.js'
  *  piece of evidence for WHY a speaking order died. */
 const LOOP_GUARD_NOTICE = /Loop protection stopped this conversation/
 
-export type WerewolfRole = 'werewolf' | 'seer' | 'doctor' | 'villager'
+// The rules shared with the webchat composition live in `werewolf-rules.ts`;
+// re-exported here so existing importers (engine.ts, tests) keep working.
+export { assignWerewolfRoles, type WerewolfRole } from './werewolf-rules.js'
 
 export interface WerewolfGameOptions {
   world: ArenaWorld
@@ -149,53 +159,8 @@ interface RecordedAction {
   reason?: string
 }
 
-/** What the referee could read out of one message for one action. */
-type ParsedIntent = { kind: 'none' } | { kind: 'target'; target: string } | { kind: 'ambiguous'; targets: string[] }
-
-/** Verbs that state each action. Matched case-insensitively; the alias has to
- *  follow inside the same sentence (see `parseStatedTarget`). */
-const ACTION_VERBS: Record<RecordedAction['action'], RegExp> = {
-  vote: /\b(?:vote|votes|voting|voted|lynch|lynches|lynching)\b/gi,
-  kill: /\b(?:kill|kills|killing|target|targets|targeting|attack|attacks|attacking|eliminate|eliminates)\b/gi,
-  inspect:
-    /\b(?:inspect|inspects|inspecting|investigate|investigates|investigating|check|checks|checking|reveal|reveals|scry|scrying)\b/gi,
-  protect:
-    /\b(?:protect|protects|protecting|save|saves|saving|guard|guards|guarding|shield|shields|shielding|heal|heals|healing)\b/gi
-}
-
-/** The seeded role map — a pure function of (aliases, seed), shared by the
- *  topology builder (the wolf den's membership depends on it) and the game.
- *
- *  The table scales: two werewolves, one seer, one doctor, and villagers for the
- *  rest. Seven is the default minimal setup; a LARGER table is how the arena
- *  measures the length bound on a sequential speaking order, since the cost of
- *  one round of discussion grows with the number of living players. */
-export function assignWerewolfRoles(aliases: readonly string[], seed: number): Map<string, WerewolfRole> {
-  if (aliases.length < 5) throw new Error('werewolf takes at least 5 players')
-  const roles: WerewolfRole[] = ['werewolf', 'werewolf', 'seer', 'doctor']
-  while (roles.length < aliases.length) roles.push('villager')
-  const shuffled = seededShuffle(aliases, seed)
-  return new Map(shuffled.map((alias, index) => [alias, roles[index]!]))
-}
-
-/** Seeded Fisher–Yates: role assignment is a pure function of the seed. */
-function seededShuffle<T>(items: readonly T[], seed: number): T[] {
-  const out = [...items]
-  let state = createHash('sha256').update(`werewolf-roles:${seed}`).digest().readUInt32BE(0) || 1
-  const next = () => {
-    // xorshift32 — deterministic, dependency-free.
-    state ^= state << 13
-    state ^= state >>> 17
-    state ^= state << 5
-    state >>>= 0
-    return state / 0xffffffff
-  }
-  for (let i = out.length - 1; i > 0; i--) {
-    const j = Math.floor(next() * (i + 1))
-    ;[out[i], out[j]] = [out[j]!, out[i]!]
-  }
-  return out
-}
+/** Verbs that state each action — the shared rule table (`werewolf-rules.ts`). */
+const ACTION_VERBS = SHARED_ACTION_VERBS
 
 export class WerewolfGame implements CollaborationGameWorld {
   readonly environment: DaemonEvaluationEnvironment
@@ -440,19 +405,7 @@ export class WerewolfGame implements CollaborationGameWorld {
    * clearly enough to be understood the first time, is part of what is measured.
    */
   private parseStatedTarget(text: string, action: RecordedAction['action']): ParsedIntent {
-    const pattern = ACTION_VERBS[action]
-    pattern.lastIndex = 0
-    const targets = new Set<string>()
-    for (const match of text.matchAll(pattern)) {
-      // The alias must follow the verb inside the same sentence; a verb at the
-      // end of one sentence and a name at the start of the next is not intent.
-      const from = match.index + match[0].length
-      const named = /^[^.!?\n]*?\b(player-\d+)\b/.exec(text.slice(from, from + 80))
-      if (named) targets.add(named[1]!)
-    }
-    if (targets.size === 0) return { kind: 'none' }
-    if (targets.size > 1) return { kind: 'ambiguous', targets: [...targets].sort() }
-    return { kind: 'target', target: [...targets][0]! }
+    return parseStatedTargetRule(text, action)
   }
 
   /** Authorization of a PARSED intent — unchanged in substance from when these
@@ -931,15 +884,9 @@ export class WerewolfGame implements CollaborationGameWorld {
   }
 
   private checkWin(): boolean {
-    const livingWolves = this.living().filter((player) => player.role === 'werewolf').length
-    const livingOthers = this.living().length - livingWolves
-    if (livingWolves === 0) {
-      this.winner = 'village'
-    } else if (livingWolves >= livingOthers) {
-      this.winner = 'werewolves'
-    } else {
-      return false
-    }
+    const winner = werewolfWinner(this.living().map((player) => player.role))
+    if (winner === undefined) return false
+    this.winner = winner
     this.phase = 'done'
     this.terminalReason = 'completed'
     this.world.appendEvent({

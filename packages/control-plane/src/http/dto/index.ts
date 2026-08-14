@@ -196,6 +196,10 @@ export const DaemonViewDto = z.object({
   lifecycleOp: DaemonLifecycleOpDto.nullable(),
   /** Live connection status overlaid from the in-memory index (not the stale durable field). */
   status: z.string(),
+  /** An install-wide cloud member (`Daemon.orgId === null`, one row per cloud-daemon Pod):
+   *  managed infrastructure every org shares, not a machine this org connected. The console
+   *  collapses the whole pool into its single "AgentConnect Cloud" entry. */
+  cloud: z.boolean(),
   health: z.string(),
   capabilities: DaemonCapabilitiesDto,
   /** Observed runtime profiles (per installed runtime); empty until the daemon reports any. */
@@ -2529,6 +2533,14 @@ export const SessionDetailDto = z.object({
   /** Whether THIS caller may use `PUT /sessions/:id/visibility` (§4.3). Computed
    *  server-side; the console never re-derives permissions from identity. */
   canChangeVisibility: z.boolean(),
+  /** Whether THIS caller may continue this session from the console composer
+   *  (webchat-cross-integration-continuation.md §6.5). Server-computed. */
+  canContinue: z.boolean(),
+  /** Bounded product-language reason when `canContinue` is false; null when
+   *  continuable. Never exposes component names. */
+  continuationUnavailableReason: z
+    .enum(['unauthorized', 'content_purged', 'unsupported_platform', 'agent_moved', 'daemon_offline', 'unavailable'])
+    .nullable(),
   accessSyncDegraded: z.boolean(),
   accessIssues: z.array(SessionAccessIssueDto).optional(),
   /** Multi-agent webchat conversation roster, in pick order (webchat-multi-agents.md

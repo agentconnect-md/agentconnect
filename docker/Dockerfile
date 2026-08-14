@@ -117,16 +117,17 @@ CMD ["node", "dist/index.js"]
 
 # ───────────────────────────── relay: build ─────────────────────────────────
 # The unified ingress plane (packages/relay). No Prisma — the relay holds no
-# database. Pulls only message + protocol + connection + observability + relay
-# (skips CP/daemon/web).
+# database. Pulls only activation-policy + message + protocol + connection +
+# observability + relay (skips CP/daemon/web).
 FROM manifests AS relay-builder
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
   pnpm install --frozen-lockfile --filter "@agentconnect.md/relay..."
 
 COPY . .
 
-# protocol → message / connection / observability → relay (topological).
+# protocol → activation-policy / message / connection / observability → relay (topological).
 RUN pnpm --filter "@agentconnect.md/protocol" \
+  --filter "@agentconnect.md/activation-policy" \
   --filter "@agentconnect.md/message" \
   --filter "@agentconnect.md/connection" \
   --filter "@agentconnect.md/observability" \

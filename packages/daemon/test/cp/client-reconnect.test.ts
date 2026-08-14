@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
+import { buildEnvelope } from '@agentconnect.md/protocol'
 import { CpClient, type CpClientDeps } from '../../src/cp/client.js'
 import { FakeTransport } from './fake-transport.js'
 import { FakeClock } from './fake-clock.js'
@@ -83,6 +84,64 @@ describe('CpClient reconnect', () => {
     clock.advance(1000)
     await tick()
     expect(connect).toHaveBeenCalledTimes(2)
+  })
+
+  it('authenticates without an organization after a frame-scoped connection drops', async () => {
+    const clock = new FakeClock()
+    const transports: FakeTransport[] = []
+    const connect = vi.fn(async () => {
+      const transport = new FakeTransport()
+      transports.push(transport)
+      return transport
+    })
+    const client = new CpClient(deps(connect, clock))
+    client.start()
+    await tick()
+
+    const first = transports[0]!
+    const firstAuth = first.lastSent()
+    first.pushInbound(
+      JSON.stringify(
+        buildEnvelope(
+          'auth/ok',
+          {
+            daemonId: DAEMON_ID,
+            sessionEpoch: 1,
+            heartbeatSec: 15,
+            serverTime: '2026-08-14T00:00:00.000Z',
+            organizationMode: 'frame'
+          },
+          { corr: firstAuth.id }
+        )
+      )
+    )
+    await tick()
+    const register = first.lastSent()
+    first.pushInbound(
+      JSON.stringify(
+        buildEnvelope(
+          'register/ok',
+          {
+            routingEpoch: 1,
+            assignments: [],
+            crons: [],
+            leases: [],
+            drop: { assignments: [], crons: [] }
+          },
+          { corr: register.id }
+        )
+      )
+    )
+    await tick()
+    expect(client.state).toBe('READY')
+
+    first.simulateClose(1012, 'restarting')
+    clock.advance(1000)
+    await tick()
+
+    const reconnectAuth = transports[1]!.lastSent()
+    expect(reconnectAuth.type).toBe('auth')
+    expect(reconnectAuth.orgId).toBeUndefined()
   })
 
   it('does NOT reconnect after a 4401 close', async () => {

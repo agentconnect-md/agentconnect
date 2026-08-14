@@ -6,7 +6,8 @@
  * holds no JWKS / no DB), so the CP mints a self-contained token AFTER the console's
  * normal human-auth + agent-visibility check, and the relay delegates verification
  * back to the CP via `rc/verify(webchat-token)`. The token is a compact HS256 JWT —
- * carrying `{ userId, user, agentId, orgId, conversationId }` with a short expiry.
+ * carrying `{ userId, user, agentId, orgId, conversationId }` and an optional
+ * private-session owner proof with a short expiry.
  * The conversation id was already registered to that identity in CP metadata before
  * minting. The CP re-resolves the agent's CURRENT placement (daemonId) at verify time
  * (placement can change between mint and dial), so the token never encodes it.
@@ -25,6 +26,8 @@ export interface WebchatTokenClaims {
   agentId: string
   orgId: string
   conversationId: string
+  /** Exact private-session owner proven by the mint-time identity expansion. */
+  privateSessionOwnerIdentity?: string
 }
 
 // v2 is intentionally incompatible with the pre-conversation-binding verifier:
@@ -50,7 +53,8 @@ export class WebchatTokenService {
       user: claims.user,
       agentId: claims.agentId,
       orgId: claims.orgId,
-      conversationId: claims.conversationId
+      conversationId: claims.conversationId,
+      ...(claims.privateSessionOwnerIdentity ? { privateSessionOwnerIdentity: claims.privateSessionOwnerIdentity } : {})
     })
       .setProtectedHeader({ alg: 'HS256' })
       .setSubject(claims.userId)
@@ -63,7 +67,10 @@ export class WebchatTokenService {
   async verify(token: string): Promise<WebchatTokenClaims | null> {
     try {
       const { payload } = await jwtVerify(token, this.key, { algorithms: ['HS256'] })
-      const { sub, user, agentId, orgId, conversationId } = payload as Record<string, unknown>
+      const { sub, user, agentId, orgId, conversationId, privateSessionOwnerIdentity } = payload as Record<
+        string,
+        unknown
+      >
       if (
         typeof sub !== 'string' ||
         typeof agentId !== 'string' ||
@@ -78,7 +85,8 @@ export class WebchatTokenService {
         user: typeof user === 'string' ? user : sub,
         agentId,
         orgId,
-        conversationId: conversationId.toLowerCase()
+        conversationId: conversationId.toLowerCase(),
+        ...(typeof privateSessionOwnerIdentity === 'string' ? { privateSessionOwnerIdentity } : {})
       }
     } catch {
       return null // bad signature / expired / malformed

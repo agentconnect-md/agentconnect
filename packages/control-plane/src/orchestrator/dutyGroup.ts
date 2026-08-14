@@ -2,20 +2,9 @@
 // agent↔daemon-held-bot graph (an enabled cron is an edge too), plus the
 // deterministic reconcile plan that maps freshly computed components onto the
 // persisted `duty_group` rows. No I/O — the repo applies the plan it returns.
-import type { DutyMemberKind, DutyMemberKey, DutyReconcilePlan } from '../domain/duty.js'
+import type { DutyMemberKind, DutyMemberKey, DutyReconcilePlan, DutyEdge, CronSeed } from '../domain/duty.js'
 
-export type { DutyMemberKind, DutyMemberKey, DutyReconcilePlan }
-
-/** An active Integration row whose bot the daemon itself connects (socket transport). */
-export interface DutyEdge {
-  agentId: string
-  botId: string
-}
-
-/** An enabled cron: the agent must belong to a claimable group even with no bots. */
-export interface CronSeed {
-  agentId: string
-}
+export type { DutyMemberKind, DutyMemberKey, DutyReconcilePlan, DutyEdge, CronSeed }
 
 export interface ComputedComponent {
   /** Canonically sorted, deduplicated membership. */
@@ -28,6 +17,19 @@ export interface ExistingDutyGroup {
   held: boolean
   holder: string | null
   members: DutyMemberKey[]
+}
+
+/** Map ledger records onto the planner's input, judging live holdership at `now`. */
+export function toExistingDutyGroups(
+  records: { groupId: string; holder: string | null; expiresAt: Date | null; members: DutyMemberKey[] }[],
+  now: Date
+): ExistingDutyGroup[] {
+  return records.map((r) => ({
+    groupId: r.groupId,
+    held: r.holder !== null && r.expiresAt !== null && r.expiresAt > now,
+    holder: r.holder,
+    members: r.members
+  }))
 }
 
 const keyOf = (m: DutyMemberKey): string => `${m.kind}:${m.refId}`

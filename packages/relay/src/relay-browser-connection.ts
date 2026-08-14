@@ -18,9 +18,11 @@
  * per-agent nack.
  */
 import { randomUUID } from 'node:crypto'
+import { selectTurnTargets } from '@agentconnect.md/activation-policy'
 import {
   ErrorCode,
   RelayWebchatOp,
+  RD_ACK_NOT_HOLDER,
   type RdChat,
   type RdMsgWebchat,
   type RdWebchatPost,
@@ -84,6 +86,9 @@ export interface RelayBrowserConnDeps {
   participants: BrowserConnParticipant[]
   /** Display handle for the transcript author line (from the verified token). */
   user: string
+  /** Session-targeted continuation: the CP-verified target ACP session id from
+   *  the verdict, stamped verbatim onto every rd/msg. Never browser input. */
+  targetSessionId?: string
   /** Non-secret MCP entitlement from the verified CP result, never browser input. */
   remoteMcp?: WebchatRemoteMcpEntitlement
   /** Resolve a live rd/* connection to a participant's daemon (absent if it dropped). */
@@ -171,35 +176,16 @@ export function parseBrowserFrame(msg: unknown, user: string): ParsedBrowserOp |
 }
 
 /**
- * Which participants one user turn ACTIVATES (pure — the production choice,
- * exported so the activation parity suite exercises this exact seam rather
- * than a re-implementation; evals/parity/spec.ts `human-kickoff-activation`).
- *
- * Conversation membership is a STANDING mention (webchat-multi-agents.md
- * §4.2): an unmentioned message activates the WHOLE roster — each agent may
- * still decline via the no-response contract — while explicit @mentions (or an
- * explicit `targets` list) narrow the turn to the named participants.
- *
- * `valid` preserves the chosen list's order filtered to roster members;
- * `invalid` are the chosen non-members, each of which is nacked
- * `not_participant`. Roster members outside `valid` receive the turn as a
- * transcript-only `context` copy instead.
+ * Which participants one user turn ACTIVATES: since the webchat fold-in this
+ * is `@agentconnect.md/activation-policy`'s `selectTurnTargets` — the
+ * roster/standing-mention semantics are package-owned policy alongside the
+ * platform ladder, and this module is the thin adapter supplying the relay's
+ * context (the verified roster and the turn's mentions/targets). Re-exported
+ * here so existing consumers (the activation parity suite exercises this
+ * exact production seam) keep their import path, mirroring the daemon's
+ * `router/routing-table.ts` adapter.
  */
-export function selectTurnTargets(
-  roster: readonly string[],
-  options: { mentions?: readonly string[]; requestedTargets?: readonly string[] } = {}
-): { valid: string[]; invalid: string[] } {
-  const chosen = options.requestedTargets?.length
-    ? options.requestedTargets
-    : options.mentions?.length
-      ? options.mentions
-      : roster
-  const members = new Set(roster)
-  return {
-    valid: chosen.filter((agentId) => members.has(agentId)),
-    invalid: chosen.filter((agentId) => !members.has(agentId))
-  }
-}
+export { selectTurnTargets }
 
 export class RelayBrowserConnection implements ChatSink {
   private closed = false
@@ -334,6 +320,7 @@ export class RelayBrowserConnection implements ChatSink {
           sessionKey: this.deps.chatId,
           msgId: randomUUID(),
           chatId: this.deps.chatId,
+          ...(this.deps.targetSessionId ? { targetSessionId: this.deps.targetSessionId } : {}),
           payload: { op: 'context', post: contextPost }
         })
         .catch((error) => {
@@ -372,11 +359,23 @@ export class RelayBrowserConnection implements ChatSink {
       sessionKey: this.deps.chatId,
       msgId: randomUUID(),
       chatId: this.deps.chatId,
+      ...(this.deps.targetSessionId ? { targetSessionId: this.deps.targetSessionId } : {}),
       ...(this.remoteMcp ? { remoteMcp: this.remoteMcp } : {}),
       payload: op
     }
     try {
-      const ack = await daemon.sendMsg(rdMsg)
+      let ack = await daemon.sendMsg(rdMsg)
+      // Activation rendezvous (design §4.4): the participant's recorded daemon
+      // may no longer hold its duty. Re-send the SAME msgId to the named holder
+      // once — its own dedup covers a double delivery, and a second refusal
+      // falls through to the browser as an ordinary rejection.
+      if (!ack.accepted && ack.reason === RD_ACK_NOT_HOLDER && ack.holderDaemonId) {
+        const holder = this.deps.daemonConnFor(ack.holderDaemonId)
+        if (holder) {
+          this.deps.log.info(`webchat: re-routing ${agentId} to duty holder ${ack.holderDaemonId}`)
+          ack = await holder.sendMsg(rdMsg)
+        }
+      }
       const browserAck = {
         accepted: ack.accepted,
         ...(ack.turnId ? { turnId: ack.turnId } : {}),
@@ -432,6 +431,7 @@ export class RelayBrowserConnection implements ChatSink {
         sessionKey: this.deps.chatId,
         msgId: randomUUID(),
         chatId: this.deps.chatId,
+        ...(this.deps.targetSessionId ? { targetSessionId: this.deps.targetSessionId } : {}),
         ...(this.remoteMcp ? { remoteMcp: this.remoteMcp } : {}),
         payload: { op: 'close' }
       })

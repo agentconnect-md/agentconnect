@@ -20,7 +20,8 @@ import type {
   ViewCtx
 } from '../ports.js'
 import { visibilityWhere } from '../../authorization/policy.js'
-import { DaemonId, OrgId } from '../../domain/ids.js'
+import { AgentId, DaemonId, OrgId } from '../../domain/ids.js'
+import { lockAgentPlacement, settleCascadedUnplacement } from './agent-placement.js'
 import type { Heartbeat, FactsMcpServer } from '@agentconnect.md/protocol'
 import { lockResourceWriteMemberships } from '../resource-membership-lock.js'
 
@@ -60,6 +61,21 @@ function toRecord(d: DaemonWithUsers): DaemonRecord {
     lastModifiedBy: d.lastModifiedBy
       ? { userId: d.lastModifiedBy.id, displayName: d.lastModifiedBy.displayName, email: d.lastModifiedBy.email }
       : null
+  }
+}
+
+// What an install-wide cloud member is, as a where-clause: org-less, cluster-reviewed, and
+// bound to one Pod UID. An envelope daemon carries an identity but no Pod, so it never matches.
+const CLOUD_MEMBER_WHERE = { orgId: null, clusterIdentity: { not: null }, clusterPodUid: { not: null } } as const
+
+/** ONE definition of "retired", shared by the worklist read and the delete that acts on it: a
+ *  claim fenced on a different predicate than the one that selected the row is not a claim.
+ *  A row that never heartbeated is judged by its own age — `lastSeenAt` stays null for a Pod
+ *  that authenticated and died before its first beat. */
+function retiredCloudMemberWhere(cutoff: Date) {
+  return {
+    ...CLOUD_MEMBER_WHERE,
+    OR: [{ lastSeenAt: { lt: cutoff } }, { lastSeenAt: null, createdAt: { lt: cutoff } }]
   }
 }
 
@@ -336,6 +352,66 @@ export class PgDaemonRepo implements DaemonRepo {
     // the org fence rides the same statement, so a cross-org id is refused with
     // exactly that error (org-scoped-data-layer.md §3).
     await this.db.daemon.delete({ where: { id: daemonId, orgId } })
+  }
+
+  /** The org-less-cloud shape rides every clause, so neither the worklist nor the delete can
+   *  name an org's own daemon. A member still inside the window is left alone even if its Pod
+   *  is long gone: only silence past `cutoff` retires a row. */
+  async findRetiredCloudMembers(cutoff: Date): Promise<DaemonRecord[]> {
+    const rows = await this.db.daemon.findMany({
+      where: retiredCloudMemberWhere(cutoff),
+      orderBy: { createdAt: 'asc' },
+      include: withUsers
+    })
+    return rows.map(toRecord)
+  }
+
+  /**
+   * Retire one cloud member: the fenced delete AND the settlement of every agent it hosted,
+   * in ONE transaction. Split across two commits, a process exit or a transient failure in
+   * between would strand agents at `daemonId = null` with `status = 'active'` — nowhere to
+   * run, live delegations, stale hook revisions — with no durable work item to retry from.
+   *
+   * The whole fence rides the DELETE statement, so this is a compare-and-delete and not a
+   * delete that trusts an earlier read: still an org-less cloud member, still silent past the
+   * same cutoff the worklist selected on, still at the `sessionEpoch` it saw there. The epoch
+   * is what makes it airtight — `upsertOnAuth` bumps it atomically on every (re)auth, while
+   * `lastSeenAt` only moves on the first heartbeat AFTER one, so a member that just came back
+   * is fresh by epoch before it is fresh by clock. A refused claim rolls back reads only.
+   *
+   * The agents are locked BEFORE the daemon row, matching the placement path's Agent → Daemon
+   * order (`agent-placement.ts`), so a concurrent move cannot deadlock against this.
+   */
+  async retireCloudMember(
+    daemonId: DaemonId,
+    fence: { retiredBefore: Date; sessionEpoch: bigint }
+  ): Promise<{ deleted: boolean; settled: { id: AgentId; orgId: OrgId }[] }> {
+    return withAmbientTx(
+      this.db,
+      async (tx) => {
+        // Read + lock before the delete: the FK is SetNull, so the cascade erases the only
+        // record of which agents this member hosted.
+        const placed = await tx.agent.findMany({
+          where: { daemonId },
+          select: { id: true, orgId: true },
+          orderBy: { id: 'asc' } // one lock order for every concurrent retirement
+        })
+        for (const agent of placed) await lockAgentPlacement(tx, agent.id)
+        const { count } = await tx.daemon.deleteMany({
+          where: { id: daemonId, sessionEpoch: fence.sessionEpoch, ...retiredCloudMemberWhere(fence.retiredBefore) }
+        })
+        if (count !== 1) return { deleted: false, settled: [] }
+        const settled: { id: AgentId; orgId: OrgId }[] = []
+        for (const agent of placed) {
+          if (await settleCascadedUnplacement(tx, agent.id))
+            settled.push({ id: AgentId(agent.id), orgId: OrgId(agent.orgId) })
+        }
+        return { deleted: true, settled }
+      },
+      // How many agents a member hosts is not bounded by anything here, and the whole point is
+      // that they settle with the delete — so the budget is the sweep's, not Prisma's 5s default.
+      { timeout: 30_000 }
+    )
   }
 
   async bumpRoutingEpoch(daemonId: DaemonId): Promise<bigint> {

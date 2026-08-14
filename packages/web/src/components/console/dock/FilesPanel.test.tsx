@@ -13,7 +13,9 @@ type Listing = { entries: Entry[]; exists?: boolean; nextCursor?: string | null 
 // Keyed by listing request: a directory path, or `${path}@${cursor}` for a later page. A failure is an HTTP status or 'network' (a rejection with no status, as a dropped connection arrives).
 const wire = vi.hoisted(() => ({
   listings: {} as Record<string, Listing>,
-  failures: {} as Record<string, number | 'network'>,
+  // A status, `'network'`, or a status WITH the CP's machine code — the sleeping-sandbox 503 is only
+  // distinguishable from an offline daemon by that code.
+  failures: {} as Record<string, number | 'network' | { status: number; code: string }>,
   git: null as unknown,
   primary: null as unknown,
   gitFails: false,
@@ -24,13 +26,17 @@ vi.mock('@/lib/api', () => {
   class ApiError extends Error {
     constructor(
       public status: number,
-      message = `HTTP ${status}`
+      message = `HTTP ${status}`,
+      public code?: string
     ) {
       super(message)
     }
   }
-  const reject = (failure: number | 'network') =>
-    Promise.reject(failure === 'network' ? new Error('fetch failed') : new ApiError(failure))
+  const reject = (failure: number | 'network' | { status: number; code: string }) => {
+    if (failure === 'network') return Promise.reject(new Error('fetch failed'))
+    if (typeof failure === 'number') return Promise.reject(new ApiError(failure))
+    return Promise.reject(new ApiError(failure.status, `HTTP ${failure.status}`, failure.code))
+  }
   return {
     ApiError,
     fetchWorkspaceFiles: vi.fn((_agentId: string, opts: { path: string; cursor?: string; sessionId?: string }) => {
@@ -631,6 +637,20 @@ describe('FilesPanel path filter', () => {
 })
 
 describe('FilesPanel degraded states', () => {
+  it('tells a sleeping sandbox apart from an offline daemon, though both are 503', async () => {
+    // The wrong answer this replaces was not a notice at all: the daemon listed its OWN empty
+    // directory, so the panel drew a workspace with no files in it. Now it is a 503 — the same status
+    // an offline daemon sends — and only the code says the files are fine and coming back.
+    wire.failures = { '': { status: 503, code: 'WORKSPACE_SANDBOX_UNAVAILABLE' } }
+    wire.gitFails = true
+    await render()
+
+    expect(text()).toContain('its pod is not running')
+    expect(text()).not.toContain('the owning daemon may be offline')
+    // A notice is content, so the tab still settles rather than spinning forever.
+    expect(settledReports.at(-1)).toBe(true)
+  })
+
   it('explains an offline daemon rather than throwing', async () => {
     wire.failures = { '': 503 }
     await render()

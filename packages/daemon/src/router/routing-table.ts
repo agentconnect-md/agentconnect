@@ -4,7 +4,9 @@
  * PURE decision logic ("who does this message activate"): the arbitration
  * ladder (`routeRules`), the set selectors (`mentionedAgents`,
  * `participantAgents`, `automaticAgents`, `conversationPeers`), the
- * conversation Off/gated fence predicate, and the §4.1 hop-transition gates.
+ * conversation Off/gated fence predicate, the §4.1 hop-transition gates, and
+ * (since the webchat fold-in) the §5.2a webchat continuation edge
+ * (`webchatContinuationDecision`).
  *
  * The daemon stays the owner of everything that is NOT pure decision: building
  * `RoutingRule`s from integrations and CP frames (routing-rule.ts), session
@@ -26,6 +28,7 @@ export {
   mentionedAgents,
   participantAgents,
   routeRules,
+  webchatContinuationDecision,
   type ActivationMessageFacts,
   type ActivationRule,
   type RouteVia

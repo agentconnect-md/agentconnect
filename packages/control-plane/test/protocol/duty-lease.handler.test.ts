@@ -425,12 +425,12 @@ describe('duty lease exchange — wire safety', () => {
 })
 
 describe('duty lease exchange — drain barrier', () => {
-  it('a release racing a granting exchange never yields a grant the releaser cannot see', async () => {
-    // The daemon holds GROUP and a beat that could grant GROUP2 races its
-    // drain's duty/release for GROUP. The lane admits two orderings, both safe:
-    // the beat runs first (its grant reaches the wire BEFORE the ack) or the
-    // release wins the lane and the busy beat is dropped (no grant at all).
-    // Never: a grant after the ack, or a ledger lease the wire never announced.
+  it('a release behind a granting beat queues: the grant reaches the wire before the ack', async () => {
+    // The daemon holds GROUP; a beat that grants GROUP2 is immediately followed
+    // by its drain's duty/release for GROUP. Lane order is frame order (the
+    // lane is reserved synchronously at dispatch), so this is deterministic:
+    // the exchange's grant is emitted BEFORE the release's ack, GROUP is
+    // vacated, and GROUP2 is coherently held — never a grant after the ack.
     const h = buildWsHarness(prisma)
     const start = new Date(h.clock.now())
     await seedGroup({ holder: DAEMON, term: 1n, expiresAt: new Date(start.getTime() + LEASE_MS) })
@@ -444,18 +444,108 @@ describe('duty lease exchange — drain barrier', () => {
     stub.inject('duty/release', { groupIds: [GROUP] }, { id: REL_ID })
     const ack = await stub.expectFrame('ack')
     expect(ack.corr).toBe(REL_ID)
-    await new Promise((r) => setTimeout(r, 50))
 
     const grantIdx = stub.sent.findIndex((f) => f.type === 'duty/grant')
     const ackIdx = stub.sent.findIndex((f) => f.type === 'ack')
+    expect(grantIdx).toBeGreaterThanOrEqual(0)
+    expect(grantIdx).toBeLessThan(ackIdx)
+
     const released = await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })
     expect(released.holder).toBeNull()
     const granted = await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP2 } })
-    if (grantIdx >= 0) {
-      expect(grantIdx).toBeLessThan(ackIdx)
-      expect(granted.holder).toBe(DAEMON)
-    } else {
-      expect(granted.holder).toBeNull()
-    }
+    expect(granted.holder).toBe(DAEMON)
+  })
+})
+
+describe('duty/claim — the activation rendezvous (real Postgres)', () => {
+  const CLAIM_ID = '66666666-6666-4666-8666-666666666666'
+
+  async function seedAgentRow(): Promise<void> {
+    await prisma.agent.create({
+      data: { id: AGENT, orgId: DEFAULT_ORG_ID, name: 'agent-1', runtime: 'claude' }
+    })
+  }
+
+  it('an unheld agent is claimed on the spot and the grant comes back installable', async () => {
+    await seedAgentRow()
+    const h = buildWsHarness(prisma)
+    const { stub } = await ready(h)
+
+    stub.inject('duty/claim', { agentId: AGENT }, { id: CLAIM_ID })
+    const ok = await stub.expectFrame('duty/claim/ok')
+    if (!isFrame('duty/claim/ok')(ok)) throw new Error('expected duty/claim/ok')
+    expect(ok.corr).toBe(CLAIM_ID)
+    expect(ok.payload.granted).toBe(true)
+    expect(ok.payload.grant).toMatchObject({
+      orgId: DEFAULT_ORG_ID,
+      term: '1',
+      members: [{ kind: 'agent', refId: AGENT }]
+    })
+
+    const row = await prisma.dutyGroup.findUniqueOrThrow({ where: { id: ok.payload.grant!.groupId } })
+    expect(row.holder).toBe(DAEMON)
+  })
+
+  it('a claim lost to a live incumbent names the winner instead', async () => {
+    await seedAgentRow()
+    const h = buildWsHarness(prisma)
+    const start = new Date(h.clock.now())
+    await prisma.dutyGroup.create({
+      data: {
+        id: GROUP,
+        orgId: DEFAULT_ORG_ID,
+        holder: OTHER,
+        term: 4n,
+        expiresAt: new Date(start.getTime() + LEASE_MS)
+      }
+    })
+    await prisma.dutyGroupMember.create({
+      data: { kind: 'agent', refId: AGENT, groupId: GROUP, orgId: DEFAULT_ORG_ID }
+    })
+    const { stub } = await ready(h)
+
+    stub.inject('duty/claim', { agentId: AGENT }, { id: CLAIM_ID })
+    const ok = await stub.expectFrame('duty/claim/ok')
+    if (!isFrame('duty/claim/ok')(ok)) throw new Error('expected duty/claim/ok')
+    expect(ok.payload).toEqual({ granted: false, holder: OTHER })
+  })
+
+  it('re-claiming what this member already holds is idempotent — no term churn', async () => {
+    await seedAgentRow()
+    const h = buildWsHarness(prisma)
+    const { stub } = await ready(h)
+
+    stub.inject('duty/claim', { agentId: AGENT }, { id: CLAIM_ID })
+    const first = await stub.expectFrame('duty/claim/ok')
+    if (!isFrame('duty/claim/ok')(first)) throw new Error('expected duty/claim/ok')
+    const groupId = first.payload.grant!.groupId
+
+    stub.inject('duty/claim', { agentId: AGENT }, { id: REL_ID })
+    const second = await stub.expectFrame('duty/claim/ok')
+    if (!isFrame('duty/claim/ok')(second)) throw new Error('expected duty/claim/ok')
+    expect(second.payload.granted).toBe(true)
+    expect(second.payload.grant).toMatchObject({ groupId, term: '1' })
+  })
+
+  it('an unknown agent is refused without naming anyone', async () => {
+    const h = buildWsHarness(prisma)
+    const { stub } = await ready(h)
+
+    stub.inject('duty/claim', { agentId: AGENT }, { id: CLAIM_ID })
+    const ok = await stub.expectFrame('duty/claim/ok')
+    if (!isFrame('duty/claim/ok')(ok)) throw new Error('expected duty/claim/ok')
+    expect(ok.payload).toEqual({ granted: false })
+  })
+
+  it('an org-scoped connection cannot claim at all', async () => {
+    await seedAgentRow()
+    const h = buildWsHarness(prisma)
+    const { stub } = await ready(h, { orgScoped: true })
+
+    stub.inject('duty/claim', { agentId: AGENT }, { id: CLAIM_ID })
+    const err = await stub.expectFrame('error')
+    if (!isFrame('error')(err)) throw new Error('expected error')
+    expect(err.payload.code).toBe('SCOPE_DENIED')
+    expect(await prisma.dutyGroup.count()).toBe(0)
   })
 })
