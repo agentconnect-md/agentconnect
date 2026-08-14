@@ -33,6 +33,7 @@ const PLATFORMS = buildCpPlatformRegistry([
 ])
 
 const AGENT = AgentId('11111111-1111-4111-8111-111111111111')
+const ORG = OrgId('55555555-5555-4555-8555-555555555555')
 const SOURCE = DaemonId('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')
 const TARGET = DaemonId('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb')
 const INTEGRATION = IntegrationId('22222222-2222-4222-8222-222222222222')
@@ -53,7 +54,7 @@ const GITHUB_WORKSPACE = {
 function agent(daemonId: string | null): AgentRecord {
   return {
     id: AGENT,
-    orgId: OrgId('55555555-5555-4555-8555-555555555555'),
+    orgId: ORG,
     name: 'mover',
     displayName: null,
     builtin: false,
@@ -87,7 +88,7 @@ function agent(daemonId: string | null): AgentRecord {
 
 const integration = {
   id: INTEGRATION,
-  orgId: OrgId('55555555-5555-4555-8555-555555555555'),
+  orgId: ORG,
   agentId: AGENT,
   botId: BOT,
   platform: 'slack',
@@ -98,7 +99,7 @@ const integration = {
 
 const bot = {
   id: BOT,
-  orgId: OrgId('55555555-5555-4555-8555-555555555555'),
+  orgId: ORG,
   platform: 'slack',
   name: 'Slack',
   prebuilt: false,
@@ -116,7 +117,7 @@ const bot = {
 
 const cron = {
   id: CRON,
-  orgId: OrgId('55555555-5555-4555-8555-555555555555'),
+  orgId: ORG,
   agentId: AGENT,
   name: 'daily',
   schedule: '0 0 * * *',
@@ -163,6 +164,9 @@ function make(
   const calls: string[] = []
   const activations: AgentActivate[] = []
   const detaches: AgentDetach[] = []
+  // The org each control frame was scoped to — undefined is what an install-wide
+  // member's connection rejects, so it is the interesting value here.
+  const frameOrgs: Array<string | undefined> = []
   const releasedLive: (typeof SESSION_KEY)[] = []
   const mutations = new AgentMutationGate()
   const repo = {
@@ -217,9 +221,10 @@ function make(
   const appliedRevisions = new Map<string, bigint>()
   let targetDetachCount = 0
   const control = {
-    agentDetach: async (daemonId: string, value: AgentDetach) => {
+    agentDetach: async (daemonId: string, value: AgentDetach, orgId?: string) => {
       calls.push(`detach:${daemonId}`)
       detaches.push(value)
+      frameOrgs.push(orgId)
       if (daemonId === SOURCE && targetDetachCount === 0 && opts.waitSourceDetach) {
         opts.sourceDetachStarted?.()
         await opts.waitSourceDetach
@@ -230,9 +235,10 @@ function make(
       }
       return ack()
     },
-    agentActivate: async (daemonId: string, value: AgentActivate) => {
+    agentActivate: async (daemonId: string, value: AgentActivate, orgId?: string) => {
       calls.push(`activate:${daemonId}`)
       activations.push(value)
+      frameOrgs.push(orgId)
       // The target's own revision fence, which the CP cannot see and must not violate: a bundle
       // older than the one this daemon already applied activates stale credentials and is refused.
       // A rejected activation still leaves its spec applied, so a rollback has to be newer.
@@ -291,7 +297,7 @@ function make(
     mutations,
     sessionOwners: { releaseSession: (key) => void releasedLive.push(key as typeof SESSION_KEY) }
   })
-  return { service, calls, activations, detaches, mutations, releasedLive, current: () => current }
+  return { service, calls, activations, detaches, frameOrgs, mutations, releasedLive, current: () => current }
 }
 
 describe('AgentMoveService', () => {
@@ -301,6 +307,16 @@ describe('AgentMoveService', () => {
     await expect(t.service.ensureActive(t.current())).resolves.toMatchObject({ daemonId: SOURCE })
     expect(t.activations).toHaveLength(1)
     expect(t.activations[0]?.reconcileWorkspace).toBe(true)
+  })
+
+  it('scopes every move frame to the agent org, so an install-wide member accepts it', async () => {
+    // A pool member's connection carries no org and neither `{agentId, moveId}`
+    // nor an agent it has never installed can supply one, so an unscoped frame is
+    // refused with SCOPE_DENIED before it leaves the CP.
+    const t = make()
+    await t.service.move(t.current(), TARGET)
+    expect(t.frameOrgs.length).toBeGreaterThan(0)
+    expect(t.frameOrgs.every((orgId) => orgId === ORG)).toBe(true)
   })
 
   it('hard-cuts the source, bootstraps the complete target bundle, and activates last', async () => {

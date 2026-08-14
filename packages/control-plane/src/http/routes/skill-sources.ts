@@ -150,7 +150,7 @@ export function skillSourceRoutes(deps: HttpDeps) {
       if (!agent.daemonId) return
       const spec = await deps.agentSpecs.assemble(agent)
       try {
-        await deps.control.agentUpsert(agent.daemonId, { agentId: agent.id, spec })
+        await deps.control.agentUpsert(agent.daemonId, { agentId: agent.id, spec }, agent.orgId)
       } catch (err) {
         if (err instanceof NoConnection) {
           app.log.debug({ agentId: agent.id, daemonId: agent.daemonId }, 'skill fan-out: daemon offline')

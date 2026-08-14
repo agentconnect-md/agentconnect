@@ -903,7 +903,7 @@ export function agentRoutes(deps: HttpDeps) {
       if (!agent.daemonId) return
       const spec = await deps.agentSpecs.assemble(agent)
       try {
-        await deps.control.agentUpsert(agent.daemonId, { agentId: agent.id, spec })
+        await deps.control.agentUpsert(agent.daemonId, { agentId: agent.id, spec }, agent.orgId)
       } catch (err) {
         // Best-effort (see the register/ok reconcile backstop above): the agent update is
         // ALREADY persisted, so a daemon-side hiccup must not fail the HTTP write — not just
@@ -922,10 +922,10 @@ export function agentRoutes(deps: HttpDeps) {
       }
     }
 
-    const replicateRemove = async (agentId: string, daemonId: string | null): Promise<void> => {
+    const replicateRemove = async (agentId: string, daemonId: string | null, orgId: string): Promise<void> => {
       if (!daemonId) return
       try {
-        await deps.control.agentRemove(daemonId, { agentId })
+        await deps.control.agentRemove(daemonId, { agentId }, orgId)
       } catch (err) {
         if (!(err instanceof NoConnection)) throw err
         app.log.debug({ agentId, daemonId }, 'agent/remove skipped: daemon offline')
@@ -2489,7 +2489,7 @@ export function agentRoutes(deps: HttpDeps) {
               )
             }
           }
-          await replicateRemove(current.id, current.daemonId)
+          await replicateRemove(current.id, current.daemonId, current.orgId)
           if (current.daemonId && current.memory?.provider === 'external') {
             await removeExternalMemoryFromDaemonIfUnused(current.orgId, current.daemonId, current.memory.connectionId)
           }

@@ -62,11 +62,15 @@ export function iconUploadRoutes(deps: HttpDeps) {
       const agent = await deps.repos.agent.get(orgId, AgentId(agentId))
       if (!agent?.daemonId) return
       try {
-        await deps.control.agentUpsert(agent.daemonId, {
-          agentId: agent.id,
-          // The assembler owns secret loading + icon bases — full spec per upsert.
-          spec: await deps.agentSpecs.assemble(agent)
-        })
+        await deps.control.agentUpsert(
+          agent.daemonId,
+          {
+            agentId: agent.id,
+            // The assembler owns secret loading + icon bases — full spec per upsert.
+            spec: await deps.agentSpecs.assemble(agent)
+          },
+          agent.orgId
+        )
       } catch (err) {
         app.log.warn({ err, agentId }, 'icon replicate agent/upsert failed (backstop: reconnect roster)')
       }

@@ -239,22 +239,28 @@ export class AgentMoveService {
       const current = await this.deps.agents.getUnscoped(agentId)
       if (!current || current.daemonId !== daemonId) return
 
-      const candidate = await this.snapshotOwned(agentId, daemonId)
-      const resumed = await this.deps.control.agentActivate(daemonId, {
-        ...this.activationDefinition(candidate.agent, candidate.bundle),
-        moveId,
-        reconcileWorkspace: true
-      })
+      const candidate = await this.snapshotOwned(agentId, daemonId, current.orgId)
+      const resumed = await this.deps.control.agentActivate(
+        daemonId,
+        {
+          ...this.activationDefinition(candidate.agent, candidate.bundle),
+          moveId,
+          reconcileWorkspace: true
+        },
+        candidate.agent.orgId
+      )
 
       let stable: ActivationSnapshot
       if (resumed.ok) {
-        const observed = await this.snapshotOwned(agentId, daemonId)
+        const observed = await this.snapshotOwned(agentId, daemonId, current.orgId)
         if (candidate.fingerprint === observed.fingerprint) {
           const confirmed = await this.deps.agents.getUnscoped(agentId)
-          if (!confirmed || confirmed.daemonId !== daemonId) return this.failClosedOwnership(agentId, daemonId)
+          if (!confirmed || confirmed.daemonId !== daemonId) {
+            return this.failClosedOwnership(agentId, daemonId, current.orgId)
+          }
           stable = { ...observed, agent: confirmed }
         } else {
-          stable = await this.activateUntilStable(agentId, daemonId, 'staged reconnect recovery', {
+          stable = await this.activateUntilStable(agentId, daemonId, 'staged reconnect recovery', current.orgId, {
             reconcileWorkspace: true
           })
         }
@@ -262,7 +268,7 @@ export class AgentMoveService {
         // A conversion may have crashed after swapping its checkout, where the
         // old token retains a one-shot empty-workspace guard. A fresh generic
         // token safely supersedes that fence and completes from current CP state.
-        stable = await this.activateUntilStable(agentId, daemonId, 'staged reconnect recovery', {
+        stable = await this.activateUntilStable(agentId, daemonId, 'staged reconnect recovery', current.orgId, {
           reconcileWorkspace: true
         })
       }
@@ -276,7 +282,7 @@ export class AgentMoveService {
     if (!agent.daemonId) throw new AgentMoveConflict('agent is not placed')
     let stable: ActivationSnapshot
     try {
-      stable = await this.activateUntilStable(agent.id, agent.daemonId, 'target repair', {
+      stable = await this.activateUntilStable(agent.id, agent.daemonId, 'target repair', agent.orgId, {
         reconcileWorkspace: true
       })
     } catch (err) {
@@ -303,7 +309,7 @@ export class AgentMoveService {
       }
       // Lost-response repair: the daemon's durable materialization marker makes
       // this replay idempotent even when the prior edit changed repo/branch/mode.
-      const stable = await this.activateUntilStable(agent.id, agent.daemonId, 'workspace edit repair', {
+      const stable = await this.activateUntilStable(agent.id, agent.daemonId, 'workspace edit repair', agent.orgId, {
         reconcileWorkspace: true
       })
       await this.finalizeWorkspaceChange(stable.agent, workspaceRepoId, stable.bundle.httpBotIds)
@@ -342,10 +348,7 @@ export class AgentMoveService {
     const moveId = randomUUID()
     let detached: Ack
     try {
-      detached = await this.deps.control.agentDetach(daemonId, {
-        agentId: agent.id,
-        moveId
-      })
+      detached = await this.deps.control.agentDetach(daemonId, { agentId: agent.id, moveId }, agent.orgId)
     } catch (err) {
       throw new AgentMoveFailed('workspace edit could not drain the agent', err)
     }
@@ -410,11 +413,15 @@ export class AgentMoveService {
 
     let activated: Ack
     try {
-      activated = await this.deps.control.agentActivate(daemonId, {
-        ...this.activationDefinition(converted, bundle),
-        moveId,
-        reconcileWorkspace: true
-      })
+      activated = await this.deps.control.agentActivate(
+        daemonId,
+        {
+          ...this.activationDefinition(converted, bundle),
+          moveId,
+          reconcileWorkspace: true
+        },
+        converted.orgId
+      )
     } catch (err) {
       // The daemon may have committed and only lost the response. Never roll DB
       // authority back on an unknown outcome; the same request repairs safely.
@@ -442,7 +449,10 @@ export class AgentMoveService {
 
     if (sourceDaemonId) {
       try {
-        requireAck('source cutover', await this.detach(sourceDaemonId, agent.id, { discardActiveTurns: true }))
+        requireAck(
+          'source cutover',
+          await this.detach(sourceDaemonId, agent.id, agent.orgId, { discardActiveTurns: true })
+        )
       } catch (err) {
         if (sourceDetachMode === 'required') {
           if (err instanceof AgentMoveFailed) throw err
@@ -485,7 +495,7 @@ export class AgentMoveService {
       // Re-read the full wire definition only AFTER the placement CAS. The
       // stability loop re-reads after each ACK and re-stages/re-activates if an
       // out-of-band writer changed any spec, integration, secret, or cron.
-      stable = await this.activateUntilStable(moved.id, targetDaemonId, 'target')
+      stable = await this.activateUntilStable(moved.id, targetDaemonId, 'target', moved.orgId)
     } catch (err) {
       if (err instanceof AgentMoveFailClosed) throw err
       const rolledBack = await this.rollback(agent, moved, sourceDaemonId, targetDaemonId, editor, sourceBundle)
@@ -514,11 +524,15 @@ export class AgentMoveService {
     try {
       requireAck(
         `workspace restore after ${after}`,
-        await this.deps.control.agentActivate(daemonId, {
-          ...this.activationDefinition(agent, bundle),
-          moveId,
-          reconcileWorkspace: true
-        })
+        await this.deps.control.agentActivate(
+          daemonId,
+          {
+            ...this.activationDefinition(agent, bundle),
+            moveId,
+            reconcileWorkspace: true
+          },
+          agent.orgId
+        )
       )
     } catch (err) {
       // The rejection that started this is what an operator has to act on; the restoration failure
@@ -664,10 +678,10 @@ export class AgentMoveService {
     }
   }
 
-  private async snapshotOwned(agentId: AgentId, targetDaemonId: DaemonId): Promise<ActivationSnapshot> {
+  private async snapshotOwned(agentId: AgentId, targetDaemonId: DaemonId, orgId: string): Promise<ActivationSnapshot> {
     const agent = await this.deps.agents.getUnscoped(agentId)
     if (!agent || agent.daemonId !== targetDaemonId) {
-      return this.failClosedOwnership(agentId, targetDaemonId)
+      return this.failClosedOwnership(agentId, targetDaemonId, orgId)
     }
     const bundle = await this.snapshot(agent)
     return {
@@ -686,21 +700,22 @@ export class AgentMoveService {
     agentId: AgentId,
     targetDaemonId: DaemonId,
     label: string,
+    orgId: string,
     workspace: Pick<AgentActivate, 'prepareWorkspace' | 'reconcileWorkspace'> = {}
   ): Promise<ActivationSnapshot> {
-    let candidate = await this.snapshotOwned(agentId, targetDaemonId)
+    let candidate = await this.snapshotOwned(agentId, targetDaemonId, orgId)
     for (let attempt = 1; attempt <= MAX_STABILITY_ATTEMPTS; attempt += 1) {
       // A committed token is idempotent by design, so every replay needs a new
       // detach/activate token pair. The newer detach also fences a delayed
       // activate from any prior attempt.
       await this.bootstrap(targetDaemonId, candidate.agent, candidate.bundle, `${label} attempt ${attempt}`, workspace)
-      const observed = await this.snapshotOwned(agentId, targetDaemonId)
+      const observed = await this.snapshotOwned(agentId, targetDaemonId, orgId)
       if (candidate.fingerprint === observed.fingerprint) {
         // Explicit final ownership read: an agent deleted or re-placed after the
         // ACK must never leave this target serving an orphaned copy.
         const confirmed = await this.deps.agents.getUnscoped(agentId)
         if (!confirmed || confirmed.daemonId !== targetDaemonId) {
-          return this.failClosedOwnership(agentId, targetDaemonId)
+          return this.failClosedOwnership(agentId, targetDaemonId, orgId)
         }
         return { ...observed, agent: confirmed }
       }
@@ -711,9 +726,9 @@ export class AgentMoveService {
     )
   }
 
-  private async failClosedOwnership(agentId: AgentId, targetDaemonId: DaemonId): Promise<never> {
+  private async failClosedOwnership(agentId: AgentId, targetDaemonId: DaemonId, orgId: string): Promise<never> {
     try {
-      requireAck('target detach after ownership change', await this.detach(targetDaemonId, agentId))
+      requireAck('target detach after ownership change', await this.detach(targetDaemonId, agentId, orgId))
     } catch (err) {
       throw new AgentMoveFailClosed(
         'agent placement changed during move and target detach was not confirmed; manual recovery is required',
@@ -726,13 +741,18 @@ export class AgentMoveService {
   private detach(
     daemonId: DaemonId,
     agentId: AgentId,
+    orgId: string,
     options: { moveId?: string; discardActiveTurns?: boolean } = {}
   ): Promise<Ack> {
-    return this.deps.control.agentDetach(daemonId, {
-      agentId,
-      moveId: options.moveId ?? randomUUID(),
-      ...(options.discardActiveTurns ? { discardActiveTurns: true } : {})
-    })
+    return this.deps.control.agentDetach(
+      daemonId,
+      {
+        agentId,
+        moveId: options.moveId ?? randomUUID(),
+        ...(options.discardActiveTurns ? { discardActiveTurns: true } : {})
+      },
+      orgId
+    )
   }
 
   private async rollback(
@@ -747,7 +767,7 @@ export class AgentMoveService {
     // an unavailable target may still be running the partial copy, and restoring
     // source in that state would create split brain.
     try {
-      requireAck('target detach rollback', await this.detach(targetDaemonId, moved.id))
+      requireAck('target detach rollback', await this.detach(targetDaemonId, moved.id, moved.orgId))
     } catch (err) {
       this.deps.log?.warn(
         { err, agentId: moved.id, targetDaemonId },
@@ -792,14 +812,18 @@ export class AgentMoveService {
     // definition. Activate persists, exact-prunes, reconciles, and warms this
     // complete snapshot synchronously while the staging tombstone remains armed.
     const moveId = randomUUID()
-    requireAck(`${label} staging detach`, await this.detach(daemonId, agent.id, { moveId }))
+    requireAck(`${label} staging detach`, await this.detach(daemonId, agent.id, agent.orgId, { moveId }))
     requireAck(
       `${label} activate`,
-      await this.deps.control.agentActivate(daemonId, {
-        ...this.activationDefinition(agent, bundle),
-        moveId,
-        ...workspace
-      })
+      await this.deps.control.agentActivate(
+        daemonId,
+        {
+          ...this.activationDefinition(agent, bundle),
+          moveId,
+          ...workspace
+        },
+        agent.orgId
+      )
     )
   }
 
