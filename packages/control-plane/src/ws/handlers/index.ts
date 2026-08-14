@@ -27,6 +27,7 @@ import { handleMemoryConnections } from './memory-connections.js'
 import { handleUsageReport } from './usage-report.js'
 import { handleIntegrationChannels } from './integration-channels.js'
 import { handleCronReport } from './cron-report.js'
+import { handleDutyRelease } from './duty-release.js'
 import { handleHookReport } from './hook-report.js'
 import { handleChannelAgents } from './channel-agents.js'
 import { handleChildSessionStatus } from './child-session-status.js'
@@ -68,6 +69,7 @@ export class FrameRouter {
       'usage/report': handleUsageReport,
       'integration/channels': handleIntegrationChannels,
       'cron/report': handleCronReport,
+      'duty/release': handleDutyRelease,
       'hook/report': handleHookReport,
       'hook/start': handleHookStart,
       'github/review-authorize': handleGithubReviewAuthorize,

@@ -88,6 +88,16 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
     return rows.map((r) => toRecord(r, members.get(r.id) ?? []))
   }
 
+  async getByIds(groupIds: string[]): Promise<DutyGroupRecord[]> {
+    if (groupIds.length === 0) return []
+    const rows = await this.prisma.dutyGroup.findMany({ where: { id: { in: groupIds } }, orderBy: { id: 'asc' } })
+    const members = await loadMembers(
+      this.prisma,
+      rows.map((r) => r.id)
+    )
+    return rows.map((r) => toRecord(r, members.get(r.id) ?? []))
+  }
+
   async applyReconcile(
     orgId: OrgId,
     planner: DutyReconcilePlanner,

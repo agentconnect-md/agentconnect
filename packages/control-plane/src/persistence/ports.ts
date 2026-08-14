@@ -5102,6 +5102,8 @@ export interface DutyGroupRepo {
   listForOrg(orgId: OrgId): Promise<DutyGroupRecord[]>
   /** Everything one member currently holds (heartbeat digest reconciliation). */
   listHeldBy(holder: DaemonId): Promise<DutyGroupRecord[]>
+  /** Point reads for digest classification: which of these ids still exist. */
+  getByIds(groupIds: string[]): Promise<DutyGroupRecord[]>
   /** Snapshot → `planner` → apply, in ONE transaction under a per-org advisory
    *  scope, so concurrent recomputes serialize CP-instance-wide. Composition
    *  changes on held groups re-grant the same holder at a bumped term; the

@@ -46,6 +46,8 @@ import { DaemonRegistryService } from '../../src/registry/registryService.js'
 import { ConnectionRegistry } from '../../src/ws/registry.js'
 import { AgentMutationGate } from '../../src/orchestrator/agentMutationGate.js'
 import { CollabRoutesService } from '../../src/orchestrator/collabRoutes.service.js'
+import { DutyLeaseService, type DutyLeaseConfig } from '../../src/orchestrator/dutyLease.js'
+import { PgDutyGroupRepo } from '../../src/persistence/index.js'
 import { RelayControlSender } from '../../src/orchestrator/relayControl.js'
 import { FrameRouter } from '../../src/ws/handlers/index.js'
 import { DaemonConnection } from '../../src/ws/connection.js'
@@ -93,6 +95,8 @@ export interface HarnessOpts {
   orgId?: string
   /** Relay roster exposed in register snapshots (including memory-plugin proxy specs). */
   relays?: RelayRosterEntry[]
+  /** Duty lease knobs (defaults suit tests; recoveryGraceMs 0 so grants flow immediately). */
+  dutyLease?: Partial<DutyLeaseConfig>
 }
 
 export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): WsHarness {
@@ -176,6 +180,12 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
     }
   )
 
+  const dutyLease = new DutyLeaseService(new PgDutyGroupRepo(prisma), clock, {
+    leaseMs: opts.dutyLease?.leaseMs ?? 120_000,
+    recoveryGraceMs: opts.dutyLease?.recoveryGraceMs ?? 0,
+    grantMaxPerTick: opts.dutyLease?.grantMaxPerTick ?? 32
+  })
+
   const deps: DaemonWsDeps = {
     auth,
     lifecycleOps: repos.daemonLifecycleOp,
@@ -191,6 +201,7 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
     agentMutations: new AgentMutationGate(),
     recoverStagedAgent: async () => {},
     collabRoutes,
+    dutyLease,
     cron: repos.cron,
     hook: repos.hook,
     externalMemoryConnection: repos.externalMemoryConnection,

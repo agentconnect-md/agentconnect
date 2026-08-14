@@ -37,6 +37,7 @@ import type { Clock } from '../domain/clock.js'
 import type { SessionEventSink } from '../events/sink.js'
 import type { AgentMutationGate } from '../orchestrator/agentMutationGate.js'
 import type { CollabRoutesService } from '../orchestrator/collabRoutes.service.js'
+import type { DutyLeaseService } from '../orchestrator/dutyLease.js'
 import type { AgentId, DaemonId } from '../domain/ids.js'
 import type { WebchatRemoteMcpService } from '../registry/webchatRemoteMcpService.js'
 import type { SlackSessionAccessService } from '../http/slack-session-access.js'
@@ -97,6 +98,8 @@ export interface DaemonWsDeps {
   recoverStagedAgent: (agentId: AgentId, daemonId: DaemonId, moveId: string) => Promise<void>
   /** Refreshes relay and daemon collaboration snapshots after accepted conversation changes. */
   collabRoutes: CollabRoutesService
+  /** The duty lease exchange riding the heartbeat (k8s daemons). */
+  dutyLease: DutyLeaseService
   /** Stamps `lastRunAt` from the `cron/report` EVT (daemon-scoped, latest-wins). */
   cron: CronRepo
   /** Closes `HookRun` rows from the correlated `hook/report` completion request. */
