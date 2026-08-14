@@ -552,6 +552,39 @@ policy widens to any-member once the shared data plane makes state portable.
 A single-org daemon sends byte-identical heartbeats to before and never
 observes any of this.
 
+### Future direction: daemon groups
+
+The k8s pool is the **degenerate case of a more general concept**: a _daemon
+group_ — a named set of members within which an agent's duty may be claimed.
+Today the member set is implicit (every frame-mode Pod of the install); the
+generalization makes it explicit and parameterizable, so that self-hosted
+installs can form groups too: point `Agent.daemonId` (or a successor placement
+field) at a group instead of a machine, and the same ledger, lease exchange,
+rendezvous, and drain semantics distribute the agent within it. For local
+daemons this is the cross-machine generalization of the singleton pid lock —
+today two local daemons configured with the same bot token fight over the
+platform API (R13); a group makes multi-machine failover safe for the first
+time.
+
+Deliberately **not built yet** — it layers a second untested generalization on
+a mechanism that has not run enforced end to end, and its hard prerequisites
+are exactly the pool's own: the shared data plane (a duty moving to another
+machine needs the agent's state to be reachable there — for local groups that
+means a shared Postgres and re-cloneable workspaces) and the daemon-side
+self-fence. Sequencing: prove the N=1 group (this pool) end to end first, then
+generalize.
+
+Two constraints on intervening work, so the door stays open:
+
+- **Membership must stay a predicate, not a hardcoded connection kind.** The
+  claim gate ("who may claim this agent's duty") is one SQL predicate today;
+  nothing new should assume frame-mode is the only shape of membership.
+- **The tenancy gate widens, never disappears.** Org-scoped connections
+  currently have their `duties` dropped (a deliberate tenancy fence). A local
+  group re-opens that door only as "this org's agents, in a group containing
+  the claimant" — org-scoped connection plus org-and-group-scoped claims is
+  still leak-free; install-wide claims remain frame-mode-only.
+
 ## 15. Rejected alternatives
 
 **R1 — Daemon scale-to-zero / sleepy per-org daemons.** Optimizes the wrong
