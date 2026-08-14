@@ -1,6 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Backoff, FakeClock } from '@agentconnect.md/connection'
-import { startK8sRuntimePlane, k8sPlaneSettings, probeAgentId, type K8sRuntimePlane } from '../src/k8s/runtime-plane.js'
+import {
+  PROBE_CLAIM_EXPIRES_ANNOTATION,
+  PROBE_CLAIM_LABEL,
+  k8sPlaneSettings,
+  probeAgentId,
+  reapExpiredProbeClaims,
+  startK8sRuntimePlane,
+  type K8sRuntimePlane
+} from '../src/k8s/runtime-plane.js'
 import { ShimClient, type ShimTransport } from '../src/shim/client.js'
 import { ShimServer } from '../src/shim/server.js'
 import { K8sApiError } from '@agentconnect.md/k8s-client'
@@ -61,6 +69,7 @@ function fakeApi(options: { podName?: string; adopt?: boolean } = {}) {
         return claim
       },
       deleteClaim: async () => undefined,
+      listClaims: async () => [],
       getSandbox: async () => sandbox,
       setOperatingMode: async () => sandbox,
       watchClaims: vi.fn(),
@@ -173,6 +182,37 @@ describe('k8s plane settings', () => {
     expect(probeAgentId('member-a')).toMatch(/^ac-runtime-probe-[a-f0-9]{16}$/)
     expect(probeAgentId('member-a')).not.toBe(probeAgentId('member-b'))
   })
+
+  it('reaps only expired probe claims from previous members', async () => {
+    const deleted: string[] = []
+    const current = `agent-${probeAgentId('member-a')}`
+    const expired = `agent-${probeAgentId('member-old')}`
+    const live = `agent-${probeAgentId('member-b')}`
+    const ordinary = 'agent-customer'
+    const expiry = (name: string, at: string, probe = true): SandboxClaim => ({
+      metadata: {
+        name,
+        labels: probe ? { [PROBE_CLAIM_LABEL]: 'true' } : {},
+        annotations: { [PROBE_CLAIM_EXPIRES_ANNOTATION]: at }
+      }
+    })
+    await reapExpiredProbeClaims(
+      {
+        listClaims: async (selector?: string) => {
+          expect(selector).toBe(`${PROBE_CLAIM_LABEL}=true`)
+          return [
+            expiry(current, '2026-08-14T11:00:00.000Z'),
+            expiry(expired, '2026-08-14T09:00:00.000Z'),
+            expiry(live, '2026-08-14T11:00:00.000Z'),
+            expiry(ordinary, '2026-08-14T09:00:00.000Z', false)
+          ]
+        },
+        deleteClaim: async (name: string) => void deleted.push(name)
+      },
+      Date.parse('2026-08-14T10:00:00.000Z')
+    )
+    expect(deleted).toEqual([expired])
+  })
 })
 
 describe('k8s runtime plane assembly', () => {
@@ -183,8 +223,14 @@ describe('k8s runtime plane assembly', () => {
     // run and looks healthy.
     const api = fakeApi()
     const deleted: string[] = []
+    const ensured: SandboxClaim[] = []
     api.api.deleteClaim = async (name: string) => {
       deleted.push(name)
+    }
+    const ensureClaim = api.api.ensureClaim
+    api.api.ensureClaim = async (claim) => {
+      ensured.push(claim)
+      return ensureClaim(claim)
     }
     const plane = await planeUnderTest(api)
     const port = shimPort(plane)
@@ -205,6 +251,10 @@ describe('k8s runtime plane assembly', () => {
     answer({ runtimes: [{ id: 'claude-acp', version: '0.66.0', acp: { protocolVersion: 1 } }] })
     const table = await probing
     expect(table.runtimes.map((entry) => `${entry.id}@${entry.version}`)).toEqual(['claude-acp@0.66.0'])
+    expect(ensured[0]?.metadata?.labels).toEqual({ [PROBE_CLAIM_LABEL]: 'true' })
+    expect(Date.parse(ensured[0]?.metadata?.annotations?.[PROBE_CLAIM_EXPIRES_ANNOTATION] ?? '')).toBeGreaterThan(
+      Date.now()
+    )
     // And the probe sandbox is gone: one leaked pod per daemon restart would be a slow leak that
     // nothing else cleans up.
     expect(deleted).toContain(`agent-${probeAgentId('member-a')}`)
@@ -219,6 +269,7 @@ describe('k8s runtime plane assembly', () => {
     const port = shimPort(plane)
 
     const probing = plane.probeRuntimes()
+    expect(plane.probeRuntimes()).toBe(probing)
     // A shim that has dialled in and is still generating its table. Waiting for the REQUEST rather
     // than for the connection is the whole point: during the bind the sandbox is held anyway, so
     // an assertion there would hold with or without the lease this test is about.

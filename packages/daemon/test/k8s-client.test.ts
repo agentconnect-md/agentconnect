@@ -83,6 +83,15 @@ describe('SandboxApi', () => {
     await expect(api.deleteClaim('gone')).resolves.toBeUndefined()
   })
 
+  it('lists claims with a server-side label selector', async () => {
+    const { config, requests } = await fakeApiServer(() => ({
+      json: { items: [{ metadata: { name: 'agent-ac-runtime-probe-old' } }] }
+    }))
+    const api = new SandboxApi(new K8sHttp(config), 'org-test')
+    await expect(api.listClaims('agentconnect.md/runtime-probe=true')).resolves.toHaveLength(1)
+    expect(requests[0]?.searchParams.get('labelSelector')).toBe('agentconnect.md/runtime-probe=true')
+  })
+
   it('guards an operatingMode patch with a test op on the value it observed', async () => {
     let patch: any
     let contentType: string | undefined

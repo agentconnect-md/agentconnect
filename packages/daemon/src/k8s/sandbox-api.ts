@@ -1,11 +1,4 @@
-import {
-  K8sApiError,
-  watchCollection,
-  type K8sHttp,
-  type K8sObject,
-  type ResourceEvent,
-  type WatchOptions
-} from '@agentconnect.md/k8s-client'
+import { K8sApiError, type K8sHttp, type K8sList, type K8sObject } from '@agentconnect.md/k8s-client'
 
 /** agent-sandbox API groups, pinned to v1beta1 — the compatibility layer is never touched. */
 export const SANDBOX_GROUP = 'agents.x-k8s.io/v1beta1'
@@ -21,9 +14,11 @@ export interface Sandbox extends K8sObject {
   }
 }
 
-/** The claim's status names the bound Sandbox; the Sandbox UID comes from that
- *  object's `metadata.uid`, since the claim carries no uid of its own. */
+/** Claim status names the bound Sandbox; its UID comes from that object's metadata. */
 export interface SandboxClaim extends K8sObject {
+  metadata?: NonNullable<K8sObject['metadata']> & {
+    labels?: Record<string, string>
+  }
   spec?: { warmPoolRef?: { name?: string }; additionalPodMetadata?: { labels?: Record<string, string> } }
   status?: { sandbox?: { name?: string } }
 }
@@ -113,6 +108,15 @@ export class SandboxApi {
     return this.http.json<SandboxClaim>({ method: 'GET', path: `${this.claims()}/${name}` })
   }
 
+  async listClaims(labelSelector?: string): Promise<SandboxClaim[]> {
+    const list = await this.http.json<K8sList<SandboxClaim>>({
+      method: 'GET',
+      path: this.claims(),
+      query: { ...(labelSelector ? { labelSelector } : {}) }
+    })
+    return list.items ?? []
+  }
+
   /** Delete a claim; an already-absent claim is success (agent deletion is idempotent). */
   async deleteClaim(name: string): Promise<void> {
     try {
@@ -121,10 +125,6 @@ export class SandboxApi {
       if (err instanceof K8sApiError && err.isNotFound) return
       throw err
     }
-  }
-
-  watchClaims(options: Omit<WatchOptions, 'path'> = {}): AsyncGenerator<ResourceEvent<SandboxClaim>> {
-    return watchCollection<SandboxClaim>(this.http, { ...options, path: this.claims() })
   }
 
   getSandbox(name: string): Promise<Sandbox> {

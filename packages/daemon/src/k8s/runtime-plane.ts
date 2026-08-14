@@ -19,13 +19,39 @@ const SILENT = { info: () => {}, warn: () => {} }
 
 /** Reserved prefix for member-scoped runtime probes; the Control Plane never assigns it. */
 export const PROBE_AGENT_ID_PREFIX = 'ac-runtime-probe'
+export const PROBE_CLAIM_LABEL = 'agentconnect.md/runtime-probe'
+export const PROBE_CLAIM_EXPIRES_ANNOTATION = 'agentconnect.md/runtime-probe-expires-at'
 /** A probe drives every runtime through `initialize` plus a session, on a possibly cold pod. */
 const PROBE_TIMEOUT_MS = 180_000
+/** Bounds an abandoned probe claim while leaving ample room for cold scheduling and the probe. */
+export const PROBE_CLAIM_TTL_MS = 15 * 60_000
+const PROBE_CLAIM_GC_INTERVAL_MS = 5 * 60_000
 
 /** A deterministic, DNS-safe probe identity unique to one daemon member. */
 export function probeAgentId(memberId: string): string {
   const memberHash = createHash('sha256').update(memberId).digest('hex').slice(0, 16)
   return `${PROBE_AGENT_ID_PREFIX}-${memberHash}`
+}
+
+/** Delete only expired probe claims; ordinary agent claims never match. */
+export async function reapExpiredProbeClaims(
+  api: Pick<SandboxApi, 'deleteClaim' | 'listClaims'>,
+  now: number,
+  log: { warn: (message: string) => void } = SILENT
+): Promise<void> {
+  const claims = await api.listClaims(`${PROBE_CLAIM_LABEL}=true`)
+  await Promise.all(
+    claims.map(async (claim) => {
+      const name = claim.metadata?.name
+      if (!name || claim.metadata?.labels?.[PROBE_CLAIM_LABEL] !== 'true') return
+      const rawExpiry = claim.metadata?.annotations?.[PROBE_CLAIM_EXPIRES_ANNOTATION]
+      const expiresAt = rawExpiry ? Date.parse(rawExpiry) : Number.NaN
+      if (!Number.isFinite(expiresAt) || expiresAt > now) return
+      await api.deleteClaim(name).catch((err: unknown) => {
+        log.warn(`k8s: expired probe claim ${name} teardown failed: ${(err as Error).message}`)
+      })
+    })
+  )
 }
 
 /**
@@ -230,6 +256,15 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
         ? (settings.orgId ?? 'install')
         : (options.orgForAgent?.(agentId) ?? settings.orgId),
     warmPoolName: settings.warmPoolName,
+    claimMetadataForAgent: (agentId) =>
+      agentId === runtimeProbeAgentId
+        ? {
+            labels: { [PROBE_CLAIM_LABEL]: 'true' },
+            annotations: {
+              [PROBE_CLAIM_EXPIRES_ANNOTATION]: new Date(Date.now() + PROBE_CLAIM_TTL_MS).toISOString()
+            }
+          }
+        : undefined,
     onChannelReady: ensureTunnels,
     connectChannel: (record, podIp, timeoutMs) =>
       dialer.connect(shimEndpoint(podIp, settings.shimPort), record, timeoutMs),
@@ -243,6 +278,20 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
   // replacement that has not arrived well inside the request deadline is a pod that is gone.
   const REBIND_GRACE_MS = 20_000
   const lossTimers = new Map<string, NodeJS.Timeout>()
+  let stopped = false
+  let probeGcTimer: NodeJS.Timeout | undefined
+  let probeInFlight: Promise<K8sRuntimeTable> | undefined
+
+  async function runProbeClaimGc(): Promise<void> {
+    await reapExpiredProbeClaims(api, Date.now(), options.log ?? SILENT).catch((err: unknown) =>
+      options.log?.warn(`k8s: probe claim sweep failed: ${(err as Error).message}`)
+    )
+    if (stopped) return
+    probeGcTimer = setTimeout(() => void runProbeClaimGc(), PROBE_CLAIM_GC_INTERVAL_MS)
+    probeGcTimer.unref?.()
+  }
+
+  void runProbeClaimGc()
 
   function scheduleLossCheck(agentId: string, reason: string): void {
     clearTimeout(lossTimers.get(agentId))
@@ -257,18 +306,13 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     )
   }
 
-  return {
-    driver,
-    dialer,
-    ensureChannel: async (agentId) => {
-      await driver.ensureBoundChannel(agentId)
-    },
-    withSandbox: (agentId, work) => driver.withSandbox(agentId, work),
-    probeRuntimes: async () => {
-      // A sandbox of its own, under a reserved id, so a probe never adopts or disturbs an
-      // agent's instance — and is torn down afterwards rather than left holding a pod.
+  function probeRuntimes(): Promise<K8sRuntimeTable> {
+    if (probeInFlight) return probeInFlight
+    probeInFlight = (async () => {
+      // Reset this member's deterministic claim so a container restart cannot adopt its leaked probe.
+      await driver.removeAgent(runtimeProbeAgentId)
       try {
-        // The lease covers the request so the ordinary idle sweep cannot suspend mid-probe.
+        // Hold the Sandbox across the request so the ordinary idle sweep cannot suspend it.
         return await driver.withSandbox(runtimeProbeAgentId, async () => {
           await driver.ensureBoundChannel(runtimeProbeAgentId, undefined, PROBE_GRANTS)
           const session = driver.sessionFor(runtimeProbeAgentId)
@@ -278,12 +322,23 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
         })
       } finally {
         await driver.removeAgent(runtimeProbeAgentId).catch((err: unknown) => {
-          // A leaked probe sandbox costs a pod and a volume, so say so loudly rather than
-          // letting it accumulate one per daemon restart.
           options.log?.warn(`k8s: probe sandbox teardown failed: ${(err as Error).message}`)
         })
       }
+    })().finally(() => {
+      probeInFlight = undefined
+    })
+    return probeInFlight
+  }
+
+  return {
+    driver,
+    dialer,
+    ensureChannel: async (agentId) => {
+      await driver.ensureBoundChannel(agentId)
     },
+    withSandbox: (agentId, work) => driver.withSandbox(agentId, work),
+    probeRuntimes,
     gitRunnerFor: (agentId, cwd, abort) => {
       // No channel means this agent has no sandbox to run git in. Returning undefined keeps the
       // caller on its local runner rather than failing the operation — which is what a
@@ -317,6 +372,9 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
       await driver.removeAgent(agentId)
     },
     stop: async () => {
+      stopped = true
+      if (probeGcTimer) clearTimeout(probeGcTimer)
+      probeGcTimer = undefined
       for (const timer of lossTimers.values()) clearTimeout(timer)
       lossTimers.clear()
       for (const { proxy } of proxies.values()) proxy.stop('daemon is shutting down')

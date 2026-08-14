@@ -135,7 +135,9 @@ names the shared namespace where the runtime plane reads and writes SandboxClaim
 and Sandboxes. Each member also receives its Pod UID through the Downward API as
 `AC_K8S_MEMBER_ID`; the runtime probe hashes it into
 `agent-ac-runtime-probe-<member-hash>`, so simultaneous member startup never races
-on one probe claim.
+on one probe claim. Probe claims carry a dedicated label and a 15-minute expiry;
+members periodically delete expired claims, so a missed teardown cannot retain a
+Sandbox and volume forever.
 
 **Org-threading is the end state; instantiation is scaffolding.** The wire
 carries the org, the data plane carries the org, and the process interior

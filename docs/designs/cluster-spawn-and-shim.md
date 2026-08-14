@@ -72,6 +72,10 @@ The daemon pool and agent sandboxes are separate namespaces. The runtime plane r
 `AC_K8S_SANDBOX_NAMESPACE` and uses it for every `SandboxClaim` and `Sandbox` request; it never
 defaults to the namespace mounted into the daemon Pod's ServiceAccount.
 
+Runtime probes use a member-hashed claim name plus an expiry annotation. A label-filtered daemon
+sweep deletes expired claims, bounding resources left by a crash or failed teardown without reading
+daemon-local storage or touching ordinary agent claims.
+
 ## 3. Binding: proving which pod accepted the connection
 
 A shim connection must be bound to the pod it claims to be, before it is given anything.
