@@ -5,6 +5,7 @@ import { isAbsolute, normalize, resolve, sep } from 'node:path'
 import { applyFileSinkPayload } from './file-sink.js'
 import { GitExecPayloadSchema, type GitExecResult } from './git-exec.js'
 import type { ShimCapability } from './protocol.js'
+import { applyWorkspaceFilesPayload } from './workspace-files-channel.js'
 
 /**
  * The git subcommands a sandbox will run, enforced HERE.
@@ -171,6 +172,13 @@ export function createExecHandler(
     }
     if (capability === 'exec') return runGit(payload, deps, abort)
     if (capability === 'probe') return probeRuntimes(deps, abort)
+    // The console's file operations, run on the mounted volume. The mount is handed over as the
+    // ANCHOR rather than the daemon's root being validated here: the operations walk to it from an
+    // open descriptor, so "is this inside the mount" and "which directory is it" are one question
+    // with one answer instead of two that a rename can separate.
+    if (capability === 'read') {
+      return applyWorkspaceFilesPayload(payload, deps.workspaceRoot)
+    }
     throw new ExecRefusedError(`capability ${capability} is not served by this handler`)
   }
 }

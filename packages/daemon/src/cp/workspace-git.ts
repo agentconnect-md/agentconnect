@@ -74,7 +74,7 @@ import {
   type CommitMessageFile
 } from '../agents/commit-message.js'
 import { LOG_FORMAT, numstatByPath, parseLogZ, parseNameStatusZ, parseNumstatZ } from './workspace-git-parse.js'
-import { REPLY_BUDGET, fitToBudget, utf8Boundary } from './wire-slice.js'
+import { REPLY_BUDGET, fitToBudget, utf8Boundary } from '../wire-slice.js'
 
 /** On-demand pull is interactive, so allow more headroom than the 4.5s
  *  best-effort pull at session start (workspace-manager.ts). */

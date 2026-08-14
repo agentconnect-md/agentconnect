@@ -348,7 +348,7 @@ import {
 } from '@agentconnect.md/protocol'
 import { isNoResponseBody, isNoResponsePrefix } from './session/no-response.js'
 import { createSessionReader } from './cp/session-reader.js'
-import { createWorkspaceReader, WorkspaceConflictError } from './cp/workspace-reader.js'
+import { createWorkspaceReader, WorkspaceConflictError, type WorkspaceLocation } from './cp/workspace-reader.js'
 import { TaskViolationError } from './cp/task-reader.js'
 import { createMemoryReader } from './cp/memory-reader.js'
 import {
@@ -20875,9 +20875,8 @@ export class Daemon {
       resolveInitialRegistry = resolve
     })
 
-    // This daemon's own coordinates. The file reader below has no other option — the shim serves no
-    // read or list — so a cluster agent's Files panel stays empty until that channel exists.
-    const workspaceLocation = (id: string, sessionId?: string) => {
+    // This daemon's own coordinates: `agent.workspace.path` and the session worktrees beside it.
+    const daemonWorkspaceLocation = (id: string, sessionId?: string): WorkspaceLocation | undefined => {
       const agent = this.agents.get(id)
       if (!agent) return undefined
       if (!sessionId) {
@@ -20888,19 +20887,26 @@ export class Daemon {
       return { root: sessionWorktreePath(agent, session.key), scratch: false }
     }
 
-    // The console's git seam runs git where the agent's work happens, which under --k8s is the pod.
+    // Where that workspace actually is, which under --k8s is the sandbox pod's volume. ONE resolver
+    // for the file reader and the git seam: the directory the console browses and the one it commits
+    // are the same directory, and describing them two different ways is what broke both panels.
     // A defined location for a sessionId means that session IS isolated, which --k8s refuses —
     // passed through so it is refused loudly rather than silently naming the shared checkout.
-    const workspaceGitRoot = (id: string, sessionId?: string): string | undefined => {
+    const workspaceLocation = (id: string, sessionId?: string): WorkspaceLocation | undefined => {
       const agent = this.agents.get(id)
-      if (!agent) return undefined
-      return consoleWorkspaceRoot(
+      const local = daemonWorkspaceLocation(id, sessionId)
+      if (!agent || !local) return undefined
+      const root = consoleWorkspaceRoot(
         agent,
-        workspaceLocation(id, sessionId)?.root,
+        local.root,
         this.k8sPlane?.workspaceRootFor(id),
         sessionId ? { isolation: 'session' } : undefined
       )
+      return root === undefined ? undefined : { root, scratch: local.scratch }
     }
+
+    const workspaceGitRoot = (id: string, sessionId?: string): string | undefined =>
+      workspaceLocation(id, sessionId)?.root
 
     const workspaceGit = createWorkspaceGit(
       workspaceGitRoot,
@@ -21032,7 +21038,13 @@ export class Daemon {
       // §5.4: serve a CP-forwarded status probe for a child session we own. Authorization is
       // re-done here (the lineage rule lives where the session lives), not trusted from the CP.
       childSessionStatusProbe: (probe) => this.childSessionStatusProbe(probe),
-      workspaceRead: createWorkspaceReader(workspaceLocation, (id, write) => this.withWorkspaceFileWrite(id, write)),
+      // The third argument is what makes a cluster agent's files reachable at all: the operations
+      // run inside its pod, on the volume the root above names.
+      workspaceRead: createWorkspaceReader(
+        workspaceLocation,
+        (id, write) => this.withWorkspaceFileWrite(id, write),
+        (id) => this.k8sPlane?.workspaceFilesFor(id)
+      ),
       workspaceGit: {
         status: (id, sessionId) => workspaceGit.status(id, sessionId),
         // diff/log are read-only, so they skip the runtime-quiescence coordinator the pull needs.
@@ -21056,8 +21068,11 @@ export class Daemon {
       memoryReader: createMemoryReader((id) => this.agents.get(id)?.dir, this.memory),
       dreamReader: createDreamReader(this.dreamRunner()),
       localSkillsReader: createLocalSkillsReader(
-        (id) => this.agents.get(id)?.workspace.path,
-        join(this.root, 'skill-installs')
+        // The workspace root in EXECUTION coordinates, like the file reader's: the skill roots the
+        // console lists are the ones the agent's harness loads, and those are in the pod.
+        (id) => workspaceLocation(id)?.root,
+        join(this.root, 'skill-installs'),
+        (id) => this.k8sPlane?.workspaceFilesFor(id)
       ),
       // webchat is no longer a CP control-WS integration (milestone A4) — it rides the
       // relay's rd/* wire, wired through RelayManager.onRelayMsg below.

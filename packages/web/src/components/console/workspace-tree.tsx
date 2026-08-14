@@ -16,6 +16,8 @@ import { fileBrowserGlyph } from '@/components/console/FileBrowser'
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
 // The CP's status separates an offline daemon (503) from one too old for session worktrees (409) and a session whose worktree the viewer cannot read (404); a consumer that wants those apart needs the number, not the flattened message.
 const statusOf = (e: unknown) => (e instanceof ApiError ? e.status : null)
+// ...and the status alone is not enough for one case: a sandbox that is asleep is a 503 like an offline daemon, and only the code tells them apart.
+const codeOf = (e: unknown) => (e instanceof ApiError ? (e.code ?? null) : null)
 
 /** Per-directory listing state, keyed by directory path ('' = workspace root). Loaded lazily: the root on mount, each folder on first expand. */
 export interface WorkspaceDirState {
@@ -28,6 +30,8 @@ export interface WorkspaceDirState {
   err: string | null
   /** That failure's HTTP status, when it had one. */
   errStatus: number | null
+  /** That failure's machine code, when the CP named one — the only thing separating a sandbox that is asleep from an offline daemon, since both are 503. */
+  errCode: string | null
   /** Append (Load more) failure — keeps the rows already loaded. */
   moreErr: string | null
 }
@@ -40,6 +44,7 @@ const LOADING_DIR: WorkspaceDirState = {
   loadingMore: false,
   err: null,
   errStatus: null,
+  errCode: null,
   moreErr: null
 }
 
@@ -74,7 +79,7 @@ export function useWorkspaceTree(agentId: string, sessionId?: string, refreshTic
   const loadDir = useCallback(
     (path: string) => {
       const gen = generation.current
-      patchDir(path, { loading: true, err: null, errStatus: null })
+      patchDir(path, { loading: true, err: null, errStatus: null, errCode: null })
       fetchWorkspaceFiles(agentId, { path, ...(sessionId ? { sessionId } : {}) }).then(
         (page) => {
           if (gen !== generation.current) return
@@ -88,13 +93,14 @@ export function useWorkspaceTree(agentId: string, sessionId?: string, refreshTic
               loadingMore: false,
               err: null,
               errStatus: null,
+              errCode: null,
               moreErr: null
             }
           }))
         },
         (e) => {
           if (gen !== generation.current) return
-          patchDir(path, { loading: false, err: msg(e), errStatus: statusOf(e) })
+          patchDir(path, { loading: false, err: msg(e), errStatus: statusOf(e), errCode: codeOf(e) })
         }
       )
     },
@@ -178,12 +184,14 @@ export function useWorkspaceTree(agentId: string, sessionId?: string, refreshTic
             loadingMore: false,
             err: null,
             errStatus: null,
+            errCode: null,
             moreErr: null
           }
         })
       },
       (e) => {
-        if (active()) setDirs({ '': { ...LOADING_DIR, loading: false, err: msg(e), errStatus: statusOf(e) } })
+        if (active())
+          setDirs({ '': { ...LOADING_DIR, loading: false, err: msg(e), errStatus: statusOf(e), errCode: codeOf(e) } })
       }
     )
     return () => {
