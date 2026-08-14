@@ -1805,6 +1805,9 @@ interface WebchatTurnContext {
    *  own to stream to (#753). Carried onto the completed `RdWebchatPost` so the
    *  browser knows this reply never streamed live and needs rendering from the post. */
   initiator?: 'agent'
+  /** Session-targeted continuation (§5.2): the webchat stream is an ADDITIONAL sink —
+   *  turn output/status/failure still follow the origin platform's ordinary rules. */
+  continuation?: true
   runtime?: WebchatRuntimeConfig
   worktree?: boolean
   /** Authority captured only from the relay's validated rd/msg envelope. It is
@@ -7416,6 +7419,7 @@ export class Daemon {
       return { accepted: false, turnId, reason: 'busy' }
     }
     const stream = this.createWebchatTurnStream(agentId, chatId, turnId, sink)
+    stream.continuation = true
     let settleMirror!: (mirrored: boolean) => void
     const mirrorAdmission = new Promise<boolean>((resolve) => {
       settleMirror = resolve
@@ -12707,7 +12711,8 @@ export class Daemon {
         turnId: ctx.webchat.turnId,
         error: reason
       })
-      return
+      // A continuation turn also surfaces the failure on the origin platform (§5.2).
+      if (!ctx.webchat.continuation) return
     }
     const notice = `⚠️ Agent failed to respond: ${reason}`
     if (ctx.replyConn) {
@@ -13913,7 +13918,12 @@ export class Daemon {
     // reply sink as `rd/chat`, so `conv`'s Slack actions never apply.
     // `none` output mode joins them: no status, status-bar, or reply reaches the channel;
     // only the converger's `recordOnly` body posts land in the transcript.
-    const replyConn = msg.headless || webchat || mode === 'none' ? undefined : this.replyConnFor(agentId, integrationId)
+    // A continuation turn keeps its platform reply connection: its webchat stream is
+    // an additional sink, not a replacement (§5.2 dual sinks).
+    const replyConn =
+      msg.headless || (webchat && !webchat.continuation) || mode === 'none'
+        ? undefined
+        : this.replyConnFor(agentId, integrationId)
     // Capture cold/warm BEFORE sessions.handle(), which boots the host via hostFor().
     const wasRunning = this.hostStarts.has(agentId)
     const statusThread = msg.thread ?? msg.msgId
@@ -14738,38 +14748,44 @@ export class Daemon {
           // A real reply that never diverged from the sentinel prefix mid-stream
           // (shorter than the sentinel) is still held — release it before commit.
           this.flushHeldWebchatText(p.webchat)
-          // Shares the strictly-monotonic clock with the inbound user message so a fast
-          // turn can't stamp both with the same ms and lose the reply to the unique index.
-          // The ts the row actually lands on (post-collision-bump) doubles as the reply
-          // post's canonical `at` (minted ONCE here, the origin) carried to every other
-          // participant's copy via rd/webchat-post.
-          const replyPostId = randomUUID()
-          const replyTs = this.appendWebchatTextRow(p.transcriptChannel, statusThread, monotonicTs(), {
-            postId: replyPostId,
-            sender: agentId,
-            text: p.webchat.replyText
-          })
-          // Fan the completed reply out as a canonical conversation post so the
-          // relay delivers it to the browser's message log and to the other
-          // participants' daemons as context (webchat-multi-agents.md §5.2).
-          // `hopCount` is this turn's own chain depth (§4.1: stamped on every body
-          // the author posts), which is what lets a receiving participant charge
-          // the ONE +1 continuation transition (§5.2a) — the same stamp the
-          // platform paths put on their outbound authorship metadata.
-          p.webchat.postSink?.({
-            conversationId: p.webchat.conversationId,
-            agentId,
-            post: {
+          // A continuation turn records its reply at the platform post boundary instead
+          // (appending here would duplicate the row), and its roster is fixed at one.
+          if (!p.webchat.continuation) {
+            // Shares the strictly-monotonic clock with the inbound user message so a fast
+            // turn can't stamp both with the same ms and lose the reply to the unique index.
+            // The ts the row actually lands on (post-collision-bump) doubles as the reply
+            // post's canonical `at` (minted ONCE here, the origin) carried to every other
+            // participant's copy via rd/webchat-post.
+            const replyPostId = randomUUID()
+            const replyTs = this.appendWebchatTextRow(p.transcriptChannel, statusThread, monotonicTs(), {
               postId: replyPostId,
+              sender: agentId,
+              text: p.webchat.replyText
+            })
+            // Fan the completed reply out as a canonical conversation post so the
+            // relay delivers it to the browser's message log and to the other
+            // participants' daemons as context (webchat-multi-agents.md §5.2).
+            // `hopCount` is this turn's own chain depth (§4.1: stamped on every body
+            // the author posts), which is what lets a receiving participant charge
+            // the ONE +1 continuation transition (§5.2a) — the same stamp the
+            // platform paths put on their outbound authorship metadata.
+            p.webchat.postSink?.({
               conversationId: p.webchat.conversationId,
-              author: { kind: 'agent', agentId, hopCount: p.sourceHopCount },
-              text: p.webchat.replyText,
-              at: Number(replyTs)
-            },
-            ...(p.webchat.initiator ? { initiator: p.webchat.initiator } : {})
-          })
+              agentId,
+              post: {
+                postId: replyPostId,
+                conversationId: p.webchat.conversationId,
+                author: { kind: 'agent', agentId, hopCount: p.sourceHopCount },
+                text: p.webchat.replyText,
+                at: Number(replyTs)
+              },
+              ...(p.webchat.initiator ? { initiator: p.webchat.initiator } : {})
+            })
+          }
         }
-        if (!p.webchat.doneSent) {
+        // Continuation defers `done` until the platform apply chain settles below —
+        // the browser must not unlock its composer while the reply is still flushing.
+        if (!p.webchat.continuation && !p.webchat.doneSent) {
           p.webchat.doneSent = true
           p.webchat.sink.done({
             conversationId: p.webchat.conversationId,
@@ -14778,7 +14794,10 @@ export class Daemon {
             ...(usage?.totalTokens !== undefined ? { usage: { used: usage.totalTokens } } : {})
           })
         }
-      } else {
+      }
+      // A continuation turn ALSO flushes the platform finals — its reply posts to the
+      // origin thread under the ordinary output rules (§5.2 dual sinks).
+      if (!p.webchat || p.webchat.continuation) {
         const link = showFooter ? this.sessionLink(sessionId) : undefined
         const finalAttributionInfo = showFooter ? currentAttributionInfo() : undefined
         // A runtime may only publish its final session-scoped model during prompt.
@@ -14810,6 +14829,18 @@ export class Daemon {
       // through the core surface does not inherit its platform's closure, and a platform
       // that cannot amend a sent message simply registers none.
       await this.turnSurfaces.exact(p.platform)?.closeResponse?.(p)
+      // Continuation `done` fires only now, behind the platform apply/finalization
+      // boundary, so both sinks settle as ONE ordered turn: the console cannot admit
+      // a next turn (whose mirror posts immediately) ahead of this reply's flush.
+      if (p.webchat?.continuation && !p.webchat.doneSent) {
+        p.webchat.doneSent = true
+        p.webchat.sink.done({
+          conversationId: p.webchat.conversationId,
+          turnId: p.webchat.turnId,
+          ...(stopReason ? { stopReason } : {}),
+          ...(usage?.totalTokens !== undefined ? { usage: { used: usage.totalTokens } } : {})
+        })
+      }
       // The user-visible reply is now delivered. Enqueue provider work without
       // awaiting it: managed may distill, while external only commits its durable
       // capture outbox. Webchat carries the canonical per-turn id separately from
@@ -14872,7 +14903,12 @@ export class Daemon {
       propagatingTurnError = true
       failEvaluation(err)
       finalPhase = 'problem'
-      if (p.webchat) {
+      if (p.webchat?.continuation) {
+        // Continuation: release any held stream text; the platform branch below owns the
+        // visible notice + transcript, and the terminal-error `done` waits behind its
+        // apply-chain drain so the console cannot admit a next turn mid-flush.
+        this.flushHeldWebchatText(p.webchat)
+      } else if (p.webchat) {
         // Reply text (including a runtime's mirrored error text) already streamed to
         // the client via onAcpUpdate; the terminal done frame carries the reason.
         // Record what streamed so the session reads back with it, like the success
@@ -14918,7 +14954,8 @@ export class Daemon {
             ...(p.webchat.initiator ? { initiator: p.webchat.initiator } : {})
           })
         }
-      } else {
+      }
+      if (!p.webchat || p.webchat.continuation) {
         // Some runtimes narrate their terminal error into the message stream just
         // before rejecting the prompt — codex-acp mirrors quota exhaustion / auth
         // expiry as an agent_message_chunk — and that text is still sitting in the
@@ -14947,7 +14984,20 @@ export class Daemon {
             })
         }
         this.showActivity(replyConn, msg.channel, statusThread, '') // clear "is thinking…"
-        await p.applyChain
+        try {
+          await p.applyChain
+        } finally {
+          // Continuation closes the browser stream only after the platform failure
+          // actions drain (or terminally fail) — never before, so the sinks stay ordered.
+          if (p.webchat?.continuation && !p.webchat.doneSent) {
+            p.webchat.doneSent = true
+            p.webchat.sink.done({
+              conversationId: p.webchat.conversationId,
+              turnId: p.webchat.turnId,
+              error: turnFailureReason(err)
+            })
+          }
+        }
       }
       if (hookContext && !this.draining) {
         this.emitHookCompletion(hookContext, 'failed', { sessionId, reason: turnFailureCode(err) }, entry)
@@ -15952,16 +16002,21 @@ export class Daemon {
     if (p.webchat) {
       // Webchat: skip a truly-empty frame (nothing for the web bar to show); the model /
       // usage lands on a later call. `sessionId` is always present, so exclude it.
-      if (!Object.entries(info).some(([k, v]) => k !== 'sessionId' && v !== undefined)) return
-      p.lastStatusBar = key
-      const wc = p.webchat
-      wc.sink.output({
-        conversationId: wc.conversationId,
-        turnId: wc.turnId,
-        index: wc.index++,
-        status: info
-      })
-    } else if (statusSurface === 'on-demand') {
+      const hasContent = Object.entries(info).some(([k, v]) => k !== 'sessionId' && v !== undefined)
+      if (hasContent) {
+        p.lastStatusBar = key
+        const wc = p.webchat
+        wc.sink.output({
+          conversationId: wc.conversationId,
+          turnId: wc.turnId,
+          index: wc.index++,
+          status: info
+        })
+      }
+      // A continuation turn also drives the origin platform's status surface below.
+      if (!p.webchat.continuation) return
+    }
+    if (statusSurface === 'on-demand') {
       // A declared on-demand platform (Telegram/Discord/Feishu) has no per-turn
       // status bar — session state is queried via `/status` (handleCommand).
       // Record the dedup key so the shared bookkeeping stays consistent, but emit
@@ -16237,7 +16292,9 @@ export class Daemon {
           index: p.webchat.index++,
           event: { kind: 'message', text }
         })
-      } else if (p.conn) {
+      }
+      // A continuation turn notifies the origin platform thread too (§5.2).
+      if ((!p.webchat || p.webchat.continuation) && p.conn) {
         this.enqueueApply(p, { kind: 'notice', text })
       }
     } catch (err) {
@@ -17177,8 +17234,9 @@ export class Daemon {
     // webchat streams its reply through the sink (→ relay `rd/chat`), one WebchatOutput
     // per mapped chunk, instead of driving the Slack renderer — but still records the
     // full activity log below, so a webchat session reads back like any other.
+    // A continuation turn drives BOTH: the browser sink and the platform renderer (§5.2).
     if (p.webchat) this.emitWebchatUpdate(p, update)
-    else if (!isHeadlessGithubFinal && !(p.stageAnswer && isAnswerChunk)) {
+    if ((!p.webchat || p.webchat.continuation) && !isHeadlessGithubFinal && !(p.stageAnswer && isAnswerChunk)) {
       for (const action of p.conv.onUpdate(update)) this.enqueueApply(p, action)
       this.armIdle(p)
       this.armFeishuStream(p)
