@@ -31,19 +31,33 @@ the seam.
 
 ## 2. Operations
 
-Two RPC-style HTTP operations, JSON bodies, schemas in
-[`packages/protocol/src/key-server.ts`](../../packages/protocol/src/key-server.ts):
+Two RPC-style **plain HTTPS request/response** operations, JSON bodies, schemas in
+[`packages/protocol/src/key-server.ts`](../../packages/protocol/src/key-server.ts).
+This is deliberately not the daemon↔CP WebSocket or a frame group: issuance is a
+low-frequency, stateless exchange, and a bare REST surface lets any deployment
+implement the server without speaking AgentConnect's wire protocol.
 
 | Operation   | Route                 | Body → Response                                                                                            |
 | ----------- | --------------------- | ---------------------------------------------------------------------------------------------------------- |
 | `GetKey`    | `POST /v1/get-key`    | `{orgId, agentId, sessionId, provider, ttlSeconds?}` → `{keyId, key, baseUrl?, expiresAt?, refreshAfter?}` |
 | `RevokeKey` | `POST /v1/revoke-key` | `{keyId}` → `{}`                                                                                           |
 
-**Caller authentication rides the transport, never the body.** The daemon presents
-the same credential it uses at its Control Plane — the org-bound API key, or the
-projected ServiceAccount identity for in-cluster daemons — and the server verifies
-`orgId` against that identity. `daemonId` is therefore not a parameter: a
-client-asserted identity would be untrusted input the server must re-derive anyway.
+**Caller authentication rides the transport, never the body**: the daemon sends
+`Authorization: Bearer <credential>`, where the credential is the same one it
+presents to its Control Plane — the org-bound API key, or the projected
+ServiceAccount token for in-cluster daemons. The server verifies the bearer, then
+cross-checks `orgId` against the identity it resolved. `daemonId` is therefore
+not a parameter: a client-asserted identity would be untrusted input the server
+must re-derive anyway.
+
+How a server verifies the bearer is its deployment's wiring, not this
+contract's: a ServiceAccount token is checked with TokenReview by anything
+holding cluster access, while an API key can only be resolved by the Control
+Plane's key registry — so an implementation accepting key-authenticated daemons
+needs a validation path to that registry (co-location with the CP's database, or
+an introspection call the deployment provides). A server may also support only
+one credential kind and reject the other with `unauthorized`; which kinds a
+given key server accepts is deployment documentation.
 
 `provider` names the API dialect the credential must speak (`anthropic` /
 `openai`) and selects which `(key, baseUrl)` pair comes back. There is

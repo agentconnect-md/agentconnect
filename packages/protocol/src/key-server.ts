@@ -4,19 +4,26 @@ import { z } from 'zod'
  * `agentconnect.key-server/v1` — the contract for dynamically fetching an
  * AI-provider credential instead of configuring a static key on the daemon.
  *
- * This is deliberately NOT a daemon↔CP frame group. The daemon is the only
- * caller; any deployment-provided service can implement it: a plain key
- * vault that rotates real provider keys, or a managed LLM egress layer that
- * issues short-lived session-scoped credentials and meters usage on its own
- * data path. The daemon treats the returned pair as opaque — it never knows
- * which kind it received.
+ * Plain HTTPS request/response — deliberately NOT the daemon↔CP WebSocket, a
+ * frame group, or any streaming transport: issuance is a low-frequency,
+ * stateless exchange, and a bare REST surface is what lets any deployment
+ * implement it without speaking AgentConnect's wire protocol. The daemon is
+ * the only caller; implementations range from a plain key vault that rotates
+ * real provider keys to a managed LLM egress layer that issues short-lived
+ * session-scoped credentials and meters usage on its own data path. The
+ * daemon treats the returned pair as opaque — it never knows which kind it
+ * received.
  */
 
 export const KEY_SERVER_PROFILE = 'agentconnect.key-server/v1' as const
 
-// RPC-style routes, mirroring the operation names.
+// RPC-style POST routes, mirroring the operation names. JSON bodies both ways.
 export const KEY_SERVER_GET_KEY_PATH = '/v1/get-key' as const
 export const KEY_SERVER_REVOKE_KEY_PATH = '/v1/revoke-key' as const
+
+// `Authorization: Bearer <credential>` — the same credential the daemon presents to its CP
+// (org API key, or projected ServiceAccount token in-cluster). Verification is server-side.
+export const KEY_SERVER_AUTH_HEADER = 'authorization' as const
 
 /** Provider API dialect the credential must speak; selects the (key, baseUrl) pair. */
 export const KeyProvider = z.enum(['anthropic', 'openai'])
