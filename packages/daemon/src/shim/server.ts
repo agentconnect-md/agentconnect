@@ -9,6 +9,35 @@ export interface ShimServerDeps {
   log?: { info: (message: string) => void; warn: (message: string) => void }
 }
 
+// A daemon socket accepted while the channel FSM is mid-backoff sits unclaimed; without
+// buffering, its hello frame fires with no listener and binding stalls until the daemon's
+// timeout. Capture inbound frames and a close until the first listener attaches, then replay.
+function bufferInbound(raw: ShimTransport): Pick<ShimTransport, 'onMessage' | 'onClose'> {
+  const frames: string[] = []
+  const messageListeners: Array<(text: string) => void> = []
+  const closeListeners: Array<(code: number, reason: string) => void> = []
+  let closed: { code: number; reason: string } | undefined
+  raw.onMessage((text) => {
+    if (messageListeners.length === 0) frames.push(text)
+    else for (const listener of messageListeners) listener(text)
+  })
+  raw.onClose((code, reason) => {
+    closed = { code, reason }
+    for (const listener of closeListeners) listener(code, reason)
+  })
+  return {
+    onMessage: (listener) => {
+      messageListeners.push(listener)
+      // Replay only on a live socket: a buffered hello answered after close would send into a dead peer.
+      if (messageListeners.length === 1 && !closed) for (const text of frames.splice(0)) listener(text)
+    },
+    onClose: (listener) => {
+      closeListeners.push(listener)
+      if (closed) listener(closed.code, closed.reason)
+    }
+  }
+}
+
 /** The sandbox-side WebSocket endpoint; one daemon channel may be active at a time. */
 export class ShimServer {
   private server?: Server
@@ -45,10 +74,11 @@ export class ShimServer {
       }
       wss.handleUpgrade(req, socket, head, (ws) => {
         const raw = new WsServerTransport(ws, req.socket.remoteAddress ?? 'unknown')
+        const inbound = bufferInbound(raw)
         const transport: ShimTransport = {
           send: (text) => raw.send(text),
-          onMessage: (listener) => raw.onMessage(listener),
-          onClose: (listener) => raw.onClose(listener),
+          onMessage: inbound.onMessage,
+          onClose: inbound.onClose,
           close: (code, reason) => {
             if (this.active === transport) this.active = undefined
             if (this.queued === transport) this.queued = undefined
