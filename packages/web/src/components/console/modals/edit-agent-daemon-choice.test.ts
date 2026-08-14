@@ -23,8 +23,9 @@ describe('editAgentDaemonChoices', () => {
       'local-1'
     )
 
-    expect(choices.map((choice) => choice.daemonId)).toEqual(['cloud-1', 'local-1', 'local-2'])
-    expect(choices.filter((choice) => choice.cloud)).toHaveLength(1)
+    expect(choices.cloudChoice?.daemonId).toBe('cloud-1')
+    expect(choices.currentCloudChoice).toBeUndefined()
+    expect(choices.localChoices.map((choice) => choice.daemonId)).toEqual(['local-1', 'local-2'])
   })
 
   it('keeps the selected Cloud member as the concrete placement target', () => {
@@ -34,17 +35,30 @@ describe('editAgentDaemonChoices', () => {
       'local-1'
     )
 
-    expect(choices[0]?.daemonId).toBe('cloud-serving')
+    expect(choices.cloudChoice?.daemonId).toBe('cloud-serving')
+    expect(choices.currentCloudChoice).toBeUndefined()
   })
 
-  it('keeps the source Cloud member available so a pending move can be cancelled', () => {
+  it('keeps an unavailable Cloud source as an explicit cancellation choice', () => {
     const choices = editAgentDaemonChoices(
       [row('cloud-source', true, 'offline'), row('cloud-serving', true), row('local-1')],
       'local-1',
       'cloud-source'
     )
 
-    expect(choices[0]?.daemonId).toBe('cloud-source')
+    expect(choices.cloudChoice?.daemonId).toBe('cloud-serving')
+    expect(choices.currentCloudChoice?.daemonId).toBe('cloud-source')
+  })
+
+  it('offers a healthy Cloud sibling when the current Cloud placement is unavailable', () => {
+    const choices = editAgentDaemonChoices(
+      [row('cloud-source', true, 'offline'), row('cloud-serving', true), row('local-1')],
+      'cloud-source',
+      'cloud-source'
+    )
+
+    expect(choices.cloudChoice?.daemonId).toBe('cloud-serving')
+    expect(choices.currentCloudChoice?.daemonId).toBe('cloud-source')
   })
 
   it('puts move-ready local daemons before unavailable local daemons', () => {
@@ -54,6 +68,7 @@ describe('editAgentDaemonChoices', () => {
       'local-offline'
     )
 
-    expect(choices.map((choice) => choice.daemonId)).toEqual(['local-ready', 'local-offline', 'local-old'])
+    expect(choices.cloudChoice).toBeUndefined()
+    expect(choices.localChoices.map((choice) => choice.daemonId)).toEqual(['local-ready', 'local-offline', 'local-old'])
   })
 })

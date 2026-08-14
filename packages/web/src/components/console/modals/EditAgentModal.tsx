@@ -310,15 +310,27 @@ export default function EditAgentModal({
   const daemonChoices = editAgentDaemonChoices(daemons, daemonId, initialDaemonId.current)
   const cloudServing = daemons.some((candidate) => candidate.cloud && moveReady(candidate))
   const daemonOptions: DaemonSelectOption[] = [
-    ...daemonChoices
-      .filter((candidate) => candidate.cloud)
-      .map((candidate) => ({
-        value: candidate.daemonId,
-        label: CLOUD_DAEMON_LABEL,
-        detail: cloudServing ? 'Model usage included — no API key needed.' : 'Cloud is currently unavailable.',
-        cloud: true,
-        disabled: candidate.daemonId !== initialDaemonId.current && !moveReady(candidate)
-      })),
+    ...(daemonChoices.cloudChoice
+      ? [
+          {
+            value: daemonChoices.cloudChoice.daemonId,
+            label: CLOUD_DAEMON_LABEL,
+            detail: cloudServing ? 'Model usage included — no API key needed.' : 'Cloud is currently unavailable.',
+            cloud: true,
+            disabled:
+              daemonChoices.cloudChoice.daemonId !== initialDaemonId.current && !moveReady(daemonChoices.cloudChoice)
+          }
+        ]
+      : []),
+    ...(daemonChoices.currentCloudChoice
+      ? [
+          {
+            value: daemonChoices.currentCloudChoice.daemonId,
+            label: 'Current placement',
+            detail: 'Currently on an unavailable Cloud node — select Cloud above to recover.'
+          }
+        ]
+      : []),
     ...(!initialDaemonId.current ? [{ value: '', label: 'No daemon', detail: 'Leave this agent inactive.' }] : []),
     ...(daemonId && !daemon
       ? [
@@ -329,23 +341,21 @@ export default function EditAgentModal({
           }
         ]
       : []),
-    ...daemonChoices
-      .filter((candidate) => !candidate.cloud)
-      .map((candidate) => {
-        const eligible = moveReady(candidate)
-        const current = candidate.daemonId === initialDaemonId.current
-        return {
-          value: candidate.daemonId,
-          label: candidate.name,
-          detail:
-            candidate.status !== 'online'
-              ? 'Offline — bring this machine online to use it.'
-              : !candidate.caps.features.includes('agent-move-v1')
-                ? 'Upgrade required before this machine can host the agent.'
-                : 'Uses the credentials on this machine.',
-          disabled: !current && !eligible
-        }
-      })
+    ...daemonChoices.localChoices.map((candidate) => {
+      const eligible = moveReady(candidate)
+      const current = candidate.daemonId === initialDaemonId.current
+      return {
+        value: candidate.daemonId,
+        label: candidate.name,
+        detail:
+          candidate.status !== 'online'
+            ? 'Offline — bring this machine online to use it.'
+            : !candidate.caps.features.includes('agent-move-v1')
+              ? 'Upgrade required before this machine can host the agent.'
+              : 'Uses the credentials on this machine.',
+        disabled: !current && !eligible
+      }
+    })
   ]
   const sourceUnavailable = !!sourceDaemon && !moveReady(sourceDaemon)
   const sourceOffline = sourceDaemon?.status === 'offline'
