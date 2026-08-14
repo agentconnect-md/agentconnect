@@ -125,6 +125,7 @@ import {
   hopTransition,
   isUsableSourceDepth,
   routeRules,
+  webchatContinuationDecision,
   type RouteVia
 } from './router/routing-table.js'
 import { parseCommand, type AgentCommand } from './commands/commands.js'
@@ -11304,30 +11305,26 @@ export class Daemon {
     contextPost: WebchatPost,
     landedTs: string
   ): void {
-    // User turns activate through the relay's pre-addressed `turn` frames; their
-    // context copies stay transcript-only exactly as before.
-    if (contextPost.author.kind !== 'agent') return
-    const authorAgentId = contextPost.author.agentId
-    if (authorAgentId === targetAgentId) return // author-never-self-activates, the one absolute
-    const sourceHopCount = contextPost.author.hopCount
-    if (!isUsableSourceDepth(sourceHopCount)) {
-      this.log.debug(
-        `webchat: peer post ${contextPost.postId} carries no usable depth — transcript-only (pre-parity author daemon)`
-      )
+    // The PURE edge decision is package policy (`webchatContinuationDecision`):
+    // user-post/self/fail-closed-depth exclusions and the §4.1 hop transition.
+    // This adapter supplies the facts and owns the impure remainder below —
+    // liveness, call policy, the exactly-once rendezvous, logging, dispatch.
+    const decision = webchatContinuationDecision(contextPost.author, targetAgentId)
+    if (!decision.activate) {
+      if (decision.reason === 'no_usable_depth') {
+        this.log.debug(
+          `webchat: peer post ${contextPost.postId} carries no usable depth — transcript-only (pre-parity author daemon)`
+        )
+      } else if (decision.reason === 'hop_limit') {
+        this.log.info(
+          `webchat: continuation refused for "${targetAgentId}" in conversation ${chatId} ` +
+            `(hop_limit: source depth ${decision.sourceHopCount} + 1 reaches ${decision.cap}); ` +
+            `peer post ${contextPost.postId} stays transcript-only`
+        )
+      }
       return
     }
-    // §4.1: ONE transition per delivery, against the same cap as an internal call —
-    // the same policy `hopTransition` the platform ladder charges.
-    const transition = hopTransition(sourceHopCount)
-    if (transition.refusal) {
-      this.log.info(
-        `webchat: continuation refused for "${targetAgentId}" in conversation ${chatId} ` +
-          `(hop_limit: source depth ${sourceHopCount} + 1 reaches ${transition.refusal.cap}); ` +
-          `peer post ${contextPost.postId} stays transcript-only`
-      )
-      return
-    }
-    const deliveryHopCount = transition.deliveryHopCount
+    const { authorAgentId, deliveryHopCount } = decision
     if (!this.agents.has(targetAgentId) || this.drainingAgents.has(targetAgentId)) return
     if (!this.cpCollab.admits(authorAgentId, targetAgentId)) {
       this.log.debug(`webchat: agent edge ${authorAgentId} → ${targetAgentId} denied by call policy`)

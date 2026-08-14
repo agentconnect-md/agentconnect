@@ -33,10 +33,16 @@
  *    provider. Its extra rungs (conversation-scoped keyword, `defaultAgentId`)
  *    are relay-specific selection AFTER this ladder declines, exactly as
  *    documented in shared-bot-relay.md §10.
- *  - **Webchat** (`daemon.ts` `maybeActivateWebchatContinuation`): the roster
- *    fan-out already chose the target, so it consumes only the edge gates —
- *    {@link isUsableSourceDepth} and {@link hopTransition} — plus the author
- *    exclusion those helpers assume the caller enforces absolutely.
+ *  - **Webchat**: FOLDED. The roster/standing-mention semantics are
+ *    package-owned policy alongside the platform ladder: the relay's
+ *    human-turn target choice is {@link selectTurnTargets} (webchat
+ *    membership is a standing mention — an unnarrowed turn activates the
+ *    whole roster; declared divergence, evals/parity/spec.ts
+ *    `human-kickoff-activation`), and the daemon's §5.2a continuation edge is
+ *    {@link webchatContinuationDecision} (author exclusion absolute,
+ *    fail-closed depth, the §4.1 hop transition). Relay and daemon are thin
+ *    adapters supplying their contexts; verification, the activation
+ *    rendezvous, call policy, and dispatch stay with the callers.
  */
 import { MAX_AGENT_CALL_HOPS, hasReachedAgentCallHopLimit } from '@agentconnect.md/protocol'
 
@@ -375,4 +381,98 @@ export function conversationPeers(
   if (options.primaryAgentId !== undefined) peers.delete(options.primaryAgentId)
   if (options.verified) peers.delete(options.verified.authorAgentId)
   return { peers: [...peers], explicitlyMentioned }
+}
+
+// ─── webchat: roster targeting and the §5.2a continuation edge ───
+
+/**
+ * Which participants one webchat USER turn activates (the human-kickoff
+ * choice; webchat-multi-agents.md §4.2, parity scenario
+ * `human-kickoff-activation`).
+ *
+ * Conversation membership is a STANDING mention: an unmentioned message
+ * activates the WHOLE roster — each agent may still decline via the
+ * no-response contract — while explicit @mentions (or an explicit `targets`
+ * list) narrow the turn to the named participants. This is the DECLARED
+ * divergence from mention-gated channels (evals/parity/spec.ts): pulling
+ * agents into a conversation is equivalent to having @-mentioned them all in
+ * its first message.
+ *
+ * `valid` preserves the chosen list's order filtered to roster members;
+ * `invalid` are the chosen non-members (the relay nacks each
+ * `not_participant`). Roster members outside `valid` receive the turn as a
+ * transcript-only `context` copy instead.
+ */
+export function selectTurnTargets(
+  roster: readonly string[],
+  options: { mentions?: readonly string[]; requestedTargets?: readonly string[] } = {}
+): { valid: string[]; invalid: string[] } {
+  const chosen = options.requestedTargets?.length
+    ? options.requestedTargets
+    : options.mentions?.length
+      ? options.mentions
+      : roster
+  const members = new Set(roster)
+  return {
+    valid: chosen.filter((agentId) => members.has(agentId)),
+    invalid: chosen.filter((agentId) => !members.has(agentId))
+  }
+}
+
+/** The author facts of a committed webchat post — a structural subset of the
+ *  wire `WebchatPost['author']`, so callers pass it directly. */
+export interface WebchatPostAuthorFacts {
+  kind: string
+  agentId?: string | undefined
+  /** The depth the AUTHOR's daemon stamped on the post (absent on a user post,
+   *  a pre-parity daemon's post, or a claim the relay could not bind). */
+  hopCount?: number | undefined
+}
+
+export type WebchatContinuationDecision =
+  | { activate: true; authorAgentId: string; deliveryHopCount: number }
+  | { activate: false; reason: 'user_post' | 'self' | 'no_usable_depth' }
+  | { activate: false; reason: 'hop_limit'; authorAgentId: string; sourceHopCount: number; cap: number }
+
+/**
+ * The webchat analogue of the §6 verified-agent continuation ladder (#549
+ * parity — webchat-multi-agents.md §5.2a, issue #904), as a pure decision:
+ * does a peer agent's COMMITTED conversation post, fanned to this
+ * pre-addressed participant as a `context` frame, wake it — or stay
+ * transcript-only? The relay's roster fan-out already excluded the author and
+ * chose the targets, so no arbitration happens here — only the checks the
+ * platform ladder applies to an implicitly selected edge:
+ *
+ *  - user turns activate through the relay's pre-addressed `turn` frames;
+ *    their context copies never activate (`user_post`);
+ *  - author exclusion is absolute (`self` — the fail-safe re-check; the relay
+ *    already skips the author);
+ *  - a post with no usable stamped depth must never coerce to zero
+ *    (`no_usable_depth` — §4.1 rule 1 / §5.2a fail-closed);
+ *  - the §4.1 hop transition: ONE +1 against the SAME `MAX_AGENT_CALL_HOPS`
+ *    budget an internal call spends (`hop_limit` when the edge must not run).
+ *
+ * The caller still owns everything impure about the edge: the directional
+ * call policy, the exactly-once activation rendezvous, agent
+ * liveness/draining, logging, and dispatch — and deliberately does NOT charge
+ * the coarse loop guard (webchat has no in-band `!resume` surface).
+ */
+export function webchatContinuationDecision(
+  author: WebchatPostAuthorFacts,
+  targetAgentId: string
+): WebchatContinuationDecision {
+  if (author.kind !== 'agent' || author.agentId === undefined) return { activate: false, reason: 'user_post' }
+  if (author.agentId === targetAgentId) return { activate: false, reason: 'self' }
+  if (!isUsableSourceDepth(author.hopCount)) return { activate: false, reason: 'no_usable_depth' }
+  const transition = hopTransition(author.hopCount)
+  if (transition.refusal) {
+    return {
+      activate: false,
+      reason: 'hop_limit',
+      authorAgentId: author.agentId,
+      sourceHopCount: author.hopCount,
+      cap: transition.refusal.cap
+    }
+  }
+  return { activate: true, authorAgentId: author.agentId, deliveryHopCount: transition.deliveryHopCount }
 }
