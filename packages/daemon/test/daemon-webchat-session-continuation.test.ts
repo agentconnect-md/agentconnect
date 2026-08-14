@@ -165,6 +165,25 @@ describe('webchat session-targeted continuation', () => {
     await daemon.stop()
   })
 
+  it('delivers the agent reply to the origin platform AND the browser sink (§5.2 dual sinks)', async () => {
+    const { daemon, d, postMessage } = await boot(() => 'dual-sink reply!')
+    const events: RdChatEvent[] = []
+
+    const ack = await d.handleRelayMsg(turn('to both'), (e) => events.push(e))
+    expect(ack).toMatchObject({ accepted: true })
+    await vi.waitFor(() => expect(events.some((e) => e.kind === 'done')).toBe(true), WAIT)
+    // The reply streamed to the browser sink…
+    expect(events.some((e) => e.kind === 'output')).toBe(true)
+    // …AND posted to the origin Slack thread under the ordinary output rules
+    // (the attributed human mirror is the other postMessage call).
+    await vi.waitFor(() => {
+      const texts = (postMessage.mock.calls as unknown[][]).map((c) => c[1])
+      expect(texts).toContain('dual-sink reply!')
+      expect(texts).toContain('[owner via console] to both')
+    }, WAIT)
+    await daemon.stop()
+  })
+
   it('refuses the turn when the platform mirror fails — the agent never consumes hidden input', async () => {
     const { daemon, d, prompts, postMessage } = await boot()
     postMessage.mockRejectedValue(new Error('channel_not_found'))
