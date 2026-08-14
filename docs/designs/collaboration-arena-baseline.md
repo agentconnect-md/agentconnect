@@ -200,6 +200,142 @@ failure. Measured leaks: **0**.
 See §6.4. The game is present and its referee semantics are covered, but the
 milestone cannot complete against the landed `sendMessage`.
 
+### 3.5 The webchat leg of the game matrix
+
+Werewolf now runs in a SECOND composition —
+`evals/games/webchat-werewolf.ts` + `webchat-werewolf-runner.ts`, gated by
+`evals/test/webchat-werewolf.test.ts` — mapped onto ONE multi-agent **webchat
+conversation** at the daemon seam (the same `handleRelayMsg` seam PR #906's
+tests and the parity webchat leg drive), per the live single-conversation
+runbook topology:
+
+| Piece                    | Slack-shaped (§3.3)                        | Webchat leg                                                               |
+| ------------------------ | ------------------------------------------ | ------------------------------------------------------------------------- |
+| Public day speech, votes | Channel posts + platform echo              | Ordinary conversation posts, carried by the #906 continuation             |
+| Role delivery            | Trusted referee DM (`deliverRefereeEvent`) | Postless `toAgent + needsReply` calls from the referee's session          |
+| Night actions            | Player's own referee DM                    | `needsReply` calls; child reports back via `sendMessage {sessionId}`      |
+| Wolf coordination        | REAL private den room                      | Referee-MEDIATED relay (propose → agree/counter), no den exists           |
+| The referee              | Code referee on the trusted control path   | SCRIPTED SUBJECT AGENT acting through the real `sendMessage` tool surface |
+| Phase pacing             | Referee waves                              | A reactive human HOST answering the referee's public "open night N" asks  |
+
+**What each composition validates.** The Slack-shaped game pins room-membership
+isolation, the platform echo, and the loop-guard/turn-budget bounds (§6.1–§6.5).
+The webchat leg pins the OTHER half of the product: the `needsReply` delegation
+round-trip into a live conversation session (exactly-once wakes, coalescing into
+in-flight turns), the pre-addressed §5.2 fan-out, and the webchat hop budget —
+with the referee composed exactly as a live model referee would be (its calls
+run the trusted-session-context MCP path; only its brain is deterministic, and
+for real-subject runs the same TypeScript brain drives a puppet ACP adapter,
+`evals/games/puppet-acp-agent.mjs` + `puppet.ts`). Rules, roles and win logic
+are shared (`evals/games/werewolf-rules.ts`) so the two compositions cannot
+drift on the game itself.
+
+Upstream of the full game sits the **night-collection scenario**
+(`evals/games/night-collection.ts`, `evals/test/webchat-night-collection.test.ts`)
+— the live night-1 failure shape in isolation: one host night-start, THREE
+concurrent `needsReply` postless calls (wolf-A propose / seer inspect / doctor
+protect) with public filler interleaved, plus the mediated wolf-B relay. Its
+scripted cells pin, on current `main`:
+
+- a child reply sent correctly (`sendMessage {sessionId}`) wakes the referee's
+  session **exactly once**, whether as its own turn or coalesced into an
+  in-flight turn whose input then still carries it (both shapes are recorded).
+  Verdicts are bound to the daemon's own wake-admission evidence
+  (`agentReplyWakeEvidence`): under #926 a reply's public copy can surface in
+  a later unrelated context refresh, so content visibility alone never counts
+  as delivery — a visible marker with no admitted reply wake scores LOST;
+- a child that answers its delegation in **prose** (headless, no tool call) is
+  a **lost** reply — the #905 validation cell, pinned `lost` because that IS
+  current main;
+- the referee-mediated relay leg round-trips end to end.
+
+**What the webchat composition surfaced that the Slack-shaped one hid** (all
+measured, recorded in the run artifacts, and — where deterministic — pinned):
+
+- **A needsReply report is not private in a conversation-origin parent.** Since
+  #926, a child's `sendMessage {sessionId}` report into a session whose origin
+  is a webchat conversation is ALSO posted live into that conversation view (and
+  fans §5.2 context copies to the whole roster). Night statements — "We kill
+  player-1 tonight." — are visible to every player. The Slack composition's
+  private den/DM rooms structurally hide this class. Pinned as
+  `privateReportsPostedPublicly > 0`.
+- **Sibling pairwise sessions share one transcript.** Every postless `toAgent`
+  child of one caller lives on the same synthetic `a2a:<caller>` channel +
+  thread, so a child's context refresh shows the referee's calls to its
+  SIBLINGS — including role assignments — and their replies. Role secrecy in
+  the webchat topology therefore depends on each child ignoring context rows
+  addressed to others; the scripted players enforce that discipline explicitly.
+- **A raw reply carries no sender label.** `messageAgent` deliveries render as
+  `From <agent>: …`, but a `{sessionId}` reply is injected verbatim — a referee
+  holding several concurrent `needsReply` calls cannot attribute a direct reply
+  wake from the text alone. Coalesced replies, ironically, ARE attributable
+  (they surface as `[<sender>] …` context rows).
+- **The turn-final regeneration fence replaces the prompt with the delta** and
+  silently discards the drafted answer; a policy that latches "I already acted"
+  on its own draft loses actions. The scripted players carry the same
+  observed-state discipline the Slack scripted host documents, plus an explicit
+  regeneration escape hatch.
+
+**Stage-1 real-model baseline — measured (2026-08-14).** The real-model
+night-collection variant (`evals/test/webchat-night-collection-real.test.ts`;
+scripted referee via the puppet adapter, real local Claude Code children over
+ACP — the §4.1 recipe: node-launched claude-agent-acp, model pinned sonnet,
+`permissionMode: default`, memory off) ran three trials. With PR #905
+deliberately parked pending exactly this coverage, the loss rate measured here
+**is the pre-#905 baseline** (the delegate-and-forward measurements ran
+2/5–3/5 lost):
+
+| Trial | Scoreable | needsReply replies owed (wolf-A / seer / doctor) | Lost    | Wolf-B relay reached  | Referee wakes |
+| ----- | --------- | ------------------------------------------------ | ------- | --------------------- | ------------- |
+| 1     | yes       | 3                                                | **3/3** | never (proposal lost) | 0             |
+| 2     | yes       | 3                                                | **3/3** | never                 | 0             |
+| 3     | yes       | 3                                                | **3/3** | never                 | 0             |
+
+Every loss has the same shape, and it is exactly the live night-1 failure: the
+child session runs, usually explores first (`ListAgents` in all nine cases,
+once `ToolSearch`, once a terminal probe), and then answers the delegation as
+its ORDINARY ASSISTANT RESPONSE — a correctly formatted single line
+("`DOCTOR-REPORT: …`", "`SEER-REPORT: …`", "`WOLF-PROPOSAL: …`") that a
+headless child delivers to nobody. Zero `sendMessage` calls, zero permission
+requests, zero failed turns; the referee's session was never woken again, so
+the mediated wolf-B relay never fired. 9/9 owed replies lost across the three
+trials — at or above the historical baseline; the marker-formatted instruction
+("answer with a single line starting …") plausibly biases the child further
+toward prose than the free-form delegations of the earlier measurements.
+
+**Stage-2 real run — measured (2026-08-14, seed 1, 5 players).** One full
+webchat Werewolf game, real local Claude Code players, scripted puppet
+referee. Result: an HONEST STALL at night 1 — `stalledAt: phase=night round=1
+awaiting protect→player-5` — which is a valid result and precisely the
+pre-#905 baseline the run exists to demonstrate:
+
+- **8 of 9 `needsReply` calls were answered correctly** via
+  `sendMessage {sessionId}`: all five role acks, the wolf lead's kill
+  proposal ("We kill player-4 tonight."), the mediated wolf-B relay
+  ("I agree."), and the seer's inspection. The referee-mediated night-kill
+  leg worked END TO END with real models.
+- **The one lost reply stalled the whole game.** The doctor answered its
+  night call in PROSE ("I protect player-5 tonight." — a correct answer,
+  delivered to nobody), the referee was never woken again, and night 1 could
+  not resolve. One headless prose reply is all it takes.
+- **The #800 tool collision appeared on the way.** The doctor's ROLE turn
+  first attempted the runtime's built-in `SendMessage` three times (delivered
+  nowhere), recovered via `ToolSearch` to `mcp__agentconnect__sendMessage`,
+  and delivered its ack — then still lost the night reply to prose in the
+  SAME session two turns later.
+- **Why stage 2 lost 1/9 where stage 1 lost 9/9:** the role-delivery leg ran
+  first, so each night call landed in a pairwise session whose context
+  already contained one successful report-back. Session precedent strongly
+  mitigates the cold-call prose loss — and the loss still concentrates
+  exactly where the live game stalled.
+- Leak posture: `canaryLeaks: 0`; `privateReportsPostedPublicly: 8` — every
+  answered "private" report, the night kill included, was visible in the
+  conversation view (the #926 surface above).
+
+A stalled run is reported, never failed: the runner records `stalledAt` and
+the unanswered `needsReply` rows (`replyLoss`), and the artifacts carry the
+full event stream and referee prompts.
+
 ## 4. Reproducing every result
 
 Node 24 (`.nvmrc`) and pnpm 11. No model credentials required.
@@ -209,7 +345,7 @@ pnpm install
 pnpm build # protocol must be built before typecheck
 
 # the whole arena gate
-pnpm eval:collab:contracts # 15 files, 115 tests
+pnpm eval:collab:contracts # 17 files, 119 tests
 
 # the routing acceptance cases alone
 pnpm eval:collab:routing # routing-acceptance + connection-surface
@@ -218,6 +354,8 @@ pnpm eval:collab:routing # routing-acceptance + connection-surface
 npx vitest run evals/test/counting.test.ts
 npx vitest run evals/test/quota-counting.test.ts
 npx vitest run evals/test/werewolf.test.ts
+npx vitest run evals/test/webchat-night-collection.test.ts
+npx vitest run evals/test/webchat-werewolf.test.ts
 npx vitest run evals/test/cross-room-counting.test.ts
 npx vitest run evals/test/game-runner.test.ts
 npx vitest run evals/test/routing-acceptance.test.ts
@@ -237,6 +375,8 @@ Full gate, measured on this branch:
 | `evals/test/routing-acceptance.test.ts`                | 8       |
 | `evals/test/game-runner.test.ts`                       | 5       |
 | `evals/test/werewolf.test.ts`                          | 18      |
+| `evals/test/webchat-night-collection.test.ts`          | 2       |
+| `evals/test/webchat-werewolf.test.ts`                  | 2       |
 | `evals/test/quota-counting.test.ts`                    | 8       |
 | `evals/test/cross-room-counting.test.ts`               | 6       |
 | `evals/test/counting.test.ts`                          | 11      |
@@ -249,7 +389,7 @@ Full gate, measured on this branch:
 | `evals/test/virtual-connections.test.ts`               | 4       |
 | `packages/daemon/test/evaluation-game-ingress.test.ts` | 5       |
 | `packages/daemon/test/evaluation-game-tools.test.ts`   | 3       |
-| **Total**                                              | **115** |
+| **Total**                                              | **119** |
 
 **0 expected-fail.** Every pin is an ordinary assertion.
 
