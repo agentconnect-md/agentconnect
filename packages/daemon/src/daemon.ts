@@ -2981,7 +2981,16 @@ export class Daemon {
     )
     this.agentsDir = cfg.agentsDir!
     this.removalObligationsDir = agentRemovalObligationsDir(root)
-    this.removedAgentTombstones = agentRemovalTombstones(this.agentsDir, this.removalObligationsDir)
+    // Opened here rather than further down: the removal obligations below are the first
+    // durable read of the boot, and in cloud mode the store is the only place they live.
+    this.store = this.dataPlane?.store ?? new LocalStore(statePath(root))
+    // Both filesystem mirrors share the state root, which is ephemeral for a cloud daemon.
+    // The store outlives it, and `agent/remove` is a fire-and-forget EVT the CP never
+    // retries, so the store row is what keeps an interrupted removal reissuable.
+    this.removedAgentTombstones = new Set([
+      ...agentRemovalTombstones(this.agentsDir, this.removalObligationsDir),
+      ...this.store.agentRemovalObligations()
+    ])
     for (const agentId of this.removedAgentTombstones) {
       this.drainingAgents.add(agentId)
       this.cpDroppedAgents.add(agentId)
@@ -3099,7 +3108,6 @@ export class Daemon {
       onDefinitionChange: (connectionId) => this.onMemoryConnectionDefinitionChange(connectionId)
     })
 
-    this.store = this.dataPlane?.store ?? new LocalStore(statePath(root))
     this.store.setTranscriptMutationListener((mutation) => this.scheduleSessionActivity(mutation))
     this.memoryOutbox = new MemoryCaptureOutbox(this.store, this.memoryConnections, {
       log: { warn: (message) => this.log.warn(message) }
@@ -19470,20 +19478,35 @@ export class Daemon {
     // already-queued re-add observes this newer removal and the queued cleanup
     // below installs a typed failure latch after stopping live authority.
     this.pendingAgentRemovals.set(agentId, (this.pendingAgentRemovals.get(agentId) ?? 0) + 1)
-    // The filesystem marker is the crash boundary: once this method returns,
-    // restart cannot rediscover and serve an old root even if asynchronous
-    // quiesce/removal never reaches its disk-delete step.
+    // The durable marker is the crash boundary: once this method returns, restart cannot
+    // rediscover and serve an old root, nor forget that the cluster still owes this agent's
+    // sandbox teardown. The store mirror leads because it is the only one a cloud daemon
+    // keeps across a pod replacement; only a total failure leaves the removal unfenced.
     let markerError: Error | undefined
+    const degraded: Error[] = []
+    let published = false
+    try {
+      this.store.recordAgentRemovalObligation(agentId, this.clock.now())
+      published = true
+    } catch (error) {
+      degraded.push(error instanceof Error ? error : new Error('agent removal obligation store write failed'))
+    }
     try {
       const marker = markAgentRemoval(this.agentsDir, agentId, this.removalObligationsDir)
+      published = true
+      degraded.push(...marker.degraded)
+    } catch (error) {
+      degraded.push(error instanceof Error ? error : new Error('agent removal tombstone publication failed'))
+    }
+    if (published) {
       this.removedAgentTombstones.add(agentId)
-      if (marker.degraded.length > 0) {
+      if (degraded.length > 0) {
         this.log.warn(
-          `cp: agent "${agentId}" removal marker is running on one durable mirror; retry will repair the other (${marker.degraded.map(formatErr).join('; ')})`
+          `cp: agent "${agentId}" removal marker is running on a reduced set of durable mirrors; retry will repair the rest (${degraded.map(formatErr).join('; ')})`
         )
       }
-    } catch (error) {
-      markerError = error instanceof Error ? error : new Error('agent removal tombstone publication failed')
+    } else {
+      markerError = new AggregateError(degraded, 'agent removal marker publication failed')
     }
     let released = false
     const release = () => {
@@ -19506,9 +19529,17 @@ export class Daemon {
    * tombstone and let a later CP retry repair it without failing the removal. */
   private clearRemovalAfterDestruction(agentId: string): void {
     const cleared = clearAgentRemoval(this.agentsDir, agentId, this.removalObligationsDir)
-    if (cleared.degraded.length > 0) {
+    const degraded = [...cleared.degraded]
+    // Best-effort like the mirrors above: the destruction already happened, so a failed
+    // discharge costs only an idempotent reissue the next time this daemon registers.
+    try {
+      this.store.clearAgentRemovalObligation(agentId)
+    } catch (error) {
+      degraded.push(error instanceof Error ? error : new Error('agent removal obligation store clear failed'))
+    }
+    if (degraded.length > 0) {
       this.log.warn(
-        `cp: agent "${agentId}" was durably removed but a tombstone mirror could not clear; retry will repair it (${cleared.degraded.map(formatErr).join('; ')})`
+        `cp: agent "${agentId}" was durably removed but a tombstone mirror could not clear; retry will repair it (${degraded.map(formatErr).join('; ')})`
       )
       return
     }
@@ -19519,8 +19550,18 @@ export class Daemon {
    * the gate can reopen, otherwise memory and restart authority would diverge. */
   private clearRemovalForReadd(agentId: string): void {
     const cleared = clearAgentRemovalForReadd(this.agentsDir, agentId, this.removalObligationsDir)
-    if (cleared.degraded.length > 0) {
-      throw new AggregateError(cleared.degraded, `cannot clear agent "${agentId}" removal tombstone for re-add`)
+    const degraded = [...cleared.degraded]
+    // The store row is the anchor: cleared last so a failure here leaves the gate closed
+    // in memory AND across restart, rather than reopening one of the two authorities.
+    if (degraded.length === 0) {
+      try {
+        this.store.clearAgentRemovalObligation(agentId)
+      } catch (error) {
+        degraded.push(error instanceof Error ? error : new Error('agent removal obligation store clear failed'))
+      }
+    }
+    if (degraded.length > 0) {
+      throw new AggregateError(degraded, `cannot clear agent "${agentId}" removal tombstone for re-add`)
     }
     this.removedAgentTombstones.delete(agentId)
   }

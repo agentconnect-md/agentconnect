@@ -755,6 +755,15 @@ export class LocalStore {
         integrationId TEXT NOT NULL, channelId TEXT NOT NULL, retractedAt INTEGER NOT NULL,
         PRIMARY KEY (integrationId, channelId)
       );
+      -- Agents whose CP-ordered removal was admitted but not proven complete. The store
+      -- mirror of the filesystem removal markers, and the ONLY one a cloud daemon keeps:
+      -- its state root is ephemeral, while agent/remove is a fire-and-forget EVT the CP
+      -- never retries and never reaps. Losing the obligation strands the agent's sandbox
+      -- claim and workspace volume in the cluster forever, because the daemon reporting
+      -- the replica at register is the sole trigger for the CP to reissue the removal.
+      CREATE TABLE IF NOT EXISTS agent_removal_obligation (
+        agentId TEXT PRIMARY KEY, createdAt INTEGER NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS permission_requests (
         id TEXT PRIMARY KEY,
         agentId TEXT NOT NULL,
@@ -1221,6 +1230,27 @@ export class LocalStore {
     this.db
       .prepare('DELETE FROM retracted_conversations WHERE integrationId = ? AND channelId = ?')
       .run(integrationId, channelId)
+  }
+
+  /** Admit a removal obligation before the destruction it fences. Idempotent: a
+   *  retried removal keeps the first admission time rather than sliding it forward. */
+  recordAgentRemovalObligation(agentId: string, now: number): void {
+    this.db
+      .prepare('INSERT OR IGNORE INTO agent_removal_obligation (agentId, createdAt) VALUES (?, ?)')
+      .run(agentId, now)
+  }
+
+  /** Agents whose removal this store still owes. Unioned into the filesystem markers at
+   *  boot, so a cloud daemon that lost its state root still reports the pending drop. */
+  agentRemovalObligations(): string[] {
+    const rows = this.db.prepare('SELECT agentId FROM agent_removal_obligation').all() as { agentId: string }[]
+    return rows.map((row) => row.agentId)
+  }
+
+  /** Discharge the obligation once the removal is durably complete, or once an
+   *  authoritative re-add has replaced the authority the obligation was fencing. */
+  clearAgentRemovalObligation(agentId: string): void {
+    this.db.prepare('DELETE FROM agent_removal_obligation WHERE agentId = ?').run(agentId)
   }
 
   /** Distinct conversation targets this agent has been triggered in through one
