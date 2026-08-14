@@ -10,11 +10,12 @@ runtimeClass, admission policy, egress control, and a managed egress proxy so a 
 key never enters the sandbox — is a separate, later plan. Until it lands, the pod and the
 shared Sandbox namespace are the only isolation boundaries, and a provider key is present inside
 the sandbox, so this shape suits internal dogfooding and self-hosted
-bring-your-own-key. As an interim step the runtime image accepts deployment-owned provider
-config from the pod environment — `AC_CLAUDE_BASE_URL`/`AC_CLAUDE_API_KEY` and
-`AC_CODEX_BASE_URL`/`AC_CODEX_API_KEY`, which the shim maps onto the matching runtime's
-`ANTHROPIC_*`/`OPENAI_*` variables at spawn (fill-in only; a daemon-sent value wins) — so
-the key can live in the SandboxTemplate instead of traveling over the shim channel.
+bring-your-own-key. A cloud daemon accepts the runtime-neutral `MODEL_BASE_URL` and
+`MODEL_TOKEN` pair and translates it for Claude, Codex, or OpenCode at spawn; a configured
+key server replaces the static token with a session-scoped pair. The runtime image still
+accepts the legacy deployment-owned `AC_CLAUDE_BASE_URL`/`AC_CLAUDE_API_KEY` and
+`AC_CODEX_BASE_URL`/`AC_CODEX_API_KEY` pod variables as fill-ins, but a daemon-sent value
+wins. See [key-server.md](key-server.md) for precedence and lifecycle.
 
 ## 1. Why a seam at all
 

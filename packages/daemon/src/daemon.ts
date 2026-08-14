@@ -293,6 +293,15 @@ import { makeModelEnumerator } from './runtimes/model-enumerator.js'
 import { capsFromConfigOptions, augmentEffortOptions } from './runtimes/config-caps.js'
 import { isClaudeRuntimeDef } from './acp/claude-runtime.js'
 import { runtimeHomePath } from './runtimes/runtime-home.js'
+import {
+  applyModelCredential,
+  applyStaticModelConfig,
+  configuredModelCredential,
+  modelProviderTarget,
+  type ModelCredential,
+  type ModelProviderTarget
+} from './runtimes/model-provider-config.js'
+import { DEFAULT_MODEL_KEY_TTL_SECONDS, KeyServerClient, type KeyGrant } from './key-server/client.js'
 import { CuratedRuntimeAdmission } from './runtimes/curated-admission.js'
 import { composeRuntimeLaunch, runtimeSandboxReadRoots } from './runtimes/launch-policy.js'
 import { resolveTrustedExecutable, trustedRuntimeReadRoots } from './runtimes/read-roots.js'
@@ -1457,6 +1466,15 @@ interface SelectedTurnHost {
   waitForCleanup: () => Promise<void>
 }
 
+interface ModelSessionHost {
+  agentId: string
+  sessionKey: string
+  target: ModelProviderTarget
+  grant: KeyGrant
+  host?: AcpHost
+  stopping?: Promise<void>
+}
+
 type TurnLifecycleCleanupOutcome = { blocked: false } | { blocked: true; error: unknown }
 
 interface QueueEntry {
@@ -1971,6 +1989,7 @@ export class Daemon {
   private agents = new Map<string, LoadedAgent>()
   private fileAgents = new Map<string, LoadedAgent>()
   private hosts = new Map<string, AcpHost>()
+  private readonly modelSessionHosts = new Map<string, ModelSessionHost>()
   // agentId → when its current host was (re)built (clock ms). The idle reaper reads
   // this so a freshly-started host that hasn't recorded session activity yet is NOT
   // treated as idle-since-epoch (`agentLastActivityTs` is unset until the first turn
@@ -2211,6 +2230,9 @@ export class Daemon {
   // `--k8s`: this daemon supervises runtimes in sandbox pods instead of local
   // subprocesses, so every "daemon and runtime share one machine" behavior is off.
   private readonly k8s: boolean
+  private readonly keyServer?: KeyServerClient
+  private readonly modelKeyNow: () => number
+  private readonly staticModelCredential?: ModelCredential
   /** Reads this pod's projected CP-audience token; undefined unless the daemon runs
    *  in-cluster AND the volume is actually mounted (decided once, at boot). */
   private readonly clusterIdentityToken?: () => string | undefined
@@ -2458,6 +2480,12 @@ export class Daemon {
        *  probing, host executable discovery (the image declares its runtimes instead),
        *  the SRT mechanism, and the self-installing upgrade path. */
       k8s?: boolean
+      /** Cloud-only service for session-scoped provider credentials. */
+      keyServer?: string
+      /** Bearer-token file re-read for every key-server request. */
+      keyServerTokenPath?: string
+      /** Test seam for key issuance without network access. */
+      keyServerClient?: KeyServerClient
       /** Test seam for the daemon-private memory-plugin transport. */
       memoryPluginConnect?: MemoryPluginConnector
       /** Optional, observer-only evaluation surface and add-on treatment. */
@@ -2473,6 +2501,21 @@ export class Daemon {
     this.sandboxMechanism =
       opts.sandboxMechanism === null || this.k8s ? undefined : (opts.sandboxMechanism ?? detectSandbox())
     this.clock = opts.clock ?? systemClock
+    this.modelKeyNow = opts.clock ? () => this.clock.now() : () => performance.timeOrigin + performance.now()
+    this.staticModelCredential = this.k8s ? configuredModelCredential(process.env) : undefined
+    const keyServerAddress = opts.keyServer?.trim() || process.env.KEY_SERVER?.trim()
+    const keyServerTokenPath = opts.keyServerTokenPath?.trim() || process.env.KEY_SERVER_TOKEN_PATH?.trim()
+    if ((keyServerAddress || opts.keyServerClient) && !this.k8s) {
+      throw new Error('key-server is supported only by cloud daemons running with --k8s')
+    }
+    if (keyServerTokenPath && !keyServerAddress && !opts.keyServerClient) {
+      throw new Error('key-server-token-path requires key-server')
+    }
+    this.keyServer =
+      opts.keyServerClient ??
+      (keyServerAddress
+        ? new KeyServerClient(keyServerAddress, { tokenPath: keyServerTokenPath, now: this.modelKeyNow })
+        : undefined)
     if (opts.evaluation?.capabilityProfile && !opts.evaluation.observer) {
       throw new Error('evaluation capability profile requires an evaluation observer')
     }
@@ -3880,6 +3923,7 @@ export class Daemon {
       // Use the one generation-safe teardown path: it evicts the host synchronously,
       // publishes hostStopping, and fences every older startup/retry generation.
       await this.stopHost(id)
+      await this.releaseModelSessionHostsForAgent(id)
       await this.revokeRemoteWebchatGrantsForAgent(id, 'agent_detached')
       // Preserve lifecycle/move gates that predated this reconcile. A plain file/CP
       // removal needs no permanent gate once the host is proven stopped (the agent is
@@ -3953,6 +3997,13 @@ export class Daemon {
           } catch (err) {
             this.log.error(
               `reconcile: host teardown failed for "${a.id}" — releasing admission gate anyway: ${formatErr(err)}`
+            )
+          }
+          try {
+            await this.releaseModelSessionHostsForAgent(a.id)
+          } catch (err) {
+            this.log.error(
+              `reconcile: model-session teardown failed for "${a.id}" — releasing admission gate anyway: ${formatErr(err)}`
             )
           }
           await this.revokeRemoteWebchatGrantsForAgent(a.id, 'agent_detached')
@@ -5209,6 +5260,7 @@ export class Daemon {
     }
     await this.stopSelectedTurnHosts(selected)
     await this.stopHost(agentId)
+    await this.releaseModelSessionHostsForAgent(agentId)
     // A dispatch admitted before the drain may still be waiting for a workspace
     // workspace-mutation fence. Release/join that fence first, then collect the dispatch
     // it registers; reversing the order leaves a late active-dispatch join gap.
@@ -5259,6 +5311,7 @@ export class Daemon {
       cwd: string
       warnOnSandboxDowngrade?: boolean
       excludeAgentToolCredentials?: boolean
+      modelCredential?: { target: ModelProviderTarget; credential: ModelCredential }
     }
   ): { host: AcpHost; configFileState: { childEnv?: Record<string, string | undefined>; materialized: boolean } } {
     const agentId = agent.id
@@ -5385,6 +5438,14 @@ export class Daemon {
     if (shimDirs.size > 0) {
       env.PATH = `${[...shimDirs].join(':')}:${env.PATH ?? process.env.PATH ?? ''}`
     }
+    const launchEnv = { ...runtimeEnv, ...env }
+    const target = opts.modelCredential?.target ?? modelProviderTarget(agent, runtime)
+    if (this.k8s && target) {
+      if (opts.modelCredential) applyModelCredential(target, launchEnv, opts.modelCredential.credential)
+      else if (!this.keyServer && this.staticModelCredential) {
+        applyStaticModelConfig(target, launchEnv, this.staticModelCredential)
+      }
+    }
     // OS sandbox decision (issue #312). security.requireSandbox forces every agent
     // on; otherwise the per-agent preference is effective only when this host has a
     // mechanism. The writable set is derived from the TRUSTED agent dir
@@ -5406,11 +5467,11 @@ export class Daemon {
         daemonRoot: this.root,
         agentsRoot: cfg.agentsDir,
         runtimeReadRoots: runInSandbox
-          ? this.sandboxRuntimeReadRoots(agent, runtime, { ...runtimeEnv, ...env }, githubAppCredentials)
+          ? this.sandboxRuntimeReadRoots(agent, runtime, launchEnv, githubAppCredentials)
           : undefined,
         trustedWorkspaceWriteRoots:
           runInSandbox && agent.workspace.mode === 'git-repo' ? [sessionWorktreeRoot(agent)] : undefined,
-        explicitEnv: { ...runtimeEnv, ...env },
+        explicitEnv: launchEnv,
         sandboxMechanism: this.sandboxMechanism,
         mcpSocketPath: mcpSocketPath(this.root),
         allowModelToolUnixSockets: githubAppCredentials,
@@ -5531,6 +5592,166 @@ export class Daemon {
       stop: (deadlineMs) => (cleanup ??= this.stopHost(agentId, deadlineMs)),
       waitForCleanup: () => cleanup ?? Promise.resolve()
     }
+  }
+
+  private selectedModelTurnHost(entry: ModelSessionHost, host: AcpHost): SelectedTurnHost {
+    let cleanup: Promise<void> | undefined
+    return {
+      host,
+      stop: (deadlineMs) => (cleanup ??= this.stopModelSessionRuntime(entry, host, deadlineMs)),
+      waitForCleanup: () => cleanup ?? Promise.resolve()
+    }
+  }
+
+  private async ensureModelSessionHost(agent: LoadedAgent, sessionKey: string): Promise<SelectedTurnHost> {
+    const keyServer = this.keyServer
+    if (!keyServer) throw new Error('key-server is not configured')
+    const runtime = this.runtimes[agent.runtime]
+    if (!runtime) throw new Error(`runtime "${agent.runtime}" is unavailable`)
+    const target = modelProviderTarget(agent, runtime)
+    if (!target) throw new Error(`runtime "${agent.runtime}" does not support MODEL_TOKEN translation`)
+    const now = this.modelKeyNow()
+    let entry = this.modelSessionHosts.get(sessionKey)
+    if (entry?.stopping) await entry.stopping
+    if (entry && JSON.stringify(entry.target) !== JSON.stringify(target)) {
+      await this.releaseModelSessionHost(sessionKey)
+      entry = undefined
+    }
+
+    const refreshDue = entry?.grant.refreshAtMs !== undefined && now >= entry.grant.refreshAtMs
+    const expired = entry?.grant.expiresAtMs !== undefined && now >= entry.grant.expiresAtMs
+    if (!entry || refreshDue || expired) {
+      let grant: KeyGrant
+      try {
+        grant = await this.issueModelKey(agent, target, sessionKey)
+      } catch (error) {
+        if (entry?.host && !expired) {
+          this.log.warn(`key-server refresh deferred for session ${sessionKey} (${formatErr(error)})`)
+          return this.selectedModelTurnHost(entry, entry.host)
+        }
+        throw error
+      }
+      if (entry) {
+        await this.stopModelSessionRuntime(entry, entry.host)
+        const staleKeyId = entry.grant.keyId
+        void keyServer
+          .revoke(staleKeyId)
+          .catch((error) => this.log.warn(`key-server revoke failed for ${staleKeyId} (${formatErr(error)})`))
+      }
+      entry = { agentId: agent.id, sessionKey, target, grant }
+      this.modelSessionHosts.set(sessionKey, entry)
+    }
+
+    if (!entry.host) entry.host = await this.startModelSessionRuntime(agent, entry)
+    return this.selectedModelTurnHost(entry, entry.host)
+  }
+
+  private async issueModelKey(
+    agent: Pick<LoadedAgent, 'id'>,
+    target: ModelProviderTarget,
+    sessionKey: string
+  ): Promise<KeyGrant> {
+    const orgId = this.cpAgents?.orgForAgent(agent.id) ?? this.cpCollab.orgForAgent(agent.id)
+    if (!orgId) throw new Error(`cannot resolve organization for agent ${agent.id}`)
+    if (!this.keyServer) throw new Error('key-server is not configured')
+    return await this.keyServer.issue({
+      orgId,
+      agentId: agent.id,
+      sessionId: createHash('sha256').update(sessionKey).digest('hex'),
+      provider: target.provider,
+      ttlSeconds: DEFAULT_MODEL_KEY_TTL_SECONDS
+    })
+  }
+
+  private async startModelSessionRuntime(agent: LoadedAgent, entry: ModelSessionHost): Promise<AcpHost> {
+    const attempts = Math.max(1, this.cfg.limits.agentStartAttempts)
+    let lastError: unknown
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      const cwd = await this.prepareAgentWorkspace(agent, undefined, undefined)
+      const { host, configFileState } = this.buildAcpHost(agent, this.cfg, {
+        runInSandbox: this.agentRunsInSandbox(agent),
+        cwd,
+        warnOnSandboxDowngrade: true,
+        modelCredential: {
+          target: entry.target,
+          credential: {
+            key: entry.grant.key,
+            ...((entry.grant.baseUrl ?? this.staticModelCredential?.baseUrl)
+              ? { baseUrl: entry.grant.baseUrl ?? this.staticModelCredential?.baseUrl }
+              : {})
+          }
+        }
+      })
+      if (configFileState.childEnv) {
+        this.hostConfigFiles.set(agent.id, { agentDir: agent.dir, ...configFileState })
+      }
+      try {
+        await host.start()
+        return host
+      } catch (error) {
+        lastError = error
+        await host.stop().catch(() => {})
+        if (attempt < attempts) await this.sleep(this.cfg.limits.agentStartBackoffMs)
+      }
+    }
+    throw lastError
+  }
+
+  private async stopModelSessionRuntime(
+    entry: ModelSessionHost,
+    expectedHost?: AcpHost,
+    deadlineMs?: number
+  ): Promise<void> {
+    if (entry.stopping) return await entry.stopping
+    const host = entry.host
+    if (!host || (expectedHost && host !== expectedHost)) return
+    entry.host = undefined
+    const stopping = host.stop(deadlineMs).finally(() => {
+      if (entry.stopping === stopping) entry.stopping = undefined
+      const sessionId = this.store.getSession(entry.sessionKey)?.acpSessionId
+      if (sessionId) this.sdkLease.delete(sdkLeaseKey(entry.agentId, sessionId))
+    })
+    entry.stopping = stopping
+    await stopping
+  }
+
+  private async releaseModelSessionHost(sessionKey: string, deadlineMs?: number): Promise<void> {
+    const entry = this.modelSessionHosts.get(sessionKey)
+    if (!entry) return
+    this.modelSessionHosts.delete(sessionKey)
+    let stopError: unknown
+    try {
+      await this.stopModelSessionRuntime(entry, entry.host, deadlineMs)
+    } catch (error) {
+      stopError = error
+    }
+    await this.keyServer
+      ?.revoke(entry.grant.keyId)
+      .catch((error) => this.log.warn(`key-server revoke failed for ${entry.grant.keyId} (${formatErr(error)})`))
+    if (
+      !this.hosts.has(entry.agentId) &&
+      ![...this.modelSessionHosts.values()].some((candidate) => candidate.agentId === entry.agentId)
+    ) {
+      const agentDir = this.hostConfigFiles.get(entry.agentId)?.agentDir
+      this.hostConfigFiles.delete(entry.agentId)
+      if (agentDir) {
+        const cleanupError = cleanupConfigFiles(agentDir)
+        if (cleanupError) this.log.warn(`config-files: cleanup for agent "${entry.agentId}" failed — ${cleanupError}`)
+      }
+    }
+    if (stopError) throw stopError
+  }
+
+  private async releaseModelSessionHostsForAgent(agentId: string, deadlineMs?: number): Promise<void> {
+    const keys = [...this.modelSessionHosts.values()]
+      .filter((entry) => entry.agentId === agentId)
+      .map((entry) => entry.sessionKey)
+    await Promise.all(keys.map((key) => this.releaseModelSessionHost(key, deadlineMs)))
+  }
+
+  private hostForStoredSession(agentId: string, acpSessionId: string): AcpHost | undefined {
+    const record = this.store.getSessionByAcpIdForAgent(agentId, acpSessionId)
+    return (record ? this.modelSessionHosts.get(record.key)?.host : undefined) ?? this.hosts.get(agentId)
   }
 
   private fenceLifecycleCleanupFailure(
@@ -5686,67 +5907,81 @@ export class Daemon {
   private async runMemoryExtraction(agentId: string, prompt: string): Promise<string> {
     const agent = this.agents.get(agentId)
     if (!agent) throw new Error(`unknown agent ${agentId}`)
-    const host = await this.ensureHostAsync(agentId)
-    if (this.memoryExtractionUnavailable.has(host)) {
-      throw new Error('memory extraction is unavailable for this runtime host')
-    }
-    // Two independent trust dimensions, gated like a memory dream (#653):
-    // - HARD GATE (fail closed): the distilled turn is attacker-controlled, so a
-    //   read-only/plan permission mode is required or extraction never runs.
-    // - OBSERVED (not gated): when the runtime carries the system prompt via
-    //   `_meta.systemPrompt` the policy rides it; otherwise it is prepended inline
-    //   to the user prompt. Runtimes without an ACP system-prompt channel (Codex /
-    //   OpenCode) therefore distill too, instead of silently failing (#653).
-    //
-    // RESIDUAL (owner-accepted P2, #658): unlike a dream, distillation writes to
-    // shared live memory UNREVIEWED and runs on the WARM host (full tool
-    // credentials). On the inline path a prompt injection could write poisoned
-    // facts or read+re-encode a warm-host credential (read-only blocks writes, not
-    // reads). #658 will move the untrusted-channel path onto a dedicated
-    // excludeAgentToolCredentials host; the trusted-channel path is unchanged.
-    const trusted = host.usesMetaSystemPrompt()
-    let sessionId = this.memoryExtractionSessions.get(agentId)
-    if (!sessionId || !host.hasSession(sessionId)) {
-      const modes = host.permissionModeOptions()?.modes ?? []
-      const readOnlyMode = readOnlyExtractionMode(modes)
-      if (!readOnlyMode) {
-        this.memoryExtractionUnavailable.add(host)
-        throw new Error('runtime lacks a verified read-only memory-extraction mode')
-      }
-      let cwd = this.memoryExtractionDirs.get(agentId)
-      if (!cwd) {
-        cwd = await mkdtemp(join(tmpdir(), 'agentconnect-memory-distill-'))
-        this.memoryExtractionDirs.set(agentId, cwd)
-      }
-      sessionId = trusted
-        ? await host.newSession(cwd, [], undefined, MEMORY_DISTILLATION_SYSTEM_PROMPT)
-        : await host.newSession(cwd, [])
-      if (!(await host.setSessionPermissionMode(sessionId, readOnlyMode))) {
-        host.discardSession(sessionId)
-        this.memoryExtractionUnavailable.add(host)
-        throw new Error('runtime lacks a verified read-only memory-extraction mode')
-      }
-      this.memoryExtractionSessions.set(agentId, sessionId)
-    }
-    const key = pendingTurnKey(agentId, sessionId)
-    const chunks: string[] = []
-    this.memoryExtractionQuarantines.delete(key)
-    this.memoryExtractionCollectors.set(key, { chunks })
+    const modelSessionKey = this.keyServer ? `internal:memory:${agentId}` : undefined
+    const host = modelSessionKey
+      ? (await this.ensureModelSessionHost(agent, modelSessionKey)).host
+      : await this.ensureHostAsync(agentId)
     try {
-      // Extraction runs read-only and shouldn't touch the config files, but keep
-      // the invariant uniform: every host.prompt is preceded by re-materialization.
-      this.rematerializeConfigFiles(agentId)
-      // Trusted runtimes received the policy as the session system prompt; for the
-      // rest, prepend it inline so the untrusted-data policy still leads the turn.
-      const text = trusted ? prompt : `${MEMORY_DISTILLATION_SYSTEM_PROMPT}\n\n${prompt}`
-      await host.prompt(sessionId, [{ type: 'text', text }])
-      return chunks.join('')
-    } catch (err) {
-      if (this.memoryExtractionSessions.get(agentId) === sessionId) this.memoryExtractionSessions.delete(agentId)
-      throw err
+      if (this.memoryExtractionUnavailable.has(host)) {
+        throw new Error('memory extraction is unavailable for this runtime host')
+      }
+      // Two independent trust dimensions, gated like a memory dream (#653):
+      // - HARD GATE (fail closed): the distilled turn is attacker-controlled, so a
+      //   read-only/plan permission mode is required or extraction never runs.
+      // - OBSERVED (not gated): when the runtime carries the system prompt via
+      //   `_meta.systemPrompt` the policy rides it; otherwise it is prepended inline
+      //   to the user prompt. Runtimes without an ACP system-prompt channel (Codex /
+      //   OpenCode) therefore distill too, instead of silently failing (#653).
+      //
+      // RESIDUAL (owner-accepted P2, #658): unlike a dream, distillation writes to
+      // shared live memory UNREVIEWED and runs on the WARM host (full tool
+      // credentials). On the inline path a prompt injection could write poisoned
+      // facts or read+re-encode a warm-host credential (read-only blocks writes, not
+      // reads). #658 will move the untrusted-channel path onto a dedicated
+      // excludeAgentToolCredentials host; the trusted-channel path is unchanged.
+      const trusted = host.usesMetaSystemPrompt()
+      let sessionId = this.memoryExtractionSessions.get(agentId)
+      if (!sessionId || !host.hasSession(sessionId)) {
+        const modes = host.permissionModeOptions()?.modes ?? []
+        const readOnlyMode = readOnlyExtractionMode(modes)
+        if (!readOnlyMode) {
+          this.memoryExtractionUnavailable.add(host)
+          throw new Error('runtime lacks a verified read-only memory-extraction mode')
+        }
+        let cwd = this.memoryExtractionDirs.get(agentId)
+        if (!cwd) {
+          cwd = await mkdtemp(join(tmpdir(), 'agentconnect-memory-distill-'))
+          this.memoryExtractionDirs.set(agentId, cwd)
+        }
+        sessionId = trusted
+          ? await host.newSession(cwd, [], undefined, MEMORY_DISTILLATION_SYSTEM_PROMPT)
+          : await host.newSession(cwd, [])
+        if (!(await host.setSessionPermissionMode(sessionId, readOnlyMode))) {
+          host.discardSession(sessionId)
+          this.memoryExtractionUnavailable.add(host)
+          throw new Error('runtime lacks a verified read-only memory-extraction mode')
+        }
+        this.memoryExtractionSessions.set(agentId, sessionId)
+      }
+      const key = pendingTurnKey(agentId, sessionId)
+      const chunks: string[] = []
+      this.memoryExtractionQuarantines.delete(key)
+      this.memoryExtractionCollectors.set(key, { chunks })
+      try {
+        // Extraction runs read-only and shouldn't touch the config files, but keep
+        // the invariant uniform: every host.prompt is preceded by re-materialization.
+        this.rematerializeConfigFiles(agentId)
+        // Trusted runtimes received the policy as the session system prompt; for the
+        // rest, prepend it inline so the untrusted-data policy still leads the turn.
+        const text = trusted ? prompt : `${MEMORY_DISTILLATION_SYSTEM_PROMPT}\n\n${prompt}`
+        await host.prompt(sessionId, [{ type: 'text', text }])
+        return chunks.join('')
+      } catch (err) {
+        if (this.memoryExtractionSessions.get(agentId) === sessionId) this.memoryExtractionSessions.delete(agentId)
+        throw err
+      } finally {
+        this.memoryExtractionQuarantines.set(key, agentId)
+        this.memoryExtractionCollectors.delete(key)
+      }
     } finally {
-      this.memoryExtractionQuarantines.set(key, agentId)
-      this.memoryExtractionCollectors.delete(key)
+      if (modelSessionKey) {
+        const extractionSessionId = this.memoryExtractionSessions.get(agentId)
+        if (extractionSessionId) {
+          this.memoryExtractionQuarantines.delete(pendingTurnKey(agentId, extractionSessionId))
+        }
+        this.memoryExtractionSessions.delete(agentId)
+        await this.releaseModelSessionHost(modelSessionKey)
+      }
     }
   }
 
@@ -5784,67 +6019,81 @@ export class Daemon {
     prompt: string,
     signal: AbortSignal
   ): Promise<{ output: string; stopReason: string }> {
-    if (!this.agents.get(agentId)) throw new Error(`unknown agent ${agentId}`)
+    const agent = this.agents.get(agentId)
+    if (!agent) throw new Error(`unknown agent ${agentId}`)
     if (signal.aborted) throw new Error('commit-message pass canceled before dispatch')
-    const host = await this.ensureHostAsync(agentId)
-    // OBSERVED, not gated (memory-dreaming.md §2): the policy rides `_meta.systemPrompt` where the
-    // runtime has that channel and is prepended inline where it does not. The output contract lives
-    // in the prompt either way, so a runtime that drops the key still answers in the right shape.
-    const trusted = host.usesMetaSystemPrompt()
-    // HARD GATE, fail closed: a staged diff can carry injected text, and this pass must not be the
-    // thing that gives it a write. No verified non-mutating mode ⇒ no draft.
-    const readOnlyMode = readOnlyExtractionMode(host.permissionModeOptions()?.modes ?? [])
-    if (!readOnlyMode) throw new Error('runtime lacks a verified read-only/plan mode')
-    let cwd = this.commitMessageDirs.get(agentId)
-    if (!cwd) {
-      cwd = await mkdtemp(join(tmpdir(), 'agentconnect-commit-message-'))
-      this.commitMessageDirs.set(agentId, cwd)
-    }
-    const sessionId = trusted ? await host.newSession(cwd, [], undefined, systemPrompt) : await host.newSession(cwd, [])
-    const key = pendingTurnKey(agentId, sessionId)
+    const modelSessionKey = this.keyServer ? `internal:commit:${agentId}:${randomUUID()}` : undefined
+    const host = modelSessionKey
+      ? (await this.ensureModelSessionHost(agent, modelSessionKey)).host
+      : await this.ensureHostAsync(agentId)
     try {
-      if (!(await host.setSessionPermissionMode(sessionId, readOnlyMode))) {
-        throw new Error('runtime rejected the read-only/plan mode')
+      // OBSERVED, not gated (memory-dreaming.md §2): the policy rides `_meta.systemPrompt` where the
+      // runtime has that channel and is prepended inline where it does not. The output contract lives
+      // in the prompt either way, so a runtime that drops the key still answers in the right shape.
+      const trusted = host.usesMetaSystemPrompt()
+      // HARD GATE, fail closed: a staged diff can carry injected text, and this pass must not be the
+      // thing that gives it a write. No verified non-mutating mode ⇒ no draft.
+      const readOnlyMode = readOnlyExtractionMode(host.permissionModeOptions()?.modes ?? [])
+      if (!readOnlyMode) throw new Error('runtime lacks a verified read-only/plan mode')
+      let cwd = this.commitMessageDirs.get(agentId)
+      if (!cwd) {
+        cwd = await mkdtemp(join(tmpdir(), 'agentconnect-commit-message-'))
+        this.commitMessageDirs.set(agentId, cwd)
       }
-      if (signal.aborted) throw new Error('commit-message pass canceled before dispatch')
-      const onAbort = () => void host.cancel(sessionId).catch(() => {})
-      if (signal.aborted) onAbort()
-      else signal.addEventListener('abort', onAbort, { once: true })
-      const chunks: string[] = []
-      this.memoryExtractionQuarantines.delete(key)
-      this.memoryExtractionCollectors.set(key, { chunks })
+      const sessionId = trusted
+        ? await host.newSession(cwd, [], undefined, systemPrompt)
+        : await host.newSession(cwd, [])
+      const key = pendingTurnKey(agentId, sessionId)
       try {
-        // Keep the invariant every host.prompt in this file holds: config files exist for the turn.
-        this.rematerializeConfigFiles(agentId)
-        const text = trusted ? prompt : `${systemPrompt}\n\n${prompt}`
-        const result = await this.promptWithCancelBackstop(
-          host,
-          sessionId,
-          text,
-          signal,
-          (detached) => {
-            // Release the chunks but keep a key-only tombstone: a detached adapter can still emit.
-            this.memoryExtractionCollectors.delete(key)
-            this.retainCommitMessageTombstone(agentId, key)
-            void detached.catch(() => {})
-          },
-          'commit-message pass'
-        )
-        // Token counts only, never content: this pass owns no session row to bill, so the operator's
-        // only view of what a wand press cost is this line.
-        this.log.debug(
-          `commit-message: agent "${agentId}" answered (${result.stopReason}, ${result.usage?.totalTokens ?? 0} tokens)`
-        )
-        return { output: chunks.join(''), stopReason: String(result.stopReason) }
+        if (!(await host.setSessionPermissionMode(sessionId, readOnlyMode))) {
+          throw new Error('runtime rejected the read-only/plan mode')
+        }
+        if (signal.aborted) throw new Error('commit-message pass canceled before dispatch')
+        const onAbort = () => void host.cancel(sessionId).catch(() => {})
+        if (signal.aborted) onAbort()
+        else signal.addEventListener('abort', onAbort, { once: true })
+        const chunks: string[] = []
+        this.memoryExtractionQuarantines.delete(key)
+        this.memoryExtractionCollectors.set(key, { chunks })
+        try {
+          // Keep the invariant every host.prompt in this file holds: config files exist for the turn.
+          this.rematerializeConfigFiles(agentId)
+          const text = trusted ? prompt : `${systemPrompt}\n\n${prompt}`
+          const result = await this.promptWithCancelBackstop(
+            host,
+            sessionId,
+            text,
+            signal,
+            (detached) => {
+              // Release the chunks but keep a key-only tombstone: a detached adapter can still emit.
+              this.memoryExtractionCollectors.delete(key)
+              this.retainCommitMessageTombstone(agentId, key)
+              void detached.catch(() => {})
+            },
+            'commit-message pass'
+          )
+          // Token counts only, never content: this pass owns no session row to bill, so the operator's
+          // only view of what a wand press cost is this line.
+          this.log.debug(
+            `commit-message: agent "${agentId}" answered (${result.stopReason}, ${result.usage?.totalTokens ?? 0} tokens)`
+          )
+          return { output: chunks.join(''), stopReason: String(result.stopReason) }
+        } finally {
+          signal.removeEventListener('abort', onAbort)
+          this.retainCommitMessageTombstone(agentId, key)
+          this.memoryExtractionCollectors.delete(key)
+        }
       } finally {
-        signal.removeEventListener('abort', onAbort)
-        this.retainCommitMessageTombstone(agentId, key)
-        this.memoryExtractionCollectors.delete(key)
+        host.discardSession(sessionId)
+        if (modelSessionKey) {
+          await this.releaseModelSessionHost(modelSessionKey)
+          this.memoryExtractionQuarantines.delete(key)
+          if (this.commitMessageTombstones.get(agentId) === key) this.commitMessageTombstones.delete(agentId)
+        }
       }
-    } finally {
-      // The warm host stays; only THIS session goes. Its quarantine tombstone is reclaimed by
-      // stopHost's per-agent sweep, which a warm-host session (unlike a dream's) always reaches.
-      host.discardSession(sessionId)
+    } catch (error) {
+      if (modelSessionKey) await this.releaseModelSessionHost(modelSessionKey)
+      throw error
     }
   }
 
@@ -5919,7 +6168,20 @@ export class Daemon {
     // one-off host — NOT the agent's warm host — sandboxed whenever the agent
     // runs sandboxed so the attacker-controlled transcript is confined from
     // provider credentials, and torn down the moment the extraction settles.
-    const host = await this.buildDreamHost(agent, context.inputDir)
+    let issued: { target: ModelProviderTarget; grant: KeyGrant } | undefined
+    if (this.keyServer) {
+      const runtime = this.runtimes[agent.runtime]
+      const target = runtime ? modelProviderTarget(agent, runtime) : undefined
+      if (!target) throw new Error(`runtime "${agent.runtime}" does not support MODEL_TOKEN translation`)
+      issued = { target, grant: await this.issueModelKey(agent, target, `internal:dream:${context.dreamId}`) }
+    }
+    let host: AcpHost
+    try {
+      host = await this.buildDreamHost(agent, context.inputDir, issued)
+    } catch (error) {
+      if (issued) await this.keyServer?.revoke(issued.grant.keyId).catch(() => {})
+      throw error
+    }
     const ref: { sessionId?: string } = {}
     try {
       return await this.runDreamExtractionOnHost(host, agent, systemPrompt, prompt, signal, context, ref)
@@ -5928,6 +6190,12 @@ export class Daemon {
       // attacker-influenced context never lingers (dreams are rare). Stopping the
       // child also kills a runtime that ignored `session/cancel`.
       await host.stop().catch(() => {})
+      if (issued) {
+        const issuedKeyId = issued.grant.keyId
+        await this.keyServer
+          ?.revoke(issuedKeyId)
+          .catch((error) => this.log.warn(`key-server revoke failed for ${issuedKeyId} (${formatErr(error)})`))
+      }
       // The confined child is gone, so no straggler ACP callback can arrive for
       // this dream's session. Reclaim the extraction quarantine tombstone now —
       // a dedicated dream host never reaches stopHost's per-agent
@@ -5954,14 +6222,31 @@ export class Daemon {
    * unsandboxed too; the residual credential exposure there is a tracked P2 (as
    * with the Codex provider-credential gap), not a gate on dreaming.
    */
-  private async buildDreamHost(agent: LoadedAgent, cwd: string): Promise<AcpHost> {
+  private async buildDreamHost(
+    agent: LoadedAgent,
+    cwd: string,
+    issued?: { target: ModelProviderTarget; grant: KeyGrant }
+  ): Promise<AcpHost> {
     const { host } = this.buildAcpHost(agent, this.cfg, {
       runInSandbox: this.agentRunsInSandbox(agent),
       cwd,
       // A dream needs only its materialized inputs, never the agent's tool
       // credentials — keep github-app/gh/`*_DATA` secrets out of the
       // attacker-controlled extraction (and off a host with no cleanup path).
-      excludeAgentToolCredentials: true
+      excludeAgentToolCredentials: true,
+      ...(issued
+        ? {
+            modelCredential: {
+              target: issued.target,
+              credential: {
+                key: issued.grant.key,
+                ...((issued.grant.baseUrl ?? this.staticModelCredential?.baseUrl)
+                  ? { baseUrl: issued.grant.baseUrl ?? this.staticModelCredential?.baseUrl }
+                  : {})
+              }
+            }
+          }
+        : {})
     })
     try {
       await host.start()
@@ -7759,7 +8044,7 @@ export class Daemon {
     this.store.setModelOverride(key, model)
     this.log.info(`session ${key} model override → "${model}"`)
     const acpSessionId = rec.acpSessionId
-    const host = this.hosts.get(rec.agentId)
+    const host = acpSessionId ? this.hostForStoredSession(rec.agentId, acpSessionId) : undefined
     if (!acpSessionId || !host?.hasSession(acpSessionId)) return true // no live session — applies next turn
     void host
       .setSessionModel(acpSessionId, model)
@@ -7795,7 +8080,7 @@ export class Daemon {
     this.store.setEffortOverride(key, effort)
     this.log.info(`session ${key} effort override → "${effort}"`)
     const acpSessionId = rec.acpSessionId
-    const host = this.hosts.get(rec.agentId)
+    const host = acpSessionId ? this.hostForStoredSession(rec.agentId, acpSessionId) : undefined
     if (!acpSessionId || !host?.hasSession(acpSessionId)) {
       this.refreshStatusBarForKey(key)
       return true
@@ -7833,7 +8118,7 @@ export class Daemon {
     this.store.setPermissionModeOverride(key, permissionPreset)
     this.log.info(`session ${key} permission preset override → "${permissionPreset}"`)
     const acpSessionId = rec.acpSessionId
-    const host = this.hosts.get(rec.agentId)
+    const host = acpSessionId ? this.hostForStoredSession(rec.agentId, acpSessionId) : undefined
     if (!acpSessionId || !host?.hasSession(acpSessionId)) {
       this.refreshStatusBarForKey(key)
       return true
@@ -7878,10 +8163,11 @@ export class Daemon {
    *  closes the window where a previously selected full-access mode could otherwise
    *  survive until the next message restores the Agent-level policy. */
   private restoreConfiguredRuntimeSettings(agent: LoadedAgent): void {
-    const host = this.hosts.get(agent.id)
-    if (!host) return
     for (const session of this.store.listSessions(agent.id)) {
-      if (!session.acpSessionId || host.hasSession?.(session.acpSessionId) !== true) continue
+      const host = session.acpSessionId
+        ? this.hostForStoredSession(agent.id, session.acpSessionId)
+        : this.hosts.get(agent.id)
+      if (!session.acpSessionId || host?.hasSession?.(session.acpSessionId) !== true) continue
       const sessionId = session.acpSessionId
       void this.applyConfiguredRuntimeSettings(agent, host, sessionId)
         .then(() => {
@@ -7902,7 +8188,7 @@ export class Daemon {
     this.store.setFastModeOverride(key, fastMode)
     this.log.info(`session ${key} fast-mode override → ${fastMode}`)
     const acpSessionId = rec.acpSessionId
-    const host = this.hosts.get(rec.agentId)
+    const host = acpSessionId ? this.hostForStoredSession(rec.agentId, acpSessionId) : undefined
     if (!acpSessionId || !host?.hasSession(acpSessionId)) {
       this.refreshStatusBarForKey(key)
       return true
@@ -14067,7 +14353,7 @@ export class Daemon {
         ? undefined
         : this.replyConnFor(agentId, integrationId)
     // Capture cold/warm BEFORE sessions.handle(), which boots the host via hostFor().
-    const wasRunning = this.hostStarts.has(agentId)
+    const wasRunning = this.hostStarts.has(agentId) || this.modelSessionHosts.get(key)?.host !== undefined
     const statusThread = msg.thread ?? msg.msgId
     const currentTranscriptChannel = () => transcriptChannelKey(msg.channel, msg.transportScope)
     // Daemon-side rendering only (not ACP); a fresh converger is built per turn, so a change
@@ -14132,6 +14418,7 @@ export class Daemon {
     let remoteMcpServer: import('@agentclientprotocol/sdk').McpServer | undefined
     try {
       const reviewWorkspace = await this.prepareGithubReviewWorkspace(entry, key, agent)
+      if (this.keyServer) entry.selectedHost = await this.ensureModelSessionHost(agent, key)
       // A prior provider post-turn operation is serialized. Managed needs this
       // barrier before reading its index; external recordTurn only durably enqueues.
       await (this.memoryPostTurnChains.get(agentId) ?? Promise.resolve())
@@ -14187,6 +14474,7 @@ export class Daemon {
           // (memory write tools via memoryAccessAllowed; post-turn distillation via
           // isCaptureExcluded at recordTurnForBinding).
           ...(remoteMcpServer ? { additionalMcpServers: [remoteMcpServer] } : {}),
+          ...(entry.selectedHost ? { host: entry.selectedHost.host } : {}),
           ...(webchat?.worktree !== undefined
             ? { workspaceIsolation: webchat.worktree ? ('session' as const) : ('shared' as const) }
             : {}),
@@ -16003,7 +16291,7 @@ export class Daemon {
     const agent = this.agents.get(agentId)
     const usage = this.store.getUsage(sessionKey)
     // `?.()` guards a host stub without the method (test fakes); real AcpHosts always have it.
-    const host = this.hosts.get(agentId)
+    const host = acpSessionId ? this.hostForStoredSession(agentId, acpSessionId) : this.hosts.get(agentId)
     const model = host?.modelOptions?.(acpSessionId)
     // A persisted session can outlive the adapter process that created it. In that
     // cold state the exact session selector is unavailable, but the runtime probe has
@@ -18874,7 +19162,7 @@ export class Daemon {
         // the worktree and runs session/load/new before prompting in its cwd.
         const current = this.store.getSession(rec.key)
         if (current?.acpSessionId === rec.acpSessionId) {
-          this.hosts.get(rec.agentId)?.forgetSession(rec.acpSessionId)
+          this.hostForStoredSession(rec.agentId, rec.acpSessionId)?.forgetSession(rec.acpSessionId)
         }
       }
       return result
@@ -18934,6 +19222,7 @@ export class Daemon {
         if (this.store.deleteSession(rec.key, { reason: 'retention', at: purgedAt })) {
           removed += 1
           if (rec.acpSessionId) this.sdkLease.delete(sdkLeaseKey(rec.agentId, rec.acpSessionId))
+          await this.releaseModelSessionHost(rec.key)
         }
       }
       this.log.info(
@@ -19090,6 +19379,9 @@ export class Daemon {
     // drain below (and the CP READY replay) delivers it eventually.
     void this.drainWebchatMcpRevocations()
     for (const row of closed) {
+      void this.releaseModelSessionHost(row.key).catch((error) =>
+        this.log.warn(`key-server session cleanup failed for ${row.key} (${formatErr(error)})`)
+      )
       if (row.platform === 'webchat' && row.channel) {
         const descriptor = this.remoteWebchatGrants
         if (descriptor) {
@@ -19199,7 +19491,11 @@ export class Daemon {
     for (const agentId of plane.launchedAgents()) {
       // A live host owns the decision above; suspending under it would pull the pod out from
       // beneath a runtime that is merely between turns.
-      if (this.hosts.has(agentId)) continue
+      if (
+        this.hosts.has(agentId) ||
+        [...this.modelSessionHosts.values()].some((entry) => entry.agentId === agentId && entry.host)
+      )
+        continue
       if ((this.activeDispatchesByAgent.get(agentId)?.size ?? 0) > 0) continue
       if ([...this.pending.values()].some((p) => p.agentId === agentId)) continue
       // No host means no `hostStartedAt` floor to fall back on, so an agent that has never served
@@ -19340,12 +19636,14 @@ export class Daemon {
     if (drain.scope.kind === 'daemon') {
       await this.stopSelectedTurnHosts(targets)
       for (const id of [...this.hosts.keys()]) await this.stopHost(id)
+      for (const key of [...this.modelSessionHosts.keys()]) await this.releaseModelSessionHost(key)
       await this.revokeAllRemoteWebchatGrants('agent_detached')
       this.draining = false
       released = matched
     } else if (drain.scope.kind === 'agent') {
       await this.stopSelectedTurnHosts(targets)
       await this.stopHost(drain.scope.agentId)
+      await this.releaseModelSessionHostsForAgent(drain.scope.agentId)
       await this.revokeRemoteWebchatGrantsForAgent(drain.scope.agentId, 'agent_detached')
       if (!this.agentDestructivePending(drain.scope.agentId)) this.drainingAgents.delete(drain.scope.agentId)
       released = matched
@@ -20494,7 +20792,8 @@ export class Daemon {
             // still closed. Workspace reconciliation happens first so the spawned
             // runtime and its sandbox bind the new directory, never an unlinked old one.
             try {
-              await this.ensureHostAsync(agentId, { allowAgentDrain: true })
+              if (this.keyServer) await this.prepareAgentWorkspace(agent, undefined, undefined, true)
+              else await this.ensureHostAsync(agentId, { allowAgentDrain: true })
             } catch (err) {
               this.moveStagedAgents.add(agentId)
               await this.stopHost(agentId).catch(() => {})
@@ -20628,7 +20927,8 @@ export class Daemon {
           if (launch.launchCorrelationId) {
             this.pendingLaunchCorrelation.set(launch.agentId, launch.launchCorrelationId)
           }
-          await this.ensureHostAsync(launch.agentId)
+          if (this.keyServer) await this.prepareAgentWorkspace(agent, undefined, undefined, true)
+          else await this.ensureHostAsync(launch.agentId, { allowAgentDrain: true })
           return {
             agentId: launch.agentId,
             launchId: randomUUID(),
@@ -20859,7 +21159,10 @@ export class Daemon {
       agentName: agent?.displayName?.trim() || agent?.name || agentId,
       agentUrl: this.agentLink(agentId),
       runtime: runtime ? (this.runtimeNames[runtime] ?? runtime) : 'unknown',
-      model: this.hosts.get(agentId)?.modelOptions?.(sessionId)?.current ?? agent?.runtimeOverrides?.model ?? 'default',
+      model:
+        this.hostForStoredSession(agentId, sessionId)?.modelOptions?.(sessionId)?.current ??
+        agent?.runtimeOverrides?.model ??
+        'default',
       sessionUrl: this.sessionLink(sessionId, 'github'),
       // Same CP-resolved public avatar Slack uses for icon_url; GitHub renders it
       // inline ahead of the footer sentence.
@@ -21949,6 +22252,9 @@ export class Daemon {
     const hostStarts = [...this.hostStarts.values()]
     const hostIds = new Set([...this.hosts.keys(), ...this.hostStarts.keys(), ...this.hostStopping.keys()])
     for (const agentId of hostIds) await this.stopHost(agentId).catch((e) => errors.push(e))
+    for (const key of [...this.modelSessionHosts.keys()]) {
+      await this.releaseModelSessionHost(key).catch((e) => errors.push(e))
+    }
     // Only now: the shim channel IS the runtimes' transport, so closing it before the drain
     // would cut in-flight turns and closing it before host teardown would leave `AcpHost.stop()`
     // unable to send its ACP close — a sandbox process still running, and reconnecting.
