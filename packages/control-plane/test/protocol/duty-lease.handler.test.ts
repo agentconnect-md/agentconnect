@@ -423,3 +423,39 @@ describe('duty lease exchange — wire safety', () => {
     expect(holders).toHaveLength(1)
   })
 })
+
+describe('duty lease exchange — drain barrier', () => {
+  it('a release racing a granting exchange never yields a grant the releaser cannot see', async () => {
+    // The daemon holds GROUP and a beat that could grant GROUP2 races its
+    // drain's duty/release for GROUP. The lane admits two orderings, both safe:
+    // the beat runs first (its grant reaches the wire BEFORE the ack) or the
+    // release wins the lane and the busy beat is dropped (no grant at all).
+    // Never: a grant after the ack, or a ledger lease the wire never announced.
+    const h = buildWsHarness(prisma)
+    const start = new Date(h.clock.now())
+    await seedGroup({ holder: DAEMON, term: 1n, expiresAt: new Date(start.getTime() + LEASE_MS) })
+    await prisma.dutyGroup.create({ data: { id: GROUP2, orgId: DEFAULT_ORG_ID, term: 0n } })
+    await prisma.dutyGroupMember.create({
+      data: { kind: 'agent', refId: AGENT2, groupId: GROUP2, orgId: DEFAULT_ORG_ID }
+    })
+    const { stub } = await ready(h)
+
+    stub.inject('heartbeat', heartbeat({ held: [{ groupId: GROUP, term: '1' }], headroom: 1 }))
+    stub.inject('duty/release', { groupIds: [GROUP] }, { id: REL_ID })
+    const ack = await stub.expectFrame('ack')
+    expect(ack.corr).toBe(REL_ID)
+    await new Promise((r) => setTimeout(r, 50))
+
+    const grantIdx = stub.sent.findIndex((f) => f.type === 'duty/grant')
+    const ackIdx = stub.sent.findIndex((f) => f.type === 'ack')
+    const released = await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })
+    expect(released.holder).toBeNull()
+    const granted = await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP2 } })
+    if (grantIdx >= 0) {
+      expect(grantIdx).toBeLessThan(ackIdx)
+      expect(granted.holder).toBe(DAEMON)
+    } else {
+      expect(granted.holder).toBeNull()
+    }
+  })
+})

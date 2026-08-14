@@ -68,11 +68,19 @@ function chunkGrants(grants: DutyGrantEntry[], perFrame: number, membersPerFrame
   return chunks
 }
 
+interface DaemonLane {
+  pending: number
+  tail: Promise<void>
+}
+
 export class DutyLeaseService {
   private readonly bootedAtMs: number
-  /** Per-daemon single-flight: handlers dispatch without awaiting, so an
-   *  overlapping beat must not spend the same reported headroom twice. */
-  private readonly inFlight = new Set<string>()
+  /** Per-daemon serialization lane: WS handlers dispatch without awaiting, so
+   *  every ledger-touching operation for one daemon chains on one tail —
+   *  overlapping beats must not double-spend headroom, and a release must never
+   *  interleave with a running exchange (its ack has to mean "every grant sent
+   *  before it is already on the wire, and nothing else was granted since"). */
+  private readonly lanes = new Map<string, DaemonLane>()
 
   constructor(
     private readonly repo: DutyGroupRepo,
@@ -83,17 +91,30 @@ export class DutyLeaseService {
     this.bootedAtMs = clock.now()
   }
 
+  /** Chain `fn` on the daemon's lane so operations never interleave. */
+  private serialize<T>(daemonId: string, fn: () => Promise<T>): Promise<T> {
+    const lane = this.lanes.get(daemonId) ?? { pending: 0, tail: Promise.resolve() }
+    this.lanes.set(daemonId, lane)
+    lane.pending++
+    const result = lane.tail.then(fn)
+    lane.tail = result
+      .then(
+        () => undefined,
+        () => undefined
+      )
+      .then(() => {
+        lane.pending--
+        if (lane.pending === 0 && this.lanes.get(daemonId) === lane) this.lanes.delete(daemonId)
+      })
+    return result
+  }
+
   /** The full per-heartbeat exchange. `send` emits on the reporting connection.
-   *  A beat arriving while this daemon's previous exchange is still running is
-   *  dropped — the next beat re-runs the whole idempotent diff anyway. */
+   *  A beat arriving while this daemon's lane is busy is dropped — the next
+   *  beat re-runs the whole idempotent diff anyway. */
   async onHeartbeat(daemonId: DaemonId, duties: HeartbeatDuties, send: Send): Promise<void> {
-    if (this.inFlight.has(daemonId)) return
-    this.inFlight.add(daemonId)
-    try {
-      await this.exchange(daemonId, duties, send)
-    } finally {
-      this.inFlight.delete(daemonId)
-    }
+    if ((this.lanes.get(daemonId)?.pending ?? 0) > 0) return
+    await this.serialize(daemonId, () => this.exchange(daemonId, duties, send))
   }
 
   private async exchange(daemonId: DaemonId, duties: HeartbeatDuties, send: Send): Promise<void> {
@@ -188,8 +209,11 @@ export class DutyLeaseService {
     }
   }
 
-  /** Explicit drain release — vacate now instead of waiting out T_reassign. */
+  /** Explicit drain release — vacate now instead of waiting out T_reassign.
+   *  Queued behind any running exchange: frames on one connection are ordered,
+   *  so every grant that exchange emitted reaches the daemon BEFORE this ack,
+   *  and no grant can slip in between the vacate and the ack. */
   async release(daemonId: DaemonId, groupIds: string[]): Promise<void> {
-    await this.repo.release(daemonId, groupIds)
+    await this.serialize(daemonId, () => this.repo.release(daemonId, groupIds))
   }
 }
