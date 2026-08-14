@@ -7,6 +7,7 @@ import { ControlSender } from './outbound.js'
 const DAEMON = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const AGENT = '11111111-1111-4111-8111-111111111111'
 const MOVE = '22222222-2222-4222-8222-222222222222'
+const ORG = 'org-1'
 
 function state(conn: ConnChannel, sessionEpoch = 7): DaemonConnState {
   return {
@@ -32,29 +33,38 @@ describe('ControlSender agent move controls', () => {
     registry.add(state(conn))
     const sender = new ControlSender(registry, {} as LaunchRepo)
 
-    await expect(sender.agentDetach(DAEMON, { agentId: AGENT, moveId: MOVE })).resolves.toEqual({ ok: true })
+    await expect(sender.agentDetach(DAEMON, { agentId: AGENT, moveId: MOVE }, ORG)).resolves.toEqual({ ok: true })
     await expect(
-      sender.agentActivate(DAEMON, {
-        agentId: AGENT,
-        moveId: MOVE,
-        spec: { name: 'mover' },
-        integrations: [],
-        crons: []
-      })
+      sender.agentActivate(
+        DAEMON,
+        {
+          agentId: AGENT,
+          moveId: MOVE,
+          spec: { name: 'mover' },
+          integrations: [],
+          crons: []
+        },
+        ORG
+      )
     ).resolves.toEqual({ ok: true })
 
+    // The org rides as the explicit last argument: an install-wide member's
+    // connection carries none, and neither payload names one.
     expect(request).toHaveBeenNthCalledWith(
       1,
       'agent/detach',
       { agentId: AGENT, moveId: MOVE },
-      { epoch: 7, agentId: AGENT }
+      { epoch: 7, agentId: AGENT },
+      undefined,
+      ORG
     )
     expect(request).toHaveBeenNthCalledWith(
       2,
       'agent/activate',
       { agentId: AGENT, moveId: MOVE, spec: { name: 'mover' }, integrations: [], crons: [] },
       { epoch: 7, agentId: AGENT },
-      { ackTimeoutMs: 60_000, maxTries: 5 }
+      { ackTimeoutMs: 60_000, maxTries: 5 },
+      ORG
     )
   })
 
@@ -72,13 +82,17 @@ describe('ControlSender agent move controls', () => {
     registry.add(state(first))
     const sender = new ControlSender(registry, {} as LaunchRepo)
 
-    const activation = sender.agentActivate(DAEMON, {
-      agentId: AGENT,
-      moveId: MOVE,
-      spec: { name: 'mover' },
-      integrations: [],
-      crons: []
-    })
+    const activation = sender.agentActivate(
+      DAEMON,
+      {
+        agentId: AGENT,
+        moveId: MOVE,
+        spec: { name: 'mover' },
+        integrations: [],
+        crons: []
+      },
+      ORG
+    )
     await vi.waitFor(() => expect(firstRequest).toHaveBeenCalledOnce())
 
     const nextRequest = vi.fn(async () => ({ ok: true }) as Ack)
@@ -91,11 +105,13 @@ describe('ControlSender agent move controls', () => {
     registry.add(state(next, 8))
 
     await expect(activation).resolves.toEqual({ ok: true })
+    // The retry on the replacement connection carries the same org.
     expect(nextRequest).toHaveBeenCalledWith(
       'agent/activate',
       { agentId: AGENT, moveId: MOVE, spec: { name: 'mover' }, integrations: [], crons: [] },
       { epoch: 8, agentId: AGENT },
-      { ackTimeoutMs: 60_000, maxTries: 5 }
+      { ackTimeoutMs: 60_000, maxTries: 5 },
+      ORG
     )
   })
 

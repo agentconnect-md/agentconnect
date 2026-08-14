@@ -124,7 +124,7 @@ export function organizationEnvironmentRoutes(deps: HttpDeps) {
           if (!agent.daemonId) return
           try {
             const spec = await deps.agentSpecs.assemble(agent)
-            await deps.control.agentUpsert(agent.daemonId, { agentId: agent.id, spec })
+            await deps.control.agentUpsert(agent.daemonId, { agentId: agent.id, spec }, agent.orgId)
           } catch (err) {
             app.log.warn(
               { err, orgId, agentId: agent.id, reason },

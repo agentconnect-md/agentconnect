@@ -294,27 +294,39 @@ export class ControlSender {
     }
   }
 
+  // The agent-lifecycle frames below take an explicit orgId: on an install-wide
+  // (frame-mode) member the connection carries no org, and a payload like
+  // `{agentId, moveId}` for an agent the member has never installed cannot be
+  // resolved from the connection's org maps either — the send would throw
+  // SCOPE_DENIED before the frame ever left the process.
+
   /** Push an edited agent spec and wait until the daemon's live reconcile applies it. */
-  async agentUpsert(daemonId: string, u: AgentUpsert): Promise<void> {
+  async agentUpsert(daemonId: string, u: AgentUpsert, orgId?: string): Promise<void> {
     const c = this.must(daemonId)
-    const ack = await c.conn.request<Ack>('agent/upsert', u, { epoch: c.sessionEpoch, agentId: u.agentId })
+    const ack = await c.conn.request<Ack>(
+      'agent/upsert',
+      u,
+      { epoch: c.sessionEpoch, agentId: u.agentId },
+      undefined,
+      orgId
+    )
     if (!ack.ok) throw new Error(`agent upsert rejected${ack.reason ? `: ${ack.reason}` : ''}`)
   }
 
   /** Tell a running daemon an agent was deleted (live CRUD, epoch-fenced EVT). */
-  async agentRemove(daemonId: string, r: AgentRemove): Promise<void> {
+  async agentRemove(daemonId: string, r: AgentRemove, orgId?: string): Promise<void> {
     const c = this.must(daemonId)
-    c.conn.send('agent/remove', r, { epoch: c.sessionEpoch, agentId: r.agentId })
+    c.conn.send('agent/remove', r, { epoch: c.sessionEpoch, agentId: r.agentId }, orgId)
   }
 
   /** Fence and archive an agent before a daemon move or workspace edit (REQ → ack). */
-  async agentDetach(daemonId: string, d: AgentDetach): Promise<Ack> {
+  async agentDetach(daemonId: string, d: AgentDetach, orgId?: string): Promise<Ack> {
     const c = this.must(daemonId)
-    return c.conn.request<Ack>('agent/detach', d, { epoch: c.sessionEpoch, agentId: d.agentId })
+    return c.conn.request<Ack>('agent/detach', d, { epoch: c.sessionEpoch, agentId: d.agentId }, undefined, orgId)
   }
 
   /** Activate a fully bootstrapped/restored agent after a daemon move (REQ → ack). */
-  async agentActivate(daemonId: string, a: AgentActivate): Promise<Ack> {
+  async agentActivate(daemonId: string, a: AgentActivate, orgId?: string): Promise<Ack> {
     let c = await this.activationConnection(daemonId)
     for (let connectionTry = 1; ; connectionTry += 1) {
       try {
@@ -322,7 +334,8 @@ export class ControlSender {
           'agent/activate',
           a,
           { epoch: c.sessionEpoch, agentId: a.agentId },
-          { ackTimeoutMs: COLD_ACTIVATE_ACK_TIMEOUT_MS, maxTries: COLD_ACTIVATE_MAX_TRIES }
+          { ackTimeoutMs: COLD_ACTIVATE_ACK_TIMEOUT_MS, maxTries: COLD_ACTIVATE_MAX_TRIES },
+          orgId
         )
       } catch (err) {
         if (!(err instanceof ConnectionClosed) || connectionTry >= COLD_ACTIVATE_MAX_CONNECTIONS) throw err
