@@ -146,31 +146,36 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
   async claimVacant(holder: DaemonId, max: number, now: Date, leaseMs: number): Promise<DutyGrantRecord[]> {
     if (max <= 0) return []
     const expiresAt = new Date(now.getTime() + leaseMs)
-    // First valid claim wins; SKIP LOCKED keeps racing claimants from queueing
-    // on each other's rows — they simply take disjoint vacancies.
-    const granted = await this.prisma.$queryRaw<Row[]>(Prisma.sql`
-      WITH picked AS (
-        SELECT id FROM "duty_group"
-        WHERE "holder" IS NULL OR "expiresAt" IS NULL OR "expiresAt" < ${now}
-        ORDER BY "orgId", id
-        LIMIT ${max}
-        FOR UPDATE SKIP LOCKED
+    // One transaction, so the grant's row locks hold until the returned
+    // (term, members) snapshot is assembled — a reconcile cannot interleave and
+    // pair the old term with rewritten membership. First valid claim wins;
+    // SKIP LOCKED keeps racing claimants from queueing on each other's rows —
+    // they simply take disjoint vacancies.
+    return withTx(this.prisma, async (tx) => {
+      const granted = await tx.$queryRaw<Row[]>(Prisma.sql`
+        WITH picked AS (
+          SELECT id FROM "duty_group"
+          WHERE "holder" IS NULL OR "expiresAt" IS NULL OR "expiresAt" < ${now}
+          ORDER BY "orgId", id
+          LIMIT ${max}
+          FOR UPDATE SKIP LOCKED
+        )
+        UPDATE "duty_group" g
+        SET "holder" = ${holder}::uuid, "term" = g."term" + 1, "expiresAt" = ${expiresAt}, "updatedAt" = ${now}
+        FROM picked WHERE g.id = picked.id
+        RETURNING g.id, g."orgId", g."holder", g."term", g."expiresAt"
+      `)
+      const members = await loadMembers(
+        tx,
+        granted.map((r) => r.id)
       )
-      UPDATE "duty_group" g
-      SET "holder" = ${holder}::uuid, "term" = g."term" + 1, "expiresAt" = ${expiresAt}, "updatedAt" = ${now}
-      FROM picked WHERE g.id = picked.id
-      RETURNING g.id, g."orgId", g."holder", g."term", g."expiresAt"
-    `)
-    const members = await loadMembers(
-      this.prisma,
-      granted.map((r) => r.id)
-    )
-    return granted.map((r) => ({
-      groupId: r.id,
-      orgId: r.orgId as OrgId,
-      term: r.term,
-      members: members.get(r.id) ?? []
-    }))
+      return granted.map((r) => ({
+        groupId: r.id,
+        orgId: r.orgId as OrgId,
+        term: r.term,
+        members: members.get(r.id) ?? []
+      }))
+    })
   }
 
   async renewHeld(holder: DaemonId, now: Date, leaseMs: number): Promise<string[]> {
