@@ -425,12 +425,12 @@ describe('duty lease exchange — wire safety', () => {
 })
 
 describe('duty lease exchange — drain barrier', () => {
-  it('a release racing a granting exchange never yields a grant the releaser cannot see', async () => {
-    // The daemon holds GROUP and a beat that could grant GROUP2 races its
-    // drain's duty/release for GROUP. The lane admits two orderings, both safe:
-    // the beat runs first (its grant reaches the wire BEFORE the ack) or the
-    // release wins the lane and the busy beat is dropped (no grant at all).
-    // Never: a grant after the ack, or a ledger lease the wire never announced.
+  it('a release behind a granting beat queues: the grant reaches the wire before the ack', async () => {
+    // The daemon holds GROUP; a beat that grants GROUP2 is immediately followed
+    // by its drain's duty/release for GROUP. Lane order is frame order (the
+    // lane is reserved synchronously at dispatch), so this is deterministic:
+    // the exchange's grant is emitted BEFORE the release's ack, GROUP is
+    // vacated, and GROUP2 is coherently held — never a grant after the ack.
     const h = buildWsHarness(prisma)
     const start = new Date(h.clock.now())
     await seedGroup({ holder: DAEMON, term: 1n, expiresAt: new Date(start.getTime() + LEASE_MS) })
@@ -444,18 +444,15 @@ describe('duty lease exchange — drain barrier', () => {
     stub.inject('duty/release', { groupIds: [GROUP] }, { id: REL_ID })
     const ack = await stub.expectFrame('ack')
     expect(ack.corr).toBe(REL_ID)
-    await new Promise((r) => setTimeout(r, 50))
 
     const grantIdx = stub.sent.findIndex((f) => f.type === 'duty/grant')
     const ackIdx = stub.sent.findIndex((f) => f.type === 'ack')
+    expect(grantIdx).toBeGreaterThanOrEqual(0)
+    expect(grantIdx).toBeLessThan(ackIdx)
+
     const released = await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })
     expect(released.holder).toBeNull()
     const granted = await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP2 } })
-    if (grantIdx >= 0) {
-      expect(grantIdx).toBeLessThan(ackIdx)
-      expect(granted.holder).toBe(DAEMON)
-    } else {
-      expect(granted.holder).toBeNull()
-    }
+    expect(granted.holder).toBe(DAEMON)
   })
 })

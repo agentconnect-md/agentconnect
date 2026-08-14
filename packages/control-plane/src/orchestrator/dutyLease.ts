@@ -117,10 +117,11 @@ export class DutyLeaseService {
 
   /** The full per-heartbeat exchange. `send` emits on the reporting connection.
    *  A beat arriving while this daemon's lane is busy is dropped — the next
-   *  beat re-runs the whole idempotent diff anyway. */
-  async onHeartbeat(daemonId: DaemonId, duties: HeartbeatDuties, send: Send): Promise<void> {
-    if ((this.lanes.get(daemonId)?.pending ?? 0) > 0) return
-    await this.serialize(daemonId, () => this.exchange(daemonId, duties, send))
+   *  beat re-runs the whole idempotent diff anyway. NOT async: the lane is
+   *  reserved synchronously, so the caller's dispatch order IS the lane order. */
+  onHeartbeat(daemonId: DaemonId, duties: HeartbeatDuties, send: Send): Promise<void> {
+    if ((this.lanes.get(daemonId)?.pending ?? 0) > 0) return Promise.resolve()
+    return this.serialize(daemonId, () => this.exchange(daemonId, duties, send))
   }
 
   private async exchange(daemonId: DaemonId, duties: HeartbeatDuties, send: Send): Promise<void> {
@@ -219,10 +220,10 @@ export class DutyLeaseService {
   }
 
   /** Explicit drain release — vacate now instead of waiting out T_reassign.
-   *  Queued behind any running exchange: frames on one connection are ordered,
-   *  so every grant that exchange emitted reaches the daemon BEFORE this ack,
-   *  and no grant can slip in between the vacate and the ack. */
-  async release(daemonId: DaemonId, groupIds: string[]): Promise<void> {
-    await this.serialize(daemonId, () => this.repo.release(daemonId, groupIds))
+   *  Queued behind any earlier beat's exchange (lane order = frame order), so
+   *  every grant that exchange emitted reaches the daemon BEFORE this ack, and
+   *  no grant can slip in between the vacate and the ack. */
+  release(daemonId: DaemonId, groupIds: string[]): Promise<void> {
+    return this.serialize(daemonId, () => this.repo.release(daemonId, groupIds))
   }
 }
