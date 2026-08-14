@@ -76,6 +76,9 @@ export * from './frames/remote-mcp.js'
 // ── external-memory plugin ABI (daemon-private MCP profile; not a CP wire) ──
 export * from './memory-plugin.js'
 
+// ── key-server contract (daemon-only HTTP client seam; not a CP wire) ──
+export * from './key-server.js'
+
 // ── the union, the type map, and guards ──
 export { AnyFrame, FRAME_SCHEMAS, FRAME_TYPES, isFrameType } from './frame.js'
 export type { FrameType } from './frame.js'
