@@ -344,6 +344,7 @@ import {
   manifestFor,
   originKindOf,
   SessionPurgeReason,
+  RD_ACK_NOT_HOLDER,
   EventSession as EventSessionSchema
 } from '@agentconnect.md/protocol'
 import { isNoResponseBody, isNoResponsePrefix } from './session/no-response.js'
@@ -2139,6 +2140,18 @@ export class Daemon {
   // only on an install-wide connection — empty on a single-org daemon, which is
   // what keeps the whole path dormant there.
   private readonly duties = new DutyRegistry()
+  // What an unbounded member reports as heartbeat headroom: the CP's own
+  // per-tick grant cap, so the wire carries a finite number without implying a
+  // ceiling. Never used for a local capacity decision.
+  private static readonly DUTY_UNBOUNDED_HEADROOM = 32
+  // Claims in flight to the CP. Each reserves one slot of headroom so concurrent
+  // rendezvous claims cannot read the same capacity and collectively overshoot,
+  // and a drain joins them so none can settle after `drain/done`.
+  private readonly inFlightDutyClaims = new Set<Promise<unknown>>()
+  // Latched for the WHOLE drain handoff, including the window after `draining`
+  // reopens and before the leases are surrendered — a claim landing there would
+  // install a grant the release snapshot has already passed by.
+  private dutyClaimsSuspended = false
   private scheduler!: Scheduler
   private dreamScheduler!: DreamScheduler
   private sessions!: SessionManager
@@ -8028,6 +8041,25 @@ export class Daemon {
     const pending = this.pendingRelayMsgAcks.get(dedupKey)
     if (pending) return pending
 
+    // Activation rendezvous (design §4.4): a trigger for an agent whose duty
+    // this member does not hold is claimed on receipt — winning serves it here,
+    // losing answers `not_holder` so the router re-routes. The verdict is NOT
+    // cached in relayMsgAcks: a later grant must not keep replaying a refusal.
+    if (this.dutyEnforced() && !this.duties.holdsAgent(msg.agentId)) {
+      const task = this.claimDutyForTrigger(msg.agentId).then((claimed) => {
+        this.pendingRelayMsgAcks.delete(dedupKey)
+        if (claimed.granted) return this.handleRelayMsg(msg, chat, post)
+        return {
+          msgId: msg.msgId,
+          accepted: false,
+          reason: RD_ACK_NOT_HOLDER,
+          ...(claimed.holder ? { holderDaemonId: claimed.holder } : {})
+        }
+      })
+      this.pendingRelayMsgAcks.set(dedupKey, task)
+      return task
+    }
+
     if (msg.source === 'hook') {
       const task = this.dispatchRelayHook(msg)
         .catch((err): RdAck => {
@@ -12608,9 +12640,30 @@ export class Daemon {
   /** The heartbeat's lease fields: what this daemon holds, and how many more
    *  groups it will accept. Capacity is the daemon's own call (design D14). */
   private dutyDigest(): HeartbeatDuties {
+    return { held: this.duties.digest(), headroom: this.dutyHeadroom() }
+  }
+
+  /** How many more duty-covered agents this member will accept. `maxAgents: 0`
+   *  means unbounded, reported as the CP's own per-tick grant cap. */
+  private dutyHeadroom(): number {
     const max = this.cfg?.limits?.maxAgents ?? 0
-    const covered = this.duties.agents().size
-    return { held: this.duties.digest(), headroom: max > 0 ? Math.max(0, max - covered) : 32 }
+    // `maxAgents: 0` is unbounded, but the WIRE still needs a finite number —
+    // the CP caps a tick's grants at 32 anyway, so that is what an unbounded
+    // member advertises. This sentinel is a batching hint, never a capacity.
+    if (max <= 0) return Daemon.DUTY_UNBOUNDED_HEADROOM
+    return Math.max(0, max - this.duties.agents().size - this.inFlightDutyClaims.size)
+  }
+
+  /** Slots left for a claim that is ITSELF in flight — its own reservation is
+   *  excluded, every other one still counts, and the result is deliberately not
+   *  clamped: a full member must come out negative and refuse, never at zero
+   *  with a slot to spare. Unbounded means unbounded here: a local fit decision
+   *  must not inherit the heartbeat's batching sentinel and reject a group of
+   *  33 agents from a member that was configured with no ceiling at all. */
+  private dutyHeadroomForPendingClaim(): number {
+    const max = this.cfg?.limits?.maxAgents ?? 0
+    if (max <= 0) return Number.POSITIVE_INFINITY
+    return max - this.duties.agents().size - Math.max(0, this.inFlightDutyClaims.size - 1)
   }
 
   /** True when duty leases actually gate service. Off (the default) the exchange
@@ -12641,6 +12694,75 @@ export class Daemon {
     )
     for (const agentId of result.agentsLost) this.stopServingAgent(agentId)
     this.onDutyChanged()
+  }
+
+  /** Claim one agent's duty because a trigger for it arrived here. A win is
+   *  installed exactly like a `duty/grant`, so the same converge path runs.
+   *  Refuses without asking the CP when this member must not take new work:
+   *  capacity is the member's own call (design D14), and a drain in progress
+   *  would either hand the fresh lease straight back or pin it to an agent whose
+   *  gate is about to drop the very turn that triggered the claim.
+   *
+   *  Both gates are checked AFTER the round trip, not instead of it. Refusing to
+   *  ask would suppress the very answer that makes a stale delivery routable —
+   *  the incumbent's identity — turning a re-routable trigger into a drop. So a
+   *  full or draining member still asks, and hands back anything it wins. */
+  private async claimDutyForTrigger(agentId: string): Promise<{ granted: boolean; holder?: string }> {
+    // A drain that has already begun is the one case worth short-circuiting: it
+    // cannot be resolved by learning a holder, because this member is leaving.
+    if (this.dutyClaimsSuspended || this.drainingAgents.has(agentId)) {
+      this.log.debug(`duty: not claiming ${agentId} while draining`)
+      return { granted: false }
+    }
+    // Reserve a slot for the duration of the round trip so concurrent claims
+    // cannot each read the same headroom and collectively overshoot, and so a
+    // drain can join this claim rather than finish while it is still in flight.
+    let markSettled!: () => void
+    const settled = new Promise<void>((resolve) => {
+      markSettled = resolve
+    })
+    this.inFlightDutyClaims.add(settled)
+    try {
+      const claim = await this.cpClient?.claimDuty(agentId)
+      if (!claim) return { granted: false }
+      if (!claim.granted || !claim.grant) {
+        return claim.holder ? { granted: false, holder: claim.holder } : { granted: false }
+      }
+      const grant = claim.grant
+      // The group we were actually given may cover several agents, so capacity
+      // is judged against it — never against the single agent we asked about.
+      const arriving = grant.members.filter((m) => m.kind === 'agent' && !this.duties.holdsAgent(m.refId)).length
+      const draining = this.dutyClaimsSuspended || this.draining || this.drainingAgents.has(agentId)
+      if (draining || arriving > this.dutyHeadroomForPendingClaim()) {
+        const why = draining ? 'a drain started while the claim was in flight' : 'it does not fit remaining capacity'
+        this.log.info(`duty: handing ${grant.groupId} straight back — ${why}`)
+        await this.cpClient
+          ?.releaseDuties([grant.groupId])
+          .catch((err) => this.log.warn(`duty: handing back ${grant.groupId} failed (it will lapse): ${err}`))
+        return { granted: false }
+      }
+      this.applyDutyGrant([grant])
+      return { granted: true }
+    } catch (err) {
+      // A CP blip must not look like "someone else holds it" — answering with no
+      // holder makes the router account it as an unplaceable trigger rather than
+      // re-routing into the void.
+      this.log.warn(`duty: claiming ${agentId} for an inbound trigger failed: ${err}`)
+      return { granted: false }
+    } finally {
+      this.inFlightDutyClaims.delete(settled)
+      markSettled()
+    }
+  }
+
+  /** Wait for every claim already awaiting the CP to settle. Called inside the
+   *  drain latch, so each one sees the latch and hands back what it won —
+   *  without this join a drain can finish and clear the latch while an older
+   *  response is still in flight, installing a grant after `drain/done`. */
+  private async joinInFlightDutyClaims(): Promise<void> {
+    while (this.inFlightDutyClaims.size > 0) {
+      await Promise.allSettled([...this.inFlightDutyClaims])
+    }
   }
 
   /** Re-derive platform connections and schedules from the new duty set. */
@@ -19179,6 +19301,15 @@ export class Daemon {
    *  releasing sessions the daemon reclaims hosts and re-opens its gate (a teardown
    *  arrives separately via daemon/restart). */
   private async runDrain(drain: Drain, onProgress: (p: DrainProgress) => void): Promise<DrainDone> {
+    if (drain.scope.kind === 'daemon') this.dutyClaimsSuspended = true
+    try {
+      return await this.runDrainInner(drain, onProgress)
+    } finally {
+      this.dutyClaimsSuspended = false
+    }
+  }
+
+  private async runDrainInner(drain: Drain, onProgress: (p: DrainProgress) => void): Promise<DrainDone> {
     const deadlineMs = Math.max(0, new Date(drain.deadline).getTime() - this.clock.now())
     const { matched, drained, targets } = await this.drainScope(drain.scope, deadlineMs, onProgress)
     // daemon/agent scope force-stop the host(s), so EVERY matched session is truly
@@ -19211,6 +19342,9 @@ export class Daemon {
   /** Hand every held duty back to the CP. Best-effort by contract — on failure
    *  the leases simply lapse, which is the same outcome one T_reassign later. */
   private async releaseAllDuties(): Promise<void> {
+    // Join first: a claim still awaiting the CP would otherwise land after the
+    // snapshot below and outlive the drain.
+    await this.joinInFlightDutyClaims()
     const groupIds = this.duties.releaseAll()
     if (groupIds.length === 0) return
     try {

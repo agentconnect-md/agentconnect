@@ -22,6 +22,7 @@ import { selectTurnTargets } from '@agentconnect.md/activation-policy'
 import {
   ErrorCode,
   RelayWebchatOp,
+  RD_ACK_NOT_HOLDER,
   type RdChat,
   type RdMsgWebchat,
   type RdWebchatPost,
@@ -363,7 +364,18 @@ export class RelayBrowserConnection implements ChatSink {
       payload: op
     }
     try {
-      const ack = await daemon.sendMsg(rdMsg)
+      let ack = await daemon.sendMsg(rdMsg)
+      // Activation rendezvous (design §4.4): the participant's recorded daemon
+      // may no longer hold its duty. Re-send the SAME msgId to the named holder
+      // once — its own dedup covers a double delivery, and a second refusal
+      // falls through to the browser as an ordinary rejection.
+      if (!ack.accepted && ack.reason === RD_ACK_NOT_HOLDER && ack.holderDaemonId) {
+        const holder = this.deps.daemonConnFor(ack.holderDaemonId)
+        if (holder) {
+          this.deps.log.info(`webchat: re-routing ${agentId} to duty holder ${ack.holderDaemonId}`)
+          ack = await holder.sendMsg(rdMsg)
+        }
+      }
       const browserAck = {
         accepted: ack.accepted,
         ...(ack.turnId ? { turnId: ack.turnId } : {}),
