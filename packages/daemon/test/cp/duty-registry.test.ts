@@ -116,9 +116,38 @@ describe('DutyRegistry', () => {
 })
 
 describe('duty capacity accounting', () => {
-  // The daemon reports `maxAgents - covered` as headroom and refuses to claim at
-  // zero, so both the CP's grant budget and the rendezvous share one number.
-  const headroom = (max: number, covered: number) => (max > 0 ? Math.max(0, max - covered) : 32)
+  // The daemon reports `maxAgents - covered - inFlightClaims` as headroom: one
+  // number feeds both the CP's grant budget and the rendezvous fit check, and
+  // in-flight claims reserve a slot so concurrent ones cannot overshoot.
+  const headroom = (max: number, covered: number, pending = 0) => (max > 0 ? Math.max(0, max - covered - pending) : 32)
+
+  it('in-flight claims reserve headroom so concurrent claims cannot overshoot', () => {
+    const r = new DutyRegistry()
+    r.applyGrant([grant(G1, '1', [A1])])
+    expect(headroom(3, r.agents().size)).toBe(2)
+    // Two claims in flight leave room for exactly one more agent.
+    expect(headroom(3, r.agents().size, 2)).toBe(0)
+  })
+
+  it('a multi-agent group is judged by the agents it actually brings', () => {
+    const r = new DutyRegistry()
+    r.applyGrant([grant(G1, '1', [A1])])
+    const arriving = grant(G2, '1', [A2, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3']).members.filter(
+      (m) => m.kind === 'agent' && !r.holdsAgent(m.refId)
+    ).length
+    expect(arriving).toBe(2)
+    // maxAgents 2 with one covered leaves room for one — this group does not fit.
+    expect(arriving > headroom(2, r.agents().size)).toBe(true)
+    // maxAgents 4 leaves room for three — it fits.
+    expect(arriving > headroom(4, r.agents().size)).toBe(false)
+  })
+
+  it('an agent already covered by another group does not consume new capacity', () => {
+    const r = new DutyRegistry()
+    r.applyGrant([grant(G1, '1', [A1])])
+    const arriving = grant(G2, '1', [A1]).members.filter((m) => m.kind === 'agent' && !r.holdsAgent(m.refId)).length
+    expect(arriving).toBe(0)
+  })
 
   it('headroom shrinks as duties cover more agents, and never goes negative', () => {
     const r = new DutyRegistry()

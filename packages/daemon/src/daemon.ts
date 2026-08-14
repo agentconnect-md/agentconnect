@@ -2137,6 +2137,13 @@ export class Daemon {
   // only on an install-wide connection — empty on a single-org daemon, which is
   // what keeps the whole path dormant there.
   private readonly duties = new DutyRegistry()
+  // Claims in flight to the CP. Each reserves one slot of headroom so concurrent
+  // rendezvous claims cannot read the same capacity and collectively overshoot.
+  private pendingDutyClaims = 0
+  // Latched for the WHOLE drain handoff, including the window after `draining`
+  // reopens and before the leases are surrendered — a claim landing there would
+  // install a grant the release snapshot has already passed by.
+  private dutyClaimsSuspended = false
   private scheduler!: Scheduler
   private dreamScheduler!: DreamScheduler
   private sessions!: SessionManager
@@ -12631,7 +12638,8 @@ export class Daemon {
    *  means unbounded, reported as the CP's own per-tick grant cap. */
   private dutyHeadroom(): number {
     const max = this.cfg?.limits?.maxAgents ?? 0
-    return max > 0 ? Math.max(0, max - this.duties.agents().size) : 32
+    if (max <= 0) return 32
+    return Math.max(0, max - this.duties.agents().size - this.pendingDutyClaims)
   }
 
   /** True when duty leases actually gate service. Off (the default) the exchange
@@ -12669,29 +12677,52 @@ export class Daemon {
    *  Refuses without asking the CP when this member must not take new work:
    *  capacity is the member's own call (design D14), and a drain in progress
    *  would either hand the fresh lease straight back or pin it to an agent whose
-   *  gate is about to drop the very turn that triggered the claim. */
+   *  gate is about to drop the very turn that triggered the claim.
+   *
+   *  Both gates are checked AFTER the round trip, not instead of it. Refusing to
+   *  ask would suppress the very answer that makes a stale delivery routable —
+   *  the incumbent's identity — turning a re-routable trigger into a drop. So a
+   *  full or draining member still asks, and hands back anything it wins. */
   private async claimDutyForTrigger(agentId: string): Promise<{ granted: boolean; holder?: string }> {
-    if (this.draining || this.drainingAgents.has(agentId)) {
-      this.log.debug(`duty: refusing to claim ${agentId} while draining`)
+    // A drain that has already begun is the one case worth short-circuiting: it
+    // cannot be resolved by learning a holder, because this member is leaving.
+    if (this.dutyClaimsSuspended || this.drainingAgents.has(agentId)) {
+      this.log.debug(`duty: not claiming ${agentId} while draining`)
       return { granted: false }
     }
-    if (this.dutyHeadroom() <= 0) {
-      this.log.info(`duty: refusing to claim ${agentId} — at capacity (${this.duties.agents().size} agent(s))`)
-      return { granted: false }
-    }
+    // Reserve a slot for the duration of the round trip so concurrent claims
+    // cannot each read the same headroom and collectively overshoot.
+    this.pendingDutyClaims++
     try {
       const claim = await this.cpClient?.claimDuty(agentId)
       if (!claim) return { granted: false }
-      if (claim.granted && claim.grant) {
-        this.applyDutyGrant([claim.grant])
-        return { granted: true }
+      if (!claim.granted || !claim.grant) {
+        return claim.holder ? { granted: false, holder: claim.holder } : { granted: false }
       }
-      return claim.holder ? { granted: false, holder: claim.holder } : { granted: false }
+      const grant = claim.grant
+      // The group we were actually given may cover several agents, so capacity
+      // is judged against it — never against the single agent we asked about.
+      const arriving = grant.members.filter((m) => m.kind === 'agent' && !this.duties.holdsAgent(m.refId)).length
+      const draining = this.dutyClaimsSuspended || this.draining || this.drainingAgents.has(agentId)
+      // `- 1` releases this claim's own reservation before judging the fit.
+      if (draining || arriving > this.dutyHeadroom() + 1) {
+        const why = draining ? 'a drain started while the claim was in flight' : 'it does not fit remaining capacity'
+        this.log.info(`duty: handing ${grant.groupId} straight back — ${why}`)
+        await this.cpClient
+          ?.releaseDuties([grant.groupId])
+          .catch((err) => this.log.warn(`duty: handing back ${grant.groupId} failed (it will lapse): ${err}`))
+        return { granted: false }
+      }
+      this.applyDutyGrant([grant])
+      return { granted: true }
     } catch (err) {
       // A CP blip must not look like "someone else holds it" — answering with no
-      // holder makes the router retry instead of re-routing into the void.
+      // holder makes the router account it as an unplaceable trigger rather than
+      // re-routing into the void.
       this.log.warn(`duty: claiming ${agentId} for an inbound trigger failed: ${err}`)
       return { granted: false }
+    } finally {
+      this.pendingDutyClaims--
     }
   }
 
@@ -19177,6 +19208,15 @@ export class Daemon {
    *  releasing sessions the daemon reclaims hosts and re-opens its gate (a teardown
    *  arrives separately via daemon/restart). */
   private async runDrain(drain: Drain, onProgress: (p: DrainProgress) => void): Promise<DrainDone> {
+    if (drain.scope.kind === 'daemon') this.dutyClaimsSuspended = true
+    try {
+      return await this.runDrainInner(drain, onProgress)
+    } finally {
+      this.dutyClaimsSuspended = false
+    }
+  }
+
+  private async runDrainInner(drain: Drain, onProgress: (p: DrainProgress) => void): Promise<DrainDone> {
     const deadlineMs = Math.max(0, new Date(drain.deadline).getTime() - this.clock.now())
     const { matched, drained, targets } = await this.drainScope(drain.scope, deadlineMs, onProgress)
     // daemon/agent scope force-stop the host(s), so EVERY matched session is truly
