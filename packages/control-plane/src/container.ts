@@ -667,7 +667,8 @@ export function buildContainer(
       intervalMs: 30_000,
       orgsPerTick: 25,
       leaseMs: DUTY_LEASE_DEFAULTS.leaseMs,
-      incumbentFence: DUTY_LEASE_DEFAULTS.grantPolicy === 'incumbent'
+      incumbentFence: DUTY_LEASE_DEFAULTS.grantPolicy === 'incumbent',
+      kickDelayMs: 250
     },
     { warn: (o, m) => http.log.warn(o, m), error: (o, m) => http.log.error(o, m) }
   )
@@ -715,6 +716,7 @@ export function buildContainer(
     collabRoutes,
     mutations: agentMutations,
     sessionOwners: connReg,
+    recomputeDuties: (orgId: string) => dutyRecompute.kick(orgId),
     log: { warn: (o, m) => http.log.warn(o, m) }
   })
 
@@ -1026,6 +1028,7 @@ export function buildContainer(
     sessionOwners: connReg,
     hooks: hookService,
     ...(githubRunReporter ? { kickGithubRunReporter: () => githubRunReporter.kick() } : {}),
+    recomputeDuties: (orgId: string) => dutyRecompute.kick(orgId),
     auth,
     apiKeys,
     oauth,

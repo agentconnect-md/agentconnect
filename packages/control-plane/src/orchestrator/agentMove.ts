@@ -93,6 +93,9 @@ export interface AgentMoveDeps {
   mutations: AgentMutationGate
   sessionOwners: { releaseSession(key: SessionKey): void }
   log?: AgentMoveLog
+  /** Placement decides duty incumbency (design §4.4 soak policy), so a completed
+   *  move re-derives the org's groups. Fire-and-forget; the sweep is the backstop. */
+  recomputeDuties?: (orgId: string) => void
 }
 
 interface MoveBundle {
@@ -467,6 +470,7 @@ export class AgentMoveService {
     let moved: AgentRecord | null
     try {
       moved = await this.deps.agents.movePlacement(agent.id, sourceDaemonId, targetDaemonId, editor)
+      if (moved) this.deps.recomputeDuties?.(moved.orgId)
     } catch (err) {
       await this.restoreSourceIfStillOwner(agent, sourceDaemonId, sourceBundle)
       throw new AgentMoveFailed('failed to persist agent placement', err)
@@ -754,6 +758,7 @@ export class AgentMoveService {
     let restored: AgentRecord | null = null
     try {
       restored = await this.deps.agents.movePlacement(moved.id, targetDaemonId, sourceDaemonId, editor)
+      if (restored) this.deps.recomputeDuties?.(restored.orgId)
     } catch (err) {
       this.deps.log?.warn({ err, agentId: moved.id }, 'agent move: placement rollback failed')
     }
