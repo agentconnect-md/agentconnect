@@ -27,11 +27,15 @@ describe('agentconnect.key-server/v1 schemas', () => {
   })
 
   it('takes an http(s) baseUrl and nothing else, since it becomes a runtime API base', () => {
-    const withUrl = (baseUrl: string) => () => IssueKeyResponse.parse({ keyId: 'k', key: 'x', baseUrl })
+    // safeParse, not parse().toThrow(): a rejection must arrive as a zod result, and a
+    // predicate that threw natively would satisfy toThrow() while escaping validation.
+    const withUrl = (baseUrl: string) => IssueKeyResponse.safeParse({ keyId: 'k', key: 'x', baseUrl })
     // Loopback http is the normal shape for an in-pod gateway, so it stays legal.
-    expect(withUrl('http://localhost:8080')()).toMatchObject({ baseUrl: 'http://localhost:8080' })
-    expect(withUrl('file:///etc/passwd')).toThrow()
-    expect(withUrl('not a url')).toThrow()
+    expect(withUrl('http://localhost:8080').success).toBe(true)
+    expect(withUrl('https://gateway.example.test').success).toBe(true)
+    expect(withUrl('file:///etc/passwd').success).toBe(false)
+    expect(withUrl('not a url').success).toBe(false)
+    expect(withUrl('').success).toBe(false)
   })
 
   it('states validity as durations, so ordering never depends on timestamp spelling', () => {

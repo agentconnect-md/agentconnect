@@ -56,10 +56,14 @@ export const IssueKeyResponse = z
     // becomes a runtime's API base, so any other scheme is a value the daemon would inject
     // and only fail on at request time. Plain http stays legal for a loopback or in-pod
     // gateway, which is where it is the normal choice.
+    // The predicate must not throw: zod runs refinements even after `.url()` has already
+    // failed, and a bare `new URL(bad)` would escape safeParse as a TypeError.
     baseUrl: z
       .string()
       .url()
-      .refine((u) => ['http:', 'https:'].includes(new URL(u).protocol), { message: 'baseUrl must be http(s)' })
+      .refine((u) => URL.canParse(u) && ['http:', 'https:'].includes(new URL(u).protocol), {
+        message: 'baseUrl must be http(s)'
+      })
       .optional(),
     // Validity as a DURATION from the server's issuance instant, for the same reason the
     // request states one: an absolute instant would be the server's clock, and every reader
