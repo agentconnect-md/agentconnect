@@ -42,25 +42,37 @@ implement the server without speaking AgentConnect's wire protocol.
 | `GetKey`    | `POST /v1/get-key`    | `{orgId, agentId, sessionId, provider, ttlSeconds?}` → `{keyId, key, baseUrl?, expiresAt?, refreshAfter?}` |
 | `RevokeKey` | `POST /v1/revoke-key` | `{keyId}` → `{}`                                                                                           |
 
-**Caller authentication rides the transport, never the body**: the daemon sends
-`Authorization: Bearer <token>`. To the daemon the token is an opaque string from
-a configured source — a file it re-reads per request (so a credential something
-else rotates underneath it stays current), or an inline config value. It parses
-nothing, asserts nothing about what the token means, and holds no verification
-logic.
+**Caller authentication rides the transport, never the body**, and is optional at
+both ends. When configured with a token source the daemon sends
+`Authorization: Bearer <token>`; with none it sends no such header. To the daemon
+the token is an opaque string from a configured source — a file it re-reads per
+request (so a credential something else rotates underneath it stays current), or
+an inline config value. It parses nothing, asserts nothing about what the token
+means, and holds no verification logic. Symmetrically, a server may verify
+nothing: a key server reachable only over loopback, inside one pod, or across an
+already-authenticated mesh has its boundary elsewhere, and this contract does not
+impose ceremony on that deployment.
 
 `daemonId` is deliberately not a body field: a client-asserted identity would be
 untrusted input, and a server that can verify the bearer at all can derive the
 caller from it. `orgId` IS in the body, and a server that resolves an
 organization from the token should cross-check the two.
 
-**What the token is, and how a server verifies it, are outside this contract.**
-They are properties of a deployment: which credential the daemon is given, what
-proves it, and what the server must hold to check it are decided together by the
-key server's own design and the deployment that installs both. This document
-stops at the header. A server may accept only the credential kinds it is built
-for and answer `unauthorized` for anything else; saying which is that server's
-documentation, not this one's.
+**One consequence to state plainly, since skipping auth is allowed: an
+unauthenticated caller supplies unverified context.** `orgId`, `agentId`, and
+`sessionId` are then claims by whoever reached the port, so a server that meters
+or bills on them is attributing usage to a caller it never identified. Verifying
+the bearer is what turns that context into attribution; a server that verifies
+nothing should be one whose issued credentials do not need it — a fixed key it
+would have handed to anyone reaching that endpoint anyway.
+
+**What the token is, and how a server verifies it, are otherwise outside this
+contract.** They are properties of a deployment: which credential the daemon is
+given, what proves it, and what the server must hold to check it are decided
+together by the key server's own design and the deployment that installs both.
+This document stops at the header. A server may accept only the credential kinds
+it is built for and answer `unauthorized` for anything else; saying which is that
+server's documentation, not this one's.
 
 `provider` names the API dialect the credential must speak (`anthropic` /
 `openai`) and selects which `(key, baseUrl)` pair comes back. There is
