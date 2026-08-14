@@ -23,28 +23,57 @@
  * thin adapters supplying the providers; behavior is byte-for-byte what the
  * daemon shipped before the extraction.
  *
- * How the OTHER surfaces plug in (future work, deliberately not folded yet):
+ * ## The activation ask — the ONE interface every surface shares
  *
- *  - **Relay** (`packages/relay/src/bot-arbitration.ts`): an
- *    `AttributedRoute` maps structurally onto {@link ActivationRule}
- *    (`agentId`/`scope`/`match`, integration + daemon attribution carried in
- *    the caller's own map), the assignment's `mutedChannels` become the rules'
- *    `mutedChannels`, and its thread-affinity map is the `threadOwner`
- *    provider. Its extra rungs (conversation-scoped keyword, `defaultAgentId`)
- *    are relay-specific selection AFTER this ladder declines, exactly as
- *    documented in shared-bot-relay.md §10.
- *  - **Webchat**: FOLDED. The roster/standing-mention semantics are
- *    package-owned policy alongside the platform ladder: the relay's
- *    human-turn target choice is {@link selectTurnTargets} (webchat
- *    membership is a standing mention — an unnarrowed turn activates the
- *    whole roster; declared divergence, evals/parity/spec.ts
- *    `human-kickoff-activation`), and the daemon's §5.2a continuation edge is
- *    {@link webchatContinuationDecision} (author exclusion absolute,
- *    fail-closed depth, the §4.1 hop transition). Relay and daemon are thin
- *    adapters supplying their contexts; verification, the activation
- *    rendezvous, call policy, and dispatch stay with the callers.
+ * A surface asks "who does this message wake?" by supplying exactly four
+ * things; everything else (verification, rendezvous, call policy, dispatch,
+ * logging) stays surface-owned:
+ *
+ *  1. **Message facts** — {@link ActivationMessageFacts} (platform, channel,
+ *     thread, text, isDm, mentions, sender bot-ness), extended per surface
+ *     only where its ladder reads more ({@link SharedBotMessageFacts} adds the
+ *     sender's provider id + group-DM bit; {@link WebchatPostAuthorFacts} is
+ *     the committed-post author with its stamped depth).
+ *  2. **Resolved rules** — {@link ActivationRule} (daemon merged local ∪ CP;
+ *     `RoutingRule` satisfies it) or {@link SharedBotRoute} (the relay's
+ *     already-attributed CP routes; wire `AttributedRoute` satisfies it). The
+ *     webchat roster IS its rule set: membership is a standing mention.
+ *  3. **Context providers** — plain values/callbacks, never live objects:
+ *     `threadOwner` + thread participants (daemon), the affinity map +
+ *     members/gates/`defaultAgentId` (relay, all declared on
+ *     {@link SharedBotAssignmentFacts}), the conversation roster +
+ *     mentions/targets (webchat).
+ *  4. **Verified authorship** — the author's agent id (and, where the edge is
+ *     depth-bounded, its stamped hop count). Verification itself stays with
+ *     the caller, since it needs I/O.
+ *
+ * The package then owns every DECIDER, one per declared ladder:
+ *
+ *  - **Daemon platform ladder** — {@link routeRules} (arbitration primary) +
+ *    {@link conversationPeers} (delivery set) + the §4.1 edge gates.
+ *  - **Shared-bot relay ladder** — {@link arbitrateSharedBot}
+ *    (shared-bot-relay.md §10): the same rules adapted for the multi-agent
+ *    ambiguity, with its adaptations DECLARED as ladder structure (channel
+ *    ownership first with scoped keyword over auto, no unscoped mention rung,
+ *    addressed-gated slug + `defaultAgentId` fallback, membership/gate-checked
+ *    continuity). Consumed by `packages/relay/src/bot-arbitration.ts`, which
+ *    keeps the stateful remainder (affinity/participant bookkeeping, the
+ *    peer fan-out's join recording).
+ *  - **Webchat** — {@link selectTurnTargets} (human-turn roster targeting;
+ *    standing-mention semantics, a DECLARED divergence in
+ *    evals/parity/spec.ts) and {@link webchatContinuationDecision} (the §5.2a
+ *    continuation edge: author exclusion absolute, fail-closed depth, the
+ *    §4.1 hop transition).
+ *
+ * Divergences between ladders are declared here and in
+ * docs/designs/activation-parity.md — never silent. One latent structural
+ * divergence is pinned rather than harmonized: the daemon ladder admits
+ * bot-sender mentions with a Slack literal while the relay ladder reads the
+ * platform manifest's `botSenderRouting`; both are Slack-only today (the
+ * manifest test pins it), so behavior is identical, but a future platform
+ * admitting bot senders must revisit `routeRules` alongside the manifest.
  */
-import { MAX_AGENT_CALL_HOPS, hasReachedAgentCallHopLimit } from '@agentconnect.md/protocol'
+import { MAX_AGENT_CALL_HOPS, hasReachedAgentCallHopLimit, manifestFor } from '@agentconnect.md/protocol'
 
 /** A routing rule's trigger — structurally identical to the daemon's
  *  `BindMatch` (agent.json bindRules) and the wire route match. */
@@ -475,4 +504,203 @@ export function webchatContinuationDecision(
     }
   }
   return { activate: true, authorAgentId: author.agentId, deliveryHopCount: transition.deliveryHopCount }
+}
+
+// ─── the shared-bot relay ladder (shared-bot-relay.md §10) ───
+
+/**
+ * The message facts the shared-bot ladder reads — {@link ActivationMessageFacts}
+ * plus the sender's provider id (own-echo suppression) and the group-DM bit
+ * (direct-control continuity). `WireNormalizedMessage` satisfies it.
+ */
+export interface SharedBotMessageFacts extends ActivationMessageFacts {
+  sender: { id: string; isBot: boolean }
+  isGroupDm?: boolean | undefined
+}
+
+/** One attributed routing rule the relay arbitrates inbound against —
+ *  structurally a subset of the wire `AttributedRoute` (it ALREADY carries its
+ *  target: the daemon to forward to and the reply integration). */
+export interface SharedBotRoute {
+  agentId: string
+  daemonId: string
+  integrationId: string
+  scope?: { channel?: string | undefined; thread?: string | undefined } | undefined
+  match: RuleMatch
+}
+
+/** The arbitration verdict — a target the relay forwards to. */
+export interface SharedBotRouteTarget {
+  agentId: string
+  daemonId: string
+  integrationId: string
+}
+
+/** The assignment facts the ladder reads — a structural subset of the relay's
+ *  `BotAssignment` (secrets, demux identity, and notice bookkeeping stay with
+ *  the relay). */
+export interface SharedBotAssignmentFacts {
+  /** Provider bot identity — used for mention + echo suppression. */
+  botUserId?: string | undefined
+  routes: SharedBotRoute[]
+  members: { daemonId: string; agentIds: string[] }[]
+  defaultAgentId?: string | undefined
+  defaultDaemonId?: string | undefined
+  /** Conversation-gated members (resource-visibility.md §14): thread continuity
+   *  to one of these agents is honoured only while it still has a
+   *  channel-scoped route in the conversation. */
+  gatedAgentIds?: string[] | undefined
+  /** Channels switched OFF — a fence rather than an omission: rungs exist that
+   *  no missing route can suppress (continuity, the unscoped keyword slug,
+   *  `defaultAgentId`), so a muted channel resolves to nothing. */
+  mutedChannels?: string[] | undefined
+}
+
+/** `channel/thread` — the per-conversation affinity + rc/assign key. */
+export function sharedBotSessionKey(msg: { channel: string; thread?: string | undefined }): string {
+  return `${msg.channel}/${msg.thread ?? msg.channel}`
+}
+
+/** Scope filter over attributed routes (exported for the relay's peer fan-out,
+ *  which reads the same routes for its mention/auto join selection). */
+export function sharedBotScopeMatches(r: SharedBotRoute, msg: SharedBotMessageFacts): boolean {
+  if (r.scope?.channel !== undefined && r.scope.channel !== msg.channel) return false
+  if (r.scope?.thread !== undefined && r.scope.thread !== msg.thread) return false
+  return true
+}
+
+function sharedBotKindMatches(r: SharedBotRoute, msg: SharedBotMessageFacts, botUserId: string | undefined): boolean {
+  switch (r.match.kind) {
+    case 'mention':
+      return botUserId !== undefined && msg.mentionedBots.includes(botUserId)
+    case 'dm':
+      return msg.isDm
+    case 'keyword':
+      return msg.text.toLowerCase().includes(r.match.value.toLowerCase())
+    case 'auto':
+      return true
+  }
+}
+
+const sharedBotTarget = (r: SharedBotRoute): SharedBotRouteTarget => ({
+  agentId: r.agentId,
+  daemonId: r.daemonId,
+  integrationId: r.integrationId
+})
+
+/**
+ * Arbitrate one inbound message against a shared bot's attributed routes
+ * (shared-bot-relay.md §10) — the relay's ladder, package-owned since the
+ * relay fold-in. It mirrors the daemon ladder (`routeRules`) but over
+ * ALREADY-ATTRIBUTED routes, and adapted for the multi-agent ambiguity (all
+ * agents answer as one bot user id) — the adaptations are DECLARED ladder
+ * structure, not drift:
+ *
+ *  - channel ownership first (§10.1): a channel-scoped rule matching the
+ *    message kind wins outright, with scoped keyword OUTRANKING scoped auto
+ *    (slug disambiguation inside a multi-agent DM, §14.3) and no `dm` rung;
+ *  - thread continuity from the caller's affinity map, membership- and
+ *    gate-checked (§14), never through a binding that points at the author;
+ *  - there is NO unscoped mention rung (it would starve keyword
+ *    disambiguation, §10.4) — the bare @bot / DM fallback is the unscoped
+ *    keyword slug (§10.2) and then the group's `defaultAgentId` (§10.3), both
+ *    gated on the bot actually being ADDRESSED;
+ *  - bot senders are admitted by the platform manifest's `botSenderRouting`
+ *    (equivalent today to the daemon ladder's Slack-only admission), and only
+ *    through an explicit mention;
+ *  - `verifiedAgentAuthor` routes through the ladder exactly as a human would
+ *    with itself excluded (send-message-routing-rework.md §2.3), and cannot
+ *    use the human-only mention nomination or the default-agent fallback.
+ *
+ * Pure: the caller owns the affinity map, refreshes it after each routed turn,
+ * and seeds it durably from `rc/assign`.
+ */
+export function arbitrateSharedBot(
+  a: SharedBotAssignmentFacts,
+  msg: SharedBotMessageFacts,
+  affinity: ReadonlyMap<string, SharedBotRouteTarget>,
+  verifiedAgentAuthor?: string
+): SharedBotRouteTarget | null {
+  // Own echoes never route. A third-party bot may enter only through an explicit
+  // mention, and only on a platform whose manifest admits bot senders at all
+  // (§5 botSenderRouting — fail-closed for unknown ids); AgentConnect-managed app
+  // messages are removed by the manager using the collaboration snapshot before
+  // forwarding.
+  if (a.botUserId !== undefined && msg.sender.id === a.botUserId && verifiedAgentAuthor === undefined) return null
+  const explicitlyMentioned = a.botUserId !== undefined && msg.mentionedBots.includes(a.botUserId)
+  if (
+    msg.sender.isBot &&
+    verifiedAgentAuthor === undefined &&
+    (!manifestFor(msg.platform).botSenderRouting || !explicitlyMentioned)
+  ) {
+    return null
+  }
+  // A channel switched Off resolves to no target at all — ahead of every rung, so
+  // neither an @-mention nor an existing thread binding can reach into it.
+  if (a.mutedChannels?.includes(msg.channel)) return null
+
+  // The author is removed ONCE, so every rung below inherits the exclusion — an agent
+  // matching its own route would wake itself on its own reply, an unconditional self-loop.
+  const routes =
+    verifiedAgentAuthor === undefined ? a.routes : a.routes.filter((r) => r.agentId !== verifiedAgentAuthor)
+  const scoped = routes.filter((r) => r.scope?.channel !== undefined && sharedBotScopeMatches(r, msg))
+
+  // 1. Channel ownership (§10.1, the primary path): a channel-scoped rule that
+  //    matches the message kind wins outright (mention rule needs the @bot; auto
+  //    rule fires on any message — the operator's trigger choice).
+  // A HUMAN mention can still nominate the compatibility primary. The peer fan-out
+  // independently joins every matching route and fans to the remembered room, including
+  // peers on other daemons. Verified agent traffic skips this selector: its mention can
+  // add a participant but never narrows the room or clears a human's stop latch.
+  const ownedMention =
+    verifiedAgentAuthor === undefined
+      ? scoped.find((r) => r.match.kind === 'mention' && sharedBotKindMatches(r, msg, a.botUserId))
+      : undefined
+  if (ownedMention) return sharedBotTarget(ownedMention)
+  // Conversation-scoped keyword (§14.3): slug disambiguation inside a multi-agent DM
+  // enabled for several gated agents — outranks the scoped auto so "<slug> …"
+  // names its agent; an unslugged message falls through to the first auto route.
+  const ownedKeyword = scoped.find((r) => r.match.kind === 'keyword' && sharedBotKindMatches(r, msg, a.botUserId))
+  if (ownedKeyword) return sharedBotTarget(ownedKeyword)
+  const ownedAuto = scoped.find((r) => r.match.kind === 'auto')
+  if (ownedAuto) return sharedBotTarget(ownedAuto)
+
+  // 2. Thread continuity: an un-mentioned follow-up in a thread the relay already
+  //    routed continues to that agent, provided it is still a member — and, for a
+  //    conversation-gated agent (§14), provided the conversation is still enabled
+  //    (a channel-scoped route for that agent exists). The affinity map is not
+  //    scope-filtered, so without this check a pre-gate binding routes forever.
+  // A continuity binding pointing at the author is skipped for the same reason: the
+  // thread's remembered owner may BE the agent that just spoke.
+  const remembered = affinity.get(sharedBotSessionKey(msg))
+  const cont = remembered && remembered.agentId === verifiedAgentAuthor ? undefined : remembered
+  const directControlOk =
+    !cont || (!msg.isDm && msg.isGroupDm !== true) || scoped.some((r) => r.agentId === cont.agentId)
+  const contGateOk =
+    directControlOk &&
+    (!cont || !a.gatedAgentIds?.includes(cont.agentId) || scoped.some((r) => r.agentId === cont.agentId))
+  if (cont && contGateOk && a.members.some((m) => m.daemonId === cont.daemonId && m.agentIds.includes(cont.agentId))) {
+    if (cont.integrationId) return cont
+    const route = a.routes.find((r) => r.agentId === cont.agentId)
+    if (route) return { ...cont, integrationId: route.integrationId }
+    return cont
+  }
+
+  // 3. Keyword disambiguation (§10.2): "@bot <slug> …" → that agent. Only when the
+  //    bot was actually addressed (a mention or a DM), so a stray slug substring in
+  //    a normal channel message doesn't trigger it.
+  const addressed = msg.isDm || (verifiedAgentAuthor === undefined && explicitlyMentioned)
+  if (addressed) {
+    const kw = routes.find((r) => r.match.kind === 'keyword' && !r.scope && sharedBotKindMatches(r, msg, a.botUserId))
+    if (kw) return sharedBotTarget(kw)
+
+    // 4. Default agent (§10.3): a bare @bot / DM with no slug → the group default.
+    if (a.defaultAgentId && a.defaultDaemonId && a.defaultAgentId !== verifiedAgentAuthor) {
+      // Resolve the default's integrationId from its (keyword) route.
+      const def = routes.find((r) => r.agentId === a.defaultAgentId)
+      if (def) return { agentId: a.defaultAgentId, daemonId: a.defaultDaemonId, integrationId: def.integrationId }
+    }
+  }
+
+  return null
 }

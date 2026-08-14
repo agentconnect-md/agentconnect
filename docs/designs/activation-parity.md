@@ -79,13 +79,21 @@ both directions: editing an expectation fails the driver that demonstrates the
 old outcome, and a behavior change fails the driver's measured assertions. All
 of it is credential-free and runs in the Unit Test CI gate: `pnpm eval:parity`.
 
-The relay's arbitrate ladder has no leg yet; it is pinned by its own unit suite
-(`packages/relay/src/bot-arbitration.test.ts`) and inherits the daemon
-expectations by construction ("same rules", §6). The single policy module now
-exists (`@agentconnect.md/activation-policy`, consumed by the daemon); the
-relay leg lands when the relay is folded onto it — the module's header
-documents how `AttributedRoute`s and the affinity map plug into the same
-functions.
+The relay's arbitrate ladder is now package-owned too (`arbitrateSharedBot`
+in `@agentconnect.md/activation-policy`; `packages/relay/src/bot-arbitration.ts`
+is the thin adapter keeping the stateful affinity/participant bookkeeping). It
+is pinned by its own unit suite (`packages/relay/src/bot-arbitration.test.ts`)
+against the package-owned ladder, whose DECLARED structural adaptations to the
+multi-agent shared-bot shape (channel ownership first with scoped keyword over
+auto, no unscoped mention rung, addressed-gated slug + `defaultAgentId`
+fallback, membership/gate-checked continuity) are documented in the package
+header alongside the daemon ladder. A dedicated relay parity LEG (spec-driven
+drivers like the Slack/webchat legs) is still future work — the documented
+mapping in the package header is the interim contract. One latent structural
+divergence is pinned there rather than harmonized: the daemon ladder admits
+bot-sender mentions with a Slack literal while the relay ladder reads the
+platform manifest's `botSenderRouting` (identical behavior today — the
+manifest test pins Slack-only).
 
 ### 2.1 Declared per-surface divergences (as of this writing)
 
