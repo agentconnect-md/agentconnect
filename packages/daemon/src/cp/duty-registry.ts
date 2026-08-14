@@ -88,6 +88,28 @@ export class DutyRegistry {
     return this.diff(before, { added, updated })
   }
 
+  /** The removal half of a replacement whose install was refused. Shrink each held group to the
+   *  members its replacement still names, keeping the OLD term: the removals are not what failed,
+   *  so applying them alone only ever reduces what this daemon serves, while the stale term is what
+   *  makes the CP reissue the full replacement. A group this daemon does not hold is skipped — a
+   *  refusal must never resurrect one. */
+  shrinkToGrant(grants: DutyGrantEntry[]): DutyApplyResult {
+    if (grants.length === 0) return EMPTY
+    const before = this.agents()
+    const updated: string[] = []
+    for (const g of grants) {
+      const held = this.held.get(g.groupId)
+      if (!held) continue
+      const kept = new Set(g.members.map((m) => `${m.kind}:${m.refId}`))
+      const agentIds = held.agentIds.filter((id) => kept.has(`agent:${id}`))
+      const botIds = held.botIds.filter((id) => kept.has(`bot:${id}`))
+      if (agentIds.length === held.agentIds.length && botIds.length === held.botIds.length) continue
+      updated.push(g.groupId)
+      this.held.set(g.groupId, { ...held, agentIds, botIds })
+    }
+    return this.diff(before, { added: [], updated })
+  }
+
   applyRevoke(revocations: DutyRevoke['revocations']): DutyApplyResult {
     if (revocations.length === 0) return EMPTY
     const before = this.agents()

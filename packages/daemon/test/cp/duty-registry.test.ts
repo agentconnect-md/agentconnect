@@ -62,6 +62,55 @@ describe('DutyRegistry', () => {
     expect(r.holdsAgent(A2)).toBe(false)
   })
 
+  it('a refused replacement shrinks the held group to the shared members, at the OLD term', () => {
+    // The removals are not what failed, so they apply on their own; the stale term is what makes
+    // the CP reissue the full replacement rather than fall silent on a term the member confirms.
+    const r = new DutyRegistry()
+    r.applyGrant([grant(G1, '1', [A1, A2], [B1])])
+    const result = r.shrinkToGrant([grant(G1, '2', [A2, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3'])])
+
+    expect(result.updated).toEqual([G1])
+    expect(result.agentsGained).toEqual([])
+    expect(result.agentsLost).toEqual([A1])
+    expect(r.digest()).toEqual([{ groupId: G1, term: '1' }])
+    expect([...r.agents()]).toEqual([A2])
+    expect([...r.bots()]).toEqual([])
+  })
+
+  it('shrinking never adds a member the install refused', () => {
+    const r = new DutyRegistry()
+    r.applyGrant([grant(G1, '1', [A1])])
+    r.shrinkToGrant([grant(G1, '2', [A1, A2])])
+
+    expect([...r.agents()]).toEqual([A1])
+  })
+
+  it('shrinking reports an agent as lost only when no held group covers it any more', () => {
+    const r = new DutyRegistry()
+    r.applyGrant([grant(G1, '1', [A1]), grant(G2, '1', [A1])])
+    const result = r.shrinkToGrant([grant(G1, '2', [A2])])
+
+    expect(result.agentsLost).toEqual([])
+    expect(r.holdsAgent(A1)).toBe(true)
+  })
+
+  it('shrinking a group this daemon does not hold is a no-op — a refusal never resurrects', () => {
+    const r = new DutyRegistry()
+    const result = r.shrinkToGrant([grant(G1, '1', [A1])])
+
+    expect(result.updated).toEqual([])
+    expect(r.size()).toBe(0)
+  })
+
+  it('a replacement that removes nothing reports no update at all', () => {
+    const r = new DutyRegistry()
+    r.applyGrant([grant(G1, '1', [A1], [B1])])
+    const result = r.shrinkToGrant([grant(G1, '2', [A1, A2], [B1])])
+
+    expect(result.updated).toEqual([])
+    expect(r.digest()).toEqual([{ groupId: G1, term: '1' }])
+  })
+
   it('a revoke drops the group and its agents', () => {
     const r = new DutyRegistry()
     r.applyGrant([grant(G1, '1', [A1]), grant(G2, '1', [A2])])
