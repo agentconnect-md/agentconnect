@@ -2138,8 +2138,9 @@ export class Daemon {
   // what keeps the whole path dormant there.
   private readonly duties = new DutyRegistry()
   // Claims in flight to the CP. Each reserves one slot of headroom so concurrent
-  // rendezvous claims cannot read the same capacity and collectively overshoot.
-  private pendingDutyClaims = 0
+  // rendezvous claims cannot read the same capacity and collectively overshoot,
+  // and a drain joins them so none can settle after `drain/done`.
+  private readonly inFlightDutyClaims = new Set<Promise<unknown>>()
   // Latched for the WHOLE drain handoff, including the window after `draining`
   // reopens and before the leases are surrendered — a claim landing there would
   // install a grant the release snapshot has already passed by.
@@ -12639,7 +12640,17 @@ export class Daemon {
   private dutyHeadroom(): number {
     const max = this.cfg?.limits?.maxAgents ?? 0
     if (max <= 0) return 32
-    return Math.max(0, max - this.duties.agents().size - this.pendingDutyClaims)
+    return Math.max(0, max - this.duties.agents().size - this.inFlightDutyClaims.size)
+  }
+
+  /** Slots left for a claim that is ITSELF in flight — its own reservation is
+   *  excluded, every other one still counts, and the result is deliberately not
+   *  clamped: a full member must come out negative and refuse, never at zero
+   *  with a slot to spare. */
+  private dutyHeadroomForPendingClaim(): number {
+    const max = this.cfg?.limits?.maxAgents ?? 0
+    if (max <= 0) return 32
+    return max - this.duties.agents().size - Math.max(0, this.inFlightDutyClaims.size - 1)
   }
 
   /** True when duty leases actually gate service. Off (the default) the exchange
@@ -12691,8 +12702,13 @@ export class Daemon {
       return { granted: false }
     }
     // Reserve a slot for the duration of the round trip so concurrent claims
-    // cannot each read the same headroom and collectively overshoot.
-    this.pendingDutyClaims++
+    // cannot each read the same headroom and collectively overshoot, and so a
+    // drain can join this claim rather than finish while it is still in flight.
+    let markSettled!: () => void
+    const settled = new Promise<void>((resolve) => {
+      markSettled = resolve
+    })
+    this.inFlightDutyClaims.add(settled)
     try {
       const claim = await this.cpClient?.claimDuty(agentId)
       if (!claim) return { granted: false }
@@ -12704,8 +12720,7 @@ export class Daemon {
       // is judged against it — never against the single agent we asked about.
       const arriving = grant.members.filter((m) => m.kind === 'agent' && !this.duties.holdsAgent(m.refId)).length
       const draining = this.dutyClaimsSuspended || this.draining || this.drainingAgents.has(agentId)
-      // `- 1` releases this claim's own reservation before judging the fit.
-      if (draining || arriving > this.dutyHeadroom() + 1) {
+      if (draining || arriving > this.dutyHeadroomForPendingClaim()) {
         const why = draining ? 'a drain started while the claim was in flight' : 'it does not fit remaining capacity'
         this.log.info(`duty: handing ${grant.groupId} straight back — ${why}`)
         await this.cpClient
@@ -12722,7 +12737,18 @@ export class Daemon {
       this.log.warn(`duty: claiming ${agentId} for an inbound trigger failed: ${err}`)
       return { granted: false }
     } finally {
-      this.pendingDutyClaims--
+      this.inFlightDutyClaims.delete(settled)
+      markSettled()
+    }
+  }
+
+  /** Wait for every claim already awaiting the CP to settle. Called inside the
+   *  drain latch, so each one sees the latch and hands back what it won —
+   *  without this join a drain can finish and clear the latch while an older
+   *  response is still in flight, installing a grant after `drain/done`. */
+  private async joinInFlightDutyClaims(): Promise<void> {
+    while (this.inFlightDutyClaims.size > 0) {
+      await Promise.allSettled([...this.inFlightDutyClaims])
     }
   }
 
@@ -19249,6 +19275,9 @@ export class Daemon {
   /** Hand every held duty back to the CP. Best-effort by contract — on failure
    *  the leases simply lapse, which is the same outcome one T_reassign later. */
   private async releaseAllDuties(): Promise<void> {
+    // Join first: a claim still awaiting the CP would otherwise land after the
+    // snapshot below and outlive the drain.
+    await this.joinInFlightDutyClaims()
     const groupIds = this.duties.releaseAll()
     if (groupIds.length === 0) return
     try {

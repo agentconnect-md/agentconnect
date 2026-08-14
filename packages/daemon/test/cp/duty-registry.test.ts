@@ -121,6 +121,32 @@ describe('duty capacity accounting', () => {
   // in-flight claims reserve a slot so concurrent ones cannot overshoot.
   const headroom = (max: number, covered: number, pending = 0) => (max > 0 ? Math.max(0, max - covered - pending) : 32)
 
+  /** What a claim that is ITSELF in flight may still accept: its own
+   *  reservation is excluded, others still count, and the result is NOT clamped
+   *  — a full member must come out negative rather than at zero with a slot. */
+  const headroomForPending = (max: number, covered: number, pending: number) =>
+    max > 0 ? max - covered - Math.max(0, pending - 1) : 32
+
+  it('a full member comes out negative, never at zero with a phantom slot', () => {
+    const r = new DutyRegistry()
+    r.applyGrant([grant(G1, '1', [A1, A2])])
+    // maxAgents 2, both covered, this claim is the only one in flight.
+    expect(headroomForPending(2, r.agents().size, 1)).toBe(0)
+    // So a group bringing even one agent does not fit.
+    expect(1 > headroomForPending(2, r.agents().size, 1)).toBe(true)
+  })
+
+  it('two concurrent claims cannot both spend the last slot', () => {
+    const r = new DutyRegistry()
+    r.applyGrant([grant(G1, '1', [A1])])
+    // maxAgents 2, one covered, two claims in flight: each sees the other's
+    // reservation, so neither may take the single remaining slot.
+    expect(headroomForPending(2, r.agents().size, 2)).toBe(0)
+    expect(1 > headroomForPending(2, r.agents().size, 2)).toBe(true)
+    // Alone, that same claim fits.
+    expect(1 > headroomForPending(2, r.agents().size, 1)).toBe(false)
+  })
+
   it('in-flight claims reserve headroom so concurrent claims cannot overshoot', () => {
     const r = new DutyRegistry()
     r.applyGrant([grant(G1, '1', [A1])])
