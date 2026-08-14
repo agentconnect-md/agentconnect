@@ -49,9 +49,33 @@ export class DutyLeaseService {
     const heldById = new Map(held.map((g) => [g.groupId, g]))
     const digestIds = new Set(duties.held.map((d) => d.groupId))
 
-    // Digest entries the ledger no longer grants this member: superseded when the
-    // group lives under someone else, gone when its edges were removed entirely.
-    const lost = duties.held.filter((d) => !heldById.has(d.groupId))
+    // Re-issue held groups the member does not know it holds (restart / lost
+    // grant EVT) or knows only at a stale term — the reconnect crossing point:
+    // confirm the terms or supersede, never both. A missing group will occupy a
+    // NEW local slot, so it is charged against the reported headroom below; a
+    // stale-term re-issue is already local and costs nothing.
+    const missing: DutyGroupRecord[] = held.filter((g) => !digestIds.has(g.groupId))
+    const stale: DutyGroupRecord[] = held.filter((g) => {
+      const claimed = duties.held.find((d) => d.groupId === g.groupId)
+      return claimed !== undefined && claimed.term !== String(g.term)
+    })
+
+    let granted: DutyGrantRecord[] = []
+    const budget = Math.max(0, duties.headroom - missing.length)
+    if (budget > 0 && this.clock.now() >= this.bootedAtMs + this.config.recoveryGraceMs) {
+      granted = await this.repo.claimVacant(
+        daemonId,
+        Math.min(budget, this.config.grantMaxPerTick),
+        now,
+        this.config.leaseMs
+      )
+    }
+
+    // Classified AFTER the claim so the grant and revoke sets are disjoint by
+    // construction: a vacant digest group the claim just re-took is a grant at
+    // its new term, never a simultaneous revocation.
+    const grantedIds = new Set(granted.map((g) => g.groupId))
+    const lost = duties.held.filter((d) => !heldById.has(d.groupId) && !grantedIds.has(d.groupId))
     const revocations: DutyRevoke['revocations'] = []
     if (lost.length > 0) {
       const existing = new Set((await this.repo.getByIds(lost.map((d) => d.groupId))).map((g) => g.groupId))
@@ -59,21 +83,7 @@ export class DutyLeaseService {
         revocations.push({ groupId: d.groupId, reason: existing.has(d.groupId) ? 'superseded' : 'gone' })
     }
 
-    // Re-issue any held group whose term the member has stale (a lost grant EVT
-    // after a composition re-grant) or does not know it holds at all — the
-    // reconnect crossing point: confirm the terms or supersede, never both.
-    const regrants: DutyGroupRecord[] = held.filter((g) => {
-      const claimed = duties.held.find((d) => d.groupId === g.groupId)
-      return claimed === undefined || claimed.term !== String(g.term) || !digestIds.has(g.groupId)
-    })
-
-    let granted: DutyGrantRecord[] = []
-    if (duties.headroom > 0 && this.clock.now() >= this.bootedAtMs + this.config.recoveryGraceMs) {
-      const max = Math.min(duties.headroom, this.config.grantMaxPerTick)
-      granted = await this.repo.claimVacant(daemonId, max, now, this.config.leaseMs)
-    }
-
-    const grants = [...regrants.map(toGrantEntry), ...granted.map(toGrantEntry)]
+    const grants = [...missing.map(toGrantEntry), ...stale.map(toGrantEntry), ...granted.map(toGrantEntry)]
     if (grants.length > 0) send('duty/grant', { grants })
     if (revocations.length > 0) send('duty/revoke', { revocations })
   }

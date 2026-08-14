@@ -14,6 +14,8 @@ const DAEMON = 'd1111111-1111-4111-8111-111111111111'
 const OTHER = 'd2222222-2222-4222-8222-222222222222'
 const GROUP = '00000000-0000-4000-8000-000000000001'
 const AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1'
+const AGENT2 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2'
+const GROUP2 = '00000000-0000-4000-8000-000000000002'
 const AUTH_ID = '99999999-9999-4999-8999-999999999999'
 const REG_ID = '88888888-8888-4888-8888-888888888888'
 const REL_ID = '77777777-7777-4777-8777-777777777777'
@@ -35,10 +37,15 @@ async function seedGroup(opts: { holder?: string; term?: bigint; expiresAt?: Dat
   })
 }
 
-async function ready(h: ReturnType<typeof buildWsHarness>) {
-  const token = await h.mintToken(DAEMON)
+async function ready(h: ReturnType<typeof buildWsHarness>, opts: { orgScoped?: boolean } = {}) {
   const { conn, stub } = h.connect()
-  stub.inject('auth', { apiKey: token, daemonId: DAEMON, agentVersion: '1.4.0' }, { id: AUTH_ID })
+  if (opts.orgScoped) {
+    const token = await h.mintToken(DAEMON)
+    stub.inject('auth', { apiKey: token, daemonId: DAEMON, agentVersion: '1.4.0' }, { id: AUTH_ID })
+  } else {
+    const saToken = await h.mintCloudDaemon(DAEMON)
+    stub.inject('auth', { serviceAccountToken: saToken, daemonId: DAEMON, agentVersion: '1.4.0' }, { id: AUTH_ID })
+  }
   await stub.expectFrame('auth/ok')
   stub.inject(
     'register',
@@ -197,5 +204,73 @@ describe('duty lease exchange (protocol level, real Postgres)', () => {
     const repo = new PgDutyGroupRepo(prisma)
     const grants = await repo.claimVacant(DaemonId(OTHER), 1, new Date(h.clock.now()), LEASE_MS)
     expect(grants[0]).toMatchObject({ groupId: GROUP, orgId: OrgId(DEFAULT_ORG_ID), term: 3n })
+  })
+})
+
+describe('duty lease exchange — scope gate and allocation coherence', () => {
+  it('an org-scoped daemon sending duties is ignored: no frames, no ledger writes', async () => {
+    await seedGroup()
+    const h = buildWsHarness(prisma)
+    const { stub } = await ready(h, { orgScoped: true })
+
+    stub.inject('heartbeat', heartbeat({ held: [], headroom: 4 }))
+    await new Promise((r) => setTimeout(r, 25))
+    expect(stub.sent.filter((f) => f.type.startsWith('duty/'))).toEqual([])
+    const row = await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })
+    expect(row.holder).toBeNull()
+  })
+
+  it('an org-scoped daemon calling duty/release gets SCOPE_DENIED and vacates nothing', async () => {
+    const h = buildWsHarness(prisma)
+    const start = new Date(h.clock.now())
+    await seedGroup({ holder: DAEMON, term: 1n, expiresAt: new Date(start.getTime() + LEASE_MS) })
+    const { stub } = await ready(h, { orgScoped: true })
+
+    stub.inject('duty/release', { groupIds: [GROUP] }, { id: REL_ID })
+    const err = await stub.expectFrame('error')
+    if (!isFrame('error')(err)) throw new Error('expected error')
+    expect(err.corr).toBe(REL_ID)
+    expect(err.payload.code).toBe('SCOPE_DENIED')
+    const row = await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })
+    expect(row.holder).toBe(DAEMON)
+  })
+
+  it('missing-from-digest regrants are charged against headroom before fresh claims', async () => {
+    // The ledger already holds GROUP for this member; a second group sits vacant.
+    const h = buildWsHarness(prisma)
+    const start = new Date(h.clock.now())
+    await seedGroup({ holder: DAEMON, term: 1n, expiresAt: new Date(start.getTime() + LEASE_MS) })
+    await prisma.dutyGroup.create({ data: { id: GROUP2, orgId: DEFAULT_ORG_ID, term: 0n } })
+    await prisma.dutyGroupMember.create({
+      data: { kind: 'agent', refId: AGENT2, groupId: GROUP2, orgId: DEFAULT_ORG_ID }
+    })
+    const { stub } = await ready(h)
+
+    // Restart shape: empty digest, headroom 1 — the missing regrant consumes the slot.
+    stub.inject('heartbeat', heartbeat({ held: [], headroom: 1 }))
+    const grant = await stub.expectFrame('duty/grant')
+    if (!isFrame('duty/grant')(grant)) throw new Error('expected duty/grant')
+    expect(grant.payload.grants).toHaveLength(1)
+    expect(grant.payload.grants[0]).toMatchObject({ groupId: GROUP, term: '1' })
+    const vacant = await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP2 } })
+    expect(vacant.holder).toBeNull()
+  })
+
+  it('a vacant digest group re-claimed in the same beat is granted, never also revoked', async () => {
+    // The member believes it holds GROUP, but the lease lapsed (e.g. a long partition).
+    const h = buildWsHarness(prisma)
+    await seedGroup({ holder: DAEMON, term: 1n, expiresAt: new Date(h.clock.now() - 1) })
+    // renewHeld would refresh a still-holder row; simulate a release-then-nobody state instead.
+    await prisma.dutyGroup.update({ where: { id: GROUP }, data: { holder: null, expiresAt: null } })
+    const { stub } = await ready(h)
+
+    stub.inject('heartbeat', heartbeat({ held: [{ groupId: GROUP, term: '1' }], headroom: 1 }))
+    const grant = await stub.expectFrame('duty/grant')
+    if (!isFrame('duty/grant')(grant)) throw new Error('expected duty/grant')
+    expect(grant.payload.grants).toEqual([
+      { groupId: GROUP, orgId: DEFAULT_ORG_ID, term: '2', members: [{ kind: 'agent', refId: AGENT }] }
+    ])
+    await new Promise((r) => setTimeout(r, 25))
+    expect(stub.sent.filter((f) => f.type === 'duty/revoke')).toEqual([])
   })
 })

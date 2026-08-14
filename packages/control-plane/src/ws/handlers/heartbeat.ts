@@ -26,8 +26,10 @@ export const handleHeartbeat: Handler = async (frame, conn, deps) => {
   await deps.registry.recordHeartbeat(did, hb)
 
   // Duty lease exchange (k8s daemons; frames/duty.ts): renewal is the heartbeat,
-  // grants and revocations ride back as EVTs on the same connection.
-  if (hb.duties) {
+  // grants and revocations ride back as EVTs on the same connection. Install-wide
+  // (frame-mode) connections only — duty groups span orgs, so an org-scoped
+  // daemon's `duties` is dropped rather than let it claim other orgs' members.
+  if (hb.duties && conn.orgId === null) {
     await deps.dutyLease.onHeartbeat(did, hb.duties, (type, payload) =>
       conn.send(type, payload, state ? { epoch: state.sessionEpoch } : undefined)
     )
