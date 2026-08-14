@@ -12866,20 +12866,22 @@ export class Daemon {
     this.onDutyChanged()
   }
 
-  // The duty self-fence (`T_reassign > T_fence`): stop serving before the CP can hand these leases to a successor.
-  // A local `duty/revoke`, never a removal — workspace, sessions, and the registry entry all survive it.
-  // Clearing the held groups IS the recovery: on reconnect the CP's missing-regrant reissues and re-installs them.
-  private fenceDuties(): void {
+  // The duty self-fence (`T_reassign > T_fence`): stop serving these groups before the CP can hand them to a
+  // successor. Per group, because the CP expires each lease on its own schedule — a group whose lease is still
+  // honoured keeps serving. Literally a local `duty/revoke`: same registry path, same teardown, so workspace,
+  // sessions, and the registry entry all survive it (#948), and the omitted groups are what the CP's
+  // missing-regrant path reissues on reconnect.
+  private fenceDuties(groupIds: string[]): void {
     // Enforcement off ⇒ duties gate nothing, so a teardown would drop live traffic for no reason.
     if (!this.dutyEnforced()) return
-    const served = this.duties.agents()
-    const groups = this.duties.releaseAll()
-    if (groups.length === 0) return
+    const held = groupIds.filter((groupId) => this.duties.get(groupId) !== undefined)
+    if (held.length === 0) return
+    const result = this.duties.applyRevoke(held.map((groupId) => ({ groupId, reason: 'superseded' as const })))
     this.log.warn(
-      `duty: self-fenced ${groups.length} group(s) covering ${served.size} agent(s) — ` +
-        'the CP lease horizon elapsed with the link down'
+      `duty: self-fenced ${held.length} group(s); ${result.agentsLost.length} agent(s) left service, ` +
+        `${this.duties.size()} group(s) still held — no confirmed lease renewal before the CP's horizon`
     )
-    for (const agentId of served) this.stopServingAgent(agentId)
+    for (const agentId of result.agentsLost) this.stopServingAgent(agentId)
     this.onDutyChanged()
   }
 
@@ -21446,7 +21448,7 @@ export class Daemon {
       },
       degradedScopes: () => this.cpDegradedScopes(),
       duties: () => this.dutyDigest(),
-      onDutyFence: () => this.fenceDuties(),
+      onDutyFence: (groupIds) => this.fenceDuties(groupIds),
       configApply: this.cpConfigApply(),
       sessionRead: createSessionReader(this.store, (session) => this.sessionThreadUrl(session)),
       // §5.4: serve a CP-forwarded status probe for a child session we own. Authorization is

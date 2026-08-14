@@ -10,8 +10,11 @@ import { Daemon } from '../src/daemon.js'
 import type { DutyRegistry } from '../src/cp/duty-registry.js'
 
 const AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1'
+const AGENT_B = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2'
 const GROUP = '11111111-1111-4111-8111-111111111111'
+const GROUP_B = '11111111-1111-4111-8111-111111111112'
 const INTEGRATION = '22222222-2222-4222-8222-222222222222'
+const INTEGRATION_B = '22222222-2222-4222-8222-222222222223'
 const CRON = '33333333-3333-4333-8333-333333333333'
 const ORG = 'org-1'
 
@@ -29,35 +32,40 @@ function scaffold(dutyEnforcement: boolean): string {
   return root
 }
 
-const grant = (): DutyGrantEntry => ({
-  groupId: GROUP,
+const grant = (groupId = GROUP, agentId = AGENT): DutyGrantEntry => ({
+  groupId,
   orgId: ORG,
   term: '1',
-  members: [{ kind: 'agent', refId: AGENT }]
+  members: [{ kind: 'agent', refId: agentId }]
 })
 
-const bundle = () => ({
-  agentId: AGENT,
+const bundle = (
+  agentId = AGENT,
+  name = 'scout',
+  integrationId = INTEGRATION,
+  creds = { botToken: 'xoxb-test', appToken: 'xapp-test' }
+) => ({
+  agentId,
   spec: {
     orgId: ORG,
-    name: 'scout',
+    name,
     runtime: 'claude',
     workspace: { mode: 'scratch' as const, isolation: 'shared' as const }
   },
   integrations: [
     {
-      integrationId: INTEGRATION,
-      agentId: AGENT,
+      integrationId,
+      agentId,
       orgId: ORG,
       platform: 'slack',
       core: { mode: 'direct' as const, bindRules: [], mutedChannels: [], gated: false },
-      config: { botToken: 'xoxb-test', appToken: 'xapp-test' }
+      config: { ...creds }
     }
   ],
   crons: [
     {
-      cronId: CRON,
-      agentId: AGENT,
+      cronId: agentId === AGENT ? CRON : `${CRON.slice(0, -1)}4`,
+      agentId,
       orgId: ORG,
       schedule: '0 9 * * *',
       timezone: 'UTC',
@@ -85,21 +93,21 @@ async function boot(dutyEnforcement = true) {
 
 const duties = (d: Daemon) => (d as any).duties as DutyRegistry
 const served = (d: Daemon): string[] => (d as any).transportAgents().map((a: { id: string }) => a.id)
-const fence = (d: Daemon) => (d as any).fenceDuties()
+/** Fence the given groups, as the client's per-group deadline does when one elapses. */
+const fence = (d: Daemon, groupIds: string[] = [GROUP]) => (d as any).fenceDuties(groupIds)
 
 /** Put a live Slack socket in the pool under the granted agent's own credentials, exactly as a
  *  successful `reconcileSlackConnections` would. Its key is what consolidation asks for while the
  *  duty is held — and what it must stop asking for once the fence closes the serving gate. */
-function liveSlackSocket(d: Daemon) {
-  const conn = {
-    appToken: 'xapp-test',
-    botToken: 'xoxb-test',
-    botUserId: 'U-bot',
-    stop: vi.fn(async () => {})
-  }
+function liveSlackSocket(
+  d: Daemon,
+  integrationId = INTEGRATION,
+  creds = { botToken: 'xoxb-test', appToken: 'xapp-test' }
+) {
+  const conn = { ...creds, botUserId: `U-${integrationId.slice(-1)}`, stop: vi.fn(async () => {}) }
   ;(d as any).slackPool.add(conn)
-  ;(d as any).connByIntegration.set(INTEGRATION, conn)
-  ;(d as any).botUserIds[INTEGRATION] = conn.botUserId
+  ;(d as any).connByIntegration.set(integrationId, conn)
+  ;(d as any).botUserIds[integrationId] = conn.botUserId
   return conn
 }
 
@@ -192,6 +200,54 @@ describe('the duty self-fence', () => {
     await vi.waitFor(() => expect(conn.stop).toHaveBeenCalled(), { timeout: 10_000 })
     expect(failures).toBeGreaterThan(1) // the first pass really did throw
     expect(pooled(daemon)).not.toContain(conn)
+    await daemon.stop()
+  })
+
+  it('fences one group and leaves the other serving, then fences that one at its own deadline', async () => {
+    // The CP expires each lease on its own schedule, so a member sheds exactly what it can no
+    // longer prove it holds. Tearing down the rest would drop live traffic the ledger still ours.
+    const { daemon } = await boot()
+    ;(daemon as any).cpClient.fetchDutyAgent = vi.fn(async () => ({
+      bundle: bundle(AGENT_B, 'ranger', INTEGRATION_B, { botToken: 'xoxb-b', appToken: 'xapp-b' })
+    }))
+    await (daemon as any).admitDutyGrants([grant(GROUP_B, AGENT_B)])
+    expect(served(daemon).sort()).toEqual([AGENT, AGENT_B].sort())
+    const socketA = liveSlackSocket(daemon)
+    const socketB = liveSlackSocket(daemon, INTEGRATION_B, { botToken: 'xoxb-b', appToken: 'xapp-b' })
+
+    fence(daemon, [GROUP])
+
+    // A is shed…
+    expect(duties(daemon).get(GROUP)).toBeUndefined()
+    expect(served(daemon)).not.toContain(AGENT)
+    await vi.waitFor(() => expect(socketA.stop).toHaveBeenCalled())
+    // …and B keeps serving, socket and schedules intact.
+    expect(duties(daemon).digest()).toEqual([{ groupId: GROUP_B, term: '1' }])
+    expect(served(daemon)).toContain(AGENT_B)
+    expect((daemon as any).scheduler.count(AGENT_B)).toBe(1)
+    expect(socketB.stop).not.toHaveBeenCalled()
+    expect(pooled(daemon)).toContain(socketB)
+
+    fence(daemon, [GROUP_B])
+
+    expect(duties(daemon).digest()).toEqual([])
+    expect(served(daemon)).not.toContain(AGENT_B)
+    await vi.waitFor(() => expect(socketB.stop).toHaveBeenCalled())
+    await daemon.stop()
+  })
+
+  it('fencing a group leaves an agent that another held group also covers in service', async () => {
+    // `applyRevoke` reports an agent as lost only when it is in NO held group any more, and the
+    // teardown follows that, not the group membership — so a shared agent keeps serving.
+    const { daemon } = await boot()
+    await (daemon as any).admitDutyGrants([grant(GROUP_B, AGENT)])
+    expect(duties(daemon).digest()).toHaveLength(2)
+
+    fence(daemon, [GROUP])
+
+    expect(duties(daemon).digest()).toEqual([{ groupId: GROUP_B, term: '1' }])
+    expect(served(daemon)).toContain(AGENT) // still covered by the group that did not expire
+    expect((daemon as any).scheduler.count(AGENT)).toBe(1)
     await daemon.stop()
   })
 

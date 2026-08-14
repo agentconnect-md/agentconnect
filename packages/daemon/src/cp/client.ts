@@ -223,9 +223,10 @@ export interface CpClientDeps {
    *  an install-wide (frame-mode) connection; absent ⇒ this daemon does not
    *  participate in the ledger and the CP-side exchange stays dormant. */
   duties?: () => HeartbeatDuties | undefined
-  /** Duty self-fence: the link has been down long enough that the ledger is about to hand this member's leases
-   *  to a successor, so stop serving them first. Armed off the last duty beat, never off the disconnect. */
-  onDutyFence?: () => void
+  /** Duty self-fence: these groups' leases are about to go vacant at the CP, so stop serving them first. Called
+   *  with the groups whose OWN deadline elapsed — never the whole held set — so a member sheds exactly what it
+   *  can no longer prove it holds and keeps serving the rest. */
+  onDutyFence?: (groupIds: string[]) => void
   configApply: ConfigApply
   /** Read-only session list/history seam over the local store (§1/§12). */
   sessionRead: SessionReader
@@ -292,10 +293,12 @@ export class CpClient {
   /** True when this CP confirms renewals (`auth/ok` carried a horizon ⇒ it also sends `duty/renewed`), so the
    *  anchor is evidence the CP renewed rather than evidence we queued a frame. */
   private dutyRenewalsConfirmed = false
-  /** When the lease countdown last provably restarted: receipt of `duty/renewed` or of a won `duty/claim/ok`,
-   *  or — only against a CP that confirms nothing — the weaker "we sent a duty beat". Undefined, never 0, so a
-   *  renewal at clock time zero is not read as "no lease this member could lose". */
-  private lastLeaseRenewalAt?: number
+  /** One fence deadline PER HELD GROUP, keyed by groupId, each anchored on the receipt that restarted it:
+   *  `duty/renewed` (all of them), a `duty/grant`, or a won `duty/claim/ok` (just that one). The CP expires each
+   *  lease independently, so a single global deadline would let a fresh grant or claim postpone an older group
+   *  past its own unchanged expiry — and would leave a group granted without a following confirmation with no
+   *  deadline at all. Empty ⇒ no lease this member could lose. */
+  private readonly dutyDeadlines = new Map<string, { anchoredAt: number; deadline: number }>()
   private dutyFenceTimer?: TimerHandle
   private connectRun?: Promise<void>
   /** `stop()` must join snapshot convergence after a transport has connected,
@@ -553,7 +556,7 @@ export class CpClient {
     // A member with a running fence beats immediately instead of a cadence from now: only a CONFIRMED
     // renewal lifts the fence, and a reconnect that waits for the next scheduled beat can be fenced with
     // the link already healthy. The confirmation this elicits is what actually cancels it.
-    if (this.state === 'READY' && this.lastLeaseRenewalAt !== undefined) this.sendHeartbeat()
+    if (this.state === 'READY' && this.dutyDeadlines.size > 0) this.sendHeartbeat()
     this.deps.log.info(`cp: READY (epoch=${this.sessionEpoch}, routingEpoch=${this.routingEpoch})`)
 
     // Report the observed runtime snapshot (D→C `facts/daemon-runtimes`,
@@ -892,12 +895,11 @@ export class CpClient {
       throw new WireError('INTERNAL', `expected duty/claim/ok, got ${rep.type}`, false)
     }
     const claim = rep.payload as DutyClaimOk
-    // A won claim CREATES this member's lease (`claimAgentHome` writes `expiresAt = now + leaseMs`)
-    // and it starts serving at once — so it is a renewal in every sense the fence cares about, and
-    // often the FIRST one, on a member no heartbeat has confirmed anything for yet. Without this the
-    // rendezvous serves a lease with no countdown running at all. Receipt-anchored like a renewal,
-    // and conservative for the same reason: the CP wrote `expiresAt` strictly before this reply.
-    if (claim.granted) this.noteLeaseRenewed()
+    // A won claim CREATES this member's lease (`claimAgentHome` writes `expiresAt = now + leaseMs`) and it starts
+    // serving at once — often the member's FIRST lease, with no heartbeat confirmed for it yet, so without this
+    // the rendezvous would serve with no countdown running. Only THIS group's deadline moves: the claim renewed
+    // nothing else, and postponing an older group here is exactly the hole per-group deadlines close.
+    if (claim.granted && claim.grant) this.noteLeasesGranted([claim.grant.groupId])
     return claim
   }
 
@@ -1225,19 +1227,50 @@ export class CpClient {
     // Sending is not renewing: on a half-open socket this `send` succeeds locally and the CP never runs
     // `renewHeld`, so against a confirming CP the anchor moves only in `onDutyRenewed`. Against one that
     // confirms nothing this is the best evidence available, and it is weaker on exactly that failure.
-    if (duties && live && !this.dutyRenewalsConfirmed) this.noteLeaseRenewed()
+    if (duties && live && !this.dutyRenewalsConfirmed) this.noteLeasesRenewed()
   }
 
   /** `duty/renewed` EVT — the CP renewed this member's leases for `leaseMs` more, as of a moment strictly before
    *  this frame arrived. The only thing that restarts the fence countdown against a confirming CP. */
   private onDutyRenewed(leaseMs: number): void {
     this.dutyLeaseMs = leaseMs
-    this.noteLeaseRenewed()
+    this.noteLeasesRenewed()
   }
 
-  private noteLeaseRenewed(): void {
-    this.lastLeaseRenewalAt = this.deps.clock.now()
+  /** A renewal restarts the countdown of EVERY group this member holds — `renewHeld` renews by holder with no id
+   *  filter, so one confirmation genuinely does refresh them all, and the per-group map collapses back to a single
+   *  value after each one. It is also where the map is pruned: the daemon's digest is the authoritative held set. */
+  private noteLeasesRenewed(): void {
+    const held = this.deps.duties?.()?.held ?? []
+    const stillHeld = new Set(held.map((entry) => entry.groupId))
+    for (const groupId of this.dutyDeadlines.keys()) if (!stillHeld.has(groupId)) this.dutyDeadlines.delete(groupId)
+    const now = this.deps.clock.now()
+    for (const entry of held) this.dutyDeadlines.set(entry.groupId, this.deadlineFrom(now))
     this.armDutyFence()
+  }
+
+  /** A grant or a won claim CREATES (or re-terms) exactly one lease, so only that group's countdown restarts —
+   *  postponing an older group's deadline because a new one arrived is precisely the split this prevents.
+   *  Receipt-anchored: the CP wrote `expiresAt` strictly before the frame reached us. This is also what arms a
+   *  first grant whose renewal confirmation never lands, and what re-arms a group granted back after a fence. */
+  private noteLeasesGranted(groupIds: string[]): void {
+    if (groupIds.length === 0) return
+    const now = this.deps.clock.now()
+    for (const groupId of groupIds) this.dutyDeadlines.set(groupId, this.deadlineFrom(now))
+    this.armDutyFence()
+  }
+
+  /** A revoked group is no longer ours to fence — drop its deadline so it cannot fire, and so it cannot hold the
+   *  timer at an earlier point than any group still held. */
+  private forgetLeaseDeadlines(groupIds: string[]): void {
+    let dropped = false
+    for (const groupId of groupIds) dropped = this.dutyDeadlines.delete(groupId) || dropped
+    if (dropped) this.armDutyFence()
+  }
+
+  private deadlineFrom(now: number): { anchoredAt: number; deadline: number } {
+    const horizon = this.dutyLeaseMs ?? DUTY_LEASE_FALLBACK_MS
+    return { anchoredAt: now, deadline: now + Math.floor(horizon * DUTY_FENCE_HORIZON_FRACTION) }
   }
 
   private stopHeartbeat(): void {
@@ -1247,26 +1280,42 @@ export class CpClient {
     }
   }
 
-  /** (Re)arm the self-fence off the latest renewal. Deliberately armed while the link is UP, not on disconnect:
+  /** Arm on the EARLIEST deadline any held group has. Deliberately armed while the link is UP, not on disconnect:
    *  a half-open socket produces no close event and no renewal either, and only a running deadline fences it.
    *  A healthy member simply re-arms every renewal, long before the deadline it set the time before. */
   private armDutyFence(): void {
-    const renewedAt = this.lastLeaseRenewalAt
-    if (renewedAt === undefined) return // no lease was ever renewed here: nothing the CP could reassign
-    if (!this.deps.onDutyFence) return
     this.clearDutyFence()
-    const horizon = this.dutyLeaseMs ?? DUTY_LEASE_FALLBACK_MS
-    const delay = Math.max(0, renewedAt + Math.floor(horizon * DUTY_FENCE_HORIZON_FRACTION) - this.deps.clock.now())
-    // Fires at most once per renewal: nothing re-arms it but the next confirmed renewal, so a
-    // link that flaps for an hour fences (and warns) once, not once per drop.
+    if (!this.deps.onDutyFence || this.dutyDeadlines.size === 0) return // no lease the CP could reassign
+    let earliest = Infinity
+    for (const { deadline } of this.dutyDeadlines.values()) earliest = Math.min(earliest, deadline)
+    const delay = Math.max(0, earliest - this.deps.clock.now())
     this.dutyFenceTimer = this.deps.clock.setTimeout(() => {
       this.dutyFenceTimer = undefined
-      this.deps.log.warn(
-        `cp: duty self-fence — no confirmed lease renewal for ${this.deps.clock.now() - renewedAt}ms; ` +
-          'releasing held duties before the CP can reassign them'
-      )
-      this.deps.onDutyFence?.()
+      this.fireDutyFence()
     }, delay)
+  }
+
+  /** Fence the groups whose own deadline has passed and re-arm at the next earliest — a group whose lease the CP
+   *  still honours keeps serving. Each fenced group's deadline is dropped, so nothing re-arms it but a fresh grant
+   *  or renewal: a link that flaps for an hour fences a given group once, not once per drop. */
+  private fireDutyFence(): void {
+    const now = this.deps.clock.now()
+    const expired: string[] = []
+    let oldest = now
+    for (const [groupId, entry] of this.dutyDeadlines) {
+      if (entry.deadline > now) continue
+      expired.push(groupId)
+      oldest = Math.min(oldest, entry.anchoredAt)
+      this.dutyDeadlines.delete(groupId)
+    }
+    if (expired.length > 0) {
+      this.deps.log.warn(
+        `cp: duty self-fence — ${expired.length} group(s) with no confirmed lease renewal for ${now - oldest}ms; ` +
+          `releasing them before the CP can reassign them (${this.dutyDeadlines.size} still leased)`
+      )
+      this.deps.onDutyFence?.(expired)
+    }
+    this.armDutyFence()
   }
 
   private clearDutyFence(): void {
@@ -1282,15 +1331,25 @@ export class CpClient {
       case 'config/push':
         this.deps.configApply.applyConfigPush((frame.payload as { keys: Record<string, unknown> }).keys)
         return // EVT — no reply
-      case 'duty/grant':
-        this.deps.configApply.applyDutyGrant((frame.payload as DutyGrant).grants)
+      case 'duty/grant': {
+        const { grants } = frame.payload as DutyGrant
+        // BEFORE admission, which is async: the CP's lease on these groups is already running, and a grant whose
+        // renewal confirmation never arrives must still fence — the receipt of the grant is what arms it.
+        this.noteLeasesGranted(grants.map((entry) => entry.groupId))
+        this.deps.configApply.applyDutyGrant(grants)
         return // EVT — no reply
+      }
       case 'duty/renewed':
         this.onDutyRenewed((frame.payload as DutyRenewed).leaseMs)
         return // EVT — no reply
-      case 'duty/revoke':
-        this.deps.configApply.applyDutyRevoke((frame.payload as DutyRevoke).revocations)
+      case 'duty/revoke': {
+        const { revocations } = frame.payload as DutyRevoke
+        this.deps.configApply.applyDutyRevoke(revocations)
+        // Not ours any more: a revoked group must not keep a deadline that could fence it a second time, nor
+        // hold the timer earlier than any group still held.
+        this.forgetLeaseDeadlines(revocations.map((revocation) => revocation.groupId))
         return // EVT — no reply
+      }
       case 'cron/upsert':
         try {
           this.deps.configApply.upsertCron(frame.payload as Parameters<ConfigApply['upsertCron']>[0])

@@ -8,6 +8,7 @@ import { FakeClock } from './fake-clock.js'
 
 const DAEMON_ID = '22222222-2222-4222-8222-222222222222'
 const GROUP = '11111111-1111-4111-8111-111111111111'
+const GROUP_B = '11111111-1111-4111-8111-111111111112'
 const AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1'
 const LEASE_MS = 120_000
 // The shipped fence: 3/4 of the horizon past the last heartbeat that carried duties.
@@ -76,6 +77,8 @@ interface Options {
   /** Omit the duty getter (or scope the connection to one org) — then no lease can exist. */
   duties?: boolean
   organizationMode?: 'connection' | 'frame'
+  /** The groups the daemon holds; the digest projects these and a renewal refreshes exactly them. */
+  held?: string[]
 }
 
 async function ready(opts: Options = {}) {
@@ -83,6 +86,8 @@ async function ready(opts: Options = {}) {
   const clock = new FakeClock()
   const onDutyFence = vi.fn()
   const warn = vi.fn()
+  // The daemon's authoritative held set, which the digest projects and a renewal refreshes.
+  const held: string[] = [...(opts.held ?? [GROUP])]
   const deps = {
     url: 'wss://cp.example.test/daemon/ws',
     token: 't',
@@ -96,11 +101,15 @@ async function ready(opts: Options = {}) {
     localState: () => ({ assignments: [], crons: [], leases: [], agents: [], integrations: [], stagedAgents: [] }),
     loadSnapshot: () => ({ cpu: 0, mem: 0, agents: 0 }),
     activeSessions: () => 0,
-    ...(opts.duties === false ? {} : { duties: () => ({ held: [{ groupId: GROUP, term: '7' }], headroom: 3 }) }),
+    ...(opts.duties === false
+      ? {}
+      : { duties: () => ({ held: held.map((groupId) => ({ groupId, term: '7' })), headroom: 3 }) }),
     onDutyFence,
     configApply: {
       applyConfigPush() {},
       applyReconcileSnapshot() {},
+      applyDutyGrant() {},
+      applyDutyRevoke() {},
       upsertCron() {},
       removeCron() {},
       applyRouteAssign() {},
@@ -158,8 +167,22 @@ async function ready(opts: Options = {}) {
     )
     await tick()
   }
-  return { client, link, clock, onDutyFence, warn }
+  return { client, link, clock, onDutyFence, warn, held }
 }
+
+/** A `duty/grant` EVT for one group, as the CP emits it when it claims or re-terms a lease. */
+function grant(t: FakeTransport, groupId: string): void {
+  t.pushInbound(
+    JSON.stringify(
+      buildEnvelope('duty/grant', {
+        grants: [{ groupId, orgId: 'org-1', term: '7', members: [{ kind: 'agent', refId: AGENT }] }]
+      })
+    )
+  )
+}
+
+/** The groups each fence call shed, in call order. */
+const fenced = (spy: { mock: { calls: unknown[][] } }): unknown[] => spy.mock.calls.map((call) => call[0])
 
 /** Advance the clock, letting each step's async work settle. */
 async function advance(clock: FakeClock, ms: number): Promise<void> {
@@ -309,6 +332,129 @@ describe('the duty self-fence deadline', () => {
     link.current.simulateClose(1006, 'gone')
     await advance(clock, 10 * LEASE_MS)
     expect(onDutyFence).not.toHaveBeenCalled()
+  })
+
+  it('a grant whose renewal confirmation never arrives still fences on time', async () => {
+    // The grant's own receipt arms it. Nothing else can: this is the member's FIRST lease, so no
+    // confirmation has ever been seen, and the one that would follow this grant is lost.
+    const { link, clock, onDutyFence } = await ready()
+    grant(link.current, GROUP)
+    await tick()
+
+    link.up = false
+    link.current.simulateClose(1006, 'gone')
+    await advance(clock, FENCE_MS - 1)
+    expect(onDutyFence).not.toHaveBeenCalled()
+    await advance(clock, 1)
+    expect(fenced(onDutyFence)).toEqual([[GROUP]])
+  })
+
+  it('a grant after a fence re-arms that group, rather than serving it undeadlined', async () => {
+    const { link, clock, onDutyFence } = await ready()
+    grant(link.current, GROUP)
+    await tick()
+    await advance(clock, FENCE_MS)
+    expect(fenced(onDutyFence)).toEqual([[GROUP]])
+
+    // The CP hands it back (its missing-regrant, or a fresh claim) — a new lease, a new deadline.
+    grant(link.current, GROUP)
+    await tick()
+    await advance(clock, FENCE_MS - 1)
+    expect(onDutyFence).toHaveBeenCalledTimes(1)
+    await advance(clock, 1)
+    expect(fenced(onDutyFence)).toEqual([[GROUP], [GROUP]])
+  })
+
+  it('a claim for another group does not postpone an older group’s deadline', async () => {
+    // The one global deadline used to be reset by any lease event; group A's CP expiry never moved,
+    // so a claim for B could carry A past it. Per-group deadlines make that unrepresentable.
+    const { client, link, clock, onDutyFence } = await ready()
+    grant(link.current, GROUP) // A, deadline at t = FENCE_MS
+    await tick()
+    await advance(clock, BEAT_MS * 2)
+
+    const claim = client.claimDuty(AGENT)
+    await tick()
+    const req = link.current.sent.map((raw) => JSON.parse(raw)).find((f) => f.type === 'duty/claim')
+    link.current.pushInbound(
+      JSON.stringify(
+        buildEnvelope(
+          'duty/claim/ok',
+          { granted: true, grant: { groupId: GROUP_B, orgId: 'org-1', term: '1', members: [] } },
+          { corr: req.id }
+        )
+      )
+    )
+    await expect(claim).resolves.toMatchObject({ granted: true })
+
+    link.up = false
+    link.current.simulateClose(1006, 'gone')
+    // A fences at its own deadline, untouched by B's arrival…
+    await advance(clock, FENCE_MS - BEAT_MS * 2)
+    expect(fenced(onDutyFence)).toEqual([[GROUP]])
+    // …and B, leased later, fences later — a partial fence, not a teardown of everything.
+    await advance(clock, BEAT_MS * 2)
+    expect(fenced(onDutyFence)).toEqual([[GROUP], [GROUP_B]])
+  })
+
+  it('fences only the expired group and re-arms at the next earliest', async () => {
+    const { link, clock, onDutyFence } = await ready({ held: [GROUP, GROUP_B] })
+    grant(link.current, GROUP) // deadline FENCE_MS
+    await tick()
+    await advance(clock, BEAT_MS)
+    grant(link.current, GROUP_B) // deadline FENCE_MS + BEAT_MS
+    await tick()
+
+    link.up = false
+    link.current.simulateClose(1006, 'gone')
+    await advance(clock, FENCE_MS - BEAT_MS)
+    expect(fenced(onDutyFence)).toEqual([[GROUP]]) // B's lease is still honoured by the CP
+
+    await advance(clock, BEAT_MS)
+    expect(fenced(onDutyFence)).toEqual([[GROUP], [GROUP_B]])
+  })
+
+  it('one renewal refreshes every held group at once', async () => {
+    const { link, clock, onDutyFence } = await ready({ held: [GROUP, GROUP_B] })
+    grant(link.current, GROUP)
+    await tick()
+    await advance(clock, BEAT_MS)
+    grant(link.current, GROUP_B)
+    await tick()
+
+    // `renewHeld` renews by holder with no id filter, so ONE confirmation restarts both countdowns.
+    await advance(clock, BEAT_MS)
+    confirmRenewal(link.current)
+    await tick()
+    const renewedAt = clock.now()
+
+    link.up = false
+    link.current.simulateClose(1006, 'gone')
+    await advance(clock, FENCE_MS - 1)
+    expect(onDutyFence).not.toHaveBeenCalled() // neither group kept its older, earlier deadline
+    await advance(clock, 1)
+    expect(clock.now()).toBe(renewedAt + FENCE_MS)
+    expect(fenced(onDutyFence)).toEqual([[GROUP, GROUP_B]]) // both, in one call, at one deadline
+  })
+
+  it('a revoked group stops holding a deadline of its own', async () => {
+    const { link, clock, onDutyFence } = await ready({ held: [GROUP, GROUP_B] })
+    grant(link.current, GROUP)
+    await tick()
+    await advance(clock, BEAT_MS)
+    grant(link.current, GROUP_B)
+    await tick()
+
+    link.current.pushInbound(
+      JSON.stringify(buildEnvelope('duty/revoke', { revocations: [{ groupId: GROUP, reason: 'superseded' }] }))
+    )
+    await tick()
+
+    link.up = false
+    link.current.simulateClose(1006, 'gone')
+    // The revoked group's earlier deadline is gone with it; only B is left to fence, at its own time.
+    await advance(clock, FENCE_MS)
+    expect(fenced(onDutyFence)).toEqual([[GROUP_B]])
   })
 
   it('never arms for a daemon that renews no lease', async () => {
