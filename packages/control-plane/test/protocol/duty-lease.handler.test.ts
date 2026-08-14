@@ -366,6 +366,39 @@ describe('duty lease exchange — wire safety', () => {
     expect(row.term).toBe(1n)
   })
 
+  it('a held group grown past the cap at a stale term is superseded and vacated, not renewed', async () => {
+    const h = buildWsHarness(prisma)
+    const start = new Date(h.clock.now())
+    await prisma.dutyGroup.create({
+      data: {
+        id: GROUP,
+        orgId: DEFAULT_ORG_ID,
+        holder: DAEMON,
+        term: 2n,
+        expiresAt: new Date(start.getTime() + LEASE_MS)
+      }
+    })
+    await prisma.dutyGroupMember.createMany({
+      data: Array.from({ length: 1001 }, (_, i) => ({
+        kind: 'agent' as const,
+        refId: `aaaaaaaa-aaaa-4aaa-8aaa-${String(i).padStart(12, '0')}`,
+        groupId: GROUP,
+        orgId: DEFAULT_ORG_ID
+      }))
+    })
+    const { stub } = await ready(h)
+
+    // The daemon still serves the pre-growth composition at term 1.
+    stub.inject('heartbeat', heartbeat({ held: [{ groupId: GROUP, term: '1' }], headroom: 0 }))
+    const revoke = await stub.expectFrame('duty/revoke')
+    if (!isFrame('duty/revoke')(revoke)) throw new Error('expected duty/revoke')
+    expect(revoke.payload.revocations).toEqual([{ groupId: GROUP, reason: 'superseded' }])
+    expect(stub.sent.filter((f) => f.type === 'duty/grant')).toEqual([])
+    const row = await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })
+    expect(row.holder).toBeNull()
+    expect(row.expiresAt).toBeNull()
+  })
+
   it('an overlapping beat cannot double-spend headroom (single-flight per daemon)', async () => {
     // Two vacant groups, headroom 1: back-to-back beats dispatched without
     // awaiting must yield at most one grant — the second beat is dropped.

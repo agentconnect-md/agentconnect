@@ -158,14 +158,23 @@ export class DutyLeaseService {
     // Chunked emission: each chunk is independently applicable (a grant entry
     // REPLACES its group), so a reconnect restoring hundreds of groups converges
     // over several frames instead of assembling one the daemon must reject.
-    // An oversized STALE-TERM lease stays: the incumbent still serves it from
-    // its digest, only the term-refresh cannot ride this wire. Warn and keep.
+    // An oversized STALE-TERM lease cannot converge either: the group grew past
+    // the cap while held, its term moved, and the replacement entry can never
+    // ride this wire — so the daemon would serve the obsolete composition
+    // forever. Vacate and supersede instead; the size gate keeps the group
+    // unclaimable until an operator moves it to a dedicated tier.
     const staleOversized = stale.filter((g) => g.members.length > DUTY_GRANT_MEMBERS_MAX)
-    if (staleOversized.length > 0)
+    if (staleOversized.length > 0) {
+      await this.repo.release(
+        daemonId,
+        staleOversized.map((g) => g.groupId)
+      )
+      for (const g of staleOversized) revocations.push({ groupId: g.groupId, reason: 'superseded' })
       this.log?.warn(
         { daemonId, groupIds: staleOversized.map((g) => g.groupId) },
-        'held duty groups exceed the grant member cap; re-grant skipped — move them to a dedicated tier'
+        'held duty groups grew past the grant member cap; superseded and vacated — move them to a dedicated tier'
       )
+    }
     const grants = [
       ...deliverable(missing).map(toGrantEntry),
       ...deliverable(stale).map(toGrantEntry),
