@@ -119,6 +119,21 @@ export class DirHandle {
     }
   }
 
+  /** Open one child directory, creating that component from this handle only when it is absent. */
+  async childDirOrCreate(name: string): Promise<DirHandle> {
+    try {
+      return await this.childDir(name)
+    } catch (err) {
+      if (!(err instanceof MissingPathError)) throw err
+    }
+    try {
+      await fs.mkdir(this.childPath(name))
+    } catch (err) {
+      if (errno(err) !== 'EEXIST') throw classify(err, `"${name}"`)
+    }
+    return await this.childDir(name)
+  }
+
   /** Open one child file, refusing a symlink. The caller closes it. */
   async childFile(name: string): Promise<FileHandle> {
     assertComponent(name)
@@ -184,12 +199,14 @@ export class DirHandle {
 export async function withDescent<T>(
   anchorPath: string,
   segments: string[],
-  work: (dir: DirHandle) => Promise<T>
+  work: (dir: DirHandle) => Promise<T>,
+  options: { createMissing?: boolean } = {}
 ): Promise<T> {
   const open: DirHandle[] = [await DirHandle.openAnchor(anchorPath)]
   try {
     for (const segment of segments) {
-      open.push(await open[open.length - 1]!.childDir(segment))
+      const parent = open[open.length - 1]!
+      open.push(options.createMissing ? await parent.childDirOrCreate(segment) : await parent.childDir(segment))
     }
     return await work(open[open.length - 1]!)
   } finally {

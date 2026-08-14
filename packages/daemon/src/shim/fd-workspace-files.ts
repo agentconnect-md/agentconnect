@@ -92,11 +92,32 @@ async function withParent<T>(
   relPath: string,
   work: (parent: DirHandle, leaf: string | undefined) => Promise<T>
 ): Promise<T> {
-  const segments = [...rootSegments(anchor, root), ...requestSegments(relPath)]
-  const leaf = requestSegments(relPath).length === 0 ? undefined : segments[segments.length - 1]
+  return await withParentMode(anchor, root, relPath, false, work)
+}
+
+/** The exclusive-create variant may create each missing ancestor from its held parent handle. */
+async function withCreatingParent<T>(
+  anchor: string,
+  root: string,
+  relPath: string,
+  work: (parent: DirHandle, leaf: string | undefined) => Promise<T>
+): Promise<T> {
+  return await withParentMode(anchor, root, relPath, true, work)
+}
+
+async function withParentMode<T>(
+  anchor: string,
+  root: string,
+  relPath: string,
+  createMissing: boolean,
+  work: (parent: DirHandle, leaf: string | undefined) => Promise<T>
+): Promise<T> {
+  const requested = requestSegments(relPath)
+  const segments = [...rootSegments(anchor, root), ...requested]
+  const leaf = requested.length === 0 ? undefined : segments[segments.length - 1]
   const upto = leaf === undefined ? segments : segments.slice(0, -1)
   try {
-    return await withDescent(anchor, upto, (parent) => work(parent, leaf))
+    return await withDescent(anchor, upto, (parent) => work(parent, leaf), { createMissing })
   } catch (err) {
     return asViolation(err)
   }
@@ -151,8 +172,6 @@ export function createFdWorkspaceFiles(anchor: string): WorkspaceFiles {
     async read(root, req: WorkspaceReadReq): Promise<WorkspaceReadContent> {
       const notFound = { agentId: req.agentId, path: req.path, exists: false }
       return await withParent(anchor, root, req.path, async (parent, leaf) => {
-        // A directory is DATA (`type:'dir'`, no content), including the workspace root itself, which
-        // is what a request with an empty path names.
         const asDir = async (dir: DirHandle) => ({
           agentId: req.agentId,
           path: req.path,
@@ -177,13 +196,10 @@ export function createFdWorkspaceFiles(anchor: string): WorkspaceFiles {
             await dir.close()
           }
         }
-        // Every other non-regular target keeps the violation, a symlink included: the descent refuses
-        // to open one, and reporting it as data would make this read an oracle for what it points at.
         if (!stat.isFile()) throw new WorkspaceViolationError('not a regular file', 'not-a-file')
 
         const file = await parent.childFile(leaf)
         try {
-          // The handle's OWN stat, not the name's: size and mtime describe the bytes actually read.
           const st = await file.stat()
           const size = st.size
           const mtime = st.mtime.toISOString()
@@ -214,16 +230,18 @@ export function createFdWorkspaceFiles(anchor: string): WorkspaceFiles {
         } finally {
           await file.close()
         }
+      }).catch((err: unknown) => {
+        if (err instanceof MissingPathError) return notFound
+        throw err
       })
     },
 
     async write(root, scratch, req: WorkspaceWriteReq): Promise<WorkspaceWriteOk> {
       assertScratch(scratch)
       const bytes = workspaceEditBytes(req)
-      return await withParent(anchor, root, req.path, async (parent, leaf) => {
+      const resolveParent = req.ifMatchMtime === undefined ? withCreatingParent : withParent
+      return await resolveParent(anchor, root, req.path, async (parent, leaf) => {
         if (leaf === undefined) throw new WorkspaceViolationError('not a regular file', 'not-a-file')
-        // Both the temp and the publish are named from the handle, so the file lands in the directory
-        // that was descended to — not in whatever occupies that path by the time the rename runs.
         const temp = parent.childPath(`.agentconnect-edit-${randomUUID()}.tmp`)
         const target = parent.childPath(leaf)
 
@@ -245,8 +263,6 @@ export function createFdWorkspaceFiles(anchor: string): WorkspaceFiles {
 
         const initial = await statForEdit(parent, leaf)
         if (initial.mtime.toISOString() !== req.ifMatchMtime) throw changedFile()
-        // The binary guard the read path applies, so an editor cannot turn a binary file into text
-        // merely because a caller bypassed the console.
         const existing = await parent.childFile(leaf)
         try {
           const sniffLen = Math.min(SNIFF_BYTES, initial.size)
@@ -272,6 +288,9 @@ export function createFdWorkspaceFiles(anchor: string): WorkspaceFiles {
           throw err
         }
         return await wrote(parent, leaf, req)
+      }).catch((err: unknown) => {
+        if (err instanceof MissingPathError) throw changedFile()
+        throw err
       })
     },
 
@@ -285,6 +304,9 @@ export function createFdWorkspaceFiles(anchor: string): WorkspaceFiles {
         if (!sameFileVersion(initial, latest)) throw changedFile()
         await fs.unlink(parent.childPath(leaf))
         return { agentId: req.agentId, path: req.path }
+      }).catch((err: unknown) => {
+        if (err instanceof MissingPathError) throw changedFile()
+        throw err
       })
     }
   }

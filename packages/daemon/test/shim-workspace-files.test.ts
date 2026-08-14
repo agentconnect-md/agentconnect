@@ -248,6 +248,72 @@ describe('the shim read capability', () => {
     expect(readFileSync(join(checkout, 'notes.md'), 'utf8')).toBe('second\n')
   })
 
+  it('returns absence through missing ancestors and creates nested parents for an exclusive write', async () => {
+    const { mount, checkout } = volume()
+    const handle = handlerFor(mount)
+    const missing = WorkspaceFilesReplySchema.parse(
+      await handle('read', {
+        op: 'read',
+        root: checkout,
+        req: { agentId: AGENT, path: 'guides/setup/README.md', offset: 0, limit: 65_536 }
+      })
+    )
+    expect(missing).toMatchObject({ ok: true, value: { exists: false } })
+
+    const created = WorkspaceFilesReplySchema.parse(
+      await handle('read', {
+        op: 'write',
+        root: checkout,
+        scratch: true,
+        req: {
+          agentId: AGENT,
+          path: 'guides/setup/README.md',
+          contentBase64: Buffer.from('nested\n').toString('base64')
+        }
+      })
+    )
+    expect(created.ok).toBe(true)
+    expect(readFileSync(join(checkout, 'guides', 'setup', 'README.md'), 'utf8')).toBe('nested\n')
+  })
+
+  it('reports missing edit and delete ancestors as conflicts', async () => {
+    const { mount, checkout } = volume()
+    const handle = handlerFor(mount)
+    const req = { agentId: AGENT, path: 'missing/file.md', ifMatchMtime: new Date(0).toISOString() }
+    const edit = WorkspaceFilesReplySchema.parse(
+      await handle('read', {
+        op: 'write',
+        root: checkout,
+        scratch: true,
+        req: { ...req, contentBase64: Buffer.from('edit\n').toString('base64') }
+      })
+    )
+    const deleted = WorkspaceFilesReplySchema.parse(
+      await handle('read', { op: 'delete', root: checkout, scratch: true, req })
+    )
+    expect(edit).toMatchObject({ ok: false, refusal: { kind: 'conflict' } })
+    expect(deleted).toMatchObject({ ok: false, refusal: { kind: 'conflict' } })
+  })
+
+  it('never creates nested parents through a symlinked component', async () => {
+    const { mount, checkout } = volume()
+    symlinkSync(mount, join(checkout, 'guides'), 'dir')
+    const reply = WorkspaceFilesReplySchema.parse(
+      await handlerFor(mount)('read', {
+        op: 'write',
+        root: checkout,
+        scratch: true,
+        req: {
+          agentId: AGENT,
+          path: 'guides/setup/README.md',
+          contentBase64: Buffer.from('escape\n').toString('base64')
+        }
+      })
+    )
+    expect(reply).toMatchObject({ ok: false, refusal: { kind: 'violation', reason: 'path-escape' } })
+    expect(() => readFileSync(join(mount, 'setup', 'README.md'))).toThrow()
+  })
+
   it('refuses a root that reaches out through a symlink, not just one that looks contained', async () => {
     const { mount, checkout } = volume()
     // The lexical fence was borrowed from the clone-target check, where the path deliberately does not
