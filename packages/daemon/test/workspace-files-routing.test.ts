@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createWorkspaceReader, WorkspaceViolationError } from '../src/cp/workspace-reader.js'
 import { createLocalSkillsReader } from '../src/cp/local-skills-reader.js'
-import { createWorkspaceGit } from '../src/cp/workspace-git.js'
 import { setSandboxWorkspaceMode, setWorkspaceGitRunnerResolver } from '../src/workspace/workspace-manager.js'
 import { localWorkspaceFiles, type WorkspaceFiles } from '../src/workspace/workspace-files.js'
 
