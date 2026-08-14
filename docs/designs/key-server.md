@@ -115,7 +115,9 @@ the first layer that yields a key, whole:
 
 Within a layer, an absent `baseUrl` falls through to the next layer's URL — that
 is the one sanctioned mix, so a key-server that only rotates keys and fronts no
-gateway needs no URL opinion.
+gateway needs no URL opinion. A present one must be `http(s)`, since it becomes a
+runtime's API base; plain `http` is legal and is the normal choice for a loopback
+or in-pod gateway.
 
 ## 5. Caching, rotation, and revocation
 
@@ -158,11 +160,11 @@ suspended", never as a generic internal error:
 
 **Degradation window.** An issued credential stays usable for its granted
 `expiresInSeconds` from the anchor of §3 — never longer, since that anchor
-precedes issuance — even when the key server is unreachable. The TTL is the
-contractual answer to
-"how long do sessions keep working through an issuer outage", and implementations
-size it as the tradeoff between revocation latency and outage tolerance. Only
-starting or refreshing past the horizon needs the server back.
+precedes issuance — even when the key server is unreachable. The TTL is thus the
+contractual answer to "how long does a session keep working through an issuer
+outage", and an implementation sizes it as its own tradeoff between revocation
+latency and outage tolerance. Only starting or refreshing past that horizon needs
+the server back.
 
 ## 7. What this replaces, and what it does not
 
