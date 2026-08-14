@@ -29,7 +29,7 @@
  * overflow — both leave headroom for the envelope.
  */
 import { randomUUID } from 'node:crypto'
-import { constants, promises as fs } from 'node:fs'
+import { promises as fs } from 'node:fs'
 import * as path from 'node:path'
 import type {
   WorkspaceListReq,
@@ -172,64 +172,13 @@ export async function canonicalWorkspacePath(root: string, relPath: string): Pro
  * lexically-resolved path plus the canonical (realpath'd) root, or `null` for
  * `realRoot` when the root does not exist yet (callers report `exists:false`).
  *
- * `pinned` is for a caller that already resolved this root and validated it — the shim, whose fence
- * decides whether the root is inside the sandbox mount. Its `realpath` here is a SECOND resolution of
- * the same name, and on a volume the runtime owns the two can disagree: replace a component with a
- * symlink in between and this function hands back the link's target as the boundary every check below
- * is then measured against. A canonical path resolves to itself, so requiring that is what binds the
- * work to the directory that was approved; a mismatch means the ground moved and is refused. Callers
- * whose roots may legitimately contain symlinks (the daemon's own `workspace.path`) leave it off.
  */
-/**
- * The identity of a directory, as the inode pair its path currently names.
- *
- * Node has no fd-relative `readdir`/`open`, so a validated PATH is all these operations can carry
- * into their I/O — and a path is not a directory. Capturing this at validation and re-checking it
- * before the answer leaves is what makes a swap during the window unable to produce a RESULT: the
- * work may have touched a replacement, but its output is discarded rather than returned.
- */
-export async function directoryIdentity(dir: string): Promise<string> {
-  const st = await fs.lstat(dir)
-  return `${st.dev}:${st.ino}`
-}
-
-/** Refuse when `dir` no longer names the directory `identity` was taken from. */
-export async function assertSameDirectory(dir: string, identity: string): Promise<void> {
-  const now = await directoryIdentity(dir).catch(() => null)
-  if (now !== identity) {
-    throw new WorkspaceViolationError('the workspace root moved while it was being read', 'path-escape')
-  }
-}
-
-async function resolveContained(
-  root: string,
-  relPath: string,
-  pinned: boolean
-): Promise<{ resolved: string; realRoot: string | null; pin: () => Promise<void> }> {
+async function resolveContained(root: string, relPath: string): Promise<{ resolved: string; realRoot: string | null }> {
   const resolved = containedWorkspacePath(root, relPath)
-  const settled = (realRoot: string | null, identity?: string) => ({
-    resolved,
-    realRoot,
-    // No-op unless the caller pinned the root: the daemon's own workspace is not on a filesystem an
-    // agent controls, and paying two extra `lstat`s per read there buys nothing.
-    pin: async () => {
-      if (identity !== undefined) await assertSameDirectory(realRoot!, identity)
-    }
-  })
   try {
-    const realRoot = await fs.realpath(root)
-    if (pinned && realRoot !== path.resolve(root)) {
-      throw new WorkspaceViolationError('the workspace root moved while it was being read', 'path-escape')
-    }
-    return settled(realRoot, pinned ? await directoryIdentity(realRoot) : undefined)
+    return { resolved, realRoot: await fs.realpath(root) }
   } catch (err) {
-    if (err instanceof WorkspaceViolationError) throw err
-    // A pinned root was proven to exist by the caller that resolved it, so its disappearance is the
-    // same event as its replacement: refuse rather than fall through to "nothing to escape".
-    if (isErrno(err, 'ENOENT')) {
-      if (pinned) throw new WorkspaceViolationError('the workspace root moved while it was being read', 'path-escape')
-      return settled(null) // no root ⇒ nothing to escape
-    }
+    if (isErrno(err, 'ENOENT')) return { resolved, realRoot: null } // no root ⇒ nothing to escape
     throw err
   }
 }
@@ -300,293 +249,183 @@ export function workspaceEditBytes(req: WorkspaceWriteReq): Buffer {
 }
 
 /**
- * Operations against THIS process's filesystem — the daemon's own disk, or, when the same code runs
- * inside the sandbox, the pod's mounted volume.
+ * Operations against the DAEMON's own filesystem.
  *
- * `pinnedRoot` says the caller has already resolved and validated the root it passes, so these
- * operations must verify it still resolves to itself rather than re-deriving a boundary from the
- * name. See {@link resolveContained}; the shim sets it, the daemon does not.
+ * Not the sandbox's: a cluster agent's volume is written by that agent's runtime, where checking a
+ * name and then acting on it is a window, so `shim/fd-workspace-files.ts` implements the same four
+ * operations against open descriptors instead. The two share every rule about the ANSWER — the sort,
+ * the page, the frame budget, the UTF-8 boundary, the scratch gate, the edit validation — and differ
+ * only in how they reach the bytes.
  */
-export function createWorkspaceFiles({ pinnedRoot = false }: { pinnedRoot?: boolean } = {}): WorkspaceFiles {
-  return {
-    async list(root, req) {
-      const { resolved, realRoot, pin } = await resolveContained(root, req.path, pinnedRoot)
-      const notFound = { agentId: req.agentId, path: req.path, exists: false, entries: [] as WorkspaceEntry[] }
-      if (realRoot === null) return notFound // workspace root missing
+export const localWorkspaceFiles: WorkspaceFiles = {
+  async list(root, req) {
+    const { resolved, realRoot } = await resolveContained(root, req.path)
+    const notFound = { agentId: req.agentId, path: req.path, exists: false, entries: [] as WorkspaceEntry[] }
+    if (realRoot === null) return notFound // workspace root missing
 
-      let target: string
-      try {
-        target = await canonicalUnder(realRoot, resolved)
-      } catch (err) {
-        if (isErrno(err, 'ENOENT')) return notFound
-        throw err
-      }
+    let target: string
+    try {
+      target = await canonicalUnder(realRoot, resolved)
+    } catch (err) {
+      if (isErrno(err, 'ENOENT')) return notFound
+      throw err
+    }
 
-      let dirents
-      try {
-        dirents = await fs.readdir(target, { withFileTypes: true })
-      } catch (err) {
-        // Missing dir or a non-directory target "does not exist" as a directory.
-        if (isErrno(err, 'ENOENT') || isErrno(err, 'ENOTDIR')) return notFound
-        throw err
-      }
+    let dirents
+    try {
+      dirents = await fs.readdir(target, { withFileTypes: true })
+    } catch (err) {
+      // Missing dir or a non-directory target "does not exist" as a directory.
+      if (isErrno(err, 'ENOENT') || isErrno(err, 'ENOTDIR')) return notFound
+      throw err
+    }
 
-      const entries: WorkspaceEntry[] = []
-      for (const d of dirents) {
-        if (d.name === '.git') continue // git-repo mode internals
-        const type: WorkspaceEntry['type'] = d.isDirectory()
-          ? 'dir'
-          : d.isFile()
-            ? 'file'
-            : d.isSymbolicLink()
-              ? 'symlink'
-              : 'other'
-        const entry: WorkspaceEntry = { name: d.name, type }
-        if (type === 'file') {
-          // lstat (not stat): never follow symlinks for size/mtime.
-          try {
-            const st = await fs.lstat(path.join(target, d.name))
-            entry.size = st.size
-            entry.mtime = st.mtime.toISOString()
-          } catch {
-            // raced deletion — keep the name-only entry
-          }
+    const entries: WorkspaceEntry[] = []
+    for (const d of dirents) {
+      if (d.name === '.git') continue // git-repo mode internals
+      const type: WorkspaceEntry['type'] = d.isDirectory()
+        ? 'dir'
+        : d.isFile()
+          ? 'file'
+          : d.isSymbolicLink()
+            ? 'symlink'
+            : 'other'
+      const entry: WorkspaceEntry = { name: d.name, type }
+      if (type === 'file') {
+        // lstat (not stat): never follow symlinks for size/mtime.
+        try {
+          const st = await fs.lstat(path.join(target, d.name))
+          entry.size = st.size
+          entry.mtime = st.mtime.toISOString()
+        } catch {
+          // raced deletion — keep the name-only entry
         }
-        entries.push(entry)
       }
-      entries.sort(compareEntries)
+      entries.push(entry)
+    }
+    return { agentId: req.agentId, path: req.path, ...pageWorkspaceEntries(entries, req) }
+  },
 
-      // Opaque cursor = numeric index into the sorted listing. Page by BOTH the
-      // count limit and an encoded-size budget (long/many names could overflow
-      // the frame); always emit ≥1 entry so a pathological name still makes
-      // progress rather than wedging the cursor.
-      const start = req.cursor !== undefined && /^\d+$/.test(req.cursor) ? Number(req.cursor) : 0
-      const page: WorkspaceEntry[] = []
-      let acc = 0
-      for (let i = start; i < entries.length && page.length < req.limit; i++) {
-        const e = entries[i]!
-        const enc = encodedBytes(e) + 1 // + array separator
-        if (page.length > 0 && acc + enc > REPLY_BUDGET) break
-        page.push(e)
-        acc += enc
-      }
-      const consumed = start + page.length
-      // The names and sizes above came from a PATH. Verified before they leave, so a directory
-      // swapped underneath the enumeration yields a refusal instead of a sibling's listing.
-      await pin()
+  async read(root, req) {
+    const { resolved, realRoot } = await resolveContained(root, req.path)
+    const notFound = { agentId: req.agentId, path: req.path, exists: false }
+    if (realRoot === null) return notFound
+
+    // lstat the lexical target first: this rejects a FINAL-component symlink
+    // (isFile() is false) before we canonicalise.
+    let st
+    try {
+      st = await fs.lstat(resolved)
+    } catch (err) {
+      if (isErrno(err, 'ENOENT')) return notFound
+      throw err
+    }
+    // A DIRECTORY is DATA (`type:'dir'`, no content): reporting it as a violation
+    // made a `?file=` naming a directory indistinguishable from an offline daemon.
+    // Every OTHER non-regular target keeps the violation — a final-component
+    // symlink is a containment matter and must not read as an ordinary answer.
+    if (st.isDirectory()) {
+      // Canonicalise FIRST. `lstat` follows intermediate components, so a symlinked
+      // directory inside the workspace would otherwise let this branch report the
+      // existence and mtime of a host directory outside it — the same oracle the
+      // git-diff seam had, reopened by making directories an ordinary answer.
+      const dir = await canonicalUnder(realRoot, resolved)
+      const canonSt = await fs.lstat(dir)
       return {
         agentId: req.agentId,
         path: req.path,
         exists: true,
-        entries: page,
-        ...(consumed < entries.length ? { nextCursor: String(consumed) } : {})
+        type: 'dir' as const,
+        mtime: canonSt.mtime.toISOString()
       }
-    },
+    }
+    if (!st.isFile()) throw new WorkspaceViolationError('not a regular file', 'not-a-file')
 
-    async read(root, req) {
-      const { resolved, realRoot, pin } = await resolveContained(root, req.path, pinnedRoot)
-      const notFound = { agentId: req.agentId, path: req.path, exists: false }
-      if (realRoot === null) return notFound
-
-      // lstat the lexical target first: this rejects a FINAL-component symlink
-      // (isFile() is false) before we canonicalise.
-      let st
-      try {
-        st = await fs.lstat(resolved)
-      } catch (err) {
-        if (isErrno(err, 'ENOENT')) return notFound
-        throw err
-      }
-      // A DIRECTORY is DATA (`type:'dir'`, no content): reporting it as a violation
-      // made a `?file=` naming a directory indistinguishable from an offline daemon.
-      // Every OTHER non-regular target keeps the violation — a final-component
-      // symlink is a containment matter and must not read as an ordinary answer.
-      if (st.isDirectory()) {
-        // Canonicalise FIRST. `lstat` follows intermediate components, so a symlinked
-        // directory inside the workspace would otherwise let this branch report the
-        // existence and mtime of a host directory outside it — the same oracle the
-        // git-diff seam had, reopened by making directories an ordinary answer.
-        const dir = await canonicalUnder(realRoot, resolved)
-        const canonSt = await fs.lstat(dir)
-        await pin()
-        return {
-          agentId: req.agentId,
-          path: req.path,
-          exists: true,
-          type: 'dir' as const,
-          mtime: canonSt.mtime.toISOString()
-        }
-      }
-      if (!st.isFile()) throw new WorkspaceViolationError('not a regular file', 'not-a-file')
-
-      // Canonicalise and re-verify (catches an intermediate component swapped to
-      // a symlink after resolveContained), then read the canonical path.
-      const target = await canonicalUnder(realRoot, resolved)
-      const size = st.size
-      const mtime = st.mtime.toISOString()
-      // O_NOFOLLOW on the pinned path: `canonicalUnder` just proved this target is not a symlink, so
-      // the flag can only fire if it BECAME one — the one window looking again cannot cover. The
-      // daemon's own instance keeps the plain open, where nothing races it.
-      const fh = await fs.open(target, pinnedRoot ? constants.O_RDONLY | constants.O_NOFOLLOW : 'r')
-      try {
-        // Binary detection: NUL byte anywhere in the first 8 KiB ⇒ no content.
-        const sniffLen = Math.min(SNIFF_BYTES, size)
-        if (sniffLen > 0) {
-          const sniff = Buffer.alloc(sniffLen)
-          const { bytesRead } = await fh.read(sniff, 0, sniffLen, 0)
-          if (sniff.subarray(0, bytesRead).includes(0)) {
-            await pin()
-            return {
-              agentId: req.agentId,
-              path: req.path,
-              exists: true,
-              type: 'file' as const,
-              size,
-              mtime,
-              encoding: 'none' as const
-            }
+    // Canonicalise and re-verify (catches an intermediate component swapped to
+    // a symlink after resolveContained), then read the canonical path.
+    const target = await canonicalUnder(realRoot, resolved)
+    const size = st.size
+    const mtime = st.mtime.toISOString()
+    const fh = await fs.open(target, 'r')
+    try {
+      // Binary detection: NUL byte anywhere in the first 8 KiB ⇒ no content.
+      const sniffLen = Math.min(SNIFF_BYTES, size)
+      if (sniffLen > 0) {
+        const sniff = Buffer.alloc(sniffLen)
+        const { bytesRead } = await fh.read(sniff, 0, sniffLen, 0)
+        if (sniff.subarray(0, bytesRead).includes(0)) {
+          return {
+            agentId: req.agentId,
+            path: req.path,
+            exists: true,
+            type: 'file' as const,
+            size,
+            mtime,
+            encoding: 'none' as const
           }
         }
-
-        // Read up to the requested byte count, then shrink so the JSON-escaped
-        // reply fits the frame budget and ends on a UTF-8 boundary. `limit` is a
-        // ceiling; the slice may be shorter. `nextOffset` (not a client-side
-        // recount of `content`) is the authoritative next offset.
-        const want = Math.min(req.limit, Math.max(0, size - req.offset))
-        let slice = Buffer.alloc(0)
-        if (want > 0) {
-          const buf = Buffer.alloc(want)
-          const { bytesRead } = await fh.read(buf, 0, want, req.offset)
-          slice = buf.subarray(0, bytesRead)
-        }
-
-        let end = utf8Boundary(slice, slice.length)
-        // Control-byte-heavy content can escape past the budget; shrink to fit.
-        const fitted = fitToBudget(slice, end)
-        end = fitted.end
-        const content = fitted.content
-
-        const nextOffset = req.offset + end
-        // Content, so this verification is what keeps a swapped directory's bytes from being returned.
-        await pin()
-        return {
-          agentId: req.agentId,
-          path: req.path,
-          exists: true,
-          type: 'file' as const,
-          size,
-          mtime,
-          encoding: 'utf8' as const,
-          content,
-          offset: req.offset,
-          nextOffset,
-          truncated: nextOffset < size
-        }
-      } finally {
-        await fh.close()
       }
-    },
 
-    async write(root, scratch, req) {
-      assertScratch(scratch)
-      const bytes = workspaceEditBytes(req)
-
-      let { resolved, realRoot, pin } = await resolveContained(root, req.path, pinnedRoot)
-      if (realRoot === null && req.ifMatchMtime === undefined) {
-        await fs.mkdir(root, { recursive: true })
-        ;({ resolved, realRoot, pin } = await resolveContained(root, req.path, pinnedRoot))
+      // Read up to the requested byte count, then shrink so the JSON-escaped
+      // reply fits the frame budget and ends on a UTF-8 boundary. `limit` is a
+      // ceiling; the slice may be shorter. `nextOffset` (not a client-side
+      // recount of `content`) is the authoritative next offset.
+      const want = Math.min(req.limit, Math.max(0, size - req.offset))
+      let slice = Buffer.alloc(0)
+      if (want > 0) {
+        const buf = Buffer.alloc(want)
+        const { bytesRead } = await fh.read(buf, 0, want, req.offset)
+        slice = buf.subarray(0, bytesRead)
       }
-      if (realRoot === null) throw changedFile()
 
-      if (req.ifMatchMtime === undefined) {
-        const parent = await createParentUnder(root, realRoot, resolved)
+      return {
+        agentId: req.agentId,
+        path: req.path,
+        exists: true,
+        type: 'file' as const,
+        size,
+        mtime,
+        encoding: 'utf8' as const,
+        ...sliceWorkspaceRead(slice, req, size)
+      }
+    } finally {
+      await fh.close()
+    }
+  },
 
-        const target = path.join(parent, path.basename(resolved))
+  async write(root, scratch, req) {
+    assertScratch(scratch)
+    const bytes = workspaceEditBytes(req)
+
+    let { resolved, realRoot } = await resolveContained(root, req.path)
+    if (realRoot === null && req.ifMatchMtime === undefined) {
+      await fs.mkdir(root, { recursive: true })
+      ;({ resolved, realRoot } = await resolveContained(root, req.path))
+    }
+    if (realRoot === null) throw changedFile()
+
+    if (req.ifMatchMtime === undefined) {
+      const parent = await createParentUnder(root, realRoot, resolved)
+
+      const target = path.join(parent, path.basename(resolved))
+      try {
+        await fs.lstat(target)
+        throw existingFile()
+      } catch (err) {
+        if (!isErrno(err, 'ENOENT')) throw err
+      }
+
+      const temp = path.join(parent, `.agentconnect-edit-${randomUUID()}.tmp`)
+      try {
+        await fs.writeFile(temp, bytes, { flag: 'wx', mode: 0o666 })
         try {
-          await fs.lstat(target)
-          throw existingFile()
+          await fs.link(temp, target)
         } catch (err) {
-          if (!isErrno(err, 'ENOENT')) throw err
-        }
-
-        const temp = path.join(parent, `.agentconnect-edit-${randomUUID()}.tmp`)
-        try {
-          await fs.writeFile(temp, bytes, { flag: 'wx', mode: 0o666 })
-          // Before the publish rather than after it: a link that has already landed in a replaced
-          // parent cannot be taken back, so the check has to precede it.
-          await pin()
-          try {
-            await fs.link(temp, target)
-          } catch (err) {
-            if (isErrno(err, 'EEXIST')) throw existingFile()
-            throw err
-          }
-        } finally {
-          await fs.rm(temp, { force: true }).catch(() => {})
-        }
-
-        const written = await fs.stat(target)
-        return {
-          agentId: req.agentId,
-          path: req.path,
-          size: written.size,
-          mtime: written.mtime.toISOString()
-        }
-      }
-
-      let initial
-      try {
-        initial = await fs.lstat(resolved)
-      } catch (err) {
-        if (isErrno(err, 'ENOENT')) throw changedFile()
-        throw err
-      }
-      if (!initial.isFile()) throw new WorkspaceViolationError('not a regular file', 'not-a-file')
-      if (initial.mtime.toISOString() !== req.ifMatchMtime) throw changedFile()
-
-      let target: string
-      try {
-        target = await canonicalUnder(realRoot, resolved)
-      } catch (err) {
-        if (isErrno(err, 'ENOENT')) throw changedFile()
-        throw err
-      }
-
-      // Match the read path's binary guard. The editor never turns a binary file
-      // into text merely because a caller bypassed the console UI.
-      const fh = await fs.open(target, 'r')
-      try {
-        const sniffLen = Math.min(SNIFF_BYTES, initial.size)
-        if (sniffLen > 0) {
-          const sniff = Buffer.alloc(sniffLen)
-          const { bytesRead } = await fh.read(sniff, 0, sniffLen, 0)
-          if (sniff.subarray(0, bytesRead).includes(0)) {
-            throw new WorkspaceViolationError('binary files are not editable', 'binary')
-          }
-        }
-      } finally {
-        await fh.close()
-      }
-
-      const temp = path.join(path.dirname(target), `.agentconnect-edit-${randomUUID()}.tmp`)
-      try {
-        await fs.writeFile(temp, bytes, { flag: 'wx', mode: initial.mode & 0o777 })
-        await fs.chmod(temp, initial.mode & 0o777)
-
-        let latest
-        try {
-          latest = await fs.lstat(target)
-        } catch (err) {
-          if (isErrno(err, 'ENOENT')) throw changedFile()
+          if (isErrno(err, 'EEXIST')) throw existingFile()
           throw err
         }
-        if (!sameFileVersion(initial, latest)) throw changedFile()
-        // Immediately before the rename, so the parent this lands in is the one that was validated.
-        await pin()
-        await fs.rename(temp, target)
-      } catch (err) {
+      } finally {
         await fs.rm(temp, { force: true }).catch(() => {})
-        throw err
       }
 
       const written = await fs.stat(target)
@@ -596,30 +435,46 @@ export function createWorkspaceFiles({ pinnedRoot = false }: { pinnedRoot?: bool
         size: written.size,
         mtime: written.mtime.toISOString()
       }
-    },
+    }
 
-    async delete(root, scratch, req) {
-      assertScratch(scratch)
-      const { resolved, realRoot, pin } = await resolveContained(root, req.path, pinnedRoot)
-      if (realRoot === null) throw changedFile()
+    let initial
+    try {
+      initial = await fs.lstat(resolved)
+    } catch (err) {
+      if (isErrno(err, 'ENOENT')) throw changedFile()
+      throw err
+    }
+    if (!initial.isFile()) throw new WorkspaceViolationError('not a regular file', 'not-a-file')
+    if (initial.mtime.toISOString() !== req.ifMatchMtime) throw changedFile()
 
-      let initial
-      try {
-        initial = await fs.lstat(resolved)
-      } catch (err) {
-        if (isErrno(err, 'ENOENT')) throw changedFile()
-        throw err
+    let target: string
+    try {
+      target = await canonicalUnder(realRoot, resolved)
+    } catch (err) {
+      if (isErrno(err, 'ENOENT')) throw changedFile()
+      throw err
+    }
+
+    // Match the read path's binary guard. The editor never turns a binary file
+    // into text merely because a caller bypassed the console UI.
+    const fh = await fs.open(target, 'r')
+    try {
+      const sniffLen = Math.min(SNIFF_BYTES, initial.size)
+      if (sniffLen > 0) {
+        const sniff = Buffer.alloc(sniffLen)
+        const { bytesRead } = await fh.read(sniff, 0, sniffLen, 0)
+        if (sniff.subarray(0, bytesRead).includes(0)) {
+          throw new WorkspaceViolationError('binary files are not editable', 'binary')
+        }
       }
-      if (!initial.isFile()) throw new WorkspaceViolationError('not a regular file', 'not-a-file')
-      if (initial.mtime.toISOString() !== req.ifMatchMtime) throw changedFile()
+    } finally {
+      await fh.close()
+    }
 
-      let target: string
-      try {
-        target = await canonicalUnder(realRoot, resolved)
-      } catch (err) {
-        if (isErrno(err, 'ENOENT')) throw changedFile()
-        throw err
-      }
+    const temp = path.join(path.dirname(target), `.agentconnect-edit-${randomUUID()}.tmp`)
+    try {
+      await fs.writeFile(temp, bytes, { flag: 'wx', mode: initial.mode & 0o777 })
+      await fs.chmod(temp, initial.mode & 0o777)
 
       let latest
       try {
@@ -629,16 +484,56 @@ export function createWorkspaceFiles({ pinnedRoot = false }: { pinnedRoot?: bool
         throw err
       }
       if (!sameFileVersion(initial, latest)) throw changedFile()
-      await pin()
-      await fs.unlink(target)
-      return { agentId: req.agentId, path: req.path }
+      await fs.rename(temp, target)
+    } catch (err) {
+      await fs.rm(temp, { force: true }).catch(() => {})
+      throw err
     }
+
+    const written = await fs.stat(target)
+    return {
+      agentId: req.agentId,
+      path: req.path,
+      size: written.size,
+      mtime: written.mtime.toISOString()
+    }
+  },
+
+  async delete(root, scratch, req) {
+    assertScratch(scratch)
+    const { resolved, realRoot } = await resolveContained(root, req.path)
+    if (realRoot === null) throw changedFile()
+
+    let initial
+    try {
+      initial = await fs.lstat(resolved)
+    } catch (err) {
+      if (isErrno(err, 'ENOENT')) throw changedFile()
+      throw err
+    }
+    if (!initial.isFile()) throw new WorkspaceViolationError('not a regular file', 'not-a-file')
+    if (initial.mtime.toISOString() !== req.ifMatchMtime) throw changedFile()
+
+    let target: string
+    try {
+      target = await canonicalUnder(realRoot, resolved)
+    } catch (err) {
+      if (isErrno(err, 'ENOENT')) throw changedFile()
+      throw err
+    }
+
+    let latest
+    try {
+      latest = await fs.lstat(target)
+    } catch (err) {
+      if (isErrno(err, 'ENOENT')) throw changedFile()
+      throw err
+    }
+    if (!sameFileVersion(initial, latest)) throw changedFile()
+    await fs.unlink(target)
+    return { agentId: req.agentId, path: req.path }
   }
 }
-
-/** The daemon's own instance: its `workspace.path` may legitimately contain symlinks, so its root is
- *  resolved here rather than pinned by a caller. */
-export const localWorkspaceFiles: WorkspaceFiles = createWorkspaceFiles()
 
 function sameFileVersion(a: Awaited<ReturnType<typeof fs.lstat>>, b: Awaited<ReturnType<typeof fs.lstat>>): boolean {
   return b.isFile() && a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeMs === b.mtimeMs
@@ -650,6 +545,58 @@ function changedFile(): WorkspaceConflictError {
 
 function existingFile(): WorkspaceConflictError {
   return new WorkspaceConflictError('the workspace file already exists; open it to edit')
+}
+
+/**
+ * Sort, page and budget one directory's entries — the RESULT rules, shared by both implementations.
+ *
+ * Opaque cursor = numeric index into the sorted listing. Paged by BOTH the count limit and an
+ * encoded-size budget (long or many names could overflow the frame), always emitting ≥1 entry so a
+ * pathological name still makes progress rather than wedging the cursor. Extracted because the
+ * fd-bound implementation enumerates differently and must still answer identically: a second copy of
+ * these bounds is how one of the two ends up able to overflow the frame it rides.
+ */
+export function pageWorkspaceEntries(
+  entries: WorkspaceEntry[],
+  req: { cursor?: string; limit: number }
+): { exists: true; entries: WorkspaceEntry[]; nextCursor?: string } {
+  const sorted = [...entries].sort(compareEntries)
+  const start = req.cursor !== undefined && /^\d+$/.test(req.cursor) ? Number(req.cursor) : 0
+  const page: WorkspaceEntry[] = []
+  let acc = 0
+  for (let i = start; i < sorted.length && page.length < req.limit; i++) {
+    const e = sorted[i]!
+    const enc = encodedBytes(e) + 1 // + array separator
+    if (page.length > 0 && acc + enc > REPLY_BUDGET) break
+    page.push(e)
+    acc += enc
+  }
+  const consumed = start + page.length
+  return { exists: true, entries: page, ...(consumed < sorted.length ? { nextCursor: String(consumed) } : {}) }
+}
+
+/**
+ * Cut a read to what one reply can carry: the requested byte count, shrunk so the JSON-escaped form
+ * fits the frame budget and never splits a UTF-8 character. `nextOffset` is authoritative — a caller
+ * must not recount the content it received.
+ */
+export function sliceWorkspaceRead(
+  slice: Buffer,
+  req: { offset: number },
+  size: number
+): { content: string; offset: number; nextOffset: number; truncated: boolean } {
+  const fitted = fitToBudget(slice, utf8Boundary(slice, slice.length))
+  const nextOffset = req.offset + fitted.end
+  return { content: fitted.content, offset: req.offset, nextOffset, truncated: nextOffset < size }
+}
+
+/** The entry a dirent becomes on the wire, without its size/mtime — the caller adds those, since only
+ *  it knows how to stat safely on its own side. `.git` is never listed: those are repo internals. */
+export function workspaceEntryOf(
+  name: string,
+  kind: { dir: boolean; file: boolean; symlink: boolean }
+): WorkspaceEntry {
+  return { name, type: kind.dir ? 'dir' : kind.file ? 'file' : kind.symlink ? 'symlink' : 'other' }
 }
 
 /** dirs first, then case-insensitive alphabetical (stable within the page). */

@@ -159,8 +159,30 @@ Two refusals travel as DATA in the reply rather than as an error frame: a contai
 violation (with its machine-readable reason) and an optimistic-concurrency conflict. An error
 frame carries only a string, and the console needs to tell "that path is not readable" from
 "the daemon may be offline" — flattening them would make a contained path escape look like an
-outage. Everything else stays an error frame, which is what a bad root or an unexpected `EIO`
-should read as.
+outage. Everything else stays an error frame, which is what an unexpected `EIO` should read as.
+
+**The pod side holds descriptors, not names.** This is the one place where the two halves run
+different code, and the reason is that they stand on filesystems with different owners. A
+self-hosted daemon's workspace is on its own disk; a cluster agent's is on a volume that agent's
+runtime writes to, and there every "check this path, then act on this path" is a window it can
+open — rename the checkout aside, install a symlink, let the work follow it, restore the original
+before any closing check. No amount of re-validating the name closes that, because a name is not a
+directory. So `shim/fd-workspace-files.ts` resolves exactly one path — the mount, which cannot be
+renamed out from under itself — and takes every step below it from an open descriptor, one
+component at a time with `O_NOFOLLOW`.
+
+Three consequences worth stating plainly:
+
+- It is **Linux-only**: Node exposes no `openat`, so the descent addresses handles through
+  `/proc/self/fd/<n>`. That is fine for an image the deployment controls and is exactly why this
+  lives in `shim/` rather than in the shared placement layer.
+- A **symlinked directory inside the workspace is refused** rather than resolved, which the
+  daemon-local path allows. It is the only behavioural divergence, and it is pinned by a test. A
+  side effect is that the pod side stops distinguishing "absent" from "outside" for such a path,
+  closing an existence oracle the local path still has.
+- What the two DO share is every rule about the answer — the sort, the page, the frame budget, the
+  UTF-8 boundary, the scratch gate, the edit validation — so a console cannot learn which
+  filesystem its agent is on from the shape of a reply.
 
 ## 6. The credential tunnel, and which way it runs
 

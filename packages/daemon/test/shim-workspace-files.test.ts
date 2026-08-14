@@ -1,14 +1,5 @@
 import { afterAll, describe, expect, it } from 'vitest'
-import {
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  realpathSync,
-  renameSync,
-  symlinkSync,
-  writeFileSync,
-  rmSync
-} from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { WorkspaceListPage, WorkspaceReadContent, WorkspaceWriteOk } from '@agentconnect.md/protocol'
@@ -20,9 +11,6 @@ import {
 } from '../src/shim/workspace-files-channel.js'
 import type { ShimRequester } from '../src/shim/channels.js'
 import {
-  assertSameDirectory,
-  createWorkspaceFiles,
-  directoryIdentity,
   localWorkspaceFiles,
   WorkspaceConflictError,
   WorkspaceViolationError
@@ -83,10 +71,13 @@ describe('the shim read capability', () => {
   it('refuses a root outside the sandbox workspace, whatever the daemon asked for', async () => {
     const { mount } = volume()
     // The daemon's own root resolution is not a control on this side: this is the check that stops a
-    // buggy — or compromised — daemon reading /etc through a channel it legitimately holds.
-    await expect(
-      handlerFor(mount)('read', { op: 'list', root: '/etc', req: { agentId: AGENT, path: '', limit: 10 } })
-    ).rejects.toThrow(/escapes the workspace root/)
+    // buggy — or compromised — daemon reading /etc through a channel it legitimately holds. It is a
+    // refusal with a reason rather than an error frame, because the walk expresses the root as steps
+    // from the mount and "that is not under the mount" is the same containment answer as any other.
+    const reply = WorkspaceFilesReplySchema.parse(
+      await handlerFor(mount)('read', { op: 'list', root: '/etc', req: { agentId: AGENT, path: '', limit: 10 } })
+    )
+    expect(reply).toMatchObject({ ok: false, refusal: { kind: 'violation', reason: 'path-escape' } })
   })
 
   it('keeps a containment refusal a REFUSAL across the channel, with its reason', async () => {
@@ -123,18 +114,15 @@ describe('the shim read capability', () => {
     expect(escape).toMatchObject({ ok: false, refusal: { kind: 'violation', reason: 'path-escape' } })
   })
 
-  it('answers exactly what the local implementation answers, refusals included', async () => {
+  it('agrees with the daemon implementation on every path that is plainly inside the workspace', async () => {
     const { mount, checkout } = volume()
-    // The property that matters for this channel is not a new contract but the ABSENCE of one: a
-    // pod workspace must not acquire its own answers. Both sides run `localWorkspaceFiles`, and this
-    // is what fails if a future change re-implements the pod side instead of routing to it — the
-    // symlink case included, where the two could plausibly disagree.
-    symlinkSync(mount, join(checkout, 'vendor'), 'dir')
+    // The two are separate implementations now — one walks descriptors, one walks names — so what has
+    // to be pinned is that they answer alike wherever both are defined. A console must not learn which
+    // filesystem its agent is on from the shape of a reply.
     const cases = [
       { agentId: AGENT, path: 'README.md', offset: 0, limit: 65_536 },
       { agentId: AGENT, path: 'nope.md', offset: 0, limit: 65_536 },
-      { agentId: AGENT, path: 'src', offset: 0, limit: 65_536 },
-      { agentId: AGENT, path: 'vendor/PROVIDER_SECRET.env', offset: 0, limit: 65_536 }
+      { agentId: AGENT, path: 'src', offset: 0, limit: 65_536 }
     ]
     for (const req of cases) {
       const remote = WorkspaceFilesReplySchema.parse(
@@ -149,6 +137,47 @@ describe('the shim read capability', () => {
       )
       expect(remote).toEqual(local)
     }
+  })
+
+  it('diverges on ONE case, deliberately: a symlinked directory component inside the workspace', async () => {
+    const { mount, checkout } = volume()
+    // The daemon resolves such a component and then asks where it landed; the descent refuses to open
+    // it at all, because "follow it and check afterwards" is the shape that cannot be made safe on a
+    // volume the agent writes to. Pinned rather than smoothed over — it is the one behaviour a repo
+    // could notice, and a symlinked subdirectory is a real thing to have in one.
+    mkdirSync(join(checkout, 'shared'), { recursive: true })
+    writeFileSync(join(checkout, 'shared', 'note.md'), 'inside the workspace\n')
+    symlinkSync(join(checkout, 'shared'), join(checkout, 'docs'), 'dir')
+    const req = { agentId: AGENT, path: 'docs/note.md', offset: 0, limit: 65_536 }
+
+    // The daemon reads it: the link stays inside the workspace, so its containment check passes.
+    await expect(localWorkspaceFiles.read(checkout, req)).resolves.toMatchObject({
+      exists: true,
+      content: 'inside the workspace\n'
+    })
+    // The pod refuses it, and says so as containment rather than as absence.
+    expect(
+      WorkspaceFilesReplySchema.parse(await handlerFor(mount)('read', { op: 'read', root: checkout, req }))
+    ).toMatchObject({ ok: false, refusal: { kind: 'violation', reason: 'path-escape' } })
+  })
+
+  it('does not answer whether a path OUTSIDE the workspace exists, which the daemon still does', async () => {
+    const { mount, checkout } = volume()
+    // A side effect of refusing the component rather than following it: `vendor/<x>` gets one answer
+    // whether or not `<x>` is there. The daemon's own path distinguishes them — absent reads as
+    // `exists:false` and present as `path-escape` — which is an existence oracle for the mount, and
+    // the mount is where the materialized provider config lives.
+    symlinkSync(mount, join(checkout, 'vendor'), 'dir')
+    writeFileSync(join(mount, 'PRESENT.env'), 'token=abc\n')
+    const ask = async (name: string) =>
+      WorkspaceFilesReplySchema.parse(
+        await handlerFor(mount)('read', {
+          op: 'read',
+          root: checkout,
+          req: { agentId: AGENT, path: `vendor/${name}`, offset: 0, limit: 10 }
+        })
+      )
+    expect(await ask('PRESENT.env')).toEqual(await ask('ABSENT.env'))
   })
 
   it('enforces the scratch gate again where the write lands', async () => {
@@ -231,125 +260,12 @@ describe('the shim read capability', () => {
     rmSync(checkout, { recursive: true, force: true })
     symlinkSync(escaped, checkout, 'dir')
 
-    await expect(
-      handlerFor(mount)('read', { op: 'list', root: checkout, req: { agentId: AGENT, path: '', limit: 50 } })
-    ).rejects.toThrow(/escapes the workspace root/)
-  })
-
-  it('answers a not-yet-materialized root without letting the operations resolve the name', async () => {
-    const { mount, checkout } = volume()
-    // `realpath` fails while the workspace is still being cloned, and absence is the answer a reader
-    // wants — but the name must not travel onward for the operations to resolve on their first
-    // `await`. That window is long enough for the runtime, which owns this volume, to create
-    // `<mount>/repo` as a symlink to `<mount>` and have them adopt the config directory as their own
-    // containment root. So the reply is produced HERE, and the operations are never called.
-    rmSync(checkout, { recursive: true, force: true })
-    let asked = 0
-    const spy = {
-      ...localWorkspaceFiles,
-      list: async (root: string, req: Parameters<typeof localWorkspaceFiles.list>[1]) => {
-        asked += 1
-        return localWorkspaceFiles.list(root, req)
-      }
-    }
-    const reply = await applyWorkspaceFilesPayload(
-      { op: 'list', root: checkout, req: { agentId: AGENT, path: '', limit: 50 } },
-      (requested) => (requested === checkout ? undefined : requested),
-      spy
+    const reply = WorkspaceFilesReplySchema.parse(
+      await handlerFor(mount)('read', { op: 'list', root: checkout, req: { agentId: AGENT, path: '', limit: 50 } })
     )
-    expect(reply).toMatchObject({ ok: true, value: { exists: false, entries: [] } })
-    expect(asked).toBe(0)
-    // And through the real handler, whose fence answers `undefined` for the same reason.
-    expect(
-      WorkspaceFilesReplySchema.parse(
-        await handlerFor(mount)('read', { op: 'list', root: checkout, req: { agentId: AGENT, path: '', limit: 50 } })
-      )
-    ).toMatchObject({ ok: true, value: { exists: false, entries: [] } })
-  })
-
-  it('refuses when the root stops resolving to itself between the fence and the work', async () => {
-    const { mount, checkout } = volume()
-    // The fence approved a canonical `<mount>/repo`; by the time the operation resolves that same name
-    // the runtime has replaced the directory with a symlink pointing at the mount, whose materialized
-    // config would then be the containment root. A canonical path resolves to itself, so the mismatch
-    // is the detection — this is the check that binds the work to the directory that was validated.
-    const pinned = createWorkspaceFiles({ pinnedRoot: true })
-    rmSync(checkout, { recursive: true, force: true })
-    symlinkSync(mount, checkout, 'dir')
-    await expect(pinned.list(checkout, { agentId: AGENT, path: '', limit: 50 })).rejects.toMatchObject({
-      name: 'WorkspaceViolationError',
-      reason: 'path-escape'
-    })
-    // The daemon's own instance keeps resolving its root, whose path may legitimately be a symlink.
-    await expect(localWorkspaceFiles.list(checkout, { agentId: AGENT, path: '', limit: 50 })).resolves.toMatchObject({
-      exists: true
-    })
-  })
-
-  it('refuses when the directory the root named is replaced by another real one', async () => {
-    const { mount, checkout } = volume()
-    // The window the pinned check above cannot see: `canonicalUnder` returns, and THEN the runtime
-    // renames the checkout aside and puts something else at the same path. Every later `readdir` and
-    // `open` follows the replacement, and no amount of re-resolving the same name notices — the path
-    // still resolves, still canonically, still inside the mount. The inode does not, which is why the
-    // identity is captured at validation and re-checked before any answer leaves.
-    // Renamed into place rather than deleted and recreated: freeing an inode and immediately asking
-    // for another can hand back the same number, which would make this test pass for the wrong reason.
-    const replacement = join(mount, 'other')
-    mkdirSync(replacement, { recursive: true })
-    const identity = await directoryIdentity(checkout)
-    rmSync(checkout, { recursive: true, force: true })
-    renameSync(replacement, checkout) // same path, definitely a different inode
-    await expect(assertSameDirectory(checkout, identity)).rejects.toMatchObject({
-      name: 'WorkspaceViolationError',
-      reason: 'path-escape'
-    })
-    // ...and the same check passes for the directory it was taken from.
-    await expect(assertSameDirectory(checkout, await directoryIdentity(checkout))).resolves.toBeUndefined()
-  })
-
-  it('refuses a pinned root that disappears between the fence and the work', async () => {
-    const { mount, checkout } = volume()
-    // Proven to exist a moment ago, so its absence now is the same event as its replacement — not the
-    // "nothing to escape through" case, which only applies to a root nobody has resolved yet.
-    const pinned = createWorkspaceFiles({ pinnedRoot: true })
-    rmSync(checkout, { recursive: true, force: true })
-    await expect(pinned.list(checkout, { agentId: AGENT, path: '', limit: 50 })).rejects.toMatchObject({
-      reason: 'path-escape'
-    })
-    expect(mount).toBeTruthy()
-  })
-
-  it('hands the operations the RESOLVED root, so the fence and the boundary are one resolution', async () => {
-    const { mount, checkout } = volume()
-    // Validating a canonical path and then passing the original string onward leaves two separate
-    // resolutions of the same root, and the runtime owns this volume — it can change the answer
-    // between them, and the second one becomes the operations' inner containment boundary. A benign
-    // in-mount symlink is enough to observe WHICH value arrives: the checkout reached through a link.
-    const real = join(mount, 'real-repo')
-    mkdirSync(real, { recursive: true })
-    rmSync(checkout, { recursive: true, force: true })
-    symlinkSync(real, checkout, 'dir')
-
-    const seen: string[] = []
-    const spy = {
-      ...localWorkspaceFiles,
-      list: async (root: string, req: Parameters<typeof localWorkspaceFiles.list>[1]) => {
-        seen.push(root)
-        return localWorkspaceFiles.list(root, req)
-      }
-    }
-    await applyWorkspaceFilesPayload(
-      { op: 'list', root: checkout, req: { agentId: AGENT, path: '', limit: 10 } },
-      (root) => {
-        // The exec handler's fence, in the shape the handler uses it: it RETURNS the root to use.
-        expect(root).toBe(checkout)
-        return realpathSync(root)
-      },
-      spy
-    )
-    expect(seen).toEqual([realpathSync(real)])
-    expect(seen).not.toContain(checkout)
+    // Not "resolved and then found to be outside" — the walk refuses to OPEN a symlinked component,
+    // so the link's target is never reached at all.
+    expect(reply).toMatchObject({ ok: false, refusal: { kind: 'violation', reason: 'path-escape' } })
   })
 
   it('refuses a payload that is not one of the four operations', async () => {
@@ -365,10 +281,7 @@ describe('ShimWorkspaceFiles', () => {
     const requester: ShimRequester = {
       request: async (capability, payload) => {
         expect(capability).toBe('read')
-        return applyWorkspaceFilesPayload(payload, (root) => {
-          if (!root.startsWith(mount)) throw new Error('escapes the workspace root')
-          return root
-        })
+        return applyWorkspaceFilesPayload(payload, mount)
       }
     }
     return new ShimWorkspaceFiles(requester)

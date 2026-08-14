@@ -143,39 +143,6 @@ function assertInsideRoot(root: string, requested: string): void {
   }
 }
 
-/**
- * Validate a workspace root and RETURN the CANONICAL path the operations must bound their work with,
- * or `undefined` when the root is not there.
- *
- * It returns rather than asserts because a validated name is not a validated directory. The lexical
- * form (`assertInsideRoot`, which is lexical on purpose — its other caller is a clone target, a path
- * deliberately not there yet) accepts `<mount>/repo` after something in this pod replaced `repo` with
- * a symlink. But canonicalising and then passing the ORIGINAL string onward is barely better: the
- * operations resolve whatever root they are handed to derive their own inner boundary, so the path
- * this check approved and the path that bounds the work would be two resolutions of one name, and the
- * runtime owns this volume — it can change the answer in between. Handing over the resolved value,
- * which the operations then require to still resolve to itself, is what binds them to the directory
- * that was checked.
- *
- * `undefined` rather than the unresolved name, and that distinction is the whole of the second half:
- * `realpath` also fails while a workspace is still being materialized, and returning the name would
- * let the operations resolve it on their first `await` — long enough for the runtime to create it as a
- * symlink and have them adopt the target as their boundary. The caller answers absence itself instead.
- */
-function readableRoot(root: string, requested: string): string | undefined {
-  assertInsideRoot(root, requested)
-  let resolved: string
-  try {
-    resolved = realpathSync(normalize(resolve(requested)))
-  } catch {
-    return undefined
-  }
-  // Canonical vs canonical: `assertInsideRoot` canonicalizes the base, and the target is already
-  // resolved, so this comparison is the one the lexical check could not make.
-  assertInsideRoot(root, resolved)
-  return resolved
-}
-
 /** Refuse a cwd that escapes the workspace root, whatever the daemon asked for. */
 function resolveCwd(root: string, requested: string | undefined): string {
   const base = canonical(root)
@@ -205,11 +172,12 @@ export function createExecHandler(
     }
     if (capability === 'exec') return runGit(payload, deps, abort)
     if (capability === 'probe') return probeRuntimes(deps, abort)
-    // The console's file operations, run on the mounted volume. The root the daemon named is fenced
-    // here because a path in a payload is a path on THIS filesystem however well-formed it looked
-    // over there — and canonically, since that root becomes the operations' own boundary.
+    // The console's file operations, run on the mounted volume. The mount is handed over as the
+    // ANCHOR rather than the daemon's root being validated here: the operations walk to it from an
+    // open descriptor, so "is this inside the mount" and "which directory is it" are one question
+    // with one answer instead of two that a rename can separate.
     if (capability === 'read') {
-      return applyWorkspaceFilesPayload(payload, (root) => readableRoot(deps.workspaceRoot, root))
+      return applyWorkspaceFilesPayload(payload, deps.workspaceRoot)
     }
     throw new ExecRefusedError(`capability ${capability} is not served by this handler`)
   }
