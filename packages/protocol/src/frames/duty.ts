@@ -17,6 +17,11 @@ export const DutyMemberRef = z.object({
 })
 export type DutyMemberRef = z.infer<typeof DutyMemberRef>
 
+/** Hard cap on one grant entry's member list. A connected component past this is
+ *  not deliverable over this wire at all — it is the dedicated-tier signal, and
+ *  the CP refuses to grant it rather than emit a frame the daemon must reject. */
+export const DUTY_GRANT_MEMBERS_MAX = 1000
+
 /** The heartbeat's lease fields: what I hold (with the terms I believe), and
  *  how many more groups I will accept. Capacity gating is member-side. */
 export const HeartbeatDuties = z.object({
@@ -32,7 +37,7 @@ export const DutyGrantEntry = z.object({
   groupId: z.string().uuid(),
   orgId: z.string().min(1).max(64),
   term: DutyTerm,
-  members: z.array(DutyMemberRef).max(1000)
+  members: z.array(DutyMemberRef).max(DUTY_GRANT_MEMBERS_MAX)
 })
 export type DutyGrantEntry = z.infer<typeof DutyGrantEntry>
 

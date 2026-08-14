@@ -305,6 +305,27 @@ describe('duty lease exchange — wire safety', () => {
     expect(sizes).toEqual([1, 2])
   })
 
+  it('an oversized group is never granted: released back to vacant instead of an invalid frame', async () => {
+    // 1001 members exceeds DutyGrantEntry.members.max — undeliverable by design.
+    await prisma.dutyGroup.create({ data: { id: GROUP, orgId: DEFAULT_ORG_ID, term: 0n } })
+    await prisma.dutyGroupMember.createMany({
+      data: Array.from({ length: 1001 }, (_, i) => ({
+        kind: 'agent' as const,
+        refId: `aaaaaaaa-aaaa-4aaa-8aaa-${String(i).padStart(12, '0')}`,
+        groupId: GROUP,
+        orgId: DEFAULT_ORG_ID
+      }))
+    })
+    const h = buildWsHarness(prisma)
+    const { stub } = await ready(h)
+
+    stub.inject('heartbeat', heartbeat({ held: [], headroom: 4 }))
+    await new Promise((r) => setTimeout(r, 100))
+    expect(stub.sent.filter((f) => f.type === 'duty/grant')).toEqual([])
+    const row = await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })
+    expect(row.holder).toBeNull()
+  })
+
   it('an overlapping beat cannot double-spend headroom (single-flight per daemon)', async () => {
     // Two vacant groups, headroom 1: back-to-back beats dispatched without
     // awaiting must yield at most one grant — the second beat is dropped.

@@ -3,7 +3,12 @@
 // diff answered with duty/grant (missed or re-issued terms) and duty/revoke
 // (superseded or vanished groups), and vacancy grants up to the member's
 // declared headroom. Terms only ever move through the repo's grant paths.
-import type { HeartbeatDuties, DutyGrantEntry, DutyRevoke } from '@agentconnect.md/protocol'
+import {
+  DUTY_GRANT_MEMBERS_MAX,
+  type HeartbeatDuties,
+  type DutyGrantEntry,
+  type DutyRevoke
+} from '@agentconnect.md/protocol'
 import type { DutyGroupRepo, DutyGroupRecord, DutyGrantRecord } from '../persistence/ports.js'
 import type { DaemonId } from '../domain/ids.js'
 import type { Clock } from '../domain/clock.js'
@@ -40,7 +45,12 @@ function toGrantEntry(g: Pick<DutyGrantRecord, 'groupId' | 'orgId' | 'term' | 'm
   return { groupId: g.groupId, orgId: g.orgId, term: String(g.term), members: g.members }
 }
 
-/** Split by entry count AND total member refs; an oversized group rides alone. */
+function deliverable(groups: DutyGroupRecord[]): DutyGroupRecord[] {
+  return groups.filter((g) => g.members.length <= DUTY_GRANT_MEMBERS_MAX)
+}
+
+/** Split by entry count AND total member refs; every entry is already ≤ the
+ *  per-entry member cap, so a full-size single entry still fits a frame. */
 function chunkGrants(grants: DutyGrantEntry[], perFrame: number, membersPerFrame: number): DutyGrantEntry[][] {
   const chunks: DutyGrantEntry[][] = []
   let current: DutyGrantEntry[] = []
@@ -67,7 +77,8 @@ export class DutyLeaseService {
   constructor(
     private readonly repo: DutyGroupRepo,
     private readonly clock: Clock,
-    private readonly config: DutyLeaseConfig = DUTY_LEASE_DEFAULTS
+    private readonly config: DutyLeaseConfig = DUTY_LEASE_DEFAULTS,
+    private readonly log?: { warn(obj: unknown, msg?: string): void }
   ) {
     this.bootedAtMs = clock.now()
   }
@@ -104,7 +115,7 @@ export class DutyLeaseService {
     })
 
     let granted: DutyGrantRecord[] = []
-    const budget = Math.max(0, duties.headroom - missing.length)
+    const budget = Math.max(0, duties.headroom - deliverable(missing).length)
     if (budget > 0 && this.clock.now() >= this.bootedAtMs + this.config.recoveryGraceMs) {
       granted = await this.repo.claimVacant(
         daemonId,
@@ -112,6 +123,21 @@ export class DutyLeaseService {
         now,
         this.config.leaseMs
       )
+      // A component past the wire's per-entry member cap cannot be delivered at
+      // all — that size is the dedicated-tier signal (it should not be pooled).
+      // Release it right away so the claim never wedges it held-but-unserved.
+      const oversized = granted.filter((g) => g.members.length > DUTY_GRANT_MEMBERS_MAX)
+      if (oversized.length > 0) {
+        await this.repo.release(
+          daemonId,
+          oversized.map((g) => g.groupId)
+        )
+        this.log?.warn(
+          { daemonId, groupIds: oversized.map((g) => g.groupId) },
+          'duty groups exceed the grant member cap; released undelivered — move them to a dedicated tier'
+        )
+        granted = granted.filter((g) => g.members.length <= DUTY_GRANT_MEMBERS_MAX)
+      }
     }
 
     // Classified AFTER the claim so the grant and revoke sets are disjoint by
@@ -129,7 +155,19 @@ export class DutyLeaseService {
     // Chunked emission: each chunk is independently applicable (a grant entry
     // REPLACES its group), so a reconnect restoring hundreds of groups converges
     // over several frames instead of assembling one the daemon must reject.
-    const grants = [...missing.map(toGrantEntry), ...stale.map(toGrantEntry), ...granted.map(toGrantEntry)]
+    // Oversized re-grants are skipped for the same reason: the incumbent keeps
+    // renewing what it already serves, but a restore can never ride this wire.
+    const undeliverable = [...missing, ...stale].filter((g) => g.members.length > DUTY_GRANT_MEMBERS_MAX)
+    if (undeliverable.length > 0)
+      this.log?.warn(
+        { daemonId, groupIds: undeliverable.map((g) => g.groupId) },
+        'held duty groups exceed the grant member cap; re-grant skipped — move them to a dedicated tier'
+      )
+    const grants = [
+      ...deliverable(missing).map(toGrantEntry),
+      ...deliverable(stale).map(toGrantEntry),
+      ...granted.map(toGrantEntry)
+    ]
     for (const chunk of chunkGrants(grants, this.config.grantsPerFrame, this.config.grantMembersPerFrame)) {
       send('duty/grant', { grants: chunk })
     }

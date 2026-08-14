@@ -654,7 +654,9 @@ export function buildContainer(
   const collabRoutes = new CollabRoutesService(repos.daemon, repos.integration, repos.agent, relayControl, sender)
 
   // Duty lease exchange riding the heartbeat (k8s daemons; orchestrator/dutyLease.ts).
-  const dutyLease = new DutyLeaseService(repos.dutyGroup, clock)
+  const dutyLease = new DutyLeaseService(repos.dutyGroup, clock, undefined, {
+    warn: (o, m) => http.log.warn(o, m)
+  })
   const agentMutations = new AgentMutationGate()
 
   // Relay roster (shared-bot-relay.md §5): computed from the durable `relay` table
