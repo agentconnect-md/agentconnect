@@ -18,7 +18,7 @@ import type {
   SecretsRequest,
   SecretsGrant
 } from '@agentconnect.md/protocol'
-import type { DaemonId, LeaseId, OrgId } from './domain/ids.js'
+import type { AgentId, DaemonId, LeaseId, OrgId } from './domain/ids.js'
 import type { DaemonStatus, HealthState, AcpSupport, ResourceVisibility, ViewCtx } from './persistence/ports.js'
 
 /** Per-connection client context handed to auth (protocol §3, audit). */
@@ -308,12 +308,17 @@ export interface DaemonRegistry {
   /** Hard-delete a daemon from the fleet (DELETE /daemons/:id). Org-fenced:
    *  throws for an absent row and for a cross-org id alike. */
   remove(orgId: OrgId, daemonId: DaemonId): Promise<void>
-  /** Claim-and-delete one install-wide cloud member — the row a replaced cloud Pod left behind
+  /** Retire one install-wide cloud member — the row a replaced cloud Pod left behind
    *  (`orchestrator/cloudDaemonReaper.ts`). No org owns it, so {@link DaemonRegistry.remove}
    *  cannot reach it. The fence is the claim: org-less cloud shape, still silent past the same
-   *  cutoff the worklist used, still at the epoch observed there. False means the row no longer
-   *  matched — a member that came back — and nothing was deleted. */
-  removeCloudMember(daemonId: DaemonId, fence: { retiredBefore: Date; sessionEpoch: bigint }): Promise<boolean>
+   *  cutoff the worklist used, still at the epoch observed there. `deleted: false` means the
+   *  row no longer matched — a member that came back — and nothing was written. The delete and
+   *  the agent settlement share one transaction; `settled` names the agents it unplaced, whose
+   *  relay, collaboration and hook state the caller re-converges after the commit. */
+  retireCloudMember(
+    daemonId: DaemonId,
+    fence: { retiredBefore: Date; sessionEpoch: bigint }
+  ): Promise<{ deleted: boolean; settled: { id: AgentId; orgId: OrgId }[] }>
   /** The org-owned fleet; shared cloud members are deliberately absent. */
   list(orgId: OrgId, viewer?: ViewCtx): Promise<DaemonView[]>
   /** The display/placement fleet, including install-wide cloud members. */

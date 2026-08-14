@@ -54,8 +54,14 @@ export function withTx<T>(prisma: PrismaClient, fn: (tx: Prisma.TransactionClien
  * `ensurePersonalOrg`). Composing means the OUTER transaction's boundary wins:
  * a rollback out there also undoes what `fn` wrote, which is the intent.
  */
-export function withAmbientTx<T>(db: PrismaLike, fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
-  if ('$transaction' in db) return (db as PrismaClient).$transaction(fn)
+export function withAmbientTx<T>(
+  db: PrismaLike,
+  fn: (tx: Prisma.TransactionClient) => Promise<T>,
+  /** Interactive-transaction budget, for a unit of work whose size is data-dependent and can
+   *  outgrow Prisma's 5s default. Ignored when composing — the outer boundary owns the clock. */
+  opts?: { timeout?: number; maxWait?: number }
+): Promise<T> {
+  if ('$transaction' in db) return (db as PrismaClient).$transaction(fn, opts)
   return fn(db as Prisma.TransactionClient)
 }
 

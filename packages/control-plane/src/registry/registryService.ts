@@ -21,7 +21,7 @@ import type {
   ResourceVisibility,
   ViewCtx
 } from '../persistence/ports.js'
-import type { DaemonId, OrgId } from '../domain/ids.js'
+import type { AgentId, DaemonId, OrgId } from '../domain/ids.js'
 import type { Clock } from '../domain/clock.js'
 
 /** Coerce the stored `capabilities` JSON (defaults to `{}`) into the typed shape. */
@@ -206,8 +206,11 @@ export class DaemonRegistryService implements DaemonRegistry {
     await this.daemons.delete(orgId, daemonId)
   }
 
-  async removeCloudMember(daemonId: DaemonId, fence: { retiredBefore: Date; sessionEpoch: bigint }): Promise<boolean> {
-    return this.daemons.deleteCloudMember(daemonId, fence)
+  async retireCloudMember(
+    daemonId: DaemonId,
+    fence: { retiredBefore: Date; sessionEpoch: bigint }
+  ): Promise<{ deleted: boolean; settled: { id: AgentId; orgId: OrgId }[] }> {
+    return this.daemons.retireCloudMember(daemonId, fence)
   }
 
   /** Org-fenced (org-scoped-data-layer.md §3): the repo read is filtered, so a

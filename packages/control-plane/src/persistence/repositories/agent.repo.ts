@@ -31,6 +31,7 @@ import { lockResourceWriteMemberships } from '../resource-membership-lock.js'
 import { lockSkillSourceNameScopes } from '../skill-source-lock.js'
 import { tryLockMemoryConnectionScopes } from '../memory-connection-lock.js'
 import { PgHookRepo } from './hook.repo.js'
+import { lockAgentPlacement, revokeActiveWebchatMcpDelegations } from './agent-placement.js'
 import { fenceAgentLocalConfigWrite, lockOrgForConfigWrite, orgIdOfAgent } from './organization-environment-fence.js'
 import {
   AgentMissing,
@@ -167,34 +168,6 @@ async function settlePresetPlacement(tx: Prisma.TransactionClient, agentId: stri
   await tx.presetAgent.updateMany({
     where: { agentId, placementSettledAt: null },
     data: { placementSettledAt: new Date() }
-  })
-}
-
-/**
- * Placement/delegation lock order:
- *   Agent FOR UPDATE → active WebchatMcpDelegation rows.
- * Establishment joins the same order with a compatible Agent FOR SHARE, then
- * locks its Conversation FOR UPDATE before touching Delegation. Agent is
- * always first, so placement and agent deletion cannot form an inverse cycle.
- */
-async function lockAgentPlacement(
-  tx: Prisma.TransactionClient,
-  agentId: string
-): Promise<{ daemonId: string | null } | null> {
-  const [row] = await tx.$queryRaw<{ daemonId: string | null }[]>(
-    Prisma.sql`SELECT "daemonId" FROM "agent" WHERE "id" = ${agentId} FOR UPDATE`
-  )
-  return row ?? null
-}
-
-async function revokeActiveWebchatMcpDelegations(
-  tx: Prisma.TransactionClient,
-  agentId: string,
-  revokedAt: Date
-): Promise<void> {
-  await tx.webchatMcpDelegation.updateMany({
-    where: { agentId, revokedAt: null },
-    data: { revokedAt, revokedReason: 'agent_placement_changed' }
   })
 }
 
@@ -845,29 +818,6 @@ export class PgAgentRepo implements AgentRepo {
           data: { dispatchRevision: { increment: 1 } }
         })
       }
-    })
-  }
-
-  /**
-   * Finish an unplacement a daemon DELETE started: the FK sets `daemonId` null and touches
-   * nothing else, so the agent is left reading `active` with nowhere to run, holding live
-   * webchat delegations and compiled hook rules. Conditional by design — a row some other
-   * writer has since placed elsewhere is not this removal's to null, so it is left alone and
-   * reported as unsettled.
-   */
-  async settleCascadedUnplacement(agentId: AgentId): Promise<boolean> {
-    return this.transaction(async (tx) => {
-      const current = await lockAgentPlacement(tx, agentId)
-      if (!current || current.daemonId !== null) return false
-      await tx.agent.update({
-        // No daemonId write — the cascade already did that; what is missing is everything
-        // `setPlacement(null)` pairs with it, including the revision the next owner compares.
-        where: { id: agentId },
-        data: { status: 'inactive', configRevision: { increment: 1 } }
-      })
-      await revokeActiveWebchatMcpDelegations(tx, agentId, new Date())
-      await tx.hookDef.updateMany({ where: { agentId }, data: { dispatchRevision: { increment: 1 } } })
-      return true
     })
   }
 

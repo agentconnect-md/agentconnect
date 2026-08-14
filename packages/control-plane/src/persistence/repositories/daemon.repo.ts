@@ -20,7 +20,8 @@ import type {
   ViewCtx
 } from '../ports.js'
 import { visibilityWhere } from '../../authorization/policy.js'
-import { DaemonId, OrgId } from '../../domain/ids.js'
+import { AgentId, DaemonId, OrgId } from '../../domain/ids.js'
+import { lockAgentPlacement, settleCascadedUnplacement } from './agent-placement.js'
 import type { Heartbeat, FactsMcpServer } from '@agentconnect.md/protocol'
 import { lockResourceWriteMemberships } from '../resource-membership-lock.js'
 
@@ -366,22 +367,51 @@ export class PgDaemonRepo implements DaemonRepo {
   }
 
   /**
-   * The whole fence rides ONE statement, so this is a compare-and-delete and not a delete
-   * that trusts an earlier read: still an org-less cloud member, still silent past the same
-   * cutoff, and still at the `sessionEpoch` the worklist saw. The epoch is what makes it
-   * airtight — `upsertOnAuth` bumps it atomically on every (re)auth, while `lastSeenAt` only
-   * moves on the first heartbeat AFTER one, so a member that just came back is fresh by epoch
-   * before it is fresh by clock.
+   * Retire one cloud member: the fenced delete AND the settlement of every agent it hosted,
+   * in ONE transaction. Split across two commits, a process exit or a transient failure in
+   * between would strand agents at `daemonId = null` with `status = 'active'` — nowhere to
+   * run, live delegations, stale hook revisions — with no durable work item to retry from.
+   *
+   * The whole fence rides the DELETE statement, so this is a compare-and-delete and not a
+   * delete that trusts an earlier read: still an org-less cloud member, still silent past the
+   * same cutoff the worklist selected on, still at the `sessionEpoch` it saw there. The epoch
+   * is what makes it airtight — `upsertOnAuth` bumps it atomically on every (re)auth, while
+   * `lastSeenAt` only moves on the first heartbeat AFTER one, so a member that just came back
+   * is fresh by epoch before it is fresh by clock. A refused claim rolls back reads only.
+   *
+   * The agents are locked BEFORE the daemon row, matching the placement path's Agent → Daemon
+   * order (`agent-placement.ts`), so a concurrent move cannot deadlock against this.
    */
-  async deleteCloudMember(daemonId: DaemonId, fence: { retiredBefore: Date; sessionEpoch: bigint }): Promise<boolean> {
-    const { count } = await this.db.daemon.deleteMany({
-      where: {
-        id: daemonId,
-        sessionEpoch: fence.sessionEpoch,
-        ...retiredCloudMemberWhere(fence.retiredBefore)
-      }
-    })
-    return count === 1
+  async retireCloudMember(
+    daemonId: DaemonId,
+    fence: { retiredBefore: Date; sessionEpoch: bigint }
+  ): Promise<{ deleted: boolean; settled: { id: AgentId; orgId: OrgId }[] }> {
+    return withAmbientTx(
+      this.db,
+      async (tx) => {
+        // Read + lock before the delete: the FK is SetNull, so the cascade erases the only
+        // record of which agents this member hosted.
+        const placed = await tx.agent.findMany({
+          where: { daemonId },
+          select: { id: true, orgId: true },
+          orderBy: { id: 'asc' } // one lock order for every concurrent retirement
+        })
+        for (const agent of placed) await lockAgentPlacement(tx, agent.id)
+        const { count } = await tx.daemon.deleteMany({
+          where: { id: daemonId, sessionEpoch: fence.sessionEpoch, ...retiredCloudMemberWhere(fence.retiredBefore) }
+        })
+        if (count !== 1) return { deleted: false, settled: [] }
+        const settled: { id: AgentId; orgId: OrgId }[] = []
+        for (const agent of placed) {
+          if (await settleCascadedUnplacement(tx, agent.id))
+            settled.push({ id: AgentId(agent.id), orgId: OrgId(agent.orgId) })
+        }
+        return { deleted: true, settled }
+      },
+      // How many agents a member hosts is not bounded by anything here, and the whole point is
+      // that they settle with the delete — so the budget is the sweep's, not Prisma's 5s default.
+      { timeout: 30_000 }
+    )
   }
 
   async bumpRoutingEpoch(daemonId: DaemonId): Promise<bigint> {

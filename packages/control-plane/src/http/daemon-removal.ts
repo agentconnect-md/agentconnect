@@ -13,14 +13,18 @@
  * lives here rather than in whichever route wrote it first.
  *
  * The two paths differ in ONE thing, deliberately: who decides. An operator's detach has
- * already decided, so it unplaces first and then deletes. The reaper's decision is a
- * guess about a row it read moments ago, so its delete comes FIRST as a fenced claim and
- * nothing destructive runs until that claim wins.
+ * already decided, so it unplaces first and then deletes — and a crash between the two leaves
+ * a live daemon with unplaced agents, which converges. The reaper's decision is a guess about
+ * a row it read moments ago, so its delete comes FIRST as a fenced claim, which puts the
+ * cascade before the settlement and makes the pair a transaction (`retireCloudMember`) rather
+ * than an ordering.
  */
 import type { FastifyBaseLogger } from 'fastify'
-import type { DaemonId, OrgId } from '../domain/ids.js'
-import type { AgentRecord } from '../persistence/ports.js'
+import type { AgentId, DaemonId, OrgId } from '../domain/ids.js'
 import type { HttpDeps } from './deps.js'
+
+/** Just enough of an agent to re-converge what pointed at it. */
+type UnplacedAgent = { id: AgentId; orgId: OrgId }
 
 /** What the sequence touches — narrow, so a caller cannot pass half a graph. */
 export type DaemonRemovalDeps = Pick<HttpDeps, 'repos' | 'registry' | 'relayControl' | 'collabRoutes' | 'hooks'>
@@ -54,12 +58,14 @@ export async function detachDaemon(
  * cannot reach it — and its placements may span every organization, which is the whole
  * reason it goes through this sequence instead of a bare delete.
  *
- * The order is the safety property. `fence` re-checks, inside the delete statement itself,
- * the staleness that put this member on the worklist plus the `sessionEpoch` observed there;
- * a member that heartbeated or re-authenticated in between simply does not match, and false
- * comes back with NOTHING written. Only a won claim reaches the settlement — the alternative,
- * unplacing first and checking after, deactivates a live member's agents across every
- * organization before it discovers the member is alive.
+ * `fence` re-checks, inside the delete statement itself, the staleness that put this member on
+ * the worklist plus the `sessionEpoch` observed there; a member that heartbeated or
+ * re-authenticated in between simply does not match, and false comes back with NOTHING
+ * written. The alternative — unplacing first and checking after — deactivates a live member's
+ * agents across every organization before it discovers the member is alive.
+ *
+ * What follows the transaction is only the out-of-database convergence, which is best-effort
+ * by nature and backstopped by `register/ok` on the next reconnect.
  */
 export async function retireCloudDaemonMember(
   deps: DaemonRemovalDeps,
@@ -68,19 +74,11 @@ export async function retireCloudDaemonMember(
   log: FastifyBaseLogger
 ): Promise<boolean> {
   const { daemonId, sessionEpoch } = member
-  // Read-only, and before the claim for the same reason as above: the cascade erases the
-  // placements, so this is the last moment anything can name them.
-  const placedAgents = await deps.repos.agent.listForDaemon(daemonId)
-  if (!(await deps.registry.removeCloudMember(daemonId, { retiredBefore, sessionEpoch }))) return false
-  // The cascade nulled `daemonId` when the claim landed; finish the half a foreign key
-  // cannot. Conditional per agent — one that another writer has since placed elsewhere is
-  // not this removal's to deactivate.
-  const unplaced: AgentRecord[] = []
-  for (const agent of placedAgents) {
-    if (await deps.repos.agent.settleCascadedUnplacement(agent.id)) unplaced.push(agent)
-    else log.info({ daemonId, agentId: agent.id }, 'cloud member retired: agent already placed elsewhere')
-  }
-  await settleAfterRemoval(deps, daemonId, unplaced, log)
+  // One transaction for both database halves — the delete and the unplacement it cascades —
+  // so nothing here can be interrupted into leaving an agent active with nowhere to run.
+  const { deleted, settled } = await deps.registry.retireCloudMember(daemonId, { retiredBefore, sessionEpoch })
+  if (!deleted) return false
+  await settleAfterRemoval(deps, daemonId, settled, log)
   return true
 }
 
@@ -89,7 +87,7 @@ export async function retireCloudDaemonMember(
 async function settleAfterRemoval(
   deps: DaemonRemovalDeps,
   daemonId: DaemonId,
-  unplacedAgents: AgentRecord[],
+  unplacedAgents: UnplacedAgent[],
   log: FastifyBaseLogger
 ): Promise<void> {
   // The daemon (and its FK-cascaded keys) is gone — tell relays to drop it (§9).

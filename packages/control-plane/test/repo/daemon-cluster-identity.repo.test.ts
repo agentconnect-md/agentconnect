@@ -2,8 +2,10 @@
 import { describe, it, expect } from 'vitest'
 import { prisma } from '../setup.db.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
+import { seedAgent } from '../fixtures/seed.js'
 import { PgDaemonRepo } from '../../src/persistence/repositories/daemon.repo.js'
-import { DaemonId, OrgId } from '../../src/domain/ids.js'
+import { PgAgentRepo } from '../../src/persistence/repositories/agent.repo.js'
+import { AgentId, DaemonId, OrgId } from '../../src/domain/ids.js'
 
 const IDENTITY = 'system:serviceaccount:ac-org-example:ac-daemon'
 const INSTALL_IDENTITY = 'system:serviceaccount:agentconnect:ac-cloud-daemon'
@@ -182,10 +184,15 @@ describe('DaemonRepo cloud-member retirement', () => {
     expect((await repo.findRetiredCloudMembers(CUTOFF)).map((daemon) => daemon.id)).toEqual([fresh.id])
   })
 
-  it('deletes a retired cloud member and refuses anything that is not one', async () => {
+  it('retires a member and settles its agents in one transaction, refusing anything else', async () => {
     const repo = new PgDaemonRepo(prisma)
     const pod = await repo.resolveCloudClusterIdentity(INSTALL_IDENTITY, POD_UID_A)
     await prisma.daemon.update({ where: { id: pod.id }, data: { lastSeenAt: HOUR_AGO } })
+    // An agent from an ordinary org, hosted on install-wide infrastructure — the shape only a
+    // cloud member has, and the reason the settlement cannot be org-scoped.
+    const hosted = AgentId('a9999999-9999-4999-8999-999999999999')
+    await seedAgent(prisma, hosted, { daemonId: pod.id })
+    await new PgAgentRepo(prisma).setPlacement(hosted, pod.id)
     const envelope = await repo.resolveClusterIdentity(DEF_ORG, IDENTITY)
     const laptop = DaemonId('88888888-8888-4888-8888-888888888888')
     await repo.provision(laptop, DEF_ORG)
@@ -194,11 +201,19 @@ describe('DaemonRepo cloud-member retirement', () => {
     }
     const fence = { retiredBefore: CUTOFF, sessionEpoch: pod.sessionEpoch }
 
-    expect(await repo.deleteCloudMember(pod.id, fence)).toBe(true)
+    expect(await repo.retireCloudMember(pod.id, fence)).toEqual({
+      deleted: true,
+      settled: [{ id: hosted, orgId: DEFAULT_ORG_ID }]
+    })
+    // The agent left the same commit as the row: unplaced AND no longer claiming to run.
+    expect(await prisma.agent.findUnique({ where: { id: hosted } })).toMatchObject({
+      daemonId: null,
+      status: 'inactive'
+    })
     // Gone, so a repeat (a peer replica sweeping the same row) is a no-op, not an error.
-    expect(await repo.deleteCloudMember(pod.id, fence)).toBe(false)
-    expect(await repo.deleteCloudMember(envelope!.id, fence)).toBe(false)
-    expect(await repo.deleteCloudMember(laptop, fence)).toBe(false)
+    expect(await repo.retireCloudMember(pod.id, fence)).toMatchObject({ deleted: false })
+    expect(await repo.retireCloudMember(envelope!.id, fence)).toMatchObject({ deleted: false })
+    expect(await repo.retireCloudMember(laptop, fence)).toMatchObject({ deleted: false })
     expect(await prisma.daemon.findUnique({ where: { id: pod.id } })).toBeNull()
     expect(await prisma.daemon.findUnique({ where: { id: envelope!.id } })).not.toBeNull()
     expect(await prisma.daemon.findUnique({ where: { id: laptop } })).not.toBeNull()
@@ -214,17 +229,17 @@ describe('DaemonRepo cloud-member retirement', () => {
     // while the clock only moves on the first heartbeat AFTER it.
     await repo.upsertOnAuth({ daemonId: pod.id, orgId: null, agentVersion: '1.0.0' })
 
-    expect(await repo.deleteCloudMember(pod.id, { retiredBefore: CUTOFF, sessionEpoch: observed.sessionEpoch })).toBe(
-      false
-    )
+    expect(
+      await repo.retireCloudMember(pod.id, { retiredBefore: CUTOFF, sessionEpoch: observed.sessionEpoch })
+    ).toMatchObject({ deleted: false })
     expect(await prisma.daemon.findUnique({ where: { id: pod.id } })).not.toBeNull()
 
     // A heartbeat is caught by the cutoff half of the same fence.
     await prisma.daemon.update({ where: { id: pod.id }, data: { lastSeenAt: new Date() } })
     const current = await repo.getUnscoped(pod.id)
-    expect(await repo.deleteCloudMember(pod.id, { retiredBefore: CUTOFF, sessionEpoch: current!.sessionEpoch })).toBe(
-      false
-    )
+    expect(
+      await repo.retireCloudMember(pod.id, { retiredBefore: CUTOFF, sessionEpoch: current!.sessionEpoch })
+    ).toMatchObject({ deleted: false })
     expect(await prisma.daemon.findUnique({ where: { id: pod.id } })).not.toBeNull()
   })
 })
