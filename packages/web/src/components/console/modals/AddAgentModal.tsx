@@ -334,9 +334,9 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
     return () => el.removeEventListener('scroll', sync)
   }, [])
 
-  // Cloud is one pool-backed placement (stored as null); only local daemons are concrete candidates.
+  // Cloud is one null-valued UI choice; the server still receives one serving pool member.
   const daemonChoice = addAgentDaemonChoice(daemons, daemonId)
-  const { cloudAvailable, daemon, daemonId: placementDaemonId, localDaemons, value: effectiveDaemonId } = daemonChoice
+  const { cloudAvailable, daemon, localDaemons, placementDaemonId, value: effectiveDaemonId } = daemonChoice
   const cloudSelected = cloudAvailable && effectiveDaemonId === ''
   const daemonLabel = cloudSelected ? CLOUD_DAEMON_LABEL : daemon ? daemon.name : 'No daemons connected'
   const sandboxRequired = daemon?.caps.features.includes('sandbox-required') ?? false

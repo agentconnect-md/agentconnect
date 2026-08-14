@@ -7,6 +7,7 @@ export interface AddAgentDaemonChoice<T extends DaemonChoiceRow> {
   daemon: T | undefined
   daemonId: string | null
   localDaemons: T[]
+  placementDaemonId: string | null
   value: string
 }
 
@@ -17,16 +18,18 @@ export function addAgentDaemonChoice<T extends DaemonChoiceRow>(
   daemons: T[],
   selectedDaemonId: string
 ): AddAgentDaemonChoice<T> {
-  const cloudDaemons = onlineFirst(daemons.filter((daemon) => daemon.cloud))
+  const cloudDaemons = daemons.filter((daemon) => daemon.cloud && daemon.status === 'online')
   const localDaemons = onlineFirst(daemons.filter((daemon) => !daemon.cloud))
   const selectedLocal = localDaemons.find((daemon) => daemon.daemonId === selectedDaemonId)
   const value = selectedLocal?.daemonId ?? (cloudDaemons.length > 0 ? '' : (localDaemons[0]?.daemonId ?? ''))
+  const daemon = value ? localDaemons.find((candidate) => candidate.daemonId === value) : cloudDaemons[0]
 
   return {
     cloudAvailable: cloudDaemons.length > 0,
-    daemon: value ? localDaemons.find((candidate) => candidate.daemonId === value) : cloudDaemons[0],
+    daemon,
     daemonId: value || null,
     localDaemons,
+    placementDaemonId: daemon?.daemonId ?? null,
     value
   }
 }

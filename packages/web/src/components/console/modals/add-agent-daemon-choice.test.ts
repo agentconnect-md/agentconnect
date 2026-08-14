@@ -24,6 +24,7 @@ describe('addAgentDaemonChoice', () => {
     expect(choice.value).toBe('')
     expect(choice.daemonId).toBeNull()
     expect(choice.daemon?.daemonId).toBe('cloud-serving')
+    expect(choice.placementDaemonId).toBe('cloud-serving')
     expect(choice.localDaemons.map((daemon) => daemon.daemonId)).toEqual(['local-1'])
   })
 
@@ -33,6 +34,7 @@ describe('addAgentDaemonChoice', () => {
     expect(choice.value).toBe('local-1')
     expect(choice.daemonId).toBe('local-1')
     expect(choice.daemon?.daemonId).toBe('local-1')
+    expect(choice.placementDaemonId).toBe('local-1')
   })
 
   it('requires and defaults to a local daemon when Cloud is unavailable', () => {
@@ -42,6 +44,15 @@ describe('addAgentDaemonChoice', () => {
     expect(choice.value).toBe('local-online')
     expect(choice.daemonId).toBe('local-online')
     expect(choice.daemon?.daemonId).toBe('local-online')
+    expect(choice.placementDaemonId).toBe('local-online')
+  })
+
+  it('falls back to a local daemon when no Cloud member is serving', () => {
+    const choice = addAgentDaemonChoice([row('cloud-offline', true, 'offline'), row('local-online')], '')
+
+    expect(choice.cloudAvailable).toBe(false)
+    expect(choice.value).toBe('local-online')
+    expect(choice.placementDaemonId).toBe('local-online')
   })
 
   it('has no valid choice when neither Cloud nor a local daemon exists', () => {
@@ -50,6 +61,7 @@ describe('addAgentDaemonChoice', () => {
       daemon: undefined,
       daemonId: null,
       localDaemons: [],
+      placementDaemonId: null,
       value: ''
     })
   })
