@@ -14,13 +14,8 @@
  * Pure data + a pure `arbitrate()` — no I/O, no Slack, no sockets — so it unit
  * tests without a live ingest.
  */
-import {
-  manifestFor,
-  type AttributedRoute,
-  type RcAgentDirEntry,
-  type RcBotAssign,
-  type WireNormalizedMessage
-} from '@agentconnect.md/protocol'
+import { arbitrateSharedBot, sharedBotScopeMatches, sharedBotSessionKey } from '@agentconnect.md/activation-policy'
+import type { AttributedRoute, RcAgentDirEntry, RcBotAssign, WireNormalizedMessage } from '@agentconnect.md/protocol'
 import { isThreadRootMessage } from '@agentconnect.md/message'
 
 /** A bot's full relay-side assignment (from `rc/bot-assign`). Secret material. */
@@ -102,29 +97,11 @@ export interface ConversationTarget {
   via: 'mention' | 'implicit'
 }
 
-/** `channel/thread` — the per-conversation affinity + rc/assign key. */
-export function sessionKeyOf(msg: Pick<WireNormalizedMessage, 'channel' | 'thread'>): string {
-  return `${msg.channel}/${msg.thread ?? msg.channel}`
-}
+/** `channel/thread` — the per-conversation affinity + rc/assign key. Package
+ *  policy since the relay fold-in; re-exported to keep the import path. */
+export const sessionKeyOf: (msg: Pick<WireNormalizedMessage, 'channel' | 'thread'>) => string = sharedBotSessionKey
 
-function scopeMatches(r: AttributedRoute, msg: WireNormalizedMessage): boolean {
-  if (r.scope?.channel !== undefined && r.scope.channel !== msg.channel) return false
-  if (r.scope?.thread !== undefined && r.scope.thread !== msg.thread) return false
-  return true
-}
-
-function kindMatches(r: AttributedRoute, msg: WireNormalizedMessage, botUserId: string | undefined): boolean {
-  switch (r.match.kind) {
-    case 'mention':
-      return botUserId !== undefined && msg.mentionedBots.includes(botUserId)
-    case 'dm':
-      return msg.isDm
-    case 'keyword':
-      return msg.text.toLowerCase().includes(r.match.value.toLowerCase())
-    case 'auto':
-      return true
-  }
-}
+const scopeMatches: (r: AttributedRoute, msg: WireNormalizedMessage) => boolean = sharedBotScopeMatches
 
 const target = (r: AttributedRoute): RouteTarget => ({
   agentId: r.agentId,
@@ -136,6 +113,13 @@ const target = (r: AttributedRoute): RouteTarget => ({
  * Arbitrate one inbound message against a bot's attributed routes (pure).
  * `affinity` maps a sessionKey to a prior target (thread continuity), refreshed by
  * the caller after each routed turn and seeded durably by `rc/assign`.
+ *
+ * Since the relay fold-in the ladder itself is package-owned policy
+ * (`arbitrateSharedBot`, `@agentconnect.md/activation-policy` — see its header
+ * for the declared ladder structure and how it relates to the daemon ladder);
+ * `BotAssignment` structurally satisfies the package's assignment facts, and
+ * this module keeps the stateful remainder (the affinity/participant
+ * bookkeeping and the peer fan-out below).
  */
 export function arbitrate(
   a: BotAssignment,
@@ -146,88 +130,7 @@ export function arbitrate(
    *  Unverified bots — including third-party ones — still stop at the explicit mention. */
   verifiedAgentAuthor?: string
 ): RouteTarget | null {
-  // Own echoes never route. A third-party bot may enter only through an explicit
-  // mention, and only on a platform whose manifest admits bot senders at all
-  // (§5 botSenderRouting — fail-closed for unknown ids); AgentConnect-managed app
-  // messages are removed by the manager using the collaboration snapshot before
-  // forwarding.
-  if (a.botUserId !== undefined && msg.sender.id === a.botUserId && verifiedAgentAuthor === undefined) return null
-  const explicitlyMentioned = a.botUserId !== undefined && msg.mentionedBots.includes(a.botUserId)
-  if (
-    msg.sender.isBot &&
-    verifiedAgentAuthor === undefined &&
-    (!manifestFor(msg.platform).botSenderRouting || !explicitlyMentioned)
-  ) {
-    return null
-  }
-  // A channel switched Off resolves to no target at all — ahead of every rung, so
-  // neither an @-mention nor an existing thread binding can reach into it.
-  if (a.mutedChannels?.includes(msg.channel)) return null
-
-  // The author is removed ONCE, so every rung below inherits the exclusion — an agent
-  // matching its own route would wake itself on its own reply, an unconditional self-loop.
-  const routes =
-    verifiedAgentAuthor === undefined ? a.routes : a.routes.filter((r) => r.agentId !== verifiedAgentAuthor)
-  const scoped = routes.filter((r) => r.scope?.channel !== undefined && scopeMatches(r, msg))
-
-  // 1. Channel ownership (§10.1, the primary path): a channel-scoped rule that
-  //    matches the message kind wins outright (mention rule needs the @bot; auto
-  //    rule fires on any message — the operator's trigger choice).
-  // A HUMAN mention can still nominate the compatibility primary. `conversationTargets`
-  // independently joins every matching route and fans to the remembered room, including
-  // peers on other daemons. Verified agent traffic skips this selector: its mention can
-  // add a participant but never narrows the room or clears a human's stop latch.
-  const ownedMention =
-    verifiedAgentAuthor === undefined
-      ? scoped.find((r) => r.match.kind === 'mention' && kindMatches(r, msg, a.botUserId))
-      : undefined
-  if (ownedMention) return target(ownedMention)
-  // Conversation-scoped keyword (§14.3): slug disambiguation inside a multi-agent DM
-  // enabled for several gated agents — outranks the scoped auto so "<slug> …"
-  // names its agent; an unslugged message falls through to the first auto route.
-  const ownedKeyword = scoped.find((r) => r.match.kind === 'keyword' && kindMatches(r, msg, a.botUserId))
-  if (ownedKeyword) return target(ownedKeyword)
-  const ownedAuto = scoped.find((r) => r.match.kind === 'auto')
-  if (ownedAuto) return target(ownedAuto)
-
-  // 2. Thread continuity: an un-mentioned follow-up in a thread the relay already
-  //    routed continues to that agent, provided it is still a member — and, for a
-  //    conversation-gated agent (§14), provided the conversation is still enabled
-  //    (a channel-scoped route for that agent exists). The affinity map is not
-  //    scope-filtered, so without this check a pre-gate binding routes forever.
-  // A continuity binding pointing at the author is skipped for the same reason: the
-  // thread's remembered owner may BE the agent that just spoke.
-  const remembered = affinity.get(sessionKeyOf(msg))
-  const cont = remembered && remembered.agentId === verifiedAgentAuthor ? undefined : remembered
-  const directControlOk =
-    !cont || (!msg.isDm && msg.isGroupDm !== true) || scoped.some((r) => r.agentId === cont.agentId)
-  const contGateOk =
-    directControlOk &&
-    (!cont || !a.gatedAgentIds?.includes(cont.agentId) || scoped.some((r) => r.agentId === cont.agentId))
-  if (cont && contGateOk && a.members.some((m) => m.daemonId === cont.daemonId && m.agentIds.includes(cont.agentId))) {
-    if (cont.integrationId) return cont
-    const route = a.routes.find((r) => r.agentId === cont.agentId)
-    if (route) return { ...cont, integrationId: route.integrationId }
-    return cont
-  }
-
-  // 3. Keyword disambiguation (§10.2): "@bot <slug> …" → that agent. Only when the
-  //    bot was actually addressed (a mention or a DM), so a stray slug substring in
-  //    a normal channel message doesn't trigger it.
-  const addressed = msg.isDm || (verifiedAgentAuthor === undefined && explicitlyMentioned)
-  if (addressed) {
-    const kw = routes.find((r) => r.match.kind === 'keyword' && !r.scope && kindMatches(r, msg, a.botUserId))
-    if (kw) return target(kw)
-
-    // 4. Default agent (§10.3): a bare @bot / DM with no slug → the group default.
-    if (a.defaultAgentId && a.defaultDaemonId && a.defaultAgentId !== verifiedAgentAuthor) {
-      // Resolve the default's integrationId from its (keyword) route.
-      const def = routes.find((r) => r.agentId === a.defaultAgentId)
-      if (def) return { agentId: a.defaultAgentId, daemonId: a.defaultDaemonId, integrationId: def.integrationId }
-    }
-  }
-
-  return null
+  return arbitrateSharedBot(a, msg, affinity, verifiedAgentAuthor)
 }
 
 /** Cap on a bot's negative-affinity set before it is flushed (bounds CP lookups). */
