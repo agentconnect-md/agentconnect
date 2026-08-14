@@ -223,7 +223,7 @@ const CoreConfigShape = {
   OPEN_CONNECTOR_PROVIDER_BLOCKLIST: z
     .string()
     .default('github,slack,telegram,discord,discordbot,feishu,feishu_app_bot,feishu_custom_bot'),
-  // ── in-cluster Kubernetes access — opt-in ──
+  // ── in-cluster daemon identity — opt-in ──
   // The switch for the cluster surface, and the ONLY access knob: turning it on
   // asserts that this control plane runs inside the cluster, so the pod's
   // ServiceAccount is the credential and the pod's own namespace is the control
@@ -231,6 +231,14 @@ const CoreConfigShape = {
   // an existing deployment. Explicit rather than sniffed: a control plane that
   // merely happens to run on Kubernetes must not start claiming cluster access.
   // EXPLICIT enum, not z.coerce.boolean().
+  CLUSTER_DAEMON_IDENTITY_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
+  // Deprecated alias for the key above, honored so a deployment can roll the control plane
+  // before its chart. It named a feature that no longer exists — provisioning per-org
+  // execution envelopes — and all that survived it is the identity check. Remove once no
+  // deployment sets it.
   CLUSTER_EXECUTION_ENABLED: z
     .enum(['true', 'false'])
     .default('false')
