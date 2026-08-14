@@ -45,7 +45,7 @@ export const DUTY_LEASE_DEFAULTS: DutyLeaseConfig = {
   grantPolicy: 'incumbent'
 }
 
-type Send = (type: 'duty/grant' | 'duty/revoke', payload: unknown) => void
+type Send = (type: 'duty/grant' | 'duty/revoke' | 'duty/renewed', payload: unknown) => void
 
 function toGrantEntry(g: Pick<DutyGrantRecord, 'groupId' | 'orgId' | 'term' | 'members'>): DutyGrantEntry {
   return { groupId: g.groupId, orgId: g.orgId, term: String(g.term), members: g.members }
@@ -127,6 +127,12 @@ export class DutyLeaseService {
   private async exchange(daemonId: DaemonId, duties: HeartbeatDuties, send: Send): Promise<void> {
     const now = new Date(this.clock.now())
     await this.repo.renewHeld(daemonId, now, this.config.leaseMs)
+    // Confirm the renewal that just happened, before anything else on this connection.
+    // The member's self-fence anchors on RECEIPT of this frame: sending a heartbeat is not
+    // renewing a lease (a half-open socket swallows it, and a beat arriving while this
+    // daemon's lane is busy is dropped without ever reaching `renewHeld`), so only the CP
+    // can tell it the countdown restarted. Relative, never a timestamp — no shared clock.
+    send('duty/renewed', { leaseMs: this.config.leaseMs })
     const held = await this.repo.listHeldBy(daemonId)
     const heldById = new Map(held.map((g) => [g.groupId, g]))
     const digestIds = new Set(duties.held.map((d) => d.groupId))

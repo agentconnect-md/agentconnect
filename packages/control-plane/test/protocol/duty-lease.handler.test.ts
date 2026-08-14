@@ -136,7 +136,24 @@ describe('duty lease exchange (protocol level, real Postgres)', () => {
     const row = await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })
     expect(row.term).toBe(1n)
     expect(row.expiresAt).toEqual(new Date(h.clock.now() + LEASE_MS))
-    expect(stub.sent.filter((f) => f.type.startsWith('duty/'))).toEqual([])
+    // Nothing to grant and nothing to revoke — only the confirmation that the renewal happened,
+    // which is what the member anchors its self-fence on.
+    expect(stub.sent.filter((f) => f.type.startsWith('duty/')).map((f) => f.type)).toEqual(['duty/renewed'])
+  })
+
+  it('every processed duty beat is answered with the renewal horizon it just wrote', async () => {
+    const h = buildWsHarness(prisma, { dutyLease: { leaseMs: 90_000 } })
+    const start = new Date(h.clock.now())
+    await seedGroup({ holder: DAEMON, term: 1n, expiresAt: new Date(start.getTime() + 5_000) })
+    const { stub } = await ready(h)
+
+    stub.inject('heartbeat', heartbeat({ held: [{ groupId: GROUP, term: '1' }], headroom: 0 }))
+    const renewed = await stub.expectFrame('duty/renewed')
+    if (!isFrame('duty/renewed')(renewed)) throw new Error('expected duty/renewed')
+    // Relative, never a timestamp: the member measures from receipt on its own clock.
+    expect(renewed.payload).toEqual({ leaseMs: 90_000 })
+    const row = await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })
+    expect(row.expiresAt).toEqual(new Date(h.clock.now() + 90_000))
   })
 
   it('a digest entry the ledger granted elsewhere is revoked as superseded', async () => {

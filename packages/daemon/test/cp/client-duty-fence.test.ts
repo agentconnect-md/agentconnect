@@ -168,14 +168,25 @@ async function advance(clock: FakeClock, ms: number): Promise<void> {
 
 const beats = (t: FakeTransport) => t.sent.map((raw) => JSON.parse(raw)).filter((f) => f.type === 'heartbeat')
 
+/** The CP's answer to a beat it processed. Anchoring happens HERE, not on the send. */
+function confirmRenewal(t: FakeTransport, leaseMs = LEASE_MS): void {
+  t.pushInbound(JSON.stringify(buildEnvelope('duty/renewed', { leaseMs })))
+}
+
+/** One healthy round trip: the daemon beats, the CP renews and says so. */
+async function renewedBeat(clock: FakeClock, t: FakeTransport, leaseMs = LEASE_MS): Promise<void> {
+  await advance(clock, BEAT_MS)
+  confirmRenewal(t, leaseMs)
+  await tick()
+}
+
 describe('the duty self-fence deadline', () => {
   it('a control-plane restart moves no duty: the epoch bumps and nothing is fenced', async () => {
     // The #955 acceptance run. A restart reconnects well inside the horizon, so the fence
     // must stay quiet — a fence here would drop live platform connections for a blip.
     const { client, link, clock, onDutyFence } = await ready()
-    await advance(clock, BEAT_MS)
-    const before = beats(link.current).at(-1)
-    expect(before.payload.duties.held).toEqual([{ groupId: GROUP, term: '7' }])
+    await renewedBeat(clock, link.current)
+    expect(beats(link.current).at(-1).payload.duties.held).toEqual([{ groupId: GROUP, term: '7' }])
 
     link.current.simulateClose(1012, 'restarting')
     expect(client.state).toBe('DEGRADED')
@@ -184,17 +195,21 @@ describe('the duty self-fence deadline', () => {
 
     expect(client.state).toBe('READY')
     expect(client.sessionEpoch).toBe(2) // a fresh fencing token, as the restart mints
-    // The reconnect renews the leases immediately, reporting the SAME terms it held before.
+    // The reconnect beats at once, reporting the SAME terms it held before, and the CP confirms.
     expect(beats(link.current).at(-1).payload.duties.held).toEqual([{ groupId: GROUP, term: '7' }])
+    confirmRenewal(link.current)
+    await tick()
 
-    // Far past the deadline the outage had armed.
-    await advance(clock, 4 * LEASE_MS)
+    // Keep the restarted CP running well past the deadline the outage had armed: a renewed
+    // beat every cadence, so the countdown restarts long before it can expire.
+    for (let i = 0; i < 10; i++) await renewedBeat(clock, link.current)
+    expect(clock.now()).toBeGreaterThan(FENCE_MS)
     expect(onDutyFence).not.toHaveBeenCalled()
   })
 
   it('fires once the horizon elapses with the link down', async () => {
     const { link, clock, onDutyFence } = await ready()
-    await advance(clock, BEAT_MS)
+    await renewedBeat(clock, link.current)
     link.up = false
     link.current.simulateClose(1006, 'gone')
 
@@ -209,16 +224,47 @@ describe('the duty self-fence deadline', () => {
     expect(onDutyFence).toHaveBeenCalledTimes(1)
   })
 
-  it('anchors the deadline on the last heartbeat, not on the disconnect', async () => {
+  it('fires on schedule on a HALF-OPEN socket, where every beat is sent and none arrives', async () => {
+    // The failure the anchor exists for: `send()` succeeds locally, the CP never runs
+    // `renewHeld`, and no close event ever fires. Sending is not renewing — the deadline set
+    // by the last CONFIRMED renewal must not move a millisecond for the beats that follow.
     const { link, clock, onDutyFence } = await ready()
-    await advance(clock, BEAT_MS) // the beat the CP renews from, at t = 15s
-    await advance(clock, BEAT_MS - 1) // …and the socket dies just before the next one is due
+    await renewedBeat(clock, link.current) // last confirmed renewal, at t = 15s
+    const sentByThen = beats(link.current).length
+
+    // The socket stays "open" and the daemon keeps beating into it — unanswered.
+    for (let i = 0; i < 5; i++) await advance(clock, BEAT_MS)
+    expect(beats(link.current).length).toBeGreaterThan(sentByThen) // the sends really happened
+    expect(onDutyFence).not.toHaveBeenCalled() // …and moved nothing: t = 90s, deadline 105s
+
+    await advance(clock, FENCE_MS - 5 * BEAT_MS - 1)
+    expect(onDutyFence).not.toHaveBeenCalled()
+    await advance(clock, 1)
+    expect(onDutyFence).toHaveBeenCalledTimes(1)
+  })
+
+  it('anchors on the confirmation, not on the disconnect', async () => {
+    const { link, clock, onDutyFence } = await ready()
+    await renewedBeat(clock, link.current) // renewal confirmed at t = 15s
+    await advance(clock, BEAT_MS - 1) // …and the socket dies just before the next beat is due
     link.up = false
     link.current.simulateClose(1006, 'gone')
 
-    // Measured from the disconnect the fence would still be 15s away.
+    // Measured from the disconnect the fence would still be a cadence away.
     await advance(clock, FENCE_MS - (BEAT_MS - 1))
     expect(onDutyFence).toHaveBeenCalledTimes(1)
+  })
+
+  it('never arms before a renewal this member can lose', async () => {
+    // Beats go out from the first cadence, but nothing is confirmed, so no lease was ever
+    // renewed here — there is no countdown to run and nothing for a successor to take.
+    const { link, clock, onDutyFence } = await ready()
+    await advance(clock, BEAT_MS)
+    link.up = false
+    link.current.simulateClose(1006, 'gone')
+
+    await advance(clock, 10 * LEASE_MS)
+    expect(onDutyFence).not.toHaveBeenCalled()
   })
 
   it('never arms for a daemon that renews no lease', async () => {
@@ -243,9 +289,22 @@ describe('the duty self-fence deadline', () => {
     expect(onDutyFence).not.toHaveBeenCalled()
   })
 
-  it('falls back to the built-in horizon, loudly, when the CP sends none', async () => {
+  it('adopts each renewal horizon the CP announces', async () => {
+    const { link, clock, onDutyFence } = await ready()
+    await renewedBeat(clock, link.current, 40_000) // this CP now leases for 40s
+    link.up = false
+    link.current.simulateClose(1006, 'gone')
+
+    await advance(clock, 30_000 - 1) // 3/4 of 40s
+    expect(onDutyFence).not.toHaveBeenCalled()
+    await advance(clock, 1)
+    expect(onDutyFence).toHaveBeenCalledTimes(1)
+  })
+
+  it('falls back to the built-in horizon and the weaker send anchor when the CP confirms nothing', async () => {
     const { link, clock, onDutyFence, warn } = await ready({ noHorizon: true })
-    // An older CP omits the field; fencing on a guess beats silently not fencing at all.
+    // A CP too old to announce a horizon is too old to confirm renewals. Anchoring on sends is
+    // strictly weaker, and saying so is the point — silently not fencing would be worse.
     expect(warn.mock.calls.flat().join(' ')).toContain('no duty lease horizon')
 
     await advance(clock, BEAT_MS)
@@ -260,7 +319,7 @@ describe('the duty self-fence deadline', () => {
 
   it('fences a daemon whose credential died, which can never renew either', async () => {
     const { link, clock, onDutyFence } = await ready()
-    await advance(clock, BEAT_MS)
+    await renewedBeat(clock, link.current)
     link.current.simulateClose(4401, 'AUTH_FAILED')
 
     await advance(clock, FENCE_MS)
@@ -269,7 +328,7 @@ describe('the duty self-fence deadline', () => {
 
   it('a local shutdown does not fence — the daemon is leaving, not being replaced', async () => {
     const { client, link, clock, onDutyFence } = await ready()
-    await advance(clock, BEAT_MS)
+    await renewedBeat(clock, link.current)
 
     await client.stop()
     link.up = false

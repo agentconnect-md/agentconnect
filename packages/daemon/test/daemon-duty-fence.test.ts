@@ -87,6 +87,24 @@ const duties = (d: Daemon) => (d as any).duties as DutyRegistry
 const served = (d: Daemon): string[] => (d as any).transportAgents().map((a: { id: string }) => a.id)
 const fence = (d: Daemon) => (d as any).fenceDuties()
 
+/** Put a live Slack socket in the pool under the granted agent's own credentials, exactly as a
+ *  successful `reconcileSlackConnections` would. Its key is what consolidation asks for while the
+ *  duty is held — and what it must stop asking for once the fence closes the serving gate. */
+function liveSlackSocket(d: Daemon) {
+  const conn = {
+    appToken: 'xapp-test',
+    botToken: 'xoxb-test',
+    botUserId: 'U-bot',
+    stop: vi.fn(async () => {})
+  }
+  ;(d as any).slackPool.add(conn)
+  ;(d as any).connByIntegration.set(INTEGRATION, conn)
+  ;(d as any).botUserIds[INTEGRATION] = conn.botUserId
+  return conn
+}
+
+const pooled = (d: Daemon): unknown[] => (d as any).slackPool.all()
+
 describe('the duty self-fence', () => {
   it('releases every held group and stops serving its agents', async () => {
     const { daemon } = await boot()
@@ -136,6 +154,22 @@ describe('the duty self-fence', () => {
     // No session purge rides a fence: the duty moved, the history did not.
     expect(store.listSessions(AGENT)).toHaveLength(1)
     expect(store.getSession(`slack:C1:T1:${AGENT}`)).toBeDefined()
+    await daemon.stop()
+  })
+
+  it('closes the platform connection the fenced agents were served over', async () => {
+    // The physical half. `transportAgents` is the only ingress gate for a daemon-owned socket —
+    // direct platform traffic is never re-checked per message — so a fence that empties a set but
+    // leaves the socket up keeps delivering work a successor is already serving.
+    const { daemon } = await boot()
+    const conn = liveSlackSocket(daemon)
+    expect(pooled(daemon)).toContain(conn)
+
+    fence(daemon)
+
+    await vi.waitFor(() => expect(conn.stop).toHaveBeenCalled())
+    expect(pooled(daemon)).not.toContain(conn)
+    expect((daemon as any).connByIntegration.has(INTEGRATION)).toBe(false)
     await daemon.stop()
   })
 

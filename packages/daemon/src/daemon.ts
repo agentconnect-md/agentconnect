@@ -3802,6 +3802,11 @@ export class Daemon {
    */
   private reconcileRun?: Promise<void>
   private reconcilePending = false
+  // A duty change moves no agent FILE, so the agent diff is empty and platform convergence
+  // would be skipped — while the serving gate it feeds (`transportAgents`) has just changed.
+  // Set by `onDutyChanged`, consumed by the next pass, so a revoke or a fence actually closes
+  // the sockets it stopped serving.
+  private dutyConnectionsDirty = false
   // Register snapshots publish agents before integrations. Carry newly-owned
   // inbox rows across coalesced passes and retry only after convergence is idle.
   private readonly pendingInboxReplayAgents = new Set<string>()
@@ -3828,6 +3833,10 @@ export class Daemon {
   }
 
   private async runReconcile(): Promise<void> {
+    // Claimed for THIS pass. A duty change landing after this read leaves the flag set, and
+    // the coalesced trailing re-run honours it.
+    const dutyDirty = this.dutyConnectionsDirty
+    this.dutyConnectionsDirty = false
     const snapshot = this.loadAgentList(true)
     const files = snapshot.agents
     const nextFileAgents = new Map(files.map((a) => [a.id, a]))
@@ -3900,7 +3909,7 @@ export class Daemon {
         this.drainingAgents.delete(id)
       }
     }
-    let connectionsDirty = toStart.length > 0 || toStop.length > 0
+    let connectionsDirty = dutyDirty || toStart.length > 0 || toStop.length > 0
     for (const change of toChange) {
       const a = change.agent
       const previous = this.agents.get(a.id)
@@ -12943,10 +12952,14 @@ export class Daemon {
     }
   }
 
-  /** Re-derive platform connections and schedules from the new duty set. */
+  /** Re-derive platform connections and schedules from the new duty set. The physical
+   *  half is not optional: `transportAgents` gates which agents get sockets, and direct
+   *  ingress has no per-message duty check, so a group this member stopped serving keeps
+   *  receiving platform traffic until its connection is actually closed. */
   private onDutyChanged(): void {
     if (!this.dutyEnforced()) return
     for (const agent of this.agents.values()) this.syncAgentSchedules(agent)
+    this.dutyConnectionsDirty = true
     void this.reconcile().catch((err) => this.log.warn(`duty: reconcile after a duty change failed: ${err}`))
   }
 

@@ -40,6 +40,7 @@ const INSTALL_WIDE_FRAME_TYPES = new Set([
   'config/push',
   // Duty lease exchange: groups span orgs on one member; grants carry per-entry orgId.
   'duty/grant',
+  'duty/renewed',
   'duty/revoke',
   'duty/release',
   'duty/claim',
