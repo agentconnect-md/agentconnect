@@ -89,9 +89,16 @@ export class DutyRegistry {
   }
 
   applyRevoke(revocations: DutyRevoke['revocations']): DutyApplyResult {
-    if (revocations.length === 0) return EMPTY
+    return this.drop(revocations.map((r) => r.groupId))
+  }
+
+  /** Stop holding these groups without a CP revocation — the local half of a
+   *  `duty/revoke`, used when this member cannot serve what it was granted. The
+   *  digest then omits them, which is what makes the CP reissue the grant. */
+  drop(groupIds: string[]): DutyApplyResult {
+    if (groupIds.length === 0) return EMPTY
     const before = this.agents()
-    for (const r of revocations) this.held.delete(r.groupId)
+    for (const groupId of groupIds) this.held.delete(groupId)
     return this.diff(before, { added: [], updated: [] })
   }
 
