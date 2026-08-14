@@ -125,7 +125,7 @@ describe('duty capacity accounting', () => {
    *  reservation is excluded, others still count, and the result is NOT clamped
    *  — a full member must come out negative rather than at zero with a slot. */
   const headroomForPending = (max: number, covered: number, pending: number) =>
-    max > 0 ? max - covered - Math.max(0, pending - 1) : 32
+    max > 0 ? max - covered - Math.max(0, pending - 1) : Number.POSITIVE_INFINITY
 
   it('a full member comes out negative, never at zero with a phantom slot', () => {
     const r = new DutyRegistry()
@@ -186,8 +186,18 @@ describe('duty capacity accounting', () => {
     expect(headroom(2, r.agents().size)).toBe(0)
   })
 
-  it('an unbounded maxAgents reports the CP per-tick cap, not infinity', () => {
+  it('an unbounded maxAgents reports the CP per-tick cap on the WIRE', () => {
+    // The heartbeat needs a finite number; 32 is the CP's own per-tick grant
+    // cap, a batching hint rather than a ceiling.
     expect(headroom(0, 100)).toBe(32)
+  })
+
+  it('but a LOCAL fit decision on an unbounded member accepts any group', () => {
+    // The sentinel must not leak into capacity: a member configured with no
+    // ceiling has to accept a group larger than one heartbeat's batch.
+    expect(headroomForPending(0, 100, 1)).toBe(Number.POSITIVE_INFINITY)
+    expect(33 > headroomForPending(0, 100, 1)).toBe(false)
+    expect(1000 > headroomForPending(0, 0, 4)).toBe(false)
   })
 
   it('a revoke frees headroom again', () => {

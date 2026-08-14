@@ -2137,6 +2137,10 @@ export class Daemon {
   // only on an install-wide connection — empty on a single-org daemon, which is
   // what keeps the whole path dormant there.
   private readonly duties = new DutyRegistry()
+  // What an unbounded member reports as heartbeat headroom: the CP's own
+  // per-tick grant cap, so the wire carries a finite number without implying a
+  // ceiling. Never used for a local capacity decision.
+  private static readonly DUTY_UNBOUNDED_HEADROOM = 32
   // Claims in flight to the CP. Each reserves one slot of headroom so concurrent
   // rendezvous claims cannot read the same capacity and collectively overshoot,
   // and a drain joins them so none can settle after `drain/done`.
@@ -12639,17 +12643,22 @@ export class Daemon {
    *  means unbounded, reported as the CP's own per-tick grant cap. */
   private dutyHeadroom(): number {
     const max = this.cfg?.limits?.maxAgents ?? 0
-    if (max <= 0) return 32
+    // `maxAgents: 0` is unbounded, but the WIRE still needs a finite number —
+    // the CP caps a tick's grants at 32 anyway, so that is what an unbounded
+    // member advertises. This sentinel is a batching hint, never a capacity.
+    if (max <= 0) return Daemon.DUTY_UNBOUNDED_HEADROOM
     return Math.max(0, max - this.duties.agents().size - this.inFlightDutyClaims.size)
   }
 
   /** Slots left for a claim that is ITSELF in flight — its own reservation is
    *  excluded, every other one still counts, and the result is deliberately not
    *  clamped: a full member must come out negative and refuse, never at zero
-   *  with a slot to spare. */
+   *  with a slot to spare. Unbounded means unbounded here: a local fit decision
+   *  must not inherit the heartbeat's batching sentinel and reject a group of
+   *  33 agents from a member that was configured with no ceiling at all. */
   private dutyHeadroomForPendingClaim(): number {
     const max = this.cfg?.limits?.maxAgents ?? 0
-    if (max <= 0) return 32
+    if (max <= 0) return Number.POSITIVE_INFINITY
     return max - this.duties.agents().size - Math.max(0, this.inFlightDutyClaims.size - 1)
   }
 
