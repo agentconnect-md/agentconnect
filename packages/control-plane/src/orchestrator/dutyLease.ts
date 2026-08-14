@@ -28,6 +28,11 @@ export interface DutyLeaseConfig {
   grantMembersPerFrame: number
   /** Revocations per duty/revoke frame (schema caps at 1000). */
   revocationsPerFrame: number
+  /** Vacancy grant policy. `incumbent` (the soak default until the shared data
+   *  plane lands) pins grants to groups whose agents already live on the
+   *  claimant, so the machinery runs without moving anyone; `any` is the target
+   *  pool behavior. */
+  grantPolicy: 'incumbent' | 'any'
 }
 
 export const DUTY_LEASE_DEFAULTS: DutyLeaseConfig = {
@@ -36,7 +41,8 @@ export const DUTY_LEASE_DEFAULTS: DutyLeaseConfig = {
   grantMaxPerTick: 32,
   grantsPerFrame: 50,
   grantMembersPerFrame: 2000,
-  revocationsPerFrame: 500
+  revocationsPerFrame: 500,
+  grantPolicy: 'incumbent'
 }
 
 type Send = (type: 'duty/grant' | 'duty/revoke', payload: unknown) => void
@@ -111,10 +117,11 @@ export class DutyLeaseService {
 
   /** The full per-heartbeat exchange. `send` emits on the reporting connection.
    *  A beat arriving while this daemon's lane is busy is dropped — the next
-   *  beat re-runs the whole idempotent diff anyway. */
-  async onHeartbeat(daemonId: DaemonId, duties: HeartbeatDuties, send: Send): Promise<void> {
-    if ((this.lanes.get(daemonId)?.pending ?? 0) > 0) return
-    await this.serialize(daemonId, () => this.exchange(daemonId, duties, send))
+   *  beat re-runs the whole idempotent diff anyway. NOT async: the lane is
+   *  reserved synchronously, so the caller's dispatch order IS the lane order. */
+  onHeartbeat(daemonId: DaemonId, duties: HeartbeatDuties, send: Send): Promise<void> {
+    if ((this.lanes.get(daemonId)?.pending ?? 0) > 0) return Promise.resolve()
+    return this.serialize(daemonId, () => this.exchange(daemonId, duties, send))
   }
 
   private async exchange(daemonId: DaemonId, duties: HeartbeatDuties, send: Send): Promise<void> {
@@ -160,7 +167,10 @@ export class DutyLeaseService {
         Math.min(budget, this.config.grantMaxPerTick),
         now,
         this.config.leaseMs,
-        DUTY_GRANT_MEMBERS_MAX
+        {
+          maxMembers: DUTY_GRANT_MEMBERS_MAX,
+          incumbentOnly: this.config.grantPolicy === 'incumbent'
+        }
       )
     }
 
@@ -210,10 +220,10 @@ export class DutyLeaseService {
   }
 
   /** Explicit drain release — vacate now instead of waiting out T_reassign.
-   *  Queued behind any running exchange: frames on one connection are ordered,
-   *  so every grant that exchange emitted reaches the daemon BEFORE this ack,
-   *  and no grant can slip in between the vacate and the ack. */
-  async release(daemonId: DaemonId, groupIds: string[]): Promise<void> {
-    await this.serialize(daemonId, () => this.repo.release(daemonId, groupIds))
+   *  Queued behind any earlier beat's exchange (lane order = frame order), so
+   *  every grant that exchange emitted reaches the daemon BEFORE this ack, and
+   *  no grant can slip in between the vacate and the ack. */
+  release(daemonId: DaemonId, groupIds: string[]): Promise<void> {
+    return this.serialize(daemonId, () => this.repo.release(daemonId, groupIds))
   }
 }

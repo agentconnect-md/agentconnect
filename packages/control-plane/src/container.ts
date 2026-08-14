@@ -158,7 +158,8 @@ import { replayMcpTo } from './orchestrator/mcpReplay.js'
 import { replayMemoryConnectionsTo, syncMemoryConnectionsToDaemons } from './orchestrator/memoryConnectionReplay.js'
 import { relayHttpOrigin } from './orchestrator/mcpProvider.js'
 import { CollabRoutesService } from './orchestrator/collabRoutes.service.js'
-import { DutyLeaseService } from './orchestrator/dutyLease.js'
+import { DutyLeaseService, DUTY_LEASE_DEFAULTS } from './orchestrator/dutyLease.js'
+import { DutyRecomputeSweep } from './orchestrator/dutyRecompute.js'
 import { AgentMutationGate } from './orchestrator/agentMutationGate.js'
 import { AgentMoveService } from './orchestrator/agentMove.js'
 import { createDaemonWsServer } from './ws/gateway.js'
@@ -657,6 +658,19 @@ export function buildContainer(
   const dutyLease = new DutyLeaseService(repos.dutyGroup, clock, undefined, {
     warn: (o, m) => http.log.warn(o, m)
   })
+  // Duty-group projection: derived from Integration/CronDef rows on a rotation;
+  // deltas reach daemons via the heartbeat lease exchange, never from the sweep.
+  const dutyRecompute = new DutyRecomputeSweep(
+    repos.dutyGroup,
+    clock,
+    {
+      intervalMs: 30_000,
+      orgsPerTick: 25,
+      leaseMs: DUTY_LEASE_DEFAULTS.leaseMs,
+      incumbentFence: DUTY_LEASE_DEFAULTS.grantPolicy === 'incumbent'
+    },
+    { warn: (o, m) => http.log.warn(o, m), error: (o, m) => http.log.error(o, m) }
+  )
   const agentMutations = new AgentMutationGate()
 
   // Relay roster (shared-bot-relay.md §5): computed from the durable `relay` table
@@ -1647,6 +1661,7 @@ export function buildContainer(
       hookRedeliveryReconciler?.start()
       for (const reaper of pendingInstallReapers) reaper.start()
       relaySweeper.start()
+      dutyRecompute.start()
       sessionAccessWarmer.start()
       for (const loop of backgroundLoops) loop.start()
       // One-shot (not a re-arming loop): the worklist empties itself; a partially
@@ -1663,6 +1678,7 @@ export function buildContainer(
       installationDoorbell?.stop()
       for (const reaper of pendingInstallReapers) reaper.stop()
       relaySweeper.stop()
+      dutyRecompute.stop()
       sessionAccessWarmer.stop()
       for (const loop of backgroundLoops) loop.stop()
       visibilityPush.stop()

@@ -40,7 +40,7 @@ import type {
   OrgId
 } from '../domain/ids.js'
 import type { SessionKey } from '../domain/sessionKey.js'
-import type { DutyMemberKey, DutyReconcilePlan } from '../domain/duty.js'
+import type { DutyMemberKey, DutyReconcilePlan, DutyEdge, CronSeed } from '../domain/duty.js'
 import type {
   OrganizationEnvironmentAudience,
   OrganizationEnvironmentKind,
@@ -5130,14 +5130,28 @@ export interface DutyGroupRepo {
   /** "Grant me up to `max` vacant groups": first valid claim wins (SKIP LOCKED),
    *  each grant bumps the term. Install-wide — capacity gating is the caller's.
    *  `maxMembers` excludes undeliverable (oversized) groups at the claim
-   *  boundary, so they never churn or starve the vacancies behind them. */
+   *  boundary, so they never churn or starve the vacancies behind them.
+   *  `incumbentOnly` restricts vacancies to groups with an agent already placed
+   *  on the claimant (`agent.daemonId`) — the soak-phase grant policy that pins
+   *  duties where state already lives until the shared data plane arrives. */
   claimVacant(
     holder: DaemonId,
     max: number,
     now: Date,
     leaseMs: number,
-    maxMembers?: number
+    opts?: { maxMembers?: number; incumbentOnly?: boolean }
   ): Promise<DutyGrantRecord[]>
+  /** The group-computation inputs for one org: active integrations on
+   *  daemon-held (socket, unrevoked) bots as edges; enabled crons as seeds. */
+  computeInputs(orgId: OrgId): Promise<{ edges: DutyEdge[]; seeds: CronSeed[] }>
+  /** Keyset rotation over orgs that can need a recompute — any org owning an
+   *  integration, an enabled cron, or an existing duty group. */
+  listDutyOrgs(afterOrgId: string | null, limit: number): Promise<string[]>
+  /** Soak-phase placement fence: vacate every held group whose holder no longer
+   *  hosts ANY of its agents (a full placement move-away), so the new incumbent
+   *  can claim. Partial occupancy keeps the lease — split groups never flap.
+   *  Returns the vacated groupIds. */
+  vacateNonIncumbent(orgId: OrgId): Promise<string[]>
   /** Batched renewal — one write per heartbeat covering every held group.
    *  Term-preserving; a reassigned group simply stops matching. Returns the
    *  renewed groupIds for digest comparison. */
