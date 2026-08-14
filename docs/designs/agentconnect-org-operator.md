@@ -1,5 +1,12 @@
 # AgentConnectOrg CRD + Operator
 
+> **Deprecation direction:** the per-org execution envelope this operator
+> reconciles — one `AgentConnectOrg` CR, namespace, and daemon per org — is
+> being replaced by the shared multi-org daemon pool
+> ([k8s-daemon-pool.md](k8s-daemon-pool.md)). This document remains the
+> reference while envelopes still run; new work targets the pool, and the
+> operator's retirement is tracked in the pool's implementation-plan issue.
+
 **Status:** Envelope, status, deletion, and rollout reconcile logic implemented — including the
 drain handshake with the daemon and its timeout — plus the control-plane CR provisioner (§6);
 gateway policy rendering waits on the gateway spike.
