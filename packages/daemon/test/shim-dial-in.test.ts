@@ -1,10 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { Backoff, ClientTransport } from '@agentconnect.md/connection'
 import { ShimClient, type ShimTransport } from '../src/shim/client.js'
 import { ShimDialer } from '../src/shim/dialer.js'
 import { ShimServer } from '../src/shim/server.js'
 import { ShimSession } from '../src/shim/session.js'
 import type { SpawnRecord } from '../src/shim/binding.js'
-import { SHIM_TOKEN_AUDIENCE } from '../src/shim/protocol.js'
+import { SHIM_SUBPROTOCOL, SHIM_TOKEN_AUDIENCE, SHIM_WS_PATH } from '../src/shim/protocol.js'
+
+// Zero-jitter millisecond backoff so reconnect tests never sleep real seconds.
+const fastBackoff = (): Backoff => new Backoff({ baseMs: 5, jitter: () => 0 })
 
 const clients: ShimClient[] = []
 const dialers: ShimDialer[] = []
@@ -16,7 +20,9 @@ afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => server.stop()))
 })
 
-async function sandbox(options: { handle?: (capability: string, payload: unknown) => Promise<unknown> } = {}) {
+async function sandbox(
+  options: { handle?: (capability: string, payload: unknown) => Promise<unknown>; backoff?: Backoff } = {}
+) {
   const server = new ShimServer()
   servers.push(server)
   const port = await server.start(0, '127.0.0.1')
@@ -27,6 +33,7 @@ async function sandbox(options: { handle?: (capability: string, payload: unknown
     readToken: () => 'projected-token',
     workspaceRoot: '/agent',
     ...(options.handle ? { handle: options.handle as never } : {}),
+    ...(options.backoff ? { backoff: options.backoff } : {}),
     log: { info: () => {}, warn: () => {} }
   })
   clients.push(client)
@@ -108,23 +115,47 @@ describe('sandbox shim dial-in', () => {
   })
 
   it('waits for the replacement connection while a bound channel is reconnecting', async () => {
-    const { endpoint, client } = await sandbox()
+    // Both reconnect loops run on injected zero-jitter backoffs, so the redial and the
+    // sandbox re-attach race each other every run instead of sleeping jittered seconds.
+    const { endpoint } = await sandbox({ backoff: fastBackoff() })
     const dialer = new ShimDialer({
       verifier: {
         reviewToken: async () => ({ authenticated: true, podName: 'sandbox-pod-1', podUid: 'pod-uid-1' })
       },
+      backoff: fastBackoff,
       log: { info: () => {}, warn: () => {} }
     })
     dialers.push(dialer)
 
     const first = await dialer.connect(endpoint, record(), 8_000)
     first.close('force reconnect')
-    await waitFor(() => dialer.connectionsFor('agent-a').length === 0 && client.binding() === undefined)
+    // The rebind can outrun a poll, so wait for the first connection to be dropped rather
+    // than for an observable zero-connection window.
+    await waitFor(() => !dialer.connectionsFor('agent-a').includes(first))
 
     const replacement = await dialer.connect(endpoint, record(), 8_000)
     expect(replacement).not.toBe(first)
     expect(dialer.connectionsFor('agent-a')).toEqual([replacement])
   }, 10_000)
+
+  it('replays frames that arrived while the accepted daemon socket was still unclaimed', async () => {
+    const server = new ShimServer()
+    servers.push(server)
+    const port = await server.start(0, '127.0.0.1')
+    const daemonSide = await ClientTransport.dial(`ws://127.0.0.1:${port}`, {
+      subprotocol: SHIM_SUBPROTOCOL,
+      path: SHIM_WS_PATH
+    })
+    // The hello lands before the channel FSM attaches — the queued-across-backoff case.
+    daemonSide.send(JSON.stringify({ type: 'shim/hello', agentId: 'agent-a', generation: 1 }))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    const accepted = await server.nextTransport()
+    const seen: string[] = []
+    accepted.onMessage((text) => seen.push(text))
+    await waitFor(() => seen.length === 1)
+    expect(JSON.parse(seen[0]!)).toMatchObject({ type: 'shim/hello', agentId: 'agent-a', generation: 1 })
+    daemonSide.close(1000, 'done')
+  })
 
   it('times out an accepted socket whose identity verification never completes', async () => {
     const { endpoint } = await sandbox()

@@ -18,6 +18,8 @@ export interface ShimDialerDeps {
   now?: () => number
   clock?: Clock
   dial?: (url: string, opts: { subprotocol: string; path: string }) => Promise<ShimTransport>
+  /** Per-dial reconnect backoff factory. Injected so tests reconnect in milliseconds. */
+  backoff?: () => Backoff
   credentialTtlMs?: number
   metrics?: ClusterMetrics
   log: { info: (message: string) => void; warn: (message: string) => void }
@@ -132,7 +134,7 @@ export class ShimDialer {
 
   private async supervise(dial: SupervisedDial, timeoutMs: number): Promise<void> {
     const deadline = this.clock.now() + timeoutMs
-    const backoff = new Backoff()
+    const backoff = this.deps.backoff?.() ?? new Backoff()
     let first = true
     while (!dial.stopped) {
       try {
