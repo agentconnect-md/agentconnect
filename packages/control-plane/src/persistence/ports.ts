@@ -40,6 +40,7 @@ import type {
   OrgId
 } from '../domain/ids.js'
 import type { SessionKey } from '../domain/sessionKey.js'
+import type { DutyMemberKey, DutyReconcilePlan } from '../domain/duty.js'
 import type {
   OrganizationEnvironmentAudience,
   OrganizationEnvironmentKind,
@@ -5061,4 +5062,66 @@ export interface OrgClusterExecutionRepo {
     defaults: ClusterExecutionDefaults,
     patch: ClusterExecutionPatch
   ): Promise<ClusterExecutionSettings>
+}
+
+// DutyGroupRepo (k8s daemons) — the CP-hosted duty ledger
+
+/** A ledger row plus its derived membership projection. */
+export interface DutyGroupRecord {
+  groupId: string
+  orgId: OrgId
+  holder: DaemonId | null
+  /** Monotonic per group; bumped on EVERY grant — the fencing token duty-scoped actions carry. */
+  term: bigint
+  /** Renewal horizon; past (or null with a holder never granted) ⇒ vacant and grantable. */
+  expiresAt: Date | null
+  members: DutyMemberKey[]
+}
+
+/** One freshly granted group as returned by a claim. */
+export interface DutyGrantRecord {
+  groupId: string
+  orgId: OrgId
+  term: bigint
+  members: DutyMemberKey[]
+}
+
+export interface AgentHomeClaim {
+  granted: boolean
+  groupId: string
+  term: bigint
+  /** The live holder — the caller when granted, the incumbent for a `not_holder` answer otherwise. */
+  holder: DaemonId | null
+}
+
+/** Pure plan callback run inside the reconcile transaction's org snapshot (orchestrator/dutyGroup.ts). */
+export type DutyReconcilePlanner = (existing: DutyGroupRecord[]) => DutyReconcilePlan
+
+export interface DutyGroupRepo {
+  /** Recompute input + console/introspection read. */
+  listForOrg(orgId: OrgId): Promise<DutyGroupRecord[]>
+  /** Everything one member currently holds (heartbeat digest reconciliation). */
+  listHeldBy(holder: DaemonId): Promise<DutyGroupRecord[]>
+  /** Snapshot → `planner` → apply, in ONE transaction under a per-org advisory
+   *  scope, so concurrent recomputes serialize CP-instance-wide. Composition
+   *  changes on held groups re-grant the same holder at a bumped term; the
+   *  returned plan carries the supersessions the caller must deliver. */
+  applyReconcile(
+    orgId: OrgId,
+    planner: DutyReconcilePlanner,
+    opts: { now: Date; leaseMs: number }
+  ): Promise<DutyReconcilePlan>
+  /** "Grant me up to `max` vacant groups": first valid claim wins (SKIP LOCKED),
+   *  each grant bumps the term. Install-wide — capacity gating is the caller's. */
+  claimVacant(holder: DaemonId, max: number, now: Date, leaseMs: number): Promise<DutyGrantRecord[]>
+  /** Batched renewal — one write per heartbeat covering every held group.
+   *  Term-preserving; a reassigned group simply stops matching. Returns the
+   *  renewed groupIds for digest comparison. */
+  renewHeld(holder: DaemonId, now: Date, leaseMs: number): Promise<string[]>
+  /** Explicit vacate (drain): holder-conditional, immediate, term kept. */
+  release(holder: DaemonId, groupIds: string[]): Promise<void>
+  /** First-trigger claim for a botless agent: creates the singleton home if none
+   *  exists ("claiming creates the lease"), grants if vacant, otherwise names
+   *  the incumbent. Idempotent for the current holder (no term churn). */
+  claimAgentHome(orgId: OrgId, agentId: AgentId, holder: DaemonId, now: Date, leaseMs: number): Promise<AgentHomeClaim>
 }
