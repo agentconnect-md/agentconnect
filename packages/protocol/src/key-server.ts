@@ -21,8 +21,9 @@ export const KEY_SERVER_PROFILE = 'agentconnect.key-server/v1' as const
 export const KEY_SERVER_GET_KEY_PATH = '/v1/get-key' as const
 export const KEY_SERVER_REVOKE_KEY_PATH = '/v1/revoke-key' as const
 
-// `Authorization: Bearer <credential>` — the same credential the daemon presents to its CP
-// (org API key, or projected ServiceAccount token in-cluster). Verification is server-side.
+// `Authorization: Bearer <token>`. The token is opaque to the daemon — read from a configured
+// file (re-read per request, so external rotation carries) or an inline value. What it proves
+// and how a server checks it belong to the deployment, not to this contract.
 export const KEY_SERVER_AUTH_HEADER = 'authorization' as const
 
 /** Provider API dialect the credential must speak; selects the (key, baseUrl) pair. */

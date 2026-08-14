@@ -43,21 +43,24 @@ implement the server without speaking AgentConnect's wire protocol.
 | `RevokeKey` | `POST /v1/revoke-key` | `{keyId}` → `{}`                                                                                           |
 
 **Caller authentication rides the transport, never the body**: the daemon sends
-`Authorization: Bearer <credential>`, where the credential is the same one it
-presents to its Control Plane — the org-bound API key, or the projected
-ServiceAccount token for in-cluster daemons. The server verifies the bearer, then
-cross-checks `orgId` against the identity it resolved. `daemonId` is therefore
-not a parameter: a client-asserted identity would be untrusted input the server
-must re-derive anyway.
+`Authorization: Bearer <token>`. To the daemon the token is an opaque string from
+a configured source — a file it re-reads per request (so a credential something
+else rotates underneath it stays current), or an inline config value. It parses
+nothing, asserts nothing about what the token means, and holds no verification
+logic.
 
-How a server verifies the bearer is its deployment's wiring, not this
-contract's: a ServiceAccount token is checked with TokenReview by anything
-holding cluster access, while an API key can only be resolved by the Control
-Plane's key registry — so an implementation accepting key-authenticated daemons
-needs a validation path to that registry (co-location with the CP's database, or
-an introspection call the deployment provides). A server may also support only
-one credential kind and reject the other with `unauthorized`; which kinds a
-given key server accepts is deployment documentation.
+`daemonId` is deliberately not a body field: a client-asserted identity would be
+untrusted input, and a server that can verify the bearer at all can derive the
+caller from it. `orgId` IS in the body, and a server that resolves an
+organization from the token should cross-check the two.
+
+**What the token is, and how a server verifies it, are outside this contract.**
+They are properties of a deployment: which credential the daemon is given, what
+proves it, and what the server must hold to check it are decided together by the
+key server's own design and the deployment that installs both. This document
+stops at the header. A server may accept only the credential kinds it is built
+for and answer `unauthorized` for anything else; saying which is that server's
+documentation, not this one's.
 
 `provider` names the API dialect the credential must speak (`anthropic` /
 `openai`) and selects which `(key, baseUrl)` pair comes back. There is
