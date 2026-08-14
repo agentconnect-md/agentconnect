@@ -12624,9 +12624,14 @@ export class Daemon {
   /** The heartbeat's lease fields: what this daemon holds, and how many more
    *  groups it will accept. Capacity is the daemon's own call (design D14). */
   private dutyDigest(): HeartbeatDuties {
+    return { held: this.duties.digest(), headroom: this.dutyHeadroom() }
+  }
+
+  /** How many more duty-covered agents this member will accept. `maxAgents: 0`
+   *  means unbounded, reported as the CP's own per-tick grant cap. */
+  private dutyHeadroom(): number {
     const max = this.cfg?.limits?.maxAgents ?? 0
-    const covered = this.duties.agents().size
-    return { held: this.duties.digest(), headroom: max > 0 ? Math.max(0, max - covered) : 32 }
+    return max > 0 ? Math.max(0, max - this.duties.agents().size) : 32
   }
 
   /** True when duty leases actually gate service. Off (the default) the exchange
@@ -12660,8 +12665,20 @@ export class Daemon {
   }
 
   /** Claim one agent's duty because a trigger for it arrived here. A win is
-   *  installed exactly like a `duty/grant`, so the same converge path runs. */
+   *  installed exactly like a `duty/grant`, so the same converge path runs.
+   *  Refuses without asking the CP when this member must not take new work:
+   *  capacity is the member's own call (design D14), and a drain in progress
+   *  would either hand the fresh lease straight back or pin it to an agent whose
+   *  gate is about to drop the very turn that triggered the claim. */
   private async claimDutyForTrigger(agentId: string): Promise<{ granted: boolean; holder?: string }> {
+    if (this.draining || this.drainingAgents.has(agentId)) {
+      this.log.debug(`duty: refusing to claim ${agentId} while draining`)
+      return { granted: false }
+    }
+    if (this.dutyHeadroom() <= 0) {
+      this.log.info(`duty: refusing to claim ${agentId} — at capacity (${this.duties.agents().size} agent(s))`)
+      return { granted: false }
+    }
     try {
       const claim = await this.cpClient?.claimDuty(agentId)
       if (!claim) return { granted: false }

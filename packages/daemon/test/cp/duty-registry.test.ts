@@ -114,3 +114,33 @@ describe('DutyRegistry', () => {
     expect(r.size()).toBe(1)
   })
 })
+
+describe('duty capacity accounting', () => {
+  // The daemon reports `maxAgents - covered` as headroom and refuses to claim at
+  // zero, so both the CP's grant budget and the rendezvous share one number.
+  const headroom = (max: number, covered: number) => (max > 0 ? Math.max(0, max - covered) : 32)
+
+  it('headroom shrinks as duties cover more agents, and never goes negative', () => {
+    const r = new DutyRegistry()
+    expect(headroom(2, r.agents().size)).toBe(2)
+
+    r.applyGrant([grant(G1, '1', [A1])])
+    expect(headroom(2, r.agents().size)).toBe(1)
+
+    r.applyGrant([grant(G2, '1', [A2, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3'])])
+    expect(headroom(2, r.agents().size)).toBe(0)
+  })
+
+  it('an unbounded maxAgents reports the CP per-tick cap, not infinity', () => {
+    expect(headroom(0, 100)).toBe(32)
+  })
+
+  it('a revoke frees headroom again', () => {
+    const r = new DutyRegistry()
+    r.applyGrant([grant(G1, '1', [A1, A2])])
+    expect(headroom(2, r.agents().size)).toBe(0)
+
+    r.applyRevoke([{ groupId: G1, reason: 'superseded' }])
+    expect(headroom(2, r.agents().size)).toBe(2)
+  })
+})

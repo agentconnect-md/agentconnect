@@ -626,30 +626,45 @@ export class RelayIngressManager {
   /**
    * Send one pre-addressed item, honouring the activation rendezvous: a daemon
    * that does not hold the target agent's duty answers `not_holder` naming the
-   * member that does, and the trigger is re-sent there ONCE. The msgId is reused
-   * verbatim so the true holder's own dedup still protects against a double
-   * delivery, and a second refusal terminates rather than chasing a stale
-   * ledger — the router's ordinary retry covers that window (design §4.4).
+   * member that does, and the trigger is re-sent there ONCE (design §4.4). The
+   * msgId is reused verbatim so the true holder's own dedup still protects
+   * against a double delivery, and a second refusal terminates rather than
+   * chasing a stale ledger.
+   *
+   * A refusal this cannot resolve — no holder named, the holder not connected
+   * to THIS relay, or the redirect target refusing in turn — is a genuinely
+   * dropped trigger, counted like any other drop. There is deliberately no
+   * claim of a retry behind it: HTTP ingress has already acknowledged and
+   * deduplicated the provider callback by this point, so nothing upstream will
+   * present the message again. Bounding that window is the CP's job (the
+   * ledger's vacancy sweep), not the router's.
    */
   private async sendWithRendezvous(
     daemon: RelayDaemonConnection,
     rd: RdMsg,
+    botId: string,
     context: string
   ): Promise<RdAck | undefined> {
     const ack = await daemon.sendMsg(rd)
     if (ack.accepted || ack.reason !== RD_ACK_NOT_HOLDER) return ack
     const holderId = ack.holderDaemonId
-    if (!holderId) {
-      this.deps.log.warn(`${context}: not_holder with no holder named — leaving it to the next retry`)
-      return ack
-    }
+    if (!holderId) return this.dropUnrouted(botId, `${context}: not_holder named no duty holder`, ack)
     const holder = this.deps.getDaemon(holderId)
-    if (!holder) {
-      this.deps.log.warn(`${context}: duty holder ${holderId} is not connected here — dropping`)
-      return ack
-    }
+    if (!holder) return this.dropUnrouted(botId, `${context}: duty holder ${holderId} is not on this relay`, ack)
     this.deps.log.info(`${context}: re-routing to duty holder ${holderId}`)
-    return holder.sendMsg(rd)
+    const second = await holder.sendMsg(rd)
+    if (!second.accepted && second.reason === RD_ACK_NOT_HOLDER) {
+      return this.dropUnrouted(botId, `${context}: duty holder ${holderId} refused in turn`, second)
+    }
+    return second
+  }
+
+  /** Count and log a trigger the rendezvous could not place. */
+  private dropUnrouted(botId: string, message: string, ack: RdAck): RdAck {
+    const n = (this.dropped.get(botId) ?? 0) + 1
+    this.dropped.set(botId, n)
+    this.deps.log.warn(`${message} (dropped ${n})`)
+    return ack
   }
 
   private async stopIngest(botId: string): Promise<void> {
@@ -820,7 +835,7 @@ export class RelayIngressManager {
         trustedRouteVia: routeVia
       }
       try {
-        await this.sendWithRendezvous(daemon, rd, `relay-ingress(${botId})`)
+        await this.sendWithRendezvous(daemon, rd, botId, `relay-ingress(${botId})`)
         this.deps.log.info(
           `relay-ingress(${botId}): agent-authored mention ${claim.authorAgentId} -> ${route.agentId} (hop ${trustedDeliveryHopCount})`
         )
@@ -988,7 +1003,7 @@ export class RelayIngressManager {
         trustedRouteVia: via
       }
       try {
-        await this.sendWithRendezvous(daemon, rd, `relay-ingress(${botId})`)
+        await this.sendWithRendezvous(daemon, rd, botId, `relay-ingress(${botId})`)
       } catch (err) {
         const n = (this.dropped.get(botId) ?? 0) + 1
         this.dropped.set(botId, n)

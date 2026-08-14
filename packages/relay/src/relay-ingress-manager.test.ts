@@ -1,6 +1,5 @@
 import { createHmac } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
-import { RD_ACK_NOT_HOLDER } from '@agentconnect.md/protocol'
 import type {
   RdAck,
   RdMsg,
@@ -12,7 +11,7 @@ import type {
   WireFeishuCardActionEvent,
   WireNormalizedMessage
 } from '@agentconnect.md/protocol'
-import { MAX_AGENT_CALL_HOPS } from '@agentconnect.md/protocol'
+import { RD_ACK_NOT_HOLDER, MAX_AGENT_CALL_HOPS } from '@agentconnect.md/protocol'
 import { FakeClock } from '@agentconnect.md/connection'
 import { RelayIngressManager, type RelayIngressManagerDeps } from './relay-ingress-manager.js'
 // The dedup-id minters belong to their platform plugins (§8: the plugin mints
@@ -2208,9 +2207,13 @@ describe('RelayIngressManager — activation rendezvous', () => {
   const sendVia = (manager: RelayIngressManager, daemon: RelayDaemonConnection) =>
     (
       manager as unknown as {
-        sendWithRendezvous(d: RelayDaemonConnection, m: RdMsg, ctx: string): Promise<RdAck | undefined>
+        sendWithRendezvous(d: RelayDaemonConnection, m: RdMsg, bot: string, ctx: string): Promise<RdAck | undefined>
       }
-    ).sendWithRendezvous(daemon, rd, 'test')
+    ).sendWithRendezvous(daemon, rd, BOT_ID, 'test')
+
+  /** The manager's per-bot drop counter — an unroutable trigger must land here. */
+  const dropCount = (manager: RelayIngressManager): number =>
+    (manager as unknown as { dropped: Map<string, number> }).dropped.get(BOT_ID) ?? 0
 
   const conn = (sendMsg: ReturnType<typeof vi.fn>) => ({ sendMsg }) as unknown as RelayDaemonConnection
 
@@ -2284,6 +2287,43 @@ describe('RelayIngressManager — activation rendezvous', () => {
     const ack = await sendVia(manager, conn(first))
     expect(ack?.reason).toBe('paused')
     expect(holderSend).not.toHaveBeenCalled()
+  })
+
+  it('counts an unroutable trigger as a drop rather than claiming a retry', async () => {
+    const first = vi.fn(async () => ({ msgId: 'm-1', accepted: false, reason: RD_ACK_NOT_HOLDER }))
+    const manager = new RelayIngressManager(deps({ getDaemon: () => undefined }))
+
+    await sendVia(manager, conn(first))
+    expect(dropCount(manager)).toBe(1)
+  })
+
+  it('a redirect target refusing in turn is also counted as a drop', async () => {
+    const first = vi.fn(async () => ({
+      msgId: 'm-1',
+      accepted: false,
+      reason: RD_ACK_NOT_HOLDER,
+      holderDaemonId: HOLDER_ID
+    }))
+    const holderSend = vi.fn(async () => ({
+      msgId: 'm-1',
+      accepted: false,
+      reason: RD_ACK_NOT_HOLDER,
+      holderDaemonId: DAEMON_ID
+    }))
+    const manager = new RelayIngressManager(
+      deps({ getDaemon: (id) => (id === HOLDER_ID ? conn(holderSend) : undefined) })
+    )
+
+    await sendVia(manager, conn(first))
+    expect(dropCount(manager)).toBe(1)
+  })
+
+  it('an ordinary refusal is NOT counted as an unrouted drop', async () => {
+    const first = vi.fn(async () => ({ msgId: 'm-1', accepted: false, reason: 'paused' }))
+    const manager = new RelayIngressManager(deps({ getDaemon: () => undefined }))
+
+    await sendVia(manager, conn(first))
+    expect(dropCount(manager)).toBe(0)
   })
 
   it('an accepted send never consults the router', async () => {
