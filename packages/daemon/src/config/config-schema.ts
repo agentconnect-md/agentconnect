@@ -171,9 +171,15 @@ export const ConfigSchema = z.object({
    * never negotiated through the control plane or placed on the message hot path. */
   features: z
     .object({
-      turnFinalContextRefresh: z.boolean().default(true)
+      turnFinalContextRefresh: z.boolean().default(true),
+      // Duty leases decide which agents this daemon serves (k8s pools). The
+      // exchange itself always runs on an install-wide connection — the ledger
+      // needs the digest to converge — but ENFORCEMENT is opt-in: until this is
+      // on, a duty grant/revoke only moves bookkeeping, so the ledger can be
+      // observed converging before it gates a single platform connection.
+      dutyEnforcement: z.boolean().default(false)
     })
-    .default({ turnFinalContextRefresh: true }),
+    .default({ turnFinalContextRefresh: true, dutyEnforcement: false }),
   sessions: z
     .object({
       // Local-DB retention for FINISHED sessions (issue #485): a session untouched

@@ -8,6 +8,9 @@ import type {
   AnyFrame,
   RegisterReq,
   Heartbeat,
+  HeartbeatDuties,
+  DutyGrant,
+  DutyRevoke,
   FactsRuntimeProfile,
   FactsMcpServer,
   UsageReport,
@@ -135,6 +138,21 @@ import type { Logger } from '../log.js'
  *  sites (`./cp/client.js`) keep working unchanged. */
 export { CP_SUBPROTOCOL, CP_WS_PATH } from '@agentconnect.md/protocol'
 
+// Frames that carry no org because they are daemon-level: the CP applies the
+// same list at its edge (ws/connection.ts INSTALL_WIDE_FRAME_TYPES). Duty groups
+// span orgs on one member, so grants carry a per-entry orgId instead.
+const INSTALL_WIDE_FRAME_TYPES = new Set([
+  'relay/roster',
+  'collaboration/routes',
+  'daemon/drain',
+  'daemon/restart',
+  'daemon/upgrade',
+  'config/push',
+  'duty/grant',
+  'duty/revoke',
+  'duty/release'
+])
+
 const ACK_TIMEOUT_MS = 5000
 const BACKOFF_BASE_MS = 1000
 const BACKOFF_CAP_MS = 30000
@@ -185,6 +203,10 @@ export interface CpClientDeps {
   orgForIntegration?: (integrationId: string) => string | undefined
   /** Unservable CP-rule agentIds, surfaced in heartbeat.degradedScopes. Defaults to []. */
   degradedScopes?: () => string[]
+  /** Duty-lease digest + headroom for the heartbeat (frames/duty.ts). Only read on
+   *  an install-wide (frame-mode) connection; absent ⇒ this daemon does not
+   *  participate in the ledger and the CP-side exchange stays dormant. */
+  duties?: () => HeartbeatDuties | undefined
   configApply: ConfigApply
   /** Read-only session list/history seam over the local store (§1/§12). */
   sessionRead: SessionReader
@@ -792,6 +814,29 @@ export class CpClient {
     return rep.payload as GitCredGrant
   }
 
+  /**
+   * `duty/release` (D→C REQ → `ack`) — surrender duty groups on drain instead of
+   * waiting out the CP's reassignment window. Install-wide: duty groups span
+   * orgs, so the frame carries no org (see {@link INSTALL_WIDE_FRAME_TYPES}).
+   * Best-effort by contract — a failed release just falls back to lease expiry,
+   * so callers log rather than fail the drain.
+   */
+  async releaseDuties(groupIds: string[]): Promise<void> {
+    if (groupIds.length === 0) return
+    if ((this.state !== 'READY' && this.state !== 'DRAINING') || !this.transport) {
+      throw new WireError('INTERNAL', `control plane unreachable (client ${this.state})`, true)
+    }
+    const rep = await this.request('duty/release', { groupIds })
+    if (rep.type !== 'ack') throw new WireError('INTERNAL', `expected ack, got ${rep.type}`, false)
+  }
+
+  /** How this connection is tenanted: `connection` = one org (an API-key daemon),
+   *  `frame` = install-wide, every frame carries its own org. Duty leases exist
+   *  only on the latter. */
+  organizationScope(): 'connection' | 'frame' {
+    return this.organizationMode
+  }
+
   /** Additive CP feature negotiation for rolling daemon/CP upgrades. */
   supportsServerFeature(feature: string): boolean {
     return this.serverFeatures.has(feature)
@@ -1000,14 +1045,7 @@ export class CpClient {
   }
 
   private installWideControl(type: string): boolean {
-    return (
-      type === 'relay/roster' ||
-      type === 'collaboration/routes' ||
-      type === 'daemon/drain' ||
-      type === 'daemon/restart' ||
-      type === 'daemon/upgrade' ||
-      type === 'config/push'
-    )
+    return INSTALL_WIDE_FRAME_TYPES.has(type)
   }
 
   private scopedFrame(type: string, payload: unknown, explicitOrgId?: string): AnyFrame {
@@ -1019,7 +1057,7 @@ export class CpClient {
       )
       if (agentId) orgId = this.deps.orgForAgent?.(agentId)
     }
-    if (this.organizationMode === 'frame' && !orgId) {
+    if (this.organizationMode === 'frame' && !orgId && !INSTALL_WIDE_FRAME_TYPES.has(type)) {
       throw new WireError('SCOPE_DENIED', `cannot resolve organization for ${type}`, false)
     }
     return buildEnvelope(type as Parameters<typeof buildEnvelope>[0], payload, orgId ? { orgId } : {})
@@ -1072,13 +1110,17 @@ export class CpClient {
       // Skip the send mid-drain (we report `degraded` differently), but keep the
       // loop alive so heartbeats resume once we transition DRAINING → READY.
       if (this.state === 'READY') {
+        // The duty lease exchange rides this beat (frames/duty.ts). Absent on a
+        // single-org daemon, which keeps the whole CP-side path dormant.
+        const duties = this.organizationMode === 'frame' ? this.deps.duties?.() : undefined
         this.transport?.send(
           encode(
             buildEnvelope('heartbeat', {
               load: this.deps.loadSnapshot(),
               health: 'ok',
               activeSessions: this.deps.activeSessions(),
-              degradedScopes: this.deps.degradedScopes?.() ?? []
+              degradedScopes: this.deps.degradedScopes?.() ?? [],
+              ...(duties ? { duties } : {})
             })
           )
         )
@@ -1099,6 +1141,12 @@ export class CpClient {
     switch (frame.type) {
       case 'config/push':
         this.deps.configApply.applyConfigPush((frame.payload as { keys: Record<string, unknown> }).keys)
+        return // EVT — no reply
+      case 'duty/grant':
+        this.deps.configApply.applyDutyGrant((frame.payload as DutyGrant).grants)
+        return // EVT — no reply
+      case 'duty/revoke':
+        this.deps.configApply.applyDutyRevoke((frame.payload as DutyRevoke).revocations)
         return // EVT — no reply
       case 'cron/upsert':
         try {
