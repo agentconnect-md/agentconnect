@@ -125,6 +125,10 @@ export class CpMemoryConnectionRegistry {
     this.connect = deps.connect ?? ((options) => MemoryPluginClient.connect(options))
   }
 
+  connectionIds(): string[] {
+    return [...this.entries.keys()]
+  }
+
   /** Full-replace the CP-owned set from register/ok. */
   converge(specs: readonly MemoryConnectionSpec[]): void {
     const desired = new Set(specs.map((spec) => spec.connectionId))

@@ -19,6 +19,33 @@ const DREAM_TOOL_INPUT_CHARS = 300
 // no index signature, so we widen at the DB boundary.
 type SqlParams = Record<string, SQLInputValue>
 
+export interface StoreRunResult {
+  changes: number | bigint
+}
+
+export interface StoreStatement {
+  run(...params: unknown[]): StoreRunResult
+  get(...params: unknown[]): unknown
+  all(...params: unknown[]): unknown[]
+}
+
+export interface StoreDatabase {
+  exec(sql: string): void
+  prepare(sql: string): StoreStatement
+  close(): void
+}
+
+export type LocalStoreSource = string | { database: StoreDatabase; shared?: boolean; ownerId?: string }
+
+const SHARED_MEMORY_CAPTURE_LEASE_MS = 2 * 60 * 1_000
+
+function idScope(column: string, values: readonly string[] | undefined): { sql: string; params: SqlParams } {
+  if (values === undefined) return { sql: '', params: {} }
+  if (values.length === 0) return { sql: ' AND 0 = 1', params: {} }
+  const params = Object.fromEntries(values.map((value, index) => [`scopeId${index}`, value])) as SqlParams
+  return { sql: ` AND ${column} IN (${values.map((_value, index) => `@scopeId${index}`).join(', ')})`, params }
+}
+
 /**
  * Normalize the timestamp forms stored in transcript rows onto one epoch-microsecond
  * axis for chronological Slack history reads:
@@ -558,7 +585,7 @@ function restrictPath(path: string, mode: number): void {
  * change that edits a `CREATE TABLE` below, and append the matching step to
  * {@link SCHEMA_MIGRATIONS}.
  */
-const SCHEMA_VERSION = 1
+const SCHEMA_VERSION = 2
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -581,15 +608,18 @@ const SCHEMA_VERSION = 1
  * in the `CREATE` block, which runs afterwards and is `IF NOT EXISTS`, so it
  * covers fresh and upgraded stores from the one description.
  */
-const SCHEMA_MIGRATIONS: ((db: DatabaseSync) => void)[] = []
+const SCHEMA_MIGRATIONS: ((db: StoreDatabase) => void)[] = [
+  (db) => db.exec('ALTER TABLE permission_requests ADD COLUMN ownerId TEXT')
+]
 
 export class LocalStore {
-  private db: DatabaseSync
+  private db: StoreDatabase
+  private readonly shared: boolean
+  private readonly ownerId?: string
   private transcriptRevision = 0
   private transcriptMutationListener?: (mutation: TranscriptMutation) => void
-  private transcriptReplica?: import('./postgres-transcript-store.js').TranscriptReplicaSink
 
-  constructor(dbPath: string) {
+  constructor(source: LocalStoreSource) {
     // This database holds every platform message body, agent reply, tool payload and
     // durable inbox blob the daemon has seen — the same material the console serves
     // behind authorization. Every other secret-bearing artifact the daemon writes is
@@ -599,14 +629,23 @@ export class LocalStore {
     // systemd `StateDirectory=` (0755), an operator-created path — a second local
     // account could read the lot. Restrict the directory and the database explicitly,
     // and chmod after creation so a loose umask cannot widen either.
-    const dir = dirname(dbPath)
-    mkdirSync(dir, { recursive: true, mode: 0o700 })
-    restrictPath(dir, 0o700)
-    this.db = new DatabaseSync(dbPath)
-    this.db.exec('PRAGMA journal_mode = WAL')
-    // WAL mode publishes two siblings alongside the database; they carry the same
-    // rows, so restricting only the main file would leave the content readable.
-    for (const p of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) restrictPath(p, 0o600)
+    if (typeof source === 'string') {
+      this.shared = false
+      this.ownerId = undefined
+      const dir = dirname(source)
+      mkdirSync(dir, { recursive: true, mode: 0o700 })
+      restrictPath(dir, 0o700)
+      this.db = new DatabaseSync(source) as StoreDatabase
+      this.db.exec('PRAGMA journal_mode = WAL')
+      // WAL mode publishes two siblings alongside the database; they carry the same
+      // rows, so restricting only the main file would leave the content readable.
+      for (const p of [source, `${source}-wal`, `${source}-shm`]) restrictPath(p, 0o600)
+    } else {
+      this.db = source.database
+      this.shared = source.shared === true
+      this.ownerId = source.ownerId
+      if (this.shared && !this.ownerId) throw new Error('shared LocalStore requires an ownerId')
+    }
     // Decided BEFORE the CREATE block, which is what makes an empty file
     // indistinguishable from an old one a moment later.
     const freshDatabase =
@@ -725,7 +764,8 @@ export class LocalStore {
         requesterName TEXT,
         command TEXT NOT NULL,
         status TEXT NOT NULL CHECK (status IN ('pending', 'allowed', 'denied', 'expired')),
-        resolvedAt INTEGER
+        resolvedAt INTEGER,
+        ownerId TEXT
       );
       CREATE INDEX IF NOT EXISTS permission_requests_agent_created
         ON permission_requests (agentId, createdAt DESC);
@@ -993,13 +1033,14 @@ export class LocalStore {
     this.transcriptRevision = (
       this.db.prepare('SELECT COALESCE(MAX(revision), 0) AS revision FROM transcript').get() as { revision: number }
     ).revision
-    // A daemon restart loses the in-memory ACP resolver. Retain the audit row but
-    // never present it as actionable after recovery.
-    this.db
-      .prepare(
-        "UPDATE permission_requests SET status = 'expired', resolvedAt = COALESCE(resolvedAt, ?) WHERE status = 'pending'"
-      )
-      .run(Date.now())
+    // Only an exclusively owned store proves that every old in-memory resolver died.
+    if (!this.shared) {
+      this.db
+        .prepare(
+          "UPDATE permission_requests SET status = 'expired', resolvedAt = COALESCE(resolvedAt, ?) WHERE status = 'pending'"
+        )
+        .run(Date.now())
+    }
   }
 
   /**
@@ -1053,11 +1094,11 @@ export class LocalStore {
     this.db
       .prepare(
         `INSERT INTO permission_requests
-           (id, agentId, sessionId, createdAt, requesterId, requesterName, command, status, resolvedAt)
+           (id, agentId, sessionId, createdAt, requesterId, requesterName, command, status, resolvedAt, ownerId)
          VALUES
-           (@id, @agentId, @sessionId, @createdAt, @requesterId, @requesterName, @command, @status, @resolvedAt)`
+           (@id, @agentId, @sessionId, @createdAt, @requesterId, @requesterName, @command, @status, @resolvedAt, @ownerId)`
       )
-      .run(record as unknown as SqlParams)
+      .run({ ...record, ownerId: this.ownerId ?? null } as unknown as SqlParams)
     this.prunePermissionRequestHistory(record.agentId)
   }
 
@@ -1102,6 +1143,20 @@ export class LocalStore {
     const changed = Number(result.changes) === 1
     if (changed) this.prunePermissionRequestHistory(agentId)
     return changed
+  }
+
+  /** Expire orphaned resolvers only after this process authoritatively takes ownership of their agents. */
+  recoverPermissionRequests(agentIds: readonly string[], resolvedAt: number): number {
+    if (!this.shared || agentIds.length === 0) return 0
+    const scope = idScope('agentId', agentIds)
+    return Number(
+      this.db
+        .prepare(
+          `UPDATE permission_requests SET status = 'expired', resolvedAt = @resolvedAt
+           WHERE status = 'pending' AND (ownerId IS NULL OR ownerId != @ownerId)${scope.sql}`
+        )
+        .run({ resolvedAt, ownerId: this.ownerId!, ...scope.params }).changes
+    )
   }
 
   /** All sessions that have an ACP id (i.e. are addressable by sessionId), newest
@@ -1274,16 +1329,15 @@ export class LocalStore {
   }
 
   currentTranscriptRevision(_agentId?: string): number {
-    return this.transcriptRevision
+    const row = this.db.prepare('SELECT COALESCE(MAX(revision), 0) AS revision FROM transcript').get() as {
+      revision: number
+    }
+    this.transcriptRevision = row.revision
+    return row.revision
   }
 
   setTranscriptMutationListener(listener?: (mutation: TranscriptMutation) => void): void {
     this.transcriptMutationListener = listener
-  }
-
-  /** Cloud persistence seam; SQLite remains the synchronous local/self-hosted driver. */
-  setTranscriptReplica(replica?: import('./postgres-transcript-store.js').TranscriptReplicaSink): void {
-    this.transcriptReplica = replica
   }
 
   /**
@@ -1482,7 +1536,7 @@ export class LocalStore {
     return {
       rows: kept,
       hasMore,
-      cursor: hasMore ? kept[kept.length - 1]!.revision : this.transcriptRevision
+      cursor: hasMore ? kept[kept.length - 1]!.revision : this.currentTranscriptRevision()
     }
   }
 
@@ -2535,7 +2589,7 @@ export class LocalStore {
         trustedAgentBot: trustedAgentBot ? 1 : null,
         revision
       } as unknown as SqlParams)
-    if (Number(inserted.changes) === 1) this.transcriptRevision = revision
+    if (Number(inserted.changes) === 1) this.transcriptRevision = this.threadTranscriptRevision(e.channel, e.thread)
     // The closing edit of a streamed reply lands on the row its own post created, so the
     // text is refreshed in place rather than lost to INSERT OR IGNORE. Scoped to text
     // rows on identical coordinates, and only ever toward the authoritative version.
@@ -2548,8 +2602,8 @@ export class LocalStore {
         )
         .run(e.text, rev, e.channel, e.thread, e.ts, e.text)
       if (Number(refreshed.changes) === 1) {
-        this.transcriptRevision = rev
-        this.notifyTranscriptMutation(e.channel, e.thread, e.recipient ? [e.recipient] : [], rev)
+        this.transcriptRevision = this.threadTranscriptRevision(e.channel, e.thread)
+        this.notifyTranscriptMutation(e.channel, e.thread, e.recipient ? [e.recipient] : [], this.transcriptRevision)
       }
     }
     // A row may predate this column and later be re-observed in an authoritative Slack
@@ -2626,7 +2680,7 @@ export class LocalStore {
         : undefined
 
     if (Number(inserted.changes) === 1) {
-      this.notifyTranscriptMutation(e.channel, e.thread, [e.sender, e.recipient], revision)
+      this.notifyTranscriptMutation(e.channel, e.thread, [e.sender, e.recipient], this.transcriptRevision)
     } else if (
       Number(provenanceUpgraded?.changes ?? 0) === 1 ||
       Number(attachmentsUpgraded?.changes ?? 0) === 1 ||
@@ -2639,7 +2693,7 @@ export class LocalStore {
       this.db
         .prepare("UPDATE transcript SET revision = ? WHERE channel = ? AND thread = ? AND ts = ? AND kind = 'text'")
         .run(deliveryRevision, e.channel, e.thread, e.ts)
-      this.transcriptRevision = deliveryRevision
+      this.transcriptRevision = this.threadTranscriptRevision(e.channel, e.thread)
       // An in-place upgrade mutates the SHARED row: every agent whose scoped
       // view already contains it must be invalidated, not just this append's
       // sender/recipient — a co-hosted participant delivered earlier would
@@ -2649,9 +2703,13 @@ export class LocalStore {
           .prepare('SELECT agentId FROM transcript_recipient WHERE channel = ? AND thread = ? AND ts = ?')
           .all(e.channel, e.thread, e.ts) as { agentId: string }[]
       ).map((r) => r.agentId)
-      this.notifyTranscriptMutation(e.channel, e.thread, [e.sender, e.recipient, ...sharedRecipients], deliveryRevision)
+      this.notifyTranscriptMutation(
+        e.channel,
+        e.thread,
+        [e.sender, e.recipient, ...sharedRecipients],
+        this.transcriptRevision
+      )
     }
-    this.transcriptReplica?.appendTranscript(e)
   }
 
   /** First sight of a tool call: insert its kind='tool' row (title in `text`, the
@@ -2686,10 +2744,9 @@ export class LocalStore {
         revision
       })
     if (Number(inserted.changes) === 1) {
-      this.transcriptRevision = revision
-      this.notifyTranscriptMutation(e.channel, e.thread, [e.sender], revision)
+      this.transcriptRevision = this.threadTranscriptRevision(e.channel, e.thread)
+      this.notifyTranscriptMutation(e.channel, e.thread, [e.sender], this.transcriptRevision)
     }
-    this.transcriptReplica?.insertToolCall(e)
   }
 
   /** Later update for one agent's tool call. `seq`/`ts` keep their first-seen
@@ -2710,10 +2767,9 @@ export class LocalStore {
       )
       .run(patch.title, patch.body, revision, channel, thread, agentId, toolCallId, patch.title, patch.body)
     if (Number(updated.changes) === 1) {
-      this.transcriptRevision = revision
-      this.notifyTranscriptMutation(channel, thread, [agentId], revision)
+      this.transcriptRevision = this.threadTranscriptRevision(channel, thread)
+      this.notifyTranscriptMutation(channel, thread, [agentId], this.transcriptRevision)
     }
-    this.transcriptReplica?.updateToolCall(channel, thread, agentId, toolCallId, patch)
   }
 
   private notifyTranscriptMutation(
@@ -3052,7 +3108,11 @@ export class LocalStore {
         enqueuedAt: row.enqueuedAt
       })
     if (inserted.changes === 0 && row.loopGuardCounted === 1) {
-      this.db.prepare('UPDATE inbox SET loopGuardCounted = MAX(loopGuardCounted, 1) WHERE id = ?').run(row.id)
+      this.db
+        .prepare(
+          'UPDATE inbox SET loopGuardCounted = CASE WHEN loopGuardCounted < 1 THEN 1 ELSE loopGuardCounted END WHERE id = ?'
+        )
+        .run(row.id)
     }
     return inserted.changes === 1
   }
@@ -3295,40 +3355,54 @@ export class LocalStore {
       .all() as unknown as MemoryCaptureOutboxRow[]
   }
 
-  nextDueMemoryCapture(now: number): MemoryCaptureOutboxRow | undefined {
+  nextDueMemoryCapture(now: number, connectionIds?: readonly string[]): MemoryCaptureOutboxRow | undefined {
+    const scope = idScope('connectionId', connectionIds)
     return this.db
       .prepare(
         `SELECT * FROM memory_capture_outbox
-         WHERE state IN ('pending', 'accepted') AND nextAttemptAt <= ?
+         WHERE state IN ('pending', 'accepted') AND nextAttemptAt <= @now${scope.sql}
          ORDER BY nextAttemptAt ASC, createdAt ASC, operationId ASC
          LIMIT 1`
       )
-      .get(now) as MemoryCaptureOutboxRow | undefined
+      .get({ now, ...scope.params }) as MemoryCaptureOutboxRow | undefined
   }
 
-  nextMemoryCaptureDueAt(): number | undefined {
+  nextMemoryCaptureDueAt(connectionIds?: readonly string[]): number | undefined {
+    const scope = idScope('connectionId', connectionIds)
     const row = this.db
       .prepare(
         `SELECT MIN(nextAttemptAt) AS dueAt FROM memory_capture_outbox
-         WHERE state IN ('pending', 'accepted')`
+         WHERE state IN ('pending', 'accepted')${scope.sql}`
       )
-      .get() as { dueAt: number | null } | undefined
+      .get(scope.params) as { dueAt: number | null } | undefined
     return row?.dueAt ?? undefined
   }
 
   /** Next age/retention deadline even when there is no due send. This keeps a
    * quiet daemon from retaining terminal dedup receipts indefinitely. */
-  nextMemoryCaptureMaintenanceAt(activeAgeMs: number, terminalRetentionMs: number): number | undefined {
+  nextMemoryCaptureMaintenanceAt(
+    activeAgeMs: number,
+    terminalRetentionMs: number,
+    connectionIds?: readonly string[]
+  ): number | undefined {
+    const scope = idScope('connectionId', connectionIds)
     const row = this.db
       .prepare(
         `SELECT
            MIN(CASE WHEN state IN ('pending', 'accepted') THEN createdAt + @activeAgeMs END) AS activeAt,
            MIN(CASE WHEN state IN ('completed', 'failed', 'ambiguous')
-                    THEN updatedAt + @terminalRetentionMs END) AS terminalAt
-         FROM memory_capture_outbox`
+                    THEN updatedAt + @terminalRetentionMs END) AS terminalAt,
+           MIN(CASE WHEN state = 'sending' THEN updatedAt + @recoveryLeaseMs END) AS recoveryAt
+         FROM memory_capture_outbox
+         WHERE 1 = 1${scope.sql}`
       )
-      .get({ activeAgeMs, terminalRetentionMs }) as { activeAt: number | null; terminalAt: number | null } | undefined
-    const deadlines = [row?.activeAt, row?.terminalAt].filter(
+      .get({
+        activeAgeMs,
+        terminalRetentionMs,
+        recoveryLeaseMs: this.shared ? SHARED_MEMORY_CAPTURE_LEASE_MS : 0,
+        ...scope.params
+      }) as { activeAt: number | null; terminalAt: number | null; recoveryAt: number | null } | undefined
+    const deadlines = [row?.activeAt, row?.terminalAt, row?.recoveryAt].filter(
       (value): value is number => value !== null && value !== undefined
     )
     return deadlines.length ? Math.min(...deadlines) : undefined
@@ -3416,58 +3490,73 @@ export class LocalStore {
     )
   }
 
-  /** Crash recovery is deliberately asymmetric. A sending idempotent operation
-   * may be replayed with the same id; a non-idempotent one may already have
-   * reached the plugin and therefore becomes terminal ambiguous. */
-  recoverMemoryCaptures(now: number): { retried: number; ambiguous: number } {
+  /** Recover only abandoned shared claims; local stores remain exclusively owned across restart. */
+  recoverMemoryCaptures(
+    now: number,
+    staleOnly = false,
+    connectionIds?: readonly string[]
+  ): { retried: number; ambiguous: number } {
+    if (staleOnly && !this.shared) return { retried: 0, ambiguous: 0 }
+    const scope = idScope('connectionId', !this.shared && !staleOnly ? undefined : connectionIds)
+    const staleClause = this.shared ? ' AND updatedAt <= @staleBefore' : ''
+    const params = this.shared
+      ? { now, staleBefore: now - SHARED_MEMORY_CAPTURE_LEASE_MS, ...scope.params }
+      : { now, ...scope.params }
     const retried = this.db
       .prepare(
         `UPDATE memory_capture_outbox
          SET state = 'pending', nextAttemptAt = @now, updatedAt = @now,
              reasonCode = 'restart_retry'
-         WHERE state = 'sending' AND idempotency = 'operation-id'`
+         WHERE state = 'sending' AND idempotency = 'operation-id'${staleClause}${scope.sql}`
       )
-      .run({ now }).changes
+      .run(params).changes
     const ambiguous = this.db
       .prepare(
         `UPDATE memory_capture_outbox
          SET state = 'ambiguous', nextAttemptAt = @now, updatedAt = @now,
              reasonCode = 'restart_after_send', config = '{}', input = '', output = '',
              sessionId = NULL, payloadBytes = 0
-         WHERE state = 'sending' AND idempotency = 'none'`
+         WHERE state = 'sending' AND idempotency = 'none'${staleClause}${scope.sql}`
       )
-      .run({ now }).changes
+      .run(params).changes
     return { retried: Number(retried), ambiguous: Number(ambiguous) }
   }
 
-  expireMemoryCaptures(activeBefore: number, terminalBefore: number, now: number): { expired: number; purged: number } {
+  expireMemoryCaptures(
+    activeBefore: number,
+    terminalBefore: number,
+    now: number,
+    connectionIds?: readonly string[]
+  ): { expired: number; purged: number } {
+    const scope = idScope('connectionId', connectionIds)
     const expired = this.db
       .prepare(
         `UPDATE memory_capture_outbox
          SET state = 'failed', nextAttemptAt = @now, updatedAt = @now,
              reasonCode = 'retention_expired', config = '{}', input = '', output = '',
              sessionId = NULL, payloadBytes = 0
-         WHERE state IN ('pending', 'accepted') AND createdAt <= @activeBefore`
+         WHERE state IN ('pending', 'accepted') AND createdAt <= @activeBefore${scope.sql}`
       )
-      .run({ now, activeBefore }).changes
+      .run({ now, activeBefore, ...scope.params }).changes
     const purged = this.db
       .prepare(
         `DELETE FROM memory_capture_outbox
-         WHERE state IN ('completed', 'failed', 'ambiguous') AND updatedAt <= ?`
+         WHERE state IN ('completed', 'failed', 'ambiguous') AND updatedAt <= @terminalBefore${scope.sql}`
       )
-      .run(terminalBefore).changes
+      .run({ terminalBefore, ...scope.params }).changes
     return { expired: Number(expired), purged: Number(purged) }
   }
 
-  memoryCaptureStats(): MemoryCaptureOutboxStats {
+  memoryCaptureStats(connectionIds?: readonly string[]): MemoryCaptureOutboxStats {
+    const scope = idScope('connectionId', connectionIds)
     const row = this.db
       .prepare(
         `SELECT COUNT(*) AS activeCount, COALESCE(SUM(payloadBytes), 0) AS activeBytes,
                 MIN(createdAt) AS oldestActiveAt
          FROM memory_capture_outbox
-         WHERE state IN ('pending', 'sending', 'accepted')`
+         WHERE state IN ('pending', 'sending', 'accepted')${scope.sql}`
       )
-      .get() as { activeCount: number; activeBytes: number; oldestActiveAt: number | null }
+      .get(scope.params) as { activeCount: number; activeBytes: number; oldestActiveAt: number | null }
     return {
       activeCount: row.activeCount,
       activeBytes: row.activeBytes,
@@ -3784,61 +3873,38 @@ export class LocalStore {
     }
   }
 
-  /**
-   * Attach the AUTHORITATIVE call envelope and atomically decide whether THIS caller
-   * owns the dispatch (§8.6).
-   *
-   * Returns `dispatch: true` exactly once per key. A second arrival — a retry, a
-   * redelivered wake, a replay after restart — reads back the stored `childSessionId`
-   * with `dispatch: false`, which is what keeps "the internal wake and the platform echo
-   * are two observations of ONE delivery" true across every arrival order and failure.
-   *
-   * A record already in `transcript-only` (its envelope expired) stays there: reviving it
-   * would dispatch a child for a delivery already reported failed.
-   */
+  /** Atomically attach the authoritative envelope; exactly one replica receives the dispatch claim. */
   attachActivationEnvelope(
     activationKey: string,
     callEnvelope: string,
     expiresAt: number,
-    /** The durable inbox row id the dispatch this claim authorizes will write. Recorded
-     *  now so a crash before admission is RECONCILABLE: the sweep can ask whether that
-     *  turn is durably queued instead of guessing. Omitted ⇒ not reconcilable, and the
-     *  sweep releases the claim rather than risk a double delivery. */
+    /** Durable inbox id used to reconcile a crash between claim and admission. */
     dispatchId?: string
   ): { dispatch: boolean; record: ActivationRecord } {
-    this.db.exec('BEGIN')
-    try {
-      const existing = this.getActivation(activationKey)
-      if (existing?.state === 'admitted' || existing?.state === 'transcript-only') {
-        this.db.exec('COMMIT')
-        return { dispatch: false, record: existing }
-      }
-      // The ENVELOPE is the claim, and it is granted once. A record that already has one
-      // has a dispatch in flight — admission settles asynchronously, so "not yet admitted"
-      // is not the same as "nobody is handling it". Without this, two arrivals inside the
-      // dispatch window would both be told to dispatch and the delivery would double.
-      // A dispatch that fails releases the record (deleting it), so a genuine retry
-      // re-enters here as a first claim.
-      if (existing?.callEnvelope) {
-        this.db.exec('COMMIT')
-        return { dispatch: false, record: existing }
-      }
-      this.db
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const inserted = this.db
         .prepare(
-          `INSERT INTO activation_rendezvous (activationKey, callEnvelope, dispatchId, state, expiresAt)
-           VALUES (?, ?, ?, 'pending', ?)
-           ON CONFLICT(activationKey) DO UPDATE SET
-             callEnvelope = excluded.callEnvelope,
-             dispatchId = excluded.dispatchId`
+          `INSERT OR IGNORE INTO activation_rendezvous
+             (activationKey, callEnvelope, dispatchId, state, expiresAt)
+           VALUES (?, ?, ?, 'pending', ?)`
         )
         .run(activationKey, callEnvelope, dispatchId ?? null, expiresAt)
-      const record = this.getActivation(activationKey)!
-      this.db.exec('COMMIT')
-      return { dispatch: true, record }
-    } catch (err) {
-      this.db.exec('ROLLBACK')
-      throw err
+      const claimed =
+        Number(inserted.changes) === 1
+          ? true
+          : Number(
+              this.db
+                .prepare(
+                  `UPDATE activation_rendezvous
+                   SET callEnvelope = ?, dispatchId = ?, expiresAt = ?
+                   WHERE activationKey = ? AND state = 'pending' AND callEnvelope IS NULL`
+                )
+                .run(callEnvelope, dispatchId ?? null, expiresAt, activationKey).changes
+            ) === 1
+      const record = this.getActivation(activationKey)
+      if (record) return { dispatch: claimed, record }
     }
+    throw new Error(`activation claim for "${activationKey}" changed too often`)
   }
 
   /**

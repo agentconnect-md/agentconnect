@@ -1922,6 +1922,7 @@ export class Daemon {
     },
     {
       registry: {
+        connectionIds: () => this.memoryConnections?.connectionIds() ?? [],
         clientFor: (connectionId) => this.memoryConnections?.clientFor(connectionId),
         specFor: (connectionId) => this.memoryConnections?.specFor(connectionId),
         markDegraded: (connectionId, reasonCode) => this.memoryConnections?.markDegraded(connectionId, reasonCode),
@@ -2854,6 +2855,8 @@ export class Daemon {
           this.requestExit(1)
         }
       )
+    }
+    if (this.k8s) {
       // A pod's terminationGracePeriodSeconds must exceed this, or the kubelet SIGKILLs
       // mid-drain and the graceful window is a promise the deployment cannot keep. The
       // daemon cannot read its own grace period (it has no pod read), so it states the
@@ -2885,7 +2888,7 @@ export class Daemon {
           }
         })
       } catch (error) {
-        await this.dataPlane.close().catch(() => undefined)
+        await this.dataPlane?.close().catch(() => undefined)
         this.dataPlane = undefined
         throw error
       }
@@ -3096,8 +3099,7 @@ export class Daemon {
       onDefinitionChange: (connectionId) => this.onMemoryConnectionDefinitionChange(connectionId)
     })
 
-    this.store = new LocalStore(statePath(root))
-    this.store.setTranscriptReplica(this.dataPlane?.transcripts)
+    this.store = this.dataPlane?.store ?? new LocalStore(statePath(root))
     this.store.setTranscriptMutationListener((mutation) => this.scheduleSessionActivity(mutation))
     this.memoryOutbox = new MemoryCaptureOutbox(this.store, this.memoryConnections, {
       log: { warn: (message) => this.log.warn(message) }
@@ -3568,6 +3570,12 @@ export class Daemon {
       throw new Error('daemon startup refused: --k8s requires an authoritative CP organization registry')
     if (cloudCpReady) this.log.info('data-plane: waiting for the initial CP organization registry before ingress')
     await cloudCpReady
+    if (this.k8s) {
+      this.store.recoverPermissionRequests(
+        (this.cpAgents?.agents() ?? []).map((agent) => agent.id),
+        this.clock.now()
+      )
+    }
     // open consolidated Slack connections, resolve bot user ids (merged rules are per-message)
     if (groups.size === 0) this.log.info('slack: no slack integrations configured')
     else this.log.info(`slack: opening ${groups.size} socket connection(s)`)
@@ -20196,6 +20204,7 @@ export class Daemon {
           // authoritative re-add commit point.
           const replacingDroppedAuthority =
             this.removedAgentTombstones.has(agentId) || this.cpDroppedAgents.has(agentId)
+          const takingOwnership = !this.cpAgents.has(agentId)
           const applied = this.cpAgents.upsert(agentId, spec)
           // The revision fence applied nothing (organization-secrets-and-variables.md
           // §7). A stale/idempotent snapshot is ACKed as a no-op — a newer revision
@@ -20206,6 +20215,7 @@ export class Daemon {
             return { ok: false, reason: 'agent config revision already applied with different content' }
           }
           if (applied !== 'apply') return { ok: true }
+          if (takingOwnership) this.store.recoverPermissionRequests([agentId], this.clock.now())
           if (replacingDroppedAuthority) {
             // A standalone upsert has no dependent bundle. Scrub every stale CP
             // integration/cron now; subsequent live frames may repopulate them.
@@ -20405,6 +20415,7 @@ export class Daemon {
             if (activation === 'missing') {
               return { ok: false, reason: `agent/activate: unknown agent ${agentId}` }
             }
+            this.store.recoverPermissionRequests([agentId], this.clock.now())
             if (this.agentRemovalPending(agentId)) {
               return { ok: false, reason: 'agent/activate: superseded by a newer agent removal' }
             }
@@ -21222,11 +21233,7 @@ export class Daemon {
       degradedScopes: () => this.cpDegradedScopes(),
       duties: () => this.dutyDigest(),
       configApply: this.cpConfigApply(),
-      sessionRead: createSessionReader(
-        this.store,
-        (session) => this.sessionThreadUrl(session),
-        this.dataPlane?.transcripts
-      ),
+      sessionRead: createSessionReader(this.store, (session) => this.sessionThreadUrl(session)),
       // §5.4: serve a CP-forwarded status probe for a child session we own. Authorization is
       // re-done here (the lineage rule lives where the session lives), not trusted from the CP.
       childSessionStatusProbe: (probe) => this.childSessionStatusProbe(probe),
@@ -21833,6 +21840,7 @@ export class Daemon {
    * recall/capture policy changes live on AgentSpec and use the normal agent
    * signature; connection changes always rebuild before the next turn. */
   private onMemoryConnectionDefinitionChange(connectionId: string): void {
+    this.memoryOutbox?.wake()
     for (const agent of this.agents.values()) {
       if (agent.memory?.provider !== 'external' || agent.memory.connectionId !== connectionId) continue
       void this.stopHost(agent.id).catch((error) =>
@@ -21952,9 +21960,8 @@ export class Daemon {
     // so server.close() isn't left waiting on a live bridge connection.
     await Promise.resolve(this.mcp?.stop()).catch((e) => errors.push(e))
     this.gitCredServer?.stop()
-    this.store?.setTranscriptReplica()
-    await this.dataPlane?.close().catch((e) => errors.push(e))
-    this.store?.close()
+    if (this.dataPlane) await this.dataPlane.close().catch((e) => errors.push(e))
+    else this.store?.close()
     if (errors.length) throw new AggregateError(errors, 'stop: partial failure')
   }
 }
