@@ -53,11 +53,6 @@ function scratchDir(): string {
   return dir
 }
 
-/** A sandbox watch that reports nothing and ends when the plane aborts it. */
-async function* idleSandboxWatch(signal?: AbortSignal): AsyncGenerator<never> {
-  await new Promise<void>((resolve) => signal?.addEventListener('abort', () => resolve(), { once: true }))
-}
-
 /** A Sandbox that binds, is Ready, and names its pod. */
 function fakeApi() {
   const sandbox = {
@@ -80,8 +75,6 @@ function fakeApi() {
     getSandbox: async () => sandbox,
     setOperatingMode: async () => sandbox,
     watchClaims: vi.fn(),
-    // The plane follows Sandboxes for a rollout's drain requests; this one reports none.
-    watchSandboxes: ({ signal }: { signal?: AbortSignal }) => idleSandboxWatch(signal),
     reviewToken: async () => ({ authenticated: true, podName: 'pool-pod-9', podUid: 'pod-uid-1' })
   }
 }
@@ -135,6 +128,8 @@ async function clusterWithTunnel(
   const plane = await startK8sRuntimePlane({
     orgId: 'org-1',
     warmPoolName: 'pool',
+    sandboxNamespace: 'agent-sandboxes',
+    memberId: 'member-a',
     shimPort,
     readyTimeoutMs: 15_000,
     api: fakeApi() as never,

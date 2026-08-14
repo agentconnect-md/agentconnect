@@ -42,7 +42,6 @@ function fakeApi() {
         }) as Sandbox,
       setOperatingMode: async () => ({}) as Sandbox,
       watchClaims: vi.fn(),
-      watchSandboxes: vi.fn(),
       reviewToken: vi.fn()
     }
   }

@@ -8,7 +8,7 @@ local child process, and how the two halves talk. Companion to
 Staged scope: this describes the mechanism. The hardened security model — an isolating
 runtimeClass, admission policy, egress control, and a managed egress proxy so a provider
 key never enters the sandbox — is a separate, later plan. Until it lands, the pod and the
-per-org namespace are the only isolation boundaries, and a provider key is present inside
+shared Sandbox namespace are the only isolation boundaries, and a provider key is present inside
 the sandbox, so this shape suits internal dogfooding and self-hosted
 bring-your-own-key. As an interim step the runtime image accepts deployment-owned provider
 config from the pod environment — `AC_CLAUDE_BASE_URL`/`AC_CLAUDE_API_KEY` and
@@ -67,6 +67,10 @@ direction also makes a future daemon pool possible: the duty holder can dial the
 sandbox it owns without publishing a callback endpoint for every daemon. What
 "duty holder" means — the pool, the lease ledger, the heartbeat exchange, and
 the activation rendezvous — is [k8s-daemon-pool.md](k8s-daemon-pool.md).
+
+The daemon pool and agent sandboxes are separate namespaces. The runtime plane requires
+`AC_K8S_SANDBOX_NAMESPACE` and uses it for every `SandboxClaim` and `Sandbox` request; it never
+defaults to the namespace mounted into the daemon Pod's ServiceAccount.
 
 ## 3. Binding: proving which pod accepted the connection
 
@@ -217,38 +221,13 @@ unwritable by the runtime — one it could rewrite is one it could replace with 
 asks the daemon for credentials in its name. It shares its implementation with the daemon's
 CLI helper and differs only in which socket it dials.
 
-## 7. Draining for a runtime-image rollout
+## 7. Runtime-image rollout ownership
 
-The daemon owns when an agent's pod runs, so an image rollout cannot simply replace it — a
-forced suspend would kill whatever turn is in flight. Instead the rollout _asks_, by writing
-`agentconnect.md/drain-requested` on the Sandbox, and the daemon answers with
-the one action that is its to take: it stops placing new work on that instance and suspends it
-once the work already there ends — immediately when there is none. The rollout's conditioned
-image patch then applies, because the instance is Suspended.
-
-The consumer is a list-then-watch over the namespace's Sandboxes, started with the runtime
-plane rather than by a launch: the instance a rollout waits on is usually the idle one nobody
-is about to launch, and a request nothing reads would stall the rollout until its deadline.
-Three properties this shape buys:
-
-- **Snapshots converge.** Each re-LIST replaces the whole drain set, so a watch gap that swallowed
-  a request's removal cannot hold an instance down forever.
-- **No launch record required.** Requests are keyed by Sandbox name, not by agent, so an instance
-  this daemon has not bound in this process — after a restart, or for an agent that has been quiet
-  — is still drained. Keying by agent would have made exactly the idle case unreachable.
-- **In-flight work is held, not raced.** Work leases its Sandbox: the bind, the cold workspace
-  preparation that runs in the pod after it (clone, pull, skill materialization — one lease around
-  the whole of it, not around the bind alone), the runtime until it exits, and the runtime probe
-  across its whole request rather than across its bind — a probe can run for minutes with nothing
-  else marking that sandbox as in use, and a daemon whose probe failed advertises no runtimes and
-  does not retry. A request that
-  arrives while a lease is held waits for it instead of pulling the pod out from under it.
-  Taking a lease on an already-draining instance is refused instead, by type
-  (`SandboxDrainingError` → the `draining` launch outcome): nothing has started yet, so the
-  rollout wins that decision and the caller retries once the request clears.
-
-A drain the daemon never completes is the rollout's to give up on, not the daemon's to force:
-the rollout marks the instance `failed` after its own deadline, and the pod keeps serving.
+The retired per-org operator was the sole producer of `agentconnect.md/drain-requested`.
+Consequently the daemon no longer watches every Sandbox for that orphaned annotation. Pool-member
+rollout is owned by the daemon Deployment and duty-release flow; agent compute migrates through the
+ordinary idle suspension path described below. Work holds its Sandbox only to prevent that idle
+sweep from suspending the pod during a bind, workspace preparation, runtime, or runtime probe.
 
 ## 8. The lifecycle of an idle agent: suspend, resume, discard
 

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { FakeClock } from '@agentconnect.md/connection'
-import { K8sDriver, DRAIN_REQUESTED_ANNOTATION, type ClusterDriverDeps } from '../src/k8s/driver.js'
+import { K8sDriver, type ClusterDriverDeps } from '../src/k8s/driver.js'
 import { LaunchTimer, type ClusterMetrics, type LaunchPath, type LaunchStage } from '../src/k8s/cluster-metrics.js'
 import { K8sApiError } from '@agentconnect.md/k8s-client'
 import type { Sandbox, SandboxClaim } from '../src/k8s/sandbox-api.js'
@@ -76,7 +76,6 @@ function fakeApi(options: { claimExists: boolean; mode: 'Running' | 'Suspended' 
         return {} as Sandbox
       },
       watchClaims: vi.fn(),
-      watchSandboxes: vi.fn(),
       reviewToken: vi.fn()
     }
   }
@@ -344,20 +343,6 @@ describe('cluster launch metrics', () => {
       'runtime_ready'
     ])
     expect(seen.channels).toContain('bound')
-  })
-
-  it('distinguishes a draining refusal from a timeout and from an error', async () => {
-    const drained = recorder()
-    const api = fakeApi({ claimExists: true, mode: 'Suspended' })
-    const driver = driverFor(drained.metrics, api)
-    driver.onSandboxObserved({
-      metadata: { name: 'sb-1', annotations: { [DRAIN_REQUESTED_ANNOTATION]: 'rollout-1/img' } },
-      spec: { operatingMode: 'Suspended' }
-    })
-    await expect(driver.launch(launchRequest)).rejects.toThrow(/draining/)
-    // Held-for-rollout is not a missed target, and pooling it with errors would make a rollout
-    // look like an outage on the dashboard.
-    expect(drained.launches).toEqual([expect.objectContaining({ outcome: 'draining' })])
   })
 
   it('counts a rejected guarded write as a retry rather than losing it in debug logs', async () => {

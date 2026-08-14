@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { K8sHttp, loadInClusterConfig } from '@agentconnect.md/k8s-client'
 import { K8sDriver, PROBE_GRANTS } from './driver.js'
 import { SandboxApi } from './sandbox-api.js'
@@ -16,11 +17,16 @@ import type { GitRunner } from '../workspace/git-runner.js'
 
 const SILENT = { info: () => {}, warn: () => {} }
 
-/** Reserved agent id for the runtime probe. Not a real agent, and never assigned one: its claim is
- *  `agent-<this>`, so the name must not collide with an id the Control Plane could hand out. */
-export const PROBE_AGENT_ID = 'ac-runtime-probe'
+/** Reserved prefix for member-scoped runtime probes; the Control Plane never assigns it. */
+export const PROBE_AGENT_ID_PREFIX = 'ac-runtime-probe'
 /** A probe drives every runtime through `initialize` plus a session, on a possibly cold pod. */
 const PROBE_TIMEOUT_MS = 180_000
+
+/** A deterministic, DNS-safe probe identity unique to one daemon member. */
+export function probeAgentId(memberId: string): string {
+  const memberHash = createHash('sha256').update(memberId).digest('hex').slice(0, 16)
+  return `${PROBE_AGENT_ID_PREFIX}-${memberHash}`
+}
 
 /**
  * Assembles the k8s execution plane: the shim dialer, the driver, and the seams that make an
@@ -38,6 +44,10 @@ export interface K8sRuntimePlaneOptions {
   orgForAgent?: (agentId: string) => string | undefined
   /** Warm pool the claims reference. v1beta1 requires one; a cold pool is `replicas: 0`. */
   warmPoolName?: string
+  /** Namespace shared by agent sandboxes, separate from the daemon pool namespace. */
+  sandboxNamespace?: string
+  /** Deployment-unique identity for this member, normally the Pod UID from the Downward API. */
+  memberId?: string
   /** Port the sandbox shim listens on; the daemon combines it with the ready pod's IP. */
   shimPort?: number
   /** Environment the deployment settings come from; `process.env` unless a test names another. */
@@ -64,6 +74,8 @@ export interface K8sRuntimePlaneOptions {
 export interface K8sPlaneSettings {
   orgId?: string
   warmPoolName: string
+  sandboxNamespace: string
+  memberId: string
   shimPort: number
 }
 
@@ -71,6 +83,8 @@ export interface K8sPlaneSettings {
  *  in the cluster, which is the deployment's to state and not an operator preference. */
 export const K8S_ORG_ID_ENV = 'AC_K8S_ORG_ID'
 export const K8S_WARM_POOL_ENV = 'AC_K8S_WARM_POOL'
+export const K8S_SANDBOX_NAMESPACE_ENV = 'AC_K8S_SANDBOX_NAMESPACE'
+export const K8S_MEMBER_ID_ENV = 'AC_K8S_MEMBER_ID'
 export const K8S_SHIM_PORT_ENV = 'AC_K8S_SHIM_PORT'
 export const DEFAULT_SHIM_PORT = DEFAULT_SHIM_LISTEN_PORT
 
@@ -80,12 +94,16 @@ export function resolveK8sPlaneSettings(options: K8sRuntimePlaneOptions = {}): K
   const orgId = options.orgId ?? env[K8S_ORG_ID_ENV]?.trim()
   const warmPoolName = options.warmPoolName ?? env[K8S_WARM_POOL_ENV]?.trim()
   if (!warmPoolName) throw new Error(`--k8s requires ${K8S_WARM_POOL_ENV}`)
+  const sandboxNamespace = options.sandboxNamespace ?? env[K8S_SANDBOX_NAMESPACE_ENV]?.trim()
+  if (!sandboxNamespace) throw new Error(`--k8s requires ${K8S_SANDBOX_NAMESPACE_ENV}`)
+  const memberId = options.memberId ?? env[K8S_MEMBER_ID_ENV]?.trim()
+  if (!memberId) throw new Error(`--k8s requires ${K8S_MEMBER_ID_ENV}`)
   const rawPort = options.shimPort ?? env[K8S_SHIM_PORT_ENV] ?? DEFAULT_SHIM_PORT
   const shimPort = Number(rawPort)
   if (!Number.isInteger(shimPort) || shimPort < 1 || shimPort > 65_535) {
     throw new Error(`${K8S_SHIM_PORT_ENV} is not a valid port: ${rawPort}`)
   }
-  return { ...(orgId ? { orgId } : {}), warmPoolName, shimPort }
+  return { ...(orgId ? { orgId } : {}), warmPoolName, sandboxNamespace, memberId, shimPort }
 }
 
 /** The env contract on its own, which is what a deployment has to satisfy. */
@@ -99,8 +117,7 @@ export interface K8sRuntimePlane {
   /** Bring an agent's Sandbox up and bind its channel WITHOUT starting a runtime, so the
    *  workspace can be prepared on the pod's own volume before the runtime looks at it. */
   ensureChannel: (agentId: string) => Promise<void>
-  /** Run `work` holding the agent's Sandbox, so a rollout's drain request waits for it rather
-   *  than suspending the pod while work this daemon already admitted runs inside it. */
+  /** Run `work` while holding the agent's Sandbox against the ordinary idle sweep. */
   withSandbox: <T>(agentId: string, work: () => Promise<T>) => Promise<T>
   /** Ask a sandbox which runtimes the image actually provides, and tear it down again. */
   probeRuntimes: () => Promise<K8sRuntimeTable>
@@ -148,7 +165,7 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     options.api ??
     (() => {
       const config = loadInClusterConfig()
-      return new SandboxApi(new K8sHttp(config), config.namespace)
+      return new SandboxApi(new K8sHttp(config), settings.sandboxNamespace)
     })()
 
   const dialer = new ShimDialer({
@@ -205,10 +222,13 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     }
   }
 
+  const runtimeProbeAgentId = probeAgentId(settings.memberId)
   const driver = new K8sDriver({
     api,
     orgForAgent: (agentId) =>
-      agentId === PROBE_AGENT_ID ? (settings.orgId ?? 'install') : (options.orgForAgent?.(agentId) ?? settings.orgId),
+      agentId === runtimeProbeAgentId
+        ? (settings.orgId ?? 'install')
+        : (options.orgForAgent?.(agentId) ?? settings.orgId),
     warmPoolName: settings.warmPoolName,
     onChannelReady: ensureTunnels,
     connectChannel: (record, podIp, timeoutMs) =>
@@ -218,11 +238,6 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     ...(options.readyTimeoutMs === undefined ? {} : { readyTimeoutMs: options.readyTimeoutMs }),
     log: options.log ?? SILENT
   })
-
-  // Follows this namespace's Sandboxes for the rollout's drain requests. Part of starting the
-  // plane rather than of the first launch: an instance whose agent is idle is exactly the one a
-  // rollout is waiting on, and nothing else would ever look at it.
-  driver.startSandboxWatch()
 
   // A renewal reconnects immediately, so a
   // replacement that has not arrived well inside the request deadline is a pod that is gone.
@@ -253,20 +268,16 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
       // A sandbox of its own, under a reserved id, so a probe never adopts or disturbs an
       // agent's instance — and is torn down afterwards rather than left holding a pod.
       try {
-        // The lease covers the REQUEST, not just the bind: the probe can run for minutes while
-        // nothing else marks that sandbox as in use, and both suspension paths — a rollout's
-        // drain and the idle sweep — read exactly this lease to decide the pod is spare. Losing
-        // the pod mid-probe fails the probe, and a daemon that failed its probe advertises no
-        // runtimes and does not retry.
-        return await driver.withSandbox(PROBE_AGENT_ID, async () => {
-          await driver.ensureBoundChannel(PROBE_AGENT_ID, undefined, PROBE_GRANTS)
-          const session = driver.sessionFor(PROBE_AGENT_ID)
+        // The lease covers the request so the ordinary idle sweep cannot suspend mid-probe.
+        return await driver.withSandbox(runtimeProbeAgentId, async () => {
+          await driver.ensureBoundChannel(runtimeProbeAgentId, undefined, PROBE_GRANTS)
+          const session = driver.sessionFor(runtimeProbeAgentId)
           if (!session) throw new Error('probe sandbox bound no session')
           const raw = await session.request('probe', {}, { timeoutMs: PROBE_TIMEOUT_MS })
           return K8sRuntimeTableSchema.parse(raw)
         })
       } finally {
-        await driver.removeAgent(PROBE_AGENT_ID).catch((err: unknown) => {
+        await driver.removeAgent(runtimeProbeAgentId).catch((err: unknown) => {
           // A leaked probe sandbox costs a pod and a volume, so say so loudly rather than
           // letting it accumulate one per daemon restart.
           options.log?.warn(`k8s: probe sandbox teardown failed: ${(err as Error).message}`)
@@ -306,7 +317,6 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
       await driver.removeAgent(agentId)
     },
     stop: async () => {
-      driver.stopSandboxWatch()
       for (const timer of lossTimers.values()) clearTimeout(timer)
       lossTimers.clear()
       for (const { proxy } of proxies.values()) proxy.stop('daemon is shutting down')

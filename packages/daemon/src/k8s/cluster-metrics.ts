@@ -15,7 +15,7 @@ export type LaunchStage =
   | 'session_replay' // session/load replay
   | 'first_token' // first token of the first turn
 
-export type LaunchOutcome = 'ok' | 'timeout' | 'draining' | 'error'
+export type LaunchOutcome = 'ok' | 'timeout' | 'error'
 
 // Fixed daemon-authored reasons only. A rejection reason is the one thing a failing handshake
 // tells an operator, and a free-form string here would be both unbounded cardinality and a

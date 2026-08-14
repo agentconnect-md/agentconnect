@@ -131,10 +131,6 @@ export class SandboxApi {
     return this.http.json<Sandbox>({ method: 'GET', path: `${this.sandboxes()}/${name}` })
   }
 
-  watchSandboxes(options: Omit<WatchOptions, 'path'> = {}): AsyncGenerator<ResourceEvent<Sandbox>> {
-    return watchCollection<Sandbox>(this.http, { ...options, path: this.sandboxes() })
-  }
-
   /** Set a bound Sandbox's operating mode — the sleep/wake path.
    *  `observed` is mandatory: between reading a Sandbox and writing it, a message can
    *  wake an instance we decided to suspend (or the reverse), so every write tests the
