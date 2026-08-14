@@ -299,9 +299,38 @@ trials — at or above the historical baseline; the marker-formatted instruction
 ("answer with a single line starting …") plausibly biases the child further
 toward prose than the free-form delegations of the earlier measurements.
 
-A webchat Werewolf real run (`evals/test/webchat-werewolf-real.test.ts`) that
-stalls at a night is therefore a VALID result: the runner records `stalledAt`
-and the unanswered `needsReply` rows instead of failing.
+**Stage-2 real run — measured (2026-08-14, seed 1, 5 players).** One full
+webchat Werewolf game, real local Claude Code players, scripted puppet
+referee. Result: an HONEST STALL at night 1 — `stalledAt: phase=night round=1
+awaiting protect→player-5` — which is a valid result and precisely the
+pre-#905 baseline the run exists to demonstrate:
+
+- **8 of 9 `needsReply` calls were answered correctly** via
+  `sendMessage {sessionId}`: all five role acks, the wolf lead's kill
+  proposal ("We kill player-4 tonight."), the mediated wolf-B relay
+  ("I agree."), and the seer's inspection. The referee-mediated night-kill
+  leg worked END TO END with real models.
+- **The one lost reply stalled the whole game.** The doctor answered its
+  night call in PROSE ("I protect player-5 tonight." — a correct answer,
+  delivered to nobody), the referee was never woken again, and night 1 could
+  not resolve. One headless prose reply is all it takes.
+- **The #800 tool collision appeared on the way.** The doctor's ROLE turn
+  first attempted the runtime's built-in `SendMessage` three times (delivered
+  nowhere), recovered via `ToolSearch` to `mcp__agentconnect__sendMessage`,
+  and delivered its ack — then still lost the night reply to prose in the
+  SAME session two turns later.
+- **Why stage 2 lost 1/9 where stage 1 lost 9/9:** the role-delivery leg ran
+  first, so each night call landed in a pairwise session whose context
+  already contained one successful report-back. Session precedent strongly
+  mitigates the cold-call prose loss — and the loss still concentrates
+  exactly where the live game stalled.
+- Leak posture: `canaryLeaks: 0`; `privateReportsPostedPublicly: 8` — every
+  answered "private" report, the night kill included, was visible in the
+  conversation view (the #926 surface above).
+
+A stalled run is reported, never failed: the runner records `stalledAt` and
+the unanswered `needsReply` rows (`replyLoss`), and the artifacts carry the
+full event stream and referee prompts.
 
 ## 4. Reproducing every result
 
