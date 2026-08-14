@@ -91,7 +91,32 @@ async function boot(dutyEnforcement = true) {
   return { daemon, root, fetchDutyAgent }
 }
 
+/** A daemon with an admission held open at the `duty/fetch` round trip, so a withdrawal can land
+ *  inside the window between grant receipt and `applyGrant` — the gap this guard exists for. */
+async function bootMidAdmission() {
+  const daemon = new Daemon({ root: scaffold(true) })
+  await daemon.start()
+  let release!: () => void
+  const fetched = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const fetchDutyAgent = vi.fn(async () => {
+    await fetched
+    return { bundle: bundle() }
+  })
+  ;(daemon as any).cpClient = {
+    organizationScope: () => 'frame',
+    stop: async () => {},
+    releaseDuties: vi.fn(async () => {}),
+    fetchDutyAgent
+  }
+  const admitted = (daemon as any).admitDutyGrants([grant()]) as Promise<Set<string>>
+  await vi.waitFor(() => expect(fetchDutyAgent).toHaveBeenCalled())
+  return { daemon, admitted, release }
+}
+
 const duties = (d: Daemon) => (d as any).duties as DutyRegistry
+const pending = (d: Daemon): string[] => (d as any).pendingDutyAdmissions()
 const served = (d: Daemon): string[] => (d as any).transportAgents().map((a: { id: string }) => a.id)
 /** Fence the given groups, as the client's per-group deadline does when one elapses. */
 const fence = (d: Daemon, groupIds: string[] = [GROUP]) => (d as any).fenceDuties(groupIds)
@@ -248,6 +273,60 @@ describe('the duty self-fence', () => {
     expect(duties(daemon).digest()).toEqual([{ groupId: GROUP_B, term: '1' }])
     expect(served(daemon)).toContain(AGENT) // still covered by the group that did not expire
     expect((daemon as any).scheduler.count(AGENT)).toBe(1)
+    await daemon.stop()
+  })
+
+  it('a fence landing mid-admission stops that admission from ever starting service', async () => {
+    // Deadline tracking is synchronous, admission deliberately is not. Between grant receipt and
+    // `applyGrant` the group is not held, so there is nothing for the fence to shed — and without
+    // the withdrawal guard it would start serving the moment the admission completed.
+    const { daemon, admitted, release } = await bootMidAdmission()
+    expect(pending(daemon)).toEqual([GROUP])
+    expect(duties(daemon).digest()).toEqual([]) // not held yet: the gap
+
+    fence(daemon, [GROUP])
+    release()
+
+    expect([...(await admitted)]).toEqual([GROUP]) // refused
+    expect(duties(daemon).digest()).toEqual([])
+    expect(served(daemon)).not.toContain(AGENT)
+    expect(pending(daemon)).toEqual([]) // and nothing left marked either
+    await daemon.stop()
+  })
+
+  it('a revoke landing mid-admission refuses it the same way', async () => {
+    const { daemon, admitted, release } = await bootMidAdmission()
+
+    ;(daemon as any).applyDutyRevoke([{ groupId: GROUP, reason: 'superseded' }])
+    release()
+
+    expect([...(await admitted)]).toEqual([GROUP])
+    expect(duties(daemon).digest()).toEqual([])
+    expect(served(daemon)).not.toContain(AGENT)
+    await daemon.stop()
+  })
+
+  it('a drain release mid-admission refuses it, so nothing installs itself back after drain/done', async () => {
+    const { daemon, admitted, release } = await bootMidAdmission()
+
+    await (daemon as any).releaseAllDuties()
+    release()
+
+    expect([...(await admitted)]).toEqual([GROUP])
+    expect(duties(daemon).digest()).toEqual([])
+    expect(served(daemon)).not.toContain(AGENT)
+    await daemon.stop()
+  })
+
+  it('an admission no withdrawal touched still applies — the guard refuses nothing on its own', async () => {
+    const { daemon, admitted, release } = await bootMidAdmission()
+
+    release()
+
+    expect([...(await admitted)]).toEqual([])
+    expect(duties(daemon).digest()).toEqual([{ groupId: GROUP, term: '1' }])
+    expect(served(daemon)).toContain(AGENT)
+    expect(pending(daemon)).toEqual([])
     await daemon.stop()
   })
 

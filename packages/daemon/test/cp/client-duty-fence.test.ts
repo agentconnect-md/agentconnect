@@ -88,6 +88,8 @@ async function ready(opts: Options = {}) {
   const warn = vi.fn()
   // The daemon's authoritative held set, which the digest projects and a renewal refreshes.
   const held: string[] = [...(opts.held ?? [GROUP])]
+  // Admissions in flight: intended to be held, deliberately absent from the digest until applied.
+  const pending: string[] = []
   const deps = {
     url: 'wss://cp.example.test/daemon/ws',
     token: 't',
@@ -103,7 +105,10 @@ async function ready(opts: Options = {}) {
     activeSessions: () => 0,
     ...(opts.duties === false
       ? {}
-      : { duties: () => ({ held: held.map((groupId) => ({ groupId, term: '7' })), headroom: 3 }) }),
+      : {
+          duties: () => ({ held: held.map((groupId) => ({ groupId, term: '7' })), headroom: 3 }),
+          dutyPending: () => [...pending]
+        }),
     onDutyFence,
     configApply: {
       applyConfigPush() {},
@@ -167,7 +172,7 @@ async function ready(opts: Options = {}) {
     )
     await tick()
   }
-  return { client, link, clock, onDutyFence, warn, held }
+  return { client, link, clock, onDutyFence, warn, held, pending }
 }
 
 /** A `duty/grant` EVT for one group, as the CP emits it when it claims or re-terms a lease. */
@@ -455,6 +460,50 @@ describe('the duty self-fence deadline', () => {
     // The revoked group's earlier deadline is gone with it; only B is left to fence, at its own time.
     await advance(clock, FENCE_MS)
     expect(fenced(onDutyFence)).toEqual([[GROUP_B]])
+  })
+
+  it('a confirmation arriving mid-admission keeps the pending group’s deadline', async () => {
+    // A group being admitted is absent from the digest by design — it is not servable yet. Pruning
+    // its deadline against the digest is what would leave it serving with no fence at all once the
+    // admission commits, so "what we intend to hold" includes the admissions in flight.
+    const { link, clock, onDutyFence, held, pending } = await ready({ held: [] })
+    grant(link.current, GROUP)
+    pending.push(GROUP) // admission in flight: marked by the daemon, not yet in the digest
+    await tick()
+
+    await advance(clock, BEAT_MS)
+    confirmRenewal(link.current)
+    await tick()
+
+    // The admission commits: now it is held, and no longer pending.
+    const renewedAt = clock.now()
+    held.push(GROUP)
+    pending.length = 0
+    link.up = false
+    link.current.simulateClose(1006, 'gone')
+
+    // Its deadline survived the prune and moved with the renewal, so it still fences — on schedule.
+    await advance(clock, FENCE_MS - 1)
+    expect(onDutyFence).not.toHaveBeenCalled()
+    await advance(clock, 1)
+    expect(clock.now()).toBe(renewedAt + FENCE_MS)
+    expect(fenced(onDutyFence)).toEqual([[GROUP]])
+  })
+
+  it('a confirmation still prunes a group that is neither held nor being admitted', async () => {
+    const { link, clock, onDutyFence, held } = await ready({ held: [GROUP] })
+    grant(link.current, GROUP_B) // never admitted, never held — a refused group
+    await tick()
+
+    await advance(clock, BEAT_MS)
+    confirmRenewal(link.current)
+    await tick()
+
+    link.up = false
+    link.current.simulateClose(1006, 'gone')
+    await advance(clock, FENCE_MS)
+    expect(fenced(onDutyFence)).toEqual([[GROUP]]) // B's stale deadline is gone
+    expect(held).toEqual([GROUP])
   })
 
   it('never arms for a daemon that renews no lease', async () => {

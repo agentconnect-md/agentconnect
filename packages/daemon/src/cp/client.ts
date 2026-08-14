@@ -223,6 +223,9 @@ export interface CpClientDeps {
    *  an install-wide (frame-mode) connection; absent ⇒ this daemon does not
    *  participate in the ledger and the CP-side exchange stays dormant. */
   duties?: () => HeartbeatDuties | undefined
+  /** Groups whose admission is in flight — intended to be held, not yet in the digest. Their deadlines must
+   *  survive a renewal's prune: dropping one is exactly what would leave an admitted group with no fence. */
+  dutyPending?: () => string[]
   /** Duty self-fence: these groups' leases are about to go vacant at the CP, so stop serving them first. Called
    *  with the groups whose OWN deadline elapsed — never the whole held set — so a member sheds exactly what it
    *  can no longer prove it holds and keeps serving the rest. */
@@ -878,6 +881,9 @@ export class CpClient {
     }
     const rep = await this.request('duty/release', { groupIds })
     if (rep.type !== 'ack') throw new WireError('INTERNAL', `expected ack, got ${rep.type}`, false)
+    // Handed back, so their deadlines are not ours to run any more — and a released group must not
+    // sit in the map holding the timer earlier than a group this member still serves.
+    this.forgetLeaseDeadlines(groupIds)
   }
 
   /**
@@ -1241,11 +1247,16 @@ export class CpClient {
    *  filter, so one confirmation genuinely does refresh them all, and the per-group map collapses back to a single
    *  value after each one. It is also where the map is pruned: the daemon's digest is the authoritative held set. */
   private noteLeasesRenewed(): void {
-    const held = this.deps.duties?.()?.held ?? []
-    const stillHeld = new Set(held.map((entry) => entry.groupId))
-    for (const groupId of this.dutyDeadlines.keys()) if (!stillHeld.has(groupId)) this.dutyDeadlines.delete(groupId)
+    // "What we intend to hold" = the digest PLUS the admissions still in flight. A pending group is
+    // absent from the digest by design (it is not servable yet), and pruning its deadline here is what
+    // would leave it serving with no fence the moment its admission completes.
+    const ours = new Set([
+      ...(this.deps.duties?.()?.held ?? []).map((entry) => entry.groupId),
+      ...(this.deps.dutyPending?.() ?? [])
+    ])
+    for (const groupId of this.dutyDeadlines.keys()) if (!ours.has(groupId)) this.dutyDeadlines.delete(groupId)
     const now = this.deps.clock.now()
-    for (const entry of held) this.dutyDeadlines.set(entry.groupId, this.deadlineFrom(now))
+    for (const groupId of ours) this.dutyDeadlines.set(groupId, this.deadlineFrom(now))
     this.armDutyFence()
   }
 
