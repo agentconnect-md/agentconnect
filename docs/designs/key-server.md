@@ -74,10 +74,19 @@ the daemon does not have — a runtime switches models mid-session.
 An absolute expiry is only meaningful on the clock that produced it: the server
 stamps it after the request lands, so a caller subtracting its own request time
 measures the round trip as if it were granted validity, and any skew between the
-two clocks lands directly in the result. Durations remove both — the daemon
-starts the countdown when the response arrives, which is conservative by exactly
-the flight time, and the narrowing rule below becomes arithmetic on one scale
-rather than a comparison between two clocks.
+two clocks lands directly in the result. Durations remove both, and the narrowing
+rule below becomes arithmetic on one scale rather than a comparison between two
+clocks.
+
+The server measures its durations from the instant it issued the credential.
+**The daemon, which cannot observe that instant, anchors them at its own
+request-send time** — read from a monotonic clock, so a local time adjustment
+cannot move a deadline already in flight. The request necessarily left at or
+before issuance, so every deadline derived this way is at or before the real one:
+the daemon expires and refreshes early by the request's flight time plus whatever
+the server spent, and never late. Anchoring at response receipt would invert
+this, putting the daemon's deadline a full round trip _past_ the issuer's and
+overstating the degradation window by the same amount.
 
 `ttlSeconds` is the caller's desired validity; absent means it asks for a
 **long-lived key** it will manage explicitly. The server may only narrow:
@@ -139,8 +148,9 @@ suspended", never as a generic internal error:
 | `unauthorized`  | 401  | Credential problem between daemon and key server; operator-facing.     |
 | `unavailable`   | 503  | Enter the degradation window below; retry with backoff.                |
 
-**Degradation window.** An issued credential stays valid for its granted
-`expiresInSeconds` even when the key server is unreachable — the TTL is the
+**Degradation window.** An issued credential stays usable for its granted
+`expiresInSeconds` from the anchor of §3 — never longer, since that anchor
+precedes issuance — even when the key server is unreachable. The TTL is the
 contractual answer to
 "how long do sessions keep working through an issuer outage", and implementations
 size it as the tradeoff between revocation latency and outage tolerance. Only

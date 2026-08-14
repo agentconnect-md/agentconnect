@@ -52,12 +52,13 @@ export const IssueKeyResponse = z
     // Atomic with `key` — inject both or neither. Absent ⇒ the daemon falls
     // through to its next base-URL layer (static config, then runtime default).
     baseUrl: z.string().url().optional(),
-    // Validity as a DURATION, measured from when the server issued it, for the same
-    // reason the request states one: an absolute instant would be the server's clock,
-    // and every reader of it would be a different one. The daemon starts the countdown
-    // at receipt, which is conservative by exactly the response's flight time. Absent
-    // ⇒ long-lived: no refresh loop, ended by RevokeKey or superseded by the re-fetch
-    // every new session performs.
+    // Validity as a DURATION from the server's issuance instant, for the same reason the
+    // request states one: an absolute instant would be the server's clock, and every reader
+    // of it would be a different one. The daemon cannot observe that instant, so it anchors
+    // the countdown at its own request-send time — necessarily at or before issuance, hence
+    // a deadline no later than the real one. Anchoring at receipt would instead overshoot by
+    // the response's flight time. Absent ⇒ long-lived: no refresh loop, ended by RevokeKey
+    // or superseded by the re-fetch every new session performs.
     expiresInSeconds: z.number().int().positive().optional(),
     // Renew-from hint on the same scale; meaningless without an expiry, so it needs one.
     refreshInSeconds: z.number().int().positive().optional()
