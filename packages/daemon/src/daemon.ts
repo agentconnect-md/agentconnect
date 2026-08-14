@@ -363,6 +363,7 @@ import { memoryChannelKey } from './agents/memory.js'
 import { createWorkspaceGit } from './cp/workspace-git.js'
 import { DAEMON_VERSION } from './version.js'
 import { CpCronRegistry } from './cp/cp-cron.js'
+import { DutyRegistry } from './cp/duty-registry.js'
 import { CpAgentRegistry } from './cp/cp-agent-registry.js'
 import {
   agentRemovalTombstones,
@@ -493,7 +494,10 @@ import type {
   ExternalSessionOrigin,
   ChannelAgentsOk,
   TaskList,
-  TaskListReq
+  TaskListReq,
+  DutyGrantEntry,
+  DutyRevoke,
+  HeartbeatDuties
 } from '@agentconnect.md/protocol'
 
 /** Format an error for logs, surfacing a JSON-RPC/ACP RequestError's `code` and
@@ -2127,6 +2131,10 @@ export class Daemon {
   // Discord/Telegram channel id → display-name resolver (Slack learns names in bulk
   // from its membership snapshot instead — see refreshChannels). Created in start().
   private channelNameResolver?: ChannelNameResolver
+  // Duty leases this daemon holds (k8s pools; cp/duty-registry.ts). Populated
+  // only on an install-wide connection — empty on a single-org daemon, which is
+  // what keeps the whole path dormant there.
+  private readonly duties = new DutyRegistry()
   private scheduler!: Scheduler
   private dreamScheduler!: DreamScheduler
   private sessions!: SessionManager
@@ -2481,6 +2489,13 @@ export class Daemon {
    *  (virtual) integrations are excluded so consolidation/reconcile never opens a
    *  real socket for them — and never evicts the installed virtual connections. */
   private transportAgents(agents: LoadedAgent[] = [...this.agents.values()]): LoadedAgent[] {
+    // Duty gate: on a pooled daemon only the agents whose group this member
+    // holds get physical connections — every consolidator derives from here, so
+    // opening and closing sockets on a grant/revoke needs no other change.
+    if (this.dutyEnforced()) {
+      const held = this.duties.agents()
+      agents = agents.filter((agent) => held.has(agent.id))
+    }
     if (this.evaluationIntegrationIds.size === 0) return agents
     return agents.map((agent) =>
       agent.integrations.some((integration) => this.evaluationIntegrationIds.has(integration.id))
@@ -3604,8 +3619,7 @@ export class Daemon {
     )
 
     // register crons (sync per agent — the same converge reconcile re-runs on change)
-    for (const a of agents) this.scheduler.sync(a.id, a.crons)
-    for (const a of agents) this.dreamScheduler.sync(a.id, this.dreamSchedulePolicyFor(a))
+    for (const a of agents) this.syncAgentSchedules(a)
     const cronCount = agents.reduce((n, a) => n + this.scheduler.count(a.id), 0)
     if (cronCount) this.log.info(`registered ${cronCount} cron(s)`)
 
@@ -3890,8 +3904,7 @@ export class Daemon {
       if (!wasPaused && a.pause) this.interruptAgentTurns(a.id, 'pause')
       // crons live in the whole-agent signature, so any change re-syncs the agent's
       // job set (design §5.2: crons change → Scheduler upsert/remove). Idempotent.
-      this.scheduler.sync(a.id, a.crons)
-      this.dreamScheduler.sync(a.id, this.dreamSchedulePolicyFor(a))
+      this.syncAgentSchedules(a)
       // host-spawn or workspace change → evict the cached host (once) so the next
       // session lazily re-spawns it with fresh env and/or re-materializes cwd via
       // prepareWorkspace. Soft-only and integration-only changes never touch the host.
@@ -3942,8 +3955,7 @@ export class Daemon {
       // New agent: warm its git-repo checkout in the background now (e.g. on daemon
       // start every agent is a toStart), so the repo is cloned ahead of the first message.
       this.prefetchClone(a as LoadedAgent)
-      this.scheduler.sync(a.id, a.crons)
-      this.dreamScheduler.sync(a.id, this.dreamSchedulePolicyFor(a))
+      this.syncAgentSchedules(a)
     }
     // Reconcile exactly once from the final live roster. The close phase is strict:
     // detach ACKs only after last-reference connections have actually stopped.
@@ -12592,6 +12604,70 @@ export class Daemon {
    * Slack integration. (CP agent specs are now written to disk and create a
    * runnable agent.json, so they no longer contribute a "no base" degraded scope.)
    */
+  /** The heartbeat's lease fields: what this daemon holds, and how many more
+   *  groups it will accept. Capacity is the daemon's own call (design D14). */
+  private dutyDigest(): HeartbeatDuties {
+    const max = this.cfg?.limits?.maxAgents ?? 0
+    const covered = this.duties.agents().size
+    return { held: this.duties.digest(), headroom: max > 0 ? Math.max(0, max - covered) : 32 }
+  }
+
+  /** True when duty leases actually gate service. Off (the default) the exchange
+   *  still runs and the registry still tracks — only enforcement is withheld. */
+  private dutyEnforced(): boolean {
+    // `cfg` lands in start(); transportAgents can run before that in tests.
+    return this.cfg?.features?.dutyEnforcement === true && this.cpClient?.organizationScope() === 'frame'
+  }
+
+  /** Apply a `duty/grant` EVT: bookkeeping first, then converge what we serve. */
+  private applyDutyGrant(grants: DutyGrantEntry[]): void {
+    const result = this.duties.applyGrant(grants)
+    this.log.info(
+      `duty: granted ${result.added.length} + re-granted ${result.updated.length} group(s); ` +
+        `holding ${this.duties.size()} covering ${this.duties.agents().size} agent(s)`
+    )
+    if (result.agentsGained.length > 0 || result.added.length > 0) this.onDutyChanged()
+  }
+
+  /** Apply a `duty/revoke` EVT. Losing a duty is NOT a removal: the agent's
+   *  workspace, sessions, and registry entry all survive — only the platform
+   *  connections and schedules this daemon was running for it stop. */
+  private applyDutyRevoke(revocations: DutyRevoke['revocations']): void {
+    const result = this.duties.applyRevoke(revocations)
+    this.log.info(
+      `duty: revoked ${revocations.length} group(s) (${revocations.map((r) => r.reason).join(',')}); ` +
+        `${result.agentsLost.length} agent(s) left service`
+    )
+    for (const agentId of result.agentsLost) this.stopServingAgent(agentId)
+    this.onDutyChanged()
+  }
+
+  /** Re-derive platform connections and schedules from the new duty set. */
+  private onDutyChanged(): void {
+    if (!this.dutyEnforced()) return
+    for (const agent of this.agents.values()) this.syncAgentSchedules(agent)
+    void this.reconcile().catch((err) => this.log.warn(`duty: reconcile after a duty change failed: ${err}`))
+  }
+
+  /** Arm this agent's cron + dream schedules, or disarm them when its duty lives
+   *  elsewhere — a cron is an ingress edge, so it fires only at the holder. */
+  private syncAgentSchedules(a: { id: string; crons: CronDef[]; memory?: Agent['memory'] }): void {
+    const serve = !this.dutyEnforced() || this.duties.holdsAgent(a.id)
+    this.scheduler.sync(a.id, serve ? a.crons : [])
+    this.dreamScheduler.sync(a.id, serve ? this.dreamSchedulePolicyFor(a) : undefined)
+  }
+
+  /** Stop serving one agent because its duty moved — the light teardown: no
+   *  workspace deletion, no removal tombstone, no CP-drop latch, so a re-grant
+   *  needs nothing from the CP to revive it. */
+  private stopServingAgent(agentId: string): void {
+    if (!this.dutyEnforced()) return
+    this.interruptAgentTurns(agentId, 'stop')
+    this.scheduler.unregister(agentId)
+    this.dreamScheduler.unregister(agentId)
+    void this.stopHost(agentId).catch((err) => this.log.warn(`duty: stopping host for ${agentId} failed: ${err}`))
+  }
+
   private cpDegradedScopes(): string[] {
     const out = new Set<string>()
     for (const cpRule of this.cpRouting?.effectiveRules() ?? []) {
@@ -19070,8 +19146,24 @@ export class Daemon {
     } else {
       released = drained
     }
+    // Whole-daemon drain surrenders the duty leases too: the CP can re-grant
+    // them to a survivor immediately instead of waiting out the reassign window.
+    if (drain.scope.kind === 'daemon') await this.releaseAllDuties()
     this.log.info(`drain[${drain.scope.kind}]: done — released ${released.length} session(s)`)
     return { released }
+  }
+
+  /** Hand every held duty back to the CP. Best-effort by contract — on failure
+   *  the leases simply lapse, which is the same outcome one T_reassign later. */
+  private async releaseAllDuties(): Promise<void> {
+    const groupIds = this.duties.releaseAll()
+    if (groupIds.length === 0) return
+    try {
+      await this.cpClient?.releaseDuties(groupIds)
+      this.log.info(`duty: released ${groupIds.length} group(s) on drain`)
+    } catch (err) {
+      this.log.warn(`duty: releasing ${groupIds.length} group(s) failed (leases will lapse): ${err}`)
+    }
   }
 
   /** `agent/stop` (§8.2): drain the agent's in-flight turns, stop its host, and
@@ -19766,6 +19858,8 @@ export class Daemon {
         if (applied.length) this.log.info(`cp: applied config keys: ${applied.join(', ')}`)
         if (ignored.length) this.log.warn(`cp: ignored config keys: ${ignored.join(', ')}`)
       },
+      applyDutyGrant: (grants) => this.applyDutyGrant(grants),
+      applyDutyRevoke: (revocations) => this.applyDutyRevoke(revocations),
       applyReconcileSnapshot: async (snap: RegisterOk) => {
         this.gitCommitIdentity = snap.gitCommitIdentity
         // Console-set finished-session retention — the reconnect baseline for the
@@ -20931,6 +21025,7 @@ export class Daemon {
         return agentId ? (this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId)) : undefined
       },
       degradedScopes: () => this.cpDegradedScopes(),
+      duties: () => this.dutyDigest(),
       configApply: this.cpConfigApply(),
       sessionRead: createSessionReader(
         this.store,

@@ -34,7 +34,9 @@ import type {
   AgentPermissionRequestList,
   AgentPermissionRequestPage,
   AgentPermissionDecision,
-  SessionVisibilityPush
+  SessionVisibilityPush,
+  DutyGrantEntry,
+  DutyRevoke
 } from '@agentconnect.md/protocol'
 import { SESSION_RETENTION_RE } from '@agentconnect.md/protocol'
 import type { Config } from '../config/config-schema.js'
@@ -42,6 +44,12 @@ import type { Config } from '../config/config-schema.js'
 export interface ConfigApply {
   /** Merge whitelisted non-secret config keys (config/push EVT). */
   applyConfigPush(keys: Record<string, unknown>): void
+  /** Duty groups granted to (or re-confirmed for) this daemon — an entry
+   *  REPLACES its group (frames/duty.ts). Fire-and-forget EVT. */
+  applyDutyGrant(grants: DutyGrantEntry[]): void
+  /** Duty groups taken away: stop serving them and drop their platform
+   *  connections. Never a workspace teardown — the agent may be re-granted. */
+  applyDutyRevoke(revocations: DutyRevoke['revocations']): void
   /** Converge crons + agent specs (+ record leases) from the register/ok reconcile snapshot. */
   applyReconcileSnapshot(snap: RegisterOk): void | Promise<void>
   /** Apply a memory-only CP agent spec and resolve after live reconcile converges. */
