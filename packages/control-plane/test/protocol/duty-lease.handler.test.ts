@@ -2,7 +2,7 @@
 // `duties` field renews held groups and is answered — only when there is
 // something to say — with duty/grant and duty/revoke EVTs; duty/release
 // vacates explicitly. A heartbeat without `duties` keeps the path dormant.
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { isFrame } from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
 import { buildWsHarness } from '../fakes/build-ws.js'
@@ -272,5 +272,60 @@ describe('duty lease exchange — scope gate and allocation coherence', () => {
     ])
     await new Promise((r) => setTimeout(r, 25))
     expect(stub.sent.filter((f) => f.type === 'duty/revoke')).toEqual([])
+  })
+})
+
+describe('duty lease exchange — wire safety', () => {
+  it('reconnect regrants are chunked so no duty/grant frame exceeds the emission budget', async () => {
+    const h = buildWsHarness(prisma, { dutyLease: { grantsPerFrame: 2 } })
+    const start = new Date(h.clock.now())
+    const horizon = new Date(start.getTime() + LEASE_MS)
+    for (let i = 0; i < 3; i++) {
+      const gid = `00000000-0000-4000-8000-00000000001${i}`
+      await prisma.dutyGroup.create({
+        data: { id: gid, orgId: DEFAULT_ORG_ID, holder: DAEMON, term: 1n, expiresAt: horizon }
+      })
+      await prisma.dutyGroupMember.create({
+        data: { kind: 'agent', refId: `aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa1${i}`, groupId: gid, orgId: DEFAULT_ORG_ID }
+      })
+    }
+    const { stub } = await ready(h)
+
+    stub.inject('heartbeat', heartbeat({ held: [], headroom: 3 }))
+    const first = await stub.expectFrame('duty/grant')
+    if (!isFrame('duty/grant')(first)) throw new Error('expected duty/grant')
+    await vi.waitFor(() => {
+      const frames = stub.sent.filter((f) => f.type === 'duty/grant')
+      expect(frames).toHaveLength(2)
+    })
+    const sizes = stub.sent
+      .filter((f) => f.type === 'duty/grant')
+      .map((f) => (f.payload as { grants: unknown[] }).grants.length)
+      .sort()
+    expect(sizes).toEqual([1, 2])
+  })
+
+  it('an overlapping beat cannot double-spend headroom (single-flight per daemon)', async () => {
+    // Two vacant groups, headroom 1: back-to-back beats dispatched without
+    // awaiting must yield at most one grant — the second beat is dropped.
+    await seedGroup()
+    await prisma.dutyGroup.create({ data: { id: GROUP2, orgId: DEFAULT_ORG_ID, term: 0n } })
+    await prisma.dutyGroupMember.create({
+      data: { kind: 'agent', refId: AGENT2, groupId: GROUP2, orgId: DEFAULT_ORG_ID }
+    })
+    const h = buildWsHarness(prisma)
+    const { stub } = await ready(h)
+
+    stub.inject('heartbeat', heartbeat({ held: [], headroom: 1 }))
+    stub.inject('heartbeat', heartbeat({ held: [], headroom: 1 }))
+    await stub.expectFrame('duty/grant')
+    await new Promise((r) => setTimeout(r, 50))
+
+    const grantedTotal = stub.sent
+      .filter((f) => f.type === 'duty/grant')
+      .reduce((n, f) => n + (f.payload as { grants: unknown[] }).grants.length, 0)
+    expect(grantedTotal).toBe(1)
+    const holders = await prisma.dutyGroup.findMany({ where: { holder: DAEMON } })
+    expect(holders).toHaveLength(1)
   })
 })

@@ -16,12 +16,22 @@ export interface DutyLeaseConfig {
   recoveryGraceMs: number
   /** Cap on fresh vacancy grants per heartbeat, under the member's headroom. */
   grantMaxPerTick: number
+  /** Emission chunking: entries per duty/grant frame (schema caps at 100) and a
+   *  member-ref budget per frame, so a reconnect restoring hundreds of groups
+   *  never assembles one frame the daemon must reject on size. */
+  grantsPerFrame: number
+  grantMembersPerFrame: number
+  /** Revocations per duty/revoke frame (schema caps at 1000). */
+  revocationsPerFrame: number
 }
 
 export const DUTY_LEASE_DEFAULTS: DutyLeaseConfig = {
   leaseMs: 120_000,
   recoveryGraceMs: 120_000,
-  grantMaxPerTick: 32
+  grantMaxPerTick: 32,
+  grantsPerFrame: 50,
+  grantMembersPerFrame: 2000,
+  revocationsPerFrame: 500
 }
 
 type Send = (type: 'duty/grant' | 'duty/revoke', payload: unknown) => void
@@ -30,8 +40,29 @@ function toGrantEntry(g: Pick<DutyGrantRecord, 'groupId' | 'orgId' | 'term' | 'm
   return { groupId: g.groupId, orgId: g.orgId, term: String(g.term), members: g.members }
 }
 
+/** Split by entry count AND total member refs; an oversized group rides alone. */
+function chunkGrants(grants: DutyGrantEntry[], perFrame: number, membersPerFrame: number): DutyGrantEntry[][] {
+  const chunks: DutyGrantEntry[][] = []
+  let current: DutyGrantEntry[] = []
+  let members = 0
+  for (const g of grants) {
+    if (current.length > 0 && (current.length >= perFrame || members + g.members.length > membersPerFrame)) {
+      chunks.push(current)
+      current = []
+      members = 0
+    }
+    current.push(g)
+    members += g.members.length
+  }
+  if (current.length > 0) chunks.push(current)
+  return chunks
+}
+
 export class DutyLeaseService {
   private readonly bootedAtMs: number
+  /** Per-daemon single-flight: handlers dispatch without awaiting, so an
+   *  overlapping beat must not spend the same reported headroom twice. */
+  private readonly inFlight = new Set<string>()
 
   constructor(
     private readonly repo: DutyGroupRepo,
@@ -41,8 +72,20 @@ export class DutyLeaseService {
     this.bootedAtMs = clock.now()
   }
 
-  /** The full per-heartbeat exchange. `send` emits on the reporting connection. */
+  /** The full per-heartbeat exchange. `send` emits on the reporting connection.
+   *  A beat arriving while this daemon's previous exchange is still running is
+   *  dropped — the next beat re-runs the whole idempotent diff anyway. */
   async onHeartbeat(daemonId: DaemonId, duties: HeartbeatDuties, send: Send): Promise<void> {
+    if (this.inFlight.has(daemonId)) return
+    this.inFlight.add(daemonId)
+    try {
+      await this.exchange(daemonId, duties, send)
+    } finally {
+      this.inFlight.delete(daemonId)
+    }
+  }
+
+  private async exchange(daemonId: DaemonId, duties: HeartbeatDuties, send: Send): Promise<void> {
     const now = new Date(this.clock.now())
     await this.repo.renewHeld(daemonId, now, this.config.leaseMs)
     const held = await this.repo.listHeldBy(daemonId)
@@ -83,9 +126,16 @@ export class DutyLeaseService {
         revocations.push({ groupId: d.groupId, reason: existing.has(d.groupId) ? 'superseded' : 'gone' })
     }
 
+    // Chunked emission: each chunk is independently applicable (a grant entry
+    // REPLACES its group), so a reconnect restoring hundreds of groups converges
+    // over several frames instead of assembling one the daemon must reject.
     const grants = [...missing.map(toGrantEntry), ...stale.map(toGrantEntry), ...granted.map(toGrantEntry)]
-    if (grants.length > 0) send('duty/grant', { grants })
-    if (revocations.length > 0) send('duty/revoke', { revocations })
+    for (const chunk of chunkGrants(grants, this.config.grantsPerFrame, this.config.grantMembersPerFrame)) {
+      send('duty/grant', { grants: chunk })
+    }
+    for (let i = 0; i < revocations.length; i += this.config.revocationsPerFrame) {
+      send('duty/revoke', { revocations: revocations.slice(i, i + this.config.revocationsPerFrame) })
+    }
   }
 
   /** Explicit drain release — vacate now instead of waiting out T_reassign. */

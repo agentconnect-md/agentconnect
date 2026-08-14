@@ -194,7 +194,10 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
   const dutyLease = new DutyLeaseService(new PgDutyGroupRepo(prisma), clock, {
     leaseMs: opts.dutyLease?.leaseMs ?? 120_000,
     recoveryGraceMs: opts.dutyLease?.recoveryGraceMs ?? 0,
-    grantMaxPerTick: opts.dutyLease?.grantMaxPerTick ?? 32
+    grantMaxPerTick: opts.dutyLease?.grantMaxPerTick ?? 32,
+    grantsPerFrame: opts.dutyLease?.grantsPerFrame ?? 50,
+    grantMembersPerFrame: opts.dutyLease?.grantMembersPerFrame ?? 2000,
+    revocationsPerFrame: opts.dutyLease?.revocationsPerFrame ?? 500
   })
 
   const deps: DaemonWsDeps = {
