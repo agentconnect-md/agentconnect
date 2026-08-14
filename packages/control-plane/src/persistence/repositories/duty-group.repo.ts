@@ -8,21 +8,32 @@ import type { AgentHomeClaim, DutyGrantRecord, DutyGroupRecord, DutyGroupRepo, D
 import type { AgentId, DaemonId, OrgId } from '../../domain/ids.js'
 import { withTx } from '../prisma.js'
 
-// One recompute at a time per org: plan-then-apply reads its own snapshot, so
-// two concurrent recomputes of the same org must serialize, CP-instance-wide.
+// Serializes the writers that CREATE or REWRITE rows for an org (applyReconcile
+// and claimAgentHome) — row locks cannot fence rows that do not exist yet.
 async function lockOrgDutyScope(tx: Prisma.TransactionClient, orgId: string): Promise<void> {
   const key = JSON.stringify(['duty-group-recompute', orgId])
   await tx.$queryRaw(Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0)) IS NULL AS "locked"`)
 }
 
-// Serializes racing first-trigger claims for one agent; the write itself stays
-// vacancy-conditional because claimVacant grants under row locks, not this one.
-async function lockAgentHomeScope(tx: Prisma.TransactionClient, agentId: string): Promise<void> {
-  const key = JSON.stringify(['duty-agent-home', agentId])
-  await tx.$queryRaw(Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0)) IS NULL AS "locked"`)
+type Row = { id: string; orgId: string; holder: string | null; term: bigint; expiresAt: Date | null }
+
+// Row-locked snapshot: FOR UPDATE fences the lease writers the advisory scope
+// does not cover (claimVacant/renewHeld/release), so a plan can never be applied
+// over rows a concurrent grant has moved; SKIP LOCKED claimants simply pass by.
+async function lockOrgDutyRows(tx: Prisma.TransactionClient, orgId: string): Promise<Row[]> {
+  return tx.$queryRaw<Row[]>(Prisma.sql`
+    SELECT id, "orgId", "holder", "term", "expiresAt" FROM "duty_group"
+    WHERE "orgId" = ${orgId} ORDER BY id FOR UPDATE
+  `)
 }
 
-type Row = { id: string; orgId: string; holder: string | null; term: bigint; expiresAt: Date | null }
+async function lockDutyRow(tx: Prisma.TransactionClient, groupId: string): Promise<Row | null> {
+  const rows = await tx.$queryRaw<Row[]>(Prisma.sql`
+    SELECT id, "orgId", "holder", "term", "expiresAt" FROM "duty_group"
+    WHERE id = ${groupId}::uuid FOR UPDATE
+  `)
+  return rows[0] ?? null
+}
 
 async function loadMembers(
   db: Prisma.TransactionClient | PrismaClient,
@@ -84,7 +95,7 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
   ): Promise<DutyReconcilePlan> {
     return withTx(this.prisma, async (tx) => {
       await lockOrgDutyScope(tx, orgId)
-      const rows = await tx.dutyGroup.findMany({ where: { orgId }, orderBy: { id: 'asc' } })
+      const rows = await lockOrgDutyRows(tx, orgId)
       const members = await loadMembers(
         tx,
         rows.map((r) => r.id)
@@ -193,7 +204,9 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
   ): Promise<AgentHomeClaim> {
     const expiresAt = new Date(now.getTime() + leaseMs)
     return withTx(this.prisma, async (tx) => {
-      await lockAgentHomeScope(tx, agentId)
+      // Org scope fences row creation against applyReconcile; the FOR UPDATE row
+      // lock below fences the lease against claimVacant/renewHeld/release.
+      await lockOrgDutyScope(tx, orgId)
       const member = await tx.dutyGroupMember.findUnique({ where: { kind_refId: { kind: 'agent', refId: agentId } } })
       if (!member) {
         // Claiming creates the lease: the first trigger for a botless agent.
@@ -202,26 +215,39 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
         await tx.dutyGroupMember.create({ data: { kind: 'agent', refId: agentId, groupId, orgId } })
         return { granted: true, groupId, term: 1n, holder }
       }
-      const row = await tx.dutyGroup.findUniqueOrThrow({ where: { id: member.groupId } })
+      const row = await lockDutyRow(tx, member.groupId)
+      if (row === null) throw new Error(`duty group ${member.groupId} vanished under its member row`)
       const live = row.holder !== null && row.expiresAt !== null && row.expiresAt > now
       if (live && row.holder === holder) {
-        // Idempotent re-claim: refresh the horizon, never churn the term.
-        await tx.dutyGroup.update({ where: { id: row.id }, data: { expiresAt } })
-        return { granted: true, groupId: row.id, term: row.term, holder }
+        // Idempotent re-claim: refresh the horizon, never churn the term. CAS on
+        // (holder, term) besides the row lock, so a moved lease can never be
+        // extended by a stale reader; a miss falls through to report the row as
+        // it now stands.
+        const refreshed = await tx.dutyGroup.updateMany({
+          where: { id: row.id, holder, term: row.term },
+          data: { expiresAt }
+        })
+        if (refreshed.count === 1) return { granted: true, groupId: row.id, term: row.term, holder }
+      } else if (live) {
+        return { granted: false, groupId: row.id, term: row.term, holder: row.holder as DaemonId }
+      } else {
+        // Vacancy re-asserted in the write despite the row lock — belt and braces.
+        const won = await tx.dutyGroup.updateMany({
+          where: {
+            id: row.id,
+            OR: [{ holder: null }, { expiresAt: null }, { expiresAt: { lt: now } }]
+          },
+          data: { holder, term: { increment: 1 }, expiresAt }
+        })
+        if (won.count === 1) {
+          const granted = await tx.dutyGroup.findUniqueOrThrow({ where: { id: row.id } })
+          return { granted: true, groupId: granted.id, term: granted.term, holder }
+        }
       }
-      if (live) return { granted: false, groupId: row.id, term: row.term, holder: row.holder as DaemonId }
-      // Vacancy-conditional even under the advisory lock: claimVacant grants
-      // under row locks, not this scope, so re-assert vacancy in the write.
-      const won = await tx.dutyGroup.updateMany({
-        where: {
-          id: row.id,
-          OR: [{ holder: null }, { expiresAt: null }, { expiresAt: { lt: now } }]
-        },
-        data: { holder, term: { increment: 1 }, expiresAt }
-      })
       const after = await tx.dutyGroup.findUniqueOrThrow({ where: { id: row.id } })
+      const stillMine = after.holder === holder && after.expiresAt !== null && after.expiresAt > now
       return {
-        granted: won.count === 1,
+        granted: stillMine,
         groupId: after.id,
         term: after.term,
         holder: after.holder as DaemonId | null

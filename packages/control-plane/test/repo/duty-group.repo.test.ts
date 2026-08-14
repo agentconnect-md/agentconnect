@@ -193,6 +193,21 @@ describe('DutyGroupRepo — ledger writes (real Postgres)', () => {
     expect(await repo.listForOrg(ORG)).toEqual([])
   })
 
+  it('a grant racing a reconcile is never silently destroyed', async () => {
+    // The reconcile deletes the group (its edges vanished). Whichever side
+    // commits first, the outcome must be coherent: a claimant that won the
+    // grant must be named superseded by the plan; a claimant that skipped the
+    // reconcile-locked row must get nothing and the plan supersedes nobody.
+    const repo = new PgDutyGroupRepo(prisma, minter())
+    await reconcile(repo, [{ agentId: A1, botId: B1 }], [], T0)
+
+    const [grants, plan] = await Promise.all([repo.claimVacant(M1, 1, T0, LEASE_MS), reconcile(repo, [], [], after(1))])
+    expect(plan.deletes).toHaveLength(1)
+    if (grants.length === 1) expect(plan.superseded).toEqual([{ groupId: grants[0]!.groupId, holder: M1 }])
+    else expect(plan.superseded).toEqual([])
+    expect(await repo.listForOrg(ORG)).toEqual([])
+  })
+
   it('reconcile leaves an unchanged held group untouched (no term churn)', async () => {
     const repo = new PgDutyGroupRepo(prisma, minter())
     await reconcile(repo, [{ agentId: A1, botId: B1 }], [], T0)
