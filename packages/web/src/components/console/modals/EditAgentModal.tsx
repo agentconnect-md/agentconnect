@@ -23,6 +23,7 @@ import {
   selectedPermissionPreset,
   supportsModes,
   agentLabel,
+  CLOUD_DAEMON_LABEL,
   type Agent,
   type AgentCallPolicy,
   type ApprovalsReviewer
@@ -34,7 +35,9 @@ import { useOrgs } from '@/lib/org-context'
 import { buildAgentReachabilityGraph } from '@/lib/agent-reachability'
 import { Spinner } from '@/components/marks'
 import { Button, Icon, Toggle } from '@/components/ui'
+import { DaemonSelect, type DaemonSelectOption } from '@/components/console/DaemonSelect'
 import { RuntimeSelect } from '@/components/console/RuntimeSelect'
+import { editAgentDaemonChoices } from './edit-agent-daemon-choice'
 import { VisibilityField, sameSharing, type SharingValue } from '@/components/console/VisibilityField'
 import { AgentCallVisibility } from '@/components/console/AgentCallVisibility'
 import {
@@ -221,15 +224,12 @@ export default function EditAgentModal({
     )
   }, [agent.id])
 
-  // An unplaced agent (the built-in `agentconnect` preset ships this way) defaults its
-  // daemon to the first placement-eligible one, so opening the editor to place it starts
-  // on that daemon instead of an empty picker when a daemon already exists. `initialDaemonId`
-  // stays '' so this reads as an initial placement (arms Save + requires runtime/model).
-  // One-shot: the user can still switch it back to "No daemon".
+  // An unplaced agent defaults to Cloud, then the first placement-ready local daemon.
   const autofilledDaemon = useRef(false)
   useEffect(() => {
     if (!loaded || autofilledDaemon.current || initialDaemonId.current || daemonId) return
-    const target = daemons.find((d) => d.status === 'online' && d.caps.features.includes('agent-move-v1'))
+    const ready = (d: (typeof daemons)[number]) => d.status === 'online' && d.caps.features.includes('agent-move-v1')
+    const target = daemons.find((d) => d.cloud && ready(d)) ?? daemons.find(ready)
     if (target) {
       autofilledDaemon.current = true
       setDaemonId(target.daemonId)
@@ -289,16 +289,6 @@ export default function EditAgentModal({
     return () => el.removeEventListener('scroll', sync)
   }, [loaded])
 
-  // Placement choices are operational: only a READY daemon that advertises the
-  // acknowledged move protocol can become a new target. The current daemon
-  // stays selectable even when it has gone offline (selecting it is a no-op), and
-  // a hidden/deleted current daemon gets a synthetic option instead of silently
-  // falling back to the first visible machine.
-  const sortedDaemons = [...daemons].sort((a, b) => {
-    const score = (d: (typeof daemons)[number]) =>
-      Number(d.status === 'online') * 2 + Number(d.caps.features.includes('agent-move-v1'))
-    return score(b) - score(a)
-  })
   const daemon = daemons.find((d) => d.daemonId === daemonId)
   const sourceDaemon = daemons.find((d) => d.daemonId === initialDaemonId.current)
   const daemonChanged = daemonId !== initialDaemonId.current
@@ -317,7 +307,56 @@ export default function EditAgentModal({
   const effectiveRunInSandbox = selectedSandboxRequired || (selectedSandboxSupported && runInSandbox)
   const moveReady = (d: (typeof daemons)[number] | undefined) =>
     !!d && d.status === 'online' && d.caps.features.includes('agent-move-v1')
-  const daemonLabel = daemon?.name ?? (daemonId ? `Current daemon (${daemonId.slice(0, 8)})` : 'No daemon')
+  const daemonChoices = editAgentDaemonChoices(daemons, daemonId, initialDaemonId.current)
+  const cloudServing = daemons.some((candidate) => candidate.cloud && moveReady(candidate))
+  const daemonOptions: DaemonSelectOption[] = [
+    ...(daemonChoices.cloudChoice
+      ? [
+          {
+            value: daemonChoices.cloudChoice.daemonId,
+            label: CLOUD_DAEMON_LABEL,
+            detail: cloudServing ? 'Model usage included — no API key needed.' : 'Cloud is currently unavailable.',
+            cloud: true,
+            disabled:
+              daemonChoices.cloudChoice.daemonId !== initialDaemonId.current && !moveReady(daemonChoices.cloudChoice)
+          }
+        ]
+      : []),
+    ...(daemonChoices.currentCloudChoice
+      ? [
+          {
+            value: daemonChoices.currentCloudChoice.daemonId,
+            label: 'Current placement',
+            detail: 'Currently on an unavailable Cloud node — select Cloud above to recover.'
+          }
+        ]
+      : []),
+    ...(!initialDaemonId.current ? [{ value: '', label: 'No daemon', detail: 'Leave this agent inactive.' }] : []),
+    ...(daemonId && !daemon
+      ? [
+          {
+            value: daemonId,
+            label: `Current daemon (${daemonId.slice(0, 8)})`,
+            detail: 'This daemon is no longer visible.'
+          }
+        ]
+      : []),
+    ...daemonChoices.localChoices.map((candidate) => {
+      const eligible = moveReady(candidate)
+      const current = candidate.daemonId === initialDaemonId.current
+      return {
+        value: candidate.daemonId,
+        label: candidate.name,
+        detail:
+          candidate.status !== 'online'
+            ? 'Offline — bring this machine online to use it.'
+            : !candidate.caps.features.includes('agent-move-v1')
+              ? 'Upgrade required before this machine can host the agent.'
+              : 'Uses the credentials on this machine.',
+        disabled: !current && !eligible
+      }
+    })
+  ]
   const sourceUnavailable = !!sourceDaemon && !moveReady(sourceDaemon)
   const sourceOffline = sourceDaemon?.status === 'offline'
   const forceEligible = daemonChanged && !initialPlacement && sourceOffline && moveReady(daemon)
@@ -625,48 +664,18 @@ export default function EditAgentModal({
                       </button>
                     )}
                   </div>
-                  <div className="inp relative">
-                    <span className={daemon ? 'inline-flex items-center gap-[7px]' : 'text-(--text-tertiary)'}>
-                      {daemon && <Icon name="server" size={14} color="var(--text-tertiary)" />}
-                      {daemonLabel}
-                    </span>
-                    <Icon name="chevron-down" size={15} color="var(--text-tertiary)" />
-                    <select
-                      value={daemonId}
-                      onChange={(e) => {
-                        setDaemonId(e.target.value)
-                        setRepairPlacement(false)
-                        setForceReassign(false)
-                        setForceConfirmed(false)
-                        setErr(null)
-                      }}
-                      className="absolute inset-0 cursor-pointer opacity-0"
-                      aria-label="Daemon"
-                    >
-                      {/* An agent that opened unplaced keeps "No daemon" selectable
-                          so a chosen target can be taken back — picking one is what
-                          turns the dialog into a placement. Never offered to a placed
-                          agent: unplacing is not a move. */}
-                      {!initialDaemonId.current && <option value="">No daemon</option>}
-                      {daemonId && !daemon && <option value={daemonId}>Current daemon ({daemonId.slice(0, 8)})</option>}
-                      {sortedDaemons.map((d) => {
-                        const current = d.daemonId === initialDaemonId.current
-                        const eligible = moveReady(d)
-                        const suffix =
-                          d.status !== 'online'
-                            ? ` (${d.status})`
-                            : !d.caps.features.includes('agent-move-v1')
-                              ? ' (upgrade required)'
-                              : ''
-                        return (
-                          <option key={d.daemonId} value={d.daemonId} disabled={!current && !eligible}>
-                            {d.name}
-                            {suffix}
-                          </option>
-                        )
-                      })}
-                    </select>
-                  </div>
+                  <DaemonSelect
+                    value={daemonId}
+                    options={daemonOptions}
+                    placeholder="No daemon"
+                    onChange={(nextDaemonId) => {
+                      setDaemonId(nextDaemonId)
+                      setRepairPlacement(false)
+                      setForceReassign(false)
+                      setForceConfirmed(false)
+                      setErr(null)
+                    }}
+                  />
                   {sourceDaemon && sourceUnavailable && (
                     <div className="mt-2 flex items-start gap-[9px] rounded-md border border-(--amber-500) bg-(--status-paused-soft) px-3 py-[10px]">
                       <Icon name="triangle-alert" size={15} color="var(--amber-500)" className="mt-[1px] flex-none" />

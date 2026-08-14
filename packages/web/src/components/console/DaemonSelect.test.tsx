@@ -1,0 +1,71 @@
+// @vitest-environment happy-dom
+
+import { act, useState } from 'react'
+import { createRoot, type Root } from 'react-dom/client'
+import { afterEach, describe, expect, it } from 'vitest'
+import { DaemonSelect, type DaemonSelectOption } from './DaemonSelect'
+
+let root: Root | undefined
+let container: HTMLDivElement | undefined
+
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
+
+const options: DaemonSelectOption[] = [
+  {
+    value: 'cloud-1',
+    label: 'AgentConnect Cloud',
+    detail: 'Model usage included — no API key needed.',
+    cloud: true
+  },
+  { value: 'edge-1', label: 'edge-1', detail: 'Uses the credentials on this machine.' },
+  { value: 'edge-2', label: 'edge-2', detail: 'Offline — bring this machine online to use it.', disabled: true }
+]
+
+function Harness() {
+  const [value, setValue] = useState('cloud-1')
+  return <DaemonSelect value={value} options={options} onChange={setValue} />
+}
+
+async function mount() {
+  container = document.createElement('div')
+  document.body.append(container)
+  root = createRoot(container)
+  await act(async () => root?.render(<Harness />))
+}
+
+afterEach(async () => {
+  if (root) await act(async () => root?.unmount())
+  container?.remove()
+  root = undefined
+  container = undefined
+})
+
+describe('DaemonSelect', () => {
+  it('renders Cloud first with its managed-runtime explanation', async () => {
+    await mount()
+    const trigger = container!.querySelector<HTMLButtonElement>('[aria-haspopup="listbox"]')!
+    await act(async () => trigger.click())
+    const rows = [...container!.querySelectorAll<HTMLButtonElement>('[role="option"]')]
+
+    expect(rows[0]?.dataset.cloud).toBe('true')
+    expect(rows[0]?.textContent).toContain('AgentConnect Cloud')
+    expect(rows[0]?.textContent).toContain('Model usage included — no API key needed.')
+    expect(rows).toHaveLength(3)
+  })
+
+  it('selects a local daemon and skips unavailable choices with the keyboard', async () => {
+    await mount()
+    const trigger = container!.querySelector<HTMLButtonElement>('[aria-haspopup="listbox"]')!
+    await act(async () => trigger.click())
+    const list = container!.querySelector<HTMLDivElement>('[role="listbox"]')!
+    await act(async () => {
+      list.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+    })
+    await act(async () => {
+      list.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    })
+
+    expect(trigger.textContent).toContain('edge-1')
+    expect(container!.querySelector('[role="listbox"]')).toBeNull()
+  })
+})

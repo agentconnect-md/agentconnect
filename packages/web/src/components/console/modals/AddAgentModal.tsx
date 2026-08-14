@@ -48,6 +48,7 @@ import {
 } from '@/lib/api'
 import { GithubMark } from '@/components/marks'
 import { AgentIconPicker } from '@/components/console/AgentIconPicker'
+import { DaemonSelect, type DaemonSelectOption } from '@/components/console/DaemonSelect'
 import { RuntimeSelect } from '@/components/console/RuntimeSelect'
 import { randomGlyphIcon, type AgentIcon } from '@/lib/agent-icon'
 import { DEFAULT_AGENT_OUTPUT_MODE, type OutputMode } from '@/lib/output-mode'
@@ -337,8 +338,26 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
   // Cloud is one null-valued UI choice; the server still receives one serving pool member.
   const daemonChoice = addAgentDaemonChoice(daemons, daemonId)
   const { cloudAvailable, daemon, localDaemons, placementDaemonId, value: effectiveDaemonId } = daemonChoice
-  const cloudSelected = cloudAvailable && effectiveDaemonId === ''
-  const daemonLabel = cloudSelected ? CLOUD_DAEMON_LABEL : daemon ? daemon.name : 'No daemons connected'
+  const daemonOptions: DaemonSelectOption[] = [
+    ...(cloudAvailable
+      ? [
+          {
+            value: '',
+            label: CLOUD_DAEMON_LABEL,
+            detail: 'Model usage included — no API key needed.',
+            cloud: true
+          }
+        ]
+      : []),
+    ...localDaemons.map((candidate) => ({
+      value: candidate.daemonId,
+      label: candidate.name,
+      detail:
+        candidate.status === 'online'
+          ? 'Uses the credentials on this machine.'
+          : `${candidate.status[0]!.toUpperCase()}${candidate.status.slice(1)} — this machine is not currently serving.`
+    }))
+  ]
   const sandboxRequired = daemon?.caps.features.includes('sandbox-required') ?? false
   const sandboxSupported = sandboxRequired || (daemon?.caps.features.includes('sandbox') ?? false)
   const effectiveRunInSandbox = sandboxRequired || (sandboxSupported && runInSandbox)
@@ -969,26 +988,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
               <div className="desktop:col-span-2 grid grid-cols-1 gap-[14px] desktop:grid-cols-3">
                 <div className="fld">
                   <span className="fldlbl">Daemon</span>
-                  <div className="inp relative">
-                    <span className={`truncate ${daemon ? 'text-(--text-primary)' : 'text-(--text-tertiary)'}`}>
-                      {daemonLabel}
-                    </span>
-                    <Icon name="chevron-down" size={15} color="var(--text-tertiary)" className="flex-none" />
-                    <select
-                      value={effectiveDaemonId}
-                      onChange={(e) => setDaemonId(e.target.value)}
-                      className="absolute inset-0 cursor-pointer opacity-0"
-                      aria-label="Daemon"
-                    >
-                      {cloudAvailable && <option value="">{CLOUD_DAEMON_LABEL}</option>}
-                      {localDaemons.map((d) => (
-                        <option key={d.daemonId} value={d.daemonId}>
-                          {d.name}
-                          {d.status !== 'online' ? ` (${d.status})` : ''}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
+                  <DaemonSelect value={effectiveDaemonId} options={daemonOptions} onChange={setDaemonId} />
                 </div>
                 <div className="fld">
                   <span className="fldlbl">Runtime</span>
