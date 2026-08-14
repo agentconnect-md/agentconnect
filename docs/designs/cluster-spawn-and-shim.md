@@ -64,7 +64,9 @@ sandbox NetworkPolicy admits daemon-labelled pods from either its dedicated name
 install's pool namespace on the fixed shim port; the pooled tier can narrow this to the pool
 namespace once tiered envelopes land. The daemon no longer exposes a shim listener. This
 direction also makes a future daemon pool possible: the duty holder can dial the
-sandbox it owns without publishing a callback endpoint for every daemon.
+sandbox it owns without publishing a callback endpoint for every daemon. What
+"duty holder" means — the pool, the lease ledger, the heartbeat exchange, and
+the activation rendezvous — is [k8s-daemon-pool.md](k8s-daemon-pool.md).
 
 ## 3. Binding: proving which pod accepted the connection
 
