@@ -365,7 +365,7 @@ import { memoryChannelKey } from './agents/memory.js'
 import { createWorkspaceGit } from './cp/workspace-git.js'
 import { DAEMON_VERSION } from './version.js'
 import { CpCronRegistry } from './cp/cp-cron.js'
-import { DutyRegistry } from './cp/duty-registry.js'
+import { DutyRegistry, type DutyApplyResult } from './cp/duty-registry.js'
 import { CpAgentRegistry } from './cp/cp-agent-registry.js'
 import {
   agentRemovalTombstones,
@@ -12750,6 +12750,12 @@ export class Daemon {
    * retry, paced by the heartbeat rather than a private loop. Nothing needs the
    * group present in the meantime: `renewHeld` renews by holder alone.
    *
+   * Refusing a REPLACEMENT of a held group is not enough on its own: an addition is what failed,
+   * yet the entry also carries removals, and keeping the old composition keeps serving agents the
+   * CP has reassigned. So the removals are applied alone — the group shrinks to what both
+   * compositions share, at the OLD term, which is what makes the CP's stale-term branch reissue
+   * the whole replacement every beat until it installs.
+   *
    * Returns the groupIds it refused — a failed install, or a withdrawal that landed while the
    * install was in flight.
    */
@@ -12763,10 +12769,10 @@ export class Daemon {
       // and each of them means "this member must not serve that group". A withdrawal drops the
       // group's admission mark, so the identity check below fails and the grant is never applied.
       // A newer admission for the same group replaces the mark for the same reason.
-      const refused = new Set(
+      const withdrawn = new Set(
         entries.filter((entry) => this.dutyAdmissions.get(entry.groupId) !== admission).map((e) => e.groupId)
       )
-      for (const groupId of failed) refused.add(groupId)
+      const refused = new Set([...withdrawn, ...failed])
       const servable = entries.filter((entry) => !refused.has(entry.groupId))
       if (servable.length > 0) {
         const result = this.duties.applyGrant(servable)
@@ -12774,10 +12780,25 @@ export class Daemon {
           `duty: granted ${result.added.length} + re-granted ${result.updated.length} group(s); ` +
             `holding ${this.duties.size()} covering ${this.duties.agents().size} agent(s)`
         )
-        if (result.agentsGained.length > 0 || result.added.length > 0) this.onDutyChanged()
+        this.settleDutyChange(result)
       }
-      const withdrawn = refused.size - failed.size
-      if (withdrawn > 0) this.log.info(`duty: ${withdrawn} group(s) were withdrawn while being admitted — not held`)
+      // Same fence, same absence of an await: a group a withdrawal took away is not shrunk either,
+      // because it is not ours to write any more — it was revoked outright, or a newer admission
+      // owns it and will apply its own composition.
+      const shrinking = entries.filter((entry) => failed.has(entry.groupId) && !withdrawn.has(entry.groupId))
+      if (shrinking.length > 0) {
+        const result = this.duties.shrinkToGrant(shrinking)
+        if (result.updated.length > 0) {
+          this.log.warn(
+            `duty: refused ${shrinking.length} group(s) but applied their removals; ` +
+              `${result.agentsLost.length} agent(s) left service, ${result.updated.length} group(s) shrunk`
+          )
+        }
+        this.settleDutyChange(result)
+      }
+      if (withdrawn.size > 0) {
+        this.log.info(`duty: ${withdrawn.size} group(s) were withdrawn while being admitted — not held`)
+      }
       return refused
     } finally {
       // Only ours to clear: a withdrawal already dropped it, and a newer admission owns it now.
@@ -12785,6 +12806,16 @@ export class Daemon {
         if (this.dutyAdmissions.get(entry.groupId) === admission) this.dutyAdmissions.delete(entry.groupId)
       }
     }
+  }
+
+  /** Settle what a registry write changed: an agent that left every held group stops being served
+   *  through the revoke teardown (#948 — workspace, sessions and registry entry survive), and any
+   *  change at all re-derives the physical half, since `transportAgents` gates sockets and direct
+   *  ingress is never re-checked per message. */
+  private settleDutyChange(result: DutyApplyResult): void {
+    for (const agentId of result.agentsLost) this.stopServingAgent(agentId)
+    const changed = result.added.length + result.updated.length + result.agentsGained.length + result.agentsLost.length
+    if (changed > 0) this.onDutyChanged()
   }
 
   /**

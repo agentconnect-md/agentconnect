@@ -209,6 +209,27 @@ describe('duty lease exchange (protocol level, real Postgres)', () => {
     expect(grant.payload.grants[0]).toMatchObject({ groupId: GROUP, term: '3' })
   })
 
+  it('the re-issue carries the CURRENT composition — the retry for a member that could not install it', async () => {
+    // A member that refused a replacement keeps the group at its OLD term after applying only the
+    // removals, so this is the branch its digest lands in every beat until the install succeeds:
+    // stale-term, not missing, so it costs nothing against the reported headroom.
+    const h = buildWsHarness(prisma)
+    const start = new Date(h.clock.now())
+    await seedGroup({ holder: DAEMON, term: 2n, expiresAt: new Date(start.getTime() + LEASE_MS) })
+    await prisma.dutyGroupMember.create({
+      data: { kind: 'agent', refId: AGENT2, groupId: GROUP, orgId: DEFAULT_ORG_ID }
+    })
+    const { stub } = await ready(h)
+
+    stub.inject('heartbeat', heartbeat({ held: [{ groupId: GROUP, term: '1' }], headroom: 0 }))
+    const grant = await stub.expectFrame('duty/grant')
+    if (!isFrame('duty/grant')(grant)) throw new Error('expected duty/grant')
+    expect(grant.payload.grants).toHaveLength(1)
+    expect(grant.payload.grants[0]?.term).toBe('2')
+    expect(grant.payload.grants[0]?.members.map((m) => m.refId).sort()).toEqual([AGENT, AGENT2].sort())
+    expect(stub.sent.filter((f) => f.type === 'duty/revoke')).toEqual([])
+  })
+
   it('a held group missing from the digest is re-granted (lost grant EVT recovery)', async () => {
     const h = buildWsHarness(prisma)
     const start = new Date(h.clock.now())
