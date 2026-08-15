@@ -522,8 +522,14 @@ export default function EditAgentModal({
         setErr(`Confirm that ${sourceDaemon?.name ?? 'the source daemon'} is permanently stopped.`)
         return
       }
-      if (!daemon || !moveReady(daemon)) {
-        setErr('Choose an online daemon that supports agent moves.')
+      // The pool is a target, not a member: ready when any live member could serve.
+      const targetReady = daemonId === CLOUD_PLACEMENT ? cloudServing : moveReady(daemon)
+      if (!targetReady) {
+        setErr(
+          daemonId === CLOUD_PLACEMENT
+            ? 'Cloud has no online member right now; try again shortly.'
+            : 'Choose an online daemon that supports agent moves.'
+        )
         return
       }
       // Placement is where a deferred runtime becomes mandatory (§3.2). Ahead of
@@ -535,14 +541,18 @@ export default function EditAgentModal({
         return
       }
       if (runtimeUnavailable) {
-        setErr(`${daemon.name} does not advertise the ${runtimeLabel(runtime, runtimeMeta?.name)} runtime.`)
+        setErr(
+          `${daemon?.name ?? CLOUD_DAEMON_LABEL} does not advertise the ${runtimeLabel(runtime, runtimeMeta?.name)} runtime.`
+        )
         return
       }
       if (modelUnavailable) {
         // Reachable only when the target DOES advertise models (see
         // `modelUnavailable`), so the picker always has a real id to point at —
         // never a synthesized "Default" the runtime does not offer.
-        setErr(`${daemon.name} does not advertise model “${selectedModel}”. Choose one of its models.`)
+        setErr(
+          `${daemon?.name ?? CLOUD_DAEMON_LABEL} does not advertise model “${selectedModel}”. Choose one of its models.`
+        )
         return
       }
     }
