@@ -1,6 +1,11 @@
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { FakeClock } from '@agentconnect.md/connection'
 import { K8sDriver, AC_LABEL_AGENT, AC_LABEL_ORG } from '../src/k8s/driver.js'
+import { LocalStore } from '../src/store/local-store.js'
+import { fakeGenerations } from './fake-generations.js'
 import { GuardedResumeRejectedError, OperatingModeRejectedError } from '../src/k8s/sandbox-api.js'
 import { K8sApiError } from '@agentconnect.md/k8s-client'
 import type { Sandbox, SandboxClaim } from '../src/k8s/sandbox-api.js'
@@ -136,6 +141,7 @@ function driver(api: ReturnType<typeof fakeApi>['api'], overrides: Record<string
     api: api as never,
     orgForAgent: () => 'org-1',
     warmPoolName: 'ac-runtime-standard-pool',
+    generations: fakeGenerations(),
     clock,
     log: { info: (message: string) => infos.push(message), warn: () => {}, debug: () => {} },
     ...overrides,
@@ -664,5 +670,67 @@ describe('cluster spawn driver', () => {
     const { api } = fakeApi()
     const { instance } = driver(api)
     await expect(instance.launch({ command: 'claude-code-acp', args: [], env: {} })).rejects.toThrow(/AC_AGENT_ID/)
+  })
+})
+
+/**
+ * The pool moves an agent between members on every rollout while its sandbox pod stays up, and
+ * that pod's shim refuses any generation below the highest it has ever bound. A per-process
+ * counter therefore breaks the successor permanently: it dials 1 against a pod already bound at
+ * 2, is closed with `stale generation`, and every turn ends in a launch timeout until the pod is
+ * recycled. The sequence has to come from state the members share.
+ */
+describe('cluster launch generations', () => {
+  function storeFile(): string {
+    return join(mkdtempSync(join(tmpdir(), 'ac-generations-')), 'state.db')
+  }
+
+  it('continues the sequence when a successor member takes an agent over', async () => {
+    const store = new LocalStore(storeFile())
+    const { api } = fakeApi()
+    const memberA = driver(api, { generations: store })
+    expect((await memberA.instance.ensureSandbox('agent-a')).generation).toBe(1)
+    // A dial that timed out forgets the launch, so the same member re-claims at a fresh generation.
+    memberA.instance.forgetLaunch('agent-a')
+    expect((await memberA.instance.ensureSandbox('agent-a')).generation).toBe(2)
+    // The rollout: a different member process, the same sandbox pod, the same shared store.
+    const memberB = driver(api, { generations: store })
+    expect((await memberB.instance.ensureSandbox('agent-a')).generation).toBe(3)
+    store.close()
+  })
+
+  it('resumes the sequence from the store after the member process restarts', async () => {
+    const path = storeFile()
+    const first = new LocalStore(path)
+    const before = driver(fakeApi().api, { generations: first })
+    expect((await before.instance.ensureSandbox('agent-a')).generation).toBe(1)
+    first.close()
+    const reopened = new LocalStore(path)
+    const after = driver(fakeApi().api, { generations: reopened })
+    expect((await after.instance.ensureSandbox('agent-a')).generation).toBe(2)
+    reopened.close()
+  })
+
+  it('counts each agent independently, so churn on one pod does not skip generations on another', async () => {
+    const store = new LocalStore(storeFile())
+    const { api } = fakeApi()
+    const { instance } = driver(api, { generations: store })
+    expect((await instance.ensureSandbox('agent-a')).generation).toBe(1)
+    instance.forgetLaunch('agent-a')
+    expect((await instance.ensureSandbox('agent-a')).generation).toBe(2)
+    expect((await instance.ensureSandbox('agent-b')).generation).toBe(1)
+    store.close()
+  })
+
+  it('does not consume a generation when the cached launch answers', async () => {
+    const store = new LocalStore(storeFile())
+    const { api } = fakeApi()
+    const { instance } = driver(api, { generations: store })
+    await instance.ensureSandbox('agent-a')
+    // Re-attach, not re-launch: the shim binding registry treats an equal generation from the
+    // same pod as a reconnect, and burning a number here would fence out the live channel.
+    expect((await instance.ensureSandbox('agent-a')).generation).toBe(1)
+    expect(store.nextSandboxGeneration('agent-a')).toBe(2)
+    store.close()
   })
 })

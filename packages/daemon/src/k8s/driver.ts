@@ -56,12 +56,21 @@ export const RUNTIME_GRANTS: ShimCapability[] = ['acp', 'materialize', 'exec', '
  *  authority it never exercises — which the direct-connect grant test exists to catch. */
 export const PROBE_GRANTS: ShimCapability[] = ['probe']
 
+/** Allocator for the per-agent shim-binding generation; the daemon store is the durable one. */
+export interface LaunchGenerations {
+  nextSandboxGeneration(agentId: string): number
+}
+
 export interface K8sDriverDeps {
   api: SandboxApi
   /** Resolves tenant ownership at claim time; pool members serve more than one org. */
   orgForAgent: (agentId: string) => string | undefined
   /** Pool the claim references; v1beta1 requires one, and a cold pool is `replicas: 0`. */
   warmPoolName: string
+  /** Where a launch's generation comes from. Never a process-local counter: agents move between
+   *  pool members while their sandbox pod stays, and that pod refuses any generation below the
+   *  highest it has bound — so a successor must continue the sequence, not restart it. */
+  generations: LaunchGenerations
   /** Optional claim metadata for host-owned synthetic agents such as runtime probes. */
   claimMetadataForAgent?: (
     agentId: string
@@ -124,7 +133,6 @@ interface Launch {
 export class K8sDriver implements SpawnDriver {
   private readonly metrics: ClusterMetrics
   private readonly launches = new Map<string, Launch>()
-  private readonly generations = new Map<string, number>()
   /** Live work per Sandbox: binds, workspace preparation, and runtimes that have not exited. */
   private readonly busy = new Map<string, number>()
   /** Per-SANDBOX transition queue. A guarded write protects competing writes, but it cannot
@@ -198,8 +206,9 @@ export class K8sDriver implements SpawnDriver {
     )
     const sandboxUid = sandbox.metadata?.uid
     if (!sandboxUid) throw new Error(`sandbox ${sandboxName} has no metadata.uid to bind against`)
-    const generation = (this.generations.get(agentId) ?? 0) + 1
-    this.generations.set(agentId, generation)
+    // Allocated from durable install-wide state, not from this process: the pod this launch is
+    // about to dial may have been bound by a member that has since been rolled away.
+    const generation = this.deps.generations.nextSandboxGeneration(agentId)
     const launch: Launch = { agentId, sandboxName, sandboxUid, generation }
     this.launches.set(agentId, launch)
     return launch

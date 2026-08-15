@@ -5,6 +5,7 @@ import { K8sDriver, type ClusterDriverDeps } from '../src/k8s/driver.js'
 import { LaunchTimer, type ClusterMetrics, type LaunchPath, type LaunchStage } from '../src/k8s/cluster-metrics.js'
 import { K8sApiError } from '@agentconnect.md/k8s-client'
 import { GuardedResumeRejectedError, type Sandbox, type SandboxClaim } from '../src/k8s/sandbox-api.js'
+import { fakeGenerations } from './fake-generations.js'
 
 // The acceptance criterion for D9 is a dashboard that settles "resume p95 ≤ 15s, cold start
 // p95 ≤ 60s" without log archaeology. That is only true if the cold/resume tag is right and the
@@ -153,6 +154,7 @@ function driverFor(
     api: api.api as never,
     orgForAgent: () => 'org-1',
     warmPoolName: 'pool',
+    generations: fakeGenerations(),
     connectChannel: awaitChannel
       ? async (record, _podIp, timeoutMs) => await awaitChannel(record.agentId, record.generation, timeoutMs)
       : async () => respondingConnection(open) as never,

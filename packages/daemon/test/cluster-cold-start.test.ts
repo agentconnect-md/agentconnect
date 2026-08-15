@@ -12,6 +12,7 @@ import { SandboxApi } from '../src/k8s/sandbox-api.js'
 import { startK8sRuntimePlane, type K8sRuntimePlane } from '../src/k8s/runtime-plane.js'
 import { ShimClient, type ShimTransport } from '../src/shim/client.js'
 import { ShimServer } from '../src/shim/server.js'
+import { fakeGenerations } from './fake-generations.js'
 
 /**
  * The sandbox cold-start race (#1010).
@@ -133,6 +134,7 @@ async function clusterUnderTest(options: {
   const plane = await startK8sRuntimePlane({
     orgId: 'org-1',
     warmPoolName: 'pool',
+    generations: fakeGenerations(),
     sandboxNamespace: 'agent-sandboxes',
     memberId: 'member-a',
     shimPort: port,

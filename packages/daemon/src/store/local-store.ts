@@ -1049,6 +1049,13 @@ export class LocalStore {
         endedAt TEXT
       );
       CREATE INDEX IF NOT EXISTS dreams_agent_created ON dreams (agentId, createdAt DESC);
+      -- Monotonic shim-binding generation per agent. Durable and install-shared because a sandbox
+      -- pod outlives the daemon holding it: a member that restarted the count would dial below the
+      -- generation that pod already bound, which its shim refuses for the rest of the pod's life.
+      CREATE TABLE IF NOT EXISTS sandbox_generations (
+        agentId TEXT PRIMARY KEY,
+        generation INTEGER NOT NULL
+      );
     `)
     // Stamped only once the CREATE block above has actually emitted that schema, so
     // a store that failed halfway through creation is not left claiming to be current.
@@ -4354,6 +4361,20 @@ export class LocalStore {
   gcRuntimeCatalog(cutoffEpochMs: number): void {
     this.db.prepare('DELETE FROM runtime_catalog_meta WHERE observedAt < ?').run(cutoffEpochMs)
     this.db.prepare('DELETE FROM runtime_model_catalog WHERE observedAt < ?').run(cutoffEpochMs)
+  }
+
+  /** Next shim-binding generation for an agent's sandbox: one atomic upsert, so two members cannot tie. */
+  // The row outlives the claim on purpose — nothing here may hand out a number a pod has seen before.
+  nextSandboxGeneration(agentId: string): number {
+    const row = this.db
+      .prepare(
+        `INSERT INTO sandbox_generations (agentId, generation) VALUES (?, 1)
+         ON CONFLICT(agentId) DO UPDATE SET generation = sandbox_generations.generation + 1
+         RETURNING generation`
+      )
+      .get(agentId) as { generation: number } | undefined
+    if (row === undefined) throw new Error(`could not allocate a sandbox generation for agent ${agentId}`)
+    return Number(row.generation)
   }
 
   close(): void {
