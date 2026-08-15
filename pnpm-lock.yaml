@@ -421,7 +421,7 @@ importers:
         version: link:../protocol
       '@modelcontextprotocol/node':
         specifier: 2.0.0
-        version: 2.0.0(@modelcontextprotocol/server@2.0.0)(hono@4.12.32)
+        version: 2.0.0(@modelcontextprotocol/server@2.0.0)(hono@4.13.2)
       '@modelcontextprotocol/server':
         specifier: 2.0.0
         version: 2.0.0
@@ -443,6 +443,9 @@ importers:
       '@opentelemetry/semantic-conventions':
         specifier: ^1.43.0
         version: 1.43.0
+      hono:
+        specifier: ^4.13.2
+        version: 4.13.2
       zod:
         specifier: ^4.4.3
         version: 4.4.3
@@ -5756,6 +5759,10 @@ packages:
     resolution: {integrity: sha512-XcuyW9qE2kJn07PkecMOBd5Vq/hMy7mmGw+idz1yblbg9N17ijJODrvPkn7/dwL3Kulj8LcRJ69DLOWf91dRUg==}
     engines: {node: '>=16.9.0'}
 
+  hono@4.13.2:
+    resolution: {integrity: sha512-JydRilDRkYBQMt9qR9U92mXxmbGqsqSn/IKOrh4e7/gEbn+0zSr8igTu0obwJoNGN4sez28DIql7FBHWydoJpA==}
+    engines: {node: '>=16.9.0'}
+
   hook-std@4.0.0:
     resolution: {integrity: sha512-IHI4bEVOt3vRUDJ+bFA9VUJlo7SzvFARPNLw75pqSmAOP2HmTWfFJtPvLBrDrlgjEYXY9zs7SFdHPQaJShkSCQ==}
     engines: {node: '>=20'}
@@ -9852,6 +9859,11 @@ snapshots:
   '@hono/node-server@1.19.15(hono@4.12.32)':
     dependencies:
       hono: 4.12.32
+    optional: true
+
+  '@hono/node-server@1.19.15(hono@4.13.2)':
+    dependencies:
+      hono: 4.13.2
 
   '@huggingface/jinja@0.5.9':
     optional: true
@@ -10333,12 +10345,12 @@ snapshots:
     dependencies:
       zod: 4.4.3
 
-  '@modelcontextprotocol/node@2.0.0(@modelcontextprotocol/server@2.0.0)(hono@4.12.32)':
+  '@modelcontextprotocol/node@2.0.0(@modelcontextprotocol/server@2.0.0)(hono@4.13.2)':
     dependencies:
-      '@hono/node-server': 1.19.15(hono@4.12.32)
+      '@hono/node-server': 1.19.15(hono@4.13.2)
       '@modelcontextprotocol/server': 2.0.0
     optionalDependencies:
-      hono: 4.12.32
+      hono: 4.13.2
 
   '@modelcontextprotocol/sdk@1.29.0(zod@4.4.3)':
     dependencies:
@@ -14285,7 +14297,10 @@ snapshots:
 
   highlight.js@11.11.1: {}
 
-  hono@4.12.32: {}
+  hono@4.12.32:
+    optional: true
+
+  hono@4.13.2: {}
 
   hook-std@4.0.0: {}
 
