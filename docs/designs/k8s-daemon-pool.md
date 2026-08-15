@@ -549,11 +549,13 @@ most one move per agent (#1016):
   left to lapse at T_reassign (the pre-#1016 takeover path), because an ack
   must mean "no longer served here" — a rejected host stop counts as
   unconfirmed. A grant that lands after the latch (an exchange that began
-  before the SIGTERM) is never installed: for a group never served here it
-  goes straight into the same acknowledged release; for a group held, mid
-  admission, or in its teardown window it is a replacement the group's own
-  release path already owns. A rebalance drain simply ignores late grants,
-  as before. The whole drain is bounded by
+  before the SIGTERM) is never installed and takes one path: wait for the
+  loop to withdraw the group if it is still held, prove it is not served
+  here with the same host-stop and convergence primitives (immediate when
+  nothing runs; waits out a teardown a revoke or fence started moments
+  earlier — host teardown is observable per agent, and a failed stop stays
+  unconfirmed), then the acknowledged release, or left to lapse. A
+  rebalance drain simply ignores late grants, as before. The whole drain is bounded by
   `limits.poolShutdownDrainMs` (5 min by default; the turn wait stops short of
   it by a release reserve so the last acks still land inside it), and ends
   with one log line: groups and agents released, acks, groups left to lapse.
