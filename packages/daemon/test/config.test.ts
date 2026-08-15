@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { chmodSync, mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { loadConfig } from '../src/config/load-config.js'
+import { loadConfig, DUTY_ENFORCEMENT_ENV } from '../src/config/load-config.js'
 import { McpServerDefSchema, RuntimeDefSchema, sessionRetentionMs } from '../src/config/config-schema.js'
 import { CP_URL_ENV } from '@agentconnect.md/protocol'
 
@@ -70,6 +70,72 @@ describe('loadConfig', () => {
       const cfg = withEnv('   ', () => loadConfig({ root: tmpRoot({ version: 1 }) }))
       expect(cfg.controlPlane.url).toBeUndefined()
       expect(cfg.controlPlane.enabled).toBe(false)
+    })
+  })
+
+  // A pool member's state root is an emptyDir, so its config.json is regenerated from defaults each start.
+  describe(`${DUTY_ENFORCEMENT_ENV} (the pool member's rollout switch)`, () => {
+    const withEnv = <T>(value: string | undefined, run: () => T): T => {
+      const previous = process.env[DUTY_ENFORCEMENT_ENV]
+      if (value === undefined) delete process.env[DUTY_ENFORCEMENT_ENV]
+      else process.env[DUTY_ENFORCEMENT_ENV] = value
+      try {
+        return run()
+      } finally {
+        if (previous === undefined) delete process.env[DUTY_ENFORCEMENT_ENV]
+        else process.env[DUTY_ENFORCEMENT_ENV] = previous
+      }
+    }
+
+    it('is off when the variable is absent, keeping the shipped default', () => {
+      const cfg = withEnv(undefined, () => loadConfig({ root: tmpRoot({ version: 1 }) }))
+      expect(cfg.features.dutyEnforcement).toBe(false)
+    })
+
+    it('turns enforcement on for every accepted spelling of on', () => {
+      for (const value of ['1', 'true', 'TRUE', 'yes', 'on', ' true ']) {
+        const cfg = withEnv(value, () => loadConfig({ root: tmpRoot({ version: 1 }) }))
+        expect(cfg.features.dutyEnforcement, value).toBe(true)
+      }
+    })
+
+    it('turns enforcement off for every accepted spelling of off', () => {
+      for (const value of ['0', 'false', 'FALSE', 'no', 'off']) {
+        const cfg = withEnv(value, () => loadConfig({ root: tmpRoot({ version: 1 }) }))
+        expect(cfg.features.dutyEnforcement, value).toBe(false)
+      }
+    })
+
+    it('refuses an unparseable value rather than silently staying off', () => {
+      expect(() => withEnv('maybe', () => loadConfig({ root: tmpRoot({ version: 1 }) }))).toThrow(
+        new RegExp(DUTY_ENFORCEMENT_ENV)
+      )
+      expect(() => withEnv('2', () => loadConfig({ root: tmpRoot({ version: 1 }) }))).toThrow(/must be one of/)
+    })
+
+    it('is ignored when blank, so a chart templating an empty value decides nothing', () => {
+      const root = tmpRoot({ version: 1, features: { dutyEnforcement: true } })
+      expect(withEnv('   ', () => loadConfig({ root })).features.dutyEnforcement).toBe(true)
+    })
+
+    it('outranks a config file that says the opposite, in both directions', () => {
+      const off = tmpRoot({ version: 1, features: { dutyEnforcement: false } })
+      expect(withEnv('true', () => loadConfig({ root: off })).features.dutyEnforcement).toBe(true)
+      const on = tmpRoot({ version: 1, features: { dutyEnforcement: true } })
+      expect(withEnv('false', () => loadConfig({ root: on })).features.dutyEnforcement).toBe(false)
+    })
+
+    it('survives the auto-create path, so a fresh ephemeral root still comes up enforcing', () => {
+      const root = mkdtempSync(join(tmpdir(), 'ac-cfg-')) // no config.json written
+      const cfg = withEnv('1', () => loadConfig({ root, autoCreate: true }))
+      expect(cfg.features.dutyEnforcement).toBe(true)
+      // The generated file stays default-shaped — the env, not the disposable file, is the source.
+      expect(JSON.parse(readFileSync(join(root, 'config.json'), 'utf8'))).toEqual({ version: 1 })
+    })
+
+    it('applies on the optional (no file) path too', () => {
+      const root = mkdtempSync(join(tmpdir(), 'ac-cfg-'))
+      expect(withEnv('on', () => loadConfig({ root, optional: true })).features.dutyEnforcement).toBe(true)
     })
   })
 

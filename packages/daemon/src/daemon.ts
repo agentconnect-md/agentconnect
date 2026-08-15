@@ -2141,6 +2141,8 @@ export class Daemon {
   // only on an install-wide connection — empty on a single-org daemon, which is
   // what keeps the whole path dormant there.
   private readonly duties = new DutyRegistry()
+  // Last enforcement state logged, so a reconnect only speaks when the answer changed.
+  private dutyEnforcementReported?: boolean
   // What an unbounded member reports as heartbeat headroom: the CP's own
   // per-tick grant cap, so the wire carries a finite number without implying a
   // ceiling. Never used for a local capacity decision.
@@ -3001,6 +3003,9 @@ export class Daemon {
     this.log.info(
       `control plane: ${cfg.controlPlane?.enabled ? `enabled (${cfg.controlPlane.url ?? 'no url'})` : 'disabled — running local'}`
     )
+    // The default is off and silent; when it is on, say so before any lease can gate a connection.
+    if (cfg.features.dutyEnforcement)
+      this.log.info('duty: enforcement configured on — awaiting an install-wide (frame-scope) control-plane connection')
     this.agentsDir = cfg.agentsDir!
     this.removalObligationsDir = agentRemovalObligationsDir(root)
     this.removedAgentTombstones = agentRemovalTombstones(this.agentsDir, this.removalObligationsDir)
@@ -12731,6 +12736,19 @@ export class Daemon {
     return this.cfg?.features?.dutyEnforcement === true && this.cpClient?.organizationScope() === 'frame'
   }
 
+  /** Which of the two configured-on states this connection resolved to; a reconnect that changes nothing stays quiet. */
+  private logDutyEnforcementScope(): void {
+    if (this.cfg?.features?.dutyEnforcement !== true) return
+    const enforcing = this.dutyEnforced()
+    if (this.dutyEnforcementReported === enforcing) return
+    this.dutyEnforcementReported = enforcing
+    if (enforcing) this.log.info('duty: enforcement ACTIVE — this daemon serves only the agents it holds a lease for')
+    else
+      this.log.warn(
+        `duty: enforcement INACTIVE — it applies only to an install-wide (frame-scope) connection, and this one is ${this.cpClient?.organizationScope() ?? 'not established'}`
+      )
+  }
+
   /** `duty/grant` EVT: admit the grants off the frame-dispatch path, so a slow
    *  CP cannot stall the socket. */
   private applyDutyGrant(grants: DutyGrantEntry[]): void {
@@ -21496,6 +21514,8 @@ export class Daemon {
       // may have missed emits while we were disconnected; latest-wins upsert).
       onReady: () => {
         resolveInitialRegistry()
+        // The organization scope is only known once the connection is up, and it is half the answer.
+        this.logDutyEnforcementScope()
         void this.probeRuntimesAndEmit()
         void this.syncOrganizationSuggestions().catch((err) =>
           this.log.warn(`cp: organization suggestion replay failed (${err instanceof Error ? err.name : 'unknown'})`)

@@ -15,6 +15,25 @@ export interface FlatOverrides {
   requireSandbox?: boolean
 }
 
+/** Env override for `features.dutyEnforcement` — the only channel a pool member has, its config.json being regenerated each start. */
+export const DUTY_ENFORCEMENT_ENV = 'AGENTCONNECT_DUTY_ENFORCEMENT'
+
+const DUTY_ENFORCEMENT_ON = ['1', 'true', 'yes', 'on']
+const DUTY_ENFORCEMENT_OFF = ['0', 'false', 'no', 'off']
+
+/** Unset or blank ⇒ no override; an unrecognized value throws, because a switch that silently reads as off is the failure mode. */
+export function dutyEnforcementFromEnv(env: NodeJS.ProcessEnv = process.env): boolean | undefined {
+  const raw = env[DUTY_ENFORCEMENT_ENV]
+  if (raw === undefined) return undefined
+  const value = raw.trim().toLowerCase()
+  if (value === '') return undefined
+  if (DUTY_ENFORCEMENT_ON.includes(value)) return true
+  if (DUTY_ENFORCEMENT_OFF.includes(value)) return false
+  throw new Error(
+    `${DUTY_ENFORCEMENT_ENV} must be one of ${[...DUTY_ENFORCEMENT_ON, ...DUTY_ENFORCEMENT_OFF].join('/')} (got ${JSON.stringify(raw)})`
+  )
+}
+
 function protectConfigFile(file: string, writable = false): void {
   if (!existsSync(file)) return
   try {
@@ -83,6 +102,10 @@ export function loadConfig(
     cfg.controlPlane.url = envUrl
     if (!o.noCp) cfg.controlPlane.enabled = true
   }
+
+  // Env wins over the file for this key alone, on every branch above: a pool member's emptyDir root regenerates config.json each start.
+  const dutyEnforcement = dutyEnforcementFromEnv()
+  if (dutyEnforcement !== undefined) cfg.features.dutyEnforcement = dutyEnforcement
 
   cfg.agentsDir = o.agentsDir ?? cfg.agentsDir ?? defaultAgentsDir(root)
   return cfg

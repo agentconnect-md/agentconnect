@@ -556,7 +556,13 @@ ledger needs the digest to converge — but _enforcement_ (the
 `transportAgents()` filter, schedule scoping, refusal of unheld triggers) is
 behind `features.dutyEnforcement`, default off: a grant or revoke only moves
 bookkeeping until the flag flips, so convergence is observable in production
-before it gates a single connection. During the soak the grant policy is
+before it gates a single connection. A pool member's state root is an
+`emptyDir`, so its config.json is regenerated from defaults on every Pod start
+and cannot carry the flag; the operator sets `AGENTCONNECT_DUTY_ENFORCEMENT`
+(`1`/`true`/`yes`/`on`, anything unrecognized refused at startup) on the Pod
+instead, which outranks the file for this one key. The daemon reports which
+state it got — enforcing, or configured-but-inactive on a non-frame
+connection — once the control-plane connection is up. During the soak the grant policy is
 **incumbent-only** — a vacancy is granted only to the member the group's
 agents are already placed on, and the recompute vacates a lease whose holder
 no longer hosts any of the group's agents (partial occupancy keeps it, so a
