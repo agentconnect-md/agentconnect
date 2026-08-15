@@ -15,7 +15,7 @@
  *   3. on success → mint the next monotonic `sessionEpoch` via `EpochService`
  *      (persisted in C6) and return the `auth/ok` frame.
  *
- * TokenReview resolves an envelope to one org or a cloud Pod to one install-wide member.
+ * TokenReview resolves an envelope to one org or a pool member Pod to one install-wide member.
  *
  * A DB error during lookup or the epoch bump closes `1011` (SERVER_INTERNAL) so the
  * daemon backs off and retries rather than treating a transient blip as a dead

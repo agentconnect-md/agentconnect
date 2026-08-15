@@ -42,7 +42,7 @@ export interface DaemonAuth {
   authenticate(req: AuthReq, ctx: ClientCtx): Promise<AuthResult>
 }
 
-/** The daemon record a verified Kubernetes identity, including a cloud Pod UID, resolves to. */
+/** The daemon record a verified Kubernetes identity, including a pool member Pod UID, resolves to. */
 export type VerifiedClusterDaemon =
   { daemonId: DaemonId; scope: 'org'; orgId: OrgId } | { daemonId: DaemonId; scope: 'install' }
 
@@ -308,20 +308,20 @@ export interface DaemonRegistry {
   /** Hard-delete a daemon from the fleet (DELETE /daemons/:id). Org-fenced:
    *  throws for an absent row and for a cross-org id alike. */
   remove(orgId: OrgId, daemonId: DaemonId): Promise<void>
-  /** Retire one install-wide cloud member — the row a replaced cloud Pod left behind
-   *  (`orchestrator/cloudDaemonReaper.ts`). No org owns it, so {@link DaemonRegistry.remove}
-   *  cannot reach it. The fence is the claim: org-less cloud shape, still silent past the same
+  /** Retire one install-wide pool member — the row a replaced pool member Pod left behind
+   *  (`orchestrator/poolMemberReaper.ts`). No org owns it, so {@link DaemonRegistry.remove}
+   *  cannot reach it. The fence is the claim: org-less pool shape, still silent past the same
    *  cutoff the worklist used, still at the epoch observed there. `deleted: false` means the
    *  row no longer matched — a member that came back — and nothing was written. The delete and
    *  the agent settlement share one transaction; `settled` names the agents it unplaced, whose
    *  relay, collaboration and hook state the caller re-converges after the commit. */
-  retireCloudMember(
+  retirePoolMember(
     daemonId: DaemonId,
     fence: { retiredBefore: Date; sessionEpoch: bigint }
   ): Promise<{ deleted: boolean; settled: { id: AgentId; orgId: OrgId }[] }>
-  /** The org-owned fleet; shared cloud members are deliberately absent. */
+  /** The org-owned fleet; shared pool members are deliberately absent. */
   list(orgId: OrgId, viewer?: ViewCtx): Promise<DaemonView[]>
-  /** The display/placement fleet, including install-wide cloud members. */
+  /** The display/placement fleet, including install-wide pool members. */
   listAvailable(orgId: OrgId, viewer?: ViewCtx): Promise<DaemonView[]>
   /** One org-owned daemon; shared and foreign ids are indistinguishable from missing. */
   get(orgId: OrgId, daemonId: DaemonId): Promise<DaemonView | null>

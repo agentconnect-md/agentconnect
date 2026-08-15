@@ -100,7 +100,7 @@ export interface WsHarness {
   mintToken(daemonId: string): Promise<string>
   /** Provision an org-less (install-wide, frame-mode) daemon row + a fake cluster
    *  ServiceAccount token for it; auth with `{ serviceAccountToken }`. */
-  mintCloudDaemon(daemonId: string): Promise<string>
+  mintPoolMember(daemonId: string): Promise<string>
   /** Open a fresh connection (started) over a new stub. */
   connect(stub?: InMemoryDaemonStub): { conn: DaemonConnection; stub: InMemoryDaemonStub }
 }
@@ -162,7 +162,7 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
 
   const epoch = new EpochService(repos.daemon, clock)
   // Fake in-cluster identity: token → install-wide daemon, no TokenReview.
-  const cloudTokens = new Map<string, string>()
+  const poolTokens = new Map<string, string>()
   const auth = new DaemonAuthService(
     codec,
     repos.apiKey,
@@ -172,7 +172,7 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
     new PgOrgRepo(prisma),
     {
       verify: async (token: string) => {
-        const daemonId = cloudTokens.get(token)
+        const daemonId = poolTokens.get(token)
         return daemonId ? { daemonId: DaemonId(daemonId), scope: 'install' as const } : null
       }
     }
@@ -319,10 +319,10 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
     hookRemovals,
     placement: placementResolver,
     codec,
-    mintCloudDaemon: async (daemonId: string) => {
+    mintPoolMember: async (daemonId: string) => {
       await prisma.daemon.create({ data: { id: daemonId, orgId: null, maxAgents: 8, status: 'ready' } })
       const token = `fake-sa-token-${daemonId}`
-      cloudTokens.set(token, daemonId)
+      poolTokens.set(token, daemonId)
       return token
     },
     mintToken: async (daemonId: string) => {

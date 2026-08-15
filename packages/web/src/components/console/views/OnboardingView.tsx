@@ -106,7 +106,7 @@ export default function OnboardingView() {
     setSaveErr(null)
     try {
       await updateAgent(builtinAgent.id, { runtime, ...(model ? { model } : {}) })
-      // Onboarding places onto a concrete machine; the cloud pool is chosen from the agent editor.
+      // Onboarding places onto a concrete machine; the pool is chosen from the agent editor.
       await moveAgent(builtinAgent.id, { kind: 'daemon', daemonId: placementDaemon.daemonId })
       await refresh()
     } catch (e) {

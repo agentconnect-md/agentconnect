@@ -37,7 +37,7 @@ const mockDaemon = (id: string, name: string, op?: DaemonRow['lifecycleOp']): Da
   lifecycleOp: op ?? null,
   canManageLifecycle: true,
   status: 'online',
-  cloud: false,
+  pool: false,
   lifecycleStatus: null,
   host: 'localhost',
   cpu: 10,

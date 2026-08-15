@@ -126,7 +126,7 @@ describe('daemon --k8s mode', () => {
     await expect(k8sDaemon.start()).rejects.toThrow(/data-plane configuration is not readable/)
   })
 
-  it('uses the mounted PostgreSQL store without creating a cloud SQLite database', async () => {
+  it('uses the mounted PostgreSQL store without creating a pool member SQLite database', async () => {
     const rootDir = root()
     const instance = daemon({ root: rootDir, k8s: true })
     try {
@@ -150,7 +150,7 @@ describe('daemon --k8s mode', () => {
     }
   })
 
-  it('waits for the initial CP organization registry before completing cloud startup', async () => {
+  it('waits for the initial CP organization registry before completing pool member startup', async () => {
     let release!: () => void
     const registryReady = new Promise<void>((resolve) => {
       release = resolve
@@ -177,7 +177,7 @@ describe('daemon --k8s mode', () => {
     }
   })
 
-  it('refuses cloud startup when no authoritative CP organization registry is available', async () => {
+  it('refuses pool member startup when no authoritative CP organization registry is available', async () => {
     const instance = daemon({ root: root(), k8s: true, startControlPlane: vi.fn(() => undefined) })
     await expect(instance.start()).rejects.toThrow(/requires an authoritative CP organization registry/)
     await instance.stop()

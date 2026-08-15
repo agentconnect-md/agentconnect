@@ -1,8 +1,8 @@
 /**
  * Placement primitives shared by the agent repository and the one writer that has to settle
- * placements from OUTSIDE it: retiring an install-wide cloud member, where the daemon delete
+ * placements from OUTSIDE it: retiring an install-wide pool member, where the daemon delete
  * and the settlement of every agent it hosted must land in one transaction
- * (`daemon.repo.ts#retireCloudMember`).
+ * (`daemon.repo.ts#retirePoolMember`).
  *
  * Placement/delegation lock order:
  *   Agent FOR UPDATE → active WebchatMcpDelegation rows.

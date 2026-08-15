@@ -147,7 +147,7 @@ export interface RegisterReqInput {
 
 export interface DaemonRecord {
   id: DaemonId
-  /** Null only for an install-wide cloud-daemon member. */
+  /** Null only for an install-wide pool member. */
   orgId: OrgId | null
   host: string | null
   /** Human-assigned display name (console-set); null until a user names it. */
@@ -209,8 +209,8 @@ export interface DaemonRepo {
     clusterIdentity: string,
     opts?: { adoptDaemonId?: string }
   ): Promise<DaemonRecord | null>
-  /** Resolve one install-wide cloud member by its reviewed ServiceAccount subject and Pod UID. */
-  resolveCloudClusterIdentity(clusterIdentity: string, clusterPodUid: string): Promise<DaemonRecord>
+  /** Resolve one install-wide pool member by its reviewed ServiceAccount subject and Pod UID. */
+  resolvePoolClusterIdentity(clusterIdentity: string, clusterPodUid: string): Promise<DaemonRecord>
   /** The Kubernetes identity a daemon record is bound to, or null for an unknown/key daemon. */
   findClusterIdentity(daemonId: DaemonId): Promise<{ orgId: string | null; clusterIdentity: string } | null>
   /** Ids of the org's daemons bound to a Kubernetes identity — the ones the control
@@ -259,27 +259,27 @@ export interface DaemonRepo {
    */
   delete(orgId: OrgId, daemonId: DaemonId): Promise<void>
   /**
-   * Install-wide cloud members nothing has been heard from since `cutoff` — the rows left
+   * Install-wide pool members nothing has been heard from since `cutoff` — the rows left
    * behind by replaced Pods, which no org's DELETE can reach because no org owns them
    * (agentconnect-org-operator.md §"The cloud daemon, which serves every org": a replacement
    * Pod gets a new daemon ID). System-tier and deliberately fleet-wide, like
    * {@link DaemonRepo.findReassignable}. Never-connected rows are judged by `createdAt`.
    */
-  findRetiredCloudMembers(cutoff: Date): Promise<DaemonRecord[]>
+  findRetiredPoolMembers(cutoff: Date): Promise<DaemonRecord[]>
   /**
-   * Retire ONE install-wide cloud member: the fenced delete (cascading exactly like
+   * Retire ONE install-wide pool member: the fenced delete (cascading exactly like
    * {@link DaemonRepo.delete}) plus the database-side settlement of every agent it hosted, in
    * one transaction — so no crash can leave an agent unplaced but still `active`.
    *
    * A compare-and-delete, not a delete: the whole fence rides one statement — the org-less
-   * cloud shape (so it cannot touch an org's own daemon), the same `retiredBefore` cutoff the
+   * pool shape (so it cannot touch an org's own daemon), the same `retiredBefore` cutoff the
    * worklist selected on, and the `sessionEpoch` observed there, which a (re)auth bumps before
    * the first heartbeat moves `lastSeenAt`. A row that stopped matching yields
    * `deleted: false`, having written nothing, so nothing downstream runs for a member that
    * came back. `settled` is the agents this call actually unplaced — the audience for the
    * out-of-database pushes that follow, excluding any a concurrent writer had already moved.
    */
-  retireCloudMember(
+  retirePoolMember(
     daemonId: DaemonId,
     fence: { retiredBefore: Date; sessionEpoch: bigint }
   ): Promise<{ deleted: boolean; settled: { id: AgentId; orgId: OrgId }[] }>
@@ -290,9 +290,9 @@ export interface DaemonRepo {
   /** Daemons unreachable for longer than `graceSec` — reassignment candidates (§4.9).
    *  System-tier: the watchdog's worklist is deliberately fleet-wide. */
   findReassignable(graceSec: number, now: Date): Promise<DaemonRecord[]>
-  /** Org-owned point read; shared cloud members are deliberately absent. */
+  /** Org-owned point read; shared pool members are deliberately absent. */
   get(orgId: OrgId, daemonId: DaemonId): Promise<DaemonRecord | null>
-  /** Placement/display read admitting both org-owned daemons and install-wide cloud members. */
+  /** Placement/display read admitting both org-owned daemons and install-wide pool members. */
   getAvailable(orgId: OrgId, daemonId: DaemonId): Promise<DaemonRecord | null>
   /** Tenancy-UNSCOPED read for internal trust domains — WS handlers resolving
    *  their own connection's daemon, orchestration/placement resolving a daemon
@@ -301,7 +301,7 @@ export interface DaemonRepo {
   getUnscoped(daemonId: DaemonId): Promise<DaemonRecord | null>
   /** Owned fleet, optionally filtered to one org; undefined is the internal fleet-wide read. */
   list(orgId?: OrgId, viewer?: ViewCtx): Promise<DaemonRecord[]>
-  /** Display/placement fleet including install-wide cloud members. */
+  /** Display/placement fleet including install-wide pool members. */
   listAvailable(orgId: OrgId, viewer?: ViewCtx): Promise<DaemonRecord[]>
 }
 

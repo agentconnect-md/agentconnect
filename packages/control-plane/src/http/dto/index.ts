@@ -196,7 +196,7 @@ export const DaemonViewDto = z.object({
   lifecycleOp: DaemonLifecycleOpDto.nullable(),
   /** Live connection status overlaid from the in-memory index (not the stale durable field). */
   status: z.string(),
-  /** An install-wide cloud member (`Daemon.orgId === null`, one row per cloud-daemon Pod):
+  /** An install-wide pool member (`Daemon.orgId === null`, one row per pool member Pod):
    *  managed infrastructure every org shares, not a machine this org connected. The console
    *  collapses the whole pool into its single "AgentConnect Cloud" entry. */
   cloud: z.boolean(),

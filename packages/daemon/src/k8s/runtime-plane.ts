@@ -71,9 +71,9 @@ export async function reapExpiredProbeClaims(
  * daemon's own host and no Sandbox was ever created.
  */
 export interface K8sRuntimePlaneOptions {
-  /** Connection-scoped org for an envelope daemon; absent for an install-wide cloud daemon. */
+  /** Connection-scoped org for an envelope daemon; absent for an install-wide pool member. */
   orgId?: string
-  /** Per-agent tenant lookup used by an install-wide cloud daemon. */
+  /** Per-agent tenant lookup used by an install-wide pool member. */
   orgForAgent?: (agentId: string) => string | undefined
   /** Warm pool the claims reference. v1beta1 requires one; a cold pool is `replicas: 0`. */
   warmPoolName?: string

@@ -116,29 +116,29 @@ describe('GET /daemons — live-status overlay', () => {
     expect(d!.status).toBe('offline') // durable status is still `ready`, but it is not connected
   })
 
-  it('lists an install-wide cloud daemon without granting org-owned mutation access', async () => {
-    const cloud = await new PgDaemonRepo(prisma).resolveCloudClusterIdentity(
+  it('lists an install-wide pool member without granting org-owned mutation access', async () => {
+    const poolMember = await new PgDaemonRepo(prisma).resolvePoolClusterIdentity(
       'system:serviceaccount:agentconnect:ac-cloud-daemon',
       'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
     )
     running = buildHttpApp(prisma)
 
     const rows = (await running.app.inject({ method: 'GET', url: `${ORG}/daemons` })).json() as DaemonDto[]
-    expect(rows.find((row) => row.daemonId === cloud.id)).toMatchObject({
+    expect(rows.find((row) => row.daemonId === poolMember.id)).toMatchObject({
       canEdit: false,
       canManageSharing: false,
       canManageLifecycle: false
     })
 
-    const issueKey = await running.app.inject({ method: 'POST', url: `${ORG}/daemons/${cloud.id}/keys` })
+    const issueKey = await running.app.inject({ method: 'POST', url: `${ORG}/daemons/${poolMember.id}/keys` })
     expect(issueKey.statusCode).toBe(404)
-    expect(await prisma.apiKey.count({ where: { daemonId: cloud.id } })).toBe(0)
+    expect(await prisma.apiKey.count({ where: { daemonId: poolMember.id } })).toBe(0)
 
-    expect((await running.app.inject({ method: 'POST', url: `${ORG}/daemons/${cloud.id}/restart` })).statusCode).toBe(
-      404
-    )
     expect(
-      (await running.app.inject({ method: 'PATCH', url: `${ORG}/daemons/${cloud.id}`, payload: { name: 'mine' } }))
+      (await running.app.inject({ method: 'POST', url: `${ORG}/daemons/${poolMember.id}/restart` })).statusCode
+    ).toBe(404)
+    expect(
+      (await running.app.inject({ method: 'PATCH', url: `${ORG}/daemons/${poolMember.id}`, payload: { name: 'mine' } }))
         .statusCode
     ).toBe(404)
   })

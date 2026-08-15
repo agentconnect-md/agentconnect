@@ -12,17 +12,17 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
 const options: DaemonSelectOption[] = [
   {
-    value: 'cloud-1',
+    value: 'pool-1',
     label: 'AgentConnect Cloud',
     detail: 'Model usage included — no API key needed.',
-    cloud: true
+    pool: true
   },
   { value: 'edge-1', label: 'edge-1', detail: 'Uses the credentials on this machine.' },
   { value: 'edge-2', label: 'edge-2', detail: 'Offline — bring this machine online to use it.', disabled: true }
 ]
 
 function Harness() {
-  const [value, setValue] = useState('cloud-1')
+  const [value, setValue] = useState('pool-1')
   return <DaemonSelect value={value} options={options} onChange={setValue} />
 }
 
@@ -47,7 +47,7 @@ describe('DaemonSelect', () => {
     await act(async () => trigger.click())
     const rows = [...container!.querySelectorAll<HTMLButtonElement>('[role="option"]')]
 
-    expect(rows[0]?.dataset.cloud).toBe('true')
+    expect(rows[0]?.dataset.pool).toBe('true')
     expect(rows[0]?.textContent).toContain('AgentConnect Cloud')
     expect(rows[0]?.textContent).toContain('Model usage included — no API key needed.')
     expect(rows).toHaveLength(3)

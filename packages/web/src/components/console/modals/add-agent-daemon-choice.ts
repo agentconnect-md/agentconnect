@@ -1,9 +1,9 @@
 import type { DaemonRow } from '@/lib/data'
 
-type DaemonChoiceRow = Pick<DaemonRow, 'cloud' | 'daemonId' | 'status'>
+type DaemonChoiceRow = Pick<DaemonRow, 'pool' | 'daemonId' | 'status'>
 
 export interface AddAgentDaemonChoice<T extends DaemonChoiceRow> {
-  cloudAvailable: boolean
+  poolAvailable: boolean
   daemon: T | undefined
   daemonId: string | null
   localDaemons: T[]
@@ -20,14 +20,14 @@ export function addAgentDaemonChoice<T extends DaemonChoiceRow>(
   daemons: T[],
   selectedDaemonId: string
 ): AddAgentDaemonChoice<T> {
-  const cloudDaemons = daemons.filter((daemon) => daemon.cloud && daemon.status === 'online')
-  const localDaemons = onlineFirst(daemons.filter((daemon) => !daemon.cloud))
+  const poolDaemons = daemons.filter((daemon) => daemon.pool && daemon.status === 'online')
+  const localDaemons = onlineFirst(daemons.filter((daemon) => !daemon.pool))
   const selectedLocal = localDaemons.find((daemon) => daemon.daemonId === selectedDaemonId)
-  const value = selectedLocal?.daemonId ?? (cloudDaemons.length > 0 ? '' : (localDaemons[0]?.daemonId ?? ''))
-  const daemon = value ? localDaemons.find((candidate) => candidate.daemonId === value) : cloudDaemons[0]
+  const value = selectedLocal?.daemonId ?? (poolDaemons.length > 0 ? '' : (localDaemons[0]?.daemonId ?? ''))
+  const daemon = value ? localDaemons.find((candidate) => candidate.daemonId === value) : poolDaemons[0]
 
   return {
-    cloudAvailable: cloudDaemons.length > 0,
+    poolAvailable: poolDaemons.length > 0,
     daemon,
     daemonId: value || null,
     localDaemons,
@@ -35,7 +35,7 @@ export function addAgentDaemonChoice<T extends DaemonChoiceRow>(
       ? daemon
         ? { kind: 'daemon', daemonId: daemon.daemonId }
         : null
-      : cloudDaemons.length > 0
+      : poolDaemons.length > 0
         ? { kind: 'pool' }
         : null,
     value

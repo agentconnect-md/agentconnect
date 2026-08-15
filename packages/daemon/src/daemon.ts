@@ -2474,7 +2474,7 @@ export class Daemon {
       startK8sPlane?: typeof startK8sRuntimePlane
       /** Test seam only; production `--k8s` always reads the fixed Secret mount. */
       openDataPlane?: typeof openMountedPostgresDataPlane
-      /** Test seam for the cloud startup barrier; production waits for CP register/ok. */
+      /** Test seam for the pool member startup barrier; production waits for CP register/ok. */
       startControlPlane?: (root: string) => Promise<void> | undefined
       /** Test seams for local catalog resolution and executable/state filtering. */
       resolveCatalog?: typeof resolveRuntimeCatalog
@@ -3092,7 +3092,7 @@ export class Daemon {
           }
         })()
       : this.k8s
-        ? this.declaredCloudCatalog(root, resolvedCatalog)
+        ? this.declaredPoolCatalog(root, resolvedCatalog)
         : installedRuntimeCatalog(resolvedCatalog)
     const { runtimes: installed, entries: installedEntries } = installedCatalog
     this.runtimeCatalog = installedCatalog
@@ -3592,11 +3592,11 @@ export class Daemon {
     // Install synthetic evaluation integrations before routing observes them; they never open sockets.
     this.installEvaluationEnvironment()
     const startControlPlane = this.opts.startControlPlane ?? ((cpRoot: string) => this.startCpClient(cpRoot))
-    const cloudCpReady = this.k8s ? startControlPlane(root) : undefined
-    if (this.k8s && !cloudCpReady)
+    const poolCpReady = this.k8s ? startControlPlane(root) : undefined
+    if (this.k8s && !poolCpReady)
       throw new Error('daemon startup refused: --k8s requires an authoritative CP organization registry')
-    if (cloudCpReady) this.log.info('data-plane: waiting for the initial CP organization registry before ingress')
-    await cloudCpReady
+    if (poolCpReady) this.log.info('data-plane: waiting for the initial CP organization registry before ingress')
+    await poolCpReady
     if (this.k8s) {
       this.store.recoverPermissionRequests(
         (this.cpAgents?.agents() ?? []).map((agent) => agent.id),
@@ -21448,10 +21448,10 @@ export class Daemon {
       }
       return undefined
     }
-    // A managed cloud daemon's credential is its Kubernetes identity, full stop.
+    // A pool member's credential is its Kubernetes identity, full stop.
     if (this.k8s && !process.env[K8S_ORG_ID_ENV]?.trim() && !this.clusterIdentityToken) {
       this.log.error(
-        `cp: not connecting — a cloud daemon authenticates with its projected identity token, expected at ${CP_IDENTITY_TOKEN_PATH}`
+        `cp: not connecting — a pool member authenticates with its projected identity token, expected at ${CP_IDENTITY_TOKEN_PATH}`
       )
       return
     }
@@ -21494,7 +21494,7 @@ export class Daemon {
       // A forwarded cross-daemon agent-call — terminal-verify + dispatch (P2).
       onRelayAgentMsg: (msg) => this.handleRelayAgentMsg(msg)
     })
-    // Self-hosted daemons boot-dial persisted relays; cloud ingress waits for fresh org authority.
+    // Self-hosted daemons boot-dial persisted relays; pool ingress waits for fresh org authority.
     if (this.cfg.relays.length && !this.k8s) this.relays.converge(this.cfg.relays)
 
     let resolveInitialRegistry!: () => void
@@ -21813,7 +21813,7 @@ export class Daemon {
     }
   }
 
-  private declaredCloudCatalog(root: string, resolved: ResolvedRuntimeCatalog): ResolvedRuntimeCatalog {
+  private declaredPoolCatalog(root: string, resolved: ResolvedRuntimeCatalog): ResolvedRuntimeCatalog {
     // Kept for a file-supplied table (an override, or a daemon started before its first probe
     // returns). The authoritative answer comes from the sandbox itself — see probeK8sRuntimes.
     this.k8sResolvedCatalog = resolved

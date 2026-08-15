@@ -5,7 +5,7 @@ export interface DaemonSelectOption {
   value: string
   label: string
   detail: string
-  cloud?: boolean
+  pool?: boolean
   disabled?: boolean
 }
 
@@ -127,18 +127,18 @@ export function DaemonSelect({
           {selected && (
             <span
               className={`flex h-6 w-6 flex-none items-center justify-center rounded-md ${
-                selected.cloud ? 'bg-(--brand-soft)' : 'bg-(--surface-sunken)'
+                selected.pool ? 'bg-(--brand-soft)' : 'bg-(--surface-sunken)'
               }`}
             >
               <Icon
-                name={selected.cloud ? 'cloud' : selected.value ? 'server' : 'server-off'}
+                name={selected.pool ? 'cloud' : selected.value ? 'server' : 'server-off'}
                 size={14}
-                color={selected.cloud ? 'var(--brand)' : 'var(--text-tertiary)'}
+                color={selected.pool ? 'var(--brand)' : 'var(--text-tertiary)'}
               />
             </span>
           )}
           <span className="truncate">{selected?.label ?? placeholder}</span>
-          {selected?.cloud && (
+          {selected?.pool && (
             <span className="flex-none rounded-full bg-(--brand-soft) px-[7px] py-[2px] font-sans text-[10.5px] font-semibold leading-normal text-(--brand-soft-text)">
               Cloud
             </span>
@@ -169,7 +169,7 @@ export function DaemonSelect({
               const isActive = index === activeIndex
               return (
                 <button
-                  key={`${option.cloud ? 'cloud' : 'daemon'}:${option.value}`}
+                  key={`${option.pool ? 'cloud' : 'daemon'}:${option.value}`}
                   id={`${listboxId}-option-${index}`}
                   type="button"
                   role="option"
@@ -177,7 +177,7 @@ export function DaemonSelect({
                   aria-selected={isSelected}
                   aria-disabled={option.disabled || undefined}
                   disabled={option.disabled}
-                  data-cloud={option.cloud || undefined}
+                  data-pool={option.pool || undefined}
                   className={`fopt min-h-[58px] gap-[10px] rounded-md px-2 py-[7px] text-[13px] ${
                     option.disabled
                       ? 'cursor-not-allowed text-(--text-disabled) opacity-65'
@@ -195,19 +195,19 @@ export function DaemonSelect({
                   </span>
                   <span
                     className={`flex h-8 w-8 flex-none items-center justify-center rounded-md ${
-                      option.cloud ? 'bg-(--brand-soft)' : 'bg-(--surface-sunken)'
+                      option.pool ? 'bg-(--brand-soft)' : 'bg-(--surface-sunken)'
                     }`}
                   >
                     <Icon
-                      name={option.cloud ? 'cloud' : option.value ? 'server' : 'server-off'}
+                      name={option.pool ? 'cloud' : option.value ? 'server' : 'server-off'}
                       size={16}
-                      color={option.cloud ? 'var(--brand)' : 'var(--text-tertiary)'}
+                      color={option.pool ? 'var(--brand)' : 'var(--text-tertiary)'}
                     />
                   </span>
                   <span className="min-w-0 flex-1">
                     <span className="flex items-center gap-2 font-sans text-[13px] font-semibold leading-normal">
                       <span className="truncate">{option.label}</span>
-                      {option.cloud && (
+                      {option.pool && (
                         <span className="flex-none rounded-full bg-(--brand-soft) px-[7px] py-[2px] font-sans text-[10.5px] font-semibold leading-normal text-(--brand-soft-text)">
                           Cloud
                         </span>

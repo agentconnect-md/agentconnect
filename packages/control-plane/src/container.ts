@@ -105,10 +105,10 @@ import { Placement } from './orchestrator/placement.js'
 import { Watchdog } from './orchestrator/watchdog.js'
 import { CronRunReaper } from './orchestrator/cronRunReaper.js'
 import {
-  CloudDaemonReaper,
-  CLOUD_DAEMON_REAP_AFTER_MS,
-  CLOUD_DAEMON_REAP_INTERVAL_MS
-} from './orchestrator/cloudDaemonReaper.js'
+  PoolMemberReaper,
+  POOL_MEMBER_REAP_AFTER_MS,
+  POOL_MEMBER_REAP_INTERVAL_MS
+} from './orchestrator/poolMemberReaper.js'
 import { RelaySweeper } from './orchestrator/relaySweeper.js'
 import { RelayRoster } from './orchestrator/relayRoster.js'
 import { WebchatMcpOperationReaper } from './orchestrator/webchatMcpOperationReaper.js'
@@ -167,7 +167,7 @@ import type { RelayWsServerDeps } from './ws/relay-gateway.js'
 import { buildHttpServer } from './http/server.js'
 import type { HttpDeps } from './http/deps.js'
 import { createReadiness, type Readiness } from './http/readiness.js'
-import { retireCloudDaemonMember } from './http/daemon-removal.js'
+import { retirePoolMember } from './http/daemon-removal.js'
 import { McpRateLimiter } from './http/mcp/rate-limit.js'
 import { RemoteGrantAuthenticator } from './http/mcp/remote-grant-authenticator.js'
 import { InternalInvocationAuth } from './http/mcp/internal-invocation-auth.js'
@@ -401,7 +401,7 @@ export function buildContainer(
       ? new ClusterDaemonIdentityService(
           clusterHttp,
           repos.daemon,
-          // Where this install's cloud daemons live; its own namespace unless told otherwise.
+          // Where this install's pool members live; its own namespace unless told otherwise.
           config.CLUSTER_CLOUD_DAEMON_NAMESPACE ?? clusterAccess.namespace
         )
       : undefined
@@ -1135,17 +1135,17 @@ export function buildContainer(
     defaultWebchatMcpMetrics
   )
 
-  // Retires the daemon rows replaced cloud Pods leave behind (a cloud member is bound to
+  // Retires the daemon rows replaced pool member Pods leave behind (a pool member is bound to
   // its Pod UID, so a new Pod means a new record). Org-less rows no `DELETE /daemons/:id`
   // can reach, which is why they accumulate in every org's fleet. Only where cluster tokens
-  // are accepted at all: nowhere else can a cloud member exist.
-  const cloudDaemonReaper = clusterIdentity
-    ? new CloudDaemonReaper(
+  // are accepted at all: nowhere else can a pool member exist.
+  const poolMemberReaper = clusterIdentity
+    ? new PoolMemberReaper(
         repos.daemon,
-        (member, retiredBefore) => retireCloudDaemonMember(httpDeps, member, retiredBefore, http.log),
+        (member, retiredBefore) => retirePoolMember(httpDeps, member, retiredBefore, http.log),
         connReg,
         clock,
-        { retireAfterMs: CLOUD_DAEMON_REAP_AFTER_MS, intervalMs: CLOUD_DAEMON_REAP_INTERVAL_MS },
+        { retireAfterMs: POOL_MEMBER_REAP_AFTER_MS, intervalMs: POOL_MEMBER_REAP_INTERVAL_MS },
         http.log
       )
     : undefined
@@ -1701,7 +1701,7 @@ export function buildContainer(
     startBackground() {
       cronRunReaper.start()
       hookRunReaper.start()
-      cloudDaemonReaper?.start()
+      poolMemberReaper?.start()
       webchatMcpOperationReaper.start()
       githubRunReporter?.start()
       hookRedeliveryReconciler?.start()
@@ -1717,7 +1717,7 @@ export function buildContainer(
     async shutdown() {
       cronRunReaper.stop()
       hookRunReaper.stop()
-      cloudDaemonReaper?.stop()
+      poolMemberReaper?.stop()
       const webchatMcpOperationSettled = webchatMcpOperationReaper.stopAndSettle()
       githubRunReporter?.stop()
       hookRedeliveryReconciler?.stop()

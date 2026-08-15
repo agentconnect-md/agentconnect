@@ -220,7 +220,7 @@ export class RelayDaemonConnection {
     }
     let result: RcVerifyResult
     try {
-      // CP verifies the untrusted echoed id against the reviewed cloud Pod UID.
+      // CP verifies the untrusted echoed id against the reviewed pool member Pod UID.
       result = await this.deps.verify(presented.kind, presented.credential, hello.daemonId)
     } catch {
       // Link not READY / CP error → transient; the daemon backs off and retries.
