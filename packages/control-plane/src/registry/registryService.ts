@@ -101,11 +101,11 @@ export class DaemonRegistryService implements DaemonRegistry {
   ) {}
 
   async upsertOnRegister(daemonId: DaemonId, req: RegisterReq): Promise<void> {
-    await this.daemons.applyRegister(daemonId, {
-      host: req.host,
-      capabilities: req.capabilities,
-      maxAgents: req.maxAgents
-    })
+    await this.daemons.applyRegister(
+      daemonId,
+      { host: req.host, capabilities: req.capabilities, maxAgents: req.maxAgents, generation: req.generation },
+      new Date(this.clock.now())
+    )
   }
 
   async updateCapabilities(daemonId: DaemonId, capabilities: RegisterReq['capabilities']): Promise<void> {

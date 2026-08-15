@@ -380,6 +380,10 @@ model Daemon {
   clusterPodUid   String?
   attestationFp String? // 🅼 last accepted attestation digest
   capabilities  Json    @default("{}") @db.JsonB // {platforms[],runtimes[],acp,features[]}
+  /// Rollout generation a pool member reported on register (RegisterReq.generation, the pod-template
+  /// hash). Only the newest live generation of a set claims vacated duty groups; null never excludes.
+  generation      String?
+  generationSince DateTime? @db.Timestamptz(6) // when this row first reported its current generation
   mcpServers    Json    @default("[]") @db.JsonB // facts/daemon-runtimes MCP-server list (FactsMcpServer[] = {name,transport}); replaced whole per frame
   maxAgents     Int     @default(0)
 

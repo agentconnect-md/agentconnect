@@ -19,6 +19,10 @@ import { GitCommitIdentity } from './gitcred.js'
 
 export const RegisterReq = z.object({
   host: z.string(), // hostname (display only)
+  // Rollout generation of a pool member (the deployment's pod-template hash, from AC_POD_TEMPLATE_HASH).
+  // Only the newest live generation of a member set may claim vacated duty groups; absent for
+  // local daemons and older pods, which the rule never excludes.
+  generation: z.string().min(1).max(128).optional(),
   capabilities: z.object({
     platforms: z.array(Platform), // D3 adapters present
     runtimes: z.array(z.string()), // e.g. ["claude","codex"]

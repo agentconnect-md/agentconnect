@@ -47,7 +47,7 @@ async function seedGroup(opts: { holder?: string; term?: bigint; expiresAt?: Dat
   })
 }
 
-async function ready(h: ReturnType<typeof buildWsHarness>, opts: { orgScoped?: boolean } = {}) {
+async function ready(h: ReturnType<typeof buildWsHarness>, opts: { orgScoped?: boolean; generation?: string } = {}) {
   const { conn, stub } = h.connect()
   if (opts.orgScoped) {
     const token = await h.mintToken(DAEMON)
@@ -61,6 +61,7 @@ async function ready(h: ReturnType<typeof buildWsHarness>, opts: { orgScoped?: b
     'register',
     {
       host: 'member-1',
+      ...(opts.generation ? { generation: opts.generation } : {}),
       capabilities: { platforms: ['slack'], runtimes: ['claude'], acp: true },
       maxAgents: 8,
       localState: { assignments: [], crons: [], leases: [], agents: [], integrations: [], stagedAgents: [] }
@@ -183,6 +184,37 @@ describe('duty lease exchange (protocol level, real Postgres)', () => {
     expect((await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })).holder).toBe(DAEMON)
   })
 
+  it('a member of an older generation claims nothing while a newer live peer is registered — the rollout barrier', async () => {
+    await seedGroup()
+    const h = buildWsHarness(prisma)
+    // A replacement pod of the newer generation, live (seen within the lease horizon).
+    await prisma.daemon.create({
+      data: {
+        id: OTHER,
+        orgId: null,
+        maxAgents: 8,
+        status: 'ready',
+        generation: 'new',
+        generationSince: new Date(h.clock.now()),
+        lastSeenAt: new Date(h.clock.now())
+      }
+    })
+    await joinPool(prisma, OTHER)
+    const { stub } = await ready(h, { generation: 'old' })
+    // Registration stamped the claimant's generation, first seen at an earlier moment.
+    await prisma.daemon.update({ where: { id: DAEMON }, data: { generationSince: new Date(h.clock.now() - 600_000) } })
+
+    await beat(stub, { held: [], headroom: 4 })
+    expect(stub.sent.filter((f) => f.type === 'duty/grant')).toEqual([])
+    expect((await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })).holder).toBeNull()
+
+    // The newer peer stops beating past the lease horizon ⇒ the barrier lifts.
+    await prisma.daemon.update({ where: { id: OTHER }, data: { lastSeenAt: new Date(h.clock.now() - LEASE_MS - 1) } })
+    stub.inject('heartbeat', heartbeat({ held: [], headroom: 4 }))
+    await stub.expectFrame('duty/grant')
+    expect((await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })).holder).toBe(DAEMON)
+  })
+
   it('within the recovery grace no vacancy grant flows; after it, grants resume', async () => {
     await seedGroup()
     const h = buildWsHarness(prisma, { dutyLease: { recoveryGraceMs: 60_000 } })
@@ -204,8 +236,9 @@ describe('duty lease exchange (protocol level, real Postgres)', () => {
     const { stub } = await ready(h)
 
     h.clock.advance(1_000)
-    stub.inject('heartbeat', heartbeat({ held: [{ groupId: GROUP, term: '1' }], headroom: 0 }))
-    await new Promise((r) => setTimeout(r, 25))
+    // Wait for the exchange's own confirmation rather than a fixed pause: the renewal is written
+    // before it, and a slow shared Postgres must not turn this into a timing race.
+    await beat(stub, { held: [{ groupId: GROUP, term: '1' }], headroom: 0 })
 
     const row = await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })
     expect(row.term).toBe(1n)

@@ -201,6 +201,8 @@ export interface CpClientDeps {
   daemonId?: string
   agentVersion: string
   host: string
+  /** Rollout generation (pod-template hash) — a pool member's; absent for a local daemon. */
+  generation?: string
   heartbeatDefaultMs: number
   maxAgents: number
   capabilities: () => RegisterReq['capabilities']
@@ -513,6 +515,7 @@ export class CpClient {
     this.lastSentCapabilities = JSON.stringify(registerCapabilities)
     const register = buildEnvelope('register', {
       host: this.deps.host,
+      ...(this.deps.generation ? { generation: this.deps.generation } : {}),
       capabilities: registerCapabilities,
       maxAgents: this.deps.maxAgents,
       localState: this.deps.localState()

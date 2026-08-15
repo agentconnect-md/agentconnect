@@ -243,3 +243,5 @@ export const CP_IDENTITY_TOKEN_PATH = '/var/run/ac-cp-identity/token'
  *  `spec.controlPlane.url`. The pod has no config file to read it from, and a URL is not a
  *  secret. Same two-sided agreement as the token path: the operator sets it, the daemon reads it. */
 export const CP_URL_ENV = 'AC_CP_URL'
+/** A pool member's rollout generation (its pod-template hash), reported on register (frames/register.ts). */
+export const POD_TEMPLATE_HASH_ENV = 'AC_POD_TEMPLATE_HASH'

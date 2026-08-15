@@ -351,6 +351,34 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
     })
   }
 
+  async newerGenerationLive(holder: DaemonId, now: Date, liveMs: number): Promise<boolean> {
+    const liveSince = new Date(now.getTime() - liveMs)
+    // Live = beat within the lease horizon, or the claimant itself (it is beating right now). A
+    // generation's rank is its earliest live member's first-seen stamp: the newest generation is
+    // the one whose earliest live member arrived last, so a rollout's replacement set outranks the
+    // set it replaces from the moment its first member registers.
+    const rows = await this.prisma.$queryRaw<{ newer: boolean }[]>(Prisma.sql`
+      WITH me AS (
+        SELECT d."generation", d."generationSince", m."setId"
+        FROM "daemon" d JOIN "member_set_member" m ON m."daemonId" = d.id
+        WHERE d.id = ${holder}::uuid AND d."generation" IS NOT NULL
+      ),
+      gens AS (
+        SELECT d."generation", MIN(d."generationSince") AS since
+        FROM "daemon" d JOIN "member_set_member" m ON m."daemonId" = d.id, me
+        WHERE m."setId" = me."setId" AND d."generation" IS NOT NULL
+          AND (d."lastSeenAt" >= ${liveSince} OR d.id = ${holder}::uuid)
+        GROUP BY d."generation"
+      )
+      SELECT EXISTS (
+        SELECT 1 FROM gens other, gens mine, me
+        WHERE mine."generation" = me."generation" AND other."generation" <> me."generation"
+          AND other.since > mine.since
+      ) AS newer
+    `)
+    return rows[0]?.newer === true
+  }
+
   async holdsAgent(holder: DaemonId, agentId: AgentId, now: Date): Promise<boolean> {
     // Unexpired-lease join only: a lapsed or reassigned group is not a holding,
     // so a stale member cannot keep pulling definitions it no longer serves.

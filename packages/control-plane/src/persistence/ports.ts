@@ -143,6 +143,8 @@ export interface RegisterReqInput {
   host: RegisterReq['host']
   capabilities: RegisterReq['capabilities']
   maxAgents: RegisterReq['maxAgents']
+  /** Rollout generation (pod-template hash); absent ⇒ stored null. */
+  generation?: RegisterReq['generation']
 }
 
 export interface DaemonRecord {
@@ -222,7 +224,8 @@ export interface DaemonRepo {
    * increasing epoch. First call for a daemon creates the row.
    */
   upsertOnAuth(input: AuthReqInput): Promise<{ daemon: DaemonRecord; sessionEpoch: bigint }>
-  applyRegister(daemonId: DaemonId, reg: RegisterReqInput): Promise<DaemonRecord>
+  /** Also records `generation`, stamping `generationSince` only when the value changes. */
+  applyRegister(daemonId: DaemonId, reg: RegisterReqInput, now: Date): Promise<DaemonRecord>
   /** Full-replace the stored capabilities from a mid-connection `capabilities/update`. */
   setCapabilities(daemonId: DaemonId, capabilities: RegisterReqInput['capabilities']): Promise<void>
   /** Replace the daemon-level MCP-server list (`facts/daemon-runtimes.mcpServers`) wholesale. */
@@ -5118,6 +5121,11 @@ export interface DutyGroupRepo {
    *  agent? The authorization for `duty/fetch`: a member may pull exactly the
    *  agent definitions it has won, and nothing else. */
   holdsAgent(holder: DaemonId, agentId: AgentId, now: Date): Promise<boolean>
+  /** The rollout barrier (k8s-daemon-pool.md §12): is there a LIVE member of the claimant's set — one
+   *  seen within `liveMs` — whose generation is different and NEWER than the claimant's? Generations
+   *  are ordered by the earliest live member's `generationSince`. A claimant with a null generation,
+   *  or in no set, is never held back; that is what keeps local daemons and older pods unaffected. */
+  newerGenerationLive(holder: DaemonId, now: Date, liveMs: number): Promise<boolean>
   /** Record the holds this member reports in its heartbeat digest, returning the ones that became
    *  confirmed on THIS beat. A grant is applied daemon-side only after its install succeeds
    *  (#972), so the digest IS the proof that the member is serving — the same signal the

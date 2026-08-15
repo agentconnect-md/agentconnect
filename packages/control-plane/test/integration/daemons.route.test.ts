@@ -59,11 +59,15 @@ function liveness(
 async function seedDaemon(features = ['worktree-iso']) {
   const repo = new PgDaemonRepo(prisma)
   await repo.upsertOnAuth({ daemonId: DaemonId(DAEMON), orgId: OrgId(DEFAULT_ORG_ID), agentVersion: '0.4.2' })
-  await repo.applyRegister(DaemonId(DAEMON), {
-    host: 'macbook-pro',
-    capabilities: { platforms: ['slack'], runtimes: ['claude', 'codex'], acp: true, features },
-    maxAgents: 3
-  })
+  await repo.applyRegister(
+    DaemonId(DAEMON),
+    {
+      host: 'macbook-pro',
+      capabilities: { platforms: ['slack'], runtimes: ['claude', 'codex'], acp: true, features },
+      maxAgents: 3
+    },
+    new Date()
+  )
 }
 
 type DaemonDto = {
