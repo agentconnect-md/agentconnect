@@ -920,8 +920,8 @@ export const CreateSkillSourceBody = z
   .object({
     name: SkillSourceName,
     source: SkillSourceArg,
-    // Exact decimal identity (BigInt on the wire). Optional only so historical
-    // unbound rows can be repaired; projection omits them until bound.
+    // Exact decimal identity (BigInt on the wire). Optional because the route
+    // resolves it from `source`; supplying it only overrides that lookup.
     githubRepoId: GithubRepoId.optional(),
     ref: SkillSourceRef.optional(),
     subDir: SkillSourceSubDir.optional(),
@@ -941,6 +941,8 @@ export const CreateSkillSourceBody = z
 export const UpdateSkillSourceBody = z
   .object({
     source: SkillSourceArg.optional(),
+    // `null` parses so the route can answer it with a 400 rather than a schema
+    // error: clearing the identity is exactly the non-installable state.
     githubRepoId: GithubRepoId.nullable().optional(),
     ref: SkillSourceRef.nullable().optional(),
     subDir: SkillSourceSubDir.nullable().optional(),

@@ -75,6 +75,7 @@ import type { AgentMutationGate } from '../orchestrator/agentMutationGate.js'
 import type { SessionEventSink } from '../events/sink.js'
 import type { HumanAuthConfig } from './plugins/auth.js'
 import type { SkillRegistrySearcher } from './skills-registry.js'
+import type { PublicRepoResolver } from '../github/public-repo.js'
 import type { Readiness } from './readiness.js'
 import type { McpRateLimiter } from './mcp/rate-limit.js'
 import type { RemoteGrantAuthenticator } from './mcp/remote-grant-authenticator.js'
@@ -338,6 +339,10 @@ export interface HttpDeps {
    *  search route reports the index unreachable and the console offers the GitHub
    *  import path instead). */
   searchSkillRegistry?: SkillRegistrySearcher
+  /** Anonymous GitHub repo lookup that binds a skill source's numeric identity when
+   *  no org installation covers the owner (the skills.sh case). Optional/injectable
+   *  so tests stay offline; absent ⇒ only the installation path can bind. */
+  resolvePublicRepo?: PublicRepoResolver
   /** github-app workspaces façade; absent ⇒ feature disabled (GITHUB_APP_* unset) and
    *  every github route 404s. */
   github?: GithubService

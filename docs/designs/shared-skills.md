@@ -198,6 +198,25 @@ public-only. `githubRepoId` remains nullable in the database only so rolling
 upgrades can read historical rows; a current row is installable only after it is
 bound to GitHub's numeric repository identity.
 
+**Binding is the Control Plane's job, not the client's.** No console entry point
+can know the numeric ID -- it appears in no read the browser makes -- so the
+create/patch routes resolve it from `source` themselves: the org installation
+first when it covers the owner, then an anonymous public read, which is the only
+path available for a skills.sh hit whose repository belongs to no installation.
+A write that cannot bind is refused (400 when GitHub says the repository does not
+exist, 503 while GitHub is unreachable) rather than persisted as a row that looks
+enabled in the console and installs nothing. A `PATCH` re-binds when the source
+changes or the row never had an identity, which is how a historical unbound row
+is repaired; clearing the identity is refused.
+
+**The stored slug is canonicalized with the ID.** GitHub follows rename and
+transfer redirects, so the resolved `full_name` may not be the slug that was
+typed (`docker/docker` resolves as `moby/moby`). The daemon's numeric-identity
+check requires `full_name` to equal the configured source, so the route persists
+the canonical owner/repository -- rewriting only that half and preserving any
+`.git` suffix or `/tree/<ref>/<subdir>` the source carries. The two fields are
+written together or the write is refused; they may never disagree.
+
 ### Per-agent binding: inline source definitions in `AgentSpec` and `agent.json`
 
 The key decision is that **all information the daemon needs to acquire and
@@ -273,8 +292,8 @@ Every route follows `openapi.ts` requirements for tags, summary, and
 | `GET /skill-sources`                 | List sources.                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `GET /skill-sources/registry/search` | Search the public skills.sh index by skill name for the "Install from skills.sh" modal. Read-only proxy of the index `npx skills find` uses (skills.sh sends no CORS headers); each hit is normalized to `{id, name, source, installs}` and validated against the same `source` / `-s` grammars the create body enforces. Nothing is persisted, and `reachable:false` distinguishes "index down" from "no match". |
 | `POST /skill-sources/preview`        | Best-effort UI scan. Given `{installationId, owner, repo, ref?}`, use the selected GitHub App installation to return branch/tag choices and candidate `{name,dirPath}` skills. Preview is not persisted or authoritative; an empty list still permits “install all.”                                                                                                                                              |
-| `POST /skill-sources`                | Persist a public GitHub source and numeric repository ID. A migration-compatible unbound row remains visible but is omitted from `AgentSpec` until bound.                                                                                                                                                                                                                                                         |
-| `PATCH /skill-sources/:id`           | Change source, numeric repository ID, ref, subdirectory, or skills (name is immutable), then **repush every agent that references it**.                                                                                                                                                                                                                                                                           |
+| `POST /skill-sources`                | Persist a public GitHub source, resolving its numeric repository ID server-side (installation read, then anonymous public read). A source that cannot be bound is refused rather than stored non-installable; a body-supplied ID overrides the lookup.                                                                                                                                                            |
+| `PATCH /skill-sources/:id`           | Change source, numeric repository ID, ref, subdirectory, or skills (name is immutable), then **repush every agent that references it**. Re-binds the numeric ID when the source changes or the row is unbound (the repair path for historical rows); clearing it is refused.                                                                                                                                      |
 | `PUT /skill-sources/:id/sharing`     | Set `ResourceVisibility`, matching MCP providers.                                                                                                                                                                                                                                                                                                                                                                 |
 | `DELETE /skill-sources/:id`          | Delete a source only when no agent references it; otherwise return 409 and require explicit unselection first.                                                                                                                                                                                                                                                                                                    |
 
