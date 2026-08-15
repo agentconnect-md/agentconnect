@@ -728,9 +728,11 @@ describe('derived visibility — session bodies, usage', () => {
     const app = appAs(other).app
     expect((await app.inject({ method: 'GET', url: `${ORG}/agents/${R}` })).statusCode).toBe(404)
     for (const path of [`/sessions/${session}/messages`, `/sessions/${session}/tool-body?toolCallId=t1`]) {
+      // Past the audience gate: the row records no daemon, so the read follows the agent's
+      // serving daemon, which is offline here — a body-plane 503, never the gate's 404.
       const response = await app.inject({ method: 'GET', url: `${ORG}${path}` })
       expect(response.statusCode).toBe(503)
-      expect(response.json()).toMatchObject({ message: 'session has no recorded daemon' })
+      expect(response.json()).toMatchObject({ message: 'owning daemon is offline' })
     }
   })
 

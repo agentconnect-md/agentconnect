@@ -15,7 +15,7 @@ import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
 import { seedDaemon, seedAgent } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
-import { ControlSender } from '../../src/orchestrator/outbound.js'
+import { ControlSender, NoConnection } from '../../src/orchestrator/outbound.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import type { DaemonLiveness } from '../../src/ports.js'
 import type { SessionListReq, SessionListPage, SessionHistoryReq, SessionHistoryPage } from '@agentconnect.md/protocol'
@@ -41,13 +41,15 @@ const LIVE: DaemonLiveness = {
   get: (id) => (id === DAEMON ? { state: 'READY', reachable: true, sessionEpoch: 1 } : undefined)
 }
 
-/** A ControlSender spy answering sessionList + sessionHistory with canned data. */
+/** A ControlSender spy answering sessionList + sessionHistory with canned data. Daemons in
+ *  `unreachable` record the call and then throw `NoConnection`, as an absent socket would. */
 class SpyControl {
   listCalls: Array<{ daemonId: string; req: SessionListReq }> = []
   histCalls: Array<{ daemonId: string; req: SessionHistoryReq }> = []
   constructor(
     private readonly list: SessionListPage,
-    private readonly hist: SessionHistoryPage
+    private readonly hist: SessionHistoryPage,
+    private readonly unreachable: readonly string[] = []
   ) {}
   async sessionList(daemonId: string, req: SessionListReq): Promise<SessionListPage> {
     this.listCalls.push({ daemonId, req })
@@ -55,6 +57,7 @@ class SpyControl {
   }
   async sessionHistory(daemonId: string, req: SessionHistoryReq): Promise<SessionHistoryPage> {
     this.histCalls.push({ daemonId, req })
+    if (this.unreachable.includes(daemonId)) throw new NoConnection(daemonId)
     return this.hist
   }
 }
@@ -672,6 +675,48 @@ describe('GET /sessions/:id/messages (history pull via the session daemon)', () 
     const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${SESSION}/messages` })
     expect(res.statusCode).toBe(503)
     expect(res.json()).toMatchObject({ message: 'session has no recorded daemon' })
+  })
+
+  it('falls back to the serving daemon when the recorded one is unreachable', async () => {
+    await seedDaemon(prisma, DAEMON)
+    await seedDaemon(prisma, OTHER_DAEMON)
+    await seedAgent(prisma, AGENT, { daemonId: OTHER_DAEMON })
+    await seedSession(AGENT, DAEMON)
+    const spy = new SpyControl({ sessions: [] }, emptyHist, [DAEMON])
+    running = buildHttpApp(prisma, undefined, LIVE, spy as unknown as ControlSender)
+
+    const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${SESSION}/messages` })
+
+    expect(res.statusCode).toBe(200)
+    expect(spy.histCalls.map((c) => c.daemonId)).toEqual([DAEMON, OTHER_DAEMON])
+  })
+
+  it('reads from the serving daemon when the session has no recorded daemon', async () => {
+    await seedDaemon(prisma, OTHER_DAEMON)
+    await seedAgent(prisma, AGENT, { daemonId: OTHER_DAEMON })
+    await seedSession(AGENT)
+    const spy = new SpyControl({ sessions: [] }, emptyHist)
+    running = buildHttpApp(prisma, undefined, LIVE, spy as unknown as ControlSender)
+
+    const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${SESSION}/messages` })
+
+    expect(res.statusCode).toBe(200)
+    expect(spy.histCalls).toEqual([{ daemonId: OTHER_DAEMON, req: { agentId: AGENT, sessionId: SESSION, limit: 50 } }])
+  })
+
+  it('503s when neither the recorded nor the serving daemon is reachable', async () => {
+    await seedDaemon(prisma, DAEMON)
+    await seedDaemon(prisma, OTHER_DAEMON)
+    await seedAgent(prisma, AGENT, { daemonId: OTHER_DAEMON })
+    await seedSession(AGENT, DAEMON)
+    const spy = new SpyControl({ sessions: [] }, emptyHist, [DAEMON, OTHER_DAEMON])
+    running = buildHttpApp(prisma, undefined, LIVE, spy as unknown as ControlSender)
+
+    const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${SESSION}/messages` })
+
+    expect(res.statusCode).toBe(503)
+    expect(res.json()).toMatchObject({ message: 'owning daemon is offline' })
+    expect(spy.histCalls.map((c) => c.daemonId)).toEqual([DAEMON, OTHER_DAEMON])
   })
 
   it('503s when the owning daemon is offline (NoConnection → 503)', async () => {
