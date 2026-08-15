@@ -601,7 +601,7 @@ describe('AgentMoveService.bundleFor — the duty/fetch install bundle', () => {
       assignments: {} as unknown as ConstructorParameters<typeof AgentMoveService>[0]['assignments'],
       mcp: {
         providers: { listForOrg: async () => [{ id: PROVIDER, orgId: ORG, name: 'docs' }] },
-        grants: { activeForProvider: async () => [{ id: 'g1', key: 'oct_docs' }] },
+        grants: { activeForProvider: async () => [{ id: 'g1', key: 'oct_docs', createdAt: new Date(2_000) }] },
         relayRoster: { entries: async () => [{ relayId: 'r1', name: 'r1', url: 'wss://relay.example.test' }] }
       } as unknown as ConstructorParameters<typeof AgentMoveService>[0]['mcp'],
       memory: {

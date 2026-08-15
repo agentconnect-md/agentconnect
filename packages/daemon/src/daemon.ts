@@ -12993,9 +12993,11 @@ export class Daemon {
   private applyDutyDefinitions(bundle: DutyAgentBundle): void {
     for (const spec of bundle.memoryConnections ?? []) this.memoryConnections?.upsert(spec)
     let mcpChanged = false
-    for (const { orgId, name, ...def } of bundle.mcpServers ?? []) {
+    for (const { orgId, name, issuedAt, ...def } of bundle.mcpServers ?? []) {
       if (!orgId || name === RESERVED_MCP_SERVER_NAME) continue
-      if (this.cpMcpDefs?.upsert(orgId, name, def)) mcpChanged = true
+      // Same monotonic fence as the live push: a bundle projected before a grant
+      // rotation must never overwrite the fresh key it raced.
+      if (this.cpMcpDefs?.upsert(orgId, name, def, issuedAt)) mcpChanged = true
     }
     if (mcpChanged) this.onMcpDefsChanged()
   }
@@ -20554,7 +20556,7 @@ export class Daemon {
         this.cpMcpDefs?.converge(
           (snap.mcpServers ?? [])
             .filter((s) => s.name !== RESERVED_MCP_SERVER_NAME)
-            .flatMap(({ orgId, name, ...def }) => (orgId ? [[orgId, name, def] as const] : []))
+            .flatMap(({ orgId, name, issuedAt, ...def }) => (orgId ? [[orgId, name, def, issuedAt] as const] : []))
         )
         this.cpCollab.replace(snap.collabRoutes) // baseline collaboration routing snapshot (P2 terminal-verify)
         this.convergeRelays(snap.relays) // connect ingress only after its organization authority is installed
@@ -20939,9 +20941,11 @@ export class Daemon {
           this.log.warn(`mcp: ignoring CP push for reserved server name "${spec.name}"`)
           return
         }
-        const { orgId, name, ...def } = spec
+        // `issuedAt` is the ordering marker, not part of the definition the runtime
+        // spawns with — strip it out of `def` at every apply site.
+        const { orgId, name, issuedAt, ...def } = spec
         if (!orgId) return
-        if (this.cpMcpDefs?.upsert(orgId, name, def)) {
+        if (this.cpMcpDefs?.upsert(orgId, name, def, issuedAt)) {
           this.onMcpDefsChanged()
           // NEVER log def values — an http proxy def's headers carry the bearer grant key.
           this.log.info(`mcp: applied CP server def "${name}" for organization ${orgId}`)

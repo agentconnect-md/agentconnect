@@ -104,18 +104,39 @@ export function relayHttpOrigin(relayUrl: string): string {
   return u.origin
 }
 
+/** The grant fields every projection needs: the key it ships and the instant that
+ *  orders it. Taken together off ONE row so the two can never disagree. */
+export interface GrantView {
+  key: string
+  createdAt: Date
+}
+
+/**
+ * The current grant of a provider's active set — the ONE selector, because
+ * rotation deliberately leaves the retiring and the fresh grant both active until
+ * the fresh one is distributed. `activeForProvider` orders by `createdAt` ascending,
+ * so the newest is last; taking `[0]` inside that window projects the key the CP is
+ * about to revoke. The same discipline (and the same reason) as the external-memory
+ * projector's `activeForConnection(...).at(-1)`.
+ */
+export function currentMcpGrant<T extends GrantView>(active: readonly T[]): T | undefined {
+  return active.at(-1)
+}
+
 /**
  * The daemon proxy def for a provider: an `http` MCP server pointing at the relay
  * proxy URL with the PLAINTEXT grant key as its bearer. NEVER carries the upstream
- * url or upstream secret headers.
+ * url or upstream secret headers. Takes the grant ROW, not a bare key, so the
+ * ordering marker and the key it orders always come from the same grant.
  */
-export function mcpProxyDef(provider: ProviderView, grantKey: string, relayBaseUrl: string): McpServerSpec {
+export function mcpProxyDef(provider: ProviderView, grant: GrantView, relayBaseUrl: string): McpServerSpec {
   return {
     orgId: provider.orgId,
     name: provider.name,
+    issuedAt: grant.createdAt.getTime(),
     transport: 'http',
     url: `${relayBaseUrl}/mcp/${provider.id}`,
-    headers: [{ name: 'Authorization', value: `Bearer ${grantKey}` }],
+    headers: [{ name: 'Authorization', value: `Bearer ${grant.key}` }],
     args: [],
     env: []
   }

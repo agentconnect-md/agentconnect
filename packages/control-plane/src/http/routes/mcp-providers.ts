@@ -24,7 +24,7 @@ import type { OrgId } from '../../domain/ids.js'
 import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
 import { canView, canEdit, canManageSharing, type ViewCtx } from '../../authorization/policy.js'
 import { resolveShareSet } from '../sharing.js'
-import { blockedUpstreamUrl, grantKeyHash } from '../../orchestrator/mcpProvider.js'
+import { blockedUpstreamUrl, currentMcpGrant, grantKeyHash, type GrantView } from '../../orchestrator/mcpProvider.js'
 import { makeMcpPush } from '../mcp-push.js'
 import { CONNECTOR_SERVICE_HEADER } from '../../connectors/index.js'
 import {
@@ -55,7 +55,7 @@ export function rotateProviderGrant(
   headers: McpHeader[],
   orgId: OrgId,
   grants: McpGrantRepo,
-  pushAssign: (p: McpProviderRecord, h: McpHeader[], grantKey: string, org: OrgId) => Promise<void>,
+  pushAssign: (p: McpProviderRecord, h: McpHeader[], grant: GrantView, org: OrgId) => Promise<void>,
   unassignHash: (providerId: string, hash: string) => void
 ): Promise<string> {
   return serializeByProvider(orgId, provider.name, () =>
@@ -123,12 +123,12 @@ async function rotateOnce(
   headers: McpHeader[],
   orgId: OrgId,
   grants: McpGrantRepo,
-  pushAssign: (p: McpProviderRecord, h: McpHeader[], grantKey: string, org: OrgId) => Promise<void>,
+  pushAssign: (p: McpProviderRecord, h: McpHeader[], grant: GrantView, org: OrgId) => Promise<void>,
   unassignHash: (providerId: string, hash: string) => void
 ): Promise<string> {
   const prior = await grants.activeForProvider(provider.orgId, provider.id) // before mint — both would read active otherwise
   const fresh = await grants.mintFor(provider.orgId, provider.id)
-  await pushAssign(provider, headers, fresh.key, orgId) // new binding + proxy def in place first
+  await pushAssign(provider, headers, fresh, orgId) // new binding + proxy def in place first
   for (const g of prior) {
     await grants.revoke(g.id)
     unassignHash(provider.id, grantKeyHash(g.key))
@@ -258,7 +258,7 @@ export function mcpProviderRoutes(deps: HttpDeps) {
           await deps.repos.mcpProviderSecret.put(provider.orgId, provider.id, req.body.headers)
           // Exactly one active grant per provider (v1). Plaintext returned once.
           const grant = await deps.repos.mcpGrant.mintFor(provider.orgId, provider.id)
-          await pushAssign(provider, req.body.headers, grant.key, orgOf(req))
+          await pushAssign(provider, req.body.headers, grant, orgOf(req))
           return { provider, grant }
         })
         if (!created) {
@@ -323,8 +323,8 @@ export function mcpProviderRoutes(deps: HttpDeps) {
         // is unchanged (patch never re-mints), so read the active one — but INSIDE the
         // per-provider lock, so a concurrent rotation can't leave us pushing its revoked key.
         await serializeByProvider(orgOf(req), provider.name, async () => {
-          const grant = (await deps.repos.mcpGrant.activeForProvider(provider.orgId, provider.id))[0]
-          if (grant) await pushAssign(provider, headers, grant.key, orgOf(req))
+          const grant = currentMcpGrant(await deps.repos.mcpGrant.activeForProvider(provider.orgId, provider.id))
+          if (grant) await pushAssign(provider, headers, grant, orgOf(req))
         })
         return toDto(provider, ctxOf(req), headers)
       }

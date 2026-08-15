@@ -59,7 +59,7 @@ import {
 } from '../../persistence/ports.js'
 import type { DaemonView } from '../../ports.js'
 import { AgentId, DaemonId, SessionId, type OrgId } from '../../domain/ids.js'
-import { mcpProxyDef, relayHttpOrigin } from '../../orchestrator/mcpProvider.js'
+import { currentMcpGrant, mcpProxyDef, relayHttpOrigin } from '../../orchestrator/mcpProvider.js'
 import { serializeByProviderNames } from './mcp-providers.js'
 
 /** Thrown inside the provider-name fence when the in-fence visibility re-check
@@ -969,9 +969,9 @@ export function agentRoutes(deps: HttpDeps) {
           for (const name of added) {
             const provider = base ? byName.get(name) : undefined
             if (!provider) continue
-            const grant = (await deps.repos.mcpGrant.activeForProvider(provider.orgId, provider.id))[0]
+            const grant = currentMcpGrant(await deps.repos.mcpGrant.activeForProvider(provider.orgId, provider.id))
             if (!grant) continue
-            const spec = mcpProxyDef(provider, grant.key, base!)
+            const spec = mcpProxyDef(provider, grant, base!)
             for (const daemonId of targets) await send(() => deps.control.mcpServerUpsert(daemonId, spec))
           }
         }

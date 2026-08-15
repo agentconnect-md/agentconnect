@@ -21,6 +21,8 @@ import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { ControlSender, NoConnection } from '../../src/orchestrator/outbound.js'
 import type { AgentUpsert, AgentRemove, CollabRoutesSnapshot } from '@agentconnect.md/protocol'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
+import { mcpDefsForAgents } from '../../src/orchestrator/agentDefinitions.js'
+import { AgentId } from '../../src/domain/ids.js'
 
 // Console routes are org-scoped: /orgs/:orgId/… (devAuth = seeded owner of the default org).
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
@@ -604,6 +606,35 @@ describe('agent updates follow the duty holder', () => {
     expect(spy.mcpUpserts.map((u) => u.daemonId)).toEqual([HOLDER])
     // The FRESH key, not the retired one — arrival alone would not prove that.
     expect(spy.mcpUpserts[0]!.spec.headers).not.toEqual([{ name: 'Authorization', value: 'Bearer oct_testkey' }])
+  })
+
+  it('a def projected DURING a rotation overlap carries the fresh key, ordered after the retiring one', async () => {
+    await seedDaemon(prisma, HOLDER)
+    const { providerId } = await seedProviderAndRelay()
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { runtimeOverrides: { mcpServers: ['fakemcp'] } })
+    await seedDutyGroup(prisma, GROUP, HOLDER, [agentId])
+
+    const spy = new McpSpyControl()
+    running = buildHttpApp(prisma, { RELAY_STALE_MS: 60_000 }, undefined, spy as unknown as ControlSender)
+    // The overlap window, exactly as `rotateOnce` creates it: mint the fresh grant
+    // while the retiring one is still active, and project BEFORE the revoke lands.
+    const fresh = await prisma.mcpGrant.create({
+      data: { mcpProviderId: providerId, key: 'oct_freshkey', createdAt: new Date(Date.now() + 1_000) }
+    })
+    const agent = await running.deps.repos.agent.getUnscoped(AgentId(agentId))
+    const defs = await mcpDefsForAgents([agent!], {
+      providers: running.deps.repos.mcpProvider,
+      grants: running.deps.repos.mcpGrant,
+      relayRoster: { entries: async () => [{ relayId: randomUUID(), url: 'ws://relay.example:8443' }] }
+    })
+
+    expect(defs).toHaveLength(1)
+    expect(defs[0]!.headers).toEqual([{ name: 'Authorization', value: 'Bearer oct_freshkey' }])
+    // Strictly newer than the retiring grant, which is what makes the daemon fence work.
+    expect(defs[0]!.issuedAt).toBe(fresh.createdAt.getTime())
+    const retiring = await prisma.mcpGrant.findFirstOrThrow({ where: { key: 'oct_testkey' } })
+    expect(defs[0]!.issuedAt!).toBeGreaterThan(retiring.createdAt.getTime())
   })
 
   it('a member holding NO duty covering the enabling agent receives no def', async () => {

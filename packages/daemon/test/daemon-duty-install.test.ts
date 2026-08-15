@@ -75,21 +75,28 @@ const bundle = (configRevision?: string) => ({
   ]
 })
 
+/** One proxy def, as the CP projects it: the grant's issuance instant is the
+ *  ordering marker, and the key it orders comes from the same grant. */
+const proxyDef = (key = 'oct_docs', issuedAt = 2_000) => ({
+  orgId: ORG,
+  name: 'docs',
+  issuedAt,
+  transport: 'http' as const,
+  url: 'https://relay.example.test/mcp/p1',
+  args: [],
+  env: [],
+  headers: [{ name: 'Authorization', value: `Bearer ${key}` }]
+})
+
+/** The bearer the daemon would hand a session for `docs`, or undefined. */
+const bearerOf = (d: Daemon): string | undefined =>
+  ((d as any).cpMcpDefs.effective(ORG).docs?.headers as Array<{ name: string; value: string }> | undefined)?.[0]?.value
+
 /** The same bundle plus the two definition kinds the spec only NAMES. */
-const bundleWithDefinitions = () => ({
+const bundleWithDefinitions = (grantKey?: string, issuedAt?: number) => ({
   ...bundle(),
   spec: { ...bundle().spec, mcpServers: ['docs'], memory: { provider: 'external' as const, connectionId: CONNECTION } },
-  mcpServers: [
-    {
-      orgId: ORG,
-      name: 'docs',
-      transport: 'http' as const,
-      url: 'https://relay.example.test/mcp/p1',
-      args: [],
-      env: [],
-      headers: [{ name: 'Authorization', value: 'Bearer oct_docs' }]
-    }
-  ],
+  mcpServers: [proxyDef(grantKey, issuedAt)],
   memoryConnections: [
     {
       connectionId: CONNECTION,
@@ -180,6 +187,56 @@ describe('installing an agent a duty grant covers', () => {
       headers: [{ name: 'Authorization', value: 'Bearer oct_docs' }]
     })
     expect((daemon as any).memoryConnections.connectionIds()).toEqual([CONNECTION])
+    await daemon.stop()
+  })
+
+  /**
+   * MCP grant rotation keeps the retiring and the fresh grant BOTH active until
+   * the fresh one is distributed, so a bundle projected inside that window carries
+   * a key the relay is about to revoke. The bundle apply is fenced by the grant's
+   * issuance instant exactly as the live push is, so the holder ends up on the
+   * fresh key under EITHER interleaving.
+   */
+  it('a bundle projected before a rotation cannot undo the fresh key it raced', async () => {
+    let releaseFetch!: () => void
+    const projected = new Promise<void>((resolve) => (releaseFetch = resolve))
+    const fetchDutyAgent = vi.fn(async () => {
+      await projected
+      return { bundle: bundleWithDefinitions('oct_retiring', 1_000) }
+    })
+    const daemon = await boot({ fetchDutyAgent })
+    const install = (daemon as any).installGrantedAgents([grant()])
+
+    // The rotation's live push lands first, through the real frame handler.
+    ;(daemon as any).cpConfigApply().applyMcpServerUpsert(proxyDef('oct_fresh', 2_000))
+    expect(bearerOf(daemon)).toBe('Bearer oct_fresh')
+
+    releaseFetch()
+    await install
+
+    expect(bearerOf(daemon)).toBe('Bearer oct_fresh')
+    await daemon.stop()
+  })
+
+  it('the other interleaving converges too — the fresh push overtakes an applied bundle', async () => {
+    const fetchDutyAgent = vi.fn(async () => ({ bundle: bundleWithDefinitions('oct_retiring', 1_000) }))
+    const daemon = await boot({ fetchDutyAgent })
+
+    await (daemon as any).installGrantedAgents([grant()])
+    expect(bearerOf(daemon)).toBe('Bearer oct_retiring')
+    ;(daemon as any).cpConfigApply().applyMcpServerUpsert(proxyDef('oct_fresh', 2_000))
+
+    expect(bearerOf(daemon)).toBe('Bearer oct_fresh')
+    await daemon.stop()
+  })
+
+  it('the ordering marker never reaches the runtime definition', async () => {
+    const fetchDutyAgent = vi.fn(async () => ({ bundle: bundleWithDefinitions() }))
+    const daemon = await boot({ fetchDutyAgent })
+
+    await (daemon as any).installGrantedAgents([grant()])
+
+    expect(JSON.stringify((daemon as any).cpMcpDefs.effective(ORG))).not.toContain('issuedAt')
     await daemon.stop()
   })
 

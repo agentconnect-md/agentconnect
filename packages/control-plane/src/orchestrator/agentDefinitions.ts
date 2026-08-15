@@ -35,7 +35,7 @@ import type {
   MemoryPluginInstallationRepo
 } from '../persistence/ports.js'
 import { OrgId } from '../domain/ids.js'
-import { mcpProxyDef, relayHttpOrigin } from './mcpProvider.js'
+import { currentMcpGrant, mcpProxyDef, relayHttpOrigin } from './mcpProvider.js'
 import { memoryConnectionSpec, stdioMemoryConnectionSpec } from './memoryConnection.js'
 
 /** Minimal relay-roster view both projectors pick a proxy base from. */
@@ -110,8 +110,11 @@ export async function mcpDefsForAgents(
   for (const [orgId, names] of wanted) {
     const providers = (await deps.providers.listForOrg(OrgId(orgId))).filter((provider) => names.has(provider.name))
     for (const provider of providers) {
-      const grant = (await deps.grants.activeForProvider(provider.orgId, provider.id))[0]
-      if (grant) specs.push(mcpProxyDef(provider, grant.key, relayBaseUrl))
+      // The NEWEST active grant, through the one shared selector: a rotation
+      // overlaps old+new until the fresh key is distributed, and a bundle
+      // projected inside that window must never carry the retiring one.
+      const grant = currentMcpGrant(await deps.grants.activeForProvider(provider.orgId, provider.id))
+      if (grant) specs.push(mcpProxyDef(provider, grant, relayBaseUrl))
     }
   }
   return specs

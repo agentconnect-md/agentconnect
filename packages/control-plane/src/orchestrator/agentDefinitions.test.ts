@@ -34,7 +34,14 @@ function provider(orgId: string, name: string, id = `p-${orgId}-${name}`): McpPr
 function mcpDeps(providers: McpProviderRecord[], relay = true): McpDefinitionDeps {
   return {
     providers: { listForOrg: async (orgId: string) => providers.filter((p) => p.orgId === orgId) },
-    grants: { activeForProvider: async (_orgId: string, id: string) => [{ id: `g-${id}`, key: `oct_${id}` }] },
+    grants: {
+      // Ascending by createdAt, exactly as the repo returns it: the retiring grant
+      // FIRST and the fresh one last, which is the rotation overlap window.
+      activeForProvider: async (_orgId: string, id: string) => [
+        { id: `g-${id}-old`, key: `oct_${id}_retiring`, createdAt: new Date(1_000) },
+        { id: `g-${id}`, key: `oct_${id}`, createdAt: new Date(2_000) }
+      ]
+    },
     relayRoster: {
       entries: async () => (relay ? [{ relayId: 'r1', name: 'r1', url: 'wss://relay.example.test' }] : [])
     }
@@ -68,6 +75,17 @@ describe('mcpDefsForAgents — the MCP half of an agent set’s definitions', ()
       [ORG_A, 'docs'],
       [ORG_B, 'payroll']
     ])
+  })
+
+  it('projects the FRESH grant during a rotation overlap, and orders the def by it', async () => {
+    // `activeForProvider` is ascending by createdAt and rotation leaves both active
+    // until the fresh key is distributed, so the head is the key about to be revoked.
+    const specs = await mcpDefsForAgents([agent(ORG_A, { mcpServers: ['docs'] })], mcpDeps([provider(ORG_A, 'docs')]))
+    expect(specs[0]!.headers).toEqual([
+      { name: 'Authorization', value: 'Bearer oct_p-11111111-1111-4111-8111-111111111111-docs' }
+    ])
+    // The marker is the fresh grant's instant — what the daemon compares on apply.
+    expect(specs[0]!.issuedAt).toBe(2_000)
   })
 
   it('skips the reserved name — the daemon injects its own agentconnect server', async () => {
@@ -116,7 +134,13 @@ function memoryDeps(over: Partial<MemoryDefinitionDeps> = {}): MemoryDefinitionD
       })
     },
     secrets: { get: async () => ({ apiKey: 'upstream-secret' }), keys: async () => ['apiKey'] },
-    grants: { activeForConnection: async () => [{ id: 'g1', key: 'omg_key' }] },
+    // Ascending by createdAt, as the repo returns it: retiring first, fresh last.
+    grants: {
+      activeForConnection: async () => [
+        { id: 'g0', key: 'omg_retiring' },
+        { id: 'g1', key: 'omg_key' }
+      ]
+    },
     relayRoster: { entries: async () => [{ relayId: 'r1', name: 'r1', url: 'wss://relay.example.test' }] },
     ...over
   } as unknown as MemoryDefinitionDeps
@@ -139,6 +163,27 @@ describe('memoryDefsForAgents — the external-memory half', () => {
     const get = vi.fn()
     await memoryDefsForAgents([agent(ORG_A)], memoryDeps({ connections: { get } } as unknown as MemoryDefinitionDeps))
     expect(get).not.toHaveBeenCalled()
+  })
+
+  it('projects the FRESH relay grant during a rotation overlap, ordered by the connection revision', async () => {
+    const specs = await memoryDefsForAgents(
+      [bound(CONNECTION)],
+      memoryDeps({
+        installations: {
+          get: async () => ({
+            id: INSTALLATION,
+            pluginId: 'ai.example.memory',
+            transport: 'streamable-http',
+            endpoint: 'https://plugin.example.test/mcp',
+            expectedManifestDigest: `sha256:${'a'.repeat(64)}`,
+            secretHeaders: []
+          })
+        }
+      } as unknown as MemoryDefinitionDeps)
+    )
+    // The memory path was already disciplined: newest active grant, and the
+    // connection's own `revision` is the marker the daemon registry fences on.
+    expect(specs[0]).toMatchObject({ grantKey: 'omg_key', revision: 2 })
   })
 
   it('a remote connection with no live relay is skipped and warned; stdio is unaffected', async () => {
