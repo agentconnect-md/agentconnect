@@ -9382,9 +9382,13 @@ export class Daemon {
     if (link && (link.parentSessionId !== callMeta.originSessionId || link.replyState !== 'awaiting')) return
     // Live background tasks: the child may legitimately be waiting to report until its
     // task settles (see wakeOnBackgroundTaskDone). Do not preempt that with a premature
-    // inference of "I started the task…" narration.
+    // inference of "I started the task…" narration. `armedWakes` closes the settle race
+    // (review): a task that just SETTLED leaves `tasks` before its wake timer fires —
+    // and that wake is deferred while this very dispatch finalizes — so a tasks-only
+    // check would see zero and infer the narration while the bg wake is still owed.
     const sessionId = this.store.getSession(childKey)?.acpSessionId ?? undefined
-    if (sessionId !== undefined && (this.sdkLease.get(sdkLeaseKey(agentId, sessionId))?.tasks.size ?? 0) > 0) return
+    const lease = sessionId !== undefined ? this.sdkLease.get(sdkLeaseKey(agentId, sessionId)) : undefined
+    if (lease !== undefined && (lease.tasks.size > 0 || lease.armedWakes > 0)) return
     const finalOutput = p.replyText.trim()
     const text =
       finalOutput && !isNoResponseBody(finalOutput)
