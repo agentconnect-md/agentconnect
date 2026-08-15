@@ -611,6 +611,141 @@ describe('handleManagedSkillRead', () => {
   })
 })
 
+// #999: the four organization READS on an install-wide member. A pool agent names no machine, so
+// `agent.daemonId` refuses every read from the very member that runs it.
+describe('organization reads follow the serving member', () => {
+  const knowledgeRow = {
+    id: '11111111-1111-4111-8111-111111111111',
+    title: 'Runbook',
+    summary: null,
+    tags: ['runbook'],
+    currentRevision: 1,
+    updatedAt: new Date('2026-08-01T00:00:00.000Z'),
+    content: 'body'
+  }
+
+  /** A pool row with one managed skill enabled — the shape every read below asks about. */
+  const poolRequester = (orgId = ORG_A) => ({ ...poolAgent(AGENT), orgId, managedSkills: [SKILL] })
+  const machineRequester = () => ({
+    id: AGENT,
+    placementKind: 'daemon' as const,
+    daemonId: DAEMON,
+    orgId: ORG_A,
+    managedSkills: [SKILL]
+  })
+
+  function knowledgeRepo() {
+    return {
+      searchKnowledge: vi.fn(async () => [knowledgeRow]),
+      listKnowledge: vi.fn(async () => [knowledgeRow]),
+      listManagedSkills: vi.fn(async () => [
+        {
+          id: SKILL,
+          orgId: ORG_A,
+          name: 'release-service',
+          description: 'Release with rollback',
+          currentRevision: 1,
+          updatedAt: new Date('2026-08-01T00:00:00.000Z')
+        }
+      ]),
+      getManagedSkill: vi.fn(async () => ({ id: SKILL, orgId: ORG_A, archivedAt: null })),
+      getManagedSkillRevision: vi.fn(async () => ({
+        managedSkillId: SKILL,
+        revision: 1,
+        archive: new Uint8Array([1, 2, 3, 4]),
+        digest: `sha256:${'b'.repeat(64)}`
+      }))
+    }
+  }
+
+  const reads = [
+    {
+      type: 'knowledge/search' as const,
+      ok: 'knowledge/search/ok',
+      payload: { query: 'runbook', limit: 5, maxBytes: 1024 },
+      probe: 'searchKnowledge' as const,
+      handler: handleKnowledgeSearch
+    },
+    {
+      type: 'knowledge/list' as const,
+      ok: 'knowledge/list/ok',
+      payload: { limit: 5, maxBytes: 1024 },
+      probe: 'listKnowledge' as const,
+      handler: handleKnowledgeList
+    },
+    {
+      type: 'skills/org' as const,
+      ok: 'skills/org/ok',
+      payload: { limit: 5 },
+      probe: 'listManagedSkills' as const,
+      handler: handleOrgSkills
+    },
+    {
+      type: 'managed-skill/read' as const,
+      ok: 'managed-skill/chunk',
+      payload: { managedSkillId: SKILL, revision: 1, offset: 0, limit: 1024 },
+      probe: 'getManagedSkillRevision' as const,
+      handler: handleManagedSkillRead
+    }
+  ]
+
+  async function read(
+    spec: (typeof reads)[number],
+    requester: Record<string, unknown>,
+    holds: Record<string, string[]>
+  ) {
+    const organizationKnowledge = knowledgeRepo()
+    const deps = {
+      // An install-wide member: org-less, so the frame is the only thing that names an org.
+      registry: { getUnscoped: async () => ({ id: DAEMON, orgId: null, capabilities: installWideCapabilities }) },
+      agent: { getUnscoped: async () => requester },
+      placementResolver: holderOf(holds),
+      organizationKnowledge
+    } as unknown as DaemonWsDeps
+    const connection = conn()
+    await spec.handler(
+      { ...frame(spec.type, { requesterAgentId: AGENT, ...spec.payload }), orgId: ORG_A },
+      connection,
+      deps
+    )
+    return { connection, organizationKnowledge }
+  }
+
+  for (const spec of reads) {
+    it(`serves ${spec.type} for a pool agent whose duty this member holds`, async () => {
+      const { connection, organizationKnowledge } = await read(spec, poolRequester(), { [AGENT]: [DAEMON] })
+
+      expect(connection.sendError).not.toHaveBeenCalled()
+      expect(connection.replyTo.mock.calls[0]![1]).toBe(spec.ok)
+      expect(organizationKnowledge[spec.probe]).toHaveBeenCalled()
+    })
+
+    it(`refuses ${spec.type} for a pool agent another member holds`, async () => {
+      const { connection, organizationKnowledge } = await read(spec, poolRequester(), { [AGENT]: ['another-member'] })
+
+      expect(connection.replyTo).not.toHaveBeenCalled()
+      expect(connection.sendError.mock.calls[0]![1]).toBe('SCOPE_DENIED')
+      expect(organizationKnowledge[spec.probe]).not.toHaveBeenCalled()
+    })
+
+    it(`still serves ${spec.type} for an agent placed on this daemon`, async () => {
+      const { connection, organizationKnowledge } = await read(spec, machineRequester(), {})
+
+      expect(connection.sendError).not.toHaveBeenCalled()
+      expect(connection.replyTo.mock.calls[0]![1]).toBe(spec.ok)
+      expect(organizationKnowledge[spec.probe]).toHaveBeenCalled()
+    })
+  }
+
+  it('refuses a read whose requester belongs to another organization', async () => {
+    // Serving an agent is not standing in its org: the frame names ORG_A, the requester is in ORG_B.
+    const { connection, organizationKnowledge } = await read(reads[0]!, poolRequester(ORG_B), { [AGENT]: [DAEMON] })
+
+    expect(connection.sendError.mock.calls[0]![1]).toBe('SCOPE_DENIED')
+    expect(organizationKnowledge.searchKnowledge).not.toHaveBeenCalled()
+  })
+})
+
 function randomUuid(): string {
   return crypto.randomUUID()
 }
