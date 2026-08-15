@@ -60,7 +60,11 @@ function daemonCapabilities(platforms: string[]) {
 
 function withSpy(): { app: HttpApp; spy: SpyControl } {
   const spy = new SpyControl()
-  const app = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+  // A publicly reachable relay origin — the http-transport gate refuses a
+  // deployment whose PUBLIC_RELAY_URL is unset or loopback-only, so the tests
+  // that exercise http installs need the same config a real one would have.
+  const config = { PUBLIC_RELAY_URL: 'https://relay.example.test' }
+  const app = buildHttpApp(prisma, config, undefined, spy as unknown as ControlSender)
   running = app
   return { app, spy }
 }
@@ -211,13 +215,70 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
 
       expect(res.statusCode).toBe(409)
       expect((res.json() as { message: string }).message).toBe(
-        'HTTP callback delivery is unavailable on this deployment'
+        'HTTP callback delivery is unavailable on this deployment — no relay is connected.'
       )
       expect(verified).toBe(false)
       expect(await prisma.bot.count({ where: { orgId: DEFAULT_ORG_ID } })).toBe(0)
       await app.close()
       running = undefined
     }
+  })
+
+  it('POST refuses an http install when the connected relay is loopback-only', async () => {
+    // The default self-hosted Compose stack: a healthy, registered relay whose
+    // PUBLIC_RELAY_URL no platform can POST to. Availability is not reachability —
+    // and because transport is immutable, accepting one mints a bot that silently
+    // black-holes every inbound message.
+    const agentId = await placedAgent()
+    const spy = new SpyControl()
+    const app = buildHttpApp(
+      prisma,
+      { PUBLIC_RELAY_URL: 'http://localhost:8090' },
+      undefined,
+      spy as unknown as ControlSender
+    )
+    running = app
+    app.relayReg.add({ relayId: 'r1', send() {}, close() {} } as RelayChannel)
+    let verified = false
+    app.platformStubs.verifySlackBot = async () => {
+      verified = true
+      return {
+        status: 'ok',
+        name: 'http-bot',
+        appId: 'AHTTPBOT',
+        botUserId: 'U1',
+        teamId: 'T1',
+        teamName: 'Acme',
+        scopes: [...SLACK_BOT_SCOPES]
+      }
+    }
+
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: {
+        platform: 'slack',
+        agentId,
+        transport: 'http',
+        slack: { botToken: SLACK.botToken, signingSecret: 'signing-secret' }
+      }
+    })
+
+    expect(res.statusCode).toBe(409)
+    expect((res.json() as { message: string }).message).toContain('http://localhost:8090')
+    expect(verified).toBe(false)
+    expect(await prisma.bot.count({ where: { orgId: DEFAULT_ORG_ID } })).toBe(0)
+    // Socket transport is the escape hatch the refusal points at, and it still works.
+    const socket = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: {
+        platform: 'slack',
+        agentId,
+        slack: { botToken: SLACK.botToken, appToken: SLACK.appToken }
+      }
+    })
+    expect(socket.statusCode).toBe(201)
   })
 
   it('POST telegram check reports Group Privacy Mode without storing the token', async () => {

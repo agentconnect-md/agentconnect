@@ -33,6 +33,7 @@ import { installNewSlackBot, slackAppIdFromAppToken } from '../install-slack.js'
 import { CONFIG_ACCESS_TTL_MS, configUsable } from '../slack-user-config.js'
 import type { SlackRouteSeams } from '../platform-route-seams.js'
 import { integrationPlatformAvailability } from '../daemon-platform-capability.js'
+import { relayHttpBase, relayIngress } from '../relay-ingress.js'
 import {
   SlackAppStartBody,
   SlackAppStartDto,
@@ -45,14 +46,6 @@ import {
   SlackInstallErrorDto,
   IdParam
 } from '../dto/index.js'
-
-/** The relay pool's public HTTPS base from PUBLIC_RELAY_URL, normalizing a
- *  `ws(s)://` origin to `http(s)://` (the Events API request_url is HTTP) and
- *  trimming a trailing slash. Null/undefined ⇒ null. */
-export function relayHttpBase(publicRelayUrl: string | undefined): string | null {
-  if (!publicRelayUrl) return null
-  return publicRelayUrl.replace(/^ws(s?):\/\//i, 'http$1://').replace(/\/$/, '')
-}
 
 /** Slack error strings from `apps.manifest.create` that mean the config token itself is
  *  invalid/expired (as opposed to a transient error or a rate limit). An ACCESS-ONLY stored
@@ -157,16 +150,13 @@ export function slackInstallRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
 
         // Transport (slack-http-mode): http ⇒ the CP builds an Events-API manifest and
         // captures the signing secret from apps.manifest.create, so finalize needs no
-        // manual paste. http requires a connected relay to receive the POSTs.
+        // manual paste. http requires a relay Slack itself can POST to.
         const transport = req.body.transport ?? 'socket'
-        const httpBase = transport === 'http' ? (relayHttpBase(deps.config.PUBLIC_RELAY_URL) ?? undefined) : undefined
-        if (transport === 'http' && (!httpBase || !deps.httpBot.hasConnectedRelay())) {
-          return reply.code(409).send({
-            error: 'Conflict',
-            statusCode: 409,
-            message: 'HTTP-mode install needs a connected relay — set PUBLIC_RELAY_URL and run a relay.'
-          })
+        const ingress = transport === 'http' ? relayIngress(deps) : null
+        if (ingress && !ingress.ok) {
+          return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: ingress.message })
         }
+        const httpBase = ingress?.ok ? ingress.base : undefined
 
         // The CP owns the manifest (chiefly `redirect_urls`): a client-supplied
         // redirect would be an open-redirect / token-theft hole.
@@ -508,9 +498,9 @@ export function slackConfigRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
       // The deployment half — a configured public callback origin — stays here,
       // which is what knows it.
       const credentialUsable = configUsable(row, now)
-      // HTTP mode is offerable here: a public relay origin is configured AND ≥1 relay
-      // is connected to receive the Events API POSTs.
-      const relayAvailable = !!relayPublicUrl && deps.httpBot.hasConnectedRelay()
+      // HTTP mode is offerable here: the SAME gate the http install paths refuse
+      // on, so the console never offers a transport the create call would reject.
+      const relayAvailable = relayIngress(deps).ok
       return {
         configured: !!row,
         durable,
