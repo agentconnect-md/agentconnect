@@ -236,5 +236,21 @@ describe('duty/fetch — installing an agent a duty was won for', () => {
     const decoded = decodeEnvelope(encode(buildEnvelope('duty/fetch/ok', payload)))
     if (!decoded.ok) throw new Error(`decode failed: ${decoded.msg}`)
     expect(decoded.frame.payload).toMatchObject(payload)
+
+    // Both arrays carry their real schemas: these are token-bearing definitions a
+    // member installs verbatim, so a malformed one must be refused at the edge,
+    // never handed to the MCP or memory registry.
+    expect(
+      DutyAgentBundle.safeParse({
+        ...payload.bundle,
+        mcpServers: [{ orgId: 'org-1', name: 'docs', transport: 'http' }]
+      }).success
+    ).toBe(false)
+    expect(
+      DutyAgentBundle.safeParse({
+        ...payload.bundle,
+        memoryConnections: [{ connectionId: CONNECTION, transport: 'streamable-http' }]
+      }).success
+    ).toBe(false)
   })
 })

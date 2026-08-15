@@ -56,12 +56,18 @@ describe('mcpDefsForAgents — the MCP half of an agent set’s definitions', ()
     })
   })
 
-  it('an agent naming a provider in ITS org never pulls a same-named provider from another', async () => {
+  it('resolves each agent’s names in ITS OWN org — a mixed roster is not one flat name set', async () => {
+    // The roster union spans orgs on an install-wide member, so the reference set
+    // is per-org: a name one org enables must never resolve against another's
+    // registry, and each org's own enable must still be found.
     const specs = await mcpDefsForAgents(
-      [agent(ORG_A, { mcpServers: ['docs'] }), agent(ORG_B)],
-      mcpDeps([provider(ORG_A, 'docs'), provider(ORG_B, 'docs')])
+      [agent(ORG_A, { mcpServers: ['docs'] }), agent(ORG_B, { mcpServers: ['payroll'] })],
+      mcpDeps([provider(ORG_A, 'docs'), provider(ORG_A, 'payroll'), provider(ORG_B, 'payroll')])
     )
-    expect(specs.map((s) => s.orgId)).toEqual([ORG_A])
+    expect(specs.map((s) => [s.orgId, s.name])).toEqual([
+      [ORG_A, 'docs'],
+      [ORG_B, 'payroll']
+    ])
   })
 
   it('skips the reserved name — the daemon injects its own agentconnect server', async () => {
