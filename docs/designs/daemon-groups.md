@@ -64,7 +64,11 @@ tenancy, not by kind:
 - **`Agent.placementKind ∈ {daemon, set}`** with `setId` as the ref for `set`. `daemon`
   is unchanged — pinned to one machine, outside the ledger. The `pool` kind #991
   introduced **goes away** as a stored value (§8): a pool agent is a `set` agent whose
-  set is the org-less one.
+  set is the org-less one. **Third write-time invariant, on the agent:** a `set`-placed
+  agent may reference only the org-less set or a set whose `orgId` equals the agent's
+  own. Enforced in the same transaction that writes the placement (create, move) — the
+  read path never re-checks it. Without this, `mayHold`'s single rule would let org X's
+  members claim an org Y agent that had been pointed at X's set.
 
 That is the whole schema. The duty ledger (`duty_group`, `duty_group_member`) is
 untouched: a duty group is the _thing claimed_, a member set is the _set that may claim
@@ -116,8 +120,9 @@ agent.placementKind = 'set'  ⇒  claimant.setId = agent.setId
 agent.placementKind = 'daemon' ⇒ claimant.daemonId = agent.daemonId
 ```
 
-The tenancy narrowing is not a branch in `mayHold` at all — it lives in the two
-write-time invariants on `member_set_member` (§2). An org-less set can only ever contain
+The tenancy narrowing is not a branch in `mayHold` at all — it lives in the three
+write-time invariants (§2): two on `member_set_member` (which daemons a set may
+contain) and one on the agent's placement (which set an agent may reference). An org-less set can only ever contain
 org-less daemons, so "claimant is in the pool's set" already implies "claimant is
 install-wide"; an org set can only contain that org's daemons, so "claimant is in group
 G of org X" already implies "claimant is an org-scoped connection of X". The read path
@@ -139,7 +144,40 @@ gets `granted: false` from the same code path a pool member gets it for a
 **What the daemon does.** `dutyEnforced()` today reduces to `organizationScope() ===
 'frame'` (after #982). It becomes "this connection is in a set", learned from `auth/ok`
 — the CP tells the daemon at handshake which set it belongs to, if any, alongside the
-lease horizon it already announces (#976). A daemon in
+lease horizon it already announces (#976).
+
+**Membership changes on a live daemon.** Org-set membership is operator-mutable while
+the daemon is connected, so `auth/ok` cannot be the only time it learns its set. Two
+rules:
+
+- _Removal from a set_ is a withdrawal, exactly like a revoke or a drain release: the
+  control plane vacates every lease that daemon holds (the general withdrawal guard from
+  #976 makes an in-flight admission refuse to commit), the sweep re-grants those groups
+  to remaining members, and the daemon is told its scope is now `none` on a versioned
+  scope update over the existing connection — not by tearing the socket down. The daemon
+  fences what it held (the same local `duty/revoke` effect, never removal) and stops
+  sending `duties`. If the scope update cannot be delivered, the next heartbeat's digest
+  reports groups the ledger no longer leases to it and the exchange supersedes them —
+  the lease horizon bounds the window either way.
+- _Addition to a set_ is the reverse: the daemon is told its new scope, starts reporting
+  `duties`, and claims on its next beat. Nothing it currently holds is affected, because
+  a daemon in no set holds nothing.
+
+**Enrolling a daemon that has directly placed agents.** A `daemon`-placed agent is
+outside the ledger; the moment its machine joins a set, that machine enforces duties and
+would serve only what it holds a lease for — so every agent still pinned to it becomes
+unservable. That state is not allowed to exist. Enrollment **re-places those agents onto
+the set atomically**, in the same transaction that writes the membership row: their
+`placementKind` becomes `set` with that set's id, and the sweep grants them back to the
+same machine on its next beat (it is a member and it already has them installed, so
+install-on-grant is a no-op refresh). This is what an operator enrolling a machine means
+— "let its agents fail over" — and it is why enrollment is a control-plane action rather
+than a daemon-side flag. The converse is also enforced: a `daemon` placement may not
+name a machine that is in a set (the console does not offer it; the route refuses it).
+Leaving a set is the same story reversed only if the operator asks for it: by default the
+agents stay `set`-placed and re-grant to remaining members; an operator who wants them
+pinned back to the leaving machine moves them explicitly, which the existing move
+machinery already does. A daemon in
 no group behaves exactly as today: no `duties` on the heartbeat, no enforcement, serves
 what it is placed with. This is also the last step of #982's argument: the enforcement
 predicate becomes "participates in a member set", which is what the design always
@@ -247,3 +285,13 @@ agent, claimant in the org-less set" — the same answer.
 
 The daemon needs nothing for PR 1: it still learns "you are install-wide" from
 `auth/ok` as today; PR 2 turns that into "you are in set S".
+
+**Rollout ordering.** Old control-plane code does not understand a stored `set`
+placement, and new code cannot resolve eligibility before `member_set` exists, so the
+migration and the code that reads it must not straddle a rolling deploy of the control
+plane. Two acceptable answers: run the migration as a coordinated cutover with the
+control plane briefly down (this is a pre-release project with a single control-plane
+replica per environment, so that is the honest, cheap one), or ship the schema first
+with dual-read code that treats `pool` and `set`-of-the-org-less-row as the same
+eligibility, migrate, then drop the `pool` arm in a following release. The design does
+not require the second; the deployment picks.
