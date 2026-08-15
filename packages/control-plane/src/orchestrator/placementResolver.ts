@@ -93,6 +93,27 @@ export class PlacementResolver {
     return ((await this.servingDaemons(agent))[0] as DaemonId | undefined) ?? null
   }
 
+  /**
+   * The daemon that may serve this SESSION's content once the daemon recorded on it cannot.
+   *
+   * Two facts have to agree, and the second is why the session is a parameter. The content must
+   * have been written to a SHARED store — `contentSetId`, stamped when the session ran — because a
+   * machine's transcripts are local and a daemon that never wrote them answers "no rows" as a
+   * valid empty page rather than an error. And the agent must still be placed on THAT set, or the
+   * resolver has no live member of that store to name. An agent moved out of a set, into one after
+   * the session ran, or between two sets satisfies neither, and gets the honest 503.
+   *
+   * Placement kind is read HERE, which is why no route has to read it.
+   */
+  async contentFailoverDaemon(
+    agent: ResolvableAgent,
+    session: { contentSetId: string | null }
+  ): Promise<DaemonId | null> {
+    const eligibility = dutyEligibility(agent)
+    if (!session.contentSetId || eligibility.scope !== 'set' || eligibility.setId !== session.contentSetId) return null
+    return this.servingDaemon(agent)
+  }
+
   /** May this daemon act on the agent's behalf — report its sessions, mint its credentials, ask on
    *  its behalf? True where it is the placement, and true where it holds the agent's duty. */
   async mayAct(agent: ResolvableAgent, daemonId: string): Promise<boolean> {
