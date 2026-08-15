@@ -1,12 +1,13 @@
 // DutyRecomputeSweep + the soak-phase incumbent grant policy (real Postgres):
-// the sweep derives duty groups from Integration/CronDef rows, and claimVacant's
-// incumbent gate pins grants to the member the group's agents already live on.
+// the sweep derives one duty group per agent (merged by shared socket bots), and
+// claimVacant's incumbent gate pins grants to the member its agents live on.
 import { describe, it, expect, vi } from 'vitest'
 import { prisma } from '../setup.db.js'
 import { PgDutyGroupRepo } from '../../src/persistence/index.js'
 import { DutyRecomputeSweep } from '../../src/orchestrator/dutyRecompute.js'
+import type { DutyReconcilePlan } from '../../src/domain/duty.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
-import { DaemonId } from '../../src/domain/ids.js'
+import { AgentId, DaemonId, OrgId } from '../../src/domain/ids.js'
 import { FakeClock } from '../fakes/fake-clock.js'
 
 const M1 = DaemonId('d1111111-1111-4111-8111-111111111111')
@@ -21,18 +22,41 @@ const INTEG2 = '11111111-1111-4111-8111-11111111111b'
 
 const LEASE_MS = 120_000
 
+const ORG = OrgId(DEFAULT_ORG_ID)
+
+// Records every applied plan and every warning, so a test can assert what the
+// sweep DID — "no revoke was planned" is not observable from the rows alone.
 function sweep(clock = new FakeClock(1_700_000_000_000)) {
   const repo = new PgDutyGroupRepo(prisma)
+  const plans: DutyReconcilePlan[] = []
+  const warns: unknown[] = []
+  const recording = {
+    listDutyOrgs: repo.listDutyOrgs.bind(repo),
+    computeInputs: repo.computeInputs.bind(repo),
+    applyReconcile: async (...args: Parameters<typeof repo.applyReconcile>) => {
+      const plan = await repo.applyReconcile(...args)
+      plans.push(plan)
+      return plan
+    },
+    vacateNonIncumbent: repo.vacateNonIncumbent.bind(repo)
+  }
   return {
     repo,
     clock,
-    sweep: new DutyRecomputeSweep(repo, clock, {
-      intervalMs: 30_000,
-      orgsPerTick: 25,
-      leaseMs: LEASE_MS,
-      incumbentFence: true,
-      kickDelayMs: 0
-    })
+    plans,
+    warns,
+    sweep: new DutyRecomputeSweep(
+      recording,
+      clock,
+      {
+        intervalMs: 30_000,
+        orgsPerTick: 25,
+        leaseMs: LEASE_MS,
+        incumbentFence: true,
+        kickDelayMs: 0
+      },
+      { warn: (o) => void warns.push(o), error: () => undefined }
+    )
   }
 }
 
@@ -62,27 +86,30 @@ async function seedIntegration(id: string, agentId: string, botId: string): Prom
 }
 
 describe('duty recompute sweep (real Postgres)', () => {
-  it('derives groups from socket integrations and enabled crons; http-only agents get none', async () => {
+  it('joins an agent to its socket bot and leaves a relay-ingress agent its own singleton', async () => {
     await seedDaemons()
     await seedAgent(AGENT, 'agent-1', M1)
     await seedAgent(AGENT2, 'agent-2', M1)
     await seedBot(BOT, 'socket')
     await seedBot(HTTP_BOT, 'http')
     await seedIntegration(INTEG, AGENT, BOT)
-    await seedIntegration(INTEG2, AGENT2, HTTP_BOT) // relay-ingress: no edge
+    await seedIntegration(INTEG2, AGENT2, HTTP_BOT) // relay-ingress: no edge, but still ownable
     const { repo, sweep: s } = sweep()
 
     expect(await s.tick()).toBe(1)
-    const groups = await repo.listForOrg(DEFAULT_ORG_ID as Parameters<typeof repo.listForOrg>[0])
-    expect(groups).toHaveLength(1)
-    expect(groups[0]!.members).toEqual([
-      { kind: 'agent', refId: AGENT },
-      { kind: 'bot', refId: BOT }
+    // listForOrg orders by the minted (random) groupId, so compare as a set.
+    const groups = await repo.listForOrg(ORG)
+    expect(groups.map((g) => g.members).sort((a, b) => a[0]!.refId.localeCompare(b[0]!.refId))).toEqual([
+      [
+        { kind: 'agent', refId: AGENT },
+        { kind: 'bot', refId: BOT }
+      ],
+      [{ kind: 'agent', refId: AGENT2 }]
     ])
-    expect(groups[0]!.holder).toBeNull()
+    expect(groups.every((g) => g.holder === null)).toBe(true)
   })
 
-  it('an enabled cron seeds a claimable singleton; disabling it removes the group', async () => {
+  it('a cron adds nothing of its own — the agent already owns a singleton, enabled or not', async () => {
     await seedDaemons()
     await seedAgent(AGENT, 'agent-1', M1)
     await prisma.cronDef.create({
@@ -100,14 +127,126 @@ describe('duty recompute sweep (real Postgres)', () => {
     const { repo, sweep: s } = sweep()
 
     await s.tick()
-    let groups = await repo.listForOrg(DEFAULT_ORG_ID as Parameters<typeof repo.listForOrg>[0])
-    expect(groups).toHaveLength(1)
-    expect(groups[0]!.members).toEqual([{ kind: 'agent', refId: AGENT }])
+    const [group] = await repo.listForOrg(ORG)
+    expect(group!.members).toEqual([{ kind: 'agent', refId: AGENT }])
 
     await prisma.cronDef.update({ where: { id: CRON }, data: { enabled: false } })
     await s.tick()
-    groups = await repo.listForOrg(DEFAULT_ORG_ID as Parameters<typeof repo.listForOrg>[0])
-    expect(groups).toEqual([])
+    expect(await repo.listForOrg(ORG)).toEqual([group])
+  })
+
+  it('an agent with no integration and no cron converges to a stable held group', async () => {
+    await seedDaemons()
+    await seedAgent(AGENT, 'agent-1', M1) // webchat / A2A only: no edge, no seed
+    const { repo, clock, plans, warns, sweep: s } = sweep()
+
+    await s.tick()
+    const [created] = await repo.listForOrg(ORG)
+    expect(created!.members).toEqual([{ kind: 'agent', refId: AGENT }])
+    const [grant] = await repo.claimVacant(M1, 1, new Date(clock.now()), LEASE_MS, { incumbentOnly: true })
+    expect(grant).toBeDefined()
+
+    // The flap this test exists for: sweep 2 and 3 must plan no delete and no
+    // supersession, and must leave the term exactly where the grant put it.
+    plans.length = 0
+    await s.tick()
+    await s.tick()
+    expect(plans).toHaveLength(2)
+    for (const plan of plans) {
+      expect(plan.deletes).toEqual([])
+      expect(plan.superseded).toEqual([])
+      expect(plan.creates).toEqual([])
+      expect(plan.writes).toEqual([])
+      expect(plan.unchanged).toEqual([created!.groupId])
+    }
+    const [held] = await repo.listHeldBy(M1)
+    expect(held!.groupId).toBe(created!.groupId)
+    expect(held!.term).toBe(grant!.term)
+    expect(warns).toEqual([])
+  })
+
+  it('a rendezvous claim survives the next sweep with the same holder and term', async () => {
+    await seedDaemons()
+    await seedAgent(AGENT, 'agent-1', M1)
+    const { repo, clock, warns, sweep: s } = sweep()
+
+    // The design's fallback path: the trigger arrives before the sweep ran.
+    const claim = await repo.claimAgentHome(ORG, AgentId(AGENT), M1, new Date(clock.now()), LEASE_MS)
+    expect(claim.granted).toBe(true)
+
+    await s.tick()
+    const [held] = await repo.listHeldBy(M1)
+    expect(held!.groupId).toBe(claim.groupId)
+    expect(held!.term).toBe(claim.term)
+    expect(held!.members).toEqual([{ kind: 'agent', refId: AGENT }])
+    expect(warns).toEqual([])
+  })
+
+  it('an unplaced agent’s rendezvous claim is not vacated — nothing moved away', async () => {
+    await seedDaemons()
+    await seedAgent(AGENT, 'agent-1') // no placement: the fence has no rival incumbent
+    const { repo, clock, warns, sweep: s } = sweep()
+
+    const claim = await repo.claimAgentHome(ORG, AgentId(AGENT), M1, new Date(clock.now()), LEASE_MS)
+    await s.tick()
+
+    const [held] = await repo.listHeldBy(M1)
+    expect(held!.groupId).toBe(claim.groupId)
+    expect(held!.term).toBe(claim.term)
+    expect(warns).toEqual([])
+  })
+
+  it('reaps the group of an agent whose row is gone', async () => {
+    await seedDaemons()
+    await seedAgent(AGENT, 'agent-1', M1)
+    const { repo, plans, sweep: s } = sweep()
+
+    await s.tick()
+    const [created] = await repo.listForOrg(ORG)
+    await prisma.agent.delete({ where: { id: AGENT } })
+
+    plans.length = 0
+    await s.tick()
+    expect(plans[0]!.deletes).toEqual([created!.groupId])
+    expect(await repo.listForOrg(ORG)).toEqual([])
+  })
+
+  it('an agent gaining its first integration merges into its singleton instead of duplicating', async () => {
+    await seedDaemons()
+    await seedAgent(AGENT, 'agent-1', M1)
+    const { repo, clock, sweep: s } = sweep()
+
+    await s.tick()
+    const [singleton] = await repo.listForOrg(ORG)
+    await repo.claimVacant(M1, 1, new Date(clock.now()), LEASE_MS, { incumbentOnly: true })
+
+    await seedBot(BOT, 'socket')
+    await seedIntegration(INTEG, AGENT, BOT)
+    await s.tick()
+
+    const groups = await repo.listForOrg(ORG)
+    expect(groups).toHaveLength(1)
+    expect(groups[0]!.groupId).toBe(singleton!.groupId)
+    expect(groups[0]!.holder).toBe(M1)
+    expect(groups[0]!.members).toEqual([
+      { kind: 'agent', refId: AGENT },
+      { kind: 'bot', refId: BOT }
+    ])
+  })
+
+  it('two agents sharing a socket bot land in one group, not one each', async () => {
+    await seedDaemons()
+    await seedAgent(AGENT, 'agent-1', M1)
+    await seedAgent(AGENT2, 'agent-2', M1)
+    await seedBot(BOT, 'socket')
+    await seedIntegration(INTEG, AGENT, BOT)
+    await seedIntegration(INTEG2, AGENT2, BOT)
+    const { repo, sweep: s } = sweep()
+
+    await s.tick()
+    const groups = await repo.listForOrg(ORG)
+    expect(groups).toHaveLength(1)
+    expect(groups[0]!.members).toHaveLength(3)
   })
 
   it('a repeated tick over unchanged rows writes nothing (idempotent rotation)', async () => {
@@ -118,9 +257,9 @@ describe('duty recompute sweep (real Postgres)', () => {
     const { repo, sweep: s } = sweep()
 
     await s.tick()
-    const before = await repo.listForOrg(DEFAULT_ORG_ID as Parameters<typeof repo.listForOrg>[0])
+    const before = await repo.listForOrg(ORG)
     await s.tick()
-    const after = await repo.listForOrg(DEFAULT_ORG_ID as Parameters<typeof repo.listForOrg>[0])
+    const after = await repo.listForOrg(ORG)
     expect(after).toEqual(before)
   })
 
@@ -240,7 +379,7 @@ describe('duty recompute kick (real Postgres)', () => {
     s.kick(DEFAULT_ORG_ID)
     clock.advance(1)
     await vi.waitFor(async () => {
-      const groups = await repo.listForOrg(DEFAULT_ORG_ID as Parameters<typeof repo.listForOrg>[0])
+      const groups = await repo.listForOrg(ORG)
       expect(groups).toHaveLength(1)
     })
   })
@@ -286,6 +425,6 @@ describe('duty recompute kick (real Postgres)', () => {
     s.stop()
     clock.advance(1_000)
     await new Promise((r) => setTimeout(r, 20))
-    expect(await repo.listForOrg(DEFAULT_ORG_ID as Parameters<typeof repo.listForOrg>[0])).toEqual([])
+    expect(await repo.listForOrg(ORG)).toEqual([])
   })
 })

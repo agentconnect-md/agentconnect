@@ -3,7 +3,7 @@
 // the lease. Every grant path bumps `term` (the fencing token); renewal never
 // does. Vacancy is temporal: `holder IS NULL` or a lapsed `expiresAt`.
 import { Prisma, type PrismaClient } from '../../generated/prisma/client.js'
-import type { DutyMemberKey, DutyReconcilePlan, DutyEdge, CronSeed } from '../../domain/duty.js'
+import type { DutyMemberKey, DutyReconcilePlan, DutyEdge, AgentSeed } from '../../domain/duty.js'
 import type { AgentHomeClaim, DutyGrantRecord, DutyGroupRecord, DutyGroupRepo, DutyReconcilePlanner } from '../ports.js'
 import type { AgentId, DaemonId, OrgId } from '../../domain/ids.js'
 import { withTx } from '../prisma.js'
@@ -93,12 +93,17 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
     // AT LEAST ONE of its agents — so a split group cannot flap between two
     // partial incumbents — but a full move-away vacates the lease, letting the
     // new incumbent claim on its next beat (the old holder learns via digest
-    // diff as a superseded revocation).
+    // diff as a superseded revocation). A move-away needs somewhere to have
+    // moved TO: a group whose agents are all unplaced has no rival incumbent,
+    // and vacating it every sweep would just churn the rendezvous claim that
+    // put a holder there.
     const rows = await this.prisma.$queryRaw<{ id: string }[]>(Prisma.sql`
       UPDATE "duty_group" g SET "holder" = NULL, "expiresAt" = NULL
       WHERE g."orgId" = ${orgId} AND g."holder" IS NOT NULL
         AND EXISTS (
-          SELECT 1 FROM "duty_group_member" m WHERE m."groupId" = g.id AND m."kind" = 'agent'
+          SELECT 1 FROM "duty_group_member" m
+          JOIN "agent" a ON a.id = m."refId"
+          WHERE m."groupId" = g.id AND m."kind" = 'agent' AND a."daemonId" IS NOT NULL
         )
         AND NOT EXISTS (
           SELECT 1 FROM "duty_group_member" m
@@ -110,29 +115,33 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
     return rows.map((r) => r.id).sort()
   }
 
-  async computeInputs(orgId: OrgId): Promise<{ edges: DutyEdge[]; seeds: CronSeed[] }> {
-    const [integrations, crons] = await Promise.all([
+  // EVERY agent seeds a component. The ledger's whole job is to name one owner
+  // per agent, and ownability is a property of the agent, not of its ingress —
+  // an agent with no socket bot and no cron (webchat, A2A, relay-ingress only)
+  // is exactly the case the edge-derived set used to miss, leaving the sweep to
+  // delete the singleton the activation rendezvous had just minted. Crons need
+  // no query of their own any more: a cron's agent is an agent.
+  async computeInputs(orgId: OrgId): Promise<{ edges: DutyEdge[]; agents: AgentSeed[] }> {
+    const [integrations, agents] = await Promise.all([
       this.prisma.integration.findMany({
         where: { orgId, status: 'active', bot: { transport: 'socket', revokedAt: null } },
         select: { agentId: true, botId: true }
       }),
-      this.prisma.cronDef.findMany({
-        where: { orgId, enabled: true, agentId: { not: null } },
-        select: { agentId: true }
-      })
+      this.prisma.agent.findMany({ where: { orgId }, select: { id: true } })
     ])
     return {
       edges: integrations.map((i) => ({ agentId: i.agentId, botId: i.botId })),
-      seeds: crons.flatMap((c) => (c.agentId ? [{ agentId: c.agentId }] : []))
+      agents: agents.map((a) => ({ agentId: a.id }))
     }
   }
 
+  // Any org with an agent has components to derive; `duty_group` keeps orgs
+  // whose last agent is gone in the rotation until their rows are reaped.
   async listDutyOrgs(afterOrgId: string | null, limit: number): Promise<string[]> {
     const after = afterOrgId ?? ''
     const rows = await this.prisma.$queryRaw<{ orgId: string }[]>(Prisma.sql`
       SELECT DISTINCT "orgId" FROM (
-        SELECT "orgId" FROM "integration"
-        UNION SELECT "orgId" FROM "cron_def" WHERE "enabled"
+        SELECT "orgId" FROM "agent"
         UNION SELECT "orgId" FROM "duty_group"
       ) orgs
       WHERE "orgId" > ${after}

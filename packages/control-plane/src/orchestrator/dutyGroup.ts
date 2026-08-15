@@ -1,10 +1,10 @@
-// Pure duty-group math for k8s daemons: connected components of the
-// agent↔daemon-held-bot graph (an enabled cron is an edge too), plus the
-// deterministic reconcile plan that maps freshly computed components onto the
-// persisted `duty_group` rows. No I/O — the repo applies the plan it returns.
-import type { DutyMemberKind, DutyMemberKey, DutyReconcilePlan, DutyEdge, CronSeed } from '../domain/duty.js'
+// Pure duty-group math for k8s daemons: EVERY agent is a node, and connected
+// components of the agent↔daemon-held-bot graph merge the ones that share a bot,
+// plus the deterministic reconcile plan that maps freshly computed components
+// onto the persisted `duty_group` rows. No I/O — the repo applies the plan.
+import type { DutyMemberKind, DutyMemberKey, DutyReconcilePlan, DutyEdge, AgentSeed } from '../domain/duty.js'
 
-export type { DutyMemberKind, DutyMemberKey, DutyReconcilePlan, DutyEdge, CronSeed }
+export type { DutyMemberKind, DutyMemberKey, DutyReconcilePlan, DutyEdge, AgentSeed }
 
 export interface ComputedComponent {
   /** Canonically sorted, deduplicated membership. */
@@ -43,8 +43,8 @@ function canonical(members: Iterable<DutyMemberKey>): DutyMemberKey[] {
   return [...seen.values()].sort(compareMembers)
 }
 
-/** Union-find over agent/bot nodes; every edge joins, every seed guarantees a node. */
-export function computeDutyComponents(edges: DutyEdge[], seeds: CronSeed[]): ComputedComponent[] {
+/** Union-find over agent/bot nodes; every agent is a node, every edge joins. */
+export function computeDutyComponents(edges: DutyEdge[], agents: AgentSeed[]): ComputedComponent[] {
   const parent = new Map<string, string>()
   const find = (x: string): string => {
     let r = x
@@ -74,7 +74,8 @@ export function computeDutyComponents(edges: DutyEdge[], seeds: CronSeed[]): Com
     add(b)
     union(a, b)
   }
-  for (const s of seeds) add(keyOf({ kind: 'agent', refId: s.agentId }))
+  // After the edges: an agent that already joined a bot keeps that component.
+  for (const a of agents) add(keyOf({ kind: 'agent', refId: a.agentId }))
 
   const byRoot = new Map<string, DutyMemberKey[]>()
   for (const k of parent.keys()) {

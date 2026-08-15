@@ -40,7 +40,7 @@ import type {
   OrgId
 } from '../domain/ids.js'
 import type { SessionKey } from '../domain/sessionKey.js'
-import type { DutyMemberKey, DutyReconcilePlan, DutyEdge, CronSeed } from '../domain/duty.js'
+import type { DutyMemberKey, DutyReconcilePlan, DutyEdge, AgentSeed } from '../domain/duty.js'
 import type {
   OrganizationEnvironmentAudience,
   OrganizationEnvironmentKind,
@@ -5054,15 +5054,16 @@ export interface DutyGroupRepo {
     leaseMs: number,
     opts?: { maxMembers?: number; incumbentOnly?: boolean }
   ): Promise<DutyGrantRecord[]>
-  /** The group-computation inputs for one org: active integrations on
-   *  daemon-held (socket, unrevoked) bots as edges; enabled crons as seeds. */
-  computeInputs(orgId: OrgId): Promise<{ edges: DutyEdge[]; seeds: CronSeed[] }>
+  /** The group-computation inputs for one org: every agent as a node, plus
+   *  active integrations on daemon-held (socket, unrevoked) bots as edges. */
+  computeInputs(orgId: OrgId): Promise<{ edges: DutyEdge[]; agents: AgentSeed[] }>
   /** Keyset rotation over orgs that can need a recompute — any org owning an
-   *  integration, an enabled cron, or an existing duty group. */
+   *  agent or an existing duty group. */
   listDutyOrgs(afterOrgId: string | null, limit: number): Promise<string[]>
   /** Soak-phase placement fence: vacate every held group whose holder no longer
    *  hosts ANY of its agents (a full placement move-away), so the new incumbent
-   *  can claim. Partial occupancy keeps the lease — split groups never flap.
+   *  can claim. Partial occupancy keeps the lease — split groups never flap —
+   *  and so does a group whose agents are all unplaced: nothing moved away.
    *  Returns the vacated groupIds. */
   vacateNonIncumbent(orgId: OrgId): Promise<string[]>
   /** Batched renewal — one write per heartbeat covering every held group.
