@@ -93,6 +93,18 @@ export class PlacementResolver {
     return ((await this.servingDaemons(agent))[0] as DaemonId | undefined) ?? null
   }
 
+  /**
+   * The daemon that may serve this agent's HISTORICAL session content once the daemon recorded on
+   * the session cannot. Only a member set answers: its members share one data-plane store, so any
+   * of them reads what another wrote. A machine's transcripts and tool bodies are local to that
+   * machine and a move never carries them, so failing over there would turn a gone transcript into
+   * a valid-looking empty page. Kind is read HERE, which is why no route has to read it.
+   */
+  async contentFailoverDaemon(agent: ResolvableAgent): Promise<DaemonId | null> {
+    if (dutyEligibility(agent).scope !== 'set') return null
+    return this.servingDaemon(agent)
+  }
+
   /** May this daemon act on the agent's behalf — report its sessions, mint its credentials, ask on
    *  its behalf? True where it is the placement, and true where it holds the agent's duty. */
   async mayAct(agent: ResolvableAgent, daemonId: string): Promise<boolean> {

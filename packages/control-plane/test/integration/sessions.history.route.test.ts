@@ -13,7 +13,8 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
-import { seedDaemon, seedAgent } from '../fixtures/seed.js'
+import { seedDaemon, seedAgent, seedDutyGroup } from '../fixtures/seed.js'
+import { joinPool, poolSetId } from '../fakes/member-set.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { ControlSender, NoConnection } from '../../src/orchestrator/outbound.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
@@ -77,6 +78,21 @@ async function seedSession(agentId = AGENT, daemonId?: string): Promise<void> {
       lastActivityAt: new Date('2026-07-05T08:00:00.000Z')
     }
   })
+}
+
+/**
+ * The shared-store placement: AGENT sits on the install-wide member set and `holder` is the member
+ * currently holding its duty. Content failover exists only for this shape — set members read one
+ * data-plane store, so a retired member's transcripts are still readable through its peer.
+ */
+async function seedPooledAgentHeldBy(holder: string): Promise<void> {
+  await prisma.daemon.create({ data: { id: holder, orgId: null, status: 'ready', maxAgents: 4 } })
+  await joinPool(prisma, holder)
+  await prisma.agent.update({
+    where: { id: AGENT },
+    data: { placementKind: 'set', setId: await poolSetId(prisma), daemonId: null }
+  })
+  await seedDutyGroup(prisma, randomUUID(), holder, [AGENT])
 }
 
 describe('GET /sessions (metadata list from CP DB)', () => {
@@ -677,10 +693,10 @@ describe('GET /sessions/:id/messages (history pull via the session daemon)', () 
     expect(res.json()).toMatchObject({ message: 'session has no recorded daemon' })
   })
 
-  it('falls back to the serving daemon when the recorded one is unreachable', async () => {
+  it('a pooled agent falls back to its duty holder when the recorded member is unreachable', async () => {
     await seedDaemon(prisma, DAEMON)
-    await seedDaemon(prisma, OTHER_DAEMON)
-    await seedAgent(prisma, AGENT, { daemonId: OTHER_DAEMON })
+    await seedAgent(prisma, AGENT)
+    await seedPooledAgentHeldBy(OTHER_DAEMON)
     await seedSession(AGENT, DAEMON)
     const spy = new SpyControl({ sessions: [] }, emptyHist, [DAEMON])
     running = buildHttpApp(prisma, undefined, LIVE, spy as unknown as ControlSender)
@@ -691,9 +707,9 @@ describe('GET /sessions/:id/messages (history pull via the session daemon)', () 
     expect(spy.histCalls.map((c) => c.daemonId)).toEqual([DAEMON, OTHER_DAEMON])
   })
 
-  it('reads from the serving daemon when the session has no recorded daemon', async () => {
-    await seedDaemon(prisma, OTHER_DAEMON)
-    await seedAgent(prisma, AGENT, { daemonId: OTHER_DAEMON })
+  it('a pooled agent reads from its duty holder when the retired member left no recorded daemon', async () => {
+    await seedAgent(prisma, AGENT)
+    await seedPooledAgentHeldBy(OTHER_DAEMON)
     await seedSession(AGENT)
     const spy = new SpyControl({ sessions: [] }, emptyHist)
     running = buildHttpApp(prisma, undefined, LIVE, spy as unknown as ControlSender)
@@ -704,10 +720,27 @@ describe('GET /sessions/:id/messages (history pull via the session daemon)', () 
     expect(spy.histCalls).toEqual([{ daemonId: OTHER_DAEMON, req: { agentId: AGENT, sessionId: SESSION, limit: 50 } }])
   })
 
-  it('503s when neither the recorded nor the serving daemon is reachable', async () => {
+  it('a machine-placed agent moved off an offline daemon still 503s — content never follows the move', async () => {
     await seedDaemon(prisma, DAEMON)
     await seedDaemon(prisma, OTHER_DAEMON)
     await seedAgent(prisma, AGENT, { daemonId: OTHER_DAEMON })
+    await seedSession(AGENT, DAEMON)
+    const spy = new SpyControl({ sessions: [] }, emptyHist, [DAEMON])
+    running = buildHttpApp(prisma, undefined, LIVE, spy as unknown as ControlSender)
+
+    const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${SESSION}/messages` })
+
+    // The new daemon holds none of this session's transcript, and it would answer an empty page
+    // rather than say so — asking it at all would dress a lost transcript up as an empty one.
+    expect(res.statusCode).toBe(503)
+    expect(res.json()).toMatchObject({ message: 'owning daemon is offline' })
+    expect(spy.histCalls.map((c) => c.daemonId)).toEqual([DAEMON])
+  })
+
+  it('503s when neither the recorded member nor the duty holder is reachable', async () => {
+    await seedDaemon(prisma, DAEMON)
+    await seedAgent(prisma, AGENT)
+    await seedPooledAgentHeldBy(OTHER_DAEMON)
     await seedSession(AGENT, DAEMON)
     const spy = new SpyControl({ sessions: [] }, emptyHist, [DAEMON, OTHER_DAEMON])
     running = buildHttpApp(prisma, undefined, LIVE, spy as unknown as ControlSender)
