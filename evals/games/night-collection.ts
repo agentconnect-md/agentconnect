@@ -177,7 +177,7 @@ function parseToolResult(result: unknown): Record<string, unknown> | undefined {
 
 // ── scoring ────────────────────────────────────────────────────────────────
 
-export type ReplyMode = 'own-turn' | 'coalesced' | 'lost'
+export type ReplyMode = 'own-turn' | 'coalesced' | 'delivered-inferred' | 'lost'
 
 /**
  * Classification is grounded in the DAEMON'S OWN wake evidence
@@ -203,8 +203,10 @@ export interface ReplyOutcome {
   marker: NightMarker
   /** 'own-turn': a referee turn started on the delivered reply; 'coalesced':
    *  no turn started on it, but a referee turn's input carried it (context
-   *  row of a coalesced wake); 'lost': the referee never saw it at all — the
-   *  headless prose-reply loss. */
+   *  row of a coalesced wake); 'delivered-inferred': the child never called
+   *  sendMessage — the daemon's #800 inferred reply delivered its final
+   *  output to the referee, explicitly marked; 'lost': the referee never saw
+   *  it at all — the pre-#800-fix headless prose-reply loss. */
   mode: ReplyMode
   /** Turns STARTED on an admitted reply wake whose input carries the
    *  DELIVERED form. Must be ≤ 1. */
@@ -266,13 +268,16 @@ export function scoreNightCollection(inputs: ScoreInputs): NightCollectionScore 
     const token = MARKERS[marker]
     const delivered = deliveredFormPattern(marker)
     const contextRow = contextRowPattern(marker)
-    const ownTurnStarts = replyWakeTurnInputs.filter((input) => delivered.test(input)).length
+    const ownTurnInputs = replyWakeTurnInputs.filter((input) => delivered.test(input))
+    const ownTurnStarts = ownTurnInputs.length
     const deliveredPromptSightings = inputs.refereePrompts.filter((text) => delivered.test(text)).length
     const contextRowSightings = inputs.refereePrompts.filter((text) => contextRow.test(text)).length
     const contentVisible = deliveredPromptSightings + contextRowSightings > 0
     let mode: ReplyMode = 'lost'
     if (ownTurnStarts > 0) {
-      mode = 'own-turn'
+      // The #800 inferred reply arrives as an ordinary reply wake whose body
+      // carries the explicit marker — distinguishable by construction.
+      mode = ownTurnInputs.some((input) => input.includes('[inferred reply]')) ? 'delivered-inferred' : 'own-turn'
     } else if (contentVisible && coalescedBudget > 0) {
       coalescedBudget -= 1
       mode = 'coalesced'

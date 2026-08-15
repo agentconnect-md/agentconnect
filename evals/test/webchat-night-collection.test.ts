@@ -150,15 +150,17 @@ describe('webchat night collection (scripted)', () => {
         expect(outcome.postedPublicly).toBe(true)
       }
 
-      // The #905 validation cell — current-main truth: a headless child's
-      // PROSE answer is lost. The referee never sees it, in any turn input.
-      expect(byChild.get('seer')!.mode).toBe('lost')
-      expect(score.lost).toEqual(['seer'])
+      // The #800 mechanism-fix cell (formerly the #905 validation cell, whose
+      // current-main truth was 'lost'): a headless child's PROSE answer is no
+      // longer dropped — the daemon delivers its final output to the referee
+      // as an INFERRED reply, explicitly marked, and nothing is lost.
+      expect(byChild.get('seer')!.mode).toBe('delivered-inferred')
+      expect(score.lost).toEqual([])
 
-      // Daemon-side ground truth: exactly the three correct replies were
-      // admitted as reply wakes — the prose answer produced none, and no
-      // verdict above rests on content visibility alone.
-      expect(score.acceptedReplyWakes).toBe(3)
+      // Daemon-side ground truth: three direct reports plus the seer's
+      // inferred delivery — four admitted reply wakes, and no verdict above
+      // rests on content visibility alone.
+      expect(score.acceptedReplyWakes).toBe(4)
 
       // The referee-mediated relay leg, end to end: wolf-B was woken with
       // wolf-A's proposal, and its verdict came back.
