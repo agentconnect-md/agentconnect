@@ -201,13 +201,17 @@ export class WebchatWerewolfReferee implements ScriptedBrain {
           // machine-parsed prefix `VOTE <n>. Discussion is closed.` and the
           // `Living players:` list are load-bearing for the scripted players
           // and must not change.
+          // The example names LIVING players only (review): a literal-minded
+          // player copies the example's target, and a hardcoded alias can be
+          // dead in a later round.
+          const living = this.aliveAliases()
           replies.push(
-            `VOTE ${this.round}. Discussion is closed. Living players: ${this.aliveAliases().join(', ')}. ` +
+            `VOTE ${this.round}. Discussion is closed. Living players: ${living.join(', ')}. ` +
               `Every living player MUST now cast exactly one vote by posting a message in this conversation in ` +
-              `the exact form "${this.aliveAliases()[0]}: I vote for player-2" (your own name, then your vote). ` +
-              `This applies to YOU personally, whatever you said during the discussion — having no strong read ` +
-              `does not excuse you: pick the most suspicious living player and vote now, in your next message. ` +
-              `Not voting forfeits your voice in the lynch. Name exactly one living player.`
+              `the form "${living[0]}: I vote for ${living[1] ?? living[0]}" — your own name, then ONE living ` +
+              `player from the list above. This applies to YOU personally, whatever you said during the ` +
+              `discussion — having no strong read does not excuse you: pick the most suspicious living player ` +
+              `and vote now, in your next message. Not voting forfeits your voice in the lynch.`
           )
         }
         continue
