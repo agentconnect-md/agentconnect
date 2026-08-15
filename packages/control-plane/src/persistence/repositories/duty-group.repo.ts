@@ -68,6 +68,34 @@ function noIneligibleAgent(group: Prisma.Sql, holder: Prisma.Sql): Prisma.Sql {
   )`
 }
 
+/**
+ * The rollout barrier (k8s-daemon-pool.md §12), as a predicate the CLAIM STATEMENT itself carries:
+ * true unless a LIVE member of the claimant's set — one seen since `liveSince`, or the claimant
+ * itself — carries a different, NEWER generation, generations ranking by their earliest live
+ * member's `generationSince`. Folded into the claim's own WHERE so the read and the write are one
+ * statement: a registration committing between a separate check and the write cannot let an older
+ * member take a just-vacated group. A null-generation claimant, or one in no set, is never held back.
+ */
+function noNewerGenerationLive(holder: Prisma.Sql, liveSince: Date): Prisma.Sql {
+  return Prisma.sql`NOT EXISTS (
+    WITH me AS (
+      SELECT d."generation", m."setId"
+      FROM "daemon" d JOIN "member_set_member" m ON m."daemonId" = d.id
+      WHERE d.id = ${holder} AND d."generation" IS NOT NULL
+    ),
+    gens AS (
+      SELECT d."generation", MIN(d."generationSince") AS since
+      FROM "daemon" d JOIN "member_set_member" m ON m."daemonId" = d.id, me
+      WHERE m."setId" = me."setId" AND d."generation" IS NOT NULL
+        AND (d."lastSeenAt" >= ${liveSince} OR d.id = ${holder})
+      GROUP BY d."generation"
+    )
+    SELECT 1 FROM gens other, gens mine, me
+    WHERE mine."generation" = me."generation" AND other."generation" <> me."generation"
+      AND other.since > mine.since
+  )`
+}
+
 // Row-locked snapshot: FOR UPDATE fences the lease writers the advisory scope
 // does not cover (claimVacant/renewHeld/release), so a plan can never be applied
 // over rows a concurrent grant has moved; SKIP LOCKED claimants simply pass by.
@@ -276,6 +304,9 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
   ): Promise<DutyGrantRecord[]> {
     if (max <= 0) return []
     const expiresAt = new Date(now.getTime() + leaseMs)
+    // The rollout barrier, in the same statement as the claim (see `noNewerGenerationLive`). Live
+    // means seen within the lease horizon — the ledger's one notion of liveness.
+    const generationGate = Prisma.sql`AND ${noNewerGenerationLive(Prisma.sql`${holder}::uuid`, new Date(now.getTime() - leaseMs))}`
     // Undeliverable groups are excluded AT THE CLAIM BOUNDARY: an oversized
     // vacancy sitting early in scan order must not be claimed-and-released on
     // every beat, starving the valid vacancies behind it.
@@ -302,7 +333,7 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
       const granted = await tx.$queryRaw<Row[]>(Prisma.sql`
         WITH picked AS (
           SELECT id FROM "duty_group"
-          WHERE ("holder" IS NULL OR "expiresAt" IS NULL OR "expiresAt" < ${now}) ${sizeGate} ${eligibilityGate} ${backoffGate}
+          WHERE ("holder" IS NULL OR "expiresAt" IS NULL OR "expiresAt" < ${now}) ${sizeGate} ${eligibilityGate} ${backoffGate} ${generationGate}
           ORDER BY "orgId", id
           LIMIT ${max}
           FOR UPDATE SKIP LOCKED
@@ -352,31 +383,12 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
   }
 
   async newerGenerationLive(holder: DaemonId, now: Date, liveMs: number): Promise<boolean> {
-    const liveSince = new Date(now.getTime() - liveMs)
-    // Live = beat within the lease horizon, or the claimant itself (it is beating right now). A
-    // generation's rank is its earliest live member's first-seen stamp: the newest generation is
-    // the one whose earliest live member arrived last, so a rollout's replacement set outranks the
-    // set it replaces from the moment its first member registers.
-    const rows = await this.prisma.$queryRaw<{ newer: boolean }[]>(Prisma.sql`
-      WITH me AS (
-        SELECT d."generation", d."generationSince", m."setId"
-        FROM "daemon" d JOIN "member_set_member" m ON m."daemonId" = d.id
-        WHERE d.id = ${holder}::uuid AND d."generation" IS NOT NULL
-      ),
-      gens AS (
-        SELECT d."generation", MIN(d."generationSince") AS since
-        FROM "daemon" d JOIN "member_set_member" m ON m."daemonId" = d.id, me
-        WHERE m."setId" = me."setId" AND d."generation" IS NOT NULL
-          AND (d."lastSeenAt" >= ${liveSince} OR d.id = ${holder}::uuid)
-        GROUP BY d."generation"
-      )
-      SELECT EXISTS (
-        SELECT 1 FROM gens other, gens mine, me
-        WHERE mine."generation" = me."generation" AND other."generation" <> me."generation"
-          AND other.since > mine.since
-      ) AS newer
+    // The pre-check and log source only: correctness lives in the claim statements, which carry
+    // the same predicate (`noNewerGenerationLive`).
+    const rows = await this.prisma.$queryRaw<{ ok: boolean }[]>(Prisma.sql`
+      SELECT ${noNewerGenerationLive(Prisma.sql`${holder}::uuid`, new Date(now.getTime() - liveMs))} AS ok
     `)
-    return rows[0]?.newer === true
+    return rows[0]?.ok !== true
   }
 
   async holdsAgent(holder: DaemonId, agentId: AgentId, now: Date): Promise<boolean> {
@@ -466,6 +478,9 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
     leaseMs: number
   ): Promise<AgentHomeClaim> {
     const expiresAt = new Date(now.getTime() + leaseMs)
+    // The rollout barrier rides every write below that CREATES or TAKES a lease, in the statement
+    // itself, so a registration committing mid-transaction cannot let an older member take a home.
+    const generationGate = noNewerGenerationLive(Prisma.sql`${holder}::uuid`, new Date(now.getTime() - leaseMs))
     return withTx(this.prisma, async (tx) => {
       // Org scope fences row creation against applyReconcile; the FOR UPDATE row
       // lock below fences the lease against claimVacant/renewHeld/release.
@@ -480,9 +495,14 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
       if (eligible?.ok !== true) return { granted: false, holder: null }
       const member = await tx.dutyGroupMember.findUnique({ where: { kind_refId: { kind: 'agent', refId: agentId } } })
       if (!member) {
-        // Claiming creates the lease: the first trigger for a botless agent.
+        // Claiming creates the lease: the first trigger for a botless agent — gated like a claim.
         const groupId = this.mintId()
-        await tx.dutyGroup.create({ data: { id: groupId, orgId, holder, term: 1n, expiresAt } })
+        const minted = await tx.$executeRaw(Prisma.sql`
+          INSERT INTO "duty_group" (id, "orgId", "holder", "term", "expiresAt", "createdAt", "updatedAt")
+          SELECT ${groupId}::uuid, ${orgId}, ${holder}::uuid, 1, ${expiresAt}, ${now}, ${now}
+          WHERE ${generationGate}
+        `)
+        if (minted !== 1) return { granted: false, holder: null }
         await tx.dutyGroupMember.create({ data: { kind: 'agent', refId: agentId, groupId, orgId } })
         return { granted: true, groupId, term: 1n, holder }
       }
@@ -502,17 +522,15 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
       } else if (live) {
         return { granted: false, groupId: row.id, term: row.term, holder: row.holder as DaemonId }
       } else {
-        // Vacancy re-asserted in the write despite the row lock — belt and braces.
-        const won = await tx.dutyGroup.updateMany({
-          where: {
-            id: row.id,
-            OR: [{ holder: null }, { expiresAt: null }, { expiresAt: { lt: now } }]
-          },
-          // Same rule as `claimVacant`: the term bump leaves the grant unconfirmed by construction,
-          // including when the claimant is the member that just lost this lease.
-          data: { holder, term: { increment: 1 }, expiresAt }
-        })
-        if (won.count === 1) {
+        // Vacancy re-asserted in the write despite the row lock — belt and braces — and the
+        // rollout barrier in the same statement. Same rule as `claimVacant`: the term bump leaves
+        // the grant unconfirmed by construction, including for the member that just lost it.
+        const won = await tx.$executeRaw(Prisma.sql`
+          UPDATE "duty_group" SET "holder" = ${holder}::uuid, "term" = "term" + 1, "expiresAt" = ${expiresAt}, "updatedAt" = ${now}
+          WHERE id = ${row.id}::uuid AND ("holder" IS NULL OR "expiresAt" IS NULL OR "expiresAt" < ${now})
+            AND ${generationGate}
+        `)
+        if (won === 1) {
           const granted = await tx.dutyGroup.findUniqueOrThrow({ where: { id: row.id } })
           return { granted: true, groupId: granted.id, term: granted.term, holder }
         }

@@ -402,6 +402,38 @@ describe('DutyGroupRepo — the rollout barrier `newerGenerationLive` (real Post
     expect(await repo.newerGenerationLive(M1, T0, LEASE_MS)).toBe(true)
   })
 
+  it('the claim statements carry the barrier themselves: an older-generation claimant updates 0 rows, the sole generation claims', async () => {
+    await member(M1, 'old', after(-600_000), T0)
+    await member(M2, 'new', after(-60_000), T0)
+    const setId = await joinPool(prisma, M1, M2)
+    await prisma.agent.create({
+      data: { id: A1, orgId: DEFAULT_ORG_ID, name: 'pooled', runtime: 'claude', placementKind: 'set', setId }
+    })
+    await prisma.agent.create({
+      data: { id: A2, orgId: DEFAULT_ORG_ID, name: 'pooled-2', runtime: 'claude', placementKind: 'set', setId }
+    })
+    const repo = new PgDutyGroupRepo(prisma, minter())
+    await reconcile(repo, [], [A1], T0)
+
+    // Vacancy claim: the older generation's UPDATE matches nothing while the newer live peer exists.
+    expect(await repo.claimVacant(M1, 10, T0, LEASE_MS)).toEqual([])
+    // Rendezvous — taking an existing vacant home, and minting a new one — both refused the same way.
+    expect((await repo.claimAgentHome(ORG, AgentId(A1), M1, T0, LEASE_MS)).granted).toBe(false)
+    expect((await repo.claimAgentHome(ORG, AgentId(A2), M1, T0, LEASE_MS)).granted).toBe(false)
+    expect(await prisma.dutyGroup.count({ where: { holder: M1 } })).toBe(0)
+    // The newest generation claims through every path.
+    expect(await repo.claimVacant(M2, 10, T0, LEASE_MS)).toHaveLength(1)
+    expect((await repo.claimAgentHome(ORG, AgentId(A2), M2, T0, LEASE_MS)).granted).toBe(true)
+
+    // Once the newer peer is dead for the ledger, the same statements let the older member claim.
+    await repo.release(
+      M2,
+      (await repo.listHeldBy(M2)).map((g) => g.groupId)
+    )
+    await prisma.daemon.update({ where: { id: M2 }, data: { lastSeenAt: after(-LEASE_MS - 1) } })
+    expect(await repo.claimVacant(M1, 10, T0, LEASE_MS)).toHaveLength(2)
+  })
+
   it('a re-register with the same generation keeps its first-seen stamp; a new value re-stamps it', async () => {
     await member(M1, null, null, T0)
     const daemons = new PgDaemonRepo(prisma)
