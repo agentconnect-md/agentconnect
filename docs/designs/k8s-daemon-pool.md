@@ -540,14 +540,19 @@ most one move per agent (#1016):
 - **Drain is real, slow-safe, and acknowledged.** Per member
   (`Daemon.stop()` → `releaseDutiesForShutdown`): in-flight turns are never
   cut to speed the rollout up; each held group is withdrawn locally (the same
-  teardown a revoke runs) and handed back with a `duty/release` that is
+  teardown a revoke runs), its hosts are stopped and its platform connections
+  converged **before** it is handed back with a `duty/release` that is
   **awaited and retried until acknowledged**, one group at a time, the moment
   that group is idle — idle groups immediately, a busy group when its last
-  turn settles — all before the CP socket closes. The whole drain is bounded
-  by `limits.poolShutdownDrainMs` (5 min by default; the turn wait stops
-  short of it by a release reserve so the last acks still land inside it), and
-  ends with one log line: groups and agents released, acks, releases that
-  timed out (those leases lapse at T_reassign, the pre-#1016 behavior).
+  turn settles — all before the CP socket closes. A group whose teardown
+  cannot be confirmed by the deadline is deliberately **not** released: it is
+  left to lapse at T_reassign (the pre-#1016 takeover path), because an ack
+  must mean "no longer served here". A grant that lands after the latch (an
+  exchange that began before the SIGTERM) is never installed and goes
+  straight into the same acknowledged release. The whole drain is bounded by
+  `limits.poolShutdownDrainMs` (5 min by default; the turn wait stops short of
+  it by a release reserve so the last acks still land inside it), and ends
+  with one log line: groups and agents released, acks, groups left to lapse.
   Deployment side: `terminationGracePeriodSeconds` ≥ that budget plus margin.
 
 Sleeping agents still move by not moving: they wake wherever their duty is

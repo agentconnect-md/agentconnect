@@ -77,7 +77,7 @@ const duties = (d: Daemon) => (d as any).duties as DutyRegistry
 const digest = (d: Daemon) => (d as any).dutyDigest() as { held: unknown[]; headroom: number; draining?: boolean }
 
 describe('shutdown drain of a duty-holding member', () => {
-  it('declares draining, refuses grants, and releases each idle group with an awaited ack before the socket closes', async () => {
+  it('declares draining and releases each idle group with an awaited ack before the socket closes', async () => {
     const { daemon, calls, releaseDuties, reportDutiesNow } = await boot()
     expect(digest(daemon).draining).toBeUndefined()
     // The admission above reported its digest too; only what the shutdown does counts here.
@@ -88,14 +88,72 @@ describe('shutdown drain of a duty-holding member', () => {
     // The very first thing: the digest says draining with zero headroom, reported at once.
     expect(digest(daemon)).toMatchObject({ headroom: 0, draining: true })
     expect(reportDutiesNow).toHaveBeenCalledTimes(1)
-    // A grant arriving mid-drain is dropped, not installed.
-    ;(daemon as any).applyDutyGrant([grant('11111111-1111-4111-8111-111111111113', AGENT)])
     await stopping
 
     // One release per group, each acknowledged, all before the CP transport was closed.
     expect(releaseDuties).toHaveBeenCalledTimes(2)
     expect(calls.releases.map((ids) => ids.length)).toEqual([1, 1])
     expect(calls.order).toEqual(['report', `release:${GROUP}`, `release:${GROUP_B}`, 'socket-close'])
+    expect(duties(daemon).size()).toBe(0)
+  })
+
+  it('a grant that lands after the shutdown latch is never installed and is released with an ack, not left held', async () => {
+    const LATE = '11111111-1111-4111-8111-111111111113'
+    const { daemon, calls } = await boot()
+    const fetchDutyAgent = (daemon as any).cpClient.fetchDutyAgent as ReturnType<typeof vi.fn>
+    const info = vi.spyOn((daemon as any).log, 'info')
+
+    const stopping = daemon.stop()
+    // An exchange that began before the SIGTERM commits its vacancy grant and delivers it now.
+    ;(daemon as any).applyDutyGrant([grant(LATE, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3')])
+    await stopping
+
+    expect(fetchDutyAgent).not.toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3' })
+    )
+    expect(duties(daemon).get(LATE)).toBeUndefined()
+    // Released like the rest, before the socket closed, and counted in the summary.
+    expect(calls.releases).toContainEqual([LATE])
+    expect(calls.order.indexOf(`release:${LATE}`)).toBeLessThan(calls.order.indexOf('socket-close'))
+    const summary = info.mock.calls.map(([m]) => String(m)).find((m) => m.startsWith('duty: shutdown drain released'))
+    expect(summary).toMatch(/released 3 group\(s\)/)
+    expect(summary).toMatch(/3 acknowledged, 0 left to lapse/)
+  })
+
+  it("a release waits for the group's platform connections to converge — the socket is closed before the ack is sought", async () => {
+    const { daemon, calls } = await boot()
+    // A live direct socket for agent A's group, as reconcile would have opened it while held.
+    const conn = { botToken: 'xoxb-test', appToken: 'xapp-test', botUserId: 'U1', stop: vi.fn(async () => {}) }
+    ;(daemon as any).slackPool.add(conn)
+    ;(daemon as any).connByIntegration.set('22222222-2222-4222-8222-222222222222', conn)
+    let socketOpenAtRelease: boolean | undefined
+    ;(daemon as any).cpClient.releaseDuties = vi.fn(async (groupIds: string[]) => {
+      if (groupIds[0] === GROUP) socketOpenAtRelease = (daemon as any).slackPool.all().includes(conn)
+      calls.releases.push(groupIds)
+    })
+
+    await daemon.stop()
+
+    expect(calls.releases).toContainEqual([GROUP])
+    expect(conn.stop).toHaveBeenCalled()
+    expect(socketOpenAtRelease).toBe(false)
+  })
+
+  it('a group whose teardown cannot be confirmed by the deadline is not released — its lease is left to lapse', async () => {
+    const { daemon, releaseDuties } = await boot()
+    ;(daemon as any).cfg.limits.poolShutdownDrainMs = 1_500
+    // The reconcile that carries the connection convergence never finishes.
+    ;(daemon as any).runReconcile = () => new Promise<void>(() => {})
+    const info = vi.spyOn((daemon as any).log, 'info')
+    const warn = vi.spyOn((daemon as any).log, 'warn')
+
+    await daemon.stop()
+
+    expect(releaseDuties).not.toHaveBeenCalled()
+    expect(warn.mock.calls.some(([m]) => /not released, its lease lapses/.test(String(m)))).toBe(true)
+    const summary = info.mock.calls.map(([m]) => String(m)).find((m) => m.startsWith('duty: shutdown drain released'))
+    expect(summary).toMatch(/0 acknowledged, 2 left to lapse/)
+    // Withdrawn locally regardless: nothing here still claims to serve them.
     expect(duties(daemon).size()).toBe(0)
   })
 
@@ -140,7 +198,7 @@ describe('shutdown drain of a duty-holding member', () => {
     expect(warn.mock.calls.some(([m]) => /not acknowledged before the drain deadline/.test(String(m)))).toBe(true)
     const summary = info.mock.calls.map(([m]) => String(m)).find((m) => m.startsWith('duty: shutdown drain released'))
     expect(summary).toMatch(/released 2 group\(s\) covering 2 agent\(s\)/)
-    expect(summary).toMatch(/0 acknowledged, 2 unacknowledged/)
+    expect(summary).toMatch(/0 acknowledged, 2 left to lapse/)
     // Locally withdrawn regardless: nothing here still serves what the CP will hand on.
     expect(duties(daemon).size()).toBe(0)
   })

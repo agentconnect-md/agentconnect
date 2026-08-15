@@ -1890,6 +1890,13 @@ function pendingSessionKey(p: Pending): SessionKey {
 registerThreadPromotion(discordThreadPromotion)
 registerObservedChannels(discordObservedChannels)
 
+/** One shutdown duty drain: its bound, its counters, and the releases of grants that landed late. */
+interface ShutdownDutyDrain {
+  deadlineAt: number
+  stats: { groups: number; agents: number; acked: number; lapsing: number }
+  tails: Set<Promise<void>>
+}
+
 export class Daemon {
   private readonly evaluation: EvaluationEventEmitter
   private readonly evaluationProfile: EvaluationCapabilityProfile
@@ -2183,6 +2190,9 @@ export class Daemon {
   // `draining` so the CP stops granting to this member (sticky for the registration), and turns the
   // shutdown into a duty drain: hold and serve until each group's turns settle, then release it.
   private shutdownDraining = false
+  // The shutdown duty drain in progress: its deadline, its counters, and the release of every grant
+  // that landed after the latch, so the summary and `stop()` can wait for all of them.
+  private shutdownDutyDrain?: ShutdownDutyDrain
   // The tail of the pool drain budget kept for the acknowledged releases themselves — a turn that
   // would run into it is cancelled so the releases still land inside `poolShutdownDrainMs`.
   private static readonly DUTY_RELEASE_RESERVE_MS = 30_000
@@ -12786,10 +12796,19 @@ export class Daemon {
   /** `duty/grant` EVT: admit the grants off the frame-dispatch path, so a slow
    *  CP cannot stall the socket. */
   private applyDutyGrant(grants: DutyGrantEntry[]): void {
-    // A draining member accepts no grant: it would install a group the release pass has already
-    // walked past. The CP re-issues on the next beat once the member is claiming again.
-    if (this.dutyClaimsSuspended) {
-      this.log.info(`duty: ignoring ${grants.length} grant(s) while draining`)
+    // A grant that wins after the shutdown latch — an exchange that began before the SIGTERM can
+    // still commit one — is never installed, but the ledger records this exiting member as its
+    // holder, so it goes straight into the acknowledged release path rather than being left to
+    // lapse. Nothing to withdraw locally: it never entered service here.
+    const drain = this.shutdownDutyDrain
+    if (drain) {
+      this.log.info(`duty: ${grants.length} grant(s) landed while shutting down — releasing them unserved`)
+      for (const grant of grants) {
+        const tail: Promise<void> = this.releaseUnservedOnShutdown(grant.groupId, drain).finally(() =>
+          drain.tails.delete(tail)
+        )
+        drain.tails.add(tail)
+      }
       return
     }
     void this.admitDutyGrants(grants)
@@ -13209,11 +13228,17 @@ export class Daemon {
    *  workspace deletion, no removal tombstone, no CP-drop latch, so a re-grant
    *  needs nothing from the CP to revive it. */
   private stopServingAgent(agentId: string): void {
+    void this.stopServingAgentSettled(agentId)
+  }
+
+  /** The same light teardown, resolving once the agent's host is actually down — what the shutdown
+   *  release awaits before it lets a successor bind the agent's sandbox. */
+  private async stopServingAgentSettled(agentId: string): Promise<void> {
     if (!this.dutyEnforced()) return
     this.interruptAgentTurns(agentId, 'stop')
     this.scheduler.unregister(agentId)
     this.dreamScheduler.unregister(agentId)
-    void this.stopHost(agentId).catch((err) => this.log.warn(`duty: stopping host for ${agentId} failed: ${err}`))
+    await this.stopHost(agentId).catch((err) => this.log.warn(`duty: stopping host for ${agentId} failed: ${err}`))
   }
 
   private cpDegradedScopes(): string[] {
@@ -19850,34 +19875,46 @@ export class Daemon {
    * `duty/release`, one group at a time, as soon as that group is idle — never cancelling a turn
    * to move faster. A group whose agents are all idle goes at once (its successor claims it on
    * the next beat while this member is still waiting on a busier group); a busy group goes when
-   * its last turn settles, or when the drain deadline has cancelled it. Past `deadlineAt` every
-   * group is withdrawn and released with whatever attempt fits; a release the CP never
-   * acknowledged lapses at T_reassign — the same outcome one lease horizon later.
+   * its last turn settles, or when the drain deadline has cancelled it. A release is sent only
+   * after the group's physical service here is gone — hosts stopped, platform connections
+   * converged — so a successor never binds a sandbox or a socket this member still holds. Past
+   * `deadlineAt`, or if that teardown cannot be confirmed, the group is NOT released: it is left
+   * to lapse at T_reassign, the pre-existing takeover path and the honest answer when "no longer
+   * served here" cannot be proven.
    */
-  private async releaseDutiesForShutdown(deadlineAt: number): Promise<void> {
+  private async releaseDutiesForShutdown(drain: ShutdownDutyDrain): Promise<void> {
     if (!this.dutyEnforced()) return
     const startedAt = this.clock.now()
+    const { deadlineAt, stats } = drain
     // Join first: a claim still awaiting the CP would otherwise land after the last release.
     await this.joinInFlightDutyClaims()
     const pending = this.withdrawDutyGroups(this.pendingDutyAdmissions())
     if (pending.length > 0) this.log.info(`duty: dropped ${pending.length} group(s) still being admitted on shutdown`)
-    if (this.duties.size() === 0) return
-    const stats = { groups: 0, agents: 0, acked: 0, unacked: 0 }
     for (;;) {
       const remaining = this.duties.groupIds()
       if (remaining.length === 0) break
       const forced = this.clock.now() >= deadlineAt
       const ready = forced ? remaining : remaining.filter((groupId) => !this.dutyGroupBusy(groupId))
       for (const groupId of ready) {
-        // Withdraw locally first — the same teardown a revoke runs — so nothing here still serves
-        // the group by the time the CP hands it to a successor.
+        // Withdraw locally first — the same teardown a revoke runs — and wait for it to be real.
         const result = this.duties.applyRevoke([{ groupId, reason: 'superseded' }])
         stats.groups++
         stats.agents += result.agentsLost.length
-        for (const agentId of result.agentsLost) this.stopServingAgent(agentId)
+        const stops = Promise.all(result.agentsLost.map((agentId) => this.stopServingAgentSettled(agentId)))
         this.onDutyChanged()
+        const target = this.dutyConnectionsRequested
+        const tornDown =
+          (await this.raceDeadline(stops, deadlineAt - this.clock.now())) === 'done' &&
+          (await this.awaitDutyConvergence(target, deadlineAt))
+        if (!tornDown) {
+          stats.lapsing++
+          this.log.warn(
+            `duty: ${groupId} may still be served here at the drain deadline — not released, its lease lapses`
+          )
+          continue
+        }
         if (await this.releaseDutyAcknowledged(groupId, deadlineAt)) stats.acked++
-        else stats.unacked++
+        else stats.lapsing++
       }
       if (forced) break
       if (ready.length === 0) {
@@ -19887,12 +19924,46 @@ export class Daemon {
         await this.sleepUntil(Math.min(this.clock.now() + 1_000, deadlineAt))
       }
     }
-    await this.reconcileRun?.catch(() => undefined)
+    while (drain.tails.size > 0) await Promise.allSettled([...drain.tails])
+    if (stats.groups === 0) return
     this.log.info(
       `duty: shutdown drain released ${stats.groups} group(s) covering ${stats.agents} agent(s) in ` +
         `${Math.round((this.clock.now() - startedAt) / 1000)}s — ${stats.acked} acknowledged, ` +
-        `${stats.unacked} unacknowledged (those leases lapse)`
+        `${stats.lapsing} left to lapse`
     )
+  }
+
+  /** A grant that landed after the shutdown latch: never served here, so it is released as soon as
+   *  the CP acknowledges, and counted with the rest of the drain. */
+  private async releaseUnservedOnShutdown(groupId: string, drain: ShutdownDutyDrain): Promise<void> {
+    drain.stats.groups++
+    if (await this.releaseDutyAcknowledged(groupId, drain.deadlineAt)) drain.stats.acked++
+    else drain.stats.lapsing++
+  }
+
+  /** Wait until the platform convergence a duty change requested has run — `dutyConnectionsConverged`
+   *  reaching `target` — or the deadline passes, or the reconcile carrying it gave up (a pass that
+   *  throws is not retried while draining). True only when convergence is confirmed. */
+  private async awaitDutyConvergence(target: number, deadlineAt: number): Promise<boolean> {
+    while (this.dutyConnectionsConverged < target) {
+      const remainingMs = deadlineAt - this.clock.now()
+      if (remainingMs <= 0) return false
+      const run = this.reconcileRun
+      if (run) {
+        if (
+          (await this.raceDeadline(
+            run.catch(() => undefined),
+            remainingMs
+          )) === 'timeout'
+        )
+          return false
+      } else if (this.reconcilePending) {
+        await this.sleepUntil(this.clock.now() + 20)
+      } else {
+        return false
+      }
+    }
+    return true
   }
 
   /** One `duty/release`, retried with backoff until acknowledged or the drain deadline passes. */
@@ -22429,7 +22500,15 @@ export class Daemon {
     this.shutdownDraining = true
     this.dutyClaimsSuspended = true
     const drainDeadlineAt = this.clock.now() + this.shutdownDrainBudgetMs()
-    if (this.dutyEnforced()) this.cpClient?.reportDutiesNow?.()
+    const shutdownDrain: ShutdownDutyDrain = {
+      deadlineAt: drainDeadlineAt,
+      stats: { groups: 0, agents: 0, acked: 0, lapsing: 0 },
+      tails: new Set()
+    }
+    if (this.dutyEnforced()) {
+      this.shutdownDutyDrain = shutdownDrain
+      this.cpClient?.reportDutiesNow?.()
+    }
     clearTimeout(this.debounceTimer)
     if (this.idleSweepTimer !== undefined) {
       this.clock.clearTimeout(this.idleSweepTimer)
@@ -22474,7 +22553,7 @@ export class Daemon {
     // the moment its own turns are done — idle groups at once, busy ones as they settle — so a
     // successor takes them while this member is still waiting on the slowest turn. The turn wait
     // stops short of the budget by the release reserve, so the last releases still land inside it.
-    const dutyDrain = this.releaseDutiesForShutdown(drainDeadlineAt)
+    const dutyDrain = this.releaseDutiesForShutdown(shutdownDrain)
     await this.drainForShutdown(
       this.dutyEnforced()
         ? Math.max(0, drainDeadlineAt - Daemon.DUTY_RELEASE_RESERVE_MS - this.clock.now())
@@ -22506,6 +22585,9 @@ export class Daemon {
     // not deliver are replayed by the next boot's orphan sweep), so shutdown
     // proceeds without losing the revocation obligation.
     await this.revokeAllRemoteWebchatGrants('session_closed')
+    // A grant can land right up to the socket close; its release must be settled before that.
+    while (shutdownDrain.tails.size > 0) await Promise.allSettled([...shutdownDrain.tails])
+    this.shutdownDutyDrain = undefined
     await Promise.resolve(this.cpClient?.stop()).catch((e) => errors.push(e))
     await Promise.resolve(this.sessionMetadataDrain).catch((e) => errors.push(e))
     // The closed CP transport cannot admit another lifecycle frame. Drain every
