@@ -389,16 +389,16 @@ export function buildContainer(
 
   const codec = new ApiKeyCodec({ API_KEY_PEPPER: config.API_KEY_PEPPER })
   const webAppUrl = resolveWebAppUrl(config)
-  // In-cluster Kubernetes access: assembled ONLY when a pool namespace is named. Hoisted
+  // In-cluster Kubernetes access: assembled ONLY when the daemon pool is enabled. Hoisted
   // above the auth service because an in-cluster daemon authenticates against this client.
   const clusterAccess = loadClusterAccess(config)
-  const clusterHttp = clusterAccess ? new K8sHttp(clusterAccess.cluster) : undefined
+  const clusterHttp = clusterAccess ? new K8sHttp(clusterAccess) : undefined
   // The in-cluster daemon's token path; undefined ⇒ this deployment only accepts API keys.
   // Shared by both doors a daemon can knock on — the CP socket and, through `rc/verify`,
   // the relay — so the relay hop can never be the weaker one.
   const clusterIdentity =
     clusterAccess && clusterHttp
-      ? new ClusterDaemonIdentityService(clusterHttp, repos.daemon, clusterAccess.poolNamespace)
+      ? new ClusterDaemonIdentityService(clusterHttp, repos.daemon, clusterAccess.namespace)
       : undefined
   const auth = new DaemonAuthService(
     codec,
