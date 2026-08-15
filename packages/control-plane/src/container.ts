@@ -1358,6 +1358,7 @@ export function buildContainer(
 
   // ── daemon WS edge (mounted on the live http.Server after listen) ──────────
   const wsDeps: DaemonWsServerDeps = {
+    log: { error: (o, m) => http.log.error(o, m) },
     auth,
     placementResolver,
     lifecycleOps: repos.daemonLifecycleOp,

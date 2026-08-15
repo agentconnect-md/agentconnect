@@ -22,6 +22,8 @@ import type { DaemonWsDeps } from '../deps.js'
 import type { Handler } from './index.js'
 import { runForReportingAgent } from './reporting-agent.js'
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 /**
  * Resolve the ownership lookups the §4.2 classification needs, then classify.
  *
@@ -58,19 +60,18 @@ async function classifyMilestone(p: EventSession, agentId: AgentId, deps: Daemon
 
 async function externalCandidate(p: EventSession, agentId: AgentId, deps: DaemonWsDeps) {
   const origin = p.externalOrigin
-  // New daemons pin source provenance in their local session row. An explicit
-  // local binding is authoritative for synthetic/platform-shaped coordinates;
-  // absence still takes the conservative mixed-version fallback below.
+  // An explicit local source binding is authoritative; absent provenance uses the mixed-version fallback below.
   if (p.sourceBindingKind === 'local' && !origin) return undefined
   if (!origin) {
+    // A2A children inherit their audience from the parent and never claim a legacy hook scope.
+    if (p.parentSessionId) return undefined
     const triggerId = p.triggeredBy?.startsWith('hook:')
       ? p.triggeredBy.slice('hook:'.length)
       : p.platform === 'hook'
         ? p.channel
         : undefined
-    // Daemon trust domain: the hook a reporting daemon named as a session's
-    // trigger; the `hook.agentId === agentId` check below binds it (§4).
-    const hook = triggerId ? await deps.hook.getUnscoped(HookId(triggerId)) : null
+    // The reporting daemon names the hook; the agent check below binds that trust (§4).
+    const hook = triggerId && UUID_RE.test(triggerId) ? await deps.hook.getUnscoped(HookId(triggerId)) : null
     const legacyGithub = hook?.kind === 'github' && hook.agentId === agentId
     if (legacyGithub) return { provider: 'github', resolution: 'pending' as const }
 
@@ -264,7 +265,11 @@ export const handleEventSessionSync: Handler = async (frame, conn, deps) => {
     // placed elsewhere (or deleted) can never accept this daemon's stale row, so
     // retaining it forever would be worse than collecting it.
     conn.replyTo(frame, 'ack', { ok: true })
-  } catch {
+  } catch (err) {
+    deps.log.error(
+      { err, daemonId, agentId, sessionId: p.sessionId },
+      'event/session-sync: metadata snapshot persistence failed'
+    )
     conn.sendError(frame.id, 'INTERNAL', 'session metadata snapshot failed to persist', true)
   } finally {
     release()

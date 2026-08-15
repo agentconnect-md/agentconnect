@@ -5,6 +5,7 @@ import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Daemon } from '../src/daemon.js'
 import { GITCRED_AGENT_ENV, GITCRED_CAPABILITY_ENV } from '../src/cp/gitcred-server.js'
+import { FakeClock } from './cp/fake-clock.js'
 
 // vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a
 // cold session boot (workspace + host + session/new) can stall well past a second.
@@ -521,6 +522,81 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     } finally {
       if (restored) await restored.stop().catch(() => undefined)
       if (!firstStopped) await first.stop().catch(() => undefined)
+      rmSync(root, { recursive: true, force: true })
+    }
+  }, 15_000)
+
+  it('preempts a deferred session metadata retry when work is ready sooner', async () => {
+    const root = scaffold()
+    const clock = new FakeClock()
+    const daemon = new Daemon({ root, clock, probeRuntimes: async () => [] })
+    await daemon.start()
+    const drain = vi.spyOn(daemon as any, 'drainSessionMetadataSnapshots').mockResolvedValue(undefined)
+
+    try {
+      ;(daemon as any).scheduleSessionMetadataRetry(5 * 60_000)
+      ;(daemon as any).scheduleSessionMetadataRetry(0)
+      clock.advance(0)
+
+      expect(drain).toHaveBeenCalledTimes(1)
+      expect(clock.pending()).not.toContain(5 * 60_000)
+    } finally {
+      await daemon.stop()
+      rmSync(root, { recursive: true, force: true })
+    }
+  }, 15_000)
+
+  it('defers a poisoned session metadata snapshot and drains unrelated sessions', async () => {
+    const root = scaffold()
+    const clock = new FakeClock()
+    const daemon = new Daemon({ root, clock, probeRuntimes: async () => [] })
+    await daemon.start()
+    const agentId = 'a0a0a0a0-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const poison = {
+      sessionId: 'acp-poison',
+      agentId,
+      phase: 'start',
+      ts: '2026-08-15T00:00:00.000Z'
+    }
+    const healthy = { ...poison, sessionId: 'acp-healthy' }
+    const syncEventSession = vi.fn(async (event: typeof poison) => {
+      if (event.sessionId === poison.sessionId) {
+        throw Object.assign(new Error('permanent persistence rejection'), { retryable: true })
+      }
+      return 'acknowledged' as const
+    })
+    const warn = vi.fn()
+    ;(daemon as any).log.warn = warn
+    ;(daemon as any).cpClient = {
+      state: 'READY',
+      supportsServerFeature: (feature: string) => feature === 'session-metadata-ack-v1',
+      syncEventSession,
+      stop: vi.fn(async () => {})
+    }
+    ;(daemon as any).store.saveSessionMetadataSnapshot(agentId, poison.sessionId, JSON.stringify(poison), true, 1)
+    ;(daemon as any).store.saveSessionMetadataSnapshot(agentId, healthy.sessionId, JSON.stringify(healthy), true, 2)
+
+    try {
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        await (daemon as any).drainSessionMetadataSnapshots()
+      }
+
+      expect(syncEventSession.mock.calls.map(([event]) => event.sessionId)).toEqual([
+        'acp-poison',
+        'acp-poison',
+        'acp-poison',
+        'acp-poison',
+        'acp-poison',
+        'acp-healthy'
+      ])
+      expect((daemon as any).store.pendingSessionMetadataSnapshot(agentId, poison.sessionId)).toMatchObject({
+        failedAttempts: 5,
+        nextAttemptAt: 300_000
+      })
+      expect((daemon as any).store.pendingSessionMetadataSnapshot(agentId, healthy.sessionId)).toBeUndefined()
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('snapshot deferred after 5 failures'))
+    } finally {
+      await daemon.stop()
       rmSync(root, { recursive: true, force: true })
     }
   }, 15_000)

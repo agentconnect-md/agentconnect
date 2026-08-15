@@ -34,6 +34,7 @@ const FOREIGN_AGENT = 'a2a2a2a2-a2a2-4a2a-8a2a-a2a2a2a2a2a2'
 function fencingDeps(clock: FakeClock): DaemonWsDeps {
   const connReg = new ConnectionRegistry()
   return {
+    log: { error: () => undefined },
     auth: {} as DaemonWsDeps['auth'],
     lifecycleOps: {} as DaemonWsDeps['lifecycleOps'],
     registry: {} as DaemonWsDeps['registry'],

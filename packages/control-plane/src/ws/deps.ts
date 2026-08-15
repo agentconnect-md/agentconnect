@@ -54,6 +54,8 @@ export interface WsConfig {
 }
 
 export interface DaemonWsDeps {
+  /** Structured server log sink for failures handled at the daemon WS edge. */
+  log: { error: (obj: Record<string, unknown>, message: string) => void }
   auth: DaemonAuth
   /** Durable lifecycle intent exposed during auth-only bootstrap. */
   lifecycleOps: DaemonLifecycleOpRepo

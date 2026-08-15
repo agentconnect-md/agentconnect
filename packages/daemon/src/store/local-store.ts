@@ -454,6 +454,8 @@ export interface SessionMetadataOutboxRow {
   revision: number
   snapshot: string
   queuedAt: number
+  failedAttempts: number
+  nextAttemptAt: number | null
 }
 
 /**
@@ -600,7 +602,7 @@ function restrictPath(path: string, mode: number): void {
  * change that edits a `CREATE TABLE` below, and append the matching step to
  * {@link SCHEMA_MIGRATIONS}.
  */
-const SCHEMA_VERSION = 2
+const SCHEMA_VERSION = 3
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -624,7 +626,12 @@ const SCHEMA_VERSION = 2
  * covers fresh and upgraded stores from the one description.
  */
 const SCHEMA_MIGRATIONS: ((db: StoreDatabase) => void)[] = [
-  (db) => db.exec('ALTER TABLE permission_requests ADD COLUMN ownerId TEXT')
+  (db) => db.exec('ALTER TABLE permission_requests ADD COLUMN ownerId TEXT'),
+  (db) =>
+    db.exec(`
+      ALTER TABLE session_metadata_outbox ADD COLUMN failedAttempts INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE session_metadata_outbox ADD COLUMN nextAttemptAt INTEGER;
+    `)
 ]
 
 export class LocalStore {
@@ -712,10 +719,14 @@ export class LocalStore {
         revision INTEGER NOT NULL,
         snapshot TEXT NOT NULL,
         queuedAt INTEGER NOT NULL,
+        failedAttempts INTEGER NOT NULL DEFAULT 0,
+        nextAttemptAt INTEGER,
         PRIMARY KEY (agentId, sessionId)
       );
       CREATE INDEX IF NOT EXISTS session_metadata_outbox_fifo
         ON session_metadata_outbox (queuedAt);
+      CREATE INDEX IF NOT EXISTS session_metadata_outbox_attempt
+        ON session_metadata_outbox (nextAttemptAt, queuedAt);
       -- Retention-GC receipts (#485): sessions this daemon has already deleted
       -- locally, still owed to the CP as an event/session-purged report. Durable
       -- because the local row is GONE — unlike every other D→C report, an
@@ -2218,19 +2229,22 @@ export class LocalStore {
     const row = enqueue
       ? (this.db
           .prepare(
-            `INSERT INTO session_metadata_outbox (agentId, sessionId, revision, snapshot, queuedAt)
-             VALUES (?, ?, 1, ?, ?)
+            `INSERT INTO session_metadata_outbox
+               (agentId, sessionId, revision, snapshot, queuedAt, failedAttempts, nextAttemptAt)
+             VALUES (?, ?, 1, ?, ?, 0, NULL)
              ON CONFLICT (agentId, sessionId) DO UPDATE SET
                revision = session_metadata_outbox.revision + 1,
                snapshot = excluded.snapshot,
-               queuedAt = excluded.queuedAt
+               queuedAt = excluded.queuedAt,
+               failedAttempts = 0,
+               nextAttemptAt = NULL
              RETURNING revision`
           )
           .get(agentId, sessionId, snapshot, queuedAt) as { revision: number } | undefined)
       : (this.db
           .prepare(
             `UPDATE session_metadata_outbox
-             SET revision = revision + 1, snapshot = ?, queuedAt = ?
+             SET revision = revision + 1, snapshot = ?, queuedAt = ?, failedAttempts = 0, nextAttemptAt = NULL
              WHERE agentId = ? AND sessionId = ?
              RETURNING revision`
           )
@@ -2241,19 +2255,45 @@ export class LocalStore {
   pendingSessionMetadataSnapshot(agentId: string, sessionId: string): SessionMetadataOutboxRow | undefined {
     return this.db
       .prepare(
-        `SELECT agentId, sessionId, revision, snapshot, queuedAt
+        `SELECT agentId, sessionId, revision, snapshot, queuedAt, failedAttempts, nextAttemptAt
          FROM session_metadata_outbox WHERE agentId = ? AND sessionId = ?`
       )
       .get(agentId, sessionId) as unknown as SessionMetadataOutboxRow | undefined
   }
 
-  nextSessionMetadataSnapshot(): SessionMetadataOutboxRow | undefined {
+  nextSessionMetadataSnapshot(now = Date.now()): SessionMetadataOutboxRow | undefined {
     return this.db
       .prepare(
-        `SELECT agentId, sessionId, revision, snapshot, queuedAt
-         FROM session_metadata_outbox ORDER BY queuedAt ASC LIMIT 1`
+        `SELECT agentId, sessionId, revision, snapshot, queuedAt, failedAttempts, nextAttemptAt
+         FROM session_metadata_outbox
+         WHERE nextAttemptAt IS NULL OR nextAttemptAt <= ?
+         ORDER BY queuedAt ASC LIMIT 1`
       )
-      .get() as unknown as SessionMetadataOutboxRow | undefined
+      .get(now) as unknown as SessionMetadataOutboxRow | undefined
+  }
+
+  nextSessionMetadataAttemptAt(): number | undefined {
+    const row = this.db
+      .prepare('SELECT MIN(COALESCE(nextAttemptAt, 0)) AS attemptAt FROM session_metadata_outbox')
+      .get() as { attemptAt: number | null } | undefined
+    return row?.attemptAt === null || row?.attemptAt === undefined ? undefined : Number(row.attemptAt)
+  }
+
+  recordSessionMetadataSnapshotFailure(
+    agentId: string,
+    sessionId: string,
+    revision: number,
+    nextAttemptAt: number | null
+  ): Pick<SessionMetadataOutboxRow, 'failedAttempts' | 'nextAttemptAt'> | undefined {
+    return this.db
+      .prepare(
+        `UPDATE session_metadata_outbox
+         SET failedAttempts = failedAttempts + 1, nextAttemptAt = ?
+         WHERE agentId = ? AND sessionId = ? AND revision = ?
+         RETURNING failedAttempts, nextAttemptAt`
+      )
+      .get(nextAttemptAt, agentId, sessionId, revision) as
+      Pick<SessionMetadataOutboxRow, 'failedAttempts' | 'nextAttemptAt'> | undefined
   }
 
   hasPendingSessionMetadata(): boolean {

@@ -43,6 +43,9 @@ describe('LocalStore schema versioning', () => {
     new LocalStore(path).close()
     const old = new DatabaseSync(path)
     old.exec('ALTER TABLE permission_requests DROP COLUMN ownerId')
+    old.exec('DROP INDEX session_metadata_outbox_attempt')
+    old.exec('ALTER TABLE session_metadata_outbox DROP COLUMN failedAttempts')
+    old.exec('ALTER TABLE session_metadata_outbox DROP COLUMN nextAttemptAt')
     old.exec('PRAGMA user_version = 1')
     old.close()
 
@@ -50,9 +53,13 @@ describe('LocalStore schema versioning', () => {
 
     const upgraded = new DatabaseSync(path)
     const columns = upgraded.prepare('PRAGMA table_info(permission_requests)').all() as { name: string }[]
+    const outboxColumns = upgraded.prepare('PRAGMA table_info(session_metadata_outbox)').all() as { name: string }[]
     upgraded.close()
     expect(columns.map((column) => column.name)).toContain('ownerId')
-    expect(userVersion(path)).toBe(2)
+    expect(outboxColumns.map((column) => column.name)).toEqual(
+      expect.arrayContaining(['failedAttempts', 'nextAttemptAt'])
+    )
+    expect(userVersion(path)).toBe(3)
   })
 
   it('refuses a store written by a newer daemon WITHOUT touching it first', () => {
@@ -165,17 +172,38 @@ describe('LocalStore', () => {
       agentId: 'bot-a',
       sessionId: 'acp-1',
       revision: 1,
-      snapshot: '{"phase":"start"}'
+      snapshot: '{"phase":"start"}',
+      failedAttempts: 0,
+      nextAttemptAt: null
+    })
+
+    expect(restored.recordSessionMetadataSnapshotFailure('bot-a', 'acp-1', 1, 100)).toEqual({
+      failedAttempts: 1,
+      nextAttemptAt: 100
+    })
+    expect(restored.nextSessionMetadataSnapshot(99)).toBeUndefined()
+    expect(restored.nextSessionMetadataAttemptAt()).toBe(100)
+    restored.close()
+
+    const deferred = new LocalStore(path)
+    expect(deferred.pendingSessionMetadataSnapshot('bot-a', 'acp-1')).toMatchObject({
+      failedAttempts: 1,
+      nextAttemptAt: 100
     })
 
     // A newer projection replaces the payload and revision. Its predecessor's
     // delayed ACK cannot delete it.
-    expect(restored.saveSessionMetadataSnapshot('bot-a', 'acp-1', '{"phase":"end"}', false, 3)).toBe(2)
-    expect(restored.acknowledgeSessionMetadataSnapshot('bot-a', 'acp-1', 1)).toBe(false)
-    expect(restored.nextSessionMetadataSnapshot()).toMatchObject({ revision: 2, snapshot: '{"phase":"end"}' })
-    expect(restored.acknowledgeSessionMetadataSnapshot('bot-a', 'acp-1', 2)).toBe(true)
-    expect(restored.hasPendingSessionMetadata()).toBe(false)
-    restored.close()
+    expect(deferred.saveSessionMetadataSnapshot('bot-a', 'acp-1', '{"phase":"end"}', false, 3)).toBe(2)
+    expect(deferred.acknowledgeSessionMetadataSnapshot('bot-a', 'acp-1', 1)).toBe(false)
+    expect(deferred.nextSessionMetadataSnapshot()).toMatchObject({
+      revision: 2,
+      snapshot: '{"phase":"end"}',
+      failedAttempts: 0,
+      nextAttemptAt: null
+    })
+    expect(deferred.acknowledgeSessionMetadataSnapshot('bot-a', 'acp-1', 2)).toBe(true)
+    expect(deferred.hasPendingSessionMetadata()).toBe(false)
+    deferred.close()
   })
 
   it('does not recursively mine dream execution sessions as dream sources', () => {
