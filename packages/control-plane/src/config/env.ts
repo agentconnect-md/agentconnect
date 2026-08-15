@@ -223,19 +223,12 @@ const CoreConfigShape = {
   OPEN_CONNECTOR_PROVIDER_BLOCKLIST: z
     .string()
     .default('github,slack,telegram,discord,discordbot,feishu,feishu_app_bot,feishu_custom_bot'),
-  // ── in-cluster Kubernetes access — opt-in ──
-  // The switch for the cluster surface, and the ONLY access knob: turning it on
-  // asserts that this control plane runs inside the cluster, so the pod's
-  // ServiceAccount is the credential and the pod's own namespace is the control
-  // namespace. 'false' (default) ⇒ no cluster module and no behavior change for
-  // an existing deployment. Explicit rather than sniffed: a control plane that
-  // merely happens to run on Kubernetes must not start claiming cluster access.
-  // EXPLICIT enum, not z.coerce.boolean().
-  CLUSTER_EXECUTION_ENABLED: z
-    .enum(['true', 'false'])
-    .default('false')
-    .transform((v) => v === 'true'),
-  // Namespace the install runs its pool members in; unset ⇒ the control plane's own namespace.
+  // ── in-cluster Kubernetes access — opt-in by naming the pool namespace ──
+  // Namespace the install runs its pool members in. Setting it is THE switch for the
+  // cluster surface: it asserts this control plane runs inside the cluster, so the pod's
+  // ServiceAccount is the credential and a process outside a pod fails at boot. Unset ⇒
+  // no cluster module, only API-key daemon auth. Explicit rather than sniffed: a control
+  // plane that merely happens to run on Kubernetes must not start claiming cluster access.
   // A pool identity from any other namespace is refused — the fence around "may name its own org".
   POOL_NAMESPACE: z
     .string()
