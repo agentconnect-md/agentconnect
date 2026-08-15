@@ -26,7 +26,6 @@ import { createFeishuCpProvider } from './feishu/provider.js'
 const EXPECTED_KEYS = [
   'ACK_TIMEOUT_MS',
   'API_KEY_PEPPER',
-  'CLUSTER_EXECUTION_ENABLED',
   'CORS_ORIGIN',
   'CRON_RUN_REAP_INTERVAL_SEC',
   'CRON_RUN_TTL_SEC',
