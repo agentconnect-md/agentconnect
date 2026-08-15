@@ -59,7 +59,7 @@ import {
 } from '../../persistence/ports.js'
 import type { DaemonView } from '../../ports.js'
 import { AgentId, DaemonId, SessionId, type OrgId } from '../../domain/ids.js'
-import { mcpProxyDef, relayHttpOrigin } from '../../orchestrator/mcpProvider.js'
+import { currentMcpGrant, mcpProxyDef, relayHttpOrigin } from '../../orchestrator/mcpProvider.js'
 import { serializeByProviderNames } from './mcp-providers.js'
 
 /** Thrown inside the provider-name fence when the in-fence visibility re-check
@@ -943,14 +943,18 @@ export function agentRoutes(deps: HttpDeps) {
     // daemon-local defs and left alone. Best-effort + never throws: an offline daemon
     // (or transient error) is covered by the reconcile roster on its next register.
     const syncMcpDefsForAgent = async (
-      orgId: OrgId,
-      daemonId: string,
+      agent: AgentRecord,
       before: readonly string[],
       after: readonly string[]
     ): Promise<void> => {
+      const orgId = agent.orgId
       const added = after.filter((n) => !before.includes(n))
       const removed = before.filter((n) => !after.includes(n))
       if (added.length === 0 && removed.length === 0) return
+      // Every daemon serving this agent, not just its placement: a duty holder
+      // installed the same enable-list and needs the same defs.
+      const targets = await deps.agentDelivery.daemonsFor(agent.id, agent.daemonId)
+      if (targets.length === 0) return
       try {
         const byName = new Map((await deps.repos.mcpProvider.listForOrg(orgId)).map((p) => [p.name, p]))
         const send = async (fn: () => Promise<void>) => {
@@ -965,20 +969,28 @@ export function agentRoutes(deps: HttpDeps) {
           for (const name of added) {
             const provider = base ? byName.get(name) : undefined
             if (!provider) continue
-            const grant = (await deps.repos.mcpGrant.activeForProvider(provider.orgId, provider.id))[0]
-            if (grant) await send(() => deps.control.mcpServerUpsert(daemonId, mcpProxyDef(provider, grant.key, base!)))
+            const grant = currentMcpGrant(await deps.repos.mcpGrant.activeForProvider(provider.orgId, provider.id))
+            if (!grant) continue
+            const spec = mcpProxyDef(provider, grant, base!)
+            for (const daemonId of targets) await send(() => deps.control.mcpServerUpsert(daemonId, spec))
           }
         }
         if (removed.some((n) => byName.has(n))) {
           const peers = await deps.repos.agent.list(orgId)
           for (const name of removed) {
             if (!byName.has(name)) continue
-            const stillUsed = peers.some((a) => a.daemonId === daemonId && a.mcpServers.includes(name))
-            if (!stillUsed) await send(() => deps.control.mcpServerRemove(daemonId, orgId, name))
+            // "Still used" is delivery-set membership, not placement: a target that
+            // serves any other agent enabling the name keeps the def.
+            const stillOn = new Set(
+              await deps.agentDelivery.daemonsForAgents(peers.filter((a) => a.mcpServers.includes(name)))
+            )
+            for (const daemonId of targets) {
+              if (!stillOn.has(daemonId)) await send(() => deps.control.mcpServerRemove(daemonId, orgId, name))
+            }
           }
         }
       } catch (err) {
-        app.log.warn({ daemonId, err }, 'mcp def sync failed (reconcile will converge)')
+        app.log.warn({ agentId: agent.id, err }, 'mcp def sync failed (reconcile will converge)')
       }
     }
 
@@ -1187,9 +1199,12 @@ export function agentRoutes(deps: HttpDeps) {
       }
     }
 
+    /** Every daemon serving this agent gets the connection before the spec that
+     *  names it — a duty holder included, or its memory admission stays closed. */
     const pushExternalMemoryBeforeAgent = async (agent: AgentRecord): Promise<void> => {
-      if (!agent.daemonId) return
-      await pushExternalMemoryToDaemon(agent, agent.daemonId)
+      for (const daemonId of await deps.agentDelivery.daemonsFor(agent.id, agent.daemonId)) {
+        await pushExternalMemoryToDaemon(agent, daemonId)
+      }
     }
 
     const removeExternalMemoryFromDaemonIfUnused = async (
@@ -1198,13 +1213,13 @@ export function agentRoutes(deps: HttpDeps) {
       connectionId: string
     ): Promise<void> => {
       try {
-        const stillUsed = (await deps.repos.agent.list(orgId)).some(
-          (agent) =>
-            agent.daemonId === daemonId &&
-            agent.memory?.provider === 'external' &&
-            agent.memory.connectionId === connectionId
+        // "Still used on this daemon" is delivery-set membership, not placement:
+        // a duty holder serving another agent bound to the connection keeps it.
+        const users = (await deps.repos.agent.list(orgId)).filter(
+          (agent) => agent.memory?.provider === 'external' && agent.memory.connectionId === connectionId
         )
-        if (!stillUsed) await deps.control.memoryConnectionRemove(daemonId, connectionId)
+        const stillOn = new Set(await deps.agentDelivery.daemonsForAgents(users))
+        if (!stillOn.has(daemonId)) await deps.control.memoryConnectionRemove(daemonId, connectionId)
       } catch (err) {
         // Offline/version-skewed daemon converges the full registry on reconnect.
         app.log.warn({ daemonId, connectionId, err }, 'external memory registry removal deferred')
@@ -1212,7 +1227,7 @@ export function agentRoutes(deps: HttpDeps) {
     }
 
     const removeUnusedExternalMemoryAfterAgent = async (before: AgentRecord, after: AgentRecord): Promise<void> => {
-      if (!before.daemonId || before.memory?.provider !== 'external') return
+      if (before.memory?.provider !== 'external') return
       const connectionId = before.memory.connectionId
       if (
         after.daemonId === before.daemonId &&
@@ -1221,7 +1236,9 @@ export function agentRoutes(deps: HttpDeps) {
       ) {
         return
       }
-      await removeExternalMemoryFromDaemonIfUnused(before.orgId, before.daemonId, connectionId)
+      for (const daemonId of await deps.agentDelivery.daemonsFor(before.id, before.daemonId)) {
+        await removeExternalMemoryFromDaemonIfUnused(before.orgId, daemonId, connectionId)
+      }
     }
 
     const agentMoves = new AgentMoveService({
@@ -1544,7 +1561,7 @@ export function agentRoutes(deps: HttpDeps) {
               )
             }
           }
-          if (agent.daemonId) await syncMcpDefsForAgent(orgOf(req), agent.daemonId, [], agent.mcpServers)
+          await syncMcpDefsForAgent(agent, [], agent.mcpServers)
           return reply.code(201).send({
             ...toDto(
               agent,
@@ -1992,10 +2009,12 @@ export function agentRoutes(deps: HttpDeps) {
           await replicateUpsert(agent)
           if (req.body.icon !== undefined) void syncAgentBotIcons(deps, agent, app.log)
           await removeUnusedExternalMemoryAfterAgent(existing, agent)
-          // Provision/drop MCP proxy defs for an enable-list change on a stably-placed
-          // agent (a daemon move goes through AgentMoveService + reconcile, not here).
-          if (agent.daemonId && agent.daemonId === existing.daemonId) {
-            await syncMcpDefsForAgent(orgOf(req), agent.daemonId, existing.mcpServers, agent.mcpServers)
+          // Provision/drop MCP proxy defs for an enable-list change with the placement
+          // unchanged (a daemon move goes through AgentMoveService + reconcile, not
+          // here). The fan-out itself is delivery-set-wide, so an unplaced agent whose
+          // duty holders serve it is still covered.
+          if (agent.daemonId === existing.daemonId) {
+            await syncMcpDefsForAgent(agent, existing.mcpServers, agent.mcpServers)
           }
           return toDto(
             agent,

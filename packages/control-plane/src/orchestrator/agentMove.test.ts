@@ -560,3 +560,105 @@ describe('AgentMoveService', () => {
     expect(t.calls).not.toContain(`activate:${SOURCE}`)
   })
 })
+
+/**
+ * `bundleFor` is the `duty/fetch` reply. An AgentSpec only NAMES its MCP servers
+ * and its memory connection, so a member that installs the bundle on a daemon the
+ * agent is not placed on would come up referencing definitions it never received
+ * (#979). Both now ride the bundle, through the SAME projector the reconnect
+ * roster uses, scoped to this one agent's references.
+ */
+describe('AgentMoveService.bundleFor — the duty/fetch install bundle', () => {
+  const PROVIDER = '88888888-8888-4888-8888-888888888888'
+  const CONNECTION = '99999999-9999-4999-8999-999999999999'
+  const INSTALLATION = 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa'
+
+  function bundleService(over: { mcpServers?: string[]; connectionId?: string } = {}) {
+    const record = {
+      ...agent(SOURCE),
+      mcpServers: over.mcpServers ?? [],
+      memory: over.connectionId ? { provider: 'external', connectionId: over.connectionId } : null
+    } as AgentRecord
+    const service = new AgentMoveService({
+      agents: { getUnscoped: async () => record } as unknown as AgentRepo,
+      integrations: { listForAgent: async () => [] } as unknown as ConstructorParameters<
+        typeof AgentMoveService
+      >[0]['integrations'],
+      integrationChannels: { listForIntegration: async () => [] } as unknown as ConstructorParameters<
+        typeof AgentMoveService
+      >[0]['integrationChannels'],
+      bots: { getUnscoped: async () => bot } as unknown as ConstructorParameters<typeof AgentMoveService>[0]['bots'],
+      botSecrets: { get: async () => ({}) } as unknown as ConstructorParameters<
+        typeof AgentMoveService
+      >[0]['botSecrets'],
+      platforms: PLATFORMS,
+      specs: new AgentSpecAssembler({
+        get: async () => ({}),
+        merge: async () => {},
+        keys: async () => new Map()
+      } as unknown as ConstructorParameters<typeof AgentSpecAssembler>[0]),
+      crons: { listForAgent: async () => [] } as unknown as ConstructorParameters<typeof AgentMoveService>[0]['crons'],
+      assignments: {} as unknown as ConstructorParameters<typeof AgentMoveService>[0]['assignments'],
+      mcp: {
+        providers: { listForOrg: async () => [{ id: PROVIDER, orgId: ORG, name: 'docs' }] },
+        grants: { activeForProvider: async () => [{ id: 'g1', key: 'oct_docs', createdAt: new Date(2_000) }] },
+        relayRoster: { entries: async () => [{ relayId: 'r1', name: 'r1', url: 'wss://relay.example.test' }] }
+      } as unknown as ConstructorParameters<typeof AgentMoveService>[0]['mcp'],
+      memory: {
+        connections: {
+          get: async (_orgId: string, id: string) =>
+            id === CONNECTION
+              ? { id: CONNECTION, orgId: ORG, installationId: INSTALLATION, revision: 1, config: {} }
+              : null
+        },
+        installations: {
+          get: async () => ({
+            id: INSTALLATION,
+            pluginId: 'ai.example.memory',
+            transport: 'stdio',
+            commandRef: 'operator-mem0',
+            expectedManifestDigest: `sha256:${'a'.repeat(64)}`,
+            secretHeaders: []
+          })
+        },
+        secrets: { get: async () => ({}), keys: async () => [] },
+        grants: { activeForConnection: async () => [] },
+        relayRoster: { entries: async () => [] }
+      } as unknown as ConstructorParameters<typeof AgentMoveService>[0]['memory'],
+      control: {} as unknown as ControlSender,
+      hooks: {} as unknown as HookService,
+      httpBot: {} as unknown as HttpBotOrchestrator,
+      collabRoutes: {} as unknown as CollabRoutesService,
+      mutations: new AgentMutationGate(),
+      sessionOwners: { releaseSession: () => {} }
+    })
+    return { service, record }
+  }
+
+  it('carries the proxy def for every MCP server the spec names', async () => {
+    const { service, record } = bundleService({ mcpServers: ['docs'] })
+    const bundle = await service.bundleFor(record)
+    expect(bundle.spec.mcpServers).toEqual(['docs'])
+    // Not just present — the grant-bearing proxy def, so the holder can actually call it.
+    expect(bundle.mcpServers).toEqual([
+      expect.objectContaining({
+        name: 'docs',
+        url: `https://relay.example.test/mcp/${PROVIDER}`,
+        headers: [{ name: 'Authorization', value: 'Bearer oct_docs' }]
+      })
+    ])
+  })
+
+  it('carries the external-memory connection the spec binds', async () => {
+    const { service, record } = bundleService({ connectionId: CONNECTION })
+    const bundle = await service.bundleFor(record)
+    expect(bundle.memoryConnections.map((c) => c.connectionId)).toEqual([CONNECTION])
+  })
+
+  it('an agent that names neither gets neither — the bundle is scoped to its references', async () => {
+    const { service, record } = bundleService()
+    const bundle = await service.bundleFor(record)
+    expect(bundle.mcpServers).toEqual([])
+    expect(bundle.memoryConnections).toEqual([])
+  })
+})

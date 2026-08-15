@@ -9,7 +9,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { isFrame } from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
 import { buildWsHarness } from '../fakes/build-ws.js'
-import { DEF_ORG, seedAgent, seedDaemon } from '../fixtures/seed.js'
+import { DEF_ORG, seedAgent, seedDaemon, seedDutyGroup } from '../fixtures/seed.js'
 import {
   PgExternalMemoryConnectionRepo,
   PgExternalMemoryConnectionSecretStore,
@@ -25,6 +25,7 @@ const DAEMON_2 = 'a2222222-2222-4222-8222-222222222222'
 const AGENT_1 = 'b1111111-1111-4111-8111-111111111111'
 const AGENT_2 = 'b2222222-2222-4222-8222-222222222222'
 const RELAY = 'c1111111-1111-4111-8111-111111111111'
+const GROUP = 'd1111111-1111-4111-8111-111111111111'
 
 function authPayload(token: string) {
   return { apiKey: token, daemonId: DAEMON_1, agentVersion: '1.7.0' }
@@ -236,5 +237,58 @@ describe('facts/memory-connections — daemon-scoped and revision-fenced', () =>
       probedRevision: null
     })
     expect(stub.lastSent('error')).toBeUndefined()
+  })
+
+  /**
+   * The ownership boundary is "the agents this daemon SERVES", not "the agents
+   * placed on it" (#979). It has to be: the roster now ships a duty-held agent's
+   * connection to its holder, so a holder that could not report facts for it
+   * would leave that connection permanently unprobed in the console — and the
+   * definition it was given would be one it may not speak about.
+   */
+  it('a DUTY HOLDER receives its held agent’s connection and may report its facts', async () => {
+    const { connections, connection1, connection2 } = await fixture()
+    // AGENT_2 is placed on DAEMON_2; DAEMON_1 only holds its duty.
+    await seedDutyGroup(prisma, GROUP, DAEMON_1, [AGENT_2])
+    const h = buildWsHarness(prisma, { relays: [{ relayId: RELAY, url: 'wss://relay.example/rd' }] })
+    const token = await h.mintToken(DAEMON_1)
+    const { stub } = h.connect()
+    stub.inject('auth', authPayload(token))
+    await stub.expectFrame('auth/ok')
+    stub.inject('register', registerPayload())
+    const registered = await stub.expectFrame('register/ok')
+    if (!isFrame('register/ok')(registered)) throw new Error('expected register/ok')
+
+    expect(registered.payload.memoryConnections.map((c) => c.connectionId).sort()).toEqual(
+      [connection1.id, connection2.id].sort()
+    )
+
+    stub.inject('facts/memory-connections', {
+      connections: [{ connectionId: connection2.id, revision: 1, pluginId: 'ai.example.memory', status: 'ready' }]
+    })
+    await vi.waitFor(async () => {
+      expect(await connections.get(DEF_ORG, connection2.id)).toMatchObject({ status: 'ready', probedRevision: 1 })
+    })
+  })
+
+  it('an EXPIRED duty is not a holding — neither the definition nor the fact is accepted', async () => {
+    const { connections, connection1, connection2 } = await fixture()
+    const h = buildWsHarness(prisma, { relays: [{ relayId: RELAY, url: 'wss://relay.example/rd' }] })
+    await seedDutyGroup(prisma, GROUP, DAEMON_1, [AGENT_2], { expiresAt: new Date(h.clock.now() - 1_000) })
+    const token = await h.mintToken(DAEMON_1)
+    const { stub } = h.connect()
+    stub.inject('auth', authPayload(token))
+    await stub.expectFrame('auth/ok')
+    stub.inject('register', registerPayload())
+    const registered = await stub.expectFrame('register/ok')
+    if (!isFrame('register/ok')(registered)) throw new Error('expected register/ok')
+
+    expect(registered.payload.memoryConnections.map((c) => c.connectionId)).toEqual([connection1.id])
+
+    stub.inject('facts/memory-connections', {
+      connections: [{ connectionId: connection2.id, revision: 1, pluginId: 'ai.example.memory', status: 'ready' }]
+    })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(await connections.get(DEF_ORG, connection2.id)).toMatchObject({ status: 'probing', probedRevision: null })
   })
 })

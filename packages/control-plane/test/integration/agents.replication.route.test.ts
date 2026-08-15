@@ -21,6 +21,8 @@ import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { ControlSender, NoConnection } from '../../src/orchestrator/outbound.js'
 import type { AgentUpsert, AgentRemove, CollabRoutesSnapshot } from '@agentconnect.md/protocol'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
+import { mcpDefsForAgents } from '../../src/orchestrator/agentDefinitions.js'
+import { AgentId } from '../../src/domain/ids.js'
 
 // Console routes are org-scoped: /orgs/:orgId/… (devAuth = seeded owner of the default org).
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
@@ -554,6 +556,126 @@ describe('agent updates follow the duty holder', () => {
     // the two replicas cannot disagree about what revision they applied.
     expect(spy.upserts.map((u) => u.daemonId)).toEqual([DAEMON, HOLDER])
     expect(spy.upserts[0]!.u.spec).toEqual(spy.upserts[1]!.u.spec)
+  })
+
+  /**
+   * The two definition kinds the AgentSpec only NAMES (#979). They were the last
+   * placement-keyed fan-outs: a holder installed an agent referencing MCP servers
+   * it had no definitions for, and provider rotations never reached it.
+   */
+  it('an MCP provider UPDATE reaches a holder that is not the placement', async () => {
+    await seedDaemon(prisma, HOLDER)
+    const { providerId } = await seedProviderAndRelay()
+    const agentId = randomUUID()
+    // Placed nowhere and enabling `fakemcp`: the duty is the only reason it is served.
+    await seedAgent(prisma, agentId, { runtimeOverrides: { mcpServers: ['fakemcp'] } })
+    await seedDutyGroup(prisma, GROUP, HOLDER, [agentId])
+
+    const spy = new McpSpyControl()
+    running = buildHttpApp(prisma, { RELAY_STALE_MS: 60_000 }, undefined, spy as unknown as ControlSender)
+    const res = await running.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/mcp-providers/${providerId}`,
+      payload: { url: 'https://upstream.example.test/mcp/v2' }
+    })
+    expect(res.statusCode, res.body).toBe(200)
+    // Content, not arrival: the holder must get the callable proxy def, not a bare ping.
+    expect(spy.mcpUpserts).toEqual([
+      {
+        daemonId: HOLDER,
+        spec: expect.objectContaining({
+          name: 'fakemcp',
+          url: `http://relay.example:8443/mcp/${providerId}`,
+          headers: [{ name: 'Authorization', value: 'Bearer oct_testkey' }]
+        })
+      }
+    ])
+  })
+
+  it('a grant ROTATION reaches the holder, so its calls do not start 401ing', async () => {
+    await seedDaemon(prisma, HOLDER)
+    const { providerId } = await seedProviderAndRelay()
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { runtimeOverrides: { mcpServers: ['fakemcp'] } })
+    await seedDutyGroup(prisma, GROUP, HOLDER, [agentId])
+
+    const spy = new McpSpyControl()
+    running = buildHttpApp(prisma, { RELAY_STALE_MS: 60_000 }, undefined, spy as unknown as ControlSender)
+    const res = await running.app.inject({ method: 'POST', url: `${ORG}/mcp-providers/${providerId}/grant/rotate` })
+    expect(res.statusCode, res.body).toBe(200)
+    expect(spy.mcpUpserts.map((u) => u.daemonId)).toEqual([HOLDER])
+    // The FRESH key, not the retired one — arrival alone would not prove that.
+    expect(spy.mcpUpserts[0]!.spec.headers).not.toEqual([{ name: 'Authorization', value: 'Bearer oct_testkey' }])
+  })
+
+  it('a def projected DURING a rotation overlap carries the fresh key, ordered after the retiring one', async () => {
+    await seedDaemon(prisma, HOLDER)
+    const { providerId } = await seedProviderAndRelay()
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { runtimeOverrides: { mcpServers: ['fakemcp'] } })
+    await seedDutyGroup(prisma, GROUP, HOLDER, [agentId])
+
+    const spy = new McpSpyControl()
+    running = buildHttpApp(prisma, { RELAY_STALE_MS: 60_000 }, undefined, spy as unknown as ControlSender)
+    // The overlap window, exactly as `rotateOnce` creates it: mint the fresh grant
+    // while the retiring one is still active, and project BEFORE the revoke lands.
+    const fresh = await prisma.mcpGrant.create({
+      data: { mcpProviderId: providerId, key: 'oct_freshkey', createdAt: new Date(Date.now() + 1_000) }
+    })
+    const agent = await running.deps.repos.agent.getUnscoped(AgentId(agentId))
+    const defs = await mcpDefsForAgents([agent!], {
+      providers: running.deps.repos.mcpProvider,
+      grants: running.deps.repos.mcpGrant,
+      relayRoster: { entries: async () => [{ relayId: randomUUID(), url: 'ws://relay.example:8443' }] }
+    })
+
+    expect(defs).toHaveLength(1)
+    expect(defs[0]!.headers).toEqual([{ name: 'Authorization', value: 'Bearer oct_freshkey' }])
+    // Strictly newer than the retiring grant, which is what makes the daemon fence work.
+    expect(defs[0]!.issuedAt).toBe(fresh.createdAt.getTime())
+    const retiring = await prisma.mcpGrant.findFirstOrThrow({ where: { key: 'oct_testkey' } })
+    expect(defs[0]!.issuedAt!).toBeGreaterThan(retiring.createdAt.getTime())
+  })
+
+  it('a member holding NO duty covering the enabling agent receives no def', async () => {
+    await seedDaemon(prisma, HOLDER)
+    await seedDaemon(prisma, DAEMON)
+    const { providerId } = await seedProviderAndRelay()
+    const unrelated = randomUUID()
+    await seedAgent(prisma, randomUUID(), { runtimeOverrides: { mcpServers: ['fakemcp'] } })
+    // HOLDER holds a duty, but for an agent that enables nothing — the boundary.
+    await seedAgent(prisma, unrelated, { daemonId: DAEMON })
+    await seedDutyGroup(prisma, GROUP, HOLDER, [unrelated])
+
+    const spy = new McpSpyControl()
+    running = buildHttpApp(prisma, { RELAY_STALE_MS: 60_000 }, undefined, spy as unknown as ControlSender)
+    const res = await running.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/mcp-providers/${providerId}`,
+      payload: { url: 'https://upstream.example.test/mcp/v2' }
+    })
+    expect(res.statusCode, res.body).toBe(200)
+    // `enabling` reaches no daemon at all, so the grant key leaves the CP nowhere.
+    expect(spy.mcpUpserts).toEqual([])
+  })
+
+  it('enabling a provider ON a duty-held agent pushes the def to its holder', async () => {
+    await seedDaemon(prisma, HOLDER)
+    const { providerId } = await seedProviderAndRelay()
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId)
+    await seedDutyGroup(prisma, GROUP, HOLDER, [agentId])
+
+    const spy = new McpSpyControl()
+    running = buildHttpApp(prisma, { RELAY_STALE_MS: 60_000 }, undefined, spy as unknown as ControlSender)
+    const res = await running.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/agents/${agentId}`,
+      payload: { mcpServers: ['fakemcp'] }
+    })
+    expect(res.statusCode, res.body).toBe(200)
+    expect(spy.mcpUpserts.map((u) => u.daemonId)).toEqual([HOLDER])
+    expect(spy.mcpUpserts[0]!.spec.url).toBe(`http://relay.example:8443/mcp/${providerId}`)
   })
 
   it('the placement holding its own agent is one target, not two', async () => {

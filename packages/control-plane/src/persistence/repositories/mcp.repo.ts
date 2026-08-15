@@ -31,7 +31,7 @@ import type {
 import { visibilityWhere } from '../../authorization/policy.js'
 import type { SecretCipher } from '../../secrets/cipher.js'
 import { orgScope } from '../../secrets/scope.js'
-import { DaemonId, OrgId } from '../../domain/ids.js'
+import { OrgId } from '../../domain/ids.js'
 import { lockResourceWriteMemberships } from '../resource-membership-lock.js'
 
 function toProviderRecord(p: McpProvider): McpProviderRecord {
@@ -142,29 +142,6 @@ export class PgMcpProviderRepo implements McpProviderRepo {
   async delete(orgId: OrgId, id: string): Promise<void> {
     // Org-fenced delete: a cross-org id throws the same P2025 as a missing row.
     await this.db.mcpProvider.delete({ where: { id, orgId } }) // FK cascade drops secret + grants
-  }
-
-  // Org providers whose `name` is enabled by some agent placed on this daemon. The
-  // enable-list lives in the agent's `runtimeOverrides.mcpServers` JSON (not a scalar
-  // column), so collect the enabled names in app code, then point-query the providers.
-  async activeForDaemon(daemonId: DaemonId): Promise<McpProviderRecord[]> {
-    const agents = await this.db.agent.findMany({
-      where: { daemonId },
-      select: { orgId: true, runtimeOverrides: true }
-    })
-    const orgIds = new Set<string>()
-    const names = new Set<string>()
-    for (const a of agents) {
-      orgIds.add(a.orgId)
-      const ov = a.runtimeOverrides as { mcpServers?: string[] } | null
-      for (const n of ov?.mcpServers ?? []) names.add(n)
-    }
-    if (names.size === 0) return []
-    const rows = await this.db.mcpProvider.findMany({
-      where: { orgId: { in: [...orgIds] }, name: { in: [...names] } },
-      orderBy: { createdAt: 'asc' }
-    })
-    return rows.map(toProviderRecord)
   }
 }
 

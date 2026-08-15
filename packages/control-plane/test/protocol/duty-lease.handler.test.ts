@@ -345,6 +345,117 @@ describe('the reconnect roster follows the duty holder', () => {
     // Detach, never remove: the CP row still proves the agent lives elsewhere.
     expect(ok.drop.agents).toEqual([{ agentId: AGENT, action: 'detach' }])
   })
+
+  /**
+   * The definitions the roster's AgentSpecs only NAME (#979). Before this they
+   * were resolved from `activeForDaemon(daemonId)` — placement — so a holder with
+   * no agent PLACED on it received an agent whose MCP servers and memory backend
+   * it had no definitions for, and both silently did not work.
+   */
+  const RELAY = [{ relayId: '00000000-0000-4000-8000-0000000000a1', url: 'wss://relay.example.test' }]
+
+  async function seedProvider(name: string, key: string): Promise<string> {
+    const provider = await prisma.mcpProvider.create({
+      data: { orgId: DEFAULT_ORG_ID, name, url: 'https://upstream.example.test/mcp' }
+    })
+    await prisma.mcpGrant.create({ data: { mcpProviderId: provider.id, key } })
+    return provider.id
+  }
+
+  async function seedStdioConnection(): Promise<string> {
+    const installation = await prisma.memoryPluginInstallation.create({
+      data: {
+        orgId: DEFAULT_ORG_ID,
+        pluginId: 'ai.example.memory',
+        transport: 'stdio',
+        commandRef: 'operator-mem0',
+        expectedManifestDigest: `sha256:${'a'.repeat(64)}`,
+        secretHeaders: []
+      }
+    })
+    const connection = await prisma.externalMemoryConnection.create({
+      data: { orgId: DEFAULT_ORG_ID, installationId: installation.id, config: {} }
+    })
+    return connection.id
+  }
+
+  it('the snapshot carries the MCP defs and memory connection its DUTY-HELD agent references', async () => {
+    const h = buildWsHarness(prisma, { relays: RELAY })
+    await prisma.daemon.create({ data: { id: OTHER, orgId: DEFAULT_ORG_ID, maxAgents: 4, status: 'ready' } })
+    const providerId = await seedProvider('docs', 'oct_docs')
+    const connectionId = await seedStdioConnection()
+    await prisma.agent.create({
+      data: {
+        id: AGENT,
+        orgId: DEFAULT_ORG_ID,
+        name: 'held',
+        runtime: 'claude',
+        daemonId: OTHER,
+        runtimeOverrides: { mcpServers: ['docs'], memory: { provider: 'external', connectionId } }
+      }
+    })
+    await seedGroup({ holder: DAEMON, term: 1n, expiresAt: new Date(h.clock.now() + LEASE_MS) })
+
+    const ok = await reconnectHolding(h)
+
+    // Content, not arrival: the proxy def must carry the grant key the holder calls with.
+    expect(ok.mcpServers).toEqual([
+      expect.objectContaining({
+        name: 'docs',
+        url: `https://relay.example.test/mcp/${providerId}`,
+        headers: [{ name: 'Authorization', value: 'Bearer oct_docs' }]
+      })
+    ])
+    expect(ok.memoryConnections.map((c) => c.connectionId)).toEqual([connectionId])
+  })
+
+  it('a member holding NO duty covering the agent receives neither definition', async () => {
+    const h = buildWsHarness(prisma, { relays: RELAY })
+    await prisma.daemon.create({ data: { id: OTHER, orgId: DEFAULT_ORG_ID, maxAgents: 4, status: 'ready' } })
+    await seedProvider('docs', 'oct_docs')
+    const connectionId = await seedStdioConnection()
+    await prisma.agent.create({
+      data: {
+        id: AGENT,
+        orgId: DEFAULT_ORG_ID,
+        name: 'not-mine',
+        runtime: 'claude',
+        daemonId: OTHER,
+        runtimeOverrides: { mcpServers: ['docs'], memory: { provider: 'external', connectionId } }
+      }
+    })
+    // The group exists but is held by ANOTHER member — same org, same registry.
+    await seedGroup({ holder: OTHER, term: 1n, expiresAt: new Date(h.clock.now() + LEASE_MS) })
+
+    const ok = await reconnectHolding(h)
+
+    expect(ok.agents).toEqual([])
+    expect(ok.mcpServers).toEqual([])
+    expect(ok.memoryConnections).toEqual([])
+  })
+
+  it('an EXPIRED lease takes the definitions away with the agent', async () => {
+    const h = buildWsHarness(prisma, { relays: RELAY })
+    await prisma.daemon.create({ data: { id: OTHER, orgId: DEFAULT_ORG_ID, maxAgents: 4, status: 'ready' } })
+    await seedProvider('docs', 'oct_docs')
+    const connectionId = await seedStdioConnection()
+    await prisma.agent.create({
+      data: {
+        id: AGENT,
+        orgId: DEFAULT_ORG_ID,
+        name: 'lapsed',
+        runtime: 'claude',
+        daemonId: OTHER,
+        runtimeOverrides: { mcpServers: ['docs'], memory: { provider: 'external', connectionId } }
+      }
+    })
+    await seedGroup({ holder: DAEMON, term: 1n, expiresAt: new Date(h.clock.now() - 1_000) })
+
+    const ok = await reconnectHolding(h)
+
+    expect(ok.mcpServers).toEqual([])
+    expect(ok.memoryConnections).toEqual([])
+  })
 })
 
 /**

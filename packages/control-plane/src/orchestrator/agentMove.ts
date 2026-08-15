@@ -40,6 +40,12 @@ import type {
 import { AgentWorkspaceIntegrationConflict } from '../persistence/errors.js'
 import type { AgentId, DaemonId } from '../domain/ids.js'
 import { cronToUpsert, integrationToSpec, isGatedAgent, httpIntegrationToSpec } from './placement.js'
+import {
+  mcpDefsForAgents,
+  memoryDefsForAgents,
+  type McpDefinitionDeps,
+  type MemoryDefinitionDeps
+} from './agentDefinitions.js'
 import type { CpPlatformRegistry } from '../platforms/provider.js'
 import type { AgentSpecAssembler } from './agentSpecAssembler.js'
 import type { OrganizationEnvironmentValues } from './organizationEnvironment.js'
@@ -87,6 +93,11 @@ export interface AgentMoveDeps {
   /** Owns AgentSpec assembly (secret loading + icon bases) for the activation definition. */
   specs: AgentSpecAssembler
   crons: CronRepo
+  /** The `duty/fetch` bundle's MCP and external-memory projections — the same
+   *  optional seams `PlacementOrchDeps` carries, so the bundle and the reconnect
+   *  snapshot are one projector. Absent (tests / no orch) ⇒ neither kind ships. */
+  mcp?: McpDefinitionDeps
+  memory?: MemoryDefinitionDeps
   control: ControlSender
   hooks: HookService
   httpBot: HttpBotOrchestrator
@@ -615,12 +626,25 @@ export class AgentMoveService {
 
   /**
    * The complete installable definition of one agent — secrets, org environment,
-   * skills, integration specs, and crons — with no move token, staging fence, or
-   * placement assertion attached. Shared with `duty/fetch`, so a member that wins
-   * a duty for an agent it lacks installs exactly what an activation would.
+   * skills, integration specs, crons, and the two definition kinds the spec only
+   * NAMES (its proxied MCP servers and its external-memory connection) — with no
+   * move token, staging fence, or placement assertion attached.
+   *
+   * Used only by `duty/fetch`. The MCP and memory defs come from the SAME
+   * projector the reconnect roster uses, scoped to this one agent's references,
+   * so a holder's install and its next snapshot cannot disagree and the reply
+   * carries nothing beyond what the duty it already holds covers. A move keeps
+   * its narrower `activationDefinition` — placement moves converge these two
+   * kinds through their own live pushes and the target's register.
    */
   async bundleFor(agent: AgentRecord): Promise<DutyAgentBundle> {
-    return this.activationDefinition(agent, await this.snapshot(agent))
+    const log = { warn: (obj: object, msg: string) => this.deps.log?.warn(obj, msg) }
+    const [snapshot, mcpServers, memoryConnections] = await Promise.all([
+      this.snapshot(agent),
+      mcpDefsForAgents([agent], this.deps.mcp, log, { agentId: agent.id }),
+      memoryDefsForAgents([agent], this.deps.memory, log, { agentId: agent.id })
+    ])
+    return { ...this.activationDefinition(agent, snapshot), mcpServers, memoryConnections }
   }
 
   /** Read every placement-dependent wire definition. */

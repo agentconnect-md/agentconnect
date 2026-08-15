@@ -9,7 +9,8 @@ import {
   DutyClaim,
   DutyClaimOk,
   DutyFetch,
-  DutyFetchOk
+  DutyFetchOk,
+  DutyAgentBundle
 } from './duty.js'
 import { Heartbeat } from './telemetry.js'
 import { decodeEnvelope, encode, buildEnvelope } from '../index.js'
@@ -17,6 +18,7 @@ import { decodeEnvelope, encode, buildEnvelope } from '../index.js'
 const GROUP = '11111111-1111-4111-8111-111111111111'
 const AGENT = '22222222-2222-4222-8222-222222222222'
 const BOT = '33333333-3333-4333-8333-333333333333'
+const CONNECTION = '66666666-6666-4666-8666-666666666666'
 
 describe('HeartbeatDuties', () => {
   it('rides the heartbeat as an optional field — absent keeps old daemons parsing clean', () => {
@@ -191,5 +193,64 @@ describe('duty/fetch — installing an agent a duty was won for', () => {
     expect(decoded.frame.type).toBe('duty/fetch/ok')
     // toMatchObject, not toEqual: AgentSpec's zod defaults materialize on decode.
     expect(decoded.frame.payload).toMatchObject(payload)
+    // An older CP omits the two definition arrays entirely; the member reads them
+    // as empty and installs the trio, exactly as before #979.
+    expect(DutyAgentBundle.parse(payload.bundle)).toMatchObject({ mcpServers: [], memoryConnections: [] })
+  })
+
+  it('the bundle also carries the MCP and memory definitions the spec only NAMES', () => {
+    const payload = {
+      bundle: {
+        agentId: AGENT,
+        spec: { orgId: 'org-1', name: 'scout', runtime: 'claude', mcpServers: ['docs'] },
+        integrations: [],
+        crons: [],
+        mcpServers: [
+          {
+            orgId: 'org-1',
+            name: 'docs',
+            transport: 'http',
+            url: 'https://relay.example.test/mcp/p1',
+            headers: [{ name: 'Authorization', value: 'Bearer oct_key' }]
+          }
+        ],
+        memoryConnections: [
+          {
+            connectionId: CONNECTION,
+            orgId: 'org-1',
+            revision: 3,
+            transport: 'streamable-http',
+            config: { projectId: 'p1' },
+            secretKeys: ['apiKey'],
+            pin: {
+              pluginId: 'ai.example.memory',
+              profileMajor: 1,
+              manifestDigest: `sha256:${'a'.repeat(64)}`
+            },
+            relayUrl: 'https://relay.example.test/memory/c1',
+            grantKey: 'omg_key'
+          }
+        ]
+      }
+    }
+    const decoded = decodeEnvelope(encode(buildEnvelope('duty/fetch/ok', payload)))
+    if (!decoded.ok) throw new Error(`decode failed: ${decoded.msg}`)
+    expect(decoded.frame.payload).toMatchObject(payload)
+
+    // Both arrays carry their real schemas: these are token-bearing definitions a
+    // member installs verbatim, so a malformed one must be refused at the edge,
+    // never handed to the MCP or memory registry.
+    expect(
+      DutyAgentBundle.safeParse({
+        ...payload.bundle,
+        mcpServers: [{ orgId: 'org-1', name: 'docs', transport: 'http' }]
+      }).success
+    ).toBe(false)
+    expect(
+      DutyAgentBundle.safeParse({
+        ...payload.bundle,
+        memoryConnections: [{ connectionId: CONNECTION, transport: 'streamable-http' }]
+      }).success
+    ).toBe(false)
   })
 })

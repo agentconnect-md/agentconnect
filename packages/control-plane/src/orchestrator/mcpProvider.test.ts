@@ -3,6 +3,7 @@ import { McpServerSpec, RcMcpAssign } from '@agentconnect.md/protocol'
 import {
   mintGrantKey,
   grantKeyHash,
+  currentMcpGrant,
   mcpProxyDef,
   mcpRcAssign,
   blockedUpstreamUrl,
@@ -35,7 +36,11 @@ describe('relayHttpOrigin', () => {
   })
 
   it('produces an http-scheme proxy url when fed a wss relay (the transport bug)', () => {
-    const def = mcpProxyDef(provider, 'oct_k', relayHttpOrigin('wss://relay.example/rd'))
+    const def = mcpProxyDef(
+      provider,
+      { key: 'oct_k', createdAt: new Date(0) },
+      relayHttpOrigin('wss://relay.example/rd')
+    )
     expect(def.url).toBe('https://relay.example/mcp/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d')
     expect(def.transport).toBe('http')
   })
@@ -51,8 +56,30 @@ describe('grantKeyHash', () => {
   })
 })
 
+describe('currentMcpGrant', () => {
+  const at = (ms: number, key: string) => ({ key, createdAt: new Date(ms) })
+
+  it('picks the NEWEST active grant — the retiring one is first during a rotation', () => {
+    // `activeForProvider` orders by createdAt ascending, and rotation deliberately
+    // leaves both active until the fresh key is distributed. Taking the head inside
+    // that window projects the key the CP is about to revoke.
+    expect(currentMcpGrant([at(1_000, 'oct_retiring'), at(2_000, 'oct_fresh')])?.key).toBe('oct_fresh')
+  })
+  it('is undefined when there is no active grant at all', () => {
+    expect(currentMcpGrant([])).toBeUndefined()
+  })
+})
+
 describe('mcpProxyDef', () => {
-  const def = mcpProxyDef(provider, 'oct_secret', 'https://relay.example.com')
+  const def = mcpProxyDef(
+    provider,
+    { key: 'oct_secret', createdAt: new Date(1_700_000_000_000) },
+    'https://relay.example.com'
+  )
+
+  it('orders itself by the instant its grant was issued', () => {
+    expect(def.issuedAt).toBe(1_700_000_000_000)
+  })
 
   it('is a valid McpServerSpec', () => {
     expect(() => McpServerSpec.parse(def)).not.toThrow()

@@ -8,6 +8,8 @@ import { z } from 'zod'
 import { AgentSpec } from './agent.js'
 import { IntegrationSpec } from './integration.js'
 import { CronUpsert } from './cron.js'
+import { McpServerSpec } from './mcpserver.js'
+import { MemoryConnectionSpec } from './memory-connection.js'
 
 /** A per-group fencing term — bigint as a decimal string (JSON-safe). */
 export const DutyTerm = z.string().regex(/^\d+$/)
@@ -125,13 +127,26 @@ export const DutyFetch = z.object({
 })
 export type DutyFetch = z.infer<typeof DutyFetch>
 
-/** One agent's complete installable definition — the same trio `agent/activate`
- *  carries, without the move token or the staging fence. */
+/**
+ * One agent's complete installable definition — the trio `agent/activate` carries,
+ * without the move token or the staging fence, plus the two definition kinds the
+ * spec only NAMES: the proxied MCP servers its `mcpServers` list enables and its
+ * external-memory connection. Those arrive separately on the placement-keyed
+ * paths, so a duty holder that is not the placement would otherwise install an
+ * agent referencing tools and a memory backend it has no definitions for.
+ *
+ * Both are token-bearing (relay proxy url + grant key, memory grant + secret
+ * leases) — NEVER log this bundle. They are scoped to what THIS agent references,
+ * so the reply widens nothing beyond the duty the asker already holds. Optional
+ * for decode tolerance: an older CP omits them and the member installs the trio.
+ */
 export const DutyAgentBundle = z.object({
   agentId: z.string().uuid(),
   spec: AgentSpec,
   integrations: z.array(IntegrationSpec),
-  crons: z.array(CronUpsert)
+  crons: z.array(CronUpsert),
+  mcpServers: z.array(McpServerSpec).default([]),
+  memoryConnections: z.array(MemoryConnectionSpec).default([])
 })
 export type DutyAgentBundle = z.infer<typeof DutyAgentBundle>
 

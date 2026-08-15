@@ -690,6 +690,16 @@ export function buildContainer(
     platforms,
     specs: agentSpecs,
     crons: repos.cron,
+    // The `duty/fetch` bundle's MCP + external-memory projections (same seams the
+    // reconcile roster below is given, same projector).
+    mcp: { providers: repos.mcpProvider, grants: repos.mcpGrant, relayRoster },
+    memory: {
+      connections: repos.externalMemoryConnection,
+      installations: repos.memoryPluginInstallation,
+      secrets: repos.externalMemoryConnectionSecret,
+      grants: repos.externalMemoryGrant,
+      relayRoster
+    },
     control: sender,
     hooks: hookService,
     httpBot,
@@ -1136,7 +1146,8 @@ export function buildContainer(
           installations: repos.memoryPluginInstallation,
           secrets: repos.externalMemoryConnectionSecret,
           grants: repos.externalMemoryGrant,
-          daemons: repos.daemon,
+          agents: repos.agent,
+          delivery: agentDelivery,
           control: sender,
           log: http.log
         })
@@ -1432,7 +1443,8 @@ export function buildContainer(
           if (!selected) return
           await syncMemoryConnectionsToDaemons(relayHttpOrigin(selected.url), {
             ...memoryDeps,
-            daemons: repos.daemon,
+            agents: repos.agent,
+            delivery: agentDelivery,
             control: sender
           })
         })().catch(() => http.log.error('relay: memory binding/daemon sync on register failed'))

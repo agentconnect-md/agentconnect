@@ -15,7 +15,7 @@ import type {
 } from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
-import { DEF_ORG, seedDaemon } from '../fixtures/seed.js'
+import { DEF_ORG, seedAgent, seedDaemon, seedDutyGroup } from '../fixtures/seed.js'
 import type { Prisma } from '../../src/generated/prisma/client.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import {
@@ -955,5 +955,91 @@ describe('external-memory agent binding — placement and revocation', () => {
     })
     expect(invalid.statusCode).toBe(400)
     expect((invalid.json() as { message: string }).message).toContain('conformance')
+  })
+})
+
+/**
+ * The connection definition is a placement-keyed push no longer (#979). A duty
+ * holder installs the agent through `duty/fetch`, so it must also receive the
+ * connection that agent binds — and every later revision of it, or it keeps a
+ * retired grant and a stale secret set while serving live turns.
+ */
+describe('external-memory definitions follow the duty holder', () => {
+  const HOLDER = 'd7777777-7777-4777-8777-777777777777'
+  const GROUP = '00000000-0000-4000-8000-0000000009b1'
+
+  it('a connection UPDATE reaches a holder that is not the placement', async () => {
+    const control = new SpyControl()
+    const app = build({ control, relay: new SpyRelayControl() })
+    await seedDaemon(prisma, HOLDER)
+    await addLiveRelay(app)
+    const installationId = await createInstallation(app)
+    const connection = await createConnection(app, installationId)
+    // Placed nowhere: the duty is the only reason this agent is served anywhere.
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, {
+      runtimeOverrides: { memory: { provider: 'external', connectionId: connection.id } }
+    })
+    await seedDutyGroup(prisma, GROUP, HOLDER, [agentId])
+
+    const patched = await app.app.inject({
+      method: 'PATCH',
+      url: `${CONNECTIONS}/${connection.id}`,
+      payload: { config: { projectId: 'p2' } }
+    })
+    expect(patched.statusCode, patched.body).toBe(200)
+
+    const pushed = control.events.filter((e) => e.kind === 'memory-upsert')
+    expect(pushed.map((e) => e.daemonId)).toEqual([HOLDER])
+    // Content, not arrival: the holder must hold the NEW revision's definition.
+    expect(pushed[0]).toMatchObject({ spec: { revision: 2, config: { projectId: 'p2' } } })
+  })
+
+  it('a grant ROTATION is fenced on the holder acking, not just the placement', async () => {
+    const control = new SpyControl()
+    const app = build({ control, relay: new SpyRelayControl() })
+    await seedDaemon(prisma, HOLDER)
+    await addLiveRelay(app)
+    const installationId = await createInstallation(app)
+    const connection = await createConnection(app, installationId)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, {
+      runtimeOverrides: { memory: { provider: 'external', connectionId: connection.id } }
+    })
+    await seedDutyGroup(prisma, GROUP, HOLDER, [agentId])
+
+    // The holder refuses the fresh definition: overlap-before-revoke must hold the
+    // old grant alive rather than retire a key the holder is still calling with.
+    control.failMemoryUpsert = true
+    const deferred = await app.app.inject({ method: 'POST', url: `${CONNECTIONS}/${connection.id}/grant/rotate` })
+    expect(deferred.statusCode).toBe(503)
+    expect(
+      await app.deps.repos.externalMemoryGrant.activeForConnection(OrgId(DEFAULT_ORG_ID), connection.id)
+    ).toHaveLength(2)
+  })
+
+  it('a member holding NO duty covering a binding agent receives nothing', async () => {
+    const control = new SpyControl()
+    const app = build({ control, relay: new SpyRelayControl() })
+    await seedDaemon(prisma, HOLDER)
+    await seedDaemon(prisma, DAEMON)
+    await addLiveRelay(app)
+    const installationId = await createInstallation(app)
+    const connection = await createConnection(app, installationId)
+    // Bound but unplaced and unheld; the holder's duty covers an UNBOUND agent.
+    await seedAgent(prisma, randomUUID(), {
+      runtimeOverrides: { memory: { provider: 'external', connectionId: connection.id } }
+    })
+    const unbound = randomUUID()
+    await seedAgent(prisma, unbound, { daemonId: DAEMON })
+    await seedDutyGroup(prisma, GROUP, HOLDER, [unbound])
+
+    const patched = await app.app.inject({
+      method: 'PATCH',
+      url: `${CONNECTIONS}/${connection.id}`,
+      payload: { config: { projectId: 'p2' } }
+    })
+    expect(patched.statusCode, patched.body).toBe(200)
+    expect(control.events.filter((e) => e.kind === 'memory-upsert')).toEqual([])
   })
 })

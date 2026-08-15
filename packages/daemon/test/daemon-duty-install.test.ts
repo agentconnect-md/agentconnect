@@ -14,6 +14,7 @@ const AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1'
 const GROUP = '11111111-1111-4111-8111-111111111111'
 const INTEGRATION = '22222222-2222-4222-8222-222222222222'
 const CRON = '33333333-3333-4333-8333-333333333333'
+const CONNECTION = '44444444-4444-4444-8444-444444444444'
 const ORG = 'org-1'
 
 function scaffold(): string {
@@ -74,6 +75,43 @@ const bundle = (configRevision?: string) => ({
   ]
 })
 
+/** One proxy def, as the CP projects it: the grant's issuance instant is the
+ *  ordering marker, and the key it orders comes from the same grant. */
+const proxyDef = (key = 'oct_docs', issuedAt = 2_000) => ({
+  orgId: ORG,
+  name: 'docs',
+  issuedAt,
+  transport: 'http' as const,
+  url: 'https://relay.example.test/mcp/p1',
+  args: [],
+  env: [],
+  headers: [{ name: 'Authorization', value: `Bearer ${key}` }]
+})
+
+/** The bearer the daemon would hand a session for `docs`, or undefined. */
+const bearerOf = (d: Daemon): string | undefined =>
+  ((d as any).cpMcpDefs.effective(ORG).docs?.headers as Array<{ name: string; value: string }> | undefined)?.[0]?.value
+
+/** The same bundle plus the two definition kinds the spec only NAMES. */
+const bundleWithDefinitions = (grantKey?: string, issuedAt?: number) => ({
+  ...bundle(),
+  spec: { ...bundle().spec, mcpServers: ['docs'], memory: { provider: 'external' as const, connectionId: CONNECTION } },
+  mcpServers: [proxyDef(grantKey, issuedAt)],
+  memoryConnections: [
+    {
+      connectionId: CONNECTION,
+      orgId: ORG,
+      revision: 1,
+      transport: 'stdio' as const,
+      commandRef: 'operator-mem0',
+      config: {},
+      secretKeys: [],
+      secretLease: { values: {} },
+      pin: { pluginId: 'ai.example.memory', profileMajor: 1 as const, secretHeaders: [] }
+    }
+  ]
+})
+
 /** A daemon started with a stub CP client — only the duty surface is exercised. */
 async function boot(client: Record<string, unknown>) {
   const daemon = new Daemon({ root: scaffold() })
@@ -82,6 +120,8 @@ async function boot(client: Record<string, unknown>) {
     organizationScope: () => 'frame',
     stop: async () => {},
     releaseDuties: vi.fn(async () => {}),
+    // The memory registry reports body-free probe facts as soon as a definition lands.
+    emitMemoryConnectionFacts: vi.fn(() => {}),
     ...client
   }
   return daemon
@@ -123,6 +163,116 @@ describe('installing an agent a duty grant covers', () => {
     expect(cp.agents.has(AGENT)).toBe(true)
     expect(cp.integrations.forAgent(AGENT).map((i: { id: string }) => i.id)).toEqual([INTEGRATION])
     expect(cp.crons.forAgent(AGENT).map((c: { id: string }) => c.id)).toEqual([CRON])
+    await daemon.stop()
+  })
+
+  /**
+   * An AgentSpec only NAMES its MCP servers and its memory connection; both
+   * definitions arrive separately on placement-keyed paths (#979). A holder that
+   * is not the placement installed neither, so the agent came up with tools it
+   * could not resolve and a memory backend it had no entry for — silently.
+   */
+  it('installs the MCP defs the spec names and the memory connection it binds', async () => {
+    const fetchDutyAgent = vi.fn(async () => ({ bundle: bundleWithDefinitions() }))
+    const daemon = await boot({ fetchDutyAgent })
+
+    await (daemon as any).installGrantedAgents([grant()])
+
+    // The proxy def is keyed (org, name) and must carry the bearer grant key —
+    // presence of the NAME alone is exactly the broken state this fixes.
+    const effective = (daemon as any).cpMcpDefs.effective(ORG)
+    expect(effective.docs).toMatchObject({
+      transport: 'http',
+      url: 'https://relay.example.test/mcp/p1',
+      headers: [{ name: 'Authorization', value: 'Bearer oct_docs' }]
+    })
+    expect((daemon as any).memoryConnections.connectionIds()).toEqual([CONNECTION])
+    await daemon.stop()
+  })
+
+  /**
+   * MCP grant rotation keeps the retiring and the fresh grant BOTH active until
+   * the fresh one is distributed, so a bundle projected inside that window carries
+   * a key the relay is about to revoke. The bundle apply is fenced by the grant's
+   * issuance instant exactly as the live push is, so the holder ends up on the
+   * fresh key under EITHER interleaving.
+   */
+  it('a bundle projected before a rotation cannot undo the fresh key it raced', async () => {
+    let releaseFetch!: () => void
+    const projected = new Promise<void>((resolve) => (releaseFetch = resolve))
+    const fetchDutyAgent = vi.fn(async () => {
+      await projected
+      return { bundle: bundleWithDefinitions('oct_retiring', 1_000) }
+    })
+    const daemon = await boot({ fetchDutyAgent })
+    const install = (daemon as any).installGrantedAgents([grant()])
+
+    // The rotation's live push lands first, through the real frame handler.
+    ;(daemon as any).cpConfigApply().applyMcpServerUpsert(proxyDef('oct_fresh', 2_000))
+    expect(bearerOf(daemon)).toBe('Bearer oct_fresh')
+
+    releaseFetch()
+    await install
+
+    expect(bearerOf(daemon)).toBe('Bearer oct_fresh')
+    await daemon.stop()
+  })
+
+  it('the other interleaving converges too — the fresh push overtakes an applied bundle', async () => {
+    const fetchDutyAgent = vi.fn(async () => ({ bundle: bundleWithDefinitions('oct_retiring', 1_000) }))
+    const daemon = await boot({ fetchDutyAgent })
+
+    await (daemon as any).installGrantedAgents([grant()])
+    expect(bearerOf(daemon)).toBe('Bearer oct_retiring')
+    ;(daemon as any).cpConfigApply().applyMcpServerUpsert(proxyDef('oct_fresh', 2_000))
+
+    expect(bearerOf(daemon)).toBe('Bearer oct_fresh')
+    await daemon.stop()
+  })
+
+  it('the ordering marker never reaches the runtime definition', async () => {
+    const fetchDutyAgent = vi.fn(async () => ({ bundle: bundleWithDefinitions() }))
+    const daemon = await boot({ fetchDutyAgent })
+
+    await (daemon as any).installGrantedAgents([grant()])
+
+    expect(JSON.stringify((daemon as any).cpMcpDefs.effective(ORG))).not.toContain('issuedAt')
+    await daemon.stop()
+  })
+
+  it('a bundle from an older CP carrying neither definition array still installs', async () => {
+    const fetchDutyAgent = vi.fn(async () => ({ bundle: bundle() }))
+    const daemon = await boot({ fetchDutyAgent })
+
+    await (daemon as any).installGrantedAgents([grant()])
+
+    expect(registries(daemon).agents.has(AGENT)).toBe(true)
+    expect((daemon as any).memoryConnections.connectionIds()).toEqual([])
+    await daemon.stop()
+  })
+
+  it('the definitions land BEFORE the spec that references them', async () => {
+    const fetchDutyAgent = vi.fn(async () => ({ bundle: bundleWithDefinitions() }))
+    const daemon = await boot({ fetchDutyAgent })
+    const order: string[] = []
+    const registry = (daemon as any).memoryConnections
+    const realUpsert = registry.upsert.bind(registry)
+    registry.upsert = (spec: unknown) => {
+      order.push('memory')
+      return realUpsert(spec)
+    }
+    const agents = registries(daemon).agents
+    const realAgentUpsert = agents.upsert.bind(agents)
+    agents.upsert = (id: string, spec: unknown) => {
+      order.push('agent')
+      return realAgentUpsert(id, spec)
+    }
+
+    await (daemon as any).installGrantedAgents([grant()])
+
+    // Registry-before-agent: static memory admission must never see the agent
+    // before at least a probing (fail-closed) connection entry exists.
+    expect(order).toEqual(['memory', 'agent'])
     await daemon.stop()
   })
 

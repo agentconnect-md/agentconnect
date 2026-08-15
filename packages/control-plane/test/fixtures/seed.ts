@@ -6,7 +6,7 @@
  * sessions, leases, and crons have valid foreign keys to hang off. All default
  * to the seeded `DEFAULT_ORG_ID`.
  */
-import type { PrismaClient } from '../../src/generated/prisma/client.js'
+import type { Prisma, PrismaClient } from '../../src/generated/prisma/client.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import { AgentId, DaemonId, OrgId, type Epoch } from '../../src/domain/ids.js'
 
@@ -63,6 +63,8 @@ export async function seedAgent(
     /** GithubInstallation row-id provenance hint ⇒ github-APP credential mode. */
     installationId?: string
     gitAccess?: 'read' | 'write'
+    /** `runtimeOverrides` JSON — where the MCP enable-list and memory binding live. */
+    runtimeOverrides?: Record<string, unknown>
   } = {}
 ): Promise<AgentId> {
   await prisma.agent.create({
@@ -77,7 +79,8 @@ export async function seedAgent(
       ...(opts.createdByUserId ? { createdByUserId: opts.createdByUserId } : {}),
       ...(opts.gitRepo ? { workspaceMode: 'github' as const, gitRepo: opts.gitRepo } : {}),
       ...(opts.installationId ? { installationId: opts.installationId } : {}),
-      ...(opts.gitAccess ? { gitAccess: opts.gitAccess } : {})
+      ...(opts.gitAccess ? { gitAccess: opts.gitAccess } : {}),
+      ...(opts.runtimeOverrides ? { runtimeOverrides: opts.runtimeOverrides as Prisma.InputJsonValue } : {})
     }
   })
   return AgentId(id)
