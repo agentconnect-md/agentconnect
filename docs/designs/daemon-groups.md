@@ -40,6 +40,16 @@ holds it to that.
 
 ## 2. Model
 
+**Two kinds of member set, distinguished by tenancy, not by size.** The install-wide
+pool is **one per install**, shared by every organization: its members are org-less
+daemon rows (`Daemon.orgId IS NULL`, frame-mode connections, every frame carrying its
+own `orgId`), and one member serves many organizations' agents at once. There is no
+per-org pool; an organization that must not share a member gets a _dedicated daemon_ —
+a `daemon`-placed machine pinned to it — not a pool of its own. A daemon group, by
+contrast, is **one organization's** set of ordinary org-scoped daemons. So "org-less"
+on a member set never means "unassigned"; it means "serves every org". That is the
+whole reason the two kinds are not one table (§7).
+
 - **`daemon_group`** — `(id, orgId, name)`. Org-scoped: a group belongs to exactly one
   organization and can only contain that organization's daemons. There is no cross-org
   group; the install-wide pool is _not_ a row in this table (§3 explains why).
