@@ -16,6 +16,7 @@
  * (frame-mode) member's connection carries no org and a duty holder is exactly
  * the connection that cannot resolve one from its own maps.
  */
+import type { CronUpsert, IntegrationSpec } from '@agentconnect.md/protocol'
 import type { AgentSpecAssembler } from './agentSpecAssembler.js'
 import type { ControlSender } from './outbound.js'
 import type { AgentRecord } from '../persistence/ports.js'
@@ -34,7 +35,10 @@ export type DeliveryErrorHandler = (err: unknown, daemonId: string) => void
 export class AgentDelivery {
   constructor(
     private readonly deps: {
-      control: Pick<ControlSender, 'agentUpsert' | 'agentRemove'>
+      control: Pick<
+        ControlSender,
+        'agentUpsert' | 'agentRemove' | 'integrationUpsert' | 'integrationRemove' | 'cronUpsert' | 'cronRemove'
+      >
       specs: AgentSpecAssembler
       duties?: DutyHolderReader
       clock: Clock
@@ -71,6 +75,58 @@ export class AgentDelivery {
   async remove(agentId: string, placement: string | null, orgId: string, onError: DeliveryErrorHandler): Promise<void> {
     const targets = await this.daemonsFor(agentId, placement)
     await this.fanOut(targets, onError, (daemonId) => this.deps.control.agentRemove(daemonId, { agentId }, orgId))
+  }
+
+  // A dependent goes exactly where its agent's own updates go. An integration
+  // spec is token-bearing and a cron definition drives execution, so a holder
+  // that receives neither keeps stale credentials, stale bind rules, or a stale
+  // schedule until it happens to reconnect — the same frozen-bundle failure as a
+  // stale spec, one level down. These take the agent's id and placement rather
+  // than the record, because a removal path may only have those.
+
+  /** Push one integration's spec (token-bearing — NEVER log it) to every target. */
+  async integrationUpsert(
+    agentId: string,
+    placement: string | null,
+    spec: IntegrationSpec,
+    onError: DeliveryErrorHandler
+  ): Promise<void> {
+    const targets = await this.daemonsFor(agentId, placement)
+    await this.fanOut(targets, onError, (daemonId) => this.deps.control.integrationUpsert(daemonId, spec))
+  }
+
+  async integrationRemove(
+    agentId: string,
+    placement: string | null,
+    integrationId: string,
+    onError: DeliveryErrorHandler
+  ): Promise<void> {
+    const targets = await this.daemonsFor(agentId, placement)
+    await this.fanOut(targets, onError, (daemonId) => this.deps.control.integrationRemove(daemonId, { integrationId }))
+  }
+
+  async cronUpsert(
+    agentId: string,
+    placement: string | null,
+    wire: CronUpsert,
+    onError: DeliveryErrorHandler
+  ): Promise<void> {
+    const targets = await this.daemonsFor(agentId, placement)
+    await this.fanOut(targets, onError, async (daemonId) => void (await this.deps.control.cronUpsert(daemonId, wire)))
+  }
+
+  async cronRemove(
+    agentId: string,
+    placement: string | null,
+    cronId: string,
+    onError: DeliveryErrorHandler
+  ): Promise<void> {
+    const targets = await this.daemonsFor(agentId, placement)
+    await this.fanOut(
+      targets,
+      onError,
+      async (daemonId) => void (await this.deps.control.cronRemove(daemonId, { cronId }))
+    )
   }
 
   /** Sequential so the placement keeps going first. A handler that rethrows (the

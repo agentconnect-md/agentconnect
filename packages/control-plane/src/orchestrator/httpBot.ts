@@ -45,6 +45,7 @@ import type {
 import type { RelayChannel, RelayRegistry } from '../ws/relay-registry.js'
 import { ControlSender, NoConnection } from './outbound.js'
 import { isGatedAgent, httpIntegrationToSpec } from './placement.js'
+import type { AgentDelivery } from './agentDelivery.js'
 import type { CpPlatformRegistry } from '../platforms/provider.js'
 import { AgentId, BotId, DaemonId } from '../domain/ids.js'
 
@@ -130,7 +131,11 @@ export class HttpBotOrchestrator {
      *  and demux bags, and (through `httpIntegrationToSpec`) of a send-only
      *  spec's payload. Late-bound in the composition root; every read happens at
      *  sync/replay time. */
-    private readonly platforms: CpPlatformRegistry
+    private readonly platforms: CpPlatformRegistry,
+    /** Resolves where a dependent of an agent goes (placement ∪ duty holders).
+     *  Used ONLY for the send-only spec and its removal — the relay's own
+     *  `rc/assign` target stays the placement, which is routing, not replication. */
+    private readonly agentDelivery: AgentDelivery
   ) {}
 
   /**
@@ -302,13 +307,11 @@ export class HttpBotOrchestrator {
     await this.unassign(bot, { credentialRevision: bot.credentialRevision })
     for (const integration of installs) {
       const agent = await this.agents.getUnscoped(integration.agentId)
-      if (!agent?.daemonId) continue
-      try {
-        await this.control.integrationRemove(agent.daemonId, { integrationId: integration.id })
-      } catch (err) {
+      if (!agent) continue
+      await this.agentDelivery.integrationRemove(agent.id, agent.daemonId, integration.id, (err) => {
         if (!(err instanceof NoConnection)) throw err
         this.log.debug?.({ integrationId: integration.id }, 'http-bot: revoke spec removal skipped — daemon offline')
-      }
+      })
     }
     this.log.info({ botId: bot.id, reason, installs: installs.length }, 'http-bot: bot revoked by workspace')
     return { applied: true }
@@ -868,16 +871,18 @@ export class HttpBotOrchestrator {
     // for the same backstop. The compile already read the bot's rows; they are keyed
     // per install, so filter by integrationId.
     for (const { integration, daemonId, gated } of compiled.placed) {
-      try {
-        const channels = compiled.botChannels.filter((c) => c.integrationId === integration.id)
-        await this.control.integrationUpsert(
-          daemonId,
-          await httpIntegrationToSpec(this.platforms, integration, bot, secret, channels, gated)
-        )
-      } catch (err) {
+      const channels = compiled.botChannels.filter((c) => c.integrationId === integration.id)
+      const spec = await httpIntegrationToSpec(this.platforms, integration, bot, secret, channels, gated)
+      // The relay still addresses ingress to `daemonId`; the send-only credential
+      // bundle goes to every daemon serving the agent, so a duty holder is not
+      // left signing egress with a credential the workspace has since rotated.
+      await this.agentDelivery.integrationUpsert(integration.agentId, daemonId, spec, (err, target) => {
         if (!(err instanceof NoConnection)) throw err
-        this.log.debug?.({ integrationId: integration.id, daemonId }, 'http-bot: spec push skipped — daemon offline')
-      }
+        this.log.debug?.(
+          { integrationId: integration.id, daemonId: target },
+          'http-bot: spec push skipped — daemon offline'
+        )
+      })
     }
   }
 

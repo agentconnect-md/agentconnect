@@ -422,7 +422,8 @@ export function buildHttpApp(
       new PgThreadAffinityStore(prisma),
       new PgSessionRepo(prisma),
       { info() {}, warn() {}, debug() {} },
-      platforms
+      platforms,
+      agentDelivery
     ),
     collabRoutes: new CollabRoutesService(daemonRepo, integrationRepo, agentRepo, relayControl, sender),
     agentMutations: new AgentMutationGate(),

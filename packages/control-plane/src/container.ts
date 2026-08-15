@@ -677,7 +677,8 @@ export function buildContainer(
       warn: (o, m) => http.log.warn(o, m),
       debug: (o, m) => http.log.debug(o, m)
     },
-    platforms
+    platforms,
+    agentDelivery
   )
   const stagedAgentMoves = new AgentMoveService({
     agents: repos.agent,

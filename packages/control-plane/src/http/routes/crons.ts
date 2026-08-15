@@ -88,24 +88,19 @@ export function cronRoutes(deps: HttpDeps) {
       return canView(cron, ctxOf(req)) ? cron : null
     }
 
-    // Live-sink a cron change to the owning agent's daemon. Best-effort: offline
-    // daemon ⇒ the register/ok reconcile snapshot carries it on the next connect.
-    async function pushLive(
-      daemonId: string | null,
-      what: string,
-      push: (daemonId: string) => Promise<unknown>
-    ): Promise<void> {
-      if (!daemonId) return // unplaced agent — reconcile is the backstop
-      try {
-        await push(daemonId) // non-null past the guard — no assertion at the call site
-      } catch (err) {
+    // Best-effort per-target log for a cron push. The delivery set itself is
+    // `deps.agentDelivery`'s call (placement ∪ duty holders): a cron drives the
+    // agent, so it belongs wherever the agent is served. Offline daemon ⇒ the
+    // register/ok reconcile snapshot carries it on the next connect.
+    const cronPushFailed =
+      (what: string) =>
+      (err: unknown, daemonId: string): void => {
         if (err instanceof NoConnection) {
           app.log.debug({ daemonId }, `${what} skipped: daemon offline`)
           return
         }
         app.log.warn({ daemonId, err }, `${what} live push failed — daemon converges on next register`)
       }
-    }
 
     r.put(
       '/crons/:id',
@@ -233,7 +228,7 @@ export function cronRoutes(deps: HttpDeps) {
             .catch(() => {})
           const wire = cronToUpsert(cron)
           if (wire) {
-            await pushLive(agent.daemonId, 'cron/upsert', (daemonId) => deps.control.cronUpsert(daemonId, wire))
+            await deps.agentDelivery.cronUpsert(agent.id, agent.daemonId, wire, cronPushFailed('cron/upsert'))
           }
           return toDto(cron, ctxOf(req))
         } finally {
@@ -449,9 +444,7 @@ export function cronRoutes(deps: HttpDeps) {
               details: { cronId: existing.id }
             })
             .catch(() => {})
-          await pushLive(agent.daemonId, 'cron/remove', (daemonId) =>
-            deps.control.cronRemove(daemonId, { cronId: existing.id })
-          )
+          await deps.agentDelivery.cronRemove(agent.id, agent.daemonId, existing.id, cronPushFailed('cron/remove'))
           return reply.code(204).send(null)
         } finally {
           release()

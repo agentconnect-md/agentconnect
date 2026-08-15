@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { HttpBotOrchestrator } from './httpBot.js'
+import { AgentDelivery } from './agentDelivery.js'
+import { systemClock } from '../domain/clock.js'
 import { RelayRegistry, type RelayChannel } from '../ws/relay-registry.js'
 import type { RcBotAssign, RelayCpFrameType } from '@agentconnect.md/protocol'
 import { AgentId, BotId, IntegrationId, OrgId } from '../domain/ids.js'
@@ -318,7 +320,10 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
         },
         debug() {}
       },
-      platforms
+      platforms,
+      // No duty ledger wired ⇒ the delivery set is the placement alone, which is
+      // exactly what every expectation in this file was written against.
+      new AgentDelivery({ control: control as never, specs: undefined as never, clock: systemClock })
     )
   }
 

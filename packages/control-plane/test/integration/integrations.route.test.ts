@@ -14,7 +14,7 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
-import { seedDaemon, seedAgent } from '../fixtures/seed.js'
+import { seedDaemon, seedAgent, seedDutyGroup } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { ControlSender } from '../../src/orchestrator/outbound.js'
 import type { IntegrationUpsert, IntegrationRemove } from '@agentconnect.md/protocol'
@@ -1616,5 +1616,122 @@ describe('bot sharing capability (PATCH /bots/:id)', () => {
 
     expect(res.statusCode).toBe(400)
     expect(res.json()).toMatchObject({ message: 'multi-agent bots currently support Slack only' })
+  })
+})
+
+/**
+ * A dependent follows the DUTY HOLDER too (#973). `AgentDelivery` owns the agent
+ * frames; an integration spec is token-bearing and its bindRules are what the
+ * daemon admits on, so a holder that never receives the push keeps stale
+ * credentials and stale routing until it happens to reconnect — the same
+ * frozen-bundle failure one level down. These mutations do not advance
+ * `Agent.configRevision` either, so the grant-time freshness stamp gives the
+ * holder no reason to refetch: the live push IS the only in-session repair.
+ */
+describe('integration updates follow the duty holder', () => {
+  const HOLDER = 'd7777777-7777-4777-8777-777777777777'
+  const GROUP = '00000000-0000-4000-8000-0000000009b1'
+
+  /** A placed agent with a Slack install, plus a live duty held by HOLDER. */
+  async function installedWithHolder(): Promise<{ agentId: string; integrationId: string; app: HttpApp }> {
+    const agentId = await placedAgent()
+    await seedDaemon(prisma, HOLDER, { capabilities: daemonCapabilities(ALL_BOT_PLATFORMS) })
+    await seedDutyGroup(prisma, GROUP, HOLDER, [agentId])
+    const { app } = withSpy()
+    const created = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: { name: 'held-bot', platform: 'slack', agentId, slack: SLACK }
+    })
+    expect(created.statusCode).toBe(201)
+    return { agentId, integrationId: (created.json() as { id: string }).id, app }
+  }
+
+  it('the install push reaches the holder as well as the placement — with the credential', async () => {
+    const agentId = await placedAgent()
+    await seedDaemon(prisma, HOLDER, { capabilities: daemonCapabilities(ALL_BOT_PLATFORMS) })
+    await seedDutyGroup(prisma, GROUP, HOLDER, [agentId])
+    const { app, spy } = withSpy()
+
+    const created = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: { name: 'held-bot', platform: 'slack', agentId, slack: SLACK }
+    })
+    expect(created.statusCode).toBe(201)
+
+    expect(spy.upserts.map((u) => u.daemonId)).toEqual([DAEMON, HOLDER])
+    // A credential that reaches only the placement is the worst of the three:
+    // the holder would go on authenticating with whatever it last saw.
+    expect(JSON.stringify(spy.upserts.at(-1)!.u)).toContain(SLACK.botToken)
+  })
+
+  it('a bindRules change reaches the holder, and the holder is current WITHOUT a reconnect', async () => {
+    const { integrationId, app } = await installedWithHolder()
+    const spy = app.deps.control as unknown as SpyControl
+    await prisma.integrationChannel.create({
+      data: { integrationId, channelId: 'C900', kind: 'channel', trigger: 'mention' }
+    })
+    spy.upserts.length = 0
+
+    const patched = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/integrations/${integrationId}/channels/C900`,
+      payload: { trigger: 'any' }
+    })
+    expect(patched.statusCode).toBe(200)
+
+    // Arrival is not enough — the pinning assertion is that what ARRIVED is the
+    // new routing. No register/reconcile ran anywhere in this test.
+    const held = spy.upserts.find((u) => u.daemonId === HOLDER)
+    expect(held).toBeDefined()
+    expect(held!.u.core.bindRules).toContainEqual({ channel: 'C900', match: { kind: 'auto' } })
+  })
+
+  it('an integration removal reaches the holder', async () => {
+    const { integrationId, app } = await installedWithHolder()
+    const spy = app.deps.control as unknown as SpyControl
+
+    const deleted = await app.app.inject({ method: 'DELETE', url: `${ORG}/integrations/${integrationId}` })
+    expect(deleted.statusCode).toBe(204)
+
+    expect(spy.removes.map((r) => r.daemonId)).toEqual([DAEMON, HOLDER])
+    expect(spy.removes.every((r) => r.r.integrationId === integrationId)).toBe(true)
+  })
+
+  it('a gating flip re-pushes the derived spec to the holder', async () => {
+    const { agentId, app } = await installedWithHolder()
+    const spy = app.deps.control as unknown as SpyControl
+    spy.upserts.length = 0
+
+    // Visibility drives the derived conversation-gating flag; the converge path
+    // (orchestrator/integrationPush.ts) re-pushes every integration of the agent.
+    const shared = await app.app.inject({
+      method: 'PUT',
+      url: `${ORG}/agents/${agentId}/sharing`,
+      payload: { visibility: 'restricted', sharedWith: [DEFAULT_OWNER_ID] }
+    })
+    expect(shared.statusCode).toBe(200)
+
+    const held = spy.upserts.find((u) => u.daemonId === HOLDER)
+    expect(held).toBeDefined()
+    // A holder still admitting on the ungated defaults would serve conversations
+    // the agent's new visibility forbids.
+    expect(held!.u.core.gated).toBe(true)
+  })
+
+  it('an EXPIRED lease is not a holding — the dependent goes to the placement alone', async () => {
+    const agentId = await placedAgent()
+    await seedDaemon(prisma, HOLDER, { capabilities: daemonCapabilities(ALL_BOT_PLATFORMS) })
+    await seedDutyGroup(prisma, GROUP, HOLDER, [agentId], { expiresAt: new Date(Date.now() - 1000) })
+    const { app, spy } = withSpy()
+
+    const created = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: { name: 'lapsed-bot', platform: 'slack', agentId, slack: SLACK }
+    })
+    expect(created.statusCode).toBe(201)
+    expect(spy.upserts.map((u) => u.daemonId)).toEqual([DAEMON])
   })
 })

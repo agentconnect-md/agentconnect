@@ -26,6 +26,8 @@ import {
 } from './provider.js'
 import { integrationToSpec, httpIntegrationToSpec } from '../../orchestrator/placement.js'
 import { HttpBotOrchestrator } from '../../orchestrator/httpBot.js'
+import { AgentDelivery } from '../../orchestrator/agentDelivery.js'
+import { systemClock as clock } from '../../domain/clock.js'
 import { RelayRegistry, type RelayChannel } from '../../ws/relay-registry.js'
 import { buildCreateIntegrationBody } from '../../http/dto/create-integration-body.js'
 import { buildCpPlatformRegistry } from '../registry.js'
@@ -550,7 +552,9 @@ async function liveAssignFrame(botRow: BotRecord, secret: BotSecretMaterial): Pr
     { upsert: async () => {}, get: async () => null, listForBot: async () => [] } as unknown as ThreadAffinityStore,
     { findThreadOwner: async () => null } as unknown as SessionRepo,
     { info() {}, warn() {}, debug() {} },
-    PLATFORMS
+    PLATFORMS,
+    // No duty ledger ⇒ the spec goes to the placement alone, as this fixture expects.
+    new AgentDelivery({ control: { integrationUpsert: async () => {} } as never, specs: undefined as never, clock })
   )
   await orch.syncBot(botRow.id)
   const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')?.payload as RcBotAssign | undefined

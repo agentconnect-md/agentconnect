@@ -15,7 +15,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
-import { seedDaemon, seedAgent } from '../fixtures/seed.js'
+import { seedDaemon, seedAgent, seedDutyGroup } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import type { ControlSender } from '../../src/orchestrator/outbound.js'
 import type { CronUpsert, CronRemove } from '@agentconnect.md/protocol'
@@ -395,5 +395,77 @@ describe('cron replication CP→daemon (REST → cron/upsert·remove)', () => {
       expect((rows[0]!.details as { cronId: string }).cronId).toBe(cronId)
       expect(rows[0]!.agentId).toBe(agentId)
     })
+  })
+})
+
+/**
+ * A cron follows the DUTY HOLDER too (#973): it drives the agent, so it belongs
+ * wherever the agent is served. A holder left on a stale schedule (or still
+ * holding one the operator deleted) fires the wrong work, and a cron mutation
+ * does not advance `Agent.configRevision`, so nothing makes it refetch either.
+ */
+describe('cron updates follow the duty holder', () => {
+  const HOLDER = 'd8888888-8888-4888-8888-888888888888'
+  const GROUP = '00000000-0000-4000-8000-0000000009c1'
+
+  it('a cron upsert reaches a holder that is NOT the placement, carrying the new schedule', async () => {
+    await seedDaemon(prisma, HOLDER)
+    const agentId = randomUUID()
+    // Placed nowhere: the duty is the only reason this cron reaches a daemon.
+    await seedAgent(prisma, agentId)
+    await seedDutyGroup(prisma, GROUP, HOLDER, [agentId])
+    const cronId = randomUUID()
+    const { app, spy } = withSpy()
+
+    const put = await app.app.inject({
+      method: 'PUT',
+      url: `${ORG}/crons/${cronId}`,
+      payload: body(agentId, { schedule: '30 6 * * *' })
+    })
+    expect(put.statusCode).toBe(200)
+
+    expect(spy.upserts.map((u) => u.daemonId)).toEqual([HOLDER])
+    // Current without a reconnect: the definition that arrived is the edited one.
+    expect(spy.upserts[0]!.u).toMatchObject({ cronId, agentId, schedule: '30 6 * * *' })
+  })
+
+  it('a cron removal reaches the holder', async () => {
+    await seedDaemon(prisma, HOLDER)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId)
+    await seedDutyGroup(prisma, GROUP, HOLDER, [agentId])
+    const cronId = randomUUID()
+    const { app, spy } = withSpy()
+
+    await app.app.inject({ method: 'PUT', url: `${ORG}/crons/${cronId}`, payload: body(agentId) })
+    const del = await app.app.inject({ method: 'DELETE', url: `${ORG}/crons/${cronId}` })
+    expect(del.statusCode).toBe(204)
+
+    expect(spy.removes).toEqual([{ daemonId: HOLDER, r: { cronId } }])
+  })
+
+  it('a placement AND a holder each get the cron exactly once', async () => {
+    await seedDaemon(prisma, DAEMON)
+    await seedDaemon(prisma, HOLDER)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: DAEMON })
+    await seedDutyGroup(prisma, GROUP, HOLDER, [agentId])
+    const { app, spy } = withSpy()
+
+    await app.app.inject({ method: 'PUT', url: `${ORG}/crons/${randomUUID()}`, payload: body(agentId) })
+
+    expect(spy.upserts.map((u) => u.daemonId)).toEqual([DAEMON, HOLDER])
+  })
+
+  it('an EXPIRED lease is not a holding — the cron goes nowhere', async () => {
+    await seedDaemon(prisma, HOLDER)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId)
+    await seedDutyGroup(prisma, GROUP, HOLDER, [agentId], { expiresAt: new Date(Date.now() - 1000) })
+    const { app, spy } = withSpy()
+
+    await app.app.inject({ method: 'PUT', url: `${ORG}/crons/${randomUUID()}`, payload: body(agentId) })
+
+    expect(spy.upserts).toHaveLength(0)
   })
 })
