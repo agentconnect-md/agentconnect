@@ -36,6 +36,9 @@ export interface DutyLeaseConfig {
   /** How long a group stays unclaimable by the member that just gave it back, so the rotation
    *  reaches a member that can install it instead of returning to the one that could not. */
   refusalBackoffMs: number
+  /** A group granted twice within this window is a double move — one warn line per occurrence, so
+   *  a rollout that moved an agent more than once is visible in the CP log without a dashboard. */
+  doubleMoveWindowMs: number
 }
 
 export const DUTY_LEASE_DEFAULTS: DutyLeaseConfig = {
@@ -46,7 +49,8 @@ export const DUTY_LEASE_DEFAULTS: DutyLeaseConfig = {
   grantMembersPerFrame: 2000,
   revocationsPerFrame: 500,
   refusalsBeforeRelease: 3,
-  refusalBackoffMs: 300_000
+  refusalBackoffMs: 300_000,
+  doubleMoveWindowMs: 600_000
 }
 
 type Send = (type: 'duty/grant' | 'duty/revoke' | 'duty/renewed', payload: unknown) => void
@@ -111,6 +115,12 @@ export class DutyLeaseService {
   /** daemonId → groupId → refusal state. Per CP instance, which is exact rather than approximate:
    *  a member has one socket, so every beat and every grant for it lands on this process. */
   private readonly refusals = new Map<string, Map<string, RefusalState>>()
+  /** Members that declared `draining` on a beat. Sticky until the member registers afresh: a
+   *  retiring member must not take back a group it — or a peer in the same rollout — just vacated,
+   *  even between the beat that said so and the next one, and even on the rendezvous path. */
+  private readonly draining = new Set<string>()
+  /** groupId → the last grant this instance handed out (vacancy claim or rendezvous), for the double-move line. */
+  private readonly lastGrant = new Map<string, { term: bigint; atMs: number }>()
 
   constructor(
     private readonly repo: DutyGroupRepo,
@@ -227,6 +237,40 @@ export class DutyLeaseService {
   /** Forget a departed member's refusal state — its lane is gone and so is its socket. */
   forget(daemonId: DaemonId): void {
     this.refusals.delete(daemonId)
+    this.draining.delete(daemonId)
+  }
+
+  /** A fresh registration is a fresh member: whatever it declared on its previous connection no
+   *  longer describes it. A member still draining re-declares on its first beat. */
+  onRegister(daemonId: DaemonId): void {
+    this.draining.delete(daemonId)
+  }
+
+  /** Has this member declared it is draining on this registration? */
+  isDraining(daemonId: DaemonId): boolean {
+    return this.draining.has(daemonId)
+  }
+
+  /** Record a grant and warn when the group's term moved twice inside the window — a term is bumped
+   *  on every real move and never on an idempotent re-claim by the incumbent, so comparing terms
+   *  counts moves, not calls. Per CP instance, like the refusal state. */
+  private noteGranted(groups: readonly { groupId: string; term: bigint }[], to: DaemonId): void {
+    const nowMs = this.clock.now()
+    for (const g of groups) {
+      const previous = this.lastGrant.get(g.groupId)
+      if (previous?.term === g.term) continue
+      this.lastGrant.set(g.groupId, { term: g.term, atMs: nowMs })
+      if (previous && nowMs - previous.atMs < this.config.doubleMoveWindowMs) {
+        this.log?.warn(
+          { groupId: g.groupId, term: String(g.term), daemonId: to, sinceLastMoveMs: nowMs - previous.atMs },
+          'duty group moved more than once within the double-move window'
+        )
+      }
+    }
+    // Bounded: an entry older than the window can never trip the line again.
+    if (this.lastGrant.size > 10_000)
+      for (const [id, g] of this.lastGrant)
+        if (nowMs - g.atMs >= this.config.doubleMoveWindowMs) this.lastGrant.delete(id)
   }
 
   /** Chain `fn` on the daemon's lane so operations never interleave. */
@@ -258,6 +302,14 @@ export class DutyLeaseService {
 
   private async exchange(daemonId: DaemonId, duties: HeartbeatDuties, send: Send): Promise<void> {
     const now = new Date(this.clock.now())
+    // Sticky for the registration (see `draining`): set here, cleared only by `onRegister`.
+    if (duties.draining && !this.draining.has(daemonId)) {
+      this.draining.add(daemonId)
+      this.log?.warn({ daemonId, held: duties.held.length }, 'duty member is draining; it will be granted nothing')
+    }
+    const draining = this.draining.has(daemonId)
+    // Renewal continues while draining: the member still serves what it holds until it releases
+    // each group, and a lapse mid-drain would hand a group to a successor while a turn is finishing.
     await this.repo.renewHeld(daemonId, now, this.config.leaseMs)
     const held = await this.repo.listHeldBy(daemonId)
     const heldById = new Map(held.map((g) => [g.groupId, g]))
@@ -311,10 +363,15 @@ export class DutyLeaseService {
       )
     }
 
-    const regrant = await this.settleRefusals(daemonId, digestIds, deliverable(missing))
+    // A draining member is re-issued nothing: a held group missing from its digest is one it is
+    // releasing (its `duty/release` is on the way, or the refusal count hands it back), and it
+    // claims nothing new — the whole point of the bit, and the reason a rollout's vacated groups
+    // can only land on a member that is staying.
+    const regrantable = await this.settleRefusals(daemonId, digestIds, deliverable(missing))
+    const regrant = draining ? [] : regrantable
 
     let granted: DutyGrantRecord[] = []
-    const budget = Math.max(0, duties.headroom - regrant.length)
+    const budget = draining ? 0 : Math.max(0, duties.headroom - regrant.length)
     if (budget > 0 && this.clock.now() >= this.bootedAtMs + this.config.recoveryGraceMs) {
       // Oversized groups are excluded at the claim boundary (the size gate), so
       // a claim never lands on a group it would immediately have to release.
@@ -325,6 +382,7 @@ export class DutyLeaseService {
         this.config.leaseMs,
         { maxMembers: DUTY_GRANT_MEMBERS_MAX, excludeGroupIds: this.backedOff(daemonId) }
       )
+      this.noteGranted(granted, daemonId)
     }
 
     // Classified AFTER the claim so the grant and revoke sets are disjoint by
@@ -396,6 +454,9 @@ export class DutyLeaseService {
     holder: DaemonId
   ): Promise<{ granted: boolean; grant?: DutyGrantEntry; holder?: string }> {
     return this.serialize(holder, async () => {
+      // A draining member never takes a home, not even for a trigger that reached it: the trigger's
+      // turn would be dropped by its own drain gate, and the group would move twice.
+      if (this.draining.has(holder)) return { granted: false }
       const now = new Date(this.clock.now())
       const claim = await this.repo.claimAgentHome(orgId, agentId, holder, now, this.config.leaseMs)
       if (!claim.granted || claim.groupId === undefined)
@@ -407,6 +468,8 @@ export class DutyLeaseService {
         await this.repo.release(holder, [claim.groupId])
         return { granted: false }
       }
+      if (claim.granted && claim.term !== undefined)
+        this.noteGranted([{ groupId: claim.groupId, term: claim.term }], holder)
       const [grant] = await this.stamp([toGrantEntry(group)])
       // No routing kick here: like every other grant this is not yet a fact — the claimant
       // installs before it answers, but the ledger has not seen the group in a digest. The

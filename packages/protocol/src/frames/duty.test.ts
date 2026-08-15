@@ -38,6 +38,12 @@ describe('HeartbeatDuties', () => {
     expect(HeartbeatDuties.safeParse({ held: [{ groupId: GROUP, term: '-1' }], headroom: 0 }).success).toBe(false)
     expect(HeartbeatDuties.safeParse({ held: [], headroom: 0 }).success).toBe(true)
   })
+
+  it('draining is an optional bit — absent means not draining', () => {
+    expect(HeartbeatDuties.parse({ held: [], headroom: 0 }).draining).toBeUndefined()
+    expect(HeartbeatDuties.parse({ held: [], headroom: 0, draining: true }).draining).toBe(true)
+    expect(HeartbeatDuties.safeParse({ held: [], headroom: 0, draining: 'yes' }).success).toBe(false)
+  })
 })
 
 describe('duty frames', () => {
