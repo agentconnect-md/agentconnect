@@ -4,7 +4,10 @@
  * CRUD for org-level shared-skills sources. A source records only WHERE skills
  * come from (a bounded public GitHub repository/tree path) plus its numeric
  * repository identity, optional ref, and skill filter — skill CONTENT never
- * touches the CP. The daemon acquires a commit-bound snapshot and installs it
+ * touches the CP. The numeric identity is the CP's to resolve, not the client's:
+ * projection drops a source without one, so a write that cannot bind it is
+ * refused here instead of producing a row that looks enabled and installs
+ * nothing (issue #935). The daemon acquires a commit-bound snapshot and installs it
  * with its bundled exact CLI before the ACP host spawns.
  *
  * There is NO secret side-table and NO grant (unlike MCP providers): skills carry
@@ -62,12 +65,18 @@ function parseGithubRepo(source: string): { owner: string; repo: string; ref?: s
   const s = source.trim().replace(/\.git$/, '')
   let m = /^https?:\/\/github\.com\/([^/]+)\/([^/]+)(?:\/tree\/([^/]+)(?:\/(.+))?)?/i.exec(s)
   if (m) return { owner: m[1]!, repo: m[2]!, ...(m[3] ? { ref: m[3] } : {}), ...(m[4] ? { subDir: m[4] } : {}) }
-  m = /^git@github\.com:([^/]+)\/([^/]+)$/i.exec(s)
+  m = /^(?:git@github\.com:|ssh:\/\/git@github\.com\/)([^/]+)\/([^/]+)$/i.exec(s)
   if (m) return { owner: m[1]!, repo: m[2]! }
   m = /^([^/\s:]+)\/([^/\s]+)$/.exec(s)
   if (m) return { owner: m[1]!, repo: m[2]! }
   return null
 }
+
+/** What one repo lookup can conclude. `unreachable` (GitHub down, rate limited) is
+ *  retryable and must not be confused with `not-found`, which is a verdict. */
+type RepoBinding =
+  | { status: 'ok'; repoId: bigint; private: boolean; defaultBranch: string }
+  | { status: 'not-found' | 'unreachable' | 'unparseable' }
 
 function toDto(s: SkillSourceRecord, ctx: ViewCtx): SkillSourceDtoT {
   return {
@@ -102,38 +111,36 @@ export function skillSourceRoutes(deps: HttpDeps) {
   return async function skillSourceRoutesPlugin(app: FastifyInstance): Promise<void> {
     const r = app.withTypeProvider<ZodTypeProvider>()
 
-    // A `subDir` source needs a ref (the CLI's tree/<ref>/<subdir> form requires one),
-    // and the daemon must not assume `main`. When a subdir is given without a ref,
-    // resolve the repo's ACTUAL default branch here and persist it as the ref. Returns
-    // the ref unchanged when there's nothing to resolve (no subdir, ref already set,
-    // non-GitHub source, or no installation).
-    const resolveRefForSubdir = async (
-      orgId: OrgId,
-      source: string,
-      ref: string | undefined,
-      subDir: string | undefined
-    ): Promise<string | undefined> => {
-      if (ref || !subDir) return ref
-      const gh = deps.github
+    // ONE lookup per write, answering everything a source write needs about the repo:
+    // its rename-proof NUMERIC id (without which the row never projects onto an
+    // AgentSpec — issue #935), whether it is private (rejected this release), and its
+    // default branch (a subdir source must pin a ref; the daemon must not assume
+    // `main`). The org installation answers first when it covers the owner; otherwise
+    // the anonymous public read does, which is the only path for a skills.sh source.
+    const resolveRepoBinding = async (orgId: OrgId, source: string): Promise<RepoBinding> => {
       const parsed = parseGithubRepo(source)
-      if (!gh || !parsed) return ref
-      const ins = await deps.repos.githubInstallation.liveByOrgAndAccount(orgId, parsed.owner)
-      if (!ins) return ref
-      const meta = await gh.getRepoMeta(ins, parsed.owner, parsed.repo).catch(() => null)
-      return meta?.defaultBranch ?? ref
+      if (!parsed) return { status: 'unparseable' }
+      const gh = deps.github
+      if (gh) {
+        const ins = await deps.repos.githubInstallation.liveByOrgAndAccount(orgId, parsed.owner)
+        // An installation failure is not a verdict on a PUBLIC repo — fall through
+        // to the anonymous read rather than treat the source as unbindable.
+        const ref = ins ? await gh.repoRefFor(ins, parsed.owner, parsed.repo).catch(() => null) : null
+        if (ref) return { status: 'ok', ...ref }
+      }
+      const resolve = deps.resolvePublicRepo
+      if (!resolve) return { status: 'unreachable' }
+      const pub = await resolve(parsed.owner, parsed.repo)
+      return typeof pub === 'string' ? { status: pub } : { status: 'ok', ...pub }
     }
 
-    // True only when we can CONFIRM the source repo is private (GitHub source + org
-    // installation + a readable meta saying private). Unknown ⇒ false (treated public).
-    const isPrivateRepo = async (orgId: OrgId, source: string): Promise<boolean> => {
-      const gh = deps.github
-      const parsed = parseGithubRepo(source)
-      if (!gh || !parsed) return false
-      const ins = await deps.repos.githubInstallation.liveByOrgAndAccount(orgId, parsed.owner)
-      if (!ins) return false
-      const meta = await gh.getRepoMeta(ins, parsed.owner, parsed.repo).catch(() => null)
-      return meta?.private === true
-    }
+    // Reject rather than persist a source whose identity we could not establish: an
+    // unbound row looks enabled in the console but is silently dropped from every
+    // projection, so it can never install anything (#935).
+    const rejectUnbound = (reply: FastifyReply, binding: RepoBinding) =>
+      binding.status === 'unreachable'
+        ? reply.code(503).send(bindingUnavailable)
+        : reply.code(400).send(binding.status === 'not-found' ? repoNotFound : notAGithubRepo)
 
     // Re-inline a source's definition onto every agent that enables it and push
     // the refreshed spec. Best-effort per agent (the register/ok roster is the
@@ -303,10 +310,17 @@ export function skillSourceRoutes(deps: HttpDeps) {
           tags: [Tag.Skills],
           summary: 'Register a skill source',
           description:
-            'Register an org-level public GitHub skill source and numeric repository identity. An omitted migration-compatible identity leaves the row visible but non-installable until bound: projection omits it from AgentSpec. The daemon acquires a bounded local snapshot; the remote source is never passed to the CLI. `skills` empty ⇒ install every skill the snapshot exposes. Rejected with 409 while any agent already enables skills under the requested source name — agents bind by name, so a new source must not silently capture existing selections.',
+            'Register an org-level public GitHub skill source. The numeric repository identity is resolved server-side (org installation first, then a public read), so no client needs to know it; `githubRepoId` in the body only overrides that lookup. A repository that cannot be identified is rejected — 400 when GitHub says it does not exist, 503 while GitHub is unreachable — rather than persisted as a row the projection would silently drop. The daemon acquires a bounded local snapshot; the remote source is never passed to the CLI. `skills` empty ⇒ install every skill the snapshot exposes. Rejected with 409 while any agent already enables skills under the requested source name — agents bind by name, so a new source must not silently capture existing selections.',
           operationId: 'createSkillSource',
           body: CreateSkillSourceBody,
-          response: { 201: SkillSourceDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
+          response: {
+            201: SkillSourceDto,
+            400: ErrorDto,
+            403: ErrorDto,
+            404: ErrorDto,
+            409: ErrorDto,
+            503: ErrorDto
+          }
         }
       },
       async (req, reply) => {
@@ -315,16 +329,19 @@ export function skillSourceRoutes(deps: HttpDeps) {
           req.body.visibility === 'restricted' && req.body.sharedWith
             ? await resolveShareSet(deps.repos.user, orgOf(req), req.body.sharedWith)
             : undefined
-        const repoId = parseRepoId(req.body.githubRepoId)
+        const binding = await resolveRepoBinding(orgOf(req), req.body.source)
         // Scope this release to PUBLIC sources: the daemon has no authorization path to
         // clone a private skill repo yet (a dedicated read-only grant is a follow-up).
-        // Reject a source we can confirm is private rather than silently accept one that
-        // can never install. Undeterminable privacy (no installation) is allowed through
-        // as public — a private repo with no installation can't be scanned/cloned anyway.
-        if (await isPrivateRepo(orgOf(req), req.body.source)) return reply.code(400).send(privateNotSupported)
-        const ref = await resolveRefForSubdir(orgOf(req), req.body.source, req.body.ref, req.body.subDir)
-        // A subdir source needs a ref; if we couldn't resolve one (owner has no org
-        // installation, non-GitHub source) reject rather than let the daemon assume `main`.
+        if (binding.status === 'ok' && binding.private) return reply.code(400).send(privateNotSupported)
+        // Bind the numeric identity server-side. A client-supplied id still wins (it is
+        // the same fact, already verified by the daemon before acquisition), but no
+        // client has to know it — which is what made every console-created source
+        // non-installable (#935).
+        const repoId = parseRepoId(req.body.githubRepoId) ?? (binding.status === 'ok' ? binding.repoId : undefined)
+        if (repoId === undefined) return rejectUnbound(reply, binding)
+        const ref = req.body.ref ?? (req.body.subDir && binding.status === 'ok' ? binding.defaultBranch : undefined)
+        // A subdir source needs a ref; if we couldn't resolve one reject rather than
+        // let the daemon assume `main`.
         if (req.body.subDir && !ref) return reply.code(400).send(subdirNeedsRef)
         // Name-capture guard — the mirror image of the delete guard: agents bind
         // by NAME, so registering a source under a name agents already enable
@@ -336,7 +353,7 @@ export function skillSourceRoutes(deps: HttpDeps) {
           orgId: orgOf(req),
           name: req.body.name,
           source: req.body.source,
-          ...(repoId !== undefined ? { githubRepoId: repoId } : {}),
+          githubRepoId: repoId,
           ...(ref !== undefined ? { ref } : {}),
           ...(req.body.subDir !== undefined ? { subDir: req.body.subDir } : {}),
           skills: req.body.skills,
@@ -363,23 +380,37 @@ export function skillSourceRoutes(deps: HttpDeps) {
           tags: [Tag.Skills],
           summary: 'Update a skill source',
           description:
-            'Edit a source’s source string, ref, subdir, or skill filter. `skills` replaces the stored filter wholesale. Name is immutable (agents bind by name; recreate to rename). Changes re-push every agent that enables this source.',
+            'Edit a source’s source string, ref, subdir, or skill filter. `skills` replaces the stored filter wholesale. Name is immutable (agents bind by name; recreate to rename). Changes re-push every agent that enables this source. The numeric repository identity is re-resolved when the source changes or the row never had one — which is how a historical unbound row is repaired — and clearing it is refused, since an unbound source can never install.',
           operationId: 'updateSkillSource',
           params: IdParam,
           body: UpdateSkillSourceBody,
-          response: { 200: SkillSourceDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto }
+          response: { 200: SkillSourceDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 503: ErrorDto }
         }
       },
       async (req, reply) => {
         if (denyViewerWrite(req, reply)) return
         const existing = await deps.repos.skillSource.get(orgOf(req), req.params.id)
         if (!existing || !canView(existing, ctxOf(req))) return notFound(reply)
+        if (req.body.githubRepoId === null) return reply.code(400).send(unbindNotAllowed)
+        const effSource = req.body.source ?? existing.source
+        const binding = await resolveRepoBinding(orgOf(req), effSource)
         // Same public-only guard as create, on the EFFECTIVE source — a PATCH that
         // points an existing source at a (now-confirmed) private repo is rejected too.
-        if (await isPrivateRepo(orgOf(req), req.body.source ?? existing.source)) {
-          return reply.code(400).send(privateNotSupported)
-        }
-        const repoId = parseRepoId(req.body.githubRepoId)
+        if (binding.status === 'ok' && binding.private) return reply.code(400).send(privateNotSupported)
+        // Re-bind when the identity would otherwise be wrong or missing: a changed
+        // source, or a historical row that never got one. This is what repairs the
+        // NULL rows already in the wild — PATCH had no way to fix them (#935). An
+        // unchanged, already-bound row is left alone, so an unrelated `skills` edit
+        // still succeeds while GitHub is unreachable.
+        const rebind = req.body.source !== undefined && req.body.source !== existing.source
+        const repoId =
+          parseRepoId(req.body.githubRepoId) ??
+          (rebind || existing.githubRepoId === null
+            ? binding.status === 'ok'
+              ? binding.repoId
+              : undefined
+            : existing.githubRepoId)
+        if (repoId === undefined) return rejectUnbound(reply, binding)
         // Preserve an explicit ref across an unrelated PATCH: only resolve a default
         // branch when the EFFECTIVE ref is absent (untouched-and-existing counts as
         // present), so a `skills`-only edit can't silently rewrite the pinned ref.
@@ -387,18 +418,13 @@ export function skillSourceRoutes(deps: HttpDeps) {
         const currentRef = refTouched ? (req.body.ref ?? undefined) : (existing.ref ?? undefined)
         const effSubDir =
           req.body.subDir === undefined ? (existing.subDir ?? undefined) : (req.body.subDir ?? undefined)
-        const resolvedRef = await resolveRefForSubdir(
-          orgOf(req),
-          req.body.source ?? existing.source,
-          currentRef,
-          effSubDir
-        )
+        const resolvedRef = currentRef ?? (effSubDir && binding.status === 'ok' ? binding.defaultBranch : undefined)
         // A subdir source needs a ref; reject if we couldn't resolve one rather than
         // let the daemon assume `main`.
         if (effSubDir && !resolvedRef) return reply.code(400).send(subdirNeedsRef)
         const source = await deps.repos.skillSource.update(orgOf(req), existing.id, {
           ...(req.body.source !== undefined ? { source: req.body.source } : {}),
-          ...(repoId !== undefined ? { githubRepoId: repoId } : {}),
+          githubRepoId: repoId,
           ...(resolvedRef !== undefined
             ? { ref: resolvedRef }
             : refTouched && req.body.ref === null
@@ -507,4 +533,29 @@ const privateNotSupported = {
   error: 'Bad Request',
   statusCode: 400,
   message: 'private skill sources are not supported yet — use a public repository'
+}
+
+const repoNotFound = {
+  error: 'Bad Request',
+  statusCode: 400,
+  message: 'no such public GitHub repository — a source that cannot be identified can never install'
+}
+
+const notAGithubRepo = {
+  error: 'Bad Request',
+  statusCode: 400,
+  message: 'source must name a GitHub repository so its numeric identity can be bound'
+}
+
+const bindingUnavailable = {
+  error: 'Service Unavailable',
+  statusCode: 503,
+  message: 'could not reach GitHub to identify the repository — retry shortly'
+}
+
+/** An explicit `githubRepoId: null` asks for exactly the state #935 is about. */
+const unbindNotAllowed = {
+  error: 'Bad Request',
+  statusCode: 400,
+  message: 'githubRepoId cannot be cleared — an unbound source is never installable'
 }

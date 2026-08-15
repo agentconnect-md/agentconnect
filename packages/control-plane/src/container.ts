@@ -177,6 +177,7 @@ import { runWithSharedTx, withSharedTxRouting } from './persistence/ambient-tx.j
 import { verifySlackBot, verifySlackAppToken } from './http/slack-identity.js'
 import { verifyTelegramBot } from './http/telegram-identity.js'
 import { searchSkillRegistry } from './http/skills-registry.js'
+import { createPublicRepoResolver } from './github/public-repo.js'
 import { createTelegramBotIconSyncer } from './http/telegram-bot-profile.js'
 import { ensureDiscordMessageContentIntent, verifyDiscordBot } from './http/discord-identity.js'
 import { createDiscordBotProfileSyncer } from './http/discord-bot-profile.js'
@@ -1082,6 +1083,7 @@ export function buildContainer(
     webchatMcpMetrics: defaultWebchatMcpMetrics,
     readiness,
     searchSkillRegistry,
+    resolvePublicRepo: createPublicRepoResolver(),
     ...(github ? { github } : {}),
     ...(pullRequestView ? { pullRequestView } : {}),
     ...(githubUserAuthz ? { githubUserAuthz } : {}),

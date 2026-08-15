@@ -27,6 +27,7 @@ import { Prisma } from '../../src/generated/prisma/client.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import { lockSkillSourceNameScope } from '../../src/persistence/skill-source-lock.js'
 import type { OrgMemberRole } from '../../src/persistence/ports.js'
+import type { HttpDeps } from '../../src/http/deps.js'
 import { AgentId, OrgId } from '../../src/domain/ids.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 
@@ -664,5 +665,157 @@ describe('GET /skill-sources/registry/search', () => {
     expect(
       (await viewer.app.inject({ method: 'GET', url: `${ORG}/skill-sources/registry/search?q=pdf` })).statusCode
     ).toBe(403)
+  })
+})
+
+/**
+ * Numeric repository identity binding (issue #935). `AgentSkillEntry` REQUIRES
+ * `githubRepoId`, so a row without one is dropped by the projection: the console
+ * shows the source enabled and the daemon never hears about it. No console entry
+ * point can send that id — it isn't in any read the web client has — so the CP
+ * must resolve it from `source` itself, and must refuse a write it cannot bind
+ * rather than persist a row that installs nothing.
+ */
+describe('POST/PATCH /skill-sources — githubRepoId binding', () => {
+  function appResolving(resolve: HttpDeps['resolvePublicRepo']): HttpApp {
+    const app = buildHttpApp(prisma, undefined, undefined, undefined, { resolvePublicRepo: resolve })
+    opened.push(app)
+    return app
+  }
+
+  const publicRepo = async (owner: string, repo: string) => ({
+    repoId: 7654321n,
+    fullName: `${owner}/${repo}`,
+    private: false,
+    defaultBranch: 'trunk'
+  })
+
+  it('binds the id a console create cannot send, and the source then projects onto the AgentSpec', async () => {
+    const app = appResolving(publicRepo)
+    // Exactly the body SkillSourcesCard/InstallRegistrySkillModal send: no id.
+    const created = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/skill-sources`,
+      payload: { name: 'kit', source: 'anthropics/skills' }
+    })
+    expect(created.statusCode).toBe(201)
+    expect(created.json().githubRepoId).toBe('7654321')
+
+    const agentId = await createAgent(app, 'enabler', ['kit/*'])
+    const agent = await app.deps.repos.agent.get(OrgId(DEFAULT_ORG_ID), AgentId(agentId))
+    const spec = await app.deps.agentSpecs.assemble(agent!)
+    expect(spec.skills).toEqual([{ name: 'kit', source: 'anthropics/skills', githubRepoId: '7654321', skills: [] }])
+  })
+
+  it('pins a subdir source to the resolved default branch, not an assumed `main`', async () => {
+    const app = appResolving(publicRepo)
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/skill-sources`,
+      payload: { name: 'sub', source: 'anthropics/skills', subDir: 'packs' }
+    })
+    expect(res.statusCode).toBe(201)
+    expect(res.json()).toMatchObject({ ref: 'trunk', githubRepoId: '7654321' })
+  })
+
+  it('an explicitly supplied id still wins over the lookup', async () => {
+    const app = appResolving(publicRepo)
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/skill-sources`,
+      payload: { name: 'kit', source: 'anthropics/skills', githubRepoId: '42' }
+    })
+    expect(res.statusCode).toBe(201)
+    expect(res.json().githubRepoId).toBe('42')
+  })
+
+  it('refuses a repo GitHub says does not exist instead of storing a non-installable row', async () => {
+    const app = appResolving(async () => 'not-found')
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/skill-sources`,
+      payload: { name: 'kit', source: 'anthropics/skills' }
+    })
+    expect(res.statusCode).toBe(400)
+    expect((await app.app.inject({ method: 'GET', url: `${ORG}/skill-sources` })).json()).toEqual([])
+  })
+
+  it('reports an unreachable GitHub as retryable rather than as a bad request', async () => {
+    const app = appResolving(async () => 'unreachable')
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/skill-sources`,
+      payload: { name: 'kit', source: 'anthropics/skills' }
+    })
+    expect(res.statusCode).toBe(503)
+  })
+
+  it('rejects a confirmed-private repo before binding it', async () => {
+    const app = appResolving(async (owner, repo) => ({
+      repoId: 9n,
+      fullName: `${owner}/${repo}`,
+      private: true,
+      defaultBranch: 'main'
+    }))
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/skill-sources`,
+      payload: { name: 'kit', source: 'anthropics/skills' }
+    })
+    expect(res.statusCode).toBe(400)
+    expect(res.json().message).toContain('private skill sources are not supported')
+  })
+
+  it('back-fills a historical unbound row on the next edit — the repair PATCH could not do', async () => {
+    const app = appResolving(publicRepo)
+    const id = await createSource(app, 'legacy')
+    // Simulate a row created before the binding existed (SQL bypasses the route).
+    await prisma.skillSource.update({ where: { id }, data: { githubRepoId: null } })
+
+    const patched = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/skill-sources/${id}`,
+      payload: { skills: ['helper'] }
+    })
+    expect(patched.statusCode).toBe(200)
+    expect(patched.json().githubRepoId).toBe('7654321')
+  })
+
+  it('re-binds when the source is repointed, and leaves a bound row alone otherwise', async () => {
+    let calls = 0
+    const app = appResolving(async (owner, repo) => {
+      calls += 1
+      return { repoId: BigInt(1000 + calls), fullName: `${owner}/${repo}`, private: false, defaultBranch: 'main' }
+    })
+    const id = await createSource(app, 'kit') // calls = 1 → 1001
+    const repointed = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/skill-sources/${id}`,
+      payload: { source: 'anthropics/skills' }
+    })
+    expect(repointed.json().githubRepoId).toBe('1002')
+
+    // An unrelated edit keeps the bound id — a `skills`-only PATCH must not depend
+    // on GitHub being reachable.
+    const unrelated = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/skill-sources/${id}`,
+      payload: { skills: ['helper'] }
+    })
+    expect(unrelated.json().githubRepoId).toBe('1002')
+  })
+
+  it('refuses to clear the id — that is precisely the non-installable state', async () => {
+    const app = appResolving(publicRepo)
+    const id = await createSource(app, 'kit')
+    const res = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/skill-sources/${id}`,
+      payload: { githubRepoId: null }
+    })
+    expect(res.statusCode).toBe(400)
+    expect((await app.app.inject({ method: 'GET', url: `${ORG}/skill-sources/${id}` })).json().githubRepoId).toBe(
+      '7654321'
+    )
   })
 })

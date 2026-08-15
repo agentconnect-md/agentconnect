@@ -194,6 +194,14 @@ export interface HttpApp {
 /** Empty liveness: no daemon is "connected right now" unless a test overrides it. */
 const NO_LIVENESS: DaemonLiveness = { get: () => undefined }
 
+/** Stable per-name repo id for the offline GitHub stand-in — distinct names get
+ *  distinct ids, and one name keeps its id across calls and across apps. */
+function fakeRepoId(fullName: string): bigint {
+  let h = 2166136261n
+  for (const ch of fullName) h = ((h ^ BigInt(ch.codePointAt(0)!)) * 16777619n) & 0xffffffffn
+  return h + 1n
+}
+
 export function buildHttpApp(
   prisma: PrismaClient,
   configOverrides?: Partial<HttpDeps['config']>,
@@ -476,6 +484,15 @@ export function buildHttpApp(
     mcpRateLimit: new McpRateLimiter(clock),
     sharedTx: <T>(fn: () => Promise<T>) => rootPrisma.$transaction((tx) => runWithSharedTx(tx, fn)),
     readiness: createReadiness(() => pingDb(prisma)),
+    // Offline stand-in for the anonymous GitHub read that binds a skill source's
+    // numeric identity: every repo resolves, to a deterministic id per owner/repo.
+    // Suites that care about the unbindable paths override this dep.
+    resolvePublicRepo: async (owner: string, repo: string) => ({
+      repoId: fakeRepoId(`${owner}/${repo}`),
+      fullName: `${owner}/${repo}`,
+      private: false,
+      defaultBranch: 'main'
+    }),
     config: { DEFAULT_OWNER_ID, ...configOverrides },
     sessionAccessPlugins: [
       { provider: 'slack', available: false, resolve: async () => ({ allowedScopes: [], degraded: false }) },
