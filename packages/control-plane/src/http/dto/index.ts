@@ -557,9 +557,11 @@ export const CreateAgentBody = z.object({
   skills: SkillEnableBody.optional(),
   managedSkills: ManagedSkillEnableBody.optional(),
   memory: MemoryConfigBody.optional(), // memory backend; absent ⇒ managed default
-  // Placement at create. `pool` needs no id; `daemon` (the default) uses `daemonId`.
-  placementKind: z.enum(['daemon', 'pool']).optional(),
+  // Placement at create. `set` uses `setId`; `daemon` (the default) uses `daemonId`. `pool` is
+  // accepted API sugar for "the org-less set" and is resolved to it at the edge.
+  placementKind: z.enum(['daemon', 'pool', 'set']).optional(),
   daemonId: z.string().optional(), // the owning daemon, if chosen at create
+  setId: z.string().uuid().optional(), // the owning member set, for a `set` placement
   workspace: AgentWorkspaceInputBody.optional(), // absent ⇒ scratch; the cold editor can replace either mode later
   capabilities: z.array(z.string()).default([]),
   // Initial visibility (absent ⇒ 'org', visible to all members); `sharedWith` is
@@ -622,18 +624,27 @@ export const UpdateAgentBody = z
  * its detach; every target-side admission check still applies. */
 export const SetAgentDaemonBody = z
   .object({
-    // The placement TARGET. `daemon` names one machine through `daemonId`; `pool` names the
-    // install-wide member set and carries no id at all — whichever member holds the agent's duty
-    // serves it, so pinning one here is exactly the dead-Pod pointer this replaced. Omitted ⇒
-    // `daemon`, so an existing client that sends only `daemonId` still means what it meant.
-    placementKind: z.enum(['daemon', 'pool']).optional(),
+    // The placement TARGET. `daemon` names one machine through `daemonId`; `set` names a member
+    // set through `setId` — whichever member holds the agent's duty serves it, so pinning one here
+    // is exactly the dead-Pod pointer this replaced. `pool` stays accepted API sugar for "the
+    // org-less set" (daemon-groups.md §4) and is resolved at the edge. Omitted ⇒ `daemon`, so an
+    // existing client that sends only `daemonId` still means what it meant.
+    placementKind: z.enum(['daemon', 'pool', 'set']).optional(),
     daemonId: z.string().uuid().optional(),
+    setId: z.string().uuid().optional(),
     force: z.boolean().optional()
   })
   .strict()
-  .refine((b) => (b.placementKind === 'pool' ? b.daemonId === undefined : b.daemonId !== undefined), {
-    message: 'daemonId is required for a daemon placement and must be omitted for a pool placement'
+  .refine((b) => (b.placementKind === 'set' ? b.setId !== undefined : b.setId === undefined), {
+    message: 'setId is required for a set placement and must be omitted otherwise'
   })
+  .refine(
+    (b) =>
+      b.placementKind === 'pool' || b.placementKind === 'set' ? b.daemonId === undefined : b.daemonId !== undefined,
+    {
+      message: 'daemonId is required for a daemon placement and must be omitted for a set placement'
+    }
+  )
 
 /** Full desired workspace definition for the acknowledged cold edit path. */
 export const SetAgentWorkspaceBody = z.discriminatedUnion('mode', [
@@ -696,12 +707,13 @@ export const AgentDto = z.object({
   managedSkills: z.array(z.string().uuid()), // explicitly enabled accepted managed-skill ids
   memory: MemoryConfigBody.nullable(), // memory backend (null ⇒ managed default)
   status: z.string(),
-  // What the placement NAMES. `pool` carries a null `daemonId` on purpose: no member id is
+  // What the placement NAMES. `set` carries a null `daemonId` on purpose: no member id is
   // durable, so the console must read readiness from `placementReady` rather than from a machine.
-  placementKind: z.enum(['daemon', 'pool']),
+  placementKind: z.enum(['daemon', 'set']),
   daemonId: z.string().nullable(),
+  setId: z.string().nullable(), // the `set`-kind ref; null for a `daemon` placement
   /** Can a session start right now? For a `daemon` placement that is its daemon's liveness; for a
-   *  `pool` placement it is "some live member could serve this", which is the question the console
+   *  `set` placement it is "some live member could serve this", which is the question the console
    *  was answering with a dead Pod's id (#987). */
   placementReady: z.boolean(),
   workspace: AgentWorkspaceBody,

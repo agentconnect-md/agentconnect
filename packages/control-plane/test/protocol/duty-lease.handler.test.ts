@@ -10,10 +10,18 @@ import type { InMemoryDaemonStub } from '../fakes/daemon-stub.js'
 import { PgDutyGroupRepo, PgLaunchRepo } from '../../src/persistence/index.js'
 import { ControlSender } from '../../src/orchestrator/outbound.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
+import { joinPool, poolSetId } from '../fakes/member-set.js'
 import { DaemonId, OrgId } from '../../src/domain/ids.js'
 
 const DAEMON = 'd1111111-1111-4111-8111-111111111111'
 const OTHER = 'd2222222-2222-4222-8222-222222222222'
+
+/** A second POOL member: the org-less row plus its membership, exactly what `upsertOnAuth` writes
+ *  when a Pod authenticates. Eligibility is a membership lookup, so a survivor has to be one. */
+async function seedPoolPeer(daemonId: string): Promise<void> {
+  await prisma.daemon.create({ data: { id: daemonId, orgId: null, maxAgents: 8, status: 'ready' } })
+  await joinPool(prisma, daemonId)
+}
 const GROUP = '00000000-0000-4000-8000-000000000001'
 const AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1'
 const AGENT2 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2'
@@ -123,7 +131,8 @@ describe('duty lease exchange (protocol level, real Postgres)', () => {
         orgId: DEFAULT_ORG_ID,
         name: 'stamped',
         runtime: 'claude',
-        placementKind: 'pool',
+        placementKind: 'set',
+        setId: await poolSetId(prisma),
         configRevision: 9n
       }
     })
@@ -295,10 +304,9 @@ describe('duty lease exchange (protocol level, real Postgres)', () => {
     expect(row.term).toBe(2n)
 
     // Immediately grantable by a survivor at a bumped term.
+    await seedPoolPeer(OTHER)
     const repo = new PgDutyGroupRepo(prisma)
-    const grants = await repo.claimVacant(DaemonId(OTHER), 1, new Date(h.clock.now()), LEASE_MS, {
-      scope: 'install-wide'
-    })
+    const grants = await repo.claimVacant(DaemonId(OTHER), 1, new Date(h.clock.now()), LEASE_MS)
     expect(grants[0]).toMatchObject({ groupId: GROUP, orgId: OrgId(DEFAULT_ORG_ID), term: 3n })
   })
 })
@@ -786,10 +794,17 @@ describe('duty/claim — the activation rendezvous (real Postgres)', () => {
   const CLAIM_ID = '66666666-6666-4666-8666-666666666666'
 
   // Placed on the POOL: the rendezvous applies the same eligibility gate as the heartbeat claim,
-  // so an install-wide member may only claim an agent whose placement is the pool.
+  // so a pool member may only claim an agent whose placement is the pool's set.
   async function seedAgentRow(): Promise<void> {
     await prisma.agent.create({
-      data: { id: AGENT, orgId: DEFAULT_ORG_ID, name: 'agent-1', runtime: 'claude', placementKind: 'pool' }
+      data: {
+        id: AGENT,
+        orgId: DEFAULT_ORG_ID,
+        name: 'agent-1',
+        runtime: 'claude',
+        placementKind: 'set',
+        setId: await poolSetId(prisma)
+      }
     })
   }
 
@@ -891,7 +906,14 @@ describe('proactive healing after a rollout (protocol level, real Postgres)', ()
     // The replaced Pod: it held the group, and its lease ran out 1ms ago.
     await seedGroup({ holder: OTHER, term: 4n, expiresAt: new Date(start - 1) })
     await prisma.agent.create({
-      data: { id: AGENT, orgId: DEFAULT_ORG_ID, name: 'webchat-only', runtime: 'claude', placementKind: 'pool' }
+      data: {
+        id: AGENT,
+        orgId: DEFAULT_ORG_ID,
+        name: 'webchat-only',
+        runtime: 'claude',
+        placementKind: 'set',
+        setId: await poolSetId(prisma)
+      }
     })
     const { stub } = await ready(h)
 
@@ -910,7 +932,14 @@ describe('proactive healing after a rollout (protocol level, real Postgres)', ()
     const h = buildWsHarness(prisma)
     await seedGroup({ holder: OTHER, term: 4n, expiresAt: new Date(start - 1) })
     await prisma.agent.create({
-      data: { id: AGENT, orgId: DEFAULT_ORG_ID, name: 'webchat-only', runtime: 'claude', placementKind: 'pool' }
+      data: {
+        id: AGENT,
+        orgId: DEFAULT_ORG_ID,
+        name: 'webchat-only',
+        runtime: 'claude',
+        placementKind: 'set',
+        setId: await poolSetId(prisma)
+      }
     })
     const { stub } = await ready(h)
 
@@ -930,7 +959,14 @@ describe('proactive healing after a rollout (protocol level, real Postgres)', ()
     const start = new Date(h.clock.now())
     await seedGroup({ holder: DAEMON, term: 1n, expiresAt: new Date(start.getTime() + LEASE_MS) })
     await prisma.agent.create({
-      data: { id: AGENT, orgId: DEFAULT_ORG_ID, name: 'uninstallable', runtime: 'claude', placementKind: 'pool' }
+      data: {
+        id: AGENT,
+        orgId: DEFAULT_ORG_ID,
+        name: 'uninstallable',
+        runtime: 'claude',
+        placementKind: 'set',
+        setId: await poolSetId(prisma)
+      }
     })
     const { stub } = await ready(h)
 
@@ -952,10 +988,9 @@ describe('proactive healing after a rollout (protocol level, real Postgres)', ()
     expect(stub.sent.filter((f) => f.type === 'duty/grant')).toHaveLength(2)
 
     // A different member takes it immediately — the point of handing it back.
+    await seedPoolPeer(OTHER)
     const repo = new PgDutyGroupRepo(prisma)
-    const grants = await repo.claimVacant(DaemonId(OTHER), 1, new Date(h.clock.now()), LEASE_MS, {
-      scope: 'install-wide'
-    })
+    const grants = await repo.claimVacant(DaemonId(OTHER), 1, new Date(h.clock.now()), LEASE_MS)
     expect(grants.map((g) => g.groupId)).toEqual([GROUP])
   })
 
@@ -979,7 +1014,14 @@ describe('routing follows the holder (protocol level, real Postgres)', () => {
 
   async function seedPooledAgentWithHook(): Promise<void> {
     await prisma.agent.create({
-      data: { id: AGENT, orgId: DEFAULT_ORG_ID, name: 'hooked', runtime: 'claude', placementKind: 'pool' }
+      data: {
+        id: AGENT,
+        orgId: DEFAULT_ORG_ID,
+        name: 'hooked',
+        runtime: 'claude',
+        placementKind: 'set',
+        setId: await poolSetId(prisma)
+      }
     })
     await prisma.hookDef.create({
       data: {
@@ -1046,7 +1088,14 @@ describe('a grant is not a route until the digest confirms it (protocol level, r
 
   async function seedPooledAgent(): Promise<void> {
     await prisma.agent.create({
-      data: { id: AGENT, orgId: DEFAULT_ORG_ID, name: 'peer', runtime: 'claude', placementKind: 'pool' }
+      data: {
+        id: AGENT,
+        orgId: DEFAULT_ORG_ID,
+        name: 'peer',
+        runtime: 'claude',
+        placementKind: 'set',
+        setId: await poolSetId(prisma)
+      }
     })
   }
 
@@ -1158,8 +1207,9 @@ describe('a grant is not a route until the digest confirms it (protocol level, r
 
     // Lapse it, then let a different member take it.
     await prisma.dutyGroup.update({ where: { id: GROUP }, data: { expiresAt: new Date(h.clock.now() - 1) } })
+    await seedPoolPeer(OTHER)
     const repo = new PgDutyGroupRepo(prisma)
-    await repo.claimVacant(DaemonId(OTHER), 1, new Date(h.clock.now()), LEASE_MS, { scope: 'install-wide' })
+    await repo.claimVacant(DaemonId(OTHER), 1, new Date(h.clock.now()), LEASE_MS)
 
     expect(await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })).toMatchObject({ holder: OTHER })
     expect(await isConfirmed(GROUP)).toBe(false)
@@ -1183,9 +1233,7 @@ describe('a grant is not a route until the digest confirms it (protocol level, r
     // Lapse, then the SAME member re-takes it.
     await prisma.dutyGroup.update({ where: { id: GROUP }, data: { expiresAt: new Date(h.clock.now() - 1) } })
     const repo = new PgDutyGroupRepo(prisma)
-    const [regrant] = await repo.claimVacant(DaemonId(DAEMON), 1, new Date(h.clock.now()), LEASE_MS, {
-      scope: 'install-wide'
-    })
+    const [regrant] = await repo.claimVacant(DaemonId(DAEMON), 1, new Date(h.clock.now()), LEASE_MS)
     expect(regrant?.term).toBe(2n)
     expect(await isConfirmed(GROUP)).toBe(false)
     expect(await directoryDaemonFor(h, AGENT)).toBeNull()

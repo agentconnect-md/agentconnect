@@ -2,6 +2,7 @@
 import { onDaemon } from '../../src/domain/placement.js'
 import { describe, it, expect } from 'vitest'
 import { prisma } from '../setup.db.js'
+import { poolSetId } from '../fakes/member-set.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import { seedAgent } from '../fixtures/seed.js'
 import { PgDaemonRepo } from '../../src/persistence/repositories/daemon.repo.js'
@@ -232,7 +233,7 @@ describe('DaemonRepo cloud-member retirement', () => {
     await seedAgent(prisma, pooled)
     await prisma.agent.update({
       where: { id: pooled },
-      data: { placementKind: 'pool', daemonId: null, status: 'active' }
+      data: { placementKind: 'set', setId: await poolSetId(prisma), daemonId: null, status: 'active' }
     })
 
     expect(await repo.retireCloudMember(pod.id, { retiredBefore: CUTOFF, sessionEpoch: pod.sessionEpoch })).toEqual({
@@ -240,7 +241,7 @@ describe('DaemonRepo cloud-member retirement', () => {
       settled: []
     })
     expect(await prisma.agent.findUnique({ where: { id: pooled } })).toMatchObject({
-      placementKind: 'pool',
+      placementKind: 'set',
       daemonId: null,
       status: 'active'
     })

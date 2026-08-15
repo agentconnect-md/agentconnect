@@ -12,6 +12,7 @@ import { prisma } from '../setup.db.js'
 import { buildWsHarness } from '../fakes/build-ws.js'
 import type { InMemoryDaemonStub } from '../fakes/daemon-stub.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
+import { poolSetId } from '../fakes/member-set.js'
 
 const DAEMON = 'd3333333-3333-4333-8333-333333333333'
 const OTHER = 'd4444444-4444-4444-8444-444444444444'
@@ -27,7 +28,8 @@ async function seedPoolAgent(managedSkills: string[]): Promise<string> {
       orgId: DEFAULT_ORG_ID,
       name: `dreamer-${id.slice(0, 8)}`,
       runtime: 'claude',
-      placementKind: 'pool',
+      placementKind: 'set',
+      setId: await poolSetId(prisma),
       managedSkills
     }
   })

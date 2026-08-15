@@ -3,12 +3,12 @@
  * answers "which daemons serve this agent right now" once placement stopped being a member id.
  *
  * `domain/placement.ts` answers eligibility from the row alone; this adds the live duty leases, so
- * a `pool` agent — which names no machine — still resolves to the member currently holding it. Two
+ * a `set` agent — which names no machine — still resolves to the member currently holding it. Two
  * questions, one resolver: delivery/edge targets (`servingDaemons`, `servingDaemon`) and authority
  * (`mayAct`, the "is this agent yours" fence every daemon-originated write applies).
  *
- * No caller branches on the placement kind; a later `group` kind changes only this file and the
- * ledger predicate it mirrors.
+ * No caller branches on the placement kind; this file and the ledger predicate it mirrors are the
+ * two readers of it.
  *
  * The inverse query — member→agents — is `servedAgents.ts`, which reads the same two relations
  * from the other side; its header states the biconditional the pair has to satisfy and names the
@@ -41,9 +41,9 @@ export class PlacementResolver {
     private readonly deps: {
       /** Absent (tests, or a deployment with no pool) ⇒ placement alone, which is the pre-duty behavior. */
       duties?: DutyHolderReader
-      /** The install-wide members that are live right now. Only {@link PlacementResolver.dispatchDaemon}
+      /** A member set's members that are live right now. Only {@link PlacementResolver.dispatchDaemon}
        *  uses it, and only as the rendezvous target — never as a claim of who serves what. */
-      liveMembers?: () => string[]
+      liveMembers?: (setId: string) => Promise<string[]>
       clock: Clock
     }
   ) {}
@@ -62,7 +62,7 @@ export class PlacementResolver {
    * Every daemon INGRESS may be addressed at. `servingDaemons` minus the holds the member has not
    * confirmed yet — a grant it has not installed is a lease, not a route.
    *
-   * Between a grant and its first digest this names NOBODY for a pool agent. For platform ingress
+   * Between a grant and its first digest this names NOBODY for a set agent. For platform ingress
    * that is fully covered — the trigger reaches a member and claims through the activation
    * rendezvous. For a cross-daemon peer wake it is NOT covered, and the honest reason to prefer it
    * anyway is narrower than "absence is retryable", because absence is terminal too
@@ -102,7 +102,7 @@ export class PlacementResolver {
   /**
    * Fill the serving daemon into a directory projection, dropping every row nothing serves right
    * now. The peer directory and the collaboration snapshot both need "who do I wake", which is a
-   * live question for a pool agent and a column read for a machine-placed one — so it is answered
+   * live question for a set agent and a column read for a machine-placed one — so it is answered
    * here once rather than at each surface, where the two could disagree.
    */
   async resolveDirectory<T extends PlacementRef & { agentId: string }>(
@@ -120,7 +120,7 @@ export class PlacementResolver {
 
   /**
    * Where to send a TRIGGER for this agent. Distinct from {@link PlacementResolver.servingDaemon}
-   * on purpose: a pool agent whose lease has lapsed is served by nobody for one lease horizon, and
+   * on purpose: a set agent whose lease has lapsed is served by nobody for one lease horizon, and
    * refusing the trigger for that window is what left webchat permanently offline after a rollout
    * (#987). Any live member is a correct target — it claims the agent's group on receipt (the
    * activation rendezvous) and then serves the turn. A machine placement has no such fallback:
@@ -129,11 +129,12 @@ export class PlacementResolver {
   async dispatchDaemon(agent: ResolvableAgent): Promise<DaemonId | null> {
     const routable = await this.routableDaemon(agent)
     if (routable) return routable
-    if (dutyEligibility(agent).scope !== 'install-wide') return null
-    return ((this.deps.liveMembers?.() ?? [])[0] as DaemonId | undefined) ?? null
+    const eligibility = dutyEligibility(agent)
+    if (eligibility.scope !== 'set' || !this.deps.liveMembers) return null
+    return ((await this.deps.liveMembers(eligibility.setId))[0] as DaemonId | undefined) ?? null
   }
 }
 
 /** The resolver a graph with no duty ledger gets: placement alone, which is exactly the pre-duty
- *  behavior. Consumers default to it so a pool-less composition needs no wiring at all. */
+ *  behavior. Consumers default to it so a set-less composition needs no wiring at all. */
 export const PLACEMENT_ONLY = new PlacementResolver({ clock: systemClock })

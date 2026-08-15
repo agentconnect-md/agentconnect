@@ -86,6 +86,7 @@ model Org {
   members                   Membership[]
   daemons                   Daemon[]
   agents                    Agent[]
+  memberSets                MemberSet[]
   crons                     CronDef[]
   hooks                     HookDef[]
   apiKeys                   ApiKey[]
@@ -435,6 +436,7 @@ model Daemon {
   sessions              SessionMeta[]
   lifecycleOps          DaemonLifecycleOp[]
   webchatMcpDelegations WebchatMcpDelegation[]
+  setMembership         MemberSetMember?
 
   @@unique([clusterIdentity, clusterPodUid], map: "daemon_cluster_identity_pod_key")
   @@index([orgId])
@@ -665,12 +667,53 @@ enum AgentStatus {
   paused
 }
 
-// Where an agent's duty may be held (docs/designs/k8s-daemon-pool.md §14). `daemon` names one
-// machine through `Agent.daemonId`; `pool` names the install-wide member set and carries no ref.
-// A later `group` value names an explicit daemon group — read it through domain/placement.ts.
+// ───────────────────────────────────────────────────────────────────────────
+// MemberSet / MemberSetMember — a named set of daemons within which an agent's
+//   duty may be claimed (docs/designs/daemon-groups.md §2). The install-wide
+//   pool is one ROW of it, not a kind of its own.
+// ───────────────────────────────────────────────────────────────────────────
+
+/// A named set of daemons within which an agent's duty may be claimed. `orgId` is nullable and
+/// NULL MEANS CROSS-ORG, never "unassigned": an org-less set is served by org-less daemons and
+/// holds every organization's agents. The install-wide pool is that row — one per install, which
+/// the partial unique index `member_set_cross_org_key` (migration-only; Prisma cannot express it)
+/// enforces.
+model MemberSet {
+  id        String   @id @db.Uuid
+  orgId     String? // NULL = cross-org (the install-wide pool), never "unassigned"
+  name      String
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  org     Org?              @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  members MemberSetMember[]
+  agents  Agent[]
+
+  @@index([orgId])
+  @@map("member_set")
+}
+
+/// One daemon in at most one set — the daemon IS the primary key. Two write-time invariants,
+/// enforced where the row is written (`member-set.repo.ts#enrollDaemonInSet`) and nowhere else:
+/// an org-less set accepts only org-less daemons, an org set only that org's daemons. They are
+/// what lets eligibility be a single membership lookup with no tenancy branch.
+model MemberSetMember {
+  setId    String   @db.Uuid
+  daemonId String   @id @db.Uuid
+  joinedAt DateTime @default(now()) @db.Timestamptz(6)
+
+  set    MemberSet @relation(fields: [setId], references: [id], onDelete: Cascade)
+  daemon Daemon    @relation(fields: [daemonId], references: [id], onDelete: Cascade)
+
+  @@index([setId])
+  @@map("member_set_member")
+}
+
+// Where an agent's duty may be held (docs/designs/daemon-groups.md §2). `daemon` names one
+// machine through `Agent.daemonId`; `set` names a member set through `Agent.setId` — the
+// install-wide pool is the org-less set. Read the pair through domain/placement.ts.
 enum AgentPlacementKind {
   daemon
-  pool
+  set
 }
 
 model Agent {
@@ -689,10 +732,11 @@ model Agent {
   runtime               String?
   status                AgentStatus        @default(inactive)
   // Placement is a TARGET, not only a member id. `daemon` (the default, so every pre-existing row
-  // keeps meaning what it meant) resolves through `daemonId`; `pool` resolves to the install-wide
-  // member set and requires `daemonId` to be null. Only domain/placement.ts reads the pair.
+  // keeps meaning what it meant) resolves through `daemonId`; `set` resolves through `setId`, the
+  // install-wide pool being the org-less set. Only domain/placement.ts reads the triple.
   placementKind         AgentPlacementKind @default(daemon)
   daemonId              String?            @db.Uuid // the `daemon`-kind ref: 1 agent : 1 machine (null until placed)
+  setId                 String?            @db.Uuid // the `set`-kind ref, null for a `daemon` placement as daemonId is for a `set` one
   // ── workspace (inline; §3.5) — daemon-generated path ──
   workspaceMode         WorkspaceMode      @default(scratch)
   workspaceIsolation    WorkspaceIsolation @default(shared)
@@ -742,6 +786,7 @@ model Agent {
 
   org                   Org                        @relation(fields: [orgId], references: [id], onDelete: Cascade)
   daemon                Daemon?                    @relation(fields: [daemonId], references: [id], onDelete: SetNull)
+  set                   MemberSet?                 @relation(fields: [setId], references: [id], onDelete: SetNull)
   createdBy             User?                      @relation("AgentCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
   lastModifiedBy        User?                      @relation("AgentModifiedBy", fields: [lastModifiedByUserId], references: [id], onDelete: SetNull)
   assignments           Assignment[]
@@ -767,6 +812,7 @@ model Agent {
   @@unique([id, orgId])
   @@index([orgId])
   @@index([daemonId])
+  @@index([setId])
   @@map("agent")
 }
 

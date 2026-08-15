@@ -61,7 +61,7 @@ import type { DaemonView } from '../../ports.js'
 import { AgentId, DaemonId, OrgId, SessionId } from '../../domain/ids.js'
 import {
   dutyEligibility,
-  ON_POOL,
+  onSet,
   placementLabel,
   placementTargetOf,
   type PlacementTarget
@@ -307,6 +307,7 @@ function toDto(
     status: a.status,
     placementKind: a.placementKind,
     daemonId: a.daemonId,
+    setId: a.setId,
     placementReady: placementView.ready,
     workspace: workspaceToDto(a.workspace),
     workspaceRepoId: a.workspaceRepoId?.toString() ?? null,
@@ -338,7 +339,7 @@ function toDto(
 /**
  * What placement says the console needs to know: the sandbox policy (#642) and whether a session
  * can start right now. Both come from ONE resolution of "who may serve this agent", so they can
- * never disagree — and for a pool placement that resolution is "is any member live", not "is the
+ * never disagree — and for a set placement that resolution is "is any member live", not "is the
  * member this row names live", which is the question a rollout made unanswerable (#987).
  */
 interface PlacementView {
@@ -353,20 +354,43 @@ function placementViewOf(deps: HttpDeps, daemon: DaemonView | null): PlacementVi
   return { sandbox: sandboxPolicyOf(daemon), ready: live?.reachable === true && live.state === 'READY' }
 }
 
-/** The install-wide members that could serve an agent right now. One read; reuse it for a page. */
-async function readyPoolMembers(deps: HttpDeps, orgId: OrgId): Promise<DaemonView[]> {
-  const daemons = await deps.registry.listAvailable(orgId)
-  return daemons.filter((d) => d.orgId === null && placementViewOf(deps, d).ready)
+/**
+ * The API-sugar edge (daemon-groups.md §4): `{ placementKind: 'pool' }` names THE org-less set, so
+ * the console's existing "Cloud" entry needs no change and storage keeps one representation.
+ * `{ placementKind: 'set', setId }` names one explicitly; a set belonging to another org is not
+ * resolvable here, exactly as another org's daemon is not.
+ */
+async function resolveTargetSetId(
+  deps: HttpDeps,
+  orgId: OrgId,
+  body: { placementKind?: 'daemon' | 'pool' | 'set'; setId?: string }
+): Promise<string | null> {
+  if (body.placementKind === 'pool') return deps.repos.memberSet.crossOrgSetId()
+  if (body.placementKind !== 'set' || body.setId === undefined) return null
+  const set = await deps.repos.memberSet.get(body.setId)
+  return set && (set.orgId === null || set.orgId === orgId) ? set.id : null
 }
 
-async function placementViewFor(deps: HttpDeps, a: AgentRecord, poolMembers?: DaemonView[]): Promise<PlacementView> {
+/** The members of a set that could serve an agent right now. One read; reuse it for a page.
+ *  Membership is the read — not "org-less daemon", which is only what the pool's membership MEANS
+ *  by the write-time invariant (daemon-groups.md §2). */
+async function readySetMembers(deps: HttpDeps, orgId: OrgId, setId: string): Promise<DaemonView[]> {
+  const [daemons, memberIds] = await Promise.all([
+    deps.registry.listAvailable(orgId),
+    deps.repos.memberSet.memberIdsOf(setId)
+  ])
+  const members = new Set(memberIds)
+  return daemons.filter((d) => members.has(d.daemonId) && placementViewOf(deps, d).ready)
+}
+
+async function placementViewFor(deps: HttpDeps, a: AgentRecord, setMembers?: DaemonView[]): Promise<PlacementView> {
   const eligibility = dutyEligibility(a)
   if (eligibility.scope === 'none') return NO_PLACEMENT
   if (eligibility.scope === 'daemon') {
     // The org-fenced agent read supplies the availability scope for its daemon.
     return placementViewOf(deps, await deps.registry.getAvailable(a.orgId, eligibility.daemonId))
   }
-  const members = poolMembers ?? (await readyPoolMembers(deps, OrgId(a.orgId)))
+  const members = setMembers ?? (await readySetMembers(deps, OrgId(a.orgId), eligibility.setId))
   return placementViewOf(deps, members[0] ?? null)
 }
 
@@ -793,7 +817,7 @@ export function agentRoutes(deps: HttpDeps) {
     /**
      * The same read, with `daemonId` resolved to the member that SERVES the agent right now
      * instead of the one its placement names. Every daemon-edge proxy below (workspace, git,
-     * memory, dreams, tasks, skills, permissions) loads through this, because for a `pool`
+     * memory, dreams, tasks, skills, permissions) loads through this, because for a `set`
      * placement the row names no machine at all and the live answer is the ledger's.
      *
      * Deliberately NOT used by the placement-authoritative routes — create, PATCH, move, delete —
@@ -1312,7 +1336,7 @@ export function agentRoutes(deps: HttpDeps) {
       mutations: deps.agentMutations,
       sessionOwners: deps.sessionOwners,
       placement: deps.placementResolver,
-      ...(deps.daemonRows ? { daemons: deps.daemonRows } : {}),
+      memberSets: deps.repos.memberSet,
       ...(deps.recomputeDuties ? { recomputeDuties: deps.recomputeDuties } : {}),
       log: app.log
     })
@@ -1354,18 +1378,22 @@ export function agentRoutes(deps: HttpDeps) {
       async (req, reply) => {
         if (denyViewerWrite(req, reply)) return
         const conflict = (message: string) => reply.code(409).send({ error: 'Conflict', statusCode: 409, message })
-        // Placement accepts visible org-owned daemons and install-wide cloud members, never another
-        // org's daemon — or the POOL, which names no member and is validated against the live
-        // member set instead, exactly like the move route's pool target.
-        const wantsPool = req.body.placementKind === 'pool'
-        const poolMembers = wantsPool ? await readyPoolMembers(deps, orgOf(req)) : []
-        if (wantsPool && poolMembers.length === 0) return conflict('no cloud daemon member is ready')
-        const placedDaemon = wantsPool
-          ? (poolMembers[0] ?? null)
+        // Placement accepts visible org-owned daemons and this org's member sets, never another
+        // org's daemon — or a SET, which names no member and is validated against its live members
+        // instead, exactly like the move route's set target.
+        const wantsSet = req.body.placementKind === 'pool' || req.body.placementKind === 'set'
+        const targetSetId = wantsSet ? await resolveTargetSetId(deps, orgOf(req), req.body) : null
+        if (wantsSet && targetSetId === null) {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'member set not found' })
+        }
+        const setMembers = targetSetId ? await readySetMembers(deps, orgOf(req), targetSetId) : []
+        if (wantsSet && setMembers.length === 0) return conflict('no cloud daemon member is ready')
+        const placedDaemon = wantsSet
+          ? (setMembers[0] ?? null)
           : req.body.daemonId !== undefined
             ? await deps.registry.getAvailable(orgOf(req), DaemonId(req.body.daemonId))
             : null
-        if (!wantsPool && req.body.daemonId !== undefined) {
+        if (!wantsSet && req.body.daemonId !== undefined) {
           if (!placedDaemon || !canView(placedDaemon, ctxOf(req))) {
             return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'daemon not found' })
           }
@@ -1561,8 +1589,8 @@ export function agentRoutes(deps: HttpDeps) {
                   ...(req.body.skills !== undefined ? { skills: req.body.skills } : {}),
                   ...(req.body.managedSkills !== undefined ? { managedSkills: req.body.managedSkills } : {}),
                   ...(req.body.memory !== undefined ? { memory: req.body.memory } : {}),
-                  ...(wantsPool
-                    ? { placementKind: 'pool' as const }
+                  ...(targetSetId !== null
+                    ? { placementKind: 'set' as const, setId: targetSetId }
                     : req.body.daemonId !== undefined
                       ? { daemonId: DaemonId(req.body.daemonId) }
                       : {}),
@@ -1686,7 +1714,7 @@ export function agentRoutes(deps: HttpDeps) {
         )
         // ONE batched resolve for the whole page (design §6) — never a query per agent.
         const organizationEnvironment = await organizationEnvironmentOfAll(orgOf(req), rows)
-        // Two batched resolves for the whole page: the named daemons, and the pool once.
+        // Two batched resolves for the whole page: the named daemons, and each named set once.
         const daemonIds = [...new Set(rows.flatMap((a) => (a.daemonId ? [a.daemonId] : [])))]
         const views = new Map(
           await Promise.all(
@@ -1696,12 +1724,20 @@ export function agentRoutes(deps: HttpDeps) {
             )
           )
         )
-        const poolMembers = await readyPoolMembers(deps, orgOf(req))
-        const poolView = placementViewOf(deps, poolMembers[0] ?? null)
+        const setIds = [...new Set(rows.flatMap((a) => (a.setId ? [a.setId] : [])))]
+        const setViews = new Map(
+          await Promise.all(
+            setIds.map(
+              async (setId) =>
+                [setId, placementViewOf(deps, (await readySetMembers(deps, orgOf(req), setId))[0] ?? null)] as const
+            )
+          )
+        )
         const viewFor = (a: AgentRecord): PlacementView => {
           const eligibility = dutyEligibility(a)
           if (eligibility.scope === 'none') return NO_PLACEMENT
-          return eligibility.scope === 'daemon' ? (views.get(eligibility.daemonId) ?? NO_PLACEMENT) : poolView
+          if (eligibility.scope === 'set') return setViews.get(eligibility.setId) ?? NO_PLACEMENT
+          return views.get(eligibility.daemonId) ?? NO_PLACEMENT
         }
         return rows.map((a) =>
           toDto(
@@ -2301,7 +2337,11 @@ export function agentRoutes(deps: HttpDeps) {
 
         const conflict = (message: string) => reply.code(409).send({ error: 'Conflict', statusCode: 409, message })
         const force = req.body.force === true
-        const wantsPool = req.body.placementKind === 'pool'
+        const wantsSet = req.body.placementKind === 'pool' || req.body.placementKind === 'set'
+        const targetSetId = wantsSet ? await resolveTargetSetId(deps, orgOf(req), req.body) : null
+        if (wantsSet && targetSetId === null) {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'member set not found' })
+        }
         const moveReady = (daemonId: string) => {
           const live = deps.liveness.get(daemonId)
           return live?.reachable === true && live.state === 'READY'
@@ -2309,22 +2349,25 @@ export function agentRoutes(deps: HttpDeps) {
         const MOVE_FEATURE = 'agent-move-v1'
 
         // The daemons the target admits. A `daemon` target is one machine and every check below
-        // is about that machine. A `pool` target names the install-wide member set, and the CP
-        // does not get to choose which member serves the agent — so the checks are evaluated
-        // against the UNION of live members: the target is admissible when SOME live member could
-        // serve this agent today. Members are one Deployment of one image, so union and
-        // intersection differ only mid-rollout, and there the ledger's install-on-grant refusal
-        // is the backstop that keeps a member from holding what it cannot install.
-        const candidates = wantsPool
-          ? (await deps.registry.listAvailable(orgOf(req))).filter(
-              (d) => d.orgId === null && moveReady(d.daemonId) && canView(d, ctxOf(req))
-            )
+        // is about that machine. A `set` target names a member set, and the CP does not get to
+        // choose which member serves the agent — so the checks are evaluated against the UNION of
+        // its live members: the target is admissible when SOME live member could serve this agent
+        // today. Pool members are one Deployment of one image, so union and intersection differ
+        // only mid-rollout, and there the ledger's install-on-grant refusal is the backstop that
+        // keeps a member from holding what it cannot install.
+        const candidates = targetSetId
+          ? await (async () => {
+              const memberIds = new Set(await deps.repos.memberSet.memberIdsOf(targetSetId))
+              return (await deps.registry.listAvailable(orgOf(req))).filter(
+                (d) => memberIds.has(d.daemonId) && moveReady(d.daemonId) && canView(d, ctxOf(req))
+              )
+            })()
           : await (async () => {
               const one = await deps.registry.getAvailable(orgOf(req), DaemonId(req.body.daemonId!))
               return one && canView(one, ctxOf(req)) ? [one] : []
             })()
         if (candidates.length === 0) {
-          if (!wantsPool) {
+          if (!wantsSet) {
             return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'daemon not found' })
           }
           return conflict('no cloud daemon member is ready')
@@ -2338,8 +2381,8 @@ export function agentRoutes(deps: HttpDeps) {
         }
 
         const placement = placementTargetOf(existing)
-        const samePlacementTarget = wantsPool
-          ? placement.kind === 'pool'
+        const samePlacementTarget = targetSetId
+          ? placement.kind === 'set' && placement.setId === targetSetId
           : placement.kind === 'daemon' && placement.daemonId === req.body.daemonId
 
         /** Why this daemon cannot take the agent, or null when it can. */
@@ -2386,7 +2429,7 @@ export function agentRoutes(deps: HttpDeps) {
               return `target runtime ${existing.runtime} does not support MCP ${server.transport} transport for ${name}`
             }
           }
-          // Capacity is a per-member fact even on the pool: "some member has headroom" is exactly
+          // Capacity is a per-member fact even on a set: "some member has headroom" is exactly
           // the condition the ledger's own headroom gate applies when it hands out the duty.
           if (!samePlacementTarget && daemon.load && daemon.maxAgents > 0 && daemon.load.agents >= daemon.maxAgents) {
             return 'target daemon is at agent capacity'
@@ -2394,7 +2437,7 @@ export function agentRoutes(deps: HttpDeps) {
           return null
         }
 
-        // First admitting candidate wins; a pool target refuses only when EVERY live member
+        // First admitting candidate wins; a set target refuses only when EVERY live member
         // refuses, and then it reports the first member's reason rather than inventing one.
         let target: DaemonView | undefined
         let refusal: string | null = null
@@ -2408,13 +2451,15 @@ export function agentRoutes(deps: HttpDeps) {
         }
         if (!target) return conflict(refusal ?? 'no daemon can take this agent')
 
-        const moveTarget: PlacementTarget = wantsPool ? ON_POOL : { kind: 'daemon', daemonId: target.daemonId }
+        const moveTarget: PlacementTarget = targetSetId
+          ? onSet(targetSetId)
+          : { kind: 'daemon', daemonId: target.daemonId }
 
         // A same-target retry is an idempotent repair after placement already
         // committed, not a second handoff. Target admission above still applies,
         // but there is no separate source to gate before ensureActive below.
         if (!samePlacementTarget) {
-          // Every member serving the agent today has to quiesce — for a pool source that is the
+          // Every member serving the agent today has to quiesce — for a set source that is the
           // duty holder, not a placement, and there may be none at all.
           const sourceDaemonIds = await deps.placementResolver.servingDaemons(existing)
           if (sourceDaemonIds.length > 0) {

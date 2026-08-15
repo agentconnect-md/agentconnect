@@ -10,6 +10,7 @@
  * Imported as a `setupFiles` entry (NOT a global), so the hooks register per
  * test file while every concurrently active pool stays on its own database.
  */
+import { randomUUID } from 'node:crypto'
 import { afterAll, beforeEach, inject } from 'vitest'
 import { PrismaPg } from '@prisma/adapter-pg'
 import { PrismaClient } from '../src/generated/prisma/client.js'
@@ -113,10 +114,21 @@ async function truncateAll(): Promise<void> {
   }
 }
 
+/**
+ * The install-wide pool set is created by the MIGRATION, not by the seed — and `TRUNCATE … CASCADE`
+ * reaches `member_set` through its `org` FK even though the pool row is org-less. Restoring it here
+ * is what leaves every test on the migrated shape, where the pool is a row and eligibility is a
+ * membership lookup (docs/designs/daemon-groups.md §8).
+ */
+async function restorePoolSet(): Promise<void> {
+  await prisma.memberSet.create({ data: { id: randomUUID(), orgId: null, name: 'AgentConnect Cloud' } })
+}
+
 beforeEach(async () => {
   // Clean slate, then re-seed the tenancy anchor.
   await truncateAll()
   await seed(prisma)
+  await restorePoolSet()
 })
 
 afterAll(async () => {

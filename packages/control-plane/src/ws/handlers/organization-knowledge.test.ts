@@ -25,13 +25,16 @@ const SKILL = '51515151-5151-4515-8515-515151515151'
 const ORG_A = 'org-a'
 const ORG_B = 'org-b'
 
+const POOL_SET = '5e700000-0000-4000-8000-000000000001'
+
 const installWideCapabilities = {
   features: [ORGANIZATION_KNOWLEDGE_FEATURE, ORGANIZATION_SUGGESTION_REVIEW_FEATURE]
 }
 
-/** A pool row: placed, naming no machine. `agent.daemonId` can never authorize one. */
+/** A pool row: placed on the org-less set, naming no machine. `agent.daemonId` can never
+ *  authorize one. */
 function poolAgent(id: string) {
-  return { id, placementKind: 'pool' as const, daemonId: null }
+  return { id, placementKind: 'set' as const, daemonId: null, setId: POOL_SET }
 }
 
 /** The live seam, keyed by who holds each agent's duty right now. */

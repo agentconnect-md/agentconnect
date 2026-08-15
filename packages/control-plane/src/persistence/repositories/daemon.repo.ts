@@ -22,6 +22,7 @@ import type {
 import { visibilityWhere } from '../../authorization/policy.js'
 import { AgentId, DaemonId, OrgId } from '../../domain/ids.js'
 import { lockAgentPlacement, settleCascadedUnplacement } from './agent-placement.js'
+import { enrollDaemonInSet } from './member-set.repo.js'
 import type { Heartbeat, FactsMcpServer } from '@agentconnect.md/protocol'
 import { lockResourceWriteMemberships } from '../resource-membership-lock.js'
 
@@ -197,27 +198,36 @@ export class PgDaemonRepo implements DaemonRepo {
   }
 
   async upsertOnAuth(input: AuthReqInput): Promise<{ daemon: DaemonRecord; sessionEpoch: bigint }> {
-    const daemon = await this.db.daemon.upsert({
-      where: { id: input.daemonId },
-      create: {
-        id: input.daemonId,
-        orgId: input.orgId,
-        agentVersion: input.agentVersion,
-        machineId: input.machineId,
-        tokenFp: input.tokenFp,
-        sessionEpoch: 1n, // first successful auth mints epoch 1
-        status: 'authenticating'
-      },
-      update: {
-        agentVersion: input.agentVersion,
-        machineId: input.machineId,
-        tokenFp: input.tokenFp,
-        sessionEpoch: { increment: 1n }, // atomic monotonic bump (§3.13)
-        status: 'authenticating'
-      },
-      include: withUsers
+    return withAmbientTx(this.db, async (tx) => {
+      const daemon = await tx.daemon.upsert({
+        where: { id: input.daemonId },
+        create: {
+          id: input.daemonId,
+          orgId: input.orgId,
+          agentVersion: input.agentVersion,
+          machineId: input.machineId,
+          tokenFp: input.tokenFp,
+          sessionEpoch: 1n, // first successful auth mints epoch 1
+          status: 'authenticating'
+        },
+        update: {
+          agentVersion: input.agentVersion,
+          machineId: input.machineId,
+          tokenFp: input.tokenFp,
+          sessionEpoch: { increment: 1n }, // atomic monotonic bump (§3.13)
+          status: 'authenticating'
+        },
+        include: withUsers
+      })
+      // Pool membership stays AUTOMATIC (daemon-groups.md §6): an org-less row is a member of the
+      // org-less set, enrolled in the same transaction that mints it. An org-scoped row is never
+      // auto-enrolled anywhere — its set is an operator decision.
+      if (daemon.orgId === null) {
+        const pool = await tx.memberSet.findFirst({ where: { orgId: null }, select: { id: true } })
+        if (pool) await enrollDaemonInSet(tx, pool.id, daemon.id)
+      }
+      return { daemon: toRecord(daemon), sessionEpoch: daemon.sessionEpoch }
     })
-    return { daemon: toRecord(daemon), sessionEpoch: daemon.sessionEpoch }
   }
 
   async applyRegister(daemonId: DaemonId, reg: RegisterReqInput): Promise<DaemonRecord> {

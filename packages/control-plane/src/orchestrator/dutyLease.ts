@@ -12,7 +12,6 @@ import {
 import type { DutyGroupRepo, DutyGroupRecord, DutyGrantRecord } from '../persistence/ports.js'
 import type { DutyMemberKey } from '../domain/duty.js'
 import type { AgentId, DaemonId, OrgId } from '../domain/ids.js'
-import type { DutyClaimScope } from '../domain/placement.js'
 import type { Clock } from '../domain/clock.js'
 
 export interface DutyLeaseConfig {
@@ -319,18 +318,12 @@ export class DutyLeaseService {
     if (budget > 0 && this.clock.now() >= this.bootedAtMs + this.config.recoveryGraceMs) {
       // Oversized groups are excluded at the claim boundary (the size gate), so
       // a claim never lands on a group it would immediately have to release.
-      // `scope` is install-wide because the heartbeat handler only reaches this service on an
-      // org-less connection; it is passed rather than assumed so the gate stays a predicate.
       granted = await this.repo.claimVacant(
         daemonId,
         Math.min(budget, this.config.grantMaxPerTick),
         now,
         this.config.leaseMs,
-        {
-          scope: 'install-wide',
-          maxMembers: DUTY_GRANT_MEMBERS_MAX,
-          excludeGroupIds: this.backedOff(daemonId)
-        }
+        { maxMembers: DUTY_GRANT_MEMBERS_MAX, excludeGroupIds: this.backedOff(daemonId) }
       )
     }
 
@@ -393,19 +386,18 @@ export class DutyLeaseService {
    * that was handed a trigger it does not serve. Serialized on the member's lane
    * like every other ledger touch, so a claim cannot interleave with its own
    * heartbeat exchange. Returns a grant the member can install verbatim, or the
-   * incumbent it lost to. `scope` carries the claimant's connection scope into the same
-   * eligibility gate the heartbeat claim uses: a trigger reaching the wrong member is not
-   * authority to serve an agent that member may not hold.
+   * incumbent it lost to. It runs the same eligibility gate the heartbeat claim uses, read from
+   * the claimant's own membership: a trigger reaching the wrong member is not authority to serve
+   * an agent that member may not hold.
    */
   async claimAgentHome(
     orgId: OrgId,
     agentId: AgentId,
-    holder: DaemonId,
-    scope: DutyClaimScope
+    holder: DaemonId
   ): Promise<{ granted: boolean; grant?: DutyGrantEntry; holder?: string }> {
     return this.serialize(holder, async () => {
       const now = new Date(this.clock.now())
-      const claim = await this.repo.claimAgentHome(orgId, agentId, holder, now, this.config.leaseMs, scope)
+      const claim = await this.repo.claimAgentHome(orgId, agentId, holder, now, this.config.leaseMs)
       if (!claim.granted || claim.groupId === undefined)
         return claim.holder ? { granted: false, holder: claim.holder } : { granted: false }
       const [group] = await this.repo.getByIds([claim.groupId])

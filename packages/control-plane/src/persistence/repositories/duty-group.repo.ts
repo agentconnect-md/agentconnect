@@ -13,7 +13,6 @@ import type {
   DutyReconcilePlanner
 } from '../ports.js'
 import type { AgentId, DaemonId, OrgId } from '../../domain/ids.js'
-import type { DutyClaimScope } from '../../domain/placement.js'
 import { withTx } from '../prisma.js'
 
 // Serializes the writers that CREATE or REWRITE rows for an org (applyReconcile
@@ -27,17 +26,25 @@ type Row = { id: string; orgId: string; holder: string | null; term: bigint; exp
 
 /**
  * The eligibility predicate, once, as SQL — the row-wise mirror of `domain/placement.ts#mayHold`.
- * May `holder` (whose connection scope is install-wide when `installWide` holds) hold the duty of
- * the agent row `agent`? `pool` placement is the install-wide member set; `daemon` placement is
- * that one machine; an unplaced agent has no eligible holder.
+ * May `holder` hold the duty of the agent row `agent`? A `set` placement is claimable by the
+ * members of that set, which is ONE join to `member_set_member` on `(agent.setId, holder)`; a
+ * `daemon` placement is that one machine; an unplaced agent has no eligible holder.
+ *
+ * Tenancy is not a branch here. The write-time invariants (daemon-groups.md §2) guarantee what
+ * membership MEANS — an org-less set holds only org-less daemons, an org set only that org's — so
+ * "the holder is in the agent's set" already implies the tenancy narrowing. The claimant's scope
+ * is therefore read from the ledger's own tables, never asserted by the caller.
  *
  * Both claim paths and the placement fence share it, so a lease can never be taken under one rule
- * and kept under another. A later `group` kind adds one arm here.
+ * and kept under another.
  */
-function eligibleAgent(agent: Prisma.Sql, holder: Prisma.Sql, installWide: Prisma.Sql): Prisma.Sql {
+function eligibleAgent(agent: Prisma.Sql, holder: Prisma.Sql): Prisma.Sql {
   return Prisma.sql`(
     CASE ${agent}."placementKind"
-      WHEN 'pool' THEN (${installWide})
+      WHEN 'set' THEN EXISTS (
+        SELECT 1 FROM "member_set_member" ms
+        WHERE ms."setId" = ${agent}."setId" AND ms."daemonId" = ${holder}
+      )
       ELSE ${agent}."daemonId" IS NOT NULL AND ${agent}."daemonId" = ${holder}
     END
   )`
@@ -45,19 +52,19 @@ function eligibleAgent(agent: Prisma.Sql, holder: Prisma.Sql, installWide: Prism
 
 /**
  * A group is claimable by `holder` only when EVERY agent in it is one the holder may hold. Stated
- * as "no ineligible agent" rather than "some eligible agent": a group that merges a pool agent
+ * as "no ineligible agent" rather than "some eligible agent": a group that merges a set agent
  * with a machine-placed one must be claimable by neither, or the winner serves an agent the other
  * side is already serving — the duplicate service the ledger exists to prevent.
  *
  * A member ref whose agent row is gone cannot be adjudicated and does not block: the group is
  * reaped by the next recompute, and install-on-grant refuses an empty bundle in the meantime.
  */
-function noIneligibleAgent(group: Prisma.Sql, holder: Prisma.Sql, installWide: Prisma.Sql): Prisma.Sql {
+function noIneligibleAgent(group: Prisma.Sql, holder: Prisma.Sql): Prisma.Sql {
   return Prisma.sql`NOT EXISTS (
     SELECT 1 FROM "duty_group_member" m
     JOIN "agent" a ON a.id = m."refId"
     WHERE m."groupId" = ${group} AND m."kind" = 'agent'
-      AND NOT ${eligibleAgent(Prisma.sql`a`, holder, installWide)}
+      AND NOT ${eligibleAgent(Prisma.sql`a`, holder)}
   )`
 }
 
@@ -139,8 +146,8 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
     // the lease on the next sweep and the eligible member claims it on its next beat (the old
     // holder learns through the digest diff, as a superseded revocation).
     //
-    // The holder's own scope comes from its row — an org-less daemon is an install-wide pool
-    // member — so this is the same rule `claimVacant` applies, not a second one that can disagree.
+    // The holder's own scope comes from its membership row, so this is the same rule
+    // `claimVacant` applies, not a second one that can disagree.
     // A group whose agents are ALL unplaced has no eligible holder at all and is vacated too:
     // nothing may serve an unplaced agent, and leaving the lease standing would keep one member
     // serving what the operator detached.
@@ -149,7 +156,7 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
         "confirmedTerm" = NULL, "confirmedHolder" = NULL
       FROM "daemon" d
       WHERE g."orgId" = ${orgId} AND g."holder" IS NOT NULL AND d.id = g."holder"
-        AND NOT ${noIneligibleAgent(Prisma.sql`g.id`, Prisma.sql`g."holder"`, Prisma.sql`d."orgId" IS NULL`)}
+        AND NOT ${noIneligibleAgent(Prisma.sql`g.id`, Prisma.sql`g."holder"`)}
       RETURNING g.id
     `)
     return rows.map((r) => r.id).sort()
@@ -265,7 +272,7 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
     max: number,
     now: Date,
     leaseMs: number,
-    opts: { scope: DutyClaimScope; maxMembers?: number; excludeGroupIds?: readonly string[] }
+    opts: { maxMembers?: number; excludeGroupIds?: readonly string[] } = {}
   ): Promise<DutyGrantRecord[]> {
     if (max <= 0) return []
     const expiresAt = new Date(now.getTime() + leaseMs)
@@ -279,11 +286,7 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
     // The eligibility gate — the whole grant policy, and the only one. There is no incumbency test
     // left: what a member may claim follows from the agents' placement, not from where their state
     // happens to already be.
-    const eligibilityGate = Prisma.sql`AND ${noIneligibleAgent(
-      Prisma.sql`"duty_group".id`,
-      Prisma.sql`${holder}::uuid`,
-      opts.scope === 'install-wide' ? Prisma.sql`TRUE` : Prisma.sql`FALSE`
-    )}`
+    const eligibilityGate = Prisma.sql`AND ${noIneligibleAgent(Prisma.sql`"duty_group".id`, Prisma.sql`${holder}::uuid`)}`
     // The caller's refusal backoff: a group this member has just failed to install is skipped so
     // it can reach one that can serve it, instead of being re-taken on the very next beat.
     const backoffGate =
@@ -432,8 +435,7 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
     agentId: AgentId,
     holder: DaemonId,
     now: Date,
-    leaseMs: number,
-    scope: DutyClaimScope
+    leaseMs: number
   ): Promise<AgentHomeClaim> {
     const expiresAt = new Date(now.getTime() + leaseMs)
     return withTx(this.prisma, async (tx) => {
@@ -444,7 +446,7 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
       // transaction, against the live row, because this path can MINT a group and a check made
       // before the lock would let a member reach through it for an agent it may not hold.
       const [eligible] = await tx.$queryRaw<{ ok: boolean }[]>(Prisma.sql`
-        SELECT ${eligibleAgent(Prisma.sql`a`, Prisma.sql`${holder}::uuid`, scope === 'install-wide' ? Prisma.sql`TRUE` : Prisma.sql`FALSE`)} AS ok
+        SELECT ${eligibleAgent(Prisma.sql`a`, Prisma.sql`${holder}::uuid`)} AS ok
         FROM "agent" a WHERE a.id = ${agentId}::uuid
       `)
       if (eligible?.ok !== true) return { granted: false, holder: null }

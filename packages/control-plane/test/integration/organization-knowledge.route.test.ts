@@ -18,6 +18,7 @@ import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import { NoConnection, type ControlSender } from '../../src/orchestrator/outbound.js'
 import { AgentId } from '../../src/domain/ids.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
+import { poolSetId } from '../fakes/member-set.js'
 import type { DaemonLiveness } from '../../src/ports.js'
 import type { OrgMemberRole } from '../../src/persistence/ports.js'
 import { organizationSuggestionSnapshotToken } from '../../src/organization-knowledge/suggestion-snapshot.js'
@@ -995,7 +996,7 @@ describe('Dream organization suggestion review on a pool member', () => {
     await seedAgent(prisma, sourceAgentId, { name: 'pool-dreamer' })
     await prisma.agent.update({
       where: { id: sourceAgentId },
-      data: { placementKind: 'pool', daemonId: null }
+      data: { placementKind: 'set', setId: await poolSetId(prisma), daemonId: null }
     })
     await seedDutyGroup(prisma, randomUUID(), DAEMON, [sourceAgentId])
 
@@ -1044,7 +1045,7 @@ describe('Dream organization suggestion review on a pool member', () => {
     await seedAgent(prisma, sourceAgentId, { name: 'pool-dreamer-expired' })
     await prisma.agent.update({
       where: { id: sourceAgentId },
-      data: { placementKind: 'pool', daemonId: null }
+      data: { placementKind: 'set', setId: await poolSetId(prisma), daemonId: null }
     })
     // An expired lease is how the ledger says "this member stopped serving it".
     await seedDutyGroup(prisma, randomUUID(), DAEMON, [sourceAgentId], { expiresAt: new Date(Date.now() - 60_000) })

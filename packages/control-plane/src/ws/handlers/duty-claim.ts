@@ -20,8 +20,8 @@ export const handleDutyClaim: Handler = async (frame, conn, deps) => {
     conn.replyTo(frame, 'duty/claim/ok', { granted: false })
     return
   }
-  // The connection reached here org-less, so its claim scope is install-wide; the ledger applies
-  // the placement predicate to it rather than trusting the trigger that got the member here.
-  const claim = await deps.dutyLease.claimAgentHome(agent.orgId, agentId, DaemonId(conn.daemonId), 'install-wide')
+  // The ledger applies the placement predicate to this member's own set membership rather than
+  // trusting the trigger that got it here.
+  const claim = await deps.dutyLease.claimAgentHome(agent.orgId, agentId, DaemonId(conn.daemonId))
   conn.replyTo(frame, 'duty/claim/ok', claim)
 }
