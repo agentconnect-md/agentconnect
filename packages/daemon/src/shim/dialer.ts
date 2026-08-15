@@ -78,20 +78,12 @@ export class ShimDialer {
       return existing.current ? Promise.resolve(existing.current) : this.awaitReady(existing, timeoutMs)
     }
     if (existing) this.stopDial(existing, 'superseded by a newer launch')
-    let resolveReady: (connection: ShimConnection) => void = () => {}
-    let rejectReady: (error: Error) => void = () => {}
-    const ready = new Promise<ShimConnection>((resolve, reject) => {
-      resolveReady = resolve
-      rejectReady = reject
-    })
     const dial: SupervisedDial = {
       endpoint,
       record,
       stopped: false,
       readySettled: false,
-      ready,
-      resolveReady,
-      rejectReady
+      ...this.freshReady()
     }
     this.dials.set(record.agentId, dial)
     void this.supervise(dial, timeoutMs)
@@ -244,15 +236,26 @@ export class ShimDialer {
   }
 
   private resetReady(dial: SupervisedDial): void {
+    Object.assign(dial, this.freshReady(), { readySettled: false })
+  }
+
+  /**
+   * A fresh "next connection" promise for a dial.
+   *
+   * Its rejection is pre-observed, deliberately: a revoke or a supersede stops the dial whether
+   * or not anything is waiting for its next connection, and that teardown is expected — the
+   * caller that IS waiting still receives it through {@link awaitReady}, which attaches its own
+   * handlers. Without this, an ordinary `revokeAgent` surfaced as an unhandled rejection.
+   */
+  private freshReady(): Pick<SupervisedDial, 'ready' | 'resolveReady' | 'rejectReady'> {
     let resolveReady: (connection: ShimConnection) => void = () => {}
     let rejectReady: (error: Error) => void = () => {}
-    dial.ready = new Promise<ShimConnection>((resolve, reject) => {
+    const ready = new Promise<ShimConnection>((resolve, reject) => {
       resolveReady = resolve
       rejectReady = reject
     })
-    dial.resolveReady = resolveReady
-    dial.rejectReady = rejectReady
-    dial.readySettled = false
+    void ready.catch(() => undefined)
+    return { ready, resolveReady, rejectReady }
   }
 
   private bind(

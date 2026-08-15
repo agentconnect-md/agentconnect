@@ -99,6 +99,13 @@ export class LaunchTimeoutError extends Error {
 const DEFAULT_READY_TIMEOUT_MS = 90_000
 const MAX_MODE_ATTEMPTS = 5
 
+/**
+ * How to read a channel that has not arrived: `starting` means the pod is not up yet, so
+ * nothing has been lost — a cold start pays PVC provisioning and an image pull before any
+ * shim can dial. `absent` means there is no pod coming at all.
+ */
+export type SandboxReadiness = 'ready' | 'starting' | 'absent'
+
 /** Per-agent launch state the driver keeps: the Sandbox it bound and which launch it is. */
 interface Launch {
   agentId: string
@@ -196,6 +203,32 @@ export class K8sDriver implements SpawnDriver {
     const launch: Launch = { agentId, sandboxName, sandboxUid, generation }
     this.launches.set(agentId, launch)
     return launch
+  }
+
+  /** How long a pod may take to come up, as this driver itself waits for it. One definition, so
+   *  the loss window and the launch path cannot disagree about what a cold start may cost. */
+  get podUpTimeoutMs(): number {
+    return this.deps.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS
+  }
+
+  /**
+   * Whether the pod that should hold this agent's channel is up right now.
+   *
+   * The driver has just watched that pod, so it can tell an unbound channel apart from a lost
+   * one: while the Sandbox is not Ready its shim cannot dial at all, and a dial that times out
+   * against it is "not ready yet", not a channel that went away.
+   */
+  async sandboxReadiness(agentId: string): Promise<SandboxReadiness> {
+    const launch = this.launches.get(agentId)
+    if (!launch) return 'absent'
+    const sandbox = await this.deps.api.getSandbox(launch.sandboxName).catch((err: unknown) => {
+      if (err instanceof K8sApiError && err.isNotFound) return undefined
+      throw err
+    })
+    if (!sandbox) return 'absent'
+    // Suspended is a decision this daemon made: the pod is gone and none is coming up for it.
+    if ((sandbox.spec?.operatingMode ?? 'Running') !== 'Running') return 'absent'
+    return isSandboxReady(sandbox) && resolvePodIp(sandbox) ? 'ready' : 'starting'
   }
 
   /** Wait for the Sandbox to report Ready, after something has asked it to run. */
