@@ -28,6 +28,7 @@ const DAEMON = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
 const AGENT = 'a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1'
 const LAUNCH = '11111111-1111-4111-8111-111111111111'
 const OLD_LAUNCH = '99999999-9999-4999-8999-999999999999'
+const FOREIGN_AGENT = 'a2a2a2a2-a2a2-4a2a-8a2a-a2a2a2a2a2a2'
 
 /** Minimal deps — fencing is pure FSM logic, no DB/auth/registry needed. */
 function fencingDeps(clock: FakeClock): DaemonWsDeps {
@@ -227,5 +228,33 @@ describe('organization gate', () => {
     const err = stub.lastSent('error')
     if (!err || !isFrame('error')(err)) throw new Error('expected error frame')
     expect(err.payload.code).toBe('SCOPE_DENIED')
+  })
+
+  // #968: the replay a pool member sends after READY. Unscoped it never reaches the handler.
+  it('rejects an unscoped organization-suggestion sync from an install-wide daemon', () => {
+    const { conn, stub } = readyConn({ sessionEpoch: 5 })
+    conn.orgId = null
+    const id = stub.inject('knowledge/suggestions/sync', { suggestions: [] })
+    const err = stub.lastSent('error')
+    if (!err || !isFrame('error')(err)) throw new Error('expected error frame')
+    expect(err.corr).toBe(id)
+    expect(err.payload.code).toBe('SCOPE_DENIED')
+  })
+
+  it('accepts an org-scoped organization-suggestion sync from an install-wide daemon', () => {
+    const { conn, stub } = readyConn({ sessionEpoch: 5 })
+    conn.orgId = null
+    stub.inject('knowledge/suggestions/sync', { suggestions: [] }, { orgId: 'org-a' })
+    expect(stub.lastSent('error')).toBeUndefined()
+  })
+
+  // A duty holder never registered the agent, so the id→org map cannot answer for it.
+  it('stamps the caller-supplied organization on a suggestion review the map cannot resolve', () => {
+    const { conn, stub } = readyConn({ sessionEpoch: 5 })
+    conn.orgId = null
+    const review = { sourceAgentId: FOREIGN_AGENT, dreamId: 'dream-1', candidateId: LAUNCH, state: 'accepted' }
+    expect(() => conn.send('knowledge/suggestion/review', review, { epoch: 5 })).toThrow(/organization is required/)
+    conn.send('knowledge/suggestion/review', review, { epoch: 5 }, 'org-b')
+    expect(stub.lastSent('knowledge/suggestion/review')?.orgId).toBe('org-b')
   })
 })

@@ -6,6 +6,9 @@ import {
 } from '@agentconnect.md/protocol'
 import type { DaemonConnection } from '../connection.js'
 import type { DaemonWsDeps } from '../deps.js'
+import { PlacementResolver } from '../../orchestrator/placementResolver.js'
+import { systemClock } from '../../domain/clock.js'
+import type { DaemonId } from '../../domain/ids.js'
 import {
   handleKnowledgeSearch,
   handleKnowledgeList,
@@ -19,6 +22,39 @@ const AGENT = 'a0a0a0a0-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const FOREIGN_AGENT = 'a1a1a1a1-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const ORG = 'org-default'
 const SKILL = '51515151-5151-4515-8515-515151515151'
+const ORG_A = 'org-a'
+const ORG_B = 'org-b'
+
+const installWideCapabilities = {
+  features: [ORGANIZATION_KNOWLEDGE_FEATURE, ORGANIZATION_SUGGESTION_REVIEW_FEATURE]
+}
+
+/** A pool row: placed, naming no machine. `agent.daemonId` can never authorize one. */
+function poolAgent(id: string) {
+  return { id, placementKind: 'pool' as const, daemonId: null }
+}
+
+/** The live seam, keyed by who holds each agent's duty right now. */
+function holderOf(holds: Record<string, string[]>): PlacementResolver {
+  const of = async (agentId: string) => (holds[String(agentId)] ?? []) as DaemonId[]
+  return new PlacementResolver({ duties: { holdersOf: of, confirmedHoldersOf: of }, clock: systemClock })
+}
+
+function proposed(sourceAgentId: string) {
+  return {
+    sourceAgentId,
+    dreamId: `dream-${sourceAgentId.slice(0, 4)}`,
+    candidateId: '33333333-3333-4333-8333-333333333333',
+    kind: 'knowledge',
+    operation: 'create',
+    title: 'Candidate',
+    digest: `sha256:${'a'.repeat(64)}`,
+    contentBytes: 10,
+    state: 'proposed',
+    sessionIds: ['session-1'],
+    createdAt: '2026-08-01T00:00:00.000Z'
+  }
+}
 
 function frame(type: AnyFrame['type'], payload: Record<string, unknown>): AnyFrame {
   return {
@@ -386,6 +422,103 @@ describe('handleOrganizationSuggestionsSync', () => {
 
     expect(syncSuggestions).toHaveBeenCalledWith(ORG, DAEMON, [suggestion])
     expect(connection.replyTo.mock.calls[0]![2]).toEqual({ decisions: [] })
+  })
+
+  // #968: a pool member is an org-less per-Pod record, so the connection has no org to derive —
+  // and the agents it dreams for are pool rows naming no machine at all.
+  it('records each org-scoped frame from one install-wide member under the org it names', async () => {
+    const syncSuggestions = vi.fn(async (_orgId, _daemonId, suggestions) =>
+      suggestions.map((s: { sourceAgentId: string }) => ({ ...s, id: 'suggestion-id', state: 'pending' }))
+    )
+    const byOrg: Record<string, ReturnType<typeof poolAgent>[]> = {
+      [ORG_A]: [poolAgent(AGENT)],
+      [ORG_B]: [poolAgent(FOREIGN_AGENT)]
+    }
+    const deps = {
+      registry: { getUnscoped: async () => ({ id: DAEMON, orgId: null, capabilities: installWideCapabilities }) },
+      agent: { list: async (orgId: string) => byOrg[orgId] ?? [] },
+      placementResolver: holderOf({ [AGENT]: [DAEMON], [FOREIGN_AGENT]: [DAEMON] }),
+      organizationKnowledge: { syncSuggestions }
+    } as unknown as DaemonWsDeps
+    const connection = conn()
+
+    await handleOrganizationSuggestionsSync(
+      { ...frame('knowledge/suggestions/sync', { suggestions: [proposed(AGENT)] }), orgId: ORG_A },
+      connection,
+      deps
+    )
+    await handleOrganizationSuggestionsSync(
+      { ...frame('knowledge/suggestions/sync', { suggestions: [proposed(FOREIGN_AGENT)] }), orgId: ORG_B },
+      connection,
+      deps
+    )
+
+    expect(connection.sendError).not.toHaveBeenCalled()
+    expect(syncSuggestions).toHaveBeenNthCalledWith(1, ORG_A, DAEMON, [proposed(AGENT)])
+    expect(syncSuggestions).toHaveBeenNthCalledWith(2, ORG_B, DAEMON, [proposed(FOREIGN_AGENT)])
+  })
+
+  it('refuses an org-scoped frame that names an org the sending agent is not in', async () => {
+    const syncSuggestions = vi.fn(async () => [])
+    const deps = {
+      registry: { getUnscoped: async () => ({ id: DAEMON, orgId: null, capabilities: installWideCapabilities }) },
+      agent: { list: async () => [] },
+      placementResolver: holderOf({ [AGENT]: [DAEMON] }),
+      organizationKnowledge: { syncSuggestions }
+    } as unknown as DaemonWsDeps
+    const connection = conn()
+
+    await handleOrganizationSuggestionsSync(
+      { ...frame('knowledge/suggestions/sync', { suggestions: [proposed(AGENT)] }), orgId: ORG_B },
+      connection,
+      deps
+    )
+
+    // The allowed set is still the fence: an org that holds none of this member's agents records nothing.
+    expect(syncSuggestions).toHaveBeenCalledWith(ORG_B, DAEMON, [])
+  })
+
+  it('refuses a pool agent this member holds no duty for', async () => {
+    const syncSuggestions = vi.fn(async () => [])
+    const deps = {
+      registry: { getUnscoped: async () => ({ id: DAEMON, orgId: null, capabilities: installWideCapabilities }) },
+      agent: { list: async () => [poolAgent(AGENT), poolAgent(FOREIGN_AGENT)] },
+      // The foreign agent's duty is held by another member, so this connection may not report it.
+      placementResolver: holderOf({ [AGENT]: [DAEMON], [FOREIGN_AGENT]: ['another-member'] }),
+      organizationKnowledge: { syncSuggestions }
+    } as unknown as DaemonWsDeps
+    const connection = conn()
+
+    await handleOrganizationSuggestionsSync(
+      {
+        ...frame('knowledge/suggestions/sync', { suggestions: [proposed(AGENT), proposed(FOREIGN_AGENT)] }),
+        orgId: ORG_A
+      },
+      connection,
+      deps
+    )
+
+    expect(syncSuggestions).toHaveBeenCalledWith(ORG_A, DAEMON, [proposed(AGENT)])
+  })
+
+  it('refuses an unscoped frame from an install-wide member', async () => {
+    const syncSuggestions = vi.fn(async () => [])
+    const deps = {
+      registry: { getUnscoped: async () => ({ id: DAEMON, orgId: null, capabilities: installWideCapabilities }) },
+      agent: { list: async () => [poolAgent(AGENT)] },
+      placementResolver: holderOf({ [AGENT]: [DAEMON] }),
+      organizationKnowledge: { syncSuggestions }
+    } as unknown as DaemonWsDeps
+    const connection = conn()
+
+    await handleOrganizationSuggestionsSync(
+      frame('knowledge/suggestions/sync', { suggestions: [proposed(AGENT)] }),
+      connection,
+      deps
+    )
+
+    expect(syncSuggestions).not.toHaveBeenCalled()
+    expect(connection.sendError.mock.calls[0]![1]).toBe('SCOPE_DENIED')
   })
 })
 

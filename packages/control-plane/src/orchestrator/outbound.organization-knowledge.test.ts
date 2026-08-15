@@ -77,13 +77,17 @@ describe('ControlSender organization suggestion content', () => {
       1,
       'knowledge/suggestion/read',
       expect.objectContaining({ offset: 0, limit: ORGANIZATION_SUGGESTION_CHUNK_BYTES }),
-      { epoch: 7 }
+      { epoch: 7 },
+      undefined,
+      undefined
     )
     expect(request).toHaveBeenNthCalledWith(
       2,
       'knowledge/suggestion/read',
       expect.objectContaining({ offset: ORGANIZATION_SUGGESTION_CHUNK_BYTES }),
-      { epoch: 7 }
+      { epoch: 7 },
+      undefined,
+      undefined
     )
   })
 
@@ -153,5 +157,42 @@ describe('ControlSender organization suggestion content', () => {
         kind: 'knowledge'
       })
     ).rejects.toThrow('mismatched digest')
+  })
+
+  // #968: a duty holder never registered the agent, so the connection's id→org map cannot name the
+  // org for it. Both downlink sends therefore state it, exactly as the lifecycle sends do.
+  it('states the organization explicitly on the review and content sends', async () => {
+    const body = Buffer.from(JSON.stringify({ kind: 'knowledge', content: 'runbook' }))
+    const seen: (string | undefined)[] = []
+    const request = vi.fn(async (type: string, _payload, _ext, _opts, orgId?: string) => {
+      seen.push(orgId)
+      if (type === 'knowledge/suggestion/review') return {}
+      return {
+        sourceAgentId: AGENT,
+        dreamId: 'dream-1',
+        candidateId: CANDIDATE,
+        digest: digest('runbook'),
+        exists: true,
+        size: body.byteLength,
+        offset: 0,
+        nextOffset: body.byteLength,
+        data: body.toString('base64'),
+        truncated: false
+      }
+    })
+    const sender = senderWith(request as unknown as ConnChannel['request'])
+
+    await sender.organizationSuggestionRead(
+      DAEMON,
+      { sourceAgentId: AGENT, dreamId: 'dream-1', candidateId: CANDIDATE, kind: 'knowledge' },
+      'org-b'
+    )
+    await sender.organizationSuggestionReview(
+      DAEMON,
+      { sourceAgentId: AGENT, dreamId: 'dream-1', candidateId: CANDIDATE, state: 'accepted' },
+      'org-b'
+    )
+
+    expect(seen).toEqual(['org-b', 'org-b'])
   })
 })
