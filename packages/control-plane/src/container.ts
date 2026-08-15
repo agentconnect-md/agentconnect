@@ -86,6 +86,7 @@ import {
   PgSocialIdentityMutationGate,
   PgCronRepo,
   PgDutyGroupRepo,
+  PgMemberSetRepo,
   PgHookRepo,
   PgHookSecretStore,
   PgRuntimeProfileRepo,
@@ -361,6 +362,7 @@ export function buildContainer(
     presetAgent: new PgPresetAgentStore(prisma),
     cron: new PgCronRepo(prisma),
     dutyGroup: new PgDutyGroupRepo(prisma),
+    memberSet: new PgMemberSetRepo(prisma),
     hook: new PgHookRepo(prisma),
     hookSecret: new PgHookSecretStore(prisma, secretCipher),
     runtimeProfile: new PgRuntimeProfileRepo(prisma),
@@ -595,13 +597,15 @@ export function buildContainer(
   // current duty holder (orchestrator/placementResolver.ts).
   const placementResolver = new PlacementResolver({
     duties: repos.dutyGroup,
-    // Install-wide members ready to take a trigger. Only the rendezvous fallback reads this: a
-    // pool agent whose lease lapsed has no holder, and any member can claim it on receipt.
-    liveMembers: () =>
-      connReg
+    // The set's members ready to take a trigger. Only the rendezvous fallback reads this: a set
+    // agent whose lease lapsed has no holder, and any member can claim it on receipt.
+    liveMembers: async (setId) => {
+      const members = new Set(await repos.memberSet.memberIdsOf(setId))
+      return connReg
         .reachableDaemons()
-        .filter((d) => d.orgId === null && d.state === 'READY')
-        .map((d) => d.daemonId),
+        .filter((d) => d.state === 'READY' && members.has(d.daemonId))
+        .map((d) => d.daemonId)
+    },
     clock
   })
 
@@ -746,7 +750,7 @@ export function buildContainer(
     mutations: agentMutations,
     sessionOwners: connReg,
     placement: placementResolver,
-    daemons: repos.daemon,
+    memberSets: repos.memberSet,
     recomputeDuties: (orgId: string) => dutyRecompute.kick(orgId),
     log: { warn: (o, m) => http.log.warn(o, m) }
   })
@@ -1003,6 +1007,7 @@ export function buildContainer(
     repos: {
       agent: repos.agent,
       assignment: repos.assignment,
+      memberSet: repos.memberSet,
       daemonLifecycleOp: repos.daemonLifecycleOp,
       cron: repos.cron,
       hook: repos.hook,
@@ -1055,7 +1060,6 @@ export function buildContainer(
     control: sender,
     agentDelivery,
     placementResolver,
-    daemonRows: repos.daemon,
     visibilityPush,
     relayControl,
     httpBot,

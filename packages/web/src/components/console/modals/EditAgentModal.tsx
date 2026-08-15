@@ -25,6 +25,7 @@ import {
   agentLabel,
   CLOUD_DAEMON_LABEL,
   CLOUD_PLACEMENT,
+  isCloudPlacementKind,
   placementValueOf,
   type Agent,
   type AgentCallPolicy,
@@ -315,7 +316,7 @@ export default function EditAgentModal({
   const daemonChoices = editAgentDaemonChoices(daemons, daemonId, initialDaemonId.current)
   const cloudServing = daemons.some((candidate) => candidate.cloud && moveReady(candidate))
   const daemonOptions: DaemonSelectOption[] = [
-    ...(daemonChoices.cloudChoice || agent.placementKind === 'pool'
+    ...(daemonChoices.cloudChoice || isCloudPlacementKind(agent.placementKind)
       ? [
           {
             // The POOL, named as itself. The server picks the member — and re-picks it after every

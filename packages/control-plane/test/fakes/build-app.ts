@@ -30,6 +30,7 @@ import {
   PgSessionRepo,
   PgSessionUsageRepo
 } from '../../src/persistence/index.js'
+import { PgMemberSetRepo } from '../../src/persistence/repositories/member-set.repo.js'
 import { PlaintextSecretCipher } from '../../src/secrets/cipher.js'
 import { EpochService } from '../../src/orchestrator/epoch.js'
 import { DUTY_LEASE_DEFAULTS } from '../../src/orchestrator/dutyLease.js'
@@ -126,13 +127,16 @@ export function buildDaemonApp(prisma: PrismaClient): DaemonApp {
     PLATFORMS
   )
   const connReg = new ConnectionRegistry()
+  const memberSets = new PgMemberSetRepo(prisma)
   const placementResolver = new PlacementResolver({
     duties: new PgDutyGroupRepo(prisma),
-    liveMembers: () =>
-      connReg
+    liveMembers: async (setId) => {
+      const members = new Set(await memberSets.memberIdsOf(setId))
+      return connReg
         .reachableDaemons()
-        .filter((d) => d.orgId === null && d.state === 'READY')
-        .map((d) => d.daemonId),
+        .filter((d) => d.state === 'READY' && members.has(d.daemonId))
+        .map((d) => d.daemonId)
+    },
     clock
   })
 

@@ -63,6 +63,7 @@ import {
   PgIntegrationChannelRepo,
   PgDutyGroupRepo
 } from '../../src/persistence/index.js'
+import { PgMemberSetRepo } from '../../src/persistence/repositories/member-set.repo.js'
 import { PlaintextSecretCipher } from '../../src/secrets/cipher.js'
 import { runWithSharedTx, withSharedTxRouting } from '../../src/persistence/ambient-tx.js'
 import { AgentSpecAssembler } from '../../src/orchestrator/agentSpecAssembler.js'
@@ -240,6 +241,7 @@ export function buildHttpApp(
   const sender = control ?? new ControlSender(connReg, new PgLaunchRepo(prisma))
 
   const dutyGroupRepo = new PgDutyGroupRepo(prisma)
+  const memberSets = new PgMemberSetRepo(prisma)
 
   const cipher = new PlaintextSecretCipher()
   const agentSecretStore = new PgAgentSecretStore(prisma, cipher)
@@ -307,11 +309,13 @@ export function buildHttpApp(
   // duty ledger is a real repo and a holder actually receives the pushes.
   const placementResolver = new PlacementResolver({
     duties: dutyGroupRepo,
-    liveMembers: () =>
-      connReg
+    liveMembers: async (setId) => {
+      const members = new Set(await memberSets.memberIdsOf(setId))
+      return connReg
         .reachableDaemons()
-        .filter((d) => d.orgId === null && d.state === 'READY')
-        .map((d) => d.daemonId),
+        .filter((d) => d.state === 'READY' && members.has(d.daemonId))
+        .map((d) => d.daemonId)
+    },
     clock
   })
   const agentDelivery = new AgentDelivery({ control: sender, specs: agentSpecs, placement: placementResolver })
@@ -368,6 +372,7 @@ export function buildHttpApp(
     repos: {
       agent: agentRepo,
       assignment: new PgAssignmentRepo(prisma),
+      memberSet: memberSets,
       daemonLifecycleOp: daemonLifecycleOpRepo,
       cron: new PgCronRepo(prisma),
       hook: hookRepo,
@@ -420,7 +425,6 @@ export function buildHttpApp(
     control: sender,
     agentDelivery,
     placementResolver,
-    daemonRows: daemonRepo,
     relayControl,
     httpBot: new HttpBotOrchestrator(
       botRepo,

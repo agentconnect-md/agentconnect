@@ -12,6 +12,7 @@ import type { CollabRoutesService } from '../../src/orchestrator/collabRoutes.se
 import { AgentMutationGate } from '../../src/orchestrator/agentMutationGate.js'
 import { OrgId } from '../../src/domain/ids.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
+import { joinPool, poolSetId } from '../fakes/member-set.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 const SOURCE = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
@@ -68,8 +69,8 @@ const live: DaemonLiveness = {
 /** One install-wide pool member, live alongside the two machines. Org-less AND Pod-bound: that
  *  shape is what makes a row visible to every org's placement list. */
 const MEMBER = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
-const seedPoolMember = () =>
-  prisma.daemon.create({
+const seedPoolMember = async () => {
+  const daemon = await prisma.daemon.create({
     data: {
       id: MEMBER,
       orgId: null,
@@ -80,6 +81,10 @@ const seedPoolMember = () =>
       capabilities: MOVE_CAPS
     }
   })
+  // What `upsertOnAuth` writes for a real Pod: the org-less row is a member of the org-less set.
+  await joinPool(prisma, MEMBER)
+  return daemon
+}
 const poolLive: DaemonLiveness = {
   get: (id) =>
     [SOURCE, TARGET, MEMBER].includes(id) ? { state: 'READY', reachable: true, sessionEpoch: 1 } : undefined
@@ -622,9 +627,9 @@ describe('PUT /agents/:id/daemon — the pool as a placement target', () => {
     })
 
     expect(res.statusCode).toBe(200)
-    expect(res.json()).toMatchObject({ placementKind: 'pool', daemonId: null })
+    expect(res.json()).toMatchObject({ placementKind: 'set', setId: await poolSetId(prisma), daemonId: null })
     expect(await prisma.agent.findUnique({ where: { id: agentId } })).toMatchObject({
-      placementKind: 'pool',
+      placementKind: 'set',
       daemonId: null,
       status: 'active'
     })
@@ -640,7 +645,10 @@ describe('PUT /agents/:id/daemon — the pool as a placement target', () => {
     await seedPoolMember()
     const agentId = randomUUID()
     await seedAgent(prisma, agentId)
-    await prisma.agent.update({ where: { id: agentId }, data: { placementKind: 'pool', daemonId: null } })
+    await prisma.agent.update({
+      where: { id: agentId },
+      data: { placementKind: 'set', setId: await poolSetId(prisma), daemonId: null }
+    })
     // The member currently holding its duty is the source to quiesce — placement names none.
     const groupId = randomUUID()
     await prisma.dutyGroup.create({
@@ -724,9 +732,14 @@ describe('POST /agents — the pool as a create-time placement', () => {
     })
 
     expect(res.statusCode).toBe(201)
-    expect(res.json()).toMatchObject({ placementKind: 'pool', daemonId: null, status: 'active' })
+    expect(res.json()).toMatchObject({ placementKind: 'set', daemonId: null, status: 'active' })
     const row = await prisma.agent.findFirstOrThrow({ where: { name: 'pooled-create' } })
-    expect(row).toMatchObject({ placementKind: 'pool', daemonId: null, status: 'active' })
+    expect(row).toMatchObject({
+      placementKind: 'set',
+      setId: await poolSetId(prisma),
+      daemonId: null,
+      status: 'active'
+    })
   })
 
   it('refuses a pool create when no member is ready, instead of landing it unplaced', async () => {
@@ -766,7 +779,7 @@ describe('PUT /agents/:id/daemon — converting a member-pinned agent to the poo
     })
 
     expect(res.statusCode).toBe(200)
-    expect(res.json()).toMatchObject({ placementKind: 'pool', daemonId: null })
+    expect(res.json()).toMatchObject({ placementKind: 'set', daemonId: null })
     // Detached to stop it serving as a PLACEMENT, then activated with the SAME token so the fence
     // it armed is released and its replica is current for a re-grant.
     const detach = control.detaches.find((d) => d.daemonId === MEMBER)

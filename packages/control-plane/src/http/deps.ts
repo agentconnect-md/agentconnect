@@ -26,6 +26,7 @@ import type {
   AgentSecretStore,
   AgentConfigWriter,
   McpProviderRepo,
+  MemberSetRepo,
   McpProviderSecretStore,
   McpGrantRepo,
   SkillSourceRepo,
@@ -46,7 +47,6 @@ import type {
   GithubInstallationRepo,
   AgentRepoAuthorizationRepo,
   DaemonLifecycleOpRepo,
-  DaemonRepo,
   OAuthRepo,
   WebchatMcpOperationRepo
 } from '../persistence/ports.js'
@@ -172,6 +172,8 @@ export interface HttpDeps {
     /** Transactional agent-row + secret-row writer — REST create/PATCH go through
      *  this so a failure between the two writes can't leave a partial definition. */
     agentConfig: AgentConfigWriter
+    /** The sets a duty may be claimed within — the console resolves a placement target to one. */
+    memberSet: MemberSetRepo
     /** Org-level MCP provider metadata (never upstream header values / grant keys). */
     mcpProvider: McpProviderRepo
     /** The ONLY read/write path for upstream MCP auth headers (store-only, never DTO'd). */
@@ -273,12 +275,9 @@ export interface HttpDeps {
    *  through this; none of them reads `agent.daemonId` to decide delivery. */
   agentDelivery: AgentDelivery
   /** The ONE answer to "which daemons serve this agent" (placement ∪ duty holders). Routes ask it
-   *  instead of reading `agent.daemonId`, which stopped naming a machine when `pool` became a
-   *  placement target. */
+   *  instead of reading `agent.daemonId`, which stopped naming a machine when a member set became
+   *  a placement target. */
   placementResolver: PlacementResolver
-  /** Daemon rows, unscoped — a move needs the SOURCE's own scope to decide whether it is still an
-   *  eligible holder of the new placement, which is a property of the row, not of its liveness. */
-  daemonRows?: Pick<DaemonRepo, 'getUnscoped'>
   /** Pushes the per-session memory-capture gate to the owning daemons after a
    *  §4.3 visibility change, and answers the pending/applied cutover state
    *  (session-visibility.md §5.1). Absent ⇒ changes converge on register. */

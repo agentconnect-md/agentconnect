@@ -41,7 +41,7 @@ import type {
 } from '../domain/ids.js'
 import type { SessionKey } from '../domain/sessionKey.js'
 import type { DutyMemberKey, DutyReconcilePlan, DutyEdge, AgentSeed } from '../domain/duty.js'
-import type { DutyClaimScope, PlacementKind, PlacementTarget } from '../domain/placement.js'
+import type { PlacementKind, PlacementTarget } from '../domain/placement.js'
 import type {
   OrganizationEnvironmentAudience,
   OrganizationEnvironmentKind,
@@ -640,9 +640,10 @@ export interface CreateAgentInput {
   managedSkills?: string[] // accepted managed_skill ids, explicitly enabled
   memory?: AgentMemoryBinding // memory backend
   icon?: AgentIcon // console avatar; absent ⇒ the repo assigns a random glyph+color combo
-  /** Placement at create time: `pool` needs no ref, `daemon` needs `daemonId`. Absent ⇒ unplaced. */
+  /** Placement at create time: `set` needs `setId`, `daemon` needs `daemonId`. Absent ⇒ unplaced. */
   placementKind?: PlacementKind
   daemonId?: DaemonId // the owning machine, if chosen at create time
+  setId?: string // the owning member set, if placed on one at create time
   workspace?: AgentWorkspace // absent ⇒ scratch
   /** Rename-proof numeric identity of the github workspace repository. This is
    *  control-plane metadata only and never rides AgentWorkspace on the wire. */
@@ -738,12 +739,14 @@ export interface AgentRecord {
   managedSkills: string[] // accepted managed_skill ids ([] ⇒ none)
   memory: AgentMemoryBinding | null // runtimeOverrides.memory
   status: 'active' | 'inactive' | 'paused'
-  /** What placement NAMES (domain/placement.ts): `daemon` resolves through `daemonId`, `pool`
-   *  resolves to the install-wide member set and carries no ref. Never branch on it directly. */
+  /** What placement NAMES (domain/placement.ts): `daemon` resolves through `daemonId`, `set`
+   *  resolves through `setId`. Never branch on it directly. */
   placementKind: PlacementKind
   /** The `daemon`-kind ref, and null for every other kind — placement, never "who serves it now".
    *  Ask {@link PlacementResolver} for that. */
   daemonId: DaemonId | null
+  /** The `set`-kind ref, null for a `daemon` placement. Which MEMBER serves it is the ledger's. */
+  setId: string | null
   workspace: AgentWorkspace
   /** Nullable on scratch/anonymous and pre-R2a rows; action-time authorization
    *  fails closed until a legacy github workspace is lazily repaired. */
@@ -894,8 +897,8 @@ export interface AgentRepo {
    *  active webchat MCP delegations; a same-placement write does not. */
   setPlacement(agentId: AgentId, target: PlacementTarget): Promise<void>
   /**
-   * Atomically move an agent only when its current placement still matches `expected` — BOTH
-   * columns, so moving between `pool` and a machine is fenced exactly like moving between two
+   * Atomically move an agent only when its current placement still matches `expected` — the whole
+   * target, so moving between a set and a machine is fenced exactly like moving between two
    * machines. Returns the updated row, or null when another move won the compare-and-set race. A
    * real move revokes active webchat MCP authority in the same transaction. This is the
    * persistence fence for the explicit cold placement-switch action.
@@ -946,6 +949,7 @@ export interface OrgAgentRecord extends ChannelAgentRecord {
   /** The placement columns, so a consumer can resolve the serving daemon (domain/placement.ts). */
   placementKind: PlacementKind
   daemonId: string | null
+  setId: string | null
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -4991,6 +4995,29 @@ export interface OrgInviteLinkRepo {
   accept(tokenHash: string, userId: string, now: Date): Promise<OrgInviteAcceptResult>
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// MemberSetRepo — the sets a duty may be claimed within (daemon-groups.md §2)
+// ───────────────────────────────────────────────────────────────────────────
+
+/** A member set. `orgId` null means CROSS-ORG (the install-wide pool), never "unassigned". */
+export interface MemberSetRecord {
+  id: string
+  orgId: string | null
+  name: string
+}
+
+export interface MemberSetRepo {
+  /** The install-wide pool: the one org-less row. Null only before the migration that mints it. */
+  crossOrgSetId(): Promise<string | null>
+  get(setId: string): Promise<MemberSetRecord | null>
+  /** Which set this daemon is a member of — the claim scope of its connection (§3). */
+  setIdOf(daemonId: DaemonId): Promise<string | null>
+  /** The set's members, sorted. The read path for "who could serve a `set`-placed agent". */
+  memberIdsOf(setId: string): Promise<string[]>
+  /** Record a membership under the set's tenancy invariant; throws MemberSetTenancyMismatch. */
+  enroll(setId: string, daemonId: DaemonId): Promise<void>
+}
+
 // DutyGroupRepo (k8s daemons) — the CP-hosted duty ledger
 
 /** One entry of a member's heartbeat duty digest: the group, at the term it believes it holds. */
@@ -5049,20 +5076,19 @@ export interface DutyGroupRepo {
     opts: { now: Date; leaseMs: number }
   ): Promise<DutyReconcilePlan>
   /** "Grant me up to `max` vacant groups": first valid claim wins (SKIP LOCKED),
-   *  each grant bumps the term. Install-wide — capacity gating is the caller's.
+   *  each grant bumps the term. Capacity gating is the caller's.
    *  `maxMembers` excludes undeliverable (oversized) groups at the claim
    *  boundary, so they never churn or starve the vacancies behind them.
-   *  `scope` is the claimant's connection scope, and the ONLY input to the
-   *  eligibility gate (domain/placement.ts): a group is claimable only when the
-   *  claimant may hold EVERY agent in it, which is what keeps an install-wide
-   *  member off the agents a local daemon is already serving.
+   *  Eligibility is read from the HOLDER's own set membership (domain/placement.ts), never
+   *  asserted by the caller: a group is claimable only when the claimant may hold EVERY agent in
+   *  it, which is what keeps a pool member off the agents a local daemon is already serving.
    *  `excludeGroupIds` carries the caller's refusal backoff. */
   claimVacant(
     holder: DaemonId,
     max: number,
     now: Date,
     leaseMs: number,
-    opts: { scope: DutyClaimScope; maxMembers?: number; excludeGroupIds?: readonly string[] }
+    opts?: { maxMembers?: number; excludeGroupIds?: readonly string[] }
   ): Promise<DutyGrantRecord[]>
   /** The group-computation inputs for one org: every agent as a node, plus
    *  active integrations on daemon-held (socket, unrevoked) bots as edges. */
@@ -5071,7 +5097,7 @@ export interface DutyGroupRepo {
    *  agent or an existing duty group. */
   listDutyOrgs(afterOrgId: string | null, limit: number): Promise<string[]>
   /** The placement fence, re-derived from the eligibility predicate: vacate every held group its
-   *  holder may no longer hold — an agent moved off the pool onto a machine, or off one machine
+   *  holder may no longer hold — an agent moved off a set onto a machine, or off one machine
    *  onto another. Same rule as {@link DutyGroupRepo.claimVacant}, read from the holder's side, so
    *  a lease can never outlive the placement that justified it. Returns the vacated groupIds. */
   vacateIneligible(orgId: OrgId): Promise<string[]>
@@ -5087,14 +5113,7 @@ export interface DutyGroupRepo {
    *  the SAME eligibility predicate as {@link DutyGroupRepo.claimVacant}, read
    *  inside the transaction — the rendezvous is a claim path too, and a member
    *  must not reach through it for an agent it may not hold. */
-  claimAgentHome(
-    orgId: OrgId,
-    agentId: AgentId,
-    holder: DaemonId,
-    now: Date,
-    leaseMs: number,
-    scope: DutyClaimScope
-  ): Promise<AgentHomeClaim>
+  claimAgentHome(orgId: OrgId, agentId: AgentId, holder: DaemonId, now: Date, leaseMs: number): Promise<AgentHomeClaim>
   /** Does `holder` currently hold an unexpired lease on a group covering this
    *  agent? The authorization for `duty/fetch`: a member may pull exactly the
    *  agent definitions it has won, and nothing else. */

@@ -39,15 +39,18 @@ import { lockSkillSourceNameScopes } from '../skill-source-lock.js'
 import { tryLockMemoryConnectionScopes } from '../memory-connection-lock.js'
 import { PgHookRepo } from './hook.repo.js'
 import { lockAgentPlacement, revokeActiveWebchatMcpDelegations } from './agent-placement.js'
+import { assertAgentMayUseSet } from './member-set.repo.js'
 
-/** An agent may be created already placed. `pool` needs no ref, so the create input carries a kind
- *  and the columns follow from it rather than from the presence of a daemon id. */
-function placementCreateColumns(input: { placementKind?: PlacementKind; daemonId?: string }): {
-  placementKind?: 'daemon' | 'pool'
+/** An agent may be created already placed. A `set` placement names a set rather than a machine, so
+ *  the create input carries a kind and the columns follow from it rather than from a daemon id. */
+function placementCreateColumns(input: { placementKind?: PlacementKind; daemonId?: string; setId?: string }): {
+  placementKind?: PlacementKind
   daemonId?: string
+  setId?: string
   status?: 'active'
 } {
-  if (input.placementKind === 'pool') return { placementKind: 'pool', status: 'active' }
+  if (input.placementKind === 'set' && input.setId)
+    return { placementKind: 'set', setId: input.setId, status: 'active' }
   return input.daemonId ? { daemonId: input.daemonId, status: 'active' } : {}
 }
 import { fenceAgentLocalConfigWrite, lockOrgForConfigWrite, orgIdOfAgent } from './organization-environment-fence.js'
@@ -235,6 +238,7 @@ function toRecord(a: AgentWithUsers): AgentRecord {
     status: a.status as AgentRecord['status'],
     placementKind: a.placementKind,
     daemonId: a.daemonId ? DaemonId(a.daemonId) : null,
+    setId: a.setId,
     workspace: workspaceOf(a),
     ...(a.workspaceRepoId !== null ? { workspaceRepoId: a.workspaceRepoId } : {}),
     capabilities: a.capabilities,
@@ -309,6 +313,9 @@ export class PgAgentRepo implements AgentRepo {
         actorUserId: input.createdByUserId,
         sharedWith: input.sharedWith
       })
+      // Third write-time invariant (daemon-groups.md §2): a create places too, so it takes it.
+      if (input.placementKind === 'set' && input.setId)
+        await assertAgentMayUseSet(tx, { id: input.id, orgId: input.orgId }, input.setId)
       const a = await tx.agent.create({
         data: {
           id: input.id,
@@ -822,6 +829,8 @@ export class PgAgentRepo implements AgentRepo {
     await this.transaction(async (tx) => {
       const current = await lockAgentPlacement(tx, agentId)
       if (!current) return
+      // Third write-time invariant (daemon-groups.md §2), inside the transaction that writes it.
+      if (target.kind === 'set') await assertAgentMayUseSet(tx, { id: agentId, orgId: current.orgId }, target.setId)
       const columns = placementColumns(target)
       await tx.agent.update({
         where: { id: agentId },
@@ -860,8 +869,14 @@ export class PgAgentRepo implements AgentRepo {
       return await this.transaction(async (tx) => {
         const current = await lockAgentPlacement(tx, agentId)
         if (!current || !samePlacement(placementTargetOf(current), expected)) return null
+        if (target.kind === 'set') await assertAgentMayUseSet(tx, { id: agentId, orgId: current.orgId }, target.setId)
         const a = await tx.agent.update({
-          where: { id: agentId, daemonId: expectedColumns.daemonId, placementKind: expectedColumns.placementKind },
+          where: {
+            id: agentId,
+            daemonId: expectedColumns.daemonId,
+            setId: expectedColumns.setId,
+            placementKind: expectedColumns.placementKind
+          },
           data: {
             ...columns,
             status: target.kind === 'unplaced' ? 'inactive' : 'active',
@@ -963,8 +978,8 @@ export class PgAgentRepo implements AgentRepo {
   // The placement relation read from the MEMBER's side, and deliberately the row-wise mirror of
   // `domain/placement.ts#placementTargets` read from the agent's side: `placementKind: 'daemon'`
   // is what makes "this daemon is the placement" mean the same thing in both directions. Without
-  // it the two agree only by accident — because `pool` happens to store a null ref — and a later
-  // kind that stores one would be placed here and unplaced there.
+  // it the two agree only by accident — because a `set` placement happens to store a null daemon
+  // ref — and a later kind that stores one would be placed here and unplaced there.
   async listForDaemon(daemonId: DaemonId): Promise<AgentRecord[]> {
     const rows = await this.db.agent.findMany({
       where: { daemonId, placementKind: 'daemon' },
@@ -990,12 +1005,12 @@ export class PgAgentRepo implements AgentRepo {
   // discoverable but not callable — the model gets a bare 'not_allowed' and retries — so
   // the exclusion belongs in the shared read, where the two surfaces cannot disagree.
   //
-  // A `pool` agent IS placed and carries no daemonId, so the filter is on the placement, not on
-  // the column: each consumer fills the serving daemon in through the resolver, which is the only
+  // A `set` agent IS placed and carries no daemonId, so the filter is on the placement, not on
+  // one column: each consumer fills the serving daemon in through the resolver, which is the only
   // thing that knows which member holds it right now.
   async orgDirectory(orgId: OrgId): Promise<OrgAgentRecord[]> {
     const rows = await this.db.agent.findMany({
-      where: { orgId, OR: [{ daemonId: { not: null } }, { placementKind: 'pool' }] },
+      where: { orgId, OR: [{ daemonId: { not: null } }, { setId: { not: null } }] },
       orderBy: { createdAt: 'asc' },
       select: {
         id: true,
@@ -1005,6 +1020,7 @@ export class PgAgentRepo implements AgentRepo {
         status: true,
         placementKind: true,
         daemonId: true,
+        setId: true,
         callPolicy: true,
         allowedCallerAgentIds: true,
         outboundPolicy: true,
@@ -1019,6 +1035,7 @@ export class PgAgentRepo implements AgentRepo {
       status: row.status as OrgAgentRecord['status'],
       placementKind: row.placementKind,
       daemonId: row.daemonId,
+      setId: row.setId,
       callPolicy: row.callPolicy as AgentCallPolicy,
       allowedCallerAgentIds: row.allowedCallerAgentIds,
       outboundPolicy: row.outboundPolicy as AgentCallPolicy,

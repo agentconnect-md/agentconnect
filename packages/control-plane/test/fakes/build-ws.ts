@@ -40,6 +40,7 @@ import {
   PgDutyGroupRepo,
   PgHookSecretStore
 } from '../../src/persistence/index.js'
+import { PgMemberSetRepo } from '../../src/persistence/repositories/member-set.repo.js'
 import { PlaintextSecretCipher } from '../../src/secrets/cipher.js'
 import { EpochService } from '../../src/orchestrator/epoch.js'
 import { Placement } from '../../src/orchestrator/placement.js'
@@ -188,13 +189,16 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
   )
   const relays = opts.relays ?? []
   const dutyGroupRepo = new PgDutyGroupRepo(prisma)
+  const memberSets = new PgMemberSetRepo(prisma)
   const placementResolver = new PlacementResolver({
     duties: dutyGroupRepo,
-    liveMembers: () =>
-      connReg
+    liveMembers: async (setId) => {
+      const members = new Set(await memberSets.memberIdsOf(setId))
+      return connReg
         .reachableDaemons()
-        .filter((d) => d.orgId === null && d.state === 'READY')
-        .map((d) => d.daemonId),
+        .filter((d) => d.state === 'READY' && members.has(d.daemonId))
+        .map((d) => d.daemonId)
+    },
     clock
   })
   const orchestrator = new Placement(

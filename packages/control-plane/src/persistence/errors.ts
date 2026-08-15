@@ -27,6 +27,40 @@ export class OwnerConflict extends Error {
 export const PG_UNIQUE_VIOLATION = '23505'
 
 /**
+ * Thrown by `enrollDaemonInSet` when the membership row would break the set's tenancy invariant
+ * (docs/designs/daemon-groups.md §2): an org-less set accepts only org-less daemons, an org set
+ * only that org's daemons. Enforced where the row is written, because it is what lets the read
+ * path be one membership lookup with no tenancy branch.
+ */
+export class MemberSetTenancyMismatch extends Error {
+  readonly code = 'MEMBER_SET_TENANCY_MISMATCH' as const
+  constructor(
+    readonly setId: string,
+    readonly daemonId: string
+  ) {
+    super(`daemon ${daemonId} does not belong to the tenancy of member set ${setId}`)
+    this.name = 'MemberSetTenancyMismatch'
+  }
+}
+
+/**
+ * Thrown by the placement writers when a `set` placement names a set the agent may not reference
+ * (docs/designs/daemon-groups.md §2, third write-time invariant): only the org-less set or a set
+ * of the agent's own org. Without it, `mayHold`'s single rule would let org X's members claim an
+ * org Y agent that had been pointed at X's set.
+ */
+export class AgentSetPlacementDenied extends Error {
+  readonly code = 'AGENT_SET_PLACEMENT_DENIED' as const
+  constructor(
+    readonly agentId: string,
+    readonly setId: string
+  ) {
+    super(`agent ${agentId} may not be placed on member set ${setId}`)
+    this.name = 'AgentSetPlacementDenied'
+  }
+}
+
+/**
  * Thrown by org-fenced agent mutations (docs/designs/org-scoped-data-layer.md
  * §3) when the addressed row does not exist in the caller's organization — a
  * cross-org id is deliberately indistinguishable from a missing row. Routes

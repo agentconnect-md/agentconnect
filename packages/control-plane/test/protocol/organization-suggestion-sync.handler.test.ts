@@ -11,6 +11,7 @@ import {
 import { prisma } from '../setup.db.js'
 import { buildWsHarness } from '../fakes/build-ws.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
+import { poolSetId } from '../fakes/member-set.js'
 
 const DAEMON = 'd1111111-1111-4111-8111-111111111111'
 const OTHER = 'd2222222-2222-4222-8222-222222222222'
@@ -21,7 +22,14 @@ const REG_ID = '88888888-8888-4888-8888-888888888888'
 async function seedPoolAgent(): Promise<string> {
   const id = randomUUID()
   await prisma.agent.create({
-    data: { id, orgId: DEFAULT_ORG_ID, name: `dreamer-${id.slice(0, 8)}`, runtime: 'claude', placementKind: 'pool' }
+    data: {
+      id,
+      orgId: DEFAULT_ORG_ID,
+      name: `dreamer-${id.slice(0, 8)}`,
+      runtime: 'claude',
+      placementKind: 'set',
+      setId: await poolSetId(prisma)
+    }
   })
   return id
 }

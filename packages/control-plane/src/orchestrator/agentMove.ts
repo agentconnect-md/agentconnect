@@ -33,7 +33,7 @@ import type {
   BotRepo,
   BotSecretStore,
   CronRepo,
-  DaemonRepo,
+  MemberSetRepo,
   AgentWorkspace,
   IntegrationChannelRepo,
   IntegrationRepo
@@ -117,9 +117,9 @@ export interface AgentMoveDeps {
   collabRoutes: CollabRoutesService
   mutations: AgentMutationGate
   sessionOwners: { releaseSession(key: SessionKey): void }
-  /** Daemon rows, for deciding whether a detached source is still an eligible holder of the new
-   *  placement. Absent ⇒ no source is ever unstaged, the pre-pool behavior. */
-  daemons?: Pick<DaemonRepo, 'getUnscoped'>
+  /** Set membership, for deciding whether a detached source is still an eligible holder of the
+   *  new placement. Absent ⇒ no source is ever unstaged, the pre-pool behavior. */
+  memberSets?: Pick<MemberSetRepo, 'setIdOf'>
   /** Resolves the members currently serving an agent — the sources a move must quiesce when
    *  placement names no machine of its own. Absent ⇒ placement alone (the pre-duty behavior). */
   placement?: PlacementResolver
@@ -580,16 +580,16 @@ export class AgentMoveService {
    *
    * A detached source is normally meant to stay fenced — that is the whole point of a hard
    * cutover, and it is right for every move onto a machine and for a LOCAL daemon losing an agent
-   * to the pool: neither may serve it again. `daemon(member) → pool` is the one transition where
-   * it is wrong. The member remains install-wide, so the ledger may hand it the very group it was
-   * just fenced out of — and `installGrantedAgents` skips a move-staged agent, so it would take
-   * the lease, install nothing, and serve nothing, with no other member able to claim it. The
+   * to a set: neither may serve it again. `daemon(member) → its own set` is the one transition
+   * where it is wrong. The member is still in that set, so the ledger may hand it the very group
+   * it was just fenced out of — and `installGrantedAgents` skips a move-staged agent, so it would
+   * take the lease, install nothing, and serve nothing, with no other member able to claim it. The
    * agent would be servable by nobody, which is worse than where it started.
    *
    * So the fence is released with the same move token that armed it, which is also what leaves
    * the member's replica current: if the ledger grants it back, install-on-grant sees the agent
    * present at the granted revision and skips the fetch entirely. Eligibility is the resolver's
-   * answer, not a kind test — a local daemon is never eligible for a pool placement and stays
+   * answer, not a kind test — a daemon in no set is never eligible for a set placement and stays
    * fenced. Best-effort: the fence is the member's own state and a member that cannot be reached
    * re-registers into a reconcile that has the authoritative placement.
    */
@@ -598,12 +598,13 @@ export class AgentMoveService {
     stagedSources: ReadonlyMap<DaemonId, string>,
     target: PlacementTarget
   ): Promise<void> {
-    if (stagedSources.size === 0) return
+    if (stagedSources.size === 0 || !this.deps.memberSets) return
+    const memberSets = this.deps.memberSets
     const columns = placementColumns(target)
     const bundle = await this.snapshot(agent)
     for (const [daemonId, moveId] of stagedSources) {
-      const daemon = await this.deps.daemons?.getUnscoped(daemonId)
-      if (!daemon || !mayHold(columns, { daemonId, scope: claimScopeOf(daemon) })) continue
+      const setId = await memberSets.setIdOf(daemonId)
+      if (!mayHold(columns, { daemonId, scope: claimScopeOf({ setId }) })) continue
       try {
         requireAck(
           'source unstage',

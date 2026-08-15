@@ -15,6 +15,7 @@ import { PgAgentRepo, PgDutyGroupRepo } from '../../src/persistence/index.js'
 import { servedAgents } from '../../src/orchestrator/servedAgents.js'
 import { PlacementResolver } from '../../src/orchestrator/placementResolver.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
+import { joinPool } from '../fakes/member-set.js'
 import { DaemonId } from '../../src/domain/ids.js'
 import { FakeClock } from '../fakes/fake-clock.js'
 
@@ -38,11 +39,19 @@ async function seedFixture(now: Date): Promise<void> {
       { id: MEMBER_B, orgId: null, maxAgents: 8, status: 'ready' }
     ]
   })
+  const setId = await joinPool(prisma, MEMBER_A, MEMBER_B)
   await prisma.agent.createMany({
     data: [
       { id: ON_LOCAL, orgId: DEFAULT_ORG_ID, name: 'on-local', runtime: 'claude', daemonId: LOCAL },
-      { id: ON_POOL_HELD, orgId: DEFAULT_ORG_ID, name: 'pool-held', runtime: 'claude', placementKind: 'pool' },
-      { id: ON_POOL_VACANT, orgId: DEFAULT_ORG_ID, name: 'pool-vacant', runtime: 'claude', placementKind: 'pool' },
+      { id: ON_POOL_HELD, orgId: DEFAULT_ORG_ID, name: 'pool-held', runtime: 'claude', placementKind: 'set', setId },
+      {
+        id: ON_POOL_VACANT,
+        orgId: DEFAULT_ORG_ID,
+        name: 'pool-vacant',
+        runtime: 'claude',
+        placementKind: 'set',
+        setId
+      },
       { id: UNPLACED_AGENT, orgId: DEFAULT_ORG_ID, name: 'unplaced', runtime: 'claude' }
     ]
   })

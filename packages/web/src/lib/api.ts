@@ -13,7 +13,8 @@ import type {
   ResourceVisibility,
   Session,
   SessionImage,
-  Workspace
+  Workspace,
+  PlacementKindValue
 } from '@/lib/data'
 import { CLOUD_DAEMON_LABEL, isSelfSender, lifecycleStatus, MOCK_MODE, placementValueOf } from '@/lib/data'
 import type { AgentIcon } from '@/lib/agent-icon'
@@ -313,10 +314,11 @@ export interface AgentDto {
   organizationVariables?: Array<{ key: string; value: string }>
   organizationSecretKeys?: string[]
   status: string
-  // Placement is a TARGET: `pool` names the install-wide member set and carries no id.
-  placementKind?: 'daemon' | 'pool'
+  // Placement is a TARGET: `set` names a member set through `setId` and carries no member id.
+  placementKind?: PlacementKindValue
   placementReady?: boolean
   daemonId: string | null
+  setId?: string | null
   workspace: AgentWorkspaceDto
   workspaceRepoId?: string | null
   capabilities: string[]
@@ -1083,7 +1085,7 @@ export interface DaemonLifecycleOpDto {
 }
 
 export interface CreateAgentInput {
-  /** `pool` places the agent on the cloud member set and carries no member id. */
+  /** `pool` is the API sugar for the cloud member set; the CP resolves it and stores `set`. */
   placementKind?: 'pool'
   name: string // slug — the CP rejects anything but ^[a-z0-9]+(-[a-z0-9]+)*$
   displayName?: string
@@ -3424,7 +3426,7 @@ export async function setAgentWorkspace(agentId: string, input: SetAgentWorkspac
 // acknowledged source fence/cancel and destination activation; `force` is the
 // explicit recovery path when the source cannot ACK. This stays separate from
 // the ordinary spec PATCH because placement changes have runtime side effects.
-/** A move target: one machine, or the cloud pool as a whole. */
+/** A move target: one machine, or the cloud member set as a whole (submitted as the `pool` sugar). */
 export type AgentPlacementTarget = { kind: 'daemon'; daemonId: string } | { kind: 'pool' }
 
 export async function moveAgent(

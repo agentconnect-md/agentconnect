@@ -63,6 +63,15 @@ export const CLOUD_DAEMON_LABEL = 'AgentConnect Cloud'
  *  a rollout, which is precisely why the placement stopped carrying one. */
 export const CLOUD_PLACEMENT = 'cloud'
 
+/** What a placement NAMES. The CP stores and emits `set` (daemon-groups.md §2); `pool` stays
+ *  accepted API sugar on the way IN, so the console keeps submitting it and tolerates both. */
+export type PlacementKindValue = 'daemon' | 'set' | 'pool'
+
+/** Is this placement the Cloud entry — a member set rather than one machine? */
+export function isCloudPlacementKind(kind?: PlacementKindValue): boolean {
+  return kind === 'set' || kind === 'pool'
+}
+
 /**
  * The ONE mapping from a DTO's placement pair to the value the console selects on: the pool
  * sentinel, a member id, or null when the agent is unplaced. Every reader of the raw DTO uses it —
@@ -70,8 +79,8 @@ export const CLOUD_PLACEMENT = 'cloud'
  * reloaded. Deriving "is this the pool?" from `daemonId` being null is what made a reloaded pool
  * agent read as unplaced; `placementKind` is the only thing that says it.
  */
-export function placementValueOf(dto: { placementKind?: 'daemon' | 'pool'; daemonId: string | null }): string | null {
-  return dto.placementKind === 'pool' ? CLOUD_PLACEMENT : (dto.daemonId ?? null)
+export function placementValueOf(dto: { placementKind?: PlacementKindValue; daemonId: string | null }): string | null {
+  return isCloudPlacementKind(dto.placementKind) ? CLOUD_PLACEMENT : (dto.daemonId ?? null)
 }
 
 /** The Cloud entry stands in for the whole pool: online while any member is serving. */
@@ -98,7 +107,7 @@ export function effectiveAgentStatus(
     // A pool placement names no member, so there is no owning daemon to consult: the CP already
     // answered "could anything serve this now" and that answer is the whole story (#987 — asking
     // a placed member's liveness is what kept a rolled-over agent permanently offline).
-    if (agent.placementKind === 'pool') return agent.placementReady ? agent.status : 'offline'
+    if (isCloudPlacementKind(agent.placementKind)) return agent.placementReady ? agent.status : 'offline'
     if (agent.daemon === '—') return 'offline'
     if (owningDaemon !== undefined) {
       if (owningDaemon.lifecycleStatus) return owningDaemon.lifecycleStatus
@@ -113,7 +122,7 @@ export function effectiveAgentStatus(
 // configuring it (onboarding's agent step) or creating a user agent flips this true. It
 // is the signal for "the org is set up" — used by the onboarding gate + getting-started.
 export function agentIsPlaced(agent: Pick<Agent, 'daemon' | 'runtime' | 'placementKind'>): boolean {
-  return (agent.placementKind === 'pool' || agent.daemon !== '—') && agent.runtime !== ''
+  return (isCloudPlacementKind(agent.placementKind) || agent.daemon !== '—') && agent.runtime !== ''
 }
 
 export type LaneKind = 'msg' | 'plan' | 'tool' | 'edit' | 'done'
@@ -329,10 +338,10 @@ export interface Agent {
   /** Names of organization-owned secrets assigned to this agent. Values are never
    *  returned for these either. */
   organizationSecretKeys: string[]
-  /** What the placement NAMES. `pool` carries `daemon: CLOUD_PLACEMENT` and no member id.
+  /** What the placement NAMES. A `set` carries `daemon: CLOUD_PLACEMENT` and no member id.
    *  Absent (a mock row, an older CP) reads as `daemon`, which is the pre-pool behavior. */
-  placementKind?: 'daemon' | 'pool'
-  /** Server-computed: can a session start right now? For a pool placement that is "some member is
+  placementKind?: PlacementKindValue
+  /** Server-computed: can a session start right now? For a set placement that is "some member is
    *  live", which is the question the console used to answer with a dead member's liveness. */
   placementReady?: boolean
   daemon: string

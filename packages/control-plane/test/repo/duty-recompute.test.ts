@@ -7,6 +7,7 @@ import { PgDutyGroupRepo } from '../../src/persistence/index.js'
 import { DutyRecomputeSweep } from '../../src/orchestrator/dutyRecompute.js'
 import type { DutyReconcilePlan } from '../../src/domain/duty.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
+import { joinPool, poolSetId } from '../fakes/member-set.js'
 import { AgentId, DaemonId, OrgId } from '../../src/domain/ids.js'
 import { FakeClock } from '../fakes/fake-clock.js'
 
@@ -77,14 +78,14 @@ async function seedAgent(id: string, name: string, daemonId?: string): Promise<v
   })
 }
 
-/** An agent placed on the POOL: kind `pool`, no member id at all. */
+/** An agent placed on the POOL: kind `set` pointing at the org-less set, no member id at all. */
 async function seedPoolAgent(id: string, name: string): Promise<void> {
   await prisma.agent.create({
-    data: { id, orgId: DEFAULT_ORG_ID, name, runtime: 'claude', placementKind: 'pool' }
+    data: { id, orgId: DEFAULT_ORG_ID, name, runtime: 'claude', placementKind: 'set', setId: await poolSetId(prisma) }
   })
 }
 
-/** Install-wide pool members: org-less rows, which is what makes them install-wide. */
+/** Install-wide pool members: org-less rows enrolled in the org-less set, as `upsertOnAuth` does. */
 async function seedMembers(): Promise<void> {
   await prisma.daemon.createMany({
     data: [
@@ -92,6 +93,7 @@ async function seedMembers(): Promise<void> {
       { id: POOL_B, orgId: null, maxAgents: 8, status: 'ready' }
     ]
   })
+  await joinPool(prisma, POOL_A, POOL_B)
 }
 
 async function seedBot(id: string, transport: 'socket' | 'http'): Promise<void> {
@@ -162,7 +164,7 @@ describe('duty recompute sweep (real Postgres)', () => {
     await s.tick()
     const [created] = await repo.listForOrg(ORG)
     expect(created!.members).toEqual([{ kind: 'agent', refId: AGENT }])
-    const [grant] = await repo.claimVacant(M1, 1, new Date(clock.now()), LEASE_MS, { scope: 'install-wide' })
+    const [grant] = await repo.claimVacant(M1, 1, new Date(clock.now()), LEASE_MS)
     expect(grant).toBeDefined()
 
     // The flap this test exists for: sweep 2 and 3 must plan no delete and no
@@ -190,7 +192,7 @@ describe('duty recompute sweep (real Postgres)', () => {
     const { repo, clock, warns, sweep: s } = sweep()
 
     // The design's fallback path: the trigger arrives before the sweep ran.
-    const claim = await repo.claimAgentHome(ORG, AgentId(AGENT), M1, new Date(clock.now()), LEASE_MS, 'install-wide')
+    const claim = await repo.claimAgentHome(ORG, AgentId(AGENT), M1, new Date(clock.now()), LEASE_MS)
     expect(claim.granted).toBe(true)
 
     await s.tick()
@@ -209,7 +211,7 @@ describe('duty recompute sweep (real Postgres)', () => {
     await seedAgent(AGENT, 'agent-1') // no placement
     const { repo, clock, warns, sweep: s } = sweep()
 
-    const claim = await repo.claimAgentHome(ORG, AgentId(AGENT), M1, new Date(clock.now()), LEASE_MS, 'install-wide')
+    const claim = await repo.claimAgentHome(ORG, AgentId(AGENT), M1, new Date(clock.now()), LEASE_MS)
     expect(claim.granted).toBe(false)
     await s.tick()
 
@@ -239,7 +241,7 @@ describe('duty recompute sweep (real Postgres)', () => {
 
     await s.tick()
     const [singleton] = await repo.listForOrg(ORG)
-    await repo.claimVacant(M1, 1, new Date(clock.now()), LEASE_MS, { scope: 'install-wide' })
+    await repo.claimVacant(M1, 1, new Date(clock.now()), LEASE_MS)
 
     await seedBot(BOT, 'socket')
     await seedIntegration(INTEG, AGENT, BOT)
@@ -292,7 +294,7 @@ describe('duty recompute sweep (real Postgres)', () => {
     const { repo, clock, sweep: s } = sweep()
 
     await s.tick()
-    await repo.claimVacant(M1, 1, new Date(clock.now()), LEASE_MS, { scope: 'install-wide' })
+    await repo.claimVacant(M1, 1, new Date(clock.now()), LEASE_MS)
 
     // A second agent joins the same daemon-held bot: the group widens.
     await seedAgent(AGENT2, 'agent-2', M1)
@@ -314,15 +316,15 @@ describe('incumbent placement fence (real Postgres)', () => {
     await seedIntegration(INTEG, AGENT, BOT)
     const { repo, clock, sweep: s } = sweep()
     await s.tick()
-    await repo.claimVacant(M1, 1, new Date(clock.now()), LEASE_MS, { scope: 'install-wide' })
+    await repo.claimVacant(M1, 1, new Date(clock.now()), LEASE_MS)
 
     // The agent moves to M2: the next tick vacates M1's lease, and only M2 can claim.
     await prisma.agent.update({ where: { id: AGENT }, data: { daemonId: M2 } })
     await s.tick()
     expect(await repo.listHeldBy(M1)).toEqual([])
     const now = new Date(clock.now())
-    expect(await repo.claimVacant(M1, 5, now, LEASE_MS, { scope: 'install-wide' })).toEqual([])
-    const grants = await repo.claimVacant(M2, 5, now, LEASE_MS, { scope: 'install-wide' })
+    expect(await repo.claimVacant(M1, 5, now, LEASE_MS)).toEqual([])
+    const grants = await repo.claimVacant(M2, 5, now, LEASE_MS)
     expect(grants).toHaveLength(1)
     expect(grants[0]!.term).toBe(2n)
   })
@@ -341,7 +343,7 @@ describe('incumbent placement fence (real Postgres)', () => {
     await seedIntegration(INTEG2, AGENT2, BOT)
     const { repo, clock, sweep: s } = sweep()
     await s.tick()
-    await repo.claimVacant(M1, 1, new Date(clock.now()), LEASE_MS, { scope: 'org-scoped' })
+    await repo.claimVacant(M1, 1, new Date(clock.now()), LEASE_MS)
     expect(await repo.listHeldBy(M1)).toHaveLength(1)
 
     await prisma.agent.update({ where: { id: AGENT2 }, data: { daemonId: M2 } })
@@ -361,8 +363,8 @@ describe('placement eligibility gate (real Postgres)', () => {
     const now = new Date(clock.now())
 
     // Another machine may not take it, and neither may an install-wide member.
-    expect(await repo.claimVacant(M2, 5, now, LEASE_MS, { scope: 'org-scoped' })).toEqual([])
-    const grants = await repo.claimVacant(M1, 5, now, LEASE_MS, { scope: 'org-scoped' })
+    expect(await repo.claimVacant(M2, 5, now, LEASE_MS)).toEqual([])
+    const grants = await repo.claimVacant(M1, 5, now, LEASE_MS)
     expect(grants).toHaveLength(1)
     expect(grants[0]!.members).toContainEqual({ kind: 'agent', refId: AGENT })
   })
@@ -377,11 +379,11 @@ describe('placement eligibility gate (real Postgres)', () => {
     await s.tick()
     const now = new Date(clock.now())
 
-    expect(await repo.claimVacant(POOL_A, 5, now, LEASE_MS, { scope: 'install-wide' })).toEqual([])
-    expect(await repo.claimVacant(POOL_B, 5, now, LEASE_MS, { scope: 'install-wide' })).toEqual([])
+    expect(await repo.claimVacant(POOL_A, 5, now, LEASE_MS)).toEqual([])
+    expect(await repo.claimVacant(POOL_B, 5, now, LEASE_MS)).toEqual([])
     // And the rendezvous is the same gate, not a second one: a trigger reaching the wrong member
     // is not authority to serve an agent that member may not hold.
-    const claim = await repo.claimAgentHome(ORG, AgentId(AGENT), POOL_A, now, LEASE_MS, 'install-wide')
+    const claim = await repo.claimAgentHome(ORG, AgentId(AGENT), POOL_A, now, LEASE_MS)
     expect(claim.granted).toBe(false)
     expect(await repo.listHeldBy(POOL_A)).toEqual([])
   })
@@ -395,8 +397,8 @@ describe('placement eligibility gate (real Postgres)', () => {
     const now = new Date(clock.now())
 
     // A machine-scoped claimant is never install-wide, so the pool's work stays out of reach.
-    expect(await repo.claimVacant(M1, 5, now, LEASE_MS, { scope: 'org-scoped' })).toEqual([])
-    const grants = await repo.claimVacant(POOL_B, 5, now, LEASE_MS, { scope: 'install-wide' })
+    expect(await repo.claimVacant(M1, 5, now, LEASE_MS)).toEqual([])
+    const grants = await repo.claimVacant(POOL_B, 5, now, LEASE_MS)
     expect(grants).toHaveLength(1)
     expect(grants[0]!.members).toContainEqual({ kind: 'agent', refId: AGENT })
   })
@@ -416,8 +418,8 @@ describe('placement eligibility gate (real Postgres)', () => {
     expect(await repo.listForOrg(ORG)).toHaveLength(1)
     const now = new Date(clock.now())
 
-    expect(await repo.claimVacant(M1, 5, now, LEASE_MS, { scope: 'org-scoped' })).toEqual([])
-    expect(await repo.claimVacant(POOL_A, 5, now, LEASE_MS, { scope: 'install-wide' })).toEqual([])
+    expect(await repo.claimVacant(M1, 5, now, LEASE_MS)).toEqual([])
+    expect(await repo.claimVacant(POOL_A, 5, now, LEASE_MS)).toEqual([])
   })
 
   it('an unplaced agent’s group is claimable by nobody, and its rendezvous claim is refused', async () => {
@@ -428,9 +430,9 @@ describe('placement eligibility gate (real Postgres)', () => {
     await s.tick()
     const now = new Date(clock.now())
 
-    expect(await repo.claimVacant(POOL_A, 5, now, LEASE_MS, { scope: 'install-wide' })).toEqual([])
-    expect(await repo.claimVacant(M1, 5, now, LEASE_MS, { scope: 'org-scoped' })).toEqual([])
-    expect((await repo.claimAgentHome(ORG, AgentId(AGENT), POOL_A, now, LEASE_MS, 'install-wide')).granted).toBe(false)
+    expect(await repo.claimVacant(POOL_A, 5, now, LEASE_MS)).toEqual([])
+    expect(await repo.claimVacant(M1, 5, now, LEASE_MS)).toEqual([])
+    expect((await repo.claimAgentHome(ORG, AgentId(AGENT), POOL_A, now, LEASE_MS)).granted).toBe(false)
   })
 
   it('the backoff list excludes named groups from a claim without disturbing the rest', async () => {
@@ -444,7 +446,6 @@ describe('placement eligibility gate (real Postgres)', () => {
     const [first, second] = (await repo.listForOrg(ORG)).map((g) => g.groupId)
 
     const grants = await repo.claimVacant(POOL_A, 5, now, LEASE_MS, {
-      scope: 'install-wide',
       excludeGroupIds: [first!]
     })
     expect(grants.map((g) => g.groupId)).toEqual([second])
@@ -458,7 +459,7 @@ describe('the placement fence (real Postgres)', () => {
     await seedPoolAgent(AGENT, 'pool-agent')
     const { repo, clock, sweep: s, warns } = sweep()
     await s.tick()
-    const [granted] = await repo.claimVacant(POOL_A, 5, new Date(clock.now()), LEASE_MS, { scope: 'install-wide' })
+    const [granted] = await repo.claimVacant(POOL_A, 5, new Date(clock.now()), LEASE_MS)
     expect(granted).toBeDefined()
 
     // Moved off the pool onto a machine: the member holding it is no longer eligible.
@@ -475,7 +476,7 @@ describe('the placement fence (real Postgres)', () => {
     await seedPoolAgent(AGENT, 'pool-agent')
     const { repo, clock, sweep: s } = sweep()
     await s.tick()
-    await repo.claimVacant(POOL_A, 5, new Date(clock.now()), LEASE_MS, { scope: 'install-wide' })
+    await repo.claimVacant(POOL_A, 5, new Date(clock.now()), LEASE_MS)
     await s.tick()
     expect(await repo.listHeldBy(POOL_A)).toHaveLength(1)
   })

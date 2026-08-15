@@ -8,6 +8,15 @@ import { describe, it, expect } from 'vitest'
 import { CLOUD_PLACEMENT, effectiveAgentStatus, agentIsPlaced, placementValueOf } from '@/lib/data'
 import type { Agent, DaemonRow } from '@/lib/data'
 
+const poolAgent = (over: Partial<Agent> = {}): Pick<Agent, 'status' | 'daemon' | 'placementKind' | 'placementReady'> =>
+  ({
+    status: 'online',
+    daemon: CLOUD_PLACEMENT,
+    placementKind: 'pool',
+    placementReady: true,
+    ...over
+  }) as Pick<Agent, 'status' | 'daemon' | 'placementKind' | 'placementReady'>
+
 describe('placementValueOf', () => {
   it('maps a pool placement to the pool sentinel, never to its null member id', () => {
     expect(placementValueOf({ placementKind: 'pool', daemonId: null })).toBe(CLOUD_PLACEMENT)
@@ -17,6 +26,15 @@ describe('placementValueOf', () => {
     expect(placementValueOf({ placementKind: 'pool', daemonId: 'dmn_1' })).toBe(CLOUD_PLACEMENT)
   })
 
+  // What the CP actually STORES and emits now: the pool is one member set (daemon-groups.md §2).
+  // `pool` stays accepted on the way in as API sugar, so both spellings have to read as Cloud.
+  it('maps a set placement to the same Cloud sentinel — that is the console round-trip', () => {
+    expect(placementValueOf({ placementKind: 'set', daemonId: null })).toBe(CLOUD_PLACEMENT)
+    expect(agentIsPlaced({ daemon: CLOUD_PLACEMENT, runtime: 'claude', placementKind: 'set' })).toBe(true)
+    expect(effectiveAgentStatus(poolAgent({ placementKind: 'set' }), undefined)).toBe('online')
+    expect(effectiveAgentStatus(poolAgent({ placementKind: 'set', placementReady: false }), undefined)).toBe('offline')
+  })
+
   it('maps a machine placement to its member id, and an unplaced agent to null', () => {
     expect(placementValueOf({ placementKind: 'daemon', daemonId: 'dmn_1' })).toBe('dmn_1')
     expect(placementValueOf({ placementKind: 'daemon', daemonId: null })).toBeNull()
@@ -24,15 +42,6 @@ describe('placementValueOf', () => {
     expect(placementValueOf({ daemonId: 'dmn_1' })).toBe('dmn_1')
   })
 })
-
-const poolAgent = (over: Partial<Agent> = {}): Pick<Agent, 'status' | 'daemon' | 'placementKind' | 'placementReady'> =>
-  ({
-    status: 'online',
-    daemon: CLOUD_PLACEMENT,
-    placementKind: 'pool',
-    placementReady: true,
-    ...over
-  }) as Pick<Agent, 'status' | 'daemon' | 'placementKind' | 'placementReady'>
 
 describe('a pool agent’s readiness is the server’s answer, not a member’s liveness', () => {
   it('stays online while the pool is ready, with no owning daemon to consult', () => {
