@@ -526,6 +526,26 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     }
   }, 15_000)
 
+  it('preempts a deferred session metadata retry when work is ready sooner', async () => {
+    const root = scaffold()
+    const clock = new FakeClock()
+    const daemon = new Daemon({ root, clock, probeRuntimes: async () => [] })
+    await daemon.start()
+    const drain = vi.spyOn(daemon as any, 'drainSessionMetadataSnapshots').mockResolvedValue(undefined)
+
+    try {
+      ;(daemon as any).scheduleSessionMetadataRetry(5 * 60_000)
+      ;(daemon as any).scheduleSessionMetadataRetry(0)
+      clock.advance(0)
+
+      expect(drain).toHaveBeenCalledTimes(1)
+      expect(clock.pending()).not.toContain(5 * 60_000)
+    } finally {
+      await daemon.stop()
+      rmSync(root, { recursive: true, force: true })
+    }
+  }, 15_000)
+
   it('defers a poisoned session metadata snapshot and drains unrelated sessions', async () => {
     const root = scaffold()
     const clock = new FakeClock()

@@ -2420,6 +2420,7 @@ export class Daemon {
   // CP/DB backpressure after an outage; the promise is joined during shutdown.
   private sessionMetadataDrain?: Promise<void>
   private sessionMetadataRetryTimer?: TimerHandle
+  private sessionMetadataRetryAt?: number
   // §7.3 force-cancel backstops, keyed by (agentId, acpSessionId); cleared at turn end.
   private cancelTimers = new Map<string, TimerHandle>()
   // Backstop for an interrupt that lands before a Pending/ACP session id exists
@@ -16337,11 +16338,21 @@ export class Daemon {
   }
 
   private scheduleSessionMetadataRetry(delayMs = SESSION_METADATA_RETRY_MS): void {
-    if (this.draining || this.sessionMetadataRetryTimer !== undefined) return
-    this.sessionMetadataRetryTimer = this.clock.setTimeout(() => {
-      this.sessionMetadataRetryTimer = undefined
-      void this.drainSessionMetadataSnapshots()
-    }, delayMs)
+    if (this.draining) return
+    const retryAt = this.clock.now() + Math.max(0, delayMs)
+    if (this.sessionMetadataRetryTimer !== undefined) {
+      if (this.sessionMetadataRetryAt !== undefined && this.sessionMetadataRetryAt <= retryAt) return
+      this.clock.clearTimeout(this.sessionMetadataRetryTimer)
+    }
+    this.sessionMetadataRetryAt = retryAt
+    this.sessionMetadataRetryTimer = this.clock.setTimeout(
+      () => {
+        this.sessionMetadataRetryTimer = undefined
+        this.sessionMetadataRetryAt = undefined
+        void this.drainSessionMetadataSnapshots()
+      },
+      Math.max(0, delayMs)
+    )
   }
 
   private emitSessionMetadataSnapshotsForDisplayName(id: string): void {
@@ -22274,6 +22285,7 @@ export class Daemon {
       this.clock.clearTimeout(this.sessionMetadataRetryTimer)
       this.sessionMetadataRetryTimer = undefined
     }
+    this.sessionMetadataRetryAt = undefined
     // Clear any live orchestration deadline timers so they don't hold the process open
     // (the durable `orchestration.deadline` epoch re-arms them on the next startup).
     for (const t of this.orchestrationDeadlines.values()) this.clock.clearTimeout(t)
