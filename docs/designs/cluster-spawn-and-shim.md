@@ -228,11 +228,18 @@ CLI helper and differs only in which socket it dials.
 
 ## 7. Runtime-image rollout ownership
 
-The retired per-org operator was the sole producer of `agentconnect.md/drain-requested`.
-Consequently the daemon no longer watches every Sandbox for that orphaned annotation. Pool-member
-rollout is owned by the daemon Deployment and duty-release flow; agent compute migrates through the
-ordinary idle suspension path described below. Work holds its Sandbox only to prevent that idle
-sweep from suspending the pod during a bind, workspace preparation, runtime, or runtime probe.
+The daemon does not force a running agent onto a new runtime image. Agent compute migrates through
+the ordinary idle suspension path described below: when a later launch finds its Sandbox Suspended,
+the daemon resolves its configured SandboxWarmPool and SandboxTemplate, then atomically patches the
+persisted Sandbox's `runtime` container image and `operatingMode: Running`. The name and observed
+image are JSON Patch preconditions, so a concurrent container reorder or image edit rejects the
+whole wake instead of changing a sidecar or starting an unverified image.
+
+This is a resume-time update, not a proactive rollout. A Sandbox already Running keeps serving its
+current image until it naturally becomes idle, and a template edit racing the daemon's fresh read is
+picked up by a later resume. The SandboxClaim, Sandbox UID, immutable volumeClaimTemplates, and
+workspace PVC all survive; only the pod incarnation changes. The daemon Role therefore reads the
+configured `sandboxwarmpools` and `sandboxtemplates` but still never reads or writes Pods directly.
 
 ## 8. The lifecycle of an idle agent: suspend, resume, discard
 

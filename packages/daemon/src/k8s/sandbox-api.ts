@@ -6,8 +6,17 @@ export const SANDBOX_EXTENSIONS_GROUP = 'extensions.agents.x-k8s.io/v1beta1'
 
 export type OperatingMode = 'Running' | 'Suspended'
 
+interface SandboxContainer {
+  name?: string
+  image?: string
+}
+
+interface SandboxPodTemplate {
+  spec?: { containers?: SandboxContainer[] }
+}
+
 export interface Sandbox extends K8sObject {
-  spec?: { operatingMode?: OperatingMode; podTemplate?: unknown }
+  spec?: { operatingMode?: OperatingMode; podTemplate?: SandboxPodTemplate }
   status?: {
     conditions?: Array<{ type?: string; status?: string }>
     podIPs?: Array<string | { ip?: string }>
@@ -21,6 +30,14 @@ export interface SandboxClaim extends K8sObject {
   }
   spec?: { warmPoolRef?: { name?: string }; additionalPodMetadata?: { labels?: Record<string, string> } }
   status?: { sandbox?: { name?: string } }
+}
+
+export interface SandboxWarmPool extends K8sObject {
+  spec?: { sandboxTemplateRef?: { name?: string } }
+}
+
+export interface SandboxTemplate extends K8sObject {
+  spec?: { podTemplate?: SandboxPodTemplate }
 }
 
 export interface TokenReviewResult {
@@ -62,6 +79,16 @@ export class OperatingModeRejectedError extends Error {
   }
 }
 
+export class GuardedResumeRejectedError extends Error {
+  constructor(
+    readonly sandbox: string,
+    readonly cause: K8sApiError
+  ) {
+    super(`sandbox ${sandbox}: guarded mode/image resume patch was rejected`)
+    this.name = 'GuardedResumeRejectedError'
+  }
+}
+
 function collectionPath(group: string, namespace: string, plural: string): string {
   return `/apis/${group}/namespaces/${namespace}/${plural}`
 }
@@ -81,6 +108,14 @@ export class SandboxApi {
 
   private sandboxes(): string {
     return collectionPath(SANDBOX_GROUP, this.namespace, 'sandboxes')
+  }
+
+  private warmPools(): string {
+    return collectionPath(SANDBOX_EXTENSIONS_GROUP, this.namespace, 'sandboxwarmpools')
+  }
+
+  private sandboxTemplates(): string {
+    return collectionPath(SANDBOX_EXTENSIONS_GROUP, this.namespace, 'sandboxtemplates')
   }
 
   /** Create a claim, treating an existing one as success: names are derived from the
@@ -152,6 +187,41 @@ export class SandboxApi {
 
   getSandbox(name: string): Promise<Sandbox> {
     return this.http.json<Sandbox>({ method: 'GET', path: `${this.sandboxes()}/${name}` })
+  }
+
+  getWarmPool(name: string): Promise<SandboxWarmPool> {
+    return this.http.json<SandboxWarmPool>({ method: 'GET', path: `${this.warmPools()}/${name}` })
+  }
+
+  getSandboxTemplate(name: string): Promise<SandboxTemplate> {
+    return this.http.json<SandboxTemplate>({ method: 'GET', path: `${this.sandboxTemplates()}/${name}` })
+  }
+
+  async resumeWithRuntimeImage(
+    name: string,
+    image: { containerIndex: number; observedName: string; observedImage: string; targetImage: string }
+  ): Promise<Sandbox> {
+    const containerPath = `/spec/podTemplate/spec/containers/${image.containerIndex}`
+    const body: Array<{ op: 'test' | 'replace'; path: string; value: string }> = [
+      { op: 'test', path: '/spec/operatingMode', value: 'Suspended' },
+      { op: 'test', path: `${containerPath}/name`, value: image.observedName },
+      { op: 'test', path: `${containerPath}/image`, value: image.observedImage }
+    ]
+    if (image.observedImage !== image.targetImage) {
+      body.push({ op: 'replace', path: `${containerPath}/image`, value: image.targetImage })
+    }
+    body.push({ op: 'replace', path: '/spec/operatingMode', value: 'Running' })
+    try {
+      return await this.http.json<Sandbox>({
+        method: 'PATCH',
+        path: `${this.sandboxes()}/${name}`,
+        contentType: 'application/json-patch+json',
+        body
+      })
+    } catch (err) {
+      if (err instanceof K8sApiError && err.isUnprocessable) throw new GuardedResumeRejectedError(name, err)
+      throw err
+    }
   }
 
   /** Set a bound Sandbox's operating mode — the sleep/wake path.

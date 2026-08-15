@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { K8sApiError, K8sHttp } from '@agentconnect.md/k8s-client'
 import { closeFakeApiServers, fakeApiServer } from '@agentconnect.md/k8s-client/testing'
-import { OperatingModeRejectedError, SandboxApi, isSandboxReady } from '../src/k8s/sandbox-api.js'
+import {
+  GuardedResumeRejectedError,
+  OperatingModeRejectedError,
+  SandboxApi,
+  isSandboxReady
+} from '../src/k8s/sandbox-api.js'
 
 // Generic config/http/watch coverage lives in packages/k8s-client; this file
 // covers the daemon-owned agent-sandbox verb surface only.
@@ -13,9 +18,13 @@ describe('SandboxApi', () => {
     const api = new SandboxApi(new K8sHttp(config), 'org-test')
     await api.getClaim('agent-a')
     await api.getSandbox('sb-1')
+    await api.getWarmPool('runtime-pool')
+    await api.getSandboxTemplate('runtime-template')
     expect(requests.map((url) => url.pathname)).toEqual([
       '/apis/extensions.agents.x-k8s.io/v1beta1/namespaces/org-test/sandboxclaims/agent-a',
-      '/apis/agents.x-k8s.io/v1beta1/namespaces/org-test/sandboxes/sb-1'
+      '/apis/agents.x-k8s.io/v1beta1/namespaces/org-test/sandboxes/sb-1',
+      '/apis/extensions.agents.x-k8s.io/v1beta1/namespaces/org-test/sandboxwarmpools/runtime-pool',
+      '/apis/extensions.agents.x-k8s.io/v1beta1/namespaces/org-test/sandboxtemplates/runtime-template'
     ])
   })
 
@@ -131,6 +140,70 @@ describe('SandboxApi', () => {
       { op: 'test', path: '/spec/operatingMode', value: 'Suspended' },
       { op: 'replace', path: '/spec/operatingMode', value: 'Running' }
     ])
+  })
+
+  it('guards a resume with the observed runtime name and image before replacing either state', async () => {
+    let patch: any
+    let contentType: string | undefined
+    const { config } = await fakeApiServer(({ body, headers }) => {
+      if (body) patch = JSON.parse(body)
+      contentType = headers['content-type'] as string | undefined
+      return { json: { spec: { operatingMode: 'Running' } } }
+    })
+    const api = new SandboxApi(new K8sHttp(config), 'org-test')
+    await api.resumeWithRuntimeImage('sb-1', {
+      containerIndex: 1,
+      observedName: 'runtime',
+      observedImage: 'runtime:old',
+      targetImage: 'runtime:new'
+    })
+    expect(contentType).toBe('application/json-patch+json')
+    expect(patch).toEqual([
+      { op: 'test', path: '/spec/operatingMode', value: 'Suspended' },
+      { op: 'test', path: '/spec/podTemplate/spec/containers/1/name', value: 'runtime' },
+      { op: 'test', path: '/spec/podTemplate/spec/containers/1/image', value: 'runtime:old' },
+      { op: 'replace', path: '/spec/podTemplate/spec/containers/1/image', value: 'runtime:new' },
+      { op: 'replace', path: '/spec/operatingMode', value: 'Running' }
+    ])
+  })
+
+  it('keeps the runtime guards when a resume image already matches', async () => {
+    let patch: any
+    const { config } = await fakeApiServer(({ body }) => {
+      if (body) patch = JSON.parse(body)
+      return { json: { spec: { operatingMode: 'Running' } } }
+    })
+    const api = new SandboxApi(new K8sHttp(config), 'org-test')
+    await api.resumeWithRuntimeImage('sb-1', {
+      containerIndex: 1,
+      observedName: 'runtime',
+      observedImage: 'runtime:new',
+      targetImage: 'runtime:new'
+    })
+    expect(patch).toEqual([
+      { op: 'test', path: '/spec/operatingMode', value: 'Suspended' },
+      { op: 'test', path: '/spec/podTemplate/spec/containers/1/name', value: 'runtime' },
+      { op: 'test', path: '/spec/podTemplate/spec/containers/1/image', value: 'runtime:new' },
+      { op: 'replace', path: '/spec/operatingMode', value: 'Running' }
+    ])
+  })
+
+  it('reports a guarded resume rejection without guessing which precondition failed', async () => {
+    const { config } = await fakeApiServer(() => ({
+      status: 422,
+      json: { kind: 'Status', code: 422, reason: 'Invalid', message: 'test failed' }
+    }))
+    const api = new SandboxApi(new K8sHttp(config), 'org-test')
+    const error = await api
+      .resumeWithRuntimeImage('sb-1', {
+        containerIndex: 1,
+        observedName: 'runtime',
+        observedImage: 'runtime:old',
+        targetImage: 'runtime:new'
+      })
+      .catch((err: unknown) => err)
+    expect(error).toBeInstanceOf(GuardedResumeRejectedError)
+    expect((error as GuardedResumeRejectedError).cause.isUnprocessable).toBe(true)
   })
 
   it('carries the guard on the suspend direction too — there is no unguarded path', async () => {
