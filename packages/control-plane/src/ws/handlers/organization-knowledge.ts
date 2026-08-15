@@ -31,19 +31,38 @@ function clampUtf8(text: string, maxBytes: number): { content: string; truncated
   return { content, truncated: true, bytes: Buffer.byteLength(content) }
 }
 
-/** On-demand search. Organization membership is derived from the placed
+/** The requester an organization read may be served for: in the frame's org, and served by this
+ *  connection right now. Authority is the live seam — placement PLUS the duty leases this member
+ *  holds — because a pool agent names no machine and `agent.daemonId` would refuse every read from
+ *  the very member running it. */
+async function servingRequester(
+  requesterAgentId: string,
+  frameOrgId: string | undefined,
+  daemon: DaemonView,
+  conn: Parameters<Handler>[1],
+  deps: Parameters<Handler>[2]
+) {
+  const requester = await deps.agent.getUnscoped(AgentId(requesterAgentId))
+  const orgId = frameOrgId ? OrgId(frameOrgId) : daemon.orgId
+  if (!requester || !orgId || requester.orgId !== orgId) return null
+  const resolver = deps.placementResolver ?? PLACEMENT_ONLY
+  return (await resolver.mayAct(requester, conn.daemonId)) ? requester : null
+}
+
+/** On-demand search. Organization membership is derived from the served
  * requester, never from daemon-supplied org input. */
 export const handleKnowledgeSearch: Handler = async (frame, conn, deps) => {
   if (!isFrame('knowledge/search')(frame)) return
-  if (!(await featureDaemon(frame.id, conn, deps))) return
+  const daemon = await featureDaemon(frame.id, conn, deps)
+  if (!daemon) return
   const repo = deps.organizationKnowledge
   if (!repo) {
     conn.sendError(frame.id, 'INTERNAL', 'organization knowledge is unavailable', true)
     return
   }
-  const requester = await deps.agent.getUnscoped(AgentId(frame.payload.requesterAgentId))
-  if (!requester || requester.daemonId !== DaemonId(conn.daemonId)) {
-    conn.sendError(frame.id, 'SCOPE_DENIED', 'requesting agent is not placed on this daemon', false)
+  const requester = await servingRequester(frame.payload.requesterAgentId, frame.orgId, daemon, conn, deps)
+  if (!requester) {
+    conn.sendError(frame.id, 'SCOPE_DENIED', 'requesting agent is not served by this daemon', false)
     return
   }
 
@@ -74,18 +93,19 @@ export const handleKnowledgeSearch: Handler = async (frame, conn, deps) => {
 
 /** List recent org knowledge (query-less) the requester's org can see — the
  * browse companion to search, so a dreamer can enumerate what already exists
- * before proposing new. Org scope comes from the placed requester. */
+ * before proposing new. Org scope comes from the served requester. */
 export const handleKnowledgeList: Handler = async (frame, conn, deps) => {
   if (!isFrame('knowledge/list')(frame)) return
-  if (!(await featureDaemon(frame.id, conn, deps))) return
+  const daemon = await featureDaemon(frame.id, conn, deps)
+  if (!daemon) return
   const repo = deps.organizationKnowledge
   if (!repo) {
     conn.sendError(frame.id, 'INTERNAL', 'organization knowledge is unavailable', true)
     return
   }
-  const requester = await deps.agent.getUnscoped(AgentId(frame.payload.requesterAgentId))
-  if (!requester || requester.daemonId !== DaemonId(conn.daemonId)) {
-    conn.sendError(frame.id, 'SCOPE_DENIED', 'requesting agent is not placed on this daemon', false)
+  const requester = await servingRequester(frame.payload.requesterAgentId, frame.orgId, daemon, conn, deps)
+  if (!requester) {
+    conn.sendError(frame.id, 'SCOPE_DENIED', 'requesting agent is not served by this daemon', false)
     return
   }
   const tags = frame.payload.tags
@@ -117,15 +137,16 @@ export const handleKnowledgeList: Handler = async (frame, conn, deps) => {
  * update-vs-create. `query` filters by name/description; absent ⇒ list. */
 export const handleOrgSkills: Handler = async (frame, conn, deps) => {
   if (!isFrame('skills/org')(frame)) return
-  if (!(await featureDaemon(frame.id, conn, deps))) return
+  const daemon = await featureDaemon(frame.id, conn, deps)
+  if (!daemon) return
   const repo = deps.organizationKnowledge
   if (!repo) {
     conn.sendError(frame.id, 'INTERNAL', 'organization skills are unavailable', true)
     return
   }
-  const requester = await deps.agent.getUnscoped(AgentId(frame.payload.requesterAgentId))
-  if (!requester || requester.daemonId !== DaemonId(conn.daemonId)) {
-    conn.sendError(frame.id, 'SCOPE_DENIED', 'requesting agent is not placed on this daemon', false)
+  const requester = await servingRequester(frame.payload.requesterAgentId, frame.orgId, daemon, conn, deps)
+  if (!requester) {
+    conn.sendError(frame.id, 'SCOPE_DENIED', 'requesting agent is not served by this daemon', false)
     return
   }
   const q = frame.payload.query?.toLowerCase()
@@ -194,24 +215,21 @@ export const handleOrganizationSuggestionsSync: Handler = async (frame, conn, de
  * the managed skill enabled. */
 export const handleManagedSkillRead: Handler = async (frame, conn, deps) => {
   if (!isFrame('managed-skill/read')(frame)) return
-  if (!(await featureDaemon(frame.id, conn, deps))) return
+  const daemon = await featureDaemon(frame.id, conn, deps)
+  if (!daemon) return
   const repo = deps.organizationKnowledge
   if (!repo) {
     conn.sendError(frame.id, 'INTERNAL', 'managed skills are unavailable', true)
     return
   }
-  const requester = await deps.agent.getUnscoped(AgentId(frame.payload.requesterAgentId))
-  if (
-    !requester ||
-    requester.daemonId !== DaemonId(conn.daemonId) ||
-    !requester.managedSkills.includes(frame.payload.managedSkillId)
-  ) {
+  const requester = await servingRequester(frame.payload.requesterAgentId, frame.orgId, daemon, conn, deps)
+  if (!requester || !requester.managedSkills.includes(frame.payload.managedSkillId)) {
     conn.sendError(frame.id, 'SCOPE_DENIED', 'managed skill is not enabled for this agent', false)
     return
   }
-  // The managed-skill id comes from the daemon's frame, so it is fenced on the
-  // REQUESTER's org — the one thing this handler has already proved (the agent is
-  // placed on this connection). The revision fences through that parent (§3.6).
+  // The managed-skill id comes from the daemon's frame, so it is fenced on the REQUESTER's org —
+  // the one thing this handler has already proved (this connection serves the agent). The revision
+  // fences through that parent (§3.6).
   const skill = await repo.getManagedSkill(requester.orgId, frame.payload.managedSkillId)
   const revision = await repo.getManagedSkillRevision(frame.payload.managedSkillId, frame.payload.revision)
   if (!skill || skill.archivedAt !== null || !revision) {
