@@ -7,6 +7,7 @@ import { ShimRequestTimeoutError } from '../shim/channels.js'
 import { ShimSession } from '../shim/session.js'
 import type { SpawnRecord } from '../shim/binding.js'
 import {
+  GuardedResumeRejectedError,
   OperatingModeRejectedError,
   isSandboxReady,
   type OperatingMode,
@@ -314,25 +315,81 @@ export class K8sDriver implements SpawnDriver {
     // The mode observed on the FIRST read, before this call changed anything. A later attempt
     // sees the state we produced, which would say nothing about where the launch started.
     let first: OperatingMode | undefined
+    let lastRejection: GuardedResumeRejectedError | OperatingModeRejectedError | undefined
     for (let attempt = 1; attempt <= MAX_MODE_ATTEMPTS; attempt += 1) {
       const sandbox = await this.deps.api.getSandbox(sandboxName)
       const observed = sandbox.spec?.operatingMode ?? 'Running'
       if (observed === desired) return first ?? observed
       first ??= observed
       try {
-        await this.deps.api.setOperatingMode(sandboxName, desired, observed)
-        this.deps.log.info(`cluster: sandbox ${sandboxName} → ${desired}`)
+        if (desired === 'Running' && observed === 'Suspended') {
+          const image = await this.resolveResumeImage(sandboxName, sandbox)
+          await this.deps.api.resumeWithRuntimeImage(sandboxName, image)
+          if (image.observedImage === image.targetImage) {
+            this.deps.log.info(`cluster: sandbox ${sandboxName} → Running`)
+          } else {
+            this.deps.log.info(
+              `cluster: sandbox ${sandboxName} runtime image ${image.observedImage} → ${image.targetImage}; resumed`
+            )
+          }
+        } else {
+          await this.deps.api.setOperatingMode(sandboxName, desired, observed)
+          this.deps.log.info(`cluster: sandbox ${sandboxName} → ${desired}`)
+        }
         return first
       } catch (err) {
-        if (!(err instanceof OperatingModeRejectedError)) throw err
+        if (!(err instanceof OperatingModeRejectedError) && !(err instanceof GuardedResumeRejectedError)) throw err
+        lastRejection = err
         this.metrics.writeRetry('rejected_precondition')
         this.deps.log.debug?.(`cluster: ${desired} write for ${sandboxName} rejected (attempt ${attempt}) — re-reading`)
       }
     }
+    if (lastRejection instanceof GuardedResumeRejectedError) {
+      throw new Error(
+        `sandbox ${sandboxName} guarded mode/image resume was rejected after ${MAX_MODE_ATTEMPTS} attempts`,
+        { cause: lastRejection.cause }
+      )
+    }
     throw new Error(
       `sandbox ${sandboxName} would not accept ${desired} after ${MAX_MODE_ATTEMPTS} attempts — ` +
-        `something else is changing its mode`
+        `the guarded mode write was repeatedly rejected`,
+      { cause: lastRejection?.cause }
     )
+  }
+
+  private async resolveResumeImage(
+    sandboxName: string,
+    sandbox: Sandbox
+  ): Promise<{ containerIndex: number; observedName: string; observedImage: string; targetImage: string }> {
+    const pool = await this.deps.api.getWarmPool(this.deps.warmPoolName)
+    const templateName = pool.spec?.sandboxTemplateRef?.name
+    if (!templateName?.trim()) {
+      throw new Error(`sandbox warm pool ${this.deps.warmPoolName} has no sandboxTemplateRef.name`)
+    }
+    if (templateName.trim() !== templateName) {
+      throw new Error(`sandbox warm pool ${this.deps.warmPoolName} has invalid sandboxTemplateRef.name`)
+    }
+    const template = await this.deps.api.getSandboxTemplate(templateName)
+    const targetContainers = (template.spec?.podTemplate?.spec?.containers ?? []).filter(
+      (container) => container.name === 'runtime'
+    )
+    if (targetContainers.length > 1) throw new Error(`sandbox template ${templateName} has multiple runtime containers`)
+    const targetImage = targetContainers[0]?.image
+    if (!targetImage?.trim()) throw new Error(`sandbox template ${templateName} runtime container has no image`)
+    if (targetImage.trim() !== targetImage) {
+      throw new Error(`sandbox template ${templateName} runtime container has invalid image`)
+    }
+    const containers = sandbox.spec?.podTemplate?.spec?.containers ?? []
+    const containerIndexes = containers.flatMap((container, index) => (container.name === 'runtime' ? [index] : []))
+    if (containerIndexes.length === 0) throw new Error(`sandbox ${sandboxName} has no runtime container`)
+    if (containerIndexes.length > 1) throw new Error(`sandbox ${sandboxName} has multiple runtime containers`)
+    const containerIndex = containerIndexes[0]!
+    const observedImage = containers[containerIndex]?.image
+    if (!observedImage?.trim()) throw new Error(`sandbox ${sandboxName} runtime container has no image`)
+    if (observedImage.trim() !== observedImage) {
+      throw new Error(`sandbox ${sandboxName} runtime container has invalid image`)
+    }
+    return { containerIndex, observedName: 'runtime', observedImage, targetImage }
   }
 
   private forgetSandbox(name: string): void {
