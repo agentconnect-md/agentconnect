@@ -685,9 +685,8 @@ model MemberSet {
   createdAt DateTime @default(now()) @db.Timestamptz(6)
 
   org     Org?              @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  members  MemberSetMember[]
-  agents   Agent[]
-  sessions SessionMeta[]
+  members MemberSetMember[]
+  agents  Agent[]
 
   @@index([orgId])
   @@map("member_set")
@@ -1040,11 +1039,6 @@ model SessionMeta {
   permissionMode      String? // runtime permission/approval mode
   outputMode          String? // daemon-side output verbosity (low/medium/high)
   daemonId            String?             @db.Uuid // first daemon that reported the session; immutable content owner, stamped by the CP from the authenticated WS conn, never daemon-echoed
-  // The member set whose SHARED data-plane store this session's content was written to, stamped
-  // from `daemonId`'s membership when that daemon is pinned. Null ⇒ the recorded daemon's own
-  // local store, which no other daemon can read. Session-scoped on purpose: the agent's CURRENT
-  // placement says nothing about where a past session's transcript landed.
-  contentSetId        String?             @db.Uuid
   // Session-pinned checkout choice. Null is a legacy row whose daemon never
   // reported it; `session` identifies a daemon-local worktree eligible for the
   // authorized Workspace viewer.
@@ -1091,7 +1085,6 @@ model SessionMeta {
   agent         Agent          @relation(fields: [agentId], references: [id], onDelete: Cascade)
   launch        AgentLaunch?   @relation(fields: [launchId], references: [id], onDelete: SetNull)
   daemon        Daemon?        @relation(fields: [daemonId], references: [id], onDelete: SetNull)
-  contentSet    MemberSet?     @relation(fields: [contentSetId], references: [id], onDelete: SetNull)
   externalScope ExternalScope? @relation(fields: [externalScopeId, orgId, externalProvider], references: [id, orgId, provider], onDelete: Restrict, onUpdate: Restrict)
 
   webchatCurrentFor      WebchatConversation[]      @relation("WebchatCurrentSession")

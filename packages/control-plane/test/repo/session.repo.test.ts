@@ -13,7 +13,6 @@ import { PgSessionRepo } from '../../src/persistence/repositories/session.repo.j
 import { DEF_ORG, seedAgent, seedDaemon, seedLaunch } from '../fixtures/seed.js'
 import { DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 import { AgentId, BotId, DaemonId, LaunchId, SessionId } from '../../src/domain/ids.js'
-import { joinPool } from '../fakes/member-set.js'
 
 const AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const OTHER_AGENT = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
@@ -21,13 +20,6 @@ const DAEMON = 'd1111111-1111-4111-8111-111111111111'
 const OTHER_DAEMON = 'd2222222-2222-4222-8222-222222222222'
 const LAUNCH = '11111111-1111-4111-8111-111111111111'
 const SESSION = '55555555-5555-4555-8555-555555555555'
-const POOL_MEMBER = 'd3333333-3333-4333-8333-333333333333'
-
-/** An org-less pool member, the way `upsertOnAuth` writes one: daemon row plus its membership. */
-async function seedPoolMember(id = POOL_MEMBER): Promise<string> {
-  await prisma.daemon.create({ data: { id, orgId: null, status: 'ready', maxAgents: 4 } })
-  return joinPool(prisma, id)
-}
 
 async function fixtures(): Promise<void> {
   await seedDaemon(prisma, DAEMON)
@@ -194,33 +186,6 @@ describe('SessionRepo.recordMilestone — milestone-only (real Postgres)', () =>
 
     const row = await prisma.sessionMeta.findUnique({ where: { id: SESSION } })
     expect(row?.daemonId).toBe(DAEMON)
-  })
-
-  it("stamps the reporting daemon's member set as the session's content store", async () => {
-    await fixtures()
-    const setId = await seedPoolMember()
-    const repo = new PgSessionRepo(prisma)
-
-    await repo.recordMilestone(ev('start', { daemonId: DaemonId(POOL_MEMBER) }))
-
-    // Provenance is a fact about where the content landed, so it is read from the reporter's
-    // membership at write time — not inferred later from wherever the agent happens to sit.
-    expect((await prisma.sessionMeta.findUnique({ where: { id: SESSION } }))?.contentSetId).toBe(setId)
-  })
-
-  it('leaves content provenance null when the content owner belongs to no set', async () => {
-    await fixtures()
-    await seedPoolMember()
-    const repo = new PgSessionRepo(prisma)
-
-    await repo.recordMilestone(ev('start', { daemonId: DaemonId(DAEMON) }))
-    // A later milestone from a pooled daemon reports on a session whose rows live on DAEMON. It
-    // may not claim them for the pool's store — the content owner never moved.
-    await repo.recordMilestone(ev('end', { daemonId: DaemonId(POOL_MEMBER) }))
-
-    const row = await prisma.sessionMeta.findUnique({ where: { id: SESSION } })
-    expect(row?.daemonId).toBe(DAEMON)
-    expect(row?.contentSetId).toBeNull()
   })
 
   it('keeps the recorded execution config when a later milestone omits it', async () => {
