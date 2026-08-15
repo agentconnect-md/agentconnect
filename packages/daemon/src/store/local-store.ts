@@ -4243,6 +4243,18 @@ export class LocalStore {
       .run(deadline, updatedAt, orchestrationId)
   }
 
+  /** CAS fire claim: clear the deadline iff it is still the armed one — every member sharing the
+   *  store may hold a timer for it, and exactly one of them gets `true`. */
+  claimOrchestrationDeadline(orchestrationId: string, deadline: number, updatedAt: number): boolean {
+    return (
+      this.db
+        .prepare(
+          "UPDATE orchestration SET deadline=NULL, updatedAt=? WHERE orchestrationId=? AND status='active' AND deadline=?"
+        )
+        .run(updatedAt, orchestrationId, deadline).changes === 1
+    )
+  }
+
   // ── runtime model-catalog cache (runtime-model-catalog.md §4) ──
 
   /** Upsert a runtime's catalog metadata (phase-1 probe fold or a discovery run).
