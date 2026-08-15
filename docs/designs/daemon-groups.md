@@ -147,41 +147,57 @@ gets `granted: false` from the same code path a pool member gets it for a
 lease horizon it already announces (#976).
 
 **Membership changes on a live daemon.** Org-set membership is operator-mutable while
-the daemon is connected, so `auth/ok` cannot be the only time it learns its set. Two
-rules:
+the daemon is connected, so `auth/ok` cannot be the only time it learns its set. The
+order of operations is the one the pool drain and the product's agent move already
+follow, and for the same reason: **stop the old runtime authority and confirm it stopped,
+then commit the new placement — never the reverse.** A transition that publishes a
+claimable lease before the old holder has acknowledged it stopped serving lets a
+successor win the duty while the old platform connections and turns are still live,
+which is the split the ledger exists to prevent. So every membership change is a
+two-phase, generation-fenced transition, and while a daemon is entering or leaving a
+set nothing may claim what it is giving up or taking on.
 
-- _Removal from a set_ is a withdrawal, exactly like a revoke or a drain release: the
-  control plane vacates every lease that daemon holds (the general withdrawal guard from
-  #976 makes an in-flight admission refuse to commit), the sweep re-grants those groups
-  to remaining members, and the daemon is told its scope is now `none` on a versioned
-  scope update over the existing connection — not by tearing the socket down. The daemon
-  fences what it held (the same local `duty/revoke` effect, never removal) and stops
-  sending `duties`. If the scope update cannot be delivered, the next heartbeat's digest
-  reports groups the ledger no longer leases to it and the exchange supersedes them —
-  the lease horizon bounds the window either way.
-- _Addition to a set_ is the reverse: the daemon is told its new scope, starts reporting
-  `duties`, and claims on its next beat. Nothing it currently holds is affected, because
-  a daemon in no set holds nothing.
+- _Removal from a set._ (1) Mark the daemon **leaving**: the ledger stops granting to it
+  and stops re-granting its groups to anyone else — the leaving mark is a claim fence on
+  exactly those groups. (2) Send a correlated withdrawal request over the existing
+  connection carrying the new scope (`none`) and a transition generation; the daemon
+  fences every group it holds (the local `duty/revoke` effect — connections and
+  schedules stop, workspace and sessions survive) and acknowledges. (3) On the ack,
+  commit: delete the membership row, vacate the leases, lift the fence; the sweep
+  re-grants to remaining members. If the daemon is unreachable or does not ack, the
+  operation does **not** proceed to (3) on a timeout — it waits out the daemon's own
+  self-fence horizon (§1, #976), after which the daemon has provably stopped serving
+  and the leases have lapsed on their own; then it commits. Successors never receive an
+  immediately vacated lease from an unconfirmed leaver.
+- _Addition to a set_ of a daemon with no directly placed agents. There is nothing to
+  stop, so the transition is one phase: write the row, send the scope update, the daemon
+  starts reporting `duties` and claims on its next beat.
 
 **Enrolling a daemon that has directly placed agents.** A `daemon`-placed agent is
-outside the ledger; the moment its machine joins a set, that machine enforces duties and
-would serve only what it holds a lease for — so every agent still pinned to it becomes
-unservable. That state is not allowed to exist. Enrollment **re-places those agents onto
-the set atomically**, in the same transaction that writes the membership row: their
-`placementKind` becomes `set` with that set's id, and the sweep grants them back to the
-same machine on its next beat (it is a member and it already has them installed, so
-install-on-grant is a no-op refresh). This is what an operator enrolling a machine means
-— "let its agents fail over" — and it is why enrollment is a control-plane action rather
-than a daemon-side flag. The converse is also enforced: a `daemon` placement may not
-name a machine that is in a set (the console does not offer it; the route refuses it).
-Leaving a set is the same story reversed only if the operator asks for it: by default the
-agents stay `set`-placed and re-grant to remaining members; an operator who wants them
-pinned back to the leaving machine moves them explicitly, which the existing move
-machinery already does. A daemon in
-no group behaves exactly as today: no `duties` on the heartbeat, no enforcement, serves
-what it is placed with. This is also the last step of #982's argument: the enforcement
-predicate becomes "participates in a member set", which is what the design always
-said membership should be.
+outside the ledger; the moment its machine enforces duties it serves only what it holds
+a lease for, so every agent still pinned to it would become unservable. That state is
+not allowed to exist, and the transition that avoids it is **the existing agent move**,
+run once per pinned agent with the set as the target — not a new mechanism: (1) mark
+the daemon **entering** (a claim fence on those agents' groups, so no member can win them
+mid-transition); (2) for each pinned agent, the move's detach step stops runtime
+authority on the machine and confirms it, exactly as a machine-to-machine move does;
+(3) commit in one transaction — the agents become `set`-placed on that set, the
+membership row is written, the fence lifts — and the daemon receives its new scope; on
+its next beat it claims those groups back and re-activates them (it is a member and it
+still has the replicas installed, so install-on-grant is a refresh, not a fetch). The
+operator sees one action; underneath it is the move convention applied N times inside
+one fence. If the machine is unreachable, the same rule as the move applies:
+enrollment uses the move's existing force-reassign semantics — the operator confirms
+the source is permanently stopped, and the agents become set-placed without the
+detach — and successors claim them after the source's lease/self-fence horizon, not
+before. The converse is enforced statically: a `daemon` placement may not name a
+machine that is in a set (the console does not offer it; the route refuses it).
+
+Leaving a set does not move agents by itself: they stay `set`-placed and re-grant to
+the remaining members. An operator who wants them pinned back to the leaving machine
+moves them explicitly afterwards, which the existing move machinery already does. Both
+transitions carry a generation so a stale ack (from a previous attempt, or from a
+daemon that reconnected mid-transition) cannot commit the wrong step.
 
 ## 4. What does not change
 
