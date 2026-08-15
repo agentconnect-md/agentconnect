@@ -2888,6 +2888,12 @@ model DutyGroup {
   holder    String?   @db.Uuid // member (daemon) the group is granted to; null ⇒ never claimed or released
   term      BigInt    @default(0) // monotonic per group; bumped on EVERY grant/re-grant — the fencing token
   expiresAt DateTime? @db.Timestamptz(6) // renewal horizon written by the granter; past ⇒ vacant and grantable
+  // When the CURRENT holder first reported this group in its heartbeat digest — the earliest
+  // moment it is provably serving, because #972 applies a grant only after the install succeeded.
+  // Null while a grant is outstanding; reset whenever `holder` changes. Ingress addressing waits
+  // for it; delivery and `duty/fetch` deliberately do not (a member must receive its bundle to
+  // become confirmed at all).
+  confirmedAt DateTime? @db.Timestamptz(6)
   createdAt DateTime  @default(now()) @db.Timestamptz(6)
   updatedAt DateTime  @updatedAt @db.Timestamptz(6)
 
@@ -2897,6 +2903,7 @@ model DutyGroup {
   @@index([orgId])
   @@index([holder])
   @@index([expiresAt])
+  @@index([confirmedAt])
   @@map("duty_group")
 }
 

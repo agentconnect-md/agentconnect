@@ -18,9 +18,19 @@ import { dutyEligibility, placementTargets, type PlacementRef } from '../domain/
 import { AgentId, type DaemonId } from '../domain/ids.js'
 import { systemClock, type Clock } from '../domain/clock.js'
 
-/** The duty-ledger read the resolver needs — the delivery half of `holdsAgent`. */
+/**
+ * The duty-ledger reads the resolver needs. TWO of them, and the difference is the point:
+ *
+ * - `holdersOf` — every live lease. Who must RECEIVE the agent's updates, and who may act for it.
+ *   A member that is still installing is included, because it has to receive its bundle to finish.
+ * - `confirmedHoldersOf` — only holds the member has reported in its digest. Who INGRESS may be
+ *   addressed at. Publishing a member here before it has admitted the grant is the same error
+ *   #976 fixed for the fence — the gate opens before the fact — and on a projection there is no
+ *   second chance: a cross-daemon peer wake forwards once and gets a terminal miss.
+ */
 export interface DutyHolderReader {
   holdersOf(agentId: AgentId, now: Date): Promise<DaemonId[]>
+  confirmedHoldersOf(agentId: AgentId, now: Date): Promise<DaemonId[]>
 }
 
 /** An agent as the resolver reads it: its identity plus the placement columns. */
@@ -41,6 +51,36 @@ export class PlacementResolver {
   private holders(agentId: string): Promise<DaemonId[]> {
     if (!this.deps.duties) return Promise.resolve([])
     return this.deps.duties.holdersOf(AgentId(agentId), new Date(this.deps.clock.now()))
+  }
+
+  private confirmedHolders(agentId: string): Promise<DaemonId[]> {
+    if (!this.deps.duties) return Promise.resolve([])
+    return this.deps.duties.confirmedHoldersOf(AgentId(agentId), new Date(this.deps.clock.now()))
+  }
+
+  /**
+   * Every daemon INGRESS may be addressed at. `servingDaemons` minus the holds the member has not
+   * confirmed yet — a grant it has not installed is a lease, not a route.
+   *
+   * Between a grant and its first digest this names NOBODY for a pool agent. For platform ingress
+   * that is fully covered — the trigger reaches a member and claims through the activation
+   * rendezvous. For a cross-daemon peer wake it is NOT covered, and the honest reason to prefer it
+   * anyway is narrower than "absence is retryable", because absence is terminal too
+   * (`admits()` fails closed on an agent missing from the directory, so the wake is refused
+   * locally as `not_allowed`): naming the installing member instead makes the relay AND the target
+   * cache a terminal `not_found` against that `deliveryId`, so even a retransmit stays dead after
+   * the member is ready. Absence refuses the attempt without poisoning the next one.
+   *
+   * Closing it properly needs a retryable verdict on `rd/agentmsg`, which that wire does not have
+   * — see the PR body; it is its own change.
+   */
+  async routableDaemons(agent: ResolvableAgent): Promise<string[]> {
+    return [...new Set([...placementTargets(agent), ...(await this.confirmedHolders(agent.id))])]
+  }
+
+  /** The one daemon an ingress projection should name, or null when nothing may be addressed. */
+  async routableDaemon(agent: ResolvableAgent): Promise<DaemonId | null> {
+    return ((await this.routableDaemons(agent))[0] as DaemonId | undefined) ?? null
   }
 
   /** Every daemon that serves this agent: what placement names, then every live duty holder. */
@@ -70,7 +110,9 @@ export class PlacementResolver {
   ): Promise<(T & { daemonId: string })[]> {
     const resolved: (T & { daemonId: string })[] = []
     for (const row of rows) {
-      const daemonId = await this.servingDaemon({ ...row, id: row.agentId })
+      // ROUTABLE, not serving: this directory is what a cross-daemon peer wake is addressed
+      // through, and it forwards once.
+      const daemonId = await this.routableDaemon({ ...row, id: row.agentId })
       if (daemonId) resolved.push({ ...row, daemonId })
     }
     return resolved
@@ -85,8 +127,8 @@ export class PlacementResolver {
    * there is exactly one daemon that may serve it.
    */
   async dispatchDaemon(agent: ResolvableAgent): Promise<DaemonId | null> {
-    const serving = await this.servingDaemon(agent)
-    if (serving) return serving
+    const routable = await this.routableDaemon(agent)
+    if (routable) return routable
     if (dutyEligibility(agent).scope !== 'install-wide') return null
     return ((this.deps.liveMembers?.() ?? [])[0] as DaemonId | undefined) ?? null
   }

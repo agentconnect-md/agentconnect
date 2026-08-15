@@ -264,6 +264,21 @@ export class DutyLeaseService {
     const heldById = new Map(held.map((g) => [g.groupId, g]))
     const digestIds = new Set(duties.held.map((d) => d.groupId))
 
+    // The ADD side of routing convergence, and it belongs HERE rather than at the grant: a grant is
+    // applied daemon-side only after its install succeeds (#972), so a group appearing in the
+    // digest is the proof that the member is actually serving it. Publishing at grant time is the
+    // same error #976 fixed for the fence — the gate opening before the fact — and on a pushed
+    // projection it costs a message: relay ingress recovers through the rendezvous, but a
+    // cross-daemon peer wake forwards ONCE and takes a terminal miss.
+    //
+    // `confirmHeld` only stamps unconfirmed rows, so this fires on the first beat that reports a
+    // group and never again — no per-beat churn.
+    const confirmed = await this.repo.confirmHeld(daemonId, [...digestIds], now)
+    if (confirmed.length > 0) {
+      const groups = held.filter((g) => confirmed.includes(g.groupId))
+      this.routing?.kick(agentIdsOf(groups))
+    }
+
     // Re-issue held groups the member does not know it holds (restart / lost
     // grant EVT) or knows only at a stale term — the reconnect crossing point:
     // confirm the terms or supersede, never both. A missing group will occupy a
@@ -344,9 +359,6 @@ export class DutyLeaseService {
         'held duty groups grew past the grant member cap; superseded and vacated — move them to a dedicated tier'
       )
     }
-    // Fresh grants moved the agent to THIS member; the surrendered ones moved it away. Both are
-    // holder changes, and the projections that address a daemon have to be re-derived for them.
-    if (granted.length > 0) this.routing?.kick(agentIdsOf(granted))
     const grants = await this.stamp([
       ...regrant.map(toGrantEntry),
       ...deliverable(stale).map(toGrantEntry),
@@ -397,7 +409,9 @@ export class DutyLeaseService {
         return { granted: false }
       }
       const [grant] = await this.stamp([toGrantEntry(group)])
-      this.routing?.kick(agentIdsOf([group]))
+      // No routing kick here: like every other grant this is not yet a fact — the claimant
+      // installs before it answers, but the ledger has not seen the group in a digest. The
+      // member's next beat confirms it and converges then.
       return { granted: true, grant }
     })
   }

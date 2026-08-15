@@ -139,7 +139,7 @@ export class HttpBotOrchestrator {
     private readonly agentDelivery: AgentDelivery,
     /** Names the one member the relay addresses ingress to. Placement when it names a machine;
      *  for a pool agent, the member currently holding its duty — placement names none. */
-    private readonly placement: Pick<PlacementResolver, 'servingDaemon'> = PLACEMENT_ONLY
+    private readonly placement: Pick<PlacementResolver, 'routableDaemon'> = PLACEMENT_ONLY
   ) {}
 
   /**
@@ -753,7 +753,7 @@ export class HttpBotOrchestrator {
     for (const integration of integrations) {
       const agent = agentById.get(integration.agentId)
       if (!agent) continue
-      const daemonId = await this.placement.servingDaemon(agent)
+      const daemonId = await this.placement.routableDaemon(agent)
       if (!daemonId) continue
       placed.push({ integration, agent, daemonId, gated: isGatedAgent(agent) })
     }

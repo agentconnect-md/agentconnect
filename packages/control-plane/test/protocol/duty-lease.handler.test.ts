@@ -997,12 +997,13 @@ describe('routing follows the holder (protocol level, real Postgres)', () => {
 
   // THE test this whole change exists for. "The sweep re-granted it" is not "it heals" unless the
   // thing that ADDRESSES a daemon moves too: the relay dispatches an inbound webhook on the
-  // compiled hook rule, and that rule bakes in a member id. So: A holds, A lapses, B is granted —
-  // and the rule the relay would dispatch on now names B, with no reconnect and no trigger.
+  // compiled hook rule, and that rule bakes in a member id. So: A holds, A lapses, B is granted and
+  // reports the group — and the rule the relay would dispatch on now names B, with no reconnect and
+  // no trigger anywhere in the sequence.
   //
-  // Mutation check: drop the `routing?.kick(...)` from the lease exchange's grant branch and the
-  // rule stays pinned to A, so the message keeps arriving at the member that lost the agent.
-  it('re-addresses the compiled hook rule at the new holder after a grant, with no reconnect', async () => {
+  // Mutation check: drop the `routing?.kick(...)` from the confirmation branch of the exchange and
+  // the rule stays pinned to A, so the webhook keeps arriving at the member that lost the agent.
+  it('re-addresses the compiled hook rule at the new holder, with no reconnect', async () => {
     const start = 1_700_000_000_000
     const h = buildWsHarness(prisma)
     await seedPooledAgentWithHook()
@@ -1010,8 +1011,11 @@ describe('routing follows the holder (protocol level, real Postgres)', () => {
     await seedGroup({ holder: OTHER, term: 4n, expiresAt: new Date(start - 1) })
     const { stub } = await ready(h)
 
-    stub.inject('heartbeat', heartbeat({ held: [], headroom: 4 }))
-    await stub.expectFrame('duty/grant')
+    // Beat 1 claims. Beat 2 reports the group, which is the first moment the member is provably
+    // serving it — publishing at beat 1 would address a member still running `duty/fetch`.
+    await beat(stub, { held: [], headroom: 4 })
+    expect(stub.sent.some((f) => f.type === 'duty/grant')).toBe(true)
+    await beat(stub, { held: [{ groupId: GROUP, term: '5' }], headroom: 4 })
     // The converger is debounced on the same clock the exchange runs on.
     h.clock.advance(1)
     await vi.waitFor(() => expect(h.hookAssigns.length).toBeGreaterThan(0))
@@ -1034,5 +1038,119 @@ describe('routing follows the holder (protocol level, real Postgres)', () => {
     await beat(stub, { held: [], headroom: 0 })
     h.clock.advance(1)
     await vi.waitFor(() => expect(h.hookRemovals).toContain(HOOK))
+  })
+})
+
+describe('a grant is not a route until the digest confirms it (protocol level, real Postgres)', () => {
+  const HOOK2 = '77777777-7777-4777-8777-77777777770b'
+
+  async function seedPooledAgent(): Promise<void> {
+    await prisma.agent.create({
+      data: { id: AGENT, orgId: DEFAULT_ORG_ID, name: 'peer', runtime: 'claude', placementKind: 'pool' }
+    })
+  }
+
+  /** The flat peer directory as the relay and every daemon receive it — what an A2A wake resolves
+   *  through, and what `admits()` fails closed against. */
+  async function directoryDaemonFor(h: ReturnType<typeof buildWsHarness>, agentId: string): Promise<string | null> {
+    const rows = await h.placement.resolveDirectory(await h.deps.agent.orgDirectory(OrgId(DEFAULT_ORG_ID)))
+    return rows.find((r) => r.agentId === agentId)?.daemonId ?? null
+  }
+
+  // The #976 shape, on a projection: the gate must not open before the fact. A grant commits the
+  // lease; the member has NOT installed yet (`duty/fetch` is still in flight), and #972 applies the
+  // grant only once that install succeeds — so "reported in the digest" is the first moment the
+  // member is provably serving. Publishing at grant time makes the relay and the target both cache
+  // a terminal `not_found` against that deliveryId, which stays dead even after the member is ready.
+  it('does not name the new holder in the peer directory until it reports the group', async () => {
+    const start = 1_700_000_000_000
+    const h = buildWsHarness(prisma)
+    await seedPooledAgent()
+    await seedGroup({ holder: OTHER, term: 4n, expiresAt: new Date(start - 1) })
+    const { stub } = await ready(h)
+
+    // Beat 1 claims the vacancy. The lease is DAEMON's from this moment. Awaited to completion:
+    // the lane drops a beat injected while one is still running.
+    await beat(stub, { held: [], headroom: 4 })
+    const grant = await stub.expectFrame('duty/grant')
+    if (!isFrame('duty/grant')(grant)) throw new Error('expected duty/grant')
+    expect((await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })).holder).toBe(DAEMON)
+
+    // ...and the directory still names nobody: a lease is not yet a route.
+    expect(await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })).toMatchObject({ confirmedAt: null })
+    expect(await directoryDaemonFor(h, AGENT)).toBeNull()
+
+    // Beat 2 carries the group in the digest — the member installed and opened its gate.
+    await beat(stub, { held: [{ groupId: GROUP, term: '5' }], headroom: 4 })
+    expect((await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })).confirmedAt).not.toBeNull()
+    expect(await directoryDaemonFor(h, AGENT)).toBe(DAEMON)
+  })
+
+  it('publishes the hook rule on confirmation, not on the grant', async () => {
+    // Same property on the other pushed projection, and the one with a spy on the wire.
+    const start = 1_700_000_000_000
+    const h = buildWsHarness(prisma)
+    await seedPooledAgent()
+    await prisma.hookDef.create({
+      data: {
+        id: HOOK2,
+        orgId: DEFAULT_ORG_ID,
+        agentId: AGENT,
+        kind: 'webhook',
+        name: 'inbound',
+        enabled: true,
+        urlToken: 'wh-confirm-gate-token',
+        sessionMode: 'perDelivery'
+      }
+    })
+    await seedGroup({ holder: OTHER, term: 4n, expiresAt: new Date(start - 1) })
+    const { stub } = await ready(h)
+
+    await beat(stub, { held: [], headroom: 4 })
+    expect(stub.sent.some((f) => f.type === 'duty/grant')).toBe(true)
+    h.clock.advance(1)
+    await new Promise((r) => setTimeout(r, 30))
+    expect(h.hookAssigns.filter((rule) => rule.daemonId === DAEMON)).toEqual([])
+
+    await beat(stub, { held: [{ groupId: GROUP, term: '5' }], headroom: 4 })
+    h.clock.advance(1)
+    await vi.waitFor(() => expect(h.hookAssigns.some((rule) => rule.daemonId === DAEMON)).toBe(true))
+  })
+
+  it('confirms once, not on every beat — the stamp is first-write-wins', async () => {
+    const h = buildWsHarness(prisma)
+    const startAt = new Date(h.clock.now())
+    await seedPooledAgent()
+    await seedGroup({ holder: DAEMON, term: 1n, expiresAt: new Date(startAt.getTime() + LEASE_MS) })
+    const { stub } = await ready(h)
+
+    await beat(stub, { held: [{ groupId: GROUP, term: '1' }], headroom: 0 })
+    const first = (await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })).confirmedAt
+    expect(first).not.toBeNull()
+
+    h.clock.advance(5_000)
+    await beat(stub, { held: [{ groupId: GROUP, term: '1' }], headroom: 0 })
+    expect((await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })).confirmedAt).toEqual(first)
+  })
+
+  it('a re-grant to a DIFFERENT member drops the confirmation; renewal keeps it', async () => {
+    // The reset rule, both ways. A composition change re-grants IN PLACE and must not blank a
+    // working route; a claim by another member must.
+    const h = buildWsHarness(prisma)
+    const startAt = new Date(h.clock.now())
+    await seedPooledAgent()
+    await seedGroup({ holder: DAEMON, term: 1n, expiresAt: new Date(startAt.getTime() + LEASE_MS) })
+    const { stub } = await ready(h)
+    await beat(stub, { held: [{ groupId: GROUP, term: '1' }], headroom: 0 })
+    expect((await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })).confirmedAt).not.toBeNull()
+
+    // Lapse it, then let a different member take it.
+    await prisma.dutyGroup.update({ where: { id: GROUP }, data: { expiresAt: new Date(h.clock.now() - 1) } })
+    const repo = new PgDutyGroupRepo(prisma)
+    await repo.claimVacant(DaemonId(OTHER), 1, new Date(h.clock.now()), LEASE_MS, { scope: 'install-wide' })
+
+    const row = await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })
+    expect(row.holder).toBe(OTHER)
+    expect(row.confirmedAt).toBeNull()
   })
 })

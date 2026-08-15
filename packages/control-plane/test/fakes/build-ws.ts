@@ -90,6 +90,9 @@ export interface WsHarness {
    *  addresses a daemon, so "ingress follows the holder" is assertable on it directly. */
   hookAssigns: CapturedHookRule[]
   hookRemovals: string[]
+  /** The resolver the projections read through — lets a test ask what the peer directory would
+   *  publish right now without reaching through the orchestrator. */
+  placement: PlacementResolver
   codec: ApiKeyCodec
   /** Provision a daemon row + mint an API key for `daemonId`; returns the plaintext `apiKey`. */
   mintToken(daemonId: string): Promise<string>
@@ -306,6 +309,7 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
     clock,
     hookAssigns,
     hookRemovals,
+    placement: placementResolver,
     codec,
     mintCloudDaemon: async (daemonId: string) => {
       await prisma.daemon.create({ data: { id: daemonId, orgId: null, maxAgents: 8, status: 'ready' } })

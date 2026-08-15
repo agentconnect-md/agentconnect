@@ -120,6 +120,10 @@ async function boot(client: Record<string, unknown>) {
     organizationScope: () => 'frame',
     stop: async () => {},
     releaseDuties: vi.fn(async () => {}),
+    // An admission reports its new digest immediately: the CP holds every projection that
+    // ADDRESSES this member until it sees the group held, so waiting for the next tick would
+    // leave an agent this member is already serving unroutable.
+    reportDutiesNow: vi.fn(() => {}),
     // The memory registry reports body-free probe facts as soon as a definition lands.
     emitMemoryConnectionFacts: vi.fn(() => {}),
     ...client

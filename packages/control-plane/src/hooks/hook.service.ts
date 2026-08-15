@@ -46,7 +46,7 @@ export class HookService {
     private readonly agents: HookAgentReads,
     private readonly relayControl: RelayControlSender,
     /** Names the member a compiled rule dispatches to (placement, or the current duty holder). */
-    private readonly placement: Pick<PlacementResolver, 'servingDaemon'> = PLACEMENT_ONLY,
+    private readonly placement: Pick<PlacementResolver, 'routableDaemon'> = PLACEMENT_ONLY,
     /** github-kind compile source: the org's live installation set (the relay's
      *  runtime attribution gate, decision 6). Absent ⇒ github hooks never compile
      *  (deployment without the GitHub App). */
@@ -69,7 +69,7 @@ export class HookService {
     // The relay needs one member to address; for a pool agent that is the current duty holder,
     // since placement names none. Nothing serving it ⇒ the rule leaves the relay pool, exactly as
     // an unplaced agent's does.
-    const agentDaemonId = agent ? await this.placement.servingDaemon(agent) : null
+    const agentDaemonId = agent ? await this.placement.routableDaemon(agent) : null
     if (!agent || !agentDaemonId) return null
     const snapshot =
       typeof hook.configRevision === 'bigint' &&

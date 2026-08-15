@@ -12835,7 +12835,14 @@ export class Daemon {
   private settleDutyChange(result: DutyApplyResult): void {
     for (const agentId of result.agentsLost) this.stopServingAgent(agentId)
     const changed = result.added.length + result.updated.length + result.agentsGained.length + result.agentsLost.length
-    if (changed > 0) this.onDutyChanged()
+    if (changed === 0) return
+    // Report the new digest immediately. The CP publishes the projections that address this member
+    // only once it has SEEN the group held (the grant alone is not proof of an install), so waiting
+    // for the next tick leaves an agent this member is already serving unroutable for up to a
+    // heartbeat. Outside the enforcement gate below on purpose: the digest is sent, and the CP
+    // acts on it, whether or not this member is enforcing.
+    this.cpClient?.reportDutiesNow()
+    this.onDutyChanged()
   }
 
   /**

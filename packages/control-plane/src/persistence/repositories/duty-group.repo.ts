@@ -138,7 +138,7 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
     // nothing may serve an unplaced agent, and leaving the lease standing would keep one member
     // serving what the operator detached.
     const rows = await this.prisma.$queryRaw<{ id: string }[]>(Prisma.sql`
-      UPDATE "duty_group" g SET "holder" = NULL, "expiresAt" = NULL
+      UPDATE "duty_group" g SET "holder" = NULL, "expiresAt" = NULL, "confirmedAt" = NULL
       FROM "daemon" d
       WHERE g."orgId" = ${orgId} AND g."holder" IS NOT NULL AND d.id = g."holder"
         AND NOT ${noIneligibleAgent(Prisma.sql`g.id`, Prisma.sql`g."holder"`, Prisma.sql`d."orgId" IS NULL`)}
@@ -226,6 +226,9 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
         if (w.regrantTo !== null)
           await tx.dutyGroup.update({
             where: { id: w.groupId },
+            // `regrantTo` is the group's existing holder (the planner only re-grants in place), so
+            // its confirmation stands: it is still serving every member both compositions share,
+            // and dropping it would blank a working route over an ADDED member.
             data: { holder: w.regrantTo, term: { increment: 1 }, expiresAt }
           })
       }
@@ -237,7 +240,10 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
             orgId,
             holder: c.grantTo,
             term: c.grantTo !== null ? 1n : 0n,
-            expiresAt: c.grantTo !== null ? expiresAt : null
+            expiresAt: c.grantTo !== null ? expiresAt : null,
+            // A created row with a holder is a SPLIT inheriting its sole contributor's holder —
+            // the same member, already serving these members under the row this one came from.
+            confirmedAt: c.grantTo !== null ? opts.now : null
           }
         })
         await tx.dutyGroupMember.createMany({
@@ -293,7 +299,10 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
           FOR UPDATE SKIP LOCKED
         )
         UPDATE "duty_group" g
-        SET "holder" = ${holder}::uuid, "term" = g."term" + 1, "expiresAt" = ${expiresAt}, "updatedAt" = ${now}
+        SET "holder" = ${holder}::uuid, "term" = g."term" + 1, "expiresAt" = ${expiresAt}, "updatedAt" = ${now},
+            -- The grant is not yet a fact: the member has not installed it. Preserved when the
+            -- claimant is the same member re-taking its own lapsed lease — its replica is intact.
+            "confirmedAt" = CASE WHEN g."holder" IS DISTINCT FROM ${holder}::uuid THEN NULL ELSE g."confirmedAt" END
         FROM picked WHERE g.id = picked.id
         RETURNING g.id, g."orgId", g."holder", g."term", g."expiresAt"
       `)
@@ -328,7 +337,7 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
     // Vacate immediately but keep `term` — monotonicity is the whole token.
     await this.prisma.dutyGroup.updateMany({
       where: { holder, id: { in: groupIds } },
-      data: { holder: null, expiresAt: null }
+      data: { holder: null, expiresAt: null, confirmedAt: null }
     })
   }
 
@@ -343,6 +352,35 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
       LIMIT 1
     `)
     return rows.length > 0
+  }
+
+  async confirmHeld(holder: DaemonId, groupIds: readonly string[], now: Date): Promise<string[]> {
+    if (groupIds.length === 0) return []
+    // Idempotent and first-write-wins: only an unconfirmed row is stamped, so the returned set is
+    // exactly the groups whose hold became a fact on THIS beat — which is what the routing
+    // convergence is keyed on. Holder-conditional, so a digest naming a group the ledger has since
+    // moved confirms nothing.
+    const rows = await this.prisma.$queryRaw<{ id: string }[]>(Prisma.sql`
+      UPDATE "duty_group" SET "confirmedAt" = ${now}
+      WHERE "holder" = ${holder}::uuid AND "confirmedAt" IS NULL
+        AND id = ANY(${groupIds as string[]}::uuid[])
+      RETURNING id
+    `)
+    return rows.map((r) => r.id).sort()
+  }
+
+  async confirmedHoldersOf(agentId: AgentId, now: Date): Promise<DaemonId[]> {
+    // `holdersOf` with the confirmation term: the same live-lease join, restricted to holders that
+    // have reported the group. INGRESS addressing uses this one — naming a member that is still
+    // installing turns a routable message into a terminal miss.
+    const rows = await this.prisma.$queryRaw<{ holder: string }[]>(Prisma.sql`
+      SELECT DISTINCT g."holder" AS holder FROM "duty_group_member" m
+      JOIN "duty_group" g ON g.id = m."groupId"
+      WHERE m."kind" = 'agent' AND m."refId" = ${agentId}
+        AND g."holder" IS NOT NULL AND g."expiresAt" IS NOT NULL AND g."expiresAt" > ${now}
+        AND g."confirmedAt" IS NOT NULL
+    `)
+    return rows.map((r) => r.holder as DaemonId).sort()
   }
 
   async holdersOf(agentId: AgentId, now: Date): Promise<DaemonId[]> {
@@ -419,7 +457,13 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
             id: row.id,
             OR: [{ holder: null }, { expiresAt: null }, { expiresAt: { lt: now } }]
           },
-          data: { holder, term: { increment: 1 }, expiresAt }
+          // Same rule as `claimVacant`: a new holder has not proved it serves the group yet.
+          data: {
+            holder,
+            term: { increment: 1 },
+            expiresAt,
+            ...(row.holder === holder ? {} : { confirmedAt: null })
+          }
         })
         if (won.count === 1) {
           const granted = await tx.dutyGroup.findUniqueOrThrow({ where: { id: row.id } })

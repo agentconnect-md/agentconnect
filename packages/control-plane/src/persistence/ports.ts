@@ -5093,6 +5093,14 @@ export interface DutyGroupRepo {
    *  agent? The authorization for `duty/fetch`: a member may pull exactly the
    *  agent definitions it has won, and nothing else. */
   holdsAgent(holder: DaemonId, agentId: AgentId, now: Date): Promise<boolean>
+  /** Stamp `confirmedAt` on the groups this holder reports in its heartbeat digest, returning the
+   *  ones that became confirmed on THIS beat. A grant is applied daemon-side only after its
+   *  install succeeds (#972), so the digest IS the proof that the member is serving — the same
+   *  signal the self-fence and CP renewal already ride, not a new one. */
+  confirmHeld(holder: DaemonId, groupIds: readonly string[], now: Date): Promise<string[]>
+  /** {@link DutyGroupRepo.holdersOf} restricted to CONFIRMED holds — who INGRESS may be addressed
+   *  at. A holder that is still installing is a live lease and not yet a route. */
+  confirmedHoldersOf(agentId: AgentId, now: Date): Promise<DaemonId[]>
   /** Every member currently holding an unexpired lease on a group covering this
    *  agent — the delivery half of {@link DutyGroupRepo.holdsAgent}, so a live
    *  update reaches whoever serves the agent rather than only where it is placed

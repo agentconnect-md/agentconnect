@@ -290,6 +290,8 @@ export class CpClient {
   private reconnectTimer?: TimerHandle
   private lastAuthedEpoch = 0 // for resume on reconnect (per-agent seq tail is out of scope)
   private heartbeatTimer?: TimerHandle
+  /** Debounce for {@link CpClient.reportDutiesNow} — one extra beat per admission, not per group. */
+  private dutyReportTimer?: TimerHandle
   private heartbeatMs = 0
   /** Lease horizon: the CP's `auth/ok` value, replaced by each renewal's own. */
   private dutyLeaseMs?: number
@@ -1212,6 +1214,26 @@ export class CpClient {
       if (this.state === 'READY') this.sendHeartbeat()
       if (this.state === 'READY' || this.state === 'DRAINING') this.armHeartbeat()
     }, this.heartbeatMs)
+  }
+
+  /**
+   * Report the duty digest NOW instead of waiting out the interval.
+   *
+   * The digest is the CP's proof that a grant is installed — a grant is applied here only after
+   * its install succeeds, so "in the digest" is the first moment this member is provably serving,
+   * and the CP holds every projection that ADDRESSES this member until it sees one. Letting an
+   * admission sit until the next tick therefore costs up to a full heartbeat of unroutable time
+   * for an agent that is already running, which is the gap a peer wake falls into.
+   *
+   * Coalesced onto one extra beat: an admission routinely settles several groups, and each one
+   * calls this. Dormant off a frame-mode connection, where there is no digest at all.
+   */
+  reportDutiesNow(): void {
+    if (this.organizationMode !== 'frame' || this.state !== 'READY' || this.dutyReportTimer !== undefined) return
+    this.dutyReportTimer = this.deps.clock.setTimeout(() => {
+      this.dutyReportTimer = undefined
+      if (this.state === 'READY') this.sendHeartbeat()
+    }, 0)
   }
 
   private sendHeartbeat(): void {
