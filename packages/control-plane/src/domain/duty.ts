@@ -4,14 +4,15 @@
 
 export type DutyMemberKind = 'agent' | 'bot'
 
-/** An active Integration row whose bot the daemon itself connects (socket transport). */
+/** An active Integration row whose bot the daemon itself connects (socket transport).
+ *  An edge only forces CO-LOCATION; it is not what makes an agent ownable. */
 export interface DutyEdge {
   agentId: string
   botId: string
 }
 
-/** An enabled cron: the agent must belong to a claimable group even with no bots. */
-export interface CronSeed {
+/** Every agent is ownable: it seeds at least a singleton, with or without edges. */
+export interface AgentSeed {
   agentId: string
 }
 

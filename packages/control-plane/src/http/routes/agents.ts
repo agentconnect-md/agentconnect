@@ -1517,6 +1517,9 @@ export function agentRoutes(deps: HttpDeps) {
           // closed until the registry validates it.
           await pushExternalMemoryBeforeAgent(agent)
           await replicateUpsert(agent) // no-op until placed; reconcile carries it otherwise
+          // Mint the agent's duty group now, so a pool member can claim it on its
+          // next beat instead of waiting for the first trigger's rendezvous.
+          deps.recomputeDuties?.(agent.orgId)
           // A create that arrives already PLACED (`daemonId` in the body) must also enter
           // the peer directory now. `replicateUpsert` only ships the AgentSpec (same-daemon
           // authorization); a peer WAKE is authorized against the collaboration snapshot,
@@ -2483,6 +2486,9 @@ export function agentRoutes(deps: HttpDeps) {
             }
           }
           await replicateRemove(current.id, current.daemonId, current.orgId)
+          // AFTER the fan-out: `remove` resolves holders from the membership rows
+          // the reap deletes, and the agent row this reads by is already gone.
+          deps.recomputeDuties?.(current.orgId)
           if (current.daemonId && current.memory?.provider === 'external') {
             await removeExternalMemoryFromDaemonIfUnused(current.orgId, current.daemonId, current.memory.connectionId)
           }

@@ -81,12 +81,12 @@ pool membership.
 | D2  | Sleep                   | Agents sleep (existing sandbox suspension); wake = existing `SandboxClaim` flow; no new machinery                                                                                                     |
 | D3  | Connection direction    | The duty holder dials the sandbox; the shim is a hardened listener; one NetworkPolicy ingress-rule amendment                                                                                          |
 | D4  | Member anatomy          | Singleton machinery + per-agent rooms + thin refcounted org contexts; the session stays the atomic unit                                                                                               |
-| D5  | Duty group              | The claim unit is the connected component of the agent↔daemon-held-bot graph, claimed atomically under one term                                                                                       |
+| D5  | Duty group              | The claim unit is the connected component of the agent↔daemon-held-bot graph — every agent is a node, so an edgeless one is its own singleton — claimed atomically under one term                     |
 | D6  | Lease service           | CP-hosted `duty_group` ledger over the fleet WS, with a derived membership projection; vacancy grant = the claim call                                                                                 |
 | D7  | Lease timing            | Batched renewals; T_fence self-fence < T_reassign; startup recovery grace                                                                                                                             |
 | D8  | Cross-member paths      | `rd/agentmsg` stays A2A-only; the rendezvous adds a `not_holder` NAK on the inbound `rd/msg` path; no redirects, no presence streams; the ledger is the directory                                     |
 | D9  | Org context on the wire | Install-wide connection with per-frame `orgId`; reconnect state is a combined multi-org snapshot / revision-fenced stream — no per-org subscription, room, or socket                                  |
-| D10 | Crons                   | A time-based ingress edge: an enabled cron joins the duty-group computation, making the group proactively claimable; the holder fires the schedule locally with today's daemon machinery              |
+| D10 | Crons                   | A time-based trigger against a group that is already proactively claimable (D5), so a schedule always has a home; the holder fires it locally with today's daemon machinery                           |
 | D11 | State                   | Separate data-plane PG, shared tables with an `org` column (org injected by the store handle, never by call sites); daemon-owned async store interfaces, SQLite + PG drivers                          |
 | D12 | Upgrades                | maxSurge ≥ 1, maxUnavailable = 0; drain = duty release + sleep-as-migration                                                                                                                           |
 | D13 | Failure model           | Explicit matrix; two accepted loss windows                                                                                                                                                            |
@@ -163,8 +163,8 @@ agent's work.
 A sleeping agent still belongs to a duty group (§6), and if that group
 contains a daemon-held bot the group stays claimed while the agent sleeps —
 that held duty is precisely what lets the wake message arrive. A singleton
-group with no daemon-held bot has no reason to be held at all, and is claimed
-on the first trigger.
+group with no daemon-held bot carries no connection to keep alive, so it may
+sit vacant until a trigger arrives — but the group itself exists either way.
 
 Wake is the existing spawn flow: whichever member needs the agent creates the
 `SandboxClaim` idempotently (`SandboxApi.ensureClaim`, deterministic name
@@ -183,7 +183,7 @@ the `Bot` and `Integration` rows it already owns.
 
 **The ledger is a `duty_group` table, not columns on existing rows.** Per-row
 leases cannot express the claim unit of §6: they are exactly the independent
-claims that would give one agent two homes, a botless cron agent has no
+claims that would give one agent two homes, a botless agent has no
 `Integration` row to carry a lease at all, and two already-held groups merging
 have no row on which to record the single surviving holder. The shape
 (`packages/control-plane/prisma/schema.prisma`, repo in
@@ -192,9 +192,9 @@ have no row on which to record the single surviving holder. The shape
 - `duty_group` — `(orgId, holder, term, expiresAt)`, one row per connected
   component, the only thing ever claimed.
 - `duty_group_member` — the derived `(agentId|botId → group)` projection,
-  recomputed from `Integration`/`CronDef` rows whenever an edge changes; its
-  composite primary key makes "one home per agent / per bot" a database
-  invariant.
+  recomputed from the org's `Agent` and `Integration` rows whenever an agent or
+  an edge changes; its composite primary key makes "one home per agent / per
+  bot" a database invariant.
 
 **`term` is the fencing token**: monotonic per group, bumped on _every_ grant
 and never on renewal. **Vacancy is temporal**, not referential: a group is
@@ -220,9 +220,9 @@ former members — which makes "the holder of the larger group keeps the merged
 group, ties broken by the lower groupId" a corollary, lets splits follow the
 largest fragment without eviction, and names every superseded holder in the
 plan. The sweep walks orgs on a keyset rotation; a coalescing `kick(orgId)`
-runs the same recompute promptly from the mutation seams (integration
-create/delete, cron upsert/remove, placement moves), with the rotation as the
-backstop.
+runs the same recompute promptly from the mutation seams (agent create/delete,
+integration create/delete, cron upsert/remove, placement moves), with the
+rotation as the backstop.
 
 **The lease protocol rides the existing heartbeat.** Not a new connection,
 timer, or tick (`orchestrator/dutyLease.ts`):
@@ -287,20 +287,36 @@ mechanism count is forever.
 | ----------------------------------------------------- | ------------------------------- | -------------------------------------------------------------------------------------------------------------- |
 | Agent with agent-bound bots (Telegram, Discord)       | `{agent, bot…}`                 | Ingress and execution co-located by construction                                                               |
 | Shared daemon-held bot (Slack Socket Mode, Feishu WS) | `{bot, …every agent it serves}` | One socket per bot token — its agents cluster at the socket's owner                                            |
-| Agent with an enabled cron                            | `{agent, cron edges…}`          | A cron is a time-based ingress edge (§9): the group is proactively claimable so the schedule always has a home |
-| Relay-ingress-only / webchat / A2A agent              | `{agent}`                       | A singleton, created on the first trigger's claim ("claiming creates the lease")                               |
+| Agent with an enabled cron                            | `{agent}`                       | A cron needs a home like any other trigger; the singleton below already is one, so the schedule always has one |
+| Relay-ingress-only / webchat / A2A agent              | `{agent}`                       | A singleton, derived by the recompute — every agent is ownable, so it is proactively claimable                 |
 
-Edges come from active `Integration` rows whose bot has `transport: 'socket'`
-plus enabled `CronDef` rows; relay-ingress (`http`) integrations create no
-edge because the relay, not the daemon, owns that socket. An oversized group
-is the mechanical signal for a dedicated daemon (D16).
+**Every agent is a node.** The component set is seeded from the org's `agent`
+rows and then merged by edges; an edge only forces **co-location**, it is not
+what makes an agent ownable. Edges come from active `Integration` rows whose
+bot has `transport: 'socket'`; relay-ingress (`http`) integrations create no
+edge because the relay, not the daemon, owns that socket. Crons need no input
+of their own — a cron's agent is an agent. An oversized group is the mechanical
+signal for a dedicated daemon (D16).
+
+Deriving the singleton rather than minting it on first contact is what keeps
+the ledger self-consistent: an edgeless agent used to appear in **no** computed
+component, so the recompute's final "delete every group no component claimed"
+pass reaped the singleton the activation rendezvous had just minted, and the
+next trigger minted it again — a grant/revoke loop that interrupted the agent's
+in-flight turn on every sweep. The cost is one `duty_group` row per agent per
+org, most of them permanently vacant in a deployment whose agents live on
+org-scoped daemons; vacancy is cheap by construction (§5) and the `incumbent`
+grant policy filters those rows out inside `claimVacant`, so they consume no
+grant budget.
 
 ### The activation rendezvous
 
 A trigger for an _unheld_ group has nowhere to go — the ledger names no holder
 for a group nobody has claimed. The resolution keeps members volunteering and
 adds no component: the relay routes the trigger to **any connected member**,
-and that member claims the group on receipt.
+and that member claims the group on receipt. The claim normally lands on a
+group the recompute already derived; minting one is the fallback for the window
+between an agent's creation and its first sweep.
 
 - The daemon's `rd/msg` handler checks its duty registry (one gate covers all
   four message sources). On a miss it sends `duty/claim`; a win returns a
@@ -407,13 +423,13 @@ Nothing here is new mechanism: the polling connection is today's
 `K8sDriver.ensureSandbox`/`bindChannel` with the dial direction flipped, and
 the session machinery is untouched.
 
-## 9. Crons are a time-based ingress edge (D10)
+## 9. Crons are a time-based trigger, not an input (D10)
 
 An enabled `CronDef` is a standing reason for its agent's duty group to be
-held — exactly as a bot connection is — so the group computation takes
-`CronDef` rows as input alongside `Integration` rows, and a cron-bearing group
-is **proactively claimable**: it appears in the vacancy pool even while its
-agent sleeps. The holder loads the schedule with the ordinary daemon-side
+held — exactly as a bot connection is. It needs no input of its own: every
+agent already seeds a component (§6), so a cron-bearing group is **proactively
+claimable** like any other, appearing in the vacancy pool even while its agent
+sleeps. The holder loads the schedule with the ordinary daemon-side
 machinery (`croner` in `packages/daemon/src/scheduler/scheduler.ts`, its
 roster filter following group holdership) and fires it locally; at fire time
 the holder is already the agent's home, so the wake is §8 with no routing step

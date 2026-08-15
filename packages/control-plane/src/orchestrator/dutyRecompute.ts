@@ -1,6 +1,6 @@
 // DutyRecomputeSweep — keeps the duty ledger's membership projection derived
 // from reality: every tick it walks a slice of orgs (keyset rotation), recomputes
-// connected components from Integration/CronDef rows, and applies the plan.
+// connected components from the org's agents and Integration rows, applies the plan.
 // The sweep only WRITES THE LEDGER — grants, re-grants after a merge, and
 // supersessions all reach daemons through the next heartbeat's lease exchange,
 // so no delivery mechanism exists here to duplicate or race it.
@@ -113,8 +113,8 @@ export class DutyRecomputeSweep {
   }
 
   async recomputeOrg(orgId: string): Promise<void> {
-    const { edges, seeds } = await this.repo.computeInputs(OrgId(orgId))
-    const components = computeDutyComponents(edges, seeds)
+    const { edges, agents } = await this.repo.computeInputs(OrgId(orgId))
+    const components = computeDutyComponents(edges, agents)
     const now = new Date(this.clock.now())
     await this.repo.applyReconcile(
       OrgId(orgId),
