@@ -26,6 +26,7 @@ import {
   transcriptQuoted,
   type InboxRow,
   type OrchestrationRow,
+  type SessionMetadataOutboxRow,
   type SessionPurgeRow,
   type SessionRecord,
   type SubtaskRow,
@@ -808,9 +809,10 @@ const MAX_TOTAL_TURNS_PER_WINDOW = 60
 // would turn a long outage into a memory/socket fan-out spike.
 const MAX_HOOK_REPORT_INFLIGHT = 100
 
-/** Backoff after a session-metadata persistence request fails while the socket
- * remains READY. Reconnect also kicks the durable drain immediately. */
+/** Backoff after a session-metadata persistence failure while the socket remains READY. */
 const SESSION_METADATA_RETRY_MS = 5_000
+const SESSION_METADATA_FAILURES_BEFORE_DEFER = 5
+const SESSION_METADATA_DEFER_MS = 5 * 60_000
 
 /** Connectable when there is a URL and a credential: an API key, or — in-cluster — the
  *  projected ServiceAccount token this pod presents instead of one. */
@@ -16254,16 +16256,9 @@ export class Daemon {
     }
     const drain = this.runSessionMetadataDrain(cp).finally(() => {
       if (this.sessionMetadataDrain === drain) this.sessionMetadataDrain = undefined
-      // Close the empty-read/new-write race: a producer that observed the old
-      // in-flight promise relies on this final check to refill the drain.
       try {
-        if (
-          !this.draining &&
-          this.cpClient?.supportsServerFeature?.(SESSION_METADATA_ACK_FEATURE) &&
-          this.store.hasPendingSessionMetadata()
-        ) {
-          this.scheduleSessionMetadataRetry(0)
-        }
+        // Close the empty-read/new-write race and re-arm the earliest deferred snapshot.
+        this.schedulePendingSessionMetadataDrain()
       } catch (err) {
         this.log.warn(`event/session outbox refill check failed (${formatErr(err)})`)
       }
@@ -16274,8 +16269,9 @@ export class Daemon {
 
   private async runSessionMetadataDrain(cp: CpClient): Promise<void> {
     while (!this.draining && (cp.state === 'READY' || cp.state === 'DRAINING')) {
+      let row: SessionMetadataOutboxRow | undefined
       try {
-        const row = this.store.nextSessionMetadataSnapshot()
+        row = this.store.nextSessionMetadataSnapshot(this.clock.now())
         if (!row) return
         const parsed = EventSessionSchema.safeParse(JSON.parse(row.snapshot))
         if (!parsed.success || parsed.data.agentId !== row.agentId || parsed.data.sessionId !== row.sessionId) {
@@ -16289,11 +16285,55 @@ export class Daemon {
         // remains pending instead of being cleared by the older ACK.
         this.store.acknowledgeSessionMetadataSnapshot(row.agentId, row.sessionId, row.revision)
       } catch (err) {
-        this.log.debug(`event/session snapshot retained for retry (${formatErr(err)})`)
+        if (!row) {
+          this.log.warn(`event/session outbox read failed (${formatErr(err)})`)
+          this.scheduleSessionMetadataRetry()
+          return
+        }
+        const nextFailure = row.failedAttempts + 1
+        const explicitlyPermanent =
+          typeof err === 'object' && err !== null && 'retryable' in err && err.retryable === false
+        const defer = explicitlyPermanent || nextFailure >= SESSION_METADATA_FAILURES_BEFORE_DEFER
+        let failure
+        try {
+          failure = this.store.recordSessionMetadataSnapshotFailure(
+            row.agentId,
+            row.sessionId,
+            row.revision,
+            defer ? this.clock.now() + SESSION_METADATA_DEFER_MS : null
+          )
+        } catch (storeErr) {
+          this.log.warn(`event/session outbox failure record failed (${formatErr(storeErr)})`)
+          this.scheduleSessionMetadataRetry()
+          return
+        }
+        // A newer revision replaced the failed request while it was in flight; drain that revision now.
+        if (!failure) continue
+        if (defer) {
+          this.log.warn(
+            `event/session snapshot deferred after ${failure.failedAttempts} failures for session ${row.sessionId} (${formatErr(err)})`
+          )
+          continue
+        }
+        const message = `event/session snapshot retained for retry (${formatErr(err)})`
+        if (failure.failedAttempts === 1) this.log.warn(message)
+        else this.log.debug(message)
         this.scheduleSessionMetadataRetry()
         return
       }
     }
+  }
+
+  private schedulePendingSessionMetadataDrain(): void {
+    if (
+      this.draining ||
+      !this.cpClient?.supportsServerFeature?.(SESSION_METADATA_ACK_FEATURE) ||
+      !this.store.hasPendingSessionMetadata()
+    ) {
+      return
+    }
+    const attemptAt = this.store.nextSessionMetadataAttemptAt()
+    if (attemptAt !== undefined) this.scheduleSessionMetadataRetry(Math.max(0, attemptAt - this.clock.now()))
   }
 
   private scheduleSessionMetadataRetry(delayMs = SESSION_METADATA_RETRY_MS): void {

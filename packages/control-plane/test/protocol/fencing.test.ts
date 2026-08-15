@@ -33,6 +33,7 @@ const OLD_LAUNCH = '99999999-9999-4999-8999-999999999999'
 function fencingDeps(clock: FakeClock): DaemonWsDeps {
   const connReg = new ConnectionRegistry()
   return {
+    log: { error: () => undefined },
     auth: {} as DaemonWsDeps['auth'],
     lifecycleOps: {} as DaemonWsDeps['lifecycleOps'],
     registry: {} as DaemonWsDeps['registry'],

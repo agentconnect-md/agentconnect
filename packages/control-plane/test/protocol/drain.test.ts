@@ -126,6 +126,7 @@ function build(): Built {
   const clock = new FakeClock(1_700_000_000_000)
   const connReg = new ConnectionRegistry()
   const deps: DaemonWsDeps = {
+    log: { error: vi.fn() },
     auth: {} as DaemonWsDeps['auth'],
     lifecycleOps: {} as DaemonWsDeps['lifecycleOps'],
     registry: {} as DaemonWsDeps['registry'],
