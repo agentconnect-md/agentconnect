@@ -167,7 +167,12 @@ member with no message sent.
 ## 7. Rejected
 
 - **A group row for the pool** (§3) — forces a nullable or fictional org onto every
-  group query.
+  group query. The pool _is_ a member set conceptually, and the two kinds already share
+  the claim predicate, the enforcement predicate, and every holder-keyed mechanism —
+  what is unified is the reading, not the row. If several install-wide pools ever exist
+  (say, per runtime tier), that is its own org-less table beside `daemon_group`, still
+  not a row in it; with one pool today, that table would be an interface guessed from a
+  single implementer.
 - **A daemon in several groups.** Nothing needs it, and it turns "which group's
   eligibility applies" into a policy question. Add if a real case appears.
 - **Cross-org groups.** They would be a second tenancy model. The pool already covers
