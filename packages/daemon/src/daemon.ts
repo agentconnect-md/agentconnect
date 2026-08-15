@@ -1890,12 +1890,16 @@ function pendingSessionKey(p: Pending): SessionKey {
 registerThreadPromotion(discordThreadPromotion)
 registerObservedChannels(discordObservedChannels)
 
-/** One shutdown duty drain: its bound, its counters, and the releases of grants that landed late. */
+/** One shutdown duty drain: its bound, its counters, and the grants that landed after the latch. */
 interface ShutdownDutyDrain {
   deadlineAt: number
   stats: { groups: number; agents: number; late: number; acked: number; lapsing: number }
-  /** Releases of grants that landed after the latch, each awaited before the socket closes. */
-  tails: Set<Promise<void>>
+  /** Grants that landed after the latch: never installed, never acknowledged before the loop is done. */
+  late: Map<string, DutyGrantEntry>
+  /** Agents of groups the loop left to lapse — a late grant covering any of them lapses too. */
+  lapsedAgents: Set<string>
+  /** Set once the main loop has finished with every held group. */
+  loopDone: boolean
 }
 
 export class Daemon {
@@ -12799,19 +12803,17 @@ export class Daemon {
   private applyDutyGrant(grants: DutyGrantEntry[]): void {
     // A grant that wins after the shutdown latch — an exchange that began before the SIGTERM can
     // still commit one — is never installed, but the ledger records this exiting member as its
-    // holder. Every such grant takes ONE path: prove the group is not served here (the same host-stop
-    // and convergence primitives the release loop uses — immediate when nothing is running, waiting
-    // out a teardown a revoke or fence started moments earlier), then release it acknowledged, or
-    // leave it to lapse, exactly like the loop.
+    // holder. One global rule, no per-case proof: record it, and acknowledge its release only once
+    // the release loop is done with every held group — by then nothing is served here any more —
+    // unless it covers an agent left to lapse. A small, bounded delay for those groups.
     const drain = this.shutdownDutyDrain
     if (drain) {
-      this.log.info(`duty: ${grants.length} grant(s) landed while shutting down — releasing them once not served here`)
-      for (const grant of grants) {
-        const tail: Promise<void> = this.releaseLateGrantOnShutdown(grant, drain).finally(() =>
-          drain.tails.delete(tail)
-        )
-        drain.tails.add(tail)
-      }
+      this.log.info(
+        `duty: ${grants.length} grant(s) landed while shutting down — held unserved until the drain completes`
+      )
+      for (const grant of grants) drain.late.set(grant.groupId, grant)
+      // Landed after the loop finished: settle them now rather than at the socket close.
+      if (drain.loopDone) void this.settleLateGrants(drain)
       return
     }
     // A CP-commanded rebalance drain accepts no grant either: it would install a group the release
@@ -19959,6 +19961,7 @@ export class Daemon {
         const why = await this.confirmDutyTeardown(held?.agentIds ?? [], this.dutyConnectionsRequested, deadlineAt)
         if (why !== undefined) {
           stats.lapsing++
+          for (const agentId of held?.agentIds ?? []) drain.lapsedAgents.add(agentId)
           this.log.warn(`duty: ${groupId} may still be served here — not released, its lease lapses (${why})`)
           continue
         }
@@ -19973,7 +19976,8 @@ export class Daemon {
         await this.sleepUntil(Math.min(this.clock.now() + 1_000, deadlineAt))
       }
     }
-    while (drain.tails.size > 0) await Promise.allSettled([...drain.tails])
+    drain.loopDone = true
+    await this.settleLateGrants(drain)
     if (stats.groups === 0 && stats.late === 0) return
     this.log.info(
       `duty: shutdown drain released ${stats.groups} group(s) covering ${stats.agents} agent(s) ` +
@@ -19982,27 +19986,43 @@ export class Daemon {
     )
   }
 
-  /** A grant that landed after the shutdown latch, never installed. If the group is still held here
-   *  it is a replacement of one the release loop owns: wait for the loop to withdraw it (never
-   *  cutting the turn that keeps it held). Then the same proof the loop demands — hosts stopped,
-   *  convergence run — and only then the acknowledged release; otherwise left to lapse. */
-  private async releaseLateGrantOnShutdown(grant: DutyGrantEntry, drain: ShutdownDutyDrain): Promise<void> {
-    const { deadlineAt, stats } = drain
-    stats.late++
-    while (this.duties.get(grant.groupId) !== undefined && this.clock.now() < deadlineAt) {
-      await this.sleepUntil(Math.min(this.clock.now() + 200, deadlineAt))
-    }
-    const agentIds = grant.members.filter((m) => m.kind === 'agent').map((m) => m.refId)
-    const why = await this.confirmDutyTeardown(agentIds, this.dutyConnectionsRequested, deadlineAt)
-    if (why !== undefined) {
-      stats.lapsing++
-      this.log.warn(
-        `duty: late grant ${grant.groupId} may still be served here — not released, its lease lapses (${why})`
-      )
-      return
-    }
-    if (await this.releaseDutyAcknowledged(grant.groupId, deadlineAt)) stats.acked++
-    else stats.lapsing++
+  /** Grants that landed after the latch, settled once the release loop is done: every held group has
+   *  been withdrawn and torn down, or left to lapse, so nothing is served here any more. Each late
+   *  grant is released acknowledged unless it covers an agent of a lapsing group or one whose host
+   *  stop is still recorded as pending or failed — then it lapses too. Serialized, so a second call
+   *  (a grant landing between the loop and the socket close) waits for the first. */
+  private lateGrantSettling: Promise<void> = Promise.resolve()
+  private settleLateGrants(drain: ShutdownDutyDrain): Promise<void> {
+    const run = this.lateGrantSettling.then(async () => {
+      const { deadlineAt, stats } = drain
+      while (drain.late.size > 0) {
+        const [groupId, grant] = drain.late.entries().next().value as [string, DutyGrantEntry]
+        drain.late.delete(groupId)
+        stats.late++
+        const agentIds = grant.members.filter((m) => m.kind === 'agent').map((m) => m.refId)
+        // A stop still in flight is given until the deadline; a failed one stays recorded.
+        for (const agentId of agentIds) {
+          const stop = this.dutyHostStops.get(agentId)
+          if (stop)
+            await this.raceDeadline(
+              stop.catch(() => undefined),
+              deadlineAt - this.clock.now()
+            )
+        }
+        const blocked = agentIds.find((agentId) => drain.lapsedAgents.has(agentId) || this.dutyHostStops.has(agentId))
+        if (blocked !== undefined) {
+          stats.lapsing++
+          this.log.warn(
+            `duty: late grant ${groupId} covers agent ${blocked}, whose teardown is unconfirmed — not released, its lease lapses`
+          )
+          continue
+        }
+        if (await this.releaseDutyAcknowledged(groupId, deadlineAt)) stats.acked++
+        else stats.lapsing++
+      }
+    })
+    this.lateGrantSettling = run.catch(() => undefined)
+    return run
   }
 
   /** Wait until the platform convergence a duty change requested has run — `dutyConnectionsConverged`
@@ -22567,7 +22587,9 @@ export class Daemon {
     const shutdownDrain: ShutdownDutyDrain = {
       deadlineAt: drainDeadlineAt,
       stats: { groups: 0, agents: 0, late: 0, acked: 0, lapsing: 0 },
-      tails: new Set()
+      late: new Map(),
+      lapsedAgents: new Set(),
+      loopDone: false
     }
     if (this.dutyEnforced()) {
       this.shutdownDutyDrain = shutdownDrain
@@ -22650,7 +22672,7 @@ export class Daemon {
     // proceeds without losing the revocation obligation.
     await this.revokeAllRemoteWebchatGrants('session_closed')
     // A grant can land right up to the socket close; its release must be settled before that.
-    while (shutdownDrain.tails.size > 0) await Promise.allSettled([...shutdownDrain.tails])
+    if (this.shutdownDutyDrain) await this.settleLateGrants(shutdownDrain)
     this.shutdownDutyDrain = undefined
     await Promise.resolve(this.cpClient?.stop()).catch((e) => errors.push(e))
     await Promise.resolve(this.sessionMetadataDrain).catch((e) => errors.push(e))

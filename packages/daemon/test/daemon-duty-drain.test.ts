@@ -97,7 +97,7 @@ describe('shutdown drain of a duty-holding member', () => {
     expect(duties(daemon).size()).toBe(0)
   })
 
-  it('a grant that lands after the shutdown latch is never installed and is released with an ack, not left held', async () => {
+  it('a late grant with everything clean is never installed and is acknowledged only after the loop is done', async () => {
     const LATE = '11111111-1111-4111-8111-111111111113'
     const { daemon, calls } = await boot()
     const fetchDutyAgent = (daemon as any).cpClient.fetchDutyAgent as ReturnType<typeof vi.fn>
@@ -112,61 +112,75 @@ describe('shutdown drain of a duty-holding member', () => {
       expect.objectContaining({ agentId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3' })
     )
     expect(duties(daemon).get(LATE)).toBeUndefined()
-    // Released like the rest, before the socket closed, and counted in the summary.
-    expect(calls.releases).toContainEqual([LATE])
-    expect(calls.order.indexOf(`release:${LATE}`)).toBeLessThan(calls.order.indexOf('socket-close'))
+    // Acknowledged after every held group, before the socket closed, and counted in the summary.
+    expect(calls.releases).toEqual([[GROUP], [GROUP_B], [LATE]])
+    expect(calls.order.at(-1)).toBe('socket-close')
     const summary = info.mock.calls.map(([m]) => String(m)).find((m) => m.startsWith('duty: shutdown drain released'))
     expect(summary).toMatch(/released 2 group\(s\) covering 2 agent\(s\) plus 1 late grant\(s\)/)
     expect(summary).toMatch(/3 acknowledged, 0 left to lapse/)
   })
 
-  it('a replacement grant for a held, busy group during shutdown is not acknowledged early — its own release path owns it', async () => {
+  it('a late grant is not acknowledged while the loop is still waiting on a busy group', async () => {
+    const LATE = '11111111-1111-4111-8111-111111111113'
     const { daemon, calls } = await boot()
     const settle = (daemon as any).beginActiveDispatch(AGENT, 'slack:C1:T2') as () => void
-    ;(daemon as any).hosts.set(AGENT, { stop: vi.fn(async () => {}), cancel: vi.fn(async () => {}) })
+    const cancel = vi.fn(async () => {})
+    ;(daemon as any).hosts.set(AGENT, { stop: vi.fn(async () => {}), cancel })
 
     const stopping = daemon.stop()
-    // A re-grant of GROUP at a bumped term lands while agent A's turn is still running.
-    ;(daemon as any).applyDutyGrant([{ ...grant(GROUP, AGENT), term: '2' }])
+    // A late grant for another agent, and a replacement of the busy group at a bumped term.
+    ;(daemon as any).applyDutyGrant([
+      grant(LATE, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3'),
+      { ...grant(GROUP, AGENT), term: '2' }
+    ])
     await vi.waitFor(() => expect(calls.releases).toEqual([[GROUP_B]]))
-    await new Promise((resolve) => setTimeout(resolve, 100))
-    // Not released while busy — and still held at the old composition, never re-admitted.
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    // Nothing late is acknowledged, the busy group is still held at its old term, its turn untouched.
     expect(calls.releases).toEqual([[GROUP_B]])
     expect(duties(daemon).get(GROUP)?.term).toBe('1')
+    expect(cancel).not.toHaveBeenCalled()
 
     settle()
     await stopping
-    // GROUP is released only after its turn settled — by its own path, and again by the late grant
-    // once the group was withdrawn and torn down (idempotent at the CP).
-    expect(calls.releases[0]).toEqual([GROUP_B])
-    expect(calls.releases.slice(1).every((ids) => ids[0] === GROUP)).toBe(true)
-  })
-
-  it('a late grant for a group revoked moments before SIGTERM is acknowledged only after that pending host stop settles', async () => {
-    const { daemon, calls } = await boot()
-    let finishStop!: () => void
-    const stopped = new Promise<void>((resolve) => {
-      finishStop = resolve
-    })
-    ;(daemon as any).hosts.set(AGENT, { stop: vi.fn(() => stopped), cancel: vi.fn(async () => {}) })
-    // A revoke lands just before the SIGTERM: GROUP leaves `duties`, its host stop is fire-and-forget.
-    ;(daemon as any).applyDutyRevoke([{ groupId: GROUP, reason: 'superseded' }])
-    expect(duties(daemon).get(GROUP)).toBeUndefined()
-
-    const stopping = daemon.stop()
-    // The in-flight exchange's re-grant of GROUP arrives after the latch, while that stop is pending.
-    ;(daemon as any).applyDutyGrant([{ ...grant(GROUP, AGENT), term: '2' }])
-    await vi.waitFor(() => expect(calls.releases).toEqual([[GROUP_B]]))
-    await new Promise((resolve) => setTimeout(resolve, 150))
-    expect(calls.releases).toEqual([[GROUP_B]])
-
-    finishStop()
-    await stopping
-    expect(calls.releases).toEqual([[GROUP_B], [GROUP]])
+    // The loop releases GROUP after its turn; only then the late grants (GROUP again is idempotent).
+    expect(calls.releases.slice(0, 2)).toEqual([[GROUP_B], [GROUP]])
+    expect(
+      calls.releases
+        .slice(2)
+        .map((ids) => ids[0])
+        .sort()
+    ).toEqual([LATE, GROUP].sort())
     expect(calls.order.at(-1)).toBe('socket-close')
   })
 
-  it('a late grant whose earlier fire-and-forget host stop failed is left to lapse, not acknowledged', async () => {
+  it('a late grant covering an agent of a group left to lapse lapses too', async () => {
+    const LATE = '11111111-1111-4111-8111-111111111113'
+    const { daemon, calls } = await boot()
+    ;(daemon as any).hosts.set(AGENT, {
+      stop: vi.fn(async () => {
+        throw new Error('child ignored SIGKILL')
+      }),
+      cancel: vi.fn(async () => {})
+    })
+    const info = vi.spyOn((daemon as any).log, 'info')
+    const warn = vi.spyOn((daemon as any).log, 'warn')
+
+    const stopping = daemon.stop()
+    // A split: agent A re-homed under a NEW group id, delivered after the latch.
+    ;(daemon as any).applyDutyGrant([grant(LATE, AGENT)])
+    await stopping
+
+    // GROUP lapses (its host would not stop), and so does the late grant that covers the same agent.
+    expect(calls.releases).toEqual([[GROUP_B]])
+    expect(
+      warn.mock.calls.some(([m]) => /late grant .* covers agent .* not released, its lease lapses/.test(String(m)))
+    ).toBe(true)
+    const summary = info.mock.calls.map(([m]) => String(m)).find((m) => m.startsWith('duty: shutdown drain released'))
+    expect(summary).toMatch(/plus 1 late grant\(s\)/)
+    expect(summary).toMatch(/1 acknowledged, 2 left to lapse/)
+  })
+
+  it('a late grant for a group whose fire-and-forget host stop failed before SIGTERM lapses', async () => {
     const { daemon, calls } = await boot()
     ;(daemon as any).hosts.set(AGENT, {
       stop: vi.fn(async () => {
@@ -183,9 +197,7 @@ describe('shutdown drain of a duty-holding member', () => {
     await stopping
 
     expect(calls.releases).toEqual([[GROUP_B]])
-    expect(
-      warn.mock.calls.some(([m]) => /late grant .* not released, its lease lapses \(host stop failed/.test(String(m)))
-    ).toBe(true)
+    expect(warn.mock.calls.some(([m]) => /late grant .* not released, its lease lapses/.test(String(m)))).toBe(true)
   })
 
   it('a CP-commanded rebalance drain still ignores grants that land while it is suspended', async () => {
