@@ -78,12 +78,10 @@ describe('webchat werewolf (scripted)', () => {
     // player whose role does not hold it.
     expect(result.canaryCrossVisibility).toBe(0)
 
-    // Current-main surface truth (#926), measured and pinned: a child's
-    // needsReply REPORT into the conversation-origin parent session is
-    // posted live into the conversation view — webchat "private" night
-    // traffic is visible to the whole room. The Slack composition (private
-    // den + DMs) structurally hides this.
-    expect(result.privateReportsPostedPublicly).toBeGreaterThan(0)
+    // #966 fixed (was the measured #926 surface, previously pinned > 0): a
+    // needsReply report resumes the parent session-only — no role ack, kill
+    // statement, or night action ever surfaces as a conversation post.
+    expect(result.privateReportsPostedPublicly).toBe(0)
   }, 180_000)
 
   it('a 6-player game runs multiple rounds through the host night-cue loop (seed 2)', async () => {
@@ -93,6 +91,7 @@ describe('webchat werewolf (scripted)', () => {
     expect(result.winner).toBeDefined()
     expect(result.canaryLeaks).toBe(0)
     expect(result.canaryCrossVisibility).toBe(0)
+    expect(result.privateReportsPostedPublicly).toBe(0)
     // Multi-round means at least two night cue round-trips through the host.
     expect(result.nights.length).toBeGreaterThanOrEqual(2)
     // Every night's kill was mediated: a proposal preceded the kill.

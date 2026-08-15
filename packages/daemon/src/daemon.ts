@@ -6509,7 +6509,10 @@ export class Daemon {
         text: msg.text,
         mentionedBots:
           replyIntegrationId && this.botUserIds[replyIntegrationId] ? [this.botUserIds[replyIntegrationId]!] : [],
-        isDm: false
+        isDm: false,
+        // #966: a report resumes the parent session-only — never a live
+        // conversation post (postAgentWakeInbound skips report deliveries).
+        parentReport: true
         // §7: a lineage reply IS the cross-daemon parent-session reply, so it behaves like
         // the local branch of `replyToSession` — the injected report is transcript-only
         // (nothing here publishes it), and the resumed parent runs an ORDINARY turn that
@@ -7344,6 +7347,9 @@ export class Daemon {
         transcriptTs: monotonicTs(),
         sender: { id: req.callerAgentId, isBot: true },
         text: req.text,
+        // #966: a report resumes the parent session-only — never a live
+        // conversation post (postAgentWakeInbound skips report deliveries).
+        parentReport: true,
         mentionedBots: integrationId
           ? this.botUserIds[integrationId]
             ? [this.botUserIds[integrationId]!]
@@ -11624,7 +11630,7 @@ export class Daemon {
     // REPLY, so the sender's message appeared on refresh but never in the live view). Mint
     // its canonical post identity before the inbox row persists so a replay reuses it and
     // the transcript row SessionManager writes carries the same postId (browser reconcile).
-    if (webchat?.initiator === 'agent' && UUID_RE.test(msg.sender.id)) {
+    if (webchat?.initiator === 'agent' && UUID_RE.test(msg.sender.id) && msg.parentReport !== true) {
       msg.transcriptPostId ??= randomUUID()
     }
     if (msg.sender.avatarUrl && msg.transportScope)
