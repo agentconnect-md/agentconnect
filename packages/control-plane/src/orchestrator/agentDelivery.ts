@@ -84,7 +84,10 @@ export class AgentDelivery {
   // stale spec, one level down. These take the agent's id and placement rather
   // than the record, because a removal path may only have those.
 
-  /** Push one integration's spec (token-bearing — NEVER log it) to every target. */
+  /** Push one integration's spec (token-bearing — NEVER log it) to every target.
+   *  No explicit orgId: `IntegrationSpec.orgId` is a required wire field, so the
+   *  payload IS the explicit org — and sending it also teaches the connection's
+   *  id→org map, which is why upserts never had this problem. */
   async integrationUpsert(
     agentId: string,
     placement: string | null,
@@ -95,16 +98,25 @@ export class AgentDelivery {
     await this.fanOut(targets, onError, (daemonId) => this.deps.control.integrationUpsert(daemonId, spec))
   }
 
+  /** `orgId` is REQUIRED, not derived. A removal payload is a bare id, so an
+   *  install-wide connection can only resolve the org from the id→org map it
+   *  built at `register` — and a holder that acquired the integration through
+   *  `duty/fetch` never registered it, so the send would raise SCOPE_DENIED
+   *  before the frame left the process. The record in hand always has the org. */
   async integrationRemove(
     agentId: string,
     placement: string | null,
     integrationId: string,
+    orgId: string,
     onError: DeliveryErrorHandler
   ): Promise<void> {
     const targets = await this.daemonsFor(agentId, placement)
-    await this.fanOut(targets, onError, (daemonId) => this.deps.control.integrationRemove(daemonId, { integrationId }))
+    await this.fanOut(targets, onError, (daemonId) =>
+      this.deps.control.integrationRemove(daemonId, { integrationId }, orgId)
+    )
   }
 
+  /** Same as the integration upsert: `CronUpsert.orgId` is a required wire field. */
   async cronUpsert(
     agentId: string,
     placement: string | null,
@@ -115,17 +127,19 @@ export class AgentDelivery {
     await this.fanOut(targets, onError, async (daemonId) => void (await this.deps.control.cronUpsert(daemonId, wire)))
   }
 
+  /** `orgId` is REQUIRED for the same reason as {@link AgentDelivery.integrationRemove}. */
   async cronRemove(
     agentId: string,
     placement: string | null,
     cronId: string,
+    orgId: string,
     onError: DeliveryErrorHandler
   ): Promise<void> {
     const targets = await this.daemonsFor(agentId, placement)
     await this.fanOut(
       targets,
       onError,
-      async (daemonId) => void (await this.deps.control.cronRemove(daemonId, { cronId }))
+      async (daemonId) => void (await this.deps.control.cronRemove(daemonId, { cronId }, orgId))
     )
   }
 

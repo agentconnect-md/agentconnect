@@ -394,10 +394,14 @@ export class ControlSender {
     c.conn.send('integration/upsert', u, { epoch: c.sessionEpoch, agentId: u.agentId })
   }
 
-  /** Tell a running daemon an integration was removed (live, epoch-fenced EVT). */
-  async integrationRemove(daemonId: string, r: IntegrationRemove): Promise<void> {
+  /** Tell a running daemon an integration was removed (live, epoch-fenced EVT).
+   *  Takes an explicit orgId for the same reason the agent frames do: the payload
+   *  is an id alone, so an install-wide connection has nothing to resolve the org
+   *  from — and a duty holder that acquired the integration through `duty/fetch`
+   *  never registered it, so the connection's id→org map has nothing either. */
+  async integrationRemove(daemonId: string, r: IntegrationRemove, orgId?: string): Promise<void> {
     const c = this.must(daemonId)
-    c.conn.send('integration/remove', r, { epoch: c.sessionEpoch })
+    c.conn.send('integration/remove', r, { epoch: c.sessionEpoch }, orgId)
   }
 
   /** Tell a daemon to stop REPORTING conversations an operator forgot (REQ → ack).
@@ -475,10 +479,12 @@ export class ControlSender {
     return c.conn.request<Ack>('cron/upsert', u, { epoch: c.sessionEpoch })
   }
 
-  /** Remove a cron from a running daemon (live CRUD, epoch-fenced REQ → ack, §5.4). */
-  async cronRemove(daemonId: string, r: CronRemove): Promise<Ack> {
+  /** Remove a cron from a running daemon (live CRUD, epoch-fenced REQ → ack, §5.4).
+   *  Explicit orgId for the same reason as `integrationRemove`: the payload is a
+   *  bare cronId, and a duty holder never registered the cron. */
+  async cronRemove(daemonId: string, r: CronRemove, orgId?: string): Promise<Ack> {
     const c = this.must(daemonId)
-    return c.conn.request<Ack>('cron/remove', r, { epoch: c.sessionEpoch })
+    return c.conn.request<Ack>('cron/remove', r, { epoch: c.sessionEpoch }, undefined, orgId)
   }
 
   /** Fire a cron immediately on its daemon (console "Run now"; REQ → ack — the

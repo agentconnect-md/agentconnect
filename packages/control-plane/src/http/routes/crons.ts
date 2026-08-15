@@ -444,7 +444,15 @@ export function cronRoutes(deps: HttpDeps) {
               details: { cronId: existing.id }
             })
             .catch(() => {})
-          await deps.agentDelivery.cronRemove(agent.id, agent.daemonId, existing.id, cronPushFailed('cron/remove'))
+          // The row's own org rides the send: `cron/remove` carries only a cronId,
+          // so a holder that never registered this cron has nothing to resolve.
+          await deps.agentDelivery.cronRemove(
+            agent.id,
+            agent.daemonId,
+            existing.id,
+            existing.orgId,
+            cronPushFailed('cron/remove')
+          )
           return reply.code(204).send(null)
         } finally {
           release()

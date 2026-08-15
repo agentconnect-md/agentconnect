@@ -6,7 +6,8 @@ import { describe, it, expect, vi } from 'vitest'
 import { isFrame } from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
 import { buildWsHarness } from '../fakes/build-ws.js'
-import { PgDutyGroupRepo } from '../../src/persistence/index.js'
+import { PgDutyGroupRepo, PgLaunchRepo } from '../../src/persistence/index.js'
+import { ControlSender } from '../../src/orchestrator/outbound.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import { DaemonId, OrgId } from '../../src/domain/ids.js'
 
@@ -343,6 +344,58 @@ describe('the reconnect roster follows the duty holder', () => {
     expect(ok.agents.map((a) => a.agentId)).not.toContain(AGENT)
     // Detach, never remove: the CP row still proves the agent lives elsewhere.
     expect(ok.drop.agents).toEqual([{ agentId: AGENT, action: 'detach' }])
+  })
+})
+
+/**
+ * A dependent REMOVAL carries a bare resource id, so on an install-wide
+ * connection the org can only come from the explicit argument or from the id→org
+ * map `register` built. A holder that acquired the resource through `duty/fetch`
+ * never registered it, so the map has nothing — and the send raises SCOPE_DENIED
+ * before the frame leaves the process (integration delete 500s after the row is
+ * already gone; cron delete logs and returns success; either way the holder goes
+ * on serving a deleted resource). Same class as #965, so the same fix: the org is
+ * explicit and local to the send.
+ */
+describe('a dependent removal to a holder that never registered the resource', () => {
+  const INTEGRATION = 'ffffffff-ffff-4fff-8fff-fffffffffff1'
+  const CRON = 'ffffffff-ffff-4fff-8fff-fffffffffff2'
+
+  /** An install-wide connection registered with EMPTY local state — exactly the
+   *  member that installed through `duty/fetch` and has no id→org map entries. */
+  async function readyWithNoRegisteredResources(h: ReturnType<typeof buildWsHarness>) {
+    const { stub } = await ready(h)
+    const state = h.deps.connReg.get(DaemonId(DAEMON))
+    expect(state?.orgByIntegration?.size).toBe(0)
+    expect(state?.orgByCron?.size).toBe(0)
+    return { stub, sender: new ControlSender(h.deps.connReg, new PgLaunchRepo(prisma)) }
+  }
+
+  it('integration/remove rides the explicit org, and is refused without it', async () => {
+    const h = buildWsHarness(prisma)
+    const { stub, sender } = await readyWithNoRegisteredResources(h)
+
+    await sender.integrationRemove(DAEMON, { integrationId: INTEGRATION }, DEFAULT_ORG_ID)
+    const sent = stub.sent.find((f) => f.type === 'integration/remove')
+    expect(sent?.orgId).toBe(DEFAULT_ORG_ID)
+
+    // The regression pin: without it the frame never leaves. This is what made
+    // the delete fail after the row was already gone.
+    await expect(sender.integrationRemove(DAEMON, { integrationId: INTEGRATION })).rejects.toThrow(/organization/i)
+    expect(stub.sent.filter((f) => f.type === 'integration/remove')).toHaveLength(1)
+  })
+
+  it('cron/remove rides the explicit org, and is refused without it', async () => {
+    const h = buildWsHarness(prisma)
+    const { stub, sender } = await readyWithNoRegisteredResources(h)
+
+    // REQ→ack: the stub never answers, so assert on what was SENT, not the reply.
+    void sender.cronRemove(DAEMON, { cronId: CRON }, DEFAULT_ORG_ID)
+    await vi.waitFor(() => expect(stub.sent.some((f) => f.type === 'cron/remove')).toBe(true))
+    expect(stub.sent.find((f) => f.type === 'cron/remove')?.orgId).toBe(DEFAULT_ORG_ID)
+
+    await expect(sender.cronRemove(DAEMON, { cronId: CRON })).rejects.toThrow(/organization/i)
+    expect(stub.sent.filter((f) => f.type === 'cron/remove')).toHaveLength(1)
   })
 })
 

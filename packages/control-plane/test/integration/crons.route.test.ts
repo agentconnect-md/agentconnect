@@ -34,13 +34,15 @@ afterEach(async () => {
 /** A ControlSender spy recording the cron pushes the route makes. */
 class SpyControl {
   readonly upserts: Array<{ daemonId: string; u: CronUpsert }> = []
-  readonly removes: Array<{ daemonId: string; r: CronRemove }> = []
+  readonly removes: Array<{ daemonId: string; r: CronRemove; orgId?: string }> = []
   async cronUpsert(daemonId: string, u: CronUpsert): Promise<{ ok: boolean }> {
     this.upserts.push({ daemonId, u })
     return { ok: true }
   }
-  async cronRemove(daemonId: string, r: CronRemove): Promise<{ ok: boolean }> {
-    this.removes.push({ daemonId, r })
+  // `orgId` is recorded because a removal payload is a bare cronId: the send
+  // cannot derive an org on an install-wide connection, so dropping it is the bug.
+  async cronRemove(daemonId: string, r: CronRemove, orgId?: string): Promise<{ ok: boolean }> {
+    this.removes.push({ daemonId, r, orgId })
     return { ok: true }
   }
   // POST /integrations (used to seed a target integration) pushes these too.
@@ -272,7 +274,9 @@ describe('cron replication CP→daemon (REST → cron/upsert·remove)', () => {
     await app.app.inject({ method: 'PUT', url: `${ORG}/crons/${cronId}`, payload: body(agentId) })
     const del = await app.app.inject({ method: 'DELETE', url: `${ORG}/crons/${cronId}` })
     expect(del.statusCode).toBe(204)
-    expect(spy.removes).toEqual([{ daemonId: DAEMON, r: { cronId } }])
+    // The org rides every removal now: the payload is a bare cronId, so the send
+    // has nothing else to scope on when the connection is install-wide.
+    expect(spy.removes).toEqual([{ daemonId: DAEMON, r: { cronId }, orgId: DEFAULT_ORG_ID }])
 
     expect((await app.app.inject({ method: 'DELETE', url: `${ORG}/crons/${cronId}` })).statusCode).toBe(404)
   })
@@ -427,6 +431,10 @@ describe('cron updates follow the duty holder', () => {
     expect(spy.upserts.map((u) => u.daemonId)).toEqual([HOLDER])
     // Current without a reconnect: the definition that arrived is the edited one.
     expect(spy.upserts[0]!.u).toMatchObject({ cronId, agentId, schedule: '30 6 * * *' })
+    // `CronUpsert.orgId` is OPTIONAL on the wire, so the guarantee is that
+    // `cronToUpsert` always stamps the row's org. Pin it: a producer that omits
+    // it hands the upsert path exactly the removal bug.
+    expect(spy.upserts[0]!.u.orgId).toBe(DEFAULT_ORG_ID)
   })
 
   it('a cron removal reaches the holder', async () => {
@@ -441,7 +449,11 @@ describe('cron updates follow the duty holder', () => {
     const del = await app.app.inject({ method: 'DELETE', url: `${ORG}/crons/${cronId}` })
     expect(del.statusCode).toBe(204)
 
-    expect(spy.removes).toEqual([{ daemonId: HOLDER, r: { cronId } }])
+    // The org is the assertion, not an incidental: `cron/remove` carries only a
+    // cronId, and this holder never registered the cron (it would have arrived
+    // through `duty/fetch`), so a send without the org is SCOPE_DENIED before it
+    // leaves the process — the daemon would keep firing a deleted schedule.
+    expect(spy.removes).toEqual([{ daemonId: HOLDER, r: { cronId }, orgId: DEFAULT_ORG_ID }])
   })
 
   it('a placement AND a holder each get the cron exactly once', async () => {

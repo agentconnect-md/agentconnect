@@ -308,7 +308,7 @@ export class HttpBotOrchestrator {
     for (const integration of installs) {
       const agent = await this.agents.getUnscoped(integration.agentId)
       if (!agent) continue
-      await this.agentDelivery.integrationRemove(agent.id, agent.daemonId, integration.id, (err) => {
+      await this.agentDelivery.integrationRemove(agent.id, agent.daemonId, integration.id, integration.orgId, (err) => {
         if (!(err instanceof NoConnection)) throw err
         this.log.debug?.({ integrationId: integration.id }, 'http-bot: revoke spec removal skipped — daemon offline')
       })

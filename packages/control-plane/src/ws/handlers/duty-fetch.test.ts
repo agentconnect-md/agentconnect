@@ -20,6 +20,7 @@ const BUNDLE = {
   spec: { orgId: ORG, name: 'scout', runtime: 'claude' },
   integrations: [
     {
+      orgId: ORG,
       integrationId: INTEGRATION,
       agentId: AGENT,
       platform: 'slack',
@@ -27,7 +28,17 @@ const BUNDLE = {
       config: { botToken: 'xoxb-test' }
     }
   ],
-  crons: [{ cronId: CRON, agentId: AGENT, schedule: '0 9 * * *', timezone: 'UTC', trigger: 'standup', enabled: true }]
+  crons: [
+    {
+      orgId: ORG,
+      cronId: CRON,
+      agentId: AGENT,
+      schedule: '0 9 * * *',
+      timezone: 'UTC',
+      trigger: 'standup',
+      enabled: true
+    }
+  ]
 }
 
 function fetchFrame(agentId = AGENT): AnyFrame {
@@ -50,14 +61,24 @@ function fakeConn(orgId: string | null = null) {
   } as unknown as DaemonConnection & { replyTo: ReturnType<typeof vi.fn>; sendError: ReturnType<typeof vi.fn> }
 }
 
-function fakeDeps(over: {
-  agent?: unknown
-  holdsAgent?: boolean
-  agentBundle?: ReturnType<typeof vi.fn>
-}): DaemonWsDeps {
+/** The per-connection id→org maps `register` normally builds. A duty holder that
+ *  installed mid-session never registered these resources, so they start empty. */
+function fakeScopes() {
+  return { orgByAgent: new Map<string, string>(), orgByIntegration: new Map(), orgByCron: new Map() }
+}
+
+function fakeDeps(
+  over: {
+    agent?: unknown
+    holdsAgent?: boolean
+    agentBundle?: ReturnType<typeof vi.fn>
+  },
+  scopes = fakeScopes()
+): DaemonWsDeps {
   return {
     agent: { getUnscoped: async () => over.agent ?? null },
     dutyLease: { holdsAgent: async () => over.holdsAgent ?? false },
+    connReg: { get: () => scopes },
     agentBundle: over.agentBundle ?? vi.fn(async () => BUNDLE)
   } as unknown as DaemonWsDeps
 }
@@ -113,6 +134,33 @@ describe('handleDutyFetch', () => {
     expect(agentBundle).toHaveBeenCalledWith(AGENT_RECORD)
     expect(conn.replyTo).toHaveBeenCalledWith(frame, 'duty/fetch/ok', { bundle: BUNDLE })
     expect(conn.sendError).not.toHaveBeenCalled()
+  })
+
+  it('teaches the connection which org the fetched resources belong to', async () => {
+    // The id→org maps are otherwise built ONLY from the register snapshot, so a
+    // resource installed mid-session through this path is absent from them — and
+    // any later C→D frame carrying a bare id has no org to resolve on an
+    // install-wide connection. A hint, never an authorization: holding the duty
+    // is what authorizes, and the removals carry their org explicitly anyway.
+    const scopes = fakeScopes()
+    const conn = fakeConn()
+
+    await handleDutyFetch(fetchFrame(), conn, fakeDeps({ agent: AGENT_RECORD, holdsAgent: true }, scopes))
+
+    expect(scopes.orgByAgent.get(AGENT)).toBe(ORG)
+    expect(scopes.orgByIntegration.get(INTEGRATION)).toBe(ORG)
+    expect(scopes.orgByCron.get(CRON)).toBe(ORG)
+  })
+
+  it('a refused fetch teaches the connection nothing', async () => {
+    const scopes = fakeScopes()
+    const conn = fakeConn()
+
+    await handleDutyFetch(fetchFrame(), conn, fakeDeps({ agent: AGENT_RECORD, holdsAgent: false }, scopes))
+
+    expect(scopes.orgByAgent.size).toBe(0)
+    expect(scopes.orgByIntegration.size).toBe(0)
+    expect(scopes.orgByCron.size).toBe(0)
   })
 
   it('answers empty when no bundle assembler is wired', async () => {

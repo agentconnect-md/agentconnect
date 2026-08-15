@@ -39,12 +39,14 @@ afterEach(async () => {
 /** A ControlSender spy recording the integration pushes the route makes. */
 class SpyControl {
   readonly upserts: Array<{ daemonId: string; u: IntegrationUpsert }> = []
-  readonly removes: Array<{ daemonId: string; r: IntegrationRemove }> = []
+  readonly removes: Array<{ daemonId: string; r: IntegrationRemove; orgId?: string }> = []
   async integrationUpsert(daemonId: string, u: IntegrationUpsert): Promise<void> {
     this.upserts.push({ daemonId, u })
   }
-  async integrationRemove(daemonId: string, r: IntegrationRemove): Promise<void> {
-    this.removes.push({ daemonId, r })
+  // `orgId` is recorded because a removal payload is a bare id: the send cannot
+  // derive an org on an install-wide connection, so dropping it here is the bug.
+  async integrationRemove(daemonId: string, r: IntegrationRemove, orgId?: string): Promise<void> {
+    this.removes.push({ daemonId, r, orgId })
   }
 }
 
@@ -1066,7 +1068,9 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
     expect(bot?.lastUsedAt).not.toBeNull()
     expect(bot?.lastAgentName).toBe(`agent-${agentId.slice(0, 4)}`)
     expect(await prisma.botSecret.findUnique({ where: { botId: created.botId } })).not.toBeNull()
-    expect(spy.removes).toEqual([{ daemonId: DAEMON, r: { integrationId: created.id } }])
+    // The org rides every removal now: the payload is a bare id, so the send has
+    // nothing else to scope on when the connection is install-wide.
+    expect(spy.removes).toEqual([{ daemonId: DAEMON, r: { integrationId: created.id }, orgId: DEFAULT_ORG_ID }])
   })
 
   it('a freed bot can be reinstalled by botId — tokens reused, no new bot row', async () => {
@@ -1697,6 +1701,22 @@ describe('integration updates follow the duty holder', () => {
 
     expect(spy.removes.map((r) => r.daemonId)).toEqual([DAEMON, HOLDER])
     expect(spy.removes.every((r) => r.r.integrationId === integrationId)).toBe(true)
+    // The org is the assertion, not an incidental: `integration/remove` carries
+    // only an id, and this holder never registered the integration (it would have
+    // arrived through `duty/fetch`), so a send without the org is SCOPE_DENIED
+    // before it leaves the process — the delete 500s and the holder keeps serving.
+    expect(spy.removes.every((r) => r.orgId === DEFAULT_ORG_ID)).toBe(true)
+  })
+
+  it('the upsert path carries the org on the payload — verified, not assumed', async () => {
+    // `IntegrationSpec.orgId` is OPTIONAL on the wire (decode tolerance), so the
+    // guarantee is that the projector always stamps the row's org. Pin it: if a
+    // future producer omits it, upserts inherit exactly the removal bug.
+    const { app } = await installedWithHolder()
+    const spy = app.deps.control as unknown as SpyControl
+
+    expect(spy.upserts).not.toHaveLength(0)
+    expect(spy.upserts.every((u) => u.u.orgId === DEFAULT_ORG_ID)).toBe(true)
   })
 
   it('a gating flip re-pushes the derived spec to the holder', async () => {

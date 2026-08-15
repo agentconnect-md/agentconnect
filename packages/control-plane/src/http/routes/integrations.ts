@@ -170,8 +170,14 @@ export function integrationRoutes(deps: HttpDeps) {
         message: refusal.message
       })
 
-    const replicateRemove = async (agentId: string, integrationId: string, daemonId: string | null): Promise<void> => {
-      await deps.agentDelivery.integrationRemove(agentId, daemonId, integrationId, (err, target) => {
+    const replicateRemove = async (
+      i: Pick<IntegrationRecord, 'id' | 'agentId' | 'orgId'>,
+      daemonId: string | null
+    ): Promise<void> => {
+      const { id: integrationId } = i
+      // The row's own org rides the send: `integration/remove` carries only an id,
+      // so a holder that never registered this integration has nothing to resolve.
+      await deps.agentDelivery.integrationRemove(i.agentId, daemonId, i.id, i.orgId, (err, target) => {
         if (!(err instanceof NoConnection)) throw err
         app.log.debug({ integrationId, daemonId: target }, 'integration/remove skipped: daemon offline')
       })
@@ -1176,7 +1182,7 @@ export function integrationRoutes(deps: HttpDeps) {
             await deps.repos.bot.markFreed(orgIdOf(req), existing.botId, new Date(), agent.name ?? null)
           }
           // Tell the removed agent's daemon to drop the spec either way.
-          await replicateRemove(existing.agentId, existing.id, agent.daemonId ?? null)
+          await replicateRemove(existing, agent.daemonId ?? null)
           // HTTP bot: recompute the relay's routes + members (or release it if this
           // was the last install).
           if (botBefore?.transport === 'http') await deps.httpBot.syncBot(existing.botId)
