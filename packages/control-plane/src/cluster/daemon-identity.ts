@@ -45,8 +45,8 @@ export class ClusterDaemonIdentityService implements ClusterDaemonIdentity {
   constructor(
     private readonly http: K8sHttp,
     private readonly daemons: Pick<DaemonRepo, 'resolvePoolClusterIdentity'>,
-    /** Namespace the install runs its pool members in. A pool identity from anywhere else
-     *  is refused, so the claim-your-own-org rule stays confined to pods the install placed. */
+    /** Namespace the daemon pool runs in — the control plane's own. A pool identity from anywhere
+     *  else is refused, so the claim-your-own-org rule stays confined to pods the install placed. */
     private readonly poolNamespace: string
   ) {}
 

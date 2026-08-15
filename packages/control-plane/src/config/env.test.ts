@@ -137,17 +137,19 @@ describe('resolveWebAppUrl', () => {
   })
 })
 
-describe('pool namespace (POOL_NAMESPACE)', () => {
+describe('daemon pool switch (DAEMON_POOL_ENABLED)', () => {
   const base = {
     DATABASE_URL: 'postgresql://agentconnect:agentconnect@localhost:5432/agentconnect',
     API_KEY_PEPPER: 'a'.repeat(32)
   }
 
-  it('reads the namespace the install runs its pool members in', () => {
-    expect(loadConfig({ ...base, POOL_NAMESPACE: 'pool-ns' }).POOL_NAMESPACE).toBe('pool-ns')
+  it('is off when the key is unset, so an existing deployment is untouched', () => {
+    expect(loadConfig(base).DAEMON_POOL_ENABLED).toBe(false)
+    expect(loadConfig({ ...base, DAEMON_POOL_ENABLED: 'false' }).DAEMON_POOL_ENABLED).toBe(false)
   })
 
-  it('leaves the pool disabled when the key is unset', () => {
-    expect(loadConfig(base).POOL_NAMESPACE).toBeUndefined()
+  it('turns the cluster surface on only for the exact string "true"', () => {
+    expect(loadConfig({ ...base, DAEMON_POOL_ENABLED: 'true' }).DAEMON_POOL_ENABLED).toBe(true)
+    expect(() => loadConfig({ ...base, DAEMON_POOL_ENABLED: '1' })).toThrow()
   })
 })

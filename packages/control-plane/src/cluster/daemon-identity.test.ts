@@ -9,8 +9,8 @@ import { DaemonId } from '../domain/ids.js'
 
 const DAEMON_ID = '11111111-1111-4111-8111-111111111111'
 const POD_UID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
-/** Where this install runs its pool members — the control namespace, as in production. */
-const POOL_NAMESPACE = 'agentconnect'
+/** Where the daemon pool runs — the control plane's own namespace, as in production. */
+const POOL_NS = 'agentconnect'
 
 /** A TokenReview response as the API server writes it; `undefined` fields are omitted. */
 function reviewed(opts: {
@@ -48,7 +48,7 @@ function daemons(record: Partial<DaemonRecord> = { id: DaemonId(DAEMON_ID) }) {
 async function service(opts: { review: unknown; daemonStore?: ReturnType<typeof daemons> }) {
   const server = await fakeApiServer(() => ({ json: opts.review }))
   const store = opts.daemonStore ?? daemons()
-  return { store, svc: new ClusterDaemonIdentityService(new K8sHttp(server.config), store, POOL_NAMESPACE) }
+  return { store, svc: new ClusterDaemonIdentityService(new K8sHttp(server.config), store, POOL_NS) }
 }
 
 afterEach(async () => {
@@ -72,7 +72,7 @@ describe('parseServiceAccountSubject', () => {
 })
 
 describe('ClusterDaemonIdentityService', () => {
-  const poolReview = (namespace = POOL_NAMESPACE) =>
+  const poolReview = (namespace = POOL_NS) =>
     reviewed({
       audiences: [CP_TOKEN_AUDIENCE],
       username: clusterIdentityOf(namespace, CLOUD_DAEMON_SA_NAME),
@@ -85,7 +85,7 @@ describe('ClusterDaemonIdentityService', () => {
       seen.push(req.body)
       return { json: poolReview() }
     })
-    const svc = new ClusterDaemonIdentityService(new K8sHttp(server.config), daemons(), POOL_NAMESPACE)
+    const svc = new ClusterDaemonIdentityService(new K8sHttp(server.config), daemons(), POOL_NS)
     await svc.verify('presented')
     expect(JSON.parse(seen[0]!).spec).toEqual({ token: 'presented', audiences: [CP_TOKEN_AUDIENCE] })
   })
@@ -99,7 +99,7 @@ describe('ClusterDaemonIdentityService', () => {
     const { svc } = await service({
       review: reviewed({
         audiences: ['ac-daemon-callback'],
-        username: clusterIdentityOf(POOL_NAMESPACE, CLOUD_DAEMON_SA_NAME),
+        username: clusterIdentityOf(POOL_NS, CLOUD_DAEMON_SA_NAME),
         extra: { 'authentication.kubernetes.io/pod-uid': [POD_UID] }
       })
     })
@@ -110,7 +110,7 @@ describe('ClusterDaemonIdentityService', () => {
     const { svc } = await service({
       review: reviewed({
         audiences: [CP_TOKEN_AUDIENCE],
-        username: clusterIdentityOf(POOL_NAMESPACE, 'ac-runtime')
+        username: clusterIdentityOf(POOL_NS, 'ac-runtime')
       })
     })
     expect(await svc.verify('token')).toBeNull()
@@ -121,8 +121,8 @@ describe('ClusterDaemonIdentityService', () => {
     expect(await svc.verify('token')).toEqual({ daemonId: DAEMON_ID, scope: 'install' })
     expect(await svc.verify('token')).toEqual({ daemonId: DAEMON_ID, scope: 'install' })
     expect(store.seen).toEqual([
-      clusterIdentityOf(POOL_NAMESPACE, CLOUD_DAEMON_SA_NAME),
-      clusterIdentityOf(POOL_NAMESPACE, CLOUD_DAEMON_SA_NAME)
+      clusterIdentityOf(POOL_NS, CLOUD_DAEMON_SA_NAME),
+      clusterIdentityOf(POOL_NS, CLOUD_DAEMON_SA_NAME)
     ])
     expect(store.seenPodUids).toEqual([POD_UID, POD_UID])
   })
@@ -131,7 +131,7 @@ describe('ClusterDaemonIdentityService', () => {
     const { svc } = await service({
       review: reviewed({
         audiences: [CP_TOKEN_AUDIENCE],
-        username: clusterIdentityOf(POOL_NAMESPACE, CLOUD_DAEMON_SA_NAME)
+        username: clusterIdentityOf(POOL_NS, CLOUD_DAEMON_SA_NAME)
       })
     })
     expect(await svc.verify('token')).toBeNull()
@@ -141,7 +141,7 @@ describe('ClusterDaemonIdentityService', () => {
     const { svc } = await service({
       review: reviewed({
         audiences: [CP_TOKEN_AUDIENCE],
-        username: clusterIdentityOf(POOL_NAMESPACE, CLOUD_DAEMON_SA_NAME),
+        username: clusterIdentityOf(POOL_NS, CLOUD_DAEMON_SA_NAME),
         extra: { 'authentication.kubernetes.io/pod-uid': [POD_UID, 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'] }
       })
     })
