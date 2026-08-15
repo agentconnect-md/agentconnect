@@ -58,15 +58,34 @@ export function parseStatedTarget(text: string, action: WerewolfAction): ParsedI
   return { kind: 'target', target: [...targets][0]! }
 }
 
+/**
+ * Size-appropriate wolf count. Two wolves at a five-player table degenerate:
+ * one unsaved night-1 kill reaches parity instantly (2 wolves vs 2 others),
+ * so every game is a one-night game with no day, vote, or later round —
+ * measured across all real 5p runs. The table:
+ *
+ *  | players | werewolves |
+ *  | ------- | ---------- |
+ *  | 5–6     | 1          |
+ *  | 7+      | 2          |
+ */
+export function werewolfWolfCount(playerCount: number): number {
+  return playerCount >= 7 ? 2 : 1
+}
+
 /** The seeded role map — a pure function of (aliases, seed), shared by the
  *  topology builder (the Slack wolf den's membership depends on it) and both
  *  game compositions.
  *
- *  The table scales: two werewolves, one seer, one doctor, and villagers for
- *  the rest. */
+ *  The table scales: {@link werewolfWolfCount} werewolves, one seer, one
+ *  doctor, and villagers for the rest. */
 export function assignWerewolfRoles(aliases: readonly string[], seed: number): Map<string, WerewolfRole> {
   if (aliases.length < 5) throw new Error('werewolf takes at least 5 players')
-  const roles: WerewolfRole[] = ['werewolf', 'werewolf', 'seer', 'doctor']
+  const roles: WerewolfRole[] = [
+    ...Array.from({ length: werewolfWolfCount(aliases.length) }, (): WerewolfRole => 'werewolf'),
+    'seer',
+    'doctor'
+  ]
   while (roles.length < aliases.length) roles.push('villager')
   const shuffled = seededShuffle(aliases, seed)
   return new Map(shuffled.map((alias, index) => [alias, roles[index]!]))

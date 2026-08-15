@@ -40,7 +40,7 @@ export type WebchatWerewolfPhase = 'setup' | 'awaiting-night-cue' | 'night' | 'd
 
 export interface NeedsReplyLogRow {
   round: number
-  purpose: 'role' | 'kill-proposal' | 'kill-verdict' | 'inspect' | 'protect'
+  purpose: 'role' | 'kill-proposal' | 'kill-verdict' | 'inspect' | 'protect' | 'vote-reprompt'
   to: string
   delivered: boolean
   /** Whether ANY wake ever brought this call's answer back. Pending rows on a
@@ -67,12 +67,20 @@ export interface WebchatDayRecord {
   order: string[]
   spoke: string[]
   votes: Record<string, string>
+  /** Living non-voters individually re-prompted after the vote went quiet. */
+  rePrompted?: string[]
+  /** Living players whose vote never arrived — counted as abstentions when
+   *  the referee closed the vote on the second host nudge. */
+  abstentions?: string[]
   lynched?: string
   revealed?: WerewolfRole
 }
 
 /** The public asks the runner (playing the human HOST) reacts to. */
 export const HOST_CUE_PATTERN = /HOST: please open night (\d+)\./
+/** The runner's host nudge when a vote goes quiet: first nudge → individual
+ *  re-prompts of the missing voters; second → close, counting abstentions. */
+export const VOTE_NUDGE_TEXT = 'Referee: the vote has gone quiet — collect the missing votes.'
 export const GAME_OVER_PATTERN = /The game is over: the (village|werewolves) win\./
 export const ROUND_LIMIT_PATTERN = /Round limit reached\./
 
@@ -103,6 +111,7 @@ export class WebchatWerewolfReferee implements ScriptedBrain {
   private night: WebchatNightRecord | undefined
   private day: WebchatDayRecord | undefined
   private pendingVerdict = false
+  private voteRePrompted = false
   /** Rows of the log still awaiting an answer, matched by purpose. */
   private readonly awaiting = new Map<NeedsReplyLogRow['purpose'], NeedsReplyLogRow>()
 
@@ -160,6 +169,7 @@ export class WebchatWerewolfReferee implements ScriptedBrain {
     }
     this.absorbRoleAcks(privateItems)
     if (this.phase === 'night') this.absorbNightAnswers(privateItems, calls, replies)
+    if (this.phase === 'day-vote') this.absorbPrivateVotes(privateItems)
 
     // ── public conversation content: host cues, speeches, votes ──
     for (const line of text.split('\n')) {
@@ -179,6 +189,17 @@ export class WebchatWerewolfReferee implements ScriptedBrain {
       const nightCue = /(?:^|\s)NIGHT (\d+) begins\./.exec(content)
       if (nightCue && humanLine && this.phase === 'awaiting-night-cue') {
         this.openNight(Number(nightCue[1]), calls)
+        continue
+      }
+      // The host's vote nudge (the human-moderator mirror): first nudge →
+      // re-prompt each missing voter individually, once; second → close the
+      // vote, counting the still-missing as abstentions.
+      if (humanLine && /collect the missing votes/.test(content) && this.phase === 'day-vote' && this.day) {
+        if (!this.voteRePrompted) {
+          this.rePromptNonVoters(calls)
+        } else {
+          this.closeVoteWithAbstentions(replies)
+        }
         continue
       }
       if (!senderAlias || !this.alive.has(senderAlias)) continue
@@ -220,15 +241,86 @@ export class WebchatWerewolfReferee implements ScriptedBrain {
         const intent = parseStatedTarget(content, 'vote')
         if (intent.kind === 'target' && this.day.votes[senderAlias] === undefined && this.alive.has(intent.target)) {
           this.day.votes[senderAlias] = intent.target
-        }
-        if (this.aliveAliases().every((alias) => this.day!.votes[alias] !== undefined)) {
-          this.resolveDay(replies)
+          // A re-prompted player may still answer publicly — either channel
+          // settles its obligation.
+          this.markVoteRePromptAnswered(senderAlias)
         }
       }
+    }
+    // One trigger for both channels (public posts above, private re-prompt
+    // replies absorbed earlier): a complete ballot resolves the day.
+    if (this.phase === 'day-vote' && this.day && this.aliveAliases().every((a) => this.day!.votes[a] !== undefined)) {
+      this.resolveDay(replies)
     }
 
     const reply = replies.length > 0 ? replies.join('\n\n') : NO_RESPONSE
     return { calls, reply }
+  }
+
+  /** Votes arriving through the private re-prompt leg. Direct replies carry no
+   *  sender label, so the re-prompt mandates the self-identifying public form
+   *  ("player-X: I vote for player-Y") and the claimed voter must be a living
+   *  re-prompted non-voter; coalesced rows are sender-attributed and accept
+   *  the plain form. Inferred replies (#800) carry the same body and parse
+   *  identically. */
+  private absorbPrivateVotes(items: { sender?: string; content: string }[]): void {
+    const day = this.day
+    if (!day) return
+    for (const item of items) {
+      const claimed = /(player-\d+)\s*:/.exec(item.content)?.[1]
+      const voter = item.sender ?? claimed
+      if (voter === undefined) continue
+      if (item.sender !== undefined && claimed !== undefined && claimed !== item.sender) continue
+      if (!this.alive.has(voter) || day.votes[voter] !== undefined) continue
+      if (item.sender === undefined && !day.rePrompted?.includes(voter)) continue
+      const intent = parseStatedTarget(item.content, 'vote')
+      if (intent.kind === 'target' && this.alive.has(intent.target)) {
+        day.votes[voter] = intent.target
+        this.markVoteRePromptAnswered(voter)
+      }
+    }
+  }
+
+  /** Mark the voter's own re-prompt obligation answered (several re-prompt
+   *  rows share one purpose, so the per-purpose `awaiting` map cannot be the
+   *  ledger here — match the row by target agent). */
+  private markVoteRePromptAnswered(voter: string): void {
+    const agentId = this.seatByAlias.get(voter)?.agentId
+    const row = this.needsReplyLog.find(
+      (candidate) => candidate.purpose === 'vote-reprompt' && candidate.to === agentId && !candidate.answered
+    )
+    if (row) row.answered = true
+  }
+
+  /** First host nudge: individually re-prompt each living non-voter, once. */
+  private rePromptNonVoters(calls: BrainTurn['calls']): void {
+    const day = this.day
+    if (!day) return
+    this.voteRePrompted = true
+    const living = this.aliveAliases()
+    const missing = living.filter((alias) => day.votes[alias] === undefined)
+    day.rePrompted = missing
+    for (const alias of missing) {
+      calls.push(
+        this.needsReply(
+          this.seatByAlias.get(alias)!,
+          'vote-reprompt',
+          this.round,
+          `${alias}, you have not voted in round ${this.round}. You MUST vote now: reply with exactly ` +
+            `"${alias}: I vote for <one living player>". Living players: ${living.join(', ')}. ` +
+            `Pick the most suspicious living player even without a strong read — this is your last chance; ` +
+            `not replying counts as an abstention.`
+        )
+      )
+    }
+  }
+
+  /** Second host nudge: close the ballot as it stands; the missing abstain. */
+  private closeVoteWithAbstentions(replies: string[]): void {
+    const day = this.day
+    if (!day) return
+    day.abstentions = this.aliveAliases().filter((alias) => day.votes[alias] === undefined)
+    this.resolveDay(replies)
   }
 
   onCallResult(outcome: BrainCallOutcome): void {
@@ -268,10 +360,11 @@ export class WebchatWerewolfReferee implements ScriptedBrain {
     const base = `Werewolf role assignment. Your alias: ${alias}. Your role: ${role}.`
     if (role === 'werewolf') {
       const partner = [...this.roles.entries()].find(([other, r]) => r === 'werewolf' && other !== alias)?.[0]
-      return (
-        `${base} Your fellow wolf: ${partner ?? 'none'}. I mediate the pack privately — never coordinate in ` +
-        `the conversation. (private canary: ${this.canaries.wolf} — never repeat it anywhere.) ${ack}`
-      )
+      const pack =
+        partner !== undefined
+          ? `Your fellow wolf: ${partner}. I mediate the pack privately — never coordinate in the conversation.`
+          : `You are the ONLY werewolf — there is no pack to coordinate; I take your night choice directly.`
+      return `${base} ${pack} (private canary: ${this.canaries.wolf} — never repeat it anywhere.) ${ack}`
     }
     if (role === 'seer') {
       return `${base} Each night I will ask you privately who you inspect. (private canary: ${this.canaries.seer} — never repeat it anywhere.) ${ack}`
@@ -290,6 +383,7 @@ export class WebchatWerewolfReferee implements ScriptedBrain {
     }
     this.phase = 'night'
     this.pendingVerdict = false
+    this.voteRePrompted = false
     const living = this.aliveAliases()
     const wolves = living.filter((alias) => this.roles.get(alias) === 'werewolf')
     const wolfTargets = living.filter((alias) => this.roles.get(alias) !== 'werewolf')
@@ -297,6 +391,14 @@ export class WebchatWerewolfReferee implements ScriptedBrain {
     if (wolves.length > 0) {
       const lead = wolves[0]!
       this.night.wolfLead = lead
+      // Single-wolf mediation collapses to propose-only: with no partner to
+      // relay to, the lone wolf's clear statement IS the pack's choice
+      // (absorbNightAnswers already takes the proposal directly when no
+      // partner is alive).
+      const mediation =
+        wolves.length > 1
+          ? 'I will relay your proposal to your fellow wolf for agreement.'
+          : 'You are the only wolf — your choice is final; I take it directly.'
       calls.push(
         this.needsReply(
           this.seatByAlias.get(lead)!,
@@ -304,7 +406,7 @@ export class WebchatWerewolfReferee implements ScriptedBrain {
           this.round,
           `NIGHT ${this.round}. You are the pack lead tonight. Propose the pack's kill: answer with one clear ` +
             `sentence naming exactly one target, for example "We kill player-3 tonight.". ` +
-            `Targets: ${wolfTargets.join(', ')}. I will relay your proposal to your fellow wolf for agreement.`
+            `Targets: ${wolfTargets.join(', ')}. ${mediation}`
         )
       )
     }
@@ -594,6 +696,10 @@ export interface ScriptedPlayerDeps {
     args: Record<string, unknown>
   ) => Promise<{ ok: boolean; error?: string }>
   parentSessionIdOf: (text: string) => string | undefined
+  /** CI cell for the re-prompt lever: this player ignores the public VOTE
+   *  call (model vote-reticence, scripted) and answers only the referee's
+   *  private re-prompt. */
+  abstainPublicVote?: boolean
 }
 
 /**
@@ -701,6 +807,17 @@ export function scriptedWebchatPlayer(deps: ScriptedPlayerDeps) {
       const living = listAfter(delivered, 'Living')
       return report(binding, sessionId, text, living[0] ? `I protect ${living[0]} tonight.` : 'No one to protect.')
     }
+    if (/you have not voted/.test(delivered)) {
+      // The referee's private vote re-prompt: answer in the self-identifying
+      // form the re-prompt mandates (direct replies carry no sender label).
+      const living = listAfter(delivered, 'Living players').filter((alias) => alias !== deps.alias)
+      const target =
+        state.knownWolf && living.includes(state.knownWolf)
+          ? state.knownWolf
+          : (living.find((alias) => alias !== state.partner) ?? living[0])
+      if (!target) return report(binding, sessionId, text, `${deps.alias}: I abstain.`)
+      return report(binding, sessionId, text, `${deps.alias}: I vote for ${target}.`)
+    }
     if (/Werewolf role assignment\./.test(delivered) && role?.[1] === deps.alias && !ackedSessions.has(sessionId)) {
       ackedSessions.add(sessionId)
       return report(binding, sessionId, text, `ROLE-ACK: ${deps.alias}`)
@@ -737,14 +854,22 @@ export function scriptedWebchatPlayer(deps: ScriptedPlayerDeps) {
     // an invocation which just acted must act again (the draft never landed).
     for (const line of text.matchAll(/^(?:\[[^\]\n]*\]\s*)?([a-z0-9-]+):\s(.*)$/gim)) {
       const speaker = line[1]!
-      if (day.order.includes(speaker)) day.spoke.add(speaker)
-      if (/I vote for player-\d+/.test(line[2] ?? '')) day.votedSeen.add(speaker)
+      const isVoteLine = /I vote for player-\d+/.test(line[2] ?? '')
+      // A vote line is a VOTE, never discussion speech: the previous round's
+      // vote rows can lag into the next day's prompts (cursor catch-up), and
+      // counting them as speech convinced later-order speakers the whole
+      // round had already spoken — the deterministic day-2 stall at seat 4.
+      if (day.order.includes(speaker) && !isVoteLine) day.spoke.add(speaker)
+      if (isVoteLine) day.votedSeen.add(speaker)
     }
     const isRegeneration = text.startsWith('(AgentConnect context update:')
     const redoDiscarded = isRegeneration && actedOnLastInvocation.get(sessionId) === true
     actedOnLastInvocation.set(sessionId, false)
     if (day.stage === 'vote') {
       if (!day.living.includes(deps.alias)) return undefined
+      // The scripted abstainer (the re-prompt lever's CI cell): stay silent on
+      // the public VOTE call; the private re-prompt branch above still answers.
+      if (deps.abstainPublicVote) return undefined
       if (day.votedSeen.has(deps.alias)) return undefined
       if (votedRound.get(sessionId) === day.round && !redoDiscarded) return undefined
       const candidates = day.living.filter((alias) => alias !== deps.alias)

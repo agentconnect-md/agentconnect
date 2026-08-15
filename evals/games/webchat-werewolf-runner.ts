@@ -35,6 +35,7 @@ import {
   GAME_OVER_PATTERN,
   HOST_CUE_PATTERN,
   ROUND_LIMIT_PATTERN,
+  VOTE_NUDGE_TEXT,
   WebchatWerewolfReferee,
   hostKickoffText,
   hostNightCueText,
@@ -49,6 +50,10 @@ export interface WebchatWerewolfRunOptions {
   seed: number
   playerCount?: number
   maxRounds?: number
+  /** Scripted subjects only: aliases that ignore the public VOTE call and
+   *  answer only the referee's private re-prompt (the re-prompt lever's CI
+   *  cell — scripted vote reticence). */
+  scriptedAbstainers?: readonly string[]
   subject?: { kind: 'scripted' } | { kind: 'real'; subjectRoot: string; templateAgentIds: string[] }
   /** Whole-run budget. Scripted default 180s; real default 30min. */
   budgetMs?: number
@@ -133,7 +138,8 @@ export async function runWebchatWerewolf(options: WebchatWerewolfRunOptions): Pr
       const player = scriptedWebchatPlayer({
         alias: seat.alias,
         callTool: callDaemonTool,
-        parentSessionIdOf
+        parentSessionIdOf,
+        ...(options.scriptedAbstainers?.includes(seat.alias) ? { abstainPublicVote: true } : {})
       })
       handlers.set(seat.agentId, ({ sessionId, text, binding }) => player({ sessionId, text, binding }))
     }
@@ -166,6 +172,7 @@ export async function runWebchatWerewolf(options: WebchatWerewolfRunOptions): Pr
     arena.postHost(hostKickoffText(), { mentions: ['referee'] })
 
     const answeredCues = new Set<number>()
+    const voteNudgesByRound = new Map<number, number>()
     let lastProgressPosts = -1
     while (Date.now() < deadline) {
       const settled = await arena.settleOrStall({
@@ -195,6 +202,15 @@ export async function runWebchatWerewolf(options: WebchatWerewolfRunOptions): Pr
       }
       if (acted) continue
       if (settled) {
+        // A quiet vote is not yet a stall: the host nudges the referee (the
+        // human-moderator mirror) — first nudge triggers the individual
+        // re-prompts of the missing voters, the second closes the ballot with
+        // abstentions. At most two nudges per round.
+        if (brain.phase === 'day-vote' && (voteNudgesByRound.get(brain.round) ?? 0) < 2) {
+          voteNudgesByRound.set(brain.round, (voteNudgesByRound.get(brain.round) ?? 0) + 1)
+          arena.postHost(VOTE_NUDGE_TEXT, { mentions: ['referee'] })
+          continue
+        }
         // Fully drained, nothing to answer, game not done: the honest stall.
         if (arena.posts.length === lastProgressPosts) break
         lastProgressPosts = arena.posts.length
