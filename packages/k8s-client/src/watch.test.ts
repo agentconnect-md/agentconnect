@@ -158,14 +158,18 @@ describe('watchCollection', () => {
     })()
     // Each failed list parks on a clock-driven delay; advancing releases it. A retry
     // whose timer wins must unregister its listener, or a long outage grows them
-    // without bound on this one long-lived signal.
+    // without bound on this one long-lived signal. Wait for the armed timer rather than
+    // for the server's hit count: that lands while the request is still in flight, still
+    // holding the listener node:http registers for its own lifetime.
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      await waitUntil(() => lists === attempt + 1)
+      await waitUntil(() => clock.pending === 1)
+      expect(getEventListeners(controller.signal, 'abort')).toHaveLength(1)
       clock.advance(60_000)
       expect(getEventListeners(controller.signal, 'abort')).toHaveLength(0)
     }
     await drain
     expect(collected).toEqual(['synced'])
+    expect(lists).toBe(4)
     expect(getEventListeners(controller.signal, 'abort')).toHaveLength(0)
     controller.abort()
   })
