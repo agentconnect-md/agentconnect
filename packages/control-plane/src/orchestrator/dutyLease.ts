@@ -119,6 +119,9 @@ export class DutyLeaseService {
    *  retiring member must not take back a group it — or a peer in the same rollout — just vacated,
    *  even between the beat that said so and the next one, and even on the rendezvous path. */
   private readonly draining = new Set<string>()
+  /** Members held back by the rollout barrier — an older generation while a newer one is live. Kept
+   *  only so the transition is logged once each way rather than every beat. */
+  private readonly heldBack = new Set<string>()
   /** groupId → the last grant this instance handed out (vacancy claim or rendezvous), for the double-move line. */
   private readonly lastGrant = new Map<string, { term: bigint; atMs: number }>()
 
@@ -238,6 +241,7 @@ export class DutyLeaseService {
   forget(daemonId: DaemonId): void {
     this.refusals.delete(daemonId)
     this.draining.delete(daemonId)
+    this.heldBack.delete(daemonId)
   }
 
   /** A fresh registration is a fresh member: whatever it declared on its previous connection no
@@ -249,6 +253,18 @@ export class DutyLeaseService {
   /** Has this member declared it is draining on this registration? */
   isDraining(daemonId: DaemonId): boolean {
     return this.draining.has(daemonId)
+  }
+
+  /** The rollout barrier (k8s-daemon-pool.md §12): may this member take NEW groups? False while a
+   *  live member of its set carries a newer generation. Null-generation members are never held
+   *  back — the repo answers false for them — so local daemons and older pods keep claiming. */
+  private async mayClaimNew(daemonId: DaemonId, now: Date): Promise<boolean> {
+    const heldBack = await this.repo.newerGenerationLive(daemonId, now, this.config.leaseMs)
+    if (heldBack && !this.heldBack.has(daemonId)) {
+      this.heldBack.add(daemonId)
+      this.log?.warn({ daemonId }, 'duty member is of an older generation than a live peer; it will claim nothing new')
+    } else if (!heldBack) this.heldBack.delete(daemonId)
+    return !heldBack
   }
 
   /** Record a grant and warn when the group's term moved twice inside the window — a term is bumped
@@ -370,9 +386,16 @@ export class DutyLeaseService {
     const regrantable = await this.settleRefusals(daemonId, digestIds, deliverable(missing))
     const regrant = draining ? [] : regrantable
 
+    // Vacancy grants need both gates: not draining, and of the newest live generation of the set —
+    // an older generation keeps serving and renewing what it holds, it just claims nothing new, so
+    // a group a retiring peer released cannot land on a member the same rollout is about to retire.
     let granted: DutyGrantRecord[] = []
     const budget = draining ? 0 : Math.max(0, duties.headroom - regrant.length)
-    if (budget > 0 && this.clock.now() >= this.bootedAtMs + this.config.recoveryGraceMs) {
+    if (
+      budget > 0 &&
+      this.clock.now() >= this.bootedAtMs + this.config.recoveryGraceMs &&
+      (await this.mayClaimNew(daemonId, now))
+    ) {
       // Oversized groups are excluded at the claim boundary (the size gate), so
       // a claim never lands on a group it would immediately have to release.
       granted = await this.repo.claimVacant(
@@ -458,6 +481,8 @@ export class DutyLeaseService {
       // turn would be dropped by its own drain gate, and the group would move twice.
       if (this.draining.has(holder)) return { granted: false }
       const now = new Date(this.clock.now())
+      // Same barrier as the vacancy grant: an older generation does not take a home either.
+      if (!(await this.mayClaimNew(holder, now))) return { granted: false }
       const claim = await this.repo.claimAgentHome(orgId, agentId, holder, now, this.config.leaseMs)
       if (!claim.granted || claim.groupId === undefined)
         return claim.holder ? { granted: false, holder: claim.holder } : { granted: false }

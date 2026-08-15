@@ -314,6 +314,7 @@ import {
   HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED,
   HookReport,
   CP_URL_ENV,
+  POD_TEMPLATE_HASH_ENV,
   RELAY_DAEMON_SUBPROTOCOL,
   RELAY_DAEMON_WS_PATH,
   RESERVED_RESTART_CODE,
@@ -21895,6 +21896,9 @@ export class Daemon {
         : {}),
       agentVersion: DAEMON_VERSION,
       host: hostname(),
+      // The deployment side sets this from the pod-template-hash label; the ledger's rollout barrier
+      // lets only the newest live generation of the set claim vacated groups. Unset locally.
+      generation: process.env[POD_TEMPLATE_HASH_ENV]?.trim() || undefined,
       heartbeatDefaultMs: cp.heartbeatMs,
       maxAgents: this.cfg.limits.maxAgents,
       capabilities: () => ({

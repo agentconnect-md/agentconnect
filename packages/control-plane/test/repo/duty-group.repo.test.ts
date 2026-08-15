@@ -5,6 +5,7 @@
 import { beforeEach, describe, it, expect } from 'vitest'
 import { prisma } from '../setup.db.js'
 import { PgDutyGroupRepo } from '../../src/persistence/repositories/duty-group.repo.js'
+import { PgDaemonRepo } from '../../src/persistence/repositories/daemon.repo.js'
 import { planDutyReconcile, computeDutyComponents } from '../../src/orchestrator/dutyGroup.js'
 import type { DutyGroupRecord } from '../../src/persistence/ports.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
@@ -338,5 +339,113 @@ describe('DutyGroupRepo — agent-home claims (real Postgres)', () => {
     expect([c1.granted, c2.granted].filter(Boolean)).toHaveLength(1)
     expect(c1.groupId).toBe(c2.groupId)
     expect(await prisma.dutyGroup.count()).toBe(1)
+  })
+})
+
+describe('DutyGroupRepo — the rollout barrier `newerGenerationLive` (real Postgres)', () => {
+  const M3 = DaemonId('d3333333-3333-4333-8333-333333333333')
+  const OTHER_SET_MEMBER = DaemonId('d4444444-4444-4444-8444-444444444444')
+
+  async function member(id: string, generation: string | null, since: Date | null, lastSeenAt: Date | null) {
+    await prisma.daemon.create({
+      data: { id, orgId: null, maxAgents: 8, status: 'ready', generation, generationSince: since, lastSeenAt }
+    })
+  }
+
+  it('an older generation is held back while a live member of a newer generation exists in its set', async () => {
+    await member(M1, 'old', after(-600_000), T0)
+    await member(M2, 'new', after(-60_000), T0)
+    await joinPool(prisma, M1, M2)
+    const repo = new PgDutyGroupRepo(prisma, minter())
+
+    expect(await repo.newerGenerationLive(M1, T0, LEASE_MS)).toBe(true)
+    // The newest generation itself is unaffected.
+    expect(await repo.newerGenerationLive(M2, T0, LEASE_MS)).toBe(false)
+  })
+
+  it('a sole generation claims, and a claimant that has not beaten yet still counts as live', async () => {
+    await member(M1, 'only', after(-600_000), null)
+    await member(M2, 'only', after(-500_000), T0)
+    await joinPool(prisma, M1, M2)
+    const repo = new PgDutyGroupRepo(prisma, minter())
+
+    expect(await repo.newerGenerationLive(M1, T0, LEASE_MS)).toBe(false)
+  })
+
+  it('a null-generation claimant is never held back, and null peers rank nothing', async () => {
+    await member(M1, null, null, T0)
+    await member(M2, 'new', after(-60_000), T0)
+    await member(M3, null, null, T0)
+    await joinPool(prisma, M1, M2, M3)
+    const repo = new PgDutyGroupRepo(prisma, minter())
+
+    expect(await repo.newerGenerationLive(M1, T0, LEASE_MS)).toBe(false)
+    expect(await repo.newerGenerationLive(M2, T0, LEASE_MS)).toBe(false)
+  })
+
+  it('a newer member that stopped beating does not hold anyone back; a peer in another set never counts', async () => {
+    await member(M1, 'old', after(-600_000), T0)
+    // Newer, but its last beat is past the lease horizon: dead for the ledger's purposes.
+    await member(M2, 'new', after(-60_000), after(-LEASE_MS - 1))
+    await joinPool(prisma, M1, M2)
+    // Newer and live — but in a different set.
+    await member(OTHER_SET_MEMBER, 'newest', after(-1_000), T0)
+    const other = await prisma.memberSet.create({
+      data: { id: '55555555-5555-4555-8555-555555555555', orgId: DEFAULT_ORG_ID, name: 'other' }
+    })
+    await prisma.memberSetMember.create({ data: { setId: other.id, daemonId: OTHER_SET_MEMBER } })
+    const repo = new PgDutyGroupRepo(prisma, minter())
+
+    expect(await repo.newerGenerationLive(M1, T0, LEASE_MS)).toBe(false)
+    // Its beat resumes ⇒ it holds the older generation back again.
+    await prisma.daemon.update({ where: { id: M2 }, data: { lastSeenAt: T0 } })
+    expect(await repo.newerGenerationLive(M1, T0, LEASE_MS)).toBe(true)
+  })
+
+  it('the claim statements carry the barrier themselves: an older-generation claimant updates 0 rows, the sole generation claims', async () => {
+    await member(M1, 'old', after(-600_000), T0)
+    await member(M2, 'new', after(-60_000), T0)
+    const setId = await joinPool(prisma, M1, M2)
+    await prisma.agent.create({
+      data: { id: A1, orgId: DEFAULT_ORG_ID, name: 'pooled', runtime: 'claude', placementKind: 'set', setId }
+    })
+    await prisma.agent.create({
+      data: { id: A2, orgId: DEFAULT_ORG_ID, name: 'pooled-2', runtime: 'claude', placementKind: 'set', setId }
+    })
+    const repo = new PgDutyGroupRepo(prisma, minter())
+    await reconcile(repo, [], [A1], T0)
+
+    // Vacancy claim: the older generation's UPDATE matches nothing while the newer live peer exists.
+    expect(await repo.claimVacant(M1, 10, T0, LEASE_MS)).toEqual([])
+    // Rendezvous — taking an existing vacant home, and minting a new one — both refused the same way.
+    expect((await repo.claimAgentHome(ORG, AgentId(A1), M1, T0, LEASE_MS)).granted).toBe(false)
+    expect((await repo.claimAgentHome(ORG, AgentId(A2), M1, T0, LEASE_MS)).granted).toBe(false)
+    expect(await prisma.dutyGroup.count({ where: { holder: M1 } })).toBe(0)
+    // The newest generation claims through every path.
+    expect(await repo.claimVacant(M2, 10, T0, LEASE_MS)).toHaveLength(1)
+    expect((await repo.claimAgentHome(ORG, AgentId(A2), M2, T0, LEASE_MS)).granted).toBe(true)
+
+    // Once the newer peer is dead for the ledger, the same statements let the older member claim.
+    await repo.release(
+      M2,
+      (await repo.listHeldBy(M2)).map((g) => g.groupId)
+    )
+    await prisma.daemon.update({ where: { id: M2 }, data: { lastSeenAt: after(-LEASE_MS - 1) } })
+    expect(await repo.claimVacant(M1, 10, T0, LEASE_MS)).toHaveLength(2)
+  })
+
+  it('a re-register with the same generation keeps its first-seen stamp; a new value re-stamps it', async () => {
+    await member(M1, null, null, T0)
+    const daemons = new PgDaemonRepo(prisma)
+    const reg = { host: 'm', capabilities: { platforms: [], runtimes: [], acp: true, features: [] }, maxAgents: 8 }
+    await daemons.applyRegister(M1, { ...reg, generation: 'g1' }, T0)
+    await daemons.applyRegister(M1, { ...reg, generation: 'g1' }, after(10_000))
+    let row = await prisma.daemon.findUniqueOrThrow({ where: { id: M1 } })
+    expect(row.generation).toBe('g1')
+    expect(row.generationSince).toEqual(T0)
+    await daemons.applyRegister(M1, { ...reg, generation: 'g2' }, after(20_000))
+    row = await prisma.daemon.findUniqueOrThrow({ where: { id: M1 } })
+    expect(row.generation).toBe('g2')
+    expect(row.generationSince).toEqual(after(20_000))
   })
 })

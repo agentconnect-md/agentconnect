@@ -175,11 +175,15 @@ describe('RuntimeProfileRepo — snapshot seq fence (real Postgres)', () => {
 
     // register resets the fence, so a reconnecting daemon's fresh per-connection
     // counter is accepted from 1 again.
-    await new PgDaemonRepo(prisma).applyRegister(DaemonId(DAEMON), {
-      host: 'host-1',
-      capabilities: { platforms: ['slack'], runtimes: ['claude'], acp: true, features: [] },
-      maxAgents: 4
-    })
+    await new PgDaemonRepo(prisma).applyRegister(
+      DaemonId(DAEMON),
+      {
+        host: 'host-1',
+        capabilities: { platforms: ['slack'], runtimes: ['claude'], acp: true, features: [] },
+        maxAgents: 4
+      },
+      new Date()
+    )
     expect(await storedSeq()).toBeNull()
     expect(await profiles.replaceAll(DaemonId(DAEMON), [profile('claude')], at, 1)).toBe(true)
     expect((await profiles.forDaemon(DaemonId(DAEMON))).map((p) => p.runtime)).toEqual(['claude'])

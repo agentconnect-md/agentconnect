@@ -230,7 +230,17 @@ export class PgDaemonRepo implements DaemonRepo {
     })
   }
 
-  async applyRegister(daemonId: DaemonId, reg: RegisterReqInput): Promise<DaemonRecord> {
+  async applyRegister(daemonId: DaemonId, reg: RegisterReqInput, now: Date): Promise<DaemonRecord> {
+    // The generation's first-seen stamp moves only when the value does — it orders generations
+    // within a member set (duty-group.repo.ts `newerGenerationLive`), so a re-register must not
+    // make an old generation look new.
+    const generation = reg.generation ?? null
+    await this.db.$executeRaw`
+      UPDATE "daemon"
+      SET "generationSince" = CASE WHEN "generation" IS DISTINCT FROM ${generation} THEN ${now} ELSE "generationSince" END,
+          "generation" = ${generation}
+      WHERE id = ${daemonId}::uuid
+    `
     const daemon = await this.db.daemon.update({
       where: { id: daemonId },
       data: {

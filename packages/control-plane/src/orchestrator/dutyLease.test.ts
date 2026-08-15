@@ -14,7 +14,7 @@ const AGENT = AgentId('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1')
 const GROUP = '00000000-0000-4000-8000-000000000001'
 
 /** A ledger with one vacant group covering one agent, and every claim path instrumented. */
-function fakeRepo(opts: { heldByMember?: DutyGroupRecord[] } = {}) {
+function fakeRepo(opts: { heldByMember?: DutyGroupRecord[]; heldBack?: (holder: string) => boolean } = {}) {
   const vacant: DutyGrantRecord = {
     groupId: GROUP,
     orgId: ORG,
@@ -29,7 +29,9 @@ function fakeRepo(opts: { heldByMember?: DutyGroupRecord[] } = {}) {
     holder: MEMBER
   }))
   const release = vi.fn(async () => undefined)
+  const newerGenerationLive = vi.fn(async (holder: string) => opts.heldBack?.(holder) ?? false)
   const repo = {
+    newerGenerationLive,
     renewHeld: async () => [],
     listHeldBy: async () => opts.heldByMember ?? [],
     confirmHeld: async () => [],
@@ -41,7 +43,7 @@ function fakeRepo(opts: { heldByMember?: DutyGroupRecord[] } = {}) {
     claimAgentHome,
     release
   } as unknown as DutyGroupRepo
-  return { repo, claimVacant, claimAgentHome, release }
+  return { repo, claimVacant, claimAgentHome, release, newerGenerationLive }
 }
 
 function service(repo: DutyGroupRepo, clock = new FakeClock(0), warn = vi.fn()) {
@@ -130,6 +132,37 @@ describe('DutyLeaseService — draining members', () => {
 
     expect(claimVacant).toHaveBeenCalledTimes(1)
     expect(send.mock.calls.map(([type]) => type)).toEqual(['duty/grant', 'duty/renewed'])
+  })
+})
+
+describe('DutyLeaseService — the rollout barrier', () => {
+  it('a member of an older generation is granted no vacancy and no home while a newer live peer exists', async () => {
+    const warn = vi.fn()
+    const { repo, claimVacant, claimAgentHome, newerGenerationLive } = fakeRepo({ heldBack: (h) => h === MEMBER })
+    const svc = service(repo, new FakeClock(0), warn)
+
+    const send = await beat(svc, MEMBER, { held: [], headroom: 4 })
+    expect(claimVacant).not.toHaveBeenCalled()
+    // Renewal still confirmed: it keeps serving what it holds.
+    expect(send.mock.calls.map(([type]) => type)).toEqual(['duty/renewed'])
+    expect(await svc.claimAgentHome(ORG, AGENT, MEMBER)).toEqual({ granted: false })
+    expect(claimAgentHome).not.toHaveBeenCalled()
+    // Logged once, not per beat.
+    await beat(svc, MEMBER, { held: [], headroom: 4 })
+    expect(warn.mock.calls.filter(([, m]) => /older generation/.test(String(m)))).toHaveLength(1)
+    // The predicate is read against the lease horizon — the ledger's one notion of "live".
+    expect(newerGenerationLive).toHaveBeenCalledWith(MEMBER, expect.any(Date), DUTY_LEASE_DEFAULTS.leaseMs)
+  })
+
+  it('a member the repo does not hold back claims as before, and one released from the barrier resumes', async () => {
+    let heldBack = true
+    const { repo, claimVacant } = fakeRepo({ heldBack: () => heldBack })
+    const svc = service(repo)
+    await beat(svc, MEMBER, { held: [], headroom: 4 })
+    expect(claimVacant).not.toHaveBeenCalled()
+    heldBack = false
+    await beat(svc, MEMBER, { held: [], headroom: 4 })
+    expect(claimVacant).toHaveBeenCalledTimes(1)
   })
 })
 

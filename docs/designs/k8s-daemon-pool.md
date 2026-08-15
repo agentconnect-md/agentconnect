@@ -529,6 +529,17 @@ waits `minReadySeconds`, then SIGTERMs every old member together. Two
 application-side properties make that a rollout with no capacity dip and at
 most one move per agent (#1016):
 
+- **Only the newest live generation claims.** `maxSurge: 100%` alone is not a
+  full-pool barrier: the Deployment controller scales the old ReplicaSet down
+  as soon as one replacement is Available for `minReadySeconds`, so one old
+  member drains while its old peers still claim what it released. So the
+  barrier lives in the ledger: a member reports its rollout generation (the
+  pod-template hash, `AC_POD_TEMPLATE_HASH`) on register, and a claimant is
+  offered vacant groups or a rendezvous home only if no live member of its
+  set carries a different, newer generation — newest = the generation whose
+  earliest live member arrived last (`newerGenerationLive`, one SQL predicate
+  next to the `draining` gate). Older generations keep serving and renewing;
+  null-generation members (local daemons, older pods) are never held back.
 - **A draining member claims nothing.** On SIGTERM the member latches its
   claim gate (no `claimVacant` headroom, no activation-rendezvous claim, no
   grant admitted) and reports `draining: true` on its digest — sent at once,
