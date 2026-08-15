@@ -551,10 +551,12 @@ most one move per agent (#1016):
   unconfirmed. A grant that lands after the latch (an exchange that began
   before the SIGTERM) is never installed and never acknowledged early: it
   is recorded, and released acknowledged only once the loop is done with
-  every held group — by then nothing is served here — unless it covers an
-  agent of a group left to lapse (or one whose host stop is still recorded
-  as pending or failed; host teardown is observable per agent), in which
-  case it lapses too. The cost is deliberate: a group granted in that race
+  every held group — by then nothing is served here — and after one global
+  wait for the platform convergence every duty change so far requested (a
+  group revoked just before the SIGTERM never entered the loop; this is
+  what closes its socket), unless it covers an agent of a group left to
+  lapse (or one whose host stop is still recorded as pending or failed;
+  host teardown is observable per agent), in which case it lapses too. The cost is deliberate: a group granted in that race
   window stays with the retiring member until its drain completes, a small
   delay bounded by the drain budget, chosen over per-case teardown proofs.
   A rebalance drain simply ignores late grants, as before. The whole drain is bounded by

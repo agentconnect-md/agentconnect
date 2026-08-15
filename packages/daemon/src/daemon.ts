@@ -19995,10 +19995,21 @@ export class Daemon {
   private settleLateGrants(drain: ShutdownDutyDrain): Promise<void> {
     const run = this.lateGrantSettling.then(async () => {
       const { deadlineAt, stats } = drain
+      if (drain.late.size === 0) return
+      // One global proof for the whole batch: the platform convergence every duty change so far
+      // requested has run — a group revoked or fenced just before the SIGTERM never entered the
+      // loop, and only this closes the socket that revoke opened the teardown for. Unconfirmed
+      // (deadline, or the reconcile gave up) ⇒ every late grant lapses.
+      const converged = await this.awaitDutyConvergence(this.dutyConnectionsRequested, deadlineAt)
       while (drain.late.size > 0) {
         const [groupId, grant] = drain.late.entries().next().value as [string, DutyGrantEntry]
         drain.late.delete(groupId)
         stats.late++
+        if (!converged) {
+          stats.lapsing++
+          this.log.warn(`duty: late grant ${groupId} — connection teardown unconfirmed, not released, its lease lapses`)
+          continue
+        }
         const agentIds = grant.members.filter((m) => m.kind === 'agent').map((m) => m.refId)
         // A stop still in flight is given until the deadline; a failed one stays recorded.
         for (const agentId of agentIds) {

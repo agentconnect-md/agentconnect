@@ -200,6 +200,54 @@ describe('shutdown drain of a duty-holding member', () => {
     expect(warn.mock.calls.some(([m]) => /late grant .* not released, its lease lapses/.test(String(m)))).toBe(true)
   })
 
+  it("a late regrant of the last group revoked just before SIGTERM waits for that revoke's connection convergence, and lapses if it never confirms", async () => {
+    // Confirmed late: the revoke's reconcile is held open, then released.
+    {
+      const { daemon, calls } = await boot()
+      // Only GROUP is held, so the loop has nothing to do once it is revoked.
+      ;(daemon as any).applyDutyRevoke([{ groupId: GROUP_B, reason: 'gone' }])
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      let finishReconcile!: () => void
+      const gate = new Promise<void>((resolve) => {
+        finishReconcile = resolve
+      })
+      const runReconcile = (daemon as any).runReconcile.bind(daemon) as () => Promise<void>
+      ;(daemon as any).runReconcile = async () => {
+        await gate
+        await runReconcile()
+      }
+      ;(daemon as any).applyDutyRevoke([{ groupId: GROUP, reason: 'superseded' }])
+      expect(duties(daemon).size()).toBe(0)
+
+      const stopping = daemon.stop()
+      ;(daemon as any).applyDutyGrant([{ ...grant(GROUP, AGENT), term: '2' }])
+      await new Promise((resolve) => setTimeout(resolve, 200))
+      // Loop done at once (nothing held), host long gone — still no ack while the socket teardown pends.
+      expect(calls.releases).toEqual([])
+
+      finishReconcile()
+      await stopping
+      expect(calls.releases).toEqual([[GROUP]])
+    }
+    // Never confirmed: lapses.
+    {
+      const { daemon, calls } = await boot()
+      ;(daemon as any).cfg.limits.poolShutdownDrainMs = 1_500
+      ;(daemon as any).applyDutyRevoke([{ groupId: GROUP_B, reason: 'gone' }])
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      ;(daemon as any).runReconcile = () => new Promise<void>(() => {})
+      ;(daemon as any).applyDutyRevoke([{ groupId: GROUP, reason: 'superseded' }])
+      const warn = vi.spyOn((daemon as any).log, 'warn')
+
+      const stopping = daemon.stop()
+      ;(daemon as any).applyDutyGrant([{ ...grant(GROUP, AGENT), term: '2' }])
+      await stopping
+
+      expect(calls.releases).toEqual([])
+      expect(warn.mock.calls.some(([m]) => /late grant .* connection teardown unconfirmed/.test(String(m)))).toBe(true)
+    }
+  })
+
   it('a CP-commanded rebalance drain still ignores grants that land while it is suspended', async () => {
     const { daemon, releaseDuties } = await boot()
     const admit = vi.spyOn(daemon as any, 'admitDutyGrants')
