@@ -271,9 +271,16 @@ export class DutyLeaseService {
     // projection it costs a message: relay ingress recovers through the rendezvous, but a
     // cross-daemon peer wake forwards ONCE and takes a terminal miss.
     //
-    // `confirmHeld` only stamps unconfirmed rows, so this fires on the first beat that reports a
-    // group and never again — no per-beat churn.
-    const confirmed = await this.repo.confirmHeld(daemonId, [...digestIds], now)
+    // The digest's TERMS ride along, not just its ids: a member mid-admission of a re-grant still
+    // reports the previous term, and that confirms the previous grant, never the current one. Same
+    // rule the stale-term branch below applies — confirm the terms or supersede, never both.
+    //
+    // `confirmHeld` only stamps rows whose (holder, term) is not already recorded, so this fires on
+    // the first beat that reports a given grant and never again — no per-beat churn.
+    const confirmed = await this.repo.confirmHeld(
+      daemonId,
+      duties.held.map((d) => ({ groupId: d.groupId, term: BigInt(d.term) }))
+    )
     if (confirmed.length > 0) {
       const groups = held.filter((g) => confirmed.includes(g.groupId))
       this.routing?.kick(agentIdsOf(groups))

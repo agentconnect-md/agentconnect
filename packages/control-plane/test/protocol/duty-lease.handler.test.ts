@@ -1050,6 +1050,14 @@ describe('a grant is not a route until the digest confirms it (protocol level, r
     })
   }
 
+  /** The confirmation rule itself: a hold counts only while it is the hold the row describes.
+   *  Asserting on `(confirmedTerm, confirmedHolder)` rather than on "a confirmation exists" is the
+   *  whole point — a bare marker could not tell a re-take or a rewrite from the grant it proved. */
+  async function isConfirmed(groupId: string): Promise<boolean> {
+    const row = await prisma.dutyGroup.findUniqueOrThrow({ where: { id: groupId } })
+    return row.confirmedTerm === row.term && row.confirmedHolder === row.holder
+  }
+
   /** The flat peer directory as the relay and every daemon receive it — what an A2A wake resolves
    *  through, and what `admits()` fails closed against. */
   async function directoryDaemonFor(h: ReturnType<typeof buildWsHarness>, agentId: string): Promise<string | null> {
@@ -1077,12 +1085,12 @@ describe('a grant is not a route until the digest confirms it (protocol level, r
     expect((await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })).holder).toBe(DAEMON)
 
     // ...and the directory still names nobody: a lease is not yet a route.
-    expect(await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })).toMatchObject({ confirmedAt: null })
+    expect(await isConfirmed(GROUP)).toBe(false)
     expect(await directoryDaemonFor(h, AGENT)).toBeNull()
 
     // Beat 2 carries the group in the digest — the member installed and opened its gate.
     await beat(stub, { held: [{ groupId: GROUP, term: '5' }], headroom: 4 })
-    expect((await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })).confirmedAt).not.toBeNull()
+    expect(await isConfirmed(GROUP)).toBe(true)
     expect(await directoryDaemonFor(h, AGENT)).toBe(DAEMON)
   })
 
@@ -1117,7 +1125,7 @@ describe('a grant is not a route until the digest confirms it (protocol level, r
     await vi.waitFor(() => expect(h.hookAssigns.some((rule) => rule.daemonId === DAEMON)).toBe(true))
   })
 
-  it('confirms once, not on every beat — the stamp is first-write-wins', async () => {
+  it('confirms one grant once — a repeat beat re-converges nothing', async () => {
     const h = buildWsHarness(prisma)
     const startAt = new Date(h.clock.now())
     await seedPooledAgent()
@@ -1125,32 +1133,130 @@ describe('a grant is not a route until the digest confirms it (protocol level, r
     const { stub } = await ready(h)
 
     await beat(stub, { held: [{ groupId: GROUP, term: '1' }], headroom: 0 })
-    const first = (await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })).confirmedAt
-    expect(first).not.toBeNull()
+    expect(await isConfirmed(GROUP)).toBe(true)
+    const row = await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })
+    expect(row.confirmedTerm).toBe(1n)
 
+    // A steady-state member reports the same hold on every beat forever; re-stamping it would
+    // re-push every projection that names it, once per heartbeat, for the life of the lease.
     h.clock.advance(5_000)
     await beat(stub, { held: [{ groupId: GROUP, term: '1' }], headroom: 0 })
-    expect((await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })).confirmedAt).toEqual(first)
+    expect(await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })).toMatchObject({
+      confirmedTerm: 1n,
+      confirmedHolder: DAEMON
+    })
   })
 
-  it('a re-grant to a DIFFERENT member drops the confirmation; renewal keeps it', async () => {
-    // The reset rule, both ways. A composition change re-grants IN PLACE and must not blank a
-    // working route; a claim by another member must.
+  it('a claim by a DIFFERENT member drops the confirmation', async () => {
     const h = buildWsHarness(prisma)
     const startAt = new Date(h.clock.now())
     await seedPooledAgent()
     await seedGroup({ holder: DAEMON, term: 1n, expiresAt: new Date(startAt.getTime() + LEASE_MS) })
     const { stub } = await ready(h)
     await beat(stub, { held: [{ groupId: GROUP, term: '1' }], headroom: 0 })
-    expect((await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })).confirmedAt).not.toBeNull()
+    expect(await isConfirmed(GROUP)).toBe(true)
 
     // Lapse it, then let a different member take it.
     await prisma.dutyGroup.update({ where: { id: GROUP }, data: { expiresAt: new Date(h.clock.now() - 1) } })
     const repo = new PgDutyGroupRepo(prisma)
     await repo.claimVacant(DaemonId(OTHER), 1, new Date(h.clock.now()), LEASE_MS, { scope: 'install-wide' })
 
-    const row = await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })
-    expect(row.holder).toBe(OTHER)
-    expect(row.confirmedAt).toBeNull()
+    expect(await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })).toMatchObject({ holder: OTHER })
+    expect(await isConfirmed(GROUP)).toBe(false)
+  })
+
+  // ── the three ways a bare marker was inherited by state that never earned it ──
+
+  it('a lapsed lease re-taken by the SAME member is unconfirmed until the new term is reported', async () => {
+    // The member is the one that held it, so a holder-keyed marker survived — but a lapse is
+    // exactly what the daemon self-fence acts on (#976): it may have dropped the group and be
+    // re-installing right now. The term bump is what makes that visible.
+    const h = buildWsHarness(prisma)
+    const startAt = new Date(h.clock.now())
+    await seedPooledAgent()
+    await seedGroup({ holder: DAEMON, term: 1n, expiresAt: new Date(startAt.getTime() + LEASE_MS) })
+    const { stub } = await ready(h)
+    await beat(stub, { held: [{ groupId: GROUP, term: '1' }], headroom: 0 })
+    expect(await isConfirmed(GROUP)).toBe(true)
+    expect(await directoryDaemonFor(h, AGENT)).toBe(DAEMON)
+
+    // Lapse, then the SAME member re-takes it.
+    await prisma.dutyGroup.update({ where: { id: GROUP }, data: { expiresAt: new Date(h.clock.now() - 1) } })
+    const repo = new PgDutyGroupRepo(prisma)
+    const [regrant] = await repo.claimVacant(DaemonId(DAEMON), 1, new Date(h.clock.now()), LEASE_MS, {
+      scope: 'install-wide'
+    })
+    expect(regrant?.term).toBe(2n)
+    expect(await isConfirmed(GROUP)).toBe(false)
+    expect(await directoryDaemonFor(h, AGENT)).toBeNull()
+
+    // Reporting the NEW term re-arms it, which is what the daemon does after re-admitting.
+    await beat(stub, { held: [{ groupId: GROUP, term: '2' }], headroom: 0 })
+    expect(await isConfirmed(GROUP)).toBe(true)
+    expect(await directoryDaemonFor(h, AGENT)).toBe(DAEMON)
+  })
+
+  it('an in-place composition rewrite drops the confirmation until the member re-admits it', async () => {
+    // The rewrite re-grants IN PLACE at a bumped term (#977/#983 already do this), so the bump IS
+    // the invalidation — no second rule. The member has admitted the OLD composition; the agents
+    // this rewrite ADDS are ones it has never installed, and addressing ingress at it for them is
+    // the same terminal miss.
+    const h = buildWsHarness(prisma)
+    const startAt = new Date(h.clock.now())
+    await seedPooledAgent()
+    await seedGroup({ holder: DAEMON, term: 1n, expiresAt: new Date(startAt.getTime() + LEASE_MS) })
+    const { stub } = await ready(h)
+    await beat(stub, { held: [{ groupId: GROUP, term: '1' }], headroom: 0 })
+    expect(await isConfirmed(GROUP)).toBe(true)
+
+    // Rewrite the group in place, adding a member — the shape a new shared bot produces.
+    const repo = new PgDutyGroupRepo(prisma)
+    await repo.applyReconcile(
+      OrgId(DEFAULT_ORG_ID),
+      () => ({
+        unchanged: [],
+        writes: [
+          {
+            groupId: GROUP,
+            members: [
+              { kind: 'agent' as const, refId: AGENT },
+              { kind: 'agent' as const, refId: AGENT2 }
+            ],
+            regrantTo: DAEMON
+          }
+        ],
+        creates: [],
+        deletes: [],
+        superseded: []
+      }),
+      { now: new Date(h.clock.now()), leaseMs: LEASE_MS }
+    )
+
+    expect((await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })).term).toBe(2n)
+    expect(await isConfirmed(GROUP)).toBe(false)
+    expect(await directoryDaemonFor(h, AGENT)).toBeNull()
+
+    await beat(stub, { held: [{ groupId: GROUP, term: '2' }], headroom: 0 })
+    expect(await isConfirmed(GROUP)).toBe(true)
+  })
+
+  it('a digest still carrying the OLD term does not confirm the current one', async () => {
+    // A beat that crossed a re-grant reports what the member believed a moment ago. The exchange
+    // already refuses to treat that as a renewal ("confirm the terms or supersede, never both");
+    // confirmation has to apply the same rule or the crossing beat confirms an install that has
+    // not happened.
+    const h = buildWsHarness(prisma)
+    const startAt = new Date(h.clock.now())
+    await seedPooledAgent()
+    await seedGroup({ holder: DAEMON, term: 5n, expiresAt: new Date(startAt.getTime() + LEASE_MS) })
+    const { stub } = await ready(h)
+
+    await beat(stub, { held: [{ groupId: GROUP, term: '4' }], headroom: 0 })
+    expect(await isConfirmed(GROUP)).toBe(false)
+    expect(await directoryDaemonFor(h, AGENT)).toBeNull()
+
+    await beat(stub, { held: [{ groupId: GROUP, term: '5' }], headroom: 0 })
+    expect(await isConfirmed(GROUP)).toBe(true)
+    expect(await directoryDaemonFor(h, AGENT)).toBe(DAEMON)
   })
 })

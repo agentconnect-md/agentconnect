@@ -4993,6 +4993,12 @@ export interface OrgInviteLinkRepo {
 
 // DutyGroupRepo (k8s daemons) — the CP-hosted duty ledger
 
+/** One entry of a member's heartbeat duty digest: the group, at the term it believes it holds. */
+export interface DutyDigestEntry {
+  groupId: string
+  term: bigint
+}
+
 /** A ledger row plus its derived membership projection. */
 export interface DutyGroupRecord {
   groupId: string
@@ -5093,11 +5099,14 @@ export interface DutyGroupRepo {
    *  agent? The authorization for `duty/fetch`: a member may pull exactly the
    *  agent definitions it has won, and nothing else. */
   holdsAgent(holder: DaemonId, agentId: AgentId, now: Date): Promise<boolean>
-  /** Stamp `confirmedAt` on the groups this holder reports in its heartbeat digest, returning the
-   *  ones that became confirmed on THIS beat. A grant is applied daemon-side only after its
-   *  install succeeds (#972), so the digest IS the proof that the member is serving — the same
-   *  signal the self-fence and CP renewal already ride, not a new one. */
-  confirmHeld(holder: DaemonId, groupIds: readonly string[], now: Date): Promise<string[]>
+  /** Record the holds this member reports in its heartbeat digest, returning the ones that became
+   *  confirmed on THIS beat. A grant is applied daemon-side only after its install succeeds
+   *  (#972), so the digest IS the proof that the member is serving — the same signal the
+   *  self-fence and CP renewal already ride, not a new one.
+   *
+   *  Scoped to the exact grant: an entry only confirms while its `term` still matches the row's,
+   *  so a beat that crossed a re-grant confirms nothing. */
+  confirmHeld(holder: DaemonId, reported: readonly DutyDigestEntry[]): Promise<string[]>
   /** {@link DutyGroupRepo.holdersOf} restricted to CONFIRMED holds — who INGRESS may be addressed
    *  at. A holder that is still installing is a live lease and not yet a route. */
   confirmedHoldersOf(agentId: AgentId, now: Date): Promise<DaemonId[]>
