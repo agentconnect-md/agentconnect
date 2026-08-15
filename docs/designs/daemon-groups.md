@@ -187,10 +187,15 @@ its next beat it claims those groups back and re-activates them (it is a member 
 still has the replicas installed, so install-on-grant is a refresh, not a fetch). The
 operator sees one action; underneath it is the move convention applied N times inside
 one fence. If the machine is unreachable, the same rule as the move applies:
-enrollment uses the move's existing force-reassign semantics — the operator confirms
-the source is permanently stopped, and the agents become set-placed without the
-detach — and successors claim them after the source's lease/self-fence horizon, not
-before. The converse is enforced statically: a `daemon` placement may not name a
+enrollment uses the move's existing force-reassign contract — the operator explicitly
+confirms the source is permanently stopped, and on that confirmation the agents become
+set-placed without the detach and are claimable immediately. There is nothing else to
+wait for: a directly placed machine is outside the ledger, so it holds no lease and
+runs no self-fence — the operator's assertion _is_ the safety boundary, exactly as it
+is for a forced machine-to-machine move today. (The lease/self-fence horizon governs
+the _removal_ path above, where the leaver was a set member and does hold leases; the
+two paths have different boundaries because the source is in the ledger in one and not
+in the other.) The converse is enforced statically: a `daemon` placement may not name a
 machine that is in a set (the console does not offer it; the route refuses it).
 
 Leaving a set does not move agents by itself: they stay `set`-placed and re-grant to
