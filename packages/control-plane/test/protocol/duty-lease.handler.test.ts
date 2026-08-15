@@ -6,6 +6,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { isFrame } from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
 import { buildWsHarness } from '../fakes/build-ws.js'
+import type { InMemoryDaemonStub } from '../fakes/daemon-stub.js'
 import { PgDutyGroupRepo, PgLaunchRepo } from '../../src/persistence/index.js'
 import { ControlSender } from '../../src/orchestrator/outbound.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
@@ -62,6 +63,18 @@ async function ready(h: ReturnType<typeof buildWsHarness>, opts: { orgScoped?: b
   return { conn, stub }
 }
 
+/** Inject one beat and wait for ITS renewal confirmation. `expectFrame` resolves from a frame
+ *  already sent, so a multi-beat test has to count instead — otherwise the next inject races the
+ *  running exchange and the lane drops it. */
+async function beat(
+  stub: InMemoryDaemonStub,
+  duties: { held: { groupId: string; term: string }[]; headroom: number }
+): Promise<void> {
+  const before = stub.sent.filter((f) => f.type === 'duty/renewed').length
+  stub.inject('heartbeat', heartbeat(duties))
+  await vi.waitFor(() => expect(stub.sent.filter((f) => f.type === 'duty/renewed').length).toBe(before + 1))
+}
+
 function heartbeat(duties?: { held: { groupId: string; term: string }[]; headroom: number }) {
   return {
     load: { cpu: 0.1, mem: 0.1, agents: 0 },
@@ -105,7 +118,14 @@ describe('duty lease exchange (protocol level, real Postgres)', () => {
     // alone and keeps serving a bundle the CP has edited since (#973).
     await seedGroup()
     await prisma.agent.create({
-      data: { id: AGENT, orgId: DEFAULT_ORG_ID, name: 'stamped', runtime: 'claude', configRevision: 9n }
+      data: {
+        id: AGENT,
+        orgId: DEFAULT_ORG_ID,
+        name: 'stamped',
+        runtime: 'claude',
+        placementKind: 'pool',
+        configRevision: 9n
+      }
     })
     const h = buildWsHarness(prisma)
     const { stub } = await ready(h)
@@ -276,7 +296,9 @@ describe('duty lease exchange (protocol level, real Postgres)', () => {
 
     // Immediately grantable by a survivor at a bumped term.
     const repo = new PgDutyGroupRepo(prisma)
-    const grants = await repo.claimVacant(DaemonId(OTHER), 1, new Date(h.clock.now()), LEASE_MS)
+    const grants = await repo.claimVacant(DaemonId(OTHER), 1, new Date(h.clock.now()), LEASE_MS, {
+      scope: 'install-wide'
+    })
     expect(grants[0]).toMatchObject({ groupId: GROUP, orgId: OrgId(DEFAULT_ORG_ID), term: 3n })
   })
 })
@@ -763,9 +785,11 @@ describe('duty lease exchange — drain barrier', () => {
 describe('duty/claim — the activation rendezvous (real Postgres)', () => {
   const CLAIM_ID = '66666666-6666-4666-8666-666666666666'
 
+  // Placed on the POOL: the rendezvous applies the same eligibility gate as the heartbeat claim,
+  // so an install-wide member may only claim an agent whose placement is the pool.
   async function seedAgentRow(): Promise<void> {
     await prisma.agent.create({
-      data: { id: AGENT, orgId: DEFAULT_ORG_ID, name: 'agent-1', runtime: 'claude' }
+      data: { id: AGENT, orgId: DEFAULT_ORG_ID, name: 'agent-1', runtime: 'claude', placementKind: 'pool' }
     })
   }
 
@@ -850,5 +874,102 @@ describe('duty/claim — the activation rendezvous (real Postgres)', () => {
     if (!isFrame('error')(err)) throw new Error('expected error')
     expect(err.payload.code).toBe('SCOPE_DENIED')
     expect(await prisma.dutyGroup.count()).toBe(0)
+  })
+})
+
+describe('proactive healing after a rollout (protocol level, real Postgres)', () => {
+  // The live failure this whole change exists to end: a member is replaced by a rollout, its lease
+  // lapses, the group becomes a claimable vacancy — and under the incumbent policy NOTHING claimed
+  // it, because the vacancy's agents named a Pod that no longer exists. Healing waited for a
+  // trigger, and for webchat the trigger could not even be sent (#987).
+  //
+  // Mutation check: restoring the incumbent gate (only groups with an agent whose `daemonId` is
+  // the claimant) makes this fail — a pool agent has no `daemonId` at all, so no member qualifies.
+  it('re-grants a lapsed holder’s group to a live member with no trigger involved', async () => {
+    const start = 1_700_000_000_000
+    const h = buildWsHarness(prisma)
+    // The replaced Pod: it held the group, and its lease ran out 1ms ago.
+    await seedGroup({ holder: OTHER, term: 4n, expiresAt: new Date(start - 1) })
+    await prisma.agent.create({
+      data: { id: AGENT, orgId: DEFAULT_ORG_ID, name: 'webchat-only', runtime: 'claude', placementKind: 'pool' }
+    })
+    const { stub } = await ready(h)
+
+    // A plain heartbeat. No rd/msg, no duty/claim, no console send — nothing but the beat.
+    stub.inject('heartbeat', heartbeat({ held: [], headroom: 4 }))
+    const grant = await stub.expectFrame('duty/grant')
+    if (!isFrame('duty/grant')(grant)) throw new Error('expected duty/grant')
+    expect(grant.payload.grants[0]).toMatchObject({ groupId: GROUP, term: '5' })
+
+    const row = await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })
+    expect(row.holder).toBe(DAEMON)
+  })
+
+  it('a member at capacity does not claim, however healable the vacancy is', async () => {
+    const start = 1_700_000_000_000
+    const h = buildWsHarness(prisma)
+    await seedGroup({ holder: OTHER, term: 4n, expiresAt: new Date(start - 1) })
+    await prisma.agent.create({
+      data: { id: AGENT, orgId: DEFAULT_ORG_ID, name: 'webchat-only', runtime: 'claude', placementKind: 'pool' }
+    })
+    const { stub } = await ready(h)
+
+    stub.inject('heartbeat', heartbeat({ held: [], headroom: 0 }))
+    await stub.expectFrame('duty/renewed')
+    expect(stub.sent.filter((f) => f.type === 'duty/grant')).toEqual([])
+    const row = await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })
+    expect(row.holder).toBe(OTHER)
+  })
+
+  it('bounds a group one member cannot install: the lease is handed back and not re-offered to it', async () => {
+    // A refused grant is invisible on the wire — the member simply never reports the group — and
+    // `renewHeld` renews by holder alone, so without this the group would sit on the one member
+    // that cannot serve it for as long as it keeps beating. Counting consecutive absences is what
+    // turns "wedged forever" into "rotated to a member that can".
+    const h = buildWsHarness(prisma, { dutyLease: { refusalsBeforeRelease: 3, refusalBackoffMs: 300_000 } })
+    const start = new Date(h.clock.now())
+    await seedGroup({ holder: DAEMON, term: 1n, expiresAt: new Date(start.getTime() + LEASE_MS) })
+    await prisma.agent.create({
+      data: { id: AGENT, orgId: DEFAULT_ORG_ID, name: 'uninstallable', runtime: 'claude', placementKind: 'pool' }
+    })
+    const { stub } = await ready(h)
+
+    // Two beats: an install may legitimately straddle one, so these are re-offers, not refusals.
+    for (let n = 0; n < 2; n += 1) {
+      await beat(stub, { held: [], headroom: 4 })
+      expect((await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })).holder).toBe(DAEMON)
+    }
+    expect(stub.sent.filter((f) => f.type === 'duty/grant')).toHaveLength(2)
+
+    // The third consecutive absence is a refusal: the lease goes back.
+    await beat(stub, { held: [], headroom: 4 })
+    expect((await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })).holder).toBeNull()
+
+    // And it is NOT handed straight back to the member that just refused it — that rotation is
+    // exactly what would spin every beat.
+    await beat(stub, { held: [], headroom: 4 })
+    expect((await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })).holder).toBeNull()
+    expect(stub.sent.filter((f) => f.type === 'duty/grant')).toHaveLength(2)
+
+    // A different member takes it immediately — the point of handing it back.
+    const repo = new PgDutyGroupRepo(prisma)
+    const grants = await repo.claimVacant(DaemonId(OTHER), 1, new Date(h.clock.now()), LEASE_MS, {
+      scope: 'install-wide'
+    })
+    expect(grants.map((g) => g.groupId)).toEqual([GROUP])
+  })
+
+  it('reporting the group at any point clears the count — that is convergence, not refusal', async () => {
+    const h = buildWsHarness(prisma, { dutyLease: { refusalsBeforeRelease: 2 } })
+    const start = new Date(h.clock.now())
+    await seedGroup({ holder: DAEMON, term: 1n, expiresAt: new Date(start.getTime() + LEASE_MS) })
+    const { stub } = await ready(h)
+
+    await beat(stub, { held: [], headroom: 0 })
+    await beat(stub, { held: [{ groupId: GROUP, term: '1' }], headroom: 0 })
+    // The count restarts, so this absence is the FIRST, not the threshold-crossing second.
+    await beat(stub, { held: [], headroom: 0 })
+
+    expect((await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })).holder).toBe(DAEMON)
   })
 })

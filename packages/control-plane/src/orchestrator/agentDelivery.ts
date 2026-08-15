@@ -10,8 +10,9 @@
  * the placement if the agent has one, plus every member currently holding an
  * unexpired duty lease covering it.
  *
- * It is a seam, not a special case: a later change makes placement a delivery
- * TARGET rather than a member id, and this is the one place that has to learn it.
+ * It is a seam, not a special case, and that is now load-bearing: placement is a TARGET rather
+ * than a member id, so a `pool` agent names no machine at all and the ledger is its entire
+ * delivery set. `PlacementResolver` owns that translation; this file never reads a placement kind.
  * The lifecycle sends keep taking an explicit `orgId`, because an install-wide
  * (frame-mode) member's connection carries no org and a duty holder is exactly
  * the connection that cannot resolve one from its own maps.
@@ -19,14 +20,10 @@
 import type { CronUpsert, IntegrationSpec } from '@agentconnect.md/protocol'
 import type { AgentSpecAssembler } from './agentSpecAssembler.js'
 import type { ControlSender } from './outbound.js'
+import { PLACEMENT_ONLY, type PlacementResolver, type ResolvableAgent } from './placementResolver.js'
 import type { AgentRecord } from '../persistence/ports.js'
-import { AgentId, type DaemonId } from '../domain/ids.js'
-import type { Clock } from '../domain/clock.js'
 
-/** The duty ledger read this seam needs — the delivery half of `holdsAgent`. */
-export interface DutyHolderReader {
-  holdersOf(agentId: AgentId, now: Date): Promise<DaemonId[]>
-}
+export type { DutyHolderReader } from './placementResolver.js'
 
 /** Per-target failure hook: every site logs it its own way, and none of them
  *  fails the HTTP write over it (the reconnect roster is the backstop). */
@@ -40,21 +37,19 @@ export class AgentDelivery {
         'agentUpsert' | 'agentRemove' | 'integrationUpsert' | 'integrationRemove' | 'cronUpsert' | 'cronRemove'
       >
       specs: AgentSpecAssembler
-      duties?: DutyHolderReader
-      clock: Clock
+      /** Absent (tests / no pool) ⇒ placement alone, which is the pre-duty behavior. */
+      placement?: PlacementResolver
     }
   ) {}
 
   /**
-   * Every daemon that must receive this agent's updates, placement first and
-   * deduped. No duty ledger wired (tests, or a deployment with no pool) ⇒ the
-   * placement alone, which is exactly the pre-duty behavior.
+   * Every daemon that must receive this agent's updates, placement first and deduped. The
+   * placement half is what the resolver makes of the agent's placement fields — one machine for a
+   * `daemon` placement, nothing for a `pool` one — so a caller passes the placement REF rather
+   * than a daemon id, and gains a kind it never has to read.
    */
-  async daemonsFor(agentId: string, placement: string | null): Promise<string[]> {
-    const holders = this.deps.duties
-      ? await this.deps.duties.holdersOf(AgentId(agentId), new Date(this.deps.clock.now()))
-      : []
-    return [...new Set([...(placement ? [placement] : []), ...holders])]
+  daemonsFor(agent: ResolvableAgent): Promise<string[]> {
+    return (this.deps.placement ?? PLACEMENT_ONLY).servingDaemons(agent)
   }
 
   /**
@@ -74,7 +69,7 @@ export class AgentDelivery {
   /** Push an edited spec to every delivery target. The spec is assembled ONCE:
    *  the targets replicate the same agent, and two assemblies could disagree. */
   async upsert(agent: AgentRecord, onError: DeliveryErrorHandler): Promise<void> {
-    const targets = await this.daemonsFor(agent.id, agent.daemonId)
+    const targets = await this.daemonsFor(agent)
     if (targets.length === 0) return
     const spec = await this.deps.specs.assemble(agent)
     await this.fanOut(targets, onError, (daemonId) =>
@@ -86,29 +81,26 @@ export class AgentDelivery {
    *  deleted by now; duty membership has no FK to it, so a holder is still
    *  resolvable — which is the whole point (a deleted agent must stop being
    *  served, not just stop being placed). */
-  async remove(agentId: string, placement: string | null, orgId: string, onError: DeliveryErrorHandler): Promise<void> {
-    const targets = await this.daemonsFor(agentId, placement)
-    await this.fanOut(targets, onError, (daemonId) => this.deps.control.agentRemove(daemonId, { agentId }, orgId))
+  async remove(agent: ResolvableAgent, orgId: string, onError: DeliveryErrorHandler): Promise<void> {
+    const targets = await this.daemonsFor(agent)
+    await this.fanOut(targets, onError, (daemonId) =>
+      this.deps.control.agentRemove(daemonId, { agentId: agent.id }, orgId)
+    )
   }
 
   // A dependent goes exactly where its agent's own updates go. An integration
   // spec is token-bearing and a cron definition drives execution, so a holder
   // that receives neither keeps stale credentials, stale bind rules, or a stale
   // schedule until it happens to reconnect — the same frozen-bundle failure as a
-  // stale spec, one level down. These take the agent's id and placement rather
-  // than the record, because a removal path may only have those.
+  // stale spec, one level down. These take the placement REF rather than the whole record,
+  // because a removal path may only have that.
 
   /** Push one integration's spec (token-bearing — NEVER log it) to every target.
    *  No explicit orgId: `IntegrationSpec.orgId` is a required wire field, so the
    *  payload IS the explicit org — and sending it also teaches the connection's
    *  id→org map, which is why upserts never had this problem. */
-  async integrationUpsert(
-    agentId: string,
-    placement: string | null,
-    spec: IntegrationSpec,
-    onError: DeliveryErrorHandler
-  ): Promise<void> {
-    const targets = await this.daemonsFor(agentId, placement)
+  async integrationUpsert(agent: ResolvableAgent, spec: IntegrationSpec, onError: DeliveryErrorHandler): Promise<void> {
+    const targets = await this.daemonsFor(agent)
     await this.fanOut(targets, onError, (daemonId) => this.deps.control.integrationUpsert(daemonId, spec))
   }
 
@@ -118,38 +110,31 @@ export class AgentDelivery {
    *  `duty/fetch` never registered it, so the send would raise SCOPE_DENIED
    *  before the frame left the process. The record in hand always has the org. */
   async integrationRemove(
-    agentId: string,
-    placement: string | null,
+    agent: ResolvableAgent,
     integrationId: string,
     orgId: string,
     onError: DeliveryErrorHandler
   ): Promise<void> {
-    const targets = await this.daemonsFor(agentId, placement)
+    const targets = await this.daemonsFor(agent)
     await this.fanOut(targets, onError, (daemonId) =>
       this.deps.control.integrationRemove(daemonId, { integrationId }, orgId)
     )
   }
 
   /** Same as the integration upsert: `CronUpsert.orgId` is a required wire field. */
-  async cronUpsert(
-    agentId: string,
-    placement: string | null,
-    wire: CronUpsert,
-    onError: DeliveryErrorHandler
-  ): Promise<void> {
-    const targets = await this.daemonsFor(agentId, placement)
+  async cronUpsert(agent: ResolvableAgent, wire: CronUpsert, onError: DeliveryErrorHandler): Promise<void> {
+    const targets = await this.daemonsFor(agent)
     await this.fanOut(targets, onError, async (daemonId) => void (await this.deps.control.cronUpsert(daemonId, wire)))
   }
 
   /** `orgId` is REQUIRED for the same reason as {@link AgentDelivery.integrationRemove}. */
   async cronRemove(
-    agentId: string,
-    placement: string | null,
+    agent: ResolvableAgent,
     cronId: string,
     orgId: string,
     onError: DeliveryErrorHandler
   ): Promise<void> {
-    const targets = await this.daemonsFor(agentId, placement)
+    const targets = await this.daemonsFor(agent)
     await this.fanOut(
       targets,
       onError,

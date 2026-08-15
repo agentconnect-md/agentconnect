@@ -1,3 +1,4 @@
+import { onDaemon, placementTargetOf, samePlacement, type PlacementTarget } from '../domain/placement.js'
 import { describe, expect, it } from 'vitest'
 import type { Ack, AgentActivate, AgentDetach } from '@agentconnect.md/protocol'
 import { AgentId, BotId, CronId, DaemonId, IntegrationId, OrgId } from '../domain/ids.js'
@@ -211,9 +212,9 @@ function make(
       return current
     },
     setWorkspaceRepoId: async () => true,
-    movePlacement: async (_id: string, expected: string | null, target: string | null) => {
-      if (opts.casMiss || current.daemonId !== expected) return null
-      current = agent(target)
+    movePlacement: async (_id: string, expected: PlacementTarget, target: PlacementTarget) => {
+      if (opts.casMiss || !samePlacement(placementTargetOf(current), expected)) return null
+      current = agent(target.kind === 'daemon' ? target.daemonId : null)
       return current
     }
   } as unknown as AgentRepo
@@ -314,14 +315,14 @@ describe('AgentMoveService', () => {
     // nor an agent it has never installed can supply one, so an unscoped frame is
     // refused with SCOPE_DENIED before it leaves the CP.
     const t = make()
-    await t.service.move(t.current(), TARGET)
+    await t.service.move(t.current(), onDaemon(TARGET))
     expect(t.frameOrgs.length).toBeGreaterThan(0)
     expect(t.frameOrgs.every((orgId) => orgId === ORG)).toBe(true)
   })
 
   it('hard-cuts the source, bootstraps the complete target bundle, and activates last', async () => {
     const t = make()
-    const moved = await t.service.move(t.current(), TARGET)
+    const moved = await t.service.move(t.current(), onDaemon(TARGET))
     expect(moved.daemonId).toBe(TARGET)
     expect(t.calls).toEqual([
       `detach:${SOURCE}`,
@@ -466,7 +467,7 @@ describe('AgentMoveService', () => {
 
   it('on target activation failure, confirms target detach then restores the full source bundle before activate', async () => {
     const t = make({ failTargetActivate: true })
-    await expect(t.service.move(t.current(), TARGET)).rejects.toBeInstanceOf(AgentMoveFailed)
+    await expect(t.service.move(t.current(), onDaemon(TARGET))).rejects.toBeInstanceOf(AgentMoveFailed)
     expect(t.current().daemonId).toBe(SOURCE)
     expect(t.calls).toEqual([
       `detach:${SOURCE}`,
@@ -481,20 +482,20 @@ describe('AgentMoveService', () => {
 
   it('fails closed when target detach is not acknowledged: DB stays on target and source is not restored', async () => {
     const t = make({ failTargetActivate: true, failRollbackTargetDetach: true })
-    await expect(t.service.move(t.current(), TARGET)).rejects.toThrow('placement remains on target')
+    await expect(t.service.move(t.current(), onDaemon(TARGET))).rejects.toThrow('placement remains on target')
     expect(t.current().daemonId).toBe(TARGET)
     expect(t.calls).not.toContain(`activate:${SOURCE}`)
   })
 
   it('restores the full source bundle after a CAS miss', async () => {
     const t = make({ casMiss: true })
-    await expect(t.service.move(t.current(), TARGET)).rejects.toThrow('changed concurrently')
+    await expect(t.service.move(t.current(), onDaemon(TARGET))).rejects.toThrow('changed concurrently')
     expect(t.calls).toEqual([`detach:${SOURCE}`, `release:${SOURCE}`, `detach:${SOURCE}`, `activate:${SOURCE}`])
   })
 
   it('re-stages with a fresh token when the bundle changes across activate ACK', async () => {
     const t = make({ changeBundleAfterFirstActivate: true })
-    await expect(t.service.move(t.current(), TARGET)).resolves.toMatchObject({ daemonId: TARGET })
+    await expect(t.service.move(t.current(), onDaemon(TARGET))).resolves.toMatchObject({ daemonId: TARGET })
 
     const targetActivations = t.activations.filter((_value, index) => index < 2)
     expect(targetActivations.map((value) => value.crons[0]?.schedule)).toEqual(['0 0 * * *', '5 * * * *'])
@@ -545,9 +546,9 @@ describe('AgentMoveService', () => {
     const sourceDetachStarted = new Promise<void>((resolve) => (markStarted = resolve))
     const t = make({ waitSourceDetach, sourceDetachStarted: markStarted })
 
-    const first = t.service.move(t.current(), TARGET)
+    const first = t.service.move(t.current(), onDaemon(TARGET))
     await sourceDetachStarted
-    await expect(t.service.move(t.current(), TARGET)).rejects.toBeInstanceOf(AgentMoveConflict)
+    await expect(t.service.move(t.current(), onDaemon(TARGET))).rejects.toBeInstanceOf(AgentMoveConflict)
     expect(t.mutations.tryBeginMutation(AGENT)).toBeNull()
     releaseSource()
     await expect(first).resolves.toMatchObject({ daemonId: TARGET })
@@ -555,7 +556,7 @@ describe('AgentMoveService', () => {
 
   it('detaches target and fails closed when DB ownership changes after activation', async () => {
     const t = make({ moveOwnershipAfterFirstActivate: true })
-    await expect(t.service.move(t.current(), TARGET)).rejects.toThrow('placement changed during move')
+    await expect(t.service.move(t.current(), onDaemon(TARGET))).rejects.toThrow('placement changed during move')
     expect(t.calls.at(-1)).toBe(`detach:${TARGET}`)
     expect(t.calls).not.toContain(`activate:${SOURCE}`)
   })

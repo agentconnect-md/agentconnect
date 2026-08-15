@@ -46,6 +46,7 @@ import type { RelayChannel, RelayRegistry } from '../ws/relay-registry.js'
 import { ControlSender, NoConnection } from './outbound.js'
 import { isGatedAgent, httpIntegrationToSpec } from './placement.js'
 import type { AgentDelivery } from './agentDelivery.js'
+import { PLACEMENT_ONLY, type PlacementResolver } from './placementResolver.js'
 import type { CpPlatformRegistry } from '../platforms/provider.js'
 import { AgentId, BotId, DaemonId } from '../domain/ids.js'
 
@@ -83,7 +84,7 @@ interface Compiled {
    *  without delivery must not latch). */
   noticedDmConversations: string[]
   /** Placed member integrations (spec push targets: daemonId + integration). */
-  placed: { integration: IntegrationRecord; daemonId: string; gated: boolean }[]
+  placed: { integration: IntegrationRecord; agent: AgentRecord; daemonId: string; gated: boolean }[]
 }
 
 /** Resolve a persisted owner marker to its active integration, falling back to
@@ -134,8 +135,11 @@ export class HttpBotOrchestrator {
     private readonly platforms: CpPlatformRegistry,
     /** Resolves where a dependent of an agent goes (placement ∪ duty holders).
      *  Used ONLY for the send-only spec and its removal — the relay's own
-     *  `rc/assign` target stays the placement, which is routing, not replication. */
-    private readonly agentDelivery: AgentDelivery
+     *  `rc/assign` target is one member, resolved below. */
+    private readonly agentDelivery: AgentDelivery,
+    /** Names the one member the relay addresses ingress to. Placement when it names a machine;
+     *  for a pool agent, the member currently holding its duty — placement names none. */
+    private readonly placement: Pick<PlacementResolver, 'servingDaemon'> = PLACEMENT_ONLY
   ) {}
 
   /**
@@ -308,7 +312,7 @@ export class HttpBotOrchestrator {
     for (const integration of installs) {
       const agent = await this.agents.getUnscoped(integration.agentId)
       if (!agent) continue
-      await this.agentDelivery.integrationRemove(agent.id, agent.daemonId, integration.id, integration.orgId, (err) => {
+      await this.agentDelivery.integrationRemove(agent, integration.id, integration.orgId, (err) => {
         if (!(err instanceof NoConnection)) throw err
         this.log.debug?.({ integrationId: integration.id }, 'http-bot: revoke spec removal skipped — daemon offline')
       })
@@ -742,16 +746,17 @@ export class HttpBotOrchestrator {
       const a = await this.agents.getUnscoped(i.agentId)
       if (a) agentById.set(i.agentId, a)
     }
-    // Only agents currently PLACED on a daemon can receive traffic.
-    const placed = integrations
-      .map((integration) => ({ integration, agent: agentById.get(integration.agentId) }))
-      .filter((x): x is { integration: IntegrationRecord; agent: AgentRecord } => !!x.agent?.daemonId)
-      .map((x) => ({
-        integration: x.integration,
-        agent: x.agent,
-        daemonId: x.agent.daemonId!,
-        gated: isGatedAgent(x.agent)
-      }))
+    // Only agents a daemon is currently SERVING can receive traffic. The relay addresses ingress
+    // to one member, so a pool agent resolves to whichever member holds its duty — placement
+    // names no machine and would strand the whole install.
+    const placed: { integration: IntegrationRecord; agent: AgentRecord; daemonId: string; gated: boolean }[] = []
+    for (const integration of integrations) {
+      const agent = agentById.get(integration.agentId)
+      if (!agent) continue
+      const daemonId = await this.placement.servingDaemon(agent)
+      if (!daemonId) continue
+      placed.push({ integration, agent, daemonId, gated: isGatedAgent(agent) })
+    }
     if (placed.length === 0) return null
 
     // members: daemonId → agentIds (the daemon connections the relay expects).
@@ -859,7 +864,12 @@ export class HttpBotOrchestrator {
       gatedOffChannels,
       noticedDmConversations,
       botChannels: chans,
-      placed: placed.map((p) => ({ integration: p.integration, daemonId: p.daemonId, gated: p.gated }))
+      placed: placed.map((p) => ({
+        integration: p.integration,
+        agent: p.agent,
+        daemonId: p.daemonId,
+        gated: p.gated
+      }))
     }
   }
 
@@ -870,13 +880,13 @@ export class HttpBotOrchestrator {
     // last-hop admission backstop (§14.3), and EVERY install carries its Off channels
     // for the same backstop. The compile already read the bot's rows; they are keyed
     // per install, so filter by integrationId.
-    for (const { integration, daemonId, gated } of compiled.placed) {
+    for (const { integration, agent, gated } of compiled.placed) {
       const channels = compiled.botChannels.filter((c) => c.integrationId === integration.id)
       const spec = await httpIntegrationToSpec(this.platforms, integration, bot, secret, channels, gated)
       // The relay still addresses ingress to `daemonId`; the send-only credential
       // bundle goes to every daemon serving the agent, so a duty holder is not
       // left signing egress with a credential the workspace has since rotated.
-      await this.agentDelivery.integrationUpsert(integration.agentId, daemonId, spec, (err, target) => {
+      await this.agentDelivery.integrationUpsert(agent, spec, (err, target) => {
         if (!(err instanceof NoConnection)) throw err
         this.log.debug?.(
           { integrationId: integration.id, daemonId: target },

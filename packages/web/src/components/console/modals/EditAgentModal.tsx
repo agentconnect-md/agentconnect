@@ -24,6 +24,7 @@ import {
   supportsModes,
   agentLabel,
   CLOUD_DAEMON_LABEL,
+  CLOUD_PLACEMENT,
   type Agent,
   type AgentCallPolicy,
   type ApprovalsReviewer
@@ -310,15 +311,16 @@ export default function EditAgentModal({
   const daemonChoices = editAgentDaemonChoices(daemons, daemonId, initialDaemonId.current)
   const cloudServing = daemons.some((candidate) => candidate.cloud && moveReady(candidate))
   const daemonOptions: DaemonSelectOption[] = [
-    ...(daemonChoices.cloudChoice
+    ...(daemonChoices.cloudChoice || agent.placementKind === 'pool'
       ? [
           {
-            value: daemonChoices.cloudChoice.daemonId,
+            // The POOL, named as itself. The server picks the member — and re-picks it after every
+            // rollout, which is the whole reason this stopped being a member id.
+            value: CLOUD_PLACEMENT,
             label: CLOUD_DAEMON_LABEL,
             detail: cloudServing ? 'Model usage included — no API key needed.' : 'Cloud is currently unavailable.',
             cloud: true,
-            disabled:
-              daemonChoices.cloudChoice.daemonId !== initialDaemonId.current && !moveReady(daemonChoices.cloudChoice)
+            disabled: initialDaemonId.current !== CLOUD_PLACEMENT && !cloudServing
           }
         ]
       : []),
@@ -569,7 +571,10 @@ export default function EditAgentModal({
         }
         await saveAgentCallPolicy(agent.id, body)
       }
-      if (placementRequested) await moveAgent(agent.id, daemonId, forceMove ? { force: true } : undefined)
+      if (placementRequested) {
+        const target = daemonId === CLOUD_PLACEMENT ? { kind: 'pool' as const } : { kind: 'daemon' as const, daemonId }
+        await moveAgent(agent.id, target, forceMove ? { force: true } : undefined)
+      }
       // Sharing uses canManageSharing and may intentionally remove this editor's
       // own visibility. Apply it only after every operation that still needs the
       // editor's authorization, including placement.

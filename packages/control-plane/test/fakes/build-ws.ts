@@ -41,6 +41,7 @@ import {
 import { PlaintextSecretCipher } from '../../src/secrets/cipher.js'
 import { EpochService } from '../../src/orchestrator/epoch.js'
 import { Placement } from '../../src/orchestrator/placement.js'
+import { PlacementResolver } from '../../src/orchestrator/placementResolver.js'
 import { ControlSender } from '../../src/orchestrator/outbound.js'
 import { AgentSpecAssembler } from '../../src/orchestrator/agentSpecAssembler.js'
 import { ApiKeyCodec } from '../../src/registry/apiKey.js'
@@ -168,6 +169,15 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
   )
   const relays = opts.relays ?? []
   const dutyGroupRepo = new PgDutyGroupRepo(prisma)
+  const placementResolver = new PlacementResolver({
+    duties: dutyGroupRepo,
+    liveMembers: () =>
+      connReg
+        .reachableDaemons()
+        .filter((d) => d.orgId === null && d.state === 'READY')
+        .map((d) => d.daemonId),
+    clock
+  })
   const orchestrator = new Placement(
     repos.daemon,
     repos.agent,
@@ -197,7 +207,8 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
         grants: repos.externalMemoryGrant,
         relayRoster: { entries: async () => relays }
       },
-      duties: dutyGroupRepo
+      duties: dutyGroupRepo,
+      placement: placementResolver
     }
   )
 
@@ -211,9 +222,8 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
       grantsPerFrame: opts.dutyLease?.grantsPerFrame ?? 50,
       grantMembersPerFrame: opts.dutyLease?.grantMembersPerFrame ?? 2000,
       revocationsPerFrame: opts.dutyLease?.revocationsPerFrame ?? 500,
-      // Wire tests use synthetic member refs with no agent rows; the incumbent
-      // policy is exercised by its own repo tests against real placements.
-      grantPolicy: opts.dutyLease?.grantPolicy ?? 'any'
+      refusalsBeforeRelease: opts.dutyLease?.refusalsBeforeRelease ?? 3,
+      refusalBackoffMs: opts.dutyLease?.refusalBackoffMs ?? 300_000
     },
     undefined,
     repos.agent
@@ -226,6 +236,7 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
     orchestrator,
     connReg,
     agent: repos.agent,
+    placementResolver,
     session: repos.session,
     events: new InMemorySessionEventSink(),
     sessionUsage: repos.sessionUsage,

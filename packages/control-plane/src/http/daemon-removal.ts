@@ -21,6 +21,7 @@
  */
 import type { FastifyBaseLogger } from 'fastify'
 import type { AgentId, DaemonId, OrgId } from '../domain/ids.js'
+import { UNPLACED } from '../domain/placement.js'
 import type { HttpDeps } from './deps.js'
 
 /** Just enough of an agent to re-converge what pointed at it. */
@@ -47,7 +48,7 @@ export async function detachDaemon(
   // `daemonId` with `status` — and going through the repo is also what revokes
   // the agents' webchat MCP delegations and bumps their hook dispatchRevision,
   // exactly as an operator-initiated unplacement would.
-  for (const agent of placedAgents) await deps.repos.agent.setPlacement(agent.id, null)
+  for (const agent of placedAgents) await deps.repos.agent.setPlacement(agent.id, UNPLACED)
   await deps.registry.remove(orgId, daemonId)
   await settleAfterRemoval(deps, daemonId, placedAgents, log)
 }

@@ -665,6 +665,14 @@ enum AgentStatus {
   paused
 }
 
+// Where an agent's duty may be held (docs/designs/k8s-daemon-pool.md §14). `daemon` names one
+// machine through `Agent.daemonId`; `pool` names the install-wide member set and carries no ref.
+// A later `group` value names an explicit daemon group — read it through domain/placement.ts.
+enum AgentPlacementKind {
+  daemon
+  pool
+}
+
 model Agent {
   id                    String             @id @db.Uuid // wire UUID across route/*, agent/*, event/session
   orgId                 String
@@ -680,7 +688,11 @@ model Agent {
   // requires one. When set it must be in Daemon.capabilities.runtimes.
   runtime               String?
   status                AgentStatus        @default(inactive)
-  daemonId              String?            @db.Uuid // 1 agent : 1 machine (null until placed)
+  // Placement is a TARGET, not only a member id. `daemon` (the default, so every pre-existing row
+  // keeps meaning what it meant) resolves through `daemonId`; `pool` resolves to the install-wide
+  // member set and requires `daemonId` to be null. Only domain/placement.ts reads the pair.
+  placementKind         AgentPlacementKind @default(daemon)
+  daemonId              String?            @db.Uuid // the `daemon`-kind ref: 1 agent : 1 machine (null until placed)
   // ── workspace (inline; §3.5) — daemon-generated path ──
   workspaceMode         WorkspaceMode      @default(scratch)
   workspaceIsolation    WorkspaceIsolation @default(shared)

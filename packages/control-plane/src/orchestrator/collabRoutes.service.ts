@@ -17,6 +17,7 @@ import type { AgentRepo, DaemonRecord, DaemonRepo, IntegrationRepo } from '../pe
 import { buildCollabSnapshot } from './collabSnapshot.js'
 import type { CollabChannelRoute, CollabOrgAgent, CollabRoutesSnapshot } from '@agentconnect.md/protocol'
 import type { OrgId } from '../domain/ids.js'
+import { PLACEMENT_ONLY, type PlacementResolver } from './placementResolver.js'
 
 export class CollabRoutesService {
   private tail: Promise<void> = Promise.resolve()
@@ -26,7 +27,10 @@ export class CollabRoutesService {
     private readonly integrations: IntegrationRepo,
     private readonly agents: AgentRepo,
     private readonly relayControl: RelayControlSender,
-    private readonly control?: ControlSender
+    private readonly control?: ControlSender,
+    /** Names the member each peer is routable at (placement, or the current duty holder).
+     *  Absent (tests / no pool) ⇒ the directory's own placement, which is the pre-duty behavior. */
+    private readonly placement: Pick<PlacementResolver, 'resolveDirectory'> = PLACEMENT_ONLY
   ) {}
 
   private serialize<T>(run: () => Promise<T>): Promise<T> {
@@ -55,7 +59,9 @@ export class CollabRoutesService {
     let platformKinds: CollabRoutesSnapshot['platformKinds'] = []
     for (const orgId of orgIds) {
       const placements = await this.integrations.channelPlacements(orgId)
-      const orgAgents = await this.agents.orgDirectory(orgId)
+      // The directory carries placement, not a live daemon: the resolver fills in who serves each
+      // agent right now, and drops the ones nothing does.
+      const orgAgents = await this.placement.resolveDirectory(await this.agents.orgDirectory(orgId))
       const snapshot = buildCollabSnapshot(orgId, placements, generation, orgAgents)
       channels.push(...snapshot.channels)
       agents.push(...snapshot.agents)

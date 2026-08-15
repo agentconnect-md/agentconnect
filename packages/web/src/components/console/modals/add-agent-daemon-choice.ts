@@ -7,7 +7,9 @@ export interface AddAgentDaemonChoice<T extends DaemonChoiceRow> {
   daemon: T | undefined
   daemonId: string | null
   localDaemons: T[]
-  placementDaemonId: string | null
+  /** What create submits. Cloud is the POOL, not one of its members: pinning a member id here is
+   *  what left an agent stranded on a Pod the next rollout replaced. */
+  placement: { kind: 'pool' } | { kind: 'daemon'; daemonId: string } | null
   value: string
 }
 
@@ -29,7 +31,13 @@ export function addAgentDaemonChoice<T extends DaemonChoiceRow>(
     daemon,
     daemonId: value || null,
     localDaemons,
-    placementDaemonId: daemon?.daemonId ?? null,
+    placement: value
+      ? daemon
+        ? { kind: 'daemon', daemonId: daemon.daemonId }
+        : null
+      : cloudDaemons.length > 0
+        ? { kind: 'pool' }
+        : null,
     value
   }
 }

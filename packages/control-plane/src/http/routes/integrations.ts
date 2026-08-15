@@ -24,6 +24,7 @@ import { Tag } from '../plugins/openapi.js'
 import type { HttpDeps } from '../deps.js'
 import type { AgentRecord, BotRecord, IntegrationRecord, IntegrationChannelRecord } from '../../persistence/ports.js'
 import { AgentId, BotId, IntegrationId, OrgId } from '../../domain/ids.js'
+import type { ResolvableAgent } from '../../orchestrator/placementResolver.js'
 import { denyViewerWrite, ctxOf, orgOf } from '../rbac.js'
 import { canView, canEdit } from '../../authorization/policy.js'
 import { integrationToSpec, isGatedAgent } from '../../orchestrator/placement.js'
@@ -103,7 +104,7 @@ export function integrationRoutes(deps: HttpDeps) {
     // or stale bind rules is the frozen-bundle failure one level down). Best-effort:
     // an offline daemon picks it up from the reconcile roster on the next connect.
     // Token-bearing — never log the spec.
-    const replicateUpsert = async (i: IntegrationRecord, daemonId: string | null): Promise<void> => {
+    const replicateUpsert = async (i: IntegrationRecord, owningAgent: ResolvableAgent): Promise<void> => {
       // The bot row joins the reads: it is a required input of the §9 projector
       // that now assembles the spec payload (`orchestrator/placement.ts`). Every
       // caller here is already on the socket-transport arm, so the projector
@@ -123,7 +124,7 @@ export function integrationRoutes(deps: HttpDeps) {
         channels,
         owner ? isGatedAgent(owner) : false
       )
-      await deps.agentDelivery.integrationUpsert(i.agentId, daemonId, spec, (err, target) => {
+      await deps.agentDelivery.integrationUpsert(owningAgent, spec, (err, target) => {
         if (!(err instanceof NoConnection)) throw err
         app.log.debug({ integrationId: i.id, daemonId: target }, 'integration/upsert skipped: daemon offline')
       })
@@ -167,12 +168,12 @@ export function integrationRoutes(deps: HttpDeps) {
 
     const replicateRemove = async (
       i: Pick<IntegrationRecord, 'id' | 'agentId' | 'orgId'>,
-      daemonId: string | null
+      owningAgent: ResolvableAgent
     ): Promise<void> => {
       const { id: integrationId } = i
       // The row's own org rides the send: `integration/remove` carries only an id,
       // so a holder that never registered this integration has nothing to resolve.
-      await deps.agentDelivery.integrationRemove(i.agentId, daemonId, i.id, i.orgId, (err, target) => {
+      await deps.agentDelivery.integrationRemove(owningAgent, i.id, i.orgId, (err, target) => {
         if (!(err instanceof NoConnection)) throw err
         app.log.debug({ integrationId, daemonId: target }, 'integration/remove skipped: daemon offline')
       })
@@ -207,14 +208,17 @@ export function integrationRoutes(deps: HttpDeps) {
         if (!canEdit(agent, ctxOf(req))) {
           return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this agent' })
         }
-        // Delivery is daemon-scoped; refuse until the agent is placed (no backfill hook).
-        if (!agent.daemonId) {
+        // Delivery is daemon-scoped; refuse until the agent is placed (no backfill hook). A pool
+        // agent IS placed and names no machine, so the capability probe below asks whichever
+        // member serves it.
+        const installDaemonId = await deps.placementResolver.servingDaemon(agent)
+        if (!installDaemonId) {
           return reply
             .code(409)
             .send({ error: 'Conflict', statusCode: 409, message: 'agent must be placed on a daemon first' })
         }
         const platformAvailability = await integrationPlatformAvailability(deps, {
-          daemonId: agent.daemonId,
+          daemonId: installDaemonId,
           orgId,
           viewer: ctxOf(req),
           platform: req.body.platform
@@ -383,7 +387,7 @@ export function integrationRoutes(deps: HttpDeps) {
             })
             // A socket-transport install is a new duty edge (design §4.4).
             deps.recomputeDuties?.(orgId)
-            await replicateUpsert(integration, daemonId)
+            await replicateUpsert(integration, agent)
             return reply.code(201).send(toDto(integration))
           }
 
@@ -621,7 +625,7 @@ export function integrationRoutes(deps: HttpDeps) {
       agent: AgentRecord
     ): Promise<void> => {
       if (bot.transport === 'http') await deps.httpBot.syncRoutes(bot.id)
-      else await replicateUpsert(integration, agent.daemonId)
+      else await replicateUpsert(integration, agent)
     }
 
     /**
@@ -887,7 +891,7 @@ export function integrationRoutes(deps: HttpDeps) {
           if (bot.transport === 'http') {
             if (!routesSynced) await deps.httpBot.syncRoutes(bot.id)
           } else {
-            await replicateUpsert(integration, agent.daemonId)
+            await replicateUpsert(integration, agent)
           }
           return toChannelDto(updated!)
         } finally {
@@ -1175,7 +1179,7 @@ export function integrationRoutes(deps: HttpDeps) {
             await deps.repos.bot.markFreed(orgIdOf(req), existing.botId, new Date(), agent.name ?? null)
           }
           // Tell the removed agent's daemon to drop the spec either way.
-          await replicateRemove(existing, agent.daemonId ?? null)
+          await replicateRemove(existing, agent)
           // HTTP bot: recompute the relay's routes + members (or release it if this
           // was the last install).
           if (botBefore?.transport === 'http') await deps.httpBot.syncBot(existing.botId)

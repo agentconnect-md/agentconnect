@@ -31,6 +31,7 @@ import {
   deleteAgent as apiDeleteAgent,
   updateAgent as apiUpdateAgent,
   moveAgent as apiMoveAgent,
+  type AgentPlacementTarget,
   createIntegration as apiCreateIntegration,
   finalizeSlackInstall as apiFinalizeSlackInstall,
   deleteIntegration as apiDeleteIntegration,
@@ -193,7 +194,7 @@ interface ConsoleData {
   /** Edit an agent's spec (PATCH), then re-pull. */
   updateAgent: (agentId: string, patch: UpdateAgentInput) => Promise<void>
   /** Hard-cut over or explicitly recover an agent, then refresh placement-derived views. */
-  moveAgent: (agentId: string, daemonId: string, options?: { force?: boolean }) => Promise<void>
+  moveAgent: (agentId: string, target: AgentPlacementTarget, options?: { force?: boolean }) => Promise<void>
   /** Install a Slack integration (POST /integrations), then re-pull. */
   createIntegration: (input: CreateIntegrationInput) => Promise<void>
   /** Finalize the config-token auto-install (§Tier B), then re-pull. Socket passes the
@@ -1069,8 +1070,8 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
   // A placement move changes the agent row, both daemons' hosted-agent counts,
   // and where live session bodies resolve. Refresh all three projections.
   const moveAgent = useCallback(
-    async (agentId: string, daemonId: string, options?: { force?: boolean }) => {
-      await apiMoveAgent(agentId, daemonId, options)
+    async (agentId: string, target: AgentPlacementTarget, options?: { force?: boolean }) => {
+      await apiMoveAgent(agentId, target, options)
       settleInBackground(mutateAgents(), mutateDaemons(), revalidateSessionLists())
     },
     [mutateAgents, mutateDaemons, revalidateSessionLists]

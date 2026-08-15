@@ -59,6 +59,26 @@ const live: DaemonLiveness = {
   get: (id) => ([SOURCE, TARGET].includes(id) ? { state: 'READY', reachable: true, sessionEpoch: 1 } : undefined)
 }
 
+/** One install-wide pool member, live alongside the two machines. Org-less AND Pod-bound: that
+ *  shape is what makes a row visible to every org's placement list. */
+const MEMBER = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+const seedPoolMember = () =>
+  prisma.daemon.create({
+    data: {
+      id: MEMBER,
+      orgId: null,
+      clusterIdentity: 'system:serviceaccount:ac-example:ac-cloud-daemon',
+      clusterPodUid: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      maxAgents: 8,
+      status: 'ready',
+      capabilities: MOVE_CAPS
+    }
+  })
+const poolLive: DaemonLiveness = {
+  get: (id) =>
+    [SOURCE, TARGET, MEMBER].includes(id) ? { state: 'READY', reachable: true, sessionEpoch: 1 } : undefined
+}
+
 async function seedMoveDaemons(): Promise<void> {
   await seedDaemon(prisma, SOURCE, { capabilities: MOVE_CAPS })
   await seedDaemon(prisma, TARGET, { capabilities: MOVE_CAPS })
@@ -574,5 +594,110 @@ describe('PUT /agents/:id/daemon', () => {
     })
     expect(cron.statusCode).toBe(409)
     expect(await prisma.cronDef.count({ where: { id: cronId } })).toBe(0)
+  })
+})
+
+describe('PUT /agents/:id/daemon — the pool as a placement target', () => {
+  // The pool is not a member id. Moving onto it commits kind `pool` and CLEARS `daemonId`; the
+  // ledger then grants the agent's group to whichever member is live, which is what makes the
+  // placement survive a rollout instead of naming a Pod that no longer exists.
+  it('moves onto the pool: kind pool, no member id, and no synchronous activation', async () => {
+    await seedMoveDaemons()
+    await seedPoolMember()
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: SOURCE })
+    const control = new MoveControlSpy()
+    running = buildHttpApp(prisma, undefined, poolLive, control as unknown as ControlSender)
+
+    const res = await running.app.inject({
+      method: 'PUT',
+      url: `${ORG}/agents/${agentId}/daemon`,
+      payload: { placementKind: 'pool' }
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({ placementKind: 'pool', daemonId: null })
+    expect(await prisma.agent.findUnique({ where: { id: agentId } })).toMatchObject({
+      placementKind: 'pool',
+      daemonId: null,
+      status: 'active'
+    })
+    // The source is quiesced; the pool member is NOT activated — install-on-grant does that when
+    // the ledger picks a member, and naming one here would only pre-empt a choice that is not the
+    // control plane's to make.
+    expect(control.calls.filter((c) => c.startsWith('detach:'))).toContain(`detach:${SOURCE}`)
+    expect(control.calls.some((c) => c.startsWith('activate:'))).toBe(false)
+  })
+
+  it('moves back off the pool onto a machine, quiescing the member that holds it', async () => {
+    await seedMoveDaemons()
+    await seedPoolMember()
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId)
+    await prisma.agent.update({ where: { id: agentId }, data: { placementKind: 'pool', daemonId: null } })
+    // The member currently holding its duty is the source to quiesce — placement names none.
+    const groupId = randomUUID()
+    await prisma.dutyGroup.create({
+      data: {
+        id: groupId,
+        orgId: DEFAULT_ORG_ID,
+        holder: MEMBER,
+        term: 1n,
+        expiresAt: new Date(Date.now() + 120_000)
+      }
+    })
+    await prisma.dutyGroupMember.create({
+      data: { kind: 'agent', refId: agentId, groupId, orgId: DEFAULT_ORG_ID }
+    })
+    const control = new MoveControlSpy()
+    running = buildHttpApp(prisma, undefined, poolLive, control as unknown as ControlSender)
+
+    const res = await running.app.inject({
+      method: 'PUT',
+      url: `${ORG}/agents/${agentId}/daemon`,
+      payload: { daemonId: TARGET }
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({ placementKind: 'daemon', daemonId: TARGET })
+    expect(control.calls).toContain(`detach:${MEMBER}`)
+    expect(control.calls).toContain(`activate:${TARGET}`)
+  })
+
+  it('refuses a pool target when no member is ready', async () => {
+    await seedMoveDaemons()
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: SOURCE })
+    const control = new MoveControlSpy()
+    // `live` knows only SOURCE and TARGET — there is no install-wide member at all.
+    running = buildHttpApp(prisma, undefined, live, control as unknown as ControlSender)
+
+    const res = await running.app.inject({
+      method: 'PUT',
+      url: `${ORG}/agents/${agentId}/daemon`,
+      payload: { placementKind: 'pool' }
+    })
+
+    expect(res.statusCode).toBe(409)
+    expect(res.json().message).toContain('no cloud daemon member is ready')
+    expect(await prisma.agent.findUnique({ where: { id: agentId } })).toMatchObject({
+      placementKind: 'daemon',
+      daemonId: SOURCE
+    })
+  })
+
+  it('rejects a body that names both a pool placement and a member id', async () => {
+    await seedMoveDaemons()
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: SOURCE })
+    running = buildHttpApp(prisma, undefined, live, new MoveControlSpy() as unknown as ControlSender)
+
+    const res = await running.app.inject({
+      method: 'PUT',
+      url: `${ORG}/agents/${agentId}/daemon`,
+      payload: { placementKind: 'pool', daemonId: TARGET }
+    })
+
+    expect(res.statusCode).toBe(400)
   })
 })

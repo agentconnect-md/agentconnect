@@ -11,6 +11,7 @@ import {
 } from '@agentconnect.md/protocol'
 import type { DutyGroupRepo, DutyGroupRecord, DutyGrantRecord } from '../persistence/ports.js'
 import type { AgentId, DaemonId, OrgId } from '../domain/ids.js'
+import type { DutyClaimScope } from '../domain/placement.js'
 import type { Clock } from '../domain/clock.js'
 
 export interface DutyLeaseConfig {
@@ -28,11 +29,13 @@ export interface DutyLeaseConfig {
   grantMembersPerFrame: number
   /** Revocations per duty/revoke frame (schema caps at 1000). */
   revocationsPerFrame: number
-  /** Vacancy grant policy. `incumbent` (the soak default until the shared data
-   *  plane lands) pins grants to groups whose agents already live on the
-   *  claimant, so the machinery runs without moving anyone; `any` is the target
-   *  pool behavior. */
-  grantPolicy: 'incumbent' | 'any'
+  /** Consecutive beats a member may leave a group it holds out of its digest before the lease is
+   *  handed back. An install can straddle one beat, so this must be >1 to be a refusal rather than
+   *  a race; a member that keeps refusing is one that cannot serve the group. */
+  refusalsBeforeRelease: number
+  /** How long a group stays unclaimable by the member that just gave it back, so the rotation
+   *  reaches a member that can install it instead of returning to the one that could not. */
+  refusalBackoffMs: number
 }
 
 export const DUTY_LEASE_DEFAULTS: DutyLeaseConfig = {
@@ -42,7 +45,8 @@ export const DUTY_LEASE_DEFAULTS: DutyLeaseConfig = {
   grantsPerFrame: 50,
   grantMembersPerFrame: 2000,
   revocationsPerFrame: 500,
-  grantPolicy: 'incumbent'
+  refusalsBeforeRelease: 3,
+  refusalBackoffMs: 300_000
 }
 
 type Send = (type: 'duty/grant' | 'duty/revoke' | 'duty/renewed', payload: unknown) => void
@@ -84,6 +88,13 @@ interface DaemonLane {
   tail: Promise<void>
 }
 
+/** One member's refusal state for one group: how many beats it has left the group out of its
+ *  digest, and — once it gave the lease back — until when it must not re-take it. */
+interface RefusalState {
+  misses: number
+  backoffUntilMs?: number
+}
+
 export class DutyLeaseService {
   private readonly bootedAtMs: number
   /** Per-daemon serialization lane: WS handlers dispatch without awaiting, so
@@ -92,6 +103,9 @@ export class DutyLeaseService {
    *  interleave with a running exchange (its ack has to mean "every grant sent
    *  before it is already on the wire, and nothing else was granted since"). */
   private readonly lanes = new Map<string, DaemonLane>()
+  /** daemonId → groupId → refusal state. Per CP instance, which is exact rather than approximate:
+   *  a member has one socket, so every beat and every grant for it lands on this process. */
+  private readonly refusals = new Map<string, Map<string, RefusalState>>()
 
   constructor(
     private readonly repo: DutyGroupRepo,
@@ -126,6 +140,82 @@ export class DutyLeaseService {
         return revision === undefined ? member : { ...member, configRevision: revision.toString() }
       })
     }))
+  }
+
+  /**
+   * Bound the cost of a group one member cannot install.
+   *
+   * A refused grant is invisible on the wire: the member simply never reports the group, so the
+   * CP's missing-regrant path offers it back on the next beat — and `renewHeld` renews by holder
+   * alone, so the lease never lapses either. Left alone, one member that cannot install an agent
+   * holds its group for as long as it keeps beating, and no member that CAN install it is ever
+   * offered the vacancy. The daemon's own per-agent failure stamp (#976) does not help: it paces
+   * one member's fetches, it does not move the group.
+   *
+   * So the CP counts consecutive beats in which a held group is absent from the digest. An install
+   * legitimately straddles one beat, which is why the threshold is above one rather than a single
+   * miss. Past it the lease is handed back and the group enters a per-member backoff, so the next
+   * claim reaches a different member and the rotation is bounded by member count rather than
+   * unbounded in time. Reporting the group at any point clears the count — that is convergence.
+   *
+   * Deliberately only the MISSING case. A member that refused a replacement shrank the group and
+   * still reports it at the old term (#977), so it is serving the shared part; taking that away
+   * over a failing addition would cost service rather than move it. Its retry is the stale-term
+   * re-issue, which costs nothing against headroom.
+   *
+   * Returns the missing groups still worth re-issuing to this member.
+   */
+  private async settleRefusals(
+    daemonId: DaemonId,
+    digestIds: ReadonlySet<string>,
+    missing: DutyGroupRecord[]
+  ): Promise<DutyGroupRecord[]> {
+    const nowMs = this.clock.now()
+    const states = this.refusals.get(daemonId) ?? new Map<string, RefusalState>()
+    for (const [groupId, state] of states) {
+      if (digestIds.has(groupId)) states.delete(groupId)
+      else if (state.backoffUntilMs !== undefined && state.backoffUntilMs <= nowMs) states.delete(groupId)
+    }
+
+    const regrant: DutyGroupRecord[] = []
+    const surrendered: string[] = []
+    for (const group of missing) {
+      const state = states.get(group.groupId) ?? { misses: 0 }
+      // A group already in backoff cannot be missing-and-held at the same time (the release
+      // vacated it), so reaching here means it was re-claimed elsewhere and lost again.
+      state.misses += 1
+      if (state.misses < this.config.refusalsBeforeRelease) {
+        states.set(group.groupId, state)
+        regrant.push(group)
+        continue
+      }
+      states.set(group.groupId, { misses: 0, backoffUntilMs: nowMs + this.config.refusalBackoffMs })
+      surrendered.push(group.groupId)
+    }
+    if (states.size > 0) this.refusals.set(daemonId, states)
+    else this.refusals.delete(daemonId)
+
+    if (surrendered.length > 0) {
+      await this.repo.release(daemonId, surrendered)
+      this.log?.warn(
+        { daemonId, groupIds: surrendered, beats: this.config.refusalsBeforeRelease },
+        'duty groups were granted but never reported as held; lease handed back so another member can take them'
+      )
+    }
+    return regrant
+  }
+
+  /** Groups this member gave back too recently to be offered again. */
+  private backedOff(daemonId: DaemonId): string[] {
+    const nowMs = this.clock.now()
+    const states = this.refusals.get(daemonId)
+    if (!states) return []
+    return [...states].filter(([, s]) => s.backoffUntilMs !== undefined && s.backoffUntilMs > nowMs).map(([id]) => id)
+  }
+
+  /** Forget a departed member's refusal state — its lane is gone and so is its socket. */
+  forget(daemonId: DaemonId): void {
+    this.refusals.delete(daemonId)
   }
 
   /** Chain `fn` on the daemon's lane so operations never interleave. */
@@ -188,19 +278,24 @@ export class DutyLeaseService {
       )
     }
 
+    const regrant = await this.settleRefusals(daemonId, digestIds, deliverable(missing))
+
     let granted: DutyGrantRecord[] = []
-    const budget = Math.max(0, duties.headroom - deliverable(missing).length)
+    const budget = Math.max(0, duties.headroom - regrant.length)
     if (budget > 0 && this.clock.now() >= this.bootedAtMs + this.config.recoveryGraceMs) {
       // Oversized groups are excluded at the claim boundary (the size gate), so
       // a claim never lands on a group it would immediately have to release.
+      // `scope` is install-wide because the heartbeat handler only reaches this service on an
+      // org-less connection; it is passed rather than assumed so the gate stays a predicate.
       granted = await this.repo.claimVacant(
         daemonId,
         Math.min(budget, this.config.grantMaxPerTick),
         now,
         this.config.leaseMs,
         {
+          scope: 'install-wide',
           maxMembers: DUTY_GRANT_MEMBERS_MAX,
-          incumbentOnly: this.config.grantPolicy === 'incumbent'
+          excludeGroupIds: this.backedOff(daemonId)
         }
       )
     }
@@ -238,7 +333,7 @@ export class DutyLeaseService {
       )
     }
     const grants = await this.stamp([
-      ...deliverable(missing).map(toGrantEntry),
+      ...regrant.map(toGrantEntry),
       ...deliverable(stale).map(toGrantEntry),
       ...granted.map(toGrantEntry)
     ])
@@ -264,17 +359,21 @@ export class DutyLeaseService {
    * that was handed a trigger it does not serve. Serialized on the member's lane
    * like every other ledger touch, so a claim cannot interleave with its own
    * heartbeat exchange. Returns a grant the member can install verbatim, or the
-   * incumbent it lost to.
+   * incumbent it lost to. `scope` carries the claimant's connection scope into the same
+   * eligibility gate the heartbeat claim uses: a trigger reaching the wrong member is not
+   * authority to serve an agent that member may not hold.
    */
   async claimAgentHome(
     orgId: OrgId,
     agentId: AgentId,
-    holder: DaemonId
+    holder: DaemonId,
+    scope: DutyClaimScope
   ): Promise<{ granted: boolean; grant?: DutyGrantEntry; holder?: string }> {
     return this.serialize(holder, async () => {
       const now = new Date(this.clock.now())
-      const claim = await this.repo.claimAgentHome(orgId, agentId, holder, now, this.config.leaseMs)
-      if (!claim.granted) return claim.holder ? { granted: false, holder: claim.holder } : { granted: false }
+      const claim = await this.repo.claimAgentHome(orgId, agentId, holder, now, this.config.leaseMs, scope)
+      if (!claim.granted || claim.groupId === undefined)
+        return claim.holder ? { granted: false, holder: claim.holder } : { granted: false }
       const [group] = await this.repo.getByIds([claim.groupId])
       // An oversized group is undeliverable on this wire (§ member cap), so the
       // claim is handed straight back rather than wedged held-but-unserved.

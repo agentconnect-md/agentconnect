@@ -93,7 +93,11 @@ function make(
     hookRemove: (id: string) => removes.push(id)
   } as unknown as RelayControlSender
   const installations = opts.installations ? { listForOrg: vi.fn(async () => opts.installations!) } : undefined
-  return { svc: new HookService(hooks, secrets, agents, relayControl, installations, opts.appSlug), assigns, removes }
+  return {
+    svc: new HookService(hooks, secrets, agents, relayControl, undefined, installations, opts.appSlug),
+    assigns,
+    removes
+  }
 }
 
 describe('HookService.compile', () => {
@@ -241,7 +245,7 @@ describe('HookService.replayTo', () => {
         throw new Error('db blip')
       })
     }
-    const svc = new HookService(hooks, secrets, agents, {} as RelayControlSender, installations, undefined, {
+    const svc = new HookService(hooks, secrets, agents, {} as RelayControlSender, undefined, installations, undefined, {
       warn: vi.fn()
     })
     const sent: string[] = []
