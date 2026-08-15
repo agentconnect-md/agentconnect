@@ -120,6 +120,61 @@ describe('shutdown drain of a duty-holding member', () => {
     expect(summary).toMatch(/3 acknowledged, 0 left to lapse/)
   })
 
+  it('a replacement grant for a held, busy group during shutdown is not acknowledged early — its own release path owns it', async () => {
+    const { daemon, calls } = await boot()
+    const settle = (daemon as any).beginActiveDispatch(AGENT, 'slack:C1:T2') as () => void
+    ;(daemon as any).hosts.set(AGENT, { stop: vi.fn(async () => {}), cancel: vi.fn(async () => {}) })
+
+    const stopping = daemon.stop()
+    // A re-grant of GROUP at a bumped term lands while agent A's turn is still running.
+    ;(daemon as any).applyDutyGrant([{ ...grant(GROUP, AGENT), term: '2' }])
+    await vi.waitFor(() => expect(calls.releases).toEqual([[GROUP_B]]))
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    // Not released while busy — and still held at the old composition, never re-admitted.
+    expect(calls.releases).toEqual([[GROUP_B]])
+    expect(duties(daemon).get(GROUP)?.term).toBe('1')
+
+    settle()
+    await stopping
+    // Exactly one release for GROUP, after its turn settled.
+    expect(calls.releases).toEqual([[GROUP_B], [GROUP]])
+  })
+
+  it('a CP-commanded rebalance drain still ignores grants that land while it is suspended', async () => {
+    const { daemon, releaseDuties } = await boot()
+    const admit = vi.spyOn(daemon as any, 'admitDutyGrants')
+    ;(daemon as any).dutyClaimsSuspended = true
+    ;(daemon as any).applyDutyGrant([
+      grant('11111111-1111-4111-8111-111111111114', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa4')
+    ])
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(admit).not.toHaveBeenCalled()
+    expect(releaseDuties).not.toHaveBeenCalled()
+    ;(daemon as any).dutyClaimsSuspended = false
+    await daemon.stop()
+  })
+
+  it('a host that fails to stop leaves its group unreleased — the lease lapses instead of a false ack', async () => {
+    const { daemon, calls } = await boot()
+    ;(daemon as any).hosts.set(AGENT, {
+      stop: vi.fn(async () => {
+        throw new Error('child ignored SIGKILL')
+      }),
+      cancel: vi.fn(async () => {})
+    })
+    const info = vi.spyOn((daemon as any).log, 'info')
+    const warn = vi.spyOn((daemon as any).log, 'warn')
+
+    await daemon.stop()
+
+    expect(calls.releases).toEqual([[GROUP_B]])
+    expect(warn.mock.calls.some(([m]) => /not released, its lease lapses \(host stop failed/.test(String(m)))).toBe(
+      true
+    )
+    const summary = info.mock.calls.map(([m]) => String(m)).find((m) => m.startsWith('duty: shutdown drain released'))
+    expect(summary).toMatch(/1 acknowledged, 1 left to lapse/)
+  })
+
   it("a release waits for the group's platform connections to converge — the socket is closed before the ack is sought", async () => {
     const { daemon, calls } = await boot()
     // A live direct socket for agent A's group, as reconcile would have opened it while held.

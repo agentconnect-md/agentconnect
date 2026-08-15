@@ -1894,7 +1894,12 @@ registerObservedChannels(discordObservedChannels)
 interface ShutdownDutyDrain {
   deadlineAt: number
   stats: { groups: number; agents: number; acked: number; lapsing: number }
+  /** Releases of grants that landed after the latch for groups never served here. */
   tails: Set<Promise<void>>
+  /** Groups withdrawn by the release loop whose teardown is still being confirmed. */
+  withdrawing: Set<string>
+  /** Groups whose teardown could not be confirmed: never acknowledged, whatever arrives for them. */
+  lapsing: Set<string>
 }
 
 export class Daemon {
@@ -12797,18 +12802,37 @@ export class Daemon {
    *  CP cannot stall the socket. */
   private applyDutyGrant(grants: DutyGrantEntry[]): void {
     // A grant that wins after the shutdown latch — an exchange that began before the SIGTERM can
-    // still commit one — is never installed, but the ledger records this exiting member as its
-    // holder, so it goes straight into the acknowledged release path rather than being left to
-    // lapse. Nothing to withdraw locally: it never entered service here.
+    // still commit one — is never installed. For a group this member never served, the ledger
+    // still records this exiting member as its holder, so it goes straight into the acknowledged
+    // release path rather than being left to lapse. A grant for a group already held, mid-admission,
+    // or in its teardown window is a replacement, not a new holding: the per-group release loop owns
+    // that group (busy wait → withdraw → confirmed teardown → ack, else lapse) and a release names
+    // the group, not the term, so nothing needs recording. A group already left to lapse stays so.
     const drain = this.shutdownDutyDrain
     if (drain) {
-      this.log.info(`duty: ${grants.length} grant(s) landed while shutting down — releasing them unserved`)
+      const unserved: string[] = []
       for (const grant of grants) {
-        const tail: Promise<void> = this.releaseUnservedOnShutdown(grant.groupId, drain).finally(() =>
+        const groupId = grant.groupId
+        if (this.duties.get(groupId) || this.dutyAdmissions.has(groupId) || drain.withdrawing.has(groupId)) continue
+        if (drain.lapsing.has(groupId)) continue
+        unserved.push(groupId)
+      }
+      this.log.info(
+        `duty: ${grants.length} grant(s) landed while shutting down — ${unserved.length} never served here, released unserved; ` +
+          `the rest follow their group's own release`
+      )
+      for (const groupId of unserved) {
+        const tail: Promise<void> = this.releaseUnservedOnShutdown(groupId, drain).finally(() =>
           drain.tails.delete(tail)
         )
         drain.tails.add(tail)
       }
+      return
+    }
+    // A CP-commanded rebalance drain accepts no grant either: it would install a group the release
+    // snapshot has already passed by. The CP re-issues on the next beat once the member reopens.
+    if (this.dutyClaimsSuspended) {
+      this.log.info(`duty: ignoring ${grants.length} grant(s) while draining`)
       return
     }
     void this.admitDutyGrants(grants)
@@ -13228,17 +13252,20 @@ export class Daemon {
    *  workspace deletion, no removal tombstone, no CP-drop latch, so a re-grant
    *  needs nothing from the CP to revive it. */
   private stopServingAgent(agentId: string): void {
-    void this.stopServingAgentSettled(agentId)
+    void this.stopServingAgentSettled(agentId).catch((err) =>
+      this.log.warn(`duty: stopping host for ${agentId} failed: ${err}`)
+    )
   }
 
   /** The same light teardown, resolving once the agent's host is actually down — what the shutdown
-   *  release awaits before it lets a successor bind the agent's sandbox. */
+   *  release awaits before it lets a successor bind the agent's sandbox. Rejects when the host stop
+   *  failed: the child may still be alive, so "no longer served here" cannot be claimed. */
   private async stopServingAgentSettled(agentId: string): Promise<void> {
     if (!this.dutyEnforced()) return
     this.interruptAgentTurns(agentId, 'stop')
     this.scheduler.unregister(agentId)
     this.dreamScheduler.unregister(agentId)
-    await this.stopHost(agentId).catch((err) => this.log.warn(`duty: stopping host for ${agentId} failed: ${err}`))
+    await this.stopHost(agentId)
   }
 
   private cpDegradedScopes(): string[] {
@@ -19897,19 +19924,32 @@ export class Daemon {
       const ready = forced ? remaining : remaining.filter((groupId) => !this.dutyGroupBusy(groupId))
       for (const groupId of ready) {
         // Withdraw locally first — the same teardown a revoke runs — and wait for it to be real.
+        drain.withdrawing.add(groupId)
         const result = this.duties.applyRevoke([{ groupId, reason: 'superseded' }])
         stats.groups++
         stats.agents += result.agentsLost.length
-        const stops = Promise.all(result.agentsLost.map((agentId) => this.stopServingAgentSettled(agentId)))
+        // A rejected host stop is not a teardown: the child may still be alive.
+        let stopsFailed: unknown
+        const stops = Promise.all(result.agentsLost.map((agentId) => this.stopServingAgentSettled(agentId))).catch(
+          (err) => {
+            stopsFailed = err
+          }
+        )
         this.onDutyChanged()
         const target = this.dutyConnectionsRequested
         const tornDown =
           (await this.raceDeadline(stops, deadlineAt - this.clock.now())) === 'done' &&
+          stopsFailed === undefined &&
           (await this.awaitDutyConvergence(target, deadlineAt))
+        drain.withdrawing.delete(groupId)
         if (!tornDown) {
+          drain.lapsing.add(groupId)
           stats.lapsing++
           this.log.warn(
-            `duty: ${groupId} may still be served here at the drain deadline — not released, its lease lapses`
+            `duty: ${groupId} may still be served here — not released, its lease lapses` +
+              (stopsFailed !== undefined
+                ? ` (host stop failed: ${stopsFailed})`
+                : ' (teardown unconfirmed at the drain deadline)')
           )
           continue
         }
@@ -22503,7 +22543,9 @@ export class Daemon {
     const shutdownDrain: ShutdownDutyDrain = {
       deadlineAt: drainDeadlineAt,
       stats: { groups: 0, agents: 0, acked: 0, lapsing: 0 },
-      tails: new Set()
+      tails: new Set(),
+      withdrawing: new Set(),
+      lapsing: new Set()
     }
     if (this.dutyEnforced()) {
       this.shutdownDutyDrain = shutdownDrain
