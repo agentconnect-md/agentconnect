@@ -21,6 +21,7 @@
  */
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import { z } from 'zod'
+import { normalizeGitHubSkillSource } from '@agentconnect.md/protocol'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import { Tag } from '../plugins/openapi.js'
 import type { HttpDeps } from '../deps.js'
@@ -59,23 +60,68 @@ import {
  * where the per-process promise chain this replaced could not reach.
  */
 
-/** Extract `{owner, repo, ref?}` from a source string (shorthand, https, or ssh
- *  GitHub form). Returns null for a non-GitHub / unparseable source. */
+/** Extract `{owner, repo, ref?, subDir?}` from a source string. Decomposes the
+ *  value the SHARED grammar already accepted (`normalizeGitHubSkillSource` — the
+ *  same refinement `SkillSourceArg` enforces) rather than re-deriving the accepted
+ *  set here: binding is mandatory, so any form this missed would be a source the
+ *  DTO admits and the route then rejects. Null ⇒ not a GitHub source at all. */
 function parseGithubRepo(source: string): { owner: string; repo: string; ref?: string; subDir?: string } | null {
-  const s = source.trim().replace(/\.git$/, '')
-  let m = /^https?:\/\/github\.com\/([^/]+)\/([^/]+)(?:\/tree\/([^/]+)(?:\/(.+))?)?/i.exec(s)
-  if (m) return { owner: m[1]!, repo: m[2]!, ...(m[3] ? { ref: m[3] } : {}), ...(m[4] ? { subDir: m[4] } : {}) }
-  m = /^(?:git@github\.com:|ssh:\/\/git@github\.com\/)([^/]+)\/([^/]+)$/i.exec(s)
-  if (m) return { owner: m[1]!, repo: m[2]! }
-  m = /^([^/\s:]+)\/([^/\s]+)$/.exec(s)
-  if (m) return { owner: m[1]!, repo: m[2]! }
-  return null
+  let normalized: string
+  try {
+    normalized = normalizeGitHubSkillSource(source)
+  } catch {
+    return null
+  }
+  // scp form (`git@github.com:owner/repo`) carries its path after the colon and is
+  // not a parseable URL; every other accepted form is absolute by now.
+  const scp = /^[\w.-]+@[\w.-]+:(.+)$/.exec(normalized)
+  let parts: string[]
+  try {
+    parts = (scp ? scp[1]! : new URL(normalized).pathname.slice(1)).split('/').map(decodeURIComponent)
+  } catch {
+    return null
+  }
+  const owner = parts[0]
+  const repo = parts[1]?.replace(/\.git$/i, '')
+  if (!owner || !repo) return null
+  // The grammar admits owner/repo or owner/repo/tree/<ref>[/<subdir>] (https only).
+  const ref = parts[2] === 'tree' ? parts[3] : undefined
+  const subDir = ref && parts.length > 4 ? parts.slice(4).join('/') : undefined
+  return { owner, repo, ...(ref ? { ref } : {}), ...(subDir ? { subDir } : {}) }
+}
+
+/**
+ * Rewrite the owner/repo half of a source to GitHub's canonical `full_name`,
+ * preserving whatever else the string carries (`.git`, `/tree/<ref>/<subdir>`).
+ *
+ * GitHub follows rename and transfer REDIRECTS: `GET /repos/docker/docker` answers
+ * 200 with `full_name: moby/moby`. Persisting the typed slug next to the resolved
+ * numeric id would then fail on the daemon, whose identity check requires
+ * `full_name` to equal the configured source — the same visible-but-uninstallable
+ * state this binding exists to remove, just louder. Null ⇒ the slug is not a
+ * substring we can rewrite (percent-encoded owner/repo); the caller refuses the
+ * write rather than store a mismatch.
+ */
+function canonicalizeSource(source: string, parsed: { owner: string; repo: string }, fullName: string): string | null {
+  const slug = `${parsed.owner}/${parsed.repo}`
+  if (slug.toLowerCase() === fullName.toLowerCase()) return source
+  const at = source.toLowerCase().indexOf(slug.toLowerCase())
+  return at < 0 ? null : source.slice(0, at) + fullName + source.slice(at + slug.length)
 }
 
 /** What one repo lookup can conclude. `unreachable` (GitHub down, rate limited) is
  *  retryable and must not be confused with `not-found`, which is a verdict. */
 type RepoBinding =
-  | { status: 'ok'; repoId: bigint; private: boolean; defaultBranch: string }
+  | {
+      status: 'ok'
+      repoId: bigint
+      fullName: string
+      /** The stored source rewritten to `fullName`; null ⇒ it names a repo that has
+       *  since been renamed and the slug cannot be rewritten in place. */
+      canonicalSource: string | null
+      private: boolean
+      defaultBranch: string
+    }
   | { status: 'not-found' | 'unreachable' | 'unparseable' }
 
 function toDto(s: SkillSourceRecord, ctx: ViewCtx): SkillSourceDtoT {
@@ -120,18 +166,25 @@ export function skillSourceRoutes(deps: HttpDeps) {
     const resolveRepoBinding = async (orgId: OrgId, source: string): Promise<RepoBinding> => {
       const parsed = parseGithubRepo(source)
       if (!parsed) return { status: 'unparseable' }
-      const gh = deps.github
-      if (gh) {
-        const ins = await deps.repos.githubInstallation.liveByOrgAndAccount(orgId, parsed.owner)
-        // An installation failure is not a verdict on a PUBLIC repo — fall through
-        // to the anonymous read rather than treat the source as unbindable.
-        const ref = ins ? await gh.repoRefFor(ins, parsed.owner, parsed.repo).catch(() => null) : null
-        if (ref) return { status: 'ok', ...ref }
+      const found = async (): Promise<
+        { repoId: bigint; fullName: string; private: boolean; defaultBranch: string } | 'not-found' | 'unreachable'
+      > => {
+        const gh = deps.github
+        if (gh) {
+          const ins = await deps.repos.githubInstallation.liveByOrgAndAccount(orgId, parsed.owner)
+          // An installation failure is not a verdict on a PUBLIC repo — fall through
+          // to the anonymous read rather than treat the source as unbindable.
+          const ref = ins ? await gh.repoRefFor(ins, parsed.owner, parsed.repo).catch(() => null) : null
+          if (ref) return ref
+        }
+        const resolve = deps.resolvePublicRepo
+        return resolve ? await resolve(parsed.owner, parsed.repo) : 'unreachable'
       }
-      const resolve = deps.resolvePublicRepo
-      if (!resolve) return { status: 'unreachable' }
-      const pub = await resolve(parsed.owner, parsed.repo)
-      return typeof pub === 'string' ? { status: pub } : { status: 'ok', ...pub }
+      const hit = await found()
+      if (typeof hit === 'string') return { status: hit }
+      // Carry the CANONICAL source alongside the id: the two must agree, or the
+      // daemon refuses the entry (see canonicalizeSource).
+      return { status: 'ok', ...hit, canonicalSource: canonicalizeSource(source, parsed, hit.fullName) }
     }
 
     // Reject rather than persist a source whose identity we could not establish: an
@@ -339,6 +392,10 @@ export function skillSourceRoutes(deps: HttpDeps) {
         // non-installable (#935).
         const repoId = parseRepoId(req.body.githubRepoId) ?? (binding.status === 'ok' ? binding.repoId : undefined)
         if (repoId === undefined) return rejectUnbound(reply, binding)
+        // Store the slug GitHub redirected us to, not the one that was typed: the
+        // daemon requires the two to agree before it will acquire anything.
+        const source = binding.status === 'ok' && repoId === binding.repoId ? binding.canonicalSource : req.body.source
+        if (source === null) return reply.code(400).send(renamedRepo)
         const ref = req.body.ref ?? (req.body.subDir && binding.status === 'ok' ? binding.defaultBranch : undefined)
         // A subdir source needs a ref; if we couldn't resolve one reject rather than
         // let the daemon assume `main`.
@@ -352,7 +409,7 @@ export function skillSourceRoutes(deps: HttpDeps) {
         const created = await deps.repos.skillSource.create({
           orgId: orgOf(req),
           name: req.body.name,
-          source: req.body.source,
+          source,
           githubRepoId: repoId,
           ...(ref !== undefined ? { ref } : {}),
           ...(req.body.subDir !== undefined ? { subDir: req.body.subDir } : {}),
@@ -411,6 +468,11 @@ export function skillSourceRoutes(deps: HttpDeps) {
               : undefined
             : existing.githubRepoId)
         if (repoId === undefined) return rejectUnbound(reply, binding)
+        // Persist the canonical slug whenever this write bound the id — including a
+        // back-fill, where the stored source may name a repo that has since moved.
+        const bound = binding.status === 'ok' && repoId === binding.repoId
+        const canonicalSource = bound ? binding.canonicalSource : effSource
+        if (canonicalSource === null) return reply.code(400).send(renamedRepo)
         // Preserve an explicit ref across an unrelated PATCH: only resolve a default
         // branch when the EFFECTIVE ref is absent (untouched-and-existing counts as
         // present), so a `skills`-only edit can't silently rewrite the pinned ref.
@@ -423,7 +485,7 @@ export function skillSourceRoutes(deps: HttpDeps) {
         // let the daemon assume `main`.
         if (effSubDir && !resolvedRef) return reply.code(400).send(subdirNeedsRef)
         const source = await deps.repos.skillSource.update(orgOf(req), existing.id, {
-          ...(req.body.source !== undefined ? { source: req.body.source } : {}),
+          ...(canonicalSource !== existing.source ? { source: canonicalSource } : {}),
           githubRepoId: repoId,
           ...(resolvedRef !== undefined
             ? { ref: resolvedRef }
@@ -551,6 +613,12 @@ const bindingUnavailable = {
   error: 'Service Unavailable',
   statusCode: 503,
   message: 'could not reach GitHub to identify the repository — retry shortly'
+}
+
+const renamedRepo = {
+  error: 'Bad Request',
+  statusCode: 400,
+  message: 'the repository has been renamed or transferred; register it under its current owner/repository name'
 }
 
 /** An explicit `githubRepoId: null` asks for exactly the state #935 is about. */

@@ -819,3 +819,106 @@ describe('POST/PATCH /skill-sources — githubRepoId binding', () => {
     )
   })
 })
+
+/**
+ * Rename/transfer redirects and the accepted-source grammar — the two findings
+ * from the review of the binding change.
+ *
+ * GitHub answers `GET /repos/docker/docker` with `full_name: moby/moby`. Storing
+ * the typed slug next to the resolved id would fail on the daemon, whose identity
+ * check requires `full_name` to equal the configured source. And because binding
+ * is now mandatory, every form `SkillSourceArg` admits must decompose here, or the
+ * DTO accepts a source the route then rejects.
+ */
+describe('POST/PATCH /skill-sources — canonical slug and accepted forms', () => {
+  /** Resolves any name to one repo that has since moved to `moby/moby`. */
+  const redirected: HttpDeps['resolvePublicRepo'] = async () => ({
+    repoId: 111n,
+    fullName: 'moby/moby',
+    private: false,
+    defaultBranch: 'main'
+  })
+
+  function appResolving(resolve: HttpDeps['resolvePublicRepo']): HttpApp {
+    const app = buildHttpApp(prisma, undefined, undefined, undefined, { resolvePublicRepo: resolve })
+    opened.push(app)
+    return app
+  }
+
+  it('stores the slug GitHub redirected to, so the daemon identity check can pass', async () => {
+    const app = appResolving(redirected)
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/skill-sources`,
+      payload: { name: 'kit', source: 'docker/docker' }
+    })
+    expect(res.statusCode).toBe(201)
+    expect(res.json()).toMatchObject({ source: 'moby/moby', githubRepoId: '111' })
+  })
+
+  it('rewrites only the owner/repo half, preserving the rest of the source string', async () => {
+    const app = appResolving(redirected)
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/skill-sources`,
+      payload: { name: 'kit', source: 'https://github.com/docker/docker.git/tree/v2/packs' }
+    })
+    expect(res.statusCode).toBe(201)
+    expect(res.json().source).toBe('https://github.com/moby/moby.git/tree/v2/packs')
+  })
+
+  it('canonicalizes on the back-fill too — a stale stored slug is repaired with the id', async () => {
+    const app = appResolving(redirected)
+    const id = await createSource(app, 'legacy', { source: 'docker/docker' })
+    await prisma.skillSource.update({ where: { id }, data: { githubRepoId: null, source: 'docker/docker' } })
+
+    const patched = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/skill-sources/${id}`,
+      payload: { skills: ['helper'] }
+    })
+    expect(patched.statusCode).toBe(200)
+    expect(patched.json()).toMatchObject({ source: 'moby/moby', githubRepoId: '111' })
+  })
+
+  it('leaves the source alone when the resolved name already matches', async () => {
+    const app = appResolving(async (owner, repo) => ({
+      repoId: 5n,
+      fullName: `${owner}/${repo}`,
+      private: false,
+      defaultBranch: 'main'
+    }))
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/skill-sources`,
+      payload: { name: 'kit', source: 'https://github.com/anthropics/skills' }
+    })
+    expect(res.json().source).toBe('https://github.com/anthropics/skills')
+  })
+
+  // Every form SkillSourceArg admits must bind; before this, the host-prefixed
+  // shorthand and a mid-path `.git` were newly rejected by mandatory binding.
+  it.each([
+    ['bare shorthand', 'anthropics/skills'],
+    ['host-prefixed shorthand', 'github.com/anthropics/skills'],
+    ['https', 'https://github.com/anthropics/skills'],
+    ['https with .git', 'https://github.com/anthropics/skills.git'],
+    ['https tree with .git', 'https://github.com/anthropics/skills.git/tree/main/packs'],
+    ['scp ssh', 'git@github.com:anthropics/skills'],
+    ['ssh url', 'ssh://git@github.com/anthropics/skills']
+  ])('binds a source given in %s form', async (_label, source) => {
+    const seen: string[] = []
+    const app = appResolving(async (owner, repo) => {
+      seen.push(`${owner}/${repo}`)
+      return { repoId: 314n, fullName: `${owner}/${repo}`, private: false, defaultBranch: 'main' }
+    })
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/skill-sources`,
+      payload: { name: 'kit', source }
+    })
+    expect(res.statusCode).toBe(201)
+    expect(res.json().githubRepoId).toBe('314')
+    expect(seen).toEqual(['anthropics/skills'])
+  })
+})

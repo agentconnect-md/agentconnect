@@ -209,6 +209,14 @@ enabled in the console and installs nothing. A `PATCH` re-binds when the source
 changes or the row never had an identity, which is how a historical unbound row
 is repaired; clearing the identity is refused.
 
+**The stored slug is canonicalized with the ID.** GitHub follows rename and
+transfer redirects, so the resolved `full_name` may not be the slug that was
+typed (`docker/docker` resolves as `moby/moby`). The daemon's numeric-identity
+check requires `full_name` to equal the configured source, so the route persists
+the canonical owner/repository -- rewriting only that half and preserving any
+`.git` suffix or `/tree/<ref>/<subdir>` the source carries. The two fields are
+written together or the write is refused; they may never disagree.
+
 ### Per-agent binding: inline source definitions in `AgentSpec` and `agent.json`
 
 The key decision is that **all information the daemon needs to acquire and
