@@ -136,3 +136,18 @@ describe('resolveWebAppUrl', () => {
     expect(resolveWebAppUrl({ CORS_ORIGIN: '*' })).toBeUndefined()
   })
 })
+
+describe('pool namespace (POOL_NAMESPACE)', () => {
+  const base = {
+    DATABASE_URL: 'postgresql://agentconnect:agentconnect@localhost:5432/agentconnect',
+    API_KEY_PEPPER: 'a'.repeat(32)
+  }
+
+  it('reads the namespace the install runs its pool members in', () => {
+    expect(loadConfig({ ...base, POOL_NAMESPACE: 'pool-ns' }).POOL_NAMESPACE).toBe('pool-ns')
+  })
+
+  it('leaves the pool disabled when the key is unset', () => {
+    expect(loadConfig(base).POOL_NAMESPACE).toBeUndefined()
+  })
+})
