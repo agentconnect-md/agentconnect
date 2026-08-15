@@ -295,6 +295,13 @@ export class DutyLeaseService {
     return this.repo.holdsAgent(holder, agentId, new Date(this.clock.now()))
   }
 
+  /** The agents this member currently holds a duty for — the holder's-side twin of
+   *  {@link DutyLeaseService.holdsAgent}, and the read behind "which agents does
+   *  this daemon serve" (orchestrator/servedAgents.ts). Same live lease horizon. */
+  heldAgentIds(holder: DaemonId, now: Date = new Date(this.clock.now())): Promise<AgentId[]> {
+    return this.repo.heldAgentIds(holder, now)
+  }
+
   /** Explicit drain release — vacate now instead of waiting out T_reassign.
    *  Queued behind any earlier beat's exchange (lane order = frame order), so
    *  every grant that exchange emitted reaches the daemon BEFORE this ack, and

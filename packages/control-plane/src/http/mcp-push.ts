@@ -28,10 +28,13 @@ export function makeMcpPush(deps: HttpDeps): McpPush {
     return url ? relayHttpOrigin(url) : null
   }
 
-  // Daemons with a placed agent that enabled `name` (runtimeOverrides.mcpServers).
+  // Every daemon SERVING an agent that enabled `name` — its placement plus any
+  // duty holder. Resolved through AgentDelivery, never `a.daemonId` inline: a
+  // holder that installed the agent through `duty/fetch` must see the provider's
+  // rotations and its removal, or it keeps calling with a retired grant key.
   const daemonsEnabling = async (orgId: OrgId, name: string): Promise<string[]> => {
-    const agents = await deps.repos.agent.list(orgId)
-    return [...new Set(agents.filter((a) => a.daemonId && a.mcpServers.includes(name)).map((a) => a.daemonId!))]
+    const agents = (await deps.repos.agent.list(orgId)).filter((a) => a.mcpServers.includes(name))
+    return deps.agentDelivery.daemonsForAgents(agents)
   }
 
   return {

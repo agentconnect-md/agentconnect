@@ -10,7 +10,7 @@ import type {
   MemoryPluginInstallation
 } from '../../generated/prisma/client.js'
 import { mintGrantKey } from '../../orchestrator/mcpProvider.js'
-import { DaemonId, OrgId } from '../../domain/ids.js'
+import { OrgId } from '../../domain/ids.js'
 import type { SecretCipher } from '../../secrets/cipher.js'
 import { orgScope } from '../../secrets/scope.js'
 import type { PrismaLike } from '../prisma.js'
@@ -167,18 +167,6 @@ export class PgExternalMemoryConnectionRepo implements ExternalMemoryConnectionR
   async delete(orgId: OrgId, id: string): Promise<void> {
     // Org-fenced delete: a cross-org id throws the same P2025 as a missing row.
     await this.db.externalMemoryConnection.delete({ where: { id, orgId } })
-  }
-
-  async activeForDaemon(daemonId: DaemonId): Promise<ExternalMemoryConnectionRecord[]> {
-    const agents = await this.db.agent.findMany({ where: { daemonId }, select: { runtimeOverrides: true } })
-    const ids = new Set<string>()
-    for (const agent of agents) {
-      const memory = (agent.runtimeOverrides as { memory?: { provider?: string; connectionId?: string } } | null)
-        ?.memory
-      if (memory?.provider === 'external' && memory.connectionId) ids.add(memory.connectionId)
-    }
-    if (ids.size === 0) return []
-    return (await this.db.externalMemoryConnection.findMany({ where: { id: { in: [...ids] } } })).map(toConnection)
   }
 
   async updateProbeFact(

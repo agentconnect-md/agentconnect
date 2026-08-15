@@ -63,6 +63,8 @@ export async function seedAgent(
     /** GithubInstallation row-id provenance hint ⇒ github-APP credential mode. */
     installationId?: string
     gitAccess?: 'read' | 'write'
+    /** `runtimeOverrides` JSON — where the MCP enable-list and memory binding live. */
+    runtimeOverrides?: Record<string, unknown>
   } = {}
 ): Promise<AgentId> {
   await prisma.agent.create({
@@ -77,7 +79,8 @@ export async function seedAgent(
       ...(opts.createdByUserId ? { createdByUserId: opts.createdByUserId } : {}),
       ...(opts.gitRepo ? { workspaceMode: 'github' as const, gitRepo: opts.gitRepo } : {}),
       ...(opts.installationId ? { installationId: opts.installationId } : {}),
-      ...(opts.gitAccess ? { gitAccess: opts.gitAccess } : {})
+      ...(opts.gitAccess ? { gitAccess: opts.gitAccess } : {}),
+      ...(opts.runtimeOverrides ? { runtimeOverrides: opts.runtimeOverrides } : {})
     }
   })
   return AgentId(id)

@@ -90,10 +90,12 @@ export function memoryConnectionRoutes(deps: HttpDeps) {
         (agent) => agent.memory?.provider === 'external' && agent.memory.connectionId === connectionId
       )
 
-    /** Push the full relay allowlist, then one chosen grant to every using daemon.
-     * Returns true only when every currently placed consumer acknowledged the
+    /** Push the full relay allowlist, then one chosen grant to every daemon SERVING
+     * a using agent — its placement plus any duty holder, resolved through
+     * AgentDelivery. Returns true only when every such consumer acknowledged the
      * chosen definition. Durable CRUD ignores a false result and converges on
-     * reconnect; grant retirement uses it as a hard overlap-before-revoke fence. */
+     * reconnect; grant retirement uses it as a hard overlap-before-revoke fence, so
+     * including holders is what stops a key being retired under a holder still on it. */
     const pushConnection = async (
       connection: ExternalMemoryConnectionRecord,
       installation: MemoryPluginInstallationRecord,
@@ -102,7 +104,7 @@ export function memoryConnectionRoutes(deps: HttpDeps) {
     ): Promise<boolean> => {
       try {
         const daemonIds = new Set(
-          (await agentsUsing(connection.orgId, connection.id)).flatMap((a) => (a.daemonId ? [a.daemonId] : []))
+          await deps.agentDelivery.daemonsForAgents(await agentsUsing(connection.orgId, connection.id))
         )
         let spec: MemoryConnectionSpec
         if (installation.transport === 'stdio') {

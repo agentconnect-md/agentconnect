@@ -497,6 +497,7 @@ import type {
   ChannelAgentsOk,
   TaskList,
   TaskListReq,
+  DutyAgentBundle,
   DutyGrantEntry,
   DutyMemberRef,
   DutyRevoke,
@@ -12952,6 +12953,13 @@ export class Daemon {
         return
       }
       if (!this.cpAgents) return
+      // Definitions BEFORE the spec that names them, same order as the reconnect
+      // snapshot: an AgentSpec carries MCP server names and a memory connection id,
+      // and static memory admission must never observe the agent before at least a
+      // probing (fail-closed) connection entry exists. Applied unconditionally of
+      // the revision fence below — they are separate registries with their own
+      // fences, and a skipped spec still leaves a replica referencing them.
+      this.applyDutyDefinitions(bundle)
       // The revision fence is the target's own (organization-secrets-and-variables.md
       // §7): a bundle older than what we already applied never overwrites it.
       const applied = this.cpAgents.upsert(agentId, bundle.spec)
@@ -12966,8 +12974,30 @@ export class Daemon {
         cronIds: bundle.crons.map((cron) => cron.cronId)
       })
       await this.flushReconcile()
-      this.log.info(`duty: installed granted agent ${agentId} (${bundle.integrations.length} integration(s))`)
+      this.log.info(
+        `duty: installed granted agent ${agentId} (${bundle.integrations.length} integration(s), ` +
+          `${(bundle.mcpServers ?? []).length} MCP def(s), ${(bundle.memoryConnections ?? []).length} memory connection(s))`
+      )
     })
+  }
+
+  /**
+   * Install the two definition kinds the granted agent's spec only NAMES. Additive
+   * (`upsert`, never `converge`): this member may already serve other agents whose
+   * definitions the bundle does not mention, and a duty install is never a
+   * full-replace of a tenant registry. An older CP omits both arrays.
+   *
+   * NEVER log the defs — an MCP proxy def's headers carry the bearer grant key and
+   * a memory def carries its grant plus secret leases.
+   */
+  private applyDutyDefinitions(bundle: DutyAgentBundle): void {
+    for (const spec of bundle.memoryConnections ?? []) this.memoryConnections?.upsert(spec)
+    let mcpChanged = false
+    for (const { orgId, name, ...def } of bundle.mcpServers ?? []) {
+      if (!orgId || name === RESERVED_MCP_SERVER_NAME) continue
+      if (this.cpMcpDefs?.upsert(orgId, name, def)) mcpChanged = true
+    }
+    if (mcpChanged) this.onMcpDefsChanged()
   }
 
   /** Apply a `duty/revoke` EVT. Losing a duty is NOT a removal: the agent's

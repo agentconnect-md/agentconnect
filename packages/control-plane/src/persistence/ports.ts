@@ -4145,8 +4145,8 @@ export interface McpProviderRepo {
   /** Org-fenced point read (docs/designs/org-scoped-data-layer.md §3): a
    *  cross-org id reads as absent, exactly like a missing row. This port has no
    *  `getUnscoped` — the daemon and relay reach providers through
-   *  {@link McpProviderRepo.activeForDaemon} and {@link McpProviderRepo.listAll},
-   *  so no internal trust domain needs an id-addressed escape hatch. */
+   *  {@link McpProviderRepo.listForOrg} and {@link McpProviderRepo.listAll}, so no
+   *  internal trust domain needs an id-addressed escape hatch. */
   get(orgId: OrgId, id: string): Promise<McpProviderRecord | null>
   /** The org's providers, filtered to what a supplied human principal may see
    *  (org-visible OR owned-by-them OR shared-with-them). Undefined is reserved
@@ -4164,13 +4164,6 @@ export interface McpProviderRepo {
   update(orgId: OrgId, id: string, patch: UpdateMcpProviderInput): Promise<McpProviderRecord>
   /** Org-fenced: a cross-org id throws the same P2025 as a missing row. */
   delete(orgId: OrgId, id: string): Promise<void>
-  /**
-   * Providers that should be pushed to `daemonId`: an org provider whose `name` is
-   * enabled (in `runtimeOverrides.mcpServers`) by some agent placed on the daemon.
-   * Mirrors {@link IntegrationRepo.activeForDaemon} but org-scoped (v1 visibility='org'):
-   * a daemon receives the proxy def only when one of its agents opted the provider in.
-   */
-  activeForDaemon(daemonId: DaemonId): Promise<McpProviderRecord[]>
   /** EVERY provider across all orgs — the pool-wide set replayed to a relay that just
    *  (re)registered (its in-memory binding table starts empty; bindings are pool-wide,
    *  like bots/hooks). System-tier: deployment-level infrastructure by design. */
@@ -4611,7 +4604,7 @@ export interface ExternalMemoryConnectionRepo {
   }): Promise<ExternalMemoryConnectionRecord>
   /** Org-fenced point read (org-scoped-data-layer.md §3): a cross-org id reads
    *  as absent, exactly like a missing row. No `getUnscoped` — the daemon and
-   *  relay reach connections through `activeForDaemon` / `listAll`, never by id. */
+   *  relay reach connections through `listForOrg` / `listAll`, never by id. */
   get(orgId: OrgId, id: string): Promise<ExternalMemoryConnectionRecord | null>
   listForOrg(orgId: OrgId): Promise<ExternalMemoryConnectionRecord[]>
   /** System-tier: the pool-wide set replayed to a relay that just (re)registered. */
@@ -4620,9 +4613,6 @@ export interface ExternalMemoryConnectionRepo {
   update(orgId: OrgId, id: string, patch: { config?: Record<string, unknown> }): Promise<ExternalMemoryConnectionRecord>
   /** Org-fenced: a cross-org id throws the same P2025 as a missing row. */
   delete(orgId: OrgId, id: string): Promise<void>
-  /** Connections referenced by an external-memory agent placed on this daemon.
-   *  System-tier: daemon-fenced. */
-  activeForDaemon(daemonId: DaemonId): Promise<ExternalMemoryConnectionRecord[]>
   /** Revision-fenced probe fact update; stale daemon facts are ignored.
    *  System-tier: daemon-reported, fenced by the revision CAS. */
   updateProbeFact(

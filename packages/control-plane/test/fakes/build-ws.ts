@@ -34,6 +34,8 @@ import {
   PgExternalMemoryConnectionRepo,
   PgExternalMemoryConnectionSecretStore,
   PgExternalMemoryGrantRepo,
+  PgMcpProviderRepo,
+  PgMcpGrantRepo,
   PgDutyGroupRepo
 } from '../../src/persistence/index.js'
 import { PlaintextSecretCipher } from '../../src/secrets/cipher.js'
@@ -127,7 +129,9 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
     memoryPluginInstallation: new PgMemoryPluginInstallationRepo(prisma),
     externalMemoryConnection: new PgExternalMemoryConnectionRepo(prisma),
     externalMemoryConnectionSecret: new PgExternalMemoryConnectionSecretStore(prisma, cipher),
-    externalMemoryGrant: new PgExternalMemoryGrantRepo(prisma, cipher)
+    externalMemoryGrant: new PgExternalMemoryGrantRepo(prisma, cipher),
+    mcpProvider: new PgMcpProviderRepo(prisma),
+    mcpGrant: new PgMcpGrantRepo(prisma, cipher)
   }
 
   const codec = new ApiKeyCodec({ API_KEY_PEPPER: TEST_API_KEY_PEPPER })
@@ -185,6 +189,7 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
         REASSIGN_GRACE_SEC: 60,
         ACK_TIMEOUT_MS: opts.ackTimeoutMs ?? 5000
       },
+      mcp: { providers: repos.mcpProvider, grants: repos.mcpGrant, relayRoster: { entries: async () => relays } },
       memory: {
         connections: repos.externalMemoryConnection,
         installations: repos.memoryPluginInstallation,
