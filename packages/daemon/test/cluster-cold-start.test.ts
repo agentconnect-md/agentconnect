@@ -41,7 +41,7 @@ afterEach(async () => {
   for (const client of clients.splice(0)) client.stop()
   for (const plane of planes.splice(0)) await plane.stop()
   for (const server of servers.splice(0)) await server.stop()
-  closeFakeApiServers()
+  await closeFakeApiServers()
 })
 
 function delay(ms: number): Promise<void> {
@@ -82,14 +82,14 @@ async function clusterUnderTest(options: {
 }): Promise<{
   plane: K8sRuntimePlane
   server: ShimServer
-  state: { ready: boolean }
+  state: { ready: boolean; hang: boolean }
   reachable: ReturnType<typeof gate>
   shim: () => ShimClient
 }> {
   const server = new ShimServer()
   const port = await server.start(0, '127.0.0.1')
   servers.push(server)
-  const state = { ready: true }
+  const state = { ready: true, hang: false }
   let claim: unknown
   const { config } = await fakeApiServer(({ method, url }) => {
     const path = url.pathname
@@ -109,7 +109,12 @@ async function clusterUnderTest(options: {
         }
       }
     }
-    if (path.endsWith('/sandboxes/sb-1')) return { json: sandboxObject(state.ready) }
+    if (path.endsWith('/sandboxes/sb-1')) {
+      // `hang` is an API server that accepts the read and never answers it — headers withheld,
+      // response never ended — which is what a request with no deadline waits on forever.
+      if (state.hang) return { lines: [], hold: true }
+      return { json: sandboxObject(state.ready) }
+    }
     if (path.endsWith('/sandboxclaims')) {
       if (method !== 'POST') return { json: { items: [] } }
       claim = { metadata: { name: `agent-${AGENT}`, uid: 'claim-uid-1' }, status: { sandbox: { name: 'sb-1' } } }
@@ -281,6 +286,26 @@ describe('a shim channel that drops while its sandbox pod is coming up', () => {
     // no pod to dial at all — the readiness poll is a quarter of the window, so a report that
     // started its clock at the drop would land far inside it.
     expect(lostAt - readyAt).toBeGreaterThanOrEqual(grace - 50)
+  }, 60_000)
+
+  it('reports loss at the ceiling when the readiness read itself never answers', async () => {
+    // The readiness read is the new dependency this window has, and the Kubernetes client has no
+    // request deadline of its own: one accepted-but-unanswered GET would otherwise pin the watch,
+    // and with it the lost session and the dead host — exactly the stuck-forever outcome the
+    // window exists to remove. Each read is bounded by what is LEFT of the ceiling instead.
+    const { plane, state, reachable, shim } = await clusterUnderTest({ rebindGraceMs: 400, readyTimeoutMs: 2_000 })
+    const client = shim()
+    let terminal = 0
+    const host = hostUnderTest(plane, () => (terminal += 1))
+    await host.start()
+
+    state.hang = true
+    reachable.closed()
+    client.stop()
+    // The launch is released and the runtime learns its channel is gone, so the next message
+    // re-claims a pod and rebuilds the host rather than waiting on a read that never returns.
+    await vi.waitFor(() => expect(plane.driver.currentLaunch(AGENT)).toBeUndefined(), WAIT)
+    await vi.waitFor(() => expect(terminal).toBe(1), WAIT)
   }, 60_000)
 
   it('reports loss for a pod that never comes up, bounded by the pod-up timeout', async () => {

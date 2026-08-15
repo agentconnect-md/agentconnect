@@ -217,11 +217,14 @@ export class K8sDriver implements SpawnDriver {
    * The driver has just watched that pod, so it can tell an unbound channel apart from a lost
    * one: while the Sandbox is not Ready its shim cannot dial at all, and a dial that times out
    * against it is "not ready yet", not a channel that went away.
+   *
+   * The read takes the caller's `signal` because the answer is only useful before the caller's
+   * deadline: a stalled API server must abort this read, not extend the decision it feeds.
    */
-  async sandboxReadiness(agentId: string): Promise<SandboxReadiness> {
+  async sandboxReadiness(agentId: string, opts: { signal?: AbortSignal } = {}): Promise<SandboxReadiness> {
     const launch = this.launches.get(agentId)
     if (!launch) return 'absent'
-    const sandbox = await this.deps.api.getSandbox(launch.sandboxName).catch((err: unknown) => {
+    const sandbox = await this.deps.api.getSandbox(launch.sandboxName, opts).catch((err: unknown) => {
       if (err instanceof K8sApiError && err.isNotFound) return undefined
       throw err
     })

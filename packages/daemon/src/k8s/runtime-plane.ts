@@ -359,12 +359,20 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
 
   async function runLossCheck(agentId: string, watch: LossWatch): Promise<void> {
     if (!lossWatchStillOpen(agentId, watch)) return
-    const readiness = await driver.sandboxReadiness(agentId).catch((err: unknown) => {
-      // An unreadable Sandbox proves nothing about the pod, so it counts as still coming up —
-      // bounded by the ceiling, which is what keeps an API outage from pinning a dead launch.
-      options.log?.warn(`k8s: could not read the sandbox for agent ${agentId} — ${(err as Error).message}`)
-      return 'starting' as const
-    })
+    // The read itself is bounded by what is LEFT of the ceiling, and by nothing else. The API
+    // server has no request deadline of its own, so a read that is accepted and never answered
+    // would hold this decision open forever — the launch stuck, its host dead, and nothing to
+    // rebuild it: the outcome this whole window exists to remove.
+    const remainingMs = watch.ceiling - Date.now()
+    const readiness =
+      remainingMs <= 0
+        ? ('absent' as const)
+        : await driver.sandboxReadiness(agentId, { signal: AbortSignal.timeout(remainingMs) }).catch((err: unknown) => {
+            // An unreadable Sandbox proves nothing about the pod, so it counts as still coming
+            // up — and the ceiling below, which the abort cannot outlive, decides in the end.
+            options.log?.warn(`k8s: could not read the sandbox for agent ${agentId} — ${(err as Error).message}`)
+            return 'starting' as const
+          })
     // Re-checked after the round trip: a replacement may have bound, or the agent gone away.
     if (!lossWatchStillOpen(agentId, watch)) return
     if (Date.now() < watch.ceiling) {
