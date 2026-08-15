@@ -3721,7 +3721,7 @@ export class Daemon {
       .on('unlink', debounced)
     this.log.info(`watching ${this.agentsDir} for agent changes`)
     this.replayInbox()
-    this.rearmOrchestrationDeadlines()
+    this.syncOrchestrationDeadlines()
     // #485 startup retention pass: reconcile what accumulated (or was orphaned by a
     // crash) while the daemon was down. Best-effort — never blocks readiness. Runs
     // AFTER replayInbox so replayed durable work is visible to its active-turn guard.
@@ -10271,12 +10271,28 @@ export class Daemon {
     this.orchestrationDeadlines.set(orchestrationId, handle)
   }
 
+  /** Whether this member serves the agent's ingress edges (crons, deadlines): the duty holder, or any local daemon. */
+  private servesAgent(agentId: string): boolean {
+    return !this.dutyEnforced() || this.duties.holdsAgent(agentId)
+  }
+
   /** Deadline fired (§3.5): mark every still-open subtask timed_out, then WAKE the main's
    *  session so it re-reads getOrchestration and summarizes the partial result. The wake is
-   *  a direct dispatch to the stored session coords — no platform post, no new thread. */
+   *  a direct dispatch to the stored session coords — no platform post, no new thread.
+   *  Every pool member sharing the store may have a timer for this id, so the fire is gated
+   *  twice: the duty check (a dispatch binds the agent's sandbox, so only its holder may wake
+   *  it) and a CAS claim on the stored deadline, which makes a handoff race fire once. */
   private fireOrchestrationDeadline(orchestrationId: string): void {
     const orch = this.store.getOrchestration(orchestrationId)
-    if (!orch || orch.status !== 'active') return // cancelled / completed → nothing to do
+    if (!orch || orch.status !== 'active' || orch.deadline == null) return // cancelled / completed / already fired
+    if (!this.servesAgent(orch.mainAgentId)) {
+      this.log.debug(`orchestration ${orchestrationId}: deadline reached but ${orch.mainAgentId} is served elsewhere`)
+      return
+    }
+    if (!this.store.claimOrchestrationDeadline(orchestrationId, orch.deadline, this.clock.now())) {
+      this.log.debug(`orchestration ${orchestrationId}: deadline already claimed by another member`)
+      return
+    }
     // Mark unreported (delivered but not yet reported, or still sending/pending) as timed_out.
     for (const s of this.store.getSubtasks(orchestrationId)) {
       this.store.setSubtaskStatus(
@@ -10287,7 +10303,6 @@ export class Daemon {
         monotonicTs()
       )
     }
-    this.store.setOrchestrationDeadline(orchestrationId, null, this.clock.now())
     this.emitEvaluation({
       type: 'orchestration.state',
       agentId: orch.mainAgentId,
@@ -10435,10 +10450,12 @@ export class Daemon {
     return orch
   }
 
-  /** Startup re-arm (§3.5): re-arm the one-shot deadline for every still-active orchestration
-   *  from the durable `deadline` epoch. A deadline already in the past fires ~immediately.
-   *  Mirrors replayInbox's read-active-rows/re-schedule pattern; idempotent. */
-  private rearmOrchestrationDeadlines(): void {
+  /** Re-derive which deadlines this member arms from the durable `deadline` epochs (§3.5): arm
+   *  the held agents' still-active orchestrations, disarm what moved to another member. Runs at
+   *  startup and after every duty change; idempotent, and a stale timer is harmless because the
+   *  fire re-checks the duty and claims the deadline through the store. A deadline already in
+   *  the past fires ~immediately. */
+  private syncOrchestrationDeadlines(): void {
     let active: OrchestrationRow[]
     try {
       active = this.store.listActiveOrchestrations()
@@ -10447,12 +10464,20 @@ export class Daemon {
       return
     }
     let armed = 0
+    let disarmed = 0
     for (const orch of active) {
-      if (orch.deadline == null) continue
-      this.armOrchestrationDeadline(orch.orchestrationId, orch.deadline)
-      armed++
+      const held = this.servesAgent(orch.mainAgentId)
+      const handle = this.orchestrationDeadlines.get(orch.orchestrationId)
+      if (held && orch.deadline != null && handle === undefined) {
+        this.armOrchestrationDeadline(orch.orchestrationId, orch.deadline)
+        armed++
+      } else if (!held && handle !== undefined) {
+        this.clock.clearTimeout(handle)
+        this.orchestrationDeadlines.delete(orch.orchestrationId)
+        disarmed++
+      }
     }
-    if (armed) this.log.info(`orchestration: re-armed ${armed} deadline(s) on startup`)
+    if (armed || disarmed) this.log.info(`orchestration: armed ${armed} and disarmed ${disarmed} deadline(s)`)
   }
 
   /**
@@ -13205,6 +13230,7 @@ export class Daemon {
   private onDutyChanged(): void {
     if (!this.dutyEnforced()) return
     for (const agent of this.agents.values()) this.syncAgentSchedules(agent)
+    this.syncOrchestrationDeadlines()
     this.dutyConnectionsRequested++
     this.convergeDutyConnections()
   }
@@ -13231,7 +13257,7 @@ export class Daemon {
   /** Arm this agent's cron + dream schedules, or disarm them when its duty lives
    *  elsewhere — a cron is an ingress edge, so it fires only at the holder. */
   private syncAgentSchedules(a: { id: string; crons: CronDef[]; memory?: Agent['memory'] }): void {
-    const serve = !this.dutyEnforced() || this.duties.holdsAgent(a.id)
+    const serve = this.servesAgent(a.id)
     this.scheduler.sync(a.id, serve ? a.crons : [])
     this.dreamScheduler.sync(a.id, serve ? this.dreamSchedulePolicyFor(a) : undefined)
   }
@@ -21698,6 +21724,8 @@ export class Daemon {
     for (const a of this.effectiveAgents()) {
       const cron = a.crons.find((c) => c.id === cronId && c.origin === 'cp')
       if (!cron) continue
+      // A cron is an ingress edge: it fires only where the agent's duty is held.
+      if (!this.servesAgent(a.id)) return { ok: false, reason: 'agent is served by another member' }
       const { msg } = buildSyntheticMessage(a.id, cron, randomUUID())
       void this.onCronFire(a.id, msg, cron).catch((err) =>
         this.log.error(`cron/run dispatch failed for agent "${a.id}": ${formatErr(err)}`)

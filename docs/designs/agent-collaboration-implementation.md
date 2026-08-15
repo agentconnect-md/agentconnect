@@ -876,7 +876,10 @@ Timeout, retransmission, and deduplication at each hop use the stable
 - **Deadline durability:** Store the deadline in the durable orchestration
   record, re-arm it at startup, and make cancellation idempotent. The wake
   dispatches directly to `mainSessionKey` and does not reuse cron
-  `fireTrigger`, which would create a new platform anchor.
+  `fireTrigger`, which would create a new platform anchor. On a pool the store
+  is shared, so a deadline is armed only where the main's duty is held, re-armed
+  on every duty change, and the fire is a CAS claim on the stored deadline —
+  one wake per deadline however many members hold a timer for it.
 - **Atomic start boundary:** A database write and cross-daemon send cannot be
   one atomic operation. Record the orchestration and stable per-subtask
   delivery/correlation ids before delivery, use monotonic state transitions,

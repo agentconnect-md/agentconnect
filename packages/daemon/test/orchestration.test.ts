@@ -397,3 +397,111 @@ describe('startup re-arm', () => {
     await daemon2.stop()
   })
 })
+
+// #1036 — on a daemon pool every member shares one store, so every member could arm and fire the
+// same deadline. Only the member holding the main agent's duty may wake it (a dispatch binds the
+// agent's sandbox), and the fire itself is claimed through the store so a handoff fires once.
+describe('pool duty gate on deadlines', () => {
+  const GROUP = '11111111-1111-4111-8111-111111111111'
+  const grant = (groupId = GROUP) => ({
+    groupId,
+    orgId: 'org-1',
+    term: '1',
+    members: [{ kind: 'agent' as const, refId: 'main' }]
+  })
+  const armed = (d: Daemon, id: string) => (d as any).orchestrationDeadlines.has(id)
+
+  /** Frame-scoped member: duty leases gate service, exactly like an install-wide pool member. */
+  function frameScope(daemon: Daemon) {
+    ;(daemon as any).cpClient = {
+      organizationScope: () => 'frame',
+      stop: async () => {},
+      releaseDuties: vi.fn(async () => {}),
+      reportDutiesNow: vi.fn(() => {}),
+      fetchDutyAgent: vi.fn()
+    }
+  }
+  const hold = (d: Daemon) => (d as any).settleDutyChange((d as any).duties.applyGrant([grant()]))
+  const drop = (d: Daemon) => (d as any).applyDutyRevoke([{ groupId: GROUP, reason: 'reassigned' }])
+
+  /** Two members over ONE store: the same root, so both LocalStores open the same database. */
+  async function bootPool() {
+    const root = scaffold(['main', 'wA', 'wB'])
+    const a = await boot(root)
+    const b = await boot(root)
+    frameScope(a.daemon)
+    frameScope(b.daemon)
+    return { a, b, stop: () => Promise.all([a.daemon.stop(), b.daemon.stop()]) }
+  }
+
+  it('only the duty holder arms and fires; a stale timer on a non-holder is refused', async () => {
+    const { a, b, stop } = await bootPool()
+    hold(a.daemon)
+    const res = await (a.daemon as any).startOrchestration(startReq({ deadlineMs: 30_000 }))
+    ;(b.daemon as any).syncOrchestrationDeadlines()
+    expect(armed(a.daemon, res.orchestrationId)).toBe(true)
+    expect(armed(b.daemon, res.orchestrationId)).toBe(false)
+    a.calls.length = 0
+    b.calls.length = 0
+    // The non-holder's timer fires first (the pool has no ordering) — the duty gate drops it.
+    ;(b.daemon as any).fireOrchestrationDeadline(res.orchestrationId)
+    expect(b.calls).toHaveLength(0)
+    expect(store(b.daemon).getOrchestration(res.orchestrationId).deadline).not.toBeNull()
+    ;(a.daemon as any).fireOrchestrationDeadline(res.orchestrationId)
+    expect(a.calls.map((c) => c.agentId)).toEqual(['main'])
+    expect(store(a.daemon).getOrchestration(res.orchestrationId).deadline).toBeNull()
+    expect(
+      store(a.daemon)
+        .getSubtasks(res.orchestrationId)
+        .every((s: any) => s.status === 'timed_out')
+    ).toBe(true)
+    await stop()
+  })
+
+  it('a deadline armed by one member fires on the member the duty moved to', async () => {
+    const { a, b, stop } = await bootPool()
+    hold(a.daemon)
+    const res = await (a.daemon as any).startOrchestration(startReq({ deadlineMs: 30_000 }))
+    expect(armed(a.daemon, res.orchestrationId)).toBe(true)
+    drop(a.daemon)
+    hold(b.daemon)
+    expect(armed(a.daemon, res.orchestrationId)).toBe(false)
+    expect(armed(b.daemon, res.orchestrationId)).toBe(true)
+    a.calls.length = 0
+    b.calls.length = 0
+    ;(a.daemon as any).fireOrchestrationDeadline(res.orchestrationId)
+    ;(b.daemon as any).fireOrchestrationDeadline(res.orchestrationId)
+    expect(a.calls).toHaveLength(0)
+    expect(b.calls.map((c) => c.agentId)).toEqual(['main'])
+    await stop()
+  })
+
+  it('a fire during a handoff, when both members still hold the duty, wakes the main once', async () => {
+    const { a, b, stop } = await bootPool()
+    hold(a.daemon)
+    hold(b.daemon)
+    const res = await (a.daemon as any).startOrchestration(startReq({ deadlineMs: 30_000 }))
+    ;(b.daemon as any).syncOrchestrationDeadlines()
+    expect(armed(b.daemon, res.orchestrationId)).toBe(true)
+    a.calls.length = 0
+    b.calls.length = 0
+    ;(a.daemon as any).fireOrchestrationDeadline(res.orchestrationId)
+    ;(b.daemon as any).fireOrchestrationDeadline(res.orchestrationId)
+    expect(a.calls.length + b.calls.length).toBe(1)
+    const orch = store(a.daemon).getOrchestration(res.orchestrationId)
+    expect(orch.status).toBe('active')
+    expect(orch.deadline).toBeNull()
+    await stop()
+  })
+
+  it('a machine-placed daemon holds no duties and still fires its own deadlines', async () => {
+    const root = scaffold(['main', 'wA', 'wB'])
+    const { daemon, calls } = await boot(root)
+    ;(daemon as any).cpClient = { organizationScope: () => 'connection', stop: async () => {} }
+    const res = await (daemon as any).startOrchestration(startReq({ deadlineMs: 30_000 }))
+    calls.length = 0
+    ;(daemon as any).fireOrchestrationDeadline(res.orchestrationId)
+    expect(calls.map((c) => c.agentId)).toEqual(['main'])
+    await daemon.stop()
+  })
+})
