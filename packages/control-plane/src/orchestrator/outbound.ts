@@ -714,7 +714,8 @@ export class ControlSender {
 
   async organizationSuggestionRead(
     daemonId: string,
-    req: Omit<OrganizationSuggestionReadReq, 'offset' | 'limit'>
+    req: Omit<OrganizationSuggestionReadReq, 'offset' | 'limit'>,
+    orgId?: string
   ): Promise<OrganizationSuggestionContent> {
     const c = this.must(daemonId)
     const chunks: Buffer[] = []
@@ -725,7 +726,9 @@ export class ControlSender {
       const chunk = await c.conn.request<OrganizationSuggestionChunk>(
         'knowledge/suggestion/read',
         { ...req, offset, limit: ORGANIZATION_SUGGESTION_CHUNK_BYTES },
-        { epoch: c.sessionEpoch }
+        { epoch: c.sessionEpoch },
+        undefined,
+        orgId
       )
       if (
         chunk.sourceAgentId !== req.sourceAgentId ||
@@ -795,9 +798,14 @@ export class ControlSender {
     }
   }
 
-  async organizationSuggestionReview(daemonId: string, req: OrganizationSuggestionReviewReq): Promise<Ack> {
+  /** `orgId` is explicit: an install-wide holder resolves no org from a bare source-agent id. */
+  async organizationSuggestionReview(
+    daemonId: string,
+    req: OrganizationSuggestionReviewReq,
+    orgId?: string
+  ): Promise<Ack> {
     const c = this.must(daemonId)
-    return c.conn.request<Ack>('knowledge/suggestion/review', req, { epoch: c.sessionEpoch })
+    return c.conn.request<Ack>('knowledge/suggestion/review', req, { epoch: c.sessionEpoch }, undefined, orgId)
   }
 
   /**

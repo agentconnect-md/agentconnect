@@ -6418,32 +6418,37 @@ export class Daemon {
     const client = this.cpClient
     if (!client || !client.supportsServerFeature?.(ORGANIZATION_KNOWLEDGE_FEATURE)) return
     const runner = this.dreamRunner()
+    // Install-wide connection: this frame is org-scoped by nature and there is no connection org behind it.
+    const frameScoped = client.organizationScope?.() === 'frame'
     const byOrg = new Map<string | undefined, ReturnType<DreamRunner['organizationSuggestionInventory']>>()
     const inventory = runner.organizationSuggestionInventory()
     for (const suggestion of inventory) {
       const orgId = this.cpAgents?.orgForAgent(suggestion.sourceAgentId)
+      // An org we cannot name has no frame to ride; holding it back beats failing every other org's replay.
+      if (frameScoped && !orgId) continue
       const suggestions = byOrg.get(orgId) ?? []
       suggestions.push(suggestion)
       byOrg.set(orgId, suggestions)
     }
-    if (inventory.length === 0) {
+    if (byOrg.size === 0) {
       const orgIds = this.cpAgents?.organizationIds() ?? []
-      if (orgIds.length > 0) {
-        for (const orgId of orgIds) byOrg.set(orgId, [])
-      } else {
-        byOrg.set(undefined, [])
-      }
+      if (orgIds.length > 0) for (const orgId of orgIds) byOrg.set(orgId, [])
+      else if (!frameScoped) byOrg.set(undefined, [])
     }
-    const decisions = (
-      await Promise.all(
-        [...byOrg].map(([orgId, suggestions]) => {
-          const sync = orgId
-            ? client.syncOrganizationSuggestions({ suggestions }, orgId)
-            : client.syncOrganizationSuggestions({ suggestions })
-          return sync.then((reply) => reply.decisions)
-        })
+    // One org's refusal must not cost the others their decisions: the replay is per-org, not per-connection.
+    const replies = await Promise.allSettled(
+      [...byOrg].map(([orgId, suggestions]) =>
+        orgId
+          ? client.syncOrganizationSuggestions({ suggestions }, orgId)
+          : client.syncOrganizationSuggestions({ suggestions })
       )
-    ).flat()
+    )
+    for (const reply of replies)
+      if (reply.status === 'rejected')
+        this.log.warn(
+          `cp: organization suggestion sync refused for one organization (${reply.reason instanceof Error ? reply.reason.name : 'unknown'})`
+        )
+    const decisions = replies.flatMap((reply) => (reply.status === 'fulfilled' ? reply.value.decisions : []))
     // During the production hold, publish inventory but do not apply destructive review decisions.
     if (!this.dreamOperationsAllowed()) return
     for (const decision of decisions) await runner.organizationSuggestionReview(decision)
