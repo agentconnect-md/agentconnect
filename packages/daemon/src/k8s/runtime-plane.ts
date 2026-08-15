@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { K8sHttp, loadInClusterConfig } from '@agentconnect.md/k8s-client'
-import { K8sDriver, PROBE_GRANTS } from './driver.js'
+import { K8sDriver, PROBE_GRANTS, type LaunchGenerations } from './driver.js'
 import { SandboxApi } from './sandbox-api.js'
 import { clusterMetrics } from './cluster-metrics.js'
 import { ShimDialer } from '../shim/dialer.js'
@@ -84,6 +84,9 @@ interface LossWatch {
  * daemon's own host and no Sandbox was ever created.
  */
 export interface K8sRuntimePlaneOptions {
+  /** Durable, install-shared allocator for launch generations — in production the daemon store,
+   *  which every pool member shares, so an agent that moves between members keeps counting up. */
+  generations: LaunchGenerations
   /** Connection-scoped org for an envelope daemon; absent for an install-wide pool member. */
   orgId?: string
   /** Per-agent tenant lookup used by an install-wide pool member. */
@@ -138,7 +141,7 @@ export const K8S_SHIM_PORT_ENV = 'AC_K8S_SHIM_PORT'
 export const DEFAULT_SHIM_PORT = DEFAULT_SHIM_LISTEN_PORT
 
 /** Explicit options win per FIELD, so a caller may name one and leave the rest to the env. */
-export function resolveK8sPlaneSettings(options: K8sRuntimePlaneOptions = {}): K8sPlaneSettings {
+export function resolveK8sPlaneSettings(options: Partial<K8sRuntimePlaneOptions> = {}): K8sPlaneSettings {
   const env = options.env ?? process.env
   const orgId = options.orgId ?? env[K8S_ORG_ID_ENV]?.trim()
   const warmPoolName = options.warmPoolName ?? env[K8S_WARM_POOL_ENV]?.trim()
@@ -278,6 +281,7 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
         ? (settings.orgId ?? 'install')
         : (options.orgForAgent?.(agentId) ?? settings.orgId),
     warmPoolName: settings.warmPoolName,
+    generations: options.generations,
     claimMetadataForAgent: (agentId) =>
       agentId === runtimeProbeAgentId
         ? {

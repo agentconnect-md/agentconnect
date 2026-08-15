@@ -4,6 +4,7 @@ import { turnFailureCode } from '../src/acp/acp-host.js'
 import { K8sDriver, RUNTIME_GRANTS } from '../src/k8s/driver.js'
 import { K8sApiError } from '@agentconnect.md/k8s-client'
 import type { Sandbox, SandboxClaim } from '../src/k8s/sandbox-api.js'
+import { fakeGenerations } from './fake-generations.js'
 import type { ShimConnection } from '../src/shim/listener.js'
 
 /**
@@ -54,6 +55,7 @@ describe('provider credentials in the direct-connect stage', () => {
       api: api as never,
       orgForAgent: () => 'org-1',
       warmPoolName: 'pool',
+      generations: fakeGenerations(),
       connectChannel: async () => ({}) as ShimConnection,
       log: { info: () => {}, warn: () => {}, debug: () => {} }
     })

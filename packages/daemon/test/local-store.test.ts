@@ -1603,3 +1603,24 @@ describe('LocalStore activation rendezvous (send-message-routing-rework.md §3.2
     s.close()
   })
 })
+
+describe('sandbox generations', () => {
+  it('never hands the same number out twice for an agent, and starts each agent at 1', () => {
+    const s = store()
+    expect(s.nextSandboxGeneration('agent-a')).toBe(1)
+    expect(s.nextSandboxGeneration('agent-a')).toBe(2)
+    expect(s.nextSandboxGeneration('agent-b')).toBe(1)
+    expect(s.nextSandboxGeneration('agent-a')).toBe(3)
+    s.close()
+  })
+
+  it('survives a reopen, because the sandbox pod the number fences does', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-generations-')), 'local.sqlite')
+    const first = new LocalStore(path)
+    expect(first.nextSandboxGeneration('agent-a')).toBe(1)
+    first.close()
+    const reopened = new LocalStore(path)
+    expect(reopened.nextSandboxGeneration('agent-a')).toBe(2)
+    reopened.close()
+  })
+})

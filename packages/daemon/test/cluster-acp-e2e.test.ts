@@ -11,6 +11,7 @@ import { ShimServer } from '../src/shim/server.js'
 import { K8sApiError } from '@agentconnect.md/k8s-client'
 import { GuardedResumeRejectedError, type Sandbox, type SandboxClaim } from '../src/k8s/sandbox-api.js'
 import type { SpawnRecord } from '../src/shim/binding.js'
+import { fakeGenerations } from './fake-generations.js'
 
 /**
  * A complete ACP turn through the cluster path: driver → listener → shim → runtime → back.
@@ -159,6 +160,7 @@ async function clusterUnderTest(options: { credentialTtlMs?: number } = {}): Pro
     api: api.api as never,
     orgForAgent: () => 'org-1',
     warmPoolName: 'pool',
+    generations: fakeGenerations(),
     connectChannel: (record: SpawnRecord, _podIp, timeoutMs) =>
       dialer.connect(`ws://127.0.0.1:${port}`, record, timeoutMs),
     revokeChannel: (agentId) => dialer.revokeAgent(agentId),

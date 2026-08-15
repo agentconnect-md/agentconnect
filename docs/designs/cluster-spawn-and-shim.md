@@ -294,6 +294,17 @@ After loss is reported, the driver revokes the outbound dial and forgets the lau
 socket therefore cannot reattach to the terminal session; the next turn creates a fresh
 generation and dials the pod through the ordinary wake path.
 
+**The generation belongs to the agent, not to the daemon process.** A sandbox pod's shim
+records the highest generation it has ever bound and refuses anything below it for the rest of
+that pod's life, so the number has to be allocated from state every daemon that may hold the
+agent shares — `LocalStore.nextSandboxGeneration`, one atomic upsert, on the pool's shared
+Postgres store for a pool member and on SQLite for a local daemon. A per-process counter was
+correct only under the original assumption of one daemon per sandbox for the sandbox's life:
+in the pool an agent moves to another member on every rollout, and a successor restarting at 1
+would be closed with `stale generation` on every dial — every turn ending in a launch timeout
+until the pod happened to be recycled. Because the number fences a pod rather than a claim,
+the row deliberately outlives the claim it was allocated for.
+
 **Removed ⇒ delete the claim, and the volume with it.** Where the local path deletes the
 agent's checkout, the cluster path deletes its SandboxClaim; the volume is not reachable from
 the daemon's filesystem, so nothing else can. This is removal only. A **detached or moved**

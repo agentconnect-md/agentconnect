@@ -2899,6 +2899,9 @@ export class Daemon {
       const startPlane = this.opts.startK8sPlane ?? startK8sRuntimePlane
       try {
         this.k8sPlane = await startPlane({
+          // The data plane opened above, so launch generations are counted in state every pool
+          // member shares — a per-process counter restarts at 1 and the agent's pod refuses it.
+          generations: this.dataPlane!.store,
           orgForAgent: (agentId) => this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId),
           // Which sockets this agent's pod needs, and where this daemon serves them. A GitHub-App
           // workspace is the one case today: its git reaches the credential helper over a unix

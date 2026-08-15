@@ -13,6 +13,7 @@ import { ShimClient, type ShimTransport } from '../src/shim/client.js'
 import { ShimServer } from '../src/shim/server.js'
 import { K8sApiError } from '@agentconnect.md/k8s-client'
 import type { Sandbox, SandboxClaim } from '../src/k8s/sandbox-api.js'
+import { fakeGenerations } from './fake-generations.js'
 
 /**
  * The assembly itself, which is the thing that did not exist: every part of the k8s path was
@@ -91,6 +92,7 @@ async function planeUnderTest(api: ReturnType<typeof fakeApi>): Promise<K8sRunti
   const plane = await startK8sRuntimePlane({
     orgId: 'org-1',
     warmPoolName: 'pool',
+    generations: fakeGenerations(),
     sandboxNamespace: 'agent-sandboxes',
     memberId: 'member-a',
     shimPort: port,
