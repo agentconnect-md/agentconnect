@@ -191,7 +191,7 @@ export const MAX_ENVIRONMENT_VALUE_LENGTH = 64 * 1024
 export const RESERVED_RESTART_CODE = 75
 
 /**
- * `AGENTCONNECT_SUPERVISOR` value a cloud daemon runs under: Kubernetes, where the
+ * `AGENTCONNECT_SUPERVISOR` value a pool member runs under: Kubernetes, where the
  * kubelet takes the place of launchd/systemd AND of the CLI's version store.
  *
  * It supervises restart — `restartPolicy: Always` brings the container back after
@@ -223,7 +223,7 @@ export const CP_TOKEN_AUDIENCE = 'ac-control-plane'
 export const ENVELOPE_DAEMON_SA_NAME = 'ac-daemon'
 
 /**
- * ServiceAccount a cloud daemon runs as. A cloud daemon serves EVERY org, so it lives in the
+ * ServiceAccount a pool member runs as. A pool member serves EVERY org, so it lives in the
  * install's control namespace rather than in an org namespace, and no namespace⇒org mapping
  * can name its org — the org is a per-connection selector it declares in `auth`, which is
  * safe precisely because this ServiceAccount is an install-level principal. The

@@ -4,7 +4,7 @@ import { PostgresDataPlane } from '../src/store/postgres-transcript-store.js'
 
 const databaseUrl = process.env.DATA_PLANE_TEST_DATABASE_URL
 
-describe.skipIf(!databaseUrl)('PostgreSQL cloud daemon store', () => {
+describe.skipIf(!databaseUrl)('PostgreSQL pool member store', () => {
   it('persists sessions, transcripts, inbox, outboxes, and caches without SQLite', async () => {
     const suffix = randomUUID()
     const agentId = `agent-${suffix}`

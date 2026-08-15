@@ -533,7 +533,7 @@ export default function DaemonDetailView() {
             </span>
           </div>
         </div>
-        {/* No menu at all when the caller may do none of it (a cloud member is nobody's to
+        {/* No menu at all when the caller may do none of it (a pool member is nobody's to
             edit, restart or detach) — an empty popover is worse than a missing button. */}
         <div className={daemon.canEdit || canRestart ? 'relative flex-none' : 'hidden'}>
           <button className="iconbtn" onClick={() => setMenuOpen((v) => !v)} title="Daemon actions">

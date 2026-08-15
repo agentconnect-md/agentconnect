@@ -91,7 +91,7 @@ async function seedManagedSkill(): Promise<string> {
 /** An install-wide (frame-mode) member advertising the organization-knowledge surface. */
 async function readyMember(h: ReturnType<typeof buildWsHarness>) {
   const { stub } = h.connect()
-  const saToken = await h.mintCloudDaemon(DAEMON)
+  const saToken = await h.mintPoolMember(DAEMON)
   stub.inject('auth', { serviceAccountToken: saToken, daemonId: DAEMON, agentVersion: '1.4.0' }, { id: AUTH_ID })
   await stub.expectFrame('auth/ok')
   stub.inject(

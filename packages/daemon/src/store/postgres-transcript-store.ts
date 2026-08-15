@@ -434,7 +434,7 @@ export class PostgresTranscriptStore {
 export class PostgresDataPlane {
   readonly transcripts: PostgresTranscriptStore
   readonly store: LocalStore
-  /** The org this daemon runs for, as the mount named it — what a cloud daemon's control
+  /** The org this daemon runs for, as the mount named it — what a pool member's control
    *  socket declares, since its Kubernetes identity names no org. */
   readonly orgId?: string
 

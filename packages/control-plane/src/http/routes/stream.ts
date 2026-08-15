@@ -79,7 +79,7 @@ export function streamRoutes(deps: HttpDeps) {
 
         const orgId = req.orgCtx!.orgId
         const connectedCtx = ctxOf(req)
-        // daemonId → available to this org, memoized per connection; shared cloud members qualify.
+        // daemonId → available to this org, memoized per connection; shared pool members qualify.
         const daemonOrg = new Map<string, boolean>()
         const inOrg = async (daemonId: string): Promise<boolean> => {
           const cached = daemonOrg.get(daemonId)

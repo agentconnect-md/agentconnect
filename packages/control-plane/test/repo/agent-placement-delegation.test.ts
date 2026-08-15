@@ -249,7 +249,7 @@ describe('agent placement and webchat MCP delegation serialization (real Postgre
   })
 
   it('finishes what a daemon delete cascaded, and leaves an agent placed elsewhere alone', async () => {
-    // Retiring a cloud member has to delete FIRST to claim the row atomically, so the FK gets
+    // Retiring a pool member has to delete FIRST to claim the row atomically, so the FK gets
     // there before any repo write: `daemonId` null, `status` untouched. Settling that is
     // conditional, because a placement that landed elsewhere is not the removal's to undo.
     await fixtures()

@@ -16,7 +16,7 @@ import type {
   Workspace,
   PlacementKindValue
 } from '@/lib/data'
-import { CLOUD_DAEMON_LABEL, isSelfSender, lifecycleStatus, MOCK_MODE, placementValueOf } from '@/lib/data'
+import { POOL_LABEL, isSelfSender, lifecycleStatus, MOCK_MODE, placementValueOf } from '@/lib/data'
 import type { AgentIcon } from '@/lib/agent-icon'
 import { withIconUrl } from '@/lib/agent-icon'
 import {
@@ -1043,8 +1043,8 @@ export interface DaemonViewDto {
    *  `status` is expiry-projected server-side. The console tracks its OWN command by `id`. */
   lifecycleOp: DaemonLifecycleOpDto | null
   status: string
-  /** An install-wide cloud member — managed infrastructure shared by every org, one row
-   *  per cloud-daemon Pod. Absent from an older CP ⇒ treat as a plain daemon. */
+  /** An install-wide pool member — managed infrastructure shared by every org, one row
+   *  per pool member Pod. Absent from an older CP ⇒ treat as a plain daemon. */
   cloud?: boolean
   health: string
   capabilities: DaemonCapabilitiesDto
@@ -1085,7 +1085,7 @@ export interface DaemonLifecycleOpDto {
 }
 
 export interface CreateAgentInput {
-  /** `pool` is the API sugar for the cloud member set; the CP resolves it and stores `set`. */
+  /** `pool` is the API sugar for the pool member set; the CP resolves it and stores `set`. */
   placementKind?: 'pool'
   name: string // slug — the CP rejects anything but ^[a-z0-9]+(-[a-z0-9]+)*$
   displayName?: string
@@ -2043,16 +2043,17 @@ export function mergeSessionDetailUsage(local: Session, detail: Session | null):
 }
 
 export function daemonFromDto(d: DaemonViewDto): DaemonRow {
-  const cloud = d.cloud ?? false
+  // `cloud` is the CP DTO's field name (a REST contract); the console's own word is `pool`.
+  const pool = d.cloud ?? false
   return {
     daemonId: d.daemonId,
-    cloud,
+    pool,
     // Display label: the daemon name (the CP seeds it from the hostname on first
     // register, so a connected daemon always has one), else a short id for a
-    // provisioned-but-never-connected row. Never the raw hostname. A cloud member's
+    // provisioned-but-never-connected row. Never the raw hostname. A pool member's
     // name is its Pod, which is meaningless outside the cluster and changes on every
     // roll — the pool is one managed thing everywhere it is named, so use that label.
-    name: cloud ? CLOUD_DAEMON_LABEL : d.name || d.daemonId.slice(0, 8),
+    name: pool ? POOL_LABEL : d.name || d.daemonId.slice(0, 8),
     version: d.agentVersion || PLACEHOLDER,
     latestVersion: d.latestVersion,
     releaseChannel: d.releaseChannel,
@@ -3426,7 +3427,7 @@ export async function setAgentWorkspace(agentId: string, input: SetAgentWorkspac
 // acknowledged source fence/cancel and destination activation; `force` is the
 // explicit recovery path when the source cannot ACK. This stays separate from
 // the ordinary spec PATCH because placement changes have runtime side effects.
-/** A move target: one machine, or the cloud member set as a whole (submitted as the `pool` sugar). */
+/** A move target: one machine, or the pool member set as a whole (submitted as the `pool` sugar). */
 export type AgentPlacementTarget = { kind: 'daemon'; daemonId: string } | { kind: 'pool' }
 
 export async function moveAgent(

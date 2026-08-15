@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { CLOUD_DAEMON_LABEL, cloudFleetStatus, presentedDaemonStatus, status, type DaemonRow } from '@/lib/data'
+import { POOL_LABEL, poolFleetStatus, presentedDaemonStatus, status, type DaemonRow } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { useModal } from '@/components/console/ModalProvider'
 import { RestrictedLock } from '@/components/console/VisibilityField'
@@ -23,20 +23,20 @@ export default function DaemonsView() {
     return map
   }, [agents])
 
-  // The cloud pool is ONE entry, not one card per Pod: its members are install-wide
+  // The pool is ONE entry, not one card per Pod: its members are install-wide
   // infrastructure every org sees, replaced without notice, and nothing here is the
   // org's to rename or detach. Everything else is a machine someone connected.
-  const cloudMembers = useMemo(() => daemons.filter((d) => d.cloud), [daemons])
-  const ownDaemons = useMemo(() => daemons.filter((d) => !d.cloud), [daemons])
-  const cloudAgents = useMemo(() => {
-    const memberIds = new Set(cloudMembers.map((m) => m.daemonId))
+  const poolMembers = useMemo(() => daemons.filter((d) => d.pool), [daemons])
+  const ownDaemons = useMemo(() => daemons.filter((d) => !d.pool), [daemons])
+  const poolAgents = useMemo(() => {
+    const memberIds = new Set(poolMembers.map((m) => m.daemonId))
     return agents.filter((a) => memberIds.has(a.daemon)).length
-  }, [agents, cloudMembers])
+  }, [agents, poolMembers])
 
   // Fleet summary for the mobile-only strip below — counted over what the page SHOWS,
   // so the pool contributes one entry rather than one per member.
   const shownStatuses = [
-    ...(cloudMembers.length > 0 ? [cloudFleetStatus(cloudMembers)] : []),
+    ...(poolMembers.length > 0 ? [poolFleetStatus(poolMembers)] : []),
     ...ownDaemons.map((d) => d.status)
   ]
   const online = shownStatuses.filter((s) => s === 'online').length
@@ -86,12 +86,12 @@ export default function DaemonsView() {
               {paused} paused
             </span>
           </div>
-          {cloudMembers.length > 0 && <CloudFleetCard members={cloudMembers} hosted={cloudAgents} />}
+          {poolMembers.length > 0 && <PoolFleetCard members={poolMembers} hosted={poolAgents} />}
           {ownDaemons.length > 0 && (
             <>
               {/* The section label earns its place only next to the Cloud entry — without
                   one there is nothing to tell these cards apart from. */}
-              {cloudMembers.length > 0 && (
+              {poolMembers.length > 0 && (
                 <div className="mt-6 mb-[9px] flex min-h-[26px] items-center gap-[9px]">
                   <span className="font-sans text-[13px] font-semibold leading-normal">Daemons</span>
                   <span className="mono text-[11.5px] text-(--text-tertiary)">{ownDaemons.length}</span>
@@ -111,7 +111,7 @@ export default function DaemonsView() {
 }
 
 /**
- * The whole cloud pool as one entry (design: the Infra screen's `cloudSlot`).
+ * The whole pool as one entry (design: the Infra screen's `cloudSlot`).
  *
  * Deliberately nothing per-member: a member is a Pod, so its name, host, CPU and memory
  * are cluster churn no reader outside the cluster can act on, and a card each turned a
@@ -121,10 +121,10 @@ export default function DaemonsView() {
  * No utilization bar and no "Manage": the design's are a billing plan's included-usage and
  * upgrade path, and inventing either from load telemetry would read as a real quota.
  */
-function CloudFleetCard({ members, hosted }: { members: DaemonRow[]; hosted: number }) {
+function PoolFleetCard({ members, hosted }: { members: DaemonRow[]; hosted: number }) {
   const { orgPath } = useOrgs()
   const router = useRouter()
-  const s = status(cloudFleetStatus(members))
+  const s = status(poolFleetStatus(members))
   const serving = members.filter((m) => m.status === 'online')
   const online = serving.length > 0
   // The serving members share a release (they roll together); an idle pool has no version
@@ -152,7 +152,7 @@ function CloudFleetCard({ members, hosted }: { members: DaemonRow[]; hosted: num
       <div className="flex min-w-0 flex-1 flex-col gap-[2px] desktop:gap-0">
         <div className="flex min-w-0 items-center gap-[6px] desktop:gap-2">
           <span className="truncate font-sans text-[14px] font-semibold leading-normal desktop:text-[13.5px]">
-            {CLOUD_DAEMON_LABEL}
+            {POOL_LABEL}
           </span>
           <span className="dot hidden flex-none desktop:inline-block" style={{ background: s.dot }} />
         </div>

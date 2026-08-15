@@ -1,4 +1,4 @@
-/** Verifies a Pod's projected Kubernetes identity as an install-wide cloud daemon. */
+/** Verifies a Pod's projected Kubernetes identity as an install-wide pool member. */
 import { CLOUD_DAEMON_SA_NAME, CP_TOKEN_AUDIENCE } from '@agentconnect.md/protocol'
 import type { K8sHttp } from '@agentconnect.md/k8s-client'
 import { DaemonId } from '../domain/ids.js'
@@ -44,10 +44,10 @@ export function reviewedPodUid(extra: Record<string, string[]> | undefined): str
 export class ClusterDaemonIdentityService implements ClusterDaemonIdentity {
   constructor(
     private readonly http: K8sHttp,
-    private readonly daemons: Pick<DaemonRepo, 'resolveCloudClusterIdentity'>,
-    /** Namespace the install runs its cloud daemons in. A cloud identity from anywhere else
+    private readonly daemons: Pick<DaemonRepo, 'resolvePoolClusterIdentity'>,
+    /** Namespace the install runs its pool members in. A pool identity from anywhere else
      *  is refused, so the claim-your-own-org rule stays confined to pods the install placed. */
-    private readonly cloudNamespace: string
+    private readonly poolNamespace: string
   ) {}
 
   async verify(token: string, claim?: { daemonId?: string }): Promise<VerifiedClusterDaemon | null> {
@@ -67,21 +67,21 @@ export class ClusterDaemonIdentityService implements ClusterDaemonIdentity {
     if (!status.audiences?.includes(CP_TOKEN_AUDIENCE)) return null
     const subject = parseServiceAccountSubject(status.user?.username)
     if (!subject) return null
-    if (subject.serviceAccount !== CLOUD_DAEMON_SA_NAME || subject.namespace !== this.cloudNamespace) return null
+    if (subject.serviceAccount !== CLOUD_DAEMON_SA_NAME || subject.namespace !== this.poolNamespace) return null
     const podUid = reviewedPodUid(status.user?.extra)
     if (!podUid) return null
-    return this.bindCloud(subject.namespace, subject.serviceAccount, podUid, claim?.daemonId)
+    return this.bindPoolMember(subject.namespace, subject.serviceAccount, podUid, claim?.daemonId)
   }
 
-  /** Resolve one cloud Pod to its org-less member row. */
-  private async bindCloud(
+  /** Resolve one pool member Pod to its org-less member row. */
+  private async bindPoolMember(
     namespace: string,
     serviceAccount: string,
     podUid: string,
     claimedDaemonId?: string
   ): Promise<VerifiedClusterDaemon | null> {
     const identity = clusterIdentityOf(namespace, serviceAccount)
-    const daemon = await this.daemons.resolveCloudClusterIdentity(identity, podUid)
+    const daemon = await this.daemons.resolvePoolClusterIdentity(identity, podUid)
     if (claimedDaemonId && claimedDaemonId !== daemon.id) return null
     return { daemonId: DaemonId(daemon.id), scope: 'install' }
   }

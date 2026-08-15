@@ -29,7 +29,7 @@ export async function integrationPlatformAvailability(
   deps: HttpDeps,
   input: { daemonId: string; orgId: OrgId; viewer: ViewCtx; platform: string }
 ): Promise<DaemonPlatformAvailability> {
-  // Availability admits this org's visible daemons and install-wide cloud members, never another org's daemon.
+  // Availability admits this org's visible daemons and install-wide pool members, never another org's daemon.
   const daemon = await deps.registry.getAvailable(input.orgId, DaemonId(input.daemonId))
   if (!daemon || !canView(daemon, input.viewer)) return 'not_found'
   return daemon.capabilities.platforms.includes(input.platform) ? 'available' : 'unsupported'

@@ -49,7 +49,7 @@ export const AuthOk = z.object({
   // own value rather than duplicate it. Optional: an older CP omits it.
   dutyLeaseMs: z.number().int().positive().optional(),
   serverTime: z.string().datetime(),
-  // Single-org daemons inherit tenant context from auth; install-wide cloud daemons require
+  // Single-org daemons inherit tenant context from auth; install-wide pool members require
   // every org-scoped post-auth frame to carry `Envelope.orgId`.
   organizationMode: z.enum(['connection', 'frame']).default('connection'),
   // Base URL of the Web App console (the CP's own public origin), so the daemon can build

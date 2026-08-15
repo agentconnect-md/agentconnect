@@ -23,9 +23,9 @@ import {
   selectedPermissionPreset,
   supportsModes,
   agentLabel,
-  CLOUD_DAEMON_LABEL,
-  CLOUD_PLACEMENT,
-  isCloudPlacementKind,
+  POOL_LABEL,
+  POOL_PLACEMENT,
+  isPoolPlacementKind,
   placementValueOf,
   type Agent,
   type AgentCallPolicy,
@@ -235,7 +235,7 @@ export default function EditAgentModal({
   useEffect(() => {
     if (!loaded || autofilledDaemon.current || initialDaemonId.current || daemonId) return
     const ready = (d: (typeof daemons)[number]) => d.status === 'online' && d.caps.features.includes('agent-move-v1')
-    const target = daemons.find((d) => d.cloud && ready(d)) ?? daemons.find(ready)
+    const target = daemons.find((d) => d.pool && ready(d)) ?? daemons.find(ready)
     if (target) {
       autofilledDaemon.current = true
       setDaemonId(target.daemonId)
@@ -314,25 +314,25 @@ export default function EditAgentModal({
   const moveReady = (d: (typeof daemons)[number] | undefined) =>
     !!d && d.status === 'online' && d.caps.features.includes('agent-move-v1')
   const daemonChoices = editAgentDaemonChoices(daemons, daemonId, initialDaemonId.current)
-  const cloudServing = daemons.some((candidate) => candidate.cloud && moveReady(candidate))
+  const poolServing = daemons.some((candidate) => candidate.pool && moveReady(candidate))
   const daemonOptions: DaemonSelectOption[] = [
-    ...(daemonChoices.cloudChoice || isCloudPlacementKind(agent.placementKind)
+    ...(daemonChoices.poolChoice || isPoolPlacementKind(agent.placementKind)
       ? [
           {
             // The POOL, named as itself. The server picks the member — and re-picks it after every
             // rollout, which is the whole reason this stopped being a member id.
-            value: CLOUD_PLACEMENT,
-            label: CLOUD_DAEMON_LABEL,
-            detail: cloudServing ? 'Model usage included — no API key needed.' : 'Cloud is currently unavailable.',
-            cloud: true,
-            disabled: initialDaemonId.current !== CLOUD_PLACEMENT && !cloudServing
+            value: POOL_PLACEMENT,
+            label: POOL_LABEL,
+            detail: poolServing ? 'Model usage included — no API key needed.' : 'Cloud is currently unavailable.',
+            pool: true,
+            disabled: initialDaemonId.current !== POOL_PLACEMENT && !poolServing
           }
         ]
       : []),
-    ...(daemonChoices.currentCloudChoice
+    ...(daemonChoices.currentPoolChoice
       ? [
           {
-            value: daemonChoices.currentCloudChoice.daemonId,
+            value: daemonChoices.currentPoolChoice.daemonId,
             label: 'Current placement',
             detail: 'Currently on an unavailable Cloud node — select Cloud above to recover.'
           }
@@ -524,10 +524,10 @@ export default function EditAgentModal({
         return
       }
       // The pool is a target, not a member: ready when any live member could serve.
-      const targetReady = daemonId === CLOUD_PLACEMENT ? cloudServing : moveReady(daemon)
+      const targetReady = daemonId === POOL_PLACEMENT ? poolServing : moveReady(daemon)
       if (!targetReady) {
         setErr(
-          daemonId === CLOUD_PLACEMENT
+          daemonId === POOL_PLACEMENT
             ? 'Cloud has no online member right now; try again shortly.'
             : 'Choose an online daemon that supports agent moves.'
         )
@@ -543,7 +543,7 @@ export default function EditAgentModal({
       }
       if (runtimeUnavailable) {
         setErr(
-          `${daemon?.name ?? CLOUD_DAEMON_LABEL} does not advertise the ${runtimeLabel(runtime, runtimeMeta?.name)} runtime.`
+          `${daemon?.name ?? POOL_LABEL} does not advertise the ${runtimeLabel(runtime, runtimeMeta?.name)} runtime.`
         )
         return
       }
@@ -551,9 +551,7 @@ export default function EditAgentModal({
         // Reachable only when the target DOES advertise models (see
         // `modelUnavailable`), so the picker always has a real id to point at —
         // never a synthesized "Default" the runtime does not offer.
-        setErr(
-          `${daemon?.name ?? CLOUD_DAEMON_LABEL} does not advertise model “${selectedModel}”. Choose one of its models.`
-        )
+        setErr(`${daemon?.name ?? POOL_LABEL} does not advertise model “${selectedModel}”. Choose one of its models.`)
         return
       }
     }
@@ -587,7 +585,7 @@ export default function EditAgentModal({
         await saveAgentCallPolicy(agent.id, body)
       }
       if (placementRequested) {
-        const target = daemonId === CLOUD_PLACEMENT ? { kind: 'pool' as const } : { kind: 'daemon' as const, daemonId }
+        const target = daemonId === POOL_PLACEMENT ? { kind: 'pool' as const } : { kind: 'daemon' as const, daemonId }
         await moveAgent(agent.id, target, forceMove ? { force: true } : undefined)
       }
       // Sharing uses canManageSharing and may intentionally remove this editor's

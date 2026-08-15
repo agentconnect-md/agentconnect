@@ -276,9 +276,9 @@ describe('DaemonAuthService.authenticate — the in-cluster token path', () => {
     expect(claims).toEqual([{ daemonId: verified.daemonId }])
   })
 
-  it('authenticates an install-wide cloud daemon in frame-scoped organization mode', async () => {
-    const cloud = { daemonId: verified.daemonId, scope: 'install' as const }
-    const r = await withIdentity(async () => cloud).authenticate(
+  it('authenticates an install-wide pool member in frame-scoped organization mode', async () => {
+    const poolMember = { daemonId: verified.daemonId, scope: 'install' as const }
+    const r = await withIdentity(async () => poolMember).authenticate(
       { serviceAccountToken: 'projected', agentVersion: '1' },
       ctx
     )

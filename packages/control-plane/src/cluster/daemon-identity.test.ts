@@ -1,4 +1,4 @@
-/** Projected-token checks for install-wide cloud members. */
+/** Projected-token checks for install-wide pool members. */
 import { afterEach, describe, expect, it } from 'vitest'
 import { CLOUD_DAEMON_SA_NAME, CP_TOKEN_AUDIENCE } from '@agentconnect.md/protocol'
 import { K8sHttp } from '@agentconnect.md/k8s-client'
@@ -9,8 +9,8 @@ import { DaemonId } from '../domain/ids.js'
 
 const DAEMON_ID = '11111111-1111-4111-8111-111111111111'
 const POD_UID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
-/** Where this install runs its cloud daemons — the control namespace, as in production. */
-const CLOUD_NAMESPACE = 'agentconnect'
+/** Where this install runs its pool members — the control namespace, as in production. */
+const POOL_NAMESPACE = 'agentconnect'
 
 /** A TokenReview response as the API server writes it; `undefined` fields are omitted. */
 function reviewed(opts: {
@@ -37,7 +37,7 @@ function daemons(record: Partial<DaemonRecord> = { id: DaemonId(DAEMON_ID) }) {
   return {
     seen,
     seenPodUids,
-    resolveCloudClusterIdentity: async (identity: string, podUid: string) => {
+    resolvePoolClusterIdentity: async (identity: string, podUid: string) => {
       seen.push(identity)
       seenPodUids.push(podUid)
       return record as DaemonRecord
@@ -48,7 +48,7 @@ function daemons(record: Partial<DaemonRecord> = { id: DaemonId(DAEMON_ID) }) {
 async function service(opts: { review: unknown; daemonStore?: ReturnType<typeof daemons> }) {
   const server = await fakeApiServer(() => ({ json: opts.review }))
   const store = opts.daemonStore ?? daemons()
-  return { store, svc: new ClusterDaemonIdentityService(new K8sHttp(server.config), store, CLOUD_NAMESPACE) }
+  return { store, svc: new ClusterDaemonIdentityService(new K8sHttp(server.config), store, POOL_NAMESPACE) }
 }
 
 afterEach(async () => {
@@ -72,7 +72,7 @@ describe('parseServiceAccountSubject', () => {
 })
 
 describe('ClusterDaemonIdentityService', () => {
-  const cloudReview = (namespace = CLOUD_NAMESPACE) =>
+  const poolReview = (namespace = POOL_NAMESPACE) =>
     reviewed({
       audiences: [CP_TOKEN_AUDIENCE],
       username: clusterIdentityOf(namespace, CLOUD_DAEMON_SA_NAME),
@@ -83,9 +83,9 @@ describe('ClusterDaemonIdentityService', () => {
     const seen: string[] = []
     const server = await fakeApiServer((req) => {
       seen.push(req.body)
-      return { json: cloudReview() }
+      return { json: poolReview() }
     })
-    const svc = new ClusterDaemonIdentityService(new K8sHttp(server.config), daemons(), CLOUD_NAMESPACE)
+    const svc = new ClusterDaemonIdentityService(new K8sHttp(server.config), daemons(), POOL_NAMESPACE)
     await svc.verify('presented')
     expect(JSON.parse(seen[0]!).spec).toEqual({ token: 'presented', audiences: [CP_TOKEN_AUDIENCE] })
   })
@@ -99,39 +99,39 @@ describe('ClusterDaemonIdentityService', () => {
     const { svc } = await service({
       review: reviewed({
         audiences: ['ac-daemon-callback'],
-        username: clusterIdentityOf(CLOUD_NAMESPACE, CLOUD_DAEMON_SA_NAME),
+        username: clusterIdentityOf(POOL_NAMESPACE, CLOUD_DAEMON_SA_NAME),
         extra: { 'authentication.kubernetes.io/pod-uid': [POD_UID] }
       })
     })
     expect(await svc.verify('token')).toBeNull()
   })
 
-  it('refuses another ServiceAccount in the cloud namespace', async () => {
+  it('refuses another ServiceAccount in the pool namespace', async () => {
     const { svc } = await service({
       review: reviewed({
         audiences: [CP_TOKEN_AUDIENCE],
-        username: clusterIdentityOf(CLOUD_NAMESPACE, 'ac-runtime')
+        username: clusterIdentityOf(POOL_NAMESPACE, 'ac-runtime')
       })
     })
     expect(await svc.verify('token')).toBeNull()
   })
 
-  it('binds a reviewed cloud Pod to its org-less member record', async () => {
-    const { svc, store } = await service({ review: cloudReview() })
+  it('binds a reviewed pool member Pod to its org-less member record', async () => {
+    const { svc, store } = await service({ review: poolReview() })
     expect(await svc.verify('token')).toEqual({ daemonId: DAEMON_ID, scope: 'install' })
     expect(await svc.verify('token')).toEqual({ daemonId: DAEMON_ID, scope: 'install' })
     expect(store.seen).toEqual([
-      clusterIdentityOf(CLOUD_NAMESPACE, CLOUD_DAEMON_SA_NAME),
-      clusterIdentityOf(CLOUD_NAMESPACE, CLOUD_DAEMON_SA_NAME)
+      clusterIdentityOf(POOL_NAMESPACE, CLOUD_DAEMON_SA_NAME),
+      clusterIdentityOf(POOL_NAMESPACE, CLOUD_DAEMON_SA_NAME)
     ])
     expect(store.seenPodUids).toEqual([POD_UID, POD_UID])
   })
 
-  it('refuses a cloud ServiceAccount token that is not Pod-bound', async () => {
+  it('refuses a pool ServiceAccount token that is not Pod-bound', async () => {
     const { svc } = await service({
       review: reviewed({
         audiences: [CP_TOKEN_AUDIENCE],
-        username: clusterIdentityOf(CLOUD_NAMESPACE, CLOUD_DAEMON_SA_NAME)
+        username: clusterIdentityOf(POOL_NAMESPACE, CLOUD_DAEMON_SA_NAME)
       })
     })
     expect(await svc.verify('token')).toBeNull()
@@ -141,25 +141,25 @@ describe('ClusterDaemonIdentityService', () => {
     const { svc } = await service({
       review: reviewed({
         audiences: [CP_TOKEN_AUDIENCE],
-        username: clusterIdentityOf(CLOUD_NAMESPACE, CLOUD_DAEMON_SA_NAME),
+        username: clusterIdentityOf(POOL_NAMESPACE, CLOUD_DAEMON_SA_NAME),
         extra: { 'authentication.kubernetes.io/pod-uid': [POD_UID, 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'] }
       })
     })
     expect(await svc.verify('token')).toBeNull()
   })
 
-  it('refuses a cloud identity from any other namespace', async () => {
-    const { svc } = await service({ review: cloudReview('kube-system') })
+  it('refuses a pool identity from any other namespace', async () => {
+    const { svc } = await service({ review: poolReview('kube-system') })
     expect(await svc.verify('token')).toBeNull()
   })
 
   it('accepts the member daemon id echoed by the relay hop', async () => {
-    const { svc } = await service({ review: cloudReview(), daemonStore: daemons({ id: DaemonId(DAEMON_ID) }) })
+    const { svc } = await service({ review: poolReview(), daemonStore: daemons({ id: DaemonId(DAEMON_ID) }) })
     expect(await svc.verify('token', { daemonId: DAEMON_ID })).toEqual({ daemonId: DAEMON_ID, scope: 'install' })
   })
 
   it('refuses a claimed daemon id different from the reviewed Pod member', async () => {
-    const { svc } = await service({ review: cloudReview(), daemonStore: daemons({ id: DaemonId(DAEMON_ID) }) })
+    const { svc } = await service({ review: poolReview(), daemonStore: daemons({ id: DaemonId(DAEMON_ID) }) })
     expect(await svc.verify('token', { daemonId: '22222222-2222-4222-8222-222222222222' })).toBeNull()
   })
 })

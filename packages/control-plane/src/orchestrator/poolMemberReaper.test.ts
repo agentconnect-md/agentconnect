@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { CloudDaemonReaper } from './cloudDaemonReaper.js'
+import { PoolMemberReaper } from './poolMemberReaper.js'
 import { DaemonId } from '../domain/ids.js'
 import type { DaemonRecord } from '../persistence/ports.js'
 import type { DaemonLiveness } from '../ports.js'
@@ -15,19 +15,19 @@ const member = (id: string, sessionEpoch = 7n): DaemonRecord =>
 const liveness = (...connected: string[]): DaemonLiveness =>
   ({ get: (id: string) => (connected.includes(id) ? { reachable: true } : undefined) }) as unknown as DaemonLiveness
 
-describe('CloudDaemonReaper', () => {
+describe('PoolMemberReaper', () => {
   it('retires every member unheard-from since now − retireAfterMs', async () => {
     const clock = new FakeClock(1_700_000_000_000)
-    const findRetiredCloudMembers = vi.fn(async () => [member('a'), member('b')])
+    const findRetiredPoolMembers = vi.fn(async () => [member('a'), member('b')])
     const retire = vi.fn(async () => true)
-    const reaper = new CloudDaemonReaper({ findRetiredCloudMembers }, retire, liveness(), clock, {
+    const reaper = new PoolMemberReaper({ findRetiredPoolMembers }, retire, liveness(), clock, {
       retireAfterMs: RETIRE_AFTER_MS,
       intervalMs: INTERVAL_MS
     })
 
     await reaper.tick()
 
-    expect(findRetiredCloudMembers).toHaveBeenCalledWith(new Date(clock.now() - RETIRE_AFTER_MS))
+    expect(findRetiredPoolMembers).toHaveBeenCalledWith(new Date(clock.now() - RETIRE_AFTER_MS))
     expect(retire.mock.calls.map(([m]) => m.daemonId)).toEqual(['a', 'b'])
     reaper.stop()
   })
@@ -37,8 +37,8 @@ describe('CloudDaemonReaper', () => {
     // still the one that was read, or a member that reconnected mid-sweep loses its agents.
     const clock = new FakeClock(1_700_000_000_000)
     const retire = vi.fn(async () => true)
-    const reaper = new CloudDaemonReaper(
-      { findRetiredCloudMembers: async () => [member('a', 12n)] },
+    const reaper = new PoolMemberReaper(
+      { findRetiredPoolMembers: async () => [member('a', 12n)] },
       retire,
       liveness(),
       clock,
@@ -54,8 +54,8 @@ describe('CloudDaemonReaper', () => {
   it('does not count a member the claim refused — it came back', async () => {
     const clock = new FakeClock()
     const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
-    const reaper = new CloudDaemonReaper(
-      { findRetiredCloudMembers: async () => [member('back')] },
+    const reaper = new PoolMemberReaper(
+      { findRetiredPoolMembers: async () => [member('back')] },
       async () => false,
       liveness(),
       clock,
@@ -72,8 +72,8 @@ describe('CloudDaemonReaper', () => {
   it('leaves a member that is connected here, however stale its last heartbeat looks', async () => {
     const clock = new FakeClock()
     const retire = vi.fn(async () => true)
-    const reaper = new CloudDaemonReaper(
-      { findRetiredCloudMembers: async () => [member('live'), member('gone')] },
+    const reaper = new PoolMemberReaper(
+      { findRetiredPoolMembers: async () => [member('live'), member('gone')] },
       retire,
       liveness('live'),
       clock,
@@ -92,8 +92,8 @@ describe('CloudDaemonReaper', () => {
       if (m.daemonId === 'boom') throw new Error('cascade failed')
       return true
     })
-    const reaper = new CloudDaemonReaper(
-      { findRetiredCloudMembers: async () => [member('boom'), member('next')] },
+    const reaper = new PoolMemberReaper(
+      { findRetiredPoolMembers: async () => [member('boom'), member('next')] },
       retire,
       liveness(),
       clock,
@@ -107,9 +107,9 @@ describe('CloudDaemonReaper', () => {
 
   it('swallows a failed worklist read and keeps the loop alive', async () => {
     const clock = new FakeClock()
-    const reaper = new CloudDaemonReaper(
+    const reaper = new PoolMemberReaper(
       {
-        findRetiredCloudMembers: async () => {
+        findRetiredPoolMembers: async () => {
           throw new Error('db down')
         }
       },
@@ -125,17 +125,17 @@ describe('CloudDaemonReaper', () => {
 
   it('start() arms a periodic sweep driven by the clock', async () => {
     const clock = new FakeClock()
-    const findRetiredCloudMembers = vi.fn(async () => [])
-    const reaper = new CloudDaemonReaper({ findRetiredCloudMembers }, async () => true, liveness(), clock, {
+    const findRetiredPoolMembers = vi.fn(async () => [])
+    const reaper = new PoolMemberReaper({ findRetiredPoolMembers }, async () => true, liveness(), clock, {
       retireAfterMs: RETIRE_AFTER_MS,
       intervalMs: INTERVAL_MS
     })
 
     reaper.start()
-    expect(findRetiredCloudMembers).not.toHaveBeenCalled()
+    expect(findRetiredPoolMembers).not.toHaveBeenCalled()
     clock.advance(INTERVAL_MS)
     await Promise.resolve() // let the async tick settle
-    expect(findRetiredCloudMembers).toHaveBeenCalledTimes(1)
+    expect(findRetiredPoolMembers).toHaveBeenCalledTimes(1)
     reaper.stop()
   })
 })

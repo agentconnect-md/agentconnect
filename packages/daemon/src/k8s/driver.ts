@@ -58,7 +58,7 @@ export const PROBE_GRANTS: ShimCapability[] = ['probe']
 
 export interface K8sDriverDeps {
   api: SandboxApi
-  /** Resolves tenant ownership at claim time; cloud daemons serve more than one org. */
+  /** Resolves tenant ownership at claim time; pool members serve more than one org. */
   orgForAgent: (agentId: string) => string | undefined
   /** Pool the claim references; v1beta1 requires one, and a cold pool is `replicas: 0`. */
   warmPoolName: string

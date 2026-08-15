@@ -53,7 +53,7 @@ async function ready(h: ReturnType<typeof buildWsHarness>, opts: { orgScoped?: b
     const token = await h.mintToken(DAEMON)
     stub.inject('auth', { apiKey: token, daemonId: DAEMON, agentVersion: '1.4.0' }, { id: AUTH_ID })
   } else {
-    const saToken = await h.mintCloudDaemon(DAEMON)
+    const saToken = await h.mintPoolMember(DAEMON)
     stub.inject('auth', { serviceAccountToken: saToken, daemonId: DAEMON, agentVersion: '1.4.0' }, { id: AUTH_ID })
   }
   await stub.expectFrame('auth/ok')
@@ -321,7 +321,7 @@ describe('the reconnect roster follows the duty holder', () => {
   /** Register while claiming a local replica of `AGENT`, and read the snapshot back. */
   async function reconnectHolding(h: ReturnType<typeof buildWsHarness>) {
     const { stub } = h.connect()
-    const saToken = await h.mintCloudDaemon(DAEMON)
+    const saToken = await h.mintPoolMember(DAEMON)
     stub.inject('auth', { serviceAccountToken: saToken, daemonId: DAEMON, agentVersion: '1.4.0' }, { id: AUTH_ID })
     await stub.expectFrame('auth/ok')
     stub.inject(

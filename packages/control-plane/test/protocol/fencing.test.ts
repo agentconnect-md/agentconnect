@@ -167,7 +167,7 @@ describe('fencing gate — epoch → launchId, typed error REPs', () => {
 })
 
 describe('organization gate', () => {
-  it('stamps an explicit organization on cloud-daemon downlink frames', () => {
+  it('stamps an explicit organization on pool-member downlink frames', () => {
     const { conn, stub } = readyConn({ sessionEpoch: 5 })
     conn.orgId = null
     conn.send('mcpserver/remove', { orgId: 'org-a', name: 'shared-name' }, { epoch: 5 })

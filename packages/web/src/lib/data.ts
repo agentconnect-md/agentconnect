@@ -55,20 +55,20 @@ export function presentedDaemonStatus(daemon: Pick<DaemonRow, 'status' | 'lifecy
   return daemon.lifecycleStatus ?? daemon.status
 }
 
-/** What every surface calls an install-wide cloud member. The CP names those rows after the
+/** What every surface calls an install-wide pool member. The CP names those rows after the
  *  Pod they run in, which is churn nobody outside the cluster should read: the pool is one
  *  managed thing, so `daemonFromDto` labels each member with this instead. */
-export const CLOUD_DAEMON_LABEL = 'AgentConnect Cloud'
+export const POOL_LABEL = 'AgentConnect Cloud'
 /** `Agent.daemon` for a pool placement. It names the POOL, never a member: no member id survives
  *  a rollout, which is precisely why the placement stopped carrying one. */
-export const CLOUD_PLACEMENT = 'cloud'
+export const POOL_PLACEMENT = 'pool'
 
 /** What a placement NAMES. The CP stores and emits `set` (daemon-groups.md §2); `pool` stays
  *  accepted API sugar on the way IN, so the console keeps submitting it and tolerates both. */
 export type PlacementKindValue = 'daemon' | 'set' | 'pool'
 
-/** Is this placement the Cloud entry — a member set rather than one machine? */
-export function isCloudPlacementKind(kind?: PlacementKindValue): boolean {
+/** Is this placement the pool — a member set rather than one machine? */
+export function isPoolPlacementKind(kind?: PlacementKindValue): boolean {
   return kind === 'set' || kind === 'pool'
 }
 
@@ -80,11 +80,11 @@ export function isCloudPlacementKind(kind?: PlacementKindValue): boolean {
  * agent read as unplaced; `placementKind` is the only thing that says it.
  */
 export function placementValueOf(dto: { placementKind?: PlacementKindValue; daemonId: string | null }): string | null {
-  return isCloudPlacementKind(dto.placementKind) ? CLOUD_PLACEMENT : (dto.daemonId ?? null)
+  return isPoolPlacementKind(dto.placementKind) ? POOL_PLACEMENT : (dto.daemonId ?? null)
 }
 
-/** The Cloud entry stands in for the whole pool: online while any member is serving. */
-export function cloudFleetStatus(members: Pick<DaemonRow, 'status'>[]): ConnectionStatusKey {
+/** One status for the whole pool: online while any member is serving. */
+export function poolFleetStatus(members: Pick<DaemonRow, 'status'>[]): ConnectionStatusKey {
   return members.some((m) => m.status === 'online') ? 'online' : 'offline'
 }
 
@@ -107,7 +107,7 @@ export function effectiveAgentStatus(
     // A pool placement names no member, so there is no owning daemon to consult: the CP already
     // answered "could anything serve this now" and that answer is the whole story (#987 — asking
     // a placed member's liveness is what kept a rolled-over agent permanently offline).
-    if (isCloudPlacementKind(agent.placementKind)) return agent.placementReady ? agent.status : 'offline'
+    if (isPoolPlacementKind(agent.placementKind)) return agent.placementReady ? agent.status : 'offline'
     if (agent.daemon === '—') return 'offline'
     if (owningDaemon !== undefined) {
       if (owningDaemon.lifecycleStatus) return owningDaemon.lifecycleStatus
@@ -122,7 +122,7 @@ export function effectiveAgentStatus(
 // configuring it (onboarding's agent step) or creating a user agent flips this true. It
 // is the signal for "the org is set up" — used by the onboarding gate + getting-started.
 export function agentIsPlaced(agent: Pick<Agent, 'daemon' | 'runtime' | 'placementKind'>): boolean {
-  return (isCloudPlacementKind(agent.placementKind) || agent.daemon !== '—') && agent.runtime !== ''
+  return (isPoolPlacementKind(agent.placementKind) || agent.daemon !== '—') && agent.runtime !== ''
 }
 
 export type LaneKind = 'msg' | 'plan' | 'tool' | 'edit' | 'done'
@@ -338,7 +338,7 @@ export interface Agent {
   /** Names of organization-owned secrets assigned to this agent. Values are never
    *  returned for these either. */
   organizationSecretKeys: string[]
-  /** What the placement NAMES. A `set` carries `daemon: CLOUD_PLACEMENT` and no member id.
+  /** What the placement NAMES. A `set` carries `daemon: POOL_PLACEMENT` and no member id.
    *  Absent (a mock row, an older CP) reads as `daemon`, which is the pre-pool behavior. */
   placementKind?: PlacementKindValue
   /** Server-computed: can a session start right now? For a set placement that is "some member is
@@ -1890,10 +1890,10 @@ export interface DaemonRow {
   canManageLifecycle: boolean
   /** Actual daemon connection/readiness. Never replaced by a presentation-only lifecycle state. */
   status: ConnectionStatusKey
-  /** An install-wide cloud member: managed infrastructure every org shares, one row per
-   *  cloud-daemon Pod. The daemons page collapses the whole pool into one Cloud entry, and
+  /** An install-wide pool member: managed infrastructure every org shares, one row per
+   *  pool member Pod. The daemons page collapses the whole pool into one Cloud entry, and
    *  nothing here is the org's to rename, restart, or detach (`canEdit` is false). */
-  cloud: boolean
+  pool: boolean
   /** Planned lifecycle presentation while the durable operation is pending. */
   lifecycleStatus: LifecycleStatusKey | null
   host: string

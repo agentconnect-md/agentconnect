@@ -50,7 +50,7 @@ const INSTALL_WIDE_FRAME_TYPES = new Set([
 export class DaemonConnection implements ConnChannel {
   state: LifecycleState = 'CONNECTING'
   daemonId = '' // set on auth/ok; "" until then (ConnChannel requires a string)
-  /** Auth-scoped org; null for an install-wide cloud daemon. */
+  /** Auth-scoped org; null for an install-wide pool member. */
   orgId: string | null = null
   /** Current fencing epoch for this daemon (set on auth/ok). */
   sessionEpoch = 0
@@ -129,7 +129,7 @@ export class DaemonConnection implements ConnChannel {
     }
   }
 
-  /** Enforce connection-scoped tenancy for ordinary daemons and frame-scoped tenancy for cloud. */
+  /** Enforce connection-scoped tenancy for ordinary daemons and frame-scoped tenancy for a pool member. */
   private gateOrganization(frame: AnyFrame): boolean {
     if (this.state === 'AUTHENTICATING' || this.state === 'REGISTERING') return true
     if (this.orgId) {

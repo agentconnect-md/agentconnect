@@ -8,7 +8,7 @@ import { useProfile } from '@/lib/profile'
 import { useOrgs } from '@/lib/org-context'
 import {
   FALLBACK_RUNTIME_IDS,
-  CLOUD_DAEMON_LABEL,
+  POOL_LABEL,
   approvalsReviewerDefault,
   loginRequiredRuntimeIds,
   agentSlugFinalize,
@@ -337,15 +337,15 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
 
   // Cloud is one UI choice AND one server-side placement: the pool, named as itself.
   const daemonChoice = addAgentDaemonChoice(daemons, daemonId)
-  const { cloudAvailable, daemon, localDaemons, placement, value: effectiveDaemonId } = daemonChoice
+  const { poolAvailable, daemon, localDaemons, placement, value: effectiveDaemonId } = daemonChoice
   const daemonOptions: DaemonSelectOption[] = [
-    ...(cloudAvailable
+    ...(poolAvailable
       ? [
           {
             value: '',
-            label: CLOUD_DAEMON_LABEL,
+            label: POOL_LABEL,
             detail: 'Model usage included — no API key needed.',
-            cloud: true
+            pool: true
           }
         ]
       : []),

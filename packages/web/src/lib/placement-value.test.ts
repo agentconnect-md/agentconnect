@@ -5,13 +5,13 @@
 // unplaced. That is what made a reloaded agent lose its Cloud selection: the list projection went
 // through the mapping and the editor's own re-fetch did not.
 import { describe, it, expect } from 'vitest'
-import { CLOUD_PLACEMENT, effectiveAgentStatus, agentIsPlaced, placementValueOf } from '@/lib/data'
+import { POOL_PLACEMENT, effectiveAgentStatus, agentIsPlaced, placementValueOf } from '@/lib/data'
 import type { Agent, DaemonRow } from '@/lib/data'
 
 const poolAgent = (over: Partial<Agent> = {}): Pick<Agent, 'status' | 'daemon' | 'placementKind' | 'placementReady'> =>
   ({
     status: 'online',
-    daemon: CLOUD_PLACEMENT,
+    daemon: POOL_PLACEMENT,
     placementKind: 'pool',
     placementReady: true,
     ...over
@@ -19,18 +19,18 @@ const poolAgent = (over: Partial<Agent> = {}): Pick<Agent, 'status' | 'daemon' |
 
 describe('placementValueOf', () => {
   it('maps a pool placement to the pool sentinel, never to its null member id', () => {
-    expect(placementValueOf({ placementKind: 'pool', daemonId: null })).toBe(CLOUD_PLACEMENT)
+    expect(placementValueOf({ placementKind: 'pool', daemonId: null })).toBe(POOL_PLACEMENT)
   })
 
   it('ignores a stray member id under a pool kind — the KIND is what says pool', () => {
-    expect(placementValueOf({ placementKind: 'pool', daemonId: 'dmn_1' })).toBe(CLOUD_PLACEMENT)
+    expect(placementValueOf({ placementKind: 'pool', daemonId: 'dmn_1' })).toBe(POOL_PLACEMENT)
   })
 
   // What the CP actually STORES and emits now: the pool is one member set (daemon-groups.md §2).
   // `pool` stays accepted on the way in as API sugar, so both spellings have to read as Cloud.
   it('maps a set placement to the same Cloud sentinel — that is the console round-trip', () => {
-    expect(placementValueOf({ placementKind: 'set', daemonId: null })).toBe(CLOUD_PLACEMENT)
-    expect(agentIsPlaced({ daemon: CLOUD_PLACEMENT, runtime: 'claude', placementKind: 'set' })).toBe(true)
+    expect(placementValueOf({ placementKind: 'set', daemonId: null })).toBe(POOL_PLACEMENT)
+    expect(agentIsPlaced({ daemon: POOL_PLACEMENT, runtime: 'claude', placementKind: 'set' })).toBe(true)
     expect(effectiveAgentStatus(poolAgent({ placementKind: 'set' }), undefined)).toBe('online')
     expect(effectiveAgentStatus(poolAgent({ placementKind: 'set', placementReady: false }), undefined)).toBe('offline')
   })
@@ -63,6 +63,6 @@ describe('a pool agent’s readiness is the server’s answer, not a member’s 
   })
 
   it('counts as placed even though it names no machine', () => {
-    expect(agentIsPlaced({ daemon: CLOUD_PLACEMENT, runtime: 'claude', placementKind: 'pool' })).toBe(true)
+    expect(agentIsPlaced({ daemon: POOL_PLACEMENT, runtime: 'claude', placementKind: 'pool' })).toBe(true)
   })
 })
