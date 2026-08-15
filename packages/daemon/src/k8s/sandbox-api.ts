@@ -185,8 +185,14 @@ export class SandboxApi {
     }
   }
 
-  getSandbox(name: string): Promise<Sandbox> {
-    return this.http.json<Sandbox>({ method: 'GET', path: `${this.sandboxes()}/${name}` })
+  /** `signal` bounds the read: a caller on a deadline must not be pinned by an API server that
+   *  accepted the connection and never answered. Same seam a watch aborts through. */
+  getSandbox(name: string, opts: { signal?: AbortSignal } = {}): Promise<Sandbox> {
+    return this.http.json<Sandbox>({
+      method: 'GET',
+      path: `${this.sandboxes()}/${name}`,
+      ...(opts.signal ? { signal: opts.signal } : {})
+    })
   }
 
   getWarmPool(name: string): Promise<SandboxWarmPool> {

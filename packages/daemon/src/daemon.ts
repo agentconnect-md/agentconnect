@@ -5472,6 +5472,9 @@ export class Daemon {
       }
       throw new Error(`agent "${agentId}" runtime launch preparation failed: ${formatErr(err)}`, { cause: err })
     }
+    // Filled right after construction, so the terminal reap can prove the host that exited is
+    // still the memoized one before evicting anything.
+    const constructed: { host?: AcpHost } = {}
     const host = new AcpHost(launchRuntime, {
       // In --k8s the runtime runs in the agent's own Sandbox pod; everywhere else AcpHost falls
       // back to its LocalDriver, which is what a self-hosted daemon wants.
@@ -5483,6 +5486,8 @@ export class Daemon {
         : {}),
       onElicit: (sid, params) => this.onAcpElicit(agentId, sid, params),
       onSdkLifecycle: (sid, message) => this.onSdkLifecycle(agentId, sid, message),
+      // Pairs the runtime's terminal exit with the ordinary rebuild — see reapTerminalHost.
+      onTerminal: () => this.reapTerminalHost(agentId, constructed.host),
       env: launch.env,
       inheritProcessEnv: launch.inheritProcessEnv,
       runtimeId: agent.runtime,
@@ -5497,7 +5502,30 @@ export class Daemon {
       },
       log: this.log
     })
+    constructed.host = host
     return { host, configFileState }
+  }
+
+  /**
+   * Reclaim a host whose runtime reached terminal exit, so the next message rebuilds it.
+   *
+   * A dead runtime leaves a host that can never serve again — its ACP connection is closed —
+   * yet it stays memoized, so every later turn is dispatched into it and fails with "ACP
+   * connection closed" until the daemon is replaced. A lost sandbox channel is exactly this
+   * shape: the pod goes and the runtime with it. The teardown is therefore paired here with the
+   * ordinary rebuild — `stopHost` returns the agent to provisioned and the next message starts
+   * a fresh host through `ensureHostAsync`, the same path a grant or an activation uses.
+   *
+   * A host that never became ready is deliberately left alone: `startHostWithRetry` reaps its
+   * own failed child, and evicting the start generation here would cancel its remaining attempts.
+   */
+  private reapTerminalHost(agentId: string, host?: AcpHost): void {
+    if (!host || this.hosts.get(agentId) !== host) return
+    if (!this.readyHosts.has(agentId)) return
+    this.log.warn(`acp: agent "${agentId}" runtime exited — reclaiming its host so the next message re-spawns it`)
+    void this.stopHost(agentId).catch((err) =>
+      this.log.warn(`acp: reclaiming the exited host for agent "${agentId}" failed: ${formatErr(err)}`)
+    )
   }
 
   /**
