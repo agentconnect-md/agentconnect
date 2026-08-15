@@ -235,11 +235,9 @@ const CoreConfigShape = {
     .enum(['true', 'false'])
     .default('false')
     .transform((v) => v === 'true'),
-  // Namespace the install runs its pool members in — the pods that serve every org rather
-  // than one, and whose identity therefore names no org. Unset ⇒ the control plane's own
-  // namespace, which is where a single-namespace install puts them. A pool identity from
-  // any other namespace is refused, so this is the fence around "may name its own org".
-  CLUSTER_CLOUD_DAEMON_NAMESPACE: z
+  // Namespace the install runs its pool members in; unset ⇒ the control plane's own namespace.
+  // A pool identity from any other namespace is refused — the fence around "may name its own org".
+  POOL_NAMESPACE: z
     .string()
     .regex(/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/, 'must be a DNS label')
     .optional()

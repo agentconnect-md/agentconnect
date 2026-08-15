@@ -402,7 +402,7 @@ export function buildContainer(
           clusterHttp,
           repos.daemon,
           // Where this install's pool members live; its own namespace unless told otherwise.
-          config.CLUSTER_CLOUD_DAEMON_NAMESPACE ?? clusterAccess.namespace
+          config.POOL_NAMESPACE ?? clusterAccess.namespace
         )
       : undefined
   const auth = new DaemonAuthService(
