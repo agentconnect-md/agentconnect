@@ -195,10 +195,19 @@ export class WebchatWerewolfReferee implements ScriptedBrain {
         if (this.day.order.every((alias) => this.day!.spoke.includes(alias))) {
           this.day.spoke = [...this.day.spoke]
           this.phase = 'day-vote'
+          // Firmer, individually binding wording (measured motivation: real
+          // players completed a perfect 6-speaker discussion and then mostly
+          // never cast a vote — the polite invitation read as optional). The
+          // machine-parsed prefix `VOTE <n>. Discussion is closed.` and the
+          // `Living players:` list are load-bearing for the scripted players
+          // and must not change.
           replies.push(
             `VOTE ${this.round}. Discussion is closed. Living players: ${this.aliveAliases().join(', ')}. ` +
-              `Every living player now says their vote out loud in this conversation, exactly once — for example ` +
-              `"${this.aliveAliases()[0]}: I vote for player-2". Name exactly one living player.`
+              `Every living player MUST now cast exactly one vote by posting a message in this conversation in ` +
+              `the exact form "${this.aliveAliases()[0]}: I vote for player-2" (your own name, then your vote). ` +
+              `This applies to YOU personally, whatever you said during the discussion — having no strong read ` +
+              `does not excuse you: pick the most suspicious living player and vote now, in your next message. ` +
+              `Not voting forfeits your voice in the lynch. Name exactly one living player.`
           )
         }
         continue
