@@ -1153,6 +1153,9 @@ export interface SessionMetaRecord {
   permissionMode: string | null
   outputMode: string | null
   daemonId: DaemonId | null
+  /** The member set whose shared store holds this session's content; null ⇒ the recorded daemon's
+   *  own local store. Session-scoped provenance — never the agent's current placement. */
+  contentSetId: string | null
   workspaceIsolation: 'shared' | 'session' | null
   activityState: ActivityState
   // ── session visibility (session-visibility.md §3) ──

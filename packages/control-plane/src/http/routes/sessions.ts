@@ -8,8 +8,8 @@
  * - `GET /sessions` lists CP-stored session metadata synced by daemon
  *   `event/session` snapshots. Transcript bodies still stay daemon-local.
  * - `GET /sessions/:id/messages` pulls one transcript page from the daemon that
- *   can serve it — the recorded one, else the serving daemon of a shared-store
- *   placement — and proxies it through. Bodies transit the CP live for display
+ *   can serve it — the recorded one, else a live member of the shared store the
+ *   session was written to — and proxies it through. Bodies transit the CP live for display
  *   only, never persisted (body-locality §1/§12).
  */
 import type { FastifyInstance, FastifyRequest } from 'fastify'
@@ -421,12 +421,13 @@ export function sessionRoutes(deps: HttpDeps) {
     // Daemon-local session content, read through the daemon that can still serve it. The recorded
     // daemon owns it, but a pool member is replaceable: retiring one deletes its row and nulls the
     // session's `daemonId`, while its set peers read the same shared store. So: recorded daemon
-    // first, then whatever `contentFailoverDaemon` names — null unless the store is shared, which
-    // is how a machine-placed agent's move keeps answering 503 instead of a false empty page.
+    // first, then whatever `contentFailoverDaemon` names for THIS session's recorded store — null
+    // unless that store is shared and still the agent's, which is how a move keeps answering 503
+    // instead of a false empty page.
     type ContentRead<T> = { ok: true; value: T } | { ok: false; reason: 'unplaced' | 'offline' }
     const readSessionContent = async <T>(
       req: FastifyRequest,
-      session: { agentId: string; daemonId: string | null },
+      session: { agentId: string; daemonId: string | null; contentSetId: string | null },
       read: (daemonId: string) => Promise<T>
     ): Promise<ContentRead<T>> => {
       if (session.daemonId) {
@@ -437,7 +438,7 @@ export function sessionRoutes(deps: HttpDeps) {
         }
       }
       const agent = await deps.repos.agent.get(orgOf(req), AgentId(session.agentId))
-      const failover = agent ? await deps.placementResolver.contentFailoverDaemon(agent) : null
+      const failover = agent ? await deps.placementResolver.contentFailoverDaemon(agent, session) : null
       if (!failover) return { ok: false, reason: session.daemonId ? 'offline' : 'unplaced' }
       if (failover === session.daemonId) return { ok: false, reason: 'offline' }
       try {
@@ -905,7 +906,7 @@ export function sessionRoutes(deps: HttpDeps) {
 
     // Replay view: proxy a page of the session's chat history live from the daemon that can serve
     // it. CP stores list/detail metadata only, not transcript bodies. The recorded daemon is tried
-    // first; only a shared-store placement has a second daemon holding the same content.
+    // first; only a session written to a shared store has a second daemon holding the same rows.
     r.get(
       '/sessions/:id/messages',
       {
@@ -913,7 +914,7 @@ export function sessionRoutes(deps: HttpDeps) {
           tags: [Tag.Sessions],
           summary: 'Get session messages',
           description:
-            "Proxies a page of the session's chat history live from the daemon recorded on the session, falling back to the agent's current serving daemon when its placement shares one content store; 503 if neither is known or reachable.",
+            "Proxies a page of the session's chat history live from the daemon recorded on the session, falling back to the agent's current serving daemon when the session was written to a member set's shared content store the agent is still placed on; 503 if neither is known or reachable.",
           operationId: 'getSessionMessages',
           params: IdParam,
           querystring: SessionHistoryQueryDto,
@@ -970,7 +971,7 @@ export function sessionRoutes(deps: HttpDeps) {
           tags: [Tag.Sessions],
           summary: 'Get a tool-call body',
           description:
-            "Proxies one byte slice of a tool call's untruncated ToolBody JSON live from the daemon recorded on the session, falling back to the agent's current serving daemon when its placement shares one content store; the console pages by offset until nextOffset is null. 503 if neither is known or reachable.",
+            "Proxies one byte slice of a tool call's untruncated ToolBody JSON live from the daemon recorded on the session, falling back to the agent's current serving daemon when the session was written to a member set's shared content store the agent is still placed on; the console pages by offset until nextOffset is null. 503 if neither is known or reachable.",
           operationId: 'getSessionToolBody',
           params: IdParam,
           querystring: SessionToolBodyQueryDto,
