@@ -28,6 +28,7 @@ const CRON: Record<string, string> = {
   [AGENT_C]: '33333333-3333-4333-8333-333333333333'
 }
 
+// No `features` block: the frame-scope stub connection below is the whole enforcement condition.
 function scaffold(): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-duty-replacement-'))
   writeFileSync(
@@ -35,7 +36,6 @@ function scaffold(): string {
     JSON.stringify({
       version: 1,
       controlPlane: { enabled: false },
-      features: { dutyEnforcement: true },
       runtimes: { claude: { command: 'node', args: ['unused'] } }
     })
   )

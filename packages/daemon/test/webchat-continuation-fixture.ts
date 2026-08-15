@@ -79,7 +79,13 @@ export function scriptedHosts(replies: Record<string, (prompt: string) => string
 }
 
 export function fakeCpClient() {
-  return { emitUsageReport: vi.fn(), emitSessionActivity: vi.fn(), stop: vi.fn(async () => {}) }
+  // Org-scoped: this daemon owns its agents outright and is not duty-governed.
+  return {
+    emitUsageReport: vi.fn(),
+    emitSessionActivity: vi.fn(),
+    organizationScope: () => 'connection' as const,
+    stop: vi.fn(async () => {})
+  }
 }
 
 /** Frame factory bound to one conversation id — mirrors the relay's

@@ -140,8 +140,6 @@ The daemon does not implement these, but interacts with them through the section
 
 All environment equivalents use the `AGENTCONNECT_` prefix, such as `AGENTCONNECT_CP_URL`, `AGENTCONNECT_CP_KEY`, and `AGENTCONNECT_ROOT`, for containers and system services.
 
-One feature switch is reachable the same way: `AGENTCONNECT_DUTY_ENFORCEMENT` sets `features.dutyEnforcement`, so a daemon whose config.json is machine-generated on every start can still state it. It accepts `1`/`true`/`yes`/`on` or `0`/`false`/`no`/`off` (case-insensitive; blank or unset means "not stated"), rejects anything else at startup rather than reading as off, and — unlike the table above — **outranks the config file**, because in that deployment the file is regenerated from defaults and could never carry the decision. It only changes behavior on an install-wide (frame-scope) daemon; an org-scoped daemon is unaffected whatever it says.
-
 ### 2.4 Mapping In-Process Responsibilities to CLI
 
 `run`, including the same `run` managed by a service after `up`, starts every module in the section 1.2 diagram corresponding to upstream D1-D12: Supervisor, CP-Client, ConnectionManager and Platform Adapters, Local Router, Scheduler, ACP Host, MCP Tool Server, Workspace Manager, Local Store, and Telemetry. Secrets Agent remains future work. Sections 6-10 expand the parts directly related to the eight requirements.
