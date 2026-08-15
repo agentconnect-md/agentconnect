@@ -32,6 +32,7 @@ import {
   PgLaunchRepo,
   PgMemoryPluginInstallationRepo,
   PgExternalMemoryConnectionRepo,
+  PgOrganizationKnowledgeRepo,
   PgExternalMemoryConnectionSecretStore,
   PgExternalMemoryGrantRepo,
   PgMcpProviderRepo,
@@ -146,6 +147,7 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
     launch: new PgLaunchRepo(prisma),
     memoryPluginInstallation: new PgMemoryPluginInstallationRepo(prisma),
     externalMemoryConnection: new PgExternalMemoryConnectionRepo(prisma),
+    organizationKnowledge: new PgOrganizationKnowledgeRepo(prisma),
     externalMemoryConnectionSecret: new PgExternalMemoryConnectionSecretStore(prisma, cipher),
     externalMemoryGrant: new PgExternalMemoryGrantRepo(prisma, cipher),
     mcpProvider: new PgMcpProviderRepo(prisma),
@@ -293,6 +295,7 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
     cron: repos.cron,
     hook: repos.hook,
     externalMemoryConnection: repos.externalMemoryConnection,
+    organizationKnowledge: repos.organizationKnowledge,
     relayRoster: async () => relays,
     clock,
     config: {

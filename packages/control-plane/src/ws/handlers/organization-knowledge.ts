@@ -4,6 +4,7 @@ import {
   ORGANIZATION_SUGGESTION_REVIEW_FEATURE
 } from '@agentconnect.md/protocol'
 import { AgentId, DaemonId, OrgId } from '../../domain/ids.js'
+import { PLACEMENT_ONLY } from '../../orchestrator/placementResolver.js'
 import type { DaemonView } from '../../ports.js'
 import type { Handler } from './index.js'
 
@@ -142,7 +143,7 @@ export const handleOrgSkills: Handler = async (frame, conn, deps) => {
   })
 }
 
-/** Reconnect/completion inventory upsert. Only currently placed agents may
+/** Reconnect/completion inventory upsert. Only agents this member currently SERVES may
  * publish metadata; CP review state stays authoritative. */
 export const handleOrganizationSuggestionsSync: Handler = async (frame, conn, deps) => {
   if (!isFrame('knowledge/suggestions/sync')(frame)) return
@@ -158,10 +159,19 @@ export const handleOrganizationSuggestionsSync: Handler = async (frame, conn, de
     conn.sendError(frame.id, 'INTERNAL', 'organization knowledge is unavailable', true)
     return
   }
-  const agents = await deps.agent.list(orgId)
-  const allowed = new Set(
-    agents.filter((agent) => agent.daemonId === DaemonId(conn.daemonId)).map((agent) => String(agent.id))
+  // Authority is the live seam, never `agent.daemonId`: a pool agent names no machine, so
+  // placement equality would silently empty the inventory of the very members that dream.
+  const resolver = deps.placementResolver ?? PLACEMENT_ONLY
+  const claimed = new Set(
+    frame.payload.suggestions
+      .filter((suggestion) => suggestion.state === 'proposed')
+      .map((suggestion) => suggestion.sourceAgentId)
   )
+  const allowed = new Set<string>()
+  for (const agent of await deps.agent.list(orgId)) {
+    if (!claimed.has(String(agent.id))) continue
+    if (await resolver.mayAct(agent, conn.daemonId)) allowed.add(String(agent.id))
+  }
   const proposed = frame.payload.suggestions.filter(
     (suggestion) => suggestion.state === 'proposed' && allowed.has(suggestion.sourceAgentId)
   )

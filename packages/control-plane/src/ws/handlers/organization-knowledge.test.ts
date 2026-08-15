@@ -6,6 +6,9 @@ import {
 } from '@agentconnect.md/protocol'
 import type { DaemonConnection } from '../connection.js'
 import type { DaemonWsDeps } from '../deps.js'
+import { PlacementResolver } from '../../orchestrator/placementResolver.js'
+import { systemClock } from '../../domain/clock.js'
+import type { DaemonId } from '../../domain/ids.js'
 import {
   handleKnowledgeSearch,
   handleKnowledgeList,
@@ -24,6 +27,17 @@ const ORG_B = 'org-b'
 
 const installWideCapabilities = {
   features: [ORGANIZATION_KNOWLEDGE_FEATURE, ORGANIZATION_SUGGESTION_REVIEW_FEATURE]
+}
+
+/** A pool row: placed, naming no machine. `agent.daemonId` can never authorize one. */
+function poolAgent(id: string) {
+  return { id, placementKind: 'pool' as const, daemonId: null }
+}
+
+/** The live seam, keyed by who holds each agent's duty right now. */
+function holderOf(holds: Record<string, string[]>): PlacementResolver {
+  const of = async (agentId: string) => (holds[String(agentId)] ?? []) as DaemonId[]
+  return new PlacementResolver({ duties: { holdersOf: of, confirmedHoldersOf: of }, clock: systemClock })
 }
 
 function proposed(sourceAgentId: string) {
@@ -410,18 +424,20 @@ describe('handleOrganizationSuggestionsSync', () => {
     expect(connection.replyTo.mock.calls[0]![2]).toEqual({ decisions: [] })
   })
 
-  // #968: a pool member is an org-less per-Pod record, so the connection has no org to derive.
+  // #968: a pool member is an org-less per-Pod record, so the connection has no org to derive —
+  // and the agents it dreams for are pool rows naming no machine at all.
   it('records each org-scoped frame from one install-wide member under the org it names', async () => {
     const syncSuggestions = vi.fn(async (_orgId, _daemonId, suggestions) =>
       suggestions.map((s: { sourceAgentId: string }) => ({ ...s, id: 'suggestion-id', state: 'pending' }))
     )
-    const byOrg: Record<string, { id: string; daemonId: string }[]> = {
-      [ORG_A]: [{ id: AGENT, daemonId: DAEMON }],
-      [ORG_B]: [{ id: FOREIGN_AGENT, daemonId: DAEMON }]
+    const byOrg: Record<string, ReturnType<typeof poolAgent>[]> = {
+      [ORG_A]: [poolAgent(AGENT)],
+      [ORG_B]: [poolAgent(FOREIGN_AGENT)]
     }
     const deps = {
       registry: { getUnscoped: async () => ({ id: DAEMON, orgId: null, capabilities: installWideCapabilities }) },
       agent: { list: async (orgId: string) => byOrg[orgId] ?? [] },
+      placementResolver: holderOf({ [AGENT]: [DAEMON], [FOREIGN_AGENT]: [DAEMON] }),
       organizationKnowledge: { syncSuggestions }
     } as unknown as DaemonWsDeps
     const connection = conn()
@@ -447,6 +463,7 @@ describe('handleOrganizationSuggestionsSync', () => {
     const deps = {
       registry: { getUnscoped: async () => ({ id: DAEMON, orgId: null, capabilities: installWideCapabilities }) },
       agent: { list: async () => [] },
+      placementResolver: holderOf({ [AGENT]: [DAEMON] }),
       organizationKnowledge: { syncSuggestions }
     } as unknown as DaemonWsDeps
     const connection = conn()
@@ -461,11 +478,35 @@ describe('handleOrganizationSuggestionsSync', () => {
     expect(syncSuggestions).toHaveBeenCalledWith(ORG_B, DAEMON, [])
   })
 
+  it('refuses a pool agent this member holds no duty for', async () => {
+    const syncSuggestions = vi.fn(async () => [])
+    const deps = {
+      registry: { getUnscoped: async () => ({ id: DAEMON, orgId: null, capabilities: installWideCapabilities }) },
+      agent: { list: async () => [poolAgent(AGENT), poolAgent(FOREIGN_AGENT)] },
+      // The foreign agent's duty is held by another member, so this connection may not report it.
+      placementResolver: holderOf({ [AGENT]: [DAEMON], [FOREIGN_AGENT]: ['another-member'] }),
+      organizationKnowledge: { syncSuggestions }
+    } as unknown as DaemonWsDeps
+    const connection = conn()
+
+    await handleOrganizationSuggestionsSync(
+      {
+        ...frame('knowledge/suggestions/sync', { suggestions: [proposed(AGENT), proposed(FOREIGN_AGENT)] }),
+        orgId: ORG_A
+      },
+      connection,
+      deps
+    )
+
+    expect(syncSuggestions).toHaveBeenCalledWith(ORG_A, DAEMON, [proposed(AGENT)])
+  })
+
   it('refuses an unscoped frame from an install-wide member', async () => {
     const syncSuggestions = vi.fn(async () => [])
     const deps = {
       registry: { getUnscoped: async () => ({ id: DAEMON, orgId: null, capabilities: installWideCapabilities }) },
-      agent: { list: async () => [{ id: AGENT, daemonId: DAEMON }] },
+      agent: { list: async () => [poolAgent(AGENT)] },
+      placementResolver: holderOf({ [AGENT]: [DAEMON] }),
       organizationKnowledge: { syncSuggestions }
     } as unknown as DaemonWsDeps
     const connection = conn()
