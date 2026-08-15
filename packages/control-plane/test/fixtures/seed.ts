@@ -83,6 +83,29 @@ export async function seedAgent(
   return AgentId(id)
 }
 
+/** A held duty group covering `agentIds`. The lease is live by default — an
+ *  expired one is how a test states "this member no longer serves it". */
+export async function seedDutyGroup(
+  prisma: PrismaClient,
+  groupId: string,
+  holder: string,
+  agentIds: string[],
+  opts: { expiresAt?: Date; term?: bigint } = {}
+): Promise<void> {
+  await prisma.dutyGroup.create({
+    data: {
+      id: groupId,
+      orgId: DEFAULT_ORG_ID,
+      holder,
+      term: opts.term ?? 1n,
+      expiresAt: opts.expiresAt ?? new Date(Date.now() + 120_000)
+    }
+  })
+  await prisma.dutyGroupMember.createMany({
+    data: agentIds.map((refId) => ({ kind: 'agent' as const, refId, groupId, orgId: DEFAULT_ORG_ID }))
+  })
+}
+
 /** A converged session milestone row. `visibility`/`ownerIdentity` default to
  *  what ingest records for a channel session (session-visibility.md §4.2). */
 export async function seedSessionMeta(

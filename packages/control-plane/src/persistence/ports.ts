@@ -910,6 +910,12 @@ export interface AgentRepo {
   /** Agents placed on a specific daemon — the reconcile roster (`register/ok.agents`).
    *  A daemon only ever receives the specs of the agents it owns (1 agent : 1 machine). */
   listForDaemon(daemonId: DaemonId): Promise<AgentRecord[]>
+  /** Unscoped batch read by id — the duty half of the reconcile roster, whose
+   *  agents are named by the ledger rather than by placement. */
+  listByIds(agentIds: readonly AgentId[]): Promise<AgentRecord[]>
+  /** The current `configRevision` of each agent — the freshness signal stamped
+   *  onto a duty grant's agent members (orchestrator/dutyLease.ts). */
+  configRevisions(agentIds: readonly AgentId[]): Promise<Map<string, bigint>>
   /**
    * The org's PEER directory: every agent, with only the fields the collaboration
    * roster filter needs. This is the channel-free discovery/authorization input —
@@ -1976,6 +1982,9 @@ export interface CronRepo {
    *  (`register/ok.crons[]`, same scope rule as integrations §3.11).
    *  System-tier: daemon-fenced. */
   listForDaemon(daemonId: DaemonId): Promise<CronRecord[]>
+  /** The crons of these agents — the duty half of the reconcile roster, whose
+   *  agents are named by the ledger, not by placement. */
+  listForAgents(agentIds: readonly string[]): Promise<CronRecord[]>
   /** Org-fenced point read (§3): a cross-org id reads as absent, exactly like a
    *  missing row. Crons have no internal-trust-domain reader — the daemon-facing
    *  paths are `listForDaemon` and `recordReport`, both fenced by the daemon
@@ -3438,6 +3447,10 @@ export interface IntegrationRepo {
    * org-wide) since the delivered spec carries plaintext tokens.
    */
   activeForDaemon(daemonId: DaemonId): Promise<IntegrationRecord[]>
+  /** Active integrations of these agents — the duty half of the reconcile roster,
+   *  whose agents are named by the ledger, not by placement. Token-bearing once
+   *  projected, so callers pass only the agents that daemon is entitled to. */
+  activeForAgents(agentIds: readonly string[]): Promise<IntegrationRecord[]>
   /**
    * The agents present in a channel (agent-collaboration directory, §channel).
    * Joins the channel's active integrations to their agents, ACROSS all daemons
@@ -5066,4 +5079,13 @@ export interface DutyGroupRepo {
    *  agent? The authorization for `duty/fetch`: a member may pull exactly the
    *  agent definitions it has won, and nothing else. */
   holdsAgent(holder: DaemonId, agentId: AgentId, now: Date): Promise<boolean>
+  /** Every member currently holding an unexpired lease on a group covering this
+   *  agent — the delivery half of {@link DutyGroupRepo.holdsAgent}, so a live
+   *  update reaches whoever serves the agent rather than only where it is placed
+   *  (orchestrator/agentDelivery.ts). Deliberately membership-only: the agent row
+   *  may already be gone (a delete replicates AFTER the cascade). */
+  holdersOf(agentId: AgentId, now: Date): Promise<DaemonId[]>
+  /** Every agent covered by the unexpired leases `holder` holds — the duty half
+   *  of the `register/ok` reconcile roster, which is `pinned-to-me ∪ held-by-me`. */
+  heldAgentIds(holder: DaemonId, now: Date): Promise<AgentId[]>
 }

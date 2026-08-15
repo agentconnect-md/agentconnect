@@ -96,10 +96,13 @@ export function integrationRoutes(deps: HttpDeps) {
       return current
     }
 
-    // Push the full spec (metadata + tokens + per-conversation bindRules) to the owning
-    // daemon. Best-effort: if the daemon is offline the reconcile roster carries it
-    // on the next connect. Token-bearing — never log the spec.
-    const replicateUpsert = async (i: IntegrationRecord, daemonId: string): Promise<void> => {
+    // Push the full spec (metadata + tokens + per-conversation bindRules) to every
+    // daemon that serves the owning agent — its placement AND any duty holder
+    // (`deps.agentDelivery` is the one resolver; a holder left on stale credentials
+    // or stale bind rules is the frozen-bundle failure one level down). Best-effort:
+    // an offline daemon picks it up from the reconcile roster on the next connect.
+    // Token-bearing — never log the spec.
+    const replicateUpsert = async (i: IntegrationRecord, daemonId: string | null): Promise<void> => {
       // The bot row joins the reads: it is a required input of the §9 projector
       // that now assembles the spec payload (`orchestrator/placement.ts`). Every
       // caller here is already on the socket-transport arm, so the projector
@@ -111,15 +114,18 @@ export function integrationRoutes(deps: HttpDeps) {
         deps.repos.bot.get(i.orgId, i.botId)
       ])
       if (!secret || !bot) return
-      try {
-        await deps.control.integrationUpsert(
-          daemonId,
-          await integrationToSpec(deps.platforms, i, bot, secret, channels, owner ? isGatedAgent(owner) : false)
-        )
-      } catch (err) {
+      const spec = await integrationToSpec(
+        deps.platforms,
+        i,
+        bot,
+        secret,
+        channels,
+        owner ? isGatedAgent(owner) : false
+      )
+      await deps.agentDelivery.integrationUpsert(i.agentId, daemonId, spec, (err, target) => {
         if (!(err instanceof NoConnection)) throw err
-        app.log.debug({ integrationId: i.id, daemonId }, 'integration/upsert skipped: daemon offline')
-      }
+        app.log.debug({ integrationId: i.id, daemonId: target }, 'integration/upsert skipped: daemon offline')
+      })
     }
 
     // Shareable-install preconditions (shared-bot-relay.md §6): Slack-only for now, a
@@ -164,14 +170,17 @@ export function integrationRoutes(deps: HttpDeps) {
         message: refusal.message
       })
 
-    const replicateRemove = async (integrationId: string, daemonId: string | null): Promise<void> => {
-      if (!daemonId) return
-      try {
-        await deps.control.integrationRemove(daemonId, { integrationId })
-      } catch (err) {
+    const replicateRemove = async (
+      i: Pick<IntegrationRecord, 'id' | 'agentId' | 'orgId'>,
+      daemonId: string | null
+    ): Promise<void> => {
+      const { id: integrationId } = i
+      // The row's own org rides the send: `integration/remove` carries only an id,
+      // so a holder that never registered this integration has nothing to resolve.
+      await deps.agentDelivery.integrationRemove(i.agentId, daemonId, i.id, i.orgId, (err, target) => {
         if (!(err instanceof NoConnection)) throw err
-        app.log.debug({ integrationId, daemonId }, 'integration/remove skipped: daemon offline')
-      }
+        app.log.debug({ integrationId, daemonId: target }, 'integration/remove skipped: daemon offline')
+      })
     }
 
     r.post(
@@ -619,7 +628,7 @@ export function integrationRoutes(deps: HttpDeps) {
       agent: AgentRecord
     ): Promise<void> => {
       if (bot.transport === 'http') await deps.httpBot.syncRoutes(bot.id)
-      else if (agent.daemonId) await replicateUpsert(integration, agent.daemonId)
+      else await replicateUpsert(integration, agent.daemonId)
     }
 
     /**
@@ -884,7 +893,7 @@ export function integrationRoutes(deps: HttpDeps) {
           // bot re-pushes its recomputed bindRules to the owning daemon.
           if (bot.transport === 'http') {
             if (!routesSynced) await deps.httpBot.syncRoutes(bot.id)
-          } else if (agent.daemonId) {
+          } else {
             await replicateUpsert(integration, agent.daemonId)
           }
           return toChannelDto(updated!)
@@ -1173,7 +1182,7 @@ export function integrationRoutes(deps: HttpDeps) {
             await deps.repos.bot.markFreed(orgIdOf(req), existing.botId, new Date(), agent.name ?? null)
           }
           // Tell the removed agent's daemon to drop the spec either way.
-          await replicateRemove(existing.id, agent.daemonId ?? null)
+          await replicateRemove(existing, agent.daemonId ?? null)
           // HTTP bot: recompute the relay's routes + members (or release it if this
           // was the last install).
           if (botBefore?.transport === 'http') await deps.httpBot.syncBot(existing.botId)

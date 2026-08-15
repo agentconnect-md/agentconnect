@@ -6,7 +6,8 @@ import { describe, it, expect, vi } from 'vitest'
 import { isFrame } from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
 import { buildWsHarness } from '../fakes/build-ws.js'
-import { PgDutyGroupRepo } from '../../src/persistence/index.js'
+import { PgDutyGroupRepo, PgLaunchRepo } from '../../src/persistence/index.js'
+import { ControlSender } from '../../src/orchestrator/outbound.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import { DaemonId, OrgId } from '../../src/domain/ids.js'
 
@@ -97,6 +98,22 @@ describe('duty lease exchange (protocol level, real Postgres)', () => {
     const row = await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })
     expect(row.holder).toBe(DAEMON)
     expect(row.term).toBe(1n)
+  })
+
+  it("a granted agent member carries the CP's current configRevision — presence is not freshness", async () => {
+    // Without it a member that already has the agent skips the fetch on `has()`
+    // alone and keeps serving a bundle the CP has edited since (#973).
+    await seedGroup()
+    await prisma.agent.create({
+      data: { id: AGENT, orgId: DEFAULT_ORG_ID, name: 'stamped', runtime: 'claude', configRevision: 9n }
+    })
+    const h = buildWsHarness(prisma)
+    const { stub } = await ready(h)
+
+    stub.inject('heartbeat', heartbeat({ held: [], headroom: 4 }))
+    const grant = await stub.expectFrame('duty/grant')
+    if (!isFrame('duty/grant')(grant)) throw new Error('expected duty/grant')
+    expect(grant.payload.grants[0]?.members).toEqual([{ kind: 'agent', refId: AGENT, configRevision: '9' }])
   })
 
   it('zero headroom claims nothing', async () => {
@@ -261,6 +278,124 @@ describe('duty lease exchange (protocol level, real Postgres)', () => {
     const repo = new PgDutyGroupRepo(prisma)
     const grants = await repo.claimVacant(DaemonId(OTHER), 1, new Date(h.clock.now()), LEASE_MS)
     expect(grants[0]).toMatchObject({ groupId: GROUP, orgId: OrgId(DEFAULT_ORG_ID), term: 3n })
+  })
+})
+
+/**
+ * The reconnect roster is `pinned-to-me ∪ agents in the duties I hold` (#973).
+ * Before this it was `listForDaemon(daemonId)` alone, so a duty-installed agent
+ * was absent from the desired set on reconnect — a stale-replica candidate whose
+ * CP row names another daemon, i.e. a `detach` that undid the install entirely.
+ */
+describe('the reconnect roster follows the duty holder', () => {
+  /** Register while claiming a local replica of `AGENT`, and read the snapshot back. */
+  async function reconnectHolding(h: ReturnType<typeof buildWsHarness>) {
+    const { stub } = h.connect()
+    const saToken = await h.mintCloudDaemon(DAEMON)
+    stub.inject('auth', { serviceAccountToken: saToken, daemonId: DAEMON, agentVersion: '1.4.0' }, { id: AUTH_ID })
+    await stub.expectFrame('auth/ok')
+    stub.inject(
+      'register',
+      {
+        host: 'member-1',
+        capabilities: { platforms: ['slack'], runtimes: ['claude'], acp: true },
+        maxAgents: 8,
+        localState: {
+          assignments: [],
+          crons: [],
+          leases: [],
+          agents: [{ agentId: AGENT, origin: 'cp' }],
+          integrations: [],
+          stagedAgents: []
+        }
+      },
+      { id: REG_ID }
+    )
+    const ok = await stub.expectFrame('register/ok')
+    if (!isFrame('register/ok')(ok)) throw new Error('expected register/ok')
+    return ok.payload
+  }
+
+  it('a duty-held agent is IN the roster and is never a prune candidate', async () => {
+    const h = buildWsHarness(prisma)
+    // Placed on ANOTHER daemon — exactly the row that used to read as "moved away".
+    await prisma.daemon.create({ data: { id: OTHER, orgId: DEFAULT_ORG_ID, maxAgents: 4, status: 'ready' } })
+    await prisma.agent.create({
+      data: { id: AGENT, orgId: DEFAULT_ORG_ID, name: 'held', runtime: 'claude', daemonId: OTHER }
+    })
+    await seedGroup({ holder: DAEMON, term: 1n, expiresAt: new Date(h.clock.now() + LEASE_MS) })
+
+    const ok = await reconnectHolding(h)
+
+    expect(ok.agents.map((a) => a.agentId)).toContain(AGENT)
+    expect(ok.drop.agents).toEqual([])
+  })
+
+  it('an EXPIRED lease is not a holding — the replica goes back to being a prune candidate', async () => {
+    const h = buildWsHarness(prisma)
+    await prisma.daemon.create({ data: { id: OTHER, orgId: DEFAULT_ORG_ID, maxAgents: 4, status: 'ready' } })
+    await prisma.agent.create({
+      data: { id: AGENT, orgId: DEFAULT_ORG_ID, name: 'lapsed', runtime: 'claude', daemonId: OTHER }
+    })
+    await seedGroup({ holder: DAEMON, term: 1n, expiresAt: new Date(h.clock.now() - 1_000) })
+
+    const ok = await reconnectHolding(h)
+
+    expect(ok.agents.map((a) => a.agentId)).not.toContain(AGENT)
+    // Detach, never remove: the CP row still proves the agent lives elsewhere.
+    expect(ok.drop.agents).toEqual([{ agentId: AGENT, action: 'detach' }])
+  })
+})
+
+/**
+ * A dependent REMOVAL carries a bare resource id, so on an install-wide
+ * connection the org can only come from the explicit argument or from the id→org
+ * map `register` built. A holder that acquired the resource through `duty/fetch`
+ * never registered it, so the map has nothing — and the send raises SCOPE_DENIED
+ * before the frame leaves the process (integration delete 500s after the row is
+ * already gone; cron delete logs and returns success; either way the holder goes
+ * on serving a deleted resource). Same class as #965, so the same fix: the org is
+ * explicit and local to the send.
+ */
+describe('a dependent removal to a holder that never registered the resource', () => {
+  const INTEGRATION = 'ffffffff-ffff-4fff-8fff-fffffffffff1'
+  const CRON = 'ffffffff-ffff-4fff-8fff-fffffffffff2'
+
+  /** An install-wide connection registered with EMPTY local state — exactly the
+   *  member that installed through `duty/fetch` and has no id→org map entries. */
+  async function readyWithNoRegisteredResources(h: ReturnType<typeof buildWsHarness>) {
+    const { stub } = await ready(h)
+    const state = h.deps.connReg.get(DaemonId(DAEMON))
+    expect(state?.orgByIntegration?.size).toBe(0)
+    expect(state?.orgByCron?.size).toBe(0)
+    return { stub, sender: new ControlSender(h.deps.connReg, new PgLaunchRepo(prisma)) }
+  }
+
+  it('integration/remove rides the explicit org, and is refused without it', async () => {
+    const h = buildWsHarness(prisma)
+    const { stub, sender } = await readyWithNoRegisteredResources(h)
+
+    await sender.integrationRemove(DAEMON, { integrationId: INTEGRATION }, DEFAULT_ORG_ID)
+    const sent = stub.sent.find((f) => f.type === 'integration/remove')
+    expect(sent?.orgId).toBe(DEFAULT_ORG_ID)
+
+    // The regression pin: without it the frame never leaves. This is what made
+    // the delete fail after the row was already gone.
+    await expect(sender.integrationRemove(DAEMON, { integrationId: INTEGRATION })).rejects.toThrow(/organization/i)
+    expect(stub.sent.filter((f) => f.type === 'integration/remove')).toHaveLength(1)
+  })
+
+  it('cron/remove rides the explicit org, and is refused without it', async () => {
+    const h = buildWsHarness(prisma)
+    const { stub, sender } = await readyWithNoRegisteredResources(h)
+
+    // REQ→ack: the stub never answers, so assert on what was SENT, not the reply.
+    void sender.cronRemove(DAEMON, { cronId: CRON }, DEFAULT_ORG_ID)
+    await vi.waitFor(() => expect(stub.sent.some((f) => f.type === 'cron/remove')).toBe(true))
+    expect(stub.sent.find((f) => f.type === 'cron/remove')?.orgId).toBe(DEFAULT_ORG_ID)
+
+    await expect(sender.cronRemove(DAEMON, { cronId: CRON })).rejects.toThrow(/organization/i)
+    expect(stub.sent.filter((f) => f.type === 'cron/remove')).toHaveLength(1)
   })
 })
 

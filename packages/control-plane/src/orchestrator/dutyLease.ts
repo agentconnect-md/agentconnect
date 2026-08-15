@@ -47,6 +47,11 @@ export const DUTY_LEASE_DEFAULTS: DutyLeaseConfig = {
 
 type Send = (type: 'duty/grant' | 'duty/revoke' | 'duty/renewed', payload: unknown) => void
 
+/** The freshness signal's source: the CP's current spec revision per agent. */
+export interface AgentRevisionReader {
+  configRevisions(agentIds: readonly AgentId[]): Promise<Map<string, bigint>>
+}
+
 function toGrantEntry(g: Pick<DutyGrantRecord, 'groupId' | 'orgId' | 'term' | 'members'>): DutyGrantEntry {
   return { groupId: g.groupId, orgId: g.orgId, term: String(g.term), members: g.members }
 }
@@ -92,9 +97,35 @@ export class DutyLeaseService {
     private readonly repo: DutyGroupRepo,
     private readonly clock: Clock,
     private readonly config: DutyLeaseConfig = DUTY_LEASE_DEFAULTS,
-    private readonly log?: { warn(obj: unknown, msg?: string): void }
+    private readonly log?: { warn(obj: unknown, msg?: string): void },
+    /** Absent ⇒ unstamped entries, and a member falls back to presence alone. */
+    private readonly agentRevisions?: AgentRevisionReader
   ) {
     this.bootedAtMs = clock.now()
+  }
+
+  /**
+   * Stamp every agent member with the CP's current spec revision. Presence is not
+   * freshness: a member that already holds an agent — installed under an earlier
+   * duty it has since lost, then edited while it was not a delivery target — must
+   * be able to tell a frozen replica from a current one and refetch only the
+   * frozen ones. An agent with no row (deleted under the projection, or a
+   * synthetic ref) is simply left unstamped.
+   */
+  private async stamp(entries: DutyGrantEntry[]): Promise<DutyGrantEntry[]> {
+    if (!this.agentRevisions || entries.length === 0) return entries
+    const agentIds = [
+      ...new Set(entries.flatMap((e) => e.members.filter((m) => m.kind === 'agent').map((m) => m.refId)))
+    ] as AgentId[]
+    if (agentIds.length === 0) return entries
+    const revisions = await this.agentRevisions.configRevisions(agentIds)
+    return entries.map((entry) => ({
+      ...entry,
+      members: entry.members.map((member) => {
+        const revision = member.kind === 'agent' ? revisions.get(member.refId) : undefined
+        return revision === undefined ? member : { ...member, configRevision: revision.toString() }
+      })
+    }))
   }
 
   /** Chain `fn` on the daemon's lane so operations never interleave. */
@@ -206,11 +237,11 @@ export class DutyLeaseService {
         'held duty groups grew past the grant member cap; superseded and vacated — move them to a dedicated tier'
       )
     }
-    const grants = [
+    const grants = await this.stamp([
       ...deliverable(missing).map(toGrantEntry),
       ...deliverable(stale).map(toGrantEntry),
       ...granted.map(toGrantEntry)
-    ]
+    ])
     for (const chunk of chunkGrants(grants, this.config.grantsPerFrame, this.config.grantMembersPerFrame)) {
       send('duty/grant', { grants: chunk })
     }
@@ -251,7 +282,8 @@ export class DutyLeaseService {
         await this.repo.release(holder, [claim.groupId])
         return { granted: false }
       }
-      return { granted: true, grant: toGrantEntry(group) }
+      const [grant] = await this.stamp([toGrantEntry(group)])
+      return { granted: true, grant }
     })
   }
 

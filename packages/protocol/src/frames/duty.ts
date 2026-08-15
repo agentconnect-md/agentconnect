@@ -13,10 +13,15 @@ import { CronUpsert } from './cron.js'
 export const DutyTerm = z.string().regex(/^\d+$/)
 export type DutyTerm = z.infer<typeof DutyTerm>
 
-/** One member of a duty group: an agent to serve or a daemon-held bot to connect. */
+/** One member of a duty group: an agent to serve or a daemon-held bot to connect.
+ *  `configRevision` is the freshness signal for AGENT members — the CP's current
+ *  `AgentSpec.configRevision` — so a member that already has the agent can tell a
+ *  current replica from a frozen one and refetch only the frozen ones. Optional:
+ *  an older CP omits it and the member falls back to presence alone. */
 export const DutyMemberRef = z.object({
   kind: z.enum(['agent', 'bot']),
-  refId: z.string().uuid()
+  refId: z.string().uuid(),
+  configRevision: z.string().regex(/^\d+$/).optional()
 })
 export type DutyMemberRef = z.infer<typeof DutyMemberRef>
 

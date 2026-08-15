@@ -214,15 +214,11 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
         agent.managedSkills.includes(managedSkillId)
       )
       await Promise.all(
-        agents.map(async (agent) => {
-          if (!agent.daemonId) return
-          try {
-            const spec = await deps.agentSpecs.assemble(agent)
-            await deps.control.agentUpsert(agent.daemonId, { agentId: agent.id, spec }, agent.orgId)
-          } catch (err) {
-            app.log.warn({ err, agentId: agent.id }, 'managed-skill fan-out deferred to reconnect roster')
-          }
-        })
+        agents.map((agent) =>
+          deps.agentDelivery.upsert(agent, (err, daemonId) => {
+            app.log.warn({ err, agentId: agent.id, daemonId }, 'managed-skill fan-out deferred to reconnect roster')
+          })
+        )
       )
     }
 

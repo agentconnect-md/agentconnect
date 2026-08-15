@@ -152,6 +152,7 @@ import { replayMemoryConnectionsTo, syncMemoryConnectionsToDaemons } from './orc
 import { relayHttpOrigin } from './orchestrator/mcpProvider.js'
 import { CollabRoutesService } from './orchestrator/collabRoutes.service.js'
 import { DutyLeaseService, DUTY_LEASE_DEFAULTS } from './orchestrator/dutyLease.js'
+import { AgentDelivery } from './orchestrator/agentDelivery.js'
 import { DutyRecomputeSweep } from './orchestrator/dutyRecompute.js'
 import { AgentMutationGate } from './orchestrator/agentMutationGate.js'
 import { AgentMoveService } from './orchestrator/agentMove.js'
@@ -617,10 +618,25 @@ export function buildContainer(
   // §2.3/§6.2): relays get the all-org table; daemons get their org-scoped copy.
   const collabRoutes = new CollabRoutesService(repos.daemon, repos.integration, repos.agent, relayControl, sender)
 
-  // Duty lease exchange riding the heartbeat (k8s daemons; orchestrator/dutyLease.ts).
-  const dutyLease = new DutyLeaseService(repos.dutyGroup, clock, undefined, {
-    warn: (o, m) => http.log.warn(o, m)
+  // The ONE resolver of an agent's delivery set — placement ∪ current duty
+  // holders — and the fan-out that rides it (orchestrator/agentDelivery.ts).
+  const agentDelivery = new AgentDelivery({
+    control: sender,
+    specs: agentSpecs,
+    duties: repos.dutyGroup,
+    clock
   })
+
+  // Duty lease exchange riding the heartbeat (k8s daemons; orchestrator/dutyLease.ts).
+  // The revision reader stamps each granted agent member with the CP's current
+  // spec revision, so a member that already has the agent can tell frozen from current.
+  const dutyLease = new DutyLeaseService(
+    repos.dutyGroup,
+    clock,
+    undefined,
+    { warn: (o, m) => http.log.warn(o, m) },
+    repos.agent
+  )
   // Duty-group projection: derived from Integration/CronDef rows on a rotation;
   // deltas reach daemons via the heartbeat lease exchange, never from the sweep.
   const dutyRecompute = new DutyRecomputeSweep(
@@ -661,7 +677,8 @@ export function buildContainer(
       warn: (o, m) => http.log.warn(o, m),
       debug: (o, m) => http.log.debug(o, m)
     },
-    platforms
+    platforms,
+    agentDelivery
   )
   const stagedAgentMoves = new AgentMoveService({
     agents: repos.agent,
@@ -715,6 +732,8 @@ export function buildContainer(
         grants: repos.externalMemoryGrant,
         relayRoster
       },
+      // The duty half of the reconcile roster: pinned-to-me ∪ held-by-me.
+      duties: repos.dutyGroup,
       log: { warn: (o, m) => http.log.warn(o, m) } // lazy over http.log (assigned below; called at reconcile time)
     }
   )
@@ -982,6 +1001,7 @@ export function buildContainer(
     liveness: connReg,
     daemonConns: connReg,
     control: sender,
+    agentDelivery,
     visibilityPush,
     relayControl,
     httpBot,
@@ -1478,25 +1498,20 @@ export function buildContainer(
                 ...hooks.map((hook) => hookService.broadcast(hook)),
                 ...agentIds.map(async (agentId) => {
                   const agent = await repos.agent.getUnscoped(agentId)
-                  if (!agent?.daemonId) return
-                  try {
-                    await sender.agentUpsert(agent.daemonId, {
-                      agentId: agent.id,
-                      spec: await agentSpecs.assemble(agent)
-                    })
-                  } catch (err) {
+                  if (!agent) return
+                  await agentDelivery.upsert(agent, (err, daemonId) => {
                     if (err instanceof NoConnection) {
                       http.log.debug(
-                        { agentId, daemonId: agent.daemonId },
+                        { agentId, daemonId },
                         'github rename: workspace agent/upsert skipped — daemon offline'
                       )
                     } else {
                       http.log.warn(
-                        { err, agentId, daemonId: agent.daemonId },
+                        { err, agentId, daemonId },
                         'github rename: workspace agent/upsert failed (backstop: reconnect roster)'
                       )
                     }
-                  }
+                  })
                 })
               ])
             )

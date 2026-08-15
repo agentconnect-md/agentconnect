@@ -190,6 +190,16 @@ export class PgCronRepo implements CronRepo {
     return rows.map(toRecord)
   }
 
+  async listForAgents(agentIds: readonly string[]): Promise<CronRecord[]> {
+    if (agentIds.length === 0) return []
+    const rows = await this.db.cronDef.findMany({
+      where: { agentId: { in: [...agentIds] } },
+      include: withUsers,
+      orderBy: { createdAt: 'asc' }
+    })
+    return rows.map(toRecord)
+  }
+
   async listForDaemon(daemonId: DaemonId): Promise<CronRecord[]> {
     // Via the agent relation: only crons whose owning agent is placed on this
     // daemon. Orphaned rows (agentId null) match no daemon — inert by design.

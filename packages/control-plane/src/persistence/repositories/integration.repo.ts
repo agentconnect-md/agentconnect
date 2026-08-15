@@ -538,6 +538,16 @@ export class PgIntegrationRepo implements IntegrationRepo {
     return rows.map(toRecord)
   }
 
+  // The duty half of that roster: the ledger names the agents, not the placement.
+  async activeForAgents(agentIds: readonly string[]): Promise<IntegrationRecord[]> {
+    if (agentIds.length === 0) return []
+    const rows = await this.db.integration.findMany({
+      where: { status: 'active', agentId: { in: [...agentIds] } },
+      orderBy: { createdAt: 'asc' }
+    })
+    return rows.map(toRecord)
+  }
+
   // Agent-collaboration directory: agents present in a channel, ACROSS all daemons
   // (the CP is the only authority for the full roster). Join the channel's active
   // integrations to their agents; dedupe by agent (an agent may reach a channel via
