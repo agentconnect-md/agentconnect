@@ -45,7 +45,13 @@ function scaffold(): string {
 }
 
 function fakeCpClient() {
-  return { emitUsageReport: vi.fn(), emitSessionActivity: vi.fn(), stop: vi.fn(async () => {}) }
+  // Org-scoped: this daemon owns its agents outright and is not duty-governed.
+  return {
+    emitUsageReport: vi.fn(),
+    emitSessionActivity: vi.fn(),
+    organizationScope: () => 'connection' as const,
+    stop: vi.fn(async () => {})
+  }
 }
 
 const rd = (payload: RdMsgWebchat['payload'], over: Partial<RdMsgWebchat> = {}): RdMsgWebchat => ({

@@ -1,6 +1,6 @@
 // The daemon half of `T_reassign > T_fence`: a member must stop serving its duties before
 // the CP can hand them to a successor. These pin what the fence tears down, what it must
-// leave alone, and that it does nothing at all while enforcement is off.
+// leave alone, and that an org-scoped daemon — which is not duty-governed — is untouched.
 import { describe, it, expect, vi } from 'vitest'
 import { existsSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -18,14 +18,15 @@ const INTEGRATION_B = '22222222-2222-4222-8222-222222222223'
 const CRON = '33333333-3333-4333-8333-333333333333'
 const ORG = 'org-1'
 
-function scaffold(dutyEnforcement: boolean): string {
+// No `features` block anywhere in here on purpose: duty enforcement follows the connection's
+// tenancy, so an install-wide member enforces with no configuration at all.
+function scaffold(): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-duty-fence-'))
   writeFileSync(
     join(root, 'config.json'),
     JSON.stringify({
       version: 1,
       controlPlane: { enabled: false },
-      features: { dutyEnforcement },
       runtimes: { claude: { command: 'node', args: ['unused'] } }
     })
   )
@@ -76,13 +77,13 @@ const bundle = (
 })
 
 /** A daemon holding one granted duty, with a stub CP client — only the duty surface runs. */
-async function boot(dutyEnforcement = true) {
-  const root = scaffold(dutyEnforcement)
+async function boot(scope: 'frame' | 'connection' = 'frame') {
+  const root = scaffold()
   const daemon = new Daemon({ root })
   await daemon.start()
   const fetchDutyAgent = vi.fn(async () => ({ bundle: bundle() }))
   ;(daemon as any).cpClient = {
-    organizationScope: () => 'frame',
+    organizationScope: () => scope,
     stop: async () => {},
     releaseDuties: vi.fn(async () => {}),
     // An admission reports its new digest immediately: the CP holds every projection that
@@ -98,7 +99,7 @@ async function boot(dutyEnforcement = true) {
 /** A daemon with an admission held open at the `duty/fetch` round trip, so a withdrawal can land
  *  inside the window between grant receipt and `applyGrant` — the gap this guard exists for. */
 async function bootMidAdmission() {
-  const daemon = new Daemon({ root: scaffold(true) })
+  const daemon = new Daemon({ root: scaffold() })
   await daemon.start()
   let release!: () => void
   const fetched = new Promise<void>((resolve) => {
@@ -147,7 +148,9 @@ function liveSlackSocket(
 const pooled = (d: Daemon): unknown[] => (d as any).slackPool.all()
 
 describe('the duty self-fence', () => {
-  it('releases every held group and stops serving its agents', async () => {
+  it('releases every held group and stops serving its agents, with no configuration asking for it', async () => {
+    // The scaffold writes no `features` block: an install-wide (frame-scope) connection is the
+    // whole condition, so a fresh pool member enforces the moment it registers.
     const { daemon } = await boot()
     expect(duties(daemon).digest()).toEqual([{ groupId: GROUP, term: '1' }])
     expect(served(daemon)).toContain(AGENT)
@@ -338,13 +341,14 @@ describe('the duty self-fence', () => {
     await daemon.stop()
   })
 
-  it('does nothing while enforcement is off — duties gate no service, so there is nothing to fence', async () => {
-    const { daemon } = await boot(false)
+  it('does nothing on an org-scoped connection — that daemon owns its agents outright', async () => {
+    // Duty is a tenancy question: an org-scoped daemon is not in the ledger, so its agents are
+    // served whatever the registry happens to hold, and a fence there would drop live traffic.
+    const { daemon } = await boot('connection')
     expect(served(daemon)).toContain(AGENT)
 
     fence(daemon)
 
-    // Still held, still served: tearing anything down here would drop live traffic.
     expect(duties(daemon).digest()).toEqual([{ groupId: GROUP, term: '1' }])
     expect(served(daemon)).toContain(AGENT)
     await daemon.stop()

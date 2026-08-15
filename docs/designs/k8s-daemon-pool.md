@@ -1,8 +1,9 @@
 # The K8s Daemon Pool: Multi-Org Daemons and the Duty Ledger
 
 **Status:** The ownership mechanism is implemented (control plane, daemon,
-relay, protocol) with enforcement opt-in behind `features.dutyEnforcement`,
-off by default. The remaining build order is the tracking issue
+relay, protocol) and enforcement is unconditional: an install-wide (frame-scope)
+member is duty-governed, an org-scoped daemon is not, and there is no switch
+between them. The remaining build order is the tracking issue
 "K8s daemon pool — implementation plan and tracking". This document states the
 design and marks what is not yet built; file references are given so every
 claim can be checked against the code.
@@ -253,11 +254,9 @@ timer, or tick (`orchestrator/dutyLease.ts`):
 
 - **T_fence** — a holder that cannot renew for T_fence **self-fences**: it
   tears down the affected duties, including their platform connections. Sized
-  to cover a routine CP deploy. **Not yet implemented daemon-side** — on
-  losing the CP link the client today only stops heartbeats while the registry
-  retains its grants; landing this self-fence is a precondition for turning
-  enforcement on (tracking issue), because without it a partitioned ex-holder
-  could still serve a group a successor has claimed.
+  to cover a routine CP deploy. Implemented daemon-side: the client tracks a
+  per-group deadline and calls `Daemon.fenceDuties`, without which a partitioned
+  ex-holder could still serve a group a successor has claimed.
 - **T_reassign > T_fence** — the CP treats a duty as vacant only after
   T_reassign without renewal, guaranteeing the old holder has self-fenced
   before a successor can claim.
@@ -543,7 +542,7 @@ dials, and sandboxes never dial anyone.
 | Failure                              | Behavior                                                                                                                                                                                                                                                                                                                        | Bound                                                                                                                                |
 | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
 | **Member death**                     | Its duties stop renewing; successors claim after T_reassign and dial. Sleeping agents untouched. In-memory pending turns die. For relay-ingress agents the relay re-routes the bot within seconds, but that member waits out T_reassign before it can claim the dead member's agent homes — no connection-death fast path (R7). | Platform retry/buffering bounds message loss (accepted window 1); takeover gap ≈ T_reassign + platform reconnect (accepted window 2) |
-| **Member ↔ CP partition**            | The member self-fences its duties at T_fence, including tearing down platform connections. _(The daemon-side self-fence is not yet implemented — see §5 and the tracking issue; enforcement stays off until it lands.)_                                                                                                         | Accepted false-positive teardown when the CP is up but unreachable from this member                                                  |
+| **Member ↔ CP partition**            | The member self-fences its duties at T_fence, including tearing down platform connections.                                                                                                                                                                                                                                      | Accepted false-positive teardown when the CP is up but unreachable from this member                                                  |
 | **Member ↔ data-plane PG partition** | The member cannot serve state: fail turns after a bounded retry window, release duties, stop accepting work.                                                                                                                                                                                                                    | Data-plane PG availability is pool availability                                                                                      |
 | **Member ↔ sandbox path break**      | Dial-retry with backoff; after N failures, release the agent's duty so another member claims and dials from its own network position.                                                                                                                                                                                           | N × backoff before relocation                                                                                                        |
 | **Shim side**                        | On connection drop the shim just listens — it never dials. A half-dead old holder is fenced by term at the shim and at every data-plane write.                                                                                                                                                                                  | Fencing is absolute, not probabilistic                                                                                               |
@@ -568,18 +567,22 @@ its runtimes — it spawns child processes and owns their stdio. Dial-in makes
 pool and local symmetric: in both, the daemon reaches out to establish the
 execution channel.
 
-**Rollout.** The exchange runs unconditionally on frame-mode daemons — the
-ledger needs the digest to converge — but _enforcement_ (the
-`transportAgents()` filter, schedule scoping, refusal of unheld triggers) is
-behind `features.dutyEnforcement`, default off: a grant or revoke only moves
-bookkeeping until the flag flips, so convergence is observable in production
-before it gates a single connection. A pool member's state root is an
-`emptyDir`, so its config.json is regenerated from defaults on every Pod start
-and cannot carry the flag; the operator sets `AGENTCONNECT_DUTY_ENFORCEMENT`
-(`1`/`true`/`yes`/`on`, anything unrecognized refused at startup) on the Pod
-instead, which outranks the file for this one key. The daemon reports which
-state it got — enforcing, or configured-but-inactive on a non-frame
-connection — once the control-plane connection is up.
+**Enforcement is not configurable.** Both the exchange and _enforcement_ (the
+`transportAgents()` filter, schedule scoping, refusal of unheld triggers) follow
+one predicate: `organizationScope() === 'frame'`. An install-wide member is
+duty-governed and needs no configuration to be; an org-scoped daemon owns its
+agents outright and is untouched. A pool member's state root is an `emptyDir`,
+so its config.json is regenerated from defaults on every Pod start — which is
+now simply irrelevant, since the file carries no part of the decision.
+
+There was a `features.dutyEnforcement` soak flag, with an
+`AGENTCONNECT_DUTY_ENFORCEMENT` override, and it is gone. It let a grant or
+revoke move only bookkeeping so convergence could be watched before it gated a
+connection, and it made sense only while placement pinned each agent to exactly
+one member: "serve everything I was placed with" was then a well-defined
+fallback. Once placement became a target, a `pool` agent is placed on no member,
+so off meant those agents were served by nobody — a lever that breaks the
+system rather than a safety valve.
 
 **There is no grant policy any more.** The soak ran on an incumbent-only one —
 a vacancy went only to the member the group's agents were already placed on —

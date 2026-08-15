@@ -2143,8 +2143,6 @@ export class Daemon {
   // only on an install-wide connection — empty on a single-org daemon, which is
   // what keeps the whole path dormant there.
   private readonly duties = new DutyRegistry()
-  // Last enforcement state logged, so a reconnect only speaks when the answer changed.
-  private dutyEnforcementReported?: boolean
   // What an unbounded member reports as heartbeat headroom: the CP's own
   // per-tick grant cap, so the wire carries a finite number without implying a
   // ceiling. Never used for a local capacity decision.
@@ -3005,9 +3003,6 @@ export class Daemon {
     this.log.info(
       `control plane: ${cfg.controlPlane?.enabled ? `enabled (${cfg.controlPlane.url ?? 'no url'})` : 'disabled — running local'}`
     )
-    // The default is off and silent; when it is on, say so before any lease can gate a connection.
-    if (cfg.features.dutyEnforcement)
-      this.log.info('duty: enforcement configured on — awaiting an install-wide (frame-scope) control-plane connection')
     this.agentsDir = cfg.agentsDir!
     this.removalObligationsDir = agentRemovalObligationsDir(root)
     this.removedAgentTombstones = agentRemovalTombstones(this.agentsDir, this.removalObligationsDir)
@@ -12731,24 +12726,12 @@ export class Daemon {
     return max - this.duties.agents().size - Math.max(0, this.inFlightDutyClaims.size - 1)
   }
 
-  /** True when duty leases actually gate service. Off (the default) the exchange
-   *  still runs and the registry still tracks — only enforcement is withheld. */
+  /** True when duty leases gate service: a tenancy question, not an option. An install-wide
+   *  (frame-scope) member serves only what it holds a lease for; an org-scoped daemon owns its
+   *  agents outright and never participates in the ledger. */
   private dutyEnforced(): boolean {
-    // `cfg` lands in start(); transportAgents can run before that in tests.
-    return this.cfg?.features?.dutyEnforcement === true && this.cpClient?.organizationScope() === 'frame'
-  }
-
-  /** Which of the two configured-on states this connection resolved to; a reconnect that changes nothing stays quiet. */
-  private logDutyEnforcementScope(): void {
-    if (this.cfg?.features?.dutyEnforcement !== true) return
-    const enforcing = this.dutyEnforced()
-    if (this.dutyEnforcementReported === enforcing) return
-    this.dutyEnforcementReported = enforcing
-    if (enforcing) this.log.info('duty: enforcement ACTIVE — this daemon serves only the agents it holds a lease for')
-    else
-      this.log.warn(
-        `duty: enforcement INACTIVE — it applies only to an install-wide (frame-scope) connection, and this one is ${this.cpClient?.organizationScope() ?? 'not established'}`
-      )
+    // `cpClient` lands in start(); transportAgents can run before that in tests.
+    return this.cpClient?.organizationScope() === 'frame'
   }
 
   /** `duty/grant` EVT: admit the grants off the frame-dispatch path, so a slow
@@ -12839,8 +12822,7 @@ export class Daemon {
     // Report the new digest immediately. The CP publishes the projections that address this member
     // only once it has SEEN the group held (the grant alone is not proof of an install), so waiting
     // for the next tick leaves an agent this member is already serving unroutable for up to a
-    // heartbeat. Outside the enforcement gate below on purpose: the digest is sent, and the CP
-    // acts on it, whether or not this member is enforcing.
+    // heartbeat. Outside the duty gate below on purpose: the CP acts on the digest either way.
     this.cpClient?.reportDutiesNow()
     this.onDutyChanged()
   }
@@ -13032,7 +13014,7 @@ export class Daemon {
   // sessions, and the registry entry all survive it (#948), and the omitted groups are what the CP's
   // missing-regrant path reissues on reconnect.
   private fenceDuties(groupIds: string[]): void {
-    // Enforcement off ⇒ duties gate nothing, so a teardown would drop live traffic for no reason.
+    // Not duty-governed (an org-scoped daemon) ⇒ a teardown would drop live traffic for no reason.
     if (!this.dutyEnforced()) return
     // BEFORE the held filter: a group still being admitted is not held yet, so there would be
     // nothing to shed — and it would start serving the moment its admission completed.
@@ -21574,8 +21556,6 @@ export class Daemon {
       // may have missed emits while we were disconnected; latest-wins upsert).
       onReady: () => {
         resolveInitialRegistry()
-        // The organization scope is only known once the connection is up, and it is half the answer.
-        this.logDutyEnforcementScope()
         void this.probeRuntimesAndEmit()
         void this.syncOrganizationSuggestions().catch((err) =>
           this.log.warn(`cp: organization suggestion replay failed (${err instanceof Error ? err.name : 'unknown'})`)

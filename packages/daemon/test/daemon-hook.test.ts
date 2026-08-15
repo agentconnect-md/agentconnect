@@ -97,6 +97,8 @@ function fakeCpClient() {
   return {
     hookReports,
     sessionEvents,
+    // An ordinary org-scoped daemon: it owns its agents outright and is not duty-governed.
+    organizationScope: () => 'connection' as const,
     stop: vi.fn(async () => {}),
     emitEventSession: (event: EventSession) => sessionEvents.push(event),
     emitHookReport: async (r: HookReport) => {
@@ -1298,6 +1300,7 @@ describe('Daemon rd/msg hook fires', () => {
     const hookReports: HookReport[] = []
     const cp = {
       stop: vi.fn(async () => {}),
+      organizationScope: () => 'connection' as const,
       startHook: vi.fn(async () => ({ accepted: true })),
       authorizeGithubReview: vi.fn(async () => ({
         attemptId: currentAttemptId,
@@ -2112,7 +2115,11 @@ describe('Daemon rd/msg hook fires', () => {
       const emitHookReport = vi.fn(async () => {
         throw new Error('cp unreachable')
       })
-      ;(daemon as never as { cpClient: unknown }).cpClient = { stop: vi.fn(async () => {}), emitHookReport }
+      ;(daemon as never as { cpClient: unknown }).cpClient = {
+        stop: vi.fn(async () => {}),
+        organizationScope: () => 'connection' as const,
+        emitHookReport
+      }
 
       const first = fire({ sessionKey: HOOK_ID })
       const second = fire({ sessionKey: HOOK_ID, msgId: `${HOOK_ID}:d-2`, deliveryKey: 'd-2' })
@@ -2159,7 +2166,11 @@ describe('Daemon rd/msg hook fires', () => {
     const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
     await daemon.start()
     const emitHookReport = vi.fn(() => new Promise<'acknowledged'>(() => {}))
-    ;(daemon as never as { cpClient: unknown }).cpClient = { stop: vi.fn(async () => {}), emitHookReport }
+    ;(daemon as never as { cpClient: unknown }).cpClient = {
+      stop: vi.fn(async () => {}),
+      organizationScope: () => 'connection' as const,
+      emitHookReport
+    }
 
     const rows = Array.from({ length: 150 }, (_, i) => ({
       id: `${HOOK_ID}:backlog-${i}`,

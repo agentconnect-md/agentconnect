@@ -72,6 +72,8 @@ async function boot(reply: (prompt: string) => string = () => 'done') {
   ;(daemon as never as { cpClient: unknown }).cpClient = {
     emitUsageReport: vi.fn(),
     emitSessionActivity: vi.fn(),
+    // Org-scoped: this daemon owns its agents outright and is not duty-governed.
+    organizationScope: () => 'connection' as const,
     stop: vi.fn(async () => {})
   }
   const d = daemon as never as {

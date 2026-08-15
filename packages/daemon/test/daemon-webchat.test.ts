@@ -110,6 +110,8 @@ function fakeCpClient() {
     usageReports,
     emitUsageReport: vi.fn((report: unknown) => usageReports.push(report)),
     emitSessionActivity: vi.fn(),
+    // An ordinary org-scoped daemon: it owns its agents outright and is not duty-governed.
+    organizationScope: () => 'connection' as const,
     stop: vi.fn(async () => {}),
     // The transport-neutral reply sink a dispatch()/handleRelayMsg call threads in (the
     // turn engine writes here instead of a hardcoded client; captures the same arrays).
