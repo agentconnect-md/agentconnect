@@ -32,6 +32,7 @@ import { NoConnection } from '../../orchestrator/outbound.js'
 import { installNewBot } from '../install-bot.js'
 import { BotExternalIdentityTaken } from '../../persistence/errors.js'
 import { integrationPlatformAvailability } from '../daemon-platform-capability.js'
+import { relayIngress } from '../relay-ingress.js'
 import { buildCreateIntegrationBody, credentialBlockOf } from '../dto/create-integration-body.js'
 import type { CpConfigRefusal } from '../../platforms/provider.js'
 import { MULTI_AGENT_UNSUPPORTED_MESSAGE, supportsMultiAgentBots } from '../../platforms/sharing.js'
@@ -142,15 +143,9 @@ export function integrationRoutes(deps: HttpDeps) {
           body: { error: 'Bad Request', statusCode: 400, message: MULTI_AGENT_UNSUPPORTED_MESSAGE }
         }
       }
-      if (!deps.httpBot.hasConnectedRelay()) {
-        return {
-          code: 409,
-          body: {
-            error: 'Conflict',
-            statusCode: 409,
-            message: 'HTTP callback delivery is unavailable on this deployment'
-          }
-        }
+      const ingress = relayIngress(deps)
+      if (!ingress.ok) {
+        return { code: 409, body: { error: 'Conflict', statusCode: 409, message: ingress.message } }
       }
       if (bot.agentIds.includes(agentId)) {
         return { code: 409, body: { error: 'Conflict', statusCode: 409, message: 'this agent already uses this bot' } }
@@ -322,12 +317,11 @@ export function integrationRoutes(deps: HttpDeps) {
                 const shareableErr = await validateShareableInstall(bot, agent.id, req.body.platform)
                 if (shareableErr) return reply.code(shareableErr.code).send(shareableErr.body)
                 if (!bot.shareable) await deps.repos.bot.setShareable(orgId, bot.id, true)
-              } else if (!deps.httpBot.hasConnectedRelay()) {
-                return reply.code(409).send({
-                  error: 'Conflict',
-                  statusCode: 409,
-                  message: 'HTTP callback delivery is unavailable on this deployment'
-                })
+              } else {
+                const ingress = relayIngress(deps)
+                if (!ingress.ok) {
+                  return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: ingress.message })
+                }
               }
               // Membership admission is ATOMIC with the bot row — the same
               // primitive as the platform callback. The checks above are the
@@ -413,18 +407,17 @@ export function integrationRoutes(deps: HttpDeps) {
               message: 'HTTP callback delivery currently supports Slack and Feishu only'
             })
           }
-          // Relay availability is CORE's 409 (§9 — core, not the provider, knows
+          // Public relay ingress is CORE's 409 (§9 — core, not the provider, knows
           // the relay pool), and it now precedes the provider round-trip on every
           // platform: a deployment that cannot serve http ingress at all is a
           // deployment-level blocker, so there is no point spending a provider API
           // call first. (Feishu already checked in this order; Slack checked after.
           // The two refusals can only race when the credential is ALSO bad.)
-          if (transport === 'http' && !deps.httpBot.hasConnectedRelay()) {
-            return reply.code(409).send({
-              error: 'Conflict',
-              statusCode: 409,
-              message: 'HTTP callback delivery is unavailable on this deployment'
-            })
+          if (transport === 'http') {
+            const ingress = relayIngress(deps)
+            if (!ingress.ok) {
+              return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: ingress.message })
+            }
           }
 
           // The chosen platform's credential block: validated by the provider's OWN

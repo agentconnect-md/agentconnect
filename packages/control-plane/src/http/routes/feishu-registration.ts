@@ -22,7 +22,7 @@ import {
 } from '../feishu-registration.js'
 import { installNewFeishuBot } from '../install-feishu.js'
 import { feishuEventsRequestUrl, type ConfigureFeishuHttpAppInput } from '../feishu-app-config.js'
-import { relayHttpBase } from './slack-install.js'
+import { relayIngress } from '../relay-ingress.js'
 import type { FeishuRouteSeams } from '../platform-route-seams.js'
 import {
   ErrorDto,
@@ -107,13 +107,9 @@ export function feishuRegistrationRoutes(deps: HttpDeps, feishu: FeishuRouteSeam
         const createdByUserId = req.principal.userId
         const targetAgentId = agent.id
         const transport = req.body.transport
-        const relayBase = transport === 'http' ? relayHttpBase(deps.config.PUBLIC_RELAY_URL) : null
-        if (transport === 'http' && (!relayBase || !deps.httpBot.hasConnectedRelay())) {
-          return reply.code(409).send({
-            error: 'Conflict',
-            statusCode: 409,
-            message: 'HTTP callback delivery is unavailable on this deployment'
-          })
+        const ingress = transport === 'http' ? relayIngress(deps) : null
+        if (ingress && !ingress.ok) {
+          return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: ingress.message })
         }
         const tenant = await feishu.tenantGuard.loginAppStatus(req.body.region).catch(() => 'unavailable' as const)
         if (tenant === 'not_configured') {
@@ -227,9 +223,11 @@ export function feishuRegistrationRoutes(deps: HttpDeps, feishu: FeishuRouteSeam
               throw new FeishuRegistrationSetupError('agent_unavailable')
             }
             const name = registration.requestedName || (check?.status === 'ok' ? check.name : null) || current.name
-            const relayBase = registration.transport === 'http' ? relayHttpBase(deps.config.PUBLIC_RELAY_URL) : null
-            if (registration.transport === 'http' && (!relayBase || !deps.httpBot.hasConnectedRelay())) {
-              throw new FeishuRegistrationRetryError()
+            let relayBase: string | null = null
+            if (registration.transport === 'http') {
+              const ingress = relayIngress(deps)
+              if (!ingress.ok) throw new FeishuRegistrationRetryError()
+              relayBase = ingress.base
             }
             const existingSecret =
               registration.transport === 'http'
