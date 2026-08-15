@@ -36,7 +36,8 @@ import {
   PgExternalMemoryGrantRepo,
   PgMcpProviderRepo,
   PgMcpGrantRepo,
-  PgDutyGroupRepo
+  PgDutyGroupRepo,
+  PgHookSecretStore
 } from '../../src/persistence/index.js'
 import { PlaintextSecretCipher } from '../../src/secrets/cipher.js'
 import { EpochService } from '../../src/orchestrator/epoch.js'
@@ -52,6 +53,8 @@ import { AgentMutationGate } from '../../src/orchestrator/agentMutationGate.js'
 import { CollabRoutesService } from '../../src/orchestrator/collabRoutes.service.js'
 import { DutyLeaseService, type DutyLeaseConfig } from '../../src/orchestrator/dutyLease.js'
 import { RelayControlSender } from '../../src/orchestrator/relayControl.js'
+import { HookService } from '../../src/hooks/hook.service.js'
+import { AgentRoutingConverger } from '../../src/orchestrator/agentRouting.js'
 import { FrameRouter } from '../../src/ws/handlers/index.js'
 import { DaemonConnection } from '../../src/ws/connection.js'
 import { RelayRegistry } from '../../src/ws/relay-registry.js'
@@ -83,6 +86,10 @@ export const TEST_API_KEY_PEPPER = 'test-api-key-pepper-0123456789abcdef'
 export interface WsHarness {
   deps: DaemonWsDeps
   clock: FakeClock
+  /** Compiled hook rules the relay would have received, in order — the routing projection that
+   *  addresses a daemon, so "ingress follows the holder" is assertable on it directly. */
+  hookAssigns: CapturedHookRule[]
+  hookRemovals: string[]
   codec: ApiKeyCodec
   /** Provision a daemon row + mint an API key for `daemonId`; returns the plaintext `apiKey`. */
   mintToken(daemonId: string): Promise<string>
@@ -103,6 +110,13 @@ export interface HarnessOpts {
   relays?: RelayRosterEntry[]
   /** Duty lease knobs (defaults suit tests; recoveryGraceMs 0 so grants flow immediately). */
   dutyLease?: Partial<DutyLeaseConfig>
+}
+
+/** One compiled hook rule as the relay would receive it — the routing projection under test. */
+export interface CapturedHookRule {
+  hookId: string
+  agentId: string
+  daemonId: string
 }
 
 export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): WsHarness {
@@ -212,6 +226,32 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
     }
   )
 
+  // A REAL HookService over a capturing relay sender: `hookAssigns` is literally what a relay
+  // would dispatch on, so a test can assert that ingress follows a holder change rather than
+  // asserting that some internal seam was called.
+  const hookAssigns: CapturedHookRule[] = []
+  const hookRemovals: string[] = []
+  const hookService = new HookService(
+    repos.hook,
+    new PgHookSecretStore(prisma, cipher),
+    repos.agent,
+    {
+      hookAssign: (rule: { hookId: string; agentId: string; daemonId: string }) => void hookAssigns.push(rule),
+      hookRemove: (hookId: string) => void hookRemovals.push(hookId)
+    } as unknown as RelayControlSender,
+    placementResolver
+  )
+  const agentRouting = new AgentRoutingConverger({
+    hooks: hookService,
+    collabRoutes,
+    httpBot: { syncBot: async () => {} },
+    agents: repos.agent,
+    integrations: repos.integration,
+    bots: repos.bot,
+    clock,
+    delayMs: 0
+  })
+
   const dutyLease = new DutyLeaseService(
     dutyGroupRepo,
     clock,
@@ -226,7 +266,8 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
       refusalBackoffMs: opts.dutyLease?.refusalBackoffMs ?? 300_000
     },
     undefined,
-    repos.agent
+    repos.agent,
+    agentRouting
   )
 
   const deps: DaemonWsDeps = {
@@ -263,6 +304,8 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
   return {
     deps,
     clock,
+    hookAssigns,
+    hookRemovals,
     codec,
     mintCloudDaemon: async (daemonId: string) => {
       await prisma.daemon.create({ data: { id: daemonId, orgId: null, maxAgents: 8, status: 'ready' } })

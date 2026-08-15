@@ -18,6 +18,7 @@ import { buildCollabSnapshot } from './collabSnapshot.js'
 import type { CollabChannelRoute, CollabOrgAgent, CollabRoutesSnapshot } from '@agentconnect.md/protocol'
 import type { OrgId } from '../domain/ids.js'
 import { PLACEMENT_ONLY, type PlacementResolver } from './placementResolver.js'
+import { servedAgents, type DutyHeldAgentReader } from './servedAgents.js'
 
 export class CollabRoutesService {
   private tail: Promise<void> = Promise.resolve()
@@ -30,7 +31,10 @@ export class CollabRoutesService {
     private readonly control?: ControlSender,
     /** Names the member each peer is routable at (placement, or the current duty holder).
      *  Absent (tests / no pool) ⇒ the directory's own placement, which is the pre-duty behavior. */
-    private readonly placement: Pick<PlacementResolver, 'resolveDirectory'> = PLACEMENT_ONLY
+    private readonly placement: Pick<PlacementResolver, 'resolveDirectory'> = PLACEMENT_ONLY,
+    /** The duty half of "which orgs does this install-wide member serve".
+     *  Absent (tests / no pool) ⇒ placement alone, which is the pre-duty behavior. */
+    private readonly duties?: DutyHeldAgentReader
   ) {}
 
   private serialize<T>(run: () => Promise<T>): Promise<T> {
@@ -52,7 +56,15 @@ export class CollabRoutesService {
         orgIds.add(daemon.orgId)
         continue
       }
-      for (const agent of await this.agents.listForDaemon(daemon.id)) orgIds.add(agent.orgId)
+      // An install-wide member's orgs are the orgs of the agents it SERVES. Placement alone would
+      // miss every pool agent — they name no machine — and drop that org from the relay's
+      // full-replace table, so its peers would stop being callable.
+      const served = await servedAgents(daemon.id, {
+        agents: this.agents,
+        ...(this.duties ? { duties: this.duties } : {}),
+        now: new Date()
+      })
+      for (const agent of served.agents) orgIds.add(agent.orgId)
     }
     const channels: CollabChannelRoute[] = []
     const agents: CollabOrgAgent[] = []

@@ -10,6 +10,7 @@ import {
   type DutyRevoke
 } from '@agentconnect.md/protocol'
 import type { DutyGroupRepo, DutyGroupRecord, DutyGrantRecord } from '../persistence/ports.js'
+import type { DutyMemberKey } from '../domain/duty.js'
 import type { AgentId, DaemonId, OrgId } from '../domain/ids.js'
 import type { DutyClaimScope } from '../domain/placement.js'
 import type { Clock } from '../domain/clock.js'
@@ -50,6 +51,11 @@ export const DUTY_LEASE_DEFAULTS: DutyLeaseConfig = {
 }
 
 type Send = (type: 'duty/grant' | 'duty/revoke' | 'duty/renewed', payload: unknown) => void
+
+/** The agent members of a set of groups — the unit a routing convergence is keyed on. */
+function agentIdsOf(groups: readonly { members: DutyMemberKey[] }[]): string[] {
+  return [...new Set(groups.flatMap((g) => g.members.filter((m) => m.kind === 'agent').map((m) => m.refId)))]
+}
 
 /** The freshness signal's source: the CP's current spec revision per agent. */
 export interface AgentRevisionReader {
@@ -113,7 +119,12 @@ export class DutyLeaseService {
     private readonly config: DutyLeaseConfig = DUTY_LEASE_DEFAULTS,
     private readonly log?: { warn(obj: unknown, msg?: string): void },
     /** Absent ⇒ unstamped entries, and a member falls back to presence alone. */
-    private readonly agentRevisions?: AgentRevisionReader
+    private readonly agentRevisions?: AgentRevisionReader,
+    /** Re-converges the routing projections that bake in the serving daemon. A grant or a release
+     *  moves who serves the agent, so the hook rules, HTTP-bot assignment and collaboration
+     *  snapshot have to follow — otherwise the ledger heals and ingress keeps arriving at the
+     *  member that lost it. Absent (tests / no pool) ⇒ no convergence, the pre-duty behavior. */
+    private readonly routing?: { kick(agentIds: Iterable<string>): void }
   ) {
     this.bootedAtMs = clock.now()
   }
@@ -197,6 +208,7 @@ export class DutyLeaseService {
 
     if (surrendered.length > 0) {
       await this.repo.release(daemonId, surrendered)
+      this.routing?.kick(agentIdsOf(missing.filter((g) => surrendered.includes(g.groupId))))
       this.log?.warn(
         { daemonId, groupIds: surrendered, beats: this.config.refusalsBeforeRelease },
         'duty groups were granted but never reported as held; lease handed back so another member can take them'
@@ -332,6 +344,9 @@ export class DutyLeaseService {
         'held duty groups grew past the grant member cap; superseded and vacated — move them to a dedicated tier'
       )
     }
+    // Fresh grants moved the agent to THIS member; the surrendered ones moved it away. Both are
+    // holder changes, and the projections that address a daemon have to be re-derived for them.
+    if (granted.length > 0) this.routing?.kick(agentIdsOf(granted))
     const grants = await this.stamp([
       ...regrant.map(toGrantEntry),
       ...deliverable(stale).map(toGrantEntry),
@@ -382,6 +397,7 @@ export class DutyLeaseService {
         return { granted: false }
       }
       const [grant] = await this.stamp([toGrantEntry(group)])
+      this.routing?.kick(agentIdsOf([group]))
       return { granted: true, grant }
     })
   }
@@ -406,6 +422,12 @@ export class DutyLeaseService {
    *  every grant that exchange emitted reaches the daemon BEFORE this ack, and
    *  no grant can slip in between the vacate and the ack. */
   release(daemonId: DaemonId, groupIds: string[]): Promise<void> {
-    return this.serialize(daemonId, () => this.repo.release(daemonId, groupIds))
+    return this.serialize(daemonId, async () => {
+      // Read the membership BEFORE the vacate: `release` keeps the rows, but reading after would
+      // race a successor's claim and converge for the wrong holder.
+      const groups = await this.repo.getByIds(groupIds)
+      await this.repo.release(daemonId, groupIds)
+      this.routing?.kick(agentIdsOf(groups))
+    })
   }
 }

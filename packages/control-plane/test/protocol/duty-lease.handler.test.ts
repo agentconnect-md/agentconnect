@@ -973,3 +973,66 @@ describe('proactive healing after a rollout (protocol level, real Postgres)', ()
     expect((await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })).holder).toBe(DAEMON)
   })
 })
+
+describe('routing follows the holder (protocol level, real Postgres)', () => {
+  const HOOK = '77777777-7777-4777-8777-77777777770a'
+
+  async function seedPooledAgentWithHook(): Promise<void> {
+    await prisma.agent.create({
+      data: { id: AGENT, orgId: DEFAULT_ORG_ID, name: 'hooked', runtime: 'claude', placementKind: 'pool' }
+    })
+    await prisma.hookDef.create({
+      data: {
+        id: HOOK,
+        orgId: DEFAULT_ORG_ID,
+        agentId: AGENT,
+        kind: 'webhook',
+        name: 'inbound',
+        enabled: true,
+        urlToken: 'wh-pool-heal-token',
+        sessionMode: 'perDelivery'
+      }
+    })
+  }
+
+  // THE test this whole change exists for. "The sweep re-granted it" is not "it heals" unless the
+  // thing that ADDRESSES a daemon moves too: the relay dispatches an inbound webhook on the
+  // compiled hook rule, and that rule bakes in a member id. So: A holds, A lapses, B is granted —
+  // and the rule the relay would dispatch on now names B, with no reconnect and no trigger.
+  //
+  // Mutation check: drop the `routing?.kick(...)` from the lease exchange's grant branch and the
+  // rule stays pinned to A, so the message keeps arriving at the member that lost the agent.
+  it('re-addresses the compiled hook rule at the new holder after a grant, with no reconnect', async () => {
+    const start = 1_700_000_000_000
+    const h = buildWsHarness(prisma)
+    await seedPooledAgentWithHook()
+    // OTHER held it and its lease ran out 1ms ago — the rollout, as the ledger sees it.
+    await seedGroup({ holder: OTHER, term: 4n, expiresAt: new Date(start - 1) })
+    const { stub } = await ready(h)
+
+    stub.inject('heartbeat', heartbeat({ held: [], headroom: 4 }))
+    await stub.expectFrame('duty/grant')
+    // The converger is debounced on the same clock the exchange runs on.
+    h.clock.advance(1)
+    await vi.waitFor(() => expect(h.hookAssigns.length).toBeGreaterThan(0))
+
+    const latest = h.hookAssigns.at(-1)!
+    expect(latest).toMatchObject({ hookId: HOOK, agentId: AGENT, daemonId: DAEMON })
+    expect(h.hookAssigns.every((rule) => rule.daemonId !== OTHER)).toBe(true)
+  })
+
+  it('withdraws the rule when the lease is handed back and nothing serves the agent', async () => {
+    // The other half of the same property: a holder change AWAY from a member has to stop the
+    // ingress it was receiving, or a dead member keeps being addressed.
+    const h = buildWsHarness(prisma, { dutyLease: { refusalsBeforeRelease: 1 } })
+    const startAt = new Date(h.clock.now())
+    await seedPooledAgentWithHook()
+    await seedGroup({ holder: DAEMON, term: 1n, expiresAt: new Date(startAt.getTime() + LEASE_MS) })
+    const { stub } = await ready(h)
+
+    // One absence is the threshold here, so this beat hands the lease back.
+    await beat(stub, { held: [], headroom: 0 })
+    h.clock.advance(1)
+    await vi.waitFor(() => expect(h.hookRemovals).toContain(HOOK))
+  })
+})

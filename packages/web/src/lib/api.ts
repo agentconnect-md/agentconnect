@@ -15,7 +15,7 @@ import type {
   SessionImage,
   Workspace
 } from '@/lib/data'
-import { CLOUD_DAEMON_LABEL, CLOUD_PLACEMENT, isSelfSender, lifecycleStatus, MOCK_MODE } from '@/lib/data'
+import { CLOUD_DAEMON_LABEL, isSelfSender, lifecycleStatus, MOCK_MODE, placementValueOf } from '@/lib/data'
 import type { AgentIcon } from '@/lib/agent-icon'
 import { withIconUrl } from '@/lib/agent-icon'
 import {
@@ -1810,7 +1810,7 @@ export function agentFromDto(d: AgentDto): Agent {
     // that a rollout invalidates.
     placementKind: d.placementKind ?? 'daemon',
     placementReady: d.placementReady ?? false,
-    daemon: d.placementKind === 'pool' ? CLOUD_PLACEMENT : (d.daemonId ?? PLACEHOLDER),
+    daemon: placementValueOf(d) ?? PLACEHOLDER,
     region: PLACEHOLDER,
     repo: ws.mode === 'github' ? ws.repo : PLACEHOLDER,
     workdir: ws.mode === 'github' ? ws.agentDir : PLACEHOLDER,

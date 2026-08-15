@@ -1007,7 +1007,7 @@ export function agentRoutes(deps: HttpDeps) {
       if (added.length === 0 && removed.length === 0) return
       // Every daemon serving this agent, not just its placement: a duty holder
       // installed the same enable-list and needs the same defs.
-      const targets = await deps.agentDelivery.daemonsFor(agent.id, agent.daemonId)
+      const targets = await deps.agentDelivery.daemonsFor(agent)
       if (targets.length === 0) return
       try {
         const byName = new Map((await deps.repos.mcpProvider.listForOrg(orgId)).map((p) => [p.name, p]))
@@ -1256,7 +1256,7 @@ export function agentRoutes(deps: HttpDeps) {
     /** Every daemon serving this agent gets the connection before the spec that
      *  names it — a duty holder included, or its memory admission stays closed. */
     const pushExternalMemoryBeforeAgent = async (agent: AgentRecord): Promise<void> => {
-      for (const daemonId of await deps.agentDelivery.daemonsFor(agent.id, agent.daemonId)) {
+      for (const daemonId of await deps.agentDelivery.daemonsFor(agent)) {
         await pushExternalMemoryToDaemon(agent, daemonId)
       }
     }
@@ -1290,7 +1290,7 @@ export function agentRoutes(deps: HttpDeps) {
       ) {
         return
       }
-      for (const daemonId of await deps.agentDelivery.daemonsFor(before.id, before.daemonId)) {
+      for (const daemonId of await deps.agentDelivery.daemonsFor(before)) {
         await removeExternalMemoryFromDaemonIfUnused(before.orgId, daemonId, connectionId)
       }
     }
@@ -1312,6 +1312,7 @@ export function agentRoutes(deps: HttpDeps) {
       mutations: deps.agentMutations,
       sessionOwners: deps.sessionOwners,
       placement: deps.placementResolver,
+      ...(deps.daemonRows ? { daemons: deps.daemonRows } : {}),
       ...(deps.recomputeDuties ? { recomputeDuties: deps.recomputeDuties } : {}),
       log: app.log
     })
@@ -1353,12 +1354,18 @@ export function agentRoutes(deps: HttpDeps) {
       async (req, reply) => {
         if (denyViewerWrite(req, reply)) return
         const conflict = (message: string) => reply.code(409).send({ error: 'Conflict', statusCode: 409, message })
-        // Placement accepts visible org-owned daemons and install-wide cloud members, never another org's daemon.
-        const placedDaemon =
-          req.body.daemonId !== undefined
+        // Placement accepts visible org-owned daemons and install-wide cloud members, never another
+        // org's daemon — or the POOL, which names no member and is validated against the live
+        // member set instead, exactly like the move route's pool target.
+        const wantsPool = req.body.placementKind === 'pool'
+        const poolMembers = wantsPool ? await readyPoolMembers(deps, orgOf(req)) : []
+        if (wantsPool && poolMembers.length === 0) return conflict('no cloud daemon member is ready')
+        const placedDaemon = wantsPool
+          ? (poolMembers[0] ?? null)
+          : req.body.daemonId !== undefined
             ? await deps.registry.getAvailable(orgOf(req), DaemonId(req.body.daemonId))
             : null
-        if (req.body.daemonId !== undefined) {
+        if (!wantsPool && req.body.daemonId !== undefined) {
           if (!placedDaemon || !canView(placedDaemon, ctxOf(req))) {
             return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'daemon not found' })
           }
@@ -1554,7 +1561,11 @@ export function agentRoutes(deps: HttpDeps) {
                   ...(req.body.skills !== undefined ? { skills: req.body.skills } : {}),
                   ...(req.body.managedSkills !== undefined ? { managedSkills: req.body.managedSkills } : {}),
                   ...(req.body.memory !== undefined ? { memory: req.body.memory } : {}),
-                  ...(req.body.daemonId !== undefined ? { daemonId: DaemonId(req.body.daemonId) } : {}),
+                  ...(wantsPool
+                    ? { placementKind: 'pool' as const }
+                    : req.body.daemonId !== undefined
+                      ? { daemonId: DaemonId(req.body.daemonId) }
+                      : {}),
                   ...(workspace !== undefined ? { workspace } : {}),
                   ...(workspaceRepoId !== undefined ? { workspaceRepoId } : {}),
                   ...(req.principal ? { createdByUserId: req.principal.userId } : {}),

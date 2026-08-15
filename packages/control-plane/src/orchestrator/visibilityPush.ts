@@ -26,6 +26,7 @@
  * reports the tighten as `pending` until it does, and the daemon meanwhile fails
  * closed (unknown gate state ⇒ capture excluded).
  */
+import { PLACEMENT_ONLY, type PlacementResolver } from './placementResolver.js'
 import {
   SESSION_VISIBILITY_FEATURE,
   SLACK_SESSION_AUDIENCE_FEATURE,
@@ -50,6 +51,8 @@ export interface VisibilityPushDeps {
   repos: { session: SessionRepo; agent: AgentRepo }
   control: ControlSender
   connReg: ConnectionRegistry
+  /** Resolves the member that serves each session's agent. Absent ⇒ placement alone. */
+  placement?: Pick<PlacementResolver, 'servingDaemon'>
   log?: { warn(obj: unknown, msg?: string): void }
 }
 
@@ -96,6 +99,11 @@ export class SessionVisibilityPushService {
    * `UNKNOWN_FRAME`, which the correlator surfaces as a rejection — feature
    * gating keeps that off the §4.3 endpoint's pending/applied bookkeeping.
    */
+  /** Absent (tests / no pool) ⇒ placement alone, which is the pre-duty behavior. */
+  private placement(): Pick<PlacementResolver, 'servingDaemon'> {
+    return this.deps.placement ?? PLACEMENT_ONLY
+  }
+
   private supports(daemonId: string): boolean {
     const c = this.deps.connReg.get(daemonId)
     return c?.capabilities?.features?.includes(SESSION_VISIBILITY_FEATURE) ?? false
@@ -114,11 +122,13 @@ export class SessionVisibilityPushService {
    * move.
    */
   async notifySessions(sessions: SessionMetaRecord[]): Promise<void> {
+    // Resolved, not read: a pool agent's gate belongs on whichever member holds it, and
+    // `agent.daemonId` names no machine for one — the whole session set would silently skip.
     const byAgent = new Map<string, string | null>()
     for (const s of sessions) {
       if (!byAgent.has(s.agentId)) {
         const agent = await this.deps.repos.agent.getUnscoped(s.agentId)
-        byAgent.set(s.agentId, agent?.daemonId ?? null)
+        byAgent.set(s.agentId, agent ? await this.placement().servingDaemon(agent) : null)
       }
       const daemonId = byAgent.get(s.agentId)
       if (!daemonId || !this.supports(daemonId) || (s.externalProvider != null && !this.supportsExternal(daemonId))) {
@@ -291,7 +301,9 @@ export class SessionVisibilityPushService {
       if (s.visibilitySource === 'default' && s.visibilityRev === 0) continue // initial classification — nothing staged
       if (s.visibilityAckedRev >= s.visibilityRev) continue
       const agent = await this.deps.repos.agent.getUnscoped(s.agentId)
-      if (!agent?.daemonId) continue // unplaced: no daemon runs it, nothing to stop
+      // Nothing SERVING it ⇒ nothing to stop. Placement alone would read a held pool agent as
+      // unplaced and call a pending cutover vacuously applied.
+      if (!agent || !(await this.placement().servingDaemon(agent))) continue
       return false
     }
     return true

@@ -153,6 +153,7 @@ import { relayHttpOrigin } from './orchestrator/mcpProvider.js'
 import { CollabRoutesService } from './orchestrator/collabRoutes.service.js'
 import { DutyLeaseService, DUTY_LEASE_DEFAULTS } from './orchestrator/dutyLease.js'
 import { AgentDelivery } from './orchestrator/agentDelivery.js'
+import { AgentRoutingConverger } from './orchestrator/agentRouting.js'
 import { PlacementResolver } from './orchestrator/placementResolver.js'
 import { DutyRecomputeSweep } from './orchestrator/dutyRecompute.js'
 import { AgentMutationGate } from './orchestrator/agentMutationGate.js'
@@ -626,6 +627,7 @@ export function buildContainer(
     repos: { session: repos.session, agent: repos.agent },
     control: sender,
     connReg,
+    placement: placementResolver,
     // Lazy over `http.log` (assigned below; only ever called at push time).
     log: { warn: (o, m) => http.log.warn(o, m) }
   })
@@ -638,11 +640,29 @@ export function buildContainer(
     repos.agent,
     relayControl,
     sender,
-    placementResolver
+    placementResolver,
+    repos.dutyGroup
   )
 
   // The fan-out that rides the resolver (orchestrator/agentDelivery.ts).
   const agentDelivery = new AgentDelivery({ control: sender, specs: agentSpecs, placement: placementResolver })
+
+  // The projections that BAKE IN the serving daemon — hook rules, HTTP-bot assignment, the
+  // collaboration snapshot. A duty grant or release moves who serves an agent exactly as a
+  // placement move does, so both go through this one fan-out rather than two copies of the list.
+  const agentRouting = new AgentRoutingConverger({
+    hooks: hookService,
+    collabRoutes,
+    // Lazy over `httpBot` (assigned below; only ever called at convergence time), the same
+    // late-binding the logger wrappers use.
+    httpBot: { syncBot: (botId: string) => httpBot.syncBot(botId) },
+    agents: repos.agent,
+    integrations: repos.integration,
+    bots: repos.bot,
+    clock,
+    delayMs: 250,
+    log: { warn: (o, m) => http.log.warn(o, m) }
+  })
 
   // Duty lease exchange riding the heartbeat (k8s daemons; orchestrator/dutyLease.ts).
   // The revision reader stamps each granted agent member with the CP's current
@@ -652,7 +672,8 @@ export function buildContainer(
     clock,
     undefined,
     { warn: (o, m) => http.log.warn(o, m) },
-    repos.agent
+    repos.agent,
+    agentRouting
   )
   // Duty-group projection: derived from Integration/CronDef rows on a rotation;
   // deltas reach daemons via the heartbeat lease exchange, never from the sweep.
@@ -665,7 +686,8 @@ export function buildContainer(
       leaseMs: DUTY_LEASE_DEFAULTS.leaseMs,
       kickDelayMs: 250
     },
-    { warn: (o, m) => http.log.warn(o, m), error: (o, m) => http.log.error(o, m) }
+    { warn: (o, m) => http.log.warn(o, m), error: (o, m) => http.log.error(o, m) },
+    agentRouting
   )
   const agentMutations = new AgentMutationGate()
 
@@ -724,6 +746,7 @@ export function buildContainer(
     mutations: agentMutations,
     sessionOwners: connReg,
     placement: placementResolver,
+    daemons: repos.daemon,
     recomputeDuties: (orgId: string) => dutyRecompute.kick(orgId),
     log: { warn: (o, m) => http.log.warn(o, m) }
   })
@@ -1032,6 +1055,7 @@ export function buildContainer(
     control: sender,
     agentDelivery,
     placementResolver,
+    daemonRows: repos.daemon,
     visibilityPush,
     relayControl,
     httpBot,

@@ -46,6 +46,7 @@ import type {
   GithubInstallationRepo,
   AgentRepoAuthorizationRepo,
   DaemonLifecycleOpRepo,
+  DaemonRepo,
   OAuthRepo,
   WebchatMcpOperationRepo
 } from '../persistence/ports.js'
@@ -275,6 +276,9 @@ export interface HttpDeps {
    *  instead of reading `agent.daemonId`, which stopped naming a machine when `pool` became a
    *  placement target. */
   placementResolver: PlacementResolver
+  /** Daemon rows, unscoped — a move needs the SOURCE's own scope to decide whether it is still an
+   *  eligible holder of the new placement, which is a property of the row, not of its liveness. */
+  daemonRows?: Pick<DaemonRepo, 'getUnscoped'>
   /** Pushes the per-session memory-capture gate to the owning daemons after a
    *  §4.3 visibility change, and answers the pending/applied cutover state
    *  (session-visibility.md §5.1). Absent ⇒ changes converge on register. */

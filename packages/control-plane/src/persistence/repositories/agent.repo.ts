@@ -960,9 +960,14 @@ export class PgAgentRepo implements AgentRepo {
     return new Map(rows.map((r) => [r.id, r.configRevision]))
   }
 
+  // The placement relation read from the MEMBER's side, and deliberately the row-wise mirror of
+  // `domain/placement.ts#placementTargets` read from the agent's side: `placementKind: 'daemon'`
+  // is what makes "this daemon is the placement" mean the same thing in both directions. Without
+  // it the two agree only by accident — because `pool` happens to store a null ref — and a later
+  // kind that stores one would be placed here and unplaced there.
   async listForDaemon(daemonId: DaemonId): Promise<AgentRecord[]> {
     const rows = await this.db.agent.findMany({
-      where: { daemonId },
+      where: { daemonId, placementKind: 'daemon' },
       orderBy: { createdAt: 'asc' },
       include: withUsers
     })

@@ -420,6 +420,7 @@ export function buildHttpApp(
     control: sender,
     agentDelivery,
     placementResolver,
+    daemonRows: daemonRepo,
     relayControl,
     httpBot: new HttpBotOrchestrator(
       botRepo,
@@ -443,7 +444,8 @@ export function buildHttpApp(
       agentRepo,
       relayControl,
       sender,
-      placementResolver
+      placementResolver,
+      dutyGroupRepo
     ),
     agentMutations: new AgentMutationGate(),
     sessionOwners: connReg,

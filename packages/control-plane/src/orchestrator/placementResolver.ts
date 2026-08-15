@@ -9,6 +9,10 @@
  *
  * No caller branches on the placement kind; a later `group` kind changes only this file and the
  * ledger predicate it mirrors.
+ *
+ * The inverse query — member→agents — is `servedAgents.ts`, which reads the same two relations
+ * from the other side; its header states the biconditional the pair has to satisfy and names the
+ * test that pins it.
  */
 import { dutyEligibility, placementTargets, type PlacementRef } from '../domain/placement.js'
 import { AgentId, type DaemonId } from '../domain/ids.js'

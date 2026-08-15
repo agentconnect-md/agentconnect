@@ -40,7 +40,8 @@ function sweep(clock = new FakeClock(1_700_000_000_000)) {
       plans.push(plan)
       return plan
     },
-    vacateIneligible: repo.vacateIneligible.bind(repo)
+    vacateIneligible: repo.vacateIneligible.bind(repo),
+    getByIds: repo.getByIds.bind(repo)
   }
   return {
     repo,
@@ -509,7 +510,8 @@ describe('duty recompute kick (real Postgres)', () => {
         return repo.computeInputs(orgId)
       },
       applyReconcile: repo.applyReconcile.bind(repo),
-      vacateIneligible: repo.vacateIneligible.bind(repo)
+      vacateIneligible: repo.vacateIneligible.bind(repo),
+      getByIds: repo.getByIds.bind(repo)
     }
     const s = new DutyRecomputeSweep(spy, clock, {
       intervalMs: 30_000,

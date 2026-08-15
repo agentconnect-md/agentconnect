@@ -33,6 +33,7 @@ import type {
   BotRepo,
   BotSecretStore,
   CronRepo,
+  DaemonRepo,
   AgentWorkspace,
   IntegrationChannelRepo,
   IntegrationRepo
@@ -40,13 +41,17 @@ import type {
 import { AgentWorkspaceIntegrationConflict } from '../persistence/errors.js'
 import type { AgentId, DaemonId } from '../domain/ids.js'
 import {
+  claimScopeOf,
   isPlaced,
+  mayHold,
+  placementColumns,
   placementLabel,
   placementTargetOf,
   samePlacement,
   type PlacementTarget
 } from '../domain/placement.js'
 import { PLACEMENT_ONLY, type PlacementResolver } from './placementResolver.js'
+import { convergeAgentRouting } from './agentRouting.js'
 import { cronToUpsert, integrationToSpec, isGatedAgent, httpIntegrationToSpec } from './placement.js'
 import {
   mcpDefsForAgents,
@@ -112,6 +117,9 @@ export interface AgentMoveDeps {
   collabRoutes: CollabRoutesService
   mutations: AgentMutationGate
   sessionOwners: { releaseSession(key: SessionKey): void }
+  /** Daemon rows, for deciding whether a detached source is still an eligible holder of the new
+   *  placement. Absent ⇒ no source is ever unstaged, the pre-pool behavior. */
+  daemons?: Pick<DaemonRepo, 'getUnscoped'>
   /** Resolves the members currently serving an agent — the sources a move must quiesce when
    *  placement names no machine of its own. Absent ⇒ placement alone (the pre-duty behavior). */
   placement?: PlacementResolver
@@ -487,11 +495,14 @@ export class AgentMoveService {
     // snapshot, never this pre-detach copy.
     const sourceBundle = await this.snapshot(agent)
 
+    const stagedSources = new Map<DaemonId, string>()
     for (const sourceDaemonId of sourceDaemonIds) {
+      const moveId = randomUUID()
+      stagedSources.set(sourceDaemonId, moveId)
       try {
         requireAck(
           'source cutover',
-          await this.detach(sourceDaemonId, agent.id, agent.orgId, { discardActiveTurns: true })
+          await this.detach(sourceDaemonId, agent.id, agent.orgId, { moveId, discardActiveTurns: true })
         )
       } catch (err) {
         if (sourceDetachMode === 'required') {
@@ -535,6 +546,7 @@ export class AgentMoveService {
     // through `duty/fetch` and starts serving. Committing the placement IS the move — a
     // synchronous activation would only name one member the ledger is free to replace next beat.
     if (target.kind !== 'daemon') {
+      await this.unstageEligibleSources(moved, stagedSources, target)
       await this.convergeDerived(moved, sourceBundle.httpBotIds)
       return moved
     }
@@ -561,6 +573,53 @@ export class AgentMoveService {
 
     await this.convergeDerived(stable.agent, stable.bundle.httpBotIds)
     return stable.agent
+  }
+
+  /**
+   * Clear the staging fence on a source that is STILL an eligible holder of the new placement.
+   *
+   * A detached source is normally meant to stay fenced — that is the whole point of a hard
+   * cutover, and it is right for every move onto a machine and for a LOCAL daemon losing an agent
+   * to the pool: neither may serve it again. `daemon(member) → pool` is the one transition where
+   * it is wrong. The member remains install-wide, so the ledger may hand it the very group it was
+   * just fenced out of — and `installGrantedAgents` skips a move-staged agent, so it would take
+   * the lease, install nothing, and serve nothing, with no other member able to claim it. The
+   * agent would be servable by nobody, which is worse than where it started.
+   *
+   * So the fence is released with the same move token that armed it, which is also what leaves
+   * the member's replica current: if the ledger grants it back, install-on-grant sees the agent
+   * present at the granted revision and skips the fetch entirely. Eligibility is the resolver's
+   * answer, not a kind test — a local daemon is never eligible for a pool placement and stays
+   * fenced. Best-effort: the fence is the member's own state and a member that cannot be reached
+   * re-registers into a reconcile that has the authoritative placement.
+   */
+  private async unstageEligibleSources(
+    agent: AgentRecord,
+    stagedSources: ReadonlyMap<DaemonId, string>,
+    target: PlacementTarget
+  ): Promise<void> {
+    if (stagedSources.size === 0) return
+    const columns = placementColumns(target)
+    const bundle = await this.snapshot(agent)
+    for (const [daemonId, moveId] of stagedSources) {
+      const daemon = await this.deps.daemons?.getUnscoped(daemonId)
+      if (!daemon || !mayHold(columns, { daemonId, scope: claimScopeOf(daemon) })) continue
+      try {
+        requireAck(
+          'source unstage',
+          await this.deps.control.agentActivate(
+            daemonId,
+            { ...this.activationDefinition(agent, bundle), moveId },
+            agent.orgId
+          )
+        )
+      } catch (err) {
+        this.deps.log?.warn(
+          { err, agentId: agent.id, daemonId },
+          'agent move: could not clear the source staging fence; its reconnect reconcile is the backstop'
+        )
+      }
+    }
   }
 
   private async restoreDetachedWorkspace(
@@ -922,21 +981,16 @@ export class AgentMoveService {
     }
   }
 
+  /** The placement and daemon activation are already committed, and every one of these projections
+   *  has a reconnect/replay backstop, so a transient fan-out error is logged rather than turning a
+   *  committed move into a 500. Shared with the duty path (`orchestrator/agentRouting.ts`): a
+   *  holder change moves who serves the agent exactly as a placement move does, and two copies of
+   *  this list would be two chances to forget one. */
   private async convergeDerived(agent: AgentRecord, httpBotIds: string[]): Promise<void> {
-    const jobs: Array<{ label: string; run: () => Promise<void> }> = [
-      { label: 'hook routes', run: () => this.deps.hooks.rebroadcastForAgent(agent.id) },
-      { label: 'collaboration routes', run: () => this.deps.collabRoutes.broadcast(agent.orgId) },
-      ...httpBotIds.map((botId) => ({ label: `HTTP bot ${botId}`, run: () => this.deps.httpBot.syncBot(botId) }))
-    ]
-    for (const job of jobs) {
-      try {
-        await job.run()
-      } catch (err) {
-        // The placement and daemon activation are already committed. Each of
-        // these derived tables has a reconnect/replay convergence backstop, so a
-        // transient fan-out error is logged rather than turning success into 500.
-        this.deps.log?.warn({ err, agentId: agent.id, job: job.label }, 'agent move: derived convergence deferred')
-      }
-    }
+    await convergeAgentRouting(
+      this.deps,
+      { agentId: agent.id, orgId: agent.orgId, httpBotIds },
+      { warn: (obj, msg) => this.deps.log?.warn(obj, msg) }
+    )
   }
 }

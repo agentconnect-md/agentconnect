@@ -58,10 +58,10 @@ export class AgentDelivery {
    * defs are not addressed to an agent, so their fan-out sites resolve "who uses
    * this" first and hand the result here rather than reading `daemonId` inline.
    */
-  async daemonsForAgents(agents: readonly { id: string; daemonId: string | null }[]): Promise<string[]> {
+  async daemonsForAgents(agents: readonly ResolvableAgent[]): Promise<string[]> {
     const targets = new Set<string>()
     for (const agent of agents) {
-      for (const daemonId of await this.daemonsFor(agent.id, agent.daemonId)) targets.add(daemonId)
+      for (const daemonId of await this.daemonsFor(agent)) targets.add(daemonId)
     }
     return [...targets]
   }

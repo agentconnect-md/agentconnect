@@ -25,6 +25,7 @@ import {
   agentLabel,
   CLOUD_DAEMON_LABEL,
   CLOUD_PLACEMENT,
+  placementValueOf,
   type Agent,
   type AgentCallPolicy,
   type ApprovalsReviewer
@@ -185,8 +186,11 @@ export default function EditAgentModal({
         initialDisplayName.current = dto.displayName ?? ''
         setRuntime(dto.runtime ?? '')
         initialRuntime.current = dto.runtime ?? ''
-        setDaemonId(dto.daemonId ?? '')
-        initialDaemonId.current = dto.daemonId ?? ''
+        // Through the SAME mapping the list projection uses, so a pool agent reloads as the pool
+        // rather than as unplaced — `daemonId` is null for it by design.
+        const placement = placementValueOf(dto) ?? ''
+        setDaemonId(placement)
+        initialDaemonId.current = placement
         setModel(dto.model ?? '')
         initialModel.current = dto.model ?? ''
         setEffort(dto.reasoningEffort ?? '')

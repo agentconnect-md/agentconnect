@@ -63,6 +63,17 @@ export const CLOUD_DAEMON_LABEL = 'AgentConnect Cloud'
  *  a rollout, which is precisely why the placement stopped carrying one. */
 export const CLOUD_PLACEMENT = 'cloud'
 
+/**
+ * The ONE mapping from a DTO's placement pair to the value the console selects on: the pool
+ * sentinel, a member id, or null when the agent is unplaced. Every reader of the raw DTO uses it —
+ * the list projection AND the editor's own reload — so a reload cannot disagree with the row it
+ * reloaded. Deriving "is this the pool?" from `daemonId` being null is what made a reloaded pool
+ * agent read as unplaced; `placementKind` is the only thing that says it.
+ */
+export function placementValueOf(dto: { placementKind?: 'daemon' | 'pool'; daemonId: string | null }): string | null {
+  return dto.placementKind === 'pool' ? CLOUD_PLACEMENT : (dto.daemonId ?? null)
+}
+
 /** The Cloud entry stands in for the whole pool: online while any member is serving. */
 export function cloudFleetStatus(members: Pick<DaemonRow, 'status'>[]): ConnectionStatusKey {
   return members.some((m) => m.status === 'online') ? 'online' : 'offline'
