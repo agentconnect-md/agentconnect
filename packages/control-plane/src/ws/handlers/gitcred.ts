@@ -16,6 +16,7 @@
  *
  * The grant payload carries the token MATERIAL — never log it.
  */
+import { PLACEMENT_ONLY } from '../../orchestrator/placementResolver.js'
 import { isFrame } from '@agentconnect.md/protocol'
 import { AgentId, HookId } from '../../domain/ids.js'
 import { GitCredDeniedError } from '../../github/service.js'
@@ -30,12 +31,12 @@ export const handleGitCredRequest: Handler = async (frame, conn, deps) => {
     return
   }
 
-  // Placement scope: the agent must currently live on the REQUESTING daemon.
-  // A daemon that lost the agent (re-placement while offline) gets a terminal
-  // SCOPE_DENIED — its cache layer clears the entry and stops asking.
+  // Service scope: the requesting daemon must currently serve the agent — its placement, or a
+  // duty it holds. A daemon that lost it (re-placement or a lapsed lease while offline) gets a
+  // terminal SCOPE_DENIED — its cache layer clears the entry and stops asking.
   const agent = await deps.agent.getUnscoped(AgentId(agentId))
-  if (!agent || agent.daemonId !== conn.daemonId) {
-    conn.sendError(frame.id, 'SCOPE_DENIED', 'agent is not placed on this daemon', false)
+  if (!agent || !(await (deps.placementResolver ?? PLACEMENT_ONLY).mayAct(agent, conn.daemonId))) {
+    conn.sendError(frame.id, 'SCOPE_DENIED', 'this daemon does not serve that agent', false)
     return
   }
 

@@ -665,6 +665,14 @@ enum AgentStatus {
   paused
 }
 
+// Where an agent's duty may be held (docs/designs/k8s-daemon-pool.md §14). `daemon` names one
+// machine through `Agent.daemonId`; `pool` names the install-wide member set and carries no ref.
+// A later `group` value names an explicit daemon group — read it through domain/placement.ts.
+enum AgentPlacementKind {
+  daemon
+  pool
+}
+
 model Agent {
   id                    String             @id @db.Uuid // wire UUID across route/*, agent/*, event/session
   orgId                 String
@@ -680,7 +688,11 @@ model Agent {
   // requires one. When set it must be in Daemon.capabilities.runtimes.
   runtime               String?
   status                AgentStatus        @default(inactive)
-  daemonId              String?            @db.Uuid // 1 agent : 1 machine (null until placed)
+  // Placement is a TARGET, not only a member id. `daemon` (the default, so every pre-existing row
+  // keeps meaning what it meant) resolves through `daemonId`; `pool` resolves to the install-wide
+  // member set and requires `daemonId` to be null. Only domain/placement.ts reads the pair.
+  placementKind         AgentPlacementKind @default(daemon)
+  daemonId              String?            @db.Uuid // the `daemon`-kind ref: 1 agent : 1 machine (null until placed)
   // ── workspace (inline; §3.5) — daemon-generated path ──
   workspaceMode         WorkspaceMode      @default(scratch)
   workspaceIsolation    WorkspaceIsolation @default(shared)
@@ -2876,6 +2888,12 @@ model DutyGroup {
   holder    String?   @db.Uuid // member (daemon) the group is granted to; null ⇒ never claimed or released
   term      BigInt    @default(0) // monotonic per group; bumped on EVERY grant/re-grant — the fencing token
   expiresAt DateTime? @db.Timestamptz(6) // renewal horizon written by the granter; past ⇒ vacant and grantable
+  // When the CURRENT holder first reported this group in its heartbeat digest — the earliest
+  // moment it is provably serving, because #972 applies a grant only after the install succeeded.
+  // Null while a grant is outstanding; reset whenever `holder` changes. Ingress addressing waits
+  // for it; delivery and `duty/fetch` deliberately do not (a member must receive its bundle to
+  // become confirmed at all).
+  confirmedAt DateTime? @db.Timestamptz(6)
   createdAt DateTime  @default(now()) @db.Timestamptz(6)
   updatedAt DateTime  @updatedAt @db.Timestamptz(6)
 
@@ -2885,6 +2903,7 @@ model DutyGroup {
   @@index([orgId])
   @@index([holder])
   @@index([expiresAt])
+  @@index([confirmedAt])
   @@map("duty_group")
 }
 

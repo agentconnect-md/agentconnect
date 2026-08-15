@@ -80,6 +80,7 @@ import { EpochService } from '../../src/orchestrator/epoch.js'
 import { DUTY_LEASE_DEFAULTS } from '../../src/orchestrator/dutyLease.js'
 import { ControlSender } from '../../src/orchestrator/outbound.js'
 import { AgentDelivery } from '../../src/orchestrator/agentDelivery.js'
+import { PlacementResolver } from '../../src/orchestrator/placementResolver.js'
 import { RelayControlSender } from '../../src/orchestrator/relayControl.js'
 import { HttpBotOrchestrator } from '../../src/orchestrator/httpBot.js'
 import { CollabRoutesService } from '../../src/orchestrator/collabRoutes.service.js'
@@ -304,7 +305,16 @@ export function buildHttpApp(
   )
   // Same graph as prod: every replicate site resolves its targets here, so the
   // duty ledger is a real repo and a holder actually receives the pushes.
-  const agentDelivery = new AgentDelivery({ control: sender, specs: agentSpecs, duties: dutyGroupRepo, clock })
+  const placementResolver = new PlacementResolver({
+    duties: dutyGroupRepo,
+    liveMembers: () =>
+      connReg
+        .reachableDaemons()
+        .filter((d) => d.orgId === null && d.state === 'READY')
+        .map((d) => d.daemonId),
+    clock
+  })
+  const agentDelivery = new AgentDelivery({ control: sender, specs: agentSpecs, placement: placementResolver })
 
   // LATE-BOUND exactly as `buildContainer` binds it (§9): the providers below are
   // constructed WITH this dep bundle, because their funnel plugins are route
@@ -409,6 +419,8 @@ export function buildHttpApp(
     daemonConns: liveness as HttpDeps['daemonConns'],
     control: sender,
     agentDelivery,
+    placementResolver,
+    daemonRows: daemonRepo,
     relayControl,
     httpBot: new HttpBotOrchestrator(
       botRepo,
@@ -423,9 +435,18 @@ export function buildHttpApp(
       new PgSessionRepo(prisma),
       { info() {}, warn() {}, debug() {} },
       platforms,
-      agentDelivery
+      agentDelivery,
+      placementResolver
     ),
-    collabRoutes: new CollabRoutesService(daemonRepo, integrationRepo, agentRepo, relayControl, sender),
+    collabRoutes: new CollabRoutesService(
+      daemonRepo,
+      integrationRepo,
+      agentRepo,
+      relayControl,
+      sender,
+      placementResolver,
+      dutyGroupRepo
+    ),
     agentMutations: new AgentMutationGate(),
     sessionOwners: connReg,
     // The installations repo feeds the github-kind compile — same graph as prod.
@@ -434,6 +455,7 @@ export function buildHttpApp(
       hookSecretStore,
       agentRepo,
       relayControl,
+      placementResolver,
       githubInstallationRepo,
       'agentconnect-test'
     ),

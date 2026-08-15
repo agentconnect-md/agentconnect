@@ -3,6 +3,7 @@
  * the one-time backfill, the reserved slugs, and the deferred-runtime tolerance
  * of the existing routes.
  */
+import { onDaemon } from '../../src/domain/placement.js'
 import { describe, it, expect, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
@@ -420,7 +421,7 @@ describe('deferred-runtime tolerance of existing routes', () => {
       // First placement of any kind stamps placementSettledAt (repo anchor).
       const daemonId = randomUUID()
       await seedDaemon(prisma, daemonId)
-      await new PgAgentRepo(prisma).setPlacement(AgentId(preset!.id), DaemonId(daemonId))
+      await new PgAgentRepo(prisma).setPlacement(AgentId(preset!.id), onDaemon(DaemonId(daemonId)))
       const row = await prisma.presetAgent.findUnique({
         where: { orgId_preset: { orgId: DEFAULT_ORG_ID, preset: 'general' } }
       })

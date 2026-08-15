@@ -24,6 +24,7 @@
  *     dropping it. This is also what garbage-collects receipts for a deleted
  *     agent, whose `SessionMeta` rows cascaded away with it.
  */
+import { PLACEMENT_ONLY } from '../../orchestrator/placementResolver.js'
 import { isFrame } from '@agentconnect.md/protocol'
 import { AgentId, DaemonId, SessionId } from '../../domain/ids.js'
 import type { Handler } from './index.js'
@@ -39,7 +40,7 @@ export const handleSessionPurged: Handler = async (frame, conn, deps) => {
   }
   try {
     const agent = await deps.agent.getUnscoped(agentId)
-    if (agent?.daemonId === DaemonId(conn.daemonId)) {
+    if (agent && (await (deps.placementResolver ?? PLACEMENT_ONLY).mayAct(agent, DaemonId(conn.daemonId)))) {
       await deps.session.markContentPurged(
         agentId,
         p.sessionIds.map((id) => SessionId(id)),

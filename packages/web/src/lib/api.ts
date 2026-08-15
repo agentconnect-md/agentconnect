@@ -15,7 +15,7 @@ import type {
   SessionImage,
   Workspace
 } from '@/lib/data'
-import { CLOUD_DAEMON_LABEL, isSelfSender, lifecycleStatus, MOCK_MODE } from '@/lib/data'
+import { CLOUD_DAEMON_LABEL, isSelfSender, lifecycleStatus, MOCK_MODE, placementValueOf } from '@/lib/data'
 import type { AgentIcon } from '@/lib/agent-icon'
 import { withIconUrl } from '@/lib/agent-icon'
 import {
@@ -313,6 +313,9 @@ export interface AgentDto {
   organizationVariables?: Array<{ key: string; value: string }>
   organizationSecretKeys?: string[]
   status: string
+  // Placement is a TARGET: `pool` names the install-wide member set and carries no id.
+  placementKind?: 'daemon' | 'pool'
+  placementReady?: boolean
   daemonId: string | null
   workspace: AgentWorkspaceDto
   workspaceRepoId?: string | null
@@ -1080,6 +1083,8 @@ export interface DaemonLifecycleOpDto {
 }
 
 export interface CreateAgentInput {
+  /** `pool` places the agent on the cloud member set and carries no member id. */
+  placementKind?: 'pool'
   name: string // slug — the CP rejects anything but ^[a-z0-9]+(-[a-z0-9]+)*$
   displayName?: string
   icon?: AgentIcon // absent ⇒ the CP assigns a random glyph+color
@@ -1800,7 +1805,12 @@ export function agentFromDto(d: AgentDto): Agent {
     // the pre-feature console did.
     organizationVariables: (d.organizationVariables ?? []).map((e) => ({ k: e.key, v: e.value })),
     organizationSecretKeys: d.organizationSecretKeys ?? [],
-    daemon: d.daemonId ?? PLACEHOLDER,
+    // A `pool` placement names no member, on purpose: whichever member holds the agent's duty
+    // serves it, so the row carries the KIND and a server-computed readiness instead of a Pod id
+    // that a rollout invalidates.
+    placementKind: d.placementKind ?? 'daemon',
+    placementReady: d.placementReady ?? false,
+    daemon: placementValueOf(d) ?? PLACEHOLDER,
     region: PLACEHOLDER,
     repo: ws.mode === 'github' ? ws.repo : PLACEHOLDER,
     workdir: ws.mode === 'github' ? ws.agentDir : PLACEHOLDER,
@@ -3414,17 +3424,24 @@ export async function setAgentWorkspace(agentId: string, input: SetAgentWorkspac
 // acknowledged source fence/cancel and destination activation; `force` is the
 // explicit recovery path when the source cannot ACK. This stays separate from
 // the ordinary spec PATCH because placement changes have runtime side effects.
-export async function moveAgent(agentId: string, daemonId: string, options: { force?: boolean } = {}): Promise<Agent> {
+/** A move target: one machine, or the cloud pool as a whole. */
+export type AgentPlacementTarget = { kind: 'daemon'; daemonId: string } | { kind: 'pool' }
+
+export async function moveAgent(
+  agentId: string,
+  target: AgentPlacementTarget,
+  options: { force?: boolean } = {}
+): Promise<Agent> {
   const moved = agentFromDto(
     await apiPut<AgentDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/daemon`, {
-      daemonId,
+      ...(target.kind === 'pool' ? { placementKind: 'pool' } : { daemonId: target.daemonId }),
       ...(options.force ? { force: true } : {})
     })
   )
   track('agent_moved', {
     org_id: apiOrgId,
     agent_id: moved.id,
-    to_daemon_id: daemonId,
+    to_daemon_id: target.kind === 'pool' ? 'pool' : target.daemonId,
     force: options.force === true
   })
   return moved

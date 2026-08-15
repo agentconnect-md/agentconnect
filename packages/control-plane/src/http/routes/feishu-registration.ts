@@ -71,13 +71,15 @@ export function feishuRegistrationRoutes(deps: HttpDeps, feishu: FeishuRouteSeam
         if (!canEdit(agent, ctxOf(req))) {
           return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this agent' })
         }
-        if (!agent.daemonId) {
+        // A pool agent is placed and names no machine; the capability probe asks its server.
+        const installDaemonId = await deps.placementResolver.servingDaemon(agent)
+        if (!installDaemonId) {
           return reply
             .code(409)
             .send({ error: 'Conflict', statusCode: 409, message: 'agent must be placed on a daemon first' })
         }
         const availability = await integrationPlatformAvailability(deps, {
-          daemonId: agent.daemonId,
+          daemonId: installDaemonId,
           orgId,
           viewer: ctxOf(req),
           platform: 'feishu'

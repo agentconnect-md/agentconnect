@@ -41,6 +41,7 @@
  * channel-filtered ask on a session-identity platform short-circuits to an empty roster
  * before any repo read (see below) — nothing to leak, so nothing to bind.
  */
+import { PLACEMENT_ONLY } from '../../orchestrator/placementResolver.js'
 import { isFrame } from '@agentconnect.md/protocol'
 import { DaemonId, OrgId } from '../../domain/ids.js'
 import { isSessionIdentityPlatform } from '../../persistence/platform.js'
@@ -96,7 +97,11 @@ export const handleChannelAgents: Handler = async (frame, conn, deps) => {
     // ONE org-scoped read, feeding both scopes and the bind (see the header). It is also
     // literally the read `buildCollabSnapshot` builds `agents[]` from, which is what keeps
     // "discoverable" and "callable" from disagreeing.
-    const orgRoster = await deps.agent.orgDirectory(orgId)
+    // Resolved through the placement resolver, so a pool agent is listed against the member that
+    // currently serves it rather than dropped for naming no machine.
+    const orgRoster = await (deps.placementResolver ?? PLACEMENT_ONLY).resolveDirectory(
+      await deps.agent.orgDirectory(orgId)
+    )
 
     // THE DAEMON-OWNERSHIP BIND (§2.2/§6.1) — the read-side twin of the relay's
     // `claimedFromAgentId` / `caller.daemonId !== fromDaemonId` check. `requesterAgentId`

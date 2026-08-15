@@ -94,6 +94,10 @@ async function boot(broken = new Set<string>()) {
     organizationScope: () => 'frame',
     stop: async () => {},
     releaseDuties: vi.fn(async () => {}),
+    // An admission reports its new digest immediately: the CP holds every projection that
+    // ADDRESSES this member until it sees the group held, so waiting for the next tick would
+    // leave an agent this member is already serving unroutable.
+    reportDutiesNow: vi.fn(() => {}),
     fetchDutyAgent
   }
   await (daemon as any).admitDutyGrants([grant(GROUP, '1', [AGENT_A, AGENT_C])])

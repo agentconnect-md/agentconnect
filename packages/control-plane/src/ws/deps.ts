@@ -37,6 +37,7 @@ import type { ConnectionRegistry } from './registry.js'
 import type { Clock } from '../domain/clock.js'
 import type { SessionEventSink } from '../events/sink.js'
 import type { AgentMutationGate } from '../orchestrator/agentMutationGate.js'
+import type { PlacementResolver } from '../orchestrator/placementResolver.js'
 import type { CollabRoutesService } from '../orchestrator/collabRoutes.service.js'
 import type { DutyLeaseService } from '../orchestrator/dutyLease.js'
 import type { AgentId, DaemonId } from '../domain/ids.js'
@@ -112,6 +113,10 @@ export interface DaemonWsDeps {
   /** Viewer-free agent reads for the `gitcred/request` placement check — a DATA-PLANE
    *  path (resource-visibility §9): restricted-but-active agents must keep minting. */
   agent: AgentRepo
+  /** "May this connection act for that agent?" — placement OR a held duty. A pool member serves
+   *  agents its row does not name, so placement equality is no longer the fence. Absent ⇒
+   *  placement alone, which is the pre-duty behavior. */
+  placementResolver?: PlacementResolver
   /** Accepted Knowledge/skills and retained suggestion metadata. */
   organizationKnowledge?: OrganizationKnowledgeRepo
   /** Revision-fenced sink for daemon external-memory conformance facts. */

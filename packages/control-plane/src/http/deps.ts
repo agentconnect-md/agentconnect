@@ -46,6 +46,7 @@ import type {
   GithubInstallationRepo,
   AgentRepoAuthorizationRepo,
   DaemonLifecycleOpRepo,
+  DaemonRepo,
   OAuthRepo,
   WebchatMcpOperationRepo
 } from '../persistence/ports.js'
@@ -64,6 +65,7 @@ import type { OrgInviteLinkService } from '../registry/orgInviteLinkService.js'
 import type { WaitlistService } from '../registry/waitlistService.js'
 import type { ControlSender } from '../orchestrator/outbound.js'
 import type { AgentDelivery } from '../orchestrator/agentDelivery.js'
+import type { PlacementResolver } from '../orchestrator/placementResolver.js'
 import type { SessionVisibilityPushService } from '../orchestrator/visibilityPush.js'
 import type { AgentSpecAssembler } from '../orchestrator/agentSpecAssembler.js'
 import type { RelayControlSender } from '../orchestrator/relayControl.js'
@@ -270,6 +272,13 @@ export interface HttpDeps {
    *  fans `agent/upsert`/`agent/remove` out over it. EVERY replicate site routes
    *  through this; none of them reads `agent.daemonId` to decide delivery. */
   agentDelivery: AgentDelivery
+  /** The ONE answer to "which daemons serve this agent" (placement ∪ duty holders). Routes ask it
+   *  instead of reading `agent.daemonId`, which stopped naming a machine when `pool` became a
+   *  placement target. */
+  placementResolver: PlacementResolver
+  /** Daemon rows, unscoped — a move needs the SOURCE's own scope to decide whether it is still an
+   *  eligible holder of the new placement, which is a property of the row, not of its liveness. */
+  daemonRows?: Pick<DaemonRepo, 'getUnscoped'>
   /** Pushes the per-session memory-capture gate to the owning daemons after a
    *  §4.3 visibility change, and answers the pending/applied cutover state
    *  (session-visibility.md §5.1). Absent ⇒ changes converge on register. */

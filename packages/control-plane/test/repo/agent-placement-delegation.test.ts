@@ -1,3 +1,4 @@
+import { onDaemon } from '../../src/domain/placement.js'
 import { describe, expect, it } from 'vitest'
 import { prisma } from '../setup.db.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
@@ -157,7 +158,7 @@ describe('agent placement and webchat MCP delegation serialization (real Postgre
     const releasePlacement = barrier()
     const placement = prisma.$transaction(
       async (tx) => {
-        await new PgAgentRepo(tx).setPlacement(AGENT, OTHER_DAEMON)
+        await new PgAgentRepo(tx).setPlacement(AGENT, onDaemon(OTHER_DAEMON))
         placed.release()
         await releasePlacement.promise
       },
@@ -190,7 +191,7 @@ describe('agent placement and webchat MCP delegation serialization (real Postgre
     )
     await established.promise
 
-    const movement = new PgAgentRepo(prisma).movePlacement(AGENT, DAEMON, OTHER_DAEMON)
+    const movement = new PgAgentRepo(prisma).movePlacement(AGENT, onDaemon(DAEMON), onDaemon(OTHER_DAEMON))
     await expectPending(movement)
     releaseEstablishment.release()
 
@@ -208,12 +209,12 @@ describe('agent placement and webchat MCP delegation serialization (real Postgre
     const agents = new PgAgentRepo(prisma)
     const delegation = (await delegations.establish(input))!
 
-    await agents.setPlacement(AGENT, DAEMON)
+    await agents.setPlacement(AGENT, onDaemon(DAEMON))
     expect((await delegations.get(delegation.id))?.revokedAt).toBeNull()
-    expect(await agents.movePlacement(AGENT, DAEMON, DAEMON)).not.toBeNull()
+    expect(await agents.movePlacement(AGENT, onDaemon(DAEMON), onDaemon(DAEMON))).not.toBeNull()
     expect((await delegations.get(delegation.id))?.revokedAt).toBeNull()
 
-    await agents.setPlacement(AGENT, OTHER_DAEMON)
+    await agents.setPlacement(AGENT, onDaemon(OTHER_DAEMON))
     expect(await delegations.get(delegation.id)).toMatchObject({
       revokedReason: 'agent_placement_changed',
       revokedAt: expect.any(Date)
@@ -237,7 +238,7 @@ describe('agent placement and webchat MCP delegation serialization (real Postgre
       conversationId: OTHER_CONVERSATION
     }))!
 
-    expect(await new PgAgentRepo(prisma).movePlacement(AGENT, DAEMON, OTHER_DAEMON)).not.toBeNull()
+    expect(await new PgAgentRepo(prisma).movePlacement(AGENT, onDaemon(DAEMON), onDaemon(OTHER_DAEMON))).not.toBeNull()
 
     for (const id of [first.id, second.id]) {
       expect(await delegations.get(id)).toMatchObject({
@@ -255,7 +256,7 @@ describe('agent placement and webchat MCP delegation serialization (real Postgre
     const agents = new PgAgentRepo(prisma)
     // Genuinely placed and serving — the seed leaves the row inactive, and `active` is the
     // half of the state the cascade cannot touch and this helper exists to correct.
-    await agents.setPlacement(AGENT, DAEMON)
+    await agents.setPlacement(AGENT, onDaemon(DAEMON))
     const before = (await prisma.agent.findUnique({ where: { id: AGENT } }))!
 
     await prisma.daemon.delete({ where: { id: DAEMON } })
@@ -272,7 +273,7 @@ describe('agent placement and webchat MCP delegation serialization (real Postgre
     })
 
     // Placed again (a peer control plane, an operator) before the sweep got here.
-    await agents.setPlacement(AGENT, OTHER_DAEMON)
+    await agents.setPlacement(AGENT, onDaemon(OTHER_DAEMON))
     expect(await prisma.$transaction((tx) => settleCascadedUnplacement(tx, AGENT))).toBe(false)
     expect(await prisma.agent.findUnique({ where: { id: AGENT } })).toMatchObject({
       daemonId: OTHER_DAEMON,
@@ -287,7 +288,7 @@ describe('agent placement and webchat MCP delegation serialization (real Postgre
 
     await expect(
       prisma.$transaction(async (tx) => {
-        await new PgAgentRepo(tx).setPlacement(AGENT, OTHER_DAEMON)
+        await new PgAgentRepo(tx).setPlacement(AGENT, onDaemon(OTHER_DAEMON))
         throw new Error('forced placement rollback')
       })
     ).rejects.toThrow('forced placement rollback')

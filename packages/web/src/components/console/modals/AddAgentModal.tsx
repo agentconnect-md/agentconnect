@@ -335,9 +335,9 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
     return () => el.removeEventListener('scroll', sync)
   }, [])
 
-  // Cloud is one null-valued UI choice; the server still receives one serving pool member.
+  // Cloud is one UI choice AND one server-side placement: the pool, named as itself.
   const daemonChoice = addAgentDaemonChoice(daemons, daemonId)
-  const { cloudAvailable, daemon, localDaemons, placementDaemonId, value: effectiveDaemonId } = daemonChoice
+  const { cloudAvailable, daemon, localDaemons, placement, value: effectiveDaemonId } = daemonChoice
   const daemonOptions: DaemonSelectOption[] = [
     ...(cloudAvailable
       ? [
@@ -822,7 +822,11 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
         runtime: effectiveRuntime,
         ...(selectedModel ? { model: selectedModel } : {}),
         ...(description.trim() ? { description: description.trim() } : {}),
-        ...(placementDaemonId !== null ? { daemonId: placementDaemonId } : {}),
+        ...(placement?.kind === 'pool'
+          ? { placementKind: 'pool' as const }
+          : placement
+            ? { daemonId: placement.daemonId }
+            : {}),
         outputMode,
         showFooter,
         showStatusBar,

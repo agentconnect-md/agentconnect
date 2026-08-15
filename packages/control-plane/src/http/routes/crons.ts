@@ -228,7 +228,7 @@ export function cronRoutes(deps: HttpDeps) {
             .catch(() => {})
           const wire = cronToUpsert(cron)
           if (wire) {
-            await deps.agentDelivery.cronUpsert(agent.id, agent.daemonId, wire, cronPushFailed('cron/upsert'))
+            await deps.agentDelivery.cronUpsert(agent, wire, cronPushFailed('cron/upsert'))
           }
           return toDto(cron, ctxOf(req))
         } finally {
@@ -336,11 +336,15 @@ export function cronRoutes(deps: HttpDeps) {
           return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot run this cron' })
         }
         let agent = cron.agentId ? await deps.repos.agent.get(orgOf(req), cron.agentId) : null
-        if (!agent?.daemonId) {
+        // A manual run goes to whoever serves the agent right now — its placement, or the member
+        // holding its duty. Nothing serving it is a 503, exactly as an unplaced agent was.
+        const runDaemonId = agent ? await deps.placementResolver.servingDaemon(agent) : null
+        if (!agent || !runDaemonId) {
           return reply
             .code(503)
             .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent is not placed on a daemon' })
         }
+        agent = { ...agent, daemonId: runDaemonId }
         const release = deps.agentMutations.tryBeginMutation(agent.id)
         if (!release) {
           return reply
@@ -446,13 +450,7 @@ export function cronRoutes(deps: HttpDeps) {
             .catch(() => {})
           // The row's own org rides the send: `cron/remove` carries only a cronId,
           // so a holder that never registered this cron has nothing to resolve.
-          await deps.agentDelivery.cronRemove(
-            agent.id,
-            agent.daemonId,
-            existing.id,
-            existing.orgId,
-            cronPushFailed('cron/remove')
-          )
+          await deps.agentDelivery.cronRemove(agent, existing.id, existing.orgId, cronPushFailed('cron/remove'))
           return reply.code(204).send(null)
         } finally {
           release()

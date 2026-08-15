@@ -557,6 +557,8 @@ export const CreateAgentBody = z.object({
   skills: SkillEnableBody.optional(),
   managedSkills: ManagedSkillEnableBody.optional(),
   memory: MemoryConfigBody.optional(), // memory backend; absent ⇒ managed default
+  // Placement at create. `pool` needs no id; `daemon` (the default) uses `daemonId`.
+  placementKind: z.enum(['daemon', 'pool']).optional(),
   daemonId: z.string().optional(), // the owning daemon, if chosen at create
   workspace: AgentWorkspaceInputBody.optional(), // absent ⇒ scratch; the cold editor can replace either mode later
   capabilities: z.array(z.string()).default([]),
@@ -618,7 +620,20 @@ export const UpdateAgentBody = z
  * drains one daemon, reprovisions another, and does not migrate local state.
  * `force` is the explicit disaster-recovery path for a source that cannot ACK
  * its detach; every target-side admission check still applies. */
-export const SetAgentDaemonBody = z.object({ daemonId: z.string().uuid(), force: z.boolean().optional() }).strict()
+export const SetAgentDaemonBody = z
+  .object({
+    // The placement TARGET. `daemon` names one machine through `daemonId`; `pool` names the
+    // install-wide member set and carries no id at all — whichever member holds the agent's duty
+    // serves it, so pinning one here is exactly the dead-Pod pointer this replaced. Omitted ⇒
+    // `daemon`, so an existing client that sends only `daemonId` still means what it meant.
+    placementKind: z.enum(['daemon', 'pool']).optional(),
+    daemonId: z.string().uuid().optional(),
+    force: z.boolean().optional()
+  })
+  .strict()
+  .refine((b) => (b.placementKind === 'pool' ? b.daemonId === undefined : b.daemonId !== undefined), {
+    message: 'daemonId is required for a daemon placement and must be omitted for a pool placement'
+  })
 
 /** Full desired workspace definition for the acknowledged cold edit path. */
 export const SetAgentWorkspaceBody = z.discriminatedUnion('mode', [
@@ -681,7 +696,14 @@ export const AgentDto = z.object({
   managedSkills: z.array(z.string().uuid()), // explicitly enabled accepted managed-skill ids
   memory: MemoryConfigBody.nullable(), // memory backend (null ⇒ managed default)
   status: z.string(),
+  // What the placement NAMES. `pool` carries a null `daemonId` on purpose: no member id is
+  // durable, so the console must read readiness from `placementReady` rather than from a machine.
+  placementKind: z.enum(['daemon', 'pool']),
   daemonId: z.string().nullable(),
+  /** Can a session start right now? For a `daemon` placement that is its daemon's liveness; for a
+   *  `pool` placement it is "some live member could serve this", which is the question the console
+   *  was answering with a dead Pod's id (#987). */
+  placementReady: z.boolean(),
   workspace: AgentWorkspaceBody,
   /** Rename-proof numeric identity of the GitHub workspace repository. Null
    * for scratch/anonymous or legacy rows that have not been repaired yet. */

@@ -41,6 +41,7 @@ import type {
 } from '../domain/ids.js'
 import type { SessionKey } from '../domain/sessionKey.js'
 import type { DutyMemberKey, DutyReconcilePlan, DutyEdge, AgentSeed } from '../domain/duty.js'
+import type { DutyClaimScope, PlacementKind, PlacementTarget } from '../domain/placement.js'
 import type {
   OrganizationEnvironmentAudience,
   OrganizationEnvironmentKind,
@@ -639,6 +640,8 @@ export interface CreateAgentInput {
   managedSkills?: string[] // accepted managed_skill ids, explicitly enabled
   memory?: AgentMemoryBinding // memory backend
   icon?: AgentIcon // console avatar; absent ⇒ the repo assigns a random glyph+color combo
+  /** Placement at create time: `pool` needs no ref, `daemon` needs `daemonId`. Absent ⇒ unplaced. */
+  placementKind?: PlacementKind
   daemonId?: DaemonId // the owning machine, if chosen at create time
   workspace?: AgentWorkspace // absent ⇒ scratch
   /** Rename-proof numeric identity of the github workspace repository. This is
@@ -735,6 +738,11 @@ export interface AgentRecord {
   managedSkills: string[] // accepted managed_skill ids ([] ⇒ none)
   memory: AgentMemoryBinding | null // runtimeOverrides.memory
   status: 'active' | 'inactive' | 'paused'
+  /** What placement NAMES (domain/placement.ts): `daemon` resolves through `daemonId`, `pool`
+   *  resolves to the install-wide member set and carries no ref. Never branch on it directly. */
+  placementKind: PlacementKind
+  /** The `daemon`-kind ref, and null for every other kind — placement, never "who serves it now".
+   *  Ask {@link PlacementResolver} for that. */
   daemonId: DaemonId | null
   workspace: AgentWorkspace
   /** Nullable on scratch/anonymous and pre-R2a rows; action-time authorization
@@ -884,18 +892,18 @@ export interface AgentRepo {
   ): Promise<AgentRecord>
   /** Serialize on the Agent row. A real placement change atomically revokes all
    *  active webchat MCP delegations; a same-placement write does not. */
-  setPlacement(agentId: AgentId, daemonId: DaemonId | null): Promise<void>
+  setPlacement(agentId: AgentId, target: PlacementTarget): Promise<void>
   /**
-   * Atomically move an agent only when its current owner still matches
-   * `expectedDaemonId`. Returns the updated row, or null when another move won
-   * the compare-and-set race. A real move revokes active webchat MCP authority
-   * in the same transaction. This is the persistence fence for the explicit
-   * cold daemon-switch action.
+   * Atomically move an agent only when its current placement still matches `expected` — BOTH
+   * columns, so moving between `pool` and a machine is fenced exactly like moving between two
+   * machines. Returns the updated row, or null when another move won the compare-and-set race. A
+   * real move revokes active webchat MCP authority in the same transaction. This is the
+   * persistence fence for the explicit cold placement-switch action.
    */
   movePlacement(
     agentId: AgentId,
-    expectedDaemonId: DaemonId | null,
-    daemonId: DaemonId | null,
+    expected: PlacementTarget,
+    target: PlacementTarget,
     byUserId?: string
   ): Promise<AgentRecord | null>
   /** Atomically enumerate the agent's HookDefs, tombstone their durable review
@@ -935,6 +943,8 @@ export interface AgentRepo {
  *  scopes) plus the owning daemon, which the flat `CollabRoutesSnapshot.agents[]`
  *  entry routes on. `daemonId` is null for an unplaced agent (not routable). */
 export interface OrgAgentRecord extends ChannelAgentRecord {
+  /** The placement columns, so a consumer can resolve the serving daemon (domain/placement.ts). */
+  placementKind: PlacementKind
   daemonId: string | null
 }
 
@@ -5005,8 +5015,10 @@ export interface DutyGrantRecord {
 
 export interface AgentHomeClaim {
   granted: boolean
-  groupId: string
-  term: bigint
+  /** Absent only when the claim was refused before any group was read or minted — an ineligible
+   *  claimant, which has no group to name and must not learn of one. */
+  groupId?: string
+  term?: bigint
   /** The live holder — the caller when granted, the incumbent for a `not_holder` answer otherwise. */
   holder: DaemonId | null
 }
@@ -5034,15 +5046,17 @@ export interface DutyGroupRepo {
    *  each grant bumps the term. Install-wide — capacity gating is the caller's.
    *  `maxMembers` excludes undeliverable (oversized) groups at the claim
    *  boundary, so they never churn or starve the vacancies behind them.
-   *  `incumbentOnly` restricts vacancies to groups with an agent already placed
-   *  on the claimant (`agent.daemonId`) — the soak-phase grant policy that pins
-   *  duties where state already lives until the shared data plane arrives. */
+   *  `scope` is the claimant's connection scope, and the ONLY input to the
+   *  eligibility gate (domain/placement.ts): a group is claimable only when the
+   *  claimant may hold EVERY agent in it, which is what keeps an install-wide
+   *  member off the agents a local daemon is already serving.
+   *  `excludeGroupIds` carries the caller's refusal backoff. */
   claimVacant(
     holder: DaemonId,
     max: number,
     now: Date,
     leaseMs: number,
-    opts?: { maxMembers?: number; incumbentOnly?: boolean }
+    opts: { scope: DutyClaimScope; maxMembers?: number; excludeGroupIds?: readonly string[] }
   ): Promise<DutyGrantRecord[]>
   /** The group-computation inputs for one org: every agent as a node, plus
    *  active integrations on daemon-held (socket, unrevoked) bots as edges. */
@@ -5050,12 +5064,11 @@ export interface DutyGroupRepo {
   /** Keyset rotation over orgs that can need a recompute — any org owning an
    *  agent or an existing duty group. */
   listDutyOrgs(afterOrgId: string | null, limit: number): Promise<string[]>
-  /** Soak-phase placement fence: vacate every held group whose holder no longer
-   *  hosts ANY of its agents (a full placement move-away), so the new incumbent
-   *  can claim. Partial occupancy keeps the lease — split groups never flap —
-   *  and so does a group whose agents are all unplaced: nothing moved away.
-   *  Returns the vacated groupIds. */
-  vacateNonIncumbent(orgId: OrgId): Promise<string[]>
+  /** The placement fence, re-derived from the eligibility predicate: vacate every held group its
+   *  holder may no longer hold — an agent moved off the pool onto a machine, or off one machine
+   *  onto another. Same rule as {@link DutyGroupRepo.claimVacant}, read from the holder's side, so
+   *  a lease can never outlive the placement that justified it. Returns the vacated groupIds. */
+  vacateIneligible(orgId: OrgId): Promise<string[]>
   /** Batched renewal — one write per heartbeat covering every held group.
    *  Term-preserving; a reassigned group simply stops matching. Returns the
    *  renewed groupIds for digest comparison. */
@@ -5064,12 +5077,30 @@ export interface DutyGroupRepo {
   release(holder: DaemonId, groupIds: string[]): Promise<void>
   /** First-trigger claim for a botless agent: creates the singleton home if none
    *  exists ("claiming creates the lease"), grants if vacant, otherwise names
-   *  the incumbent. Idempotent for the current holder (no term churn). */
-  claimAgentHome(orgId: OrgId, agentId: AgentId, holder: DaemonId, now: Date, leaseMs: number): Promise<AgentHomeClaim>
+   *  the incumbent. Idempotent for the current holder (no term churn). Gated by
+   *  the SAME eligibility predicate as {@link DutyGroupRepo.claimVacant}, read
+   *  inside the transaction — the rendezvous is a claim path too, and a member
+   *  must not reach through it for an agent it may not hold. */
+  claimAgentHome(
+    orgId: OrgId,
+    agentId: AgentId,
+    holder: DaemonId,
+    now: Date,
+    leaseMs: number,
+    scope: DutyClaimScope
+  ): Promise<AgentHomeClaim>
   /** Does `holder` currently hold an unexpired lease on a group covering this
    *  agent? The authorization for `duty/fetch`: a member may pull exactly the
    *  agent definitions it has won, and nothing else. */
   holdsAgent(holder: DaemonId, agentId: AgentId, now: Date): Promise<boolean>
+  /** Stamp `confirmedAt` on the groups this holder reports in its heartbeat digest, returning the
+   *  ones that became confirmed on THIS beat. A grant is applied daemon-side only after its
+   *  install succeeds (#972), so the digest IS the proof that the member is serving — the same
+   *  signal the self-fence and CP renewal already ride, not a new one. */
+  confirmHeld(holder: DaemonId, groupIds: readonly string[], now: Date): Promise<string[]>
+  /** {@link DutyGroupRepo.holdersOf} restricted to CONFIRMED holds — who INGRESS may be addressed
+   *  at. A holder that is still installing is a live lease and not yet a route. */
+  confirmedHoldersOf(agentId: AgentId, now: Date): Promise<DaemonId[]>
   /** Every member currently holding an unexpired lease on a group covering this
    *  agent — the delivery half of {@link DutyGroupRepo.holdsAgent}, so a live
    *  update reaches whoever serves the agent rather than only where it is placed

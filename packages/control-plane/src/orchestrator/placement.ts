@@ -72,6 +72,7 @@ import type { AgentSpecAssembler } from './agentSpecAssembler.js'
 import { buildCollabSnapshot } from './collabSnapshot.js'
 import type { ConnectionRegistry, DaemonConnState } from '../ws/registry.js'
 import type { ControlSender } from './outbound.js'
+import type { PlacementResolver } from './placementResolver.js'
 import type { EpochService } from './epoch.js'
 import type { Clock } from '../domain/clock.js'
 
@@ -96,6 +97,8 @@ export interface PlacementOrchDeps {
   /** The duty ledger read that makes the reconcile roster `pinned-to-me ∪ agents
    *  in the duties I hold`. Absent (tests / no pool) ⇒ placement alone. */
   duties?: { heldAgentIds(holder: DaemonId, now: Date): Promise<AgentId[]> }
+  /** Resolves the peer directory's routing targets. Absent ⇒ placement alone. */
+  placement?: Pick<PlacementResolver, 'resolveDirectory'>
   /** Optional structured logger for reconcile-time skips (no live relay). */
   log?: { warn(obj: object, msg: string): void }
   // NOTE: icon URL bases moved into the AgentSpecAssembler (it owns spec assembly).
@@ -490,7 +493,15 @@ export class Placement implements ReconcileService {
         this.integrations.channelPlacements(orgId),
         this.agents.orgDirectory(orgId)
       ])
-      const snapshot = buildCollabSnapshot(orgId, placements, Number(daemon.routingEpoch), orgDirectory)
+      const snapshot = buildCollabSnapshot(
+        orgId,
+        placements,
+        Number(daemon.routingEpoch),
+        // Placement names the target for a machine-placed peer; the ledger names it for a pool
+        // one. `buildCollabSnapshot` drops rows with no daemon, so resolving here is what keeps a
+        // pool agent discoverable AND callable.
+        this.orch?.placement ? await this.orch.placement.resolveDirectory(orgDirectory) : orgDirectory
+      )
       collabRoutes.channels.push(...snapshot.channels)
       collabRoutes.agents.push(...snapshot.agents)
       collabRoutes.platformKinds = snapshot.platformKinds

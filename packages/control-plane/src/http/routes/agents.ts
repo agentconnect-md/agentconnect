@@ -58,7 +58,15 @@ import {
   isSyntheticEmail
 } from '../../persistence/ports.js'
 import type { DaemonView } from '../../ports.js'
-import { AgentId, DaemonId, SessionId, type OrgId } from '../../domain/ids.js'
+import { AgentId, DaemonId, OrgId, SessionId } from '../../domain/ids.js'
+import {
+  dutyEligibility,
+  ON_POOL,
+  placementLabel,
+  placementTargetOf,
+  type PlacementTarget
+} from '../../domain/placement.js'
+import type { ResolvableAgent } from '../../orchestrator/placementResolver.js'
 import { currentMcpGrant, mcpProxyDef, relayHttpOrigin } from '../../orchestrator/mcpProvider.js'
 import { serializeByProviderNames } from './mcp-providers.js'
 
@@ -256,7 +264,7 @@ function toDto(
   secretKeys: string[],
   hookKinds: AgentDtoT['hookKinds'],
   iconBases: IconUrlBases,
-  sandboxPolicy: SandboxPolicy,
+  placementView: PlacementView,
   // Organization entries assigned to THIS agent. Metadata only: variable values
   // plus secret KEY names, resolved without decrypting anything (design §6).
   organizationEnvironment: AssignedOrganizationMetadata = NO_ORGANIZATION_ENVIRONMENT
@@ -297,7 +305,9 @@ function toDto(
     managedSkills: a.managedSkills,
     memory: a.memory,
     status: a.status,
+    placementKind: a.placementKind,
     daemonId: a.daemonId,
+    placementReady: placementView.ready,
     workspace: workspaceToDto(a.workspace),
     workspaceRepoId: a.workspaceRepoId?.toString() ?? null,
     capabilities: a.capabilities,
@@ -319,17 +329,45 @@ function toDto(
     allowedTargetAgentIds: a.allowedTargetAgentIds,
     introduceOnJoin: a.introduceOnJoin,
     runInSandbox: a.runInSandbox,
-    sandboxSupported: sandboxPolicy.supported,
-    sandboxRequired: sandboxPolicy.required,
+    sandboxSupported: placementView.sandbox.supported,
+    sandboxRequired: placementView.sandbox.required,
     hookKinds
   }
 }
 
-/** #642: sandbox capability and policy for an org-owned or install-wide placement. */
-async function sandboxPolicyFor(deps: HttpDeps, a: AgentRecord): Promise<SandboxPolicy> {
-  if (!a.daemonId) return UNAVAILABLE_SANDBOX
-  // The org-fenced agent read supplies the availability scope for its daemon.
-  return sandboxPolicyOf(await deps.registry.getAvailable(a.orgId, a.daemonId))
+/**
+ * What placement says the console needs to know: the sandbox policy (#642) and whether a session
+ * can start right now. Both come from ONE resolution of "who may serve this agent", so they can
+ * never disagree — and for a pool placement that resolution is "is any member live", not "is the
+ * member this row names live", which is the question a rollout made unanswerable (#987).
+ */
+interface PlacementView {
+  sandbox: SandboxPolicy
+  ready: boolean
+}
+
+const NO_PLACEMENT: PlacementView = { sandbox: UNAVAILABLE_SANDBOX, ready: false }
+
+function placementViewOf(deps: HttpDeps, daemon: DaemonView | null): PlacementView {
+  const live = daemon ? deps.liveness.get(daemon.daemonId) : undefined
+  return { sandbox: sandboxPolicyOf(daemon), ready: live?.reachable === true && live.state === 'READY' }
+}
+
+/** The install-wide members that could serve an agent right now. One read; reuse it for a page. */
+async function readyPoolMembers(deps: HttpDeps, orgId: OrgId): Promise<DaemonView[]> {
+  const daemons = await deps.registry.listAvailable(orgId)
+  return daemons.filter((d) => d.orgId === null && placementViewOf(deps, d).ready)
+}
+
+async function placementViewFor(deps: HttpDeps, a: AgentRecord, poolMembers?: DaemonView[]): Promise<PlacementView> {
+  const eligibility = dutyEligibility(a)
+  if (eligibility.scope === 'none') return NO_PLACEMENT
+  if (eligibility.scope === 'daemon') {
+    // The org-fenced agent read supplies the availability scope for its daemon.
+    return placementViewOf(deps, await deps.registry.getAvailable(a.orgId, eligibility.daemonId))
+  }
+  const members = poolMembers ?? (await readyPoolMembers(deps, OrgId(a.orgId)))
+  return placementViewOf(deps, members[0] ?? null)
 }
 
 /** The dto's hook-kind marks for ONE agent (single-agent reads/writes). */
@@ -752,6 +790,22 @@ export function agentRoutes(deps: HttpDeps) {
       return canView(agent, ctxOf(req)) ? agent : null
     }
 
+    /**
+     * The same read, with `daemonId` resolved to the member that SERVES the agent right now
+     * instead of the one its placement names. Every daemon-edge proxy below (workspace, git,
+     * memory, dreams, tasks, skills, permissions) loads through this, because for a `pool`
+     * placement the row names no machine at all and the live answer is the ledger's.
+     *
+     * Deliberately NOT used by the placement-authoritative routes — create, PATCH, move, delete —
+     * which compare and write the placement itself and must see what the row says.
+     */
+    const getServingAgent = async (req: FastifyRequest, id: string): Promise<AgentRecord | null> => {
+      const agent = await getOrgAgent(req, id)
+      if (!agent) return null
+      const daemonId = await deps.placementResolver.servingDaemon(agent)
+      return { ...agent, daemonId }
+    }
+
     // A session worktree is part of that session's protected body surface. The
     // caller must pass both the owning-agent gate above and the session's own
     // private/external visibility rule before its daemon-local files are read.
@@ -919,10 +973,10 @@ export function agentRoutes(deps: HttpDeps) {
         }
       })
 
-    const replicateRemove = (agentId: string, daemonId: string | null, orgId: string): Promise<void> =>
-      deps.agentDelivery.remove(agentId, daemonId, orgId, (err, target) => {
+    const replicateRemove = (agent: ResolvableAgent, orgId: string): Promise<void> =>
+      deps.agentDelivery.remove(agent, orgId, (err, target) => {
         if (!(err instanceof NoConnection)) throw err
-        app.log.debug({ agentId, daemonId: target }, 'agent/remove skipped: daemon offline')
+        app.log.debug({ agentId: agent.id, daemonId: target }, 'agent/remove skipped: daemon offline')
       })
 
     // The alive relay's HTTP origin for MCP proxy defs (ws→http/wss→https), or null
@@ -953,7 +1007,7 @@ export function agentRoutes(deps: HttpDeps) {
       if (added.length === 0 && removed.length === 0) return
       // Every daemon serving this agent, not just its placement: a duty holder
       // installed the same enable-list and needs the same defs.
-      const targets = await deps.agentDelivery.daemonsFor(agent.id, agent.daemonId)
+      const targets = await deps.agentDelivery.daemonsFor(agent)
       if (targets.length === 0) return
       try {
         const byName = new Map((await deps.repos.mcpProvider.listForOrg(orgId)).map((p) => [p.name, p]))
@@ -1202,7 +1256,7 @@ export function agentRoutes(deps: HttpDeps) {
     /** Every daemon serving this agent gets the connection before the spec that
      *  names it — a duty holder included, or its memory admission stays closed. */
     const pushExternalMemoryBeforeAgent = async (agent: AgentRecord): Promise<void> => {
-      for (const daemonId of await deps.agentDelivery.daemonsFor(agent.id, agent.daemonId)) {
+      for (const daemonId of await deps.agentDelivery.daemonsFor(agent)) {
         await pushExternalMemoryToDaemon(agent, daemonId)
       }
     }
@@ -1236,7 +1290,7 @@ export function agentRoutes(deps: HttpDeps) {
       ) {
         return
       }
-      for (const daemonId of await deps.agentDelivery.daemonsFor(before.id, before.daemonId)) {
+      for (const daemonId of await deps.agentDelivery.daemonsFor(before)) {
         await removeExternalMemoryFromDaemonIfUnused(before.orgId, daemonId, connectionId)
       }
     }
@@ -1257,6 +1311,9 @@ export function agentRoutes(deps: HttpDeps) {
       collabRoutes: deps.collabRoutes,
       mutations: deps.agentMutations,
       sessionOwners: deps.sessionOwners,
+      placement: deps.placementResolver,
+      ...(deps.daemonRows ? { daemons: deps.daemonRows } : {}),
+      ...(deps.recomputeDuties ? { recomputeDuties: deps.recomputeDuties } : {}),
       log: app.log
     })
     const refreshMutationAgent = async (observed: AgentRecord): Promise<AgentRecord | null> => {
@@ -1297,12 +1354,18 @@ export function agentRoutes(deps: HttpDeps) {
       async (req, reply) => {
         if (denyViewerWrite(req, reply)) return
         const conflict = (message: string) => reply.code(409).send({ error: 'Conflict', statusCode: 409, message })
-        // Placement accepts visible org-owned daemons and install-wide cloud members, never another org's daemon.
-        const placedDaemon =
-          req.body.daemonId !== undefined
+        // Placement accepts visible org-owned daemons and install-wide cloud members, never another
+        // org's daemon — or the POOL, which names no member and is validated against the live
+        // member set instead, exactly like the move route's pool target.
+        const wantsPool = req.body.placementKind === 'pool'
+        const poolMembers = wantsPool ? await readyPoolMembers(deps, orgOf(req)) : []
+        if (wantsPool && poolMembers.length === 0) return conflict('no cloud daemon member is ready')
+        const placedDaemon = wantsPool
+          ? (poolMembers[0] ?? null)
+          : req.body.daemonId !== undefined
             ? await deps.registry.getAvailable(orgOf(req), DaemonId(req.body.daemonId))
             : null
-        if (req.body.daemonId !== undefined) {
+        if (!wantsPool && req.body.daemonId !== undefined) {
           if (!placedDaemon || !canView(placedDaemon, ctxOf(req))) {
             return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'daemon not found' })
           }
@@ -1498,7 +1561,11 @@ export function agentRoutes(deps: HttpDeps) {
                   ...(req.body.skills !== undefined ? { skills: req.body.skills } : {}),
                   ...(req.body.managedSkills !== undefined ? { managedSkills: req.body.managedSkills } : {}),
                   ...(req.body.memory !== undefined ? { memory: req.body.memory } : {}),
-                  ...(req.body.daemonId !== undefined ? { daemonId: DaemonId(req.body.daemonId) } : {}),
+                  ...(wantsPool
+                    ? { placementKind: 'pool' as const }
+                    : req.body.daemonId !== undefined
+                      ? { daemonId: DaemonId(req.body.daemonId) }
+                      : {}),
                   ...(workspace !== undefined ? { workspace } : {}),
                   ...(workspaceRepoId !== undefined ? { workspaceRepoId } : {}),
                   ...(req.principal ? { createdByUserId: req.principal.userId } : {}),
@@ -1569,7 +1636,7 @@ export function agentRoutes(deps: HttpDeps) {
               await secretKeysOf(agent.orgId, agent.id),
               await hookKindsOf(deps, agent.id),
               iconBasesOf(deps),
-              sandboxPolicy,
+              await placementViewFor(deps, agent),
               // Create already enrolled the agent into the org's `all` entries in
               // its own transaction, so the response shows what will actually apply.
               await organizationEnvironmentOf(agent)
@@ -1619,15 +1686,23 @@ export function agentRoutes(deps: HttpDeps) {
         )
         // ONE batched resolve for the whole page (design §6) — never a query per agent.
         const organizationEnvironment = await organizationEnvironmentOfAll(orgOf(req), rows)
+        // Two batched resolves for the whole page: the named daemons, and the pool once.
         const daemonIds = [...new Set(rows.flatMap((a) => (a.daemonId ? [a.daemonId] : [])))]
-        const policies = new Map(
+        const views = new Map(
           await Promise.all(
             daemonIds.map(
               async (daemonId) =>
-                [daemonId, sandboxPolicyOf(await deps.registry.getAvailable(orgOf(req), daemonId))] as const
+                [daemonId, placementViewOf(deps, await deps.registry.getAvailable(orgOf(req), daemonId))] as const
             )
           )
         )
+        const poolMembers = await readyPoolMembers(deps, orgOf(req))
+        const poolView = placementViewOf(deps, poolMembers[0] ?? null)
+        const viewFor = (a: AgentRecord): PlacementView => {
+          const eligibility = dutyEligibility(a)
+          if (eligibility.scope === 'none') return NO_PLACEMENT
+          return eligibility.scope === 'daemon' ? (views.get(eligibility.daemonId) ?? NO_PLACEMENT) : poolView
+        }
         return rows.map((a) =>
           toDto(
             a,
@@ -1635,7 +1710,7 @@ export function agentRoutes(deps: HttpDeps) {
             secretKeys.get(a.id) ?? [],
             hookKinds.get(a.id) ?? [],
             iconBasesOf(deps),
-            a.daemonId ? (policies.get(a.daemonId) ?? UNAVAILABLE_SANDBOX) : UNAVAILABLE_SANDBOX,
+            viewFor(a),
             organizationEnvironment.get(a.id) ?? NO_ORGANIZATION_ENVIRONMENT
           )
         )
@@ -1663,7 +1738,7 @@ export function agentRoutes(deps: HttpDeps) {
           await secretKeysOf(agent.orgId, agent.id),
           await hookKindsOf(deps, agent.id),
           iconBasesOf(deps),
-          await sandboxPolicyFor(deps, agent),
+          await placementViewFor(deps, agent),
           await organizationEnvironmentOf(agent)
         )
       }
@@ -1722,7 +1797,7 @@ export function agentRoutes(deps: HttpDeps) {
       },
       async (req, reply) => {
         if (denyViewerWrite(req, reply)) return
-        const agent = await getOrgAgent(req, req.params.id)
+        const agent = await getServingAgent(req, req.params.id)
         if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
         if (!canEdit(agent, ctxOf(req))) {
           return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this agent' })
@@ -1770,7 +1845,7 @@ export function agentRoutes(deps: HttpDeps) {
       },
       async (req, reply) => {
         if (denyViewerWrite(req, reply)) return
-        const agent = await getOrgAgent(req, req.params.id)
+        const agent = await getServingAgent(req, req.params.id)
         if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
         if (!canEdit(agent, ctxOf(req))) {
           return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this agent' })
@@ -1866,15 +1941,15 @@ export function agentRoutes(deps: HttpDeps) {
               .code(409)
               .send({ error: 'Conflict', statusCode: 409, message: 'agent changed; refresh and retry the edit' })
           }
-          const sandboxPolicy = await sandboxPolicyFor(deps, existing)
-          if (sandboxPolicy.required && req.body.runInSandbox === false) {
+          const placementView = await placementViewFor(deps, existing)
+          if (placementView.sandbox.required && req.body.runInSandbox === false) {
             return reply.code(409).send({
               error: 'Conflict',
               statusCode: 409,
               message: 'Run in sandbox is required by this daemon'
             })
           }
-          if (!sandboxPolicy.supported && req.body.runInSandbox === true) {
+          if (!placementView.sandbox.supported && req.body.runInSandbox === true) {
             return reply.code(409).send({
               error: 'Conflict',
               statusCode: 409,
@@ -2022,7 +2097,7 @@ export function agentRoutes(deps: HttpDeps) {
             await secretKeysOf(agent.orgId, agent.id),
             await hookKindsOf(deps, agent.id),
             iconBasesOf(deps),
-            sandboxPolicy,
+            placementView,
             // A PATCH may also have enrolled the agent into `all` entries added
             // since its last edit, so re-resolve rather than echoing the request.
             await organizationEnvironmentOf(agent)
@@ -2167,7 +2242,7 @@ export function agentRoutes(deps: HttpDeps) {
             await secretKeysOf(converted.orgId, converted.id),
             await hookKindsOf(deps, converted.id),
             iconBasesOf(deps),
-            await sandboxPolicyFor(deps, converted),
+            await placementViewFor(deps, converted),
             await organizationEnvironmentOf(converted)
           )
         } catch (err) {
@@ -2224,99 +2299,139 @@ export function agentRoutes(deps: HttpDeps) {
           return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this agent' })
         }
 
-        const target = await deps.registry.getAvailable(orgOf(req), DaemonId(req.body.daemonId))
-        if (!target || !canView(target, ctxOf(req))) {
-          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'daemon not found' })
-        }
-
         const conflict = (message: string) => reply.code(409).send({ error: 'Conflict', statusCode: 409, message })
         const force = req.body.force === true
-        // Deferred exec config (preset-agents.md §3.2): placement is where a
-        // runtime becomes mandatory — an unplaced preset carries none until the
-        // user (or M1 auto-placement) chooses one.
-        if (!existing.runtime) {
-          return conflict('agent has no runtime yet — set a runtime before placing it on a daemon')
-        }
+        const wantsPool = req.body.placementKind === 'pool'
         const moveReady = (daemonId: string) => {
           const live = deps.liveness.get(daemonId)
           return live?.reachable === true && live.state === 'READY'
         }
         const MOVE_FEATURE = 'agent-move-v1'
 
-        if (!moveReady(target.daemonId)) return conflict('target daemon is not ready')
-        if (!target.capabilities.features.includes(MOVE_FEATURE)) {
-          return conflict('target daemon does not support agent moves')
-        }
-        if (existing.managedSkills.length > 0 && !organizationKnowledgeSupportedOn(target)) {
-          return conflict('target daemon does not support organization knowledge managed skills')
-        }
-        // Rollout gate (organization-secrets-and-variables.md §10 step 3): an agent
-        // bound to an organization entry receives FULL resolved env/secret maps, and
-        // that is only safe on a daemon that persists `configRevision` and refuses an
-        // older snapshot. An unplaced bound agent may be saved; placing it requires
-        // the feature. Deliberately not "old daemons ignore the optional field" — a
-        // late-completing older snapshot there would reinstate a rotated value.
-        if ((await organizationEnvironmentBindingCount(existing)) > 0 && !configRevisionSupportedOn(target)) {
-          return conflict(
-            'target daemon does not yet support organization variables and secrets, which this agent is assigned; upgrade it first'
-          )
-        }
-        const targetRuntime = target.runtimeProfiles.find((p) => p.runtime === existing.runtime)
-        if (target.runtimeProfiles.length > 0 && !targetRuntime) {
-          return conflict(`target daemon does not support runtime ${existing.runtime}`)
-        }
-        // A 'cached' model list (hydrated from the daemon's last-good cache, not
-        // confirmed by a live probe this process) is permissive exactly like an
-        // empty one — only a probed list enforces membership, so a daemon that
-        // restarted mid-upgrade never strands a move on a stale hydrated list
-        // (runtime-model-catalog.md §5).
-        if (
-          existing.model &&
-          targetRuntime &&
-          targetRuntime.modelsSource !== 'cached' &&
-          targetRuntime.models.length > 0 &&
-          !targetRuntime.models.includes(existing.model)
-        ) {
-          return conflict(`target daemon does not support model ${existing.model} for runtime ${existing.runtime}`)
-        }
-        for (const name of existing.mcpServers) {
-          const server = target.mcpServers.find((candidate) => candidate.name === name)
-          if (!server) return conflict(`target daemon cannot attach MCP server ${name}`)
-          const caps = targetRuntime?.mcpCapabilities
-          const transportSupported =
-            server.transport === 'stdio' || !caps || (server.transport === 'http' ? caps.http : caps.sse)
-          if (!transportSupported) {
-            return conflict(
-              `target runtime ${existing.runtime} does not support MCP ${server.transport} transport for ${name}`
+        // The daemons the target admits. A `daemon` target is one machine and every check below
+        // is about that machine. A `pool` target names the install-wide member set, and the CP
+        // does not get to choose which member serves the agent — so the checks are evaluated
+        // against the UNION of live members: the target is admissible when SOME live member could
+        // serve this agent today. Members are one Deployment of one image, so union and
+        // intersection differ only mid-rollout, and there the ledger's install-on-grant refusal
+        // is the backstop that keeps a member from holding what it cannot install.
+        const candidates = wantsPool
+          ? (await deps.registry.listAvailable(orgOf(req))).filter(
+              (d) => d.orgId === null && moveReady(d.daemonId) && canView(d, ctxOf(req))
             )
+          : await (async () => {
+              const one = await deps.registry.getAvailable(orgOf(req), DaemonId(req.body.daemonId!))
+              return one && canView(one, ctxOf(req)) ? [one] : []
+            })()
+        if (candidates.length === 0) {
+          if (!wantsPool) {
+            return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'daemon not found' })
           }
+          return conflict('no cloud daemon member is ready')
         }
-        if (
-          existing.daemonId !== target.daemonId &&
-          target.load &&
-          target.maxAgents > 0 &&
-          target.load.agents >= target.maxAgents
-        ) {
-          return conflict('target daemon is at agent capacity')
+
+        // Deferred exec config (preset-agents.md §3.2): placement is where a
+        // runtime becomes mandatory — an unplaced preset carries none until the
+        // user (or M1 auto-placement) chooses one.
+        if (!existing.runtime) {
+          return conflict('agent has no runtime yet — set a runtime before placing it on a daemon')
         }
+
+        const placement = placementTargetOf(existing)
+        const samePlacementTarget = wantsPool
+          ? placement.kind === 'pool'
+          : placement.kind === 'daemon' && placement.daemonId === req.body.daemonId
+
+        /** Why this daemon cannot take the agent, or null when it can. */
+        const admits = async (daemon: DaemonView): Promise<string | null> => {
+          if (!moveReady(daemon.daemonId)) return 'target daemon is not ready'
+          if (!daemon.capabilities.features.includes(MOVE_FEATURE)) return 'target daemon does not support agent moves'
+          if (existing.managedSkills.length > 0 && !organizationKnowledgeSupportedOn(daemon)) {
+            return 'target daemon does not support organization knowledge managed skills'
+          }
+          // Rollout gate (organization-secrets-and-variables.md §10 step 3): an agent
+          // bound to an organization entry receives FULL resolved env/secret maps, and
+          // that is only safe on a daemon that persists `configRevision` and refuses an
+          // older snapshot. An unplaced bound agent may be saved; placing it requires
+          // the feature. Deliberately not "old daemons ignore the optional field" — a
+          // late-completing older snapshot there would reinstate a rotated value.
+          if ((await organizationEnvironmentBindingCount(existing)) > 0 && !configRevisionSupportedOn(daemon)) {
+            return 'target daemon does not yet support organization variables and secrets, which this agent is assigned; upgrade it first'
+          }
+          const targetRuntime = daemon.runtimeProfiles.find((p) => p.runtime === existing.runtime)
+          if (daemon.runtimeProfiles.length > 0 && !targetRuntime) {
+            return `target daemon does not support runtime ${existing.runtime}`
+          }
+          // A 'cached' model list (hydrated from the daemon's last-good cache, not
+          // confirmed by a live probe this process) is permissive exactly like an
+          // empty one — only a probed list enforces membership, so a daemon that
+          // restarted mid-upgrade never strands a move on a stale hydrated list
+          // (runtime-model-catalog.md §5).
+          if (
+            existing.model &&
+            targetRuntime &&
+            targetRuntime.modelsSource !== 'cached' &&
+            targetRuntime.models.length > 0 &&
+            !targetRuntime.models.includes(existing.model)
+          ) {
+            return `target daemon does not support model ${existing.model} for runtime ${existing.runtime}`
+          }
+          for (const name of existing.mcpServers) {
+            const server = daemon.mcpServers.find((candidate) => candidate.name === name)
+            if (!server) return `target daemon cannot attach MCP server ${name}`
+            const caps = targetRuntime?.mcpCapabilities
+            const transportSupported =
+              server.transport === 'stdio' || !caps || (server.transport === 'http' ? caps.http : caps.sse)
+            if (!transportSupported) {
+              return `target runtime ${existing.runtime} does not support MCP ${server.transport} transport for ${name}`
+            }
+          }
+          // Capacity is a per-member fact even on the pool: "some member has headroom" is exactly
+          // the condition the ledger's own headroom gate applies when it hands out the duty.
+          if (!samePlacementTarget && daemon.load && daemon.maxAgents > 0 && daemon.load.agents >= daemon.maxAgents) {
+            return 'target daemon is at agent capacity'
+          }
+          return null
+        }
+
+        // First admitting candidate wins; a pool target refuses only when EVERY live member
+        // refuses, and then it reports the first member's reason rather than inventing one.
+        let target: DaemonView | undefined
+        let refusal: string | null = null
+        for (const candidate of candidates) {
+          const why = await admits(candidate)
+          if (why === null) {
+            target = candidate
+            break
+          }
+          refusal ??= why
+        }
+        if (!target) return conflict(refusal ?? 'no daemon can take this agent')
+
+        const moveTarget: PlacementTarget = wantsPool ? ON_POOL : { kind: 'daemon', daemonId: target.daemonId }
 
         // A same-target retry is an idempotent repair after placement already
         // committed, not a second handoff. Target admission above still applies,
         // but there is no separate source to gate before ensureActive below.
-        if (existing.daemonId !== target.daemonId) {
-          if (existing.daemonId) {
-            const source = await deps.registry.getAvailable(orgOf(req), existing.daemonId)
-            const sourceLive = source ? deps.liveness.get(source.daemonId) : undefined
-            const sourceReady = sourceLive?.reachable === true && sourceLive.state === 'READY'
-            if (force) {
-              if (sourceReady) return conflict('source daemon is ready; use a safe move')
-              if (sourceLive?.reachable === true) {
-                return conflict('source daemon is reconnecting; wait until it is ready')
-              }
-            } else {
-              if (!source || !moveReady(source.daemonId)) return conflict('source daemon is not ready')
-              if (!source.capabilities.features.includes(MOVE_FEATURE)) {
-                return conflict('source daemon does not support agent moves')
+        if (!samePlacementTarget) {
+          // Every member serving the agent today has to quiesce — for a pool source that is the
+          // duty holder, not a placement, and there may be none at all.
+          const sourceDaemonIds = await deps.placementResolver.servingDaemons(existing)
+          if (sourceDaemonIds.length > 0) {
+            for (const sourceDaemonId of sourceDaemonIds) {
+              const source = await deps.registry.getAvailable(orgOf(req), DaemonId(sourceDaemonId))
+              const sourceLive = source ? deps.liveness.get(source.daemonId) : undefined
+              const sourceReady = sourceLive?.reachable === true && sourceLive.state === 'READY'
+              if (force) {
+                if (sourceReady) return conflict('source daemon is ready; use a safe move')
+                if (sourceLive?.reachable === true) {
+                  return conflict('source daemon is reconnecting; wait until it is ready')
+                }
+              } else {
+                if (!source || !moveReady(source.daemonId)) return conflict('source daemon is not ready')
+                if (!source.capabilities.features.includes(MOVE_FEATURE)) {
+                  return conflict('source daemon does not support agent moves')
+                }
               }
             }
           } else if (force) {
@@ -2360,7 +2475,7 @@ export function agentRoutes(deps: HttpDeps) {
           // Retry/repair: the prior response may have been lost, or a failed move
           // may have left DB placement on a partially bootstrapped target. Reapply
           // the full bundle + activate; all operations are idempotent.
-          if (existing.daemonId === target.daemonId) {
+          if (samePlacementTarget) {
             try {
               const repaired = await agentMoves.ensureActive(existing)
               return toDto(
@@ -2369,7 +2484,7 @@ export function agentRoutes(deps: HttpDeps) {
                 await secretKeysOf(repaired.orgId, repaired.id),
                 await hookKindsOf(deps, repaired.id),
                 iconBasesOf(deps),
-                sandboxPolicyOf(target),
+                placementViewOf(deps, target),
                 await organizationEnvironmentOf(repaired)
               )
             } catch (err) {
@@ -2386,16 +2501,16 @@ export function agentRoutes(deps: HttpDeps) {
             req.log.warn(
               {
                 agentId: existing.id,
-                sourceDaemonId: existing.daemonId,
-                targetDaemonId: target.daemonId,
+                sourcePlacement: placementLabel(placement),
+                targetPlacement: placementLabel(moveTarget),
                 userId: req.principal?.userId
               },
               'agent force reassign requested while source daemon is unavailable'
             )
           }
           const moved = force
-            ? await agentMoves.forceReassign(existing, target.daemonId, req.principal?.userId)
-            : await agentMoves.move(existing, target.daemonId, req.principal?.userId)
+            ? await agentMoves.forceReassign(existing, moveTarget, req.principal?.userId)
+            : await agentMoves.move(existing, moveTarget, req.principal?.userId)
           // The pre-activation probe fact can arrive before the placement CAS and
           // is correctly rejected by the daemon-ownership check. Re-send the
           // idempotent definition after commit so the daemon re-emits its current
@@ -2414,7 +2529,7 @@ export function agentRoutes(deps: HttpDeps) {
             await secretKeysOf(moved.orgId, moved.id),
             await hookKindsOf(deps, moved.id),
             iconBasesOf(deps),
-            sandboxPolicyOf(target),
+            placementViewOf(deps, target),
             await organizationEnvironmentOf(moved)
           )
         } catch (err) {
@@ -2504,7 +2619,7 @@ export function agentRoutes(deps: HttpDeps) {
               )
             }
           }
-          await replicateRemove(current.id, current.daemonId, current.orgId)
+          await replicateRemove(current, current.orgId)
           // AFTER the fan-out: `remove` resolves holders from the membership rows
           // the reap deletes, and the agent row this reads by is already gone.
           deps.recomputeDuties?.(current.orgId)
@@ -2584,7 +2699,7 @@ export function agentRoutes(deps: HttpDeps) {
             await secretKeysOf(agent.orgId, agent.id),
             await hookKindsOf(deps, agent.id),
             iconBasesOf(deps),
-            await sandboxPolicyFor(deps, agent),
+            await placementViewFor(deps, agent),
             await organizationEnvironmentOf(agent)
           )
         } finally {
@@ -2665,7 +2780,7 @@ export function agentRoutes(deps: HttpDeps) {
             await secretKeysOf(agent.orgId, agent.id),
             await hookKindsOf(deps, agent.id),
             iconBasesOf(deps),
-            await sandboxPolicyFor(deps, agent),
+            await placementViewFor(deps, agent),
             await organizationEnvironmentOf(agent)
           )
         } finally {
@@ -2692,7 +2807,7 @@ export function agentRoutes(deps: HttpDeps) {
         }
       },
       async (req, reply) => {
-        const agent = await getOrgAgent(req, req.params.id)
+        const agent = await getServingAgent(req, req.params.id)
         if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
         if (!(await canReadWorkspaceScope(req, agent.id, req.query.sessionId))) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'workspace not found' })
@@ -2738,7 +2853,7 @@ export function agentRoutes(deps: HttpDeps) {
         }
       },
       async (req, reply) => {
-        const agent = await getOrgAgent(req, req.params.id)
+        const agent = await getServingAgent(req, req.params.id)
         if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
         if (!agent.daemonId) {
           return reply
@@ -2775,7 +2890,7 @@ export function agentRoutes(deps: HttpDeps) {
         }
       },
       async (req, reply) => {
-        const agent = await getOrgAgent(req, req.params.id)
+        const agent = await getServingAgent(req, req.params.id)
         if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
         if (!(await canReadWorkspaceScope(req, agent.id, req.query.sessionId))) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'workspace not found' })
@@ -2829,7 +2944,7 @@ export function agentRoutes(deps: HttpDeps) {
       },
       async (req, reply) => {
         if (denyViewerWrite(req, reply)) return
-        const agent = await getOrgAgent(req, req.params.id)
+        const agent = await getServingAgent(req, req.params.id)
         if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
         if (!canEdit(agent, ctxOf(req))) {
           return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this agent' })
@@ -2904,7 +3019,7 @@ export function agentRoutes(deps: HttpDeps) {
       },
       async (req, reply) => {
         if (denyViewerWrite(req, reply)) return
-        const agent = await getOrgAgent(req, req.params.id)
+        const agent = await getServingAgent(req, req.params.id)
         if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
         if (!canEdit(agent, ctxOf(req))) {
           return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this agent' })
@@ -2964,7 +3079,7 @@ export function agentRoutes(deps: HttpDeps) {
         }
       },
       async (req, reply) => {
-        const agent = await getOrgAgent(req, req.params.id)
+        const agent = await getServingAgent(req, req.params.id)
         if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
         if (agent.memory?.provider === 'none') {
           return toAgentMemoryDto({ agentId: agent.id, path: req.query.path ?? 'MEMORY.md', exists: false })
@@ -3014,7 +3129,7 @@ export function agentRoutes(deps: HttpDeps) {
         }
       },
       async (req, reply) => {
-        const agent = await getOrgAgent(req, req.params.id)
+        const agent = await getServingAgent(req, req.params.id)
         if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
         if (agent.memory?.provider === 'none') {
           return toMemoryFilesDto({ agentId: agent.id, exists: false, entries: [] })
@@ -3060,7 +3175,7 @@ export function agentRoutes(deps: HttpDeps) {
         }
       },
       async (req, reply) => {
-        const agent = await getOrgAgent(req, req.params.id)
+        const agent = await getServingAgent(req, req.params.id)
         if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
         if (agent.memory?.provider !== undefined && agent.memory.provider !== 'managed') {
           return { channels: [] }
@@ -3105,7 +3220,7 @@ export function agentRoutes(deps: HttpDeps) {
         }
       },
       async (req, reply) => {
-        const agent = await getOrgAgent(req, req.params.id)
+        const agent = await getServingAgent(req, req.params.id)
         if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
         if (agent.memory?.provider === 'none') {
           return toAgentMemoryDto({ agentId: agent.id, path: req.query.path ?? 'MEMORY.md', exists: false })
@@ -3164,7 +3279,7 @@ export function agentRoutes(deps: HttpDeps) {
         }
       },
       async (req, reply) => {
-        const agent = await getOrgAgent(req, req.params.id)
+        const agent = await getServingAgent(req, req.params.id)
         if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
         if (!canEdit(agent, ctxOf(req))) {
           return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this agent' })
@@ -3234,7 +3349,7 @@ export function agentRoutes(deps: HttpDeps) {
         }
       },
       async (req, reply) => {
-        const agent = await getOrgAgent(req, req.params.id)
+        const agent = await getServingAgent(req, req.params.id)
         if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
         if ((agent.memory?.provider ?? 'managed') !== 'managed') {
           return reply.code(400).send({
@@ -3285,7 +3400,7 @@ export function agentRoutes(deps: HttpDeps) {
         }
       },
       async (req, reply) => {
-        const agent = await getOrgAgent(req, req.params.id)
+        const agent = await getServingAgent(req, req.params.id)
         if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
         const provider = agent.memory?.provider ?? 'managed'
         if (provider === 'none') return { shape: 'none' as const, capabilities: [] }
@@ -3321,7 +3436,7 @@ export function agentRoutes(deps: HttpDeps) {
         }
       },
       async (req, reply) => {
-        const agent = await getOrgAgent(req, req.params.id)
+        const agent = await getServingAgent(req, req.params.id)
         if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
         if (agent.memory?.provider !== 'external') {
           return reply
@@ -3366,7 +3481,7 @@ export function agentRoutes(deps: HttpDeps) {
         }
       },
       async (req, reply) => {
-        const agent = await getOrgAgent(req, req.params.id)
+        const agent = await getServingAgent(req, req.params.id)
         if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
         if (agent.memory?.provider !== 'external') {
           return reply
@@ -3417,7 +3532,7 @@ export function agentRoutes(deps: HttpDeps) {
         }
       },
       async (req, reply) => {
-        const agent = await getOrgAgent(req, req.params.id)
+        const agent = await getServingAgent(req, req.params.id)
         if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
         if (!canEdit(agent, ctxOf(req))) {
           return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this agent' })
@@ -3464,7 +3579,7 @@ export function agentRoutes(deps: HttpDeps) {
         }
       },
       async (req, reply) => {
-        const agent = await getOrgAgent(req, req.params.id)
+        const agent = await getServingAgent(req, req.params.id)
         if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
         if (agent.memory?.provider !== 'external') {
           return reply
@@ -3511,7 +3626,7 @@ export function agentRoutes(deps: HttpDeps) {
         }
       },
       async (req, reply) => {
-        const agent = await getOrgAgent(req, req.params.id)
+        const agent = await getServingAgent(req, req.params.id)
         if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
         if (!canEdit(agent, ctxOf(req))) {
           return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this agent' })
@@ -3568,7 +3683,7 @@ export function agentRoutes(deps: HttpDeps) {
         }
       },
       async (req, reply) => {
-        const agent = await getOrgAgent(req, req.params.id)
+        const agent = await getServingAgent(req, req.params.id)
         if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
         if (!canEdit(agent, ctxOf(req))) {
           return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this agent' })
@@ -3622,7 +3737,7 @@ export function agentRoutes(deps: HttpDeps) {
         }
       },
       async (req, reply) => {
-        const agent = await getOrgAgent(req, req.params.id)
+        const agent = await getServingAgent(req, req.params.id)
         if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
         if (agent.memory?.provider !== 'external') {
           return reply
@@ -3672,7 +3787,7 @@ export function agentRoutes(deps: HttpDeps) {
       id: string,
       edit = false
     ): Promise<(AgentRecord & { daemonId: string }) | null> => {
-      const agent = await getOrgAgent(req, id)
+      const agent = await getServingAgent(req, id)
       if (!agent) {
         await reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
         return null
@@ -4097,7 +4212,7 @@ export function agentRoutes(deps: HttpDeps) {
       async (req, reply) => {
         // Route through getOrgAgent (org boundary + canView) — a bare repo.get here
         // would leak a restricted / cross-org agent's checkout state.
-        const agent = await getOrgAgent(req, req.params.id)
+        const agent = await getServingAgent(req, req.params.id)
         if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
         if (!(await canReadWorkspaceScope(req, agent.id, req.query.sessionId))) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'workspace not found' })
@@ -4141,7 +4256,7 @@ export function agentRoutes(deps: HttpDeps) {
       async (req, reply) => {
         // Route through getOrgAgent (org boundary + canView) — a bare repo.get here
         // would leak a restricted / cross-org agent's uncommitted work.
-        const agent = await getOrgAgent(req, req.params.id)
+        const agent = await getServingAgent(req, req.params.id)
         if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
         if (!(await canReadWorkspaceScope(req, agent.id, req.query.sessionId))) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'workspace not found' })
@@ -4188,7 +4303,7 @@ export function agentRoutes(deps: HttpDeps) {
       async (req, reply) => {
         // Route through getOrgAgent (org boundary + canView) — a bare repo.get here
         // would leak a restricted / cross-org agent's commit history.
-        const agent = await getOrgAgent(req, req.params.id)
+        const agent = await getServingAgent(req, req.params.id)
         if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
         if (!(await canReadWorkspaceScope(req, agent.id, req.query.sessionId))) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'workspace not found' })
@@ -4234,7 +4349,7 @@ export function agentRoutes(deps: HttpDeps) {
       async (req, reply) => {
         // Route through getOrgAgent (org boundary + canView) — a bare repo.get here
         // would let a non-viewer trigger a pull on a restricted / cross-org agent.
-        const agent = await getOrgAgent(req, req.params.id)
+        const agent = await getServingAgent(req, req.params.id)
         if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
         if (!agent.daemonId) {
           return reply
@@ -4267,7 +4382,7 @@ export function agentRoutes(deps: HttpDeps) {
       requireFeature: (reply: FastifyReply, orgId: OrgId, daemonId: DaemonId) => Promise<boolean>
     ): Promise<{ agent: AgentRecord; daemonId: DaemonId } | null> => {
       if (denyViewerWrite(req, reply)) return null
-      const agent = await getOrgAgent(req, agentId)
+      const agent = await getServingAgent(req, agentId)
       if (!agent) {
         void reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
         return null
@@ -4519,7 +4634,7 @@ export function agentRoutes(deps: HttpDeps) {
       async (req, reply) => {
         // Route through getOrgAgent (org boundary + canView) — a bare repo.get here would leak
         // a restricted / cross-org agent's work, and task descriptions are model-authored text.
-        const agent = await getOrgAgent(req, req.params.id)
+        const agent = await getServingAgent(req, req.params.id)
         if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
         if (!(await visibleAgentSession(req, agent.id, req.query.sessionId))) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'session not found' })

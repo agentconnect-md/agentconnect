@@ -66,7 +66,7 @@ export async function convergeIntegrationGating(
       // reaches only the placement leaves a holder admitting conversations the
       // agent's new visibility forbids.
       const spec = await integrationToSpec(deps.platforms, i, bot, secret, channels, gated)
-      await deps.agentDelivery.integrationUpsert(agent.id, agent.daemonId, spec, (err) => {
+      await deps.agentDelivery.integrationUpsert(agent, spec, (err) => {
         if (err instanceof NoConnection) return // offline daemon → reconcile roster carries it
         throw err
       })

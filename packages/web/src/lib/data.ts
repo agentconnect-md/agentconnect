@@ -59,6 +59,20 @@ export function presentedDaemonStatus(daemon: Pick<DaemonRow, 'status' | 'lifecy
  *  Pod they run in, which is churn nobody outside the cluster should read: the pool is one
  *  managed thing, so `daemonFromDto` labels each member with this instead. */
 export const CLOUD_DAEMON_LABEL = 'AgentConnect Cloud'
+/** `Agent.daemon` for a pool placement. It names the POOL, never a member: no member id survives
+ *  a rollout, which is precisely why the placement stopped carrying one. */
+export const CLOUD_PLACEMENT = 'cloud'
+
+/**
+ * The ONE mapping from a DTO's placement pair to the value the console selects on: the pool
+ * sentinel, a member id, or null when the agent is unplaced. Every reader of the raw DTO uses it —
+ * the list projection AND the editor's own reload — so a reload cannot disagree with the row it
+ * reloaded. Deriving "is this the pool?" from `daemonId` being null is what made a reloaded pool
+ * agent read as unplaced; `placementKind` is the only thing that says it.
+ */
+export function placementValueOf(dto: { placementKind?: 'daemon' | 'pool'; daemonId: string | null }): string | null {
+  return dto.placementKind === 'pool' ? CLOUD_PLACEMENT : (dto.daemonId ?? null)
+}
 
 /** The Cloud entry stands in for the whole pool: online while any member is serving. */
 export function cloudFleetStatus(members: Pick<DaemonRow, 'status'>[]): ConnectionStatusKey {
@@ -77,10 +91,14 @@ export function cloudFleetStatus(members: Pick<DaemonRow, 'status'>[]): Connecti
 // without writing the status (a bare FK SetNull, say) would otherwise paint a green
 // dot on an agent that cannot run.
 export function effectiveAgentStatus(
-  agent: Pick<Agent, 'status' | 'daemon'>,
+  agent: Pick<Agent, 'status' | 'daemon' | 'placementKind' | 'placementReady'>,
   owningDaemon: Pick<DaemonRow, 'status' | 'lifecycleStatus'> | undefined
 ): StatusKey {
   if (agent.status === 'online') {
+    // A pool placement names no member, so there is no owning daemon to consult: the CP already
+    // answered "could anything serve this now" and that answer is the whole story (#987 — asking
+    // a placed member's liveness is what kept a rolled-over agent permanently offline).
+    if (agent.placementKind === 'pool') return agent.placementReady ? agent.status : 'offline'
     if (agent.daemon === '—') return 'offline'
     if (owningDaemon !== undefined) {
       if (owningDaemon.lifecycleStatus) return owningDaemon.lifecycleStatus
@@ -94,8 +112,8 @@ export function effectiveAgentStatus(
 // ships the built-in `agentconnect` preset UNPLACED (daemon '—', deferred runtime '');
 // configuring it (onboarding's agent step) or creating a user agent flips this true. It
 // is the signal for "the org is set up" — used by the onboarding gate + getting-started.
-export function agentIsPlaced(agent: Pick<Agent, 'daemon' | 'runtime'>): boolean {
-  return agent.daemon !== '—' && agent.runtime !== ''
+export function agentIsPlaced(agent: Pick<Agent, 'daemon' | 'runtime' | 'placementKind'>): boolean {
+  return (agent.placementKind === 'pool' || agent.daemon !== '—') && agent.runtime !== ''
 }
 
 export type LaneKind = 'msg' | 'plan' | 'tool' | 'edit' | 'done'
@@ -311,6 +329,12 @@ export interface Agent {
   /** Names of organization-owned secrets assigned to this agent. Values are never
    *  returned for these either. */
   organizationSecretKeys: string[]
+  /** What the placement NAMES. `pool` carries `daemon: CLOUD_PLACEMENT` and no member id.
+   *  Absent (a mock row, an older CP) reads as `daemon`, which is the pre-pool behavior. */
+  placementKind?: 'daemon' | 'pool'
+  /** Server-computed: can a session start right now? For a pool placement that is "some member is
+   *  live", which is the question the console used to answer with a dead member's liveness. */
+  placementReady?: boolean
   daemon: string
   region: string
   /** Convenience mirror of the workspace for list views: github repo, else '—'. */

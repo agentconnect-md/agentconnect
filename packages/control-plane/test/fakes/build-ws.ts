@@ -36,11 +36,13 @@ import {
   PgExternalMemoryGrantRepo,
   PgMcpProviderRepo,
   PgMcpGrantRepo,
-  PgDutyGroupRepo
+  PgDutyGroupRepo,
+  PgHookSecretStore
 } from '../../src/persistence/index.js'
 import { PlaintextSecretCipher } from '../../src/secrets/cipher.js'
 import { EpochService } from '../../src/orchestrator/epoch.js'
 import { Placement } from '../../src/orchestrator/placement.js'
+import { PlacementResolver } from '../../src/orchestrator/placementResolver.js'
 import { ControlSender } from '../../src/orchestrator/outbound.js'
 import { AgentSpecAssembler } from '../../src/orchestrator/agentSpecAssembler.js'
 import { ApiKeyCodec } from '../../src/registry/apiKey.js'
@@ -51,6 +53,8 @@ import { AgentMutationGate } from '../../src/orchestrator/agentMutationGate.js'
 import { CollabRoutesService } from '../../src/orchestrator/collabRoutes.service.js'
 import { DutyLeaseService, type DutyLeaseConfig } from '../../src/orchestrator/dutyLease.js'
 import { RelayControlSender } from '../../src/orchestrator/relayControl.js'
+import { HookService } from '../../src/hooks/hook.service.js'
+import { AgentRoutingConverger } from '../../src/orchestrator/agentRouting.js'
 import { FrameRouter } from '../../src/ws/handlers/index.js'
 import { DaemonConnection } from '../../src/ws/connection.js'
 import { RelayRegistry } from '../../src/ws/relay-registry.js'
@@ -82,6 +86,13 @@ export const TEST_API_KEY_PEPPER = 'test-api-key-pepper-0123456789abcdef'
 export interface WsHarness {
   deps: DaemonWsDeps
   clock: FakeClock
+  /** Compiled hook rules the relay would have received, in order — the routing projection that
+   *  addresses a daemon, so "ingress follows the holder" is assertable on it directly. */
+  hookAssigns: CapturedHookRule[]
+  hookRemovals: string[]
+  /** The resolver the projections read through — lets a test ask what the peer directory would
+   *  publish right now without reaching through the orchestrator. */
+  placement: PlacementResolver
   codec: ApiKeyCodec
   /** Provision a daemon row + mint an API key for `daemonId`; returns the plaintext `apiKey`. */
   mintToken(daemonId: string): Promise<string>
@@ -102,6 +113,13 @@ export interface HarnessOpts {
   relays?: RelayRosterEntry[]
   /** Duty lease knobs (defaults suit tests; recoveryGraceMs 0 so grants flow immediately). */
   dutyLease?: Partial<DutyLeaseConfig>
+}
+
+/** One compiled hook rule as the relay would receive it — the routing projection under test. */
+export interface CapturedHookRule {
+  hookId: string
+  agentId: string
+  daemonId: string
 }
 
 export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): WsHarness {
@@ -168,6 +186,15 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
   )
   const relays = opts.relays ?? []
   const dutyGroupRepo = new PgDutyGroupRepo(prisma)
+  const placementResolver = new PlacementResolver({
+    duties: dutyGroupRepo,
+    liveMembers: () =>
+      connReg
+        .reachableDaemons()
+        .filter((d) => d.orgId === null && d.state === 'READY')
+        .map((d) => d.daemonId),
+    clock
+  })
   const orchestrator = new Placement(
     repos.daemon,
     repos.agent,
@@ -197,9 +224,36 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
         grants: repos.externalMemoryGrant,
         relayRoster: { entries: async () => relays }
       },
-      duties: dutyGroupRepo
+      duties: dutyGroupRepo,
+      placement: placementResolver
     }
   )
+
+  // A REAL HookService over a capturing relay sender: `hookAssigns` is literally what a relay
+  // would dispatch on, so a test can assert that ingress follows a holder change rather than
+  // asserting that some internal seam was called.
+  const hookAssigns: CapturedHookRule[] = []
+  const hookRemovals: string[] = []
+  const hookService = new HookService(
+    repos.hook,
+    new PgHookSecretStore(prisma, cipher),
+    repos.agent,
+    {
+      hookAssign: (rule: { hookId: string; agentId: string; daemonId: string }) => void hookAssigns.push(rule),
+      hookRemove: (hookId: string) => void hookRemovals.push(hookId)
+    } as unknown as RelayControlSender,
+    placementResolver
+  )
+  const agentRouting = new AgentRoutingConverger({
+    hooks: hookService,
+    collabRoutes,
+    httpBot: { syncBot: async () => {} },
+    agents: repos.agent,
+    integrations: repos.integration,
+    bots: repos.bot,
+    clock,
+    delayMs: 0
+  })
 
   const dutyLease = new DutyLeaseService(
     dutyGroupRepo,
@@ -211,12 +265,12 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
       grantsPerFrame: opts.dutyLease?.grantsPerFrame ?? 50,
       grantMembersPerFrame: opts.dutyLease?.grantMembersPerFrame ?? 2000,
       revocationsPerFrame: opts.dutyLease?.revocationsPerFrame ?? 500,
-      // Wire tests use synthetic member refs with no agent rows; the incumbent
-      // policy is exercised by its own repo tests against real placements.
-      grantPolicy: opts.dutyLease?.grantPolicy ?? 'any'
+      refusalsBeforeRelease: opts.dutyLease?.refusalsBeforeRelease ?? 3,
+      refusalBackoffMs: opts.dutyLease?.refusalBackoffMs ?? 300_000
     },
     undefined,
-    repos.agent
+    repos.agent,
+    agentRouting
   )
 
   const deps: DaemonWsDeps = {
@@ -226,6 +280,7 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
     orchestrator,
     connReg,
     agent: repos.agent,
+    placementResolver,
     session: repos.session,
     events: new InMemorySessionEventSink(),
     sessionUsage: repos.sessionUsage,
@@ -252,6 +307,9 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
   return {
     deps,
     clock,
+    hookAssigns,
+    hookRemovals,
+    placement: placementResolver,
     codec,
     mintCloudDaemon: async (daemonId: string) => {
       await prisma.daemon.create({ data: { id: daemonId, orgId: null, maxAgents: 8, status: 'ready' } })

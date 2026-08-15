@@ -1,3 +1,4 @@
+import { PLACEMENT_ONLY } from '../orchestrator/placementResolver.js'
 import { describe, it, expect, vi } from 'vitest'
 import {
   buildRelayCpFrame,
@@ -254,6 +255,7 @@ function buildWebchatVerifier(
       },
       sessions: { getUnscoped: async (id) => over.sessionById?.[id] ?? null },
       orgs: { roleOf: async () => (over.role === undefined ? 'collaborator' : over.role) },
+      placement: PLACEMENT_ONLY,
       remoteMcp: { establish }
     })
   }

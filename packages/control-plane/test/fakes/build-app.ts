@@ -16,6 +16,7 @@ import {
   PgApiKeyRepo,
   PgOrgRepo,
   PgAgentRepo,
+  PgDutyGroupRepo,
   PgAgentSecretStore,
   PgAssignmentRepo,
   PgCronRepo,
@@ -49,6 +50,7 @@ import { createDaemonWsServer } from '../../src/ws/gateway.js'
 import type { DaemonWsDeps } from '../../src/ws/deps.js'
 import { InMemorySessionEventSink } from '../../src/events/sink.js'
 import { systemClock } from '../../src/domain/clock.js'
+import { PlacementResolver } from '../../src/orchestrator/placementResolver.js'
 import { DaemonId, OrgId } from '../../src/domain/ids.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 
@@ -124,6 +126,15 @@ export function buildDaemonApp(prisma: PrismaClient): DaemonApp {
     PLATFORMS
   )
   const connReg = new ConnectionRegistry()
+  const placementResolver = new PlacementResolver({
+    duties: new PgDutyGroupRepo(prisma),
+    liveMembers: () =>
+      connReg
+        .reachableDaemons()
+        .filter((d) => d.orgId === null && d.state === 'READY')
+        .map((d) => d.daemonId),
+    clock
+  })
 
   // Mount the daemon WS gateway once the HTTP server exists (after `listen`).
   let listening = false
@@ -137,6 +148,7 @@ export function buildDaemonApp(prisma: PrismaClient): DaemonApp {
       orchestrator,
       connReg,
       agent: repos.agent,
+      placementResolver,
       session: repos.session,
       events: new InMemorySessionEventSink(),
       sessionUsage: repos.sessionUsage,

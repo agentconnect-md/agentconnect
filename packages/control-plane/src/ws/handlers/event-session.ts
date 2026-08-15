@@ -14,6 +14,7 @@
  * Trust boundary: the reported agent must still be placed on the authenticated
  * daemon, and an existing sessionId remains bound to its first agent.
  */
+import { PLACEMENT_ONLY } from '../../orchestrator/placementResolver.js'
 import { isFrame, type EventSession } from '@agentconnect.md/protocol'
 import { AgentId, BotId, DaemonId, HookId, IntegrationId, LaunchId, SessionId } from '../../domain/ids.js'
 import { classifySession } from '../../domain/session-visibility.js'
@@ -257,7 +258,8 @@ export const handleEventSessionSync: Handler = async (frame, conn, deps) => {
   }
   try {
     const agent = await deps.agent.getUnscoped(agentId)
-    if (agent?.daemonId === daemonId) await recordEventSession(p, agentId, daemonId, deps)
+    if (agent && (await (deps.placementResolver ?? PLACEMENT_ONLY).mayAct(agent, daemonId)))
+      await recordEventSession(p, agentId, daemonId, deps)
     // ACK only after recordEventSession's transaction has committed. An agent
     // placed elsewhere (or deleted) can never accept this daemon's stale row, so
     // retaining it forever would be worse than collecting it.

@@ -305,8 +305,9 @@ pass reaped the singleton the activation rendezvous had just minted, and the
 next trigger minted it again — a grant/revoke loop that interrupted the agent's
 in-flight turn on every sweep. The cost is one `duty_group` row per agent per
 org, most of them permanently vacant in a deployment whose agents live on
-org-scoped daemons; vacancy is cheap by construction (§5) and the `incumbent`
-grant policy filters those rows out inside `claimVacant`, so they consume no
+org-scoped daemons; vacancy is cheap by construction (§5) and the eligibility
+gate filters those rows out inside `claimVacant` — a machine-placed agent has
+exactly one eligible holder and it is never a pool member — so they consume no
 grant budget.
 
 ### The activation rendezvous
@@ -578,14 +579,28 @@ and cannot carry the flag; the operator sets `AGENTCONNECT_DUTY_ENFORCEMENT`
 (`1`/`true`/`yes`/`on`, anything unrecognized refused at startup) on the Pod
 instead, which outranks the file for this one key. The daemon reports which
 state it got — enforcing, or configured-but-inactive on a non-frame
-connection — once the control-plane connection is up. During the soak the grant policy is
-**incumbent-only** — a vacancy is granted only to the member the group's
-agents are already placed on, and the recompute vacates a lease whose holder
-no longer hosts any of the group's agents (partial occupancy keeps it, so a
-split group never flaps). Duties pin where agent state already lives; the
-policy widens to any-member once the shared data plane makes state portable.
-A single-org daemon sends byte-identical heartbeats to before and never
-observes any of this.
+connection — once the control-plane connection is up.
+
+**There is no grant policy any more.** The soak ran on an incumbent-only one —
+a vacancy went only to the member the group's agents were already placed on —
+and it could not survive its own premise: after a rollout the incumbent names a
+Pod that no longer exists, so a vacated group was claimable in principle and
+claimed by nobody in practice. What replaced it is not a wider policy but a
+different question. Placement is a **target**: `daemon` names one machine
+through `Agent.daemonId`, `pool` names the install-wide member set and carries
+no ref at all. A member may claim a group iff it may hold **every** agent in it —
+that machine for a `daemon` placement, any install-wide member for a `pool`
+one. One predicate, applied identically by the heartbeat claim, the activation
+rendezvous, and the sweep's placement fence, which now vacates a lease whose
+holder is no longer eligible rather than one that lost its last incumbency.
+
+Two consequences worth stating. A group mixing a `pool` agent with a
+machine-placed one is claimable by **neither** — serving it as a unit would mean
+one side running what the other already runs — so the gate is FORALL, not
+EXISTS. And an agent placed on a machine has exactly one eligible holder, which
+an install-wide member never is: dropping the incumbent gate cannot reach the
+agents a local daemon is already serving. A single-org daemon sends
+byte-identical heartbeats to before and never observes any of this.
 
 ### Future direction: daemon groups
 

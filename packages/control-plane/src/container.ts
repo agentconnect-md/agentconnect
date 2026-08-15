@@ -153,6 +153,8 @@ import { relayHttpOrigin } from './orchestrator/mcpProvider.js'
 import { CollabRoutesService } from './orchestrator/collabRoutes.service.js'
 import { DutyLeaseService, DUTY_LEASE_DEFAULTS } from './orchestrator/dutyLease.js'
 import { AgentDelivery } from './orchestrator/agentDelivery.js'
+import { AgentRoutingConverger } from './orchestrator/agentRouting.js'
+import { PlacementResolver } from './orchestrator/placementResolver.js'
 import { DutyRecomputeSweep } from './orchestrator/dutyRecompute.js'
 import { AgentMutationGate } from './orchestrator/agentMutationGate.js'
 import { AgentMoveService } from './orchestrator/agentMove.js'
@@ -589,6 +591,20 @@ export function buildContainer(
   // deployment tenant anchor used to admit Bot Apps from the same organization.
   const feishuPlatformApps = resolveFeishuPlatformApps(config)
 
+  // The ONE answer to "which daemons serve this agent" — what its placement names, plus every
+  // current duty holder (orchestrator/placementResolver.ts).
+  const placementResolver = new PlacementResolver({
+    duties: repos.dutyGroup,
+    // Install-wide members ready to take a trigger. Only the rendezvous fallback reads this: a
+    // pool agent whose lease lapsed has no holder, and any member can claim it on receipt.
+    liveMembers: () =>
+      connReg
+        .reachableDaemons()
+        .filter((d) => d.orgId === null && d.state === 'READY')
+        .map((d) => d.daemonId),
+    clock
+  })
+
   // Hook compiler/converger (webhook-triggers-and-github-events.md): CRUD routes
   // broadcast through it, and a (re)registering relay gets the full-set replay.
   // The installation repo feeds the github-kind compile (installationIds gate).
@@ -597,6 +613,7 @@ export function buildContainer(
     repos.hookSecret,
     repos.agent,
     relayControl,
+    placementResolver,
     githubAppCfg ? repos.githubInstallation : undefined,
     githubAppCfg?.slug
   )
@@ -610,21 +627,41 @@ export function buildContainer(
     repos: { session: repos.session, agent: repos.agent },
     control: sender,
     connReg,
+    placement: placementResolver,
     // Lazy over `http.log` (assigned below; only ever called at push time).
     log: { warn: (o, m) => http.log.warn(o, m) }
   })
 
   // Bot-agnostic collaboration routing snapshot fan-out (agent-collaboration
   // §2.3/§6.2): relays get the all-org table; daemons get their org-scoped copy.
-  const collabRoutes = new CollabRoutesService(repos.daemon, repos.integration, repos.agent, relayControl, sender)
+  const collabRoutes = new CollabRoutesService(
+    repos.daemon,
+    repos.integration,
+    repos.agent,
+    relayControl,
+    sender,
+    placementResolver,
+    repos.dutyGroup
+  )
 
-  // The ONE resolver of an agent's delivery set — placement ∪ current duty
-  // holders — and the fan-out that rides it (orchestrator/agentDelivery.ts).
-  const agentDelivery = new AgentDelivery({
-    control: sender,
-    specs: agentSpecs,
-    duties: repos.dutyGroup,
-    clock
+  // The fan-out that rides the resolver (orchestrator/agentDelivery.ts).
+  const agentDelivery = new AgentDelivery({ control: sender, specs: agentSpecs, placement: placementResolver })
+
+  // The projections that BAKE IN the serving daemon — hook rules, HTTP-bot assignment, the
+  // collaboration snapshot. A duty grant or release moves who serves an agent exactly as a
+  // placement move does, so both go through this one fan-out rather than two copies of the list.
+  const agentRouting = new AgentRoutingConverger({
+    hooks: hookService,
+    collabRoutes,
+    // Lazy over `httpBot` (assigned below; only ever called at convergence time), the same
+    // late-binding the logger wrappers use.
+    httpBot: { syncBot: (botId: string) => httpBot.syncBot(botId) },
+    agents: repos.agent,
+    integrations: repos.integration,
+    bots: repos.bot,
+    clock,
+    delayMs: 250,
+    log: { warn: (o, m) => http.log.warn(o, m) }
   })
 
   // Duty lease exchange riding the heartbeat (k8s daemons; orchestrator/dutyLease.ts).
@@ -635,7 +672,8 @@ export function buildContainer(
     clock,
     undefined,
     { warn: (o, m) => http.log.warn(o, m) },
-    repos.agent
+    repos.agent,
+    agentRouting
   )
   // Duty-group projection: derived from Integration/CronDef rows on a rotation;
   // deltas reach daemons via the heartbeat lease exchange, never from the sweep.
@@ -646,10 +684,10 @@ export function buildContainer(
       intervalMs: 30_000,
       orgsPerTick: 25,
       leaseMs: DUTY_LEASE_DEFAULTS.leaseMs,
-      incumbentFence: DUTY_LEASE_DEFAULTS.grantPolicy === 'incumbent',
       kickDelayMs: 250
     },
-    { warn: (o, m) => http.log.warn(o, m), error: (o, m) => http.log.error(o, m) }
+    { warn: (o, m) => http.log.warn(o, m), error: (o, m) => http.log.error(o, m) },
+    agentRouting
   )
   const agentMutations = new AgentMutationGate()
 
@@ -678,7 +716,8 @@ export function buildContainer(
       debug: (o, m) => http.log.debug(o, m)
     },
     platforms,
-    agentDelivery
+    agentDelivery,
+    placementResolver
   )
   const stagedAgentMoves = new AgentMoveService({
     agents: repos.agent,
@@ -706,6 +745,8 @@ export function buildContainer(
     collabRoutes,
     mutations: agentMutations,
     sessionOwners: connReg,
+    placement: placementResolver,
+    daemons: repos.daemon,
     recomputeDuties: (orgId: string) => dutyRecompute.kick(orgId),
     log: { warn: (o, m) => http.log.warn(o, m) }
   })
@@ -744,6 +785,7 @@ export function buildContainer(
       },
       // The duty half of the reconcile roster: pinned-to-me ∪ held-by-me.
       duties: repos.dutyGroup,
+      placement: placementResolver,
       log: { warn: (o, m) => http.log.warn(o, m) } // lazy over http.log (assigned below; called at reconcile time)
     }
   )
@@ -1012,6 +1054,8 @@ export function buildContainer(
     daemonConns: connReg,
     control: sender,
     agentDelivery,
+    placementResolver,
+    daemonRows: repos.daemon,
     visibilityPush,
     relayControl,
     httpBot,
@@ -1309,6 +1353,7 @@ export function buildContainer(
   // ── daemon WS edge (mounted on the live http.Server after listen) ──────────
   const wsDeps: DaemonWsServerDeps = {
     auth,
+    placementResolver,
     lifecycleOps: repos.daemonLifecycleOp,
     registry,
     orchestrator,
@@ -1387,7 +1432,8 @@ export function buildContainer(
       conversations: repos.webchatConversation,
       sessions: repos.session,
       orgs: repos.org,
-      remoteMcp: webchatRemoteMcp
+      remoteMcp: webchatRemoteMcp,
+      placement: placementResolver
     }),
     // Current-permission fallback for GitHub comment webhooks whose
     // author_association snapshot is stale or inconsistent across event types.

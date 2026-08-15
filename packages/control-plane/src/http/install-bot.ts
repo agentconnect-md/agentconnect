@@ -123,7 +123,6 @@ export async function installNewBot(
   // because a freshly pasted credential that reaches only the placement leaves the
   // holder authenticating with the old one. Best-effort — an offline daemon picks
   // it up from the register/ok reconcile roster. Never log the token-bearing spec.
-  const daemonId = agent.daemonId! // caller guarantees placement for socket transport
   // The bot row joins the reads: it is a required input of the §9 projector that
   // assembles the spec payload (`orchestrator/placement.ts`). `bot` was created
   // above, so this is the same row, not a second fetch.
@@ -133,7 +132,7 @@ export async function installNewBot(
   ])
   if (secret) {
     const spec = await integrationToSpec(deps.platforms, integration, bot, secret, channels, isGatedAgent(agent))
-    await deps.agentDelivery.integrationUpsert(agent.id, daemonId, spec, (err, target) => {
+    await deps.agentDelivery.integrationUpsert(agent, spec, (err, target) => {
       if (!(err instanceof NoConnection)) throw err
       log.debug({ integrationId: id, daemonId: target }, 'integration/upsert skipped: daemon offline')
     })

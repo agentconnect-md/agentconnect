@@ -16,10 +16,6 @@ export interface DutyRecomputeConfig {
   orgsPerTick: number
   /** Renewal horizon for re-grants applied inside the reconcile. */
   leaseMs: number
-  /** Mirrors the lease exchange's grant policy: under `incumbent`, a placement
-   *  move must also move the duty, so each tick vacates leases whose holder no
-   *  longer hosts any of the group's agents. Flip together with the policy. */
-  incumbentFence: boolean
   /** Coalescing window for {@link DutyRecomputeSweep.kick}: a burst of writes to
    *  one org (an install touching several rows) costs one recompute. */
   kickDelayMs: number
@@ -40,11 +36,14 @@ export class DutyRecomputeSweep {
   constructor(
     private readonly repo: Pick<
       DutyGroupRepo,
-      'listDutyOrgs' | 'computeInputs' | 'applyReconcile' | 'vacateNonIncumbent'
+      'listDutyOrgs' | 'computeInputs' | 'applyReconcile' | 'vacateIneligible' | 'getByIds'
     >,
     private readonly clock: Clock,
     private readonly cfg: DutyRecomputeConfig,
-    private readonly log?: DutyRecomputeLog
+    private readonly log?: DutyRecomputeLog,
+    /** Re-converges the routing projections when the fence moves a group's holder. Absent
+     *  (tests / no pool) ⇒ no convergence, the pre-duty behavior. */
+    private readonly routing?: { kick(agentIds: Iterable<string>): void }
   ) {}
 
   start(): void {
@@ -121,10 +120,16 @@ export class DutyRecomputeSweep {
       (existing) => planDutyReconcile(toExistingDutyGroups(existing, now), components),
       { now, leaseMs: this.cfg.leaseMs }
     )
-    if (this.cfg.incumbentFence) {
-      const vacated = await this.repo.vacateNonIncumbent(OrgId(orgId))
-      if (vacated.length > 0)
-        this.log?.warn({ orgId, groupIds: vacated }, 'duty leases vacated after a placement move-away')
+    // Unconditional: this is the placement fence, not a soak-phase switch. A lease whose holder
+    // may no longer hold the group is wrong under every grant policy, and the sweep is the only
+    // place that notices — `renewHeld` renews by holder alone and would keep it alive forever.
+    const vacated = await this.repo.vacateIneligible(OrgId(orgId))
+    if (vacated.length > 0) {
+      this.log?.warn({ orgId, groupIds: vacated }, 'duty leases vacated: the holder is no longer eligible')
+      // A vacated lease is a holder change like any other: whatever addressed the old holder has
+      // to stop, or ingress keeps arriving at a member that no longer serves the agent.
+      const groups = await this.repo.getByIds(vacated)
+      this.routing?.kick(groups.flatMap((g) => g.members.filter((m) => m.kind === 'agent').map((m) => m.refId)))
     }
   }
 }

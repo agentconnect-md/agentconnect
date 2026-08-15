@@ -1,4 +1,5 @@
 /** Real-Postgres coverage for Kubernetes identity-to-daemon bindings. */
+import { onDaemon } from '../../src/domain/placement.js'
 import { describe, it, expect } from 'vitest'
 import { prisma } from '../setup.db.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
@@ -192,7 +193,7 @@ describe('DaemonRepo cloud-member retirement', () => {
     // cloud member has, and the reason the settlement cannot be org-scoped.
     const hosted = AgentId('a9999999-9999-4999-8999-999999999999')
     await seedAgent(prisma, hosted, { daemonId: pod.id })
-    await new PgAgentRepo(prisma).setPlacement(hosted, pod.id)
+    await new PgAgentRepo(prisma).setPlacement(hosted, onDaemon(pod.id))
     const envelope = await repo.resolveClusterIdentity(DEF_ORG, IDENTITY)
     const laptop = DaemonId('88888888-8888-4888-8888-888888888888')
     await repo.provision(laptop, DEF_ORG)
@@ -217,6 +218,32 @@ describe('DaemonRepo cloud-member retirement', () => {
     expect(await prisma.daemon.findUnique({ where: { id: pod.id } })).toBeNull()
     expect(await prisma.daemon.findUnique({ where: { id: envelope!.id } })).not.toBeNull()
     expect(await prisma.daemon.findUnique({ where: { id: laptop } })).not.toBeNull()
+  })
+
+  it('does not unplace a POOL agent when the member serving it is retired', async () => {
+    // A pool agent is not placed ON the member — the member only holds its duty — so retiring the
+    // Pod must leave the placement alone. Unplacing it would set `status: 'inactive'` and strand
+    // it exactly the way the reaper stranded agents before placement became a target: nothing
+    // re-places an unplaced agent, so it would be permanently offline.
+    const repo = new PgDaemonRepo(prisma)
+    const pod = await repo.resolveCloudClusterIdentity(INSTALL_IDENTITY, POD_UID_A)
+    await prisma.daemon.update({ where: { id: pod.id }, data: { lastSeenAt: HOUR_AGO } })
+    const pooled = AgentId('a8888888-8888-4888-8888-888888888888')
+    await seedAgent(prisma, pooled)
+    await prisma.agent.update({
+      where: { id: pooled },
+      data: { placementKind: 'pool', daemonId: null, status: 'active' }
+    })
+
+    expect(await repo.retireCloudMember(pod.id, { retiredBefore: CUTOFF, sessionEpoch: pod.sessionEpoch })).toEqual({
+      deleted: true,
+      settled: []
+    })
+    expect(await prisma.agent.findUnique({ where: { id: pooled } })).toMatchObject({
+      placementKind: 'pool',
+      daemonId: null,
+      status: 'active'
+    })
   })
 
   it('refuses a member that came back between the worklist read and the delete', async () => {

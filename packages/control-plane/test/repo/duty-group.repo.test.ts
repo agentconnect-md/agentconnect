@@ -2,7 +2,7 @@
 // Claims are CAS grants (first valid claim wins), renewal is holder-conditional
 // and term-preserving, and applyReconcile applies the pure planner's output
 // under a per-org advisory scope.
-import { describe, it, expect } from 'vitest'
+import { beforeEach, describe, it, expect } from 'vitest'
 import { prisma } from '../setup.db.js'
 import { PgDutyGroupRepo } from '../../src/persistence/repositories/duty-group.repo.js'
 import { planDutyReconcile, computeDutyComponents } from '../../src/orchestrator/dutyGroup.js'
@@ -56,7 +56,7 @@ describe('DutyGroupRepo — ledger writes (real Postgres)', () => {
     expect(rows).toHaveLength(2)
     expect(rows.every((r) => r.holder === null && r.term === 0n && r.expiresAt === null)).toBe(true)
 
-    const grants = await repo.claimVacant(M1, 10, T0, LEASE_MS)
+    const grants = await repo.claimVacant(M1, 10, T0, LEASE_MS, { scope: 'install-wide' })
     expect(grants).toHaveLength(2)
     expect(grants.every((g) => g.term === 1n)).toBe(true)
     expect(grants.map((g) => g.members)).toContainEqual([
@@ -69,15 +69,18 @@ describe('DutyGroupRepo — ledger writes (real Postgres)', () => {
     const repo = new PgDutyGroupRepo(prisma, minter())
     await reconcile(repo, [{ agentId: A1, botId: B1 }], [A2], T0)
 
-    expect(await repo.claimVacant(M1, 1, T0, LEASE_MS)).toHaveLength(1)
-    expect(await repo.claimVacant(M2, 10, T0, LEASE_MS)).toHaveLength(1)
+    expect(await repo.claimVacant(M1, 1, T0, LEASE_MS, { scope: 'install-wide' })).toHaveLength(1)
+    expect(await repo.claimVacant(M2, 10, T0, LEASE_MS, { scope: 'install-wide' })).toHaveLength(1)
   })
 
   it('racing claimants never receive the same group', async () => {
     const repo = new PgDutyGroupRepo(prisma, minter())
     await reconcile(repo, [{ agentId: A1, botId: B1 }], [A2], T0)
 
-    const [g1, g2] = await Promise.all([repo.claimVacant(M1, 2, T0, LEASE_MS), repo.claimVacant(M2, 2, T0, LEASE_MS)])
+    const [g1, g2] = await Promise.all([
+      repo.claimVacant(M1, 2, T0, LEASE_MS, { scope: 'install-wide' }),
+      repo.claimVacant(M2, 2, T0, LEASE_MS, { scope: 'install-wide' })
+    ])
     const ids = [...g1, ...g2].map((g) => g.groupId)
     expect(new Set(ids).size).toBe(ids.length)
     expect(ids).toHaveLength(2)
@@ -86,10 +89,10 @@ describe('DutyGroupRepo — ledger writes (real Postgres)', () => {
   it('an expired lease is grantable again at a higher term', async () => {
     const repo = new PgDutyGroupRepo(prisma, minter())
     await reconcile(repo, [], [A1], T0)
-    await repo.claimVacant(M1, 1, T0, LEASE_MS)
+    await repo.claimVacant(M1, 1, T0, LEASE_MS, { scope: 'install-wide' })
 
     const late = after(LEASE_MS + 1)
-    const regrants = await repo.claimVacant(M2, 1, late, LEASE_MS)
+    const regrants = await repo.claimVacant(M2, 1, late, LEASE_MS, { scope: 'install-wide' })
     expect(regrants).toHaveLength(1)
     expect(regrants[0]!.term).toBe(2n)
     const [row] = await repo.listHeldBy(M2)
@@ -99,7 +102,7 @@ describe('DutyGroupRepo — ledger writes (real Postgres)', () => {
   it('renewHeld refreshes the horizon term-free; a reassigned group stops matching', async () => {
     const repo = new PgDutyGroupRepo(prisma, minter())
     await reconcile(repo, [], [A1], T0)
-    await repo.claimVacant(M1, 1, T0, LEASE_MS)
+    await repo.claimVacant(M1, 1, T0, LEASE_MS, { scope: 'install-wide' })
 
     const renewed = await repo.renewHeld(M1, after(10_000), LEASE_MS)
     expect(renewed).toHaveLength(1)
@@ -109,14 +112,14 @@ describe('DutyGroupRepo — ledger writes (real Postgres)', () => {
 
     // Lapse, reassign to M2, then the old holder's renewal matches nothing.
     const late = after(LEASE_MS * 2)
-    await repo.claimVacant(M2, 1, late, LEASE_MS)
+    await repo.claimVacant(M2, 1, late, LEASE_MS, { scope: 'install-wide' })
     expect(await repo.renewHeld(M1, after(LEASE_MS * 2 + 1000), LEASE_MS)).toEqual([])
   })
 
   it('a lapsed-but-unclaimed lease still renews at the same term (CP outage recovery)', async () => {
     const repo = new PgDutyGroupRepo(prisma, minter())
     await reconcile(repo, [], [A1], T0)
-    await repo.claimVacant(M1, 1, T0, LEASE_MS)
+    await repo.claimVacant(M1, 1, T0, LEASE_MS, { scope: 'install-wide' })
 
     const renewed = await repo.renewHeld(M1, after(LEASE_MS * 3), LEASE_MS)
     expect(renewed).toHaveLength(1)
@@ -127,21 +130,21 @@ describe('DutyGroupRepo — ledger writes (real Postgres)', () => {
   it('release vacates immediately, keeps the term, and is holder-conditional', async () => {
     const repo = new PgDutyGroupRepo(prisma, minter())
     await reconcile(repo, [], [A1], T0)
-    const [grant] = await repo.claimVacant(M1, 1, T0, LEASE_MS)
+    const [grant] = await repo.claimVacant(M1, 1, T0, LEASE_MS, { scope: 'install-wide' })
 
     await repo.release(M2, [grant!.groupId]) // not the holder — no-op
     expect(await repo.listHeldBy(M1)).toHaveLength(1)
 
     await repo.release(M1, [grant!.groupId])
     expect(await repo.listHeldBy(M1)).toHaveLength(0)
-    const regrant = await repo.claimVacant(M2, 1, after(1), LEASE_MS)
+    const regrant = await repo.claimVacant(M2, 1, after(1), LEASE_MS, { scope: 'install-wide' })
     expect(regrant[0]!.term).toBe(2n)
   })
 
   it('reconcile re-grants the incumbent at a bumped term when a held group gains a bot', async () => {
     const repo = new PgDutyGroupRepo(prisma, minter())
     await reconcile(repo, [{ agentId: A1, botId: B1 }], [], T0)
-    await repo.claimVacant(M1, 1, T0, LEASE_MS)
+    await repo.claimVacant(M1, 1, T0, LEASE_MS, { scope: 'install-wide' })
 
     const plan = await reconcile(
       repo,
@@ -161,8 +164,8 @@ describe('DutyGroupRepo — ledger writes (real Postgres)', () => {
   it('reconcile merge keeps the larger held group and reports the loser superseded', async () => {
     const repo = new PgDutyGroupRepo(prisma, minter())
     await reconcile(repo, [{ agentId: A1, botId: B1 }], [A2], T0)
-    const grants1 = await repo.claimVacant(M1, 1, T0, LEASE_MS)
-    const grants2 = await repo.claimVacant(M2, 1, T0, LEASE_MS)
+    const grants1 = await repo.claimVacant(M1, 1, T0, LEASE_MS, { scope: 'install-wide' })
+    const grants2 = await repo.claimVacant(M2, 1, T0, LEASE_MS, { scope: 'install-wide' })
     const bigHolder = grants1[0]!.members.length > grants2[0]!.members.length ? M1 : M2
 
     // A2 gains an integration on B1: the {A1,B1} pair and the {A2} singleton merge.
@@ -185,7 +188,7 @@ describe('DutyGroupRepo — ledger writes (real Postgres)', () => {
   it('reconcile deletes groups whose edges vanished', async () => {
     const repo = new PgDutyGroupRepo(prisma, minter())
     await reconcile(repo, [{ agentId: A1, botId: B1 }], [], T0)
-    await repo.claimVacant(M1, 1, T0, LEASE_MS)
+    await repo.claimVacant(M1, 1, T0, LEASE_MS, { scope: 'install-wide' })
 
     const plan = await reconcile(repo, [], [], after(1000))
     expect(plan.deletes).toHaveLength(1)
@@ -201,7 +204,10 @@ describe('DutyGroupRepo — ledger writes (real Postgres)', () => {
     const repo = new PgDutyGroupRepo(prisma, minter())
     await reconcile(repo, [{ agentId: A1, botId: B1 }], [], T0)
 
-    const [grants, plan] = await Promise.all([repo.claimVacant(M1, 1, T0, LEASE_MS), reconcile(repo, [], [], after(1))])
+    const [grants, plan] = await Promise.all([
+      repo.claimVacant(M1, 1, T0, LEASE_MS, { scope: 'install-wide' }),
+      reconcile(repo, [], [], after(1))
+    ])
     expect(plan.deletes).toHaveLength(1)
     if (grants.length === 1) expect(plan.superseded).toEqual([{ groupId: grants[0]!.groupId, holder: M1 }])
     else expect(plan.superseded).toEqual([])
@@ -211,7 +217,7 @@ describe('DutyGroupRepo — ledger writes (real Postgres)', () => {
   it('reconcile leaves an unchanged held group untouched (no term churn)', async () => {
     const repo = new PgDutyGroupRepo(prisma, minter())
     await reconcile(repo, [{ agentId: A1, botId: B1 }], [], T0)
-    await repo.claimVacant(M1, 1, T0, LEASE_MS)
+    await repo.claimVacant(M1, 1, T0, LEASE_MS, { scope: 'install-wide' })
 
     const plan = await reconcile(repo, [{ agentId: A1, botId: B1 }], [], after(1000))
     expect(plan.unchanged).toHaveLength(1)
@@ -221,9 +227,17 @@ describe('DutyGroupRepo — ledger writes (real Postgres)', () => {
 })
 
 describe('DutyGroupRepo — agent-home claims (real Postgres)', () => {
+  // The rendezvous is a claim path, so it takes the eligibility gate too — which means the agent
+  // has to exist and be placed on the pool for an install-wide member to claim it.
+  beforeEach(async () => {
+    await prisma.agent.create({
+      data: { id: A1, orgId: DEFAULT_ORG_ID, name: 'pooled', runtime: 'claude', placementKind: 'pool' }
+    })
+  })
+
   it('claiming creates the lease for an unmapped agent', async () => {
     const repo = new PgDutyGroupRepo(prisma, minter())
-    const claim = await repo.claimAgentHome(ORG, AgentId(A1), M1, T0, LEASE_MS)
+    const claim = await repo.claimAgentHome(ORG, AgentId(A1), M1, T0, LEASE_MS, 'install-wide')
     expect(claim).toMatchObject({ granted: true, term: 1n, holder: M1 })
     const rows = await repo.listForOrg(ORG)
     expect(rows[0]!.members).toEqual([{ kind: 'agent', refId: A1 }])
@@ -231,8 +245,8 @@ describe('DutyGroupRepo — agent-home claims (real Postgres)', () => {
 
   it('is idempotent for the current holder — horizon refreshed, term kept', async () => {
     const repo = new PgDutyGroupRepo(prisma, minter())
-    await repo.claimAgentHome(ORG, AgentId(A1), M1, T0, LEASE_MS)
-    const again = await repo.claimAgentHome(ORG, AgentId(A1), M1, after(10_000), LEASE_MS)
+    await repo.claimAgentHome(ORG, AgentId(A1), M1, T0, LEASE_MS, 'install-wide')
+    const again = await repo.claimAgentHome(ORG, AgentId(A1), M1, after(10_000), LEASE_MS, 'install-wide')
     expect(again).toMatchObject({ granted: true, term: 1n, holder: M1 })
     const [row] = await repo.listHeldBy(M1)
     expect(row!.expiresAt).toEqual(after(10_000 + LEASE_MS))
@@ -240,21 +254,21 @@ describe('DutyGroupRepo — agent-home claims (real Postgres)', () => {
 
   it('names the incumbent instead of granting while the home is live', async () => {
     const repo = new PgDutyGroupRepo(prisma, minter())
-    const won = await repo.claimAgentHome(ORG, AgentId(A1), M1, T0, LEASE_MS)
-    const lost = await repo.claimAgentHome(ORG, AgentId(A1), M2, after(1000), LEASE_MS)
+    const won = await repo.claimAgentHome(ORG, AgentId(A1), M1, T0, LEASE_MS, 'install-wide')
+    const lost = await repo.claimAgentHome(ORG, AgentId(A1), M2, after(1000), LEASE_MS, 'install-wide')
     expect(lost).toEqual({ granted: false, groupId: won.groupId, term: 1n, holder: M1 })
   })
 
   it('grants an expired home to the new claimant at a bumped term', async () => {
     const repo = new PgDutyGroupRepo(prisma, minter())
-    await repo.claimAgentHome(ORG, AgentId(A1), M1, T0, LEASE_MS)
-    const claim = await repo.claimAgentHome(ORG, AgentId(A1), M2, after(LEASE_MS + 1), LEASE_MS)
+    await repo.claimAgentHome(ORG, AgentId(A1), M1, T0, LEASE_MS, 'install-wide')
+    const claim = await repo.claimAgentHome(ORG, AgentId(A1), M2, after(LEASE_MS + 1), LEASE_MS, 'install-wide')
     expect(claim).toMatchObject({ granted: true, term: 2n, holder: M2 })
   })
 
   it('holdsAgent answers only for the live holder — the duty/fetch authorization', async () => {
     const repo = new PgDutyGroupRepo(prisma, minter())
-    await repo.claimAgentHome(ORG, AgentId(A1), M1, T0, LEASE_MS)
+    await repo.claimAgentHome(ORG, AgentId(A1), M1, T0, LEASE_MS, 'install-wide')
 
     expect(await repo.holdsAgent(M1, AgentId(A1), T0)).toBe(true)
     // Another member holds nothing here, and neither does the holder for an agent
@@ -276,7 +290,7 @@ describe('DutyGroupRepo — agent-home claims (real Postgres)', () => {
       [],
       T0
     )
-    await repo.claimVacant(M1, 10, T0, LEASE_MS)
+    await repo.claimVacant(M1, 10, T0, LEASE_MS, { scope: 'install-wide' })
 
     expect(await repo.holdsAgent(M1, AgentId(A1), T0)).toBe(true)
     expect(await repo.holdsAgent(M1, AgentId(A2), T0)).toBe(true)
@@ -294,7 +308,7 @@ describe('DutyGroupRepo — agent-home claims (real Postgres)', () => {
       T0
     )
     const [first] = await repo.listForOrg(ORG)
-    await repo.claimVacant(M1, 1, T0, LEASE_MS)
+    await repo.claimVacant(M1, 1, T0, LEASE_MS, { scope: 'install-wide' })
     const heldAgent = first!.members.find((m) => m.kind === 'agent')!.refId
 
     expect(await repo.holdersOf(AgentId(heldAgent), T0)).toEqual([M1])
@@ -306,7 +320,7 @@ describe('DutyGroupRepo — agent-home claims (real Postgres)', () => {
 
   it('holdersOf survives the agent row it names — a delete must still reach the holder', async () => {
     const repo = new PgDutyGroupRepo(prisma, minter())
-    await repo.claimAgentHome(ORG, AgentId(A1), M1, T0, LEASE_MS)
+    await repo.claimAgentHome(ORG, AgentId(A1), M1, T0, LEASE_MS, 'install-wide')
     // No FK from membership to `agent`: the projection owns that lifecycle, so a
     // cascade cannot strand `agent/remove` with nowhere to send it.
     expect(await repo.holdersOf(AgentId(A1), T0)).toEqual([M1])
@@ -315,8 +329,8 @@ describe('DutyGroupRepo — agent-home claims (real Postgres)', () => {
   it('racing first claims resolve to exactly one home and one winner', async () => {
     const repo = new PgDutyGroupRepo(prisma, minter())
     const [c1, c2] = await Promise.all([
-      repo.claimAgentHome(ORG, AgentId(A1), M1, T0, LEASE_MS),
-      repo.claimAgentHome(ORG, AgentId(A1), M2, T0, LEASE_MS)
+      repo.claimAgentHome(ORG, AgentId(A1), M1, T0, LEASE_MS, 'install-wide'),
+      repo.claimAgentHome(ORG, AgentId(A1), M2, T0, LEASE_MS, 'install-wide')
     ])
     expect([c1.granted, c2.granted].filter(Boolean)).toHaveLength(1)
     expect(c1.groupId).toBe(c2.groupId)
