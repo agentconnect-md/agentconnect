@@ -32,11 +32,14 @@ export type DutyMemberRef = z.infer<typeof DutyMemberRef>
  *  the CP refuses to grant it rather than emit a frame the daemon must reject. */
 export const DUTY_GRANT_MEMBERS_MAX = 1000
 
-/** The heartbeat's lease fields: what I hold (with the terms I believe), and
- *  how many more groups I will accept. Capacity gating is member-side. */
+/** The heartbeat's lease fields: what I hold (with the terms I believe), how many more groups I
+ *  will accept, and whether I am draining. Capacity gating is member-side; `draining` is sticky
+ *  CP-side for the connection — a member that said it once claims nothing (vacancy or rendezvous)
+ *  until it registers afresh, so a rollout's retiring members can never take back a vacated group. */
 export const HeartbeatDuties = z.object({
   held: z.array(z.object({ groupId: z.string().uuid(), term: DutyTerm })).max(1000),
-  headroom: z.number().int().min(0)
+  headroom: z.number().int().min(0),
+  draining: z.boolean().optional()
 })
 export type HeartbeatDuties = z.infer<typeof HeartbeatDuties>
 

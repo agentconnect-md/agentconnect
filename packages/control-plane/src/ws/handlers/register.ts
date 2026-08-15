@@ -27,6 +27,8 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
   const did = DaemonId(conn.daemonId)
 
   await deps.registry.upsertOnRegister(did, req)
+  // A fresh registration clears the member's draining declaration (frames/duty.ts).
+  deps.dutyLease.onRegister(did)
   const snap = await deps.orchestrator.reconcile(did, req)
 
   // Update the live index: capabilities/maxAgents + the bound session set.

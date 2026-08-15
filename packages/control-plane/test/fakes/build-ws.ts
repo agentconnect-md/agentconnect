@@ -272,7 +272,8 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
       grantMembersPerFrame: opts.dutyLease?.grantMembersPerFrame ?? 2000,
       revocationsPerFrame: opts.dutyLease?.revocationsPerFrame ?? 500,
       refusalsBeforeRelease: opts.dutyLease?.refusalsBeforeRelease ?? 3,
-      refusalBackoffMs: opts.dutyLease?.refusalBackoffMs ?? 300_000
+      refusalBackoffMs: opts.dutyLease?.refusalBackoffMs ?? 300_000,
+      doubleMoveWindowMs: opts.dutyLease?.doubleMoveWindowMs ?? 600_000
     },
     undefined,
     repos.agent,

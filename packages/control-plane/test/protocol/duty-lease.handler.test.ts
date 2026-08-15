@@ -76,14 +76,14 @@ async function ready(h: ReturnType<typeof buildWsHarness>, opts: { orgScoped?: b
  *  running exchange and the lane drops it. */
 async function beat(
   stub: InMemoryDaemonStub,
-  duties: { held: { groupId: string; term: string }[]; headroom: number }
+  duties: { held: { groupId: string; term: string }[]; headroom: number; draining?: boolean }
 ): Promise<void> {
   const before = stub.sent.filter((f) => f.type === 'duty/renewed').length
   stub.inject('heartbeat', heartbeat(duties))
   await vi.waitFor(() => expect(stub.sent.filter((f) => f.type === 'duty/renewed').length).toBe(before + 1))
 }
 
-function heartbeat(duties?: { held: { groupId: string; term: string }[]; headroom: number }) {
+function heartbeat(duties?: { held: { groupId: string; term: string }[]; headroom: number; draining?: boolean }) {
   return {
     load: { cpu: 0.1, mem: 0.1, agents: 0 },
     health: 'ok',
@@ -153,6 +153,34 @@ describe('duty lease exchange (protocol level, real Postgres)', () => {
     stub.inject('heartbeat', heartbeat({ held: [], headroom: 0 }))
     await new Promise((r) => setTimeout(r, 25))
     expect(stub.sent.filter((f) => f.type === 'duty/grant')).toEqual([])
+  })
+
+  it('a draining member is granted nothing, whatever headroom it reports, and stays that way until it registers afresh', async () => {
+    await seedGroup()
+    const h = buildWsHarness(prisma)
+    const { stub } = await ready(h)
+
+    await beat(stub, { held: [], headroom: 4, draining: true })
+    // Sticky: a later beat without the bit still claims nothing.
+    await beat(stub, { held: [], headroom: 4 })
+    expect(stub.sent.filter((f) => f.type === 'duty/grant')).toEqual([])
+    expect((await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })).holder).toBeNull()
+
+    // A fresh registration is a fresh member: the vacancy is granted on the next beat.
+    stub.inject(
+      'register',
+      {
+        host: 'member-1',
+        capabilities: { platforms: ['slack'], runtimes: ['claude'], acp: true },
+        maxAgents: 8,
+        localState: { assignments: [], crons: [], leases: [], agents: [], integrations: [], stagedAgents: [] }
+      },
+      { id: REL_ID }
+    )
+    await vi.waitFor(() => expect(stub.sent.filter((f) => f.type === 'register/ok').length).toBe(2))
+    stub.inject('heartbeat', heartbeat({ held: [], headroom: 4 }))
+    await stub.expectFrame('duty/grant')
+    expect((await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })).holder).toBe(DAEMON)
   })
 
   it('within the recovery grace no vacancy grant flows; after it, grants resume', async () => {
@@ -867,6 +895,19 @@ describe('duty/claim — the activation rendezvous (real Postgres)', () => {
     if (!isFrame('duty/claim/ok')(second)) throw new Error('expected duty/claim/ok')
     expect(second.payload.granted).toBe(true)
     expect(second.payload.grant).toMatchObject({ groupId, term: '1' })
+  })
+
+  it('a draining member cannot claim a home through the rendezvous either', async () => {
+    await seedAgentRow()
+    const h = buildWsHarness(prisma)
+    const { stub } = await ready(h)
+    await beat(stub, { held: [], headroom: 0, draining: true })
+
+    stub.inject('duty/claim', { agentId: AGENT }, { id: CLAIM_ID })
+    const ok = await stub.expectFrame('duty/claim/ok')
+    if (!isFrame('duty/claim/ok')(ok)) throw new Error('expected duty/claim/ok')
+    expect(ok.payload).toEqual({ granted: false })
+    expect(await prisma.dutyGroup.count({ where: { holder: DAEMON } })).toBe(0)
   })
 
   it('an unknown agent is refused without naming anyone', async () => {

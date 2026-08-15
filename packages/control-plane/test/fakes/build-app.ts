@@ -164,7 +164,8 @@ export function buildDaemonApp(prisma: PrismaClient): DaemonApp {
       collabRoutes: { broadcast: async () => undefined } as unknown as DaemonWsDeps['collabRoutes'],
       dutyLease: {
         onHeartbeat: async () => undefined,
-        release: async () => undefined
+        release: async () => undefined,
+        onRegister: () => undefined
       } as unknown as DaemonWsDeps['dutyLease'],
       cron: repos.cron,
       hook: repos.hook,

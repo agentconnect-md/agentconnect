@@ -1,0 +1,163 @@
+// The daemon half of a pool rollout (k8s-daemon-pool.md §12): on SIGTERM a member stops claiming,
+// declares `draining` on its digest, lets in-flight turns finish, and hands each held group back
+// with an acknowledged `duty/release` — idle groups at once, busy ones as they settle — before the
+// CP socket closes. These pin that sequence and its deadline path.
+import { describe, it, expect, vi } from 'vitest'
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import type { DutyGrantEntry } from '@agentconnect.md/protocol'
+import { Daemon } from '../src/daemon.js'
+import type { DutyRegistry } from '../src/cp/duty-registry.js'
+
+const AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1'
+const AGENT_B = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2'
+const GROUP = '11111111-1111-4111-8111-111111111111'
+const GROUP_B = '11111111-1111-4111-8111-111111111112'
+const ORG = 'org-1'
+
+function scaffold(): string {
+  const root = mkdtempSync(join(tmpdir(), 'ac-duty-drain-'))
+  writeFileSync(
+    join(root, 'config.json'),
+    JSON.stringify({
+      version: 1,
+      controlPlane: { enabled: false },
+      runtimes: { claude: { command: 'node', args: ['unused'] } }
+    })
+  )
+  return root
+}
+
+const grant = (groupId: string, agentId: string): DutyGrantEntry => ({
+  groupId,
+  orgId: ORG,
+  term: '1',
+  members: [{ kind: 'agent', refId: agentId }]
+})
+
+const bundle = (agentId: string, name: string) => ({
+  agentId,
+  spec: { orgId: ORG, name, runtime: 'claude', workspace: { mode: 'scratch' as const, isolation: 'shared' as const } },
+  integrations: [],
+  crons: []
+})
+
+/** A frame-scope member holding two single-agent groups, with an instrumented stub CP client. */
+async function boot(opts: { releaseDuties?: (groupIds: string[]) => Promise<void> } = {}) {
+  const daemon = new Daemon({ root: scaffold() })
+  await daemon.start()
+  const calls: { order: string[]; releases: string[][] } = { order: [], releases: [] }
+  const releaseDuties = vi.fn(async (groupIds: string[]) => {
+    calls.releases.push(groupIds)
+    calls.order.push(`release:${groupIds.join(',')}`)
+    await opts.releaseDuties?.(groupIds)
+  })
+  const stop = vi.fn(async () => {
+    calls.order.push('socket-close')
+  })
+  const reportDutiesNow = vi.fn(() => {
+    calls.order.push('report')
+  })
+  ;(daemon as any).cpClient = {
+    organizationScope: () => 'frame',
+    stop,
+    releaseDuties,
+    reportDutiesNow,
+    fetchDutyAgent: vi.fn(async ({ agentId }: { agentId: string }) => ({
+      bundle: bundle(agentId, agentId === AGENT ? 'scout' : 'ranger')
+    }))
+  }
+  await (daemon as any).admitDutyGrants([grant(GROUP, AGENT), grant(GROUP_B, AGENT_B)])
+  expect(duties(daemon).groupIds().sort()).toEqual([GROUP, GROUP_B])
+  return { daemon, calls, releaseDuties, stop, reportDutiesNow }
+}
+
+const duties = (d: Daemon) => (d as any).duties as DutyRegistry
+const digest = (d: Daemon) => (d as any).dutyDigest() as { held: unknown[]; headroom: number; draining?: boolean }
+
+describe('shutdown drain of a duty-holding member', () => {
+  it('declares draining, refuses grants, and releases each idle group with an awaited ack before the socket closes', async () => {
+    const { daemon, calls, releaseDuties, reportDutiesNow } = await boot()
+    expect(digest(daemon).draining).toBeUndefined()
+    // The admission above reported its digest too; only what the shutdown does counts here.
+    reportDutiesNow.mockClear()
+    calls.order.length = 0
+
+    const stopping = daemon.stop()
+    // The very first thing: the digest says draining with zero headroom, reported at once.
+    expect(digest(daemon)).toMatchObject({ headroom: 0, draining: true })
+    expect(reportDutiesNow).toHaveBeenCalledTimes(1)
+    // A grant arriving mid-drain is dropped, not installed.
+    ;(daemon as any).applyDutyGrant([grant('11111111-1111-4111-8111-111111111113', AGENT)])
+    await stopping
+
+    // One release per group, each acknowledged, all before the CP transport was closed.
+    expect(releaseDuties).toHaveBeenCalledTimes(2)
+    expect(calls.releases.map((ids) => ids.length)).toEqual([1, 1])
+    expect(calls.order).toEqual(['report', `release:${GROUP}`, `release:${GROUP_B}`, 'socket-close'])
+    expect(duties(daemon).size()).toBe(0)
+  })
+
+  it('a busy group waits for its turn to finish while idle groups are released at once — no turn is cancelled', async () => {
+    const { daemon, calls } = await boot()
+    // Agent A owns admitted work: an active dispatch lease, exactly what a running turn holds.
+    const settle = (daemon as any).beginActiveDispatch(AGENT, 'slack:C1:T1') as () => void
+    const cancel = vi.fn(async () => {})
+    ;(daemon as any).hosts.set(AGENT, { stop: vi.fn(async () => {}), cancel })
+
+    const stopping = daemon.stop()
+    // Group B (idle) goes immediately; group A is still held while its turn runs.
+    await vi.waitFor(() => expect(calls.releases).toEqual([[GROUP_B]]))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(duties(daemon).groupIds()).toEqual([GROUP])
+    expect(cancel).not.toHaveBeenCalled()
+
+    settle()
+    await stopping
+    expect(calls.releases).toEqual([[GROUP_B], [GROUP]])
+    expect(cancel).not.toHaveBeenCalled()
+    expect(calls.order.at(-1)).toBe('socket-close')
+  })
+
+  it('a release the CP never acknowledges is retried until the drain deadline, then counted and left to lapse', async () => {
+    const { daemon, releaseDuties } = await boot({
+      releaseDuties: async () => {
+        throw new Error('control plane unreachable (client DEGRADED)')
+      }
+    })
+    ;(daemon as any).cfg.limits.poolShutdownDrainMs = 2_500
+    const info = vi.spyOn((daemon as any).log, 'info')
+    const warn = vi.spyOn((daemon as any).log, 'warn')
+
+    const startedAt = Date.now()
+    await daemon.stop()
+    const elapsed = Date.now() - startedAt
+
+    // Retried (1s backoff, then 2s would overrun) and bounded by the budget, not by the retries.
+    expect(releaseDuties.mock.calls.length).toBeGreaterThanOrEqual(2)
+    expect(elapsed).toBeLessThan(6_000)
+    expect(warn.mock.calls.some(([m]) => /not acknowledged before the drain deadline/.test(String(m)))).toBe(true)
+    const summary = info.mock.calls.map(([m]) => String(m)).find((m) => m.startsWith('duty: shutdown drain released'))
+    expect(summary).toMatch(/released 2 group\(s\) covering 2 agent\(s\)/)
+    expect(summary).toMatch(/0 acknowledged, 2 unacknowledged/)
+    // Locally withdrawn regardless: nothing here still serves what the CP will hand on.
+    expect(duties(daemon).size()).toBe(0)
+  })
+
+  it('an org-scoped daemon is not duty-governed and stops as before — no digest bit, no release', async () => {
+    const daemon = new Daemon({ root: scaffold() })
+    await daemon.start()
+    const releaseDuties = vi.fn(async () => {})
+    const reportDutiesNow = vi.fn()
+    ;(daemon as any).cpClient = {
+      organizationScope: () => 'connection',
+      stop: vi.fn(async () => {}),
+      releaseDuties,
+      reportDutiesNow
+    }
+    await daemon.stop()
+    expect(reportDutiesNow).not.toHaveBeenCalled()
+    expect(releaseDuties).not.toHaveBeenCalled()
+  })
+})

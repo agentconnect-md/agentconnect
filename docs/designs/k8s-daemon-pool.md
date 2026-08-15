@@ -89,7 +89,7 @@ pool membership.
 | D9  | Org context on the wire | Install-wide connection with per-frame `orgId`; reconnect state is a combined multi-org snapshot / revision-fenced stream — no per-org subscription, room, or socket                                  |
 | D10 | Crons                   | A time-based trigger against a group that is already proactively claimable (D5), so a schedule always has a home; the holder fires it locally with today's daemon machinery                           |
 | D11 | State                   | Separate data-plane PG, shared tables with an `org` column (org injected by the store handle, never by call sites); daemon-owned async store interfaces, SQLite + PG drivers                          |
-| D12 | Upgrades                | maxSurge ≥ 1, maxUnavailable = 0; drain = duty release + sleep-as-migration                                                                                                                           |
+| D12 | Upgrades                | maxSurge 100%, maxUnavailable = 0; drain = draining bit + acknowledged per-group duty release + sleep-as-migration                                                                                    |
 | D13 | Failure model           | Explicit matrix; two accepted loss windows                                                                                                                                                            |
 | D14 | Capacity                | Member self-gating at claim time; CP alarms on vacant-duty age; no scheduler                                                                                                                          |
 | D15 | One binary              | Composition-root profiles differ by capability knobs, never a mode flag                                                                                                                               |
@@ -522,18 +522,43 @@ safety valve, per-member duty budgets bound each member, and finer-grained
 enforcement belongs to whatever owns limits. A runaway workload's escape hatch
 is a dedicated daemon (D16).
 
-The pool Deployment rolls with **maxSurge ≥ 1, maxUnavailable = 0**:
-successors exist before predecessors drain. Drain, per member: stop claiming →
-**sleep-as-migration** (sleeping agents cost zero — they wake wherever their
-duty is next claimed; idle-awake agents are force-slept through the existing
-suspension path) → a bounded grace window for agents mid-turn, ending with
-in-flight turns drained or cancelled and runtime authority stopped → only then
-the graceful `duty/release` (successors claim on their next beat and re-dial
-sandboxes at a fresh term; the shim's highest-term-wins handshake makes the
-cutover atomic per sandbox). The order is load-bearing: releasing before the
-grace would let a successor bind at a higher term while the predecessor still
-owns admitted work — which is why the shipped drain (`runDrain` in
-`packages/daemon/src/daemon.ts`) stops turn hosts before `releaseAllDuties`.
+The pool Deployment rolls by **surging the whole pool, then draining the old
+members slowly** — `maxSurge: 100%`, `maxUnavailable: 0`, a long
+`terminationGracePeriodSeconds`. Kubernetes brings up a full second set,
+waits `minReadySeconds`, then SIGTERMs every old member together. Two
+application-side properties make that a rollout with no capacity dip and at
+most one move per agent (#1016):
+
+- **A draining member claims nothing.** On SIGTERM the member latches its
+  claim gate (no `claimVacant` headroom, no activation-rendezvous claim, no
+  grant admitted) and reports `draining: true` on its digest — sent at once,
+  not at the next tick. The CP keeps that bit **sticky for the registration**
+  (`DutyLeaseService.draining`): `claimVacant`, `claimAgentHome`, and the
+  missing-regrant re-issue all skip a draining member until it registers
+  afresh, so a vacated group can only land on a member that is staying —
+  even if the scale-down is not simultaneous. Renewal continues meanwhile.
+- **Drain is real, slow-safe, and acknowledged.** Per member
+  (`Daemon.stop()` → `releaseDutiesForShutdown`): in-flight turns are never
+  cut to speed the rollout up; each held group is withdrawn locally (the same
+  teardown a revoke runs) and handed back with a `duty/release` that is
+  **awaited and retried until acknowledged**, one group at a time, the moment
+  that group is idle — idle groups immediately, a busy group when its last
+  turn settles — all before the CP socket closes. The whole drain is bounded
+  by `limits.poolShutdownDrainMs` (5 min by default; the turn wait stops
+  short of it by a release reserve so the last acks still land inside it), and
+  ends with one log line: groups and agents released, acks, releases that
+  timed out (those leases lapse at T_reassign, the pre-#1016 behavior).
+  Deployment side: `terminationGracePeriodSeconds` ≥ that budget plus margin.
+
+Sleeping agents still move by not moving: they wake wherever their duty is
+next claimed. Successors claim on their next beat and re-dial sandboxes at a
+fresh term; the shim's highest-term-wins handshake makes the cutover atomic per
+sandbox. Releasing only after the group's own turns are done is load-bearing —
+a successor binding at a higher term while the predecessor still owns admitted
+work is the split this ordering prevents. A CP-commanded rebalance drain
+(`runDrain`) keeps its own shape: it stops turn hosts, then `releaseAllDuties`,
+and reopens — it never sets the sticky bit. Double moves are visible on the CP:
+a group granted at a new term twice inside `doubleMoveWindowMs` logs a warning.
 There are no reconnect storms in either direction: successors pace their own
 dials, and sandboxes never dial anyone.
 
