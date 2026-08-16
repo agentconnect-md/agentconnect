@@ -373,8 +373,7 @@ model Daemon {
   agentVersion  String?
   machineId     String? @db.Uuid // 🅼 AuthReq.machineId (stored, stub-enforced)
   tokenFp       String? // `id` of the authenticating ApiKey (audit; written by upsertOnAuth)
-  /// The Kubernetes ServiceAccount subject TokenReview reports. Envelope rows are unique by
-  /// subject; pool members share the subject and are unique by the bound token's Pod UID.
+  /// The Kubernetes ServiceAccount subject TokenReview reports; pool members share it and are unique by the reviewed Pod UID.
   clusterIdentity String?
   clusterPodUid   String?
   attestationFp String? // 🅼 last accepted attestation digest

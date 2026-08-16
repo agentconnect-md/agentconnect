@@ -1,0 +1,19 @@
+-- `daemon_cluster_identity_envelope_key` kept the per-org execution envelope's rows
+-- one-to-one by ServiceAccount subject: a `clusterIdentity` with no `clusterPodUid`.
+-- #964 deleted the envelope, #1086 dropped its tables, and #1106 and #1108 removed
+-- the last repository reads of that shape.
+--
+-- Nothing can write the shape any more. `ClusterDaemonIdentityService.verify` refuses
+-- a token TokenReview reports without a Pod UID, and the column's sole writer,
+-- `PgDaemonRepo.resolvePoolClusterIdentity`, always writes the subject and the
+-- reviewed Pod UID together. The index's predicate therefore matches no row the
+-- control plane can create, and `daemon_cluster_identity_pod_key` is the whole of the
+-- uniqueness pool members actually rely on.
+--
+-- It is also the one index on this table with no counterpart in schema.prisma, which
+-- cannot express a partial unique index; it has only ever existed in migration SQL.
+--
+-- FORWARD-ONLY, but cheap to be wrong about: this drops a constraint rather than data,
+-- so a binary from before it keeps working against the migrated database — it simply
+-- cannot produce the rows the index used to reject.
+DROP INDEX IF EXISTS "daemon_cluster_identity_envelope_key";
