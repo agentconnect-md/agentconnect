@@ -152,7 +152,13 @@ async function walkContained(root: string, parts: string[], create: boolean): Pr
       stat = await fsp.lstat(candidate)
     }
     if (!stat.isDirectory()) throw new MemoryPathError('memory path contains a symlink or non-directory')
-    parent = await fsp.realpath(candidate)
+    try {
+      parent = await fsp.realpath(candidate)
+    } catch (err) {
+      // A concurrent rm can drop the component between lstat and realpath; absent stays data on the read side.
+      if (!isErrno(err, 'ENOENT') || create) throw err
+      return null
+    }
     if (!under(realRoot, parent)) throw new MemoryPathError('path resolves outside the memory root')
   }
   return parent
