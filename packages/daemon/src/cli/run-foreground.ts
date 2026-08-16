@@ -15,6 +15,8 @@ export interface ForegroundOpts {
   supervisor?: string
   /** `--k8s`: runtimes run in cluster sandbox pods, not on this host. */
   k8s?: boolean
+  keyServer?: string
+  keyServerTokenPath?: string
 }
 
 export interface ForegroundDeps {

@@ -122,23 +122,25 @@ The daemon does not implement these, but interacts with them through the section
 
 **Precedence, high to low: `CLI flag > environment variable > config.json > built-in default`.** CLI flags override only **process-level** configuration such as endpoints, roots, and log level; they do not mutate agent business configuration.
 
-| Flag                    | Config field overridden        | Purpose                                                                                                                                            |
-| ----------------------- | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--config <path>`       | Locates the file itself        | Specify config.json, default `~/.agentconnect/config.json`.                                                                                        |
-| `--root <dir>`          | Locates the root               | Override `~/.agentconnect`; maps to `AGENTCONNECT_ROOT`.                                                                                           |
-| `--api-url <wss://...>` | `controlPlane.url`             | Override the API endpoint; this is the most common override.                                                                                       |
-| `--api-key <key>`       | `controlPlane.key`             | Override the opaque, long-lived, revocable daemon **API key**; see [daemon-api-key-auth.md](daemon-api-key-auth.md).                               |
-| `--no-cp` / `--offline` | `controlPlane.enabled=false`   | Force local-only mode with no CP connection.                                                                                                       |
-| `--daemon-id <id>`      | `daemonId`                     | Override/specify daemon identity.                                                                                                                  |
-| `--log-level <lvl>`     | `logging.level`                | trace/debug/info/warn/error.                                                                                                                       |
-| `--agents-dir <dir>`    | `agentsDir`                    | Override agent discovery root. Daemon/`chat` recursively collect `agent.json`, skipping `node_modules`, `.git`, dot directories, depth about four. |
-| `--agent <name>`        | Selector                       | Select by `agent.id`: single-agent `run` ignoring status, or disambiguate `chat`.                                                                  |
-| `--max-agents <n>`      | `limits.maxAgents`             | Capacity reported to CP + local hard limit.                                                                                                        |
-| `--require-sandbox`     | `security.requireSandbox=true` | Require every agent to run in the Linux SRT sandbox; refuse daemon startup on unsupported or failed hosts.                                         |
-| `--k8s`                 | n/a (mode switch)              | Run runtimes in cluster sandbox pods instead of on this host; see section 2.6 for what that changes.                                               |
-| `--dry-run`             | n/a                            | Load and validate all configuration and print the reconcile plan without opening connections/processes.                                            |
+| Flag                             | Config field overridden        | Purpose                                                                                                                                            |
+| -------------------------------- | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--config <path>`                | Locates the file itself        | Specify config.json, default `~/.agentconnect/config.json`.                                                                                        |
+| `--root <dir>`                   | Locates the root               | Override `~/.agentconnect`; maps to `AGENTCONNECT_ROOT`.                                                                                           |
+| `--api-url <wss://...>`          | `controlPlane.url`             | Override the API endpoint; this is the most common override.                                                                                       |
+| `--api-key <key>`                | `controlPlane.key`             | Override the opaque, long-lived, revocable daemon **API key**; see [daemon-api-key-auth.md](daemon-api-key-auth.md).                               |
+| `--no-cp` / `--offline`          | `controlPlane.enabled=false`   | Force local-only mode with no CP connection.                                                                                                       |
+| `--daemon-id <id>`               | `daemonId`                     | Override/specify daemon identity.                                                                                                                  |
+| `--log-level <lvl>`              | `logging.level`                | trace/debug/info/warn/error.                                                                                                                       |
+| `--agents-dir <dir>`             | `agentsDir`                    | Override agent discovery root. Daemon/`chat` recursively collect `agent.json`, skipping `node_modules`, `.git`, dot directories, depth about four. |
+| `--agent <name>`                 | Selector                       | Select by `agent.id`: single-agent `run` ignoring status, or disambiguate `chat`.                                                                  |
+| `--max-agents <n>`               | `limits.maxAgents`             | Capacity reported to CP + local hard limit.                                                                                                        |
+| `--require-sandbox`              | `security.requireSandbox=true` | Require every agent to run in the Linux SRT sandbox; refuse daemon startup on unsupported or failed hosts.                                         |
+| `--k8s`                          | n/a (mode switch)              | Run runtimes in cluster sandbox pods instead of on this host; see section 2.6 for what that changes.                                               |
+| `--key-server <url>`             | `KEY_SERVER`                   | Cloud-only HTTPS service for session-scoped model credentials; see [key-server.md](key-server.md).                                                 |
+| `--key-server-token-path <path>` | `KEY_SERVER_TOKEN_PATH`        | File re-read as the key-server bearer token on every request.                                                                                      |
+| `--dry-run`                      | n/a                            | Load and validate all configuration and print the reconcile plan without opening connections/processes.                                            |
 
-All environment equivalents use the `AGENTCONNECT_` prefix, such as `AGENTCONNECT_CP_URL`, `AGENTCONNECT_CP_KEY`, and `AGENTCONNECT_ROOT`, for containers and system services.
+General environment equivalents use the `AGENTCONNECT_` prefix, such as `AGENTCONNECT_CP_URL`, `AGENTCONNECT_CP_KEY`, and `AGENTCONNECT_ROOT`. The cloud model seam uses `MODEL_TOKEN`, `MODEL_BASE_URL`, `KEY_SERVER`, and `KEY_SERVER_TOKEN_PATH` as documented above.
 
 ### 2.4 Mapping In-Process Responsibilities to CLI
 

@@ -1,8 +1,8 @@
 # Key Server — Dynamic Provider-Credential Issuance
 
-**Status:** contract declared (`@agentconnect.md/protocol` `key-server.ts`); daemon
-consumption not yet wired. This document is the contract's semantics — the parts a
-schema cannot carry.
+**Status:** implemented by the cloud daemon (`--k8s`) and declared by
+`@agentconnect.md/protocol` `key-server.ts`. This document records the semantics that
+the schema cannot carry.
 
 ## 1. Why a seam
 
@@ -68,6 +68,17 @@ whatever observes actual requests (a gateway data path, or the runtime's own usa
 reports), and a spawn-time hint would invite implementations to treat it as truth
 the daemon does not have — a runtime switches models mid-session.
 
+### 2.1 Daemon configuration
+
+Cloud daemons accept `--key-server <https-url>` and
+`--key-server-token-path <path>`. The equivalent deployment environment names are
+`KEY_SERVER` and `KEY_SERVER_TOKEN_PATH`; explicit CLI values win. A token path
+without a server is rejected, and these options are rejected outside `--k8s`.
+
+The bearer file is read for every IssueKey and RevokeKey request. The kubelet or
+another credential agent can therefore rotate the file without restarting the daemon.
+The token is never copied into an agent environment.
+
 ## 3. Validity: durations, and the narrowing rule
 
 **Both directions state validity as a duration in seconds, never as an instant.**
@@ -119,14 +130,49 @@ gateway needs no URL opinion. A present one must be `http(s)`, since it becomes 
 runtime's API base; plain `http` is legal and is the normal choice for a loopback
 or in-pod gateway.
 
+The cloud daemon's static pair is `MODEL_TOKEN` plus optional `MODEL_BASE_URL`.
+`MODEL_BASE_URL` must be an HTTP(S) URL. The pair is translated at runtime launch:
+
+| Runtime  | Token                                                                                    | Base URL                                                                                                                             |
+| -------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Claude   | `ANTHROPIC_AUTH_TOKEN`                                                                   | `ANTHROPIC_BASE_URL`                                                                                                                 |
+| Codex    | `OPENAI_API_KEY`                                                                         | `CODEX_CONFIG` → `model_provider = "openai"` and `model_providers.openai.base_url`; `OPENAI_BASE_URL` is also set for older adapters |
+| OpenCode | `OPENCODE_CONFIG_CONTENT` → selected provider `options.apiKey` using `{env:MODEL_TOKEN}` | selected provider `options.baseURL`                                                                                                  |
+
+Dynamic grants use the same translation and override the static token. If IssueKey
+omits `baseUrl`, only the static `MODEL_BASE_URL` is inherited. With no key server,
+the static pair wins; with neither, the runtime's existing provider configuration is
+left unchanged.
+
+One logical AgentConnect session owns one ACP host when key-server mode is active.
+Provider credentials are process-level settings, so sharing a runtime would let
+concurrent sessions use whichever key was written last. Internal model jobs use their
+own opaque session identities and revoke their grants when their one-off host stops.
+OpenCode derives the credential provider from the effective session model. A started
+host is authoritative for its whole working life: while its session still has live SDK
+work, a model switch to another provider is recorded as the sticky session override but
+never pushed to the running process, whose options only ever received the key and base
+URL of the provider it was started for. The next start after the work settles reads that
+override, issues for the new provider, and rebinds. Without a key server the shared
+static-credential host has no per-session start to rebind at, so it refuses a
+cross-provider selection outright instead of storing one that could never be honoured.
+
 ## 5. Caching, rotation, and revocation
 
 - **Cache within a session, re-fetch per session.** `sessionId` is a request
   field, so a new session is structurally a new `IssueKey`. Long-lived keys thus
   rotate with **session granularity and no push mechanism**: the issuer swaps
   what it hands out, and daemons converge as sessions turn over.
-- **Expiring keys just lapse**; the refresh loop replaces them in place while a
-  session runs.
+- **Expiring keys lapse.** The daemon replaces one once its refresh hint has passed,
+  before the session's next activation; if refresh fails before expiry, the current
+  host remains usable for the rest of its granted window. Live SDK background work
+  pins the host to its start-time credential: rotation never terminates work in flight,
+  and past expiry the pinned host keeps running on the lapsed grant until the session
+  becomes quiescent — a request the issuer has stopped honouring fails upstream, which
+  is strictly better than the daemon killing background work to enforce the boundary.
+- **A host is never handed out to a released session.** Teardown joins an in-progress
+  start rather than observing an entry that has no host yet, so a host born after its
+  release is stopped instead of leaking untracked.
 - **Long-lived keys are revoked, not expired.** The daemon calls `RevokeKey` when
   a session holding one ends. `RevokeKey` is idempotent — unknown and
   already-revoked ids succeed, because the caller wants "ensure it is dead", not
