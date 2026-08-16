@@ -168,4 +168,4 @@ export const settle = () => new Promise((r) => setTimeout(r, 300))
 
 /** Mirrors daemon.ts `activationKey(platform, transportScope, platformMessageId, target)`. */
 export const rendezvousKey = (postId: string, targetAgentId: string): string =>
-  ['webchat', '', postId, targetAgentId].join('\u0000')
+  ['webchat', '', postId, targetAgentId].join('\u001f')

@@ -984,6 +984,10 @@ const AGENT_CALL_HOP_LIMIT_NOTICE = `Agent conversation stopped after reaching t
  */
 const ACTIVATION_PAIRING_TTL_MS = 10 * 60 * 1000
 
+/** Composite-key separator for the activation rendezvous. NOT NUL: these keys and their
+ *  transcript coordinates are stored, and the pool store is PostgreSQL, whose TEXT rejects 0x00. */
+const ACTIVATION_KEY_SEPARATOR = '\u001f'
+
 /**
  * The key that makes one logical delivery admissible exactly once
  * (send-message-routing-rework.md §3.2).
@@ -998,7 +1002,7 @@ function activationKey(
   platformMessageId: string,
   targetAgentId: string
 ): string {
-  return [platform, transportScope ?? '', platformMessageId, targetAgentId].join('\u0000')
+  return [platform, transportScope ?? '', platformMessageId, targetAgentId].join(ACTIVATION_KEY_SEPARATOR)
 }
 
 /** The platform `ts` inside a Slack `msgId` (`slack:<channel>:<ts>`). The ts — not the
@@ -6978,7 +6982,7 @@ export class Daemon {
         {
           agentCallDeliveryId: verified.agentCallDeliveryId,
           platformMessageId,
-          transcriptCoordinates: `${transcriptChannelKey(msg.channel, msg.transportScope)}\u0000${msg.thread ?? ''}`
+          transcriptCoordinates: `${transcriptChannelKey(msg.channel, msg.transportScope)}${ACTIVATION_KEY_SEPARATOR}${msg.thread ?? ''}`
         },
         expiresAt
       )
@@ -8355,7 +8359,7 @@ export class Daemon {
         {
           agentCallDeliveryId: msg.trustedAgentCallDeliveryId,
           platformMessageId,
-          transcriptCoordinates: `${transcriptChannelKey(normalized.channel, normalized.transportScope)}\u0000${normalized.thread ?? ''}`
+          transcriptCoordinates: `${transcriptChannelKey(normalized.channel, normalized.transportScope)}${ACTIVATION_KEY_SEPARATOR}${normalized.thread ?? ''}`
         },
         this.clock.now() + ACTIVATION_PAIRING_TTL_MS
       )
