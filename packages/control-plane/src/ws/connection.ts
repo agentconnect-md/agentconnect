@@ -73,11 +73,13 @@ export class DaemonConnection implements ConnChannel {
   /** Begin: open the gate at AUTHENTICATING and wire transport callbacks. */
   start(): void {
     this.state = 'AUTHENTICATING'
-    this.transport.onMessage((t) => {
-      void this.onText(t).catch(() => {
+    // Returned, not swallowed: a live socket discards it, and the in-memory fake awaits it so a
+    // test can barrier on the whole dispatch instead of pausing and hoping.
+    this.transport.onMessage((t) =>
+      this.onText(t).catch(() => {
         if (this.state !== 'CLOSED') this.close(1011, 'SERVER_INTERNAL')
       })
-    })
+    )
     this.transport.onClose((c, r) => this.onClose(c, r))
   }
 
