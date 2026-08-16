@@ -497,6 +497,31 @@ describe('shim listener hardening', () => {
     await expect(pending).rejects.toThrow(/daemon shutting down/)
   })
 
+  it('survives an oversized frame from an unauthenticated peer and accepts the next daemon', async () => {
+    // The accept-side mirror of the case above: an unlistened 'error' here ends the shim process.
+    const server = new ShimServer()
+    servers.push(server)
+    const port = await server.start(0, '127.0.0.1')
+    const intruder = await rawDial(port)
+    intruder.socket.send('x'.repeat(MAX_FRAME_BYTES + 1))
+    await intruder.closed
+    // Not one frame: an unproved peer learns nothing about what runs in this pod.
+    expect(intruder.frames).toEqual([])
+
+    // The shim tears its side down before the peer observes the close, so its single slot is free.
+    const daemonSide = await ClientTransport.dial(`ws://127.0.0.1:${port}`, {
+      subprotocol: SHIM_SUBPROTOCOL,
+      path: SHIM_WS_PATH
+    })
+    daemonSide.send(JSON.stringify({ type: 'shim/hello', agentId: 'agent-a', generation: 1 }))
+    const accepted = await server.nextTransport()
+    const seen: string[] = []
+    accepted.onMessage((text) => seen.push(text))
+    await waitFor(() => seen.length === 1)
+    expect(JSON.parse(seen[0]!)).toMatchObject({ type: 'shim/hello', agentId: 'agent-a', generation: 1 })
+    daemonSide.close(1000, 'done')
+  })
+
   it('refuses a dial announcing a generation or an agent below the one it already bound', async () => {
     const { endpoint } = await sandbox({ backoff: fastBackoff() })
     const verifier: PodIdentityVerifier = {
