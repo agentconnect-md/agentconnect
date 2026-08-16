@@ -311,6 +311,7 @@ function toDto(
     status: a.status,
     placementKind: a.placementKind,
     daemonId: a.daemonId,
+    daemonName: a.daemonId ? placementView.daemonName : null,
     setId: a.setId,
     placementReady: placementView.ready,
     workspace: workspaceToDto(a.workspace),
@@ -340,22 +341,22 @@ function toDto(
   }
 }
 
-/**
- * What placement says the console needs to know: the sandbox policy (#642) and whether a session
- * can start right now. Both come from ONE resolution of "who may serve this agent", so they can
- * never disagree — and for a set placement that resolution is "is any member live", not "is the
- * member this row names live", which is the question a rollout made unanswerable (#987).
- */
+/** One placement resolution supplies its display name, sandbox policy, and readiness. */
 interface PlacementView {
+  daemonName: string | null
   sandbox: SandboxPolicy
   ready: boolean
 }
 
-const NO_PLACEMENT: PlacementView = { sandbox: UNAVAILABLE_SANDBOX, ready: false }
+const NO_PLACEMENT: PlacementView = { daemonName: null, sandbox: UNAVAILABLE_SANDBOX, ready: false }
 
 function placementViewOf(deps: HttpDeps, daemon: DaemonView | null): PlacementView {
   const live = daemon ? deps.liveness.get(daemon.daemonId) : undefined
-  return { sandbox: sandboxPolicyOf(daemon), ready: live?.reachable === true && live.state === 'READY' }
+  return {
+    daemonName: daemon?.name ?? null,
+    sandbox: sandboxPolicyOf(daemon),
+    ready: live?.reachable === true && live.state === 'READY'
+  }
 }
 
 /**
