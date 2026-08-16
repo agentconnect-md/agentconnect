@@ -568,12 +568,15 @@ accept, present its audience-restricted projected ServiceAccount token (the same
 TokenReview it.
 
 **The edge fencing token is the binding generation, not the duty term, and
-supersession is a daemon-side act.** `ShimBindingRegistry.authorize()` enforces
-the three rules over the generation — the durable, install-shared counter of
-#1017: a higher generation supersedes (`superseded_generation` refuses the older
-one), a lower one is refused, and an equal generation is accepted only from the
-same pod (`generation_claimed_by_another_pod` otherwise), which is what makes an
-ordinary transport break recoverable without a generation advance. The shim
+supersession is a daemon-side act.** `ShimBindingRegistry.bind()` enforces the
+three rules over the generation — the durable, install-shared counter of #1017: a
+higher generation supersedes (`superseded_generation` refuses the older one), a
+lower one is refused, and an equal generation is accepted only from the same pod
+(`generation_claimed_by_another_pod` otherwise), which is what makes an ordinary
+transport break recoverable without a generation advance.
+`ShimBindingRegistry.authorize()` is the per-operation check on an
+already-issued credential — its exact generation, its expiry, its capability —
+and binds nothing. The shim
 itself inspects no term and never arbitrates between two would-be holders; the
 dialer does, dropping its own older dial as `superseded by a newer launch` when a
 newer launch record arrives. The duty term stays where it is arbitrated, at the
@@ -583,10 +586,19 @@ ledger and at the store.
 handshake: a half-dead ex-holder whose socket is still established when the
 ledger has already moved the duty. The new holder's dial is refused `unavailable`
 until that socket dies by keepalive or timeout, so takeover is bounded by the
-transport timeout rather than immediate. Nothing unsafe follows — every write is
-fenced by generation at the sandbox and by ownership at the store (§11) — and it
-mirrors the posture just below, where an unreachable sandbox is treated as a
-placement problem rather than a protocol one. Plumbing the term into the hello
+transport timeout rather than immediate.
+
+Be precise about what protects the sandbox during that interval, because it is
+**not** the generation: the successor is refused by the listener before its hello
+is ever read, so its higher generation never reaches `bind()`, and the requests
+still arriving on the old socket carry that socket's own credential at its own
+matching generation and pass `authorize()` exactly as they always did. The
+generation fences the ex-holder's _rebinding_ once the socket closes. What stops
+the ex-holder from doing harm while it lingers is the duty gate on the daemon
+side and row ownership at the store (§11) — the same two fences that carry every
+data-plane write. That is why the window is acceptable rather than merely short,
+and it mirrors the posture just below, where an unreachable sandbox is treated as
+a placement problem rather than a protocol one. Plumbing the term into the hello
 would close the window; it is deliberately not built, because that delay has not
 been observed in practice and the rollouts that looked like it root-caused
 elsewhere.
@@ -605,9 +617,10 @@ The binding invariants of the spawn design survive re-choreographed: mutual
 authentication; the connection binds to (sandbox UID, pod UID, org, agent,
 generation), checked by the dialer against its own launch record; per-operation
 capability grants unchanged; the replay fence remains the generation; no
-long-lived credential in the sandbox. The single-predicate enforcement style of
-`ShimBindingRegistry.authorize()` is retained unchanged — one predicate carrying
-the generation rule and the pod-identity rule together.
+long-lived credential in the sandbox. The single-predicate enforcement style is
+retained unchanged, split across the two entry points it always had:
+`ShimBindingRegistry.bind()` carries the generation rule and the pod-identity
+rule together, and `authorize()` carries the per-operation one.
 
 **Unreachable sandbox:** after N failed dials with backoff, the holder
 releases the agent's duty so another member can claim it and dial from its own
@@ -945,14 +958,14 @@ dials, and sandboxes never dial anyone.
 
 ## 13. Failure model (D13)
 
-| Failure                              | Behavior                                                                                                                                                                                                                                                                                                                        | Bound                                                                                                                                |
-| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| **Member death**                     | Its duties stop renewing; successors claim after T_reassign and dial. Sleeping agents untouched. In-memory pending turns die. For relay-ingress agents the relay re-routes the bot within seconds, but that member waits out T_reassign before it can claim the dead member's agent homes — no connection-death fast path (R7). | Platform retry/buffering bounds message loss (accepted window 1); takeover gap ≈ T_reassign + platform reconnect (accepted window 2) |
-| **Member ↔ CP partition**            | The member self-fences its duties at T_fence, including tearing down platform connections.                                                                                                                                                                                                                                      | Accepted false-positive teardown when the CP is up but unreachable from this member                                                  |
-| **Member ↔ data-plane PG partition** | The member cannot serve state: fail turns after a bounded retry window, release duties, stop accepting work.                                                                                                                                                                                                                    | Data-plane PG availability is pool availability                                                                                      |
-| **Member ↔ sandbox path break**      | Dial-retry with backoff; after N failures, release the agent's duty so another member claims and dials from its own network position.                                                                                                                                                                                           | N × backoff before relocation                                                                                                        |
-| **Shim side**                        | On connection drop the shim just listens — it never dials. A half-dead old holder is fenced by generation at the shim, and stopped at the store by the duty gate and row ownership (§11); while its socket is still established the successor's dial is refused until keepalive or timeout closes it (§7).                      | Fencing is absolute, not probabilistic                                                                                               |
-| **CP outage**                        | Existing holders keep serving until T_fence. No new claims, no wakes of new duties, no failovers until the CP returns — "CP down = activation pauses, established sessions continue."                                                                                                                                           | Outage > T_fence tears down daemon-held ingress pool-wide (accepted trade, §5)                                                       |
+| Failure                              | Behavior                                                                                                                                                                                                                                                                                                                                                                                                                             | Bound                                                                                                                                |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
+| **Member death**                     | Its duties stop renewing; successors claim after T_reassign and dial. Sleeping agents untouched. In-memory pending turns die. For relay-ingress agents the relay re-routes the bot within seconds, but that member waits out T_reassign before it can claim the dead member's agent homes — no connection-death fast path (R7).                                                                                                      | Platform retry/buffering bounds message loss (accepted window 1); takeover gap ≈ T_reassign + platform reconnect (accepted window 2) |
+| **Member ↔ CP partition**            | The member self-fences its duties at T_fence, including tearing down platform connections.                                                                                                                                                                                                                                                                                                                                           | Accepted false-positive teardown when the CP is up but unreachable from this member                                                  |
+| **Member ↔ data-plane PG partition** | The member cannot serve state: fail turns after a bounded retry window, release duties, stop accepting work.                                                                                                                                                                                                                                                                                                                         | Data-plane PG availability is pool availability                                                                                      |
+| **Member ↔ sandbox path break**      | Dial-retry with backoff; after N failures, release the agent's duty so another member claims and dials from its own network position.                                                                                                                                                                                                                                                                                                | N × backoff before relocation                                                                                                        |
+| **Shim side**                        | On connection drop the shim just listens — it never dials. While a half-dead old holder's socket is still established the successor's dial is refused, and that interval is covered by the duty gate and row ownership (§11), not by the generation: the successor never reaches `bind()`, and the old socket's requests still match their own binding. The generation fences the ex-holder's rebinding once the socket closes (§7). | Fencing is absolute, not probabilistic                                                                                               |
+| **CP outage**                        | Existing holders keep serving until T_fence. No new claims, no wakes of new duties, no failovers until the CP returns — "CP down = activation pauses, established sessions continue."                                                                                                                                                                                                                                                | Outage > T_fence tears down daemon-held ingress pool-wide (accepted trade, §5)                                                       |
 
 ## 14. Local/pool parity (D15) and rollout
 
