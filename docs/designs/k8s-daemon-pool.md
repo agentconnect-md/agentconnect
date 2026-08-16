@@ -674,12 +674,23 @@ that connection. Both peers enforce it with the shared classification in
 install-wide frame with one, an org that does not own the targeted resource,
 or a reply that does not carry its request's org is refused with
 `SCOPE_DENIED` and never applied (the contract in detail:
-[`org-scoped-data-layer.md`](org-scoped-data-layer.md) §4.1). Reconnect state is a combined multi-org snapshot or revision-fenced stream
-on the same member connection — deliberately **not** `subscribe(org)`, an org
-room, or an org-specific socket — reusing the watermark machinery that already
-exists in production (`Agent.configRevision` with the daemon-side
-`stale|conflict|idempotent|apply` compare, and `SessionMeta.visibilityRev` +
-replay-on-register).
+[`org-scoped-data-layer.md`](org-scoped-data-layer.md) §4.1). Reconnect state is a
+combined multi-org snapshot plus two revision-fenced streams on the same member
+connection — deliberately **not** `subscribe(org)`, an org room, or an
+org-specific socket. `register/ok` is the snapshot: one install-wide frame (no
+envelope org) whose roster is the union pinned-to-me ∪ duty-held across every
+served org, each entry naming its own org and each agent spec carrying its
+current `Agent.configRevision`, with ownership-aware drop sets for what moved or
+was deleted while the member was away; the daemon applies it through the
+existing `stale|conflict|idempotent|apply` compare. The streams reuse the
+production watermarks rather than inventing new ones: the register-time
+visibility replay converges `SessionMeta.visibilityRev` per org over org-scoped
+`session/visibility/snapshot` frames on the same connection, and the first
+heartbeat's duty exchange re-issues missing or stale-term grants stamped with
+each agent's current revision, so the member refetches only frozen bundles.
+`packages/control-plane/test/protocol/multi-org-reconnect.test.ts` pins the
+end-to-end property: two orgs mutated while a member is away converge through
+one reconnect with no org-specific frame shape.
 
 **Platform credentials are duty-scoped; agent secrets stay pointer-based.** An
 agent's secrets are materialized at spawn through the shim, but a duty holder

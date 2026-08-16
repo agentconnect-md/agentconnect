@@ -217,6 +217,8 @@ defined in `packages/protocol/src/frames/register.ts`.
 
 **Reconcile contract:** `register/ok` is the **source of truth**. On receipt the daemon: (1) starts/keeps every assignment & cron in the snapshot, (2) releases everything in `drop`, (3) adopts `routingEpoch` as its current routing fence. **CP wins all conflicts.** This makes reconnect convergence idempotent — re-issuing the same snapshot is a no-op.
 
+**Multi-org reconnect (install-wide members).** On a frame-mode connection `register/ok` is the **combined multi-org snapshot** (k8s-daemon-pool.md D9): the frame itself is install-wide and carries no envelope `orgId`, while every payload entry — agent spec, cron, integration, MCP and memory definition, collaboration route — names its own organization, and the roster is the union `pinned-to-me ∪ agents in the duties I hold` across every org the member serves, with ownership-aware `drop` sets for what moved or was deleted while it was away. Agent entries carry the current `Agent.configRevision`, so the daemon's `stale|conflict|idempotent|apply` compare converges edits missed offline. Two revision-fenced streams on the same connection finish the job: the register-time visibility replay re-sends the capture-gate set per organization as org-scoped `session/visibility/snapshot` frames, and the first heartbeat's duty exchange re-issues missing or stale-term grants revision-stamped (`frames/duty.ts`; k8s-daemon-pool.md §5), so the member refetches only frozen bundles. There is no `subscribe(org)`, org room, or per-org socket; `packages/control-plane/test/protocol/multi-org-reconnect.test.ts` pins the property end to end.
+
 ### 3.3a `capabilities/update` (EVT, D→C)
 
 A fire-and-forget full-replace of the connection's registered
