@@ -191,11 +191,6 @@ export interface DaemonRepo {
   provision(daemonId: DaemonId, orgId: OrgId, createdByUserId?: string): Promise<DaemonRecord>
   /** Resolve one install-wide pool member by its reviewed ServiceAccount subject and Pod UID. */
   resolvePoolClusterIdentity(clusterIdentity: string, clusterPodUid: string): Promise<DaemonRecord>
-  /** The Kubernetes identity a daemon record is bound to, or null for an unknown/key daemon. */
-  findClusterIdentity(daemonId: DaemonId): Promise<{ orgId: string | null; clusterIdentity: string } | null>
-  /** Ids of the org's daemons bound to a Kubernetes identity — the ones the control
-   *  plane provisioned for a cluster envelope rather than a human attaching a machine. */
-  clusterBoundIds(orgId: OrgId): Promise<string[]>
   /**
    * Idempotent on `daemonId`. Bumps `sessionEpoch` (the fencing root) in ONE
    * transaction and sets status `authenticating`. Returns the new strictly-
