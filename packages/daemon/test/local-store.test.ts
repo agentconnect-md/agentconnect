@@ -70,7 +70,38 @@ describe('LocalStore schema versioning', () => {
     expect(dreamColumns).toContain('ownerId')
     expect(grantColumns).toContain('ownerId')
     expect(inboxColumns).toEqual(expect.arrayContaining(['reportOwnerId', 'reportClaimedAt']))
-    expect(userVersion(path)).toBe(5)
+    expect(userVersion(path)).toBe(6)
+  })
+
+  it('re-keys the capture gate by agent when upgrading a v5 store', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v5-')), 'local.sqlite')
+    new LocalStore(path).close()
+    const old = new DatabaseSync(path)
+    old.exec('DROP TABLE session_gates')
+    old.exec(`CREATE TABLE session_gates (
+      acpSessionId TEXT PRIMARY KEY, localExcluded INTEGER NOT NULL DEFAULT 1,
+      cpPrivate INTEGER, cpRev INTEGER NOT NULL DEFAULT 0, updatedAt INTEGER
+    )`)
+    old.exec(`INSERT INTO sessions (key, agentId, acpSessionId) VALUES
+      ('a', 'bot-a', 'acp-1'), ('b', 'bot-b', 'acp-2'), ('c', 'bot-c', 'acp-2')`)
+    old.exec(`INSERT INTO session_gates (acpSessionId, localExcluded, cpPrivate, cpRev) VALUES
+      ('acp-1', 1, 0, 4), ('acp-2', 0, 0, 7), ('acp-orphan', 0, 0, 1)`)
+    old.exec('PRAGMA user_version = 5')
+    old.close()
+
+    const upgraded = new LocalStore(path)
+    // Attributable: the CP verdict follows the one agent that held the id.
+    expect(upgraded.isCaptureExcluded('bot-a', 'acp-1')).toBe(false)
+    // Held by two agents: the stored verdict was never attributable to either, so
+    // both start from the fail-closed state and wait for their own CP push.
+    expect(upgraded.isCaptureExcluded('bot-b', 'acp-2')).toBe(true)
+    expect(upgraded.isCaptureExcluded('bot-c', 'acp-2')).toBe(true)
+    expect(upgraded.applyCpCaptureGate('bot-b', 'acp-2', false, 1)).toBe('applied')
+    expect(upgraded.isCaptureExcluded('bot-b', 'acp-2')).toBe(false)
+    expect(upgraded.isCaptureExcluded('bot-c', 'acp-2')).toBe(true)
+    upgraded.close()
+
+    expect(userVersion(path)).toBe(6)
   })
 
   it('refuses a store written by a newer daemon WITHOUT touching it first', () => {
@@ -1008,7 +1039,7 @@ describe('LocalStore session retention GC (#485)', () => {
     const s = store()
     seed(s, 'gone', 'closed', 100)
     s.setSessionMuted('gone', true)
-    s.setLocalCaptureGate('acp-gone', true)
+    s.setLocalCaptureGate('bot-a', 'acp-gone', true)
     s.appendInbox({ id: 'm1', sessionKey: 'gone', agentId: 'bot-a', msg: '{}', enqueuedAt: '0000000001' })
     // An unacknowledged terminal hook report is an outbox toward the CP and must
     // survive the session delete (same rule as removeInboxByAgentId).
@@ -1064,7 +1095,7 @@ describe('LocalStore session retention GC (#485)', () => {
     s.close()
   })
 
-  it('deleteSession keeps a capture gate another agent still references through the same ACP id', () => {
+  it('deleteSession drops only the deleted agent gate for a shared ACP id', () => {
     const s = store()
     // ACP session ids are runtime-local: bot-a and bot-b can both hold `acp-shared`.
     const put = (key: string, agentId: string) =>
@@ -1081,16 +1112,16 @@ describe('LocalStore session retention GC (#485)', () => {
       })
     put('a', 'bot-a')
     put('b', 'bot-b')
-    s.setLocalCaptureGate('acp-shared', false) // capture open (not excluded)
-    expect(s.isCaptureExcluded('acp-shared')).toBe(false)
+    s.setLocalCaptureGate('bot-a', 'acp-shared', false) // capture open (not excluded)
+    s.setLocalCaptureGate('bot-b', 'acp-shared', false)
 
-    // bot-a's session expires first: bot-b still references the id — gate survives.
+    // bot-a's session expires: its own gate goes, bot-b's is untouched.
     expect(s.deleteSession('a')).toBe(true)
-    expect(s.isCaptureExcluded('acp-shared')).toBe(false)
+    expect(s.isCaptureExcluded('bot-a', 'acp-shared')).toBe(true) // no row ⇒ excluded-by-default
+    expect(s.isCaptureExcluded('bot-b', 'acp-shared')).toBe(false)
 
-    // The last referencing session goes: the gate is finally collected too.
     expect(s.deleteSession('b')).toBe(true)
-    expect(s.isCaptureExcluded('acp-shared')).toBe(true) // no row ⇒ excluded-by-default
+    expect(s.isCaptureExcluded('bot-b', 'acp-shared')).toBe(true)
     s.close()
   })
 

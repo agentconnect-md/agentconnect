@@ -742,7 +742,7 @@ describe('Daemon session lifecycle (#118)', () => {
     const rec = (daemon as any).store.getSession(key)
     expect(rec?.conversationKind).toBe('dm')
     // The private-capture gate follows the same bit.
-    expect((daemon as any).store.isCaptureExcluded(rec?.acpSessionId)).toBe(true)
+    expect((daemon as any).store.isCaptureExcluded('bot-a', rec?.acpSessionId)).toBe(true)
     await daemon.stop()
   }, 15_000)
 

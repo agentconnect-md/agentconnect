@@ -1170,7 +1170,14 @@ describe('session visibility — §5.1 daemon-ack cutover', () => {
     expect(await repo.countUnackedVisibility(daemonId)).toBe(1)
     const capped = await repo.visibilitySnapshotForDaemon(daemonId, 1)
     expect(capped).toEqual([
-      { sessionId: stale, orgId: DEFAULT_ORG_ID, visibility: 'private', sharedMemoryExcluded: true, visibilityRev: 1 }
+      {
+        sessionId: stale,
+        orgId: DEFAULT_ORG_ID,
+        agentId,
+        visibility: 'private',
+        sharedMemoryExcluded: true,
+        visibilityRev: 1
+      }
     ])
   })
 
@@ -1216,6 +1223,7 @@ describe('session visibility — §5.1 daemon-ack cutover', () => {
       {
         sessionId: newer,
         orgId: DEFAULT_ORG_ID,
+        agentId,
         visibility: 'private',
         sharedMemoryExcluded: true,
         visibilityRev: 0
@@ -1223,6 +1231,7 @@ describe('session visibility — §5.1 daemon-ack cutover', () => {
       {
         sessionId: older,
         orgId: DEFAULT_ORG_ID,
+        agentId,
         visibility: 'org',
         sharedMemoryExcluded: false,
         visibilityRev: 0

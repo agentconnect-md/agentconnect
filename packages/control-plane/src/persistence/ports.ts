@@ -1094,6 +1094,7 @@ export interface SessionVisibilityChange {
 /** One entry of the §5.1 register-time gate snapshot. */
 export interface SessionVisibilityState {
   orgId: OrgId
+  agentId: AgentId
   sessionId: SessionId
   visibility: SessionVisibility
   sharedMemoryExcluded: boolean

@@ -101,8 +101,10 @@ describe('notifySessions', () => {
     const { push, sessionVisibility, recordVisibilityAck } = deps()
     await push.notifySessions([session()])
 
+    // The agent rides along: the daemon keys its gate by (agent, ACP session id).
     expect(sessionVisibility).toHaveBeenCalledWith(DAEMON, ORG, {
       sessionId: 'acp-1',
+      agentId: AGENT,
       visibility: 'private',
       sharedMemoryExcluded: true,
       visibilityRev: 2

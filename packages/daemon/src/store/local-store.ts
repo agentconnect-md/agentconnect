@@ -621,7 +621,7 @@ function restrictPath(path: string, mode: number): void {
  * change that edits a `CREATE TABLE` below, and append the matching step to
  * {@link SCHEMA_MIGRATIONS}.
  */
-const SCHEMA_VERSION = 5
+const SCHEMA_VERSION = 6
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -660,6 +660,35 @@ const SCHEMA_MIGRATIONS: ((db: StoreDatabase) => void)[] = [
     db.exec(`
       ALTER TABLE inbox ADD COLUMN reportOwnerId TEXT;
       ALTER TABLE inbox ADD COLUMN reportClaimedAt INTEGER;
+    `),
+  // session_gates gains the owning agent in its key. Existing rows are attributed
+  // through the sessions row that holds the ACP id; a row no session claims is
+  // dropped, and an id several agents claim is rewritten to the fail-closed state
+  // because its stored verdict was never attributable to one of them.
+  (db) =>
+    db.exec(`
+      CREATE TABLE session_gates_keyed (
+        agentId TEXT NOT NULL,
+        acpSessionId TEXT NOT NULL,
+        localExcluded INTEGER NOT NULL DEFAULT 1,
+        cpPrivate INTEGER,
+        cpRev INTEGER NOT NULL DEFAULT 0,
+        updatedAt INTEGER,
+        PRIMARY KEY (agentId, acpSessionId)
+      );
+      INSERT INTO session_gates_keyed (agentId, acpSessionId, localExcluded, cpPrivate, cpRev, updatedAt)
+      SELECT o.agentId, g.acpSessionId, g.localExcluded, g.cpPrivate, g.cpRev, g.updatedAt
+      FROM session_gates g
+      JOIN (
+        SELECT DISTINCT agentId, acpSessionId FROM sessions
+        WHERE agentId IS NOT NULL AND acpSessionId IS NOT NULL
+      ) o ON o.acpSessionId = g.acpSessionId;
+      UPDATE session_gates_keyed SET localExcluded = 1, cpPrivate = NULL, cpRev = 0
+      WHERE acpSessionId IN (
+        SELECT acpSessionId FROM session_gates_keyed GROUP BY acpSessionId HAVING COUNT(*) > 1
+      );
+      DROP TABLE session_gates;
+      ALTER TABLE session_gates_keyed RENAME TO session_gates;
     `)
 ]
 
@@ -724,20 +753,25 @@ export class LocalStore {
       CREATE TABLE IF NOT EXISTS session_mutes (
         key TEXT PRIMARY KEY
       );
-      -- Per-session memory-capture gate (session-visibility.md §5.1). Keyed by ACP
-      -- session id, NOT the logical session key: the CP addresses sessions by the
-      -- id it knows, and its push can arrive before (or after a resume recreates)
-      -- the sessions row — so this table stands alone, like session_mutes.
+      -- Per-session memory-capture gate (session-visibility.md §5.1). Keyed by
+      -- (agentId, acpSessionId), NOT the logical session key: the CP addresses
+      -- sessions by the id it knows, and its push can arrive before (or after a
+      -- resume recreates) the sessions row — so this table stands alone, like
+      -- session_mutes. The agent is part of the key because ACP session ids are
+      -- runtime-local: on a pool's shared store every agent of every org can hold
+      -- an acp-1, and one org's push must never answer for another org's gate.
       --   localExcluded: the daemon-local initial verdict (DM/webchat/launch/A2A).
       --   cpPrivate    : the CP-confirmed bit; authoritative once it is set.
       --   cpRev        : the CP's durable visibilityRev — the dedup/order key.
       -- (localExcluded, not "excluded": SQLite's upsert pseudo-table owns that name.)
       CREATE TABLE IF NOT EXISTS session_gates (
-        acpSessionId TEXT PRIMARY KEY,
+        agentId TEXT NOT NULL,
+        acpSessionId TEXT NOT NULL,
         localExcluded INTEGER NOT NULL DEFAULT 1,
         cpPrivate INTEGER,
         cpRev INTEGER NOT NULL DEFAULT 0,
-        updatedAt INTEGER
+        updatedAt INTEGER,
+        PRIMARY KEY (agentId, acpSessionId)
       );
       -- Latest-wins session metadata awaiting a correlated CP persistence ACK.
       -- This is deliberately separate from sessions: an upgrade starts with an
@@ -1716,15 +1750,15 @@ export class LocalStore {
 
   /** Seed the local verdict for a session the daemon just created. Never lowers
    *  `cpRev`: a CP push that arrived first stays authoritative. */
-  setLocalCaptureGate(acpSessionId: string, localExcluded: boolean): void {
+  setLocalCaptureGate(agentId: string, acpSessionId: string, localExcluded: boolean): void {
     this.db
       .prepare(
-        `INSERT INTO session_gates (acpSessionId, localExcluded, cpRev, updatedAt)
-         VALUES (?, ?, 0, ?)
-         ON CONFLICT(acpSessionId) DO UPDATE SET
+        `INSERT INTO session_gates (agentId, acpSessionId, localExcluded, cpRev, updatedAt)
+         VALUES (?, ?, ?, 0, ?)
+         ON CONFLICT(agentId, acpSessionId) DO UPDATE SET
            localExcluded = excluded.localExcluded, updatedAt = excluded.updatedAt`
       )
-      .run(acpSessionId, localExcluded ? 1 : 0, Date.now())
+      .run(agentId, acpSessionId, localExcluded ? 1 : 0, Date.now())
   }
 
   /**
@@ -1732,22 +1766,33 @@ export class LocalStore {
    * rev is at or below what we hold is NOT reapplied but IS still acknowledged
    * (`superseded`) — "ignore" must never mean "don't ACK", or a lost ack leaves
    * the CP retrying forever.
+   *
+   * The revision test is the upsert's own `WHERE`, not a prior `SELECT`: two members
+   * on the shared store otherwise interleave read and write and land the older rev last.
    */
-  applyCpCaptureGate(acpSessionId: string, isPrivate: boolean, rev: number): 'applied' | 'superseded' {
-    const row = this.db.prepare('SELECT cpRev FROM session_gates WHERE acpSessionId = ?').get(acpSessionId) as
-      { cpRev: number } | undefined
+  applyCpCaptureGate(agentId: string, acpSessionId: string, isPrivate: boolean, rev: number): 'applied' | 'superseded' {
     // rev 0 is a legitimate first revision (a session ingested and never
     // changed), so it applies once — but only while we hold nothing newer.
-    if (row && (rev > 0 ? row.cpRev >= rev : row.cpRev > 0)) return 'superseded'
-    this.db
+    const changes = this.db
       .prepare(
-        `INSERT INTO session_gates (acpSessionId, localExcluded, cpPrivate, cpRev, updatedAt)
-         VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(acpSessionId) DO UPDATE SET
-           cpPrivate = excluded.cpPrivate, cpRev = excluded.cpRev, updatedAt = excluded.updatedAt`
+        `INSERT INTO session_gates (agentId, acpSessionId, localExcluded, cpPrivate, cpRev, updatedAt)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(agentId, acpSessionId) DO UPDATE SET
+           cpPrivate = excluded.cpPrivate, cpRev = excluded.cpRev, updatedAt = excluded.updatedAt
+         WHERE session_gates.cpRev < excluded.cpRev
+            OR (excluded.cpRev = 0 AND session_gates.cpRev = 0)`
       )
-      .run(acpSessionId, isPrivate ? 1 : 0, isPrivate ? 1 : 0, rev, Date.now())
-    return 'applied'
+      .run(agentId, acpSessionId, isPrivate ? 1 : 0, isPrivate ? 1 : 0, rev, Date.now()).changes
+    return Number(changes) > 0 ? 'applied' : 'superseded'
+  }
+
+  /** The one agent holding this ACP id locally, or undefined when none or several
+   *  do — how a push from a CP too old to name the agent is attributed. */
+  soleAgentForAcpSession(acpSessionId: string): string | undefined {
+    const rows = this.db
+      .prepare('SELECT DISTINCT agentId FROM sessions WHERE acpSessionId = ? AND agentId IS NOT NULL LIMIT 2')
+      .all(acpSessionId) as { agentId: string }[]
+    return rows.length === 1 ? rows[0]!.agentId : undefined
   }
 
   /**
@@ -1755,7 +1800,7 @@ export class LocalStore {
    * we have one; otherwise the local verdict; otherwise excluded. An A2A child
    * therefore starts closed and only a CP-confirmed `org` state opens it.
    */
-  isCaptureExcluded(acpSessionId: string | undefined): boolean {
+  isCaptureExcluded(agentId: string, acpSessionId: string | undefined): boolean {
     if (!acpSessionId) return true
     // External-source binding (a Slack/Feishu channel = external identity domain)
     // no longer forces memory exclusion: such channels behave like any other
@@ -1764,8 +1809,8 @@ export class LocalStore {
     // §5.1). DM / webchat / A2A / launch-correlated sessions stay private through
     // those same layers.
     const row = this.db
-      .prepare('SELECT localExcluded, cpPrivate FROM session_gates WHERE acpSessionId = ?')
-      .get(acpSessionId) as { localExcluded: number; cpPrivate: number | null } | undefined
+      .prepare('SELECT localExcluded, cpPrivate FROM session_gates WHERE agentId = ? AND acpSessionId = ?')
+      .get(agentId, acpSessionId) as { localExcluded: number; cpPrivate: number | null } | undefined
     if (!row) return true
     if (row.cpPrivate !== null) return row.cpPrivate === 1
     return row.localExcluded === 1
@@ -2200,9 +2245,8 @@ export class LocalStore {
    *  - unacknowledged terminal hook reports (`terminalReport IS NOT NULL`) — an
    *    outbox the CP has not converged yet, preserved exactly like
    *    removeInboxByAgentId does.
-   *  permission_requests is scoped by agentId, and the capture gate is dropped
-   *  only when no surviving session still references the ACP id: ACP session ids
-   *  are runtime-local, so two agents can both hold an `acp-1`.
+   *  permission_requests and the capture gate are both scoped by agentId, so a
+   *  neighbour holding the same runtime-local `acp-1` keeps its own rows.
    *  Returns false when the row is already gone (idempotent). */
   deleteSession(key: string, purge?: { reason: string; at: number }): boolean {
     const rec = this.getSession(key)
@@ -2231,16 +2275,9 @@ export class LocalStore {
         this.db
           .prepare('DELETE FROM session_metadata_outbox WHERE agentId = ? AND sessionId = ?')
           .run(rec.agentId, rec.acpSessionId)
-        // session_gates is keyed by the ACP id ALONE, and ACP ids are runtime-local
-        // — another agent's still-live `acp-1` may share the key. Drop the gate only
-        // once no surviving session references it (the sessions row above is already
-        // deleted inside this transaction, so a self-reference cannot pin it).
-        const stillReferenced = this.db
-          .prepare('SELECT 1 AS present FROM sessions WHERE acpSessionId = ? LIMIT 1')
-          .get(rec.acpSessionId)
-        if (!stillReferenced) {
-          this.db.prepare('DELETE FROM session_gates WHERE acpSessionId = ?').run(rec.acpSessionId)
-        }
+        this.db
+          .prepare('DELETE FROM session_gates WHERE agentId = ? AND acpSessionId = ?')
+          .run(rec.agentId, rec.acpSessionId)
         this.db
           .prepare('DELETE FROM permission_requests WHERE agentId = ? AND sessionId = ?')
           .run(rec.agentId, rec.acpSessionId)
