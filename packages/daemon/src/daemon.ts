@@ -1132,6 +1132,11 @@ interface CallMeta {
 
 type TurnInterruptReason = 'pause' | 'loop protection' | 'stop' | 'cancel' | 'shutdown' | 'superseded'
 
+/** What an interrupt means for the agent's admitted-but-unrun durable rows. `reason` cannot say
+ *  it: removal and a duty handoff are both `stop`. `terminal` ends that work here (pause, removal,
+ *  host respawn); `handoff` leaves the rows for the successor holder to replay (#1050). */
+type TurnInterruptDisposition = 'terminal' | 'handoff'
+
 /** One durable loop-guard scope shared by every agent on one physical bot.
  *  DMs are keyed at channel level because malformed platform wrappers may lose
  *  thread coordinates; threaded channel conversations retain their canonical
@@ -1536,6 +1541,9 @@ interface QueueEntry {
   /** The live inbox row was redacted into a durable terminal HookReport
    * receipt; removeInbox must retain it for restart-safe redelivery dedup. */
   hookTerminalReceipt?: boolean
+  /** A duty handoff released this row to the successor holder instead of ending it, so the
+   *  entry's later terminal settle must not delete it either (#1050). */
+  inboxHandedOff?: boolean
 }
 
 interface GithubQueueCandidate {
@@ -13407,7 +13415,10 @@ export class Daemon {
    *  longer served here" cannot be claimed. Immediate when no host exists. */
   private stopServingAgentSettled(agentId: string): Promise<void> {
     if (!this.dutyEnforced()) return Promise.resolve()
-    this.interruptAgentTurns(agentId, 'stop')
+    // A handoff, never a removal (#948): the turns stop here, but their admitted-but-unrun rows
+    // stay for whoever holds the duty next. Only a duty-governed member reaches this line, so a
+    // single daemon's terminal-purge semantics are untouched.
+    this.interruptAgentTurns(agentId, 'stop', 'handoff')
     this.scheduler.unregister(agentId)
     this.dreamScheduler.unregister(agentId)
     const prior = this.dutyHostStops.get(agentId) ?? Promise.resolve()
@@ -13806,10 +13817,16 @@ export class Daemon {
   /** Remove an entry's durable inbox row once its turn reaches ANY terminal state (success,
    *  reject/fail-stop, cancel, gate-drop) so it is not replayed on the next startup. No-op
    *  for a non-persisted entry (webchat / never-admitted). NOT called on graceful-shutdown
-   *  settle: those admitted-but-unrun rows are intentionally LEFT for startup replay. */
-  private removeInbox(entry: QueueEntry): void {
+   *  settle: those admitted-but-unrun rows are intentionally LEFT for startup replay.
+   *  `handoff` is the same retention for one agent: drop only this process's live claim so a
+   *  successor holder — or a later re-grant here — replays the row (#1050). */
+  private removeInbox(entry: QueueEntry, handoff = false): void {
     if (!entry.inboxId) return
     this.liveInboxIds.delete(entry.inboxId)
+    // Latched on the entry: the interrupted turn settles through dispatch's own terminal
+    // paths afterwards, and those must not delete the row the handoff just kept.
+    if (handoff) entry.inboxHandedOff = true
+    if (entry.inboxHandedOff) return
     // Hook rows become redacted terminal receipts in emitHookCompletion. If
     // that conversion failed (or shutdown deliberately skipped completion),
     // retaining the live row is the only restart-safe choice.
@@ -15967,6 +15984,8 @@ export class Daemon {
       preserveQueued?: boolean
       allowSameKeyAdmissions?: boolean
       allowGithubLane?: string
+      /** Duty handoff: stop running the work here, but leave its durable rows for the successor. */
+      handoffInbox?: boolean
     } = {}
   ): void {
     // The force-cancel fallback is host-wide. Hold NEW admissions until this exact
@@ -15987,7 +16006,7 @@ export class Daemon {
       if (reason === 'superseded' && activeEntry.hookContext) {
         this.emitHookCompletion(activeEntry.hookContext, 'failed', { reason }, activeEntry)
       } else {
-        this.removeInbox(activeEntry)
+        this.removeInbox(activeEntry, opts.handoffInbox)
       }
     }
     // Drop everything buffered behind this turn first (one unified queue) and settle each
@@ -16001,7 +16020,7 @@ export class Daemon {
         if (e.hookContext) {
           this.emitHookCompletion(e.hookContext, 'failed', { reason: opts.dropQueued ? 'dropped' : 'cancelled' }, e)
         }
-        this.removeInbox(e)
+        this.removeInbox(e, opts.handoffInbox)
         if (opts.dropQueued) e.resolve(null)
         else e.reject(new FailStopError(key))
       }
@@ -16067,11 +16086,17 @@ export class Daemon {
   /** Interrupt every logical session owned by an agent for a lifecycle gate (pause,
    *  removal, or host respawn). Active ACP turns are cancelled; queued turns are
    *  cleanly gate-dropped. A cold head is latched so it cannot resume after teardown. */
-  private interruptAgentTurns(agentId: string, reason: TurnInterruptReason): void {
+  private interruptAgentTurns(
+    agentId: string,
+    reason: TurnInterruptReason,
+    disposition: TurnInterruptDisposition = 'terminal'
+  ): void {
+    const handoffInbox = disposition === 'handoff'
     this.beginSafetyDrain(agentId, reason)
-    // The interruption is terminal for every already-admitted turn. Delete durable
-    // rows first so an immediate daemon stop cannot preserve and replay old work.
-    this.purgeAgentInbox(agentId, reason)
+    // A terminal interrupt ends every already-admitted turn: delete the durable rows first so an
+    // immediate daemon stop cannot preserve and replay old work. A handoff keeps them instead —
+    // on a pool's shared store those rows ARE the unrun work the successor holder must replay.
+    if (!handoffInbox) this.purgeAgentInbox(agentId, reason)
     const targets = new Map<string, string | undefined>()
     for (const [key, entry] of this.activeGateEntries) {
       if (entry.agentId !== agentId) continue
@@ -16089,7 +16114,7 @@ export class Daemon {
     if (targets.size > 0)
       this.log.info(`${reason}: interrupting ${targets.size} active session(s) for agent "${agentId}"`)
     for (const [key, acpSessionId] of targets) {
-      this.interruptTurn(agentId, key, reason, acpSessionId, { dropQueued: true })
+      this.interruptTurn(agentId, key, reason, acpSessionId, { dropQueued: true, handoffInbox })
     }
   }
 
