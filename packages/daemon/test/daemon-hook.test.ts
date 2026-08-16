@@ -28,8 +28,11 @@ import {
 import { GithubReplyCollector } from '../src/github/poster.js'
 import { transcriptCoords } from '../src/session/session-manager.js'
 import { sessionKey } from '../src/store/local-store.js'
-import { sessionWorktreePath } from '../src/workspace/workspace-manager.js'
+import { WorkspaceManager } from '../src/workspace/workspace-manager.js'
 import { FakeClock } from '@agentconnect.md/connection'
+
+// One plane per test file — the isolation Vitest's per-file module registry used to give.
+const workspaces = new WorkspaceManager()
 
 // vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a
 // cold session boot (workspace + host + session/new) can stall well past a second.
@@ -1497,7 +1500,7 @@ describe('Daemon rd/msg hook fires', () => {
       ;(daemon as never as { cpClient: unknown }).cpClient = cp
       const agent = (daemon as any).agents.get(AGENT_ID)
       const key = sessionKey('hook', 'acme/infra', '42', AGENT_ID, 'github:123')
-      const worktree = sessionWorktreePath(agent, key)
+      const worktree = workspaces.sessionWorktreePath(agent, key)
       mkdirSync(join(agentDir, 'worktrees'), { recursive: true })
       execFileSync('git', ['worktree', 'add', '--detach', worktree, 'HEAD'], { cwd: workspace, stdio: 'ignore' })
       ;(daemon as any).store.upsertSession({

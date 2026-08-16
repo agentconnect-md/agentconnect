@@ -212,21 +212,7 @@ import {
 } from './platforms/slack/turn-output.js'
 import { ChannelNameResolver } from './messages/channel-name-resolver.js'
 import {
-  cleanupStaleWorkspaceClones,
-  clusterWorkspaceCwd,
-  consoleWorkspaceRoot,
-  convergeGithubAppWorkspaceRename,
-  ensureWorkspaceMaterialization,
-  isWorkspaceEmpty,
-  prepareClusterWorkspace,
-  prepareWorkspace,
-  prepareSessionWorkspace,
-  prepareWorkspaceForActivation,
-  resolvePreparedWorkspaceCwd,
-  prefetchWorkspace,
-  removeSessionWorktree,
-  sessionWorktreePath,
-  sessionWorktreeRoot,
+  WorkspaceManager,
   type PrepareSessionWorkspaceRequest,
   type SessionWorktreeRemoval
 } from './workspace/workspace-manager.js'
@@ -281,11 +267,6 @@ import {
 import { resolveRuntimeCatalog, type ResolvedRuntimeCatalog } from './runtimes/registry.js'
 import { installedRuntimeCatalog, installedRuntimes, resolveCommandPath } from './runtimes/probe.js'
 import { K8S_ORG_ID_ENV, startK8sRuntimePlane, type K8sRuntimePlane } from './k8s/runtime-plane.js'
-import {
-  setSandboxWorkspaceMode,
-  setWorkspaceGitRunnerResolver,
-  setWorkspacePathClearer
-} from './workspace/workspace-manager.js'
 import { initiatorLabel } from './workspace/session-branch.js'
 import { declaredRuntimeCatalog, loadK8sRuntimeTable, type K8sRuntimeAcpSnapshot } from './runtimes/k8s-runtimes.js'
 import { ensureNodeBinOnPath } from './runtimes/exec-path.js'
@@ -1941,6 +1922,10 @@ interface ShutdownDutyDrain {
 }
 
 export class Daemon {
+  // This daemon's workspace execution plane. Owned per instance, so two daemons in one process
+  // (the test suite, and a k8s daemon beside a local one) cannot inherit each other's git runner,
+  // path clearer or sandbox mode — which is what a module-level plane silently did.
+  readonly workspaces = new WorkspaceManager()
   private readonly evaluation: EvaluationEventEmitter
   private readonly evaluationProfile: EvaluationCapabilityProfile
   private store!: LocalStore
@@ -2998,13 +2983,13 @@ export class Daemon {
       // Workspace git then runs where the workspace actually is. Registered for ALL agents; the
       // resolver answers undefined for any without a bound channel, so an agent this daemon has
       // not launched into a sandbox keeps its local behaviour.
-      setWorkspaceGitRunnerResolver((agentId, cwd, abort) => this.k8sPlane?.gitRunnerFor(agentId, cwd, abort))
+      this.workspaces.setGitRunnerResolver((agentId, cwd, abort) => this.k8sPlane?.gitRunnerFor(agentId, cwd, abort))
       // And the one destructive operation a cluster workspace needs, for the same reason: a
       // partial clone sits on a volume no `rmSync` here can reach.
-      setWorkspacePathClearer((agentId, root) => this.k8sPlane!.clearPath(agentId, root))
+      this.workspaces.setPathClearer((agentId, root) => this.k8sPlane!.clearPath(agentId, root))
       // And the mode itself, which decides what workspace operations are available at all: an
       // in-place conversion has no pod-side implementation of its rollback contract.
-      setSandboxWorkspaceMode(true)
+      this.workspaces.setSandboxMode(true)
       this.log.info('k8s: execution plane ready — daemon-to-sandbox shim dialing enabled')
     }
     // Sandbox-optional principle (#36): skills are NOT force-sandboxed fleet-wide.
@@ -3116,7 +3101,7 @@ export class Daemon {
     for (const agent of discoveredAgents) {
       if (!this.removedAgentTombstones.has(agent.id)) {
         try {
-          const removed = cleanupStaleWorkspaceClones(agent)
+          const removed = this.workspaces.cleanupStaleWorkspaceClones(agent)
           if (removed > 0) {
             this.log.info(`workspace: removed ${removed} stale conversion clone(s) for agent "${agent.id}"`)
           }
@@ -3513,6 +3498,10 @@ export class Daemon {
     )
 
     this.sessions = new SessionManager({
+      // THIS daemon's plane. Omitting it hands the manager a local-mode one, and
+      // `additionalWorkspaceDirectories` would then `realpathSync` a `--k8s` workspace's pod-side
+      // cwd against this filesystem — failing session create/load before the runtime call.
+      workspaces: this.workspaces,
       memoryScopeFor: (agentId, msg, integrationId) =>
         this.memoryScope(
           agentId,
@@ -3535,8 +3524,8 @@ export class Daemon {
       // the channel (and with it the pod's reported mount) has already bound.
       resolvePreparedWorkspace: (agent) =>
         this.k8sPlane
-          ? clusterWorkspaceCwd(agent, this.k8sPlane.workspaceRootFor(agent.id))
-          : resolvePreparedWorkspaceCwd(agent),
+          ? this.workspaces.clusterWorkspaceCwd(agent, this.k8sPlane.workspaceRootFor(agent.id))
+          : this.workspaces.resolvePreparedWorkspaceCwd(agent),
       memory: this.memory,
       onMemoryRecallError: (agentId, error) =>
         this.log.warn(
@@ -4031,7 +4020,7 @@ export class Daemon {
       if (change.workspaceRepoRename) {
         try {
           await this.enqueueAgentWorkspacePreparation(a as LoadedAgent, () =>
-            convergeGithubAppWorkspaceRename(a as LoadedAgent)
+            this.workspaces.convergeGithubAppWorkspaceRename(a as LoadedAgent)
           )
         } catch (err) {
           workspaceNeedsColdRecovery = true
@@ -5207,7 +5196,7 @@ export class Daemon {
         // The pod's own preparation: clone and pull happen on its volume through the runner, and
         // none of the local work below runs — its mkdir, `existsSync(.git)` and skills installation
         // all land on this daemon's disk, describing a filesystem the runtime never reads.
-        return await prepareClusterWorkspace(agent, plane.workspaceRootFor(agent.id), request)
+        return await this.workspaces.prepareClusterWorkspace(agent, plane.workspaceRootFor(agent.id), request)
       })
     }
     if (!this.opts.hostFactory) assertExclusiveAgentWorkspaces([agent as LoadedAgent])
@@ -5216,14 +5205,16 @@ export class Daemon {
       skillsStateDir: join(this.root, 'skill-installs'),
       skillsAgentId: this.runtimeCatalog.entries[agent.runtime]?.skillsAgentId ?? null
     }
-    return request ? prepareSessionWorkspace(agent, request, opts) : prepareWorkspace(agent, opts)
+    return request
+      ? this.workspaces.prepareSessionWorkspace(agent, request, opts)
+      : this.workspaces.prepareWorkspace(agent, opts)
   }
 
   private runAgentWorkspacePrefetch(agent: Agent): Promise<void> {
     // A cluster workspace materializes on the pod's volume at session time; a local prefetch
     // would clone the repository onto this daemon's own disk instead.
     if (this.k8sPlane) return Promise.resolve()
-    return prefetchWorkspace(agent)
+    return this.workspaces.prefetchWorkspace(agent)
   }
 
   private workspacePreparationAuthority(agent: Agent): string {
@@ -5530,7 +5521,9 @@ export class Daemon {
           ? this.sandboxRuntimeReadRoots(agent, runtime, { ...runtimeEnv, ...env }, githubAppCredentials)
           : undefined,
         trustedWorkspaceWriteRoots:
-          runInSandbox && agent.workspace.mode === 'git-repo' ? [sessionWorktreeRoot(agent)] : undefined,
+          runInSandbox && agent.workspace.mode === 'git-repo'
+            ? [this.workspaces.sessionWorktreeRoot(agent)]
+            : undefined,
         explicitEnv: { ...runtimeEnv, ...env },
         sandboxMechanism: this.sandboxMechanism,
         mcpSocketPath: mcpSocketPath(this.root),
@@ -19756,7 +19749,7 @@ export class Daemon {
 
   /** The one safe per-session worktree deletion path shared by age retention
    * and GitHub thread lifecycle cleanup. It deliberately preserves the current
-   * dirty/untracked and unique-commit protections in removeSessionWorktree(). */
+   * dirty/untracked and unique-commit protections in this.workspaces.removeSessionWorktree(). */
   private async cleanupSessionWorktree(rec: SessionRecord): Promise<SessionWorktreeCleanupResult> {
     if (this.sessionRetentionActive(rec)) return { outcome: 'active' }
     const agent = this.agents.get(rec.agentId)
@@ -19771,7 +19764,7 @@ export class Daemon {
       if (!currentAgent || currentAgent.workspace.mode !== 'git-repo' || rec.workspaceIsolation === 'shared') {
         return { outcome: 'not_applicable' }
       }
-      const result = await removeSessionWorktree(currentAgent, rec.key)
+      const result = await this.workspaces.removeSessionWorktree(currentAgent, rec.key)
       if ((result.outcome === 'removed' || result.outcome === 'absent') && rec.acpSessionId) {
         // The session row intentionally survives lifecycle cleanup. Evict only
         // this stale warm binding so the next reopened/comment turn recreates
@@ -21472,7 +21465,7 @@ export class Daemon {
           // permission/subdirectory edit from a destructive mode/repo/branch
           // replacement, including after an ACK-loss retry.
           const currentWorkspace = this.agents.get(agentId)
-          if (currentWorkspace) ensureWorkspaceMaterialization(currentWorkspace)
+          if (currentWorkspace) this.workspaces.ensureWorkspaceMaterialization(currentWorkspace)
 
           // This is also the destination staging gate. An absent agent is expected:
           // ACK after arming the gate so the atomic activate bundle cannot serve early.
@@ -21505,7 +21498,7 @@ export class Daemon {
               ? `agent ${agentId} is not active on this daemon`
               : current.workspace.mode !== 'from-scratch'
                 ? 'workspace is no longer scratch'
-                : !isWorkspaceEmpty(current)
+                : !this.workspaces.isWorkspaceEmpty(current)
                   ? 'scratch workspace is not empty; remove or move its files before converting'
                   : undefined
             if (reason) {
@@ -21642,7 +21635,7 @@ export class Daemon {
                 rollbackPreparedWorkspace = await this.enqueueAgentWorkspacePreparation(
                   agent,
                   () =>
-                    prepareWorkspaceForActivation(agent, {
+                    this.workspaces.prepareWorkspaceForActivation(agent, {
                       allowExistingCheckout: stage.requireEmptyWorkspace !== true,
                       reconcileMaterialization: activate.reconcileWorkspace === true
                     }),
@@ -22281,7 +22274,7 @@ export class Daemon {
       }
       const session = this.store.getSessionByAcpIdForAgent(id, sessionId)
       if (agent.workspace.mode !== 'git-repo' || session?.workspaceIsolation !== 'session') return undefined
-      return { root: sessionWorktreePath(agent, session.key), scratch: false }
+      return { root: this.workspaces.sessionWorktreePath(agent, session.key), scratch: false }
     }
 
     // Where that workspace actually is, which under --k8s is the sandbox pod's volume. ONE resolver
@@ -22293,7 +22286,7 @@ export class Daemon {
       const agent = this.agents.get(id)
       const local = daemonWorkspaceLocation(id, sessionId)
       if (!agent || !local) return undefined
-      const root = consoleWorkspaceRoot(
+      const root = this.workspaces.consoleWorkspaceRoot(
         agent,
         local.root,
         this.k8sPlane?.workspaceRootFor(id),
@@ -22306,6 +22299,7 @@ export class Daemon {
       workspaceLocation(id, sessionId)?.root
 
     const workspaceGit = createWorkspaceGit(
+      this.workspaces,
       workspaceGitRoot,
       (id) => {
         const workspace = this.agents.get(id)?.workspace
@@ -22440,6 +22434,7 @@ export class Daemon {
       // The third argument is what makes a cluster agent's files reachable at all: the operations
       // run inside its pod, on the volume the root above names.
       workspaceRead: createWorkspaceReader(
+        this.workspaces,
         workspaceLocation,
         (id, write) => this.withWorkspaceFileWrite(id, write),
         (id) => this.k8sPlane?.workspaceFilesFor(id)
@@ -22482,6 +22477,7 @@ export class Daemon {
       memoryReader: createMemoryReader((id) => this.agents.get(id)?.dir, this.memory),
       dreamReader: createDreamReader(this.dreamRunner()),
       localSkillsReader: createLocalSkillsReader(
+        this.workspaces,
         // The workspace root in EXECUTION coordinates, like the file reader's: the skill roots the
         // console lists are the ones the agent's harness loads, and those are in the pod.
         (id) => workspaceLocation(id)?.root,
@@ -23237,9 +23233,9 @@ export class Daemon {
     await this.k8sPlane?.stop().catch(() => undefined)
     await this.readiness?.stop().catch(() => undefined)
     this.readiness = undefined
-    setWorkspaceGitRunnerResolver(undefined)
-    setWorkspacePathClearer(undefined)
-    setSandboxWorkspaceMode(false)
+    this.workspaces.setGitRunnerResolver(undefined)
+    this.workspaces.setPathClearer(undefined)
+    this.workspaces.setSandboxMode(false)
     await Promise.allSettled(hostStarts)
     // Shutdown backstop: dream extractions reclaim their own tombstone when the
     // dedicated host stops, and stopHost sweeps per-agent for warm hosts, but drop

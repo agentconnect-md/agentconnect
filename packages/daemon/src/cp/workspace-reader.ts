@@ -27,7 +27,7 @@ import {
   type WorkspaceFiles,
   type WorkspaceLocation
 } from '../workspace/workspace-files.js'
-import { sandboxWorkspaceMode } from '../workspace/workspace-manager.js'
+import { WorkspaceManager } from '../workspace/workspace-manager.js'
 
 // Re-exported rather than moved-and-chased: the error classes are what the CP dispatcher maps onto
 // wire frames, and the two path helpers are what the git seam contains its pathspecs with. Neither
@@ -58,6 +58,7 @@ export type WorkspaceWriteCoordinator = <T>(agentId: string, write: () => Promis
 export type WorkspaceFilesResolver = (agentId: string) => WorkspaceFiles | undefined
 
 export function createWorkspaceReader(
+  workspaces: WorkspaceManager,
   workspaceByAgent: (agentId: string, sessionId?: string) => WorkspaceLocation | undefined,
   coordinateWrite: WorkspaceWriteCoordinator,
   filesFor: WorkspaceFilesResolver = () => undefined
@@ -82,7 +83,7 @@ export function createWorkspaceReader(
   function filesOf(agentId: string): WorkspaceFiles {
     const remote = filesFor(agentId)
     if (remote) return remote
-    if (sandboxWorkspaceMode()) {
+    if (workspaces.sandboxMode) {
       throw new WorkspaceViolationError(
         `agent "${agentId}" has no running sandbox, so its workspace cannot be reached`,
         'sandbox-unavailable'

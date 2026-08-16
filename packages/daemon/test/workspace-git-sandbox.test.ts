@@ -5,7 +5,10 @@ import { join } from 'node:path'
 import { createWorkspaceGit } from '../src/cp/workspace-git.js'
 import { ShimChannelLostError } from '../src/shim/channels.js'
 import { ShimGitRunner } from '../src/shim/git-exec.js'
-import { setSandboxWorkspaceMode, setWorkspaceGitRunnerResolver } from '../src/workspace/workspace-manager.js'
+import { WorkspaceManager } from '../src/workspace/workspace-manager.js'
+
+// One plane per test file — the isolation Vitest's per-file module registry used to give.
+const workspaces = new WorkspaceManager()
 
 /**
  * What the console's git seam answers for a cluster agent whose sandbox is not reachable.
@@ -19,8 +22,8 @@ import { setSandboxWorkspaceMode, setWorkspaceGitRunnerResolver } from '../src/w
 const AGENT = 'bot-cluster'
 
 afterEach(() => {
-  setSandboxWorkspaceMode(false)
-  setWorkspaceGitRunnerResolver(undefined)
+  workspaces.setSandboxMode(false)
+  workspaces.setGitRunnerResolver(undefined)
 })
 
 /** Answers the first call and nothing after it — a detach timed to land between two resolutions. */
@@ -53,9 +56,9 @@ function answeringRunner(seen: string[][]) {
 
 describe('the console git seam without a bound sandbox', () => {
   it('refuses with a machine-readable reason instead of reporting "not a git checkout"', async () => {
-    setSandboxWorkspaceMode(true)
+    workspaces.setSandboxMode(true)
     // No resolver registered for this agent — what the plane answers with no bound channel.
-    const git = createWorkspaceGit(() => '/agent/repo')
+    const git = createWorkspaceGit(workspaces, () => '/agent/repo')
     for (const read of [
       () => git.status(AGENT),
       () => git.log({ agentId: AGENT, limit: 20 }),
@@ -80,7 +83,7 @@ describe('the console git seam without a bound sandbox', () => {
     // answer comes from git on this filesystem — a real directory that simply is not a checkout.
     const plain = mkdtempSync(join(tmpdir(), 'ac-git-sandbox-'))
     try {
-      const status = await createWorkspaceGit(() => plain).status(AGENT)
+      const status = await createWorkspaceGit(workspaces, () => plain).status(AGENT)
       expect(status.isRepo).toBe(false)
     } finally {
       rmSync(plain, { recursive: true, force: true })
@@ -88,21 +91,21 @@ describe('the console git seam without a bound sandbox', () => {
   })
 
   it('holds the runner it resolved when the channel drops mid-request', async () => {
-    setSandboxWorkspaceMode(true)
+    workspaces.setSandboxMode(true)
     // The shim re-dials at half its credential TTL, so "the resolver answered once" is not a promise
     // that it answers the same way again. A fence that probes and then resolves is check-then-use: the
     // second answer would be a daemon-local runner against a pod path, so a read reports no checkout
     // and a write mutates this disk. The refusal rides on the resolution, which happens once.
     const seen: string[][] = []
-    setWorkspaceGitRunnerResolver(detachAfterFirst(answeringRunner(seen) as never))
-    const status = await createWorkspaceGit(() => '/agent/repo').status(AGENT)
+    workspaces.setGitRunnerResolver(detachAfterFirst(answeringRunner(seen) as never))
+    const status = await createWorkspaceGit(workspaces, () => '/agent/repo').status(AGENT)
     expect(status.isRepo).toBe(true)
     expect(seen.some((args) => args.includes('--show-prefix'))).toBe(true)
   })
 
   it('still refuses an unknown agent as an unknown agent, ahead of reachability', async () => {
-    setSandboxWorkspaceMode(true)
-    await expect(createWorkspaceGit(() => undefined).status('nope')).rejects.toMatchObject({
+    workspaces.setSandboxMode(true)
+    await expect(createWorkspaceGit(workspaces, () => undefined).status('nope')).rejects.toMatchObject({
       reason: 'unknown-agent'
     })
   })
@@ -114,8 +117,8 @@ describe('a shim channel that goes away mid-request', () => {
   // ordinary renewal settled as "not a git checkout" — the same misleading answer this seam was built
   // to remove, arriving from the transport instead of from a wrong path.
   afterEach(() => {
-    setSandboxWorkspaceMode(false)
-    setWorkspaceGitRunnerResolver(undefined)
+    workspaces.setSandboxMode(false)
+    workspaces.setGitRunnerResolver(undefined)
   })
 
   /** A remote runner whose channel is lost on the Nth request, as a renewal loses it. */
@@ -132,27 +135,27 @@ describe('a shim channel that goes away mid-request', () => {
   }
 
   it('retries a read once across the renewal rather than reporting no checkout', async () => {
-    setSandboxWorkspaceMode(true)
+    workspaces.setSandboxMode(true)
     // The first `rev-parse` loses its channel; the second lands. The panel must never see the blip.
     const { runner, state } = losingRunner((n) => n === 1)
-    setWorkspaceGitRunnerResolver(() => runner)
-    const status = await createWorkspaceGit(() => '/agent/repo').status(AGENT)
+    workspaces.setGitRunnerResolver(() => runner)
+    const status = await createWorkspaceGit(workspaces, () => '/agent/repo').status(AGENT)
     expect(status.isRepo).toBe(true)
     expect(state.calls).toBeGreaterThan(1)
   })
 
   it('reports a channel that stays gone as transient, NOT as "not a git checkout"', async () => {
-    setSandboxWorkspaceMode(true)
+    workspaces.setSandboxMode(true)
     const { runner } = losingRunner(() => true)
-    setWorkspaceGitRunnerResolver(() => runner)
-    await expect(createWorkspaceGit(() => '/agent/repo').status(AGENT)).rejects.toMatchObject({
+    workspaces.setGitRunnerResolver(() => runner)
+    await expect(createWorkspaceGit(workspaces, () => '/agent/repo').status(AGENT)).rejects.toMatchObject({
       name: 'WorkspaceViolationError',
       reason: 'sandbox-unavailable'
     })
   })
 
   it('never repeats a write, whose first attempt may already have landed', async () => {
-    setSandboxWorkspaceMode(true)
+    workspaces.setSandboxMode(true)
     // The abort says a REPLY was lost, not whether the request arrived — so a repeated `commit` risks
     // a second commit. Reads are the only invocations this may resend.
     const seen: string[][] = []
@@ -164,12 +167,12 @@ describe('a shim channel that goes away mid-request', () => {
         throw new ShimChannelLostError('shim channel renewed')
       }
     }
-    setWorkspaceGitRunnerResolver(() => new ShimGitRunner(session))
+    workspaces.setGitRunnerResolver(() => new ShimGitRunner(session))
     // Refused as transient rather than retried. `config` — the executable-config audit a stage runs
     // first — is left out of the repeatable set for the same reason: it CAN write, and the cheapest
     // way never to get that wrong is to repeat nothing that can.
     await expect(
-      createWorkspaceGit(() => '/agent/repo').stage({ agentId: AGENT, paths: ['a.ts'] })
+      createWorkspaceGit(workspaces, () => '/agent/repo').stage({ agentId: AGENT, paths: ['a.ts'] })
     ).rejects.toMatchObject({ reason: 'sandbox-unavailable' })
     // Nothing that mutates was sent twice — nor, here, even once.
     const sent = seen.map((args) => args.join(' '))

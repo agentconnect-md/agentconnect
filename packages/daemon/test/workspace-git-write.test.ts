@@ -13,7 +13,10 @@ import {
 } from '../src/workspace/git-injection.js'
 import type { GitRunner } from '../src/workspace/git-runner.js'
 import { parsePorcelainV2 } from '../src/shim/git-exec.js'
-import { setWorkspaceGitRunnerResolver } from '../src/workspace/workspace-manager.js'
+import { WorkspaceManager } from '../src/workspace/workspace-manager.js'
+
+// One plane per test file — the isolation Vitest's per-file module registry used to give.
+const workspaces = new WorkspaceManager()
 import { LocalGitRunner } from '../src/workspace/git-runner.js'
 
 // Real git against real checkouts, no simple-git mock: the write half is a set of claims about what
@@ -182,7 +185,7 @@ const githubTarget = (branch = 'main') => ({
 })
 
 afterEach(() => {
-  setWorkspaceGitRunnerResolver(undefined)
+  workspaces.setGitRunnerResolver(undefined)
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
@@ -191,7 +194,7 @@ describe('workspace git stage / unstage (real repo, real index)', () => {
     const dir = repo()
     writeFileSync(join(dir, 'tracked.txt'), 'two\n')
     writeFileSync(join(dir, 'new.txt'), 'new\n')
-    const seam = createWorkspaceGit(() => dir)
+    const seam = createWorkspaceGit(workspaces, () => dir)
 
     const before = await seam.status('a')
     expect(byPath(before.files)).toEqual([
@@ -213,7 +216,7 @@ describe('workspace git stage / unstage (real repo, real index)', () => {
     const dir = repo()
     writeFileSync(join(dir, 'tracked.txt'), 'two\n')
     writeFileSync(join(dir, 'new.txt'), 'new\n')
-    const seam = createWorkspaceGit(() => dir)
+    const seam = createWorkspaceGit(workspaces, () => dir)
     await seam.stage({ agentId: 'a', paths: ['tracked.txt', 'new.txt'] })
 
     const after = await seam.unstage({ agentId: 'a', paths: ['tracked.txt', 'new.txt'] })
@@ -231,7 +234,7 @@ describe('workspace git stage / unstage (real repo, real index)', () => {
     git(dir, ['init', '-q', '-b', 'main', '.'])
     writeFileSync(join(dir, 'first.txt'), 'first\n')
     git(dir, ['add', 'first.txt'])
-    const seam = createWorkspaceGit(() => dir)
+    const seam = createWorkspaceGit(workspaces, () => dir)
 
     const after = await seam.unstage({ agentId: 'a', paths: ['first.txt'] })
     expect(after.files).toEqual([{ path: 'first.txt', index: '?', workingDir: '?' }])
@@ -241,7 +244,7 @@ describe('workspace git stage / unstage (real repo, real index)', () => {
   it('treats every no-op as data: an empty list, an unchanged path, and a path git does not report', async () => {
     const dir = repo()
     writeFileSync(join(dir, 'tracked.txt'), 'two\n')
-    const seam = createWorkspaceGit(() => dir)
+    const seam = createWorkspaceGit(workspaces, () => dir)
 
     // Empty selection: the fresh status, and nothing staged behind the caller's back.
     const untouched = await seam.stage({ agentId: 'a', paths: [] })
@@ -261,14 +264,14 @@ describe('workspace git stage / unstage (real repo, real index)', () => {
   it('reports a from-scratch workspace as isRepo:false instead of failing', async () => {
     const dir = join(tempRoot(), 'scratch')
     mkdirSync(dir, { recursive: true })
-    const seam = createWorkspaceGit(() => dir)
+    const seam = createWorkspaceGit(workspaces, () => dir)
     expect(await seam.stage({ agentId: 'a', paths: ['x.txt'] })).toEqual({ agentId: 'a', isRepo: false, clean: true })
     expect(await seam.unstage({ agentId: 'a', paths: ['x.txt'] })).toEqual({ agentId: 'a', isRepo: false, clean: true })
   })
 
   it('refuses a pathspec that escapes the workspace or reaches into .git', async () => {
     const dir = repo()
-    const seam = createWorkspaceGit(() => dir)
+    const seam = createWorkspaceGit(workspaces, () => dir)
     await expect(seam.stage({ agentId: 'a', paths: ['../agent.json'] })).rejects.toBeInstanceOf(WorkspaceViolationError)
     await expect(seam.stage({ agentId: 'a', paths: ['/etc/passwd'] })).rejects.toMatchObject({
       reason: 'path-escape'
@@ -284,7 +287,7 @@ describe('workspace git stage / unstage (real repo, real index)', () => {
     const dir = repo()
     writeFileSync(join(dir, 'tracked.txt'), 'two\n')
     git(dir, ['config', 'filter.evil.process', 'sh -c "touch /tmp/pwned"'])
-    const seam = createWorkspaceGit(() => dir)
+    const seam = createWorkspaceGit(workspaces, () => dir)
     await expect(seam.stage({ agentId: 'a', paths: ['tracked.txt'] })).rejects.toThrow(/disallowed/)
     expect(git(dir, ['diff', '--cached', '--name-only'])).toBe('')
   })
@@ -295,6 +298,7 @@ describe('workspace git commit (real repo, real commit)', () => {
     const dir = repo()
     writeFileSync(join(dir, 'tracked.txt'), 'two\n')
     const seam = createWorkspaceGit(
+      workspaces,
       () => dir,
       () => ({}),
       () => githubTarget(),
@@ -322,6 +326,7 @@ describe('workspace git commit (real repo, real commit)', () => {
     const dir = repo()
     writeFileSync(join(dir, 'tracked.txt'), 'three\n')
     const seam = createWorkspaceGit(
+      workspaces,
       () => dir,
       () => ({}),
       () => githubTarget(),
@@ -345,7 +350,7 @@ describe('workspace git commit (real repo, real commit)', () => {
   it('REFUSES as data when no commit identity was registered, and creates no commit', async () => {
     const dir = repo()
     writeFileSync(join(dir, 'tracked.txt'), 'two\n')
-    const seam = createWorkspaceGit(() => dir)
+    const seam = createWorkspaceGit(workspaces, () => dir)
     await seam.stage({ agentId: 'a', paths: ['tracked.txt'] })
     const head = git(dir, ['rev-parse', 'HEAD']).trim()
 
@@ -361,6 +366,7 @@ describe('workspace git commit (real repo, real commit)', () => {
   it('reports nothing staged, an empty message and a from-scratch workspace as data', async () => {
     const dir = repo()
     const seam = createWorkspaceGit(
+      workspaces,
       () => dir,
       () => ({}),
       () => githubTarget(),
@@ -380,6 +386,7 @@ describe('workspace git commit (real repo, real commit)', () => {
     const scratch = join(tempRoot(), 'scratch')
     mkdirSync(scratch, { recursive: true })
     const scratchSeam = createWorkspaceGit(
+      workspaces,
       () => scratch,
       () => ({}),
       () => undefined,
@@ -396,6 +403,7 @@ describe('workspace git commit (real repo, real commit)', () => {
     const dir = repo()
     writeFileSync(join(dir, 'tracked.txt'), 'two\n')
     const seam = createWorkspaceGit(
+      workspaces,
       () => dir,
       () => ({}),
       () => githubTarget(),
@@ -420,6 +428,7 @@ describe('workspace git commit (real repo, real commit)', () => {
     writeFileSync(join(hooks, 'pre-commit'), `#!/bin/sh\ntouch '${marker}'\nexit 1\n`, { mode: 0o755 })
     writeFileSync(join(dir, 'tracked.txt'), 'two\n')
     const seam = createWorkspaceGit(
+      workspaces,
       () => dir,
       () => ({}),
       () => githubTarget(),
@@ -436,9 +445,10 @@ describe('workspace git push (real repo; local bare remote through the runner se
   it('pushes the branch, then advances origin/<branch> so the commits stop reading as unpushed', async () => {
     const { dir, bare, origin } = repoWithRemote()
     const calls: Call[] = []
-    setWorkspaceGitRunnerResolver((_agentId, cwd) => new SeamRunner(cwd ?? dir, calls, origin, bare))
+    workspaces.setGitRunnerResolver((_agentId, cwd) => new SeamRunner(cwd ?? dir, calls, origin, bare))
     writeFileSync(join(dir, 'tracked.txt'), 'two\n')
     const seam = createWorkspaceGit(
+      workspaces,
       () => dir,
       gitcredEnv,
       () => githubTarget(),
@@ -497,9 +507,10 @@ describe('workspace git push (real repo; local bare remote through the runner se
     git(other, ['push', '-q', 'origin', 'main'])
     const remoteHead = git(bare, ['rev-parse', 'refs/heads/main']).trim()
 
-    setWorkspaceGitRunnerResolver((_agentId, cwd) => new SeamRunner(cwd ?? dir, [], origin, bare))
+    workspaces.setGitRunnerResolver((_agentId, cwd) => new SeamRunner(cwd ?? dir, [], origin, bare))
     writeFileSync(join(dir, 'tracked.txt'), 'mine\n')
     const seam = createWorkspaceGit(
+      workspaces,
       () => dir,
       () => ({}),
       () => githubTarget(),
@@ -521,10 +532,10 @@ describe('workspace git push (real repo; local bare remote through the runner se
   it('chunks the pathspecs so one invocation stays inside the sandbox argv cap', async () => {
     const dir = repo()
     const calls: Call[] = []
-    setWorkspaceGitRunnerResolver((_agentId, cwd) => new SeamRunner(cwd ?? dir, calls))
+    workspaces.setGitRunnerResolver((_agentId, cwd) => new SeamRunner(cwd ?? dir, calls))
     const paths = Array.from({ length: 120 }, (_, index) => `f${index}.txt`)
     for (const path of paths) writeFileSync(join(dir, path), `${path}\n`)
-    const seam = createWorkspaceGit(() => dir)
+    const seam = createWorkspaceGit(workspaces, () => dir)
 
     const after = await seam.stage({ agentId: 'a', paths })
     expect(after.files?.filter((file) => file.index === 'A')).toHaveLength(120)
@@ -538,6 +549,7 @@ describe('workspace git push (real repo; local bare remote through the runner se
 describe('workspace git push preconditions (data, not errors)', () => {
   const seamFor = (dir: string) =>
     createWorkspaceGit(
+      workspaces,
       () => dir,
       () => ({}),
       () => githubTarget(),
@@ -605,7 +617,7 @@ describe('workspace git push preconditions (data, not errors)', () => {
     // never sent. Verified against real git.
     const { dir, bare, origin } = repoWithRemote()
     const calls: Call[] = []
-    setWorkspaceGitRunnerResolver((_agentId, cwd) => new SeamRunner(cwd ?? dir, calls, origin, bare))
+    workspaces.setGitRunnerResolver((_agentId, cwd) => new SeamRunner(cwd ?? dir, calls, origin, bare))
     // `feature` branches off main at the SAME commit and adds nothing, so `ahead(origin/main)` is
     // zero — while `origin/feature` does not exist, which means there is very much something to
     // send. A URL-only check reports "Everything is already pushed" here and creates nothing.
@@ -614,6 +626,7 @@ describe('workspace git push preconditions (data, not errors)', () => {
     expect(git(dir, ['rev-list', '--count', 'origin/main..HEAD']).trim()).toBe('0')
     expect(git(dir, ['ls-remote', '--heads', bare, 'feature']).trim()).toBe('')
     const seam = createWorkspaceGit(
+      workspaces,
       () => dir,
       gitcredEnv,
       () => githubTarget(),
@@ -657,7 +670,7 @@ describe('workspace git push preconditions (data, not errors)', () => {
     const { dir } = repoWithRemote()
     writeFileSync(join(dir, 'tracked.txt'), 'two\n')
     let resolutions = 0
-    setWorkspaceGitRunnerResolver((_agentId, cwd) => {
+    workspaces.setGitRunnerResolver((_agentId, cwd) => {
       resolutions += 1
       if (resolutions > 1) return undefined
       return new LocalGitRunner(gitFor(cwd ?? dir), cwd ?? dir, (env) => gitFor(cwd ?? dir).env(env))
@@ -668,7 +681,7 @@ describe('workspace git push preconditions (data, not errors)', () => {
       expect(status.isRepo).toBe(true)
       expect(status.files?.map((f) => f.path)).toEqual(['tracked.txt'])
     } finally {
-      setWorkspaceGitRunnerResolver(undefined)
+      workspaces.setGitRunnerResolver(undefined)
     }
   })
 
@@ -706,7 +719,7 @@ describe('workspace git push preconditions (data, not errors)', () => {
   })
 
   it('refuses an unknown agent as a BAD_PAYLOAD violation, not as data', async () => {
-    const seam = createWorkspaceGit(() => undefined)
+    const seam = createWorkspaceGit(workspaces, () => undefined)
     await expect(seam.push({ agentId: 'ghost' })).rejects.toMatchObject({ reason: 'unknown-agent' })
     await expect(seam.commit({ agentId: 'ghost', message: 'x' })).rejects.toBeInstanceOf(WorkspaceViolationError)
     await expect(seam.stage({ agentId: 'ghost', paths: [] })).rejects.toBeInstanceOf(WorkspaceViolationError)
@@ -722,6 +735,7 @@ describe('workspace git message — the AI commit-message pass (real staged diff
   function seamWith(dir: string, answer: () => Promise<{ output: string; stopReason: string }>) {
     const pass: Pass = { calls: [] }
     const seam = createWorkspaceGit(
+      workspaces,
       () => dir,
       undefined,
       undefined,
@@ -851,10 +865,11 @@ describe('workspace git message — the AI commit-message pass (real staged diff
     const dir = repo()
     // Every git call synchronous through the seam runner, so the only thing this test has to wait for
     // is the fake clock — a real simple-git read would still be in flight when the clock advanced.
-    setWorkspaceGitRunnerResolver((_agentId, cwd) => new SeamRunner(cwd ?? dir, []))
+    workspaces.setGitRunnerResolver((_agentId, cwd) => new SeamRunner(cwd ?? dir, []))
     writeFileSync(join(dir, 'tracked.txt'), 'two\n')
     let aborted = false
     const seam = createWorkspaceGit(
+      workspaces,
       () => dir,
       undefined,
       undefined,
@@ -886,7 +901,7 @@ describe('workspace git message — the AI commit-message pass (real staged diff
   it('answers as data when the daemon wired no model pass at all, and for a from-scratch workspace', async () => {
     const dir = repo()
     writeFileSync(join(dir, 'tracked.txt'), 'two\n')
-    const bare = createWorkspaceGit(() => dir)
+    const bare = createWorkspaceGit(workspaces, () => dir)
     await bare.stage({ agentId: 'a', paths: ['tracked.txt'] })
     expect(await bare.message({ agentId: 'a' })).toEqual({
       agentId: 'a',
