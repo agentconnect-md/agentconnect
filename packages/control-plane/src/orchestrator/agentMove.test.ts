@@ -624,9 +624,12 @@ describe('AgentMoveService', () => {
     })
     await t.service.recoverStaged(AGENT, MEMBER, STAGED_MOVE)
 
+    // Token-less, exactly like the commit broadcast: `mayAct` was false, so the reporter releases
+    // its fence without being told to run the agent — the daemon leaves the host down (#1093).
     expect(t.detaches).toEqual([])
     expect(t.activations).toHaveLength(1)
-    expect(t.activations[0]).toMatchObject({ agentId: AGENT, moveId: STAGED_MOVE })
+    expect(t.activations[0]).toMatchObject({ agentId: AGENT })
+    expect(t.activations[0]?.moveId).toBeUndefined()
   })
 
   it('reconnect recovery leaves a fence armed when the reporter is not an eligible holder', async () => {

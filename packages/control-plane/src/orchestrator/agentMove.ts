@@ -274,7 +274,7 @@ export class AgentMoveService {
       if (!current) return
       if (!(await (this.deps.placement ?? PLACEMENT_ONLY).mayAct(current, daemonId))) {
         // A member that missed a set-commit unstage while offline reports its stale fence here (#1093).
-        await this.unstageReportedFence(current, daemonId, moveId)
+        await this.unstageReportedFence(current, daemonId)
         return
       }
 
@@ -632,13 +632,14 @@ export class AgentMoveService {
   }
 
   /** Reconnect backstop: release a reported fence when the reporter is an eligible set member. */
-  private async unstageReportedFence(agent: AgentRecord, daemonId: DaemonId, moveId: string): Promise<void> {
+  private async unstageReportedFence(agent: AgentRecord, daemonId: DaemonId): Promise<void> {
     const memberSets = this.deps.memberSets
     const target = placementTargetOf(agent)
     if (!memberSets || target.kind !== 'set') return
     const setId = await memberSets.setIdOf(daemonId)
     if (!mayHold(placementColumns(target), { daemonId, scope: claimScopeOf({ setId }) })) return
-    await this.bestEffortUnstage(agent, await this.snapshot(agent), daemonId, moveId)
+    // Token-less like the commit broadcast: `mayAct` said no, so this member must release without running.
+    await this.bestEffortUnstage(agent, await this.snapshot(agent), daemonId)
   }
 
   /** The target set's READY members — who a set commit may need to unstage. */

@@ -468,7 +468,7 @@ export type AgentDetach = z.infer<typeof AgentDetach>
 
 export const AgentActivate = z.object({
   agentId: z.string().uuid(),
-  /** Absent ⇒ authoritative unstage on a set commit: release any staging fence still held, no-op without one. */
+  /** Absent ⇒ authoritative unstage: release any fence held, and start no host unless the duty is held. */
   moveId: z.string().uuid().optional(),
   /**
    * One authoritative, acknowledged bootstrap bundle. Unlike the live CRUD

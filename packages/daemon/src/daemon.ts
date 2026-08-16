@@ -21667,6 +21667,9 @@ export class Daemon {
           if (activate.moveId === undefined && stage?.state !== 'staging') return { ok: true }
           // Token-less ⇒ adopt the stored fence's token, so commit supersedes the stale move exactly.
           const moveId = activate.moveId ?? stage!.moveId
+          // An unstage restores the replica, not serving authority: a non-holder must not bind the sandbox (#1093).
+          // Tokened stays host-proving: its target is the placement, or a source whose duty the move never released.
+          const proveHost = activate.moveId !== undefined || this.servesAgent(agentId)
           if (stage?.moveId === moveId && stage.state === 'committed') return { ok: true }
           if (
             stage?.moveId !== moveId ||
@@ -21786,23 +21789,24 @@ export class Daemon {
                 return { ok: false, reason: `agent/activate: workspace preparation failed: ${(err as Error).message}` }
               }
             }
-            // Prove the target can actually initialize ACP while the staging gate is
-            // still closed. Workspace reconciliation happens first so the spawned
-            // runtime and its sandbox bind the new directory, never an unlinked old one.
-            try {
-              await this.ensureHostAsync(agentId, { allowAgentDrain: true })
-            } catch (err) {
-              this.moveStagedAgents.add(agentId)
-              await this.stopHost(agentId).catch(() => {})
+            // Prove ACP can initialize under the still-closed gate; the workspace reconciled first, so the
+            // spawned runtime and its sandbox bind the new directory rather than an unlinked old one.
+            if (proveHost) {
               try {
-                await rollbackPreparedWorkspace?.()
-              } catch (rollbackErr) {
-                this.log.error(
-                  `agent/activate: failed to roll workspace back for "${agentId}": ${formatErr(rollbackErr)}`
-                )
+                await this.ensureHostAsync(agentId, { allowAgentDrain: true })
+              } catch (err) {
+                this.moveStagedAgents.add(agentId)
+                await this.stopHost(agentId).catch(() => {})
+                try {
+                  await rollbackPreparedWorkspace?.()
+                } catch (rollbackErr) {
+                  this.log.error(
+                    `agent/activate: failed to roll workspace back for "${agentId}": ${formatErr(rollbackErr)}`
+                  )
+                }
+                await this.flushReconcile().catch(() => {})
+                return { ok: false, reason: `agent/activate: ${(err as Error).message}` }
               }
-              await this.flushReconcile().catch(() => {})
-              return { ok: false, reason: `agent/activate: ${(err as Error).message}` }
             }
             if (this.agentDestructivePending(agentId)) {
               this.moveStagedAgents.add(agentId)

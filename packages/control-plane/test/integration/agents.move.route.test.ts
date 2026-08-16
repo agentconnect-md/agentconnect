@@ -869,7 +869,9 @@ describe('PUT /agents/:id/daemon — a two-hop move back onto the pool (#1093)',
     const memberUnstage = control.activateCalls.slice(hop1Activates).filter((a) => a.daemonId === MEMBER)
     expect(memberUnstage).toHaveLength(1)
     expect(memberUnstage[0]!.value.agentId).toBe(agentId)
-    expect(memberUnstage[0]!.value.moveId).toBeUndefined()
+    // Token-less across BOTH hops is what leaves the released member's host down: the daemon reads it
+    // as "release the fence, run nothing", so only a later duty grant can start the agent there.
+    expect(control.activateCalls.filter((a) => a.daemonId === MEMBER).map((a) => a.value.moveId)).toEqual([undefined])
     // The second hop's machine source is not an eligible holder: fenced and left fenced.
     expect(control.detaches.some((d) => d.daemonId === TARGET)).toBe(true)
     expect(control.activateCalls.slice(hop1Activates).filter((a) => a.daemonId === TARGET)).toEqual([])
