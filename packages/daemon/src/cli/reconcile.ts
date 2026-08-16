@@ -55,7 +55,7 @@ export interface ObserverSeams {
 const dialCp = (url: string): Promise<Transport> =>
   ClientTransport.dial(url, { subprotocol: CP_SUBPROTOCOL, path: CP_WS_PATH, handshakeTimeoutMs: REQUEST_TIMEOUT_MS })
 
-/** Exit code: 0 when the sweep completed, 1 when it could not. */
+/** Exit code: 0 only when the sweep ran AND collected everything it decided to; 1 otherwise. */
 export async function runReconcileOnce(opts: ReconcileOnceOpts = {}): Promise<number> {
   const env = opts.env ?? process.env
   const log = opts.log ?? { info: (m: string) => console.log(m), warn: (m: string) => console.error(m) }
@@ -70,7 +70,10 @@ export async function runReconcileOnce(opts: ReconcileOnceOpts = {}): Promise<nu
     if (!url) throw new Error(`reconcile requires the control plane's address in ${CP_URL_ENV}`)
     cp = await (opts.connectCp ?? connectObserver)(url)
     const reconciler = new OrphanReconciler({ api, liveAgents: cp.liveAgents, settings, log })
-    return (await reconciler.sweep()) ? 0 : 1
+    const summary = await reconciler.sweep()
+    // A delete that failed is counted, not thrown, so the run reports the whole picture — but a run
+    // that left an orphan behind is not a successful Job, or the cluster hides a leak that repeats.
+    return summary && summary.failed === 0 ? 0 : 1
   } catch (err) {
     log.warn(`k8s orphans: sweep failed — ${(err as Error).message}`)
     return 1

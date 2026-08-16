@@ -31,11 +31,12 @@ function claim(agentId: string): SandboxClaim {
 }
 
 /** A cluster holding two claims — one of a live agent, one of a forgotten one. */
-async function cluster() {
+async function cluster(opts: { deleteStatus?: number } = {}) {
   const deletes: string[] = []
   const { config } = await fakeApiServer(({ method, url }) => {
     if (method === 'DELETE') {
       deletes.push(url.pathname)
+      if (opts.deleteStatus) return { status: opts.deleteStatus, json: { kind: 'Status', reason: 'Forbidden' } }
       return { json: {} }
     }
     if (url.pathname.endsWith('/sandboxclaims')) return { json: { items: [claim(LIVE), claim(GONE)] } }
@@ -81,6 +82,23 @@ describe('reconcile --once', () => {
     expect(infos.at(-1)).toContain('swept 2 candidates — orphaned=1 deleted=1 skipped-live=1')
     // The connection is one-shot: closed whatever the sweep decided.
     expect(cp.wasClosed()).toBe(true)
+  })
+
+  it('exits 1 when a delete failed, after reporting the whole sweep', async () => {
+    // The failure is counted rather than thrown, so the run still says what it found — but an
+    // orphan it could not collect will be back next run, and a green Job would hide that.
+    const { api, deletes } = await cluster({ deleteStatus: 403 })
+    const logged: string[] = []
+    const code = await runReconcileOnce({
+      api,
+      connectCp: fakeCp().connectCp,
+      apiUrl: 'wss://cp.example.test/daemon/ws',
+      env: { [ORPHAN_DELETE_ENV]: 'true' },
+      log: { info: (m) => logged.push(m), warn: (m) => logged.push(m) }
+    })
+    expect(code).toBe(1)
+    expect(deletes).toHaveLength(1)
+    expect(logged.at(-1)).toContain('orphaned=1 deleted=0 skipped-live=1 skipped-grace=0 failed=1')
   })
 
   it('exits 1 when the control plane cannot be reached, deleting nothing', async () => {
