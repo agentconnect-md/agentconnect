@@ -556,3 +556,17 @@ export const AgentPermissionDecision = z.object({
   decision: z.enum(['allow', 'deny'])
 })
 export type AgentPermissionDecision = z.infer<typeof AgentPermissionDecision>
+
+// `agent/wake` (C→D REQ → `agent/wake/ok`): bring a cluster agent's sandbox to Running WITHOUT a turn.
+// The daemon claims the agent's duty on receipt like any trigger, so a set agent with no holder is
+// served by whichever member the wake reached; it answers with what it observed, never a promise.
+export const AgentWakeReq = z.object({ agentId: z.string().min(1) })
+export type AgentWakeReq = z.infer<typeof AgentWakeReq>
+
+// `running` = the sandbox channel is bound; `starting` = the resume is in flight and the next read may
+// still refuse; `unsupported` = this daemon runs no sandboxes, so there is nothing to wake.
+export const AgentWakeState = z.enum(['running', 'starting', 'unsupported'])
+export type AgentWakeState = z.infer<typeof AgentWakeState>
+
+export const AgentWakeOk = z.object({ agentId: z.string().min(1), state: AgentWakeState })
+export type AgentWakeOk = z.infer<typeof AgentWakeOk>

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { existsSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { DAEMON_BOOTSTRAP_UPGRADE_FEATURE } from '@agentconnect.md/protocol'
+import { AGENT_WAKE_FEATURE, DAEMON_BOOTSTRAP_UPGRADE_FEATURE } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
 import type { ResolvedRuntimeCatalog } from '../src/runtimes/registry.js'
 import { LocalStore } from '../src/store/local-store.js'
@@ -242,6 +242,16 @@ describe('daemon --k8s mode', () => {
       const features: string[] = (k8sDaemon as any).registrationFeatures()
       expect(features).not.toContain('sandbox')
       expect(features).not.toContain('sandbox-required')
+    } finally {
+      await k8sDaemon.stop()
+    }
+  })
+
+  it('advertises the sandbox wake: in cluster mode there is a sandbox to wake', async () => {
+    const k8sDaemon = daemon({ root: root({ declared: { runtimes: [{ id: 'claude' }] } }), k8s: true })
+    try {
+      await k8sDaemon.start()
+      expect((k8sDaemon as any).registrationFeatures()).toContain(AGENT_WAKE_FEATURE)
     } finally {
       await k8sDaemon.stop()
     }

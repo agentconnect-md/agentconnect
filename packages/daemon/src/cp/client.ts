@@ -53,6 +53,7 @@ import type {
   WorkspaceGitPushReq,
   WorkspaceGitMessageReq,
   TaskListReq,
+  AgentWakeReq,
   WorkspaceGitMessageResult,
   GitCredRequest,
   GitCredGrant,
@@ -130,6 +131,8 @@ import {
 import type { WorkspaceGit } from './workspace-git.js'
 import type { TaskReader } from './task-reader.js'
 import { TaskViolationError } from './task-reader.js'
+import type { AgentWaker } from './agent-wake.js'
+import { AgentWakeViolationError } from './agent-wake.js'
 import type { DreamReader } from './dream-reader.js'
 import type { LocalSkillsReader } from './local-skills-reader.js'
 import { DreamViolationError, DreamStateError } from '../agents/dream-runner.js'
@@ -248,6 +251,8 @@ export interface CpClientDeps {
   workspaceGit: WorkspaceGit
   /** Read-only projection of the in-memory background-task lease (§3.5 of webchat-side-panels.md). */
   taskReader: TaskReader
+  /** The console's sandbox wake (`agent/wake`); absent ⇒ every wake answers `unsupported`. */
+  agentWake?: AgentWaker
   /** Read/write seam over the agents' memory dirs (`<agent-root>/memory/`, §1/§12). */
   memoryReader: MemoryReader
   /** Dream-job lifecycle + staged-output review seam (docs/designs/memory-dreaming.md §10). */
@@ -1792,6 +1797,16 @@ export class CpClient {
           .catch((err) => this.taskError(frame.id, 'task/list', err))
         return
       }
+      case 'agent/wake': {
+        // A sandbox resume with no turn; a daemon with no waker has nothing to wake.
+        const wake = frame.payload as AgentWakeReq
+        const answer =
+          this.deps.agentWake?.wake(wake) ?? Promise.resolve({ agentId: wake.agentId, state: 'unsupported' as const })
+        answer
+          .then((result) => this.reply(frame, 'agent/wake/ok', result))
+          .catch((err) => this.wakeError(frame.id, err))
+        return
+      }
       case 'memory/channels': {
         this.deps.memoryReader
           .channels(frame.payload as MemoryChannelsReq)
@@ -2015,6 +2030,16 @@ export class CpClient {
     }
     this.deps.log.warn(`cp: ${op} failed: ${(err as Error)?.message}`)
     this.sendError(corr, 'INTERNAL', `${op} failed`, false)
+  }
+
+  /** Unknown agent → BAD_PAYLOAD with the machine reason (the CP maps it like a workspace read's); else INTERNAL. */
+  private wakeError(corr: string, err: unknown): void {
+    if (err instanceof AgentWakeViolationError) {
+      this.sendError(corr, 'BAD_PAYLOAD', `agent/wake failed: ${err.message}`, false, { reason: err.reason })
+      return
+    }
+    this.deps.log.warn(`cp: agent/wake failed: ${(err as Error)?.message}`)
+    this.sendError(corr, 'INTERNAL', 'agent/wake failed', false)
   }
 
   /** Unknown agent → BAD_PAYLOAD with the machine reason; anything else → INTERNAL with a generic

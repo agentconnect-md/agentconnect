@@ -339,6 +339,7 @@ import {
   MAX_TASK_DETAIL,
   MAX_TASK_LIST_TASKS,
   TASK_LIST_FEATURE,
+  AGENT_WAKE_FEATURE,
   WORKSPACE_GIT_MESSAGE_FEATURE,
   WORKSPACE_GIT_REVIEW_FEATURE,
   WORKSPACE_GIT_WRITE_FEATURE,
@@ -364,6 +365,7 @@ import {
 import { isNoResponseBody, isNoResponsePrefix } from './session/no-response.js'
 import { createSessionReader } from './cp/session-reader.js'
 import { createWorkspaceReader, WorkspaceConflictError, type WorkspaceLocation } from './cp/workspace-reader.js'
+import { createAgentWaker } from './cp/agent-wake.js'
 import { TaskViolationError } from './cp/task-reader.js'
 import { createMemoryReader } from './cp/memory-reader.js'
 import {
@@ -5633,6 +5635,8 @@ export class Daemon {
       'workspace-file-delete-v1',
       WORKSPACE_SESSION_READ_FEATURE,
       TASK_LIST_FEATURE,
+      // Only a cluster daemon has a sandbox to wake; elsewhere the CP answers `unsupported` unsent.
+      ...(this.k8s ? [AGENT_WAKE_FEATURE] : []),
       WORKSPACE_GIT_MESSAGE_FEATURE,
       WORKSPACE_GIT_REVIEW_FEATURE,
       WORKSPACE_GIT_WRITE_FEATURE,
@@ -22481,6 +22485,21 @@ export class Daemon {
       // A pure projection of the in-memory lease — no I/O, no runtime, and nothing it can do to a
       // reclaim decision, so it needs neither of the workspace coordinators.
       taskReader: { list: async (req) => this.listBackgroundTasks(req) },
+      // The console's "start this agent's sandbox": duty claim + channel bind, no host — the same
+      // condition the file reader serves on, reached without a turn. Local daemons have no plane.
+      agentWake: createAgentWaker({
+        ...(this.k8sPlane
+          ? {
+              sandbox: {
+                isRunning: (id) => this.k8sPlane!.runsInSandbox(id),
+                ensureChannel: (id) => this.k8sPlane!.ensureChannel(id)
+              }
+            }
+          : {}),
+        knowsAgent: (id) => this.agents.has(id) && (!this.dutyEnforced() || this.duties.holdsAgent(id)),
+        claimDuty: async (id) => this.dutyEnforced() && (await this.claimDutyForTrigger(id)).granted,
+        log: this.log
+      }),
       memoryReader: createMemoryReader((id) => this.agents.get(id)?.dir, this.memory),
       dreamReader: createDreamReader(this.dreamRunner()),
       localSkillsReader: createLocalSkillsReader(
