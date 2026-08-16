@@ -447,6 +447,85 @@ describe('Daemon CP agent → memory + reconcile', () => {
     await daemon.stop()
   })
 
+  it('a token-less activate releases a stale staging fence by committing the stored token (#1093)', async () => {
+    const root = root1()
+    writeAgent(root, 'bot-a')
+    const { daemon, hosts } = makeDaemon(root)
+    await daemon.start()
+    // The fence a pool member keeps after sourcing a move onto a machine (pool → machine …).
+    await expect(seam(daemon).applyAgentDetach({ agentId: 'bot-a', moveId: MOVE_ID })).resolves.toEqual({ ok: true })
+    expect((daemon as any).cpLocalState().stagedAgents).toEqual([{ agentId: 'bot-a', moveId: MOVE_ID }])
+
+    // … → pool: the CP commits the set placement and broadcasts an activate with NO move token.
+    await expect(
+      seam(daemon).applyAgentActivate({
+        agentId: 'bot-a',
+        spec: { name: 'bot-a', runtime: 'claude' },
+        integrations: [],
+        crons: []
+      })
+    ).resolves.toEqual({ ok: true })
+    expect((daemon as any).agents.has('bot-a')).toBe(true)
+    expect((daemon as any).moveStagedAgents.has('bot-a')).toBe(false)
+    expect((daemon as any).drainingAgents.has('bot-a')).toBe(false)
+    expect(readAgentMoveStage(join(root, 'agents'), 'bot-a')).toEqual({ moveId: MOVE_ID, state: 'committed' })
+    expect((daemon as any).cpLocalState().stagedAgents).toEqual([])
+    expect(hosts.length).toBeGreaterThan(0) // activation proved ACP can start before the ACK
+    await daemon.stop()
+  })
+
+  it('a token-less activate with no staging fence acknowledges without applying anything', async () => {
+    const root = root1()
+    writeAgent(root, 'bot-a')
+    const { daemon, hosts } = makeDaemon(root)
+    await daemon.start()
+
+    await expect(
+      seam(daemon).applyAgentActivate({
+        agentId: 'bot-a',
+        spec: { name: 'renamed', runtime: 'claude' },
+        integrations: [],
+        crons: []
+      })
+    ).resolves.toEqual({ ok: true })
+    expect((daemon as any).agents.get('bot-a').name).toBe('bot-a') // the bundle was NOT applied
+    expect(existsSync(stagedAgentDir(join(root, 'agents'), 'bot-a'))).toBe(false)
+
+    await expect(
+      seam(daemon).applyAgentActivate({
+        agentId: 'ghost',
+        spec: { name: 'ghost', runtime: 'claude' },
+        integrations: [],
+        crons: []
+      })
+    ).resolves.toEqual({ ok: true })
+    expect((daemon as any).agents.has('ghost')).toBe(false)
+    expect(hosts).toEqual([])
+    await daemon.stop()
+  })
+
+  it('a token-less activate never resurrects a removal-tombstoned agent', async () => {
+    const root = root1()
+    writeAgent(root, 'bot-a')
+    stageAgentMove(join(root, 'agents'), 'bot-a', MOVE_ID)
+    markAgentRemoval(join(root, 'agents'), 'bot-a', agentRemovalObligationsDir(root))
+    const { daemon } = makeDaemon(root)
+    await daemon.start()
+
+    await expect(
+      seam(daemon).applyAgentActivate({
+        agentId: 'bot-a',
+        spec: { name: 'bot-a', runtime: 'claude' },
+        integrations: [],
+        crons: []
+      })
+    ).resolves.toEqual({ ok: false, reason: 'agent/activate: a removal tombstone owns this agent' })
+    expect((daemon as any).agents.has('bot-a')).toBe(false)
+    expect((daemon as any).moveStagedAgents.has('bot-a')).toBe(true)
+    expect(agentRemovalTombstones(join(root, 'agents'), agentRemovalObligationsDir(root)).has('bot-a')).toBe(true)
+    await daemon.stop()
+  })
+
   it('keeps a newer removal gate latched while an older activation is preparing', async () => {
     const root = root1()
     writeAgent(root, 'bot-a')
