@@ -100,8 +100,18 @@ async function bootPool() {
   const b = await boot(root, 'daemon-b')
   const locals: LocalStore[] = [a.inner.store, b.inner.store]
   const path = statePath(root)
-  a.inner.store = new LocalStore({ database: new DatabaseSync(path), shared: true, ownerId: 'daemon-a' })
-  b.inner.store = new LocalStore({ database: new DatabaseSync(path), shared: true, ownerId: 'daemon-b' })
+  a.inner.store = new LocalStore({
+    database: new DatabaseSync(path),
+    shared: true,
+    ownerId: 'daemon-a',
+    orgForAgent: () => 'org-1'
+  })
+  b.inner.store = new LocalStore({
+    database: new DatabaseSync(path),
+    shared: true,
+    ownerId: 'daemon-b',
+    orgForAgent: () => 'org-1'
+  })
   const shared: LocalStore = a.inner.store
   return {
     a,

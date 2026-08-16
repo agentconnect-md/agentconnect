@@ -14,8 +14,18 @@ function pool(): { a: LocalStore; b: LocalStore; close: () => void } {
   const path = dbPath()
   const seed = new LocalStore(path)
   seed.close()
-  const a = new LocalStore({ database: new DatabaseSync(path), shared: true, ownerId: 'daemon-a' })
-  const b = new LocalStore({ database: new DatabaseSync(path), shared: true, ownerId: 'daemon-b' })
+  const a = new LocalStore({
+    database: new DatabaseSync(path),
+    shared: true,
+    ownerId: 'daemon-a',
+    orgForAgent: () => 'org-1'
+  })
+  const b = new LocalStore({
+    database: new DatabaseSync(path),
+    shared: true,
+    ownerId: 'daemon-b',
+    orgForAgent: () => 'org-1'
+  })
   return { a, b, close: () => [a, b].forEach((store) => store.close()) }
 }
 

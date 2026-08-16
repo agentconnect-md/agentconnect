@@ -475,7 +475,10 @@ export class SessionManager {
     if (msg.platform === 'webchat') {
       let slot = BigInt(ts)
       for (let attempt = 0; attempt < 32; attempt++) {
-        const existing = this.deps.store.transcriptTextAt(transcriptChannel, thread, String(slot))
+        const existing = this.deps.store.transcriptTextAt(transcriptChannel, thread, String(slot), {
+          sender: msg.sender.id,
+          recipient: agentId
+        })
         // Mirror the daemon-side probe (§6): matching canonical postId is what
         // proves the occupant is this same post; (sender, text) only decides
         // for legacy rows without an id on either side.
@@ -1106,12 +1109,12 @@ export class SessionManager {
     // a sibling must never see another child's role/task delivery or report.
     const blocks: ContentBlock[] = []
     let contextEventTs: string[] = []
-    let contextRevision = this.deps.store.threadTranscriptRevision(transcriptChannel, thread)
+    let contextRevision = this.deps.store.threadTranscriptRevision(transcriptChannel, thread, agentId)
     {
       const gap = (
         isSyntheticA2aChannel(transcriptChannel)
           ? this.deps.store.transcriptSinceForAgent(transcriptChannel, thread, markerBefore, agentId)
-          : this.deps.store.transcriptSince(transcriptChannel, thread, markerBefore)
+          : this.deps.store.transcriptSince(transcriptChannel, thread, markerBefore, agentId)
       ).filter((e) => withinSnapshot(e.ts))
       // SQLite's text order puts UUID-like legacy coordinates after real platform
       // ids. Keep those old rows as context, but before the real timeline — which
@@ -1217,7 +1220,7 @@ export class SessionManager {
         contextEventTs = [...context.map((entry) => entry.ts), ts]
       }
       rec.lastDeliveredTs = deliveredThrough ?? ts
-      contextRevision = this.deps.store.threadTranscriptRevision(transcriptChannel, thread)
+      contextRevision = this.deps.store.threadTranscriptRevision(transcriptChannel, thread, agentId)
     }
 
     // §9.2 attachments on the current message → image/resource/resource_link blocks.
