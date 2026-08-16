@@ -18,6 +18,7 @@ export interface WireFrameLike {
   id: string
   corr?: string
   type: string
+  orgId?: string | undefined
   payload: unknown
 }
 
@@ -37,6 +38,8 @@ export class WireError extends Error {
 
 interface Pending<F> {
   id: string
+  /** The REQ as issued — a correlated reply is fenced against its type and org before it settles. */
+  request: { type: string; orgId?: string | undefined }
   encoded: string
   resolve: (frame: F) => void
   reject: (err: unknown) => void
@@ -65,6 +68,7 @@ export class ReqRep<F extends WireFrameLike = WireFrameLike> {
     return new Promise<F>((resolve, reject) => {
       const entry: Pending<F> = {
         id: frame.id,
+        request: { type: frame.type, ...(frame.orgId ? { orgId: frame.orgId } : {}) },
         encoded,
         resolve,
         reject,
@@ -126,6 +130,11 @@ export class ReqRep<F extends WireFrameLike = WireFrameLike> {
     if (entry.timer !== undefined) this.clock.clearTimeout(entry.timer)
     entry.resolve(frame)
     return true
+  }
+
+  /** The still-pending REQ a reply with `corr` would settle, if any — read before `settle` to fence the reply. */
+  requested(corr: string): { type: string; orgId?: string | undefined } | undefined {
+    return this.pending.get(corr)?.request
   }
 
   /** Reject one pending request by correlation id (e.g. a REP whose envelope is
