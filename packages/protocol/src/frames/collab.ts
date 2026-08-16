@@ -84,7 +84,11 @@ export type CollabAgentPlacement = z.infer<typeof CollabAgentPlacement>
 export const CollabOrgAgent = CollabAgentPlacement.extend({
   // Org ids are opaque strings (see CollabChannelRoute) — carried per entry because
   // the flat list is not nested under an org-keyed parent. Cross-org pairs never resolve.
-  orgId: z.string().min(1)
+  orgId: z.string().min(1),
+  // The member a wake is forwarded to. ABSENT ⇒ PENDING: the agent exists, its policy is authoritative, but
+  // no member is addressable yet (unconfirmed pool grant / lapsed lease) → `not_ready`, not `not_found`.
+  // Only this flat directory carries pending entries; `channels[]` never does.
+  daemonId: z.string().uuid().optional()
 })
 export type CollabOrgAgent = z.infer<typeof CollabOrgAgent>
 

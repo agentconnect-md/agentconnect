@@ -173,8 +173,12 @@ describe('buildCollabSnapshot (agent-collaboration P2)', () => {
     expect(snap.agents.find((a) => a.agentId === AGENT_1)?.displayName).toBe('Deploy Bot')
   })
 
-  it('drops an unplaced agent from the flat directory — nothing to route a wake to', () => {
+  // The resolver already dropped what nothing serves; a null daemon here is a PENDING pool
+  // agent, carried without a daemon so a wake gets the retryable `not_ready` (#987).
+  it('carries a pending (daemon-less) directory row without a daemonId', () => {
     const snap = buildCollabSnapshot(DEFAULT_ORG_ID, [], 1, [orgAgent({ agentId: AGENT_3, daemonId: null })])
-    expect(snap.agents).toEqual([])
+    expect(snap.agents).toHaveLength(1)
+    expect(snap.agents[0]).toMatchObject({ agentId: AGENT_3, orgId: DEFAULT_ORG_ID })
+    expect(snap.agents[0]).not.toHaveProperty('daemonId')
   })
 })

@@ -2048,6 +2048,27 @@ describe('collaboration/routes snapshot', () => {
     expect(r.frame.payload.agents).toEqual([])
   })
 
+  // A PENDING entry: the agent exists and its policy is authoritative, but no member is
+  // addressable for it yet (an unconfirmed pool grant / a lapsed lease). Only the flat
+  // directory may carry one; a channel row still names its daemon.
+  it('decodes a flat agent entry with no daemonId as pending, and keeps channel rows strict', () => {
+    const r = decodeEnvelope(
+      envelope('collaboration/routes', {
+        agents: [{ agentId: AGENT_ID, orgId: ORG_ID, callPolicy: 'selected', allowedCallerAgentIds: [LAUNCH_ID] }]
+      })
+    )
+    expect(r.ok).toBe(true)
+    if (!r.ok || !isFrame('collaboration/routes')(r.frame)) throw new Error('expected collaboration/routes')
+    expect(r.frame.payload.agents[0]!.daemonId).toBeUndefined()
+    expect(r.frame.payload.agents[0]!.allowedCallerAgentIds).toEqual([LAUNCH_ID])
+    const channelRow = decodeEnvelope(
+      envelope('collaboration/routes', {
+        channels: [{ orgId: ORG_ID, platform: 'slack', channelId: 'C1', agents: [{ agentId: AGENT_ID }] }]
+      })
+    )
+    expect(channelRow.ok).toBe(false)
+  })
+
   // orgId is required on a flat entry — cross-org authorization has no fallback scope.
   it('rejects a flat agent entry without orgId', () => {
     const r = decodeEnvelope(envelope('collaboration/routes', { agents: [{ agentId: AGENT_ID, daemonId: DAEMON_ID }] }))

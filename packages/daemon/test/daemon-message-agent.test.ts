@@ -3,7 +3,9 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { MAX_AGENT_CALL_HOPS } from '@agentconnect.md/protocol'
+import { FakeClock } from '@agentconnect.md/connection'
 import { Daemon } from '../src/daemon.js'
+import { AGENTMSG_NOT_READY_RETRY } from '../src/cp/agentmsg-retry.js'
 import { executeTool, type MessageAgentReq } from '../src/mcp/ops.js'
 import { sessionKey } from '../src/store/local-store.js'
 import * as monotonic from '../src/store/monotonic-ts.js'
@@ -907,6 +909,54 @@ describe('messageAgent: cross-daemon routing (P2, source side)', () => {
     await daemon.stop()
   })
 
+  it('re-sends the SAME deliveryId while the relay answers not_ready, then returns the admission (#987)', async () => {
+    const root = scaffold([{ id: 'bot-a' }])
+    const { daemon, call } = await bootWithDispatchSpy(root)
+    const clock = new FakeClock(1_000_000)
+    ;(daemon as any).clock = clock
+    const sent: any[] = []
+    ;(daemon as any).relays = {
+      stop: vi.fn(async () => {}),
+      sendAgentMsg: vi.fn(async (p: any) => {
+        sent.push(p)
+        return sent.length < 3
+          ? { deliveryId: p.deliveryId, delivered: false, reason: 'not_ready' }
+          : { deliveryId: p.deliveryId, delivered: true, childSessionId: 'remote-key' }
+      })
+    }
+    const pending = call(baseReq({ toAgentId: 'bot-b' }))
+    // Each miss parks the loop on a backoff timer; fire them one at a time.
+    for (let i = 0; i < 2; i += 1) {
+      await vi.waitFor(() => expect(clock.pending).toBe(1), WAIT)
+      clock.advance(60_000)
+    }
+    const res = await pending
+    expect(res).toMatchObject({ delivered: true, targetSession: 'remote-key' })
+    expect(sent).toHaveLength(3)
+    expect(new Set(sent.map((p) => p.deliveryId)).size).toBe(1)
+    await daemon.stop()
+  })
+
+  it('a not_ready that outlasts the retry window is recorded as the terminal verdict', async () => {
+    const root = scaffold([{ id: 'bot-a' }])
+    const { daemon, call } = await bootWithDispatchSpy(root)
+    const clock = new FakeClock(1_000_000)
+    ;(daemon as any).clock = clock
+    const sendAgentMsg = vi.fn(async (p: any) => ({ deliveryId: p.deliveryId, delivered: false, reason: 'not_ready' }))
+    ;(daemon as any).relays = { stop: vi.fn(async () => {}), sendAgentMsg }
+    const pending = call(baseReq({ toAgentId: 'bot-b' }))
+    // Jumping past the whole window makes the next backoff step cross the deadline: terminal.
+    await vi.waitFor(() => expect(clock.pending).toBe(1), WAIT)
+    clock.advance(AGENTMSG_NOT_READY_RETRY.windowMs)
+    const res = await pending
+    expect(res).toMatchObject({ delivered: false, reason: 'not_ready' })
+    expect(sendAgentMsg).toHaveBeenCalledTimes(2)
+    // Recorded like every other terminal verdict: the same deliveryId replays it, no re-send.
+    const deliveryId = sendAgentMsg.mock.calls[0]![0].deliveryId
+    expect((daemon as any).agentCallDeliveries.get(deliveryId)).toMatchObject({ reason: 'not_ready' })
+    await daemon.stop()
+  })
+
   it('no READY relay (send throws) → delivered:false reason offline', async () => {
     const root = scaffold([{ id: 'bot-a' }])
     const { daemon, call } = await bootWithDispatchSpy(root)
@@ -1284,14 +1334,23 @@ describe('handleRelayAgentMsg: cross-daemon target side (P2)', () => {
     await daemon.stop()
   })
 
-  it('fails closed when the local snapshot has no placement (defense in depth)', async () => {
+  it('refuses retryably (not_ready) when the local snapshot does not know the target yet, and terminally on an org mismatch', async () => {
     const root = scaffold([{ id: 'bot-b' }])
     const { daemon, calls } = await bootWithDispatchSpy(root)
-    // Empty snapshot → terminal-verify cannot confirm the caller/target directory entries.
-    ;(daemon as any).cpCollab.replace({ generation: 2, channels: [], agents: [] })
+    // Empty snapshot → terminal-verify cannot confirm the target's org: our copy of the
+    // directory may simply be behind the grant, so this is the retryable miss, not a refusal.
+    ;(daemon as any).cpCollab.replace({ generation: 0, channels: [], agents: [] })
     const ack = await (daemon as any).handleRelayAgentMsg(fwd())
-    expect(ack).toMatchObject({ delivered: false, reason: 'not_allowed' })
+    expect(ack).toMatchObject({ delivered: false, reason: 'not_ready' })
     expect(calls).toHaveLength(0)
+    // ...and it is NOT cached: once the snapshot lands, the SAME deliveryId dispatches.
+    withSnapshot(daemon)
+    expect(await (daemon as any).handleRelayAgentMsg(fwd())).toMatchObject({ delivered: true })
+    expect(calls).toHaveLength(1)
+    // A directory that names a DIFFERENT org for the target is the terminal, cached refusal.
+    const mismatch = await (daemon as any).handleRelayAgentMsg(fwd({ deliveryId: 'd-2', orgId: 'org-other' }))
+    expect(mismatch).toMatchObject({ delivered: false, reason: 'not_allowed' })
+    expect(calls).toHaveLength(1)
     await daemon.stop()
   })
 
@@ -1484,12 +1543,24 @@ describe('handleRelayAgentMsg: cross-daemon target side (P2)', () => {
     await daemon.stop()
   })
 
-  it('target not a local agent → NAK not_found', async () => {
+  it('target known to the directory but not local → NAK not_ready (a stale route, re-routed by the retry)', async () => {
     const root = scaffold([{ id: 'bot-x' }]) // bot-b not local
     const { daemon } = await bootWithDispatchSpy(root)
     withSnapshot(daemon)
     const ack = await (daemon as any).handleRelayAgentMsg(fwd())
+    expect(ack).toMatchObject({ delivered: false, reason: 'not_ready' })
+    // Not cached: the same deliveryId is re-evaluated (still not local here, so still not_ready).
+    expect((daemon as any).relayAgentMsgAcks.has(`bot-a:${fwd().deliveryId}`)).toBe(false)
+    await daemon.stop()
+  })
+
+  it('target unknown to the directory AND not local → NAK not_found (terminal, cached)', async () => {
+    const root = scaffold([{ id: 'bot-x' }])
+    const { daemon } = await bootWithDispatchSpy(root)
+    withSnapshot(daemon)
+    const ack = await (daemon as any).handleRelayAgentMsg(fwd({ toAgentId: 'bot-nowhere' }))
     expect(ack).toMatchObject({ delivered: false, reason: 'not_found' })
+    expect((daemon as any).relayAgentMsgAcks.has(`bot-a:${fwd().deliveryId}`)).toBe(true)
     await daemon.stop()
   })
 

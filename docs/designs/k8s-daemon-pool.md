@@ -357,6 +357,18 @@ relay-owned durable retry, which is deliberately future work rather than an
 implied property. Crons never reach this rendezvous: a cron-bearing group is
 proactively claimable, so it always has a holder by the time a fire is due.
 
+**A cross-daemon peer wake (`rd/agentmsg`) does not take the rendezvous; it
+waits it out.** Its sender is a daemon, not a provider callback, so it can be
+told "not yet". The peer directory carries a pool agent nobody may be addressed
+at yet — a grant its member has not confirmed in a digest, a lapsed lease a live
+member is about to claim — as a **pending** entry (policy intact, no daemon), the
+relay answers the retryable **`not_ready`** for it (as does a target daemon
+handed an agent it does not run), no hop caches that verdict against the
+`deliveryId`, and the source daemon re-sends the same `deliveryId` with backoff
+for a few lease horizons before recording it as terminal. Exactly-once holds
+because the id never changes: an attempt that landed is replayed from the
+target's dedup on every later attempt.
+
 ## 7. Ownership and dial-in binding (D3)
 
 Historically the shim dialed out to its org's daemon (`AC_SHIM_ENDPOINT` — the

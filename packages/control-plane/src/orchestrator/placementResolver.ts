@@ -25,8 +25,9 @@ import { systemClock, type Clock } from '../domain/clock.js'
  *   A member that is still installing is included, because it has to receive its bundle to finish.
  * - `confirmedHoldersOf` — only holds the member has reported in its digest. Who INGRESS may be
  *   addressed at. Publishing a member here before it has admitted the grant is the same error
- *   #976 fixed for the fence — the gate opens before the fact — and on a projection there is no
- *   second chance: a cross-daemon peer wake forwards once and gets a terminal miss.
+ *   #976 fixed for the fence — the gate opens before the fact; a peer wake addressed at an
+ *   installing member would be refused by it, and the window between the two is exactly what the
+ *   directory's PENDING entry (`resolveDirectory`) exists to name.
  */
 export interface DutyHolderReader {
   holdersOf(agentId: AgentId, now: Date): Promise<DaemonId[]>
@@ -63,16 +64,11 @@ export class PlacementResolver {
    * confirmed yet — a grant it has not installed is a lease, not a route.
    *
    * Between a grant and its first digest this names NOBODY for a set agent. For platform ingress
-   * that is fully covered — the trigger reaches a member and claims through the activation
-   * rendezvous. For a cross-daemon peer wake it is NOT covered, and the honest reason to prefer it
-   * anyway is narrower than "absence is retryable", because absence is terminal too
-   * (`admits()` fails closed on an agent missing from the directory, so the wake is refused
-   * locally as `not_allowed`): naming the installing member instead makes the relay AND the target
-   * cache a terminal `not_found` against that `deliveryId`, so even a retransmit stays dead after
-   * the member is ready. Absence refuses the attempt without poisoning the next one.
-   *
-   * Closing it properly needs a retryable verdict on `rd/agentmsg`, which that wire does not have
-   * — see the PR body; it is its own change.
+   * that is covered by the activation rendezvous (the trigger reaches a member and claims). For a
+   * cross-daemon peer wake the directory carries the agent as PENDING instead
+   * ({@link PlacementResolver.resolveDirectory}), so the relay answers the retryable `not_ready`
+   * rather than a terminal `not_found`, and the source retries the same delivery until this
+   * names the confirmed member.
    */
   async routableDaemons(agent: ResolvableAgent): Promise<string[]> {
     return [...new Set([...placementTargets(agent), ...(await this.confirmedHolders(agent.id))])]
@@ -100,20 +96,42 @@ export class PlacementResolver {
   }
 
   /**
-   * Fill the serving daemon into a directory projection, dropping every row nothing serves right
-   * now. The peer directory and the collaboration snapshot both need "who do I wake", which is a
-   * live question for a set agent and a column read for a machine-placed one — so it is answered
-   * here once rather than at each surface, where the two could disagree.
+   * Fill the serving daemon into a directory projection. The peer directory and the collaboration
+   * snapshot both need "who do I wake", which is a live question for a set agent and a column read
+   * for a machine-placed one — so it is answered here once rather than at each surface, where the
+   * two could disagree.
+   *
+   * Three outcomes per row: a ROUTABLE member (`daemonId` set); PENDING (`daemonId: null`) — a set
+   * agent nobody may be addressed at yet, but which a live member holds unconfirmed or is about to
+   * claim, so a wake gets the retryable `not_ready` instead of a terminal miss; or dropped, when
+   * nothing serves the agent and nothing can. Naming the installing member instead would send the
+   * wake to a daemon that refuses it, which is why pending is a state of its own.
    */
   async resolveDirectory<T extends PlacementRef & { agentId: string }>(
     rows: readonly T[]
-  ): Promise<(T & { daemonId: string })[]> {
-    const resolved: (T & { daemonId: string })[] = []
+  ): Promise<(T & { daemonId: string | null })[]> {
+    const resolved: (T & { daemonId: string | null })[] = []
+    const liveBySet = new Map<string, Promise<boolean>>()
+    const setHasLiveMember = (setId: string): Promise<boolean> => {
+      let cached = liveBySet.get(setId)
+      if (!cached) {
+        cached = this.deps.liveMembers ? this.deps.liveMembers(setId).then((m) => m.length > 0) : Promise.resolve(false)
+        liveBySet.set(setId, cached)
+      }
+      return cached
+    }
     for (const row of rows) {
-      // ROUTABLE, not serving: this directory is what a cross-daemon peer wake is addressed
-      // through, and it forwards once.
-      const daemonId = await this.routableDaemon({ ...row, id: row.agentId })
-      if (daemonId) resolved.push({ ...row, daemonId })
+      const agent = { ...row, id: row.agentId }
+      // ROUTABLE, not serving: this directory is what a cross-daemon peer wake is addressed through.
+      const daemonId = await this.routableDaemon(agent)
+      if (daemonId) {
+        resolved.push({ ...row, daemonId })
+        continue
+      }
+      const eligibility = dutyEligibility(row)
+      if (eligibility.scope !== 'set') continue
+      const pending = (await this.holders(row.agentId)).length > 0 || (await setHasLiveMember(eligibility.setId))
+      if (pending) resolved.push({ ...row, daemonId: null })
     }
     return resolved
   }

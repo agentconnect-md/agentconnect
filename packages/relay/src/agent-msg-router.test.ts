@@ -23,7 +23,7 @@ const INT = '00000000-0000-0000-0000-0000000000f1'
 const noopLog = { info() {}, warn() {}, error() {}, debug() {} }
 
 /** An org-scoped directory entry (the flat `agents[]` shape) with policy defaults. */
-function orgAgent(over: Partial<CollabOrgAgent> & { agentId: string; daemonId: string }): CollabOrgAgent {
+function orgAgent(over: Partial<CollabOrgAgent> & { agentId: string }): CollabOrgAgent {
   return {
     orgId: ORG,
     callPolicy: 'all',
@@ -686,6 +686,95 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
     const ack = await route(D1, baseMsg())
     expect(ack.delivered).toBe(false)
     expect(ack.reason).toBe('not_found')
+  })
+
+  // The install window (#987): the CP carries a pool agent whose grant is not confirmed (or whose
+  // lapsed lease a live member is about to claim) as a PENDING entry — present, policy intact, no
+  // daemon. The verdict is the retryable `not_ready`, and it is NOT cached: the source re-sends the
+  // same deliveryId, and once the directory names the member the retransmit is forwarded — once.
+  it('PENDING target (directory entry with no daemon) → NAK not_ready, uncached; the retransmit forwards once the member is named', async () => {
+    const pending = snap()
+    pending.agents = pending.agents.map((a) => (a.agentId === B ? orgAgent({ agentId: B }) : a))
+    pending.channels[0].agents = pending.channels[0].agents.filter((a) => a.agentId !== B)
+    const router = new CollaborationRouter()
+    router.replace(pending)
+    const forwards: RdAgentMsgFwd[] = []
+    const route = createAgentMsgRouter({
+      router,
+      daemons: () => fakeDaemons({ deliveryId: 'd-1', delivered: true }, forwards),
+      log: noopLog
+    })
+    const first = await route(D1, baseMsg())
+    expect(first).toEqual({ deliveryId: 'd-1', delivered: false, reason: 'not_ready' })
+    // Still pending: re-evaluated, still not_ready, still nothing forwarded.
+    expect(await route(D1, baseMsg())).toEqual(first)
+    expect(forwards).toHaveLength(0)
+
+    // The member confirms; the CP re-pushes with B routable at D2. Same deliveryId → forwarded.
+    router.replace({ ...snap(), generation: 2 })
+    const retry = await route(D1, baseMsg())
+    expect(retry.delivered).toBe(true)
+    expect(forwards).toHaveLength(1)
+    // ...and THAT verdict is cached like any other: a further retransmit replays, no double wake.
+    expect(await route(D1, baseMsg())).toEqual(retry)
+    expect(forwards).toHaveLength(1)
+  })
+
+  it('PENDING target still fails policy terminally — a refusal is not deferred behind not_ready', async () => {
+    const pending = snap()
+    pending.agents = pending.agents.map((a) =>
+      a.agentId === B ? orgAgent({ agentId: B, callPolicy: 'selected', allowedCallerAgentIds: [] }) : a
+    )
+    const router = new CollaborationRouter()
+    router.replace(pending)
+    const route = createAgentMsgRouter({
+      router,
+      daemons: () => fakeDaemons({ deliveryId: 'd-1', delivered: true }, []),
+      log: noopLog
+    })
+    expect((await route(D1, baseMsg())).reason).toBe('not_allowed')
+  })
+
+  it('PENDING caller (no confirmed member to bind the socket to) → NAK not_ready, not forged', async () => {
+    const pending = snap()
+    pending.agents = pending.agents.map((a) => (a.agentId === A ? orgAgent({ agentId: A }) : a))
+    const router = new CollaborationRouter()
+    router.replace(pending)
+    const forwards: RdAgentMsgFwd[] = []
+    const route = createAgentMsgRouter({
+      router,
+      daemons: () => fakeDaemons({ deliveryId: 'd-1', delivered: true }, forwards),
+      log: noopLog
+    })
+    expect(await route(D1, baseMsg())).toEqual({ deliveryId: 'd-1', delivered: false, reason: 'not_ready' })
+    expect(forwards).toHaveLength(0)
+    router.replace({ ...snap(), generation: 2 })
+    expect((await route(D1, baseMsg())).delivered).toBe(true)
+  })
+
+  it('a target daemon answering not_ready is passed through uncached, so the retransmit is re-forwarded', async () => {
+    const router = new CollaborationRouter()
+    router.replace(snap())
+    const forwards: RdAgentMsgFwd[] = []
+    let verdict: RdAgentMsgAck = { deliveryId: 'd-1', delivered: false, reason: 'not_ready' }
+    const conn = {
+      supports: () => true,
+      forwardAgentMsg: vi.fn(async (fwd: RdAgentMsgFwd) => {
+        forwards.push(fwd)
+        return verdict
+      })
+    }
+    const route = createAgentMsgRouter({
+      router,
+      daemons: () => ({ get: (id: string) => (id === D2 ? conn : undefined) }) as unknown as RelayDaemonServer,
+      log: noopLog
+    })
+    expect((await route(D1, baseMsg())).reason).toBe('not_ready')
+    verdict = { deliveryId: 'd-1', delivered: true }
+    expect((await route(D1, baseMsg())).delivered).toBe(true)
+    expect(forwards).toHaveLength(2)
+    expect((await route(D1, baseMsg())).delivered).toBe(true)
+    expect(forwards).toHaveLength(2)
   })
 
   it('target owning daemon offline (no connection) → NAK offline', async () => {

@@ -17,6 +17,7 @@ import type { AgentRepo, DaemonRecord, DaemonRepo, IntegrationRepo } from '../pe
 import { buildCollabSnapshot } from './collabSnapshot.js'
 import type { CollabChannelRoute, CollabOrgAgent, CollabRoutesSnapshot } from '@agentconnect.md/protocol'
 import type { OrgId } from '../domain/ids.js'
+import { systemClock, type Clock } from '../domain/clock.js'
 import { PLACEMENT_ONLY, type PlacementResolver } from './placementResolver.js'
 import { servedAgents, type DutyHeldAgentReader } from './servedAgents.js'
 
@@ -34,7 +35,8 @@ export class CollabRoutesService {
     private readonly placement: Pick<PlacementResolver, 'resolveDirectory'> = PLACEMENT_ONLY,
     /** The duty half of "which orgs does this install-wide member serve".
      *  Absent (tests / no pool) ⇒ placement alone, which is the pre-duty behavior. */
-    private readonly duties?: DutyHeldAgentReader
+    private readonly duties?: DutyHeldAgentReader,
+    private readonly clock: Clock = systemClock
   ) {}
 
   private serialize<T>(run: () => Promise<T>): Promise<T> {
@@ -62,7 +64,7 @@ export class CollabRoutesService {
       const served = await servedAgents(daemon.id, {
         agents: this.agents,
         ...(this.duties ? { duties: this.duties } : {}),
-        now: new Date()
+        now: new Date(this.clock.now())
       })
       for (const agent of served.agents) orgIds.add(agent.orgId)
     }
