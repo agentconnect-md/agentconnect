@@ -4,14 +4,17 @@
  */
 import { isFrame } from '@agentconnect.md/protocol'
 import { AgentId, DaemonId } from '../../domain/ids.js'
+import { frameOrgId } from './frame-org.js'
 import type { Handler } from './index.js'
 import { runForReportingAgent } from './reporting-agent.js'
 
 export const handleSessionActivity: Handler = async (frame, conn, deps) => {
   if (!isFrame('event/session-activity')(frame)) return
+  const orgId = frameOrgId(frame, conn)
+  if (!orgId) return
   const agentId = AgentId(frame.payload.agentId)
   const daemonId = DaemonId(conn.daemonId)
-  await runForReportingAgent(agentId, daemonId, deps, async () => {
+  await runForReportingAgent(orgId, agentId, daemonId, deps, async () => {
     deps.events.publishActivity(daemonId, frame.payload)
   })
 }

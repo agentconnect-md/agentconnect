@@ -6,6 +6,7 @@ import { handleSessionPurged } from './event-session-purged.js'
 
 const DAEMON_ID = 'd1d1d1d1-dddd-4ddd-8ddd-dddddddddddd'
 const AGENT_ID = 'a0a0a0a0-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+const ORG_ID = '0e0e0e0e-eeee-4eee-8eee-eeeeeeeeeeee'
 const PURGED_AT = '2026-08-04T09:00:00.000Z'
 
 function purgedFrame(): AnyFrame {
@@ -30,7 +31,7 @@ function depsWith(
 ): { deps: DaemonWsDeps; release: ReturnType<typeof vi.fn> } {
   const release = vi.fn()
   const deps = {
-    agent: { getUnscoped: vi.fn().mockResolvedValue(placedOn === null ? null : { daemonId: placedOn }) },
+    agent: { get: vi.fn().mockResolvedValue(placedOn === null ? null : { daemonId: placedOn }) },
     agentMutations: { tryBeginMutation: vi.fn(() => (lease === 'free' ? release : null)) },
     session: { markContentPurged }
   } as unknown as DaemonWsDeps
@@ -38,7 +39,7 @@ function depsWith(
 }
 
 function conn() {
-  return { daemonId: DAEMON_ID, replyTo: vi.fn(), sendError: vi.fn() } as unknown as DaemonConnection & {
+  return { daemonId: DAEMON_ID, orgId: ORG_ID, replyTo: vi.fn(), sendError: vi.fn() } as unknown as DaemonConnection & {
     replyTo: ReturnType<typeof vi.fn>
     sendError: ReturnType<typeof vi.fn>
   }

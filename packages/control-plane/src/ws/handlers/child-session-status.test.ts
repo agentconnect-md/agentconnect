@@ -38,6 +38,7 @@ function frame(payload: Record<string, unknown> = {}): AnyFrame {
 function fakeConn() {
   return {
     daemonId: ASKING_DAEMON,
+    orgId: ORG,
     replyTo: vi.fn(),
     sendError: vi.fn()
   } as unknown as DaemonConnection & { replyTo: ReturnType<typeof vi.fn>; sendError: ReturnType<typeof vi.fn> }
@@ -61,13 +62,13 @@ function fakeDeps(
     deps: {
       registry: { getUnscoped: async () => ({ id: ASKING_DAEMON, orgId: ORG }) },
       session: {
-        getUnscoped: async () =>
+        get: async () =>
           'parent' in over
             ? over.parent
             : { id: PARENT_SESSION, orgId: ORG, daemonId: ASKING_DAEMON, agentId: CHILD_AGENT }
       },
       agent: {
-        getUnscoped: async () =>
+        get: async () =>
           'childAgent' in over ? over.childAgent : { id: CHILD_AGENT, orgId: ORG, daemonId: OWNING_DAEMON }
       },
       connReg: { get: () => owner }

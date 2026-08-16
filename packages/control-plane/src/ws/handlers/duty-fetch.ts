@@ -6,6 +6,7 @@
 import { isFrame, type DutyAgentBundle } from '@agentconnect.md/protocol'
 import { AgentId, DaemonId } from '../../domain/ids.js'
 import type { DaemonWsDeps } from '../deps.js'
+import { frameOrgId } from './frame-org.js'
 import type { Handler } from './index.js'
 
 export const handleDutyFetch: Handler = async (frame, conn, deps) => {
@@ -15,9 +16,14 @@ export const handleDutyFetch: Handler = async (frame, conn, deps) => {
     conn.sendError(frame.id, 'SCOPE_DENIED', 'duty ledger requires an install-wide connection', false)
     return
   }
+  const orgId = frameOrgId(frame, conn)
+  if (!orgId) {
+    conn.sendError(frame.id, 'SCOPE_DENIED', 'organization is required', false)
+    return
+  }
   const agentId = AgentId(frame.payload.agentId)
-  // The CP resolves the org from the agent itself — an asker never asserts it.
-  const agent = await deps.agent.getUnscoped(agentId)
+  // Fenced on the frame's org, so an asker can only fetch a bundle inside the org it named.
+  const agent = await deps.agent.get(orgId, agentId)
   // Unknown agent, no duty, or no assembler wired: all answer "install nothing".
   // An empty reply, never an error frame — the member's behavior is the same.
   if (!agent || !deps.agentBundle) {

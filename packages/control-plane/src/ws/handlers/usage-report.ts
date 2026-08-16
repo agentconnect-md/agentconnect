@@ -11,14 +11,17 @@
  */
 import { isFrame } from '@agentconnect.md/protocol'
 import { AgentId, DaemonId } from '../../domain/ids.js'
+import { frameOrgId } from './frame-org.js'
 import type { Handler } from './index.js'
 import { runForReportingAgent } from './reporting-agent.js'
 
 export const handleUsageReport: Handler = async (frame, conn, deps) => {
   if (!isFrame('usage/report')(frame)) return
+  const orgId = frameOrgId(frame, conn)
+  if (!orgId) return
   const p = frame.payload
   const agentId = AgentId(p.agentId)
-  await runForReportingAgent(agentId, DaemonId(conn.daemonId), deps, async () => {
+  await runForReportingAgent(orgId, agentId, DaemonId(conn.daemonId), deps, async () => {
     await deps.sessionUsage.record({
       sessionId: p.sessionId,
       agentId,

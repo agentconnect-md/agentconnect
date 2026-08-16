@@ -73,8 +73,9 @@ export const handleChannelAgents: Handler = async (frame, conn, deps) => {
   if (!isFrame('channel/agents')(frame)) return
   const { platform, channel, requesterAgentId } = frame.payload
 
-  // Daemon trust domain: the connection's own daemon, resolved without an org
-  // (org-scoped-data-layer.md §4).
+  // Install-wide read: the connection's OWN daemon row, whose org is null on a pool member,
+  // so no org fence exists to apply (org-scoped-data-layer.md §4).
+  // eslint-disable-next-line no-restricted-syntax -- the authenticated connection's own daemon row
   const daemon = await deps.registry.getUnscoped(DaemonId(conn.daemonId))
   if (!daemon) return // unknown daemon (should not happen post-auth) — drop silently
   const orgId = frame.orgId ? OrgId(frame.orgId) : daemon.orgId
