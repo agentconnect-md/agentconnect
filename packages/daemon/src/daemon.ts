@@ -21667,9 +21667,6 @@ export class Daemon {
           if (activate.moveId === undefined && stage?.state !== 'staging') return { ok: true }
           // Token-less ⇒ adopt the stored fence's token, so commit supersedes the stale move exactly.
           const moveId = activate.moveId ?? stage!.moveId
-          // An unstage restores the replica, not serving authority: a non-holder must not bind the sandbox (#1093).
-          // Tokened stays host-proving: its target is the placement, or a source whose duty the move never released.
-          const proveHost = activate.moveId !== undefined || this.servesAgent(agentId)
           if (stage?.moveId === moveId && stage.state === 'committed') return { ok: true }
           if (
             stage?.moveId !== moveId ||
@@ -21791,7 +21788,10 @@ export class Daemon {
             }
             // Prove ACP can initialize under the still-closed gate; the workspace reconciled first, so the
             // spawned runtime and its sandbox bind the new directory rather than an unlinked old one.
-            if (proveHost) {
+            // An unstage restores the replica, not serving authority: a non-holder must not bind the sandbox (#1093).
+            // Read HERE, never captured: a revoke landing during the awaits above already stopped this host.
+            // Tokened stays host-proving: its target is the placement, or a source whose duty the move never released.
+            if (activate.moveId !== undefined || this.servesAgent(agentId)) {
               try {
                 await this.ensureHostAsync(agentId, { allowAgentDrain: true })
               } catch (err) {

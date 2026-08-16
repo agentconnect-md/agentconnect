@@ -565,6 +565,47 @@ describe('Daemon CP agent → memory + reconcile', () => {
     await daemon.stop()
   })
 
+  it('a revoke landing mid-activation keeps the unstaged host down (#1093)', async () => {
+    const root = root1()
+    writeAgent(root, 'bot-a')
+    const { daemon, hosts } = makeDaemon(root)
+    await daemon.start()
+    poolMember(daemon)
+    ;(daemon as any).duties.applyGrant([dutyGrant('bot-a')]) // holds the duty when the frame arrives
+    await expect(seam(daemon).applyAgentDetach({ agentId: 'bot-a', moveId: MOVE_ID })).resolves.toEqual({ ok: true })
+    expect((daemon as any).servesAgent('bot-a')).toBe(true)
+
+    // Land the revoke inside the activation's OWN reconcile — after the bundle apply (the agent is
+    // already unstaged there), before the host start. Awaited interleave, no timers, no sleeps.
+    const reconcile = (daemon as any).flushReconcile.bind(daemon)
+    let landed = false
+    ;(daemon as any).flushReconcile = async () => {
+      await reconcile()
+      if (landed || (daemon as any).moveStagedAgents.has('bot-a')) return
+      landed = true
+      ;(daemon as any).applyDutyRevoke([{ groupId: GROUP_ID, reason: 'superseded' }])
+    }
+
+    await expect(
+      seam(daemon).applyAgentActivate({
+        agentId: 'bot-a',
+        spec: { name: 'bot-a', runtime: 'claude' },
+        integrations: [],
+        crons: []
+      })
+    ).resolves.toEqual({ ok: true })
+
+    // The fence is still released — losing the duty is not a reason to keep a stale fence armed …
+    expect(landed).toBe(true) // the interleave really happened
+    expect((daemon as any).moveStagedAgents.has('bot-a')).toBe(false)
+    expect(readAgentMoveStage(join(root, 'agents'), 'bot-a')).toEqual({ moveId: MOVE_ID, state: 'committed' })
+    // … and the host stays down: holdership is re-read at the start boundary, not captured before it.
+    expect((daemon as any).servesAgent('bot-a')).toBe(false)
+    expect(hosts).toEqual([])
+    expect((daemon as any).hosts.has('bot-a')).toBe(false)
+    await daemon.stop()
+  })
+
   it('a token-less activate with no staging fence acknowledges without applying anything', async () => {
     const root = root1()
     writeAgent(root, 'bot-a')
