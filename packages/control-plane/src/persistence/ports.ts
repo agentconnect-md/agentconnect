@@ -5084,6 +5084,26 @@ export interface AgentHomeClaim {
 /** Pure plan callback run inside the reconcile transaction's org snapshot (orchestrator/dutyGroup.ts). */
 export type DutyReconcilePlanner = (existing: DutyGroupRecord[]) => DutyReconcilePlan
 
+/** One member set's capacity and unmet demand, as {@link DutyGroupRepo.poolTelemetry} reads it. */
+export interface PoolTelemetryRow {
+  setId: string
+  setName: string
+  /** The org-less set — the install-wide pool. */
+  installWide: boolean
+  /** Members seen within the lease horizon. */
+  liveMembers: number
+  /** Σ `maxAgents` over those members — the duty budget the pool can currently spend. */
+  capacityAgents: number
+  /** Distinct agents covered by unexpired leases those members hold — the budget spent. */
+  dutyAgents: number
+  /** Vacant groups this set is eligible to claim and CAN deliver — unmet demand. */
+  vacantGroups: number
+  /** Vacant, eligible, but over the wire's member cap: never claimable at any pool size (D16). */
+  oversizedVacantGroups: number
+  /** Age of the oldest {@link PoolTelemetryRow.vacantGroups} entry. Sustained ⇒ nothing could take it. */
+  oldestVacancySec: number
+}
+
 export interface DutyGroupRepo {
   /** Recompute input + console/introspection read. */
   listForOrg(orgId: OrgId): Promise<DutyGroupRecord[]>
@@ -5121,6 +5141,12 @@ export interface DutyGroupRepo {
   /** Keyset rotation over orgs that can need a recompute — any org owning an
    *  agent or an existing duty group. */
   listDutyOrgs(afterOrgId: string | null, limit: number): Promise<string[]>
+  /** Per-set capacity and unmet demand, for the pool gauges (observability/pool-metrics.ts).
+   *  Read-only and derived entirely from the ledger, so it states what the claim paths would
+   *  decide rather than a second opinion about it: `liveMs` is the same liveness horizon
+   *  {@link DutyGroupRepo.newerGenerationLive} uses, `maxMembers` the same deliverability cap
+   *  {@link DutyGroupRepo.claimVacant} gates on. */
+  poolTelemetry(now: Date, liveMs: number, maxMembers: number): Promise<PoolTelemetryRow[]>
   /** The placement fence, re-derived from the eligibility predicate: vacate every held group its
    *  holder may no longer hold — an agent moved off a set onto a machine, or off one machine
    *  onto another. Same rule as {@link DutyGroupRepo.claimVacant}, read from the holder's side, so

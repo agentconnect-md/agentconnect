@@ -14,7 +14,7 @@
 import type { FastifyInstance, FastifyServerOptions } from 'fastify'
 import type { PrismaClient } from './generated/prisma/client.js'
 import type { WebSocketServer } from 'ws'
-import { HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED } from '@agentconnect.md/protocol'
+import { DUTY_GRANT_MEMBERS_MAX, HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED } from '@agentconnect.md/protocol'
 
 import { type AppConfig, resolveWebAppUrl } from './config/env.js'
 import { resolveGithubAppConfig } from './github/config.js'
@@ -153,6 +153,7 @@ import { replayMemoryConnectionsTo, syncMemoryConnectionsToDaemons } from './orc
 import { relayHttpOrigin } from './orchestrator/mcpProvider.js'
 import { CollabRoutesService } from './orchestrator/collabRoutes.service.js'
 import { DutyLeaseService, DUTY_LEASE_DEFAULTS } from './orchestrator/dutyLease.js'
+import { registerPoolMetrics } from './observability/pool-metrics.js'
 import { AgentDelivery } from './orchestrator/agentDelivery.js'
 import { AgentRoutingConverger } from './orchestrator/agentRouting.js'
 import { PlacementResolver, type ResolvableAgent } from './orchestrator/placementResolver.js'
@@ -702,6 +703,15 @@ export function buildContainer(
     { warn: (o, m) => http.log.warn(o, m), error: (o, m) => http.log.error(o, m) },
     agentRouting
   )
+  // Pool capacity gauges (observability/pool-metrics.ts) — the §12 "alarm on vacant-duty age",
+  // reading the same lease horizon and deliverability cap the claim paths gate on.
+  const poolMetrics = registerPoolMetrics({
+    repo: repos.dutyGroup,
+    clock,
+    liveMs: DUTY_LEASE_DEFAULTS.leaseMs,
+    maxMembers: DUTY_GRANT_MEMBERS_MAX,
+    log: { warn: (o, m) => http.log.warn(o, m) }
+  })
   const agentMutations = new AgentMutationGate()
 
   // Relay roster (shared-bot-relay.md §5): computed from the durable `relay` table
@@ -1740,6 +1750,7 @@ export function buildContainer(
       for (const reaper of pendingInstallReapers) reaper.stop()
       relaySweeper.stop()
       dutyRecompute.stop()
+      poolMetrics.stop()
       sessionAccessWarmer.stop()
       for (const loop of backgroundLoops) loop.stop()
       visibilityPush.stop()
