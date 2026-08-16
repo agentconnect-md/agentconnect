@@ -231,3 +231,91 @@ describe('replaying the shared inbox on a duty gain', () => {
     await b.daemon.stop()
   }, 20_000)
 })
+
+// A duty handoff is not an agent removal (#1050). `stopServingAgent` interrupts the turns running
+// here, but on a pool's shared store the agent's admitted-but-unrun rows are the work the successor
+// holder has to replay — purging them makes a GRACEFUL revoke/fence/drain lose messages a crash
+// would have preserved. These pin that the retiring member keeps the rows and that removal, the
+// other caller of the same interrupt, still discards them.
+describe('a duty handoff leaves the agent’s unrun inbox to its successor', () => {
+  const seedRow = (root: string, ts: string, text: string) => {
+    const s = new LocalStore(statePath(root))
+    s.appendInbox({
+      id: `slack:C1:${ts}`,
+      sessionKey: sessionKey('slack', 'C1', 'T1', AGENT),
+      agentId: AGENT,
+      msg: JSON.stringify(msg(ts, text)),
+      integrationId: INTEGRATION,
+      callMeta: null,
+      isQueueCmd: null,
+      enqueuedAt: ts
+    })
+    s.close()
+  }
+
+  it('a graceful fence keeps the admitted row and the successor runs it exactly once', async () => {
+    const rootA = scaffold()
+    const a = await boot(rootA)
+    await admit(a.daemon)
+    await settled(a.daemon)
+    // Admitted before the ACK settled and not yet started — the row a crash would leave behind.
+    seedRow(rootA, '100', 'finish the report')
+
+    fence(a.daemon)
+    await settled(a.daemon)
+    expect(holds(a.daemon)).toBe(false)
+    expect(a.host.prompt).not.toHaveBeenCalled()
+    // On main the fence purged this row, so the successor below had nothing to replay.
+    expect(inbox(rootA).map((r) => r.id)).toEqual(['slack:C1:100'])
+
+    const b = await boot(scaffold(rootA))
+    await admit(b.daemon, '2')
+    await vi.waitFor(() => expect(b.started).toHaveLength(1), WAIT)
+    expect(b.started[0]).toContain('finish the report')
+    await settled(b.daemon)
+    expect(b.host.prompt).toHaveBeenCalledTimes(1)
+
+    b.releaseAll()
+    await vi.waitFor(() => expect(inbox(rootA)).toHaveLength(0), WAIT)
+    await Promise.all([a.daemon.stop(), b.daemon.stop()])
+  }, 20_000)
+
+  it('the interrupted head and everything queued behind it survive the retiring member’s teardown', async () => {
+    const rootA = scaffold()
+    const a = await boot(rootA)
+    await admit(a.daemon)
+    await settled(a.daemon)
+    const head = (a.daemon as any).dispatch(AGENT, msg('100', 'first'), INTEGRATION)
+    void head.catch(() => {})
+    await vi.waitFor(() => expect(a.started).toHaveLength(1), WAIT)
+    const queued = (a.daemon as any).dispatch(AGENT, msg('200', 'second'), INTEGRATION)
+    void queued.catch(() => {})
+    await vi.waitFor(() => expect(inbox(rootA)).toHaveLength(2), WAIT)
+
+    fence(a.daemon)
+    await settled(a.daemon)
+    expect(inbox(rootA).map((r) => r.id)).toEqual(['slack:C1:100', 'slack:C1:200'])
+    // The cancelled head settles through dispatch's own terminal paths afterwards; those must
+    // not delete the row the handoff just kept.
+    a.releaseAll()
+    await head.catch(() => {})
+    await queued.catch(() => {})
+    await new Promise((r) => setTimeout(r, 50))
+    expect(inbox(rootA).map((r) => r.id)).toEqual(['slack:C1:100', 'slack:C1:200'])
+    await a.daemon.stop()
+  }, 20_000)
+
+  it('removing the agent still discards its unrun rows', async () => {
+    const rootA = scaffold()
+    const a = await boot(rootA)
+    await admit(a.daemon)
+    await settled(a.daemon)
+    seedRow(rootA, '100', 'work nobody will do')
+    expect(inbox(rootA)).toHaveLength(1)
+
+    // The destructive authority-release fence every agent removal runs.
+    await (a.daemon as any).quiesceAgentWorkspaceAuthority(AGENT)
+    expect(inbox(rootA)).toHaveLength(0)
+    await a.daemon.stop()
+  }, 20_000)
+})
