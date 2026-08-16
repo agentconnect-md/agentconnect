@@ -559,6 +559,15 @@ most one move per agent (#1016):
   missing-regrant re-issue all skip a draining member until it registers
   afresh, so a vacated group can only land on a member that is staying —
   even if the scale-down is not simultaneous. Renewal continues meanwhile.
+- **Ready means servable, not merely up.** A member under `--k8s` publishes one
+  predicate (`packages/daemon/src/readiness.ts`, `readinessState`) on the two
+  sinks a pod probe can read — HTTP `/readyz` on `AC_READINESS_PORT` and a file
+  at `AC_READINESS_FILE` (default `/var/run/agentconnect/ready`) — true only once
+  the CP registration is acknowledged **and** the install-wide sandbox runtime
+  probe has returned, and false again the instant the SIGTERM latch closes, so
+  the endpoints controller stops routing while the pod keeps running for the
+  drain. That makes the rollout barrier the fact rather than a timed
+  `minReadySeconds` (#1043).
 - **Drain is real, slow-safe, and acknowledged.** Per member
   (`Daemon.stop()` → `releaseDutiesForShutdown`): in-flight turns are never
   cut to speed the rollout up; each held group is withdrawn locally (the same
@@ -796,3 +805,4 @@ shrinking every actor's permissions.
 | Relay re-route                                                         | `packages/relay/src/relay-ingress-manager.ts` (`sendWithRendezvous`), `relay-browser-connection.ts`   |
 | Shim dial-in                                                           | `packages/daemon/src/shim/{dialer,server}.ts`                                                         |
 | Pod-bound member identity                                              | `packages/control-plane/src/cluster/daemon-identity.ts`                                               |
+| Member readiness (probe sinks)                                         | `packages/daemon/src/readiness.ts`, `src/daemon.ts` (`readinessState`)                                |

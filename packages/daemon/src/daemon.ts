@@ -6,6 +6,7 @@ import { mkdtemp } from 'node:fs/promises'
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar'
 import { loadConfig, persistDaemonId, persistRelays, type FlatOverrides } from './config/load-config.js'
 import { readCliEntry, runCliUpgrade } from './lifecycle/cli-upgrade.js'
+import { ReadinessGate, readinessSinksFromEnv, readinessState, type ReadinessState } from './readiness.js'
 import { sessionRetentionMs, type Config, type RuntimeDef } from './config/config-schema.js'
 import { discoverAgentsTolerant, type LoadedAgent } from './agents/load-agents.js'
 import { agentChildEnv } from './agents/agent-env.js'
@@ -2196,6 +2197,10 @@ export class Daemon {
   // `draining` so the CP stops granting to this member (sticky for the registration), and turns the
   // shutdown into a duty drain: hold and serve until each group's turns settle, then release it.
   private shutdownDraining = false
+  // Kubernetes readiness (#1043): the two sinks a pod probe reads, and the one fact only this
+  // member knows — that the install-wide sandbox runtime probe came back.
+  private readiness?: ReadinessGate
+  private k8sRuntimeProbed = false
   // The shutdown duty drain in progress: its deadline, its counters, and the release of every grant
   // that landed after the latch, so the summary and `stop()` can wait for all of them.
   private shutdownDutyDrain?: ShutdownDutyDrain
@@ -3734,6 +3739,9 @@ export class Daemon {
     void this.probeRuntimesAndEmit(false).finally(() => this.armRuntimeProbeRefresh())
     if (!this.k8s) startControlPlane(root)
     this.armIdleSweep()
+    // Under Kubernetes only: elsewhere the process being up IS the signal, and nothing reads a
+    // readiness sink. Last, so the endpoint exists exactly when the rest of the daemon does.
+    if (this.k8s || this.opts.supervisor === K8S_SUPERVISOR) await this.startReadinessGate()
     this.log.info('daemon ready')
   }
 
@@ -21994,6 +22002,7 @@ export class Daemon {
       // may have missed emits while we were disconnected; latest-wins upsert).
       onReady: () => {
         resolveInitialRegistry()
+        this.readiness?.refresh()
         void this.probeRuntimesAndEmit()
         void this.syncOrganizationSuggestions().catch((err) =>
           this.log.warn(`cp: organization suggestion replay failed (${err instanceof Error ? err.name : 'unknown'})`)
@@ -22236,6 +22245,10 @@ export class Daemon {
         this.runtimeProbedVersions.set(id, entry.version || (this.runtimeProbedVersions.get(id) ?? ''))
       }
       this.applyK8sDeclaredFacts()
+      // The half of readiness only this call can settle: before it the member advertises nothing
+      // and the CP would assign it nothing, so it is not servable however healthy it looks.
+      this.k8sRuntimeProbed = true
+      this.readiness?.refresh()
       this.log.info(
         `runtimes ready (probed): ${table.runtimes.map((entry) => `${entry.id}@${entry.version}`).join(', ') || '(none)'}`
       )
@@ -22257,6 +22270,37 @@ export class Daemon {
           : `runtimes: sandbox probe failed — advertising none (${message})`
       )
     }
+  }
+
+  /**
+   * What a Kubernetes readiness probe reads (#1043) — one predicate, so the HTTP endpoint, the
+   * readiness file, and the tests can never answer differently.
+   */
+  readinessState(): ReadinessState {
+    return readinessState({
+      cpRegistered: this.cpClient?.state === 'READY',
+      // No execution plane means no image to interrogate, so a k8s-supervised daemon that runs its
+      // runtimes locally is not held behind a probe it never makes.
+      runtimeProbed: !this.k8sPlane || this.k8sRuntimeProbed,
+      // Both gates: the shutdown latch, and the drain a failed data plane requests an exit behind.
+      draining: this.draining || this.shutdownDraining
+    })
+  }
+
+  /** Start the readiness sinks. Their configuration is environment, not daemon config: the pod
+   *  spec that declares the probe is the same thing that sets the port and path it reads. */
+  private async startReadinessGate(): Promise<void> {
+    const gate = new ReadinessGate({
+      ...readinessSinksFromEnv(process.env, (message) => this.log.warn(message)),
+      state: () => this.readinessState(),
+      log: { info: (message) => this.log.info(message), warn: (message) => this.log.warn(message) }
+    })
+    try {
+      await gate.start()
+    } catch (error) {
+      throw new Error(`daemon startup refused: the readiness endpoint could not listen — ${formatErr(error)}`)
+    }
+    this.readiness = gate
   }
 
   private projectDeclaredRuntimes(
@@ -22665,6 +22709,9 @@ export class Daemon {
     // digest says `draining` with zero headroom — sent now rather than at the next tick, so the CP
     // stops granting to this member within one round trip of the SIGTERM.
     this.shutdownDraining = true
+    // Flip readiness with the latch, not on the next sync tick: the endpoints controller has to
+    // stop routing here while the pod keeps running for the whole drain.
+    this.readiness?.refresh()
     this.dutyClaimsSuspended = true
     const drainDeadlineAt = this.clock.now() + this.shutdownDrainBudgetMs()
     const shutdownDrain: ShutdownDutyDrain = {
@@ -22783,6 +22830,8 @@ export class Daemon {
     // would cut in-flight turns and closing it before host teardown would leave `AcpHost.stop()`
     // unable to send its ACP close — a sandbox process still running, and reconnecting.
     await this.k8sPlane?.stop().catch(() => undefined)
+    await this.readiness?.stop().catch(() => undefined)
+    this.readiness = undefined
     setWorkspaceGitRunnerResolver(undefined)
     setWorkspacePathClearer(undefined)
     setSandboxWorkspaceMode(false)

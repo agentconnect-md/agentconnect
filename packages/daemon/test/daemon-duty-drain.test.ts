@@ -97,6 +97,19 @@ describe('shutdown drain of a duty-holding member', () => {
     expect(duties(daemon).size()).toBe(0)
   })
 
+  it('turns readiness false at the latch, so the endpoints controller stops routing before the drain runs', async () => {
+    const { daemon } = await boot()
+    ;(daemon as any).cpClient.state = 'READY'
+    expect(daemon.readinessState()).toEqual({ ready: true, reason: 'ready' })
+
+    const stopping = daemon.stop()
+    // Synchronous with the latch, not a sync tick later: the drain that follows can take minutes,
+    // and every second of it routing new traffic here is traffic the member is retiring from.
+    expect(daemon.readinessState()).toEqual({ ready: false, reason: 'draining' })
+    await stopping
+    expect(daemon.readinessState()).toEqual({ ready: false, reason: 'draining' })
+  })
+
   it('a late grant with everything clean is never installed and is acknowledged only after the loop is done', async () => {
     const LATE = '11111111-1111-4111-8111-111111111113'
     const { daemon, calls } = await boot()
