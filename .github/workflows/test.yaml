@@ -131,26 +131,20 @@ jobs:
           pnpm_config_enable_pre_post_scripts: false
           VITEST_JOB_SUMMARY_DIR: ${{ runner.temp }}
         run: GITHUB_STEP_SUMMARY="$CAPTURED_JOB_SUMMARY" pnpm test:unit
-      - name: Evaluation contracts
+      # The three evaluation gates in ONE Vitest run. As separate steps they each paid Vitest
+      # startup, config load and transform, and `eval:parity`'s three files could not fill four
+      # workers — 95.5s together against 43.3s merged, locally. `scripts/eval-gates.test.mjs`
+      # fails if the merged list drifts from the three per-gate scripts, which stay for local use.
+      #
+      # Covers: evaluation contracts, the Collaboration Arena gate (collaboration-arena.md §14
+      # step 3), and cross-surface activation parity (docs/designs/activation-parity.md) — a PR
+      # that changes "who does this message activate" must keep every leg green or declare the
+      # divergence in evals/parity/spec.ts with a citation.
+      - name: Evaluation gates
         env:
           CAPTURED_JOB_SUMMARY: ${{ runner.temp }}/unit-test-summary.md
           PROMPTFOO_DISABLE_TELEMETRY: '1'
-        run: GITHUB_STEP_SUMMARY="$CAPTURED_JOB_SUMMARY" pnpm eval:contracts
-      # Collaboration Arena CI gate (collaboration-arena.md §14 step 3): the
-      # deterministic same-room counting game with scripted ACP hosts, plus the
-      # virtual-transport / world-authorization / ingress contract suites.
-      - name: Collaboration Arena contracts
-        env:
-          CAPTURED_JOB_SUMMARY: ${{ runner.temp }}/unit-test-summary.md
-        run: GITHUB_STEP_SUMMARY="$CAPTURED_JOB_SUMMARY" pnpm eval:collab:contracts
-      # Cross-surface activation parity (docs/designs/activation-parity.md):
-      # one scenario spec, per-surface legs — a PR that changes "who does this
-      # message activate" on one surface must either keep every leg green or
-      # declare the divergence in evals/parity/spec.ts with a citation.
-      - name: Activation parity contracts
-        env:
-          CAPTURED_JOB_SUMMARY: ${{ runner.temp }}/unit-test-summary.md
-        run: GITHUB_STEP_SUMMARY="$CAPTURED_JOB_SUMMARY" pnpm eval:parity
+        run: GITHUB_STEP_SUMMARY="$CAPTURED_JOB_SUMMARY" pnpm eval:gates
       - name: Merge unit test summaries
         if: ${{ !cancelled() }}
         env:
