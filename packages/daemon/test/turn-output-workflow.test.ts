@@ -6,6 +6,7 @@ import { Daemon } from '../src/daemon.js'
 import { sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { FakeClock } from './cp/fake-clock.js'
+import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
 // vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a
 // cold session boot (workspace + host + session/new) can stall well past a second.
@@ -84,6 +85,7 @@ describe('TurnOutputWorkflow', () => {
     // cast that only looks like one. A connection without the port contributes
     // no provider snapshot and the fence falls back to daemon-observed rows.
     const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
       root: scaffold(),
       hostFactory: () =>
         ({
@@ -153,6 +155,7 @@ describe('TurnOutputWorkflow', () => {
       stop: vi.fn(async () => {})
     }
     const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
       root: scaffold(),
       hostFactory: (_agent, update) => {
         onUpdate = update
@@ -225,6 +228,7 @@ describe('TurnOutputWorkflow', () => {
       stop: vi.fn(async () => {})
     }
     const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
       root: scaffold(),
       hostFactory: (_agent, update) => {
         onUpdate = update
@@ -319,6 +323,7 @@ describe('TurnOutputWorkflow', () => {
       stop: vi.fn(async () => {})
     }
     const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
       root: scaffold(),
       clock,
       hostFactory: (_agent, update) => {
@@ -359,6 +364,7 @@ describe('TurnOutputWorkflow', () => {
       stop: vi.fn(async () => {})
     }
     const firstDaemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
       root,
       hostFactory: (_agent, update) => {
         onFirstUpdate = update
@@ -406,6 +412,7 @@ describe('TurnOutputWorkflow', () => {
       stop: vi.fn(async () => {})
     }
     const restarted = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
       root,
       hostFactory: (_agent, update) => {
         onRestartedUpdate = update
@@ -456,6 +463,7 @@ describe('TurnOutputWorkflow', () => {
       stop: vi.fn(async () => {})
     }
     const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
       root: scaffold(),
       hostFactory: (_agent, update) => {
         onUpdate = update
@@ -503,6 +511,7 @@ describe('TurnOutputWorkflow', () => {
       stop: vi.fn(async () => {})
     }
     const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
       root: scaffold(),
       hostFactory: (_agent, update) => {
         onUpdate = update

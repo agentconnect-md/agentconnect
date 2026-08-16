@@ -9,6 +9,7 @@ import { AGENTMSG_NOT_READY_RETRY } from '../src/cp/agentmsg-retry.js'
 import { executeTool, type MessageAgentReq } from '../src/mcp/ops.js'
 import { sessionKey } from '../src/store/local-store.js'
 import * as monotonic from '../src/store/monotonic-ts.js'
+import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
 // vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a
 // cold session boot (workspace + host + session/new) can stall well past a second.
@@ -79,7 +80,7 @@ const fakeHost = () => ({
 
 /** Boot a daemon and replace `dispatch` with a spy that records its args. */
 async function bootWithDispatchSpy(root: string) {
-  const daemon = new Daemon({ root, hostFactory: () => fakeHost() as any })
+  const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => fakeHost() as any })
   await daemon.start()
   // Same-daemon authorization consumes the same CP collaboration snapshot as
   // relay terminal verification. Seed the default test channel with every local
@@ -2171,7 +2172,7 @@ describe('spawnChannelRootSession — case 2a new-session seed', () => {
   it('creates an idle session without prompting the model', async () => {
     const root = scaffold([{ id: 'bot-a' }])
     const host = fakeHost()
-    const daemon = new Daemon({ root, hostFactory: () => host as any })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => host as any })
     await daemon.start()
     const targetKey = sessionKey('slack', 'C1', '1784297789.871789', 'bot-a')
 

@@ -14,6 +14,7 @@ import {
 } from '../../src/agents/write-agent.js'
 import { RegisterReq, type AgentSpec } from '@agentconnect.md/protocol'
 import { agentRemovalObligationsDir } from '../../src/paths.js'
+import { fakeSlackAppFactory } from '../fakes/slack-app.js'
 
 const MOVE_ID = '77777777-7777-4777-8777-777777777777'
 const MOVE_ID_2 = '88888888-8888-4888-8888-888888888888'
@@ -54,6 +55,7 @@ function writeAgent(root: string, id: string) {
 function makeDaemon(root: string) {
   const hosts: Array<{ id: string; stop: ReturnType<typeof vi.fn> }> = []
   const daemon = new Daemon({
+    slackAppFactory: fakeSlackAppFactory(),
     root,
     hostFactory: (agent) => {
       const h = {

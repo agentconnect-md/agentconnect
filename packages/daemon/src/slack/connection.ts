@@ -333,7 +333,9 @@ function actorOf(body: BlockActionArgs['body']): InteractionActor | undefined {
   return body?.user?.id ? { userId: body.user.id } : undefined
 }
 
-type AppLike = {
+/** The Slack surface `SlackConnection` drives. Exported so a caller can supply its own — see
+ *  {@link SlackAppFactory}. */
+export type AppLike = {
   message: (handler: (args: { message: unknown }) => Promise<void> | void) => void
   event: (type: string, handler: (args: { event: unknown }) => Promise<void> | void) => void
   action: (actionId: string | RegExp, handler: (args: BlockActionArgs) => Promise<void> | void) => void
@@ -529,6 +531,43 @@ function sendOnlyApp(botToken: string): AppLike {
   }
 }
 
+/** Builds the Slack app a connection drives. The default reaches slack.com; daemon tests inject an
+ *  inert one so a unit suite never depends on Slack being reachable. */
+export type SlackAppFactory = (opts: { token: string; appToken: string }) => AppLike
+
+/** The production socket-mode app: a real Bolt/`WebClient` pair that reaches slack.com. */
+function realSocketModeApp(o: { token: string; appToken: string }, boltDebug?: boolean): AppLike {
+  // If HTTPS_PROXY or HTTP_PROXY is set, route all Slack API calls and
+  // WebSocket connections through that proxy.
+  const dispatcher = proxyDispatcher()
+  const clientOptions: WebClientOptions = {
+    ...(dispatcher ? { fetch: fetchWithDispatcher(dispatcher) } : {}),
+    // Bound the Web API per-request time + retries. The @slack/web-api default
+    // "10 retries over ~30 minutes" would, combined with our serial send-queue,
+    // let one transient failure block all delivery for a whole turn. 30s is a
+    // compromise: long enough for auth.test and sends to survive a slow/VPN link,
+    // yet still bounded so a stuck call cannot wedge the queue indefinitely.
+    timeout: 30_000,
+    retryConfig: { retries: 2 }
+  }
+  const logLevel = boltDebug ? LogLevel.DEBUG : undefined
+  const receiver = new SocketModeReceiver({
+    appToken: o.appToken,
+    ...(dispatcher ? { dispatcher } : {}),
+    installerOptions: { clientOptions },
+    ...(logLevel ? { logLevel } : {})
+  })
+  return new App({
+    token: o.token,
+    receiver,
+    clientOptions,
+    // Bolt v5 otherwise starts token verification from its constructor without
+    // an awaitable lifecycle. start() calls init() before opening the socket.
+    deferInitialization: true,
+    ...(logLevel ? { logLevel } : {})
+  }) as unknown as AppLike
+}
+
 export class SlackConnection implements PlatformConnection {
   private app: AppLike
   // §9.1: all outbound writes (post/update/setStatus/setTitle) funnel through one queue so
@@ -561,37 +600,7 @@ export class SlackConnection implements PlatformConnection {
 
   constructor(
     private deps: SlackDeps,
-    factory: (opts: { token: string; appToken: string }) => AppLike = (o) => {
-      // If HTTPS_PROXY or HTTP_PROXY is set, route all Slack API calls and
-      // WebSocket connections through that proxy.
-      const dispatcher = proxyDispatcher()
-      const clientOptions: WebClientOptions = {
-        ...(dispatcher ? { fetch: fetchWithDispatcher(dispatcher) } : {}),
-        // Bound the Web API per-request time + retries. The @slack/web-api default
-        // "10 retries over ~30 minutes" would, combined with our serial send-queue,
-        // let one transient failure block all delivery for a whole turn. 30s is a
-        // compromise: long enough for auth.test and sends to survive a slow/VPN link,
-        // yet still bounded so a stuck call cannot wedge the queue indefinitely.
-        timeout: 30_000,
-        retryConfig: { retries: 2 }
-      }
-      const logLevel = deps.boltDebug ? LogLevel.DEBUG : undefined
-      const receiver = new SocketModeReceiver({
-        appToken: o.appToken,
-        ...(dispatcher ? { dispatcher } : {}),
-        installerOptions: { clientOptions },
-        ...(logLevel ? { logLevel } : {})
-      })
-      return new App({
-        token: o.token,
-        receiver,
-        clientOptions,
-        // Bolt v5 otherwise starts token verification from its constructor without
-        // an awaitable lifecycle. start() calls init() before opening the socket.
-        deferInitialization: true,
-        ...(logLevel ? { logLevel } : {})
-      }) as unknown as AppLike
-    }
+    factory?: SlackAppFactory
   ) {
     this.appToken = deps.group.appToken
     this.botToken = deps.group.botToken
@@ -599,9 +608,13 @@ export class SlackConnection implements PlatformConnection {
     // Send-only: a bare Web-API client (no Socket Mode, no appToken) wrapped in the
     // AppLike send surface. The event/action/start/stop members are inert — nothing
     // ever registers a handler or opens a socket in this mode.
-    this.app = deps.sendOnly
-      ? sendOnlyApp(deps.group.botToken)
-      : factory({ token: deps.group.botToken, appToken: deps.group.appToken })
+    // An injected factory wins in BOTH modes: send-only otherwise hard-coded `sendOnlyApp`, whose
+    // `auth.test()` reaches Slack, which left injected tests network-dependent on that path.
+    this.app = factory
+      ? factory({ token: deps.group.botToken, appToken: deps.group.appToken })
+      : deps.sendOnly
+        ? sendOnlyApp(deps.group.botToken)
+        : realSocketModeApp({ token: deps.group.botToken, appToken: deps.group.appToken }, deps.boltDebug)
     this.queue = new SlackSendQueue(deps.sendIntervalMs ?? 350)
   }
 

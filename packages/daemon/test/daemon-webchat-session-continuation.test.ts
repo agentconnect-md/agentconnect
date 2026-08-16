@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { Daemon } from '../src/daemon.js'
 import type { RdAck, RdChatEvent, RdMsgWebchat } from '@agentconnect.md/protocol'
+import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
 // Session-targeted webchat continuation (webchat-cross-integration-continuation.md
 // §5.2/§6.4): a browser turn carrying `targetSessionId` dispatches onto the target
@@ -67,7 +68,7 @@ function scriptedHost(reply: (prompt: string) => string) {
 
 async function boot(reply: (prompt: string) => string = () => 'done') {
   const { factory, prompts } = scriptedHost(reply)
-  const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+  const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
   await daemon.start()
   ;(daemon as never as { cpClient: unknown }).cpClient = {
     emitUsageReport: vi.fn(),

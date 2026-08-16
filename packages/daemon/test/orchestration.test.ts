@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { Daemon } from '../src/daemon.js'
 import { sessionKey } from '../src/store/local-store.js'
 import type { StartOrchestrationReq, OrchestrationOwnerReq } from '../src/mcp/ops.js'
+import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
 /**
  * §3.4/§6.8 main-agent orchestration. These drive the daemon's private orchestration
@@ -53,7 +54,7 @@ const fakeHost = () => ({
 
 /** Boot a daemon with `dispatch` replaced by a spy so no real ACP turn runs; capture calls. */
 async function boot(root: string) {
-  const daemon = new Daemon({ root, hostFactory: () => fakeHost() as any })
+  const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => fakeHost() as any })
   await daemon.start()
   const localAgents = [...(daemon as any).agents.values()].map((agent: any) => ({
     agentId: agent.id,
@@ -390,7 +391,7 @@ describe('startup re-arm', () => {
     await daemon.stop()
 
     // Fresh daemon over the SAME root/store → re-arm should re-schedule the deadline.
-    const daemon2 = new Daemon({ root, hostFactory: () => fakeHost() as any })
+    const daemon2 = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => fakeHost() as any })
     ;(daemon2 as any).__noop = true
     await daemon2.start()
     expect((daemon2 as any).orchestrationDeadlines.has(res.orchestrationId)).toBe(true)

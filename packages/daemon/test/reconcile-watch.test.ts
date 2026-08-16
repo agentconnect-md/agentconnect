@@ -6,6 +6,7 @@ import { Daemon } from '../src/daemon.js'
 import { SlackConnection } from '../src/slack/connection.js'
 import { TelegramConnection } from '../src/telegram/connection.js'
 import { DiscordConnection } from '../src/discord/connection.js'
+import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
 // vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a
 // cold session boot (workspace + host + session/new) can stall well past a second.
@@ -65,6 +66,7 @@ describe('Daemon debounce timer cleared on stop()', () => {
     writeAgent(root, 'bot-a')
     const daemon = new Daemon({
       root,
+      slackAppFactory: fakeSlackAppFactory(),
       hostFactory: () =>
         ({
           __started: true,
@@ -129,6 +131,7 @@ describe('Daemon.reconcile', () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     const daemon = new Daemon({
       root,
+      slackAppFactory: fakeSlackAppFactory(),
       hostFactory: () =>
         ({
           __started: true,
@@ -155,6 +158,7 @@ describe('Daemon.reconcile', () => {
     writeAgent(root, 'bot-a')
     const daemon = new Daemon({
       root,
+      slackAppFactory: fakeSlackAppFactory(),
       hostFactory: () =>
         ({
           __started: true,
@@ -321,6 +325,7 @@ describe('Daemon watcher resilience: corrupt agent.json', () => {
     writeAgent(root, 'bot-b')
     const daemon = new Daemon({
       root,
+      slackAppFactory: fakeSlackAppFactory(),
       hostFactory: () =>
         ({
           __started: true,

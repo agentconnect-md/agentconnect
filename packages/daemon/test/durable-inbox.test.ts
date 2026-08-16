@@ -8,6 +8,7 @@ import { statePath } from '../src/paths.js'
 import { Daemon } from '../src/daemon.js'
 import { stableMessageId } from '../src/messages/normalized.js'
 import type { WebchatOutput, WebchatDone } from '@agentconnect.md/protocol'
+import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
 // vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a
 // cold session boot (workspace + host + session/new) can stall well past a second.
@@ -431,7 +432,7 @@ function retainedHook(deliveryKey: string) {
 }
 
 async function boot(root: string, host: any) {
-  const daemon = new Daemon({ root, hostFactory: () => host as any })
+  const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => host as any })
   await daemon.start()
   return daemon
 }
@@ -1013,6 +1014,7 @@ describe('daemon durable inbox', () => {
     const a = gatedHost('acp-a')
     const b = gatedHost('acp-b')
     const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
       root,
       hostFactory: (agent) => (agent.id === 'bot-a' ? a.host : b.host) as any
     })
@@ -1389,6 +1391,7 @@ describe('daemon durable inbox', () => {
       stop: vi.fn(async () => {})
     }
     const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
       root,
       hostFactory: (_agent, update) => {
         onUpdate = update

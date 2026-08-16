@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Daemon } from '../src/daemon.js'
+import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
 /**
  * Live-turn auth signal (issue: claude-agent-acp initializes, opens sessions,
@@ -105,7 +106,7 @@ describe('live-turn runtime auth signal', () => {
       cancel: vi.fn(async () => {}),
       stop: vi.fn(async () => {})
     }
-    const daemon = new Daemon({ root, hostFactory: () => fakeHost as any })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => fakeHost as any })
     await daemon.start()
     makeRoutable(daemon)
     const emitted: Array<Array<{ runtime: string; authRequired?: boolean }>> = []
@@ -164,7 +165,7 @@ describe('live-turn runtime auth signal', () => {
       cancel: vi.fn(async () => {}),
       stop: vi.fn(async () => {})
     }
-    const daemon = new Daemon({ root, hostFactory: () => fakeHost as any })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => fakeHost as any })
     await daemon.start()
     makeRoutable(daemon)
     ;(daemon as any).cpClient = {

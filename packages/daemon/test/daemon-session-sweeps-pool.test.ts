@@ -7,6 +7,7 @@ import { Daemon } from '../src/daemon.js'
 import { LocalStore } from '../src/store/local-store.js'
 import { statePath } from '../src/paths.js'
 import { FakeClock } from './cp/fake-clock.js'
+import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
 /**
  * #1032 — on a daemon pool the session table is one table for every member, but the
@@ -56,7 +57,7 @@ function scaffold(): string {
 /** One pool member: duty leases gate service, exactly like an install-wide member. */
 async function boot(root: string, daemonId: string) {
   const clock = new FakeClock()
-  const daemon = new Daemon({ root, hostFactory: () => ({}) as any, clock })
+  const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => ({}) as any, clock })
   await daemon.start()
   const inner = daemon as any
   inner.cfg.daemonId = daemonId

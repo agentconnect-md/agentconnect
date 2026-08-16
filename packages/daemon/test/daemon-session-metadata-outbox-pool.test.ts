@@ -7,6 +7,7 @@ import { Daemon } from '../src/daemon.js'
 import { LocalStore } from '../src/store/local-store.js'
 import { statePath } from '../src/paths.js'
 import { FakeClock } from './cp/fake-clock.js'
+import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
 /**
  * #1023 — on a daemon pool the session-metadata outbox is one shared table, but the
@@ -59,7 +60,7 @@ type Member = Awaited<ReturnType<typeof boot>>
  *  from the agent registry, which on a pool carries only the agents this member serves. */
 async function boot(root: string, daemonId: string, scope: 'frame' | 'install' = 'frame') {
   const clock = new FakeClock()
-  const daemon = new Daemon({ root, hostFactory: () => ({}) as any, clock })
+  const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => ({}) as any, clock })
   await daemon.start()
   const inner = daemon as any
   inner.cfg.daemonId = daemonId

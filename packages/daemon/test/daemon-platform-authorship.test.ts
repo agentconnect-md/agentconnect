@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { manifestFor } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
+import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
 /**
  * Behavioral pins for the bot-authorship cluster — the seven core branches that were
@@ -89,7 +90,11 @@ const fakeHost = () => ({
  * verify. The gates are what keep it out, not a missing snapshot row.
  */
 async function boot(agentIds: string[], over: { botShared?: boolean; platforms?: string[] } = {}) {
-  const daemon = new Daemon({ root: scaffold(agentIds), hostFactory: () => fakeHost() as any })
+  const daemon = new Daemon({
+    root: scaffold(agentIds),
+    hostFactory: () => fakeHost() as any,
+    slackAppFactory: fakeSlackAppFactory()
+  })
   await daemon.start()
   const placements = agentIds.map((id) => ({
     agentId: id,

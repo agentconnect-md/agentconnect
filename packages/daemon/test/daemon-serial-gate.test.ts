@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Daemon } from '../src/daemon.js'
 import type { WebchatOutput, WebchatDone } from '@agentconnect.md/protocol'
+import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
 // vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a
 // cold session boot (workspace + host + session/new) can stall well past a second.
@@ -101,7 +102,11 @@ const msg = (ts: string, text: string, thread = 'T1') => ({
 })
 
 async function boot(host: any) {
-  const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+  const daemon = new Daemon({
+    slackAppFactory: fakeSlackAppFactory(),
+    root: scaffold(),
+    hostFactory: () => host as any
+  })
   await daemon.start()
   return daemon
 }
@@ -170,7 +175,7 @@ describe('P4 serial gate', () => {
     )
 
     const g = gatedHost()
-    const daemon = new Daemon({ root, hostFactory: () => g.host as any })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => g.host as any })
     await daemon.start()
     const key = 'slack:C1:T1:bot-a'
     const active = (daemon as any).dispatch('bot-a', msg('100', 'active'), 'int-a')
@@ -234,7 +239,7 @@ describe('P4 serial gate', () => {
     )
 
     const g = gatedHost()
-    const daemon = new Daemon({ root, hostFactory: () => g.host as any })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => g.host as any })
     await daemon.start()
     await (daemon as any).ensureHostAsync('bot-a')
     expect((daemon as any).hosts.has('bot-a')).toBe(true)
