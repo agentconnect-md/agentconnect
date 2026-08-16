@@ -2181,7 +2181,7 @@ describe('Daemon rd/msg hook fires', () => {
         status: 'success'
       })
     }))
-    vi.spyOn((daemon as any).store, 'listInboxBySessionKeyFifo').mockReturnValue(rows)
+    vi.spyOn((daemon as any).store, 'listHookTerminalReports').mockReturnValue(rows)
 
     ;(daemon as any).replayHookTerminalReports()
     expect(emitHookReport).toHaveBeenCalledTimes(100)
@@ -2197,7 +2197,7 @@ describe('Daemon rd/msg hook fires', () => {
     await daemon.start()
     ;(daemon as never as { cpClient: unknown }).cpClient = fakeCpClient()
     const retry = vi.spyOn(daemon as any, 'scheduleHookReportRetry').mockImplementation(() => {})
-    const list = vi.spyOn((daemon as any).store, 'listInboxBySessionKeyFifo').mockImplementation(() => {
+    const list = vi.spyOn((daemon as any).store, 'listHookTerminalReports').mockImplementation(() => {
       throw new Error('sqlite busy')
     })
 
@@ -2258,6 +2258,66 @@ describe('Daemon rd/msg hook fires', () => {
     expect(cp.hookReports[0]).toMatchObject({ deliveryKey: 'double-terminal', status: 'success' })
     const receipt = (daemon as any).store.listInboxBySessionKeyFifo().find((row: { id: string }) => row.id === id)
     expect(JSON.parse(receipt.terminalReport)).toMatchObject({ status: 'success' })
+    await daemon.stop()
+  }, 15_000)
+
+  it("keeps a peer dispatch's report body when the CP answers a permanent CONFLICT", async () => {
+    // #1035: on a pool the outbox is one shared table. A member that emitted a peer's
+    // row is told CONFLICT because it is the wrong reporter — not because the
+    // completion is invalid — so nulling the body would lose a finished turn forever.
+    const { factory } = streamingHost()
+    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    await daemon.start()
+    const rejection = Object.assign(new Error('hook completion does not match the accepted dispatch'), {
+      retryable: false
+    })
+    ;(daemon as never as { cpClient: unknown }).cpClient = {
+      stop: vi.fn(async () => {}),
+      organizationScope: () => 'connection' as const,
+      emitHookReport: vi.fn(async () => {
+        throw rejection
+      })
+    }
+    const store = (daemon as any).store
+    const mine = `${HOOK_ID}:own-dispatch`
+    const peers = `${HOOK_ID}:peer-dispatch`
+    for (const deliveryKey of ['own-dispatch', 'peer-dispatch']) {
+      const id = `${HOOK_ID}:${deliveryKey}`
+      const message = buildHookMessage(fire({ msgId: id, deliveryKey }), `trace-${deliveryKey}`)
+      expect(
+        store.appendInbox({
+          id,
+          sessionKey: `${message.platform}:${message.channel}:${message.thread}:${AGENT_ID}`,
+          agentId: AGENT_ID,
+          msg: JSON.stringify(message),
+          hookContext: '{}',
+          enqueuedAt: '1'
+        })
+      ).toBe(true)
+      expect(store.completeHookInbox(id, JSON.stringify({ deliveryKey }), 1)).toBe('completed')
+    }
+    const report = (dispatchDaemonId?: string): HookReport => ({
+      hookId: HOOK_ID,
+      agentId: AGENT_ID,
+      deliveryKey: 'd-1',
+      status: 'success',
+      ...(dispatchDaemonId ? { dispatchDaemonId } : {})
+    })
+
+    ;(daemon as any).sendHookReport(report((daemon as any).cfg.daemonId), mine)
+    ;(daemon as any).sendHookReport(report('cccccccc-cccc-4ccc-8ccc-cccccccccccc'), peers)
+
+    const rowById = (id: string) =>
+      store.listInboxBySessionKeyFifo().find((row: { id: string }) => row.id === id) as {
+        terminalReport: string | null
+      }
+    // Our own dispatch fence can never become valid: dead-letter it as before.
+    await vi.waitFor(() => expect(rowById(mine).terminalReport).toBeNull(), WAIT)
+    expect(rowById(peers).terminalReport).not.toBeNull()
+    expect((daemon as any).hookReportForeign.has(peers)).toBe(true)
+    // And the drain leaves it alone on the next CP ready.
+    ;(daemon as any).replayHookTerminalReports()
+    expect(rowById(peers).terminalReport).not.toBeNull()
     await daemon.stop()
   }, 15_000)
 
