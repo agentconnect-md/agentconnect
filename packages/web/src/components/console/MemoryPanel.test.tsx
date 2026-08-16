@@ -4,7 +4,12 @@ import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const mocks = vi.hoisted(() => ({ updateAgent: vi.fn(), isMobile: false }))
+const mocks = vi.hoisted(() => ({
+  updateAgent: vi.fn(),
+  isMobile: false,
+  // What the wake answers; the panel presses it once when a memory read refuses as a sleeping sandbox.
+  wake: 'starting' as 'running' | 'starting' | 'unsupported'
+}))
 
 vi.mock('next/dynamic', () => ({ default: () => () => null }))
 
@@ -12,15 +17,28 @@ vi.mock('@/lib/data-context', () => ({
   useConsoleData: () => ({ updateAgent: mocks.updateAgent })
 }))
 
-vi.mock('@/lib/api', () => ({
-  ApiError: class ApiError extends Error {
-    status = 500
-  },
-  fetchAgentMemoryFull: vi.fn(),
-  listAgentMemory: vi.fn(),
-  updateAgentMemory: vi.fn(),
-  fetchAgentMemoryChannels: vi.fn(async () => ({ channels: [] }))
-}))
+vi.mock('@/lib/api', () => {
+  class ApiError extends Error {
+    constructor(
+      message: string,
+      public status = 500,
+      public code?: string
+    ) {
+      super(message)
+    }
+  }
+  return {
+    ApiError,
+    fetchAgentMemoryFull: vi.fn(),
+    listAgentMemory: vi.fn(),
+    updateAgentMemory: vi.fn(),
+    fetchAgentMemoryChannels: vi.fn(async () => ({ channels: [] })),
+    wakeAgent: vi.fn(() => Promise.resolve({ state: mocks.wake })),
+    // Pulled in by the workspace read model the sandbox code constant lives beside; never called from here.
+    fetchWorkspaceFiles: vi.fn(),
+    fetchWorkspaceGitStatus: vi.fn()
+  }
+})
 
 vi.mock('@/components/console/ExternalMemoryBindingFields', () => ({
   DEFAULT_EXTERNAL_MEMORY_BINDING: {
@@ -59,7 +77,14 @@ vi.mock('@/components/console/ManagedMemoryHistory', () => ({
   ManagedMemoryHistory: () => <div data-testid="memory-file-history" />
 }))
 
-import { fetchAgentMemoryFull, listAgentMemory, updateAgentMemory, fetchAgentMemoryChannels } from '@/lib/api'
+import {
+  ApiError,
+  fetchAgentMemoryFull,
+  listAgentMemory,
+  updateAgentMemory,
+  fetchAgentMemoryChannels,
+  wakeAgent
+} from '@/lib/api'
 import { MemoryPanel } from './MemoryPanel'
 
 const CONNECTION_ID = '11111111-1111-4111-8111-111111111111'
@@ -72,6 +97,10 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 beforeEach(() => {
   mocks.updateAgent.mockReset().mockResolvedValue(undefined)
   mocks.isMobile = false
+  mocks.wake = 'starting'
+  vi.mocked(wakeAgent)
+    .mockReset()
+    .mockImplementation(() => Promise.resolve({ state: mocks.wake }))
   vi.mocked(listAgentMemory)
     .mockReset()
     .mockResolvedValue({
@@ -681,5 +710,114 @@ describe('MemoryPanel settings draft', () => {
     })
     // A successful save collapses the form back to the summary bar.
     expect(container.querySelector('[data-memory-provider="native"]')).toBeNull()
+  })
+})
+
+// A cluster agent's managed memory lives on its sandbox volume (#1078), so the memory reads refuse with the same
+// asleep code the workspace reads do — and the panel answers it the way the Files surfaces do: one wake, then a poll.
+describe('MemoryPanel sandbox wake', () => {
+  const AGENT = '22222222-2222-4222-8222-222222222222'
+  const asleep = () => new ApiError('sandbox not running', 503, 'WORKSPACE_SANDBOX_UNAVAILABLE')
+
+  const refuse = (error: () => Error) => {
+    vi.mocked(listAgentMemory).mockImplementation(() => Promise.reject(error()))
+    vi.mocked(fetchAgentMemoryFull).mockImplementation(() => Promise.reject(error()))
+  }
+
+  const mount = async (props: { sandboxed?: boolean; memoryProvider?: string } = {}) => {
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => {
+      root?.render(
+        <MemoryPanel
+          agentId={AGENT}
+          canEdit
+          memoryProvider={props.memoryProvider ?? 'managed'}
+          autoDistill={false}
+          sandboxed={props.sandboxed}
+        />
+      )
+      await Promise.resolve()
+    })
+    // The wake's own round trip, then the render it settles.
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+  }
+
+  const text = () => container?.textContent ?? ''
+  const startButton = () =>
+    Array.from(container?.querySelectorAll<HTMLButtonElement>('button') ?? []).find(
+      (button) => button.textContent?.trim() === 'Start'
+    )
+
+  it('presses the wake once and says so calmly while the read is polled — never an error', async () => {
+    refuse(asleep)
+    mocks.wake = 'starting'
+    await mount()
+
+    expect(vi.mocked(wakeAgent)).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(wakeAgent)).toHaveBeenCalledWith(AGENT)
+    expect(text()).toContain('Starting the agent’s sandbox')
+    expect(text()).not.toContain('may be offline')
+    expect(text()).not.toContain('its pod is not running')
+  })
+
+  it('leaves a daemon with nothing to wake on the terminal copy, without a Start button', async () => {
+    refuse(asleep)
+    mocks.wake = 'unsupported'
+    await mount()
+
+    expect(vi.mocked(wakeAgent)).toHaveBeenCalledTimes(1)
+    expect(text()).toContain('Memory is not available right now')
+    expect(text()).toContain('its memory comes back with it')
+    expect(text()).not.toContain('may be offline')
+    expect(startButton()).toBeUndefined()
+  })
+
+  it('offers Start on the terminal copy, and pressing it wakes again', async () => {
+    // A refused press ends the attempt at once, which is the terminal state without waiting out the poll bound.
+    refuse(asleep)
+    vi.mocked(wakeAgent).mockImplementation(() => Promise.reject(new ApiError('forbidden', 403)))
+    await mount()
+
+    expect(vi.mocked(wakeAgent)).toHaveBeenCalledTimes(1)
+    expect(text()).toContain('Memory is not available right now')
+    const start = startButton()
+    expect(start).toBeTruthy()
+
+    await act(async () => {
+      start?.click()
+      await Promise.resolve()
+    })
+    expect(vi.mocked(wakeAgent)).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps the offline story for a 503 without the code, and presses nothing', async () => {
+    refuse(() => new ApiError('daemon offline', 503))
+    await mount()
+
+    expect(vi.mocked(wakeAgent)).not.toHaveBeenCalled()
+    expect(text()).toContain('the owning daemon may be offline')
+    expect(text()).not.toContain('its pod is not running')
+    expect(startButton()).toBeUndefined()
+  })
+
+  it('wakes a sandboxed agent on open, before any read has refused', async () => {
+    await mount({ sandboxed: true })
+
+    expect(vi.mocked(wakeAgent)).toHaveBeenCalledTimes(1)
+    // The reads answered, so nothing is left on screen to explain.
+    expect(text()).not.toContain('Starting the agent’s sandbox')
+    expect(text()).not.toContain('Memory is not available right now')
+  })
+
+  it('never presses for a backend that does not live on the sandbox volume', async () => {
+    // Runtime-native memory is the runtime's own store, so a sandboxed agent's Memory tab starts no pod for it.
+    await mount({ sandboxed: true, memoryProvider: 'native' })
+
+    expect(vi.mocked(wakeAgent)).not.toHaveBeenCalled()
   })
 })

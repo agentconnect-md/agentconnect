@@ -1,8 +1,8 @@
 'use client'
 
-// The two things a Files surface says while its agent's sandbox is not running (#1070): the calm "starting" line
-// while a wake is polling the read, and the terminal not-available copy with a Start button once it gave up.
-// Shared by the agent page's file browser and the dock's Files panel so the two never drift.
+// The two things a sandbox-backed surface says while its agent's sandbox is not running (#1070): the calm
+// "starting" line while a wake is polling the read, and the terminal not-available copy with a Start button once
+// it gave up. Shared by the agent page's file browser, the dock's Files panel and the Memory tab so they never drift.
 
 import type { ReactNode } from 'react'
 import { Spinner } from '@/components/marks'
@@ -12,6 +12,10 @@ import type { SandboxWake } from '@/components/console/sandbox-wake'
 /** The terminal copy for a sleeping sandbox — kept verbatim from before the wake existed. */
 export const SANDBOX_ASLEEP_NOTICE =
   'Files are not available right now — this agent runs in a cluster sandbox and its pod is not running. It starts again on the agent’s next turn, and the workspace comes back with it.'
+
+/** The same story for managed memory (#1078), which lives on that same sandbox volume. */
+export const MEMORY_SANDBOX_ASLEEP_NOTICE =
+  'Memory is not available right now — this agent runs in a cluster sandbox and its pod is not running. It starts again on the agent’s next turn, and its memory comes back with it.'
 
 /** What is drawn while the sandbox is being started. Not an error: nothing is wrong, and the read is being polled. */
 export function SandboxStartingNotice({ compact = false }: { compact?: boolean }) {
