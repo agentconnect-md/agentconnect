@@ -318,6 +318,7 @@ export interface AgentDto {
   placementKind?: PlacementKindValue
   placementReady?: boolean
   daemonId: string | null
+  daemonName: string | null
   setId?: string | null
   workspace: AgentWorkspaceDto
   workspaceRepoId?: string | null
@@ -1813,6 +1814,7 @@ export function agentFromDto(d: AgentDto): Agent {
     placementKind: d.placementKind ?? 'daemon',
     placementReady: d.placementReady ?? false,
     daemon: placementValueOf(d) ?? PLACEHOLDER,
+    ...(d.daemonName ? { daemonName: d.daemonName } : {}),
     region: PLACEHOLDER,
     repo: ws.mode === 'github' ? ws.repo : PLACEHOLDER,
     workdir: ws.mode === 'github' ? ws.agentDir : PLACEHOLDER,

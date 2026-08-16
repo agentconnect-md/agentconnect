@@ -1,11 +1,13 @@
-// The console's ONE mapping from a DTO's placement pair to the value it selects on.
-//
-// A pool placement carries `daemonId: null` by design — no member id survives a rollout — so
-// anything that derives "is this the pool?" from `daemonId` being non-null reads a pool agent as
-// unplaced. That is what made a reloaded agent lose its Cloud selection: the list projection went
-// through the mapping and the editor's own re-fetch did not.
+// Placement projection regressions for machine and set targets.
 import { describe, it, expect } from 'vitest'
-import { POOL_PLACEMENT, effectiveAgentStatus, agentIsPlaced, placementValueOf } from '@/lib/data'
+import {
+  POOL_LABEL,
+  POOL_PLACEMENT,
+  agentDaemonLabel,
+  effectiveAgentStatus,
+  agentIsPlaced,
+  placementValueOf
+} from '@/lib/data'
 import type { Agent, DaemonRow } from '@/lib/data'
 
 const poolAgent = (over: Partial<Agent> = {}): Pick<Agent, 'status' | 'daemon' | 'placementKind' | 'placementReady'> =>
@@ -40,6 +42,15 @@ describe('placementValueOf', () => {
     expect(placementValueOf({ placementKind: 'daemon', daemonId: null })).toBeNull()
     // An older CP omits the field entirely; that has to keep meaning `daemon`.
     expect(placementValueOf({ daemonId: 'dmn_1' })).toBe('dmn_1')
+  })
+})
+
+describe('agentDaemonLabel', () => {
+  it('uses the Agent projection outside the visible fleet and never falls back to a raw daemon id', () => {
+    const daemonId = 'd8e6ea1f-c9bb-4d7b-8b75-e4db14e84999'
+    expect(agentDaemonLabel({ daemon: daemonId, daemonName: 'Daemon A', placementKind: 'daemon' }, [])).toBe('Daemon A')
+    expect(agentDaemonLabel({ daemon: daemonId, placementKind: 'daemon' }, [])).toBe('—')
+    expect(agentDaemonLabel({ daemon: POOL_PLACEMENT, placementKind: 'set' }, [])).toBe(POOL_LABEL)
   })
 })
 

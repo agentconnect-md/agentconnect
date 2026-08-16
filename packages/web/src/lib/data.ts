@@ -83,6 +83,15 @@ export function placementValueOf(dto: { placementKind?: PlacementKindValue; daem
   return isPoolPlacementKind(dto.placementKind) ? POOL_PLACEMENT : (dto.daemonId ?? null)
 }
 
+/** Resolve placement display text without exposing an unresolved daemon id. */
+export function agentDaemonLabel(
+  agent: Pick<Agent, 'daemon' | 'daemonName' | 'placementKind'>,
+  daemons: readonly Pick<DaemonRow, 'daemonId' | 'name'>[]
+): string {
+  if (isPoolPlacementKind(agent.placementKind)) return POOL_LABEL
+  return agent.daemonName ?? daemons.find((daemon) => daemon.daemonId === agent.daemon)?.name ?? '—'
+}
+
 /** One status for the whole pool: online while any member is serving. */
 export function poolFleetStatus(members: Pick<DaemonRow, 'status'>[]): ConnectionStatusKey {
   return members.some((m) => m.status === 'online') ? 'online' : 'offline'
@@ -345,6 +354,8 @@ export interface Agent {
    *  live", which is the question the console used to answer with a dead member's liveness. */
   placementReady?: boolean
   daemon: string
+  /** Display name projected with the Agent; available even when the daemon itself is not visible. */
+  daemonName?: string
   region: string
   /** Convenience mirror of the workspace for list views: github repo, else '—'. */
   repo: string
@@ -1223,6 +1234,7 @@ export const AGENTS: Agent[] = (
       organizationVariables: [],
       organizationSecretKeys: [],
       daemon: 'edge-1',
+      daemonName: 'edge-1',
       region: 'us-west',
       repo: 'acme/infra',
       workdir: './services/api',
@@ -1315,6 +1327,7 @@ export const AGENTS: Agent[] = (
       organizationVariables: [],
       organizationSecretKeys: [],
       daemon: 'edge-1',
+      daemonName: 'edge-1',
       region: 'us-west',
       repo: 'acme/web',
       workdir: './',
@@ -1393,6 +1406,7 @@ export const AGENTS: Agent[] = (
       organizationVariables: [],
       organizationSecretKeys: [],
       daemon: 'edge-2',
+      daemonName: 'edge-2',
       region: 'us-east',
       repo: '—',
       workdir: '/var/agentconnect/ws/oncall-bot',
@@ -1460,6 +1474,7 @@ export const AGENTS: Agent[] = (
       organizationVariables: [],
       organizationSecretKeys: [],
       daemon: 'edge-1',
+      daemonName: 'edge-1',
       region: 'us-west',
       repo: 'acme/docs',
       workdir: './',

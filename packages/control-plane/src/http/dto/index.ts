@@ -711,6 +711,7 @@ export const AgentDto = z.object({
   // durable, so the console must read readiness from `placementReady` rather than from a machine.
   placementKind: z.enum(['daemon', 'set']),
   daemonId: z.string().nullable(),
+  daemonName: z.string().nullable(), // display-only placement metadata; does not grant daemon access
   setId: z.string().nullable(), // the `set`-kind ref; null for a `daemon` placement
   /** Can a session start right now? For a `daemon` placement that is its daemon's liveness; for a
    *  `set` placement it is "some live member could serve this", which is the question the console
