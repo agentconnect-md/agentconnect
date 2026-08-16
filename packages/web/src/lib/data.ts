@@ -89,7 +89,7 @@ export function agentDaemonLabel(
   daemons: readonly Pick<DaemonRow, 'daemonId' | 'name'>[]
 ): string {
   if (isPoolPlacementKind(agent.placementKind)) return POOL_LABEL
-  return agent.daemonName ?? daemons.find((daemon) => daemon.daemonId === agent.daemon)?.name ?? '—'
+  return daemons.find((daemon) => daemon.daemonId === agent.daemon)?.name ?? agent.daemonName ?? '—'
 }
 
 /** One status for the whole pool: online while any member is serving. */
