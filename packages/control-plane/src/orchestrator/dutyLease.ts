@@ -136,7 +136,12 @@ export class DutyLeaseService {
      *  moves who serves the agent, so the hook rules, HTTP-bot assignment and collaboration
      *  snapshot have to follow — otherwise the ledger heals and ingress keeps arriving at the
      *  member that lost it. Absent (tests / no pool) ⇒ no convergence, the pre-duty behavior. */
-    private readonly routing?: { kick(agentIds: Iterable<string>): void }
+    private readonly routing?: { kick(agentIds: Iterable<string>): void },
+    /** Converges the per-session capture gates of what this member now serves. A member registers
+     *  BEFORE it holds anything, so register-time replay alone leaves a duty acquired later with
+     *  no gate state at all (the duty bundle carries none). Absent ⇒ no replay, the pre-duty
+     *  behavior. */
+    private readonly visibility?: { replayTo(daemonId: DaemonId): Promise<void> }
   ) {
     this.bootedAtMs = clock.now()
   }
@@ -352,6 +357,13 @@ export class DutyLeaseService {
     if (confirmed.length > 0) {
       const groups = held.filter((g) => confirmed.includes(g.groupId))
       this.routing?.kick(agentIdsOf(groups))
+      // Same moment, same reason: what this member now serves includes sessions whose capture gate
+      // was tightened while someone else held them. Register-time replay cannot have carried them
+      // — the member held nothing then. Best-effort; `confirmHeld` fires once per grant, not per
+      // beat, and the daemon fails closed on an unknown gate until this lands.
+      void this.visibility
+        ?.replayTo(daemonId)
+        .catch((err) => this.log?.warn({ daemonId, err }, 'visibility replay on duty admission failed'))
     }
 
     // Re-issue held groups the member does not know it holds (restart / lost

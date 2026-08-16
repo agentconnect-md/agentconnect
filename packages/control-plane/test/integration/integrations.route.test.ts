@@ -15,6 +15,7 @@ import { describe, it, expect, afterEach } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
 import { seedDaemon, seedAgent, seedDutyGroup } from '../fixtures/seed.js'
+import { seedPoolMember } from '../fakes/member-set.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { ControlSender } from '../../src/orchestrator/outbound.js'
 import type { IntegrationUpsert, IntegrationRemove } from '@agentconnect.md/protocol'
@@ -1799,6 +1800,44 @@ describe('integration updates follow the duty holder', () => {
     // A holder still admitting on the ungated defaults would serve conversations
     // the agent's new visibility forbids.
     expect(held!.u.core.gated).toBe(true)
+  })
+
+  // #1026: the create probed with the resolver and then finalized on `agent.daemonId`, which is
+  // NULL for a pool agent — so the whole install refused after its capability check had passed.
+  it('installs on a POOL agent through the member holding its duty (#1026)', async () => {
+    const setId = await seedPoolMember(prisma, HOLDER)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { setId })
+    await seedDutyGroup(prisma, GROUP, HOLDER, [agentId])
+    const { app, spy } = withSpy()
+
+    const created = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: { name: 'pool-bot', platform: 'slack', agentId, slack: SLACK }
+    })
+    expect({ status: created.statusCode, message: created.json() }).toMatchObject({ status: 201 })
+    expect(spy.upserts.map((u) => u.daemonId)).toEqual([HOLDER])
+    expect(await prisma.integration.count()).toBe(1)
+  })
+
+  it('a POOL agent nothing is serving is still refused with 409, and stores nothing', async () => {
+    const setId = await seedPoolMember(prisma, HOLDER)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { setId })
+    const { app, spy } = withSpy()
+
+    const created = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: { name: 'pool-bot', platform: 'slack', agentId, slack: SLACK }
+    })
+    expect(created.statusCode).toBe(409)
+    expect({
+      integrations: await prisma.integration.count(),
+      bots: await prisma.bot.count(),
+      pushes: spy.upserts
+    }).toEqual({ integrations: 0, bots: 0, pushes: [] })
   })
 
   it('an EXPIRED lease is not a holding — the dependent goes to the placement alone', async () => {

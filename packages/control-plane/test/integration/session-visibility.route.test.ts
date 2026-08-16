@@ -9,10 +9,17 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
-import { seedAgent, seedDaemon, seedSessionMeta } from '../fixtures/seed.js'
+import { seedAgent, seedDaemon, seedDutyGroup, seedSessionMeta } from '../fixtures/seed.js'
+import { seedPoolMember } from '../fakes/member-set.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import { PgSessionRepo } from '../../src/persistence/repositories/session.repo.js'
+import { PgAgentRepo } from '../../src/persistence/repositories/agent.repo.js'
+import { PgDutyGroupRepo } from '../../src/persistence/repositories/duty-group.repo.js'
+import { PlacementResolver } from '../../src/orchestrator/placementResolver.js'
+import { SessionVisibilityPushService, SNAPSHOT_CHUNK } from '../../src/orchestrator/visibilityPush.js'
+import { systemClock } from '../../src/domain/clock.js'
+import { SESSION_VISIBILITY_FEATURE, SLACK_SESSION_AUDIENCE_FEATURE } from '@agentconnect.md/protocol'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import { AgentId, OrgId, SessionId } from '../../src/domain/ids.js'
 import type { OrgMemberRole } from '../../src/persistence/ports.js'
@@ -1167,8 +1174,8 @@ describe('session visibility — §5.1 daemon-ack cutover', () => {
     })
     await repo.recordVisibilityAck(SessionId(fresh), 0)
 
-    expect(await repo.countUnackedVisibility(daemonId)).toBe(1)
-    const capped = await repo.visibilitySnapshotForDaemon(daemonId, 1)
+    expect(await repo.countUnackedVisibilityForAgents([agentId])).toBe(1)
+    const capped = await repo.visibilitySnapshotForAgents([agentId], 1)
     expect(capped).toEqual([
       {
         sessionId: stale,
@@ -1203,10 +1210,11 @@ describe('session visibility — §5.1 daemon-ack cutover', () => {
     expect(subtree.find((r) => r.id === child)).toMatchObject({ visibilityAckedRev: -1, visibilityRev: 1 })
   })
 
-  it('snapshots the gate state for one daemon, newest first', async () => {
+  it('snapshots the gate state for the agents a daemon serves, newest first', async () => {
     const daemonId = await seedDaemon(prisma, randomUUID())
     const otherDaemonId = await seedDaemon(prisma, randomUUID())
     const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+    const otherAgentId = await seedAgent(prisma, randomUUID(), { daemonId: otherDaemonId })
     const older = await seedSessionMeta(prisma, `s-snap-old-${randomUUID()}`, agentId, {
       daemonId,
       lastActivityAt: new Date(Date.now() - 60_000)
@@ -1216,9 +1224,10 @@ describe('session visibility — §5.1 daemon-ack cutover', () => {
       visibility: 'private',
       lastActivityAt: new Date()
     })
-    await seedSessionMeta(prisma, `s-snap-elsewhere-${randomUUID()}`, agentId, { daemonId: otherDaemonId })
+    // Another agent's session never rides this page, whichever daemon first reported it.
+    await seedSessionMeta(prisma, `s-snap-elsewhere-${randomUUID()}`, otherAgentId, { daemonId: otherDaemonId })
 
-    const snapshot = await new PgSessionRepo(prisma).visibilitySnapshotForDaemon(daemonId, 10)
+    const snapshot = await new PgSessionRepo(prisma).visibilitySnapshotForAgents([agentId], 10)
     expect(snapshot).toEqual([
       {
         sessionId: newer,
@@ -1236,6 +1245,162 @@ describe('session visibility — §5.1 daemon-ack cutover', () => {
         sharedMemoryExcluded: false,
         visibilityRev: 0
       }
+    ])
+  })
+})
+
+/**
+ * #1029 — the reconnect replay is what "ultimately closes the bypass" for a gate a member missed.
+ * It paged by `session_meta.daemonId`, the daemon that FIRST reported the session (nulled once
+ * that member is reaped), so a duty that moved after a rollout left the new holder replaying
+ * nothing and capturing from a session the user had marked private.
+ */
+describe('session visibility — §5.1 replay follows the serving member', () => {
+  const RETIRED = 'd5555555-5555-4555-8555-555555555555'
+  const NEW_HOLDER = 'd6666666-6666-4666-8666-666666666666'
+  const GROUP = '00000000-0000-4000-8000-0000000009a2'
+
+  /** The push service as the container builds it, over a capturing sender and a registry that
+   *  says every daemon is connected and speaks the visibility features. */
+  function pushService() {
+    const snapshots: Array<{ daemonId: string; orgId: string; entries: Array<{ sessionId: string }> }> = []
+    const push = new SessionVisibilityPushService({
+      repos: { session: new PgSessionRepo(prisma), agent: new PgAgentRepo(prisma) },
+      control: {
+        sessionVisibilitySnapshot: async (daemonId: string, orgId: string, entries: Array<{ sessionId: string }>) => {
+          snapshots.push({ daemonId, orgId, entries })
+          return { ok: true }
+        }
+      } as never,
+      connReg: {
+        get: () => ({
+          capabilities: { features: [SESSION_VISIBILITY_FEATURE, SLACK_SESSION_AUDIENCE_FEATURE] }
+        })
+      } as never,
+      placement: new PlacementResolver({ duties: new PgDutyGroupRepo(prisma), clock: systemClock }),
+      duties: new PgDutyGroupRepo(prisma),
+      clock: systemClock
+    })
+    return { push, snapshots }
+  }
+
+  it('replays a pool agent’s tightened gate to the member holding its duty now', async () => {
+    const setId = await seedPoolMember(prisma, NEW_HOLDER)
+    await seedDaemon(prisma, RETIRED)
+    const agentId = await seedAgent(prisma, randomUUID(), { setId })
+    const repo = new PgSessionRepo(prisma)
+    // Reported by the member that has since been rolled away — the column still names it.
+    const sessionId = await seedSessionMeta(prisma, `s-pool-${randomUUID()}`, agentId, { daemonId: RETIRED })
+    await repo.setVisibility(OrgId(DEFAULT_ORG_ID), SessionId(sessionId), 'private')
+    await seedDutyGroup(prisma, GROUP, NEW_HOLDER, [agentId])
+
+    const { push, snapshots } = pushService()
+    await push.replayTo(NEW_HOLDER as never)
+
+    expect(snapshots.map((s) => ({ daemonId: s.daemonId, sessions: s.entries.map((e) => e.sessionId) }))).toEqual([
+      { daemonId: NEW_HOLDER, sessions: [sessionId] }
+    ])
+    // …and the unacked counter agrees, so nothing reports a convergence that did not happen.
+    expect(await repo.countUnackedVisibilityForAgents([agentId])).toBe(0)
+  })
+
+  it('a member holding no duty for the agent still replays nothing', async () => {
+    const setId = await seedPoolMember(prisma, NEW_HOLDER)
+    await seedDaemon(prisma, RETIRED)
+    const agentId = await seedAgent(prisma, randomUUID(), { setId })
+    const sessionId = await seedSessionMeta(prisma, `s-unheld-${randomUUID()}`, agentId, { daemonId: RETIRED })
+    await new PgSessionRepo(prisma).setVisibility(OrgId(DEFAULT_ORG_ID), SessionId(sessionId), 'private')
+
+    const { push, snapshots } = pushService()
+    await push.replayTo(NEW_HOLDER as never)
+
+    expect(snapshots).toEqual([])
+  })
+
+  // The exact leak the ACK watermark allows, end to end. `visibilityAckedRev` is per SESSION, so
+  // the PREVIOUS holder's ack makes every row look delivered; ordering then puts the old private
+  // session past the 500-row page, and phase 1 stops on `unacked === 0`. Without the private phase
+  // the new holder never receives it and — because losing a duty preserves its local gate state —
+  // can go on capturing from a session the user marked private.
+  //
+  // Mutation check: drop `replayPrivatePages` and this test fails on exactly that session.
+  it('sends an old private gate the previous holder acked, past the page cap', async () => {
+    const setId = await seedPoolMember(prisma, NEW_HOLDER)
+    await seedDaemon(prisma, RETIRED)
+    const agentId = await seedAgent(prisma, randomUUID(), { setId })
+    const repo = new PgSessionRepo(prisma)
+
+    // One OLD session, tightened and acked while RETIRED held the agent.
+    const old = `s-old-private-${randomUUID()}`
+    await seedSessionMeta(prisma, old, agentId, {
+      daemonId: RETIRED,
+      lastActivityAt: new Date(Date.now() - 365 * 86_400_000)
+    })
+    await repo.setVisibility(OrgId(DEFAULT_ORG_ID), SessionId(old), 'private')
+    await repo.recordVisibilityAck(SessionId(old), 1)
+
+    // …behind a full page of newer, already-acked sessions.
+    await prisma.sessionMeta.createMany({
+      data: Array.from({ length: SNAPSHOT_CHUNK }, (_, i) => ({
+        id: `s-bulk-${i}-${randomUUID()}`,
+        agentId,
+        orgId: DEFAULT_ORG_ID,
+        platform: 'slack',
+        channel: '#bulk',
+        phase: 'start' as const,
+        // Acked at their initial revision — the state a previous holder's replay leaves behind.
+        visibilityAckedRev: 0,
+        lastActivityAt: new Date(Date.now() - i * 1000)
+      }))
+    })
+    // Nothing is outstanding as far as the watermark is concerned.
+    expect(await repo.countUnackedVisibilityForAgents([agentId])).toBe(0)
+
+    await seedDutyGroup(prisma, GROUP, NEW_HOLDER, [agentId])
+    const { push, snapshots } = pushService()
+    await push.replayTo(NEW_HOLDER as never)
+
+    const delivered = snapshots.flatMap((s) => s.entries.map((e) => e.sessionId))
+    expect(delivered).toContain(old)
+  })
+
+  it('the private page is cursored, agent-scoped and blind to the ack watermark', async () => {
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const mine = await seedAgent(prisma, randomUUID(), { daemonId })
+    const theirs = await seedAgent(prisma, randomUUID(), { daemonId })
+    const repo = new PgSessionRepo(prisma)
+    const ids: string[] = []
+    for (const owner of [mine, mine, theirs]) {
+      const id = `s-priv-${randomUUID()}`
+      await seedSessionMeta(prisma, id, owner)
+      await repo.setVisibility(OrgId(DEFAULT_ORG_ID), SessionId(id), 'private')
+      await repo.recordVisibilityAck(SessionId(id), 1) // fully acked — phase 1 would skip these
+      if (owner === mine) ids.push(id)
+    }
+    // An org session of the same agent is not a gate anyone can be wrong about the safe way.
+    await seedSessionMeta(prisma, `s-org-${randomUUID()}`, mine)
+    const ordered = [...ids].sort()
+
+    const first = await repo.privateVisibilityPage([mine], 1)
+    expect(first.map((r) => r.sessionId)).toEqual([ordered[0]])
+    expect(first[0]).toMatchObject({ visibility: 'private', sharedMemoryExcluded: true })
+
+    const next = await repo.privateVisibilityPage([mine], 10, true, ordered[0])
+    expect(next.map((r) => r.sessionId)).toEqual([ordered[1]]) // the other agent's row never appears
+    expect(await repo.privateVisibilityPage([mine], 10, true, ordered[1])).toEqual([])
+  })
+
+  it('a machine-placed agent still replays to its placement', async () => {
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+    const sessionId = await seedSessionMeta(prisma, `s-pinned-${randomUUID()}`, agentId, { daemonId })
+    await new PgSessionRepo(prisma).setVisibility(OrgId(DEFAULT_ORG_ID), SessionId(sessionId), 'private')
+
+    const { push, snapshots } = pushService()
+    await push.replayTo(daemonId as never)
+
+    expect(snapshots.map((s) => ({ daemonId: s.daemonId, sessions: s.entries.map((e) => e.sessionId) }))).toEqual([
+      { daemonId, sessions: [sessionId] }
     ])
   })
 })

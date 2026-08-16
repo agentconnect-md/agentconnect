@@ -1406,17 +1406,26 @@ export interface SessionRepo {
   /** Raise the daemon-ack watermark (§5.1). Monotonic: a late ack for an older
    *  revision never lowers it, so the tighten stays `applied`. */
   recordVisibilityAck(sessionId: SessionId, visibilityRev: number): Promise<void>
-  /** The §5.1 register-time gate snapshot for one daemon: the current
-   *  `(sessionId, visibility, visibilityRev)` set for the sessions it reported,
-   *  newest first and bounded. A snapshot, not a diff. */
-  visibilitySnapshotForDaemon(
-    daemonId: DaemonId,
+  /** The §5.1 register-time gate snapshot for a daemon, keyed on the AGENTS it serves (the
+   *  caller resolves that set): the current `(sessionId, visibility, visibilityRev)` set,
+   *  unacked first then newest-active, and bounded. A snapshot, not a diff. */
+  visibilitySnapshotForAgents(
+    agentIds: readonly string[],
     limit: number,
     includeExternal?: boolean
   ): Promise<SessionVisibilityState[]>
-  /** How many of a daemon's sessions still owe an ack — used to report when a
+  /** How many of those agents' sessions still owe an ack — used to report when a
    *  bounded snapshot could not carry them all (never a silent truncation). */
-  countUnackedVisibility(daemonId: DaemonId, includeExternal?: boolean): Promise<number>
+  countUnackedVisibilityForAgents(agentIds: readonly string[], includeExternal?: boolean): Promise<number>
+  /** Every currently-PRIVATE session of those agents, ordered by id and cursored on `afterId`.
+   *  Deliberately blind to `visibilityAckedRev`: that watermark is per session, not per daemon, so
+   *  a previous holder's ack cannot prove this member ever received the gate. */
+  privateVisibilityPage(
+    agentIds: readonly string[],
+    limit: number,
+    includeExternal?: boolean,
+    afterId?: string
+  ): Promise<SessionVisibilityState[]>
   /** A session plus every descendant — the set a tightening cascade rewrote, so
    *  the detail view's cutover state covers the whole subtree, not just the root.
    *  System-tier: driven by the visibility-push orchestrator from a row it holds. */
@@ -1978,14 +1987,14 @@ export interface CronRepo {
   /** Every cron definition owned by one agent (cold placement-move snapshot).
    *  System-tier (§3.4): agent-fenced, orchestration-only. */
   listForAgent(agentId: AgentId): Promise<CronRecord[]>
-  /** Apply a daemon `cron/report`. Scoped: the cron's owning agent must be
-   *  placed on the REPORTING daemon (a daemon can never write another daemon's
-   *  cron). `lastRunAt` is latest-wins (re-asserts / out-of-order reports never
+  /** Apply a daemon `cron/report`. The reporting daemon's authority is settled by the caller
+   *  against the placement resolver (placement ∪ live duty holders), never by a join here.
+   *  `lastRunAt` is latest-wins (re-asserts / out-of-order reports never
    *  regress it); the run row upserts on (cronId, firedAt) — the fire report
    *  opens it `running`, a progress report can attach its session, and the
    *  completion report closes it. Returns whether the report was accepted
-   *  (false ⇒ unknown/foreign cron, dropped). */
-  recordReport(cronId: CronId, reportingDaemonId: DaemonId, report: CronReportInput): Promise<boolean>
+   *  (false ⇒ unknown cron, dropped). */
+  recordReport(cronId: CronId, report: CronReportInput): Promise<boolean>
   /** Run history for the console detail page, newest first. Run rows carry
    *  their own `orgId`, so the fence rides this query directly rather than only
    *  through the parent cron (§3.6). */
@@ -2005,9 +2014,8 @@ export interface CronRepo {
    *  agents are named by the ledger, not by placement. */
   listForAgents(agentIds: readonly string[]): Promise<CronRecord[]>
   /** Org-fenced point read (§3): a cross-org id reads as absent, exactly like a
-   *  missing row. Crons have no internal-trust-domain reader — the daemon-facing
-   *  paths are `listForDaemon` and `recordReport`, both fenced by the daemon
-   *  axis — so this port deliberately grows no `getUnscoped`. */
+   *  missing row. Also the `cron/report` fence's read — it needs the cron's OWNING AGENT before
+   *  it can ask the resolver who serves it, fenced on the frame's org like every WS read. */
   get(orgId: OrgId, cronId: CronId): Promise<CronRecord | null>
 }
 

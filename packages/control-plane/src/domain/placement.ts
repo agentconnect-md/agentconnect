@@ -101,6 +101,12 @@ export function samePlacement(a: PlacementTarget, b: PlacementTarget): boolean {
   return a.kind !== 'set' || a.setId === (b as { setId: string }).setId
 }
 
+/** Do two reads of one agent name the same placement? The identity a mutation fences on —
+ *  `daemonId` alone misses a set change and reads every set placement as unplaced. */
+export function samePlacementRef(a: PlacementRef, b: PlacementRef): boolean {
+  return samePlacement(placementTargetOf(a), placementTargetOf(b))
+}
+
 /** A stable label for logs and conflict messages — never a raw member id for a set placement. */
 export function placementLabel(target: PlacementTarget): string {
   return target.kind === 'daemon' ? target.daemonId : target.kind

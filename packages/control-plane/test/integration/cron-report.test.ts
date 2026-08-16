@@ -1,17 +1,23 @@
 /**
  * `cron/report` (D→C EVT) → `lastRunAt` convergence, end to end on the CP side:
  *
- *  - A report from the daemon OWNING the cron's agent stamps `lastRunAt`.
- *  - Daemon-scoped: a report from a daemon the agent is not placed on drops
- *    silently (a daemon can never stamp another daemon's cron).
+ *  - A report from a daemon that SERVES the cron's agent stamps `lastRunAt` — its
+ *    placement, or a duty it currently holds (a pool agent names no machine).
+ *  - Fenced: a report from a daemon that serves neither drops silently (a daemon
+ *    can never stamp another daemon's cron).
  *  - Latest-wins: an older `firedAt` (reconnect re-assert, out-of-order
  *    delivery) never regresses the stored stamp; a newer one advances it.
  */
 import { describe, it, expect } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
-import { seedDaemon, seedAgent } from '../fixtures/seed.js'
+import { seedDaemon, seedAgent, seedDutyGroup } from '../fixtures/seed.js'
+import { poolSetId, seedPoolMember } from '../fakes/member-set.js'
 import { PgCronRepo } from '../../src/persistence/repositories/cron.repo.js'
+import { PgAgentRepo } from '../../src/persistence/repositories/agent.repo.js'
+import { PgDutyGroupRepo } from '../../src/persistence/repositories/duty-group.repo.js'
+import { PlacementResolver } from '../../src/orchestrator/placementResolver.js'
+import { systemClock } from '../../src/domain/clock.js'
 import { handleCronReport } from '../../src/ws/handlers/index.js'
 import { AgentId, CronId, OrgId } from '../../src/domain/ids.js'
 import type { DaemonConnection } from '../../src/ws/connection.js'
@@ -21,6 +27,7 @@ import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 
 const DAEMON = 'd1d1d1d1-dddd-4ddd-8ddd-dddddddddddd'
 const OTHER_DAEMON = 'd2d2d2d2-dddd-4ddd-8ddd-dddddddddddd'
+const POOL_MEMBER = 'd3d3d3d3-dddd-4ddd-8ddd-dddddddddddd'
 
 /** Dispatch a hand-built `cron/report` EVT through the real handler. */
 async function report(
@@ -35,9 +42,17 @@ async function report(
     id: randomUUID(),
     ts: new Date().toISOString(),
     type: 'cron/report',
+    // An install-wide member carries many orgs on one socket, so the org rides the FRAME — both
+    // reads the fence makes are scoped to it (`frameOrgId`).
+    orgId: DEFAULT_ORG_ID,
     payload: { cronId, agentId, firedAt, ...outcome }
   } as AnyFrame
-  const deps = { cron: new PgCronRepo(prisma) } as unknown as DaemonWsDeps
+  // The same graph production wires: the fence is the resolver's, over a real duty ledger.
+  const deps = {
+    cron: new PgCronRepo(prisma),
+    agent: new PgAgentRepo(prisma),
+    placementResolver: new PlacementResolver({ duties: new PgDutyGroupRepo(prisma), clock: systemClock })
+  } as unknown as DaemonWsDeps
   await handleCronReport(frame, { daemonId } as DaemonConnection, deps)
 }
 
@@ -70,6 +85,29 @@ describe('cron/report EVT → lastRunAt convergence', () => {
     expect((await new PgCronRepo(prisma).get(OrgId(DEFAULT_ORG_ID), CronId(cronId)))!.lastRunAt).toEqual(
       new Date(firedAt)
     )
+  })
+
+  it('stamps lastRunAt from the pool member holding the agent’s duty (#1027)', async () => {
+    await seedPoolMember(prisma, POOL_MEMBER)
+    await seedDaemon(prisma, OTHER_DAEMON)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { setId: await poolSetId(prisma) })
+    const cronId = await seedCron(agentId)
+    const firedAt = '2026-07-03T09:00:00.000Z'
+    const repo = new PgCronRepo(prisma)
+
+    // Nothing holds the duty yet: the member serves the agent no more than any other daemon does.
+    await report(POOL_MEMBER, cronId, agentId, firedAt)
+    expect((await repo.get(OrgId(DEFAULT_ORG_ID), CronId(cronId)))!.lastRunAt).toBeNull()
+
+    await seedDutyGroup(prisma, randomUUID(), POOL_MEMBER, [agentId])
+    // A member that holds no duty for it still cannot stamp it.
+    await report(OTHER_DAEMON, cronId, agentId, firedAt)
+    expect((await repo.get(OrgId(DEFAULT_ORG_ID), CronId(cronId)))!.lastRunAt).toBeNull()
+
+    await report(POOL_MEMBER, cronId, agentId, firedAt)
+    expect((await repo.get(OrgId(DEFAULT_ORG_ID), CronId(cronId)))!.lastRunAt).toEqual(new Date(firedAt))
+    expect(await repo.listRuns(OrgId(DEFAULT_ORG_ID), CronId(cronId))).toHaveLength(1)
   })
 
   it('latest-wins: an older firedAt never regresses the stamp; a newer one advances it', async () => {

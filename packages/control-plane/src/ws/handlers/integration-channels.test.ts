@@ -22,10 +22,16 @@ function fakeDeps(platform = 'slack', known = true) {
   const dropPublicAudiences = vi.fn()
   const integration = known ? [{ id: INTEGRATION, agentId: AGENT, botId: BOT, orgId: 'org-1', platform }] : []
   const deps = {
-    integration: { activeForDaemon: vi.fn(async () => integration) },
+    // The handler admits by SERVED agents now, so the repo read is the agent-keyed one.
+    integration: { activeForAgents: vi.fn(async () => integration) },
     slackSessionAccess: { dropPublicAudiences },
     agentMutations: { tryBeginMutation: vi.fn(() => vi.fn()) },
-    agent: { get: vi.fn(async () => null) },
+    agent: {
+      get: vi.fn(async () => null),
+      listForDaemon: vi.fn(async () => [{ id: AGENT }]),
+      listByIds: vi.fn(async () => [])
+    },
+    clock: { now: () => Date.now() },
     integrationChannel: { replaceSnapshot: vi.fn(async () => {}) },
     collabRoutes: { broadcast: vi.fn(async () => {}) }
   } as unknown as DaemonWsDeps

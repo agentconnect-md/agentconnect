@@ -91,6 +91,8 @@ export interface WsHarness {
    *  addresses a daemon, so "ingress follows the holder" is assertable on it directly. */
   hookAssigns: CapturedHookRule[]
   hookRemovals: string[]
+  /** Daemons the duty exchange asked for a session-visibility replay, in order. */
+  visibilityReplays: string[]
   /** Every relay-facing collab-routes push, in order — the peer directory as a relay would hold it. */
   collabSnapshots: CollabRoutesSnapshot[]
   /** The resolver the projections read through — lets a test ask what the peer directory would
@@ -272,6 +274,10 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
     delayMs: 0
   })
 
+  // Members the exchange asked for a capture-gate replay, in order. The snapshot's CONTENT is
+  // pinned in `session-visibility.route.test.ts`; what belongs here is that a confirmed grant
+  // triggers one at all — a member registers before it holds anything.
+  const visibilityReplays: string[] = []
   const dutyLease = new DutyLeaseService(
     dutyGroupRepo,
     clock,
@@ -288,7 +294,8 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
     },
     undefined,
     repos.agent,
-    agentRouting
+    agentRouting,
+    { replayTo: async (daemonId) => void visibilityReplays.push(daemonId) }
   )
 
   const deps: DaemonWsDeps = {
@@ -329,6 +336,7 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
     clock,
     hookAssigns,
     hookRemovals,
+    visibilityReplays,
     collabSnapshots,
     placement: placementResolver,
     codec,
