@@ -5870,6 +5870,12 @@ export class Daemon {
       await entry.stopping
       entry = this.modelSessionHosts.get(sessionKey) // a concurrent release may have dropped it
     }
+    // A released entry only survives in the map when its stop failed, so its process may still
+    // be alive on a key already given back — retry the kill before this session gets a host.
+    if (entry?.released) {
+      await this.releaseModelSessionHost(sessionKey)
+      entry = undefined
+    }
     const targetChanged = entry !== undefined && JSON.stringify(entry.target) !== JSON.stringify(target)
     const refreshDue = entry?.grant.refreshAtMs !== undefined && now >= entry.grant.refreshAtMs
     const expired = entry?.grant.expiresAtMs !== undefined && now >= entry.grant.expiresAtMs
@@ -6028,11 +6034,19 @@ export class Daemon {
     const host = entry.host
     if (!host || (expectedHost && host !== expectedHost)) return
     entry.host = undefined
-    const stopping = host.stop(deadlineMs).finally(() => {
-      if (entry.stopping === stopping) entry.stopping = undefined
-      const sessionId = this.store.getSession(entry.sessionKey)?.acpSessionId
-      if (sessionId) this.sdkLease.delete(sdkLeaseKey(entry.agentId, sessionId))
-    })
+    const stopping = host
+      .stop(deadlineMs)
+      .catch((error) => {
+        // A stop that rejects may have left the process alive, so the entry has to keep owning
+        // it — dropping the reference is what makes the kill unretryable.
+        entry.host ??= host
+        throw error
+      })
+      .finally(() => {
+        if (entry.stopping === stopping) entry.stopping = undefined
+        const sessionId = this.store.getSession(entry.sessionKey)?.acpSessionId
+        if (sessionId) this.sdkLease.delete(sdkLeaseKey(entry.agentId, sessionId))
+      })
     entry.stopping = stopping
     await stopping
   }
@@ -6053,6 +6067,13 @@ export class Daemon {
     await this.keyServer
       ?.revoke(entry.grant.keyId)
       .catch((error) => this.log.warn(`key-server revoke failed for ${entry.grant.keyId} (${formatErr(error)})`))
+    // A surviving host means the stop rejected and the process may still be running. Put the
+    // entry back so shutdown and the next activation retry the kill; `RevokeKey` is idempotent
+    // (§5), so handing the same key back a second time is a no-op.
+    if (entry.host && !this.modelSessionHosts.has(sessionKey)) {
+      this.modelSessionHosts.set(sessionKey, entry)
+      this.log.warn(`session ${sessionKey}: model host stop failed — retained for a retry`)
+    }
     if (
       !this.hosts.has(entry.agentId) &&
       ![...this.modelSessionHosts.values()].some((candidate) => candidate.agentId === entry.agentId)

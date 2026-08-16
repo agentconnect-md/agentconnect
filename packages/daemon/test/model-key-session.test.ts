@@ -194,9 +194,32 @@ describe('daemon model-key session lifecycle', () => {
     await expect(h.daemon.ensureModelSessionHost(agent, 'session-a')).rejects.toThrow(/stop refused/)
     await vi.waitFor(() => expect(h.revoke).toHaveBeenCalledWith('key-2'))
     expect(h.revoke).not.toHaveBeenCalledWith('key-1')
-    // The old entry keeps owning key-1, so teardown still gives it back.
+    // The old entry keeps owning both key-1 and the host whose stop rejected, so teardown
+    // gives the key back AND retries the kill rather than losing the process.
+    expect(h.daemon.modelSessionHosts.get('session-a').host).toBe(h.firstHost)
     await h.daemon.releaseModelSessionHost('session-a')
     expect(h.revoke).toHaveBeenCalledWith('key-1')
+    expect(h.firstHost.stop).toHaveBeenCalledTimes(2)
+    expect(h.daemon.modelSessionHosts.has('session-a')).toBe(false)
+  })
+
+  it('retains a host whose stop rejected during release and retries the kill', async () => {
+    const h = harness([
+      { keyId: 'key-1', key: 'secret', requestedAtMs: 1_000 },
+      { keyId: 'key-2', key: 'next', requestedAtMs: 1_000 }
+    ])
+    await h.daemon.ensureModelSessionHost(agent, 'session-a')
+    h.firstHost.stop.mockRejectedValueOnce(new Error('stop refused'))
+
+    await expect(h.daemon.releaseModelSessionHost('session-a')).rejects.toThrow(/stop refused/)
+    expect(h.revoke).toHaveBeenCalledWith('key-1')
+    // Retained rather than lost — but never handed back out, since its key is already revoked.
+    expect(h.daemon.modelSessionHosts.get('session-a').host).toBe(h.firstHost)
+
+    const next = await h.daemon.ensureModelSessionHost(agent, 'session-a')
+    expect(h.firstHost.stop).toHaveBeenCalledTimes(2)
+    expect(next.host).toBe(h.secondHost)
+    expect(h.issue).toHaveBeenCalledTimes(2)
   })
 
   it('stops a host started after its entry was released', async () => {
