@@ -180,8 +180,8 @@ Implementation entry points:
   durable counter and latch.
 - [`packages/daemon/src/slack/connection.ts`](../../packages/daemon/src/slack/connection.ts):
   direct Slack ingress.
-- [`packages/relay/src/slack-http-ingest.ts`](../../packages/relay/src/slack-http-ingest.ts):
-  HTTP Slack ingress.
+- [`packages/relay/src/platforms/slack/http-ingest.ts`](../../packages/relay/src/platforms/slack/http-ingest.ts):
+  HTTP Slack ingress — the relay's per-bot inbound handler.
 
 ### 4.1 Messages Counted
 

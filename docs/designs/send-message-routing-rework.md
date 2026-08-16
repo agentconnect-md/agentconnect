@@ -562,8 +562,8 @@ The main implementation surfaces are:
 - `packages/daemon/src/slack/connection.ts`: retain AgentConnect-authored events,
   stamp response/recipient/pairing state, split only at mention-safe boundaries,
   and surface only the finalized routing event.
-- `packages/relay/src/slack-http-ingest.ts`: stop dropping AgentConnect message
-  echoes while retaining structural/chrome filtering.
+- `packages/relay/src/platforms/slack/http-ingest.ts`: stop dropping AgentConnect
+  message echoes while retaining structural/chrome filtering.
 - `packages/relay/src/relay-ingress-manager.ts`: replace blanket managed-agent
   suppression with author verification, source-hop transition/cap enforcement,
   per-edge policy checks, and cross-daemon participant fan-out — with the paired
