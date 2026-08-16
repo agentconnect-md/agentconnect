@@ -1675,9 +1675,16 @@ export class PgSessionRepo implements SessionRepo {
     // overwrites. Cursored on `id` and blind to `visibilityAckedRev` on purpose: that watermark is
     // per SESSION, not per daemon, so an ack from the previous holder says nothing about this one.
     const rows = await this.db.$queryRaw<
-      Array<{ id: string; orgId: string; visibility: string; externalProvider: string | null; visibilityRev: number }>
+      Array<{
+        id: string
+        orgId: string
+        agentId: string
+        visibility: string
+        externalProvider: string | null
+        visibilityRev: number
+      }>
     >(Prisma.sql`
-      SELECT "id", "orgId", "visibility", "externalProvider", "visibilityRev"
+      SELECT "id", "orgId", "agentId", "visibility", "externalProvider", "visibilityRev"
       FROM "session_meta"
       WHERE "agentId" = ANY(${[...agentIds]}::uuid[])
         AND "visibility" = 'private'::"SessionVisibility"
@@ -1688,6 +1695,7 @@ export class PgSessionRepo implements SessionRepo {
     `)
     return rows.map((r) => ({
       orgId: OrgId(r.orgId),
+      agentId: AgentId(r.agentId),
       sessionId: SessionId(r.id),
       visibility: r.visibility as SessionVisibility,
       sharedMemoryExcluded: true,
