@@ -155,7 +155,7 @@ import { CollabRoutesService } from './orchestrator/collabRoutes.service.js'
 import { DutyLeaseService, DUTY_LEASE_DEFAULTS } from './orchestrator/dutyLease.js'
 import { AgentDelivery } from './orchestrator/agentDelivery.js'
 import { AgentRoutingConverger } from './orchestrator/agentRouting.js'
-import { PlacementResolver } from './orchestrator/placementResolver.js'
+import { PlacementResolver, type ResolvableAgent } from './orchestrator/placementResolver.js'
 import { DutyRecomputeSweep } from './orchestrator/dutyRecompute.js'
 import { AgentMutationGate } from './orchestrator/agentMutationGate.js'
 import { AgentMoveService } from './orchestrator/agentMove.js'
@@ -364,7 +364,13 @@ export function buildContainer(
     cron: new PgCronRepo(prisma),
     dutyGroup: new PgDutyGroupRepo(prisma),
     memberSet: new PgMemberSetRepo(prisma),
-    hook: new PgHookRepo(prisma),
+    // Fenced hook writes ask "may this daemon act for the hook's agent" — placement ∪ live duty
+    // holders, which a join on `agent.daemonId` cannot express. Lazy over `placementResolver`
+    // (assigned below; only ever called at report time).
+    hook: new PgHookRepo(prisma, {
+      servingDaemons: (agent: ResolvableAgent): Promise<string[]> => placementResolver.servingDaemons(agent),
+      routableDaemon: (agent: ResolvableAgent): Promise<DaemonId | null> => placementResolver.routableDaemon(agent)
+    }),
     hookSecret: new PgHookSecretStore(prisma, secretCipher),
     runtimeProfile: new PgRuntimeProfileRepo(prisma),
     audit: new PgAuditRepo(prisma),
@@ -841,7 +847,13 @@ export function buildContainer(
   // The console PR panel's read projection — long-lived so its short TTL cache actually absorbs mounts.
   const pullRequestView = github ? new PullRequestViewService(github.tokens, clock, opts.githubFetch) : undefined
   const githubReviewBroker = github
-    ? new GithubReviewBrokerService({ hook: repos.hook, agent: repos.agent, github, clock })
+    ? new GithubReviewBrokerService({
+        hook: repos.hook,
+        agent: repos.agent,
+        github,
+        clock,
+        placement: placementResolver
+      })
     : undefined
   const githubCommentAuthz = github
     ? new GithubCommentAuthzService({
