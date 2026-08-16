@@ -293,7 +293,7 @@ jobs:
       #
       # A target with a verification suite loads into the local daemon instead of pushing, so the
       # checks below run against the exact image this release publishes and a failure never
-      # reaches the registry. Single-platform (`_release`), so there is no manifest list to lose.
+      # reaches the registry. The Push step at the end then publishes it from cache.
       - name: Build
         uses: docker/build-push-action@v7
         with:
@@ -364,12 +364,24 @@ jobs:
           IMAGE: ${{ steps.image.outputs.ref }}
         run: pnpm --filter @agentconnect.md/daemon exec tsx scripts/smoke-runtime-image.mts "$IMAGE"
 
-      # Verified targets publish here rather than from the build, once the checks above have passed.
+      # Publish a verified target once its checks have passed. Same inputs against the same builder,
+      # so this re-exports from cache rather than rebuilding. It goes out through the action's own
+      # push path deliberately: a plain `docker push` of the loaded image would publish these two
+      # without the provenance attestation every directly-pushed target carries.
       - name: Push
         if: matrix.verify != ''
-        env:
-          TAGS: ${{ matrix.tags }}
-        run: printf '%s\n' "$TAGS" | xargs -rn1 docker push
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          target: ${{ matrix.build_target }}
+          platforms: ${{ matrix.platforms }}
+          push: true
+          tags: ${{ matrix.tags }}
+          build-args: ${{ matrix.build_args }}
+          build-contexts: ${{ matrix.build_contexts }}
+          labels: ${{ matrix.labels }}
+          cache-from: type=registry,ref=${{ matrix.cache_ref }}
 
   finalize:
     name: Finalize image tags
