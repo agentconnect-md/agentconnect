@@ -22,7 +22,12 @@ export function usingPostgresStore(): boolean {
 
 /** A suite closes its store freely, so the worker-wide connection must survive that. */
 function borrowed(database: StoreDatabase): StoreDatabase {
-  return { exec: (sql) => database.exec(sql), prepare: (sql) => database.prepare(sql), close: () => undefined }
+  return {
+    exec: (sql) => database.exec(sql),
+    prepare: (sql) => database.prepare(sql),
+    batch: (statements) => database.batch(statements),
+    close: () => undefined
+  }
 }
 
 export interface PostgresLocalStoreOptions {

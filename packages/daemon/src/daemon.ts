@@ -16269,6 +16269,9 @@ export class Daemon {
       }
       // …and any trailing reasoning the agent emitted after its last reply.
       for (const ev of rec.onFinal()) this.recordEvent(agentId, transcriptChannel, statusThread, ev)
+      // The turn is over, so nothing more will supersede a coalesced tool body: make the last
+      // state of every streamed tool call durable now rather than on the buffer's own timer.
+      this.store.flushToolCallWrites()
       await p.applyChain
       // Every section has now been delivered, so the complete logical response exists and
       // exactly one of its messages can be marked final (§5.5). Must run AFTER applyChain:
@@ -23758,6 +23761,9 @@ export class Daemon {
         : this.shutdownDrainBudgetMs()
     )
     await dutyDrain
+    // Every turn has settled: land whatever a tool call was still streaming when the drain
+    // began, while the mutation listener is still there to invalidate the live views.
+    this.store.flushToolCallWrites()
     this.store.setTranscriptMutationListener()
     for (const { timer } of this.transcriptActivityTimers.values()) this.clock.clearTimeout(timer)
     this.transcriptActivityTimers.clear()

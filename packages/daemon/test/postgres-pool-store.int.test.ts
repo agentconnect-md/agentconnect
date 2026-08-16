@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
 import { PostgresDataPlane } from '../src/store/postgres-data-plane.js'
+import { PostgresSyncDatabase } from '../src/store/postgres-sync-database.js'
 import type { LocalStore } from '../src/store/local-store.js'
 import { STORE_RETENTION_RULES, StoreRetentionSweeper } from '../src/store/retention.js'
 
@@ -306,6 +307,65 @@ describe.skipIf(!databaseUrl)('PostgreSQL pool member store', () => {
     } finally {
       await second.close()
       await first.close()
+    }
+  })
+
+  it('lands a coalesced tool-call burst as the last body the burst produced', async () => {
+    const suffix = randomUUID()
+    const agentId = `agent-${suffix}`
+    const channel = `C-${suffix}`
+    const thread = `T-${suffix}`
+    const config = { version: 1 as const, databaseUrl: databaseUrl!, maxConnections: 2 }
+    const member = await PostgresDataPlane.open(config, (id) => (id === agentId ? `org-${suffix}` : undefined))
+    try {
+      member.store.insertToolCall({
+        channel,
+        thread,
+        ts: '1',
+        sender: agentId,
+        toolCallId: 'tc-1',
+        title: 'Bash',
+        body: '{"status":"pending"}'
+      })
+      for (let chunk = 1; chunk <= 8; chunk++) {
+        member.store.updateToolCall(channel, thread, agentId, 'tc-1', {
+          title: 'Bash',
+          body: `{"status":"in_progress","chunk":${chunk}}`
+        })
+      }
+      const row = member.store.threadTranscript(channel, thread, agentId).find((entry) => entry.kind === 'tool')
+      // Every intermediate body was superseded; the row carries the last one the burst produced,
+      // and the revision the pool's sequence handed the write that landed it.
+      expect(row?.body).toBe('{"status":"in_progress","chunk":8}')
+      expect(Number(row?.revision)).toBeGreaterThan(0)
+      // The read the CP's bounded tool-body fetch actually takes, drained by the same facade.
+      expect(member.store.getToolBodyForAgent(channel, thread, agentId, 'tc-1')).toBe(
+        '{"status":"in_progress","chunk":8}'
+      )
+    } finally {
+      await member.close()
+    }
+  })
+
+  it('answers a batch in order and names the statement that failed', () => {
+    const database = new PostgresSyncDatabase({ version: 1, databaseUrl: databaseUrl!, maxConnections: 2 })
+    database.finishSchemaInitialization()
+    try {
+      expect(
+        database.batch([
+          { kind: 'read', sql: 'SELECT 1 AS one', params: [] },
+          { kind: 'read', sql: 'SELECT 2 AS one', params: [] }
+        ])
+      ).toMatchObject([{ rows: [{ one: 1 }] }, { rows: [{ one: 2 }] }])
+      // A failure is attributed to its statement, never collapsed into "the batch failed".
+      expect(() =>
+        database.batch([
+          { kind: 'read', sql: 'SELECT 1 AS one', params: [] },
+          { kind: 'read', sql: 'SELECT * FROM a_table_that_does_not_exist', params: [] }
+        ])
+      ).toThrow(/batch statement 2 of 2 failed/)
+    } finally {
+      database.close()
     }
   })
 
