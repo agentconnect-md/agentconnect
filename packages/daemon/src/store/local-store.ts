@@ -4187,67 +4187,69 @@ export class LocalStore {
          WHERE trippedAt IS NULL AND windowStartedAt <= @cutoff AND automaticWindowStartedAt <= @cutoff`
       )
       .run({ cutoff: now - limits.windowMs })
-    const current = this.getLoopGuard(scopeKey)
-    if (current?.trippedAt !== null && current?.trippedAt !== undefined) {
-      return {
-        allowed: false,
-        trippedNow: false,
-        totalCount: current.totalCount,
-        automaticCount: current.automaticCount,
-        ...(current.reason ? { reason: current.reason } : {})
-      }
-    }
+    // The charge is one relative, window-aware statement, never a JS read-modify-write:
+    // pool members sharing this store charge the same conversation concurrently, and an
+    // absolute upsert would let the faster loop lose exactly the increments that matter.
+    // The DO UPDATE guard makes a latched circuit skip the charge and return no row.
+    const charged = this.db
+      .prepare(
+        `INSERT INTO loop_guard
+           (scopeKey, windowStartedAt, totalCount, automaticWindowStartedAt, automaticCount, trippedAt, reason)
+         VALUES (@scopeKey, @now, 1, @now, @automatic, NULL, NULL)
+         ON CONFLICT(scopeKey) DO UPDATE SET
+           windowStartedAt=CASE WHEN @now - loop_guard.windowStartedAt >= @windowMs
+             THEN @now ELSE loop_guard.windowStartedAt END,
+           totalCount=CASE WHEN @now - loop_guard.windowStartedAt >= @windowMs
+             THEN 1 ELSE loop_guard.totalCount + 1 END,
+           automaticWindowStartedAt=CASE WHEN @automatic = 0
+             OR @now - loop_guard.automaticWindowStartedAt >= @windowMs
+             THEN @now ELSE loop_guard.automaticWindowStartedAt END,
+           automaticCount=CASE WHEN @automatic = 0 THEN 0
+             WHEN @now - loop_guard.automaticWindowStartedAt >= @windowMs
+             THEN 1 ELSE loop_guard.automaticCount + 1 END
+         WHERE loop_guard.trippedAt IS NULL
+         RETURNING totalCount, automaticCount`
+      )
+      .get({ scopeKey, now, automatic: automatic ? 1 : 0, windowMs: limits.windowMs }) as
+      { totalCount: number; automaticCount: number } | undefined
+    if (!charged) return this.latchedLoopGuardVerdict(scopeKey)
 
-    const totalWindowExpired = !current || now - current.windowStartedAt >= limits.windowMs
-    const automaticWindowExpired = !current || now - current.automaticWindowStartedAt >= limits.windowMs
-    const windowStartedAt = totalWindowExpired ? now : current.windowStartedAt
-    const totalCount = totalWindowExpired ? 1 : current.totalCount + 1
-    const automaticWindowStartedAt = automaticWindowExpired || !automatic ? now : current.automaticWindowStartedAt
-    const automaticCount = automatic ? (automaticWindowExpired ? 1 : current.automaticCount + 1) : 0
+    const totalCount = Number(charged.totalCount)
+    const automaticCount = Number(charged.automaticCount)
     const reason =
       automaticCount > limits.maxAutomatic
         ? 'automatic_turn_burst'
         : totalCount > limits.maxTotal
           ? 'turn_rate_burst'
           : undefined
-    const trippedAt = reason ? now : null
+    if (!reason) return { allowed: true, trippedNow: false, totalCount, automaticCount }
+    // The verdict is computed from what was actually stored, so the latch is a CAS: a
+    // member that loses it still refuses the turn but runs no duplicate side effects.
+    const latched =
+      this.db
+        .prepare('UPDATE loop_guard SET trippedAt=@now, reason=@reason WHERE scopeKey=@scopeKey AND trippedAt IS NULL')
+        .run({ scopeKey, now, reason }).changes === 1
+    return { allowed: false, trippedNow: latched, totalCount, automaticCount, reason }
+  }
 
-    this.db
-      .prepare(
-        `INSERT INTO loop_guard
-           (scopeKey, windowStartedAt, totalCount, automaticWindowStartedAt, automaticCount, trippedAt, reason)
-         VALUES (@scopeKey, @windowStartedAt, @totalCount, @automaticWindowStartedAt, @automaticCount, @trippedAt, @reason)
-         ON CONFLICT(scopeKey) DO UPDATE SET
-           windowStartedAt=excluded.windowStartedAt,
-           totalCount=excluded.totalCount,
-           automaticWindowStartedAt=excluded.automaticWindowStartedAt,
-           automaticCount=excluded.automaticCount,
-           trippedAt=excluded.trippedAt,
-           reason=excluded.reason`
-      )
-      .run({
-        scopeKey,
-        windowStartedAt,
-        totalCount,
-        automaticWindowStartedAt,
-        automaticCount,
-        trippedAt,
-        reason: reason ?? null
-      })
-
+  /** The verdict for a scope another writer already latched: refuse, own no side effects. */
+  private latchedLoopGuardVerdict(scopeKey: string): LoopGuardVerdict {
+    const current = this.getLoopGuard(scopeKey)
     return {
-      allowed: reason === undefined,
-      trippedNow: reason !== undefined,
-      totalCount,
-      automaticCount,
-      ...(reason ? { reason } : {})
+      allowed: false,
+      trippedNow: false,
+      totalCount: Number(current?.totalCount ?? 0),
+      automaticCount: Number(current?.automaticCount ?? 0),
+      ...(current?.reason ? { reason: current.reason } : {})
     }
   }
 
-  /** Charge a migrated inbox delivery and advance its marker in one SQLite transaction.
-   *  A crash can therefore neither lose the charge nor charge the same retained row again
-   *  after ownership moves. A tripping delivery is intentionally left at marker 0: the
-   *  newly-open durable circuit makes its whole scope terminal and replay purges it. */
+  /** Charge a migrated inbox delivery and advance its marker in one transaction, so a crash
+   *  can neither lose the charge nor charge the same retained row again after ownership moves.
+   *  The transaction buys atomicity only — the charge itself is a relative SQL statement and
+   *  never depends on an exclusive writer, which a shared PostgreSQL store cannot give it.
+   *  A tripping delivery is intentionally left at marker 0: the newly-open durable circuit
+   *  makes its whole scope terminal and replay purges it. */
   recordLoopGuardTurnForInbox(
     inboxId: string,
     scopeKey: string,
@@ -4270,38 +4272,25 @@ export class LocalStore {
     }
   }
 
-  /** Open a loop circuit immediately for a structurally-invalid platform event. */
+  /** Open a loop circuit immediately for a structurally-invalid platform event. The latch
+   *  is a single guarded statement, so concurrent members elect exactly one side-effect owner. */
   tripLoopGuard(scopeKey: string, now: number, reason: string): LoopGuardVerdict {
-    const current = this.getLoopGuard(scopeKey)
-    if (current?.trippedAt !== null && current?.trippedAt !== undefined) {
-      return {
-        allowed: false,
-        trippedNow: false,
-        totalCount: current.totalCount,
-        automaticCount: current.automaticCount,
-        ...(current.reason ? { reason: current.reason } : {})
-      }
-    }
-    const row = current ?? {
-      scopeKey,
-      windowStartedAt: now,
-      totalCount: 0,
-      automaticWindowStartedAt: now,
-      automaticCount: 0
-    }
-    this.db
+    const latched = this.db
       .prepare(
         `INSERT INTO loop_guard
            (scopeKey, windowStartedAt, totalCount, automaticWindowStartedAt, automaticCount, trippedAt, reason)
-         VALUES (@scopeKey, @windowStartedAt, @totalCount, @automaticWindowStartedAt, @automaticCount, @trippedAt, @reason)
-         ON CONFLICT(scopeKey) DO UPDATE SET trippedAt=excluded.trippedAt, reason=excluded.reason`
+         VALUES (@scopeKey, @now, 0, @now, 0, @now, @reason)
+         ON CONFLICT(scopeKey) DO UPDATE SET trippedAt=@now, reason=@reason
+         WHERE loop_guard.trippedAt IS NULL
+         RETURNING totalCount, automaticCount`
       )
-      .run({ ...row, trippedAt: now, reason })
+      .get({ scopeKey, now, reason }) as { totalCount: number; automaticCount: number } | undefined
+    if (!latched) return this.latchedLoopGuardVerdict(scopeKey)
     return {
       allowed: false,
       trippedNow: true,
-      totalCount: row.totalCount,
-      automaticCount: row.automaticCount,
+      totalCount: Number(latched.totalCount),
+      automaticCount: Number(latched.automaticCount),
       reason
     }
   }
