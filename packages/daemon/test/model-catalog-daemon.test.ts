@@ -169,6 +169,32 @@ describe('daemon model-catalog cache hydrate', () => {
       await daemon.stop()
     }
   })
+
+  it('never hydrates or advertises a catalog past its retention window', async () => {
+    // Retention runs BEFORE the hydrate, synchronously — the ordering the removed
+    // gcRuntimeCatalog used to provide. Without it this member boots advertising models it
+    // has not seen in over a month, and the cached provenance keeps the activation gate
+    // permissive over them.
+    const dir = root()
+    seedCache(dir, [{ runtimeId: 'fake', defaultModel: 'm-stale', models: [{ id: 'm-stale', caps: { efforts: [] } }] }])
+    const clock = new FakeClock()
+    clock.advance(1_000 + 31 * 24 * 3_600_000)
+    const daemon = daemonWith({ root: dir, catalog: catalogOf({ fake: FAKE_RT }), clock, probe: neverProbe })
+
+    try {
+      await daemon.start()
+      const fake = firstSnapshot(daemon)[0]!
+      expect(fake.models).toEqual([])
+      expect(fake.modelsSource).toBeUndefined()
+      expect(fake.modelCatalog).toBeUndefined()
+      // Collected, not merely ignored: both catalog tables are empty afterwards.
+      const store = (daemon as any).store as LocalStore
+      expect(store.listRuntimeCatalogMetas()).toEqual([])
+      expect(store.listRuntimeModelCaps()).toEqual([])
+    } finally {
+      await daemon.stop()
+    }
+  })
 })
 
 describe('daemon activation gate provenance rule', () => {

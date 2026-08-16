@@ -356,7 +356,7 @@ describe('MemoryCaptureOutbox', () => {
     db.close()
   })
 
-  it('schedules age expiry and terminal-body cleanup even while the queue is otherwise quiet', async () => {
+  it('schedules age expiry even while the queue is otherwise quiet', async () => {
     const db = store()
     const unavailable: MemoryCaptureConnectionRegistry = {
       connectionIds: () => [connectionId],
@@ -368,7 +368,6 @@ describe('MemoryCaptureOutbox', () => {
     const outbox = new MemoryCaptureOutbox(db, unavailable, {
       metrics,
       maxAgeMs: 30,
-      terminalRetentionMs: 30,
       unavailableRetryMs: 1_000
     })
     try {
@@ -378,10 +377,8 @@ describe('MemoryCaptureOutbox', () => {
         timeout: 500,
         interval: 5
       })
-      await vi.waitFor(() => expect(db.getMemoryCapture(queued.operationId)).toBeUndefined(), {
-        timeout: 500,
-        interval: 5
-      })
+      // The terminal row it leaves is the retention rule table's to drop, not this loop's.
+      expect(db.getMemoryCapture(queued.operationId)?.state).toBe('failed')
     } finally {
       await outbox.stop()
       db.close()

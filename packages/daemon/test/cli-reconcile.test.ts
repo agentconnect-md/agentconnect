@@ -9,6 +9,8 @@ import { buildEnvelope, decodeEnvelope, encode, type AnyFrame } from '@agentconn
 import { AC_LABEL_AGENT, AC_LABEL_ORG } from '../src/k8s/driver.js'
 import { SandboxApi, type SandboxClaim } from '../src/k8s/sandbox-api.js'
 import { ORPHAN_DELETE_ENV } from '../src/k8s/orphan-reconciler.js'
+import { STORE_ORPHAN_DELETE_ENV } from '../src/store/retention.js'
+import type { StoreRetentionCandidate, StoreRetentionRule } from '../src/store/retention.js'
 import { K8S_SANDBOX_NAMESPACE_ENV } from '../src/k8s/runtime-plane.js'
 import { connectObserver, runReconcileOnce, type ExistenceReader } from '../src/cli/reconcile.js'
 import { FakeTransport } from './cp/fake-transport.js'
@@ -82,6 +84,61 @@ describe('reconcile --once', () => {
     expect(infos.at(-1)).toContain('swept 2 candidates — orphaned=1 deleted=1 skipped-live=1')
     // The connection is one-shot: closed whatever the sweep decided.
     expect(cp.wasClosed()).toBe(true)
+  })
+
+  it('sweeps the shared store in the same run, on the same control-plane answer', async () => {
+    // One CronJob covers both halves because they ask the same question: `agent/exists` decides
+    // whether a SandboxClaim and an outbox row alike are leaked.
+    const { api } = await cluster()
+    const cp = fakeCp()
+    const infos: string[] = []
+    const deleted: string[] = []
+    let closed = false
+    const code = await runReconcileOnce({
+      api,
+      connectCp: cp.connectCp,
+      apiUrl: 'wss://cp.example.test/daemon/ws',
+      env: { [ORPHAN_DELETE_ENV]: 'true', [STORE_ORPHAN_DELETE_ENV]: 'true' },
+      openStore: async () => ({
+        store: storeOf({ 'session-purge': GONE, 'hook-report': LIVE }, deleted),
+        close: async () => {
+          closed = true
+        }
+      }),
+      log: { info: (m) => infos.push(m), warn: (m) => infos.push(m) }
+    })
+    expect(code).toBe(0)
+    expect(cp.asked).toEqual([
+      [LIVE, GONE],
+      [LIVE, GONE]
+    ])
+    expect(deleted).toEqual(['row-session-purge'])
+    expect(infos.at(-1)).toContain('store retention: swept 2 candidates — collected=1 deleted=1 kept=1 failed=0')
+    expect(infos.at(-1)).toContain('agent-gone=1 horizon=0')
+    expect(infos.at(-1)).toContain('session-purge=1')
+    expect(closed).toBe(true)
+  })
+
+  it('exits 1 when the store sweep left an orphan behind, however clean the cluster was', async () => {
+    const { api } = await cluster()
+    const code = await runReconcileOnce({
+      api,
+      connectCp: fakeCp().connectCp,
+      apiUrl: 'wss://cp.example.test/daemon/ws',
+      env: { [ORPHAN_DELETE_ENV]: 'true', [STORE_ORPHAN_DELETE_ENV]: 'true' },
+      openStore: async () => ({
+        store: {
+          listRetentionCandidates: (rule: StoreRetentionRule) =>
+            rule.id === 'session-purge' ? [candidate(rule, GONE)] : [],
+          deleteRetentionRow: () => {
+            throw new Error('deadlock detected')
+          }
+        },
+        close: async () => undefined
+      }),
+      log: { info: () => {}, warn: () => {} }
+    })
+    expect(code).toBe(1)
   })
 
   it('exits 1 when a delete failed, after reporting the whole sweep', async () => {
@@ -211,3 +268,21 @@ describe('observer connection', () => {
     ).rejects.toThrow('identity token')
   })
 })
+
+/** One fresh candidate per rule, so only the control-plane answer decides what is collected. */
+const candidate = (rule: StoreRetentionRule, agentId: string): StoreRetentionCandidate => ({
+  key: Object.fromEntries(rule.key.map((column) => [column, `row-${rule.id}`])),
+  agentId,
+  touchedAt: Date.now()
+})
+
+/** A store holding exactly the named rules' rows, recording what the sweep deleted. */
+function storeOf(rows: Record<string, string>, deleted: string[]) {
+  return {
+    listRetentionCandidates: (rule: StoreRetentionRule) => (rows[rule.id] ? [candidate(rule, rows[rule.id]!)] : []),
+    deleteRetentionRow: (rule: StoreRetentionRule) => {
+      deleted.push(`row-${rule.id}`)
+      return true
+    }
+  }
+}

@@ -1,16 +1,22 @@
 /**
- * `agentconnect-daemon reconcile --once` — one orphan sweep of the sandbox namespace, then exit.
+ * `agentconnect-daemon reconcile --once` — one orphan sweep, then exit.
  *
  * The reconciler is a Kubernetes CronJob, not a timer inside every pool member: the cluster owns
  * the schedule, `concurrencyPolicy: Forbid` is the mutual exclusion a lease used to provide, and a
  * failed run is a failed Job the cluster already reports. So this boots the minimum a sweep needs —
- * the sandbox API surface and a control-plane connection to ask which agents still exist — and
- * nothing else: no store, no agents, no platform connections (k8s-daemon-pool.md §4).
+ * the sandbox API surface, the shared data-plane store, and a control-plane connection to ask which
+ * agents still exist — and nothing else: no agents, no platform connections (k8s-daemon-pool.md §4).
+ *
+ * Both halves run in the one job because they ask the control plane the SAME question: the batched
+ * `agent/exists` read answers "is this leaked?" for a `SandboxClaim` and for an outbox row alike.
+ * The store half is skipped where no shared data plane is mounted — a local single-daemon store has
+ * one owner forever and its rows are its own to drain.
  *
  * The connection registers as an OBSERVER. It presents the same projected pool identity a member
  * does, so the control plane admits it on the same TokenReview path, but it is enrolled in no
  * member set and is granted no duty — a job that sweeps must never be handed work to serve.
  */
+import { existsSync } from 'node:fs'
 import type { AnyFrame, AgentExistsOk, FrameType } from '@agentconnect.md/protocol'
 import {
   AGENT_EXISTS_MAX,
@@ -26,6 +32,10 @@ import { SandboxApi } from '../k8s/sandbox-api.js'
 import { OrphanReconciler, resolveOrphanReconcilerSettings } from '../k8s/orphan-reconciler.js'
 import { K8S_SANDBOX_NAMESPACE_ENV } from '../k8s/runtime-plane.js'
 import { readClusterIdentityToken } from '../cp/cluster-identity.js'
+import { DATA_PLANE_CONFIG_PATH } from '../store/postgres-config.js'
+import { openMountedPostgresDataPlane } from '../store/postgres-data-plane.js'
+import { StoreRetentionSweeper, resolveStoreRetentionSettings } from '../store/retention.js'
+import type { RetentionCapableStore } from '../store/retention.js'
 import { DAEMON_VERSION } from '../version.js'
 
 const REQUEST_TIMEOUT_MS = 15_000
@@ -36,14 +46,22 @@ export interface ExistenceReader {
   close: () => void
 }
 
+/** The shared data-plane store, plus how to give it back. */
+export interface ReapableStore {
+  store: RetentionCapableStore
+  close: () => Promise<void>
+}
+
 export interface ReconcileOnceOpts {
   env?: NodeJS.ProcessEnv
   /** Control-plane WS URL; defaults to the pod's `AC_CP_URL`. */
   apiUrl?: string
   log?: { info: (m: string) => void; warn: (m: string) => void }
-  /** Seams the tests replace: the cluster surface and the control-plane read. */
+  /** Seams the tests replace: the cluster surface, the store, and the control-plane read. */
   api?: SandboxApi
   connectCp?: (url: string) => Promise<ExistenceReader>
+  /** Resolves undefined when this deployment mounts no shared data plane. */
+  openStore?: () => Promise<ReapableStore | undefined>
 }
 
 /** The socket and the credential, injected so the handshake is testable without a cluster. */
@@ -55,13 +73,15 @@ export interface ObserverSeams {
 const dialCp = (url: string): Promise<Transport> =>
   ClientTransport.dial(url, { subprotocol: CP_SUBPROTOCOL, path: CP_WS_PATH, handshakeTimeoutMs: REQUEST_TIMEOUT_MS })
 
-/** Exit code: 0 only when the sweep ran AND collected everything it decided to; 1 otherwise. */
+/** Exit code: 0 only when both sweeps ran AND collected everything they decided to; 1 otherwise. */
 export async function runReconcileOnce(opts: ReconcileOnceOpts = {}): Promise<number> {
   const env = opts.env ?? process.env
   const log = opts.log ?? { info: (m: string) => console.log(m), warn: (m: string) => console.error(m) }
   let cp: ExistenceReader | undefined
+  let mounted: ReapableStore | undefined
   try {
     const settings = resolveOrphanReconcilerSettings(env)
+    const storeSettings = resolveStoreRetentionSettings(env)
     // The namespace is resolved BEFORE the in-cluster config: a missing env var must name itself,
     // not surface as "this process is not in a pod".
     const namespace = opts.api ? undefined : sandboxNamespace(env)
@@ -69,17 +89,33 @@ export async function runReconcileOnce(opts: ReconcileOnceOpts = {}): Promise<nu
     const url = opts.apiUrl ?? env[CP_URL_ENV]?.trim()
     if (!url) throw new Error(`reconcile requires the control plane's address in ${CP_URL_ENV}`)
     cp = await (opts.connectCp ?? connectObserver)(url)
-    const reconciler = new OrphanReconciler({ api, liveAgents: cp.liveAgents, settings, log })
+    const liveAgents = cp.liveAgents
+    const reconciler = new OrphanReconciler({ api, liveAgents, settings, log })
     const summary = await reconciler.sweep()
+    mounted = await (opts.openStore ?? openSharedStore)()
+    // No data plane is not a failure: this deployment keeps no shared store to sweep.
+    // No `ownerId`: a one-shot job owns no rows, so every rule keeps its conservative window.
+    const storeSummary = mounted
+      ? await new StoreRetentionSweeper({ store: mounted.store, liveAgents, settings: storeSettings, log }).sweep()
+      : { failed: 0 }
     // A delete that failed is counted, not thrown, so the run reports the whole picture — but a run
     // that left an orphan behind is not a successful Job, or the cluster hides a leak that repeats.
-    return summary && summary.failed === 0 ? 0 : 1
+    return summary?.failed === 0 && storeSummary?.failed === 0 ? 0 : 1
   } catch (err) {
-    log.warn(`k8s orphans: sweep failed — ${(err as Error).message}`)
+    log.warn(`reconcile: sweep failed — ${(err as Error).message}`)
     return 1
   } finally {
     cp?.close()
+    await mounted?.close().catch(() => undefined)
   }
+}
+
+/** The pool's shared store, or undefined where the deployment mounts none. */
+async function openSharedStore(): Promise<ReapableStore | undefined> {
+  if (!existsSync(DATA_PLANE_CONFIG_PATH)) return undefined
+  // The reaper reads and deletes outbox rows only; no transcript write needs an org resolver.
+  const plane = await openMountedPostgresDataPlane(() => undefined)
+  return { store: plane.store, close: () => plane.close() }
 }
 
 function sandboxNamespace(env: NodeJS.ProcessEnv): string {

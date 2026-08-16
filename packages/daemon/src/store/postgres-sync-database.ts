@@ -132,6 +132,7 @@ const canonicalColumns = [
   'threadUrl',
   'toAgentId',
   'toolCallId',
+  'touchedAt',
   'totalCount',
   'transportScope',
   'transcriptCoordinates',

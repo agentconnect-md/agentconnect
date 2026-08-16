@@ -1572,6 +1572,8 @@ export interface WebchatMcpDelegationRepo {
    * been observed, including rows marked expired during reconnect rotation.
    */
   reapExpired(expiredBefore: Date): Promise<ReapWebchatMcpDelegationsResult>
+  /** Revoke live delegations of agents nothing serves any more; returns how many were revoked. */
+  revokeUnplaced(now: Date): Promise<number>
 }
 
 export type WebchatMcpGrantStatus = 'pending' | 'active' | 'revoked' | 'expired'
