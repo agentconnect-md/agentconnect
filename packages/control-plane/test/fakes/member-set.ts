@@ -20,3 +20,25 @@ export async function joinPool(prisma: PrismaClient, ...daemonIds: string[]): Pr
   await prisma.memberSetMember.createMany({ data: daemonIds.map((daemonId) => ({ setId, daemonId })) })
   return setId
 }
+
+/** An org-less daemon ROW plus its pool membership — one install-wide member, ready to hold duty.
+ *  Capabilities mirror `fixtures/seed.ts`'s stock member so install probes can pass. */
+export async function seedPoolMember(prisma: PrismaClient, daemonId: string): Promise<string> {
+  await prisma.daemon.create({
+    data: {
+      id: daemonId,
+      orgId: null,
+      maxAgents: 8,
+      status: 'ready',
+      // What makes an org-less row an install-wide MEMBER rather than an orphan (`getAvailable`).
+      clusterIdentity: `cluster/${daemonId}`,
+      capabilities: {
+        platforms: ['slack', 'telegram', 'discord', 'feishu'],
+        runtimes: ['claude'],
+        acp: true,
+        features: []
+      }
+    }
+  })
+  return joinPool(prisma, daemonId)
+}

@@ -218,13 +218,15 @@ export class PgCronRepo implements CronRepo {
     return c ? toRecord(c) : null
   }
 
-  async recordReport(cronId: CronId, reportingDaemonId: DaemonId, r: CronReportInput): Promise<boolean> {
-    // Scope gate first (owning agent placed on the reporting daemon) — a
-    // foreign daemon's report is a silent no-op, never an error.
-    const cron = await this.db.cronDef.findFirst({
-      where: { id: cronId, agent: { daemonId: reportingDaemonId } },
-      select: { id: true, orgId: true }
-    })
+  async getUnscoped(cronId: CronId): Promise<CronRecord | null> {
+    const c = await this.db.cronDef.findUnique({ where: { id: cronId }, include: withUsers })
+    return c ? toRecord(c) : null
+  }
+
+  async recordReport(cronId: CronId, r: CronReportInput): Promise<boolean> {
+    // The reporting daemon's authority is settled by the caller against the resolver (placement ∪
+    // live duty holders); a join on `agent.daemonId` here dropped every pool member's report.
+    const cron = await this.db.cronDef.findUnique({ where: { id: cronId }, select: { id: true, orgId: true } })
     if (!cron) return false
     // lastRunAt is latest-wins: an older firedAt (reconnect re-assert,
     // out-of-order delivery) never regresses the stamp.

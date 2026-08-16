@@ -628,6 +628,9 @@ export function buildContainer(
     control: sender,
     connReg,
     placement: placementResolver,
+    // The replay's inverse half: a reconnecting member's served set, not the recorded column.
+    duties: repos.dutyGroup,
+    clock,
     // Lazy over `http.log` (assigned below; only ever called at push time).
     log: { warn: (o, m) => http.log.warn(o, m) }
   })

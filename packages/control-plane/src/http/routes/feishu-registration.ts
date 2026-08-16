@@ -212,11 +212,15 @@ export function feishuRegistrationRoutes(deps: HttpDeps, feishu: FeishuRouteSeam
           let httpAppConfig: ConfigureFeishuHttpAppInput | undefined
           try {
             const current = await deps.repos.agent.get(orgOf(req), registration.agentId)
-            if (!current || !current.daemonId || !canView(current, ctxOf(req)) || !canEdit(current, ctxOf(req))) {
+            if (!current || !canView(current, ctxOf(req)) || !canEdit(current, ctxOf(req))) {
               throw new FeishuRegistrationSetupError('agent_unavailable')
             }
+            // Resolved under the lease, exactly as the start leg resolved it: the column is null
+            // for a pool agent, so re-reading it would refuse every registration one finishes.
+            const finalizeDaemonId = await deps.placementResolver.servingDaemon(current)
+            if (!finalizeDaemonId) throw new FeishuRegistrationSetupError('agent_unavailable')
             const availability = await integrationPlatformAvailability(deps, {
-              daemonId: current.daemonId,
+              daemonId: finalizeDaemonId,
               orgId: registration.orgId,
               viewer: ctxOf(req),
               platform: 'feishu'

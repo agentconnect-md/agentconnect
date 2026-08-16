@@ -16,6 +16,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
 import { seedDaemon, seedAgent, seedDutyGroup } from '../fixtures/seed.js'
+import { seedPoolMember } from '../fakes/member-set.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import type { ControlSender } from '../../src/orchestrator/outbound.js'
 import type { CronUpsert, CronRemove } from '@agentconnect.md/protocol'
@@ -467,6 +468,38 @@ describe('cron updates follow the duty holder', () => {
     await app.app.inject({ method: 'PUT', url: `${ORG}/crons/${randomUUID()}`, payload: body(agentId) })
 
     expect(spy.upserts.map((u) => u.daemonId)).toEqual([DAEMON, HOLDER])
+  })
+
+  // #1026: "Run now" resolved the serving member and then wrote it onto the observed record, so
+  // the mutation refresh compared a synthetic value against a NULL column and 409'd every time.
+  it('fires a POOL agent’s cron on the member holding its duty (#1026)', async () => {
+    const setId = await seedPoolMember(prisma, HOLDER)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { setId })
+    await seedDutyGroup(prisma, GROUP, HOLDER, [agentId])
+    const cronId = randomUUID()
+    const { app, spy } = withSpy()
+
+    expect(
+      (await app.app.inject({ method: 'PUT', url: `${ORG}/crons/${cronId}`, payload: body(agentId) })).statusCode
+    ).toBe(200)
+    const run = await app.app.inject({ method: 'POST', url: `${ORG}/crons/${cronId}/run` })
+    expect({ status: run.statusCode, runs: spy.runs }).toEqual({
+      status: 202,
+      runs: [{ daemonId: HOLDER, cronId }]
+    })
+  })
+
+  it('a POOL agent nothing is serving still refuses the run with 503', async () => {
+    const setId = await seedPoolMember(prisma, HOLDER)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { setId })
+    const cronId = randomUUID()
+    const { app, spy } = withSpy()
+
+    await app.app.inject({ method: 'PUT', url: `${ORG}/crons/${cronId}`, payload: body(agentId) })
+    const run = await app.app.inject({ method: 'POST', url: `${ORG}/crons/${cronId}/run` })
+    expect({ status: run.statusCode, runs: spy.runs }).toEqual({ status: 503, runs: [] })
   })
 
   it('an EXPIRED lease is not a holding — the cron goes nowhere', async () => {

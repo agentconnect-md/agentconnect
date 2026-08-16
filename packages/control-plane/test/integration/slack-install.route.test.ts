@@ -13,7 +13,8 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
-import { seedDaemon, seedAgent } from '../fixtures/seed.js'
+import { seedDaemon, seedAgent, seedDutyGroup } from '../fixtures/seed.js'
+import { seedPoolMember } from '../fakes/member-set.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import type { RelayChannel } from '../../src/ws/relay-registry.js'
 import { ControlSender } from '../../src/orchestrator/outbound.js'
@@ -32,6 +33,8 @@ import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 const DAEMON = 'd1d1d1d1-dddd-4ddd-8ddd-dddddddddddd'
+const MEMBER = 'd9999999-9999-4999-8999-999999999999'
+const GROUP = '00000000-0000-4000-8000-0000000009e1'
 // The PUBLIC form (`/v1` alias mount) — what Slack actually redirects the browser
 // to on a direct-hit deploy; the gateway-rewritten arrival at the internal
 // `/api/v1/…` mount gets its own test below.
@@ -375,6 +378,51 @@ describe('slack auto-install funnel', () => {
   // later, as a scoped call answering `missing_scope` and the session-access
   // check failing closed. Finalize is the last point where the operator is still
   // in the flow and one reinstall away, so it refuses there.
+  // #1026: both funnel legs still gated on `agent.daemonId`, which a POOL agent leaves NULL — so
+  // the whole wizard was unreachable for one while its siblings had already been converted.
+  it('start and finalize both work for a POOL agent, through the member holding its duty (#1026)', async () => {
+    const setId = await seedPoolMember(prisma, MEMBER)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { setId })
+    await seedDutyGroup(prisma, GROUP, MEMBER, [agentId])
+    await seedUserConfig()
+    const { app, spy } = withFunnel()
+
+    const started = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations/slack/app`,
+      payload: { agentId, name: 'pool-bot' }
+    })
+    expect({ status: started.statusCode, body: started.json() }).toMatchObject({ status: 201 })
+    const { installId } = started.json() as { installId: string }
+    await app.app.inject({ method: 'GET', url: `${CALLBACK}?code=the-code&state=${installId}` })
+
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations/slack/app/${installId}/finalize`,
+      payload: { appToken: 'xapp-1-A1TEST-9-abcdef' }
+    })
+    expect({ status: res.statusCode, body: res.json() }).toMatchObject({ status: 201 })
+    expect(spy.upserts.map((u) => u.daemonId)).toEqual([MEMBER])
+    expect(await prisma.slackInstall.findUnique({ where: { id: installId } })).toBeNull()
+  })
+
+  it('start refuses a POOL agent nothing is serving with 409, minting no pending row', async () => {
+    const setId = await seedPoolMember(prisma, MEMBER)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { setId })
+    await seedUserConfig()
+    const { app, stub } = withFunnel()
+
+    const started = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations/slack/app`,
+      payload: { agentId }
+    })
+    expect(started.statusCode).toBe(409)
+    expect({ created: stub.createCalls, rows: await prisma.slackInstall.count() }).toEqual({ created: [], rows: 0 })
+  })
+
   it('finalize refuses a workspace authorization that granted fewer bot scopes, minting nothing', async () => {
     const { app, spy } = withFunnel()
     const withheld = ['channels:history', 'users:read']

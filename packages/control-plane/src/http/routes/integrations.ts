@@ -28,6 +28,7 @@ import type { ResolvableAgent } from '../../orchestrator/placementResolver.js'
 import { denyViewerWrite, ctxOf, orgOf } from '../rbac.js'
 import { canView, canEdit } from '../../authorization/policy.js'
 import { integrationToSpec, isGatedAgent } from '../../orchestrator/placement.js'
+import { samePlacementRef } from '../../domain/placement.js'
 import { conversationOwnerRow, pickConversationOwner } from '../../orchestrator/httpBot.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
 import { installNewBot } from '../install-bot.js'
@@ -86,11 +87,13 @@ export function integrationRoutes(deps: HttpDeps) {
     const CreateIntegrationBody = buildCreateIntegrationBody(deps.platforms)
     // The caller's active org — every read/write below is scoped to it.
     const orgIdOf = (req: { orgCtx?: { orgId: OrgId } }) => req.orgCtx!.orgId
+    // Placement IDENTITY, not the `daemonId` column: a set placement names no machine, so column
+    // equality both misses a re-placement onto another set and reads every set agent as unplaced.
     const refreshMutationAgent = async (observed: AgentRecord): Promise<AgentRecord | null> => {
       const current = await deps.repos.agent.get(observed.orgId, observed.id)
       if (
         !current ||
-        current.daemonId !== observed.daemonId ||
+        !samePlacementRef(current, observed) ||
         current.lastModifiedAt.getTime() !== observed.lastModifiedAt.getTime()
       ) {
         return null
@@ -259,8 +262,9 @@ export function integrationRoutes(deps: HttpDeps) {
             })
           }
           agent = current
-          const daemonId = current.daemonId
-          if (!daemonId) {
+          // Re-taken under the lease, and RESOLVED: the column is null for a pool agent, which is
+          // served without naming a machine. Nothing serving it is what "no longer placed" means.
+          if (!(await deps.placementResolver.servingDaemon(current))) {
             return reply.code(409).send({
               error: 'Conflict',
               statusCode: 409,
@@ -672,9 +676,12 @@ export function integrationRoutes(deps: HttpDeps) {
           message: 'the daemon is offline, so this conversation would be listed again — retry once it reconnects'
         }
       }
-      if (!agent.daemonId) return undeliverable
+      // The suppression goes to whoever serves the agent right now — its placement, or the member
+      // holding its duty. A pool agent names no machine, so the column would refuse every one.
+      const target = await deps.placementResolver.servingDaemon(agent)
+      if (!target) return undeliverable
       try {
-        const ack = await deps.control.integrationForget(agent.daemonId, { integrationId: integration.id, channels })
+        const ack = await deps.control.integrationForget(target, { integrationId: integration.id, channels })
         if (ack.ok) return { ok: true }
         return {
           ok: false,
@@ -1074,8 +1081,9 @@ export function integrationRoutes(deps: HttpDeps) {
           }
           // The daemon holding this integration owns provider egress for it in BOTH
           // transports — a relay-managed bot still keeps send credentials — so the
-          // platform call belongs to the agent's own daemon either way.
-          if (!placed.daemonId) {
+          // platform call belongs to whichever member serves the agent, resolved not read.
+          const egressDaemonId = await deps.placementResolver.servingDaemon(placed)
+          if (!egressDaemonId) {
             return reply.code(409).send({
               error: 'Conflict',
               statusCode: 409,
@@ -1084,7 +1092,7 @@ export function integrationRoutes(deps: HttpDeps) {
           }
           let verdict
           try {
-            verdict = await deps.control.integrationLeave(placed.daemonId, { integrationId: integration.id, target })
+            verdict = await deps.control.integrationLeave(egressDaemonId, { integrationId: integration.id, target })
           } catch (err) {
             return reply.code(502).send({
               error: 'Bad Gateway',

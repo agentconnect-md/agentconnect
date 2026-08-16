@@ -14,10 +14,13 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
-import { seedDaemon, seedAgent } from '../fixtures/seed.js'
+import { seedDaemon, seedAgent, seedDutyGroup } from '../fixtures/seed.js'
+import { seedPoolMember } from '../fakes/member-set.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { PgAgentRepo, PgDaemonRepo, PgIntegrationRepo, PgIntegrationChannelRepo } from '../../src/persistence/index.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
+import { PgDutyGroupRepo } from '../../src/persistence/repositories/duty-group.repo.js'
+import { systemClock } from '../../src/domain/clock.js'
 import { handleIntegrationChannels } from '../../src/ws/handlers/index.js'
 import { IntegrationId } from '../../src/domain/ids.js'
 import type { DaemonConnection } from '../../src/ws/connection.js'
@@ -149,6 +152,9 @@ async function report(
     integration: new PgIntegrationRepo(prisma),
     integrationChannel: new PgIntegrationChannelRepo(prisma),
     agent: new PgAgentRepo(prisma),
+    // Admission is the served set now — placement ∪ the duties this member holds.
+    dutyLease: new PgDutyGroupRepo(prisma),
+    clock: systemClock,
     agentMutations,
     collabRoutes
   } as unknown as DaemonWsDeps
@@ -727,7 +733,7 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
     const id = await install(running)
     const stored = await prisma.integration.findUniqueOrThrow({ where: { id } })
-    const scoped = new PgIntegrationRepo(prisma)
+    const agents = new PgAgentRepo(prisma)
     let firstRead = true
     const frame = {
       v: 1,
@@ -736,17 +742,22 @@ describe('integration/channels EVT → integration_channel convergence', () => {
       type: 'integration/channels',
       payload: { integrationId: id, channels: [{ id: 'C1', name: 'late-source' }] }
     } as AnyFrame
+    // The served set is what admission reads, so the move lands between its two evaluations.
     const deps = {
-      integration: {
-        activeForDaemon: async (daemonId: Parameters<typeof scoped.activeForDaemon>[0]) => {
-          const rows = await scoped.activeForDaemon(daemonId)
+      integration: new PgIntegrationRepo(prisma),
+      agent: {
+        listForDaemon: async (daemonId: Parameters<typeof agents.listForDaemon>[0]) => {
+          const rows = await agents.listForDaemon(daemonId)
           if (firstRead) {
             firstRead = false
             await prisma.agent.update({ where: { id: stored.agentId }, data: { daemonId: OTHER_DAEMON } })
           }
           return rows
-        }
+        },
+        listByIds: (ids: Parameters<typeof agents.listByIds>[0]) => agents.listByIds(ids),
+        getUnscoped: (agentId: Parameters<typeof agents.getUnscoped>[0]) => agents.getUnscoped(agentId)
       },
+      clock: systemClock,
       integrationChannel: new PgIntegrationChannelRepo(prisma),
       agentMutations: new AgentMutationGate()
     } as unknown as DaemonWsDeps
@@ -1361,6 +1372,81 @@ describe('DELETE …/channels/:channelId (forget) and POST …/leave (platform)'
     expect(res.statusCode).toBe(204)
     expect(spy.leaves).toEqual([
       { daemonId: DAEMON, l: { integrationId: id, target: { kind: 'space', spaceId: 'G1' } } }
+    ])
+  })
+})
+
+/**
+ * The pool half of every conversation path (#1026, #1027): a POOL agent is placed and names no
+ * machine, so a snapshot admitted by `agent.daemonId` was dropped in silence, and Forget / Leave
+ * refused on a column that could never be filled.
+ */
+describe('conversation paths for a POOL agent', () => {
+  const MEMBER = 'd9999999-9999-4999-8999-999999999999'
+  const GROUP = '00000000-0000-4000-8000-0000000009d1'
+
+  /** A pool agent whose duty MEMBER holds, with a Telegram install (the session-derived
+   *  platform, so Forget must reach a daemon) — plus the id of that install. */
+  async function heldInstall(app: HttpApp, platform: 'slack' | 'telegram'): Promise<string> {
+    const setId = await seedPoolMember(prisma, MEMBER)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { setId, createdByUserId: DEFAULT_OWNER_ID })
+    await seedDutyGroup(prisma, GROUP, MEMBER, [agentId])
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload:
+        platform === 'slack'
+          ? { name: 'pool-bot', platform, agentId, slack: SLACK }
+          : { name: 'pool-tg', platform, agentId, telegram: { botToken: '123456:AAE-xyz' } }
+    })
+    expect(res.statusCode).toBe(201)
+    return (res.json() as { id: string }).id
+  }
+
+  it('accepts a channel snapshot from the member holding the duty, and no one else (#1027)', async () => {
+    await seedDaemon(prisma, OTHER_DAEMON)
+    const spy = new SpyControl()
+    running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+    const id = await heldInstall(running, 'slack')
+    const channels = new PgIntegrationChannelRepo(prisma)
+
+    // A daemon that holds no duty for the agent writes nothing — silently, as before.
+    await report(OTHER_DAEMON, id, [{ id: 'C1', name: 'deploys' }])
+    expect(await channels.listForIntegration(IntegrationId(id))).toEqual([])
+
+    await report(MEMBER, id, [{ id: 'C1', name: 'deploys' }])
+    expect((await channels.listForIntegration(IntegrationId(id))).map((c) => c.channelId)).toEqual(['C1'])
+  })
+
+  it('pushes Forget to the duty holder instead of refusing as undeliverable (#1026)', async () => {
+    const spy = new SpyControl()
+    running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+    const id = await heldInstall(running, 'telegram')
+    await report(MEMBER, id, [{ id: '-100123', name: 'Team' }], undefined, undefined, false)
+
+    const res = await running.app.inject({ method: 'DELETE', url: `${ORG}/integrations/${id}/channels/-100123` })
+
+    expect(res.statusCode).toBe(204)
+    expect(spy.forgets).toEqual([{ daemonId: MEMBER, f: { integrationId: id, channels: ['-100123'] } }])
+    expect(await new PgIntegrationChannelRepo(prisma).listForIntegration(IntegrationId(id))).toEqual([])
+  })
+
+  it('dispatches Leave to the duty holder (#1026)', async () => {
+    const spy = new SpyControl()
+    running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+    const id = await heldInstall(running, 'telegram')
+    await report(MEMBER, id, [{ id: 'C1', name: 'deploys' }], undefined, undefined, false)
+
+    const res = await running.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations/${id}/leave`,
+      payload: { target: { kind: 'conversation', channel: 'C1' } }
+    })
+
+    expect(res.statusCode).toBe(204)
+    expect(spy.leaves).toEqual([
+      { daemonId: MEMBER, l: { integrationId: id, target: { kind: 'conversation', channel: 'C1' } } }
     ])
   })
 })

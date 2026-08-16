@@ -27,6 +27,7 @@
  * closed (unknown gate state ⇒ capture excluded).
  */
 import { PLACEMENT_ONLY, type PlacementResolver } from './placementResolver.js'
+import { servedAgents, type DutyHeldAgentReader } from './servedAgents.js'
 import {
   SESSION_VISIBILITY_FEATURE,
   SLACK_SESSION_AUDIENCE_FEATURE,
@@ -34,6 +35,7 @@ import {
 } from '@agentconnect.md/protocol'
 import type { AgentRepo, SessionMetaRecord, SessionRepo, SessionVisibilityState } from '../persistence/ports.js'
 import { SessionId, type DaemonId } from '../domain/ids.js'
+import { systemClock, type Clock } from '../domain/clock.js'
 import { ConnectionClosed, type ConnectionRegistry } from '../ws/registry.js'
 import { NoConnection, type ControlSender } from './outbound.js'
 
@@ -53,6 +55,10 @@ export interface VisibilityPushDeps {
   connReg: ConnectionRegistry
   /** Resolves the member that serves each session's agent. Absent ⇒ placement alone. */
   placement?: Pick<PlacementResolver, 'servingDaemon'>
+  /** The inverse read the replay pages by — which agents a member serves. Absent ⇒ placement
+   *  alone, which is the pre-duty behavior. */
+  duties?: DutyHeldAgentReader
+  clock?: Clock
   log?: { warn(obj: unknown, msg?: string): void }
 }
 
@@ -102,6 +108,17 @@ export class SessionVisibilityPushService {
   /** Absent (tests / no pool) ⇒ placement alone, which is the pre-duty behavior. */
   private placement(): Pick<PlacementResolver, 'servingDaemon'> {
     return this.deps.placement ?? PLACEMENT_ONLY
+  }
+
+  /** The agents this member serves — `pinned-to-me ∪ duties I hold`, the inverse of the resolver
+   *  the live push uses, so a replay covers exactly the sessions that member can capture from. */
+  private async servedAgentIds(daemonId: DaemonId): Promise<string[]> {
+    const { agents } = await servedAgents(daemonId, {
+      agents: this.deps.repos.agent,
+      ...(this.deps.duties ? { duties: this.deps.duties } : {}),
+      now: new Date((this.deps.clock ?? systemClock).now())
+    })
+    return agents.map((agent) => agent.id as string)
   }
 
   private supports(daemonId: string): boolean {
@@ -182,7 +199,9 @@ export class SessionVisibilityPushService {
     const includeExternal = this.supportsExternal(daemonId)
     for (;;) {
       if (this.stopped) return // shutdown: the next process converges on register
-      const page = await this.deps.repos.session.visibilitySnapshotForDaemon(daemonId, SNAPSHOT_CHUNK, includeExternal)
+      // Re-resolved each round: a duty granted mid-replay widens the set the very next page.
+      const agentIds = await this.servedAgentIds(daemonId)
+      const page = await this.deps.repos.session.visibilitySnapshotForAgents(agentIds, SNAPSHOT_CHUNK, includeExternal)
       if (page.length === 0) return
       const outcome = await this.sendSnapshotChunk(daemonId, page)
       if (outcome === 'gone') return // disconnected: its next register replays
@@ -193,7 +212,7 @@ export class SessionVisibilityPushService {
         return
       }
       if (page.length < SNAPSHOT_CHUNK) return // the page was not full: nothing behind it
-      const unacked = await this.deps.repos.session.countUnackedVisibility(daemonId, includeExternal)
+      const unacked = await this.deps.repos.session.countUnackedVisibilityForAgents(agentIds, includeExternal)
       if (unacked === 0) return
       if (unacked >= previousUnacked) {
         // Not converging — new changes are arriving at least as fast as we ack.

@@ -2,10 +2,13 @@ import { describe, expect, it, vi } from 'vitest'
 import type { AnyFrame, ChildSessionStatus } from '@agentconnect.md/protocol'
 import type { DaemonConnection } from '../connection.js'
 import type { DaemonWsDeps } from '../deps.js'
+import { PlacementResolver } from '../../orchestrator/placementResolver.js'
+import { systemClock } from '../../domain/clock.js'
 import { handleChildSessionStatus } from './child-session-status.js'
 
 const ASKING_DAEMON = 'd1d1d1d1-dddd-4ddd-8ddd-dddddddddddd'
 const OWNING_DAEMON = 'd2d2d2d2-dddd-4ddd-8ddd-dddddddddddd'
+const PARENT_AGENT = 'a1a1a1a1-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const CHILD_AGENT = 'a0a0a0a0-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const ORG = 'org-a'
 
@@ -43,12 +46,21 @@ function fakeConn() {
   } as unknown as DaemonConnection & { replyTo: ReturnType<typeof vi.fn>; sendError: ReturnType<typeof vi.fn> }
 }
 
-/** Deps with every check passing; each test overrides exactly the one it exercises. */
+/**
+ * Deps with every check passing; each test overrides exactly the one it exercises.
+ *
+ * Both legs are LIVE reads now: the parent is admitted by "does the asking daemon serve this
+ * session's agent", and the child is addressed at whoever serves it — so the fake carries two
+ * agents (parent on the asker, child elsewhere) and, where a test needs one, a duty ledger.
+ */
 function fakeDeps(
   over: {
     parent?: unknown
+    parentAgent?: unknown
     childAgent?: unknown
     ownerConn?: unknown
+    /** agentId → the members holding its duty right now. */
+    holders?: Record<string, string[]>
     request?: ReturnType<typeof vi.fn>
   } = {}
 ) {
@@ -57,6 +69,12 @@ function fakeDeps(
     'ownerConn' in over
       ? over.ownerConn
       : { daemonId: OWNING_DAEMON, reachable: true, sessionEpoch: 7, conn: { request } }
+  const agents: Record<string, unknown> = {
+    [PARENT_AGENT]:
+      'parentAgent' in over ? over.parentAgent : { id: PARENT_AGENT, orgId: ORG, daemonId: ASKING_DAEMON },
+    [CHILD_AGENT]: 'childAgent' in over ? over.childAgent : { id: CHILD_AGENT, orgId: ORG, daemonId: OWNING_DAEMON }
+  }
+  const holdersOf = async (agentId: string) => over.holders?.[agentId] ?? []
   return {
     deps: {
       registry: { getUnscoped: async () => ({ id: ASKING_DAEMON, orgId: ORG }) },
@@ -64,12 +82,13 @@ function fakeDeps(
         getUnscoped: async () =>
           'parent' in over
             ? over.parent
-            : { id: PARENT_SESSION, orgId: ORG, daemonId: ASKING_DAEMON, agentId: CHILD_AGENT }
+            : { id: PARENT_SESSION, orgId: ORG, daemonId: ASKING_DAEMON, agentId: PARENT_AGENT }
       },
-      agent: {
-        getUnscoped: async () =>
-          'childAgent' in over ? over.childAgent : { id: CHILD_AGENT, orgId: ORG, daemonId: OWNING_DAEMON }
-      },
+      agent: { getUnscoped: async (id: string) => agents[id] ?? null },
+      placementResolver: new PlacementResolver({
+        duties: { holdersOf, confirmedHoldersOf: holdersOf } as never,
+        clock: systemClock
+      }),
       connReg: { get: () => owner }
     } as unknown as DaemonWsDeps,
     request
@@ -99,8 +118,8 @@ describe('handleChildSessionStatus — cross-daemon child status (session-concep
 
   // (a) The parent-session claim is untrusted: without this check any daemon could name someone
   // else's parent session and read its children.
-  it('refuses when the claimed parent session was reported by a DIFFERENT daemon', async () => {
-    const { deps, request } = fakeDeps({ parent: { id: PARENT_SESSION, daemonId: OWNING_DAEMON } })
+  it('refuses when the asking daemon does not serve the claimed parent session’s agent', async () => {
+    const { deps, request } = fakeDeps({ parentAgent: { id: PARENT_AGENT, orgId: ORG, daemonId: OWNING_DAEMON } })
     const conn = fakeConn()
     await handleChildSessionStatus(frame(), conn, deps)
 
@@ -117,6 +136,34 @@ describe('handleChildSessionStatus — cross-daemon child status (session-concep
     expect(request).not.toHaveBeenCalled()
   })
 
+  // A rollout moves the duty; the recorded `session_meta.daemonId` still names the retired member
+  // (or nothing at all), so the column would refuse the holder its own parent.
+  it('admits a parent whose agent this daemon holds by duty, not by placement', async () => {
+    const { deps, request } = fakeDeps({
+      parent: { id: PARENT_SESSION, orgId: ORG, daemonId: null, agentId: PARENT_AGENT },
+      parentAgent: { id: PARENT_AGENT, orgId: ORG, placementKind: 'set', daemonId: null, setId: 'pool' },
+      holders: { [PARENT_AGENT]: [ASKING_DAEMON] }
+    })
+    const conn = fakeConn()
+    await handleChildSessionStatus(frame(), conn, deps)
+
+    expect(replied(conn)).toEqual(ANSWER)
+    expect(request).toHaveBeenCalledTimes(1)
+  })
+
+  // A pool child names no machine, so the column refused every one of them outright.
+  it('addresses a pool child at the member currently holding its duty', async () => {
+    const { deps, request } = fakeDeps({
+      childAgent: { id: CHILD_AGENT, orgId: ORG, placementKind: 'set', daemonId: null, setId: 'pool' },
+      holders: { [CHILD_AGENT]: [OWNING_DAEMON] }
+    })
+    const conn = fakeConn()
+    await handleChildSessionStatus(frame(), conn, deps)
+
+    expect(replied(conn)).toEqual(ANSWER)
+    expect(request).toHaveBeenCalledTimes(1)
+  })
+
   it('refuses a child agent in another org even when both daemons are reachable', async () => {
     const { deps, request } = fakeDeps({ childAgent: { id: CHILD_AGENT, orgId: 'org-b', daemonId: OWNING_DAEMON } })
     const conn = fakeConn()
@@ -126,7 +173,7 @@ describe('handleChildSessionStatus — cross-daemon child status (session-concep
     expect(request).not.toHaveBeenCalled()
   })
 
-  it('refuses an unknown or unplaced child agent', async () => {
+  it('refuses an unknown child agent, or one nothing is serving', async () => {
     for (const childAgent of [null, { id: CHILD_AGENT, orgId: ORG, daemonId: null }]) {
       const { deps, request } = fakeDeps({ childAgent })
       const conn = fakeConn()

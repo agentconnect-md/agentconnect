@@ -1600,11 +1600,16 @@ export class PgSessionRepo implements SessionRepo {
     `)
   }
 
-  async visibilitySnapshotForDaemon(
-    daemonId: DaemonId,
+  async visibilitySnapshotForAgents(
+    agentIds: readonly string[],
     limit: number,
     includeExternal = true
   ): Promise<SessionVisibilityState[]> {
+    if (agentIds.length === 0) return []
+    // Keyed on the AGENTS the daemon serves, not on `session_meta.daemonId` — that column names
+    // the member that first reported the session and is null once that member is reaped, so a new
+    // duty holder would page zero rows and keep the gates it was never sent (#1029).
+    //
     // Unacknowledged revisions FIRST, newest-active after. A session tightened
     // while this daemon was offline is by definition unacked, so it replays no
     // matter how old it is — a plain newest-first window would drop it past the
@@ -1614,7 +1619,7 @@ export class PgSessionRepo implements SessionRepo {
     >(Prisma.sql`
       SELECT "id", "orgId", "visibility", "externalProvider", "visibilityRev"
       FROM "session_meta"
-      WHERE "daemonId" = ${daemonId}::uuid
+      WHERE "agentId" = ANY(${[...agentIds]}::uuid[])
         AND (${includeExternal} OR "externalProvider" IS NULL)
       ORDER BY ("visibilityAckedRev" < "visibilityRev") DESC,
                "lastActivityAt" DESC, "startedAt" DESC, "id" DESC
@@ -1632,10 +1637,13 @@ export class PgSessionRepo implements SessionRepo {
     }))
   }
 
-  async countUnackedVisibility(daemonId: DaemonId, includeExternal = true): Promise<number> {
+  async countUnackedVisibilityForAgents(agentIds: readonly string[], includeExternal = true): Promise<number> {
+    if (agentIds.length === 0) return 0
+    // Same predicate as the snapshot above, or the counter reports a convergence that never
+    // happened for a member whose served set the recorded column does not describe.
     const rows = await this.db.$queryRaw<Array<{ n: bigint }>>(Prisma.sql`
       SELECT COUNT(*)::bigint AS n FROM "session_meta"
-      WHERE "daemonId" = ${daemonId}::uuid
+      WHERE "agentId" = ANY(${[...agentIds]}::uuid[])
         AND (${includeExternal} OR "externalProvider" IS NULL)
         AND "visibilityAckedRev" < "visibilityRev"
     `)

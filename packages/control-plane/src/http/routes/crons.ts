@@ -22,6 +22,7 @@ import { canView, canEdit, canManageSharing, type ViewCtx } from '../../authoriz
 import { resolveShareSet } from '../sharing.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
 import { cronToUpsert } from '../../orchestrator/placement.js'
+import { samePlacementRef } from '../../domain/placement.js'
 import { toDbPlatform } from '../../persistence/platform.js'
 import { Tag } from '../plugins/openapi.js'
 import {
@@ -67,11 +68,13 @@ function toDto(c: CronRecord, ctx: ViewCtx): CronDtoT {
 export function cronRoutes(deps: HttpDeps) {
   return async function cronRoutesPlugin(app: FastifyInstance): Promise<void> {
     const r = app.withTypeProvider<ZodTypeProvider>()
+    // Placement IDENTITY, not the `daemonId` column: a set placement names no machine, so column
+    // equality both misses a re-placement onto another set and reads every set agent as unplaced.
     const refreshMutationAgent = async (observed: AgentRecord): Promise<AgentRecord | null> => {
       const current = await deps.repos.agent.get(observed.orgId, observed.id)
       if (
         !current ||
-        current.daemonId !== observed.daemonId ||
+        !samePlacementRef(current, observed) ||
         current.lastModifiedAt.getTime() !== observed.lastModifiedAt.getTime()
       ) {
         return null
@@ -335,16 +338,14 @@ export function cronRoutes(deps: HttpDeps) {
         if (!canEdit(cron, ctxOf(req))) {
           return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot run this cron' })
         }
-        let agent = cron.agentId ? await deps.repos.agent.get(orgOf(req), cron.agentId) : null
+        const agent = cron.agentId ? await deps.repos.agent.get(orgOf(req), cron.agentId) : null
         // A manual run goes to whoever serves the agent right now — its placement, or the member
         // holding its duty. Nothing serving it is a 503, exactly as an unplaced agent was.
-        const runDaemonId = agent ? await deps.placementResolver.servingDaemon(agent) : null
-        if (!agent || !runDaemonId) {
+        if (!agent || !(await deps.placementResolver.servingDaemon(agent))) {
           return reply
             .code(503)
             .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent is not placed on a daemon' })
         }
-        agent = { ...agent, daemonId: runDaemonId }
         const release = deps.agentMutations.tryBeginMutation(agent.id)
         if (!release) {
           return reply
@@ -360,8 +361,9 @@ export function cronRoutes(deps: HttpDeps) {
               message: 'agent placement changed; refresh and retry the cron run'
             })
           }
-          agent = current
-          const daemonId = current.daemonId
+          // Re-resolved under the lease rather than read off the row, so the fire reaches the
+          // member serving a pool agent instead of refusing on a column that names no machine.
+          const daemonId = await deps.placementResolver.servingDaemon(current)
           if (!daemonId) {
             return reply
               .code(409)

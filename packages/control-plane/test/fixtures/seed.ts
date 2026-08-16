@@ -54,6 +54,8 @@ export async function seedAgent(
   opts: {
     runtime?: string
     daemonId?: string
+    /** A MEMBER-SET placement: placed, naming no machine. Only the duty ledger says who serves it. */
+    setId?: string
     name?: string
     visibility?: 'org' | 'restricted'
     sharedWith?: string[]
@@ -74,6 +76,7 @@ export async function seedAgent(
       name: opts.name ?? `agent-${id.slice(0, 4)}`,
       runtime: opts.runtime ?? 'claude',
       daemonId: opts.daemonId,
+      ...(opts.setId ? { placementKind: 'set' as const, setId: opts.setId } : {}),
       ...(opts.visibility ? { visibility: opts.visibility } : {}),
       ...(opts.sharedWith ? { sharedWith: opts.sharedWith } : {}),
       ...(opts.createdByUserId ? { createdByUserId: opts.createdByUserId } : {}),

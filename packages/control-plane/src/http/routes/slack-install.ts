@@ -24,6 +24,7 @@ import type { ZodTypeProvider } from '../plugins/zod.js'
 import { Tag } from '../plugins/openapi.js'
 import type { HttpDeps } from '../deps.js'
 import { AgentId, OrgId } from '../../domain/ids.js'
+import { samePlacementRef } from '../../domain/placement.js'
 import { denyViewerWrite, ctxOf, orgOf } from '../rbac.js'
 import { canView, canEdit } from '../../authorization/policy.js'
 import { resolveWebAppUrl } from '../../config/env.js'
@@ -103,13 +104,16 @@ export function slackInstallRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
         if (!canEdit(agent, ctxOf(req))) {
           return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this agent' })
         }
-        if (!agent.daemonId) {
+        // Delivery is daemon-scoped; refuse until the agent is placed. A pool agent IS placed and
+        // names no machine, so the capability probe asks whichever member serves it.
+        const installDaemonId = await deps.placementResolver.servingDaemon(agent)
+        if (!installDaemonId) {
           return reply
             .code(409)
             .send({ error: 'Conflict', statusCode: 409, message: 'agent must be placed on a daemon first' })
         }
         const platformAvailability = await integrationPlatformAvailability(deps, {
-          daemonId: agent.daemonId,
+          daemonId: installDaemonId,
           orgId,
           viewer: ctxOf(req),
           platform: 'slack'
@@ -343,13 +347,15 @@ export function slackInstallRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
         if (!canEdit(agent, ctxOf(req))) {
           return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this agent' })
         }
-        if (!agent.daemonId) {
+        // A pool agent IS placed and names no machine; the probe asks whichever member serves it.
+        const installDaemonId = await deps.placementResolver.servingDaemon(agent)
+        if (!installDaemonId) {
           return reply
             .code(409)
             .send({ error: 'Conflict', statusCode: 409, message: 'agent must be placed on a daemon first' })
         }
         const platformAvailability = await integrationPlatformAvailability(deps, {
-          daemonId: agent.daemonId,
+          daemonId: installDaemonId,
           orgId,
           viewer: ctxOf(req),
           platform: 'slack'
@@ -406,10 +412,11 @@ export function slackInstallRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
           // Token verification and capability checks above can take long enough
           // for placement to change. Re-read after taking the mutation side of
           // the move gate so the bot cannot be installed onto a stale daemon.
+          // Placement IDENTITY, not the column: a set placement names no machine.
           const current = await deps.repos.agent.get(orgOf(req), agent.id)
           if (
             !current ||
-            current.daemonId !== agent.daemonId ||
+            !samePlacementRef(current, agent) ||
             current.lastModifiedAt.getTime() !== agent.lastModifiedAt.getTime()
           ) {
             return reply.code(409).send({

@@ -3,7 +3,8 @@ import { gunzipSync } from 'node:zlib'
 import { randomUUID } from 'node:crypto'
 import type { IntegrationUpsert } from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
-import { seedAgent, seedDaemon } from '../fixtures/seed.js'
+import { seedAgent, seedDaemon, seedDutyGroup } from '../fixtures/seed.js'
+import { seedPoolMember } from '../fakes/member-set.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { ControlSender } from '../../src/orchestrator/outbound.js'
 import {
@@ -29,6 +30,8 @@ import type { RelayChannel } from '../../src/ws/relay-registry.js'
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 const DAEMON = 'd1d1d1d1-dddd-4ddd-8ddd-dddddddddddd'
 const UNSUPPORTED_DAEMON = 'd2d2d2d2-dddd-4ddd-8ddd-dddddddddddd'
+const MEMBER = 'd9999999-9999-4999-8999-999999999999'
+const GROUP = '00000000-0000-4000-8000-0000000009f1'
 
 let running: HttpApp | undefined
 
@@ -229,6 +232,58 @@ describe('Feishu/Lark one-click app registration', () => {
         // §6.4 emission flip: credentials ride the opaque config envelope.
         config: { appId: 'cli_oneclick', appSecret: 'one-click-secret', region: 'lark' }
       }
+    })
+  }, 15_000)
+
+  // #1026: `start` resolved the serving member, then the finalize step re-read `agent.daemonId` —
+  // NULL for a pool agent — and failed the whole registration as `agent_unavailable`.
+  it('finalizes a POOL agent’s registration through the member holding its duty (#1026)', async () => {
+    const setId = await seedPoolMember(prisma, MEMBER)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { setId, name: 'pool-agent' })
+    await seedDutyGroup(prisma, GROUP, MEMBER, [agentId])
+    const fetcher = vi.fn<typeof fetch>(async (_input, init) => {
+      const form = new URLSearchParams(String(init?.body))
+      if (form.get('action') === 'begin') {
+        return new Response(
+          JSON.stringify({
+            verification_uri_complete: 'https://accounts.feishu.cn/device?user_code=POOL-CODE',
+            device_code: 'pool-device-code',
+            expires_in: 600,
+            interval: 1
+          })
+        )
+      }
+      return new Response(
+        JSON.stringify({
+          client_id: 'cli_pool',
+          client_secret: 'pool-secret',
+          user_info: { tenant_brand: 'lark' }
+        })
+      )
+    })
+    const spy = new SpyControl()
+    const app = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender, {
+      feishuAppRegistration: service(fetcher),
+      verifyFeishuBot: async () => ({ status: 'ok', name: 'Pool Bot', openId: 'ou_pool_bot' })
+    })
+    running = app
+
+    const started = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations/feishu/app`,
+      payload: { agentId, name: 'AgentConnect Pool', region: 'lark' }
+    })
+    expect({ status: started.statusCode, body: started.json() }).toMatchObject({ status: 201 })
+    const { id } = started.json() as { id: string }
+
+    await vi.waitFor(async () => {
+      const polled = await app.app.inject({ method: 'GET', url: `${ORG}/integrations/feishu/app/${id}` })
+      expect(polled.json()).toMatchObject({ status: 'completed', failureReason: null })
+    })
+    expect(spy.upserts.map((u) => u.daemonId)).toEqual([MEMBER])
+    expect(await prisma.bot.findFirst({ where: { externalAppId: 'cli_pool' } })).toMatchObject({
+      name: 'AgentConnect Pool'
     })
   }, 15_000)
 
