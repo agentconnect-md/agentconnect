@@ -303,6 +303,38 @@ describe('PUT /agents/:id/memory/file (replace, edit-gated, proxied)', () => {
     expect(res.statusCode).toBe(400)
   })
 
+  it("answers a sleeping sandbox with the workspace reader's 503 + code on every file route", async () => {
+    // A cluster agent's memory tree is on its sandbox volume; the daemon refuses with the workspace
+    // reader's reason, and the console wakes the sandbox on this code (#1077) — never a 400.
+    await seedDaemon(prisma, DAEMON)
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    const asleep = () => {
+      throw new ProtocolError('BAD_PAYLOAD', 'memory/list failed: agent has no running sandbox', {
+        details: { reason: 'sandbox-unavailable' }
+      })
+    }
+    const s = {
+      memoryList: asleep,
+      memoryRead: asleep,
+      memoryWrite: asleep,
+      memoryHistory: asleep,
+      memoryChannels: asleep
+    }
+    running = buildHttpApp(prisma, undefined, LIVE, s as unknown as ControlSender)
+    for (const request of [
+      { method: 'GET' as const, url: `${ORG}/agents/${AGENT}/memory/files` },
+      { method: 'GET' as const, url: `${ORG}/agents/${AGENT}/memory` },
+      { method: 'GET' as const, url: `${ORG}/agents/${AGENT}/memory/file?path=deploys.md` },
+      { method: 'GET' as const, url: `${ORG}/agents/${AGENT}/memory/history?path=MEMORY.md` },
+      { method: 'GET' as const, url: `${ORG}/agents/${AGENT}/memory/channels` },
+      { method: 'PUT' as const, url: `${ORG}/agents/${AGENT}/memory/file`, payload: { content: 'x' } }
+    ]) {
+      const res = await running.app.inject(request)
+      expect(res.statusCode, request.url).toBe(503)
+      expect((res.json() as { code?: string }).code, request.url).toBe('WORKSPACE_SANDBOX_UNAVAILABLE')
+    }
+  })
+
   it('rejects an unknown body field (.strict)', async () => {
     await seedDaemon(prisma, DAEMON)
     await seedAgent(prisma, AGENT, { daemonId: DAEMON })

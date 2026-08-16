@@ -726,6 +726,16 @@ function sendWorkspaceFailure(reply: FastifyReply, err: unknown): boolean {
   return true
 }
 
+/** A memory or dream request refused because the agent's sandbox is not running: the workspace
+ *  reader's transient 503 + code, so the console wakes the sandbox (#1077). false ⇒ not that. */
+function sendSandboxUnavailable(reply: FastifyReply, err: unknown): boolean {
+  if (!(err instanceof ProtocolError) || workspaceErrorCode(err) !== SANDBOX_UNAVAILABLE) return false
+  void reply
+    .code(503)
+    .send({ error: 'Service Unavailable', statusCode: 503, message: err.message, code: SANDBOX_UNAVAILABLE })
+  return true
+}
+
 /** A workspace MUTATION's failure mapping, which differs from a read's on purpose: the
  *  status is the mutation's (409 for a conflict, 400 for a refused payload) whatever the
  *  daemon names, and a reason only rides along as the machine `code` — a write that was
@@ -792,9 +802,17 @@ function sendTaskFailure(reply: FastifyReply, err: unknown): boolean {
   return true
 }
 
-function memoryAdminFailure(
-  err: unknown
-): { status: 400 | 409 | 503; error: 'Bad Request' | 'Conflict' | 'Service Unavailable'; message: string } | null {
+function memoryAdminFailure(err: unknown): {
+  status: 400 | 409 | 503
+  error: 'Bad Request' | 'Conflict' | 'Service Unavailable'
+  message: string
+  code?: string
+} | null {
+  // A cluster agent's memory tree is on its sandbox volume: asleep is the workspace reader's transient
+  // 503 + code, which the console answers by waking the sandbox (#1077) — never a 400.
+  if (err instanceof ProtocolError && workspaceErrorCode(err) === SANDBOX_UNAVAILABLE) {
+    return { status: 503, error: 'Service Unavailable', message: err.message, code: SANDBOX_UNAVAILABLE }
+  }
   if (err instanceof ProtocolError && err.code === 'BAD_PAYLOAD') {
     return { status: 400, error: 'Bad Request', message: `daemon rejected the request: ${err.message}` }
   }
@@ -3190,6 +3208,7 @@ export function agentRoutes(deps: HttpDeps) {
           })
           return toAgentMemoryDto(rep)
         } catch (err) {
+          if (sendSandboxUnavailable(reply, err)) return
           const unavailable = daemonEdgeFailure(err)
           if (unavailable !== null) {
             return reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: unavailable })
@@ -3237,6 +3256,7 @@ export function agentRoutes(deps: HttpDeps) {
           })
           return toMemoryFilesDto(rep)
         } catch (err) {
+          if (sendSandboxUnavailable(reply, err)) return
           const unavailable = daemonEdgeFailure(err)
           if (unavailable !== null) {
             return reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: unavailable })
@@ -3281,6 +3301,7 @@ export function agentRoutes(deps: HttpDeps) {
             }))
           }
         } catch (err) {
+          if (sendSandboxUnavailable(reply, err)) return
           const unavailable = daemonEdgeFailure(err)
           if (unavailable !== null) {
             return reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: unavailable })
@@ -3331,6 +3352,7 @@ export function agentRoutes(deps: HttpDeps) {
           })
           return toAgentMemoryDto(rep)
         } catch (err) {
+          if (sendSandboxUnavailable(reply, err)) return
           const unavailable = daemonEdgeFailure(err)
           if (unavailable !== null) {
             return reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: unavailable })
@@ -3395,6 +3417,7 @@ export function agentRoutes(deps: HttpDeps) {
           })
           return { path: ok.path, size: ok.size, mtime: ok.mtime }
         } catch (err) {
+          if (sendSandboxUnavailable(reply, err)) return
           // The daemon rejects a stale write (CONFLICT) or an over-budget / bad-path
           // write (BAD_PAYLOAD) — surface those as 409 / 400, not the generic 503.
           if (err instanceof ProtocolError && err.code === 'CONFLICT') {
@@ -3462,9 +3485,12 @@ export function agentRoutes(deps: HttpDeps) {
         } catch (err) {
           const failure = memoryAdminFailure(err)
           if (failure) {
-            return reply
-              .code(failure.status)
-              .send({ error: failure.error, statusCode: failure.status, message: failure.message })
+            return reply.code(failure.status).send({
+              error: failure.error,
+              statusCode: failure.status,
+              message: failure.message,
+              ...(failure.code ? { code: failure.code } : {})
+            })
           }
           throw err
         }
@@ -3501,9 +3527,12 @@ export function agentRoutes(deps: HttpDeps) {
         } catch (err) {
           const failure = memoryAdminFailure(err)
           if (failure)
-            return reply
-              .code(failure.status)
-              .send({ error: failure.error, statusCode: failure.status, message: failure.message })
+            return reply.code(failure.status).send({
+              error: failure.error,
+              statusCode: failure.status,
+              message: failure.message,
+              ...(failure.code ? { code: failure.code } : {})
+            })
           throw err
         }
       }
@@ -3546,9 +3575,12 @@ export function agentRoutes(deps: HttpDeps) {
         } catch (err) {
           const failure = memoryAdminFailure(err)
           if (failure)
-            return reply
-              .code(failure.status)
-              .send({ error: failure.error, statusCode: failure.status, message: failure.message })
+            return reply.code(failure.status).send({
+              error: failure.error,
+              statusCode: failure.status,
+              message: failure.message,
+              ...(failure.code ? { code: failure.code } : {})
+            })
           throw err
         }
       }
@@ -3590,9 +3622,12 @@ export function agentRoutes(deps: HttpDeps) {
         } catch (err) {
           const failure = memoryAdminFailure(err)
           if (failure)
-            return reply
-              .code(failure.status)
-              .send({ error: failure.error, statusCode: failure.status, message: failure.message })
+            return reply.code(failure.status).send({
+              error: failure.error,
+              statusCode: failure.status,
+              message: failure.message,
+              ...(failure.code ? { code: failure.code } : {})
+            })
           throw err
         }
       }
@@ -3645,9 +3680,12 @@ export function agentRoutes(deps: HttpDeps) {
         } catch (err) {
           const failure = memoryAdminFailure(err)
           if (failure)
-            return reply
-              .code(failure.status)
-              .send({ error: failure.error, statusCode: failure.status, message: failure.message })
+            return reply.code(failure.status).send({
+              error: failure.error,
+              statusCode: failure.status,
+              message: failure.message,
+              ...(failure.code ? { code: failure.code } : {})
+            })
           throw err
         }
       }
@@ -3684,9 +3722,12 @@ export function agentRoutes(deps: HttpDeps) {
         } catch (err) {
           const failure = memoryAdminFailure(err)
           if (failure)
-            return reply
-              .code(failure.status)
-              .send({ error: failure.error, statusCode: failure.status, message: failure.message })
+            return reply.code(failure.status).send({
+              error: failure.error,
+              statusCode: failure.status,
+              message: failure.message,
+              ...(failure.code ? { code: failure.code } : {})
+            })
           throw err
         }
       }
@@ -3741,9 +3782,12 @@ export function agentRoutes(deps: HttpDeps) {
         } catch (err) {
           const failure = memoryAdminFailure(err)
           if (failure)
-            return reply
-              .code(failure.status)
-              .send({ error: failure.error, statusCode: failure.status, message: failure.message })
+            return reply.code(failure.status).send({
+              error: failure.error,
+              statusCode: failure.status,
+              message: failure.message,
+              ...(failure.code ? { code: failure.code } : {})
+            })
           throw err
         }
       }
@@ -3796,9 +3840,12 @@ export function agentRoutes(deps: HttpDeps) {
         } catch (err) {
           const failure = memoryAdminFailure(err)
           if (failure)
-            return reply
-              .code(failure.status)
-              .send({ error: failure.error, statusCode: failure.status, message: failure.message })
+            return reply.code(failure.status).send({
+              error: failure.error,
+              statusCode: failure.status,
+              message: failure.message,
+              ...(failure.code ? { code: failure.code } : {})
+            })
           throw err
         }
       }
@@ -3847,9 +3894,12 @@ export function agentRoutes(deps: HttpDeps) {
         } catch (err) {
           const failure = memoryAdminFailure(err)
           if (failure)
-            return reply
-              .code(failure.status)
-              .send({ error: failure.error, statusCode: failure.status, message: failure.message })
+            return reply.code(failure.status).send({
+              error: failure.error,
+              statusCode: failure.status,
+              message: failure.message,
+              ...(failure.code ? { code: failure.code } : {})
+            })
           throw err
         }
       }
@@ -3912,9 +3962,12 @@ export function agentRoutes(deps: HttpDeps) {
     const sendDreamFailure = (reply: FastifyReply, err: unknown): boolean => {
       const failure = memoryAdminFailure(err)
       if (!failure) return false
-      void reply
-        .code(failure.status)
-        .send({ error: failure.error, statusCode: failure.status, message: failure.message })
+      void reply.code(failure.status).send({
+        error: failure.error,
+        statusCode: failure.status,
+        message: failure.message,
+        ...(failure.code ? { code: failure.code } : {})
+      })
       return true
     }
 
