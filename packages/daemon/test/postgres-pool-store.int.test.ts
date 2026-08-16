@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
-import { PostgresDataPlane } from '../src/store/postgres-transcript-store.js'
+import { PostgresDataPlane } from '../src/store/postgres-data-plane.js'
 
 const databaseUrl = process.env.DATA_PLANE_TEST_DATABASE_URL
 
@@ -108,7 +108,7 @@ describe.skipIf(!databaseUrl)('PostgreSQL pool member store', () => {
     const second = await PostgresDataPlane.open(config, (id) => (id === agentId ? `org-${suffix}` : undefined))
     try {
       expect(second.store.getSession(sessionKey)?.acpSessionId).toBe(`session-${suffix}`)
-      expect(second.store.threadTranscript(`C-${suffix}`, `T-${suffix}`)).toMatchObject([
+      expect(second.store.threadTranscript(`C-${suffix}`, `T-${suffix}`, agentId)).toMatchObject([
         { text: 'authoritative PostgreSQL text', trustedAgentBot: 1 }
       ])
       expect(second.store.hasInbox(`delivery-${suffix}`)).toBe(true)

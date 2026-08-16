@@ -397,7 +397,7 @@ import { CpMcpDefs } from './mcp/cp-mcp-defs.js'
 import { CpMemoryConnectionRegistry, type MemoryPluginConnector } from './cp/memory-connection-registry.js'
 import { MemoryCaptureOutbox } from './memory-plugin/outbox.js'
 import { defaultMemoryPluginMetrics } from './memory-plugin/metrics.js'
-import { openMountedPostgresDataPlane, type PostgresDataPlane } from './store/postgres-transcript-store.js'
+import { openMountedPostgresDataPlane, type PostgresDataPlane } from './store/postgres-data-plane.js'
 import {
   EvaluationCapabilityProfileSchema,
   EvaluationEventEmitter,
@@ -11435,7 +11435,7 @@ export class Daemon {
   ): string {
     let slot = BigInt(ts)
     for (let attempt = 0; attempt < 32; attempt++) {
-      const existing = this.store.transcriptTextAt(channel, thread, String(slot))
+      const existing = this.store.transcriptTextAt(channel, thread, String(slot), entry)
       // Canonical identity decides slot reuse (§6): two DISTINCT posts can share
       // sender, text, AND millisecond (`at` minting is connection-local, so two
       // tabs can collide) — only a matching postId proves the occupant IS this
@@ -11740,24 +11740,28 @@ export class Daemon {
     // the agent is still working, defeating the catch-up it's meant to enable.
     const sinceTs = Date.now() - this.cfg.limits.agentIdleTimeoutMs
     const recentlyActive = this.store.activeSessionCountSince(msg.channel, thread, sinceTs, msg.transportScope) > 0
-    const inFlight = [...this.pending.values()].some(
+    const inFlightAgent = [...this.pending.values()].find(
       (p) => p.transcriptChannel === transcriptChannel && p.statusThread === thread
-    )
-    const initializing = [...this.activeGateEntries.values()].some((entry) => {
+    )?.agentId
+    const initializingAgent = [...this.activeGateEntries.values()].find((entry) => {
       const coords = transcriptCoords(entry.msg)
       return (
         transcriptChannelKey(entry.msg.channel, entry.msg.transportScope) === transcriptChannel &&
         coords.thread === thread
       )
-    })
-    if (!recentlyActive && !inFlight && !initializing) return
+    })?.agentId
+    if (!recentlyActive && !inFlightAgent && !initializingAgent) return
     const mention = includeAttachment ? attachmentMention(msg.attachments) : ''
-    const before = this.store.threadTranscriptRevision(transcriptChannel, thread)
+    // The row is observed before routing names a recipient, so the org that owns it comes
+    // from whichever agent made the thread live — a shared store has no other partition.
+    const owner = recipient ?? inFlightAgent ?? initializingAgent
+    const before = this.store.threadTranscriptRevision(transcriptChannel, thread, owner)
     this.threadContext.observeInbound({
       channel: transcriptChannel,
       thread,
       ts,
       sender: msg.sender.id,
+      ...(owner ? { orgAgentId: owner } : {}),
       // The canonical webchat post identity must survive whichever writer wins the
       // first insert, or the browser's live frame cannot reconcile against the row.
       ...(msg.transcriptPostId ? { postId: msg.transcriptPostId } : {}),
@@ -11774,7 +11778,7 @@ export class Daemon {
       text: mention ? `${msg.text}\n${mention}`.trim() : msg.text,
       ...(msg.quoted?.text ? { quoted: msg.quoted } : {})
     })
-    const after = this.store.threadTranscriptRevision(transcriptChannel, thread)
+    const after = this.store.threadTranscriptRevision(transcriptChannel, thread, owner)
     if (after > before)
       this.log.debug(`transcript: observed inbound msg ch=${msg.channel} thread=${thread} ts=${ts} (live session)`)
   }
@@ -11938,7 +11942,12 @@ export class Daemon {
           afterRevision,
           pending.agentId
         )
-      : this.store.transcriptSinceRevision(pending.transcriptChannel, pending.statusThread, afterRevision)
+      : this.store.transcriptSinceRevision(
+          pending.transcriptChannel,
+          pending.statusThread,
+          afterRevision,
+          pending.agentId
+        )
     return rows
       .filter((row) => row.kind === 'text' && row.sender !== pending.agentId)
       .sort((a, b) => a.eventTimeUs - b.eventTimeUs || a.seq - b.seq)
@@ -15348,7 +15357,7 @@ export class Daemon {
       let promptBlocks = [...blocks]
       let finalCaptureInput = handled.captureInput ?? msg.text
       let baseRevision =
-        handled.contextRevision ?? this.store.threadTranscriptRevision(p.transcriptChannel, p.statusThread)
+        handled.contextRevision ?? this.store.threadTranscriptRevision(p.transcriptChannel, p.statusThread, p.agentId)
       let providerCheckpoint = handled.providerCheckpoint
       if (p.stageAnswer || p.webchatRefresh) {
         // Recheck observations that landed while attachments, memory recall, or
@@ -15377,7 +15386,7 @@ export class Daemon {
           finalCaptureInput = recallQueryFromBlocks([{ type: 'text', text: finalCaptureInput }, ...deltaBlocks])
         }
         this.coalesceQueuedContext(key, sessionId, representedEventTs)
-        baseRevision = this.store.threadTranscriptRevision(p.transcriptChannel, p.statusThread)
+        baseRevision = this.store.threadTranscriptRevision(p.transcriptChannel, p.statusThread, p.agentId)
         providerCheckpoint = initialRefresh.providerCheckpoint ?? providerCheckpoint
       }
 
@@ -15494,7 +15503,7 @@ export class Daemon {
           // trigger's canonical ts is carried on the message — exclude it.
           .filter((event) => !p.webchatRefresh || msg.transcriptTs === undefined || event.ts !== msg.transcriptTs)
           .sort((a, b) => a.eventTimeUs - b.eventTimeUs || a.seq - b.seq)
-        const finalRevision = this.store.threadTranscriptRevision(p.transcriptChannel, p.statusThread)
+        const finalRevision = this.store.threadTranscriptRevision(p.transcriptChannel, p.statusThread, p.agentId)
 
         if (invalidatingEvents.length === 0) {
           if (p.stageAnswer) this.acceptStagedAttempt(p)
@@ -15596,7 +15605,7 @@ export class Daemon {
         }
         defaultTurnOutputMetrics.candidateDiscarded('context_changed')
         this.coalesceQueuedContext(key, sessionId, eventTs)
-        baseRevision = this.store.threadTranscriptRevision(p.transcriptChannel, p.statusThread)
+        baseRevision = this.store.threadTranscriptRevision(p.transcriptChannel, p.statusThread, p.agentId)
         generation += 1
         promptBlocks = [
           {

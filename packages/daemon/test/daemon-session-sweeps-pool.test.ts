@@ -181,8 +181,18 @@ describe('session sweeps on a daemon pool are holder-only (#1032)', () => {
     // The pool's shared store: one receipt table, leased per member.
     const path = statePath(root)
     const locals: LocalStore[] = [a.inner.store, b.inner.store]
-    a.inner.store = new LocalStore({ database: new DatabaseSync(path), shared: true, ownerId: 'daemon-a' })
-    b.inner.store = new LocalStore({ database: new DatabaseSync(path), shared: true, ownerId: 'daemon-b' })
+    a.inner.store = new LocalStore({
+      database: new DatabaseSync(path),
+      shared: true,
+      ownerId: 'daemon-a',
+      orgForAgent: () => 'org-1'
+    })
+    b.inner.store = new LocalStore({
+      database: new DatabaseSync(path),
+      shared: true,
+      ownerId: 'daemon-b',
+      orgForAgent: () => 'org-1'
+    })
     const shared: LocalStore = a.inner.store
     const owed = () => shared.listSessionPurges(10, 0, 'daemon-a', [AGENT_A, AGENT_B]).map((row) => row.sessionId)
 
@@ -219,8 +229,18 @@ describe('session sweeps on a daemon pool are holder-only (#1032)', () => {
     hold(a.inner, GROUP_A, AGENT_A)
     const path = statePath(root)
     const locals: LocalStore[] = [a.inner.store, b.inner.store]
-    a.inner.store = new LocalStore({ database: new DatabaseSync(path), shared: true, ownerId: 'daemon-a' })
-    b.inner.store = new LocalStore({ database: new DatabaseSync(path), shared: true, ownerId: 'daemon-b' })
+    a.inner.store = new LocalStore({
+      database: new DatabaseSync(path),
+      shared: true,
+      ownerId: 'daemon-a',
+      orgForAgent: () => 'org-1'
+    })
+    b.inner.store = new LocalStore({
+      database: new DatabaseSync(path),
+      shared: true,
+      ownerId: 'daemon-b',
+      orgForAgent: () => 'org-1'
+    })
     const shared: LocalStore = a.inner.store
     // B purged this session while it held the agent; the duty then moved to A.
     seedSession(shared, 'moved', AGENT_A, 'closed', 0)
@@ -246,8 +266,18 @@ describe('session sweeps on a daemon pool are holder-only (#1032)', () => {
     const { a, b, root, stop } = await bootPool()
     const path = statePath(root)
     const locals: LocalStore[] = [a.inner.store, b.inner.store]
-    a.inner.store = new LocalStore({ database: new DatabaseSync(path), shared: true, ownerId: 'daemon-a' })
-    b.inner.store = new LocalStore({ database: new DatabaseSync(path), shared: true, ownerId: 'daemon-b' })
+    a.inner.store = new LocalStore({
+      database: new DatabaseSync(path),
+      shared: true,
+      ownerId: 'daemon-a',
+      orgForAgent: () => 'org-1'
+    })
+    b.inner.store = new LocalStore({
+      database: new DatabaseSync(path),
+      shared: true,
+      ownerId: 'daemon-b',
+      orgForAgent: () => 'org-1'
+    })
     const shared: LocalStore = b.inner.store
     // The prior holder purged this session and died before its receipt was ACKed.
     seedSession(shared, 'left', AGENT_A, 'closed', 0)

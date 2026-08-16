@@ -36,7 +36,15 @@ export interface StoreDatabase {
   close(): void
 }
 
-export type LocalStoreSource = string | { database: StoreDatabase; shared?: boolean; ownerId?: string }
+/** The daemon's agent registry, projected to the org that owns one agent. */
+export type OrgForAgent = (agentId: string) => string | undefined
+
+export type LocalStoreSource =
+  string | { database: StoreDatabase; shared?: boolean; ownerId?: string; orgForAgent?: OrgForAgent }
+
+/** Transcript org partition of a store no pool shares: it holds exactly one daemon's
+ *  threads, so it owns one partition forever, the way `cacheOwnerId` owns one. */
+const LOCAL_TRANSCRIPT_ORG = ''
 
 /** How long a shared-store claim survives without renewal. A pool member renews on
  *  every drain attempt, so a lapsed claim means its owner is gone and a peer may take
@@ -290,6 +298,10 @@ export interface TranscriptEntry {
    *  unrouted messages. Lets the console session view show what one agent actually
    *  received + produced instead of the whole shared (channel, thread) thread. */
   recipient?: string
+  /** Names the org that owns this row when neither `sender` nor `recipient` is an agent —
+   *  an inbound observed before routing picks one. Attribution only: never a column, and
+   *  never a delivery, so it cannot widen any agent's scoped view. */
+  orgAgentId?: string
 }
 
 /** A transcript row as read back, including its insertion-order sequence. The
@@ -359,7 +371,7 @@ export function transcriptChannelKey(channel: string, transportScope?: string | 
  */
 const AGENT_DELIVERY_SCOPE_SQL = `(sender = ? OR recipient = ? OR (transcript.kind = 'text' AND EXISTS (
         SELECT 1 FROM transcript_recipient tr
-        WHERE tr.channel = transcript.channel AND tr.thread = transcript.thread
+        WHERE tr.orgId = transcript.orgId AND tr.channel = transcript.channel AND tr.thread = transcript.thread
           AND tr.ts = transcript.ts AND tr.agentId = ?)))`
 
 /**
@@ -636,7 +648,7 @@ function restrictPath(path: string, mode: number): void {
  * change that edits a `CREATE TABLE` below, and append the matching step to
  * {@link SCHEMA_MIGRATIONS}.
  */
-const SCHEMA_VERSION = 10
+const SCHEMA_VERSION = 11
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -659,7 +671,7 @@ const SCHEMA_VERSION = 10
  * in the `CREATE` block, which runs afterwards and is `IF NOT EXISTS`, so it
  * covers fresh and upgraded stores from the one description.
  */
-const SCHEMA_MIGRATIONS: ((db: StoreDatabase) => void)[] = [
+const SCHEMA_MIGRATIONS: ((db: StoreDatabase, store: { shared: boolean }) => void)[] = [
   (db) => db.exec('ALTER TABLE permission_requests ADD COLUMN ownerId TEXT'),
   (db) =>
     db.exec(`
@@ -722,7 +734,35 @@ const SCHEMA_MIGRATIONS: ((db: StoreDatabase) => void)[] = [
     db.exec(`
       ALTER TABLE session_metadata_outbox ADD COLUMN ownerId TEXT;
       ALTER TABLE session_metadata_outbox ADD COLUMN claimedAt INTEGER;
+    `),
+  // Transcripts gain the owning org in their key (#1041 item 7). A store no pool shares
+  // holds one daemon's threads, so every existing row belongs to its single partition and
+  // the added default IS the backfill. A shared store cannot attribute what it already
+  // holds: nothing here records an agent's org — the daemon learns it from the CP at
+  // runtime — so sessions → agent → org resolves to nothing at migration time and the rows
+  // are dropped rather than misfiled into one org's fenced reads. Only test data exists on
+  // any shared store today, which is why dropping is the accepted price of the fence.
+  // The recipient table is rebuilt rather than altered: its PRIMARY KEY gains the org, and
+  // the transcript indexes are dropped so the CREATE block re-emits them org-first.
+  (db, store) => {
+    if (store.shared) db.exec('DELETE FROM transcript; DELETE FROM transcript_recipient;')
+    db.exec(`
+      ALTER TABLE transcript ADD COLUMN orgId TEXT NOT NULL DEFAULT '';
+      DROP INDEX IF EXISTS transcript_thread_seq;
+      DROP INDEX IF EXISTS transcript_text_ts;
+      DROP INDEX IF EXISTS transcript_agent_tool_call;
+      DROP INDEX IF EXISTS transcript_thread_event_time;
+      DROP INDEX IF EXISTS transcript_thread_revision;
+      CREATE TABLE transcript_recipient_orged (
+        orgId TEXT NOT NULL, channel TEXT NOT NULL, thread TEXT NOT NULL, ts TEXT NOT NULL, agentId TEXT NOT NULL,
+        PRIMARY KEY (orgId, channel, thread, ts, agentId)
+      );
+      INSERT INTO transcript_recipient_orged (orgId, channel, thread, ts, agentId)
+      SELECT '', channel, thread, ts, agentId FROM transcript_recipient;
+      DROP TABLE transcript_recipient;
+      ALTER TABLE transcript_recipient_orged RENAME TO transcript_recipient;
     `)
+  }
 ]
 
 export class LocalStore {
@@ -731,6 +771,8 @@ export class LocalStore {
   private readonly ownerId?: string
   /** Partition key for per-member cache rows; a single-daemon store owns one partition forever. */
   private readonly cacheOwnerId: string
+  /** Set only on a shared store, where transcript rows of several orgs share one table. */
+  private readonly orgForAgent?: OrgForAgent
   private transcriptRevision = 0
   private transcriptMutationListener?: (mutation: TranscriptMutation) => void
 
@@ -759,7 +801,9 @@ export class LocalStore {
       this.db = source.database
       this.shared = source.shared === true
       this.ownerId = source.ownerId
+      this.orgForAgent = source.orgForAgent
       if (this.shared && !this.ownerId) throw new Error('shared LocalStore requires an ownerId')
+      if (this.shared && !this.orgForAgent) throw new Error('shared LocalStore requires an orgForAgent resolver')
     }
     this.cacheOwnerId = this.ownerId ?? ''
     // Decided BEFORE the CREATE block, which is what makes an empty file
@@ -901,39 +945,44 @@ export class LocalStore {
       );
       CREATE INDEX IF NOT EXISTS permission_requests_agent_created
         ON permission_requests (agentId, createdAt DESC);
+      -- orgId fences every thread on the org that owns it (#1041 item 7): a pool's shared
+      -- store carries several orgs' threads, and platform channel/thread ids are only
+      -- unique WITHIN one of them. A store no pool shares holds one org and stores ''.
       CREATE TABLE IF NOT EXISTS transcript (
         seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        orgId TEXT NOT NULL DEFAULT '',
         channel TEXT NOT NULL, thread TEXT NOT NULL, ts TEXT,
         sender TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL,
         tool_call_id TEXT, body TEXT, recipient TEXT, eventTimeUs INTEGER,
         attachmentsJson TEXT, quoteJson TEXT, trustedAgentBot INTEGER, revision INTEGER NOT NULL DEFAULT 0,
         postId TEXT
       );
-      CREATE INDEX IF NOT EXISTS transcript_thread_seq ON transcript (channel, thread, seq);
+      CREATE INDEX IF NOT EXISTS transcript_thread_seq ON transcript (orgId, channel, thread, seq);
       -- Dedup conversational rows by platform ts (double-fired inbound / redelivery);
       -- internal events have no platform ts and are intentionally never deduped here.
       CREATE UNIQUE INDEX IF NOT EXISTS transcript_text_ts
-        ON transcript (channel, thread, ts) WHERE kind = 'text';
+        ON transcript (orgId, channel, thread, ts) WHERE kind = 'text';
       -- Per-agent DELIVERY of a shared thread message. The transcript row itself is deduped
-      -- by (channel, thread, ts), so the recipient column only records the FIRST agent a
+      -- by (orgId, channel, thread, ts), so the recipient column only records the FIRST agent a
       -- message reached; when several agents on one daemon each catch up on the same message
       -- their deliveries are recorded here so no agent's scoped session view (transcriptPage-
       -- ForAgent) hides a message it actually received.
       CREATE TABLE IF NOT EXISTS transcript_recipient (
+        orgId TEXT NOT NULL DEFAULT '',
         channel TEXT NOT NULL, thread TEXT NOT NULL, ts TEXT NOT NULL, agentId TEXT NOT NULL,
-        PRIMARY KEY (channel, thread, ts, agentId)
+        PRIMARY KEY (orgId, channel, thread, ts, agentId)
       );
       -- ACP tool ids are session-local, so same-thread agents may legitimately reuse
       -- them; the uniqueness that matters is per agent.
       CREATE UNIQUE INDEX IF NOT EXISTS transcript_agent_tool_call
-        ON transcript (channel, thread, sender, tool_call_id) WHERE tool_call_id IS NOT NULL;
+        ON transcript (orgId, channel, thread, sender, tool_call_id) WHERE tool_call_id IS NOT NULL;
       -- Chronological history key: rows carry both an insertion-order seq and an
       -- event time, and the console reads in event-time order.
       CREATE INDEX IF NOT EXISTS transcript_thread_event_time
-        ON transcript (channel, thread, eventTimeUs DESC, seq DESC);
+        ON transcript (orgId, channel, thread, eventTimeUs DESC, seq DESC);
       -- Stable-row updates need a cursor independent of insertion-order seq.
       CREATE INDEX IF NOT EXISTS transcript_thread_revision
-        ON transcript (channel, thread, revision);
+        ON transcript (orgId, channel, thread, revision);
       -- Written ONLY by an exclusively owned store: a shared store's members would each
       -- serialize their own map over this one row, so they do not persist here at all.
       CREATE TABLE IF NOT EXISTS cp_routing (
@@ -1194,7 +1243,8 @@ export class LocalStore {
     if (freshDatabase) this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`)
     // The revision counter is in-memory but the rows it numbers are durable, so it
     // must resume from the database on every open — starting a restarted daemon back
-    // at 0 would hand already-issued revisions to new rows.
+    // at 0 would hand already-issued revisions to new rows. Deliberately unfenced: it
+    // allocates across every org partition, so it must clear the highest of them all.
     this.transcriptRevision = (
       this.db.prepare('SELECT COALESCE(MAX(revision), 0) AS revision FROM transcript').get() as { revision: number }
     ).revision
@@ -1240,7 +1290,7 @@ export class LocalStore {
       if (!step) throw new Error(`local store is missing a migration step for schema v${version}`)
       this.db.exec('BEGIN')
       try {
-        step(this.db)
+        step(this.db, { shared: this.shared })
         this.db.exec(`PRAGMA user_version = ${version + 1}`)
         this.db.exec('COMMIT')
       } catch (err) {
@@ -1480,6 +1530,44 @@ export class LocalStore {
       .get(agentId, acpSessionId) as SessionRecord | undefined
   }
 
+  /**
+   * The org partition one transcript read or write belongs to. A store no pool shares owns
+   * a single partition whatever the agent; a shared store resolves the agent's org through
+   * the daemon's registry and refuses a row it cannot attribute, since an unattributed one
+   * would be served to whichever org happened to reuse the same channel/thread ids.
+   */
+  private orgFor(agentId: string | undefined): string {
+    if (!this.shared) return LOCAL_TRANSCRIPT_ORG
+    const orgId = agentId ? this.orgForAgent?.(agentId) : undefined
+    if (!orgId) throw new Error(`cannot resolve the transcript organization for agent ${agentId ?? '(none)'}`)
+    return orgId
+  }
+
+  /** The org of a row written from a message rather than by an agent: its recipient or
+   *  sender when either names one, else an agent already holding a session in the thread —
+   *  an observed inbound is recorded before routing picks a recipient, and only a thread
+   *  with live work is recorded at all. */
+  private transcriptOrg(channel: string, thread: string, ...candidates: Array<string | undefined>): string {
+    if (!this.shared) return LOCAL_TRANSCRIPT_ORG
+    for (const candidate of candidates) {
+      const orgId = candidate ? this.orgForAgent?.(candidate) : undefined
+      if (orgId) return orgId
+    }
+    return this.orgFor(this.threadSessionAgent(channel, thread))
+  }
+
+  /** An agent holding a session in a transcript thread, for that fallback attribution. */
+  private threadSessionAgent(channel: string, thread: string): string | undefined {
+    const rows = this.db
+      .prepare(
+        'SELECT DISTINCT agentId, channel, transportScope FROM sessions WHERE thread = ? AND agentId IS NOT NULL'
+      )
+      .all(thread) as { agentId: string; channel: string; transportScope: string | null }[]
+    return rows.find(
+      (row) => transcriptChannelKey(row.channel, row.transportScope) === channel && this.orgForAgent?.(row.agentId)
+    )?.agentId
+  }
+
   /** Addressable session ids whose authorized transcript scope may have changed. */
   sessionIdsForTranscript(agentId: string, channel: string, thread: string): string[] {
     const rows = this.db
@@ -1493,11 +1581,12 @@ export class LocalStore {
       .map((row) => row.acpSessionId)
   }
 
-  currentTranscriptRevision(_agentId?: string): number {
-    const row = this.db.prepare('SELECT COALESCE(MAX(revision), 0) AS revision FROM transcript').get() as {
-      revision: number
-    }
-    this.transcriptRevision = row.revision
+  currentTranscriptRevision(agentId?: string): number {
+    const row = this.db
+      .prepare('SELECT COALESCE(MAX(revision), 0) AS revision FROM transcript WHERE orgId = ?')
+      .get(this.orgFor(agentId)) as { revision: number }
+    // The in-memory allocator spans every partition; only the answer is org-scoped.
+    this.transcriptRevision = Math.max(this.transcriptRevision, row.revision)
     return row.revision
   }
 
@@ -1511,31 +1600,36 @@ export class LocalStore {
    * by an older daemon disappear after upgrade. Pages backward via `beforeSeq` (the
    * lowest seq already seen; null ⇒ newest page). Over-fetches one row to detect
    * `hasMore` without a second query. Rows stay seq DESC.
+   *
+   * `agentId` names the org partition only, never a delivery scope, and may be omitted on
+   * a store no pool shares — a shared store has no single partition to fall back on.
    */
   transcriptPage(
     channel: string,
     thread: string,
     beforeSeq: number | null,
-    limit: number
+    limit: number,
+    agentId?: string
   ): { rows: TranscriptRow[]; hasMore: boolean } {
+    const orgId = this.orgFor(agentId)
     const hiddenToolTitles = [...SESSION_TITLE_TOOL_TITLES]
     const rows = (beforeSeq !== null
       ? this.db
           .prepare(
             `SELECT * FROM transcript
-             WHERE channel = ? AND thread = ? AND seq < ?
+             WHERE orgId = ? AND channel = ? AND thread = ? AND seq < ?
                AND NOT (kind = 'tool' AND text IN (?, ?))
              ORDER BY seq DESC LIMIT ?`
           )
-          .all(channel, thread, beforeSeq, ...hiddenToolTitles, limit + 1)
+          .all(orgId, channel, thread, beforeSeq, ...hiddenToolTitles, limit + 1)
       : this.db
           .prepare(
             `SELECT * FROM transcript
-             WHERE channel = ? AND thread = ?
+             WHERE orgId = ? AND channel = ? AND thread = ?
                AND NOT (kind = 'tool' AND text IN (?, ?))
              ORDER BY seq DESC LIMIT ?`
           )
-          .all(channel, thread, ...hiddenToolTitles, limit + 1)) as unknown as TranscriptRow[]
+          .all(orgId, channel, thread, ...hiddenToolTitles, limit + 1)) as unknown as TranscriptRow[]
     const hasMore = rows.length > limit
     return { rows: hasMore ? rows.slice(0, limit) : rows, hasMore }
   }
@@ -1566,24 +1660,26 @@ export class LocalStore {
     // same ts would be pulled back in. Deliveries only ever concern conversational messages;
     // own internal rows still surface via `sender`.
     const scope = AGENT_DELIVERY_SCOPE_SQL
+    const orgId = this.orgFor(agentId)
     const hiddenToolTitles = [...SESSION_TITLE_TOOL_TITLES]
     const rows = (beforeSeq !== null
       ? this.db
           .prepare(
-            `SELECT * FROM transcript WHERE channel = ? AND thread = ? AND seq < ?
+            `SELECT * FROM transcript WHERE orgId = ? AND channel = ? AND thread = ? AND seq < ?
                AND ${scope}
                AND NOT (kind = 'tool' AND text IN (?, ?))
              ORDER BY seq DESC LIMIT ?`
           )
-          .all(channel, thread, beforeSeq, agentId, agentId, agentId, ...hiddenToolTitles, limit + 1)
+          .all(orgId, channel, thread, beforeSeq, agentId, agentId, agentId, ...hiddenToolTitles, limit + 1)
       : this.db
           .prepare(
-            `SELECT * FROM transcript WHERE channel = ? AND thread = ?
+            `SELECT * FROM transcript WHERE orgId = ? AND channel = ? AND thread = ?
                AND ${scope}
                AND NOT (kind = 'tool' AND text IN (?, ?))
              ORDER BY seq DESC LIMIT ?`
           )
           .all(
+            orgId,
             channel,
             thread,
             agentId,
@@ -1614,17 +1710,19 @@ export class LocalStore {
     limit: number
   ): { rows: TranscriptRow[]; hasMore: boolean } {
     const scope = AGENT_DELIVERY_SCOPE_SQL
+    const orgId = this.orgFor(agentId)
     const hiddenToolTitles = [...SESSION_TITLE_TOOL_TITLES]
     const rows = (before !== null
       ? this.db
           .prepare(
-            `SELECT * FROM transcript WHERE channel = ? AND thread = ?
+            `SELECT * FROM transcript WHERE orgId = ? AND channel = ? AND thread = ?
                AND (eventTimeUs < ? OR (eventTimeUs = ? AND seq < ?))
                AND ${scope}
                AND NOT (kind = 'tool' AND text IN (?, ?))
              ORDER BY eventTimeUs DESC, seq DESC LIMIT ?`
           )
           .all(
+            orgId,
             channel,
             thread,
             before.eventTimeUs,
@@ -1638,12 +1736,13 @@ export class LocalStore {
           )
       : this.db
           .prepare(
-            `SELECT * FROM transcript WHERE channel = ? AND thread = ?
+            `SELECT * FROM transcript WHERE orgId = ? AND channel = ? AND thread = ?
                AND ${scope}
                AND NOT (kind = 'tool' AND text IN (?, ?))
              ORDER BY eventTimeUs DESC, seq DESC LIMIT ?`
           )
           .all(
+            orgId,
             channel,
             thread,
             agentId,
@@ -1672,12 +1771,13 @@ export class LocalStore {
     const rows = this.db
       .prepare(
         `SELECT * FROM transcript
-         WHERE channel = ? AND thread = ? AND revision > ?
+         WHERE orgId = ? AND channel = ? AND thread = ? AND revision > ?
            AND ${scope}
            AND NOT (kind = 'tool' AND text IN (?, ?))
          ORDER BY revision ASC LIMIT ?`
       )
       .all(
+        this.orgFor(agentId),
         channel,
         thread,
         afterRevision,
@@ -1692,7 +1792,7 @@ export class LocalStore {
     return {
       rows: kept,
       hasMore,
-      cursor: hasMore ? kept[kept.length - 1]!.revision : this.currentTranscriptRevision()
+      cursor: hasMore ? kept[kept.length - 1]!.revision : this.currentTranscriptRevision(agentId)
     }
   }
 
@@ -2983,15 +3083,25 @@ export class LocalStore {
         // mining prompt. Deliveries only ever concern conversational messages;
         // this agent's own tool rows still surface through `sender`.
         `SELECT sender, text, kind, body FROM transcript
-         WHERE channel = ? AND thread = ? AND kind ${includeTools ? "IN ('text','tool')" : "= 'text'"}
+         WHERE orgId = ? AND channel = ? AND thread = ? AND kind ${includeTools ? "IN ('text','tool')" : "= 'text'"}
            AND (sender = ? OR recipient = ? OR (transcript.kind = 'text' AND EXISTS (
              SELECT 1 FROM transcript_recipient tr
-             WHERE tr.channel = transcript.channel AND tr.thread = transcript.thread
+             WHERE tr.orgId = transcript.orgId AND tr.channel = transcript.channel
+               AND tr.thread = transcript.thread
                AND tr.ts = transcript.ts AND tr.agentId = ?)))
            AND NOT (kind = 'tool' AND text IN (?, ?))
          ORDER BY seq DESC LIMIT ?`
       )
-      .all(transcriptChannel, thread, agentId, agentId, agentId, ...SESSION_TITLE_TOOL_TITLES, limit) as {
+      .all(
+        this.orgFor(agentId),
+        transcriptChannel,
+        thread,
+        agentId,
+        agentId,
+        agentId,
+        ...SESSION_TITLE_TOOL_TITLES,
+        limit
+      ) as {
       sender: string
       text: string
       kind?: string
@@ -3014,28 +3124,35 @@ export class LocalStore {
   transcriptTextAt(
     channel: string,
     thread: string,
-    ts: string
+    ts: string,
+    row: { sender: string; recipient?: string }
   ): { sender: string; text: string; postId: string | null } | undefined {
+    // Attributed exactly like the append it guards, or the probe would read a partition
+    // the write does not land in and every slot would look free.
+    const orgId = this.transcriptOrg(channel, thread, row.recipient, row.sender)
     return this.db
       .prepare(
-        `SELECT sender, text, postId FROM transcript WHERE channel = ? AND thread = ? AND ts = ? AND kind = 'text'`
+        `SELECT sender, text, postId FROM transcript
+         WHERE orgId = ? AND channel = ? AND thread = ? AND ts = ? AND kind = 'text'`
       )
-      .get(channel, thread, ts) as { sender: string; text: string; postId: string | null } | undefined
+      .get(orgId, channel, thread, ts) as { sender: string; text: string; postId: string | null } | undefined
   }
 
   appendTranscript(e: TranscriptEntry): void {
-    const { attachments, trustedAgentBot, quoted, quoteJson, authoritative, ...entry } = e
+    const { attachments, trustedAgentBot, quoted, quoteJson, authoritative, orgAgentId, ...entry } = e
     const durableQuoteJson = quoted?.text ? JSON.stringify(quoted) : (quoteJson ?? null)
+    const orgId = this.transcriptOrg(e.channel, e.thread, e.recipient, e.sender, orgAgentId)
     const revision = this.transcriptRevision + 1
     const inserted = this.db
       .prepare(
         `INSERT OR IGNORE INTO transcript
-           (channel, thread, ts, sender, kind, text, recipient, eventTimeUs, attachmentsJson, quoteJson, trustedAgentBot, revision, postId)
+           (orgId, channel, thread, ts, sender, kind, text, recipient, eventTimeUs, attachmentsJson, quoteJson, trustedAgentBot, revision, postId)
          VALUES
-           (@channel, @thread, @ts, @sender, @kind, @text, @recipient, @eventTimeUs, @attachmentsJson, @quoteJson, @trustedAgentBot, @revision, @postId)`
+           (@orgId, @channel, @thread, @ts, @sender, @kind, @text, @recipient, @eventTimeUs, @attachmentsJson, @quoteJson, @trustedAgentBot, @revision, @postId)`
       )
       .run({
         ...entry,
+        orgId,
         recipient: e.recipient ?? null,
         postId: e.postId ?? null,
         eventTimeUs: e.eventTimeUs ?? transcriptEventTimeUs(e.ts),
@@ -3044,7 +3161,7 @@ export class LocalStore {
         trustedAgentBot: trustedAgentBot ? 1 : null,
         revision
       } as unknown as SqlParams)
-    if (Number(inserted.changes) === 1) this.transcriptRevision = this.threadTranscriptRevision(e.channel, e.thread)
+    if (Number(inserted.changes) === 1) this.transcriptRevision = this.threadRevisionInOrg(orgId, e.channel, e.thread)
     // The closing edit of a streamed reply lands on the row its own post created, so the
     // text is refreshed in place rather than lost to INSERT OR IGNORE. Scoped to text
     // rows on identical coordinates, and only ever toward the authoritative version.
@@ -3053,11 +3170,11 @@ export class LocalStore {
       const refreshed = this.db
         .prepare(
           `UPDATE transcript SET text = ?, revision = ?
-           WHERE channel = ? AND thread = ? AND ts = ? AND kind = 'text' AND text IS NOT ?`
+           WHERE orgId = ? AND channel = ? AND thread = ? AND ts = ? AND kind = 'text' AND text IS NOT ?`
         )
-        .run(e.text, rev, e.channel, e.thread, e.ts, e.text)
+        .run(e.text, rev, orgId, e.channel, e.thread, e.ts, e.text)
       if (Number(refreshed.changes) === 1) {
-        this.transcriptRevision = this.threadTranscriptRevision(e.channel, e.thread)
+        this.transcriptRevision = this.threadRevisionInOrg(orgId, e.channel, e.thread)
         this.notifyTranscriptMutation(e.channel, e.thread, e.recipient ? [e.recipient] : [], this.transcriptRevision)
       }
     }
@@ -3069,10 +3186,10 @@ export class LocalStore {
         ? this.db
             .prepare(
               `UPDATE transcript SET trustedAgentBot = 1
-               WHERE channel = ? AND thread = ? AND ts = ? AND kind = 'text'
+               WHERE orgId = ? AND channel = ? AND thread = ? AND ts = ? AND kind = 'text'
                  AND COALESCE(trustedAgentBot, 0) = 0`
             )
-            .run(e.channel, e.thread, e.ts)
+            .run(orgId, e.channel, e.thread, e.ts)
         : undefined
     // The same canonical post can be recorded first by a pre-upgrade write (no
     // postId column value) and re-observed by a copy that carries it. Upgrade in
@@ -3082,9 +3199,9 @@ export class LocalStore {
         ? this.db
             .prepare(
               `UPDATE transcript SET postId = ?
-               WHERE channel = ? AND thread = ? AND ts = ? AND kind = 'text' AND postId IS NULL`
+               WHERE orgId = ? AND channel = ? AND thread = ? AND ts = ? AND kind = 'text' AND postId IS NULL`
             )
-            .run(e.postId, e.channel, e.thread, e.ts)
+            .run(e.postId, orgId, e.channel, e.thread, e.ts)
         : undefined
     // A later duplicate can be the first copy that carries the AUTHORITATIVE
     // provider send time (an early observer wrote the row with the derived
@@ -3094,9 +3211,9 @@ export class LocalStore {
         ? this.db
             .prepare(
               `UPDATE transcript SET eventTimeUs = ?
-               WHERE channel = ? AND thread = ? AND ts = ? AND kind = 'text' AND eventTimeUs IS NOT ?`
+               WHERE orgId = ? AND channel = ? AND thread = ? AND ts = ? AND kind = 'text' AND eventTimeUs IS NOT ?`
             )
-            .run(e.eventTimeUs, e.channel, e.thread, e.ts, e.eventTimeUs)
+            .run(e.eventTimeUs, orgId, e.channel, e.thread, e.ts, e.eventTimeUs)
         : undefined
     // The observer often wins the INSERT race against SessionManager's authoritative
     // append, and only that append has fetched the image bytes — upgrade the row in
@@ -3107,9 +3224,9 @@ export class LocalStore {
         ? this.db
             .prepare(
               `UPDATE transcript SET attachmentsJson = ?
-               WHERE channel = ? AND thread = ? AND ts = ? AND kind = 'text' AND attachmentsJson IS NULL`
+               WHERE orgId = ? AND channel = ? AND thread = ? AND ts = ? AND kind = 'text' AND attachmentsJson IS NULL`
             )
-            .run(JSON.stringify(attachments), e.channel, e.thread, e.ts)
+            .run(JSON.stringify(attachments), orgId, e.channel, e.thread, e.ts)
         : undefined
     // A later duplicate can be the first copy that carries provider reply metadata
     // (or a corrected selected passage). Upgrade it without ever clearing a quote when
@@ -3119,10 +3236,10 @@ export class LocalStore {
         ? this.db
             .prepare(
               `UPDATE transcript SET quoteJson = ?
-               WHERE channel = ? AND thread = ? AND ts = ? AND kind = 'text'
+               WHERE orgId = ? AND channel = ? AND thread = ? AND ts = ? AND kind = 'text'
                  AND COALESCE(quoteJson, '') <> ?`
             )
-            .run(durableQuoteJson, e.channel, e.thread, e.ts, durableQuoteJson)
+            .run(durableQuoteJson, orgId, e.channel, e.thread, e.ts, durableQuoteJson)
         : undefined
     // Record the delivery separately so it survives the text-row dedup above: if this same
     // (channel, thread, ts) was already recorded by another agent, the INSERT OR IGNORE
@@ -3130,8 +3247,10 @@ export class LocalStore {
     const delivered =
       e.recipient && e.ts
         ? this.db
-            .prepare('INSERT OR IGNORE INTO transcript_recipient (channel, thread, ts, agentId) VALUES (?, ?, ?, ?)')
-            .run(e.channel, e.thread, e.ts, e.recipient)
+            .prepare(
+              'INSERT OR IGNORE INTO transcript_recipient (orgId, channel, thread, ts, agentId) VALUES (?, ?, ?, ?, ?)'
+            )
+            .run(orgId, e.channel, e.thread, e.ts, e.recipient)
         : undefined
 
     if (Number(inserted.changes) === 1) {
@@ -3146,17 +3265,19 @@ export class LocalStore {
     ) {
       const deliveryRevision = this.transcriptRevision + 1
       this.db
-        .prepare("UPDATE transcript SET revision = ? WHERE channel = ? AND thread = ? AND ts = ? AND kind = 'text'")
-        .run(deliveryRevision, e.channel, e.thread, e.ts)
-      this.transcriptRevision = this.threadTranscriptRevision(e.channel, e.thread)
+        .prepare(
+          "UPDATE transcript SET revision = ? WHERE orgId = ? AND channel = ? AND thread = ? AND ts = ? AND kind = 'text'"
+        )
+        .run(deliveryRevision, orgId, e.channel, e.thread, e.ts)
+      this.transcriptRevision = this.threadRevisionInOrg(orgId, e.channel, e.thread)
       // An in-place upgrade mutates the SHARED row: every agent whose scoped
       // view already contains it must be invalidated, not just this append's
       // sender/recipient — a co-hosted participant delivered earlier would
       // otherwise keep serving the stale copy until an unrelated mutation.
       const sharedRecipients = (
         this.db
-          .prepare('SELECT agentId FROM transcript_recipient WHERE channel = ? AND thread = ? AND ts = ?')
-          .all(e.channel, e.thread, e.ts) as { agentId: string }[]
+          .prepare('SELECT agentId FROM transcript_recipient WHERE orgId = ? AND channel = ? AND thread = ? AND ts = ?')
+          .all(orgId, e.channel, e.thread, e.ts) as { agentId: string }[]
       ).map((r) => r.agentId)
       this.notifyTranscriptMutation(
         e.channel,
@@ -3180,14 +3301,16 @@ export class LocalStore {
     title: string
     body: string
   }): void {
+    const orgId = this.orgFor(e.sender)
     const revision = this.transcriptRevision + 1
     const inserted = this.db
       .prepare(
         `INSERT OR IGNORE INTO transcript
-           (channel, thread, ts, sender, kind, text, tool_call_id, body, eventTimeUs, revision)
-         VALUES (@channel, @thread, @ts, @sender, 'tool', @text, @toolCallId, @body, @eventTimeUs, @revision)`
+           (orgId, channel, thread, ts, sender, kind, text, tool_call_id, body, eventTimeUs, revision)
+         VALUES (@orgId, @channel, @thread, @ts, @sender, 'tool', @text, @toolCallId, @body, @eventTimeUs, @revision)`
       )
       .run({
+        orgId,
         channel: e.channel,
         thread: e.thread,
         ts: e.ts,
@@ -3199,7 +3322,7 @@ export class LocalStore {
         revision
       })
     if (Number(inserted.changes) === 1) {
-      this.transcriptRevision = this.threadTranscriptRevision(e.channel, e.thread)
+      this.transcriptRevision = this.threadRevisionInOrg(orgId, e.channel, e.thread)
       this.notifyTranscriptMutation(e.channel, e.thread, [e.sender], this.transcriptRevision)
     }
   }
@@ -3213,16 +3336,17 @@ export class LocalStore {
     toolCallId: string,
     patch: { title: string; body: string }
   ): void {
+    const orgId = this.orgFor(agentId)
     const revision = this.transcriptRevision + 1
     const updated = this.db
       .prepare(
         `UPDATE transcript SET text = ?, body = ?, revision = ?
-         WHERE channel = ? AND thread = ? AND sender = ? AND tool_call_id = ?
+         WHERE orgId = ? AND channel = ? AND thread = ? AND sender = ? AND tool_call_id = ?
            AND (text IS NOT ? OR body IS NOT ?)`
       )
-      .run(patch.title, patch.body, revision, channel, thread, agentId, toolCallId, patch.title, patch.body)
+      .run(patch.title, patch.body, revision, orgId, channel, thread, agentId, toolCallId, patch.title, patch.body)
     if (Number(updated.changes) === 1) {
-      this.transcriptRevision = this.threadTranscriptRevision(channel, thread)
+      this.transcriptRevision = this.threadRevisionInOrg(orgId, channel, thread)
       this.notifyTranscriptMutation(channel, thread, [agentId], this.transcriptRevision)
     }
   }
@@ -3245,8 +3369,10 @@ export class LocalStore {
   /** One agent's full stored ToolBody JSON, or undefined if unknown/not owned. */
   getToolBodyForAgent(channel: string, thread: string, agentId: string, toolCallId: string): string | undefined {
     const row = this.db
-      .prepare('SELECT body FROM transcript WHERE channel = ? AND thread = ? AND sender = ? AND tool_call_id = ?')
-      .get(channel, thread, agentId, toolCallId) as { body: string | null } | undefined
+      .prepare(
+        'SELECT body FROM transcript WHERE orgId = ? AND channel = ? AND thread = ? AND sender = ? AND tool_call_id = ?'
+      )
+      .get(this.orgFor(agentId), channel, thread, agentId, toolCallId) as { body: string | null } | undefined
     return row?.body ?? undefined
   }
 
@@ -3255,15 +3381,21 @@ export class LocalStore {
    * are audit/UI data and must never be replayed back into an agent's prompt. Ordered by
    * platform `ts` (every text row carries one), compared against the session marker.
    */
-  transcriptSince(channel: string, thread: string, sinceTs: string | null): TranscriptEntry[] {
+  transcriptSince(channel: string, thread: string, sinceTs: string | null, agentId: string): TranscriptEntry[] {
+    const orgId = this.orgFor(agentId)
     if (sinceTs === null) {
       return this.db
-        .prepare("SELECT * FROM transcript WHERE channel = ? AND thread = ? AND kind = 'text' ORDER BY ts ASC")
-        .all(channel, thread) as unknown as TranscriptEntry[]
+        .prepare(
+          "SELECT * FROM transcript WHERE orgId = ? AND channel = ? AND thread = ? AND kind = 'text' ORDER BY ts ASC"
+        )
+        .all(orgId, channel, thread) as unknown as TranscriptEntry[]
     }
     return this.db
-      .prepare("SELECT * FROM transcript WHERE channel = ? AND thread = ? AND kind = 'text' AND ts > ? ORDER BY ts ASC")
-      .all(channel, thread, sinceTs) as unknown as TranscriptEntry[]
+      .prepare(
+        `SELECT * FROM transcript WHERE orgId = ? AND channel = ? AND thread = ? AND kind = 'text' AND ts > ?
+         ORDER BY ts ASC`
+      )
+      .all(orgId, channel, thread, sinceTs) as unknown as TranscriptEntry[]
   }
 
   /**
@@ -3275,20 +3407,21 @@ export class LocalStore {
    * pair's rows, or siblings see each other's private deliveries (#967).
    */
   transcriptSinceForAgent(channel: string, thread: string, sinceTs: string | null, agentId: string): TranscriptEntry[] {
+    const orgId = this.orgFor(agentId)
     if (sinceTs === null) {
       return this.db
         .prepare(
-          `SELECT * FROM transcript WHERE channel = ? AND thread = ? AND kind = 'text'
+          `SELECT * FROM transcript WHERE orgId = ? AND channel = ? AND thread = ? AND kind = 'text'
              AND ${AGENT_DELIVERY_SCOPE_SQL} ORDER BY ts ASC`
         )
-        .all(channel, thread, agentId, agentId, agentId) as unknown as TranscriptEntry[]
+        .all(orgId, channel, thread, agentId, agentId, agentId) as unknown as TranscriptEntry[]
     }
     return this.db
       .prepare(
-        `SELECT * FROM transcript WHERE channel = ? AND thread = ? AND kind = 'text' AND ts > ?
+        `SELECT * FROM transcript WHERE orgId = ? AND channel = ? AND thread = ? AND kind = 'text' AND ts > ?
            AND ${AGENT_DELIVERY_SCOPE_SQL} ORDER BY ts ASC`
       )
-      .all(channel, thread, sinceTs, agentId, agentId, agentId) as unknown as TranscriptEntry[]
+      .all(orgId, channel, thread, sinceTs, agentId, agentId, agentId) as unknown as TranscriptEntry[]
   }
 
   /**
@@ -3296,22 +3429,29 @@ export class LocalStore {
    * `transcriptSince`, this never compares provider message ids from different
    * ordering domains; it follows the daemon's monotonic observation revision.
    */
-  threadTranscriptRevision(channel: string, thread: string): number {
+  threadTranscriptRevision(channel: string, thread: string, agentId?: string): number {
+    return this.threadRevisionInOrg(this.transcriptOrg(channel, thread, agentId), channel, thread)
+  }
+
+  /** {@link threadTranscriptRevision} for a partition already resolved by a write. */
+  private threadRevisionInOrg(orgId: string, channel: string, thread: string): number {
     const row = this.db
-      .prepare('SELECT COALESCE(MAX(revision), 0) AS revision FROM transcript WHERE channel = ? AND thread = ?')
-      .get(channel, thread) as { revision: number }
+      .prepare(
+        'SELECT COALESCE(MAX(revision), 0) AS revision FROM transcript WHERE orgId = ? AND channel = ? AND thread = ?'
+      )
+      .get(orgId, channel, thread) as { revision: number }
     return row.revision
   }
 
   /** Conversation and audit rows observed after a thread-local revision fence. */
-  transcriptSinceRevision(channel: string, thread: string, afterRevision: number): TranscriptRow[] {
+  transcriptSinceRevision(channel: string, thread: string, afterRevision: number, agentId: string): TranscriptRow[] {
     return this.db
       .prepare(
         `SELECT * FROM transcript
-         WHERE channel = ? AND thread = ? AND revision > ?
+         WHERE orgId = ? AND channel = ? AND thread = ? AND revision > ?
          ORDER BY revision ASC, seq ASC`
       )
-      .all(channel, thread, afterRevision) as unknown as TranscriptRow[]
+      .all(this.orgFor(agentId), channel, thread, afterRevision) as unknown as TranscriptRow[]
   }
 
   /** `transcriptSinceRevision`, scoped to one agent's sent/received rows — the
@@ -3326,11 +3466,19 @@ export class LocalStore {
     return this.db
       .prepare(
         `SELECT * FROM transcript
-         WHERE channel = ? AND thread = ? AND revision > ?
+         WHERE orgId = ? AND channel = ? AND thread = ? AND revision > ?
            AND ${AGENT_DELIVERY_SCOPE_SQL}
          ORDER BY revision ASC, seq ASC`
       )
-      .all(channel, thread, afterRevision, agentId, agentId, agentId) as unknown as TranscriptRow[]
+      .all(
+        this.orgFor(agentId),
+        channel,
+        thread,
+        afterRevision,
+        agentId,
+        agentId,
+        agentId
+      ) as unknown as TranscriptRow[]
   }
 
   /** The earliest inbound (non-agent) `text` message in a thread — the triggering user
@@ -3341,17 +3489,19 @@ export class LocalStore {
   firstMessageText(channel: string, thread: string, agentId: string): string | undefined {
     const row = this.db
       .prepare(
-        "SELECT text FROM transcript WHERE channel = ? AND thread = ? AND kind = 'text' AND sender != ? ORDER BY seq ASC LIMIT 1"
+        `SELECT text FROM transcript WHERE orgId = ? AND channel = ? AND thread = ? AND kind = 'text'
+           AND sender != ? ORDER BY seq ASC LIMIT 1`
       )
-      .get(channel, thread, agentId) as { text: string } | undefined
+      .get(this.orgFor(agentId), channel, thread, agentId) as { text: string } | undefined
     return row?.text
   }
 
-  /** Full activity log for a thread (all kinds), in insertion order — for the Web UI. */
-  threadTranscript(channel: string, thread: string): TranscriptRow[] {
+  /** Full activity log for a thread (all kinds), in insertion order — for the Web UI.
+   *  `agentId` names the org partition only, and may be omitted on a store no pool shares. */
+  threadTranscript(channel: string, thread: string, agentId?: string): TranscriptRow[] {
     return this.db
-      .prepare('SELECT * FROM transcript WHERE channel = ? AND thread = ? ORDER BY seq ASC')
-      .all(channel, thread) as unknown as TranscriptRow[]
+      .prepare('SELECT * FROM transcript WHERE orgId = ? AND channel = ? AND thread = ? ORDER BY seq ASC')
+      .all(this.orgFor(agentId), channel, thread) as unknown as TranscriptRow[]
   }
 
   /**
@@ -3361,6 +3511,11 @@ export class LocalStore {
    * a human reply to a bot message (`reply_to_message.message_id`) resolves to the
    * session that bot message was posted in. Undefined when the id was never recorded
    * as text (e.g. a reply to transient chrome, or an unknown message).
+   *
+   * The one transcript read with no org fence, because it runs BEFORE routing picks an
+   * agent. It is safe unfenced: `channel` is the physical-bot-scoped transcript key, one
+   * integration owns that bot, one org owns that integration — and it returns a thread id,
+   * never content.
    */
   telegramThreadForMessage(channel: string, messageId: string): string | undefined {
     const row = this.db

@@ -593,12 +593,13 @@ the properties that matter to the pool:
   that is cheap against local SQLite would be pathological against networked
   PG.
 
-Shipped so far: the transcript dual-write
-(`packages/daemon/src/store/postgres-transcript-store.ts`). The remaining
-store inventory (sessions, cursors, durable inbox, loop guards, outboxes, cron
-runs) is the async-store workstream in the tracking issue — and until it
-lands, duties are pinned to the member that already holds each agent's state
-(§14).
+Shipped so far: the transcript fence itself — rows in the pool store carry
+`orgId` like every other org-scoped row (#1041), and the data plane's separate
+transcript table, which was declared but never read or written, is gone so
+that one store carries the fence. The remaining store inventory (sessions,
+cursors, durable inbox, loop guards, outboxes, cron runs) is the async-store
+workstream in the tracking issue — and until it lands, duties are pinned to
+the member that already holds each agent's state (§14).
 
 ## 12. Capacity (D14) and upgrades (D12)
 

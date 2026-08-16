@@ -9,13 +9,39 @@ function store(): LocalStore {
   return new LocalStore(join(mkdtempSync(join(tmpdir(), 'ac-db-')), 'local.sqlite'))
 }
 
+/** Every agent a shared-store test names belongs to one org unless the test says otherwise. */
+const oneOrg = () => 'org-1'
+
 /** Two pool members over ONE database — what the shared Postgres schema is during a rollout. */
 function sharedMembers(first: string, second: string): [LocalStore, LocalStore] {
   const database = new DatabaseSync(':memory:') as unknown as StoreDatabase
   return [
-    new LocalStore({ database, shared: true, ownerId: first }),
-    new LocalStore({ database, shared: true, ownerId: second })
+    new LocalStore({ database, shared: true, ownerId: first, orgForAgent: oneOrg }),
+    new LocalStore({ database, shared: true, ownerId: second, orgForAgent: oneOrg })
   ]
+}
+
+/** Undo the v11 transcript fence, so a fixture looks like a store an older daemon wrote. */
+const dropTranscriptOrg = (db: DatabaseSync): void => {
+  db.exec(`
+    DROP INDEX transcript_thread_seq;
+    DROP INDEX transcript_text_ts;
+    DROP INDEX transcript_agent_tool_call;
+    DROP INDEX transcript_thread_event_time;
+    DROP INDEX transcript_thread_revision;
+    ALTER TABLE transcript DROP COLUMN orgId;
+    DROP TABLE transcript_recipient;
+    CREATE TABLE transcript_recipient (
+      channel TEXT NOT NULL, thread TEXT NOT NULL, ts TEXT NOT NULL, agentId TEXT NOT NULL,
+      PRIMARY KEY (channel, thread, ts, agentId)
+    );
+    CREATE INDEX transcript_thread_seq ON transcript (channel, thread, seq);
+    CREATE UNIQUE INDEX transcript_text_ts ON transcript (channel, thread, ts) WHERE kind = 'text';
+    CREATE UNIQUE INDEX transcript_agent_tool_call
+      ON transcript (channel, thread, sender, tool_call_id) WHERE tool_call_id IS NOT NULL;
+    CREATE INDEX transcript_thread_event_time ON transcript (channel, thread, eventTimeUs DESC, seq DESC);
+    CREATE INDEX transcript_thread_revision ON transcript (channel, thread, revision);
+  `)
 }
 
 describe('LocalStore schema versioning', () => {
@@ -64,6 +90,7 @@ describe('LocalStore schema versioning', () => {
     old.exec('ALTER TABLE session_purges DROP COLUMN claimedAt')
     old.exec('ALTER TABLE session_metadata_outbox DROP COLUMN ownerId')
     old.exec('ALTER TABLE session_metadata_outbox DROP COLUMN claimedAt')
+    dropTranscriptOrg(old)
     old.exec('PRAGMA user_version = 1')
     old.close()
 
@@ -91,7 +118,7 @@ describe('LocalStore schema versioning', () => {
     expect(cronColumns).toContain('definition')
     // Purge receipts are leased per pool member (#1032).
     expect(purgeColumns).toEqual(expect.arrayContaining(['ownerId', 'claimedAt']))
-    expect(userVersion(path)).toBe(10)
+    expect(userVersion(path)).toBe(11)
   })
 
   it('never persists the CP routing map on a shared store, and still does on an owned one', () => {
@@ -99,8 +126,8 @@ describe('LocalStore schema versioning', () => {
     // boot hydrated whichever map was written last — a foreign `routingEpoch` with it. A shared
     // member now writes nothing and reads nothing, so it starts from an empty map at epoch 0.
     const database = new DatabaseSync(join(mkdtempSync(join(tmpdir(), 'ac-schema-shared-')), 'local.sqlite'))
-    const first = new LocalStore({ database, shared: true, ownerId: 'member-1' })
-    const second = new LocalStore({ database, shared: true, ownerId: 'member-2' })
+    const first = new LocalStore({ database, shared: true, ownerId: 'member-1', orgForAgent: oneOrg })
+    const second = new LocalStore({ database, shared: true, ownerId: 'member-2', orgForAgent: oneOrg })
 
     first.setCpRouting(1, '{"a":[]}', '[]')
     second.setCpRouting(9, '{"b":[]}', '[{"kind":"global"}]')
@@ -136,6 +163,7 @@ describe('LocalStore schema versioning', () => {
     old.exec('ALTER TABLE session_purges DROP COLUMN claimedAt')
     old.exec('ALTER TABLE session_metadata_outbox DROP COLUMN ownerId')
     old.exec('ALTER TABLE session_metadata_outbox DROP COLUMN claimedAt')
+    dropTranscriptOrg(old)
     old.exec('PRAGMA user_version = 5')
     old.close()
 
@@ -151,7 +179,7 @@ describe('LocalStore schema versioning', () => {
     expect(upgraded.isCaptureExcluded('bot-c', 'acp-2')).toBe(true)
     upgraded.close()
 
-    expect(userVersion(path)).toBe(10)
+    expect(userVersion(path)).toBe(11)
   })
 
   it('re-keys the runtime catalog cache on its owning member when upgrading a v7 store', () => {
@@ -179,6 +207,7 @@ describe('LocalStore schema versioning', () => {
     old.exec('ALTER TABLE session_purges DROP COLUMN claimedAt')
     old.exec('ALTER TABLE session_metadata_outbox DROP COLUMN ownerId')
     old.exec('ALTER TABLE session_metadata_outbox DROP COLUMN claimedAt')
+    dropTranscriptOrg(old)
     old.exec('PRAGMA user_version = 7')
     old.close()
 
@@ -200,7 +229,7 @@ describe('LocalStore schema versioning', () => {
         .map((column) => column.name)
     expect(primaryKey(metaColumns)).toEqual(['ownerId', 'runtimeId'])
     expect(primaryKey(capColumns)).toEqual(['ownerId', 'runtimeId', 'modelId'])
-    expect(userVersion(path)).toBe(10)
+    expect(userVersion(path)).toBe(11)
   })
 
   it('refuses a store written by a newer daemon WITHOUT touching it first', () => {
@@ -575,7 +604,7 @@ describe('LocalStore', () => {
     // a plain read-merge-write silently drops whichever writer commits first. The compare-and-set
     // notices and re-merges instead.
     const database = new DatabaseSync(join(mkdtempSync(join(tmpdir(), 'ac-usage-race-')), 'local.sqlite'))
-    const peer = new LocalStore({ database, shared: true, ownerId: 'member-2' })
+    const peer = new LocalStore({ database, shared: true, ownerId: 'member-2', orgForAgent: oneOrg })
     const key = sessionKey('slack', 'C1', 'T1', 'bot-a')
 
     // Slip the peer's whole write in between our read and our compare-and-set, exactly once.
@@ -600,7 +629,7 @@ describe('LocalStore', () => {
         }
       }
     }
-    const member = new LocalStore({ database: racing, shared: true, ownerId: 'member-1' })
+    const member = new LocalStore({ database: racing, shared: true, ownerId: 'member-1', orgForAgent: oneOrg })
     member.upsertSession({
       key,
       agentId: 'bot-a',
@@ -1755,7 +1784,7 @@ describe('LocalStore recovery scope on a shared store (daemon pool)', () => {
 
   const sharedPath = (): string => join(mkdtempSync(join(tmpdir(), 'ac-pool-')), 'shared.sqlite')
   const member = (path: string, ownerId: string): LocalStore =>
-    new LocalStore({ database: new DatabaseSync(path), shared: true, ownerId })
+    new LocalStore({ database: new DatabaseSync(path), shared: true, ownerId, orgForAgent: oneOrg })
 
   it("a starting member leaves a peer's live grant and running dream untouched", () => {
     const path = sharedPath()
@@ -2132,5 +2161,129 @@ describe('sweep leases', () => {
     expect(local.acquireSweepLease('orphans', 1_000, 0)).toBe(true)
     expect(local.acquireSweepLease('orphans', 1_000, 0)).toBe(true)
     local.close()
+  })
+})
+
+describe('transcript org fence on a shared store', () => {
+  const orgs: Record<string, string> = { 'agent-a': 'org-a', 'agent-b': 'org-b' }
+  const twoOrgMembers = (): [LocalStore, LocalStore] => {
+    const database = new DatabaseSync(':memory:') as unknown as StoreDatabase
+    const orgForAgent = (agentId: string): string | undefined => orgs[agentId]
+    return [
+      new LocalStore({ database, shared: true, ownerId: 'member-1', orgForAgent }),
+      new LocalStore({ database, shared: true, ownerId: 'member-2', orgForAgent })
+    ]
+  }
+
+  it('keeps two orgs holding the SAME channel/thread key independent', () => {
+    // Platform ids are unique only inside one org, so a pool store keyed on (channel, thread)
+    // alone let one org's dedup swallow another org's message, and served one org's rows to
+    // the other org's console.
+    const [a, b] = twoOrgMembers()
+    const row = { channel: 'C1', thread: 'T1', ts: '1', sender: 'U', kind: 'text' as const }
+    a.appendTranscript({ ...row, recipient: 'agent-a', text: 'org A' })
+    b.appendTranscript({ ...row, recipient: 'agent-b', text: 'org B' })
+
+    expect(a.threadTranscript('C1', 'T1', 'agent-a').map((r) => r.text)).toEqual(['org A'])
+    expect(b.threadTranscript('C1', 'T1', 'agent-b').map((r) => r.text)).toEqual(['org B'])
+    expect(a.transcriptPageForAgent('C1', 'T1', 'agent-a', null, 10).rows.map((r) => r.text)).toEqual(['org A'])
+    expect(b.transcriptPageForAgent('C1', 'T1', 'agent-b', null, 10).rows.map((r) => r.text)).toEqual(['org B'])
+    expect(a.transcriptSince('C1', 'T1', null, 'agent-a').map((e) => e.text)).toEqual(['org A'])
+    expect(a.firstMessageText('C1', 'T1', 'agent-a')).toBe('org A')
+    expect(b.firstMessageText('C1', 'T1', 'agent-b')).toBe('org B')
+    a.close()
+  })
+
+  it('keeps a tool call, its body and the thread revision inside one org', () => {
+    const [a, b] = twoOrgMembers()
+    const call = { channel: 'C1', thread: 'T1', ts: '2', toolCallId: 'call-1', title: 'Bash' }
+    a.insertToolCall({ ...call, sender: 'agent-a', body: '{"rawInput":"A"}' })
+    b.insertToolCall({ ...call, sender: 'agent-b', body: '{"rawInput":"B"}' })
+    expect(a.getToolBodyForAgent('C1', 'T1', 'agent-a', 'call-1')).toBe('{"rawInput":"A"}')
+    expect(b.getToolBodyForAgent('C1', 'T1', 'agent-b', 'call-1')).toBe('{"rawInput":"B"}')
+
+    // A peer org's update can never reach this row: the fence is in the WHERE clause.
+    b.updateToolCall('C1', 'T1', 'agent-b', 'call-1', { title: 'Bash', body: '{"rawInput":"B2"}' })
+    expect(a.getToolBodyForAgent('C1', 'T1', 'agent-a', 'call-1')).toBe('{"rawInput":"A"}')
+
+    // One org's write never moves the other org's context fence for the same thread key.
+    const peerRevision = b.threadTranscriptRevision('C1', 'T1', 'agent-b')
+    a.appendTranscript({ channel: 'C1', thread: 'T1', ts: '3', sender: 'agent-a', kind: 'text', text: 'A reply' })
+    expect(b.threadTranscriptRevision('C1', 'T1', 'agent-b')).toBe(peerRevision)
+    expect(a.currentTranscriptRevision('agent-a')).toBe(a.threadTranscriptRevision('C1', 'T1', 'agent-a'))
+    a.close()
+  })
+
+  it('refuses a row it cannot attribute rather than filing it where anyone may read it', () => {
+    const [a] = twoOrgMembers()
+    expect(() =>
+      a.appendTranscript({ channel: 'C1', thread: 'T9', ts: '1', sender: 'U', kind: 'text', text: 'nobody owns this' })
+    ).toThrow(/transcript organization/)
+    // A session in the thread is enough: an observed inbound is recorded before routing
+    // names a recipient, and the thread's owner is what attributes it.
+    a.upsertSession({
+      key: sessionKey('slack', 'C1', 'T9', 'agent-a'),
+      agentId: 'agent-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: 'T9',
+      acpSessionId: 'acp-1',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 1
+    })
+    a.appendTranscript({ channel: 'C1', thread: 'T9', ts: '1', sender: 'U', kind: 'text', text: 'observed' })
+    expect(a.threadTranscript('C1', 'T9', 'agent-a').map((r) => r.text)).toEqual(['observed'])
+    a.close()
+  })
+})
+
+describe('transcript org migration from a v10 store', () => {
+  const v10Store = (prefix: string): string => {
+    const path = join(mkdtempSync(join(tmpdir(), prefix)), 'local.sqlite')
+    new LocalStore(path).close()
+    const old = new DatabaseSync(path)
+    dropTranscriptOrg(old)
+    old.exec(`INSERT INTO transcript (channel, thread, ts, sender, kind, text, recipient, eventTimeUs, revision)
+      VALUES ('C1', 'T1', '1', 'U', 'text', 'kept', 'agent-a', 1000000, 1)`)
+    old.exec("INSERT INTO transcript_recipient (channel, thread, ts, agentId) VALUES ('C1', 'T1', '1', 'agent-b')")
+    old.exec('PRAGMA user_version = 10')
+    old.close()
+    return path
+  }
+
+  it('backfills a store no pool shares with its single partition, keeping every row', () => {
+    const path = v10Store('ac-transcript-v10-')
+    const upgraded = new LocalStore(path)
+    expect(upgraded.threadTranscript('C1', 'T1').map((r) => r.text)).toEqual(['kept'])
+    // The delivery table came across too, so the co-hosted recipient still sees the row.
+    expect(upgraded.transcriptPageForAgent('C1', 'T1', 'agent-b', null, 10).rows.map((r) => r.text)).toEqual(['kept'])
+    upgraded.close()
+
+    const after = new DatabaseSync(path)
+    const recipientKey = (
+      after.prepare('PRAGMA table_info(transcript_recipient)').all() as { name: string; pk: number }[]
+    )
+      .filter((column) => column.pk > 0)
+      .sort((first, second) => first.pk - second.pk)
+      .map((column) => column.name)
+    expect(recipientKey).toEqual(['orgId', 'channel', 'thread', 'ts', 'agentId'])
+    after.close()
+  })
+
+  it('drops what a shared store cannot attribute, because no org survives in its rows', () => {
+    // Nothing here records an agent's org — the daemon learns it from the CP at runtime — so
+    // sessions → agent → org resolves to nothing and a kept row would be readable by whichever
+    // org reused the channel/thread ids.
+    const path = v10Store('ac-transcript-v10-shared-')
+    const shared = new LocalStore({
+      database: new DatabaseSync(path),
+      shared: true,
+      ownerId: 'member-1',
+      orgForAgent: () => 'org-a'
+    })
+    expect(shared.threadTranscript('C1', 'T1', 'agent-a')).toEqual([])
+    expect(shared.transcriptPageForAgent('C1', 'T1', 'agent-b', null, 10).rows).toEqual([])
+    shared.close()
   })
 })

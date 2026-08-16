@@ -184,7 +184,7 @@ describe('LocalStore inbox', () => {
   const LEASE_MS = 2 * 60 * 1_000
 
   function poolMember(database: DatabaseSync, ownerId: string): LocalStore {
-    return new LocalStore({ database: database as never, shared: true, ownerId })
+    return new LocalStore({ database: database as never, shared: true, ownerId, orgForAgent: () => 'org-1' })
   }
 
   function pooledReport(s: LocalStore, id: string, agentId: string, ownerDaemonId: string, at: number): void {
