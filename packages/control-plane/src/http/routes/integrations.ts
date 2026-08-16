@@ -26,9 +26,9 @@ import type { AgentRecord, BotRecord, IntegrationRecord, IntegrationChannelRecor
 import { AgentId, BotId, IntegrationId, OrgId } from '../../domain/ids.js'
 import type { ResolvableAgent } from '../../orchestrator/placementResolver.js'
 import { denyViewerWrite, ctxOf, orgOf } from '../rbac.js'
+import { refreshMutationAgent as refreshAgentUnderMutation } from '../mutation-agent.js'
 import { canView, canEdit } from '../../authorization/policy.js'
 import { integrationToSpec, isGatedAgent } from '../../orchestrator/placement.js'
-import { samePlacementRef } from '../../domain/placement.js'
 import { conversationOwnerRow, pickConversationOwner } from '../../orchestrator/httpBot.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
 import { installNewBot } from '../install-bot.js'
@@ -87,19 +87,7 @@ export function integrationRoutes(deps: HttpDeps) {
     const CreateIntegrationBody = buildCreateIntegrationBody(deps.platforms)
     // The caller's active org — every read/write below is scoped to it.
     const orgIdOf = (req: { orgCtx?: { orgId: OrgId } }) => req.orgCtx!.orgId
-    // Placement IDENTITY, not the `daemonId` column: a set placement names no machine, so column
-    // equality both misses a re-placement onto another set and reads every set agent as unplaced.
-    const refreshMutationAgent = async (observed: AgentRecord): Promise<AgentRecord | null> => {
-      const current = await deps.repos.agent.get(observed.orgId, observed.id)
-      if (
-        !current ||
-        !samePlacementRef(current, observed) ||
-        current.lastModifiedAt.getTime() !== observed.lastModifiedAt.getTime()
-      ) {
-        return null
-      }
-      return current
-    }
+    const refreshMutationAgent = (observed: AgentRecord) => refreshAgentUnderMutation(deps.repos.agent, observed)
 
     // Push the full spec (metadata + tokens + per-conversation bindRules) to every
     // daemon that serves the owning agent — its placement AND any duty holder

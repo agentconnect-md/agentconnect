@@ -24,7 +24,7 @@ import type { ZodTypeProvider } from '../plugins/zod.js'
 import { Tag } from '../plugins/openapi.js'
 import type { HttpDeps } from '../deps.js'
 import { AgentId, OrgId } from '../../domain/ids.js'
-import { samePlacementRef } from '../../domain/placement.js'
+import { refreshMutationAgent } from '../mutation-agent.js'
 import { denyViewerWrite, ctxOf, orgOf } from '../rbac.js'
 import { canView, canEdit } from '../../authorization/policy.js'
 import { resolveWebAppUrl } from '../../config/env.js'
@@ -412,13 +412,8 @@ export function slackInstallRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
           // Token verification and capability checks above can take long enough
           // for placement to change. Re-read after taking the mutation side of
           // the move gate so the bot cannot be installed onto a stale daemon.
-          // Placement IDENTITY, not the column: a set placement names no machine.
-          const current = await deps.repos.agent.get(orgOf(req), agent.id)
-          if (
-            !current ||
-            !samePlacementRef(current, agent) ||
-            current.lastModifiedAt.getTime() !== agent.lastModifiedAt.getTime()
-          ) {
+          const current = await refreshMutationAgent(deps.repos.agent, agent)
+          if (!current) {
             return reply.code(409).send({
               error: 'Conflict',
               statusCode: 409,
