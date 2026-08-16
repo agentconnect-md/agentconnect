@@ -10,7 +10,7 @@ import type { GitCredCapability } from '@agentconnect.md/protocol'
 import { FakeClock } from '../../test/fakes/fake-clock.js'
 import type { AgentRepoAuthorizationRecord, GithubInstallationRecord } from '../persistence/ports.js'
 import { githubAppBotIdentity, resolveGithubAppConfig, type GithubAppConfig } from './config.js'
-import { GithubApiError, githubRequest, mintAppJwt } from './api.js'
+import { GithubApiError, githubRequest, mintAppJwt, type FetchLike } from './api.js'
 import { InstallationTokenInvalidatedError, InstallationTokenService } from './installation-token.service.js'
 import { deriveInstallStateKey, mintInstallState, verifyInstallState, INSTALL_STATE_TTL_MS } from './install-state.js'
 import { GithubService } from './service.js'
@@ -149,6 +149,90 @@ describe('githubRequest', () => {
     await expect(
       githubRequest<unknown>('/x/attempts', { method: 'POST', auth: 'jwt', fetchImpl })
     ).resolves.toBeUndefined()
+  })
+})
+
+describe('GithubService.listHookDeliveries', () => {
+  const deliveryPage = (guids: string[], at: string): string =>
+    JSON.stringify(
+      guids.map((guid) => ({
+        id: '1234567890123456789',
+        guid,
+        delivered_at: at,
+        event: 'pull_request',
+        action: 'opened',
+        repository_id: 42,
+        installation_id: 7
+      }))
+    )
+  const svc = (fetchImpl: FetchLike) =>
+    new GithubService({
+      cfg: cfg(),
+      clock: new FakeClock(1_700_000_000_000),
+      installations: {} as never,
+      installState: { put: async () => {}, consume: async () => true },
+      pepper: 'p'.repeat(32),
+      fetchImpl
+    })
+
+  it('walks the cursor until a page reaches past the floor', async () => {
+    const paths: string[] = []
+    const fetchImpl = vi.fn(async (url: string) => {
+      paths.push(url)
+      const second = url.includes('cursor=next')
+      return new Response(
+        second ? deliveryPage(['old'], '2023-11-14T21:40:00.000Z') : deliveryPage(['new'], '2023-11-14T22:10:00.000Z'),
+        {
+          status: 200,
+          headers: {
+            'content-type': 'application/json',
+            link: '<https://api.github.com/app/hook/deliveries?per_page=100&cursor=next>; rel="next"'
+          }
+        }
+      )
+    })
+
+    const page = await svc(fetchImpl).listHookDeliveries({ deliveredSince: new Date('2023-11-14T21:50:00.000Z') })
+    expect(page.deliveries.map((d) => d.guid)).toEqual(['new', 'old'])
+    expect(page.truncated).toBe(false) // the second page reaches past the floor
+    expect(paths[1]).toContain('cursor=next')
+  })
+
+  it('reports truncation when the page budget runs out before the floor', async () => {
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(deliveryPage(['g'], '2023-11-14T22:10:00.000Z'), {
+          status: 200,
+          headers: {
+            'content-type': 'application/json',
+            link: '<https://api.github.com/app/hook/deliveries?per_page=100&cursor=next>; rel="next"'
+          }
+        })
+    )
+
+    const page = await svc(fetchImpl).listHookDeliveries({
+      maxPages: 3,
+      deliveredSince: new Date('2023-11-14T20:00:00.000Z')
+    })
+    expect(fetchImpl).toHaveBeenCalledTimes(3)
+    expect(page.truncated).toBe(true)
+  })
+
+  it('never follows a next cursor that points off the API base', async () => {
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(deliveryPage(['g'], '2023-11-14T22:10:00.000Z'), {
+          status: 200,
+          headers: {
+            'content-type': 'application/json',
+            link: '<https://evil.example/app/hook/deliveries?cursor=next>; rel="next"'
+          }
+        })
+    )
+
+    const page = await svc(fetchImpl).listHookDeliveries({ deliveredSince: new Date('2023-11-14T20:00:00.000Z') })
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    expect(page.truncated).toBe(false)
   })
 })
 

@@ -73,6 +73,8 @@ function delivery(over: Partial<GhHookDelivery> = {}): GhHookDelivery {
 function make(opts: {
   hooks?: HookRecord[]
   deliveries?: GhHookDelivery[] | (() => GhHookDelivery[])
+  /** The listing walked its page budget without reaching `deliveredSince`. */
+  truncated?: boolean
   landed?: string[]
   relaysAlive?: boolean | (() => boolean)
   redeliverError?: boolean
@@ -99,11 +101,13 @@ function make(opts: {
   )
   const settleMock = vi.fn(async () => 0)
   const reviewFanoutClaimMock = vi.fn(async () => opts.reviewFanoutClaim ?? false)
+  const listMock = vi.fn(async (_opts?: { deliveredSince?: Date }) => ({
+    deliveries: typeof opts.deliveries === 'function' ? opts.deliveries() : (opts.deliveries ?? [delivery()]),
+    truncated: opts.truncated ?? false
+  }))
   const reconciler = new HookRedeliveryReconciler(
     {
-      listHookDeliveries: vi.fn(async () =>
-        typeof opts.deliveries === 'function' ? opts.deliveries() : (opts.deliveries ?? [delivery()])
-      ),
+      listHookDeliveries: listMock,
       redeliverHookDelivery: redeliverMock
     },
     {
@@ -120,8 +124,11 @@ function make(opts: {
   // Ticks stay MANUAL: tick()'s finally re-arms a timer, and clock.advance()
   // would fire those into async sweeps racing the test's own tick() calls.
   reconciler.stop()
-  return { reconciler, redelivered, redeliverMock, reviewFanoutClaimMock, claimMock, settleMock, clock }
+  return { reconciler, redelivered, redeliverMock, reviewFanoutClaimMock, claimMock, settleMock, listMock, clock }
 }
+
+/** Let a clock-fired sweep run to completion. */
+const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
 
 describe('HookRedeliveryReconciler', () => {
   it('redelivers a matching, unlanded GUID', async () => {
@@ -336,5 +343,51 @@ describe('HookRedeliveryReconciler', () => {
     for (let i = 0; i < 5; i++) await expect(h.reconciler.tick()).resolves.toBeUndefined()
     expect(h.redelivered).toEqual([]) // never succeeded…
     expect(h.redeliverMock).toHaveBeenCalledTimes(3) // …retried next ticks, then the cap ended the calls
+  })
+
+  it('asks the delivery listing to reach the whole look-back window', async () => {
+    const h = make({})
+    await h.reconciler.tick()
+    expect(h.listMock.mock.calls[0]?.[0]?.deliveredSince).toEqual(new Date(NOW - CFG.windowMs))
+  })
+
+  it('a truncated listing covers only what it listed, and the next sweep resumes there', async () => {
+    // The busy-App case: the page budget runs out long before the window does.
+    // Anything older than the oldest listed delivery was never looked at.
+    const listedFloor = NOW - 4 * 60 * 1000
+    const h = make({
+      truncated: true,
+      deliveries: () => [delivery({ delivered_at: new Date(listedFloor).toISOString() })]
+    })
+    await h.reconciler.tick()
+    h.clock.advance(CFG.intervalMs)
+    await h.reconciler.tick()
+
+    // Not `now − windowMs` (which would slide past the unlisted slice) and not
+    // `newest` — the second sweep starts exactly where the first one stopped.
+    expect(h.listMock.mock.calls[1]?.[0]?.deliveredSince).toEqual(new Date(listedFloor))
+  })
+
+  it('a complete listing that is simply short still advances coverage', async () => {
+    const h = make({ deliveries: () => [delivery()] }) // truncated: false — quiet App
+    await h.reconciler.tick()
+    h.clock.advance(CFG.intervalMs)
+    await h.reconciler.tick()
+    // The first sweep covered its whole window, so the second resumes at that
+    // sweep's ceiling instead of re-listing an interval it already saw.
+    expect(h.listMock.mock.calls[1]?.[0]?.deliveredSince).toEqual(new Date(NOW - CFG.graceMs))
+  })
+
+  it('runs its first sweep early — a CP that restarts every few minutes still sweeps', async () => {
+    const h = make({})
+    h.reconciler.start()
+
+    h.clock.advance(30_000)
+    await flush()
+    expect(h.listMock).not.toHaveBeenCalled()
+    h.clock.advance(30_000) // 60s after boot, not a full interval
+    await flush()
+    expect(h.listMock).toHaveBeenCalledOnce()
+    h.reconciler.stop()
   })
 })
