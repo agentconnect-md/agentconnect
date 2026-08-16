@@ -69,6 +69,25 @@ async function execute(message) {
     await client.end()
     return
   }
+  // One hand-off, N statements, each still on its own commit: a failure names its statement and
+  // abandons the rest, leaving what the same statements run as separate calls would have left.
+  if (message.kind === 'batch') {
+    const statements = message.statements ?? []
+    const results = []
+    for (let index = 0; index < statements.length; index++) {
+      try {
+        results.push((await runStatement(statements[index])) ?? { rows: [], changes: 0 })
+      } catch (error) {
+        const detail = error instanceof Error && error.stack ? error.stack : String(error)
+        throw new Error(`batch statement ${index + 1} of ${statements.length} failed: ${detail}`)
+      }
+    }
+    return results
+  }
+  return runStatement(message)
+}
+
+async function runStatement(message) {
   if (/^\s*PRAGMA\s+journal_mode/i.test(message.sql)) return
   const setVersion = /^\s*PRAGMA\s+user_version\s*=\s*(\d+)/i.exec(message.sql)
   if (setVersion) {

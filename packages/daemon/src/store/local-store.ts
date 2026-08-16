@@ -31,11 +31,103 @@ export interface StoreStatement {
   all(...params: unknown[]): unknown[]
 }
 
+/** One statement of a batch. `run` reports `changes`; `read` returns `rows`. */
+export interface StoreBatchStatement {
+  sql: string
+  params: unknown[]
+  kind: 'run' | 'read'
+}
+
+export interface StoreBatchResult {
+  changes: number
+  rows: unknown[]
+}
+
 export interface StoreDatabase {
   exec(sql: string): void
   prepare(sql: string): StoreStatement
+  /** Run an ordered statement list and return its results in the same order. Each statement
+   *  commits on its own, exactly as the single-statement path does. */
+  batch(statements: StoreBatchStatement[]): StoreBatchResult[]
   close(): void
 }
+
+/** The `node:sqlite` backend as a `StoreDatabase`. Its batch is a plain in-process sequence:
+ *  an embedded database has no round trip for a batch to save. */
+export function sqliteStoreDatabase(database: DatabaseSync): StoreDatabase {
+  return {
+    exec: (sql) => database.exec(sql),
+    prepare: (sql) => database.prepare(sql) as unknown as StoreStatement,
+    close: () => database.close(),
+    batch: (statements) =>
+      statements.map(({ sql, params, kind }) => {
+        const statement = database.prepare(sql)
+        const bound = params as SQLInputValue[]
+        if (kind === 'read') return { changes: 0, rows: statement.all(...bound) }
+        return { changes: Number(statement.run(...bound).changes), rows: [] }
+      })
+  }
+}
+
+/** The facade every LocalStore method uses: draining the coalescing buffer before each
+ *  statement is what makes it invisible — no read reaches the database without passing here. */
+function drainPendingWritesFirst(backend: StoreDatabase, drain: () => void): StoreDatabase {
+  return {
+    exec: (sql) => {
+      drain()
+      backend.exec(sql)
+    },
+    batch: (statements) => {
+      drain()
+      return backend.batch(statements)
+    },
+    close: () => backend.close(),
+    prepare: (sql) => {
+      const statement = backend.prepare(sql)
+      return {
+        run: (...params) => {
+          drain()
+          return statement.run(...params)
+        },
+        get: (...params) => {
+          drain()
+          return statement.get(...params)
+        },
+        all: (...params) => {
+          drain()
+          return statement.all(...params)
+        }
+      }
+    }
+  }
+}
+
+/** One coalesced streaming tool-call write, already fenced: `orgId` was resolved when the
+ *  update was enqueued, from the same agent the unbuffered write would have resolved it from. */
+interface PendingToolWrite {
+  orgId: string
+  channel: string
+  thread: string
+  agentId: string
+  toolCallId: string
+  title: string
+  body: string
+  bytes: number
+}
+
+/** The partition a coalesced write lands in — its notification and revision scope. */
+const threadKeyOf = (write: PendingToolWrite): string => [write.orgId, write.channel, write.thread].join('\0')
+
+/** How long a streaming tool-call body may sit unwritten. Short enough that a crash loses at
+ *  most this much of an in-flight tool body, long enough to swallow a chunk burst. */
+const TOOL_WRITE_FLUSH_MS = 200
+
+/** Rows the coalescing buffer may hold — one per tool call in flight — before it flushes early. */
+const MAX_PENDING_TOOL_WRITES = 64
+
+/** The bound that actually caps memory: a single body may reach 1 MiB, so counting rows alone
+ *  would let 64 of them buffer far more than this. Reaching it flushes early, same as the count. */
+const MAX_PENDING_TOOL_WRITE_BYTES = 4 * 1024 * 1024
 
 /** The daemon's agent registry, projected to the org that owns one agent. */
 export type OrgForAgent = (agentId: string) => string | undefined
@@ -766,6 +858,9 @@ const SCHEMA_MIGRATIONS: ((db: StoreDatabase, store: { shared: boolean }) => voi
 ]
 
 export class LocalStore {
+  /** The backend as given. Only the tool-write flush uses it directly; everything else goes
+   *  through `db`, which drains that buffer first. */
+  private backend: StoreDatabase
   private db: StoreDatabase
   private readonly shared: boolean
   private readonly ownerId?: string
@@ -775,6 +870,10 @@ export class LocalStore {
   private readonly orgForAgent?: OrgForAgent
   private transcriptRevision = 0
   private transcriptMutationListener?: (mutation: TranscriptMutation) => void
+  private readonly pendingToolWrites = new Map<string, PendingToolWrite>()
+  private pendingToolWriteBytes = 0
+  private toolWriteTimer?: ReturnType<typeof setTimeout>
+  private flushingToolWrites = false
 
   constructor(source: LocalStoreSource) {
     // This database holds every platform message body, agent reply, tool payload and
@@ -792,13 +891,15 @@ export class LocalStore {
       const dir = dirname(source)
       mkdirSync(dir, { recursive: true, mode: 0o700 })
       restrictPath(dir, 0o700)
-      this.db = new DatabaseSync(source) as StoreDatabase
+      this.backend = sqliteStoreDatabase(new DatabaseSync(source))
+      this.db = drainPendingWritesFirst(this.backend, () => this.flushToolCallWrites())
       this.db.exec('PRAGMA journal_mode = WAL')
       // WAL mode publishes two siblings alongside the database; they carry the same
       // rows, so restricting only the main file would leave the content readable.
       for (const p of [source, `${source}-wal`, `${source}-shm`]) restrictPath(p, 0o600)
     } else {
-      this.db = source.database
+      this.backend = source.database
+      this.db = drainPendingWritesFirst(this.backend, () => this.flushToolCallWrites())
       this.shared = source.shared === true
       this.ownerId = source.ownerId
       this.orgForAgent = source.orgForAgent
@@ -3171,39 +3272,61 @@ export class LocalStore {
     const { attachments, trustedAgentBot, quoted, quoteJson, authoritative, orgAgentId, ...entry } = e
     const durableQuoteJson = quoted?.text ? JSON.stringify(quoted) : (quoteJson ?? null)
     const orgId = this.transcriptOrg(e.channel, e.thread, e.recipient, e.sender, orgAgentId)
-    const revision = this.transcriptRevision + 1
-    const inserted = this.db
-      .prepare(
-        `INSERT OR IGNORE INTO transcript
+    // The row, its delivery record, and the thread revision the caller needs next, in one
+    // round trip. `transcript_recipient` is a different table, so its insert moving ahead of
+    // the in-place upgrades below changes nothing either statement can observe.
+    const recordsDelivery = !!e.recipient && !!e.ts
+    const { changes, revision } = this.writeTranscriptRows(orgId, e.channel, e.thread, [
+      {
+        kind: 'run',
+        sql: `INSERT OR IGNORE INTO transcript
            (orgId, channel, thread, ts, sender, kind, text, recipient, eventTimeUs, attachmentsJson, quoteJson, trustedAgentBot, revision, postId)
          VALUES
-           (@orgId, @channel, @thread, @ts, @sender, @kind, @text, @recipient, @eventTimeUs, @attachmentsJson, @quoteJson, @trustedAgentBot, @revision, @postId)`
-      )
-      .run({
-        ...entry,
-        orgId,
-        recipient: e.recipient ?? null,
-        postId: e.postId ?? null,
-        eventTimeUs: e.eventTimeUs ?? transcriptEventTimeUs(e.ts),
-        attachmentsJson: attachments?.length ? JSON.stringify(attachments) : null,
-        quoteJson: durableQuoteJson,
-        trustedAgentBot: trustedAgentBot ? 1 : null,
-        revision
-      } as unknown as SqlParams)
-    if (Number(inserted.changes) === 1) this.transcriptRevision = this.threadRevisionInOrg(orgId, e.channel, e.thread)
+           (@orgId, @channel, @thread, @ts, @sender, @kind, @text, @recipient, @eventTimeUs, @attachmentsJson, @quoteJson, @trustedAgentBot, @revision, @postId)`,
+        params: [
+          {
+            ...entry,
+            orgId,
+            recipient: e.recipient ?? null,
+            postId: e.postId ?? null,
+            eventTimeUs: e.eventTimeUs ?? transcriptEventTimeUs(e.ts),
+            attachmentsJson: attachments?.length ? JSON.stringify(attachments) : null,
+            quoteJson: durableQuoteJson,
+            trustedAgentBot: trustedAgentBot ? 1 : null,
+            revision: this.transcriptRevision + 1
+          } as unknown as SqlParams
+        ]
+      },
+      // Recorded separately so it survives the text-row dedup above: if this same
+      // (channel, thread, ts) was already recorded by another agent, the INSERT OR IGNORE
+      // dropped this row and its `recipient`, but the message WAS delivered to this agent too.
+      ...(recordsDelivery
+        ? [
+            {
+              kind: 'run' as const,
+              sql: 'INSERT OR IGNORE INTO transcript_recipient (orgId, channel, thread, ts, agentId) VALUES (?, ?, ?, ?, ?)',
+              params: [orgId, e.channel, e.thread, e.ts, e.recipient]
+            }
+          ]
+        : [])
+    ])
+    const inserted = changes[0] ?? 0
+    const delivered = recordsDelivery ? (changes[1] ?? 0) : 0
+    if (inserted === 1) this.transcriptRevision = revision
     // The closing edit of a streamed reply lands on the row its own post created, so the
     // text is refreshed in place rather than lost to INSERT OR IGNORE. Scoped to text
     // rows on identical coordinates, and only ever toward the authoritative version.
-    if (Number(inserted.changes) === 0 && authoritative && e.kind === 'text') {
-      const rev = this.transcriptRevision + 1
-      const refreshed = this.db
-        .prepare(
-          `UPDATE transcript SET text = ?, revision = ?
-           WHERE orgId = ? AND channel = ? AND thread = ? AND ts = ? AND kind = 'text' AND text IS NOT ?`
-        )
-        .run(e.text, rev, orgId, e.channel, e.thread, e.ts, e.text)
-      if (Number(refreshed.changes) === 1) {
-        this.transcriptRevision = this.threadRevisionInOrg(orgId, e.channel, e.thread)
+    if (inserted === 0 && authoritative && e.kind === 'text') {
+      const refreshed = this.writeTranscriptRows(orgId, e.channel, e.thread, [
+        {
+          kind: 'run',
+          sql: `UPDATE transcript SET text = ?, revision = ?
+           WHERE orgId = ? AND channel = ? AND thread = ? AND ts = ? AND kind = 'text' AND text IS NOT ?`,
+          params: [e.text, this.transcriptRevision + 1, orgId, e.channel, e.thread, e.ts, e.text]
+        }
+      ])
+      if (refreshed.changes[0] === 1) {
+        this.transcriptRevision = refreshed.revision
         this.notifyTranscriptMutation(e.channel, e.thread, e.recipient ? [e.recipient] : [], this.transcriptRevision)
       }
     }
@@ -3211,7 +3334,7 @@ export class LocalStore {
     // snapshot. Upgrade only toward trusted=true; an untrusted replay can never clear or
     // manufacture provenance, and the stable text-row coordinates keep this scoped.
     const provenanceUpgraded =
-      Number(inserted.changes) === 0 && trustedAgentBot
+      inserted === 0 && trustedAgentBot
         ? this.db
             .prepare(
               `UPDATE transcript SET trustedAgentBot = 1
@@ -3224,7 +3347,7 @@ export class LocalStore {
     // postId column value) and re-observed by a copy that carries it. Upgrade in
     // place; an identity can be added but never changed or cleared.
     const postIdUpgraded =
-      Number(inserted.changes) === 0 && e.postId
+      inserted === 0 && e.postId
         ? this.db
             .prepare(
               `UPDATE transcript SET postId = ?
@@ -3236,7 +3359,7 @@ export class LocalStore {
     // provider send time (an early observer wrote the row with the derived
     // axis). Explicit values only — two derived computations must never flap.
     const eventTimeUpgraded =
-      Number(inserted.changes) === 0 && e.eventTimeUs
+      inserted === 0 && e.eventTimeUs
         ? this.db
             .prepare(
               `UPDATE transcript SET eventTimeUs = ?
@@ -3249,7 +3372,7 @@ export class LocalStore {
     // place instead of leaving attachmentsJson pinned to NULL (the console would then
     // show only the `[attached: …]` label).
     const attachmentsUpgraded =
-      Number(inserted.changes) === 0 && attachments?.length
+      inserted === 0 && attachments?.length
         ? this.db
             .prepare(
               `UPDATE transcript SET attachmentsJson = ?
@@ -3261,7 +3384,7 @@ export class LocalStore {
     // (or a corrected selected passage). Upgrade it without ever clearing a quote when
     // a provider snapshot subsequently re-appends the same text row without metadata.
     const quoteUpgraded =
-      Number(inserted.changes) === 0 && durableQuoteJson !== null
+      inserted === 0 && durableQuoteJson !== null
         ? this.db
             .prepare(
               `UPDATE transcript SET quoteJson = ?
@@ -3270,19 +3393,7 @@ export class LocalStore {
             )
             .run(durableQuoteJson, orgId, e.channel, e.thread, e.ts, durableQuoteJson)
         : undefined
-    // Record the delivery separately so it survives the text-row dedup above: if this same
-    // (channel, thread, ts) was already recorded by another agent, the INSERT OR IGNORE
-    // dropped this row and its `recipient`, but the message WAS delivered to this agent too.
-    const delivered =
-      e.recipient && e.ts
-        ? this.db
-            .prepare(
-              'INSERT OR IGNORE INTO transcript_recipient (orgId, channel, thread, ts, agentId) VALUES (?, ?, ?, ?, ?)'
-            )
-            .run(orgId, e.channel, e.thread, e.ts, e.recipient)
-        : undefined
-
-    if (Number(inserted.changes) === 1) {
+    if (inserted === 1) {
       this.notifyTranscriptMutation(e.channel, e.thread, [e.sender, e.recipient], this.transcriptRevision)
     } else if (
       Number(provenanceUpgraded?.changes ?? 0) === 1 ||
@@ -3290,24 +3401,31 @@ export class LocalStore {
       Number(quoteUpgraded?.changes ?? 0) === 1 ||
       Number(postIdUpgraded?.changes ?? 0) === 1 ||
       Number(eventTimeUpgraded?.changes ?? 0) === 1 ||
-      Number(delivered?.changes ?? 0) === 1
+      delivered === 1
     ) {
-      const deliveryRevision = this.transcriptRevision + 1
-      this.db
-        .prepare(
-          "UPDATE transcript SET revision = ? WHERE orgId = ? AND channel = ? AND thread = ? AND ts = ? AND kind = 'text'"
-        )
-        .run(deliveryRevision, orgId, e.channel, e.thread, e.ts)
-      this.transcriptRevision = this.threadRevisionInOrg(orgId, e.channel, e.thread)
       // An in-place upgrade mutates the SHARED row: every agent whose scoped
       // view already contains it must be invalidated, not just this append's
       // sender/recipient — a co-hosted participant delivered earlier would
       // otherwise keep serving the stale copy until an unrelated mutation.
-      const sharedRecipients = (
-        this.db
-          .prepare('SELECT agentId FROM transcript_recipient WHERE orgId = ? AND channel = ? AND thread = ? AND ts = ?')
-          .all(orgId, e.channel, e.thread, e.ts) as { agentId: string }[]
-      ).map((r) => r.agentId)
+      const bumped = this.db.batch([
+        {
+          kind: 'run',
+          sql: "UPDATE transcript SET revision = ? WHERE orgId = ? AND channel = ? AND thread = ? AND ts = ? AND kind = 'text'",
+          params: [this.transcriptRevision + 1, orgId, e.channel, e.thread, e.ts]
+        },
+        {
+          kind: 'read',
+          sql: 'SELECT COALESCE(MAX(revision), 0) AS revision FROM transcript WHERE orgId = ? AND channel = ? AND thread = ?',
+          params: [orgId, e.channel, e.thread]
+        },
+        {
+          kind: 'read',
+          sql: 'SELECT agentId FROM transcript_recipient WHERE orgId = ? AND channel = ? AND thread = ? AND ts = ?',
+          params: [orgId, e.channel, e.thread, e.ts]
+        }
+      ])
+      this.transcriptRevision = Number((bumped[1]?.rows[0] as { revision: number } | undefined)?.revision ?? 0)
+      const sharedRecipients = (bumped[2]?.rows as { agentId: string }[]).map((r) => r.agentId)
       this.notifyTranscriptMutation(
         e.channel,
         e.thread,
@@ -3331,33 +3449,40 @@ export class LocalStore {
     body: string
   }): void {
     const orgId = this.orgFor(e.sender)
-    const revision = this.transcriptRevision + 1
-    const inserted = this.db
-      .prepare(
-        `INSERT OR IGNORE INTO transcript
+    const { changes, revision } = this.writeTranscriptRows(orgId, e.channel, e.thread, [
+      {
+        kind: 'run',
+        sql: `INSERT OR IGNORE INTO transcript
            (orgId, channel, thread, ts, sender, kind, text, tool_call_id, body, eventTimeUs, revision)
-         VALUES (@orgId, @channel, @thread, @ts, @sender, 'tool', @text, @toolCallId, @body, @eventTimeUs, @revision)`
-      )
-      .run({
-        orgId,
-        channel: e.channel,
-        thread: e.thread,
-        ts: e.ts,
-        sender: e.sender,
-        text: e.title,
-        toolCallId: e.toolCallId,
-        body: e.body,
-        eventTimeUs: transcriptEventTimeUs(e.ts),
-        revision
-      })
-    if (Number(inserted.changes) === 1) {
-      this.transcriptRevision = this.threadRevisionInOrg(orgId, e.channel, e.thread)
+         VALUES (@orgId, @channel, @thread, @ts, @sender, 'tool', @text, @toolCallId, @body, @eventTimeUs, @revision)`,
+        params: [
+          {
+            orgId,
+            channel: e.channel,
+            thread: e.thread,
+            ts: e.ts,
+            sender: e.sender,
+            text: e.title,
+            toolCallId: e.toolCallId,
+            body: e.body,
+            eventTimeUs: transcriptEventTimeUs(e.ts),
+            revision: this.transcriptRevision + 1
+          }
+        ]
+      }
+    ])
+    if (changes[0] === 1) {
+      this.transcriptRevision = revision
       this.notifyTranscriptMutation(e.channel, e.thread, [e.sender], this.transcriptRevision)
     }
   }
 
-  /** Later update for one agent's tool call. `seq`/`ts` keep their first-seen
-   *  values; a peer reusing the same session-local tool id cannot overwrite it. */
+  /** Later update for one agent's tool call. `seq`/`ts` keep their first-seen values; a peer
+   *  reusing the same session-local tool id cannot overwrite it. The store's highest-frequency
+   *  writer, and every write is a full latest-wins overlay of the merged ToolBody rather than an
+   *  append — so the burst is coalesced per row, and writing only its last state leaves exactly
+   *  the row the per-chunk path left. Flushed before any other statement, on
+   *  {@link TOOL_WRITE_FLUSH_MS}, at either buffer bound, at turn end, and on drain. */
   updateToolCall(
     channel: string,
     thread: string,
@@ -3365,18 +3490,135 @@ export class LocalStore {
     toolCallId: string,
     patch: { title: string; body: string }
   ): void {
+    // Resolved here, not at flush time: the org fence must reject an unattributable agent at
+    // the same call, with the same inputs, as the per-chunk write it replaces.
     const orgId = this.orgFor(agentId)
-    const revision = this.transcriptRevision + 1
-    const updated = this.db
-      .prepare(
-        `UPDATE transcript SET text = ?, body = ?, revision = ?
+    const key = [orgId, channel, thread, agentId, toolCallId].join('\0')
+    this.pendingToolWriteBytes -= this.pendingToolWrites.get(key)?.bytes ?? 0
+    const bytes = patch.title.length + patch.body.length
+    this.pendingToolWrites.set(key, { orgId, channel, thread, agentId, toolCallId, bytes, ...patch })
+    this.pendingToolWriteBytes += bytes
+    if (this.pendingToolWrites.size >= MAX_PENDING_TOOL_WRITES) this.flushToolCallWrites()
+    else if (this.pendingToolWriteBytes >= MAX_PENDING_TOOL_WRITE_BYTES) this.flushToolCallWrites()
+    else this.armToolWriteFlush()
+  }
+
+  /** Write every buffered streaming tool-call update, plus the post-write revision of each
+   *  thread they touched, in one round trip — so buffered content is durable before a shutdown
+   *  and never outlives the turn that produced it. Entries survive a failed flush, and the timer
+   *  is re-armed, so a retry re-applies them. */
+  flushToolCallWrites(): void {
+    if (this.flushingToolWrites || this.pendingToolWrites.size === 0) return
+    this.clearToolWriteFlush()
+    const pending = [...this.pendingToolWrites.values()]
+    // Distinct threads in write order, so each one's revision read rides the same round trip.
+    const threads = new Map<string, PendingToolWrite>()
+    for (const write of pending) threads.set(threadKeyOf(write), write)
+    const threadList = [...threads.values()]
+    this.flushingToolWrites = true
+    let results: StoreBatchResult[]
+    try {
+      results = this.backend.batch([
+        ...pending.map((write, index) => ({
+          kind: 'run' as const,
+          sql: `UPDATE transcript SET text = ?, body = ?, revision = ?
          WHERE orgId = ? AND channel = ? AND thread = ? AND sender = ? AND tool_call_id = ?
-           AND (text IS NOT ? OR body IS NOT ?)`
-      )
-      .run(patch.title, patch.body, revision, orgId, channel, thread, agentId, toolCallId, patch.title, patch.body)
-    if (Number(updated.changes) === 1) {
-      this.transcriptRevision = this.threadRevisionInOrg(orgId, channel, thread)
-      this.notifyTranscriptMutation(channel, thread, [agentId], this.transcriptRevision)
+           AND (text IS NOT ? OR body IS NOT ?)`,
+          params: [
+            write.title,
+            write.body,
+            this.transcriptRevision + index + 1,
+            write.orgId,
+            write.channel,
+            write.thread,
+            write.agentId,
+            write.toolCallId,
+            write.title,
+            write.body
+          ]
+        })),
+        ...threadList.map((write) => ({
+          kind: 'read' as const,
+          sql: 'SELECT COALESCE(MAX(revision), 0) AS revision FROM transcript WHERE orgId = ? AND channel = ? AND thread = ?',
+          params: [write.orgId, write.channel, write.thread]
+        }))
+      ])
+    } catch (error) {
+      // Nothing is dropped: the entries stay buffered and the timer comes back, so a store that
+      // goes quiet after the failure still lands them instead of holding them until the next call.
+      this.armToolWriteFlush()
+      throw error
+    } finally {
+      this.flushingToolWrites = false
+    }
+    this.pendingToolWrites.clear()
+    this.pendingToolWriteBytes = 0
+    const revisions = new Map<string, number>()
+    for (const [index, write] of threadList.entries()) {
+      const row = results[pending.length + index]?.rows[0] as { revision: number } | undefined
+      revisions.set(threadKeyOf(write), Number(row?.revision ?? 0))
+    }
+    // The allocator spans every partition, so it takes the highest revision any thread now
+    // carries — a thread whose write was a no-op must never pull it back below one already issued.
+    this.transcriptRevision = Math.max(this.transcriptRevision, ...revisions.values())
+    // One notification per thread that actually changed, carrying that thread's own revision —
+    // the per-chunk path emitted one per write, and every intermediate one is now superseded.
+    const changed = new Map<string, string[]>()
+    for (const [index, write] of pending.entries()) {
+      if (Number(results[index]?.changes ?? 0) !== 1) continue
+      const key = threadKeyOf(write)
+      const agentIds = changed.get(key)
+      if (agentIds) agentIds.push(write.agentId)
+      else changed.set(key, [write.agentId])
+    }
+    for (const write of threadList) {
+      const key = threadKeyOf(write)
+      const agentIds = changed.get(key)
+      if (agentIds) this.notifyTranscriptMutation(write.channel, write.thread, agentIds, revisions.get(key) ?? 0)
+    }
+  }
+
+  private armToolWriteFlush(): void {
+    if (this.toolWriteTimer || this.pendingToolWrites.size === 0) return
+    this.toolWriteTimer = setTimeout(() => {
+      this.toolWriteTimer = undefined
+      // The backend reported this through its own failure channel and the entries are still
+      // buffered; an idempotent latest-wins overlay is always safe to re-apply.
+      try {
+        this.flushToolCallWrites()
+      } catch {
+        this.armToolWriteFlush()
+      }
+    }, TOOL_WRITE_FLUSH_MS)
+    this.toolWriteTimer.unref?.()
+  }
+
+  private clearToolWriteFlush(): void {
+    if (!this.toolWriteTimer) return
+    clearTimeout(this.toolWriteTimer)
+    this.toolWriteTimer = undefined
+  }
+
+  /** One round trip for a transcript mutation plus the thread revision the caller needs next.
+   *  Each statement still commits on its own, so a failure leaves what the same sequence of
+   *  single-statement calls would have left. */
+  private writeTranscriptRows(
+    orgId: string,
+    channel: string,
+    thread: string,
+    statements: StoreBatchStatement[]
+  ): { changes: number[]; revision: number } {
+    const results = this.db.batch([
+      ...statements,
+      {
+        kind: 'read',
+        sql: 'SELECT COALESCE(MAX(revision), 0) AS revision FROM transcript WHERE orgId = ? AND channel = ? AND thread = ?',
+        params: [orgId, channel, thread]
+      }
+    ])
+    return {
+      changes: results.slice(0, -1).map((result) => Number(result.changes)),
+      revision: Number((results.at(-1)?.rows[0] as { revision: number } | undefined)?.revision ?? 0)
     }
   }
 
@@ -5114,6 +5356,9 @@ export class LocalStore {
   }
 
   close(): void {
+    // Last chance for a buffered tool body: the backend is about to go away.
+    this.flushToolCallWrites()
+    this.clearToolWriteFlush()
     this.db.close()
   }
 }

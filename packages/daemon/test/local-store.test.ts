@@ -3,7 +3,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { LocalStore, sessionKey, type StoreDatabase } from '../src/store/local-store.js'
+import { LocalStore, sessionKey, sqliteStoreDatabase, type StoreDatabase } from '../src/store/local-store.js'
 import { openPostgresLocalStore, usingPostgresStore } from './store-postgres/backend.js'
 
 /** True in the `store-postgres` project, where every store below is the real pool store. */
@@ -29,7 +29,7 @@ function sharedMembers(first: string, second: string): [LocalStore, LocalStore] 
       openPostgresLocalStore({ shared: true, ownerId: first, orgForAgent: oneOrg }),
       openPostgresLocalStore({ shared: true, ownerId: second, orgForAgent: oneOrg })
     ]
-  const database = new DatabaseSync(':memory:') as unknown as StoreDatabase
+  const database = sqliteStoreDatabase(new DatabaseSync(':memory:'))
   return [
     new LocalStore({ database, shared: true, ownerId: first, orgForAgent: oneOrg }),
     new LocalStore({ database, shared: true, ownerId: second, orgForAgent: oneOrg })
@@ -624,11 +624,13 @@ describe('LocalStore', () => {
 
     // Slip the peer's whole write in between our read and our compare-and-set, exactly once.
     let raced = false
+    const backing = sqliteStoreDatabase(database)
     const racing: StoreDatabase = {
-      exec: (sql) => database.exec(sql),
-      close: () => database.close(),
+      exec: (sql) => backing.exec(sql),
+      close: () => backing.close(),
+      batch: (statements) => backing.batch(statements),
       prepare: (sql) => {
-        const statement = database.prepare(sql)
+        const statement = backing.prepare(sql)
         if (!sql.startsWith('SELECT usage FROM sessions')) return statement
         return {
           run: (...params) => statement.run(...params),
@@ -2084,7 +2086,7 @@ describe('sandbox generations', () => {
 describe('transcript org fence on a shared store', () => {
   const orgs: Record<string, string> = { 'agent-a': 'org-a', 'agent-b': 'org-b' }
   const twoOrgMembers = (): [LocalStore, LocalStore] => {
-    const database = new DatabaseSync(':memory:') as unknown as StoreDatabase
+    const database = sqliteStoreDatabase(new DatabaseSync(':memory:'))
     const orgForAgent = (agentId: string): string | undefined => orgs[agentId]
     return [
       new LocalStore({ database, shared: true, ownerId: 'member-1', orgForAgent }),

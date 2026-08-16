@@ -1,6 +1,12 @@
 import { MessageChannel, receiveMessageOnPort, Worker } from 'node:worker_threads'
 import type { DataPlaneConfig } from './postgres-config.js'
-import type { StoreDatabase, StoreRunResult, StoreStatement } from './local-store.js'
+import type {
+  StoreBatchResult,
+  StoreBatchStatement,
+  StoreDatabase,
+  StoreRunResult,
+  StoreStatement
+} from './local-store.js'
 
 // Stored schema name — the pool's data lives here, so the literal outlives the vocabulary rename.
 const POOL_STORE_SCHEMA = 'agentconnect_cloud_store'
@@ -213,6 +219,16 @@ export class PostgresSyncDatabase implements StoreDatabase {
     return { rows: value?.rows ?? [], changes: value?.changes ?? 0 }
   }
 
+  /** One round trip for an ordered statement list. The worker still runs each statement on its
+   *  own — same rewrite, same per-statement commit — so only the number of blocking hand-offs
+   *  changes. An error names the statement that failed and abandons the rest, exactly as the
+   *  equivalent run of single-statement calls would. */
+  batch(statements: StoreBatchStatement[]): StoreBatchResult[] {
+    if (statements.length === 0) return []
+    const value = this.request('batch', '', [], statements) as { rows?: unknown[]; changes?: number }[] | undefined
+    return (value ?? []).map((result) => ({ rows: result?.rows ?? [], changes: result?.changes ?? 0 }))
+  }
+
   finishSchemaInitialization(): void {
     this.request('finishSchemaInitialization', '', [])
   }
@@ -225,11 +241,11 @@ export class PostgresSyncDatabase implements StoreDatabase {
     this.replies.close()
   }
 
-  private request(kind: string, sql: string, params: unknown[]): unknown {
+  private request(kind: string, sql: string, params: unknown[], statements?: StoreBatchStatement[]): unknown {
     if (this.closed) throw new Error('PostgreSQL pool store is closed')
     const id = this.nextId++
     const signal = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT))
-    this.worker.postMessage({ id, kind, sql, params, signal })
+    this.worker.postMessage({ id, kind, sql, params, statements, signal })
     if (Atomics.wait(signal, 0, 0, 30_000) === 'timed-out') {
       const error = new Error('PostgreSQL pool store operation timed out after 30 seconds')
       this.onFailure(error)

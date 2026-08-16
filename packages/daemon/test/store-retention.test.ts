@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import { DatabaseSync } from 'node:sqlite'
-import { LocalStore, sessionKey, type StoreDatabase } from '../src/store/local-store.js'
+import { LocalStore, sessionKey, sqliteStoreDatabase } from '../src/store/local-store.js'
 import {
   DEFAULT_STORE_HORIZON_MS,
   STORE_ORPHAN_DELETE_ENV,
@@ -36,7 +36,7 @@ function sharedMembers(first: string, second: string): [LocalStore, LocalStore] 
       openPostgresLocalStore({ shared: true, ownerId: first, orgForAgent: oneOrg }),
       openPostgresLocalStore({ shared: true, ownerId: second, orgForAgent: oneOrg })
     ]
-  const database = new DatabaseSync(':memory:') as unknown as StoreDatabase
+  const database = sqliteStoreDatabase(new DatabaseSync(':memory:'))
   return [
     new LocalStore({ database, shared: true, ownerId: first, orgForAgent: oneOrg }),
     new LocalStore({ database, shared: true, ownerId: second, orgForAgent: oneOrg })
@@ -44,7 +44,7 @@ function sharedMembers(first: string, second: string): [LocalStore, LocalStore] 
 }
 
 const solo = (): LocalStore =>
-  pg ? openPostgresLocalStore() : new LocalStore({ database: new DatabaseSync(':memory:') as never })
+  pg ? openPostgresLocalStore() : new LocalStore({ database: sqliteStoreDatabase(new DatabaseSync(':memory:')) })
 
 /** One row in every table the rule table names, all stamped `at`. */
 function seedEveryTable(s: LocalStore, agentId: string, tag: string, at: number, owner: string): void {
