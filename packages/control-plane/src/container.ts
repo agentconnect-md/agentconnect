@@ -547,6 +547,22 @@ export function buildContainer(
   // The derived in-memory connection index every hot lookup hits.
   const connReg = new ConnectionRegistry()
 
+  // The ONE answer to "which daemons serve this agent" — what its placement names, plus every
+  // current duty holder (orchestrator/placementResolver.ts).
+  const placementResolver = new PlacementResolver({
+    duties: repos.dutyGroup,
+    // The set's members ready to take a trigger. Only the rendezvous fallback reads this: a set
+    // agent whose lease lapsed has no holder, and any member can claim it on receipt.
+    liveMembers: async (setId) => {
+      const members = new Set(await repos.memberSet.memberIdsOf(setId))
+      return connReg
+        .reachableDaemons()
+        .filter((d) => d.state === 'READY' && members.has(d.daemonId))
+        .map((d) => d.daemonId)
+    },
+    clock
+  })
+
   // Built-in general-preset webchat entitlement and short-lived access grants.
   const webchatMcpGrantToken = new WebchatMcpGrantTokenCodec(config.API_KEY_PEPPER)
   const webchatRemoteMcp = new WebchatRemoteMcpService({
@@ -557,6 +573,7 @@ export function buildContainer(
     agents: repos.agent,
     presets: repos.presetAgent,
     daemons: connReg,
+    placement: placementResolver,
     authorities: repos.webchatMcpDelegation,
     grants: repos.webchatMcpAccessGrant,
     // The daemon installs this verbatim into the adapter's `agentconnect-admin`
@@ -571,6 +588,7 @@ export function buildContainer(
     agents: repos.agent,
     presets: repos.presetAgent,
     daemons: connReg,
+    placement: placementResolver,
     grants: repos.webchatMcpAccessGrant,
     authorities: repos.webchatMcpDelegation,
     sessions: repos.session,
@@ -594,22 +612,6 @@ export function buildContainer(
   // Regional Login Apps mirrored from Logto. Their credentials are the stable
   // deployment tenant anchor used to admit Bot Apps from the same organization.
   const feishuPlatformApps = resolveFeishuPlatformApps(config)
-
-  // The ONE answer to "which daemons serve this agent" — what its placement names, plus every
-  // current duty holder (orchestrator/placementResolver.ts).
-  const placementResolver = new PlacementResolver({
-    duties: repos.dutyGroup,
-    // The set's members ready to take a trigger. Only the rendezvous fallback reads this: a set
-    // agent whose lease lapsed has no holder, and any member can claim it on receipt.
-    liveMembers: async (setId) => {
-      const members = new Set(await repos.memberSet.memberIdsOf(setId))
-      return connReg
-        .reachableDaemons()
-        .filter((d) => d.state === 'READY' && members.has(d.daemonId))
-        .map((d) => d.daemonId)
-    },
-    clock
-  })
 
   // Hook compiler/converger (webhook-triggers-and-github-events.md): CRUD routes
   // broadcast through it, and a (re)registering relay gets the full-set replay.

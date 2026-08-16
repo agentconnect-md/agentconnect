@@ -41,7 +41,7 @@ import type {
 } from '../domain/ids.js'
 import type { SessionKey } from '../domain/sessionKey.js'
 import type { DutyMemberKey, DutyReconcilePlan, DutyEdge, AgentSeed } from '../domain/duty.js'
-import type { PlacementKind, PlacementTarget } from '../domain/placement.js'
+import type { PlacementKind, PlacementRef, PlacementTarget } from '../domain/placement.js'
 import type {
   OrganizationEnvironmentAudience,
   OrganizationEnvironmentKind,
@@ -1495,7 +1495,9 @@ export interface EstablishWebchatMcpDelegationInput {
   userId: string
   orgId: OrgId
   agentId: AgentId
-  daemonId: DaemonId
+  /** The placement the caller resolved its live authority against, re-checked under the agent row
+   *  lock so a concurrent move cannot slip a delegation past the revocation that move performs. */
+  expectedPlacement: PlacementRef
   now: Date
   expiresAt: Date
 }
@@ -1507,7 +1509,6 @@ export interface WebchatMcpDelegationRecord {
   userId: string
   orgId: string
   agentId: string
-  daemonId: string
   createdAt: Date
   expiresAt: Date
   revokedAt: Date | null
@@ -1521,7 +1522,6 @@ export interface RevokeWebchatMcpDelegationInput {
   userId: string
   orgId: OrgId
   agentId: AgentId
-  daemonId: DaemonId
   revokedAt: Date
   reason: string
 }
@@ -1536,9 +1536,9 @@ export interface WebchatMcpDelegationRepo {
    * Serialize on the durable conversation owner. Reconnects reuse matching,
    * unexpired authority without extending it. An earlier requested expiry
    * atomically shortens the reused row without rotating its generation.
-   * An already-expired row or a placement change rotates its generation.
-   * A foreign/unknown conversation binding, wrong daemon, or unplaced agent
-   * returns null without mutating the current generation.
+   * An already-expired row rotates its generation, as does a placement change,
+   * which revokes the live row where it lands. A foreign/unknown conversation
+   * binding or a moved placement returns null without mutating the current generation.
    */
   establish(input: EstablishWebchatMcpDelegationInput): Promise<WebchatMcpDelegationRecord | null>
   /** Conditional, generation-fenced revocation. An already-revoked exact match is idempotently true. */
@@ -1576,7 +1576,6 @@ export interface IssueWebchatMcpGrantInput {
   authorityGeneration: number
   conversationId: string
   descriptorInstanceId: string
-  authenticatedDaemonId: string
   tokenHash: string
   now: Date
   pendingExpiresAt: Date
@@ -1590,7 +1589,6 @@ export interface AcceptWebchatMcpGrantInput {
   conversationId: string
   descriptorInstanceId: string
   grantRevision: number
-  authenticatedDaemonId: string
   now: Date
 }
 
@@ -1598,7 +1596,6 @@ export interface RevokeWebchatMcpGrantsInput {
   authorityId: string
   authorityGeneration: number
   conversationId: string
-  authenticatedDaemonId: string
   now: Date
   reason: string
 }

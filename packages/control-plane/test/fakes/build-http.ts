@@ -288,6 +288,19 @@ export function buildHttpApp(
   // no-ops — exactly the prod graph with no relay dialed in, unless a test wires one up.
   const relayReg = new RelayRegistry()
   const relayControl = new RelayControlSender(relayReg)
+  // Same graph as prod: every replicate site resolves its targets here, so the
+  // duty ledger is a real repo and a holder actually receives the pushes.
+  const placementResolver = new PlacementResolver({
+    duties: dutyGroupRepo,
+    liveMembers: async (setId) => {
+      const members = new Set(await memberSets.memberIdsOf(setId))
+      return connReg
+        .reachableDaemons()
+        .filter((d) => d.state === 'READY' && members.has(d.daemonId))
+        .map((d) => d.daemonId)
+    },
+    clock
+  })
   const remoteGrantAuth =
     depsOverrides?.remoteGrantAuth ??
     new RemoteGrantAuthenticator({
@@ -298,6 +311,7 @@ export function buildHttpApp(
       agents: agentRepo,
       presets: presetAgentRepo,
       daemons: liveness,
+      placement: placementResolver,
       grants: webchatMcpAccessGrantRepo,
       authorities: webchatMcpDelegationRepo,
       sessions: sessionRepo,
@@ -313,19 +327,6 @@ export function buildHttpApp(
     undefined,
     organizationEnvironmentResolver
   )
-  // Same graph as prod: every replicate site resolves its targets here, so the
-  // duty ledger is a real repo and a holder actually receives the pushes.
-  const placementResolver = new PlacementResolver({
-    duties: dutyGroupRepo,
-    liveMembers: async (setId) => {
-      const members = new Set(await memberSets.memberIdsOf(setId))
-      return connReg
-        .reachableDaemons()
-        .filter((d) => d.state === 'READY' && members.has(d.daemonId))
-        .map((d) => d.daemonId)
-    },
-    clock
-  })
   const agentDelivery = new AgentDelivery({ control: sender, specs: agentSpecs, placement: placementResolver })
 
   // LATE-BOUND exactly as `buildContainer` binds it (§9): the providers below are

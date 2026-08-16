@@ -22,6 +22,7 @@ import {
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
 import { AgentId, SessionId, type OrgId } from '../../domain/ids.js'
+import type { ResolvableAgent } from '../../orchestrator/placementResolver.js'
 import { canContinueSession, canView } from '../../authorization/policy.js'
 import { makeSessionAccessResolver } from '../session-access.js'
 import { ctxOf, orgOf } from '../rbac.js'
@@ -68,6 +69,18 @@ export function webchatTokenRoutes(deps: HttpDeps) {
     const authorHandle = async (userId: string, email: string | undefined): Promise<string> => {
       const profile = await deps.repos.user.getProfile(userId)
       return profile?.displayName?.trim() || email || userId
+    }
+
+    /** The first roster agent whose serving daemon does not advertise multi-agent webchat, or
+     *  undefined when every one of them does. The daemon comes from the resolver — the same
+     *  answer `rc/verify` will reach — because a pool agent's row names no machine at all. */
+    const firstWithoutMultiAgent = async (roster: readonly ResolvableAgent[]): Promise<string | undefined> => {
+      for (const agent of roster) {
+        const daemonId = await deps.placementResolver.dispatchDaemon(agent)
+        const daemon = daemonId ? deps.daemonConns.get(daemonId) : undefined
+        if (!daemon?.capabilities?.features?.includes(WEBCHAT_MULTI_AGENT_FEATURE)) return agent.id
+      }
+      return undefined
     }
 
     /** Mint-time fence (webchat-multi-agents.md §10.2): a resume requires the
@@ -285,15 +298,13 @@ export function webchatTokenRoutes(deps: HttpDeps) {
         if (agents.length > 1) {
           // Capability gate at creation (webchat-multi-agents.md §6.3): every
           // selected agent's daemon must advertise multi-agent webchat support.
-          for (const agent of agents) {
-            const daemon = agent.daemonId ? deps.daemonConns.get(agent.daemonId) : undefined
-            if (!daemon?.capabilities?.features?.includes(WEBCHAT_MULTI_AGENT_FEATURE)) {
-              return reply.code(409).send({
-                error: 'Conflict',
-                statusCode: 409,
-                message: `agent ${agent.id} is not on a daemon that supports multi-agent conversations`
-              })
-            }
+          const ungated = await firstWithoutMultiAgent(agents)
+          if (ungated) {
+            return reply.code(409).send({
+              error: 'Conflict',
+              statusCode: 409,
+              message: `agent ${ungated} is not on a daemon that supports multi-agent conversations`
+            })
           }
         }
         const conversationId = randomUUID()
@@ -376,15 +387,13 @@ export function webchatTokenRoutes(deps: HttpDeps) {
           const existing = await deps.repos.agent.get(orgOf(req), p.agentId)
           if (existing) rosterAgents.push(existing)
         }
-        for (const member of rosterAgents) {
-          const daemon = member.daemonId ? deps.daemonConns.get(member.daemonId) : undefined
-          if (!daemon?.capabilities?.features?.includes(WEBCHAT_MULTI_AGENT_FEATURE)) {
-            return reply.code(409).send({
-              error: 'Conflict',
-              statusCode: 409,
-              message: `agent ${member.id} is not on a daemon that supports multi-agent conversations`
-            })
-          }
+        const ungated = await firstWithoutMultiAgent(rosterAgents)
+        if (ungated) {
+          return reply.code(409).send({
+            error: 'Conflict',
+            statusCode: 409,
+            message: `agent ${ungated} is not on a daemon that supports multi-agent conversations`
+          })
         }
         await deps.repos.webchatConversation.addParticipant(orgId, conversationId, agent.id, userId)
         return respond()

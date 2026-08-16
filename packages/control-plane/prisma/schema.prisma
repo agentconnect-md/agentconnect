@@ -439,7 +439,6 @@ model Daemon {
   apiKeys               ApiKey[]
   sessions              SessionMeta[]
   lifecycleOps          DaemonLifecycleOp[]
-  webchatMcpDelegations WebchatMcpDelegation[]
   setMembership         MemberSetMember?
 
   @@unique([clusterIdentity, clusterPodUid], map: "daemon_cluster_identity_pod_key")
@@ -1228,7 +1227,7 @@ model WebchatConversationAgent {
 }
 
 // Durable, generation-fenced authority for one browser conversation to invoke
-// curated AgentConnect MCP tools through its currently placed daemon.
+// curated AgentConnect MCP tools through whichever daemon serves the agent when it redeems one.
 model WebchatMcpDelegation {
   id             String    @id @default(uuid()) @db.Uuid
   conversationId String    @db.Uuid
@@ -1236,7 +1235,6 @@ model WebchatMcpDelegation {
   userId         String
   orgId          String
   agentId        String    @db.Uuid
-  daemonId       String    @db.Uuid
   createdAt      DateTime  @default(now()) @db.Timestamptz(6)
   expiresAt      DateTime  @db.Timestamptz(6)
   revokedAt      DateTime? @db.Timestamptz(6)
@@ -1246,7 +1244,6 @@ model WebchatMcpDelegation {
   user         User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
   org          Org                     @relation(fields: [orgId], references: [id], onDelete: Cascade)
   agent        Agent                   @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  daemon       Daemon                  @relation(fields: [daemonId], references: [id], onDelete: Cascade)
   grants       WebchatMcpAccessGrant[]
 
   @@unique([conversationId, generation])

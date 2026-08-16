@@ -4,12 +4,14 @@ import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 import { PgWebchatMcpDelegationRepo } from '../../src/persistence/repositories/webchat-mcp-delegation.repo.js'
 import { PgWebchatMcpOperationRepo } from '../../src/persistence/repositories/webchat-mcp-operation.repo.js'
-import { AgentId, DaemonId, OrgId } from '../../src/domain/ids.js'
+import { AgentId, OrgId } from '../../src/domain/ids.js'
+import { revokeActiveWebchatMcpDelegations } from '../../src/persistence/repositories/agent-placement.js'
 import { WebchatMcpOperationReaper } from '../../src/orchestrator/webchatMcpOperationReaper.js'
 import { FakeClock } from '../fakes/fake-clock.js'
 
 const CONVERSATION = 'c1111111-1111-4111-8111-111111111111'
 const AGENT = 'a1111111-1111-4111-8111-111111111111'
+const OTHER_AGENT = 'a2222222-2222-4222-8222-222222222222'
 const DAEMON = 'd1111111-1111-4111-8111-111111111111'
 const OTHER_DAEMON = 'd2222222-2222-4222-8222-222222222222'
 const NOW = new Date('2026-07-30T00:00:00.000Z')
@@ -70,13 +72,16 @@ async function fixtures(): Promise<void> {
   })
 }
 
+/** The placement a caller resolved its live authority against — never a bare daemon id. */
+const machine = (daemonId: string) => ({ placementKind: 'daemon' as const, daemonId, setId: null })
+
 function establishInput(daemonId = DAEMON, expiresAt = at(60_000)) {
   return {
     conversationId: CONVERSATION,
     userId: DEFAULT_OWNER_ID,
     orgId: OrgId(DEFAULT_ORG_ID),
     agentId: AgentId(AGENT),
-    daemonId: DaemonId(daemonId),
+    expectedPlacement: machine(daemonId),
     now: NOW,
     expiresAt
   }
@@ -90,7 +95,6 @@ function revokeInput(delegation: { id: string; generation: number }) {
     userId: DEFAULT_OWNER_ID,
     orgId: OrgId(DEFAULT_ORG_ID),
     agentId: AgentId(AGENT),
-    daemonId: DaemonId(DAEMON),
     revokedAt: at(5_000),
     reason: 'session_closed'
   }
@@ -106,7 +110,7 @@ describe('PgWebchatMcpDelegationRepo (real Postgres)', () => {
 
     expect(left).not.toBeNull()
     expect(right).not.toBeNull()
-    expect(left).toMatchObject({ generation: 1, daemonId: DAEMON, revokedAt: null })
+    expect(left).toMatchObject({ generation: 1, revokedAt: null })
     expect(right).toMatchObject({ id: left?.id, generation: 1 })
     expect(await prisma.webchatMcpDelegation.count({ where: { conversationId: CONVERSATION } })).toBe(1)
     expect(
@@ -288,24 +292,25 @@ describe('PgWebchatMcpDelegationRepo (real Postgres)', () => {
     expect(indexes.map(({ indexname }) => indexname)).toContain('webchat_mcp_delegation_agentId_revokedAt_idx')
   })
 
-  it('rotates placement by revoking the active row and incrementing the durable generation', async () => {
+  it('rotates after a placement move revokes the active row, keeping one durable generation ladder', async () => {
     await fixtures()
     const repo = new PgWebchatMcpDelegationRepo(prisma)
     const first = await repo.establish(establishInput())
 
+    // Exactly what a placement write does in its own transaction (agent-placement.ts).
     await prisma.agent.update({ where: { id: AGENT }, data: { daemonId: OTHER_DAEMON } })
+    await prisma.$transaction((tx) => revokeActiveWebchatMcpDelegations(tx, AGENT, NOW))
     const moved = await repo.establish(establishInput(OTHER_DAEMON))
 
-    expect(moved).toMatchObject({ generation: 2, daemonId: OTHER_DAEMON, revokedAt: null })
+    expect(moved).toMatchObject({ generation: 2, revokedAt: null })
     expect(await repo.get(first!.id)).toMatchObject({
       generation: 1,
-      daemonId: DAEMON,
       revokedAt: NOW,
-      revokedReason: 'placement_changed'
+      revokedReason: 'agent_placement_changed'
     })
   })
 
-  it('rejects a caller-supplied daemon that is not the durable agent placement without mutating authority', async () => {
+  it('rejects an expected placement that is no longer the agent row without mutating authority', async () => {
     await fixtures()
     const repo = new PgWebchatMcpDelegationRepo(prisma)
     const first = (await repo.establish(establishInput()))!
@@ -313,7 +318,6 @@ describe('PgWebchatMcpDelegationRepo (real Postgres)', () => {
     expect(await repo.establish(establishInput(OTHER_DAEMON))).toBeNull()
     expect(await repo.get(first.id)).toMatchObject({
       generation: 1,
-      daemonId: DAEMON,
       revokedAt: null,
       revokedReason: null
     })
@@ -335,7 +339,6 @@ describe('PgWebchatMcpDelegationRepo (real Postgres)', () => {
     expect(await repo.establish(establishInput())).toBeNull()
     expect(await repo.get(first.id)).toMatchObject({
       generation: 1,
-      daemonId: DAEMON,
       revokedAt: null,
       revokedReason: null
     })
@@ -358,7 +361,7 @@ describe('PgWebchatMcpDelegationRepo (real Postgres)', () => {
     const first = await repo.establish(establishInput(DAEMON, at(1_000)))
 
     const rotated = await repo.establish({ ...establishInput(DAEMON, at(120_000)), now: at(1_000) })
-    expect(rotated).toMatchObject({ generation: 2, daemonId: DAEMON })
+    expect(rotated).toMatchObject({ generation: 2 })
     expect(await repo.get(first!.id)).toMatchObject({
       revokedAt: at(1_000),
       revokedReason: 'expired'
@@ -395,13 +398,12 @@ describe('PgWebchatMcpDelegationRepo (real Postgres)', () => {
       userId: DEFAULT_OWNER_ID,
       orgId: OrgId(DEFAULT_ORG_ID),
       agentId: AgentId(AGENT),
-      daemonId: DaemonId(DAEMON),
       revokedAt: at(500),
       reason: 'session_closed'
     }
 
     expect(await repo.revoke({ ...revoke, generation: delegation.generation + 1 })).toBe(false)
-    expect(await repo.revoke({ ...revoke, daemonId: DaemonId(OTHER_DAEMON) })).toBe(false)
+    expect(await repo.revoke({ ...revoke, agentId: AgentId(OTHER_AGENT) })).toBe(false)
     expect((await repo.get(delegation.id))?.revokedAt).toBeNull()
     expect(await repo.revoke(revoke)).toBe(true)
     expect(await repo.revoke(revoke)).toBe(true)
@@ -426,7 +428,6 @@ describe('PgWebchatMcpDelegationRepo (real Postgres)', () => {
           userId: DEFAULT_OWNER_ID,
           orgId: DEFAULT_ORG_ID,
           agentId: AGENT,
-          daemonId: DAEMON,
           expiresAt: at(1_000),
           revokedAt: at(500),
           revokedReason
@@ -447,7 +448,6 @@ describe('PgWebchatMcpDelegationRepo (real Postgres)', () => {
       userId: DEFAULT_OWNER_ID,
       orgId: DEFAULT_ORG_ID,
       agentId: AGENT,
-      daemonId: DAEMON,
       createdAt: at(index),
       expiresAt: at(1_000)
     }))
@@ -495,7 +495,6 @@ describe('PgWebchatMcpDelegationRepo (real Postgres)', () => {
           userId: DEFAULT_OWNER_ID,
           orgId: DEFAULT_ORG_ID,
           agentId: AGENT,
-          daemonId: DAEMON,
           expiresAt: at(1_000)
         },
         {
@@ -505,7 +504,6 @@ describe('PgWebchatMcpDelegationRepo (real Postgres)', () => {
           userId: DEFAULT_OWNER_ID,
           orgId: DEFAULT_ORG_ID,
           agentId: AGENT,
-          daemonId: DAEMON,
           expiresAt: at(1_000),
           revokedAt: at(500),
           revokedReason: 'session_closed'
@@ -517,7 +515,6 @@ describe('PgWebchatMcpDelegationRepo (real Postgres)', () => {
           userId: DEFAULT_OWNER_ID,
           orgId: DEFAULT_ORG_ID,
           agentId: AGENT,
-          daemonId: DAEMON,
           expiresAt: at(1_000),
           revokedAt: at(500),
           revokedReason: 'placement_changed'
@@ -529,7 +526,6 @@ describe('PgWebchatMcpDelegationRepo (real Postgres)', () => {
           userId: DEFAULT_OWNER_ID,
           orgId: DEFAULT_ORG_ID,
           agentId: AGENT,
-          daemonId: DAEMON,
           expiresAt: at(1_000),
           revokedAt: at(500),
           revokedReason: 'expired'

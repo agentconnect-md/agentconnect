@@ -54,7 +54,7 @@ async function fixtures() {
     userId: DEFAULT_OWNER_ID,
     orgId: OrgId(DEFAULT_ORG_ID),
     agentId: AGENT,
-    daemonId: DAEMON,
+    expectedPlacement: { placementKind: 'daemon' as const, daemonId: DAEMON, setId: null },
     now: NOW,
     expiresAt: new Date(NOW.getTime() + 60_000)
   }
@@ -294,10 +294,6 @@ describe('agent placement and webchat MCP delegation serialization (real Postgre
     ).rejects.toThrow('forced placement rollback')
 
     expect((await prisma.agent.findUnique({ where: { id: AGENT } }))?.daemonId).toBe(DAEMON)
-    expect(await delegations.get(delegation.id)).toMatchObject({
-      daemonId: DAEMON,
-      revokedAt: null,
-      revokedReason: null
-    })
+    expect(await delegations.get(delegation.id)).toMatchObject({ revokedAt: null, revokedReason: null })
   })
 })
