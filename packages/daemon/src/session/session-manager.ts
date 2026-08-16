@@ -3,7 +3,7 @@ import { LocalStore, sessionKey, transcriptChannelKey, type TranscriptEntry } fr
 import { isSyntheticA2aChannel } from '../cp/cp-collab-routes.js'
 import { monotonicTs } from '../store/monotonic-ts.js'
 import { SLACK_RESPONSE_FINAL_EVENT_TAG } from '@agentconnect.md/message'
-import { additionalWorkspaceDirectories, prepareWorkspace } from '../workspace/workspace-manager.js'
+import { WorkspaceManager } from '../workspace/workspace-manager.js'
 import { initiatorLabel } from '../workspace/session-branch.js'
 import { memoryKindOf, type MemoryProvider, type MemoryScope } from '../agents/memory-provider.js'
 import { MAX_INDEX_INJECT_BYTES } from '../agents/memory.js'
@@ -235,6 +235,13 @@ function abortable<T>(start: () => PromiseLike<T> | T, signal?: AbortSignal): Pr
 }
 
 export class SessionManager {
+  /** The owning daemon's plane when it supplied one; otherwise a private plane, so two harnesses
+   *  in one process still cannot see each other's registrations. */
+  private get workspaces(): WorkspaceManager {
+    return (this.ownWorkspaces ??= this.deps.workspaces ?? new WorkspaceManager())
+  }
+  private ownWorkspaces?: WorkspaceManager
+
   constructor(
     private deps: {
       store: LocalStore
@@ -243,6 +250,9 @@ export class SessionManager {
        * own preparation itself when resolvePreparedWorkspace is also supplied. */
       isHostRunning?: (agentId: string) => boolean
       agentById: (id: string) => LoadedAgent | undefined
+      /** The owning daemon's workspace plane. Absent only in lightweight harnesses, which get
+       *  their own so nothing is shared between them. */
+      workspaces?: WorkspaceManager
       /** Daemon seam for the unified Git/managed/accepted-local skill
        * reconciliation. Tests and the standalone chat CLI use the ordinary
        * workspace preparer. Production also passes the ordinary warm host so
@@ -609,7 +619,9 @@ export class SessionManager {
     let preparedCwd =
       hostCold && !this.deps.resolvePreparedWorkspace
         ? await abortable(
-            () => this.deps.prepareWorkspace?.(agent, undefined, workspaceRequest) ?? prepareWorkspace(agent),
+            () =>
+              this.deps.prepareWorkspace?.(agent, undefined, workspaceRequest) ??
+              this.workspaces.prepareWorkspace(agent),
             signal
           )
         : undefined
@@ -632,7 +644,7 @@ export class SessionManager {
       return { value, chatSelected: value !== undefined }
     }
     const runtimeWorkspaceDirectories = (cwd: string): string[] =>
-      additionalWorkspaceDirectories(agent, cwd, {
+      this.workspaces.additionalWorkspaceDirectories(agent, cwd, {
         sessionKey: key,
         isolation: workspaceIsolation
       })
@@ -910,7 +922,9 @@ export class SessionManager {
         options.preparedWorkspaceCwd ??
         (workspaceIsolation === 'shared' ? preparedCwd : undefined) ??
         (await abortable(
-          () => this.deps.prepareWorkspace?.(agent, expectedWarmHost, workspaceRequest) ?? prepareWorkspace(agent),
+          () =>
+            this.deps.prepareWorkspace?.(agent, expectedWarmHost, workspaceRequest) ??
+            this.workspaces.prepareWorkspace(agent),
           signal
         ))
       const ordinaryMcpServers =
@@ -971,7 +985,9 @@ export class SessionManager {
         options.preparedWorkspaceCwd ??
         (workspaceIsolation === 'shared' ? preparedCwd : undefined) ??
         (await abortable(
-          () => this.deps.prepareWorkspace?.(agent, expectedWarmHost, workspaceRequest) ?? prepareWorkspace(agent),
+          () =>
+            this.deps.prepareWorkspace?.(agent, expectedWarmHost, workspaceRequest) ??
+            this.workspaces.prepareWorkspace(agent),
           signal
         ))
       // Resolved once, shared by both paths: session/load must re-attach the same

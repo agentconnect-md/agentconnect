@@ -4,16 +4,10 @@ import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import {
-  clusterWorkspaceCwd,
-  consoleWorkspaceRoot,
-  prefetchWorkspace,
-  removeSessionWorktree,
-  sessionWorktreeRoot,
-  setSandboxWorkspaceMode,
-  setWorkspaceGitRunnerResolver,
-  type WorkspaceGitRunnerResolver
-} from '../src/workspace/workspace-manager.js'
+import { WorkspaceManager, type WorkspaceGitRunnerResolver } from '../src/workspace/workspace-manager.js'
+
+// One plane per test file — the isolation Vitest's per-file module registry used to give.
+const workspaces = new WorkspaceManager()
 import { LocalGitRunner, type GitRunner } from '../src/workspace/git-runner.js'
 import { gitFor } from '../src/workspace/git-injection.js'
 import type { Agent } from '../src/agents/agent-schema.js'
@@ -25,8 +19,8 @@ import type { Agent } from '../src/agents/agent-schema.js'
 const roots: string[] = []
 
 afterEach(() => {
-  setWorkspaceGitRunnerResolver(undefined)
-  setSandboxWorkspaceMode(false)
+  workspaces.setGitRunnerResolver(undefined)
+  workspaces.setSandboxMode(false)
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
@@ -83,7 +77,7 @@ function agentWithWorktree(sessionKey: string): { agent: Agent; worktree: string
 
   // The real worktree the removal path judges, registered by real git.
   const id = createHash('sha256').update(sessionKey).digest('hex').slice(0, 24)
-  const worktree = join(sessionWorktreeRoot(agent), id)
+  const worktree = join(workspaces.sessionWorktreeRoot(agent), id)
   mkdirSync(dirname(worktree), { recursive: true })
   git(path, ['worktree', 'add', '--detach', worktree, 'HEAD'])
   return { agent, worktree }
@@ -155,9 +149,9 @@ describe('workspace-manager git runner seam', () => {
   it('routes worktree removal through the resolver, with the agent it belongs to', async () => {
     const { agent, worktree } = agentWithWorktree('session-1')
     const { resolver, calls, argv } = recording()
-    setWorkspaceGitRunnerResolver(resolver)
+    workspaces.setGitRunnerResolver(resolver)
 
-    const outcome = await removeSessionWorktree(agent, 'session-1')
+    const outcome = await workspaces.removeSessionWorktree(agent, 'session-1')
 
     // Real removal against a real worktree — the outcome proves the routed argv actually ran.
     expect(outcome).toEqual({ outcome: 'removed' })
@@ -177,20 +171,20 @@ describe('workspace-manager git runner seam', () => {
     const { agent, worktree } = agentWithWorktree('session-2')
     writeFileSync(join(worktree, 'dirty.txt'), 'x\n')
     const { resolver } = recording()
-    setWorkspaceGitRunnerResolver(resolver)
+    workspaces.setGitRunnerResolver(resolver)
 
     // The decision must come from the runner's answer, not from this daemon's own disk.
-    expect(await removeSessionWorktree(agent, 'session-2')).toEqual({ outcome: 'retained', reason: 'dirty' })
+    expect(await workspaces.removeSessionWorktree(agent, 'session-2')).toEqual({ outcome: 'retained', reason: 'dirty' })
     expect(existsSync(worktree)).toBe(true)
   })
 
   it('cannot be bypassed: a refusing resolver stops the operation instead of falling back', async () => {
     const { agent, worktree } = agentWithWorktree('session-3')
     // A site still reaching git directly would succeed despite the seam refusing everything.
-    setWorkspaceGitRunnerResolver(() => {
+    workspaces.setGitRunnerResolver(() => {
       throw new Error('seam refused')
     })
-    const outcome = await removeSessionWorktree(agent, 'session-3')
+    const outcome = await workspaces.removeSessionWorktree(agent, 'session-3')
     expect(outcome.outcome).toBe('failed')
     expect(existsSync(worktree)).toBe(true)
   })
@@ -198,7 +192,7 @@ describe('workspace-manager git runner seam', () => {
   it('leaves the local path unregistered, so a self-hosted daemon needs no wiring', async () => {
     const { agent, worktree } = agentWithWorktree('session-4')
     // No resolver installed: undefined means local, and the default must still work.
-    expect(await removeSessionWorktree(agent, 'session-4')).toEqual({ outcome: 'removed' })
+    expect(await workspaces.removeSessionWorktree(agent, 'session-4')).toEqual({ outcome: 'removed' })
     expect(existsSync(worktree)).toBe(false)
   })
 
@@ -215,7 +209,7 @@ describe('workspace-manager git runner seam', () => {
       release = resolve
     })
     // Clone is intercepted, so nothing reaches the network; the point is who asks and how often.
-    setWorkspaceGitRunnerResolver((agentId) => {
+    workspaces.setGitRunnerResolver((agentId) => {
       const runner = {
         withEnv: () => runner,
         raw: async () => '',
@@ -230,8 +224,8 @@ describe('workspace-manager git runner seam', () => {
       return runner
     })
 
-    const first = prefetchWorkspace(clusterAgent('bot-one', shared))
-    const second = prefetchWorkspace(clusterAgent('bot-two', shared))
+    const first = workspaces.prefetchWorkspace(clusterAgent('bot-one', shared))
+    const second = workspaces.prefetchWorkspace(clusterAgent('bot-two', shared))
     // Both arrive while the other is in flight, which is the race the lock exists for.
     await new Promise((resolve) => setTimeout(resolve, 20))
     release()
@@ -280,53 +274,61 @@ describe('consoleWorkspaceRoot', () => {
 
   it('is the daemon-local path for a self-hosted daemon', () => {
     expect(
-      consoleWorkspaceRoot(agentAt('/var/lib/ac/agents/bot/workspace'), '/var/lib/ac/agents/bot/workspace', undefined)
+      workspaces.consoleWorkspaceRoot(
+        agentAt('/var/lib/ac/agents/bot/workspace'),
+        '/var/lib/ac/agents/bot/workspace',
+        undefined
+      )
     ).toBe('/var/lib/ac/agents/bot/workspace')
   })
 
   it('is the POD checkout under --k8s, never the daemon path the runtime cannot see', () => {
-    setSandboxWorkspaceMode(true)
+    workspaces.setSandboxMode(true)
     const local = '/var/lib/agentconnect/agents/bot/workspace'
-    expect(consoleWorkspaceRoot(agentAt(local), local, '/agent')).toBe('/agent/repo')
+    expect(workspaces.consoleWorkspaceRoot(agentAt(local), local, '/agent')).toBe('/agent/repo')
   })
 
   it('falls back to the legacy mount when the bound shim reported no root', () => {
-    setSandboxWorkspaceMode(true)
-    expect(consoleWorkspaceRoot(agentAt('/local/ws'), '/local/ws', undefined)).toBe('/agent/repo')
+    workspaces.setSandboxMode(true)
+    expect(workspaces.consoleWorkspaceRoot(agentAt('/local/ws'), '/local/ws', undefined)).toBe('/agent/repo')
   })
 
   it('is the mounted volume itself for a from-scratch workspace', () => {
-    setSandboxWorkspaceMode(true)
-    expect(consoleWorkspaceRoot(agentAt('/local/ws', { mode: 'from-scratch' }), '/local/ws', '/agent')).toBe('/agent')
+    workspaces.setSandboxMode(true)
+    expect(workspaces.consoleWorkspaceRoot(agentAt('/local/ws', { mode: 'from-scratch' }), '/local/ws', '/agent')).toBe(
+      '/agent'
+    )
   })
 
   it('stops at the CHECKOUT root, not the runtime cwd, when a working subdirectory is configured', () => {
-    setSandboxWorkspaceMode(true)
+    workspaces.setSandboxMode(true)
     // The distinction is the local path's: it has always addressed `workspace.path` (the clone root)
     // while the ACP cwd went one level in. Routing the console through `clusterWorkspaceCwd` instead
     // put every agentDir-configured cluster agent on "not a git checkout" — `isRepo` accepts only an
     // empty `--show-prefix`, so a descendant cwd is rejected before any operation runs, and no status
     // ever reaches the panel to be corrected downstream.
-    expect(consoleWorkspaceRoot(agentAt('/local/ws', { agentDir: 'services/api' }), '/local/ws', '/agent')).toBe(
-      '/agent/repo'
-    )
+    expect(
+      workspaces.consoleWorkspaceRoot(agentAt('/local/ws', { agentDir: 'services/api' }), '/local/ws', '/agent')
+    ).toBe('/agent/repo')
     // The RUNTIME still gets the subdirectory — the two answers differ on purpose.
-    expect(clusterWorkspaceCwd(agentAt('/local/ws', { agentDir: 'services/api' }), '/agent')).toBe(
+    expect(workspaces.clusterWorkspaceCwd(agentAt('/local/ws', { agentDir: 'services/api' }), '/agent')).toBe(
       '/agent/repo/services/api'
     )
   })
 
   it('keeps an absent workspace absent, so a shared-workspace sessionId stays refused', () => {
-    setSandboxWorkspaceMode(true)
+    workspaces.setSandboxMode(true)
     // The local resolver answers undefined for a sessionId naming a session that is NOT isolated.
     // Turning that into the shared checkout would answer a question about a worktree that has none.
-    expect(consoleWorkspaceRoot(agentAt('/local/ws'), undefined, '/agent')).toBeUndefined()
+    expect(workspaces.consoleWorkspaceRoot(agentAt('/local/ws'), undefined, '/agent')).toBeUndefined()
   })
 
   it('refuses a session-isolated worktree loudly rather than naming the shared checkout', () => {
-    setSandboxWorkspaceMode(true)
+    workspaces.setSandboxMode(true)
     expect(() =>
-      consoleWorkspaceRoot(agentAt('/local/ws'), '/local/ws/.sessions/abc', '/agent', { isolation: 'session' })
+      workspaces.consoleWorkspaceRoot(agentAt('/local/ws'), '/local/ws/.sessions/abc', '/agent', {
+        isolation: 'session'
+      })
     ).toThrow(/session-isolated/)
   })
 })

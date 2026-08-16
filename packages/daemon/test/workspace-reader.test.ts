@@ -11,6 +11,10 @@ import {
   type WorkspaceReader,
   type WorkspaceWriteCoordinator
 } from '../src/cp/workspace-reader.js'
+import { WorkspaceManager } from '../src/workspace/workspace-manager.js'
+
+// One plane per test file — the isolation Vitest's per-file module registry used to give.
+const workspaces = new WorkspaceManager()
 
 const AGENT = 'bot-a'
 
@@ -62,7 +66,11 @@ beforeEach(() => {
   outside = join(base, 'outside')
   mkdirSync(ws)
   mkdirSync(outside)
-  reader = createWorkspaceReader((id) => (id === AGENT ? { root: ws, scratch: true } : undefined), directWrite)
+  reader = createWorkspaceReader(
+    workspaces,
+    (id) => (id === AGENT ? { root: ws, scratch: true } : undefined),
+    directWrite
+  )
 })
 
 afterEach(() => {
@@ -76,6 +84,7 @@ describe('workspace list', () => {
     writeFileSync(join(ws, 'primary.txt'), 'primary')
     writeFileSync(join(worktree, 'session.txt'), 'session')
     const scoped = createWorkspaceReader(
+      workspaces,
       (id, sessionId) =>
         id === AGENT
           ? { root: sessionId === 'session-a' ? worktree : ws, scratch: sessionId === undefined }
@@ -349,6 +358,7 @@ describe('workspace write', () => {
     )
 
     const repoReader = createWorkspaceReader(
+      workspaces,
       (id) => (id === AGENT ? { root: ws, scratch: false } : undefined),
       directWrite
     )
@@ -377,6 +387,7 @@ describe('workspace delete', () => {
     const target = join(ws, 'notes.md')
     writeFileSync(target, 'current')
     const repoReader = createWorkspaceReader(
+      workspaces,
       (id) => (id === AGENT ? { root: ws, scratch: false } : undefined),
       directWrite
     )

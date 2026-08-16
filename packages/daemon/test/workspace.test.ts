@@ -39,20 +39,10 @@ vi.mock('simple-git', () => ({
 }))
 
 // Imported after vi.mock so the mock is in effect.
-const {
-  additionalWorkspaceDirectories,
-  clusterWorkspaceCwd,
-  convergeGithubAppWorkspaceRename,
-  ensureWorkspaceMaterialization,
-  prepareSessionWorkspace,
-  prepareWorkspace,
-  prepareWorkspaceForActivation,
-  prefetchWorkspace,
-  recordWorkspaceMaterialization,
-  removeSessionWorktree,
-  sessionWorktreePath,
-  sessionWorktreeRoot
-} = await import('../src/workspace/workspace-manager.js')
+const { WorkspaceManager } = await import('../src/workspace/workspace-manager.js')
+
+// One plane per test file — the isolation Vitest's per-file module registry used to give.
+const workspaces = new WorkspaceManager()
 const { daemonGitCredentialTarget, initGitInjection } = await import('../src/workspace/git-injection.js')
 
 // Made once and reused: `targetFor` is called on every pointer build, so minting a directory
@@ -122,7 +112,7 @@ beforeEach(() => {
 describe('prepareWorkspace', () => {
   it('creates the workspace dir for from-scratch mode (memory lives at the agent root, not here)', async () => {
     const path = join(mkdtempSync(join(tmpdir(), 'ac-ws-')), 'workspace')
-    const cwd = await prepareWorkspace(fromScratchAgent(path))
+    const cwd = await workspaces.prepareWorkspace(fromScratchAgent(path))
     expect(cwd).toBe(path)
     expect(existsSync(path)).toBe(true)
     // memory.md is NOT created in the workspace anymore — it moved to <agent-root>/memory.md
@@ -132,7 +122,7 @@ describe('prepareWorkspace', () => {
 
   it('clones git-repo when the checkout has no .git, with branch + single-branch args', async () => {
     const path = join(mkdtempSync(join(tmpdir(), 'ac-ws-')), 'co')
-    const cwd = await prepareWorkspace(gitRepoAgent(path))
+    const cwd = await workspaces.prepareWorkspace(gitRepoAgent(path))
     expect(cwd).toBe(realpathSync(path))
     expect(cloneImpl).toHaveBeenCalledTimes(1)
     expect(cloneImpl).toHaveBeenCalledWith('https://github.com/acme/repo.git', path, [
@@ -149,7 +139,7 @@ describe('prepareWorkspace', () => {
     const agent = gitRepoAgent(path)
     agent.workspace.gitRepo = 'ssh://git@github.com/acme/repo.git'
 
-    await prepareWorkspace(agent)
+    await workspaces.prepareWorkspace(agent)
 
     expect(cloneImpl).toHaveBeenCalledWith('ssh://git@github.com/acme/repo.git', path, [
       '--branch',
@@ -166,7 +156,7 @@ describe('prepareWorkspace', () => {
       for (const path of [fresh, existing]) {
         const agent = gitRepoAgent(path)
         agent.workspace.gitRepo = gitRepo
-        await expect(prepareWorkspace(agent)).rejects.toThrow()
+        await expect(workspaces.prepareWorkspace(agent)).rejects.toThrow()
       }
     }
 
@@ -184,8 +174,8 @@ describe('prepareWorkspace', () => {
         })
     )
     const agent = gitRepoAgent(path)
-    const p1 = prepareWorkspace(agent)
-    const p2 = prepareWorkspace(agent) // arrives while p1's clone is in flight
+    const p1 = workspaces.prepareWorkspace(agent)
+    const p2 = workspaces.prepareWorkspace(agent) // arrives while p1's clone is in flight
     resolveClone()
     await Promise.all([p1, p2])
     expect(cloneImpl).toHaveBeenCalledTimes(1)
@@ -194,13 +184,13 @@ describe('prepareWorkspace', () => {
   it('THROWS on clone failure (no on-disk fallback)', async () => {
     const path = join(mkdtempSync(join(tmpdir(), 'ac-ws-')), 'co')
     cloneImpl = vi.fn().mockRejectedValue(new Error('boom'))
-    await expect(prepareWorkspace(gitRepoAgent(path))).rejects.toThrow('boom')
+    await expect(workspaces.prepareWorkspace(gitRepoAgent(path))).rejects.toThrow('boom')
   })
 
   it('pulls (not clones) when an existing .git checkout is present', async () => {
     const dir = join(mkdtempSync(join(tmpdir(), 'ac-ws-')), 'co')
     mkdirSync(join(dir, '.git'), { recursive: true })
-    await prepareWorkspace(gitRepoAgent(dir))
+    await workspaces.prepareWorkspace(gitRepoAgent(dir))
     expect(cloneImpl).not.toHaveBeenCalled()
     expect(pullMock).toHaveBeenCalledWith(
       expect.stringMatching(/^agentconnect-[0-9a-f-]+$/),
@@ -219,7 +209,7 @@ describe('prepareWorkspace', () => {
       args[0] === 'remote' && args[1] === 'get-url' ? 'https://attacker.example/other.git\n' : ''
     )
 
-    await prepareWorkspace(agent)
+    await workspaces.prepareWorkspace(agent)
 
     expect(pullMock).toHaveBeenCalledWith(
       expect.stringMatching(/^agentconnect-[0-9a-f-]+$/),
@@ -234,7 +224,7 @@ describe('prepareWorkspace', () => {
     mkdirSync(join(dir, '.git'), { recursive: true })
     mkdirSync(join(dir, 'services', 'api'), { recursive: true })
 
-    await expect(prepareWorkspace(gitRepoAgent(dir, './services/api'))).resolves.toBe(
+    await expect(workspaces.prepareWorkspace(gitRepoAgent(dir, './services/api'))).resolves.toBe(
       realpathSync(join(dir, 'services', 'api'))
     )
   })
@@ -242,7 +232,7 @@ describe('prepareWorkspace', () => {
   it('rejects lexical traversal before cloning', async () => {
     const dir = join(mkdtempSync(join(tmpdir(), 'ac-ws-')), 'co')
 
-    await expect(prepareWorkspace(gitRepoAgent(dir, '../outside'))).rejects.toThrow('working subdirectory')
+    await expect(workspaces.prepareWorkspace(gitRepoAgent(dir, '../outside'))).rejects.toThrow('working subdirectory')
     expect(cloneImpl).not.toHaveBeenCalled()
   })
 
@@ -251,8 +241,8 @@ describe('prepareWorkspace', () => {
     mkdirSync(join(dir, '.git'), { recursive: true })
     writeFileSync(join(dir, 'README.md'), 'not a directory')
 
-    await expect(prepareWorkspace(gitRepoAgent(dir, 'missing'))).rejects.toThrow('missing')
-    await expect(prepareWorkspace(gitRepoAgent(dir, 'README.md'))).rejects.toThrow('not a directory')
+    await expect(workspaces.prepareWorkspace(gitRepoAgent(dir, 'missing'))).rejects.toThrow('missing')
+    await expect(workspaces.prepareWorkspace(gitRepoAgent(dir, 'README.md'))).rejects.toThrow('not a directory')
   })
 
   it('returns the canonical target of an in-repository symlink', async () => {
@@ -261,7 +251,7 @@ describe('prepareWorkspace', () => {
     mkdirSync(join(dir, 'packages', 'api'), { recursive: true })
     symlinkSync(join(dir, 'packages', 'api'), join(dir, 'api-link'))
 
-    await expect(prepareWorkspace(gitRepoAgent(dir, 'api-link'))).resolves.toBe(
+    await expect(workspaces.prepareWorkspace(gitRepoAgent(dir, 'api-link'))).resolves.toBe(
       realpathSync(join(dir, 'packages', 'api'))
     )
   })
@@ -274,7 +264,9 @@ describe('prepareWorkspace', () => {
     mkdirSync(outside)
     symlinkSync(outside, join(dir, 'outside-link'))
 
-    await expect(prepareWorkspace(gitRepoAgent(dir, 'outside-link'))).rejects.toThrow('outside the repository')
+    await expect(workspaces.prepareWorkspace(gitRepoAgent(dir, 'outside-link'))).rejects.toThrow(
+      'outside the repository'
+    )
   })
 })
 
@@ -311,10 +303,10 @@ describe('prepareSessionWorkspace', () => {
       isolation: 'session' as const,
       review: { pullNumber: 461, baseSha: base, headSha: head }
     }
-    const cwd = await prepareSessionWorkspace(agent, request)
-    await prepareSessionWorkspace(agent, request)
+    const cwd = await workspaces.prepareSessionWorkspace(agent, request)
+    await workspaces.prepareSessionWorkspace(agent, request)
 
-    expect(dirname(cwd)).toBe(realpathSync(sessionWorktreeRoot(agent)))
+    expect(dirname(cwd)).toBe(realpathSync(workspaces.sessionWorktreeRoot(agent)))
     const addCall = rawMock.mock.calls
       .map((call) => call[0] as string[])
       .find((args) => args[0] === 'worktree' && args[1] === 'add')
@@ -347,11 +339,11 @@ describe('prepareSessionWorkspace', () => {
       githubReviewRevisionOnly: true as const
     }
 
-    const cwd = await prepareSessionWorkspace(agent, request)
+    const cwd = await workspaces.prepareSessionWorkspace(agent, request)
     mkdirSync(join(cwd, '.git'))
     writeFileSync(join(cwd, 'stale-review.txt'), 'must not be trusted')
 
-    await expect(prepareSessionWorkspace(agent, request)).resolves.toBe(cwd)
+    await expect(workspaces.prepareSessionWorkspace(agent, request)).resolves.toBe(cwd)
     expect(readdirSync(cwd)).toEqual([])
   })
 
@@ -368,9 +360,9 @@ describe('prepareSessionWorkspace', () => {
       return ''
     })
 
-    await expect(prepareSessionWorkspace(agent, { sessionKey: 'session-a', isolation: 'session' })).rejects.toThrow(
-      'workspace Git configuration contains a disallowed network override or executable setting'
-    )
+    await expect(
+      workspaces.prepareSessionWorkspace(agent, { sessionKey: 'session-a', isolation: 'session' })
+    ).rejects.toThrow('workspace Git configuration contains a disallowed network override or executable setting')
     expect(rawMock.mock.calls.some(([args]) => args[0] === 'worktree' && args[1] === 'add')).toBe(false)
   })
 
@@ -391,18 +383,18 @@ describe('prepareSessionWorkspace', () => {
       return args[0] === 'rev-parse' ? `${'c'.repeat(40)}\n` : ''
     })
 
-    const first = await prepareSessionWorkspace(agent, { sessionKey: 'session-a', isolation: 'session' })
-    const again = await prepareSessionWorkspace(agent, { sessionKey: 'session-a', isolation: 'session' })
-    const second = await prepareSessionWorkspace(agent, { sessionKey: 'session-b', isolation: 'session' })
+    const first = await workspaces.prepareSessionWorkspace(agent, { sessionKey: 'session-a', isolation: 'session' })
+    const again = await workspaces.prepareSessionWorkspace(agent, { sessionKey: 'session-a', isolation: 'session' })
+    const second = await workspaces.prepareSessionWorkspace(agent, { sessionKey: 'session-b', isolation: 'session' })
 
     expect(again).toBe(first)
     expect(second).not.toBe(first)
-    expect(additionalWorkspaceDirectories(agent, first, { sessionKey: 'session-a', isolation: 'session' })).toEqual([
-      realpathSync(sessionWorktreePath(agent, 'session-a'))
-    ])
-    expect(additionalWorkspaceDirectories(agent, second, { sessionKey: 'session-b', isolation: 'session' })).toEqual([
-      realpathSync(sessionWorktreePath(agent, 'session-b'))
-    ])
+    expect(
+      workspaces.additionalWorkspaceDirectories(agent, first, { sessionKey: 'session-a', isolation: 'session' })
+    ).toEqual([realpathSync(workspaces.sessionWorktreePath(agent, 'session-a'))])
+    expect(
+      workspaces.additionalWorkspaceDirectories(agent, second, { sessionKey: 'session-b', isolation: 'session' })
+    ).toEqual([realpathSync(workspaces.sessionWorktreePath(agent, 'session-b'))])
   })
 
   /** A session worktree on `dev/<user>/<words>`, with control over which branch
@@ -431,7 +423,11 @@ describe('prepareSessionWorkspace', () => {
   it('checks the worktree out on its own branch, named for the user who opened the session', async () => {
     const { agent, addCall } = branchFixture()
 
-    await prepareSessionWorkspace(agent, { sessionKey: 'session-a', isolation: 'session', initiatedBy: 'Yu Long' })
+    await workspaces.prepareSessionWorkspace(agent, {
+      sessionKey: 'session-a',
+      isolation: 'session',
+      initiatedBy: 'Yu Long'
+    })
 
     expect(addCall()?.[2]).toBe('-b')
     expect(addCall()?.[3]).toMatch(/^dev\/yu-long\/[a-zA-Z]+-[a-zA-Z]+$/)
@@ -446,14 +442,18 @@ describe('prepareSessionWorkspace', () => {
       return args[0] === 'rev-parse' ? `${'c'.repeat(40)}\n` : ''
     })
 
-    await prepareSessionWorkspace(agent, { sessionKey: 'session-a', isolation: 'session', initiatedBy: 'yulong' })
+    await workspaces.prepareSessionWorkspace(agent, {
+      sessionKey: 'session-a',
+      isolation: 'session',
+      initiatedBy: 'yulong'
+    })
 
     expect(rawMock.mock.calls.filter(([args]) => (args as string[])[0] === 'show-ref')).toHaveLength(5)
     expect(addCall()?.[3]).toMatch(/^dev\/yulong\/[a-zA-Z]+-[a-zA-Z]+-[0-9a-f]{6}$/)
   })
 })
 
-describe('removeSessionWorktree (#485 retention GC)', () => {
+describe('workspaces.removeSessionWorktree(#485 retention GC)', () => {
   /** A git-repo agent plus one on-disk session worktree (a dir with a `.git` file,
    *  exactly what `worktree add` leaves behind). */
   function fixture() {
@@ -461,7 +461,7 @@ describe('removeSessionWorktree (#485 retention GC)', () => {
     const path = join(root, 'workspace')
     mkdirSync(join(path, '.git'), { recursive: true })
     const agent = gitRepoAgent(path)
-    const requestedCwd = sessionWorktreePath(agent, 'session-a')
+    const requestedCwd = workspaces.sessionWorktreePath(agent, 'session-a')
     mkdirSync(requestedCwd, { recursive: true })
     const cwd = realpathSync(requestedCwd)
     writeFileSync(join(cwd, '.git'), 'gitdir: elsewhere')
@@ -480,7 +480,7 @@ describe('removeSessionWorktree (#485 retention GC)', () => {
       return ''
     })
 
-    expect(await removeSessionWorktree(agent, 'session-a')).toEqual({ outcome: 'removed' })
+    expect(await workspaces.removeSessionWorktree(agent, 'session-a')).toEqual({ outcome: 'removed' })
 
     const calls = gitCalls()
     const removeAt = calls.findIndex((args) => args[0] === 'worktree' && args[1] === 'remove' && args[2] === cwd)
@@ -509,7 +509,7 @@ describe('removeSessionWorktree (#485 retention GC)', () => {
       return ''
     })
 
-    expect(await removeSessionWorktree(agent, 'session-a')).toEqual({ outcome: 'removed' })
+    expect(await workspaces.removeSessionWorktree(agent, 'session-a')).toEqual({ outcome: 'removed' })
 
     const calls = gitCalls()
     const readAt = calls.findIndex((args) => args[0] === 'symbolic-ref')
@@ -529,7 +529,7 @@ describe('removeSessionWorktree (#485 retention GC)', () => {
       if (args[0] === 'symbolic-ref') return 'main\n'
       return ''
     })
-    expect(await removeSessionWorktree(agent, 'session-a')).toEqual({ outcome: 'removed' })
+    expect(await workspaces.removeSessionWorktree(agent, 'session-a')).toEqual({ outcome: 'removed' })
     expect(gitCalls().some((args) => args[0] === 'branch')).toBe(false)
 
     // Unique commits keep the worktree, so its branch must survive with them.
@@ -539,7 +539,10 @@ describe('removeSessionWorktree (#485 retention GC)', () => {
       if (args[0] === 'symbolic-ref') return 'dev/yulong/brave-otter\n'
       return ''
     })
-    expect(await removeSessionWorktree(agent, 'session-a')).toEqual({ outcome: 'retained', reason: 'unique-commits' })
+    expect(await workspaces.removeSessionWorktree(agent, 'session-a')).toEqual({
+      outcome: 'retained',
+      reason: 'unique-commits'
+    })
     expect(gitCalls().some((args) => args[0] === 'branch')).toBe(false)
   })
 
@@ -551,7 +554,7 @@ describe('removeSessionWorktree (#485 retention GC)', () => {
       return ''
     })
 
-    expect(await removeSessionWorktree(agent, 'session-a')).toEqual({ outcome: 'removed' })
+    expect(await workspaces.removeSessionWorktree(agent, 'session-a')).toEqual({ outcome: 'removed' })
     expect(gitCalls().some((args) => args[0] === 'branch')).toBe(false)
   })
 
@@ -562,7 +565,7 @@ describe('removeSessionWorktree (#485 retention GC)', () => {
       return '0\n'
     })
 
-    expect(await removeSessionWorktree(agent, 'session-a')).toEqual({ outcome: 'retained', reason: 'dirty' })
+    expect(await workspaces.removeSessionWorktree(agent, 'session-a')).toEqual({ outcome: 'retained', reason: 'dirty' })
     expect(gitCalls().some((args) => args[0] === 'worktree')).toBe(false)
   })
 
@@ -570,7 +573,7 @@ describe('removeSessionWorktree (#485 retention GC)', () => {
     const { agent } = fixture()
     rawMock.mockImplementation(async (args: string[]) => (args[0] === 'rev-list' ? '2\n' : ''))
 
-    expect(await removeSessionWorktree(agent, 'session-a')).toEqual({
+    expect(await workspaces.removeSessionWorktree(agent, 'session-a')).toEqual({
       outcome: 'retained',
       reason: 'unique-commits'
     })
@@ -585,22 +588,25 @@ describe('removeSessionWorktree (#485 retention GC)', () => {
       return ''
     })
 
-    expect(await removeSessionWorktree(agent, 'session-a')).toEqual({ outcome: 'failed', error: 'worktree is locked' })
+    expect(await workspaces.removeSessionWorktree(agent, 'session-a')).toEqual({
+      outcome: 'failed',
+      error: 'worktree is locked'
+    })
   })
 
   it('an absent worktree still prunes stale registrations and review refs', async () => {
     const { agent, id } = fixture()
-    const other = sessionWorktreePath(agent, 'session-b')
-    expect(other).not.toBe(sessionWorktreePath(agent, 'session-a'))
+    const other = workspaces.sessionWorktreePath(agent, 'session-b')
+    expect(other).not.toBe(workspaces.sessionWorktreePath(agent, 'session-a'))
 
-    expect(await removeSessionWorktree(agent, 'session-b')).toEqual({ outcome: 'absent' })
+    expect(await workspaces.removeSessionWorktree(agent, 'session-b')).toEqual({ outcome: 'absent' })
 
     const calls = gitCalls()
     expect(calls).toContainEqual(['worktree', 'prune'])
     expect(calls).toContainEqual(['update-ref', '-d', `refs/agentconnect/reviews/${basename(other)}/base`])
     expect(calls.some((args) => args[0] === 'status' || args[0] === 'rev-list')).toBe(false)
     // fixture()'s own worktree for session-a is untouched
-    expect(existsSync(sessionWorktreePath(agent, 'session-a'))).toBe(true)
+    expect(existsSync(workspaces.sessionWorktreePath(agent, 'session-a'))).toBe(true)
     void id
   })
 
@@ -608,7 +614,7 @@ describe('removeSessionWorktree (#485 retention GC)', () => {
     const { agent, cwd } = fixture()
     rmSync(join(cwd, '.git'))
 
-    expect(await removeSessionWorktree(agent, 'session-a')).toEqual({ outcome: 'removed' })
+    expect(await workspaces.removeSessionWorktree(agent, 'session-a')).toEqual({ outcome: 'removed' })
     expect(existsSync(cwd)).toBe(false)
     expect(gitCalls()).toContainEqual(['worktree', 'prune'])
   })
@@ -618,7 +624,7 @@ describe('removeSessionWorktree (#485 retention GC)', () => {
     rmSync(join(cwd, '.git'))
     writeFileSync(join(cwd, 'notes.md'), 'work in progress')
 
-    expect(await removeSessionWorktree(agent, 'session-a')).toEqual({ outcome: 'retained', reason: 'dirty' })
+    expect(await workspaces.removeSessionWorktree(agent, 'session-a')).toEqual({ outcome: 'retained', reason: 'dirty' })
     expect(readFileSync(join(cwd, 'notes.md'), 'utf8')).toBe('work in progress')
   })
 
@@ -630,12 +636,12 @@ describe('removeSessionWorktree (#485 retention GC)', () => {
     // An attacker-replaced root: `worktrees` is a symlink to a directory outside
     // the agent dir, holding a victim tree at the derived worktree id.
     const outside = mkdtempSync(join(tmpdir(), 'ac-wt-victim-'))
-    const victim = join(outside, basename(sessionWorktreePath(agent, 'session-a')))
+    const victim = join(outside, basename(workspaces.sessionWorktreePath(agent, 'session-a')))
     mkdirSync(victim, { recursive: true })
     writeFileSync(join(victim, 'precious.txt'), 'do not delete')
-    symlinkSync(outside, sessionWorktreeRoot(agent))
+    symlinkSync(outside, workspaces.sessionWorktreeRoot(agent))
 
-    const res = await removeSessionWorktree(agent, 'session-a')
+    const res = await workspaces.removeSessionWorktree(agent, 'session-a')
     expect(res.outcome).toBe('failed')
     expect(readFileSync(join(victim, 'precious.txt'), 'utf8')).toBe('do not delete')
   })
@@ -646,16 +652,16 @@ describe('removeSessionWorktree (#485 retention GC)', () => {
     const outside = mkdtempSync(join(tmpdir(), 'ac-wt-outside-'))
     symlinkSync(outside, cwd)
 
-    const res = await removeSessionWorktree(agent, 'session-a')
+    const res = await workspaces.removeSessionWorktree(agent, 'session-a')
     expect(res.outcome).toBe('failed')
     expect(existsSync(outside)).toBe(true) // the link target was never touched
   })
 })
 
-describe('prefetchWorkspace (reconcile-time eager clone)', () => {
+describe('workspaces.prefetchWorkspace(reconcile-time eager clone)', () => {
   it('clones a git-repo with no checkout yet (warms it ahead of the first session)', async () => {
     const path = join(mkdtempSync(join(tmpdir(), 'ac-ws-')), 'co')
-    await prefetchWorkspace(gitRepoAgent(path))
+    await workspaces.prefetchWorkspace(gitRepoAgent(path))
     expect(cloneImpl).toHaveBeenCalledTimes(1)
     expect(cloneImpl).toHaveBeenCalledWith('https://github.com/acme/repo.git', path, [
       '--branch',
@@ -666,14 +672,14 @@ describe('prefetchWorkspace (reconcile-time eager clone)', () => {
 
   it('is a no-op for from-scratch mode', async () => {
     const path = join(mkdtempSync(join(tmpdir(), 'ac-ws-')), 'workspace')
-    await prefetchWorkspace(fromScratchAgent(path))
+    await workspaces.prefetchWorkspace(fromScratchAgent(path))
     expect(cloneImpl).not.toHaveBeenCalled()
   })
 
   it('is a no-op (no re-clone, no pull) when a .git checkout already exists', async () => {
     const dir = join(mkdtempSync(join(tmpdir(), 'ac-ws-')), 'co')
     mkdirSync(join(dir, '.git'), { recursive: true })
-    await prefetchWorkspace(gitRepoAgent(dir))
+    await workspaces.prefetchWorkspace(gitRepoAgent(dir))
     expect(cloneImpl).not.toHaveBeenCalled()
     expect(pullMock).not.toHaveBeenCalled()
   })
@@ -687,7 +693,7 @@ describe('prepareWorkspaceForActivation', () => {
       writeFileSync(join(target, 'README.md'), 'converted')
     })
 
-    const rollback = await prepareWorkspaceForActivation(gitRepoAgent(path))
+    const rollback = await workspaces.prepareWorkspaceForActivation(gitRepoAgent(path))
     const cloneTarget = (cloneImpl as ReturnType<typeof vi.fn>).mock.calls[0]?.[1] as string
     expect(cloneTarget).not.toBe(path)
     expect(existsSync(join(path, '.git'))).toBe(true)
@@ -703,7 +709,7 @@ describe('prepareWorkspaceForActivation', () => {
     mkdirSync(path, { recursive: true })
     writeFileSync(join(path, 'keep.txt'), 'do not overwrite')
 
-    await expect(prepareWorkspaceForActivation(gitRepoAgent(path))).rejects.toThrow('workspace is not empty')
+    await expect(workspaces.prepareWorkspaceForActivation(gitRepoAgent(path))).rejects.toThrow('workspace is not empty')
     expect(cloneImpl).not.toHaveBeenCalled()
     expect(existsSync(join(path, 'keep.txt'))).toBe(true)
   })
@@ -712,7 +718,7 @@ describe('prepareWorkspaceForActivation', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'ac-ws-convert-')), 'workspace')
     cloneImpl = vi.fn().mockRejectedValue(new Error('clone failed'))
 
-    await expect(prepareWorkspaceForActivation(gitRepoAgent(path))).rejects.toThrow('clone failed')
+    await expect(workspaces.prepareWorkspaceForActivation(gitRepoAgent(path))).rejects.toThrow('clone failed')
     expect(existsSync(path)).toBe(true)
     expect(readdirSync(path)).toEqual([])
   })
@@ -724,7 +730,7 @@ describe('prepareWorkspaceForActivation', () => {
       writeFileSync(join(path, 'keep.txt'), 'do not overwrite')
     })
 
-    await expect(prepareWorkspaceForActivation(gitRepoAgent(path))).rejects.toThrow(
+    await expect(workspaces.prepareWorkspaceForActivation(gitRepoAgent(path))).rejects.toThrow(
       'workspace changed while conversion was cloning'
     )
     expect(existsSync(join(path, 'keep.txt'))).toBe(true)
@@ -735,9 +741,9 @@ describe('prepareWorkspaceForActivation', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'ac-ws-convert-')), 'workspace')
     mkdirSync(join(path, '.git'), { recursive: true })
 
-    await expect(prepareWorkspaceForActivation(gitRepoAgent(path), { allowExistingCheckout: false })).rejects.toThrow(
-      'workspace changed after its empty check'
-    )
+    await expect(
+      workspaces.prepareWorkspaceForActivation(gitRepoAgent(path), { allowExistingCheckout: false })
+    ).rejects.toThrow('workspace changed after its empty check')
     expect(cloneImpl).not.toHaveBeenCalled()
   })
 
@@ -751,7 +757,7 @@ describe('prepareWorkspaceForActivation', () => {
     })
     mkdirSync(join(path, '.git'), { recursive: true })
     writeFileSync(join(path, 'local.txt'), 'keep me')
-    recordWorkspaceMaterialization(current)
+    workspaces.recordWorkspaceMaterialization(current)
     // Older daemons recorded the conventional `.git` suffix in this marker.
     writeFileSync(
       join(dirname(path), `.${basename(path)}.workspace-materialization.json`),
@@ -768,7 +774,7 @@ describe('prepareWorkspaceForActivation', () => {
       args[0] === 'remote' && args[1] === 'get-url' ? 'https://github.com/acme/repo.git\n' : ''
     )
 
-    const rollback = await prepareWorkspaceForActivation(
+    const rollback = await workspaces.prepareWorkspaceForActivation(
       { ...current, workspace: { ...current.workspace, gitRepo: 'https://github.com/acme/repo' } } as Agent,
       { reconcileMaterialization: true }
     )
@@ -789,7 +795,7 @@ describe('prepareWorkspaceForActivation', () => {
     })
     mkdirSync(join(path, '.git'), { recursive: true })
     writeFileSync(join(path, 'untrusted.txt'), 'wrong-host content')
-    recordWorkspaceMaterialization(agent)
+    workspaces.recordWorkspaceMaterialization(agent)
     rawMock.mockImplementation(async (args: string[]) =>
       args[0] === 'remote' && args[1] === 'get-url' ? 'https://other-host.example/acme/repo.git\n' : ''
     )
@@ -798,7 +804,7 @@ describe('prepareWorkspaceForActivation', () => {
       writeFileSync(join(target, 'README.md'), 'authorized GitHub content')
     })
 
-    const rollback = await prepareWorkspaceForActivation(agent, { reconcileMaterialization: true })
+    const rollback = await workspaces.prepareWorkspaceForActivation(agent, { reconcileMaterialization: true })
 
     expect(cloneImpl).toHaveBeenCalledWith('https://github.com/acme/repo.git', expect.any(String), [
       '--branch',
@@ -817,7 +823,7 @@ describe('prepareWorkspaceForActivation', () => {
     mkdirSync(join(path, '.git'), { recursive: true })
     mkdirSync(join(path, 'packages', 'service'), { recursive: true })
     writeFileSync(join(path, 'local.txt'), 'keep me')
-    recordWorkspaceMaterialization(current)
+    workspaces.recordWorkspaceMaterialization(current)
     let failSetUrl = true
     rawMock.mockImplementation(async (args: string[]) => {
       if (args[0] === 'remote' && args[1] === 'get-url') return 'https://github.com/acme/old-name\n'
@@ -829,10 +835,10 @@ describe('prepareWorkspaceForActivation', () => {
       ...current,
       workspace: { ...current.workspace, gitRepo: 'https://github.com/acme/new-name' }
     } as Agent
-    await expect(convergeGithubAppWorkspaceRename(renamed)).rejects.toThrow('config locked')
+    await expect(workspaces.convergeGithubAppWorkspaceRename(renamed)).rejects.toThrow('config locked')
     failSetUrl = false
 
-    const rollback = await prepareWorkspaceForActivation(
+    const rollback = await workspaces.prepareWorkspaceForActivation(
       { ...renamed, workspace: { ...renamed.workspace, agentDir: 'packages/service' } } as Agent,
       { reconcileMaterialization: true }
     )
@@ -855,7 +861,7 @@ describe('prepareWorkspaceForActivation', () => {
     const current = gitRepoAgent(path)
     mkdirSync(join(path, '.git'), { recursive: true })
     writeFileSync(join(path, 'local.txt'), 'discard me')
-    recordWorkspaceMaterialization(current)
+    workspaces.recordWorkspaceMaterialization(current)
     cloneImpl = vi.fn().mockImplementation(async (_repo: string, target: string) => {
       mkdirSync(join(target, '.git'), { recursive: true })
       writeFileSync(join(target, 'README.md'), 'replacement')
@@ -866,9 +872,9 @@ describe('prepareWorkspaceForActivation', () => {
     } as Agent
     // A crash can leave the target spec on disk before materialization. The next
     // detach must not overwrite the source marker merely because it sees that spec.
-    ensureWorkspaceMaterialization(target)
+    workspaces.ensureWorkspaceMaterialization(target)
 
-    const rollback = await prepareWorkspaceForActivation(target, { reconcileMaterialization: true })
+    const rollback = await workspaces.prepareWorkspaceForActivation(target, { reconcileMaterialization: true })
 
     expect(existsSync(join(path, 'local.txt'))).toBe(false)
     expect(readFileSync(join(path, 'README.md'), 'utf8')).toBe('replacement')
@@ -893,7 +899,7 @@ describe('prepareWorkspace repo-local helper re-pin (github-app)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ac-ws-repin-'))
     mkdirSync(join(dir, '.git'))
 
-    await prepareWorkspace(githubAppAgent(dir))
+    await workspaces.prepareWorkspace(githubAppAgent(dir))
 
     const configCalls = rawMock.mock.calls.map((c) => c[0] as string[])
     expect(configCalls).toContainEqual(['config', '--replace-all', 'credential.https://github.com.helper', ''])
@@ -913,7 +919,7 @@ describe('prepareWorkspace repo-local helper re-pin (github-app)', () => {
       args[0] === 'remote' && args[1] === 'get-url' ? 'https://github.com/acme/old-name\n' : ''
     )
 
-    await prepareWorkspace(agent)
+    await workspaces.prepareWorkspace(agent)
 
     expect(rawMock.mock.calls.map((call) => call[0])).toContainEqual(['remote', 'get-url', 'origin'])
     expect(rawMock.mock.calls.map((call) => call[0])).toContainEqual([
@@ -939,7 +945,7 @@ describe('prepareWorkspace repo-local helper re-pin (github-app)', () => {
     })
 
     try {
-      await prepareWorkspace(agent)
+      await workspaces.prepareWorkspace(agent)
     } finally {
       if (previousGitDir === undefined) delete process.env.GIT_DIR
       else process.env.GIT_DIR = previousGitDir
@@ -960,7 +966,9 @@ describe('prepareWorkspace repo-local helper re-pin (github-app)', () => {
       args[0] === 'remote' && args[1] === 'get-url' ? 'https://other-host.example/acme/repo.git\n' : ''
     )
 
-    await expect(prepareWorkspace(githubAppAgent(dir))).rejects.toThrow('origin is not a trusted GitHub remote')
+    await expect(workspaces.prepareWorkspace(githubAppAgent(dir))).rejects.toThrow(
+      'origin is not a trusted GitHub remote'
+    )
     expect(pullMock).not.toHaveBeenCalled()
   })
 
@@ -975,7 +983,7 @@ describe('prepareWorkspace repo-local helper re-pin (github-app)', () => {
       return ''
     })
 
-    await expect(prepareWorkspace(agent)).rejects.toThrow('config locked')
+    await expect(workspaces.prepareWorkspace(agent)).rejects.toThrow('config locked')
     expect(pullMock).not.toHaveBeenCalled()
   })
 
@@ -986,7 +994,7 @@ describe('prepareWorkspace repo-local helper re-pin (github-app)', () => {
       args[0] === 'remote' && args[1] === 'get-url' ? 'https://github.com/acme/repo.git\n' : ''
     )
 
-    await prepareWorkspace(gitRepoAgent(dir))
+    await workspaces.prepareWorkspace(gitRepoAgent(dir))
 
     expect(rawMock.mock.calls.map((call) => call[0])).toContainEqual(['remote', 'get-url', 'origin'])
     expect(rawMock.mock.calls.map((call) => call[0])).not.toContainEqual([
@@ -1006,7 +1014,7 @@ describe('prepareWorkspace repo-local helper re-pin (github-app)', () => {
         : ''
     )
 
-    await prepareWorkspace(gitRepoAgent(dir))
+    await workspaces.prepareWorkspace(gitRepoAgent(dir))
 
     expect(rawMock.mock.calls.map((call) => call[0])).toContainEqual([
       'remote',
@@ -1026,7 +1034,7 @@ describe('prepareWorkspace repo-local helper re-pin (github-app)', () => {
       args[0] === 'remote' && args[1] === 'get-url' ? 'acme/repo\n' : ''
     )
 
-    await prepareWorkspace(agent)
+    await workspaces.prepareWorkspace(agent)
 
     expect(rawMock.mock.calls.map((call) => call[0])).toContainEqual([
       'remote',
@@ -1038,27 +1046,27 @@ describe('prepareWorkspace repo-local helper re-pin (github-app)', () => {
   })
 })
 
-describe('clusterWorkspaceCwd (--k8s pod coordinates)', () => {
+describe('workspaces.clusterWorkspaceCwd(--k8s pod coordinates)', () => {
   it('hands a from-scratch agent the pod root, never the daemon-disk workspace path', () => {
     const agent = fromScratchAgent('/var/lib/agentconnect/agents/bot-a/workspace')
-    expect(clusterWorkspaceCwd(agent, '/agent')).toBe('/agent')
+    expect(workspaces.clusterWorkspaceCwd(agent, '/agent')).toBe('/agent')
   })
 
   it('falls back to the historical mount for a legacy shim that reported none', () => {
     const agent = fromScratchAgent('/var/lib/agentconnect/agents/bot-a/workspace')
-    expect(clusterWorkspaceCwd(agent, undefined)).toBe('/agent')
+    expect(workspaces.clusterWorkspaceCwd(agent, undefined)).toBe('/agent')
   })
 
   it('checks a git-repo workspace out below the mount, never at the daemon-disk path', () => {
     // The mount is also the runtime's HOME, so a working tree at the root would sit on top of its
     // `.claude`/`.codex` state. What must never appear is the daemon's own workspace path.
     const agent = gitRepoAgent('/var/lib/agentconnect/agents/bot-git/workspace')
-    expect(clusterWorkspaceCwd(agent, '/agent')).toBe('/agent/repo')
-    expect(clusterWorkspaceCwd(agent, '/agent')).not.toContain('/var/lib/agentconnect')
+    expect(workspaces.clusterWorkspaceCwd(agent, '/agent')).toBe('/agent/repo')
+    expect(workspaces.clusterWorkspaceCwd(agent, '/agent')).not.toContain('/var/lib/agentconnect')
   })
 
   it('refuses session isolation, whose worktrees still assume the daemon filesystem', () => {
     const agent = fromScratchAgent('/var/lib/agentconnect/agents/bot-a/workspace')
-    expect(() => clusterWorkspaceCwd(agent, '/agent', { isolation: 'session' })).toThrow(/session-isolated/)
+    expect(() => workspaces.clusterWorkspaceCwd(agent, '/agent', { isolation: 'session' })).toThrow(/session-isolated/)
   })
 })
