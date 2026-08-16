@@ -10,6 +10,7 @@ import { configFilesDir } from '../src/agents/config-file-env.js'
 import { readSkillLedger, skillLedgerLocation } from '../src/skills/skill-install-ledger.js'
 import { sessionKey } from '../src/store/local-store.js'
 import { FakeClock } from './cp/fake-clock.js'
+import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
 // vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a
 // cold session boot (workspace + host + session/new) can stall well past a second.
@@ -180,7 +181,7 @@ describe('Daemon session lifecycle (#118)', () => {
       expect(existsSync(workspace)).toBe(true)
       return host as any
     })
-    const daemon = new Daemon({ root, hostFactory: factory })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: factory })
     await daemon.start()
     expect(existsSync(workspace)).toBe(false)
 
@@ -196,7 +197,7 @@ describe('Daemon session lifecycle (#118)', () => {
     const workspace = join(root, 'agents', 'bot-a', 'workspace')
     writeFileSync(workspace, 'not a directory')
     const factory = vi.fn(() => quietHost() as any)
-    const daemon = new Daemon({ root, hostFactory: factory })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: factory })
     await daemon.start()
 
     await expect((daemon as any).ensureHostAsync('bot-a')).rejects.toThrow()
@@ -207,7 +208,11 @@ describe('Daemon session lifecycle (#118)', () => {
   }, 15_000)
 
   it('shares one cold preparation between host start and session creation', async () => {
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => quietHost() as any
+    })
     await daemon.start()
     makeRoutable(daemon)
     const prepare = vi.spyOn(daemon as any, 'prepareAgentWorkspace')
@@ -233,7 +238,7 @@ describe('Daemon session lifecycle (#118)', () => {
     })
     const second = quietHost()
     const factory = vi.fn().mockReturnValueOnce(first).mockReturnValueOnce(second)
-    const daemon = new Daemon({ root, hostFactory: factory })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: factory })
     await daemon.start()
     const realPrepare = (daemon as any).prepareAgentWorkspace.bind(daemon)
     let preparations = 0
@@ -256,7 +261,7 @@ describe('Daemon session lifecycle (#118)', () => {
     const root = scaffold()
     const host = quietHost()
     const factory = vi.fn(() => host as any)
-    const daemon = new Daemon({ root, hostFactory: factory })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: factory })
     await daemon.start()
 
     const realPrepare = (daemon as any).prepareAgentWorkspace.bind(daemon)
@@ -319,7 +324,7 @@ describe('Daemon session lifecycle (#118)', () => {
     const secondHost = quietHost()
     const factory = vi.fn().mockReturnValueOnce(firstHost).mockReturnValueOnce(secondHost)
     const clock = new FakeClock()
-    const daemon = new Daemon({ root, hostFactory: factory, clock })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: factory, clock })
     await daemon.start()
     makeRoutable(daemon)
     await (daemon as any).ensureHostAsync('bot-a')
@@ -376,7 +381,7 @@ describe('Daemon session lifecycle (#118)', () => {
     const firstHost = quietHost()
     const secondHost = quietHost()
     const factory = vi.fn().mockReturnValueOnce(firstHost).mockReturnValueOnce(secondHost)
-    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
     await daemon.start()
     await (daemon as any).ensureHostAsync('bot-a')
     const capturedAgent = (daemon as any).agents.get('bot-a')
@@ -394,7 +399,11 @@ describe('Daemon session lifecycle (#118)', () => {
   }, 20_000)
 
   it('keeps stopAgent fenced until an aborted warm preparation quiesces', async () => {
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => quietHost() as any
+    })
     await daemon.start()
     makeRoutable(daemon)
     await (daemon as any).ensureHostAsync('bot-a')
@@ -429,7 +438,11 @@ describe('Daemon session lifecycle (#118)', () => {
   }, 20_000)
 
   it('coordinates a console git write like a file write, minus the host stop', async () => {
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => quietHost() as any
+    })
     await daemon.start()
     const agent = (daemon as any).agents.get('bot-a')
     const stopHost = vi.spyOn(daemon as any, 'stopHost')
@@ -488,7 +501,11 @@ describe('Daemon session lifecycle (#118)', () => {
   }, 20_000)
 
   it('serializes workspace preparation and file publication in both admission orders', async () => {
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => quietHost() as any
+    })
     await daemon.start()
     const agent = (daemon as any).agents.get('bot-a')
 
@@ -542,7 +559,11 @@ describe('Daemon session lifecycle (#118)', () => {
   }, 20_000)
 
   it('writes the session back to idle once a turn finishes (no longer stuck prompting)', async () => {
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => quietHost() as any
+    })
     await daemon.start()
     makeRoutable(daemon)
     await (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
@@ -552,7 +573,11 @@ describe('Daemon session lifecycle (#118)', () => {
 
   it('does not post a cron anchor while the target agent is paused', async () => {
     const host = quietHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => host as any
+    })
     await daemon.start()
     const conn = makeRoutable(daemon)
     ;(daemon as any).agents.get('bot-a').pause = true
@@ -573,7 +598,11 @@ describe('Daemon session lifecycle (#118)', () => {
 
   it('attributes a cron anchor to its agent and uses its Slack timestamp for follow-ups', async () => {
     const host = quietHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => host as any
+    })
     await daemon.start()
     Object.assign((daemon as any).agents.get('bot-a'), {
       displayName: 'Review Bot',
@@ -625,7 +654,11 @@ describe('Daemon session lifecycle (#118)', () => {
 
   it('§6.8: a telegram anchored fire keys the session by that platform conversation model', async () => {
     const host = quietHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => host as any
+    })
     await daemon.start()
     makeRoutable(daemon)
     const postMessage = vi.fn(async () => '777')
@@ -665,7 +698,11 @@ describe('Daemon session lifecycle (#118)', () => {
 
   it('§6.8: a telegram DM anchored fire keys `dm` and classifies as a DM session', async () => {
     const host = quietHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => host as any
+    })
     await daemon.start()
     makeRoutable(daemon)
     const postMessage = vi.fn(async () => '888')
@@ -707,7 +744,11 @@ describe('Daemon session lifecycle (#118)', () => {
     // A Discord DM is one continuous conversation keyed by its channel. The same
     // classification also drives `conversationKind` and the private-capture gate.
     const host = quietHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => host as any
+    })
     await daemon.start()
     makeRoutable(daemon)
     const postMessage = vi.fn(async () => 'msg-1')
@@ -748,7 +789,11 @@ describe('Daemon session lifecycle (#118)', () => {
 
   it('§6.8: a discord guild anchored fire materializes its native thread before dispatch', async () => {
     const host = quietHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => host as any
+    })
     await daemon.start()
     makeRoutable(daemon)
     const postMessage = vi.fn(async () => 'msg-1')
@@ -788,7 +833,11 @@ describe('Daemon session lifecycle (#118)', () => {
 
   it('§6.8: a discord guild anchored fire starts no session when thread creation fails', async () => {
     const host = quietHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => host as any
+    })
     await daemon.start()
     makeRoutable(daemon)
     const createThread = vi.fn(async () => undefined)
@@ -828,7 +877,11 @@ describe('Daemon session lifecycle (#118)', () => {
 
   it('reports a cron session before its turn finishes', async () => {
     const blocked = blockingHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => blocked.host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => blocked.host as any
+    })
     await daemon.start()
     const conn = makeRoutable(daemon)
     Object.assign(conn, {
@@ -872,7 +925,12 @@ describe('Daemon session lifecycle (#118)', () => {
   it('!stop sets cancelling, and the backstop force-stops the host if the agent ignores cancel', async () => {
     const clock = new FakeClock()
     const blocked = blockingHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => blocked.host as any, clock })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => blocked.host as any,
+      clock
+    })
     await daemon.start()
     makeRoutable(daemon)
 
@@ -897,7 +955,7 @@ describe('Daemon session lifecycle (#118)', () => {
   it('pausing interrupts every active session, drops queued turns, and keeps the host warm', async () => {
     const root = scaffold()
     const blocked = multiBlockingHost()
-    const daemon = new Daemon({ root, hostFactory: () => blocked.host as any })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => blocked.host as any })
     await daemon.start()
 
     const first = (daemon as any).dispatch('bot-a', dm('100', 'first', 'T1'))
@@ -936,7 +994,7 @@ describe('Daemon session lifecycle (#118)', () => {
   it('pausing suppresses renderer actions already queued by the old turn', async () => {
     const root = scaffold()
     const blocked = blockingHost()
-    const daemon = new Daemon({ root, hostFactory: () => blocked.host as any })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => blocked.host as any })
     await daemon.start()
     const conn = makeRoutable(daemon)
 
@@ -970,7 +1028,7 @@ describe('Daemon session lifecycle (#118)', () => {
   it('does not revive a cold pre-pause turn after a quick unpause', async () => {
     const root = scaffold()
     const cold = coldBlockingHost()
-    const daemon = new Daemon({ root, hostFactory: () => cold.host as any })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => cold.host as any })
     await daemon.start()
 
     const turn = (daemon as any).dispatch('bot-a', dm('100', 'cold', 'T1'))
@@ -1010,6 +1068,7 @@ describe('Daemon idle sweep (#111/#118)', () => {
       onUpdate('acp-1', { sessionUpdate: 'session_info_update', title: 'Final stopped title' })
     })
     const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
       root: scaffold({ agentIdleTimeoutMs: 1000, idleSweepMs: 1000 }),
       hostFactory: (_agent, update) => {
         onUpdate = update
@@ -1039,7 +1098,7 @@ describe('Daemon idle sweep (#111/#118)', () => {
     const clock = new FakeClock()
     const host = quietHost()
     const root = scaffold({ agentIdleTimeoutMs: 1000, idleSweepMs: 1000 })
-    const daemon = new Daemon({ root, hostFactory: () => host as any, clock })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => host as any, clock })
     await daemon.start()
     makeRoutable(daemon)
 
@@ -1072,7 +1131,7 @@ describe('Daemon idle sweep (#111/#118)', () => {
       sawFileAtPrompt.push(existsSync(kubeFile))
       return 'end_turn'
     })
-    const daemon = new Daemon({ root, hostFactory: () => host as any, clock })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => host as any, clock })
     await daemon.start()
     makeRoutable(daemon)
 
@@ -1109,7 +1168,12 @@ describe('Daemon idle sweep (#111/#118)', () => {
     const root = scaffold({ agentIdleTimeoutMs: 1_000_000, idleSweepMs: 10_000_000, configFilesIdleMs: 1000 })
     const adir = join(root, 'agents', 'bot-a')
     const kubeFile = join(configFilesDir(adir), 'kubeconfig')
-    const daemon = new Daemon({ root, hostFactory: () => blocked.host as any, clock })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root,
+      hostFactory: () => blocked.host as any,
+      clock
+    })
     await daemon.start()
     makeRoutable(daemon)
 
@@ -1137,7 +1201,7 @@ describe('Daemon idle sweep (#111/#118)', () => {
     mkdirSync(secretsDir, { recursive: true })
     writeFileSync(join(secretsDir, 'kubeconfig'), 'stale')
 
-    const daemon = new Daemon({ root, hostFactory: () => quietHost() as any })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => quietHost() as any })
     await daemon.start()
     expect(existsSync(secretsDir)).toBe(false)
     await daemon.stop()
@@ -1153,6 +1217,7 @@ describe('Daemon idle sweep (#111/#118)', () => {
     clock.advance(1_700_000_000_000) // a realistic epoch, so `now - 0` ≫ TTL (the bug's trigger)
     const host = quietHost()
     const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
       root: scaffold({ agentIdleTimeoutMs: 1000, idleSweepMs: 10_000_000 }),
       hostFactory: () => host as any,
       clock
@@ -1183,7 +1248,12 @@ describe('Daemon idle sweep — background-task lease', () => {
 
   async function bootWithTurn(clock: FakeClock, limits: Record<string, number>) {
     const host = quietHost()
-    const daemon = new Daemon({ root: scaffold(limits), hostFactory: () => host as any, clock })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(limits),
+      hostFactory: () => host as any,
+      clock
+    })
     await daemon.start()
     const conn = makeRoutable(daemon)
     await (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
@@ -1535,6 +1605,7 @@ describe('Daemon idle sweep — background-task lease', () => {
         stop: vi.fn(async () => {})
       }
       const daemon = new Daemon({
+        slackAppFactory: fakeSlackAppFactory(),
         root: scaffold({ agentIdleTimeoutMs: 10_000_000, idleSweepMs: 10_000_000 }),
         hostFactory: () => host as any,
         clock
@@ -1817,7 +1888,11 @@ describe('Daemon idle sweep — background-task lease', () => {
 describe('Daemon graceful shutdown drain (#109)', () => {
   it('awaits an in-flight turn before tearing the host down (no mid-turn kill)', async () => {
     const blocked = blockingHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => blocked.host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => blocked.host as any
+    })
     await daemon.start()
     makeRoutable(daemon)
 
@@ -1839,7 +1914,11 @@ describe('Daemon graceful shutdown drain (#109)', () => {
   }, 15_000)
 
   it('keeps the store alive until an admitted workspace file write settles', async () => {
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => quietHost() as any
+    })
     await daemon.start()
     const store = (daemon as any).store
     const close = vi.spyOn(store, 'close')
@@ -1876,7 +1955,11 @@ describe('Daemon CP drain (#109)', () => {
 
   it('scope:daemon drains in-flight turns, releases them, stops hosts, re-opens the gate', async () => {
     const blocked = blockingHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => blocked.host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => blocked.host as any
+    })
     await daemon.start()
     makeRoutable(daemon)
 
@@ -1896,7 +1979,11 @@ describe('Daemon CP drain (#109)', () => {
 
   it('omits the thread for a channel-root session in released[] (matches the CP key)', async () => {
     const blocked = blockingHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => blocked.host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => blocked.host as any
+    })
     await daemon.start()
     makeRoutable(daemon)
 
@@ -1943,7 +2030,12 @@ describe('Daemon session retention GC (#485)', () => {
 
   it('the idle sweep deletes expired sessions but spares live turns and gate-owned keys', async () => {
     const clock = new FakeClock()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as any, clock })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => quietHost() as any,
+      clock
+    })
     await daemon.start()
 
     seedSession(daemon, 'expired-closed', 'closed', 0)
@@ -1966,7 +2058,12 @@ describe('Daemon session retention GC (#485)', () => {
 
   it('retention "never" disables the sweep entirely', async () => {
     const clock = new FakeClock()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as any, clock })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => quietHost() as any,
+      clock
+    })
     await daemon.start()
     ;(daemon as any).cfg.sessions.retention = 'never'
     seedSession(daemon, 'expired-closed', 'closed', 0)
@@ -1980,7 +2077,12 @@ describe('Daemon session retention GC (#485)', () => {
 
   it('reports each purged session to the CP and clears the receipt only on the ACK', async () => {
     const clock = new FakeClock()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as any, clock })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => quietHost() as any,
+      clock
+    })
     await daemon.start()
     const emitSessionPurged = vi.fn(async () => 'acknowledged' as const)
     ;(daemon as any).cpClient = { emitSessionPurged, state: 'READY', stop: vi.fn(async () => {}) }
@@ -2006,7 +2108,12 @@ describe('Daemon session retention GC (#485)', () => {
 
   it('never reports a session under another purge time or agent', async () => {
     const clock = new FakeClock()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as any, clock })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => quietHost() as any,
+      clock
+    })
     await daemon.start()
     const emitSessionPurged = vi.fn(async () => 'acknowledged' as const)
     ;(daemon as any).cpClient = { emitSessionPurged, state: 'READY', stop: vi.fn(async () => {}) }
@@ -2040,7 +2147,12 @@ describe('Daemon session retention GC (#485)', () => {
 
   it('leaves the receipts alone while the CP socket is down', async () => {
     const clock = new FakeClock()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as any, clock })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => quietHost() as any,
+      clock
+    })
     await daemon.start()
     const emitSessionPurged = vi.fn()
     ;(daemon as any).cpClient = { emitSessionPurged, state: 'DEGRADED', stop: vi.fn(async () => {}) }
@@ -2059,7 +2171,12 @@ describe('Daemon session retention GC (#485)', () => {
 
   it('keeps the purge receipts when the CP cannot accept them yet', async () => {
     const clock = new FakeClock()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as any, clock })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => quietHost() as any,
+      clock
+    })
     await daemon.start()
     // A CP that does not advertise the feature would reject the unknown frame, so
     // the receipt must survive for a post-upgrade reconnect.
@@ -2094,7 +2211,12 @@ describe('Daemon session retention GC (#485)', () => {
 
   it('a session with pending durable inbox work is treated as active and kept', async () => {
     const clock = new FakeClock()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as any, clock })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => quietHost() as any,
+      clock
+    })
     await daemon.start()
     seedSession(daemon, 'expired-queued', 'closed', 0)
     ;(daemon as any).store.appendInbox({

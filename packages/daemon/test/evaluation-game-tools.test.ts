@@ -13,6 +13,7 @@ import {
   type OutboundEffectResult,
   type VirtualConnectionWorldPort
 } from '../src/evaluation/index.js'
+import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
 const PLAYER_A = 'player-a'
 const PLAYER_B = 'player-b'
@@ -189,6 +190,7 @@ describe('evaluation tool registry (§6)', () => {
     const bindings = new Map<string, CapturedBinding>()
     const inTurnResults = new Map<string, Record<string, unknown>>()
     daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
       root: scaffold([PLAYER_A, PLAYER_B]),
       hostFactory: bindingCapturingHostFactory(bindings, async (agentId, binding) => {
         // Dispatch binds the TRUSTED session identity, never tool input.
@@ -264,6 +266,7 @@ describe('evaluation tool registry (§6)', () => {
       }
     ]
     daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
       root: scaffold([PLAYER_A, PLAYER_B]),
       hostFactory: bindingCapturingHostFactory(new Map()),
       evaluation: {
@@ -288,6 +291,7 @@ describe('evaluation tool registry (§6)', () => {
       handler: async () => ({})
     }
     daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
       root: scaffold([PLAYER_A, PLAYER_B]),
       hostFactory: bindingCapturingHostFactory(new Map()),
       evaluation: {

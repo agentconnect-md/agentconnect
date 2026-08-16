@@ -8,6 +8,7 @@ import { join } from 'node:path'
 import type { DutyGrantEntry } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
 import type { DutyRegistry } from '../src/cp/duty-registry.js'
+import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
 const AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1'
 const AGENT_B = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2'
@@ -79,7 +80,7 @@ const bundle = (
 /** A daemon holding one granted duty, with a stub CP client — only the duty surface runs. */
 async function boot(scope: 'frame' | 'connection' = 'frame') {
   const root = scaffold()
-  const daemon = new Daemon({ root })
+  const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root })
   await daemon.start()
   const fetchDutyAgent = vi.fn(async () => ({ bundle: bundle() }))
   ;(daemon as any).cpClient = {
@@ -99,7 +100,7 @@ async function boot(scope: 'frame' | 'connection' = 'frame') {
 /** A daemon with an admission held open at the `duty/fetch` round trip, so a withdrawal can land
  *  inside the window between grant receipt and `applyGrant` — the gap this guard exists for. */
 async function bootMidAdmission() {
-  const daemon = new Daemon({ root: scaffold() })
+  const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
   await daemon.start()
   let release!: () => void
   const fetched = new Promise<void>((resolve) => {

@@ -5094,24 +5094,27 @@ export class Daemon {
     this.log.info(
       `slack: background retry for appToken (${group.integrations.length} integration(s): ${group.integrations.map((i) => i.agentId).join(', ')})…`
     )
-    const conn: SlackConnection = new SlackConnection({
-      group,
-      newTraceId: () => randomUUID(),
-      onMessage: (msg) => {
-        // The arrow captures the NEW `conn` ref so nameResolver/onInbound use the
-        // successfully-retried connection, not a stale one from an earlier attempt.
-        this.nameResolver?.noteMessage(conn, msg)
-        this.onInbound(msg, this.srcIntegrationIds(conn))
+    const conn: SlackConnection = new SlackConnection(
+      {
+        group,
+        newTraceId: () => randomUUID(),
+        onMessage: (msg) => {
+          // The arrow captures the NEW `conn` ref so nameResolver/onInbound use the
+          // successfully-retried connection, not a stale one from an earlier attempt.
+          this.nameResolver?.noteMessage(conn, msg)
+          this.onInbound(msg, this.srcIntegrationIds(conn))
+        },
+        onChannelsChanged: () => void this.refreshChannels(conn),
+        onMessageShortcut: (shortcut) => this.slackShortcutSession(shortcut, this.srcIntegrationIds(conn)),
+        onStatusAction: (a) => this.handleStatusAction(a),
+        onStatusInfo: (key) => this.statusInfoForKey(key),
+        onPermissionChoice: (a) => this.handlePermissionChoice(a),
+        onElicitChoice: (a) => this.handleElicitChoice(a),
+        log: this.log,
+        boltDebug: this.cfg.logging.level === 'debug' || this.cfg.logging.level === 'trace'
       },
-      onChannelsChanged: () => void this.refreshChannels(conn),
-      onMessageShortcut: (shortcut) => this.slackShortcutSession(shortcut, this.srcIntegrationIds(conn)),
-      onStatusAction: (a) => this.handleStatusAction(a),
-      onStatusInfo: (key) => this.statusInfoForKey(key),
-      onPermissionChoice: (a) => this.handlePermissionChoice(a),
-      onElicitChoice: (a) => this.handleElicitChoice(a),
-      log: this.log,
-      boltDebug: this.cfg.logging.level === 'debug' || this.cfg.logging.level === 'trace'
-    })
+      this.opts.slackAppFactory
+    )
     try {
       await conn.start()
       // The roster may have changed while start() was in flight. Never publish a

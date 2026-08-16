@@ -7,6 +7,7 @@ import { MAX_AGENT_CALL_HOPS } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
 import { transcriptChannelKey, type TranscriptEntry } from '../src/store/local-store.js'
 import { stableTurnId } from '../src/messages/normalized.js'
+import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
 // vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a
 // cold session boot (workspace + host + session/new) can stall well past a second.
@@ -160,7 +161,11 @@ function streamingResponse(hopCount = 0) {
 describe('Daemon transcript records the agent reply', () => {
   it('medium mode: the buffered reply (flushed at onFinal) lands as a bot-a row', async () => {
     const { factory } = replyingHost('here is my answer')
-    const daemon = new Daemon({ root: scaffold('medium'), hostFactory: factory })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold('medium'),
+      hostFactory: factory
+    })
     await daemon.start()
     makeRoutable(daemon)
 
@@ -177,7 +182,11 @@ describe('Daemon transcript records the agent reply', () => {
 
   it('records post-turn memory for a CP-published session only after the reply is delivered', async () => {
     const { factory } = replyingHost('here is my answer')
-    const daemon = new Daemon({ root: scaffold('medium'), hostFactory: factory })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold('medium'),
+      hostFactory: factory
+    })
     await daemon.start()
     const conn = makeRoutable(daemon)
     await (daemon as any).dispatch('bot-a', dm('100', 'private question'), 'int-a')
@@ -220,7 +229,11 @@ describe('Daemon transcript records the agent reply', () => {
   // (see the DM test below).
   it('captures post-turn memory from a Slack channel input', async () => {
     const { factory } = replyingHost('here is my answer')
-    const daemon = new Daemon({ root: scaffold('medium'), hostFactory: factory })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold('medium'),
+      hostFactory: factory
+    })
     await daemon.start()
     makeRoutable(daemon)
     const recordTurn = vi.fn(async () => {})
@@ -235,7 +248,11 @@ describe('Daemon transcript records the agent reply', () => {
 
   it('rejects a Slack audience change on a session created from another source', async () => {
     const { factory, host } = replyingHost('here is my answer')
-    const daemon = new Daemon({ root: scaffold('medium'), hostFactory: factory })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold('medium'),
+      hostFactory: factory
+    })
     await daemon.start()
 
     // A headless Slack-shaped automation has no trusted external destination,
@@ -255,7 +272,11 @@ describe('Daemon transcript records the agent reply', () => {
 
   it('reuses an external runtime only for the same inherited Slack source', async () => {
     const { factory, host } = replyingHost('here is my answer')
-    const daemon = new Daemon({ root: scaffold('medium'), hostFactory: factory })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold('medium'),
+      hostFactory: factory
+    })
     await daemon.start()
     const conn = makeRoutable(daemon)
     const callMeta = (resourceKey: string) => ({
@@ -288,7 +309,11 @@ describe('Daemon transcript records the agent reply', () => {
   // private from its first turn, with no CP round-trip.
   it('never captures post-turn memory from a private DM session', async () => {
     const { factory } = replyingHost('here is my answer')
-    const daemon = new Daemon({ root: scaffold('medium'), hostFactory: factory })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold('medium'),
+      hostFactory: factory
+    })
     await daemon.start()
     makeRoutable(daemon)
     const recordTurn = vi.fn(async () => {})
@@ -306,7 +331,11 @@ describe('Daemon transcript records the agent reply', () => {
   // gated for isolated sessions.
   it('runs automatic recall for a private DM (reads are always allowed, #653)', async () => {
     const { factory } = replyingHost('here is my answer')
-    const daemon = new Daemon({ root: scaffold('medium'), hostFactory: factory })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold('medium'),
+      hostFactory: factory
+    })
     await daemon.start()
     makeRoutable(daemon)
     const recallForTurn = vi.spyOn((daemon as any).memory, 'recallForTurn').mockResolvedValue([])
@@ -319,7 +348,11 @@ describe('Daemon transcript records the agent reply', () => {
 
   it('runs automatic recall for an A2A child (reads are always allowed, #653)', async () => {
     const { factory } = replyingHost('here is my answer')
-    const daemon = new Daemon({ root: scaffold('medium'), hostFactory: factory })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold('medium'),
+      hostFactory: factory
+    })
     await daemon.start()
     makeRoutable(daemon)
     const recallForTurn = vi.spyOn((daemon as any).memory, 'recallForTurn').mockResolvedValue([])
@@ -334,7 +367,11 @@ describe('Daemon transcript records the agent reply', () => {
   it('uses the stable bot name in linked attribution instead of the display name', async () => {
     const { factory, host } = replyingHost('the answer')
     ;(host as any).modelOptions = vi.fn(() => ({ current: 'claude-sonnet-4-5' }))
-    const daemon = new Daemon({ root: scaffold('medium'), hostFactory: factory })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold('medium'),
+      hostFactory: factory
+    })
     await daemon.start()
     ;(daemon as any).runtimeNames.claude = 'Claude Code'
     ;(daemon as any).agents.get('bot-a').displayName = 'Repo Bot'
@@ -357,7 +394,11 @@ describe('Daemon transcript records the agent reply', () => {
 
   it('marks the last admitted agent turn in the attached Slack footer', async () => {
     const { factory } = replyingHost('the final autonomous answer')
-    const daemon = new Daemon({ root: scaffold('medium'), hostFactory: factory })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold('medium'),
+      hostFactory: factory
+    })
     await daemon.start()
     const conn = makeRoutable(daemon)
 
@@ -401,7 +442,11 @@ describe('Daemon transcript records the agent reply', () => {
       model = 'model-after-prompt'
       return result
     })
-    const daemon = new Daemon({ root: scaffold('medium'), hostFactory: factory })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold('medium'),
+      hostFactory: factory
+    })
     await daemon.start()
     const conn = makeRoutable(daemon)
 
@@ -437,6 +482,7 @@ describe('Daemon transcript records the agent reply', () => {
       stop: vi.fn(async () => {})
     }
     const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
       root: scaffold('low'),
       hostFactory: (_agent, callback) => {
         onUpdate = callback
@@ -463,7 +509,11 @@ describe('Daemon transcript records the agent reply', () => {
 
   it('minimal mode: includes the footer in the initial live-reply post', async () => {
     const { factory } = replyingHost('here is my answer')
-    const daemon = new Daemon({ root: scaffold('minimal'), hostFactory: factory })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold('minimal'),
+      hostFactory: factory
+    })
     await daemon.start()
     const conn = makeRoutable(daemon)
 
@@ -485,7 +535,11 @@ describe('Daemon transcript records the agent reply', () => {
   it('minimal mode: delivers an over-limit final reply across messages and attaches the footer last', async () => {
     const reply = `${'a'.repeat(12_000)}\nsecond section`
     const { factory } = replyingHost(reply)
-    const daemon = new Daemon({ root: scaffold('minimal'), hostFactory: factory })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold('minimal'),
+      hostFactory: factory
+    })
     await daemon.start()
     const conn = makeRoutable(daemon)
 
@@ -559,6 +613,7 @@ describe('Daemon transcript records the agent reply', () => {
       stop: vi.fn(async () => {})
     }
     const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
       root: scaffold('minimal'),
       hostFactory: (_agent, callback) => {
         onUpdate = callback
@@ -597,7 +652,11 @@ describe('Daemon transcript records the agent reply', () => {
     // in call order, so a reply/status message whose applyChain step hasn't run yet would be
     // sent AFTER — and land BELOW — the card. Serializing the post on the chain keeps it above.
     const { factory } = replyingHost('x')
-    const daemon = new Daemon({ root: scaffold('minimal'), hostFactory: factory })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold('minimal'),
+      hostFactory: factory
+    })
     await daemon.start()
 
     const order: string[] = []
@@ -627,7 +686,7 @@ describe('Daemon transcript records the agent reply', () => {
 
   it('moves the attached footer to the latest body section across a flush boundary', async () => {
     const { factory } = streamingHost([text('first section'), tool('t1', 'Read file.ts'), text('last section')])
-    const daemon = new Daemon({ root: scaffold('low'), hostFactory: factory })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold('low'), hostFactory: factory })
     await daemon.start()
     const conn = makeRoutable(daemon)
 
@@ -652,7 +711,7 @@ describe('Daemon transcript records the agent reply', () => {
 
   it('retries a failed stale-footer cleanup at finalization', async () => {
     const { factory } = streamingHost([text('first section'), tool('t1', 'Read file.ts'), text('last section')])
-    const daemon = new Daemon({ root: scaffold('low'), hostFactory: factory })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold('low'), hostFactory: factory })
     await daemon.start()
     const conn = makeRoutable(daemon)
     ;(conn.updateBlocks as any).mockRejectedValueOnce(new Error('queue timeout')).mockResolvedValueOnce(true)
@@ -668,7 +727,7 @@ describe('Daemon transcript records the agent reply', () => {
 
   it('keeps the prior footer when a later body post returns no timestamp', async () => {
     const { factory } = streamingHost([text('first section'), tool('t1', 'Read file.ts'), text('last section')])
-    const daemon = new Daemon({ root: scaffold('low'), hostFactory: factory })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold('low'), hostFactory: factory })
     await daemon.start()
     const conn = makeRoutable(daemon)
     ;(conn.postMessage as any).mockResolvedValueOnce('reply-1').mockResolvedValueOnce(undefined)
@@ -682,7 +741,7 @@ describe('Daemon transcript records the agent reply', () => {
 
   it('does not create an orphan attribution message when the turn has no reply body', async () => {
     const { factory } = streamingHost([tool('t1', 'Read file.ts')])
-    const daemon = new Daemon({ root: scaffold('high'), hostFactory: factory })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold('high'), hostFactory: factory })
     await daemon.start()
     const conn = makeRoutable(daemon)
 
@@ -702,7 +761,11 @@ describe('Daemon transcript records the agent reply', () => {
     host.prompt = vi.fn(async () => {
       throw new Error('runtime exploded')
     })
-    const daemon = new Daemon({ root: scaffold('medium'), hostFactory: factory })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold('medium'),
+      hostFactory: factory
+    })
     await daemon.start()
     const conn = makeRoutable(daemon)
 
@@ -737,6 +800,7 @@ describe('Daemon transcript records the agent reply', () => {
       stop: vi.fn(async () => {})
     }
     const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
       root: scaffold('low'),
       hostFactory: (_agent, callback) => {
         onUpdate = callback
@@ -758,7 +822,11 @@ describe('Daemon transcript records the agent reply', () => {
 
   it('a replayed reply is filtered out of its own author’s catch-up context', async () => {
     const { factory } = replyingHost('my first reply')
-    const daemon = new Daemon({ root: scaffold('medium'), hostFactory: factory })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold('medium'),
+      hostFactory: factory
+    })
     await daemon.start()
     makeRoutable(daemon)
 
@@ -789,7 +857,7 @@ describe('Daemon transcript captures the full activity log (mode-independent)', 
   for (const mode of ['low', 'medium', 'high'] as const) {
     it(`${mode} mode: tool + reasoning + text are all recorded with their kind`, async () => {
       const { factory } = streamingHost(turn)
-      const daemon = new Daemon({ root: scaffold(mode), hostFactory: factory })
+      const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(mode), hostFactory: factory })
       await daemon.start()
       makeRoutable(daemon)
 
@@ -807,7 +875,7 @@ describe('Daemon transcript captures the full activity log (mode-independent)', 
 
   it('tool/reasoning rows are excluded from §8.5 catch-up replay', async () => {
     const { factory } = streamingHost(turn)
-    const daemon = new Daemon({ root: scaffold('low'), hostFactory: factory })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold('low'), hostFactory: factory })
     await daemon.start()
     makeRoutable(daemon)
 
@@ -842,6 +910,7 @@ describe('Daemon transcript captures the full activity log (mode-independent)', 
       text('yes, TestSA is set to s3cret-value')
     ])
     const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
       root: scaffold('medium', {
         runtimeOverrides: { secrets: [{ name: 'TestSA', value: 's3cret-value' }] }
       }),
@@ -876,7 +945,11 @@ describe('Daemon transcript captures the full activity log (mode-independent)', 
       { sessionUpdate: 'tool_call_update', toolCallId: 't1', status: 'completed' },
       text('done')
     ])
-    const daemon = new Daemon({ root: scaffold('medium'), hostFactory: factory })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold('medium'),
+      hostFactory: factory
+    })
     await daemon.start()
     makeRoutable(daemon)
 

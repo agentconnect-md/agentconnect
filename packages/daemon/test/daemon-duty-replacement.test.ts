@@ -8,6 +8,7 @@ import { join } from 'node:path'
 import type { DutyGrantEntry } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
 import type { DutyRegistry } from '../src/cp/duty-registry.js'
+import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
 const AGENT_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1'
 const AGENT_B = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2'
@@ -84,7 +85,7 @@ const bundle = (agentId: string) => ({
  *  fails — the uninstallable addition a replacement carries. */
 async function boot(broken = new Set<string>()) {
   const root = scaffold()
-  const daemon = new Daemon({ root })
+  const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root })
   await daemon.start()
   const fetchDutyAgent = vi.fn(async (agentId: string) => {
     if (broken.has(agentId)) throw new Error('control plane unreachable')

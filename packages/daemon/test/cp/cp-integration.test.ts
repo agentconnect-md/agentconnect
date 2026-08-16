@@ -24,6 +24,7 @@ vi.mock('../../src/slack/connection.js', async (importActual) => {
 
 import { Daemon } from '../../src/daemon.js'
 import type { IntegrationSpec } from '@agentconnect.md/protocol'
+import { fakeSlackAppFactory } from '../fakes/slack-app.js'
 
 function root1(): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-cpint-'))
@@ -57,6 +58,7 @@ function writeAgent(root: string, id: string) {
 
 function makeDaemon(root: string) {
   const daemon = new Daemon({
+    slackAppFactory: fakeSlackAppFactory(),
     root,
     hostFactory: (agent) =>
       ({

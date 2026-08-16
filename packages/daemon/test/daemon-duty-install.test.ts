@@ -9,6 +9,7 @@ import { join } from 'node:path'
 import type { DutyGrantEntry } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
 import type { DutyRegistry } from '../src/cp/duty-registry.js'
+import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
 const AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1'
 const GROUP = '11111111-1111-4111-8111-111111111111'
@@ -114,7 +115,7 @@ const bundleWithDefinitions = (grantKey?: string, issuedAt?: number) => ({
 
 /** A daemon started with a stub CP client — only the duty surface is exercised. */
 async function boot(client: Record<string, unknown>) {
-  const daemon = new Daemon({ root: scaffold() })
+  const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
   await daemon.start()
   ;(daemon as any).cpClient = {
     organizationScope: () => 'frame',

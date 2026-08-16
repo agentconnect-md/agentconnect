@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { planChannelIntros, buildIntroMessage, introPrompt, INTRO_MAX_BURST } from '../src/agents/channel-intro.js'
 import { Daemon } from '../src/daemon.js'
+import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
 const state = (seeded: boolean, introduced: string[] = []) => ({ seeded, introduced: new Set(introduced) })
 
@@ -140,7 +141,11 @@ describe('Daemon.maybeIntroduceOnJoin: the intro turn carries its own discovery 
   }
 
   it('stamps the joined channel on the dispatched turn’s CallMeta', async () => {
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => ({}) as never })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => ({}) as never
+    })
     await daemon.start()
     const agent = (daemon as never as { agents: Map<string, Record<string, unknown>> }).agents.get('bot-a')!
     agent.integrations = [{ id: 'int-1', platform: 'slack' }]

@@ -7,6 +7,7 @@ import { Daemon } from '../src/daemon.js'
 import { LocalStore } from '../src/store/local-store.js'
 import { statePath } from '../src/paths.js'
 import { FakeClock } from './cp/fake-clock.js'
+import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
 /**
  * #1038 — the loop guard's durable backlog is one inbox table for the whole install, but a
@@ -51,7 +52,12 @@ function scaffold(): string {
 }
 
 async function boot(root: string, daemonId: string, scope: 'frame' | 'legacy') {
-  const daemon = new Daemon({ root, hostFactory: () => ({}) as any, clock: new FakeClock() })
+  const daemon = new Daemon({
+    slackAppFactory: fakeSlackAppFactory(),
+    root,
+    hostFactory: () => ({}) as any,
+    clock: new FakeClock()
+  })
   await daemon.start()
   const inner = daemon as any
   inner.cfg.daemonId = daemonId

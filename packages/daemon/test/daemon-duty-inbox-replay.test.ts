@@ -12,6 +12,7 @@ import type { DutyGrantEntry } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
 import { LocalStore, sessionKey, type InboxRow } from '../src/store/local-store.js'
 import { statePath } from '../src/paths.js'
+import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
 const WAIT = { timeout: 10_000 }
 const AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1'
@@ -96,7 +97,7 @@ const msg = (ts: string, text: string) => ({
 /** A frame-scope member with a stub CP client that serves the one agent's bundle. */
 async function boot(root: string) {
   const g = gatedHost()
-  const daemon = new Daemon({ root, hostFactory: () => g.host as any })
+  const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => g.host as any })
   await daemon.start()
   const fetchDutyAgent = vi.fn(async () => ({ bundle: bundle() }))
   ;(daemon as any).cpClient = {
