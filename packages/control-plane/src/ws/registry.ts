@@ -90,6 +90,17 @@ export class ConnectionRegistry {
     return true
   }
 
+  /** A membership change reaches a connected daemon by making it handshake again: `auth/ok` is
+   *  where it is told its set (daemon-groups.md §3), and the reconnect's register reconcile
+   *  settles what it should be running. `1012` is transient to the daemon, so it comes straight
+   *  back. False ⇒ nothing was connected, and the next auth reads the change anyway. */
+  reconnectForMemberSet(daemonId: string): boolean {
+    const state = this.byDaemon.get(daemonId)
+    if (!state?.reachable) return false
+    state.conn.close(1012, 'member set changed — reconnect to re-register')
+    return true
+  }
+
   has(daemonId: string): boolean {
     return this.byDaemon.has(daemonId)
   }

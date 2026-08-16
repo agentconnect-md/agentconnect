@@ -29,7 +29,9 @@ export interface ClientCtx {
 
 /** Outcome of `DaemonAuth.authenticate` (design §2.3). */
 export type AuthResult =
-  | { ok: true; daemonId: DaemonId; orgId: OrgId | null; okFrame: AuthOk }
+  // `setId` is the connection's claim scope (daemon-groups.md §3), resolved once here so the
+  // duty handlers read it off the connection instead of asking the ledger on every frame.
+  | { ok: true; daemonId: DaemonId; orgId: OrgId | null; setId: string | null; okFrame: AuthOk }
   | { ok: false; closeCode: 4401 | 4409 | 1011; reason: string }
 
 /**
@@ -239,6 +241,9 @@ export interface DaemonView {
   sharedWith: string[]
   /** Console-set finished-session retention window ('never' | '7d' | '30d' | '90d'). */
   sessionRetention: string
+  /** The member set this daemon belongs to, if any (daemon-groups.md §2) — null for a machine
+   *  that owns its agents outright. An install-wide daemon is always the org-less set's. */
+  memberSetId: string | null
 }
 
 /**
@@ -254,6 +259,11 @@ export interface DaemonLiveness {
   get(daemonId: string): { state: string; reachable: boolean; sessionEpoch: number } | undefined
   /** Close the same non-READY epoch so an auth-time bootstrap directive cannot be missed. */
   reconnectForBootstrap?(daemonId: string, sessionEpoch: number): boolean
+  /** Close this daemon's socket so it handshakes again. `auth/ok` is where a daemon learns its
+   *  member set (daemon-groups.md §3), so that is how a membership change reaches a connected
+   *  one — no wire negotiation, and the reconnect's register reconcile settles the rest.
+   *  False ⇒ nothing was connected, and the daemon will read the change on its next auth. */
+  reconnectForMemberSet?(daemonId: string): boolean
 }
 
 /**

@@ -23,15 +23,14 @@ export const handleHeartbeat: Handler = async (frame, conn, deps) => {
     state.reachable = true
   }
 
-  // Duty lease exchange (k8s daemons; frames/duty.ts): renewal is the heartbeat,
-  // grants and revocations ride back as EVTs on the same connection. Install-wide
-  // (frame-mode) connections only — duty groups span orgs, so an org-scoped
-  // daemon's `duties` is dropped rather than let it claim other orgs' members.
-  // Started BEFORE any await: the service's per-daemon lane is reserved
+  // Duty lease exchange (frames/duty.ts): renewal is the heartbeat, grants and revocations ride
+  // back as EVTs on the same connection. Members of a member set only (daemon-groups.md §3) — a
+  // daemon in no set owns its agents outright, so its `duties` is dropped rather than let it into
+  // the ledger. Started BEFORE any await: the service's per-daemon lane is reserved
   // synchronously, so a duty/release dispatched after this beat queues behind
   // its exchange — ledger operations keep the daemon's frame order.
   const lease =
-    hb.duties && conn.orgId === null
+    hb.duties && conn.setId !== null
       ? deps.dutyLease.onHeartbeat(did, hb.duties, (type, payload) =>
           conn.send(type, payload, state ? { epoch: state.sessionEpoch } : undefined)
         )

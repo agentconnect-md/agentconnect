@@ -1,17 +1,18 @@
 /**
  * Member sets — the named sets of daemons within which an agent's duty may be claimed
- * (docs/designs/daemon-groups.md §2). The install-wide pool is the ONE org-less row; org sets
- * arrive with the console CRUD in PR 2.
+ * (docs/designs/daemon-groups.md §2). The install-wide pool is the ONE org-less row; an org's own
+ * sets are rows with its `orgId`, created by an operator.
  *
  * Everything tenancy-shaped lives on the WRITE side here. `enrollDaemonInSet` is the only writer
  * of `member_set_member`, and it is where "an org-less set accepts only org-less daemons, an org
  * set only that org's daemons" is enforced — which is precisely what lets the ledger's read path
  * be one membership lookup with no tenancy branch.
  */
+import { randomUUID } from 'node:crypto'
 import { Prisma, type PrismaClient } from '../../generated/prisma/client.js'
 import type { DaemonId } from '../../domain/ids.js'
 import type { MemberSetRecord, MemberSetRepo } from '../ports.js'
-import { AgentSetPlacementDenied, MemberSetTenancyMismatch } from '../errors.js'
+import { AgentSetPlacementDenied, DaemonPlacementInSet, MemberSetInUse, MemberSetTenancyMismatch } from '../errors.js'
 
 /** The ONLY writer of `member_set_member`: the set's org and the daemon's org must be the same
  *  value, null (cross-org) included, or the row is refused. */
@@ -46,6 +47,22 @@ export async function assertAgentMayUseSet(
   if (!row || (row.orgId !== null && row.orgId !== agent.orgId)) throw new AgentSetPlacementDenied(agent.id, setId)
 }
 
+/**
+ * The converse of that invariant, and the reason it can be enforced statically (§3): a `daemon`
+ * placement may not name a machine that is in a set. Such a machine serves only what it holds a
+ * lease for, so an agent pinned to it would be placed and unservable at once.
+ */
+export async function assertDaemonNotInSet(
+  tx: Prisma.TransactionClient,
+  agentId: string,
+  daemonId: string
+): Promise<void> {
+  const [row] = await tx.$queryRaw<{ one: number }[]>(
+    Prisma.sql`SELECT 1 AS one FROM "member_set_member" WHERE "daemonId" = ${daemonId}::uuid`
+  )
+  if (row) throw new DaemonPlacementInSet(agentId, daemonId)
+}
+
 export class PgMemberSetRepo implements MemberSetRepo {
   constructor(private readonly prisma: PrismaClient) {}
 
@@ -62,6 +79,11 @@ export class PgMemberSetRepo implements MemberSetRepo {
   async setIdOf(daemonId: DaemonId): Promise<string | null> {
     const row = await this.prisma.memberSetMember.findUnique({ where: { daemonId }, select: { setId: true } })
     return row?.setId ?? null
+  }
+
+  async setOf(daemonId: DaemonId): Promise<MemberSetRecord | null> {
+    const row = await this.prisma.memberSetMember.findUnique({ where: { daemonId }, select: { set: true } })
+    return row ? { id: row.set.id, orgId: row.set.orgId, name: row.set.name } : null
   }
 
   async memberIdsOf(setId: string): Promise<string[]> {
@@ -82,5 +104,40 @@ export class PgMemberSetRepo implements MemberSetRepo {
 
   async enroll(setId: string, daemonId: DaemonId): Promise<void> {
     await this.prisma.$transaction((tx) => enrollDaemonInSet(tx, setId, daemonId))
+  }
+
+  async listForOrg(orgId: string): Promise<MemberSetRecord[]> {
+    const rows = await this.prisma.memberSet.findMany({ where: { orgId }, orderBy: { name: 'asc' } })
+    return rows.map((r) => ({ id: r.id, orgId: r.orgId, name: r.name }))
+  }
+
+  async createForOrg(orgId: string, name: string): Promise<MemberSetRecord> {
+    const row = await this.prisma.memberSet.create({ data: { id: randomUUID(), orgId, name } })
+    return { id: row.id, orgId: row.orgId, name: row.name }
+  }
+
+  async renameForOrg(orgId: string, setId: string, name: string): Promise<MemberSetRecord | null> {
+    const { count } = await this.prisma.memberSet.updateMany({ where: { id: setId, orgId }, data: { name } })
+    return count === 0 ? null : { id: setId, orgId, name }
+  }
+
+  async deleteForOrg(orgId: string, setId: string): Promise<boolean> {
+    return this.prisma.$transaction(async (tx) => {
+      const row = await tx.memberSet.findFirst({ where: { id: setId, orgId }, select: { id: true } })
+      if (!row) return false
+      // Both cascades are silent — `member_set_member` is Cascade and `Agent.setId` is SetNull —
+      // so a set with either still pointing at it is refused rather than emptied on the way out.
+      const [members, agents] = await Promise.all([
+        tx.memberSetMember.count({ where: { setId } }),
+        tx.agent.count({ where: { setId } })
+      ])
+      if (members > 0 || agents > 0) throw new MemberSetInUse(setId)
+      await tx.memberSet.delete({ where: { id: setId } })
+      return true
+    })
+  }
+
+  async withdraw(daemonId: DaemonId): Promise<void> {
+    await this.prisma.memberSetMember.deleteMany({ where: { daemonId } })
   }
 }

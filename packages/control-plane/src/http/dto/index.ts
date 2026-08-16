@@ -220,6 +220,10 @@ export const DaemonViewDto = z.object({
    *  retention sweep deletes them — 'never' disables the sweep, otherwise an
    *  integer day count as '<n>d' (e.g. '7d'). */
   sessionRetention: z.string().regex(SESSION_RETENTION_RE),
+  /** The member set this daemon belongs to (docs/designs/daemon-groups.md §2), or null when it
+   *  owns its agents outright. A member serves only what it holds a duty lease for, so this is
+   *  what says whether an agent may be pinned here or must be placed on the set. */
+  memberSetId: z.string().nullable(),
   // ── visibility / sharing (docs/designs/resource-visibility.md) ──
   visibility: ResourceVisibilityEnum,
   sharedWith: z.array(z.string()), // complete app_user.id audience when restricted
@@ -230,6 +234,24 @@ export const DaemonViewDto = z.object({
   canManageLifecycle: z.boolean()
 })
 export const DaemonListDto = z.array(DaemonViewDto)
+
+// ── member sets (docs/designs/daemon-groups.md) ──
+// A named set of this organization's daemons within which an agent's duty may be claimed. The
+// install-wide pool is the org-less set and is never one of these — it belongs to no organization.
+
+/** One of an organization's member sets, with its current members. */
+export const MemberSetDto = z.object({
+  setId: z.string().uuid(),
+  name: z.string(),
+  /** Daemon ids currently enrolled. A daemon is in at most one set. */
+  memberDaemonIds: z.array(z.string().uuid())
+})
+export const MemberSetListDto = z.array(MemberSetDto)
+
+export const MemberSetBody = z.object({ name: z.string().trim().min(1).max(64) })
+
+/** `…/member-sets/:id/members/:daemonId` — the enrolment target. */
+export const MemberSetMemberParams = z.object({ id: z.string(), daemonId: z.string() })
 
 /** `PATCH /daemons/:id` — console daemon settings: a human-friendly display name
  *  and/or the finished-session retention window ("Expire sessions"). */

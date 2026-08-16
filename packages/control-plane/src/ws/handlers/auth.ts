@@ -27,6 +27,7 @@ export const handleAuth: Handler = async (frame, conn, deps) => {
 
   conn.daemonId = verdict.daemonId
   conn.orgId = verdict.orgId
+  conn.setId = verdict.setId
   conn.sessionEpoch = verdict.okFrame.sessionEpoch
   conn.state = 'REGISTERING'
 

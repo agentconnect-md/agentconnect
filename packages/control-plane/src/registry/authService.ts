@@ -24,7 +24,7 @@
  */
 import type { AuthReq, AuthOk } from '@agentconnect.md/protocol'
 import type { AuthResult, ClientCtx, ClusterDaemonIdentity, DaemonAuth, VerifiedClusterDaemon } from '../ports.js'
-import type { ApiKeyRepo, OrgRepo } from '../persistence/ports.js'
+import type { ApiKeyRepo, MemberSetRepo, OrgRepo } from '../persistence/ports.js'
 import type { EpochService } from '../orchestrator/epoch.js'
 import type { Clock } from '../domain/clock.js'
 import { DaemonId, OrgId } from '../domain/ids.js'
@@ -51,6 +51,10 @@ export class DaemonAuthService implements DaemonAuth {
     // Resolves the daemon's org slug for the org-scoped session deep link. Only `slugById`
     // is used; a failed lookup degrades to no `orgSlug` (never fails the handshake).
     private readonly orgs: Pick<OrgRepo, 'slugById'>,
+    /** The set this connection may claim within (daemon-groups.md §3), announced on `auth/ok`.
+     *  NOT optional: a missing reader would hand every member `auth/ok` with no set, and the whole
+     *  duty ledger would go quiet — a wiring hole must not be able to look like an empty pool. */
+    private readonly memberSets: Pick<MemberSetRepo, 'setOf'>,
     /** Absent when this deployment provisions no clusters — then only the key path exists. */
     private readonly clusterIdentity?: ClusterDaemonIdentity
   ) {}
@@ -144,6 +148,16 @@ export class DaemonAuthService implements DaemonAuth {
     // not fail an otherwise-good auth — the daemon just omits the org segment if absent.
     const orgSlug = orgId ? await this.orgs.slugById(OrgId(orgId)).catch(() => null) : null
 
+    // The daemon's member set (daemon-groups.md §3). NOT best-effort: an unread membership would
+    // hand a set member `auth/ok` with no set, and it would then serve its agents outright instead
+    // of only what it holds a lease for. A blip is 1011 — the daemon retries.
+    let memberSet
+    try {
+      memberSet = await this.memberSets.setOf(DaemonId(daemonId))
+    } catch {
+      return { ok: false, closeCode: 1011, reason: 'SERVER_INTERNAL' }
+    }
+
     const okFrame: AuthOk = {
       daemonId, // authoritative id (what the credential resolves to) — the daemon adopts this
       sessionEpoch: Number(sessionEpoch), // wire is a JS number; DB stores bigint
@@ -155,10 +169,17 @@ export class DaemonAuthService implements DaemonAuth {
       organizationMode: orgId ? 'connection' : 'frame',
       ...(this.config.WEB_APP_URL ? { webAppUrl: this.config.WEB_APP_URL } : {}),
       ...(orgSlug ? { orgSlug } : {}),
+      ...(memberSet ? { memberSet: { setId: memberSet.id, name: memberSet.name } } : {}),
       // A reconnecting daemon (resume present) is told to do a full register reconcile.
       ...(req.resume ? { resume: { accepted: false } } : {})
     }
 
-    return { ok: true, daemonId: DaemonId(daemonId), orgId: orgId ? OrgId(orgId) : null, okFrame }
+    return {
+      ok: true,
+      daemonId: DaemonId(daemonId),
+      orgId: orgId ? OrgId(orgId) : null,
+      setId: memberSet?.id ?? null,
+      okFrame
+    }
   }
 }

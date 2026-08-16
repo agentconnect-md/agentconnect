@@ -44,6 +44,35 @@ export class MemberSetTenancyMismatch extends Error {
 }
 
 /**
+ * Thrown by `deleteForOrg` when the set still has members or `set`-placed agents. Dropping it
+ * would unplace those agents by cascade (`Agent.setId` is SetNull), so the set is emptied
+ * deliberately or not at all.
+ */
+export class MemberSetInUse extends Error {
+  readonly code = 'MEMBER_SET_IN_USE' as const
+  constructor(readonly setId: string) {
+    super(`member set ${setId} still has members or placed agents`)
+    this.name = 'MemberSetInUse'
+  }
+}
+
+/**
+ * Thrown by the placement writers when a `daemon` placement names a machine that is in a member
+ * set (docs/designs/daemon-groups.md §3). A set member serves only what it holds a lease for, so
+ * an agent pinned to one would be unservable — the agent belongs on the set instead.
+ */
+export class DaemonPlacementInSet extends Error {
+  readonly code = 'DAEMON_PLACEMENT_IN_SET' as const
+  constructor(
+    readonly agentId: string,
+    readonly daemonId: string
+  ) {
+    super(`agent ${agentId} may not be pinned to daemon ${daemonId}, which is a member set member`)
+    this.name = 'DaemonPlacementInSet'
+  }
+}
+
+/**
  * Thrown by the placement writers when a `set` placement names a set the agent may not reference
  * (docs/designs/daemon-groups.md §2, third write-time invariant): only the org-less set or a set
  * of the agent's own org. Without it, `mayHold`'s single rule would let org X's members claim an

@@ -169,6 +169,7 @@ function toDto(
     // values, so a fallback here just keeps an unexpected stored value from
     // failing the whole response's schema serialization.
     sessionRetention: SESSION_RETENTION_RE.test(view.sessionRetention) ? view.sessionRetention : '7d',
+    memberSetId: view.memberSetId,
     visibility: view.visibility,
     sharedWith: view.sharedWith,
     canEdit: orgOwned && canEdit(view, ctx),

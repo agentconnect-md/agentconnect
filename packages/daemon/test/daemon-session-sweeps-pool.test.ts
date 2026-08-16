@@ -64,6 +64,7 @@ async function boot(root: string, daemonId: string) {
   const emitSessionPurged = vi.fn(async () => 'acknowledged' as const)
   inner.cpClient = {
     organizationScope: () => 'frame',
+    memberSet: () => ({ setId: '9f11e5e7-0000-4000-8000-000000000001', name: 'Cloud' }),
     state: 'READY',
     emitSessionPurged,
     stop: async () => {},

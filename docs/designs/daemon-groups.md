@@ -2,9 +2,12 @@
 
 **Status:** PR 1 (§6, §8) is **built and deployed** — #1003 folded the pool into the
 `member_set` model with zero behavior change, and every #991 test passed unchanged.
-PR 2, the org-scoped sets this document exists for, is designed and not built
-(#1000). ([k8s-daemon-pool.md](k8s-daemon-pool.md) §14 records the pool as the
-degenerate case of what this document generalizes.)
+PR 2's **mechanism** is built (#1000): org sets exist, the ledger's door is membership
+rather than install-wideness, `auth/ok` announces the set, and the daemon's enforcement
+predicate reads it. Two pieces of PR 2 are deliberately still open — the console surface,
+and the one-action live membership transitions of §3 (what shipped instead is recorded
+there). ([k8s-daemon-pool.md](k8s-daemon-pool.md) §14 records the pool as the degenerate
+case of what this document generalizes.)
 
 A _daemon group_ is a named set of daemons within which an agent's duty may be claimed.
 The k8s pool is one such group, and since #1003 it is an explicit one: a `member_set` row,
@@ -213,6 +216,28 @@ moves them explicitly afterwards, which the existing move machinery already does
 transitions carry a generation so a stale ack (from a previous attempt, or from a
 daemon that reconnected mid-transition) cannot commit the wrong step.
 
+**What shipped, and what the above is still owed.** The mechanism PR (#1000) took the
+same safety rule — never commit while the old authority might still be serving — but
+paid for it with **preconditions instead of choreography**, so no new wire frame, fence
+column, or transition generation exists yet:
+
+- _Join_ is refused (409) while the daemon has directly placed agents, rather than
+  running the move once per agent inside one fence. The operator re-places them first,
+  with the move machinery that already exists.
+- _Leave_ is refused (409) while the daemon holds a **live** duty lease, rather than
+  sending a correlated withdrawal and committing on the ack. Draining the daemon, or
+  simply letting its leases lapse, is the "stop and confirm" step — a lapsed lease is
+  strictly later than that member's own self-fence horizon, which is the same evidence
+  the unreachable-leaver path above waits for.
+- Either way the daemon relearns its set the one way it ever learns it: the CP closes
+  the socket with `1012` and the reconnect's `auth/ok` carries the new membership. Both
+  admitted transitions leave nothing running to disturb, so the reconnect costs nothing.
+
+That is strictly narrower than §3, never wider: every transition it performs is one §3
+also permits. What is owed is the operator ergonomics — the one-action enrol-with-agents
+and drain-and-leave — which is where the correlated request, the leaving fence, and the
+transition generation earn their keep.
+
 ## 4. What does not change
 
 Stated so nobody rebuilds it: install-on-grant, the self-fence, the withdrawal guard,
@@ -262,11 +287,14 @@ was a set all along. Also: a new org-less daemon row (a Pod that just authentica
 must be enrolled in the org-less set as part of `upsertOnAuth`, so pool membership stays
 automatic; a `daemon`-kind daemon row is never enrolled anywhere by itself.
 
-**PR 2 — org sets (#1000, open).** Console: set CRUD in org settings, membership on the daemon detail,
-one more placement entry per set. The three duty handlers and the heartbeat handler:
+**PR 2 — org sets (#1000).** The three duty handlers and the heartbeat handler:
 `SCOPE_DENIED` becomes "in no set". `auth/ok` announces the daemon's set; the daemon's
 enforcement predicate reads it. Nothing in the ledger changes — PR 1 already made it
-set-shaped.
+set-shaped. Org-set CRUD and membership are an org-scoped REST surface
+(`/orgs/:orgId/member-sets`), and the daemon read model carries its set. **Shipped as the
+mechanism**, with the transition ergonomics reduced to the preconditions §3 records.
+Console — set CRUD in org settings, membership on the daemon detail, one more placement
+entry per set — is still to come; the data and wire formats it needs are in place.
 
 Load-bearing tests, all mutation-checked: an org-scoped member of set G in org X claims
 a `set`-placed agent of X in G; the same member is refused a `set` agent of X in another

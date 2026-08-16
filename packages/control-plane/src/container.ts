@@ -425,6 +425,8 @@ export function buildContainer(
     },
     // Resolves the daemon's org slug for the org-scoped deep link (`…/<orgSlug>/sessions/…`).
     repos.org,
+    // The set `auth/ok` announces — the daemon's duty-enforcement predicate (daemon-groups.md §3).
+    repos.memberSet,
     clusterIdentity
   )
   const apiKeys = new ApiKeyService(codec, repos.apiKey, repos.daemon, repos.audit, clock)
@@ -1034,6 +1036,7 @@ export function buildContainer(
       agent: repos.agent,
       assignment: repos.assignment,
       memberSet: repos.memberSet,
+      dutyGroup: repos.dutyGroup,
       daemonLifecycleOp: repos.daemonLifecycleOp,
       cron: repos.cron,
       hook: repos.hook,

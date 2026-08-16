@@ -39,7 +39,7 @@ import { lockSkillSourceNameScopes } from '../skill-source-lock.js'
 import { tryLockMemoryConnectionScopes } from '../memory-connection-lock.js'
 import { PgHookRepo } from './hook.repo.js'
 import { lockAgentPlacement, revokeActiveWebchatMcpDelegations } from './agent-placement.js'
-import { assertAgentMayUseSet } from './member-set.repo.js'
+import { assertAgentMayUseSet, assertDaemonNotInSet } from './member-set.repo.js'
 
 /** An agent may be created already placed. A `set` placement names a set rather than a machine, so
  *  the create input carries a kind and the columns follow from it rather than from a daemon id. */
@@ -316,6 +316,7 @@ export class PgAgentRepo implements AgentRepo {
       // Third write-time invariant (daemon-groups.md §2): a create places too, so it takes it.
       if (input.placementKind === 'set' && input.setId)
         await assertAgentMayUseSet(tx, { id: input.id, orgId: input.orgId }, input.setId)
+      if (input.placementKind !== 'set' && input.daemonId) await assertDaemonNotInSet(tx, input.id, input.daemonId)
       const a = await tx.agent.create({
         data: {
           id: input.id,
@@ -831,6 +832,7 @@ export class PgAgentRepo implements AgentRepo {
       if (!current) return
       // Third write-time invariant (daemon-groups.md §2), inside the transaction that writes it.
       if (target.kind === 'set') await assertAgentMayUseSet(tx, { id: agentId, orgId: current.orgId }, target.setId)
+      if (target.kind === 'daemon') await assertDaemonNotInSet(tx, agentId, target.daemonId)
       const columns = placementColumns(target)
       await tx.agent.update({
         where: { id: agentId },
@@ -870,6 +872,7 @@ export class PgAgentRepo implements AgentRepo {
         const current = await lockAgentPlacement(tx, agentId)
         if (!current || !samePlacement(placementTargetOf(current), expected)) return null
         if (target.kind === 'set') await assertAgentMayUseSet(tx, { id: agentId, orgId: current.orgId }, target.setId)
+        if (target.kind === 'daemon') await assertDaemonNotInSet(tx, agentId, target.daemonId)
         const a = await tx.agent.update({
           where: {
             id: agentId,

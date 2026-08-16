@@ -382,6 +382,7 @@ export function buildHttpApp(
       agent: agentRepo,
       assignment: new PgAssignmentRepo(prisma),
       memberSet: memberSets,
+      dutyGroup: dutyGroupRepo,
       daemonLifecycleOp: daemonLifecycleOpRepo,
       cron: new PgCronRepo(prisma),
       hook: hookRepo,
@@ -478,7 +479,8 @@ export function buildHttpApp(
       epoch,
       clock,
       { HEARTBEAT_SEC: 15, DUTY_LEASE_MS: DUTY_LEASE_DEFAULTS.leaseMs },
-      new PgOrgRepo(prisma)
+      new PgOrgRepo(prisma),
+      memberSets
     ),
     apiKeys: apiKeyService,
     oauth: new OAuthService(oauthRepo, apiKeyService, codec, clock),

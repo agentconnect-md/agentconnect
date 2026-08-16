@@ -63,6 +63,8 @@ async function boot(root: string, daemonId: string, scope: 'frame' | 'legacy') {
   inner.cfg.daemonId = daemonId
   inner.cpClient = {
     organizationScope: () => scope,
+    // Membership, not tenancy, is what makes duties enforced (daemon-groups.md §3).
+    memberSet: () => (scope === 'frame' ? { setId: '9f11e5e7-0000-4000-8000-000000000001', name: 'Cloud' } : null),
     state: 'READY',
     stop: async () => {},
     releaseDuties: vi.fn(async () => {}),

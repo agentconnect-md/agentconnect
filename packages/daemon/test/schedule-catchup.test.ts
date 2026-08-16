@@ -79,6 +79,7 @@ async function boot(root: string) {
   // Duty leases gate service, exactly like an install-wide pool member.
   inner.cpClient = {
     organizationScope: () => 'frame',
+    memberSet: () => ({ setId: '9f11e5e7-0000-4000-8000-000000000001', name: 'Cloud' }),
     stop: async () => {},
     releaseDuties: vi.fn(async () => {}),
     reportDutiesNow: vi.fn(() => {}),

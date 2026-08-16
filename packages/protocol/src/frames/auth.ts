@@ -51,6 +51,11 @@ export const AuthOk = z.object({
   // Single-org daemons inherit tenant context from auth; install-wide pool members require
   // every org-scoped post-auth frame to carry `Envelope.orgId`.
   organizationMode: z.enum(['connection', 'frame']).default('connection'),
+  // The member set this daemon belongs to (docs/designs/daemon-groups.md §3); absent means it is
+  // in none. Membership is never negotiated on the wire — the CP tells the daemon, the daemon does
+  // not tell — and this is the daemon's whole duty-enforcement predicate: in a set it serves only
+  // what it holds a lease for, in no set it owns its agents outright.
+  memberSet: z.object({ setId: z.string().uuid(), name: z.string() }).optional(),
   // Base URL of the Web App console (the CP's own public origin), so the daemon can build
   // session deep links without local config. Omitted when the CP has no console URL
   // configured; a daemon-local `webAppUrl` overrides it.

@@ -10,6 +10,9 @@ const DAEMON_ID = '22222222-2222-4222-8222-222222222222'
 const GROUP = '11111111-1111-4111-8111-111111111111'
 const GROUP_B = '11111111-1111-4111-8111-111111111112'
 const AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1'
+// The install-wide pool, as `auth/ok` announces it — membership is what puts this daemon in the
+// duty ledger at all (daemon-groups.md §3), so a lease can only exist while it carries one.
+const POOL_SET = { setId: '9f11e5e7-0000-4000-8000-000000000001', name: 'Cloud' }
 const LEASE_MS = 120_000
 // The shipped fence: 3/4 of the horizon past the last heartbeat that carried duties.
 const FENCE_MS = 90_000
@@ -44,7 +47,8 @@ async function handshake(t: FakeTransport, epoch: number, dutyLeaseMs?: number):
           heartbeatSec: BEAT_MS / 1000,
           ...(dutyLeaseMs !== undefined ? { dutyLeaseMs } : {}),
           serverTime: '2026-08-14T00:00:00.000Z',
-          organizationMode: 'frame'
+          organizationMode: 'frame',
+          memberSet: POOL_SET
         },
         { corr: auth.id }
       )

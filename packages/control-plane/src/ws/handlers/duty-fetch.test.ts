@@ -12,6 +12,7 @@ const AGENT = 'a0a0a0a0-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const INTEGRATION = '11111111-1111-4111-8111-111111111111'
 const CRON = '22222222-2222-4222-8222-222222222222'
 const ORG = 'org-a'
+const SET = '33333333-3333-4333-8333-333333333333'
 
 const AGENT_RECORD = { id: AGENT, orgId: ORG, daemonId: DAEMON }
 
@@ -52,11 +53,12 @@ function fetchFrame(agentId = AGENT, orgId: string | null = ORG): AnyFrame {
   } as AnyFrame
 }
 
-/** An install-wide connection — the only kind that can hold duties. */
-function fakeConn(orgId: string | null = null) {
+/** A connection in a member set — the only kind that can hold duties (daemon-groups.md §3). */
+function fakeConn(orgId: string | null = null, setId: string | null = SET) {
   return {
     daemonId: DAEMON,
     orgId,
+    setId,
     replyTo: vi.fn(),
     sendError: vi.fn()
   } as unknown as DaemonConnection & { replyTo: ReturnType<typeof vi.fn>; sendError: ReturnType<typeof vi.fn> }
@@ -85,8 +87,8 @@ function fakeDeps(
 }
 
 describe('handleDutyFetch', () => {
-  it('refuses an org-scoped connection — the duty ledger is install-wide', async () => {
-    const conn = fakeConn(ORG)
+  it('refuses a connection in no member set — membership is the door', async () => {
+    const conn = fakeConn(ORG, null)
     const agentBundle = vi.fn(async () => BUNDLE)
     const frame = fetchFrame()
 
@@ -95,11 +97,24 @@ describe('handleDutyFetch', () => {
     expect(conn.sendError).toHaveBeenCalledWith(
       frame.id,
       'SCOPE_DENIED',
-      'duty ledger requires an install-wide connection',
+      'duty ledger requires membership in a member set',
       false
     )
     expect(conn.replyTo).not.toHaveBeenCalled()
     expect(agentBundle).not.toHaveBeenCalled()
+  })
+
+  it('admits an ORG-SCOPED connection that is in a set — tenancy is not the door', async () => {
+    // The narrowing is the write-time membership invariants', not this handler's: an org set can
+    // only ever contain that org's daemons, so "in a set" already implies the tenancy fence.
+    const conn = fakeConn(ORG, SET)
+    const agentBundle = vi.fn(async () => BUNDLE)
+    const frame = fetchFrame()
+
+    await handleDutyFetch(frame, conn, fakeDeps({ agent: AGENT_RECORD, holdsAgent: true, agentBundle }))
+
+    expect(conn.sendError).not.toHaveBeenCalled()
+    expect(conn.replyTo).toHaveBeenCalledWith(frame, 'duty/fetch/ok', { bundle: BUNDLE })
   })
 
   it('refuses a fetch that names no organization', async () => {
