@@ -3,10 +3,19 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { LocalStore, sessionKey } from '../src/store/local-store.js'
+import { LocalStore, sessionKey, type StoreDatabase } from '../src/store/local-store.js'
 
 function store(): LocalStore {
   return new LocalStore(join(mkdtempSync(join(tmpdir(), 'ac-db-')), 'local.sqlite'))
+}
+
+/** Two pool members over ONE database — what the shared Postgres schema is during a rollout. */
+function sharedMembers(first: string, second: string): [LocalStore, LocalStore] {
+  const database = new DatabaseSync(':memory:') as unknown as StoreDatabase
+  return [
+    new LocalStore({ database, shared: true, ownerId: first }),
+    new LocalStore({ database, shared: true, ownerId: second })
+  ]
 }
 
 describe('LocalStore schema versioning', () => {
@@ -74,7 +83,7 @@ describe('LocalStore schema versioning', () => {
     expect(inboxColumns).toEqual(expect.arrayContaining(['reportOwnerId', 'reportClaimedAt']))
     // A stamp is only comparable to a fire of the same schedule definition (#1031).
     expect(cronColumns).toContain('definition')
-    expect(userVersion(path)).toBe(7)
+    expect(userVersion(path)).toBe(8)
   })
 
   it('re-keys the capture gate by agent when upgrading a v5 store', () => {
@@ -106,7 +115,52 @@ describe('LocalStore schema versioning', () => {
     expect(upgraded.isCaptureExcluded('bot-c', 'acp-2')).toBe(true)
     upgraded.close()
 
-    expect(userVersion(path)).toBe(7)
+    expect(userVersion(path)).toBe(8)
+  })
+
+  it('re-keys the runtime catalog cache on its owning member when upgrading a v7 store', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v7-')), 'local.sqlite')
+    new LocalStore(path).close()
+    const old = new DatabaseSync(path)
+    old.exec(`
+      DROP TABLE runtime_catalog_meta;
+      DROP TABLE runtime_model_catalog;
+      CREATE TABLE runtime_catalog_meta (
+        runtimeId TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, source TEXT NOT NULL, defaultModel TEXT,
+        permissionModes TEXT, defaultPermissionMode TEXT, complete INTEGER NOT NULL DEFAULT 0,
+        modelsHash TEXT, observedAt INTEGER NOT NULL
+      );
+      CREATE TABLE runtime_model_catalog (
+        runtimeId TEXT NOT NULL, modelId TEXT NOT NULL, fingerprint TEXT NOT NULL,
+        capsJson TEXT NOT NULL, observedAt INTEGER NOT NULL, PRIMARY KEY (runtimeId, modelId)
+      );
+      INSERT INTO runtime_catalog_meta (runtimeId, fingerprint, source, complete, observedAt)
+        VALUES ('claude', 'fp-1', 'acp', 1, 100);
+      INSERT INTO runtime_model_catalog (runtimeId, modelId, fingerprint, capsJson, observedAt)
+        VALUES ('claude', 'opus', 'fp-1', '{}', 100);
+    `)
+    old.exec('PRAGMA user_version = 7')
+    old.close()
+
+    const upgraded = new LocalStore(path)
+    // Pre-upgrade rows name no member, so no member can honestly claim them; the next
+    // probe refills the cache this one owns.
+    expect(upgraded.getRuntimeCatalogMeta('claude')).toBeUndefined()
+    expect(upgraded.listRuntimeModelCaps()).toEqual([])
+    upgraded.close()
+
+    const after = new DatabaseSync(path)
+    const metaColumns = after.prepare('PRAGMA table_info(runtime_catalog_meta)').all() as { name: string; pk: number }[]
+    const capColumns = after.prepare('PRAGMA table_info(runtime_model_catalog)').all() as { name: string; pk: number }[]
+    after.close()
+    const primaryKey = (columns: { name: string; pk: number }[]): string[] =>
+      columns
+        .filter((column) => column.pk > 0)
+        .sort((a, b) => a.pk - b.pk)
+        .map((column) => column.name)
+    expect(primaryKey(metaColumns)).toEqual(['ownerId', 'runtimeId'])
+    expect(primaryKey(capColumns)).toEqual(['ownerId', 'runtimeId', 'modelId'])
+    expect(userVersion(path)).toBe(8)
   })
 
   it('refuses a store written by a newer daemon WITHOUT touching it first', () => {
@@ -1365,7 +1419,94 @@ describe('LocalStore runtime model-catalog cache (runtime-model-catalog.md §4)'
     expect(s.getRuntimeCatalogMeta('old-rt')).toBeUndefined()
     expect(s.getRuntimeCatalogMeta('fresh-rt')).toBeDefined()
     expect(s.listRuntimeModelCaps().map((c) => c.runtimeId)).toEqual(['fresh-rt'])
+    // A single daemon owns every row, so the departed-member window never reaches them.
+    s.gcRuntimeCatalog(500, 5000)
+    expect(s.getRuntimeCatalogMeta('fresh-rt')).toBeDefined()
+    expect(s.listRuntimeModelCaps().map((c) => c.runtimeId)).toEqual(['fresh-rt'])
     s.close()
+  })
+
+  it('gcRuntimeCatalog keeps a refreshed catalog whole, models discovery found included', () => {
+    // Staleness is per catalog, not per row: a phase-1 refresh re-stamps the meta row and the
+    // seed model only, so sweeping row by row would strip the older model rows while leaving
+    // complete/modelsHash standing — a closed gate over a permanently partial matrix.
+    const s = store()
+    s.recordRuntimeCatalogMeta(meta('claude', 'fp-1', 100))
+    s.upsertRuntimeModelCap(cap('claude', 'opus', 100))
+    s.upsertRuntimeModelCap(cap('claude', 'sonnet', 100))
+    s.markRuntimeCatalogComplete('claude', 'fp-1', 'hash-1', 100)
+    s.recordRuntimeCatalogMeta(meta('claude', 'fp-1', 900))
+    s.upsertRuntimeModelCap(cap('claude', 'opus', 900))
+
+    s.gcRuntimeCatalog(500)
+    expect(s.getRuntimeCatalogMeta('claude')).toMatchObject({ complete: true, modelsHash: 'hash-1' })
+    expect(s.listRuntimeModelCaps('claude').map((c) => c.modelId)).toEqual(['opus', 'sonnet'])
+    s.close()
+  })
+
+  it('keeps two members of one shared store on independent catalogs', () => {
+    // The rollout case: two image generations, one Postgres schema. Each member reads and
+    // writes only its own rows, so neither sees the other's fingerprint as a change.
+    const [a, b] = sharedMembers('member-a', 'member-b')
+    a.recordRuntimeCatalogMeta(meta('claude', 'fp-a'))
+    a.upsertRuntimeModelCap(cap('claude', 'opus'))
+    a.markRuntimeCatalogComplete('claude', 'fp-a', 'hash-a', 200)
+
+    b.recordRuntimeCatalogMeta(meta('claude', 'fp-b'))
+    b.upsertRuntimeModelCap(cap('claude', 'haiku'))
+    b.upsertRuntimeModelCap(cap('claude', 'sonnet'))
+    b.pruneRuntimeModelCaps('claude', ['haiku'])
+
+    // a's gate stays closed on its own generation; the prune-on-success stayed inside b.
+    expect(a.getRuntimeCatalogMeta('claude')).toMatchObject({
+      fingerprint: 'fp-a',
+      complete: true,
+      modelsHash: 'hash-a',
+      observedAt: 200
+    })
+    expect(b.getRuntimeCatalogMeta('claude')).toMatchObject({ fingerprint: 'fp-b', complete: false })
+    expect(a.listRuntimeModelCaps('claude').map((c) => c.modelId)).toEqual(['opus'])
+    expect(b.listRuntimeModelCaps('claude').map((c) => c.modelId)).toEqual(['haiku'])
+    // Hydration too: a member boots on its own catalog, never a peer image's.
+    expect(a.listRuntimeCatalogMetas().map((m) => m.fingerprint)).toEqual(['fp-a'])
+    expect(b.listRuntimeModelCaps().map((c) => c.modelId)).toEqual(['haiku'])
+    // And a completion from the other member cannot close a's gate on a's fingerprint.
+    b.markRuntimeCatalogComplete('claude', 'fp-a', 'hash-a', 300)
+    expect(b.getRuntimeCatalogMeta('claude')?.complete).toBe(false)
+    a.close()
+  })
+
+  it('gcRuntimeCatalog reclaims a departed member at the shorter cutoff', () => {
+    const [live, gone] = sharedMembers('member-live', 'member-gone')
+    live.recordRuntimeCatalogMeta(meta('claude', 'fp-live', 100))
+    live.upsertRuntimeModelCap(cap('claude', 'opus', 100))
+    gone.recordRuntimeCatalogMeta(meta('claude', 'fp-gone', 100))
+    gone.upsertRuntimeModelCap(cap('claude', 'sonnet', 100))
+
+    live.gcRuntimeCatalog(50, 500)
+    expect(live.getRuntimeCatalogMeta('claude')).toMatchObject({ fingerprint: 'fp-live' })
+    expect(live.listRuntimeModelCaps('claude').map((c) => c.modelId)).toEqual(['opus'])
+    expect(gone.getRuntimeCatalogMeta('claude')).toBeUndefined()
+    expect(gone.listRuntimeModelCaps()).toEqual([])
+    live.close()
+  })
+
+  it('a peer sweep cannot strip a live member catalog down the middle', () => {
+    // The live member last ran a full discovery long ago and has only been refreshing phase-1
+    // since. Its meta row is fresh, its older model rows are not — and its gate stays closed on
+    // an unchanged fingerprint, so anything a peer deletes here is never rediscovered.
+    const [live, peer] = sharedMembers('member-live', 'member-peer')
+    live.recordRuntimeCatalogMeta(meta('claude', 'fp-live', 100))
+    live.upsertRuntimeModelCap(cap('claude', 'opus', 100))
+    live.upsertRuntimeModelCap(cap('claude', 'sonnet', 100))
+    live.markRuntimeCatalogComplete('claude', 'fp-live', 'hash-live', 100)
+    live.recordRuntimeCatalogMeta(meta('claude', 'fp-live', 900))
+    live.upsertRuntimeModelCap(cap('claude', 'opus', 900))
+
+    peer.gcRuntimeCatalog(50, 500)
+    expect(live.getRuntimeCatalogMeta('claude')).toMatchObject({ complete: true, modelsHash: 'hash-live' })
+    expect(live.listRuntimeModelCaps('claude').map((c) => c.modelId)).toEqual(['opus', 'sonnet'])
+    live.close()
   })
 
   it('finds a pending skill proposal behind many skill-bearing dreams', () => {

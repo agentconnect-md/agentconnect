@@ -256,4 +256,40 @@ describe.skipIf(!databaseUrl)('PostgreSQL pool member store', () => {
       await first.close()
     }
   })
+
+  it('keeps each member on its own runtime model catalog', async () => {
+    // The rollout case against the real schema: two members, two fingerprints, one table.
+    const suffix = randomUUID()
+    const runtimeId = `runtime-${suffix}`
+    const config = { version: 1 as const, databaseUrl: databaseUrl!, maxConnections: 2 }
+    const first = await PostgresDataPlane.open(config, () => undefined)
+    const second = await PostgresDataPlane.open(config, () => undefined)
+    try {
+      first.store.recordRuntimeCatalogMeta({ runtimeId, fingerprint: 'fp-1', source: 'acp', observedAt: 100 })
+      first.store.upsertRuntimeModelCap({ runtimeId, modelId: 'a', fingerprint: 'fp-1', caps: {}, observedAt: 100 })
+      first.store.markRuntimeCatalogComplete(runtimeId, 'fp-1', 'hash-1', 100)
+
+      second.store.recordRuntimeCatalogMeta({ runtimeId, fingerprint: 'fp-2', source: 'acp', observedAt: 200 })
+      second.store.upsertRuntimeModelCap({ runtimeId, modelId: 'b', fingerprint: 'fp-2', caps: {}, observedAt: 200 })
+      second.store.pruneRuntimeModelCaps(runtimeId, ['b'])
+
+      expect(first.store.getRuntimeCatalogMeta(runtimeId)).toMatchObject({
+        fingerprint: 'fp-1',
+        complete: true,
+        modelsHash: 'hash-1'
+      })
+      expect(second.store.getRuntimeCatalogMeta(runtimeId)).toMatchObject({ fingerprint: 'fp-2', complete: false })
+      expect(first.store.listRuntimeModelCaps(runtimeId).map((row) => row.modelId)).toEqual(['a'])
+      expect(second.store.listRuntimeModelCaps(runtimeId).map((row) => row.modelId)).toEqual(['b'])
+
+      // A departed member's cache is unreadable by anyone, so the shorter window takes it.
+      second.store.gcRuntimeCatalog(1, 150)
+      expect(first.store.getRuntimeCatalogMeta(runtimeId)).toBeUndefined()
+      expect(second.store.getRuntimeCatalogMeta(runtimeId)).toMatchObject({ fingerprint: 'fp-2' })
+    } finally {
+      second.store.gcRuntimeCatalog(Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER)
+      await second.close()
+      await first.close()
+    }
+  })
 })

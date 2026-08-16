@@ -22501,10 +22501,13 @@ export class Daemon {
    *  that would wipe the CP's learned state until the sweep completes. Rows for
    *  runtimes not in the installed catalog are ignored (kept on disk — the
    *  runtime may only be temporarily unresolved); rows older than 30 days are
-   *  garbage-collected. */
+   *  garbage-collected. The store reads only this member's rows, so a member can
+   *  never boot advertising models a peer's image runs and its own does not. */
   private hydrateRuntimeCatalogCache(): void {
     try {
-      this.store.gcRuntimeCatalog(this.clock.now() - 30 * 24 * 3600_000)
+      // A member's own last-good catalogs keep the 30-day window; a departed member's are
+      // reclaimed after 7 days, long enough that a quiet live peer keeps its cache.
+      this.store.gcRuntimeCatalog(this.clock.now() - 30 * 24 * 3600_000, this.clock.now() - 7 * 24 * 3600_000)
       for (const meta of this.store.listRuntimeCatalogMetas()) {
         if (!this.runtimeCatalog.entries[meta.runtimeId]) continue
         this.rebuildRuntimeCatalog(meta.runtimeId)
