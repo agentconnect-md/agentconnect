@@ -3866,8 +3866,8 @@ export class Daemon {
   private dutyConnectionsRequested = 0
   private dutyConnectionsConverged = 0
   private dutyConvergeRetryTimer?: TimerHandle
-  // Register snapshots publish agents before integrations. Carry newly-owned
-  // inbox rows across coalesced passes and retry only after convergence is idle.
+  // Register snapshots publish agents before integrations. Carry newly-owned (installed or
+  // duty-gained) inbox rows across coalesced passes and replay only after convergence is idle.
   private readonly pendingInboxReplayAgents = new Set<string>()
   async reconcile(): Promise<void> {
     if (this.reconcileRun) {
@@ -12946,6 +12946,10 @@ export class Daemon {
     for (const agentId of result.agentsLost) this.stopServingAgent(agentId)
     for (const agentId of result.agentsGained) this.adoptClusterSandbox(agentId)
     this.reclaimInterruptedWork(result.agentsGained)
+    // A duty newly held here replays that agent's shared inbox backlog even when its replica was
+    // already installed and the grant fetched nothing (#1034): a crashed holder's admitted rows
+    // must run on the successor. Drained by the reconcile below, once its connections converge.
+    for (const agentId of result.agentsGained) this.pendingInboxReplayAgents.add(agentId)
     const changed = result.added.length + result.updated.length + result.agentsGained.length + result.agentsLost.length
     if (changed === 0) return
     // Report the new digest immediately. The CP publishes the projections that address this member
@@ -20620,7 +20624,7 @@ export class Daemon {
     this.serialQueue.clear()
   }
 
-  /** Re-admit durable inbox rows through the serial gate at startup while preserving replay ownership and FIFO. */
+  /** Re-admit durable inbox rows through the serial gate — at startup, on install, or on a duty gain — preserving replay ownership and FIFO. */
   private replayInbox(agentIds?: ReadonlySet<string>): void {
     let rows: InboxRow[]
     try {
@@ -20643,9 +20647,11 @@ export class Daemon {
       // Idempotency: a row already backing a live gate entry (re-admitted this startup, or a
       // duplicate id) is not re-dispatched.
       if (this.liveInboxIds.has(row.id)) continue
-      // Skip (leave the row) for an agent this daemon doesn't own — another owner may hold it.
-      if (!this.agents.has(row.agentId)) {
-        this.log.warn(`durable inbox: skipping replay of ${row.id} — unknown agent "${row.agentId}"`)
+      // Leave the row for its holder: an agent this daemon lacks, or a replica whose duty lives
+      // elsewhere. On a shared store the whole fleet's backlog is here, so that is not an anomaly.
+      if (!this.agents.has(row.agentId) || !this.servesAgent(row.agentId)) {
+        const level = this.dataPlane ? 'debug' : 'warn'
+        this.log[level](`durable inbox: skipping replay of ${row.id} — agent "${row.agentId}" is not served here`)
         continue
       }
       let msg: NormalizedMessage
