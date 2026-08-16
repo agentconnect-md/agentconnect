@@ -225,7 +225,12 @@ export class HookRedeliveryReconciler {
     // declare a slice swept that was never listed, which is exactly how a lost
     // delivery stays lost.
     const oldestListedMs = deliveries.length > 0 ? Date.parse(deliveries[deliveries.length - 1]!.delivered_at) : NaN
-    const sweptUntil = truncated && !Number.isNaN(oldestListedMs) && oldestListedMs > oldest ? oldestListedMs : newest
+    const truncatedFloor =
+      truncated && !Number.isNaN(oldestListedMs) && oldestListedMs > oldest ? oldestListedMs : undefined
+    // …and never PAST `newest`: everything above that ceiling is inside the
+    // grace window and was skipped below, so a budget exhausted entirely inside
+    // the grace period must not carry coverage over the deliveries it withheld.
+    const sweptUntil = truncatedFloor === undefined ? newest : Math.min(newest, truncatedFloor)
     if (sweptUntil !== newest) {
       this.log?.warn(
         { count: deliveries.length, reachedBack: new Date(sweptUntil).toISOString() },

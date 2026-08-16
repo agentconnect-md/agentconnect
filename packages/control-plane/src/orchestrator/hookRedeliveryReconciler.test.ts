@@ -368,6 +368,21 @@ describe('HookRedeliveryReconciler', () => {
     expect(h.listMock.mock.calls[1]?.[0]?.deliveredSince).toEqual(new Date(listedFloor))
   })
 
+  it('a listing truncated entirely inside the grace window covers no more than the ceiling it evaluated', async () => {
+    // Every listed delivery is younger than `graceMs`, so none of them were
+    // evaluated. Coverage must stop at that ceiling — carrying it up to the
+    // oldest listed delivery would skip everything in between once those
+    // deliveries age into eligibility.
+    const h = make({
+      truncated: true,
+      deliveries: () => [delivery({ delivered_at: new Date(NOW - 30_000).toISOString() })]
+    })
+    await h.reconciler.tick()
+    h.clock.advance(CFG.intervalMs)
+    await h.reconciler.tick()
+    expect(h.listMock.mock.calls[1]?.[0]?.deliveredSince).toEqual(new Date(NOW - CFG.graceMs))
+  })
+
   it('a complete listing that is simply short still advances coverage', async () => {
     const h = make({ deliveries: () => [delivery()] }) // truncated: false — quiet App
     await h.reconciler.tick()
