@@ -72,12 +72,9 @@ The daemon pool and agent sandboxes are separate namespaces. The runtime plane r
 `AC_K8S_SANDBOX_NAMESPACE` and uses it for every `SandboxClaim` and `Sandbox` request; it never
 defaults to the namespace mounted into the daemon Pod's ServiceAccount.
 
-Runtime probes use a member-hashed claim name plus an expiry annotation. The pool's orphan
-reconciler — `agentconnect-daemon reconcile --once`, run as a CronJob rather than in any member
-(k8s-daemon-pool.md §4) — collects expired probe claims by that window, bounding resources
-left by a crash or failed teardown without reading daemon-local storage or touching ordinary agent
-claims. UID/resourceVersion delete preconditions prevent a stale sweep from deleting a same-name
-claim recreated by a container restart.
+Runtime probes use a member-hashed claim name plus an expiry annotation, so simultaneous member
+startup never races on one probe claim and a missed teardown cannot retain a Sandbox forever: the
+pool's orphan reconciler collects an expired one ([k8s-daemon-pool.md](k8s-daemon-pool.md) §3–§4).
 
 ## 3. Binding: proving which pod accepted the connection
 
@@ -256,15 +253,11 @@ any agent it holds a launch for that no longer has a host. Suspension deletes th
 nothing else: the Sandbox object and the workspace volume survive, so the next message resumes
 onto the same checkout and the same runtime history rather than paying a clone.
 
-**On a pool the sweep is duty-gated, because a launch is not evidence of ownership.** The
+**On a pool the sweep is duty-gated, because a launch is not evidence of ownership** — the
 `busy` counter a member reads is its own, so an ex-holder that kept its launch record would
-see zero holders and suspend a pod its successor is binding. So the sweep skips any agent
-this member does not serve, losing a duty releases the launch with its shim session, tunnel
-proxy and loss watch (the claim, Sandbox and volume are untouched), and gaining one
-re-derives the launch from the cluster — two GETs, recording it only when the pod is
-Running. Idleness is then `max(agentLastActivityTs, launch.since)`, so an agent whose
-activity the shared store does not record gets a full window from the takeover instead of an
-instant epoch-idle suspend.
+see zero holders and suspend a pod its successor is binding. The launch therefore follows
+the duty and idleness is floored at the takeover, which is
+[k8s-daemon-pool.md](k8s-daemon-pool.md) §4.
 
 Suspension and acquisition exclude each other, and the lease counter is not what does it: `busy`
 counts holders, it does not keep new ones out, so a dispatch arriving during the Kubernetes write
@@ -290,12 +283,9 @@ One gap this leaves, deliberately: a pod still Running from _before_ a daemon re
 launch in the new process, so nothing considers it until the agent is used again — at which
 point it acquires a launch and the rule applies from then on. On a pool member the duty grant
 closes it, since re-deriving the launch is exactly what the grant does; a single daemon
-restarting still pays one pod until its agent's next message. The drain path solves the same
-problem by keying on Sandbox name, which works because a rollout needs no agent identity;
-suspension does need it, to ask whether that agent has been quiet, and the Sandbox object
-carries no agent label to recover it from (the labels go to the pod). Inventing a mapping is
-worse than naming the gap: the steady-state case is covered, and the restart case costs one
-pod until the agent's next message.
+restarting still pays one pod until its agent's next message. Naming the gap beats a
+startup-time reconstruction of every Sandbox in the namespace: the steady-state case is covered,
+and the cost of the restart case is that one pod.
 
 **A departed pod ends its launch.** Suspension, an eviction and a node drain all produce the
 same thing: a channel that does not come back. The session behind it is terminal — `attach()`
