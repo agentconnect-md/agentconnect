@@ -5,6 +5,7 @@ import { ShimDialer } from '../src/shim/dialer.js'
 import { ShimServer } from '../src/shim/server.js'
 import { ShimSession } from '../src/shim/session.js'
 import type { SpawnRecord } from '../src/shim/binding.js'
+import type { ShimConnection } from '../src/shim/listener.js'
 import { SHIM_SUBPROTOCOL, SHIM_TOKEN_AUDIENCE, SHIM_WS_PATH } from '../src/shim/protocol.js'
 
 // Zero-jitter millisecond backoff so reconnect tests never sleep real seconds.
@@ -117,26 +118,34 @@ describe('sandbox shim dial-in', () => {
   it('waits for the replacement connection while a bound channel is reconnecting', async () => {
     // Both reconnect loops run on injected zero-jitter backoffs, so the redial and the
     // sandbox re-attach race each other every run instead of sleeping jittered seconds.
+    //
+    // The dial's own `onConnection` hook is what the redial is awaited on. Waiting inside
+    // `connect()` instead would put the supervised redial in a race with that call's real
+    // wall-clock binding deadline, which is what made this flaky on a loaded runner (#938):
+    // the assertion here is about ordering, so it must not be timed against one.
+    const bound: ShimConnection[] = []
     const { endpoint } = await sandbox({ backoff: fastBackoff() })
     const dialer = new ShimDialer({
       verifier: {
         reviewToken: async () => ({ authenticated: true, podName: 'sandbox-pod-1', podUid: 'pod-uid-1' })
       },
       backoff: fastBackoff,
+      onConnection: (connection) => void bound.push(connection),
       log: { info: () => {}, warn: () => {} }
     })
     dialers.push(dialer)
 
     const first = await dialer.connect(endpoint, record(), 8_000)
+    await waitFor(() => bound.length === 1)
     first.close('force reconnect')
-    // The rebind can outrun a poll, so wait for the first connection to be dropped rather
-    // than for an observable zero-connection window.
-    await waitFor(() => !dialer.connectionsFor('agent-a').includes(first))
+    await waitFor(() => bound.length === 2, 30_000)
 
+    // Already bound, so this resolves from the dial's current connection rather than waiting.
     const replacement = await dialer.connect(endpoint, record(), 8_000)
+    expect(replacement).toBe(bound[1])
     expect(replacement).not.toBe(first)
     expect(dialer.connectionsFor('agent-a')).toEqual([replacement])
-  }, 10_000)
+  }, 40_000)
 
   it('replays frames that arrived while the accepted daemon socket was still unclaimed', async () => {
     const server = new ShimServer()
@@ -146,7 +155,10 @@ describe('sandbox shim dial-in', () => {
       subprotocol: SHIM_SUBPROTOCOL,
       path: SHIM_WS_PATH
     })
-    // The hello lands before the channel FSM attaches — the queued-across-backoff case.
+    // The hello lands before the channel FSM attaches — the queued-across-backoff case. The
+    // settle below is the only real wait left in this file, and it is a one-directional one:
+    // too short and the frame takes the live path instead of the replayed one, which weakens
+    // what is covered but can never fail the assertion, so a slow runner is safe here.
     daemonSide.send(JSON.stringify({ type: 'shim/hello', agentId: 'agent-a', generation: 1 }))
     await new Promise((resolve) => setTimeout(resolve, 50))
     const accepted = await server.nextTransport()

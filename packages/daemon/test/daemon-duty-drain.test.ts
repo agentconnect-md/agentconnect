@@ -9,6 +9,8 @@ import { join } from 'node:path'
 import type { DutyGrantEntry } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
 import type { DutyRegistry } from '../src/cp/duty-registry.js'
+import { fakeSlackAppFactory } from './fakes/slack-app.js'
+import { VirtualClock, runVirtual, settle as flush } from './fakes/virtual-clock.js'
 
 const AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1'
 const AGENT_B = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2'
@@ -43,9 +45,12 @@ const bundle = (agentId: string, name: string) => ({
   crons: []
 })
 
-/** A frame-scope member holding two single-agent groups, with an instrumented stub CP client. */
+/** A frame-scope member holding two single-agent groups, with an instrumented stub CP client.
+ *  Every deadline the drain measures — the budget, the release backoff, the "still busy" sleep —
+ *  runs on the injected clock, so a test skips them in virtual time instead of sleeping them. */
 async function boot(opts: { releaseDuties?: (groupIds: string[]) => Promise<void> } = {}) {
-  const daemon = new Daemon({ root: scaffold() })
+  const clock = new VirtualClock()
+  const daemon = new Daemon({ root: scaffold(), slackAppFactory: fakeSlackAppFactory(), clock })
   await daemon.start()
   const calls: { order: string[]; releases: string[][] } = { order: [], releases: [] }
   const releaseDuties = vi.fn(async (groupIds: string[]) => {
@@ -70,7 +75,7 @@ async function boot(opts: { releaseDuties?: (groupIds: string[]) => Promise<void
   }
   await (daemon as any).admitDutyGrants([grant(GROUP, AGENT), grant(GROUP_B, AGENT_B)])
   expect(duties(daemon).groupIds().sort()).toEqual([GROUP, GROUP_B])
-  return { daemon, calls, releaseDuties, stop, reportDutiesNow }
+  return { daemon, clock, calls, releaseDuties, stop, reportDutiesNow }
 }
 
 const duties = (d: Daemon) => (d as any).duties as DutyRegistry
@@ -135,7 +140,7 @@ describe('shutdown drain of a duty-holding member', () => {
 
   it('a late grant is not acknowledged while the loop is still waiting on a busy group', async () => {
     const LATE = '11111111-1111-4111-8111-111111111113'
-    const { daemon, calls } = await boot()
+    const { daemon, clock, calls } = await boot()
     const settle = (daemon as any).beginActiveDispatch(AGENT, 'slack:C1:T2') as () => void
     const cancel = vi.fn(async () => {})
     ;(daemon as any).hosts.set(AGENT, { stop: vi.fn(async () => {}), cancel })
@@ -147,14 +152,16 @@ describe('shutdown drain of a duty-holding member', () => {
       { ...grant(GROUP, AGENT), term: '2' }
     ])
     await vi.waitFor(() => expect(calls.releases).toEqual([[GROUP_B]]))
-    await new Promise((resolve) => setTimeout(resolve, 150))
+    // The loop is now parked on its "still busy" deadline, which is virtual and unfired, so
+    // draining the macrotask queue is proof that nothing further CAN happen — not a guess.
+    await flush()
     // Nothing late is acknowledged, the busy group is still held at its old term, its turn untouched.
     expect(calls.releases).toEqual([[GROUP_B]])
     expect(duties(daemon).get(GROUP)?.term).toBe('1')
     expect(cancel).not.toHaveBeenCalled()
 
     settle()
-    await stopping
+    await runVirtual(clock, stopping)
     // The loop releases GROUP after its turn; only then the late grants (GROUP again is idempotent).
     expect(calls.releases.slice(0, 2)).toEqual([[GROUP_B], [GROUP]])
     expect(
@@ -202,7 +209,7 @@ describe('shutdown drain of a duty-holding member', () => {
       cancel: vi.fn(async () => {})
     })
     ;(daemon as any).applyDutyRevoke([{ groupId: GROUP, reason: 'superseded' }])
-    await new Promise((resolve) => setTimeout(resolve, 20))
+    await flush()
     const warn = vi.spyOn((daemon as any).log, 'warn')
 
     const stopping = daemon.stop()
@@ -219,7 +226,7 @@ describe('shutdown drain of a duty-holding member', () => {
       const { daemon, calls } = await boot()
       // Only GROUP is held, so the loop has nothing to do once it is revoked.
       ;(daemon as any).applyDutyRevoke([{ groupId: GROUP_B, reason: 'gone' }])
-      await new Promise((resolve) => setTimeout(resolve, 20))
+      await flush()
       let finishReconcile!: () => void
       const gate = new Promise<void>((resolve) => {
         finishReconcile = resolve
@@ -234,7 +241,7 @@ describe('shutdown drain of a duty-holding member', () => {
 
       const stopping = daemon.stop()
       ;(daemon as any).applyDutyGrant([{ ...grant(GROUP, AGENT), term: '2' }])
-      await new Promise((resolve) => setTimeout(resolve, 200))
+      await flush()
       // Loop done at once (nothing held), host long gone — still no ack while the socket teardown pends.
       expect(calls.releases).toEqual([])
 
@@ -244,17 +251,18 @@ describe('shutdown drain of a duty-holding member', () => {
     }
     // Never confirmed: lapses.
     {
-      const { daemon, calls } = await boot()
+      const { daemon, clock, calls } = await boot()
       ;(daemon as any).cfg.limits.poolShutdownDrainMs = 1_500
       ;(daemon as any).applyDutyRevoke([{ groupId: GROUP_B, reason: 'gone' }])
-      await new Promise((resolve) => setTimeout(resolve, 20))
+      await flush()
       ;(daemon as any).runReconcile = () => new Promise<void>(() => {})
       ;(daemon as any).applyDutyRevoke([{ groupId: GROUP, reason: 'superseded' }])
       const warn = vi.spyOn((daemon as any).log, 'warn')
 
       const stopping = daemon.stop()
       ;(daemon as any).applyDutyGrant([{ ...grant(GROUP, AGENT), term: '2' }])
-      await stopping
+      // The 1.5s budget is the thing under test, so it is elapsed in virtual time, not slept.
+      await runVirtual(clock, stopping, 2_000)
 
       expect(calls.releases).toEqual([])
       expect(warn.mock.calls.some(([m]) => /late grant .* connection teardown unconfirmed/.test(String(m)))).toBe(true)
@@ -268,7 +276,7 @@ describe('shutdown drain of a duty-holding member', () => {
     ;(daemon as any).applyDutyGrant([
       grant('11111111-1111-4111-8111-111111111114', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa4')
     ])
-    await new Promise((resolve) => setTimeout(resolve, 20))
+    await flush()
     expect(admit).not.toHaveBeenCalled()
     expect(releaseDuties).not.toHaveBeenCalled()
     ;(daemon as any).dutyClaimsSuspended = false
@@ -316,14 +324,15 @@ describe('shutdown drain of a duty-holding member', () => {
   })
 
   it('a group whose teardown cannot be confirmed by the deadline is not released — its lease is left to lapse', async () => {
-    const { daemon, releaseDuties } = await boot()
+    const { daemon, clock, releaseDuties } = await boot()
     ;(daemon as any).cfg.limits.poolShutdownDrainMs = 1_500
     // The reconcile that carries the connection convergence never finishes.
     ;(daemon as any).runReconcile = () => new Promise<void>(() => {})
     const info = vi.spyOn((daemon as any).log, 'info')
     const warn = vi.spyOn((daemon as any).log, 'warn')
 
-    await daemon.stop()
+    // The budget it never confirms within is elapsed in virtual time.
+    await runVirtual(clock, daemon.stop(), 2_000)
 
     expect(releaseDuties).not.toHaveBeenCalled()
     expect(warn.mock.calls.some(([m]) => /not released, its lease lapses/.test(String(m)))).toBe(true)
@@ -334,7 +343,7 @@ describe('shutdown drain of a duty-holding member', () => {
   })
 
   it('a busy group waits for its turn to finish while idle groups are released at once — no turn is cancelled', async () => {
-    const { daemon, calls } = await boot()
+    const { daemon, clock, calls } = await boot()
     // Agent A owns admitted work: an active dispatch lease, exactly what a running turn holds.
     const settle = (daemon as any).beginActiveDispatch(AGENT, 'slack:C1:T1') as () => void
     const cancel = vi.fn(async () => {})
@@ -343,19 +352,21 @@ describe('shutdown drain of a duty-holding member', () => {
     const stopping = daemon.stop()
     // Group B (idle) goes immediately; group A is still held while its turn runs.
     await vi.waitFor(() => expect(calls.releases).toEqual([[GROUP_B]]))
-    await new Promise((resolve) => setTimeout(resolve, 50))
+    // Parked on the loop's virtual "still busy" deadline: draining the queue settles everything
+    // that could still happen, so the negative assertions below are exhaustive rather than timed.
+    await flush()
     expect(duties(daemon).groupIds()).toEqual([GROUP])
     expect(cancel).not.toHaveBeenCalled()
 
     settle()
-    await stopping
+    await runVirtual(clock, stopping)
     expect(calls.releases).toEqual([[GROUP_B], [GROUP]])
     expect(cancel).not.toHaveBeenCalled()
     expect(calls.order.at(-1)).toBe('socket-close')
   })
 
   it('a release the CP never acknowledges is retried until the drain deadline, then counted and left to lapse', async () => {
-    const { daemon, releaseDuties } = await boot({
+    const { daemon, clock, releaseDuties } = await boot({
       releaseDuties: async () => {
         throw new Error('control plane unreachable (client DEGRADED)')
       }
@@ -364,9 +375,11 @@ describe('shutdown drain of a duty-holding member', () => {
     const info = vi.spyOn((daemon as any).log, 'info')
     const warn = vi.spyOn((daemon as any).log, 'warn')
 
-    const startedAt = Date.now()
-    await daemon.stop()
-    const elapsed = Date.now() - startedAt
+    const startedAt = clock.now()
+    // Budget and backoff both run on the injected clock, so the ladder below is exercised in
+    // virtual time — and the bound is asserted against that clock, never against the wall one.
+    await runVirtual(clock, daemon.stop(), 3_000)
+    const elapsed = clock.now() - startedAt
 
     // Retried (1s backoff, then 2s would overrun) and bounded by the budget, not by the retries.
     expect(releaseDuties.mock.calls.length).toBeGreaterThanOrEqual(2)
@@ -380,7 +393,7 @@ describe('shutdown drain of a duty-holding member', () => {
   })
 
   it('an org-scoped daemon is not duty-governed and stops as before — no digest bit, no release', async () => {
-    const daemon = new Daemon({ root: scaffold() })
+    const daemon = new Daemon({ root: scaffold(), slackAppFactory: fakeSlackAppFactory() })
     await daemon.start()
     const releaseDuties = vi.fn(async () => {})
     const reportDutiesNow = vi.fn()

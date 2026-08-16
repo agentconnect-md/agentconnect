@@ -443,8 +443,9 @@ describe('P4 serial gate', () => {
     const stop = daemon.stop()
     await p1.catch(() => {})
     await stop
-    await new Promise((r) => setTimeout(r, 10))
-    expect(settled).toBe(true)
+    // Wait for the settlement itself. A fixed ten milliseconds was a bet that the drop landed
+    // within them, and the assertion is positive, so a slow runner failed it outright.
+    await vi.waitFor(() => expect(settled).toBe(true), WAIT)
     expect((daemon as any).serialQueue.has(key)).toBe(false)
   }, 15_000)
 
