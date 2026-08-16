@@ -41,7 +41,7 @@ import { NoConnection, type ControlSender } from './outbound.js'
 
 /** Entries per snapshot frame. The schema caps at 1000; stay well under the
  *  256 KiB frame ceiling. */
-const SNAPSHOT_CHUNK = 500
+export const SNAPSHOT_CHUNK = 500
 /** How long to wait before resuming a replay that stalled — i.e. one where the
  *  unacknowledged set stopped shrinking because new changes are landing as fast
  *  as we ack them. A pause, never an abandonment: the remaining gates are known
@@ -184,6 +184,23 @@ export class SessionVisibilityPushService {
   }
 
   /**
+   * TWO phases, because one watermark cannot answer both questions.
+   *
+   * The unacked phase converges what the CP knows is outstanding; the private phase converges what
+   * it cannot know, because `visibilityAckedRev` is per SESSION and not per daemon — once duty can
+   * move a session's server, an ack from the previous holder marks a gate "delivered" to a member
+   * that never saw it. The second phase runs only if the first drained normally; an abort already
+   * armed a resume that redoes both.
+   */
+  private async replayPages(daemonId: DaemonId): Promise<void> {
+    const includeExternal = this.supportsExternal(daemonId)
+    // What phase 1 already put on the wire, so phase 2 re-sends only what it did not cover.
+    const sent = new Set<string>()
+    if (!(await this.replayUnackedPages(daemonId, includeExternal, sent))) return
+    await this.replayPrivatePages(daemonId, includeExternal, sent)
+  }
+
+  /**
    * Page until nothing is left unacknowledged. Ordering alone is not enough:
    * with more unacked rows than one page holds, a single pass would ack the
    * first page and leave the rest carrying a stale gate until some LATER
@@ -193,34 +210,75 @@ export class SessionVisibilityPushService {
    * the unacknowledged set strictly shrinks and the loop ends. A fixed cap would
    * instead walk away from gates we KNOW are stale, which is the privacy gap
    * this replay exists to close.
+   *
+   * Returns whether it drained rather than aborted — false means a resume is armed, or the daemon
+   * is gone and its next register starts over.
    */
-  private async replayPages(daemonId: DaemonId): Promise<void> {
+  private async replayUnackedPages(daemonId: DaemonId, includeExternal: boolean, sent: Set<string>): Promise<boolean> {
     let previousUnacked = Number.POSITIVE_INFINITY
-    const includeExternal = this.supportsExternal(daemonId)
     for (;;) {
-      if (this.stopped) return // shutdown: the next process converges on register
+      if (this.stopped) return false // shutdown: the next process converges on register
       // Re-resolved each round: a duty granted mid-replay widens the set the very next page.
       const agentIds = await this.servedAgentIds(daemonId)
       const page = await this.deps.repos.session.visibilitySnapshotForAgents(agentIds, SNAPSHOT_CHUNK, includeExternal)
-      if (page.length === 0) return
+      if (page.length === 0) return true
       const outcome = await this.sendSnapshotChunk(daemonId, page)
-      if (outcome === 'gone') return // disconnected: its next register replays
+      if (outcome === 'sent') for (const entry of page) sent.add(entry.sessionId)
+      if (outcome === 'gone') return false // disconnected: its next register replays
       if (outcome === 'retry') {
         // Still connected, but this page did not land. Nothing else is coming
         // back for the tail on its own, so resume it ourselves.
         this.scheduleRetry(daemonId, 'failed')
-        return
+        return false
       }
-      if (page.length < SNAPSHOT_CHUNK) return // the page was not full: nothing behind it
+      if (page.length < SNAPSHOT_CHUNK) return true // the page was not full: nothing behind it
       const unacked = await this.deps.repos.session.countUnackedVisibilityForAgents(agentIds, includeExternal)
-      if (unacked === 0) return
+      if (unacked === 0) return true
       if (unacked >= previousUnacked) {
         // Not converging — new changes are arriving at least as fast as we ack.
         // Yield and resume rather than spin, and rather than leave it to chance.
         this.scheduleRetry(daemonId, unacked)
-        return
+        return false
       }
       previousUnacked = unacked
+    }
+  }
+
+  /**
+   * Re-send every currently-private gate of the served agents, cursored and blind to the ack
+   * watermark.
+   *
+   * A member that never heard of a session already fails closed, so the only way capture reopens is
+   * a stale NON-private gate left over from an earlier hold — and duty revocation deliberately
+   * preserves that local state. So the set that has to land is exactly the private one, which is
+   * the explicitly-reclassified minority rather than every session ever recorded. Idempotent by
+   * revision on the daemon: a member that already holds the gate answers `superseded`.
+   */
+  private async replayPrivatePages(daemonId: DaemonId, includeExternal: boolean, sent: Set<string>): Promise<void> {
+    let afterId: string | undefined
+    for (;;) {
+      if (this.stopped) return
+      const agentIds = await this.servedAgentIds(daemonId)
+      const page = await this.deps.repos.session.privateVisibilityPage(
+        agentIds,
+        SNAPSHOT_CHUNK,
+        includeExternal,
+        afterId
+      )
+      if (page.length === 0) return
+      // Filter AFTER the page is in hand: the cursor walks raw rows, so a page covered entirely by
+      // phase 1 still advances it instead of stalling the walk.
+      const fresh = page.filter((entry) => !sent.has(entry.sessionId))
+      if (fresh.length > 0) {
+        const outcome = await this.sendSnapshotChunk(daemonId, fresh)
+        if (outcome === 'gone') return
+        if (outcome === 'retry') {
+          this.scheduleRetry(daemonId, 'failed')
+          return
+        }
+      }
+      if (page.length < SNAPSHOT_CHUNK) return
+      afterId = page.at(-1)!.sessionId // keyset on the id this page ordered by
     }
   }
 

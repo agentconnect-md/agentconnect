@@ -1637,6 +1637,39 @@ export class PgSessionRepo implements SessionRepo {
     }))
   }
 
+  async privateVisibilityPage(
+    agentIds: readonly string[],
+    limit: number,
+    includeExternal = true,
+    afterId?: string
+  ): Promise<SessionVisibilityState[]> {
+    if (agentIds.length === 0) return []
+    // The rows a member must not be wrong about: `sharedMemoryExcluded` is `visibility ===
+    // 'private'`, and a member that never heard of a session already fails closed. So the ONLY way
+    // to leak is a stale non-private gate left from an earlier hold — which is what this page
+    // overwrites. Cursored on `id` and blind to `visibilityAckedRev` on purpose: that watermark is
+    // per SESSION, not per daemon, so an ack from the previous holder says nothing about this one.
+    const rows = await this.db.$queryRaw<
+      Array<{ id: string; orgId: string; visibility: string; externalProvider: string | null; visibilityRev: number }>
+    >(Prisma.sql`
+      SELECT "id", "orgId", "visibility", "externalProvider", "visibilityRev"
+      FROM "session_meta"
+      WHERE "agentId" = ANY(${[...agentIds]}::uuid[])
+        AND "visibility" = 'private'::"SessionVisibility"
+        AND (${includeExternal} OR "externalProvider" IS NULL)
+        ${afterId ? Prisma.sql`AND "id" > ${afterId}` : Prisma.empty}
+      ORDER BY "id"
+      LIMIT ${limit}
+    `)
+    return rows.map((r) => ({
+      orgId: OrgId(r.orgId),
+      sessionId: SessionId(r.id),
+      visibility: r.visibility as SessionVisibility,
+      sharedMemoryExcluded: true,
+      visibilityRev: r.visibilityRev
+    }))
+  }
+
   async countUnackedVisibilityForAgents(agentIds: readonly string[], includeExternal = true): Promise<number> {
     if (agentIds.length === 0) return 0
     // Same predicate as the snapshot above, or the counter reports a convergence that never

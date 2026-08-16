@@ -71,6 +71,8 @@ function deps(
       Array<{ orgId: string; sessionId: string; visibility: 'private' | 'org' | 'external'; visibilityRev: number }>
     >
     unackedAfter?: number[]
+    /** Successive PRIVATE pages (phase 2), newest call first. */
+    privatePages?: Array<Array<{ orgId: string; sessionId: string; visibility: 'private'; visibilityRev: number }>>
   } = {}
 ) {
   const recordVisibilityAck = vi.fn(async () => {})
@@ -84,13 +86,16 @@ function deps(
   const daemonId = over.daemonId === undefined ? DAEMON : over.daemonId
   const pages = [...(over.snapshotPages ?? [[]])]
   const unacked = [...(over.unackedAfter ?? [0])]
+  const privatePages = [...(over.privatePages ?? [[]])]
   const visibilitySnapshotForAgents = vi.fn(async () => pages.shift() ?? [])
   const countUnackedVisibilityForAgents = vi.fn(async () => unacked.shift() ?? 0)
+  const privateVisibilityPage = vi.fn(async () => privatePages.shift() ?? [])
   const sessionVisibilitySnapshot = vi.fn(async () => ({ ok: true }))
   return {
     recordVisibilityAck,
     sessionVisibility,
     visibilitySnapshotForAgents,
+    privateVisibilityPage,
     sessionVisibilitySnapshot,
     push: new SessionVisibilityPushService({
       repos: {
@@ -98,6 +103,7 @@ function deps(
           recordVisibilityAck,
           visibilitySnapshotForAgents,
           countUnackedVisibilityForAgents,
+          privateVisibilityPage,
           get: vi.fn(async () => null)
         } as never,
         agent: agentRepo(daemonId)
@@ -246,6 +252,7 @@ describe('replayTo — register-time convergence', () => {
             recordVisibilityAck: vi.fn(async () => {}),
             visibilitySnapshotForAgents,
             countUnackedVisibilityForAgents,
+            privateVisibilityPage: vi.fn(async () => []),
             get: vi.fn(async () => null)
           } as never,
           agent: agentRepo(DAEMON)
@@ -288,6 +295,7 @@ describe('replayTo — register-time convergence', () => {
             recordVisibilityAck: vi.fn(async () => {}),
             visibilitySnapshotForAgents,
             countUnackedVisibilityForAgents: vi.fn(async () => 0),
+            privateVisibilityPage: vi.fn(async () => []),
             get: vi.fn(async () => null)
           } as never,
           agent: agentRepo(DAEMON)
@@ -319,6 +327,7 @@ describe('replayTo — register-time convergence', () => {
             recordVisibilityAck: vi.fn(async () => {}),
             visibilitySnapshotForAgents,
             countUnackedVisibilityForAgents: vi.fn(async () => 5_000),
+            privateVisibilityPage: vi.fn(async () => []),
             get: vi.fn(async () => null)
           } as never,
           agent: agentRepo(DAEMON)
@@ -357,6 +366,7 @@ describe('replayTo — register-time convergence', () => {
             recordVisibilityAck: vi.fn(async () => {}),
             visibilitySnapshotForAgents: vi.fn(async () => page(2)),
             countUnackedVisibilityForAgents: vi.fn(async () => 0),
+            privateVisibilityPage: vi.fn(async () => []),
             get: vi.fn(async () => null)
           } as never,
           agent: agentRepo(DAEMON)
@@ -387,6 +397,7 @@ describe('replayTo — register-time convergence', () => {
             recordVisibilityAck,
             visibilitySnapshotForAgents: vi.fn(async () => page(2)),
             countUnackedVisibilityForAgents: vi.fn(async () => 0),
+            privateVisibilityPage: vi.fn(async () => []),
             get: vi.fn(async () => null)
           } as never,
           agent: agentRepo(DAEMON)
@@ -420,6 +431,7 @@ describe('replayTo — register-time convergence', () => {
             recordVisibilityAck: vi.fn(async () => {}),
             visibilitySnapshotForAgents,
             countUnackedVisibilityForAgents: vi.fn(async () => 10),
+            privateVisibilityPage: vi.fn(async () => []),
             get: vi.fn(async () => null)
           } as never,
           agent: agentRepo(DAEMON)
@@ -437,6 +449,47 @@ describe('replayTo — register-time convergence', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  // The ACK watermark is per SESSION, not per daemon: once duty can move a session's server, a
+  // previous holder's ack marks a gate "delivered" to a member that never saw it. Phase 1 then
+  // stops on `unacked === 0` and the older private gates are never sent. Phase 2 is what covers
+  // them, so it must run even when phase 1 reports full convergence.
+  it('re-sends the private gates after the unacked phase reports nothing outstanding', async () => {
+    const priv = [{ orgId: ORG, sessionId: 'acp-old-private', visibility: 'private' as const, visibilityRev: 3 }]
+    const d = deps({ snapshotPages: [page(500)], unackedAfter: [0], privatePages: [priv] })
+    await d.push.replayTo(DAEMON as never)
+
+    expect(d.privateVisibilityPage).toHaveBeenCalledTimes(1)
+    const sent = d.sessionVisibilitySnapshot.mock.calls.at(-1)!
+    expect((sent[2] as Array<{ sessionId: string }>).map((e) => e.sessionId)).toEqual(['acp-old-private'])
+  })
+
+  it('cursors the private phase on the last id of a full page', async () => {
+    const full = Array.from({ length: 500 }, (_, i) => ({
+      orgId: ORG,
+      sessionId: `acp-p-${String(i).padStart(3, '0')}`,
+      visibility: 'private' as const,
+      visibilityRev: 1
+    }))
+    const tail = [{ orgId: ORG, sessionId: 'acp-p-500', visibility: 'private' as const, visibilityRev: 1 }]
+    const d = deps({ privatePages: [full, tail] })
+    await d.push.replayTo(DAEMON as never)
+
+    expect(d.privateVisibilityPage).toHaveBeenCalledTimes(2)
+    // Blind to the watermark, so the cursor is the ONLY thing that ends the walk.
+    expect(d.privateVisibilityPage.mock.calls[1]![3]).toBe('acp-p-499')
+  })
+
+  it('does not start the private phase when the unacked phase aborted', async () => {
+    const d = deps({ snapshotPages: [page(500), page(500, 500)], unackedAfter: [500, 0] })
+    d.sessionVisibilitySnapshot.mockImplementationOnce(async () => {
+      throw new NoConnection(DAEMON)
+    })
+    await d.push.replayTo(DAEMON as never)
+
+    // The daemon is gone; its next register redoes both phases from scratch.
+    expect(d.privateVisibilityPage).not.toHaveBeenCalled()
   })
 
   it('sends nothing to a daemon that does not advertise the feature', async () => {

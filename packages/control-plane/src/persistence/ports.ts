@@ -1413,6 +1413,15 @@ export interface SessionRepo {
   /** How many of those agents' sessions still owe an ack — used to report when a
    *  bounded snapshot could not carry them all (never a silent truncation). */
   countUnackedVisibilityForAgents(agentIds: readonly string[], includeExternal?: boolean): Promise<number>
+  /** Every currently-PRIVATE session of those agents, ordered by id and cursored on `afterId`.
+   *  Deliberately blind to `visibilityAckedRev`: that watermark is per session, not per daemon, so
+   *  a previous holder's ack cannot prove this member ever received the gate. */
+  privateVisibilityPage(
+    agentIds: readonly string[],
+    limit: number,
+    includeExternal?: boolean,
+    afterId?: string
+  ): Promise<SessionVisibilityState[]>
   /** A session plus every descendant — the set a tightening cascade rewrote, so
    *  the detail view's cutover state covers the whole subtree, not just the root.
    *  System-tier: driven by the visibility-push orchestrator from a row it holds. */
