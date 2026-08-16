@@ -1683,31 +1683,23 @@ export class PgSessionRepo implements SessionRepo {
     return rows.map(toRecord)
   }
 
-  async findThreadOwner(
-    botId: BotId,
-    channel: string,
-    thread: string
-  ): Promise<{ agentId: string; daemonId: string } | null> {
-    // Most-recently-active session on this bot's (channel, thread) whose agent is currently
-    // placed. The session's daemonId is provenance only and may be null after its reporting
-    // daemon is deleted; routing follows current agent placement.
+  async findThreadOwner(botId: BotId, channel: string, thread: string): Promise<{ agentId: string } | null> {
+    // Most-recently-active session on this bot's (channel, thread). The AGENT is the answer; who
+    // serves it right now is the placement resolver's, so this asks nothing about placement at
+    // all. Requiring a non-null `agent.daemonId` here excluded every pool agent — placed, but
+    // naming no machine — so the pull-on-miss fallback below never fired for one.
+    // The session's own daemonId is provenance only and may be null after its reporting daemon is
+    // deleted; routing follows current agent placement.
     // NOTE: do NOT filter on `endedAt` — a session emits `phase:'end'` (→ `endedAt`) at the end
     // of EVERY turn, so an idle-between-turns session (the normal state of a thread's owner
     // between messages) has `endedAt` set yet is still the valid target; the daemon resumes it on
     // delivery. Filtering `endedAt: null` here made the affinity fallback miss essentially every
     // real thread (incl. a case-2a spawned session after its one headless turn).
     const row = await this.db.sessionMeta.findFirst({
-      where: {
-        channel,
-        thread,
-        agent: {
-          daemonId: { not: null },
-          integrations: { some: { botId, status: 'active' } }
-        }
-      },
+      where: { channel, thread, agent: { integrations: { some: { botId, status: 'active' } } } },
       orderBy: [{ lastActivityAt: 'desc' }, { startedAt: 'desc' }],
-      select: { agentId: true, agent: { select: { daemonId: true } } }
+      select: { agentId: true }
     })
-    return row?.agent.daemonId ? { agentId: row.agentId, daemonId: row.agent.daemonId } : null
+    return row ? { agentId: row.agentId } : null
   }
 }

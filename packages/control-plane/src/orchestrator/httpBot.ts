@@ -436,18 +436,36 @@ export class HttpBotOrchestrator {
       const channel = m.sessionKey.slice(0, slash)
       const thread = m.sessionKey.slice(slash + 1)
       const owner = await this.sessions.findThreadOwner(BotId(m.botId), channel, thread)
-      if (owner && (await this.threadTargetAllowed(m.botId, channel, owner.agentId))) {
+      // The session names the agent; the member serving it is resolved live, so this fallback
+      // covers a pool agent — whose row names no machine — as well as a machine-placed one.
+      const target = owner ? await this.threadOwnerTarget(m.botId, channel, owner.agentId) : null
+      if (target) {
         return {
           botId: m.botId,
           sessionKey: m.sessionKey,
-          target: owner,
-          participants: participants.some((participant) => participant.agentId === owner.agentId)
+          target,
+          participants: participants.some((participant) => participant.agentId === target.agentId)
             ? participants
-            : [...participants, owner]
+            : [...participants, target]
         }
       }
     }
     return { botId: m.botId, sessionKey: m.sessionKey, target: null, participants }
+  }
+
+  /** The addressable target for a thread owner, or null when the gate refuses it or nothing is
+   *  routable. `routableDaemon` and not `servingDaemon`: this seeds relay ingress affinity, so a
+   *  member that holds the agent but has not yet reported it must not be named. */
+  private async threadOwnerTarget(
+    botId: string,
+    channel: string,
+    agentId: string
+  ): Promise<{ agentId: string; daemonId: string } | null> {
+    if (!(await this.threadTargetAllowed(botId, channel, agentId))) return null
+    const agent = await this.agents.getUnscoped(AgentId(agentId))
+    if (!agent) return null
+    const daemonId = await this.placement.routableDaemon({ ...agent, id: agent.id })
+    return daemonId ? { agentId, daemonId } : null
   }
 
   /** §14 conversation-gating check for the thread-lookup backstop: a non-gated

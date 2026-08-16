@@ -65,6 +65,8 @@ export async function seedAgent(
     gitAccess?: 'read' | 'write'
     /** `runtimeOverrides` JSON — where the MCP enable-list and memory binding live. */
     runtimeOverrides?: Record<string, unknown>
+    /** A `set` placement: placed, but naming no machine — which member serves it is the ledger's. */
+    setId?: string
   } = {}
 ): Promise<AgentId> {
   await prisma.agent.create({
@@ -74,6 +76,7 @@ export async function seedAgent(
       name: opts.name ?? `agent-${id.slice(0, 4)}`,
       runtime: opts.runtime ?? 'claude',
       daemonId: opts.daemonId,
+      ...(opts.setId ? { placementKind: 'set' as const, setId: opts.setId } : {}),
       ...(opts.visibility ? { visibility: opts.visibility } : {}),
       ...(opts.sharedWith ? { sharedWith: opts.sharedWith } : {}),
       ...(opts.createdByUserId ? { createdByUserId: opts.createdByUserId } : {}),

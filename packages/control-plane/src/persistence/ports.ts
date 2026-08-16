@@ -1422,12 +1422,13 @@ export interface SessionRepo {
    *  System-tier: driven by the visibility-push orchestrator from a row it holds. */
   visibilitySubtree(sessionId: SessionId, limit: number): Promise<SessionMetaRecord[]>
   /** Resolve the agent that owns a bot's `(channel, thread)` — the most-recently-active session
-   *  keyed there whose agent still has an active integration for that bot and a current daemon
-   *  placement. Backstop for shared-bot thread-affinity lookup: a daemon-created session (e.g.
-   *  an agent's own channel-root post, session-concept §7.2 case 2a) never goes through the
-   *  relay's mention/switch REPORT leg, so no `thread-assign` seeds the affinity store — this
-   *  lets `lookupThread` still find the owner. Null when none. */
-  findThreadOwner(botId: BotId, channel: string, thread: string): Promise<{ agentId: string; daemonId: string } | null>
+   *  keyed there whose agent still has an active integration for that bot. Backstop for
+   *  shared-bot thread-affinity lookup: a daemon-created session (e.g. an agent's own channel-root
+   *  post, session-concept §7.2 case 2a) never goes through the relay's mention/switch REPORT leg,
+   *  so no `thread-assign` seeds the affinity store — this lets `lookupThread` still find the
+   *  owner. Null when none. Placement is deliberately NOT a predicate here: which daemon serves
+   *  the agent is {@link PlacementResolver}'s answer, and a pool agent names no machine. */
+  findThreadOwner(botId: BotId, channel: string, thread: string): Promise<{ agentId: string } | null>
 }
 
 // ───────────────────────────────────────────────────────────────────────────

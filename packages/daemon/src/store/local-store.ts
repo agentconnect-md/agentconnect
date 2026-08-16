@@ -215,6 +215,20 @@ export type TokenCounts = Pick<
 /** Context-window + cost snapshot (from a `usage_update`), latest-wins. */
 export type UsageSnapshot = Pick<StoredUsage, 'contextUsed' | 'contextSize' | 'costAmount' | 'costCurrency'>
 
+/** `{}` for an unrecorded or unreadable blob — an unparseable one is not worth failing a turn over. */
+function parseUsage(raw: string | null): StoredUsage {
+  if (!raw) return {}
+  try {
+    return JSON.parse(raw) as StoredUsage
+  } catch {
+    return {}
+  }
+}
+
+/** CAS attempts before the usage merge writes blind. One session has one writer plus, at most, a
+ *  handover peer, so losing four in a row means something other than contention is going on. */
+const USAGE_MERGE_ATTEMPTS = 5
+
 /** A session row as read back for `session/list`, carrying the raw usage JSON. */
 export interface SessionListRow extends SessionRecord {
   usage: string | null
@@ -903,6 +917,8 @@ export class LocalStore {
       -- Stable-row updates need a cursor independent of insertion-order seq.
       CREATE INDEX IF NOT EXISTS transcript_thread_revision
         ON transcript (channel, thread, revision);
+      -- Written ONLY by an exclusively owned store: a shared store's members would each
+      -- serialize their own map over this one row, so they do not persist here at all.
       CREATE TABLE IF NOT EXISTS cp_routing (
         id INTEGER PRIMARY KEY CHECK (id = 1),
         routingEpoch INTEGER, assignments TEXT, globalRules TEXT
@@ -2113,16 +2129,41 @@ export class LocalStore {
   getUsage(key: string): StoredUsage {
     const row = this.db.prepare('SELECT usage FROM sessions WHERE key = ?').get(key) as
       { usage: string | null } | undefined
-    if (!row?.usage) return {}
-    try {
-      return JSON.parse(row.usage) as StoredUsage
-    } catch {
-      return {}
-    }
+    return parseUsage(row?.usage ?? null)
   }
 
-  private writeUsage(key: string, u: StoredUsage): void {
-    this.db.prepare('UPDATE sessions SET usage = ? WHERE key = ?').run(JSON.stringify(u), key)
+  /**
+   * Read-merge-write `sessions.usage` under a compare-and-set on the value read, retried when a
+   * concurrent writer wins. `addTokenUsage` and `addCost` are genuinely additive, so a plain
+   * read-then-write drops the loser's increment; on a shared store two members touch one session
+   * across a handover. A relative UPDATE would be simpler but the column is one JSON blob and the
+   * two backends spell JSON mutation differently, whereas a CAS is plain SQL in both.
+   *
+   * `merge` runs again on every attempt, so it must be safe to repeat; returning undefined aborts.
+   */
+  private mergeUsage(key: string, merge: (u: StoredUsage) => StoredUsage | undefined): void {
+    for (let attempt = 1; attempt <= USAGE_MERGE_ATTEMPTS; attempt++) {
+      const row = this.db.prepare('SELECT usage FROM sessions WHERE key = ?').get(key) as
+        { usage: string | null } | undefined
+      if (!row) return // unknown key: the row is created first (unchanged from the plain write)
+      const merged = merge(parseUsage(row.usage))
+      if (!merged) return
+      const next = JSON.stringify(merged)
+      // The last attempt writes unconditionally. Losing an increment is exactly the behavior this
+      // replaces, so it is the floor to degrade to rather than dropping the write entirely.
+      if (attempt === USAGE_MERGE_ATTEMPTS) {
+        this.db.prepare('UPDATE sessions SET usage = ? WHERE key = ?').run(next, key)
+        return
+      }
+      // Two statements, not one NULL-safe comparison: `IS` / `IS NOT DISTINCT FROM` are spelled
+      // differently by the two backends, and which case applies is already known here.
+      const changes =
+        row.usage === null
+          ? this.db.prepare('UPDATE sessions SET usage = ? WHERE key = ? AND usage IS NULL').run(next, key).changes
+          : this.db.prepare('UPDATE sessions SET usage = ? WHERE key = ? AND usage = ?').run(next, key, row.usage)
+              .changes
+      if (changes > 0) return
+    }
   }
 
   /** Record the latest token counts for a session when an adapter reports a
@@ -2130,54 +2171,63 @@ export class LocalStore {
    *  additive. Only provided fields are updated; the context/cost snapshot is
    *  left intact. No-op on an unknown key (the row is created first). */
   setTokenUsage(key: string, counts: TokenCounts): void {
-    const u = this.getUsage(key)
-    if (counts.totalTokens !== undefined) u.totalTokens = counts.totalTokens
-    if (counts.inputTokens !== undefined) u.inputTokens = counts.inputTokens
-    if (counts.outputTokens !== undefined) u.outputTokens = counts.outputTokens
-    if (counts.thoughtTokens !== undefined) u.thoughtTokens = counts.thoughtTokens
-    if (counts.cachedReadTokens !== undefined) u.cachedReadTokens = counts.cachedReadTokens
-    if (counts.cachedWriteTokens !== undefined) u.cachedWriteTokens = counts.cachedWriteTokens
-    this.writeUsage(key, u)
+    this.mergeUsage(key, (u) => {
+      if (counts.totalTokens !== undefined) u.totalTokens = counts.totalTokens
+      if (counts.inputTokens !== undefined) u.inputTokens = counts.inputTokens
+      if (counts.outputTokens !== undefined) u.outputTokens = counts.outputTokens
+      if (counts.thoughtTokens !== undefined) u.thoughtTokens = counts.thoughtTokens
+      if (counts.cachedReadTokens !== undefined) u.cachedReadTokens = counts.cachedReadTokens
+      if (counts.cachedWriteTokens !== undefined) u.cachedWriteTokens = counts.cachedWriteTokens
+      return u
+    })
   }
 
   /** Add one turn's token counts to the session total. codex-acp currently maps
    *  Codex's `last_token_usage` into PromptResponse.usage, so its values are a
    *  per-turn delta even though other ACP adapters return a session snapshot. */
   addTokenUsage(key: string, counts: TokenCounts): void {
-    const u = this.getUsage(key)
-    const add = (field: keyof TokenCounts, value: number | undefined) => {
-      if (value !== undefined) u[field] = (u[field] ?? 0) + value
-    }
-    add('totalTokens', counts.totalTokens)
-    add('inputTokens', counts.inputTokens)
-    add('outputTokens', counts.outputTokens)
-    add('thoughtTokens', counts.thoughtTokens)
-    add('cachedReadTokens', counts.cachedReadTokens)
-    add('cachedWriteTokens', counts.cachedWriteTokens)
-    this.writeUsage(key, u)
+    this.mergeUsage(key, (u) => {
+      const add = (field: keyof TokenCounts, value: number | undefined) => {
+        if (value !== undefined) u[field] = (u[field] ?? 0) + value
+      }
+      add('totalTokens', counts.totalTokens)
+      add('inputTokens', counts.inputTokens)
+      add('outputTokens', counts.outputTokens)
+      add('thoughtTokens', counts.thoughtTokens)
+      add('cachedReadTokens', counts.cachedReadTokens)
+      add('cachedWriteTokens', counts.cachedWriteTokens)
+      return u
+    })
   }
 
   /** Overwrite the session's context-window + cost snapshot (latest `usage_update`
    *  wins). Only provided fields are updated. No-op on an unknown key. */
   setUsageSnapshot(key: string, snap: UsageSnapshot): void {
-    const u = this.getUsage(key)
-    if (snap.contextUsed !== undefined) u.contextUsed = snap.contextUsed
-    if (snap.contextSize !== undefined) u.contextSize = snap.contextSize
-    if (snap.costAmount !== undefined) u.costAmount = snap.costAmount
-    if (snap.costCurrency !== undefined) u.costCurrency = snap.costCurrency
-    this.writeUsage(key, u)
+    this.mergeUsage(key, (u) => {
+      if (snap.contextUsed !== undefined) u.contextUsed = snap.contextUsed
+      if (snap.contextSize !== undefined) u.contextSize = snap.contextSize
+      if (snap.costAmount !== undefined) u.costAmount = snap.costAmount
+      if (snap.costCurrency !== undefined) u.costCurrency = snap.costCurrency
+      return u
+    })
   }
 
   /** Add one turn's fallback cost to the session running total. Refuse to mix
    *  currencies; a later ACP usage_update can still replace the total snapshot. */
   addCost(key: string, amount: number, currency: string): boolean {
     if (!Number.isFinite(amount) || amount <= 0 || !currency) return false
-    const u = this.getUsage(key)
-    if (u.costCurrency !== undefined && u.costCurrency !== currency) return false
-    u.costAmount = (u.costAmount ?? 0) + amount
-    u.costCurrency = currency
-    this.writeUsage(key, u)
-    return true
+    // Set at most once and only by the refusal branch, so repeating the merge cannot change it.
+    let mixedCurrency = false
+    this.mergeUsage(key, (u) => {
+      if (u.costCurrency !== undefined && u.costCurrency !== currency) {
+        mixedCurrency = true
+        return undefined
+      }
+      u.costAmount = (u.costAmount ?? 0) + amount
+      u.costCurrency = currency
+      return u
+    })
+    return !mixedCurrency
   }
 
   /** Most-recent activity across an agent's non-closed sessions (epoch ms), or null
@@ -3234,12 +3284,28 @@ export class LocalStore {
     return out
   }
 
+  /**
+   * The persisted CP routing map — one row, and therefore EXCLUSIVELY OWNED STORES ONLY.
+   *
+   * `CpRoutingLayer` serializes its whole in-memory map on every mutation, so on a shared store
+   * each member's write erased every other member's and each boot hydrated a foreign map — a
+   * foreign `routingEpoch` with it, which then made `applyUpdate`'s stale guard discard legitimate
+   * global-rule updates until the real epoch caught up. Partitioning the row per member does not
+   * fix it either: `ownerId` is a process incarnation, so the key would change on every restart,
+   * leaking a row each time and still hydrating nothing.
+   *
+   * A shared member therefore starts from an empty map at epoch 0, which is the safe direction: it
+   * accepts the first `route/update` it is pushed, and `converge()` restates assignments from the
+   * CP snapshot on register/ok. An exclusively owned store keeps persisting exactly as before.
+   */
   getCpRouting(): { routingEpoch: number; assignments: string; globalRules: string } | undefined {
+    if (this.shared) return undefined
     return this.db.prepare('SELECT routingEpoch, assignments, globalRules FROM cp_routing WHERE id = 1').get() as
       { routingEpoch: number; assignments: string; globalRules: string } | undefined
   }
 
   setCpRouting(routingEpoch: number, assignments: string, globalRules: string): void {
+    if (this.shared) return
     this.db
       .prepare(
         `INSERT INTO cp_routing (id, routingEpoch, assignments, globalRules) VALUES (1, @routingEpoch, @assignments, @globalRules)

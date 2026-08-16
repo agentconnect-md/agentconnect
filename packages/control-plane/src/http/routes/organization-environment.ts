@@ -37,9 +37,10 @@ import type { ZodTypeProvider } from '../plugins/zod.js'
 import { Tag } from '../plugins/openapi.js'
 import type { HttpDeps } from '../deps.js'
 import { ctxOf, denyNonOwner, orgOf } from '../rbac.js'
-import { AgentId, type DaemonId, type OrgId } from '../../domain/ids.js'
+import { AgentId, DaemonId, type OrgId } from '../../domain/ids.js'
 import { canEdit, canView, type ViewCtx } from '../../authorization/policy.js'
 import type {
+  AgentRecord,
   OrganizationEnvironmentEntryRecord,
   OrganizationEnvironmentWriteResult,
   OrganizationEnvironmentWriteFailure
@@ -131,14 +132,19 @@ export function organizationEnvironmentRoutes(deps: HttpDeps) {
       )
     }
 
-    /** Does this placed agent's daemon persist and enforce `configRevision`? An
-     *  unplaced agent is always fine (placement re-checks the feature), and an
-     *  unknown/never-registered daemon cannot be proven compatible — the gate
-     *  never relies on lenient behavior from an unverified daemon. */
-    const onCompatibleDaemon = async (orgId: OrgId, daemonId: DaemonId | null): Promise<boolean> => {
-      if (daemonId === null) return true
-      const daemon = await deps.registry.getAvailable(orgId, daemonId)
-      return !!daemon?.capabilities.features.includes(AGENT_CONFIG_REVISION_FEATURE)
+    /** Does every daemon serving this agent persist and enforce `configRevision`? Asked through
+     *  the resolver, never off `agent.daemonId`: a pool agent is placed but names no machine, so
+     *  the column reads as unplaced and skipped the precondition entirely. An agent nothing serves
+     *  is still fine (placement re-checks the feature), and an unknown/never-registered daemon
+     *  cannot be proven compatible — the gate never relies on lenient behavior from an
+     *  unverified daemon. */
+    const onCompatibleDaemon = async (orgId: OrgId, agent: AgentRecord): Promise<boolean> => {
+      const daemonIds = await deps.placementResolver.servingDaemons(agent)
+      for (const daemonId of daemonIds) {
+        const daemon = await deps.registry.getAvailable(orgId, DaemonId(daemonId))
+        if (!daemon?.capabilities.features.includes(AGENT_CONFIG_REVISION_FEATURE)) return false
+      }
+      return true
     }
 
     /**
@@ -155,7 +161,7 @@ export function organizationEnvironmentRoutes(deps: HttpDeps) {
       const placed = (await deps.repos.agent.list(orgId)).filter((agent) => wanted.has(agent.id))
       const out: string[] = []
       for (const agent of placed) {
-        if (!(await onCompatibleDaemon(orgId, agent.daemonId))) out.push(agent.id)
+        if (!(await onCompatibleDaemon(orgId, agent))) out.push(agent.id)
       }
       return out
     }
@@ -197,7 +203,7 @@ export function organizationEnvironmentRoutes(deps: HttpDeps) {
       // what keeps the refusal indistinguishable from a missing agent.
       const inScope = mode === 'requested' ? agents.filter((agent) => canEdit(agent, ctx)) : agents
       for (const agent of inScope) {
-        if (!(await onCompatibleDaemon(orgId, agent.daemonId))) {
+        if (!(await onCompatibleDaemon(orgId, agent))) {
           // Naming is safe only for an agent the caller can already see.
           return canView(agent, ctx)
             ? `agent ${agent.name} runs on a daemon that does not yet support organization environment entries; upgrade it first`
