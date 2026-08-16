@@ -14218,13 +14218,18 @@ export class Daemon {
           // lost its thread. Non-DM wrappers may each have a synthetic outer ts, so
           // drop them without creating an unbounded set of permanent latches.
           const verdict = this.store.tripLoopGuard(loopScope, this.clock.now(), 'malformed_platform_event')
-          if (verdict.trippedNow)
+          if (verdict.trippedNow) {
             this.onLoopGuardTripped(loopScope, verdict.reason ?? 'malformed_platform_event', {
               agentId,
               msg,
               integrationId
             })
-          else this.purgeLoopScopeInbox(loopScope)
+          } else {
+            // The CAS elected a peer (or the circuit was already open): this member still
+            // owns stopping its own turns, exactly like the counter-latch path below.
+            this.purgeLoopScopeInbox(loopScope)
+            this.enforceLatchedLoopScope(loopScope)
+          }
         } else {
           this.log.warn(`dispatch: dropped malformed Slack platform event ${msg.msgId}`)
         }

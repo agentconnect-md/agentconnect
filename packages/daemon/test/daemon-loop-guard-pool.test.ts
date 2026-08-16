@@ -115,11 +115,27 @@ function seedInbox(store: LocalStore, id: string, agentId: string, ts: string): 
   })
 }
 
+/** The Slack poison shape — an anonymous, empty, attachment-less user turn — in a DM. */
+function malformedDm(ts: string) {
+  return {
+    msgId: `slack:D1:${ts}`,
+    platform: 'slack',
+    channel: 'D1',
+    thread: ts,
+    isDm: true,
+    source: 'user',
+    text: '',
+    attachments: [],
+    sender: { id: 'unknown', name: 'unknown', isBot: false },
+    headless: true
+  }
+}
+
 /** A live turn in the member's serial gate: state only that member can cancel. */
-function liveTurn(inner: any, key: string, agentId: string): any {
+function liveTurn(inner: any, key: string, agentId: string, msg?: any): any {
   const entry = {
     agentId,
-    msg: scopedMessage(agentId, '900.1'),
+    msg: msg ?? scopedMessage(agentId, '900.1'),
     initAbort: new AbortController(),
     resolve: () => {},
     reject: () => {}
@@ -157,6 +173,24 @@ describe('loop guard on a daemon pool acts only on what the member serves (#1038
     b.inner.enforceLatchedLoopScope(SCOPE)
     expect(turnBAgain.cancelledReason).toBeUndefined()
     // These heads have no dispatch behind them, so release them before shutdown drains the gate.
+    for (const member of [a, b]) member.inner.activeGateEntries.clear()
+    await stop()
+  }, 15_000)
+
+  it('a member that loses the structural trip still stops its own turns', async () => {
+    const { a, b, shared, stop } = await bootPool()
+    hold(a.inner, GROUP_A, AGENT_A)
+    hold(b.inner, GROUP_B, AGENT_B)
+    const dmScope = 'slack:D1:dm'
+    const turnA = liveTurn(a.inner, 'key-dm-a', AGENT_A, malformedDm('900.1'))
+
+    // B latches the DM circuit first; A read it as closed a moment earlier, which is the
+    // exact race the trip's CAS resolves — A's own trip returns trippedNow: false.
+    expect(shared.tripLoopGuard(dmScope, 2_000, 'malformed_platform_event').trippedNow).toBe(true)
+    a.inner.store.isLoopGuardOpen = () => false
+    await a.inner.dispatch(AGENT_A, malformedDm('300.1'))
+
+    expect(turnA.cancelledReason).toBe('loop protection')
     for (const member of [a, b]) member.inner.activeGateEntries.clear()
     await stop()
   }, 15_000)
