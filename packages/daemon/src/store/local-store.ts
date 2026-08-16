@@ -9,6 +9,7 @@ import {
   type SessionImageAttachment
 } from '@agentconnect.md/protocol'
 import { SESSION_TITLE_TOOL_TITLES } from '../mcp/session-title-tool.js'
+import type { ScheduleRun } from '../scheduler/scheduler.js'
 
 /** Per-tool-row rawInput budget in the mining prompt — enough for a command
  *  line or path, short enough that N tool rows can't crowd out the store. */
@@ -621,7 +622,7 @@ function restrictPath(path: string, mode: number): void {
  * change that edits a `CREATE TABLE` below, and append the matching step to
  * {@link SCHEMA_MIGRATIONS}.
  */
-const SCHEMA_VERSION = 6
+const SCHEMA_VERSION = 7
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -689,7 +690,8 @@ const SCHEMA_MIGRATIONS: ((db: StoreDatabase) => void)[] = [
       );
       DROP TABLE session_gates;
       ALTER TABLE session_gates_keyed RENAME TO session_gates;
-    `)
+    `),
+  (db) => db.exec('ALTER TABLE cron_runs ADD COLUMN definition TEXT')
 ]
 
 export class LocalStore {
@@ -897,13 +899,16 @@ export class LocalStore {
       );
       -- Authoritative last-run per cron (protocol §5.4 — missed-fire compensation).
       -- key = "<agentId>:<cronId>" (cron defs themselves live in agent.json).
+      -- The definition column fingerprints the entry the stamp was written under (#1031): schedules are
+      -- edited in place, so a stamp is only comparable to a fire of the SAME definition. NULL on
+      -- rows written before it existed, which simply makes them ineligible for a catch-up.
       CREATE TABLE IF NOT EXISTS cron_runs (
-        key TEXT PRIMARY KEY, lastRunAt INTEGER NOT NULL
+        key TEXT PRIMARY KEY, lastRunAt INTEGER NOT NULL, definition TEXT
       );
       -- The dream half of cron_runs (#1031): a dream schedule's only durable last-fired, so a
       -- handover can tell a swallowed occurrence from one that already ran. One row per agent.
       CREATE TABLE IF NOT EXISTS dream_runs (
-        agentId TEXT PRIMARY KEY, lastRunAt INTEGER NOT NULL
+        agentId TEXT PRIMARY KEY, lastRunAt INTEGER NOT NULL, definition TEXT
       );
       -- §6.9 #353 durable inbox: an ADMITTED-but-QUEUED message persisted BEFORE the
       -- admission ACK, so a hard kill / agent move can't lose a message the caller was
@@ -3229,54 +3234,53 @@ export class LocalStore {
   }
 
   /** Stamp a cron fire (key = `<agentId>:<cronId>`). */
-  setCronLastRun(key: string, lastRunAt: number): void {
+  setCronLastRun(key: string, lastRunAt: number, definition: string): void {
     this.db
       .prepare(
-        `INSERT INTO cron_runs (key, lastRunAt) VALUES (@key, @lastRunAt)
-         ON CONFLICT(key) DO UPDATE SET lastRunAt=excluded.lastRunAt`
+        `INSERT INTO cron_runs (key, lastRunAt, definition) VALUES (@key, @lastRunAt, @definition)
+         ON CONFLICT(key) DO UPDATE SET lastRunAt=excluded.lastRunAt, definition=excluded.definition`
       )
-      .run({ key, lastRunAt })
+      .run({ key, lastRunAt, definition })
   }
 
-  getCronLastRun(key: string): number | undefined {
-    const row = this.db.prepare('SELECT lastRunAt FROM cron_runs WHERE key = ?').get(key) as
-      { lastRunAt: number } | undefined
-    return row?.lastRunAt
+  cronRun(key: string): ScheduleRun | undefined {
+    return this.db.prepare('SELECT lastRunAt, definition FROM cron_runs WHERE key = ?').get(key) as
+      ScheduleRun | undefined
   }
 
-  /** Stamp a dream-schedule fire (one row per agent). */
-  setDreamLastRun(agentId: string, lastRunAt: number): void {
+  /** Stamp a dream-schedule fire (one row per agent), under the definition that fired. */
+  setDreamLastRun(agentId: string, lastRunAt: number, definition: string): void {
     this.db
       .prepare(
-        `INSERT INTO dream_runs (agentId, lastRunAt) VALUES (@agentId, @lastRunAt)
-         ON CONFLICT(agentId) DO UPDATE SET lastRunAt=excluded.lastRunAt`
+        `INSERT INTO dream_runs (agentId, lastRunAt, definition) VALUES (@agentId, @lastRunAt, @definition)
+         ON CONFLICT(agentId) DO UPDATE SET lastRunAt=excluded.lastRunAt, definition=excluded.definition`
       )
-      .run({ agentId, lastRunAt })
+      .run({ agentId, lastRunAt, definition })
   }
 
-  getDreamLastRun(agentId: string): number | undefined {
-    const row = this.db.prepare('SELECT lastRunAt FROM dream_runs WHERE agentId = ?').get(agentId) as
-      { lastRunAt: number } | undefined
-    return row?.lastRunAt
+  dreamRun(agentId: string): ScheduleRun | undefined {
+    return this.db.prepare('SELECT lastRunAt, definition FROM dream_runs WHERE agentId = ?').get(agentId) as
+      ScheduleRun | undefined
   }
 
   /** CAS claim on a cron occurrence a handover missed (#1031): take it iff the stamp is still older
-   *  than the occurrence, so two members racing one handoff compensate it exactly once. A schedule
-   *  with no stamp has nothing to compensate and is never claimed. */
-  claimCronCatchUp(key: string, occurrence: number, claimedAt: number): boolean {
+   *  than the occurrence AND was written under the definition asking for it, so two members racing
+   *  one handoff compensate it exactly once and an edited schedule replays nothing. A row with no
+   *  stamp, or one fingerprinted differently, is never claimed. */
+  claimCronCatchUp(key: string, occurrence: number, claimedAt: number, definition: string): boolean {
     return (
       this.db
-        .prepare('UPDATE cron_runs SET lastRunAt = ? WHERE key = ? AND lastRunAt < ?')
-        .run(claimedAt, key, occurrence).changes === 1
+        .prepare('UPDATE cron_runs SET lastRunAt = ? WHERE key = ? AND lastRunAt < ? AND definition = ?')
+        .run(claimedAt, key, occurrence, definition).changes === 1
     )
   }
 
   /** The dream twin of {@link claimCronCatchUp}, over the per-agent dream stamp. */
-  claimDreamCatchUp(agentId: string, occurrence: number, claimedAt: number): boolean {
+  claimDreamCatchUp(agentId: string, occurrence: number, claimedAt: number, definition: string): boolean {
     return (
       this.db
-        .prepare('UPDATE dream_runs SET lastRunAt = ? WHERE agentId = ? AND lastRunAt < ?')
-        .run(claimedAt, agentId, occurrence).changes === 1
+        .prepare('UPDATE dream_runs SET lastRunAt = ? WHERE agentId = ? AND lastRunAt < ? AND definition = ?')
+        .run(claimedAt, agentId, occurrence, definition).changes === 1
     )
   }
 

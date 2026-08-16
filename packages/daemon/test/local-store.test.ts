@@ -50,6 +50,7 @@ describe('LocalStore schema versioning', () => {
     old.exec('ALTER TABLE webchat_mcp_grant_ledger DROP COLUMN ownerId')
     old.exec('ALTER TABLE inbox DROP COLUMN reportOwnerId')
     old.exec('ALTER TABLE inbox DROP COLUMN reportClaimedAt')
+    old.exec('ALTER TABLE cron_runs DROP COLUMN definition')
     old.exec('PRAGMA user_version = 1')
     old.close()
 
@@ -63,6 +64,7 @@ describe('LocalStore schema versioning', () => {
     const dreamColumns = columnsOf('dreams')
     const grantColumns = columnsOf('webchat_mcp_grant_ledger')
     const inboxColumns = columnsOf('inbox')
+    const cronColumns = columnsOf('cron_runs')
     upgraded.close()
     expect(columns).toContain('ownerId')
     expect(outboxColumns).toEqual(expect.arrayContaining(['failedAttempts', 'nextAttemptAt']))
@@ -70,7 +72,9 @@ describe('LocalStore schema versioning', () => {
     expect(dreamColumns).toContain('ownerId')
     expect(grantColumns).toContain('ownerId')
     expect(inboxColumns).toEqual(expect.arrayContaining(['reportOwnerId', 'reportClaimedAt']))
-    expect(userVersion(path)).toBe(6)
+    // A stamp is only comparable to a fire of the same schedule definition (#1031).
+    expect(cronColumns).toContain('definition')
+    expect(userVersion(path)).toBe(7)
   })
 
   it('re-keys the capture gate by agent when upgrading a v5 store', () => {
@@ -101,7 +105,7 @@ describe('LocalStore schema versioning', () => {
     expect(upgraded.isCaptureExcluded('bot-c', 'acp-2')).toBe(true)
     upgraded.close()
 
-    expect(userVersion(path)).toBe(6)
+    expect(userVersion(path)).toBe(7)
   })
 
   it('refuses a store written by a newer daemon WITHOUT touching it first', () => {
@@ -310,14 +314,32 @@ describe('LocalStore', () => {
     s.close()
   })
 
-  it('round-trips per-cron last-run stamps (latest-wins)', () => {
+  it('round-trips per-cron last-run stamps with their definition (latest-wins)', () => {
     const s = store()
-    expect(s.getCronLastRun('bot-a:daily')).toBeUndefined()
-    s.setCronLastRun('bot-a:daily', 1000)
-    s.setCronLastRun('bot-a:daily', 2000)
-    s.setCronLastRun('bot-b:weekly', 1500)
-    expect(s.getCronLastRun('bot-a:daily')).toBe(2000)
-    expect(s.getCronLastRun('bot-b:weekly')).toBe(1500)
+    expect(s.cronRun('bot-a:daily')).toBeUndefined()
+    s.setCronLastRun('bot-a:daily', 1000, 'def-1')
+    s.setCronLastRun('bot-a:daily', 2000, 'def-2')
+    s.setCronLastRun('bot-b:weekly', 1500, 'def-1')
+    expect(s.cronRun('bot-a:daily')).toEqual({ lastRunAt: 2000, definition: 'def-2' })
+    expect(s.cronRun('bot-b:weekly')).toEqual({ lastRunAt: 1500, definition: 'def-1' })
+    s.close()
+  })
+
+  it('claims a catch-up only for the definition the stamp was written under', () => {
+    const s = store()
+    s.setCronLastRun('bot-a:daily', 1000, 'def-1')
+    s.setDreamLastRun('bot-a', 1000, 'def-1')
+    // A definition that has moved on cannot claim the moment the old one left behind.
+    expect(s.claimCronCatchUp('bot-a:daily', 2000, 3000, 'def-2')).toBe(false)
+    expect(s.claimDreamCatchUp('bot-a', 2000, 3000, 'def-2')).toBe(false)
+    expect(s.cronRun('bot-a:daily')).toEqual({ lastRunAt: 1000, definition: 'def-1' })
+    // The same definition claims once; the loser of the race sees a stamp past the occurrence.
+    expect(s.claimCronCatchUp('bot-a:daily', 2000, 3000, 'def-1')).toBe(true)
+    expect(s.claimCronCatchUp('bot-a:daily', 2000, 3000, 'def-1')).toBe(false)
+    expect(s.claimDreamCatchUp('bot-a', 2000, 3000, 'def-1')).toBe(true)
+    expect(s.claimDreamCatchUp('bot-a', 2000, 3000, 'def-1')).toBe(false)
+    // Never claimed for a schedule that has never stamped a run.
+    expect(s.claimCronCatchUp('bot-b:weekly', 2000, 3000, 'def-1')).toBe(false)
     s.close()
   })
 

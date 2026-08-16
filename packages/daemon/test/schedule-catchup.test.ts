@@ -1,14 +1,16 @@
 import { describe, it, expect, vi } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Daemon } from '../src/daemon.js'
+import { scheduleFingerprint } from '../src/scheduler/scheduler.js'
 
 /**
  * #1031 — a cron or dream whose moment lands inside a duty handover (old holder released, new
  * holder not yet armed) used to run nowhere: a fresh `Cron` knows nothing of a moment already
  * passed. Gaining an agent's duty now replays the one occurrence that was swallowed, claimed
- * through the shared store so a pair of members racing the same handoff fires it once.
+ * through the shared store so a pair of members racing the same handoff fires it once. A stamp is
+ * only evidence about the definition it was written under, so an edited schedule replays nothing.
  */
 
 /** Hourly: the previous occurrence is always inside the schedule's own grace window, and a real
@@ -88,7 +90,7 @@ async function bootPool() {
   const root = scaffold()
   const a = await boot(root)
   const b = await boot(root)
-  return { a, b, stop: () => Promise.all([a.daemon.stop(), b.daemon.stop()]) }
+  return { a, b, root, stop: () => Promise.all([a.daemon.stop(), b.daemon.stop()]) }
 }
 
 const grant = () => ({
@@ -100,11 +102,28 @@ const grant = () => ({
 const hold = (inner: any) => inner.settleDutyChange(inner.duties.applyGrant([grant()]))
 const drop = (inner: any) => inner.applyDutyRevoke([{ groupId: GROUP, reason: 'reassigned' }])
 
-/** Backdate both stamps so the schedules' previous occurrence reads as swallowed. */
+const agentOf = (inner: any) => inner.agents.get(AGENT)
+
+/** Backdate both stamps, fingerprinted under the definitions currently in force. */
 function stampsBefore(inner: any, msAgo: number): void {
   const at = inner.clock.now() - msAgo
-  inner.store.setCronLastRun(`${AGENT}:report`, at)
-  inner.store.setDreamLastRun(AGENT, at)
+  const agent = agentOf(inner)
+  inner.store.setCronLastRun(`${AGENT}:report`, at, scheduleFingerprint(inner.cronDefinition(agent.crons[0])))
+  inner.store.setDreamLastRun(AGENT, at, scheduleFingerprint(inner.dreamDefinition(agent)))
+}
+
+/** Edit the cron entry and the dreaming policy on disk, then reconcile every member — the path a
+ *  real definition change takes, and where a moved definition retires its stamp. */
+async function editSchedules(
+  root: string,
+  members: { inner: any }[],
+  over: { schedule?: string; enabled?: boolean }
+): Promise<void> {
+  const path = join(root, 'agents', AGENT, 'agent.json')
+  const agent = JSON.parse(readFileSync(path, 'utf8'))
+  for (const target of [agent.crons[0], agent.memory.dreaming]) Object.assign(target, over)
+  writeFileSync(path, JSON.stringify(agent))
+  for (const member of members) await member.inner.reconcile()
 }
 
 /** croner fires are async under the hood; let the stubbed dispatch settle. */
@@ -181,10 +200,41 @@ describe('missed-fire compensation across a duty handover', () => {
 
   it('a real fire stamps the dream schedule, so the next handover sees the moment as served', async () => {
     const { a, stop } = await bootPool()
-    expect(a.inner.store.getDreamLastRun(AGENT)).toBeUndefined()
+    expect(a.inner.store.dreamRun(AGENT)).toBeUndefined()
     a.inner.onDreamScheduleFire(AGENT)
     await settle()
-    expect(a.inner.store.getDreamLastRun(AGENT)).toBeGreaterThan(0)
+    const run = a.inner.store.dreamRun(AGENT)
+    expect(run.lastRunAt).toBeGreaterThan(0)
+    expect(run.definition).toBe(scheduleFingerprint(a.inner.dreamDefinition(agentOf(a.inner))))
+    await stop()
+  })
+
+  it('replays nothing when the definition was edited since the stamp', async () => {
+    const { a, b, root, stop } = await bootPool()
+    hold(a.inner)
+    stampsBefore(a.inner, 2 * HOUR_MS)
+    drop(a.inner)
+    // Same cadence, different moments: :30 past the hour is due on its own, but the stamp is
+    // evidence about the :00 schedule that no longer exists.
+    await editSchedules(root, [a, b], { schedule: '30 * * * *' })
+    hold(b.inner)
+    await settle()
+    expect(b.crons).toEqual([])
+    expect(b.dreams).toEqual([])
+    await stop()
+  })
+
+  it('replays nothing across a disable and re-enable', async () => {
+    const { a, b, root, stop } = await bootPool()
+    hold(a.inner)
+    stampsBefore(a.inner, 2 * HOUR_MS)
+    await editSchedules(root, [a, b], { enabled: false })
+    await editSchedules(root, [a, b], { enabled: true })
+    drop(a.inner)
+    hold(b.inner)
+    await settle()
+    expect(b.crons).toEqual([])
+    expect(b.dreams).toEqual([])
     await stop()
   })
 })

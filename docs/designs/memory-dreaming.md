@@ -483,7 +483,11 @@ to run once dreaming has usage data.
   was serviced here rather than that a dream ran. On gaining an agent's duty a
   member compensates the one occurrence a handover swallowed — the newest missed
   moment only, inside a grace window of one interval capped at an hour, claimed
-  by a CAS on the stamp so two members racing a handoff dream once.
+  by a CAS on the stamp so two members racing a handoff dream once. The row also
+  fingerprints the policy fields that define the schedule (enabled + expression +
+  timezone), because a mutable policy makes a bare stamp meaningless: a catch-up
+  is eligible only under the same definition, and a reconcile that sees a moved
+  one retires the stamp so the new policy starts clean.
 - **Idle-triggered (later)** — "N hours since the last consolidation and the
   agent has been active since" fits the daemon (it already tracks per-agent
   activity), as a follow-up once scheduled dreams are proven.
