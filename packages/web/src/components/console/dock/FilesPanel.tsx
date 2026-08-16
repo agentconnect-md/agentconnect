@@ -3,7 +3,7 @@
 // The dock's Files tab: the open session's worktree as ONE narrow column at 380–760px — lazily expanded rows with git status tags, a path filter over the tree already loaded, and the checkout's last fetch time.
 // The file itself opens in the left-pane viewer (§4), which this panel does not own: a file row reports the path and nothing more.
 
-import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Spinner } from '@/components/marks'
 import { Icon } from '@/components/ui'
 import { FileBrowserRow, formatFileMtime, formatFileSize } from '@/components/console/FileBrowser'
@@ -13,8 +13,15 @@ import {
   useWorkspaceGitStatus,
   useWorkspaceTree,
   workspaceDirtyMap,
-  workspaceEntryIcon
+  workspaceEntryIcon,
+  workspaceRootReadState
 } from '@/components/console/workspace-tree'
+import { useSandboxWake } from '@/components/console/sandbox-wake'
+import {
+  SANDBOX_ASLEEP_NOTICE,
+  SandboxAsleepNotice,
+  SandboxStartingNotice
+} from '@/components/console/SandboxWakeNotice'
 import type { DockTabStatus } from './SessionDock'
 
 /** The Files tab's status: `loading` covers the first root listing only, and everything after it is `ready` — an offline daemon, a non-repo workspace and an empty directory are each something this panel has copy for, and copy is content. */
@@ -27,9 +34,7 @@ export function filesTabStatus(rootSettled: boolean): DockTabStatus {
 function rootNoticeText(status: number | null, scoped: boolean, code?: string | null): string {
   // Ahead of the status checks: this one arrives as a 503 and would otherwise read as an outage, when
   // in fact the files are fine and reachable again on the agent's next turn.
-  if (code === SANDBOX_ASLEEP_CODE) {
-    return 'Files are not available right now — this agent runs in a cluster sandbox and its pod is not running. It starts again on the agent’s next turn, and the workspace comes back with it.'
-  }
+  if (code === SANDBOX_ASLEEP_CODE) return SANDBOX_ASLEEP_NOTICE
   if (status === 409) {
     return 'This agent runs a daemon version that cannot browse a session worktree. Update the agent, or read the files from its workspace page.'
   }
@@ -64,8 +69,12 @@ export function FilesPanel({
   /** Whether the first root listing has answered — the input to {@link filesTabStatus}. The caller owns the tab descriptor, so the verdict is reported rather than applied. */
   onRootSettledChange?: (settled: boolean) => void
 }) {
-  const { dirs, root, expanded, toggleDir, loadMoreDir } = useWorkspaceTree(agentId, sessionId, refreshTick)
-  const { git, outcome, primaryBranch } = useWorkspaceGitStatus(agentId, sessionId, refreshTick)
+  // The wake's own refresh rides beside the tab's: a poll re-reads the tree the same way the refresh action does.
+  const [wakeTick, setWakeTick] = useState(0)
+  const { dirs, root, expanded, toggleDir, loadMoreDir } = useWorkspaceTree(agentId, sessionId, refreshTick + wakeTick)
+  const { git, outcome, primaryBranch } = useWorkspaceGitStatus(agentId, sessionId, refreshTick + wakeTick)
+  const retryRoot = useCallback(() => setWakeTick((tick) => tick + 1), [])
+  const wake = useSandboxWake(agentId, workspaceRootReadState(root), retryRoot)
   const [query, setQuery] = useState('')
   const scope = `${agentId}:${sessionId ?? 'primary'}`
   // Latched per scope, so the tab reports `ready` once and a refresh keeps the panel — and the reader's filter text — on screen behind an in-tree spinner.
@@ -178,8 +187,17 @@ export function FilesPanel({
 
   // Which of the tree's states the body draws. Every branch here is data — none of them may take the panel, the dock or the transcript down (§2).
   const body = (): ReactNode => {
-    if (root?.err && !root.entries)
-      return <PanelNotice warn text={rootNoticeText(root.errStatus, Boolean(sessionId), root.errCode)} />
+    if (root?.err && !root.entries) {
+      if (wake.phase === 'starting') return <SandboxStartingNotice compact />
+      return (
+        <SandboxAsleepNotice
+          wake={wake}
+          startable={root.errCode === SANDBOX_ASLEEP_CODE}
+          compact
+          notice={<PanelNotice warn text={rootNoticeText(root.errStatus, Boolean(sessionId), root.errCode)} />}
+        />
+      )
+    }
     if (root && !root.loading && !root.err && !root.exists) {
       return (
         <PanelNotice

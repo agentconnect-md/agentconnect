@@ -19,7 +19,9 @@ const wire = vi.hoisted(() => ({
   git: null as unknown,
   primary: null as unknown,
   gitFails: false,
-  primaryFails: false
+  primaryFails: false,
+  // What the wake answers; the panel presses it once when the root read refuses as a sleeping sandbox.
+  wake: 'starting' as 'running' | 'starting' | 'unsupported'
 }))
 
 vi.mock('@/lib/api', () => {
@@ -54,13 +56,14 @@ vi.mock('@/lib/api', () => {
     fetchWorkspaceGitStatus: vi.fn((_agentId: string, sessionId?: string) => {
       if (sessionId) return wire.gitFails ? Promise.reject(new Error('offline')) : Promise.resolve(wire.git)
       return wire.primaryFails ? Promise.reject(new Error('offline')) : Promise.resolve(wire.primary)
-    })
+    }),
+    wakeAgent: vi.fn(() => Promise.resolve({ state: wire.wake }))
   }
 })
 
 import { FilesPanel, filesTabStatus } from './FilesPanel'
 import { SessionDock, type DockTab } from './SessionDock'
-import { fetchWorkspaceFiles, fetchWorkspaceGitStatus } from '@/lib/api'
+import { fetchWorkspaceFiles, fetchWorkspaceGitStatus, wakeAgent } from '@/lib/api'
 import type { WorkspaceGitFileDto, WorkspaceGitStatusDto } from '@/lib/api'
 
 vi.mock('@/lib/org-context', () => ({
@@ -188,6 +191,7 @@ beforeEach(() => {
   wire.primary = gitStatus()
   wire.gitFails = false
   wire.primaryFails = false
+  wire.wake = 'starting'
   opened = []
   settledReports = []
 })
@@ -199,6 +203,7 @@ afterEach(async () => {
   root = undefined
   vi.mocked(fetchWorkspaceFiles).mockClear()
   vi.mocked(fetchWorkspaceGitStatus).mockClear()
+  vi.mocked(wakeAgent).mockClear()
 })
 
 describe('filesTabStatus', () => {
@@ -643,12 +648,37 @@ describe('FilesPanel degraded states', () => {
     // an offline daemon sends — and only the code says the files are fine and coming back.
     wire.failures = { '': { status: 503, code: 'WORKSPACE_SANDBOX_UNAVAILABLE' } }
     wire.gitFails = true
+    wire.wake = 'unsupported'
     await render()
 
+    // The refusal pressed the wake once; a daemon with nothing to wake leaves the terminal copy, without Start.
+    expect(vi.mocked(wakeAgent)).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(wakeAgent)).toHaveBeenCalledWith('agent-a')
     expect(text()).toContain('its pod is not running')
     expect(text()).not.toContain('the owning daemon may be offline')
+    expect(text()).not.toContain('Start')
     // A notice is content, so the tab still settles rather than spinning forever.
     expect(settledReports.at(-1)).toBe(true)
+  })
+
+  it('wakes a sleeping sandbox and says so calmly while the read is polled — never an error', async () => {
+    wire.failures = { '': { status: 503, code: 'WORKSPACE_SANDBOX_UNAVAILABLE' } }
+    wire.gitFails = true
+    wire.wake = 'starting'
+    await render()
+
+    expect(vi.mocked(wakeAgent)).toHaveBeenCalledTimes(1)
+    expect(text()).toContain('Starting the agent’s sandbox')
+    expect(text()).not.toContain('its pod is not running')
+    expect(settledReports.at(-1)).toBe(true)
+  })
+
+  it('does not press the wake for an offline daemon — only the sleeping-sandbox code earns one', async () => {
+    wire.failures = { '': 503 }
+    await render()
+
+    expect(vi.mocked(wakeAgent)).not.toHaveBeenCalled()
+    expect(text()).not.toContain('Start')
   })
 
   it('explains an offline daemon rather than throwing', async () => {
