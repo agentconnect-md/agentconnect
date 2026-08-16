@@ -1156,6 +1156,9 @@ export interface SessionMetaRecord {
   permissionMode: string | null
   outputMode: string | null
   daemonId: DaemonId | null
+  /** The member set whose shared store holds this session's content; null ⇒ the recorder kept a
+   *  private one. Session-bound provenance that outlives `daemonId` (domain/session-content.ts). */
+  contentSetId: string | null
   workspaceIsolation: 'shared' | 'session' | null
   activityState: ActivityState
   // ── session visibility (session-visibility.md §3) ──
@@ -5014,6 +5017,10 @@ export interface MemberSetRepo {
   setIdOf(daemonId: DaemonId): Promise<string | null>
   /** The set's members, sorted. The read path for "who could serve a `set`-placed agent". */
   memberIdsOf(setId: string): Promise<string[]>
+  /** The set's members, sorted, but ONLY for a set whose members share one content store — the
+   *  org-less install-wide pool. An org set answers `[]`: its machines may keep private stores, so
+   *  none of them can stand in for another's transcripts (domain/session-content.ts). */
+  sharedStoreMemberIdsOf(setId: string): Promise<string[]>
   /** Record a membership under the set's tenancy invariant; throws MemberSetTenancyMismatch. */
   enroll(setId: string, daemonId: DaemonId): Promise<void>
 }

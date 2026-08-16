@@ -69,6 +69,17 @@ export class PgMemberSetRepo implements MemberSetRepo {
     return rows.map((r) => r.daemonId).sort()
   }
 
+  async sharedStoreMemberIdsOf(setId: string): Promise<string[]> {
+    // `set: { orgId: null }` IS the shared-store predicate — the install-wide pool is the one set
+    // whose members are cluster daemons on the single data-plane store. An operator-built org set
+    // may be self-hosted machines with private stores, so none of its members answers for another.
+    const rows = await this.prisma.memberSetMember.findMany({
+      where: { setId, set: { orgId: null } },
+      select: { daemonId: true }
+    })
+    return rows.map((r) => r.daemonId).sort()
+  }
+
   async enroll(setId: string, daemonId: DaemonId): Promise<void> {
     await this.prisma.$transaction((tx) => enrollDaemonInSet(tx, setId, daemonId))
   }

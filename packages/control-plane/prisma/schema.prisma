@@ -687,9 +687,10 @@ model MemberSet {
   name      String
   createdAt DateTime @default(now()) @db.Timestamptz(6)
 
-  org     Org?              @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  members MemberSetMember[]
-  agents  Agent[]
+  org      Org?              @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  members  MemberSetMember[]
+  agents   Agent[]
+  sessions SessionMeta[]     @relation("SessionContentStore")
 
   @@index([orgId])
   @@map("member_set")
@@ -1041,7 +1042,15 @@ model SessionMeta {
   fastMode            Boolean?
   permissionMode      String? // runtime permission/approval mode
   outputMode          String? // daemon-side output verbosity (low/medium/high)
-  daemonId            String?             @db.Uuid // first daemon that reported the session; immutable content owner, stamped by the CP from the authenticated WS conn, never daemon-echoed
+  // First daemon that reported the session, stamped by the CP from the authenticated WS conn and
+  // never daemon-echoed. Provenance, NOT the only reader: the FK nulls it when that daemon is
+  // deleted, and a pool member's content outlives it in the store its peers share.
+  daemonId            String?             @db.Uuid
+  /// The member set whose shared data-plane store holds this session's content, stamped from the
+  /// recorder's own membership beside `daemonId`. Null ⇒ the recorder's private local store, which
+  /// nobody else can read. Session-bound on purpose: the agent's CURRENT placement is no evidence
+  /// about where a past session ran (`domain/session-content.ts`).
+  contentSetId        String?             @db.Uuid
   // Session-pinned checkout choice. Null is a legacy row whose daemon never
   // reported it; `session` identifies a daemon-local worktree eligible for the
   // authorized Workspace viewer.
@@ -1088,6 +1097,7 @@ model SessionMeta {
   agent         Agent          @relation(fields: [agentId], references: [id], onDelete: Cascade)
   launch        AgentLaunch?   @relation(fields: [launchId], references: [id], onDelete: SetNull)
   daemon        Daemon?        @relation(fields: [daemonId], references: [id], onDelete: SetNull)
+  contentSet    MemberSet?     @relation("SessionContentStore", fields: [contentSetId], references: [id], onDelete: SetNull)
   externalScope ExternalScope? @relation(fields: [externalScopeId, orgId, externalProvider], references: [id, orgId, provider], onDelete: Restrict, onUpdate: Restrict)
 
   webchatCurrentFor      WebchatConversation[]      @relation("WebchatCurrentSession")
