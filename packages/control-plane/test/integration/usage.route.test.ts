@@ -72,10 +72,14 @@ describe('usage/report handler — persists per-session token usage', () => {
       usage: { totalTokens: 4820, inputTokens: 3600, outputTokens: 1220, cachedReadTokens: 512, costAmount: 0.41 }
     })
 
-    // Fire-and-forget EVT — poll for the persisted row.
+    // Fire-and-forget EVT — poll for the persisted rows. The spend sample is a SECOND
+    // upsert, so waiting only on the counters can read the gap between them.
     const key = { agentId_sessionId: { agentId: AGENT_A, sessionId: 'acp-sess-1' } }
     await vi.waitFor(async () => {
       expect(await prisma.sessionUsage.findUnique({ where: key })).not.toBeNull()
+      expect(
+        await prisma.sessionSpend.findFirst({ where: { agentId: AGENT_A, sessionId: 'acp-sess-1' } })
+      ).not.toBeNull()
     })
     let row = await prisma.sessionUsage.findUnique({ where: key })
     expect(row!.totalTokens).toBe(4820)

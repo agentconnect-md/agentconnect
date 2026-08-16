@@ -41,6 +41,7 @@ function frame(payload: Record<string, unknown> = {}): AnyFrame {
 function fakeConn() {
   return {
     daemonId: ASKING_DAEMON,
+    orgId: ORG,
     replyTo: vi.fn(),
     sendError: vi.fn()
   } as unknown as DaemonConnection & { replyTo: ReturnType<typeof vi.fn>; sendError: ReturnType<typeof vi.fn> }
@@ -79,12 +80,13 @@ function fakeDeps(
     deps: {
       registry: { getUnscoped: async () => ({ id: ASKING_DAEMON, orgId: ORG }) },
       session: {
-        getUnscoped: async () =>
+        get: async () =>
           'parent' in over
             ? over.parent
             : { id: PARENT_SESSION, orgId: ORG, daemonId: ASKING_DAEMON, agentId: PARENT_AGENT }
       },
-      agent: { getUnscoped: async (id: string) => agents[id] ?? null },
+      // Org-fenced now, so the id is the SECOND argument.
+      agent: { get: async (_orgId: string, id: string) => agents[id] ?? null },
       placementResolver: new PlacementResolver({
         duties: { holdersOf, confirmedHoldersOf: holdersOf } as never,
         clock: systemClock

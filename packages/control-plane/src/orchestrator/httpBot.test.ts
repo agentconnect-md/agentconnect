@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { HttpBotOrchestrator } from './httpBot.js'
 import { AgentDelivery } from './agentDelivery.js'
+import type { PlacementResolver } from './placementResolver.js'
 import { systemClock } from '../domain/clock.js'
 import { RelayRegistry, type RelayChannel } from '../ws/relay-registry.js'
 import type { RcBotAssign, RelayCpFrameType } from '@agentconnect.md/protocol'
-import { AgentId, BotId, IntegrationId, OrgId } from '../domain/ids.js'
+import { AgentId, BotId, DaemonId, IntegrationId, OrgId } from '../domain/ids.js'
 import type {
   BotRepo,
   BotRecord,
@@ -130,7 +131,8 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
   }[]
   let secretMaterial: BotSecretMaterial
   // Drives the SessionRepo.findThreadOwner fallback in lookupThread (null = no daemon session).
-  let threadOwner: { agentId: string; daemonId: string } | null
+  // The AGENT alone: which member serves it is resolved live, so a pool agent resolves too.
+  let threadOwner: { agentId: string } | null
   let threadOwnerLookup: { botId: BotId; channel: string; thread: string } | null
   // §14: agents whose AgentRepo.get returns visibility 'restricted' (⇒ gated).
   let gatedAgents: Set<string>
@@ -152,7 +154,9 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
   // "why is my bot not receiving anything".
   let warns: { bindings: Record<string, unknown>; message: string }[]
 
-  function makeOrch(platforms = PLATFORMS): HttpBotOrchestrator {
+  /** `placement` stands in for the duty ledger: absent ⇒ placement alone, which is what every
+   *  expectation predating the pool was written against. */
+  function makeOrch(platforms = PLATFORMS, placement?: Pick<PlacementResolver, 'routableDaemon'>): HttpBotOrchestrator {
     const agents: Record<string, AgentRecord> = {
       [ALICE]: agent(ALICE, 'alice', unplacedAgents.has(ALICE) ? null : D1),
       [BOB]: agent(BOB, 'bob', unplacedAgents.has(BOB) ? null : D2)
@@ -323,7 +327,8 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       platforms,
       // No duty ledger wired ⇒ the delivery set is the placement alone, which is
       // exactly what every expectation in this file was written against.
-      new AgentDelivery({ control: control as never, specs: undefined as never, clock: systemClock })
+      new AgentDelivery({ control: control as never, specs: undefined as never, clock: systemClock }),
+      ...(placement ? [placement] : [])
     )
   }
 
@@ -357,7 +362,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
     // the relay's REPORT leg is still resolved from the daemon-reported SessionMeta.
     it('falls back to the daemon-reported SessionMeta owner (channel/thread parsed from sessionKey)', async () => {
       const orch = makeOrch()
-      threadOwner = { agentId: ALICE, daemonId: D1 }
+      threadOwner = { agentId: ALICE }
       const res = await orch.lookupThread({ botId: BOT, sessionKey: SK })
       expect(res).toEqual({
         botId: BOT,
@@ -366,6 +371,29 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
         participants: [{ agentId: ALICE, daemonId: D1 }]
       })
       expect(threadOwnerLookup).toEqual({ botId: BOT, channel: 'C1', thread: '1784297789.871789' })
+    })
+
+    it('resolves a POOL owner through the placement resolver, which the agent row cannot name', async () => {
+      // The blind spot: the lookup used to require a non-null `agent.daemonId`, so a pool agent —
+      // placed on a set, naming no machine — never resolved and its own thread's un-mentioned
+      // follow-ups were dropped.
+      unplacedAgents = new Set([ALICE])
+      const orch = makeOrch(PLATFORMS, {
+        routableDaemon: async (a) => (a.id === ALICE ? DaemonId(D1) : null)
+      })
+      threadOwner = { agentId: ALICE }
+      const res = await orch.lookupThread({ botId: BOT, sessionKey: SK })
+      expect(res.target).toEqual({ agentId: ALICE, daemonId: D1 })
+    })
+
+    it('still names nobody while no member is routable for the owning agent', async () => {
+      // Fail closed, not stale: between a lapsed lease and the next grant the honest answer is
+      // "no target", which the relay retries — never a member that has stopped serving it.
+      unplacedAgents = new Set([ALICE])
+      const orch = makeOrch(PLATFORMS, { routableDaemon: async () => null })
+      threadOwner = { agentId: ALICE }
+      const res = await orch.lookupThread({ botId: BOT, sessionKey: SK })
+      expect(res.target).toBeNull()
     })
 
     it('returns null when neither affinity nor a SessionMeta owner exists', async () => {

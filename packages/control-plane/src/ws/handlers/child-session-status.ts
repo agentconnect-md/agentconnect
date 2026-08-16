@@ -26,6 +26,7 @@ import { isFrame } from '@agentconnect.md/protocol'
 import type { ChildSessionStatus } from '@agentconnect.md/protocol'
 import { AgentId, DaemonId, SessionId } from '../../domain/ids.js'
 import { PLACEMENT_ONLY } from '../../orchestrator/placementResolver.js'
+import { frameOrgId } from './frame-org.js'
 import type { Handler } from './index.js'
 
 const NOT_FOUND: ChildSessionStatus = { found: false }
@@ -35,29 +36,33 @@ export const handleChildSessionStatus: Handler = async (frame, conn, deps) => {
   const { parentSessionId, childSessionId, childAgentId } = frame.payload
   const resolver = deps.placementResolver ?? PLACEMENT_ONLY
 
-  // Daemon trust domain: the connection's own daemon (org-scoped-data-layer.md §4).
+  const orgId = frameOrgId(frame, conn)
+  if (!orgId) {
+    conn.replyTo(frame, 'session/child-status/ok', NOT_FOUND)
+    return
+  }
+
+  // Install-wide read: the connection's OWN daemon row, whose org is null on a pool member,
+  // so no org fence exists to apply (org-scoped-data-layer.md §4).
+  // eslint-disable-next-line no-restricted-syntax -- the authenticated connection's own daemon row
   const daemon = await deps.registry.getUnscoped(DaemonId(conn.daemonId))
   if (!daemon) return // unknown daemon (should not happen post-auth) — drop silently
 
-  // (a) Prove the asking daemon serves the parent session it is asking AS. The LIVE seam, not
+  // (a) Prove the asking daemon SERVES the parent session it is asking AS. The LIVE seam, not
   // `SessionMeta.daemonId`: that column is the daemon that first reported the session and goes
   // null when its member is reaped, so after a rollout the new holder would be refused its own
-  // parent. Fail closed when the session or its agent is unknown to the CP.
-  const parent = await deps.session.getUnscoped(SessionId(parentSessionId))
-  const parentAgent = parent ? await deps.agent.getUnscoped(AgentId(parent.agentId)) : null
-  if (
-    !parent ||
-    !parentAgent ||
-    !(await resolver.mayAct(parentAgent, conn.daemonId)) ||
-    (frame.orgId && frame.orgId !== parent.orgId)
-  ) {
+  // parent. Both reads are fenced on the frame's org, so anything outside it is indistinguishable
+  // from a missing row. Fail closed when the session or its agent is unknown to the CP.
+  const parent = await deps.session.get(orgId, SessionId(parentSessionId))
+  const parentAgent = parent ? await deps.agent.get(orgId, AgentId(parent.agentId)) : null
+  if (!parent || !parentAgent || !(await resolver.mayAct(parentAgent, conn.daemonId))) {
     conn.replyTo(frame, 'session/child-status/ok', NOT_FOUND)
     return
   }
 
   // (b) Resolve the child agent's serving daemon. Cross-org is refused outright: a status read must
   // never cross an org boundary even when both daemons are reachable.
-  const childAgent = await deps.agent.getUnscoped(AgentId(childAgentId))
+  const childAgent = await deps.agent.get(orgId, AgentId(childAgentId))
   if (!childAgent || childAgent.orgId !== parent.orgId) {
     conn.replyTo(frame, 'session/child-status/ok', NOT_FOUND)
     return

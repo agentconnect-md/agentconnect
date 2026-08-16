@@ -15,6 +15,7 @@
 import { isFrame } from '@agentconnect.md/protocol'
 import { CronId, DaemonId } from '../../domain/ids.js'
 import { PLACEMENT_ONLY } from '../../orchestrator/placementResolver.js'
+import { frameOrgId } from './frame-org.js'
 import type { Handler } from './index.js'
 
 export const handleCronReport: Handler = async (frame, conn, deps) => {
@@ -22,10 +23,12 @@ export const handleCronReport: Handler = async (frame, conn, deps) => {
   const p = frame.payload
   const firedAt = new Date(p.firedAt)
   if (Number.isNaN(firedAt.getTime())) return
+  const orgId = frameOrgId(frame, conn)
+  if (!orgId) return // no org to fence the reads on — drop, like every other unusable report
   // The cron's OWN agent, never the frame's claim: `agentId` rides an untrusted daemon payload.
-  const cron = await deps.cron.getUnscoped(CronId(p.cronId))
-  if (!cron?.agentId) return // unknown / orphaned cron — inert by design
-  const agent = await deps.agent.getUnscoped(cron.agentId)
+  const cron = await deps.cron.get(orgId, CronId(p.cronId))
+  if (!cron?.agentId) return // unknown / orphaned / out-of-org cron — inert by design
+  const agent = await deps.agent.get(orgId, cron.agentId)
   if (!agent) return
   const resolver = deps.placementResolver ?? PLACEMENT_ONLY
   if (!(await resolver.mayAct(agent, DaemonId(conn.daemonId)))) return

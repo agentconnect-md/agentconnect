@@ -27,7 +27,7 @@ function fakeDeps(platform = 'slack', known = true) {
     slackSessionAccess: { dropPublicAudiences },
     agentMutations: { tryBeginMutation: vi.fn(() => vi.fn()) },
     agent: {
-      getUnscoped: vi.fn(async () => null),
+      get: vi.fn(async () => null),
       listForDaemon: vi.fn(async () => [{ id: AGENT }]),
       listByIds: vi.fn(async () => [])
     },

@@ -218,11 +218,6 @@ export class PgCronRepo implements CronRepo {
     return c ? toRecord(c) : null
   }
 
-  async getUnscoped(cronId: CronId): Promise<CronRecord | null> {
-    const c = await this.db.cronDef.findUnique({ where: { id: cronId }, include: withUsers })
-    return c ? toRecord(c) : null
-  }
-
   async recordReport(cronId: CronId, r: CronReportInput): Promise<boolean> {
     // The reporting daemon's authority is settled by the caller against the resolver (placement ∪
     // live duty holders); a join on `agent.daemonId` here dropped every pool member's report.

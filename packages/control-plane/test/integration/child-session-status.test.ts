@@ -13,6 +13,7 @@ import type { AnyFrame, ChildSessionStatus } from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
 import { seedAgent, seedDaemon, seedDutyGroup, seedSessionMeta } from '../fixtures/seed.js'
 import { poolSetId, seedPoolMember } from '../fakes/member-set.js'
+import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import { PgAgentRepo, PgDaemonRepo, PgDutyGroupRepo, PgRuntimeProfileRepo } from '../../src/persistence/index.js'
 import { PgDaemonLifecycleOpRepo } from '../../src/persistence/repositories/daemon-lifecycle-op.repo.js'
 import { PgSessionRepo } from '../../src/persistence/repositories/session.repo.js'
@@ -41,6 +42,9 @@ async function ask(input: {
     id: randomUUID(),
     ts: new Date().toISOString(),
     type: 'session/child-status',
+    // An install-wide member carries many orgs on one socket, so the org rides the FRAME; both
+    // repository reads below are fenced on it (`frameOrgId`).
+    orgId: DEFAULT_ORG_ID,
     payload: {
       parentSessionId: input.parentSessionId,
       childSessionId: input.childSessionId,

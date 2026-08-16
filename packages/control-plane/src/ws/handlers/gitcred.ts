@@ -20,6 +20,7 @@ import { PLACEMENT_ONLY } from '../../orchestrator/placementResolver.js'
 import { isFrame } from '@agentconnect.md/protocol'
 import { AgentId, HookId } from '../../domain/ids.js'
 import { GitCredDeniedError } from '../../github/service.js'
+import { frameOrgId } from './frame-org.js'
 import type { Handler } from './index.js'
 
 export const handleGitCredRequest: Handler = async (frame, conn, deps) => {
@@ -31,10 +32,17 @@ export const handleGitCredRequest: Handler = async (frame, conn, deps) => {
     return
   }
 
+  const orgId = frameOrgId(frame, conn)
+  if (!orgId) {
+    conn.sendError(frame.id, 'SCOPE_DENIED', 'organization is required', false)
+    return
+  }
+
   // Service scope: the requesting daemon must currently serve the agent — its placement, or a
   // duty it holds. A daemon that lost it (re-placement or a lapsed lease while offline) gets a
-  // terminal SCOPE_DENIED — its cache layer clears the entry and stops asking.
-  const agent = await deps.agent.getUnscoped(AgentId(agentId))
+  // terminal SCOPE_DENIED — its cache layer clears the entry and stops asking. The read is
+  // fenced on the frame's org, so a foreign-org agent is indistinguishable from a missing one.
+  const agent = await deps.agent.get(orgId, AgentId(agentId))
   if (!agent || !(await (deps.placementResolver ?? PLACEMENT_ONLY).mayAct(agent, conn.daemonId))) {
     conn.sendError(frame.id, 'SCOPE_DENIED', 'this daemon does not serve that agent', false)
     return
@@ -62,8 +70,8 @@ export const handleGitCredRequest: Handler = async (frame, conn, deps) => {
       // environment. Its authority is the enabled hook itself, not the
       // workspace contents gitAccess (read workspaces must still be able to
       // deliver the reply promised by an always-on GitHub hook).
-      // Daemon trust domain: the hook named by the requesting daemon's own run (§4).
-      const hook = await deps.hook.getUnscoped(HookId(hookId))
+      // The hook named by the requesting daemon's own run, fenced on the frame's org (§4).
+      const hook = await deps.hook.get(orgId, HookId(hookId))
       if (!hook || hook.agentId !== AgentId(agentId) || hook.kind !== 'github' || !hook.enabled) {
         conn.sendError(frame.id, 'SCOPE_DENIED', 'hook is not an enabled github hook of this agent', false)
         return

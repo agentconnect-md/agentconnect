@@ -27,10 +27,16 @@
 import { PLACEMENT_ONLY } from '../../orchestrator/placementResolver.js'
 import { isFrame } from '@agentconnect.md/protocol'
 import { AgentId, DaemonId, SessionId } from '../../domain/ids.js'
+import { frameOrgId } from './frame-org.js'
 import type { Handler } from './index.js'
 
 export const handleSessionPurged: Handler = async (frame, conn, deps) => {
   if (!isFrame('event/session-purged')(frame)) return
+  const orgId = frameOrgId(frame, conn)
+  if (!orgId) {
+    conn.sendError(frame.id, 'SCOPE_DENIED', 'organization is required', false)
+    return
+  }
   const p = frame.payload
   const agentId = AgentId(p.agentId)
   const release = deps.agentMutations.tryBeginMutation(agentId)
@@ -39,7 +45,7 @@ export const handleSessionPurged: Handler = async (frame, conn, deps) => {
     return
   }
   try {
-    const agent = await deps.agent.getUnscoped(agentId)
+    const agent = await deps.agent.get(orgId, agentId)
     if (agent && (await (deps.placementResolver ?? PLACEMENT_ONLY).mayAct(agent, DaemonId(conn.daemonId)))) {
       await deps.session.markContentPurged(
         agentId,

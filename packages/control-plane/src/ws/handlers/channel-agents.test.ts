@@ -13,7 +13,9 @@ import type { AnyFrame } from '@agentconnect.md/protocol'
 import type { ChannelAgentRecord, OrgAgentRecord } from '../../persistence/ports.js'
 import type { DaemonConnection } from '../connection.js'
 import type { DaemonWsDeps } from '../deps.js'
-import { AgentId } from '../../domain/ids.js'
+import { AgentId, type DaemonId } from '../../domain/ids.js'
+import { PlacementResolver } from '../../orchestrator/placementResolver.js'
+import { systemClock } from '../../domain/clock.js'
 
 const CALLER = AgentId('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')
 const PEER = AgentId('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb')
@@ -21,6 +23,7 @@ const OTHER = AgentId('cccccccc-cccc-4ccc-8ccc-cccccccccccc')
 const ASKING_DAEMON = 'd1d1d1d1-dddd-4ddd-8ddd-dddddddddddd'
 const OTHER_DAEMON = 'd2d2d2d2-dddd-4ddd-8ddd-dddddddddddd'
 const ORG = 'org-a'
+const SET = 'set-pool'
 
 function rec(over: Partial<ChannelAgentRecord> & { agentId: ChannelAgentRecord['agentId'] }): ChannelAgentRecord {
   return {
@@ -155,6 +158,34 @@ function fakeDeps(placedOn: string | null, channelExtra?: ChannelAgentRecord) {
   }
 }
 
+/**
+ * The pool shape: CALLER is placed on a SET (so its row names no machine) and its duty is held by
+ * `holders`; only `confirmed` may be addressed for ingress. PEER stays machine-placed on the asking
+ * daemon, so the reply has something routable in it either way.
+ */
+function fakePoolDeps(duty: { holders: string[]; confirmed: string[] }) {
+  const orgRoster: OrgAgentRecord[] = [
+    { ...rec({ agentId: CALLER }), placementKind: 'set', daemonId: null, setId: SET },
+    { ...rec({ agentId: PEER }), placementKind: 'daemon', daemonId: ASKING_DAEMON, setId: null }
+  ]
+  const forCaller = (agentId: string, ids: string[]) => (agentId === CALLER ? ids : [])
+  const placementResolver = new PlacementResolver({
+    clock: systemClock,
+    duties: {
+      holdersOf: async (agentId) => forCaller(agentId, duty.holders) as DaemonId[],
+      confirmedHoldersOf: async (agentId) => forCaller(agentId, duty.confirmed) as DaemonId[]
+    }
+  })
+  return {
+    deps: {
+      registry: { getUnscoped: async () => ({ id: ASKING_DAEMON, orgId: ORG }) },
+      agent: { orgDirectory: async () => orgRoster },
+      integration: { agentsInChannel: async () => [] },
+      placementResolver
+    } as unknown as DaemonWsDeps
+  }
+}
+
 const rosterNames = (conn: ReturnType<typeof fakeConn>): string[] =>
   ((conn.replyTo.mock.calls[0]![2] as { agents: Array<{ agentId: string }> }).agents ?? []).map((a) => a.agentId)
 
@@ -221,5 +252,27 @@ describe('handleChannelAgents — daemon-ownership bind on requesterAgentId', ()
     const conn = fakeConn()
     await handleChannelAgents(frame({ channel: 'C1' }), conn, deps)
     expect(rosterNames(conn).sort()).toEqual([CALLER, PEER].sort())
+  })
+
+  // The pool window this bind used to close over the wrong predicate. A grant makes a member a
+  // HOLDER at once; it becomes a CONFIRMED holder only from its first reporting digest, and
+  // `resolveDirectory` deliberately names confirmed holders because it addresses ingress. Binding
+  // the ownership question on that projection refused a member that genuinely held the agent.
+  it('serves a member that HOLDS the requester but has not yet confirmed the grant', async () => {
+    const { deps } = fakePoolDeps({ holders: [ASKING_DAEMON], confirmed: [] })
+    const conn = fakeConn()
+    await handleChannelAgents(frame({}), conn, deps)
+    expect(conn.replyTo.mock.calls[0]![1]).toBe('channel/agents/ok')
+    // PEER is confirmed elsewhere, so it is routable and listed; the requester always sees itself.
+    expect(rosterNames(conn).sort()).toEqual([CALLER, PEER].sort())
+  })
+
+  it('still refuses a member that holds NOTHING for the requester', async () => {
+    // The integrity control is unchanged: may-act widens the bind from confirmed holders to
+    // holders, never to "any member of the set".
+    const { deps } = fakePoolDeps({ holders: [OTHER_DAEMON], confirmed: [OTHER_DAEMON] })
+    const conn = fakeConn()
+    await handleChannelAgents(frame({}), conn, deps)
+    expect(rosterNames(conn)).toEqual([])
   })
 })

@@ -54,8 +54,6 @@ export async function seedAgent(
   opts: {
     runtime?: string
     daemonId?: string
-    /** A MEMBER-SET placement: placed, naming no machine. Only the duty ledger says who serves it. */
-    setId?: string
     name?: string
     visibility?: 'org' | 'restricted'
     sharedWith?: string[]
@@ -67,6 +65,8 @@ export async function seedAgent(
     gitAccess?: 'read' | 'write'
     /** `runtimeOverrides` JSON — where the MCP enable-list and memory binding live. */
     runtimeOverrides?: Record<string, unknown>
+    /** A `set` placement: placed, but naming no machine — which member serves it is the ledger's. */
+    setId?: string
   } = {}
 ): Promise<AgentId> {
   await prisma.agent.create({

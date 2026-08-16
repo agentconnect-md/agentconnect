@@ -41,12 +41,13 @@ const BUNDLE = {
   ]
 }
 
-function fetchFrame(agentId = AGENT): AnyFrame {
+function fetchFrame(agentId = AGENT, orgId: string | null = ORG): AnyFrame {
   return {
     v: 1,
     id: crypto.randomUUID(),
     ts: '2026-08-14T00:00:00.000Z',
     type: 'duty/fetch',
+    ...(orgId ? { orgId } : {}),
     payload: { agentId }
   } as AnyFrame
 }
@@ -76,7 +77,7 @@ function fakeDeps(
   scopes = fakeScopes()
 ): DaemonWsDeps {
   return {
-    agent: { getUnscoped: async () => over.agent ?? null },
+    agent: { get: async () => over.agent ?? null },
     dutyLease: { holdsAgent: async () => over.holdsAgent ?? false },
     connReg: { get: () => scopes },
     agentBundle: over.agentBundle ?? vi.fn(async () => BUNDLE)
@@ -99,6 +100,16 @@ describe('handleDutyFetch', () => {
     )
     expect(conn.replyTo).not.toHaveBeenCalled()
     expect(agentBundle).not.toHaveBeenCalled()
+  })
+
+  it('refuses a fetch that names no organization', async () => {
+    const conn = fakeConn()
+    const frame = fetchFrame(AGENT, null)
+
+    await handleDutyFetch(frame, conn, fakeDeps({ agent: AGENT_RECORD, holdsAgent: true }))
+
+    expect(conn.sendError).toHaveBeenCalledWith(frame.id, 'SCOPE_DENIED', 'organization is required', false)
+    expect(conn.replyTo).not.toHaveBeenCalled()
   })
 
   it('an unknown agent answers empty, never an error frame', async () => {
@@ -166,7 +177,7 @@ describe('handleDutyFetch', () => {
   it('answers empty when no bundle assembler is wired', async () => {
     const conn = fakeConn()
     const deps = {
-      agent: { getUnscoped: async () => AGENT_RECORD },
+      agent: { get: async () => AGENT_RECORD },
       dutyLease: { holdsAgent: async () => true }
     } as unknown as DaemonWsDeps
 

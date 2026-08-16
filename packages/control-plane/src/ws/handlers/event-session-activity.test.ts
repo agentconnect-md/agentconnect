@@ -6,6 +6,7 @@ import { handleSessionActivity } from './event-session-activity.js'
 
 const DAEMON_ID = 'd1d1d1d1-dddd-4ddd-8ddd-dddddddddddd'
 const AGENT_ID = 'a0a0a0a0-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+const ORG_ID = '0e0e0e0e-eeee-4eee-8eee-eeeeeeeeeeee'
 
 function activityFrame(): AnyFrame {
   return {
@@ -27,13 +28,13 @@ describe('handleSessionActivity', () => {
     const publishActivity = vi.fn()
     const release = vi.fn()
     const deps = {
-      agent: { getUnscoped: vi.fn().mockResolvedValue({ daemonId: DAEMON_ID }) },
+      agent: { get: vi.fn().mockResolvedValue({ daemonId: DAEMON_ID }) },
       agentMutations: { tryBeginMutation: vi.fn(() => release) },
       events: { publishActivity }
     } as unknown as DaemonWsDeps
     const frame = activityFrame()
 
-    await handleSessionActivity(frame, { daemonId: DAEMON_ID } as DaemonConnection, deps)
+    await handleSessionActivity(frame, { daemonId: DAEMON_ID, orgId: ORG_ID } as DaemonConnection, deps)
 
     expect(publishActivity).toHaveBeenCalledWith(DAEMON_ID, frame.payload)
     expect(release).toHaveBeenCalledOnce()
@@ -42,12 +43,12 @@ describe('handleSessionActivity', () => {
   it('drops activity from a daemon that does not own the agent', async () => {
     const publishActivity = vi.fn()
     const deps = {
-      agent: { getUnscoped: vi.fn().mockResolvedValue({ daemonId: crypto.randomUUID() }) },
+      agent: { get: vi.fn().mockResolvedValue({ daemonId: crypto.randomUUID() }) },
       agentMutations: { tryBeginMutation: vi.fn(() => vi.fn()) },
       events: { publishActivity }
     } as unknown as DaemonWsDeps
 
-    await handleSessionActivity(activityFrame(), { daemonId: DAEMON_ID } as DaemonConnection, deps)
+    await handleSessionActivity(activityFrame(), { daemonId: DAEMON_ID, orgId: ORG_ID } as DaemonConnection, deps)
 
     expect(publishActivity).not.toHaveBeenCalled()
   })

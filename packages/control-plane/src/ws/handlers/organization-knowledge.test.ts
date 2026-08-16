@@ -103,7 +103,7 @@ describe('handleKnowledgeSearch', () => {
     ])
     const deps = {
       registry: featureRegistry,
-      agent: { getUnscoped: async () => ({ id: AGENT, orgId: ORG, daemonId: DAEMON }) },
+      agent: { get: async () => ({ id: AGENT, orgId: ORG, daemonId: DAEMON }) },
       organizationKnowledge: { searchKnowledge }
     } as unknown as DaemonWsDeps
     const connection = conn()
@@ -137,7 +137,7 @@ describe('handleKnowledgeSearch', () => {
       const searchKnowledge = vi.fn()
       const deps = {
         registry: featureRegistry,
-        agent: { getUnscoped: async () => requester },
+        agent: { get: async () => requester },
         organizationKnowledge: { searchKnowledge }
       } as unknown as DaemonWsDeps
       const connection = conn()
@@ -167,7 +167,7 @@ describe('handleKnowledgeList', () => {
     ])
     const deps = {
       registry: featureRegistry,
-      agent: { getUnscoped: async () => ({ id: AGENT, orgId: ORG, daemonId: DAEMON }) },
+      agent: { get: async () => ({ id: AGENT, orgId: ORG, daemonId: DAEMON }) },
       organizationKnowledge: { listKnowledge }
     } as unknown as DaemonWsDeps
     const connection = conn()
@@ -200,7 +200,7 @@ describe('handleKnowledgeList', () => {
     const listKnowledge = vi.fn()
     const deps = {
       registry: featureRegistry,
-      agent: { getUnscoped: async () => ({ id: AGENT, orgId: ORG, daemonId: 'another-daemon' }) },
+      agent: { get: async () => ({ id: AGENT, orgId: ORG, daemonId: 'another-daemon' }) },
       organizationKnowledge: { listKnowledge }
     } as unknown as DaemonWsDeps
     const connection = conn()
@@ -236,7 +236,7 @@ describe('handleKnowledgeList', () => {
     ])
     const deps = {
       registry: featureRegistry,
-      agent: { getUnscoped: async () => ({ id: AGENT, orgId: ORG, daemonId: DAEMON }) },
+      agent: { get: async () => ({ id: AGENT, orgId: ORG, daemonId: DAEMON }) },
       organizationKnowledge: { listKnowledge }
     } as unknown as DaemonWsDeps
     const connection = conn()
@@ -274,7 +274,7 @@ describe('handleOrgSkills', () => {
     const listManagedSkills = vi.fn(async () => rows)
     const deps = {
       registry: featureRegistry,
-      agent: { getUnscoped: async () => ({ id: AGENT, orgId: ORG, daemonId: DAEMON }) },
+      agent: { get: async () => ({ id: AGENT, orgId: ORG, daemonId: DAEMON }) },
       organizationKnowledge: { listManagedSkills }
     } as unknown as DaemonWsDeps
     const connection = conn()
@@ -307,7 +307,7 @@ describe('handleOrgSkills', () => {
     const listManagedSkills = vi.fn(async () => rows)
     const deps = {
       registry: featureRegistry,
-      agent: { getUnscoped: async () => ({ id: AGENT, orgId: ORG, daemonId: DAEMON }) },
+      agent: { get: async () => ({ id: AGENT, orgId: ORG, daemonId: DAEMON }) },
       organizationKnowledge: { listManagedSkills }
     } as unknown as DaemonWsDeps
     const connection = conn()
@@ -530,7 +530,7 @@ describe('handleManagedSkillRead', () => {
     const archive = new Uint8Array([0, 1, 2, 3, 4, 5])
     const deps = {
       registry: featureRegistry,
-      agent: { getUnscoped: async () => ({ id: AGENT, orgId: ORG, daemonId: DAEMON, managedSkills: [SKILL] }) },
+      agent: { get: async () => ({ id: AGENT, orgId: ORG, daemonId: DAEMON, managedSkills: [SKILL] }) },
       organizationKnowledge: {
         getManagedSkill: async () => ({ id: SKILL, orgId: ORG, archivedAt: null }),
         getManagedSkillRevision: async () => ({
@@ -572,7 +572,7 @@ describe('handleManagedSkillRead', () => {
     const getManagedSkillRevision = vi.fn()
     const deps = {
       registry: featureRegistry,
-      agent: { getUnscoped: async () => ({ id: AGENT, orgId: ORG, daemonId: DAEMON, managedSkills: [] }) },
+      agent: { get: async () => ({ id: AGENT, orgId: ORG, daemonId: DAEMON, managedSkills: [] }) },
       organizationKnowledge: { getManagedSkillRevision }
     } as unknown as DaemonWsDeps
     const connection = conn()
@@ -597,7 +597,7 @@ describe('handleManagedSkillRead', () => {
     const searchKnowledge = vi.fn()
     const deps = {
       registry: { getUnscoped: async () => ({ id: DAEMON, orgId: ORG, capabilities: { features: [] } }) },
-      agent: { getUnscoped: vi.fn() },
+      agent: { get: vi.fn() },
       organizationKnowledge: { searchKnowledge }
     } as unknown as DaemonWsDeps
     const connection = conn()
@@ -610,7 +610,7 @@ describe('handleManagedSkillRead', () => {
 
     expect(connection.sendError).toHaveBeenCalledWith(expect.any(String), 'SCOPE_DENIED', expect.any(String), false)
     expect(searchKnowledge).not.toHaveBeenCalled()
-    expect(deps.agent.getUnscoped).not.toHaveBeenCalled()
+    expect(deps.agent.get).not.toHaveBeenCalled()
   })
 })
 
@@ -701,7 +701,8 @@ describe('organization reads follow the serving member', () => {
     const deps = {
       // An install-wide member: org-less, so the frame is the only thing that names an org.
       registry: { getUnscoped: async () => ({ id: DAEMON, orgId: null, capabilities: installWideCapabilities }) },
-      agent: { getUnscoped: async () => requester },
+      // The org-fenced point read: a requester outside the frame's org reads as absent.
+      agent: { get: async (orgId: string) => (requester.orgId === orgId ? requester : null) },
       placementResolver: holderOf(holds),
       organizationKnowledge
     } as unknown as DaemonWsDeps

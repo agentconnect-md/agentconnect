@@ -42,6 +42,9 @@ async function report(
     id: randomUUID(),
     ts: new Date().toISOString(),
     type: 'cron/report',
+    // An install-wide member carries many orgs on one socket, so the org rides the FRAME — both
+    // reads the fence makes are scoped to it (`frameOrgId`).
+    orgId: DEFAULT_ORG_ID,
     payload: { cronId, agentId, firedAt, ...outcome }
   } as AnyFrame
   // The same graph production wires: the fence is the resolver's, over a real duty ledger.
