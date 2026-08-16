@@ -17,7 +17,14 @@ import {
   writeFileSync
 } from 'node:fs'
 import { SandboxManager, SandboxRuntimeConfigSchema } from '@anthropic-ai/sandbox-runtime'
-import { sandboxWrap, sandboxBoundary, SandboxError, detectSandbox, writeSandboxSettings } from '../src/acp/sandbox.js'
+import {
+  sandboxWrap,
+  sandboxBoundary,
+  SandboxError,
+  detectSandbox,
+  probeSandboxHost,
+  writeSandboxSettings
+} from '../src/acp/sandbox.js'
 import { claudeInnerSandboxSettings } from '../src/acp/claude-runtime.js'
 import { clearConfigFiles, configFilesDir, materializeConfigFiles } from '../src/agents/config-file-env.js'
 
@@ -85,6 +92,24 @@ describe('sandboxWrap', () => {
     expect(settings.git.safeDirectories).toEqual([realpathSync(workspace)])
     expect(settingsPath.startsWith(`${workspace}/`)).toBe(false)
     expect(statSync(settingsPath).mode & 0o777).toBe(0o600)
+  })
+})
+
+// #956: a host missing SRT's own dependencies confines nothing and installs no
+// managed skills. The probe already knew; the reason has to survive it so the
+// daemon's startup preflight can name what is missing.
+describe('probeSandboxHost', () => {
+  it.skipIf(process.platform === 'linux')('names the unsupported platform', () => {
+    expect(probeSandboxHost()).toEqual({ mechanism: undefined, reason: `unsupported platform ${process.platform}` })
+  })
+
+  it.runIf(process.platform === 'linux')('keeps the provider failure as one bounded line', () => {
+    // An empty PATH is how the reported host looked to the daemon: SRT's rg/socat lookup fails.
+    const probe = probeSandboxHost({ ...process.env, PATH: '/nonexistent' })
+    expect(probe.mechanism).toBeUndefined()
+    expect(probe.reason).toBeTruthy()
+    expect(probe.reason).not.toContain('\n')
+    expect(probe.reason!.length).toBeLessThanOrEqual(300)
   })
 })
 

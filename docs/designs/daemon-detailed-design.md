@@ -358,7 +358,12 @@ the exact-pinned `@anthropic-ai/sandbox-runtime` package, backed by `bubblewrap`
 and launches a separate SRT provider process for each ordinary ACP host so policy
 state is never shared between agents. The host must provide working `bwrap`,
 `socat`, and `rg` executables and permit unprivileged user namespaces. Startup
-performs a live probe rather than treating installed binaries as sufficient.
+performs a live probe rather than treating installed binaries as sufficient, and
+logs its verdict: `sandbox: bwrap ready`, or a warning carrying the provider's
+own failure text and the daemon's `PATH`. A failed probe is not confined to
+agent launches — managed skill installation runs the pinned skills CLI inside
+the same kernel sandbox and has no fail-open path, so it fails on every
+reconcile until the missing dependencies are installed.
 
 An enabled sandbox gives the runtime a private HOME, hides daemon-owned agent
 metadata and the host source from which that runtime state was seeded, and

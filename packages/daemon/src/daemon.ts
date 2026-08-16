@@ -37,7 +37,13 @@ import {
   type StoredUsage
 } from './store/local-store.js'
 import { AcpHost, turnFailureCode, turnFailureReason, type AcpPermissionPolicyEvent } from './acp/acp-host.js'
-import { detectSandbox, sandboxBoundary, SandboxError, type SandboxMechanism } from './acp/sandbox.js'
+import {
+  probeSandboxHost,
+  sandboxBoundary,
+  SandboxError,
+  type SandboxMechanism,
+  type SandboxProbe
+} from './acp/sandbox.js'
 import { effectiveRunInSandbox, prepareRuntimeLaunch } from './acp/runtime-launch.js'
 import {
   permissionModeDisplayLabel,
@@ -2284,6 +2290,9 @@ export class Daemon {
   // per-agent requests are ineffective; security.requireSandbox refuses startup
   // (including on unsupported macOS/Windows hosts).
   private sandboxMechanism: SandboxMechanism | undefined
+  // The same detection, with the provider's failure text kept for the startup
+  // preflight log. undefined when this daemon never probes (--k8s, injected null).
+  private readonly sandboxProbe: SandboxProbe | undefined
   // `--k8s`: this daemon supervises runtimes in sandbox pods instead of local
   // subprocesses, so every "daemon and runtime share one machine" behavior is off.
   private readonly k8s: boolean
@@ -2557,8 +2566,13 @@ export class Daemon {
     this.clusterIdentityToken = this.k8s && readClusterIdentityToken() ? () => readClusterIdentityToken() : undefined
     // A k8s runtime is isolated by its own pod, so the in-process SRT mechanism is
     // not part of that shape — it stays off even if this host happens to support it.
-    this.sandboxMechanism =
-      opts.sandboxMechanism === null || this.k8s ? undefined : (opts.sandboxMechanism ?? detectSandbox())
+    this.sandboxProbe =
+      opts.sandboxMechanism === null || this.k8s
+        ? undefined
+        : opts.sandboxMechanism
+          ? { mechanism: opts.sandboxMechanism }
+          : probeSandboxHost()
+    this.sandboxMechanism = this.sandboxProbe?.mechanism
     this.clock = opts.clock ?? systemClock
     if (opts.evaluation?.capabilityProfile && !opts.evaluation.observer) {
       throw new Error('evaluation capability profile requires an evaluation observer')
@@ -2580,6 +2594,19 @@ export class Daemon {
       ttlMs: Daemon.PROBE_TTL_MS
     })
     this.requestExit = opts.requestExit ?? ((code) => process.exit(code))
+  }
+
+  /** Say what the boot probe found: missing SRT dependencies silently run agents unconfined AND fail every managed-skill install (#956). */
+  private logSandboxPreflight(): void {
+    // Linux-only: macOS/Windows have no mechanism by design, and --k8s isolates by pod.
+    if (this.k8s || process.platform !== 'linux' || !this.sandboxProbe) return
+    if (this.sandboxProbe.mechanism) {
+      this.log.info(`sandbox: ${this.sandboxProbe.mechanism} ready`)
+      return
+    }
+    this.log.warn(
+      `sandbox: unavailable — ${this.sandboxProbe.reason || 'the live SRT probe failed'}; agents run unconfined and managed skills cannot be installed. Install bwrap, socat, and rg on the daemon's own PATH (PATH=${process.env.PATH ?? ''})`
+    )
   }
 
   private emitEvaluation(input: EvaluationEventInput): void {
@@ -2929,6 +2956,7 @@ export class Daemon {
     })
     this.cfg = cfg
     configureWorkspaceGitOrigins(cfg.security.workspaceGitAllowedOrigins)
+    this.logSandboxPreflight()
     if (cfg.security.requireSandbox && !this.sandboxMechanism) {
       throw new Error(
         this.k8s
