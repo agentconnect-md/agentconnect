@@ -18,11 +18,11 @@ import type { HttpDeps } from '../deps.js'
 import { isSyntheticEmail, type AgentRecord, type CronRecord } from '../../persistence/ports.js'
 import { AgentId, CronId, IntegrationId } from '../../domain/ids.js'
 import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
+import { refreshMutationAgent as refreshAgentUnderMutation } from '../mutation-agent.js'
 import { canView, canEdit, canManageSharing, type ViewCtx } from '../../authorization/policy.js'
 import { resolveShareSet } from '../sharing.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
 import { cronToUpsert } from '../../orchestrator/placement.js'
-import { samePlacementRef } from '../../domain/placement.js'
 import { toDbPlatform } from '../../persistence/platform.js'
 import { Tag } from '../plugins/openapi.js'
 import {
@@ -68,19 +68,7 @@ function toDto(c: CronRecord, ctx: ViewCtx): CronDtoT {
 export function cronRoutes(deps: HttpDeps) {
   return async function cronRoutesPlugin(app: FastifyInstance): Promise<void> {
     const r = app.withTypeProvider<ZodTypeProvider>()
-    // Placement IDENTITY, not the `daemonId` column: a set placement names no machine, so column
-    // equality both misses a re-placement onto another set and reads every set agent as unplaced.
-    const refreshMutationAgent = async (observed: AgentRecord): Promise<AgentRecord | null> => {
-      const current = await deps.repos.agent.get(observed.orgId, observed.id)
-      if (
-        !current ||
-        !samePlacementRef(current, observed) ||
-        current.lastModifiedAt.getTime() !== observed.lastModifiedAt.getTime()
-      ) {
-        return null
-      }
-      return current
-    }
+    const refreshMutationAgent = (observed: AgentRecord) => refreshAgentUnderMutation(deps.repos.agent, observed)
 
     // Fetch a cron AND verify it's in the caller's org AND visible to them — a
     // cross-org id OR a restricted cron they can't see both read as absent (404).

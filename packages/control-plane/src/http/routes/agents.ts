@@ -79,6 +79,7 @@ class SkillEnableDenied extends Error {}
 import { parseSkillRef, redactSourceCredentials } from '../../orchestrator/skillSource.js'
 import { memoryConnectionSpec, stdioMemoryConnectionSpec } from '../../orchestrator/memoryConnection.js'
 import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
+import { refreshMutationAgent as refreshAgentUnderMutation } from '../mutation-agent.js'
 import { canView, canViewSession, canEdit, canManageSharing, type ViewCtx } from '../../authorization/policy.js'
 import { makeSessionAccessResolver } from '../session-access.js'
 import { resolveShareSet } from '../sharing.js'
@@ -1340,18 +1341,7 @@ export function agentRoutes(deps: HttpDeps) {
       ...(deps.recomputeDuties ? { recomputeDuties: deps.recomputeDuties } : {}),
       log: app.log
     })
-    const refreshMutationAgent = async (observed: AgentRecord): Promise<AgentRecord | null> => {
-      // `observed` came through an org-fenced read, so its own org scopes the refresh.
-      const current = await deps.repos.agent.get(observed.orgId, observed.id)
-      if (
-        !current ||
-        current.daemonId !== observed.daemonId ||
-        current.lastModifiedAt.getTime() !== observed.lastModifiedAt.getTime()
-      ) {
-        return null
-      }
-      return current
-    }
+    const refreshMutationAgent = (observed: AgentRecord) => refreshAgentUnderMutation(deps.repos.agent, observed)
 
     r.post(
       '/agents',
