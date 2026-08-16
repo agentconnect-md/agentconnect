@@ -24,6 +24,7 @@ interface SetBody {
   setId: string
   name: string
   memberDaemonIds: string[]
+  agentCount: number
 }
 
 describe('member sets — CRUD is org-fenced (real Postgres)', () => {
@@ -33,7 +34,7 @@ describe('member sets — CRUD is org-fenced (real Postgres)', () => {
       const created = await app.inject({ method: 'POST', url: `${ORG}/member-sets`, payload: { name: 'lab' } })
       expect(created.statusCode).toBe(201)
       const set = created.json() as SetBody
-      expect(set).toMatchObject({ name: 'lab', memberDaemonIds: [] })
+      expect(set).toMatchObject({ name: 'lab', memberDaemonIds: [], agentCount: 0 })
 
       // The pool exists, and it is not listed: it belongs to no organization.
       const pool = await poolSetId(prisma)
@@ -52,6 +53,21 @@ describe('member sets — CRUD is org-fenced (real Postgres)', () => {
 
       expect((await app.inject({ method: 'DELETE', url: `${ORG}/member-sets/${set.setId}` })).statusCode).toBe(204)
       expect(((await app.inject({ method: 'GET', url: `${ORG}/member-sets` })).json() as SetBody[]).length).toBe(0)
+    } finally {
+      await close()
+    }
+  })
+
+  it('reports what is placed on the set — the count the console shows beside the pool and a cluster', async () => {
+    const { app, close } = buildHttpApp(prisma)
+    try {
+      const set = (
+        await app.inject({ method: 'POST', url: `${ORG}/member-sets`, payload: { name: 'lab' } })
+      ).json() as SetBody
+      await seedAgent(prisma, AGENT, { setId: set.setId })
+
+      const listed = (await app.inject({ method: 'GET', url: `${ORG}/member-sets` })).json() as SetBody[]
+      expect(listed).toEqual([{ setId: set.setId, name: 'lab', memberDaemonIds: [], agentCount: 1 }])
     } finally {
       await close()
     }

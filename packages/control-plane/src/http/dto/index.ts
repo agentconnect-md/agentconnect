@@ -244,7 +244,10 @@ export const MemberSetDto = z.object({
   setId: z.string().uuid(),
   name: z.string(),
   /** Daemon ids currently enrolled. A daemon is in at most one set. */
-  memberDaemonIds: z.array(z.string().uuid())
+  memberDaemonIds: z.array(z.string().uuid()),
+  /** Agents placed on this set. The console shows the same count on the install-wide pool and on
+   *  a cluster, so a set that cannot answer it cannot be presented beside them. */
+  agentCount: z.number().int()
 })
 export const MemberSetListDto = z.array(MemberSetDto)
 

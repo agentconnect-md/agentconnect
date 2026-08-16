@@ -111,6 +111,16 @@ export class PgMemberSetRepo implements MemberSetRepo {
     return rows.map((r) => ({ id: r.id, orgId: r.orgId, name: r.name }))
   }
 
+  async agentCountsOf(setIds: readonly string[]): Promise<Map<string, number>> {
+    if (setIds.length === 0) return new Map()
+    const rows = await this.prisma.agent.groupBy({
+      by: ['setId'],
+      where: { setId: { in: [...setIds] } },
+      _count: { _all: true }
+    })
+    return new Map(rows.flatMap((r) => (r.setId ? [[r.setId, r._count._all] as const] : [])))
+  }
+
   async createForOrg(orgId: string, name: string): Promise<MemberSetRecord> {
     const row = await this.prisma.memberSet.create({ data: { id: randomUUID(), orgId, name } })
     return { id: row.id, orgId: row.orgId, name: row.name }

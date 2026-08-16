@@ -5020,6 +5020,9 @@ export interface MemberSetRepo {
   enroll(setId: string, daemonId: DaemonId): Promise<void>
   /** One org's sets, by name. The org-less pool is never among them — it belongs to no org. */
   listForOrg(orgId: string): Promise<MemberSetRecord[]>
+  /** Agents placed on each of these sets, in one query — the list read must not be N+1. Sets with
+   *  no agents are absent from the map, not zero-valued. */
+  agentCountsOf(setIds: readonly string[]): Promise<Map<string, number>>
   /** Create an org's set. The org-less pool is minted by migration and never through this. */
   createForOrg(orgId: string, name: string): Promise<MemberSetRecord>
   /** Rename one of an org's sets. Null ⇒ no such set in that org. */

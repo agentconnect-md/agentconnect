@@ -53,12 +53,27 @@ function conflict(reply: FastifyReply, message: string): FastifyReply {
 }
 
 export function memberSetRoutes(deps: HttpDeps) {
-  /** One set plus its members — the only projection these routes return. */
-  const toDto = async (set: { id: string; name: string }) => ({
-    setId: set.id,
-    name: set.name,
-    memberDaemonIds: await deps.repos.memberSet.memberIdsOf(set.id)
-  })
+  /** One set plus its members and what is placed on it — the only projection these routes return. */
+  const toDto = async (set: { id: string; name: string }) => {
+    const [memberDaemonIds, agentCounts] = await Promise.all([
+      deps.repos.memberSet.memberIdsOf(set.id),
+      deps.repos.memberSet.agentCountsOf([set.id])
+    ])
+    return { setId: set.id, name: set.name, memberDaemonIds, agentCount: agentCounts.get(set.id) ?? 0 }
+  }
+
+  /** The list read, batched: one membership query and one count query for every set at once. */
+  const toDtoList = async (sets: { id: string; name: string }[]) => {
+    const agentCounts = await deps.repos.memberSet.agentCountsOf(sets.map((s) => s.id))
+    return Promise.all(
+      sets.map(async (set) => ({
+        setId: set.id,
+        name: set.name,
+        memberDaemonIds: await deps.repos.memberSet.memberIdsOf(set.id),
+        agentCount: agentCounts.get(set.id) ?? 0
+      }))
+    )
+  }
 
   /** Resolve a path id to one of THIS org's sets. Null ⇒ 404, including for the org-less pool:
    *  it is not this organization's to see or change. */
@@ -82,10 +97,7 @@ export function memberSetRoutes(deps: HttpDeps) {
           response: { 200: MemberSetListDto }
         }
       },
-      async (req) => {
-        const sets = await deps.repos.memberSet.listForOrg(orgOf(req))
-        return Promise.all(sets.map(toDto))
-      }
+      async (req) => toDtoList(await deps.repos.memberSet.listForOrg(orgOf(req)))
     )
 
     r.post(
