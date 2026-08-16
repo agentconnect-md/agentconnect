@@ -333,7 +333,9 @@ function actorOf(body: BlockActionArgs['body']): InteractionActor | undefined {
   return body?.user?.id ? { userId: body.user.id } : undefined
 }
 
-type AppLike = {
+/** The Slack surface `SlackConnection` drives. Exported so a caller can supply its own — see
+ *  {@link SlackAppFactory}. */
+export type AppLike = {
   message: (handler: (args: { message: unknown }) => Promise<void> | void) => void
   event: (type: string, handler: (args: { event: unknown }) => Promise<void> | void) => void
   action: (actionId: string | RegExp, handler: (args: BlockActionArgs) => Promise<void> | void) => void
@@ -529,6 +531,10 @@ function sendOnlyApp(botToken: string): AppLike {
   }
 }
 
+/** Builds the Slack app a connection drives. The default reaches slack.com; daemon tests inject an
+ *  inert one so a unit suite never depends on Slack being reachable. */
+export type SlackAppFactory = (opts: { token: string; appToken: string }) => AppLike
+
 export class SlackConnection implements PlatformConnection {
   private app: AppLike
   // §9.1: all outbound writes (post/update/setStatus/setTitle) funnel through one queue so
@@ -561,7 +567,7 @@ export class SlackConnection implements PlatformConnection {
 
   constructor(
     private deps: SlackDeps,
-    factory: (opts: { token: string; appToken: string }) => AppLike = (o) => {
+    factory: SlackAppFactory = (o) => {
       // If HTTPS_PROXY or HTTP_PROXY is set, route all Slack API calls and
       // WebSocket connections through that proxy.
       const dispatcher = proxyDispatcher()

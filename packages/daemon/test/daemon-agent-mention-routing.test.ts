@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { MAX_AGENT_CALL_HOPS } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
 import { sessionKey } from '../src/store/local-store.js'
+import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
 /**
  * send-message-routing-rework.md §4 / §4.1 / §6 — the DIRECT-daemon ladder for a
@@ -98,7 +99,8 @@ async function boot(
 ) {
   const daemon = new Daemon({
     root: scaffold(agents, over.distinctTokens),
-    hostFactory: () => fakeHost() as any
+    hostFactory: () => fakeHost() as any,
+    slackAppFactory: fakeSlackAppFactory()
   })
   await daemon.start()
   const placements = agents.map((a) => ({

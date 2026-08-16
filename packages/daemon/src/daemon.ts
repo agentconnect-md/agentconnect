@@ -147,6 +147,7 @@ import {
   slackSharedKey,
   SlackConnection,
   type InteractionActor,
+  type SlackAppFactory,
   type SlackPostOptions,
   type SlackStatusOptions
 } from './slack/connection.js'
@@ -2500,6 +2501,9 @@ export class Daemon {
       overrides?: FlatOverrides
       agentName?: string
       hostFactory?: (agent: Agent, onUpdate: (sid: string, u: any) => void) => AcpHost
+      /** Builds the Slack app each connection drives. Injected by tests ONLY — unset, connections
+       * build the real client and reach slack.com, which is not something a unit suite should need. */
+      slackAppFactory?: SlackAppFactory
       /** Explicit test/evaluation-only Dream bypass. It is honored only with an
        * injected hostFactory, never by the production CLI/config surface. */
       dreamOperationPolicy?: DreamOperationPolicy
@@ -3672,22 +3676,25 @@ export class Daemon {
     if (groups.size === 0) this.log.info('slack: no slack integrations configured')
     else this.log.info(`slack: opening ${groups.size} socket connection(s)`)
     for (const group of groups.values()) {
-      const conn: SlackConnection = new SlackConnection({
-        group,
-        newTraceId: () => randomUUID(),
-        onMessage: (msg) => {
-          this.nameResolver?.noteMessage(conn, msg)
-          this.onInbound(msg, this.srcIntegrationIds(conn))
+      const conn: SlackConnection = new SlackConnection(
+        {
+          group,
+          newTraceId: () => randomUUID(),
+          onMessage: (msg) => {
+            this.nameResolver?.noteMessage(conn, msg)
+            this.onInbound(msg, this.srcIntegrationIds(conn))
+          },
+          onChannelsChanged: () => void this.refreshChannels(conn),
+          onMessageShortcut: (shortcut) => this.slackShortcutSession(shortcut, this.srcIntegrationIds(conn)),
+          onStatusAction: (a) => this.handleStatusAction(a),
+          onStatusInfo: (key) => this.statusInfoForKey(key),
+          onPermissionChoice: (a) => this.handlePermissionChoice(a),
+          onElicitChoice: (a) => this.handleElicitChoice(a),
+          log: this.log,
+          boltDebug: cfg.logging.level === 'debug' || cfg.logging.level === 'trace'
         },
-        onChannelsChanged: () => void this.refreshChannels(conn),
-        onMessageShortcut: (shortcut) => this.slackShortcutSession(shortcut, this.srcIntegrationIds(conn)),
-        onStatusAction: (a) => this.handleStatusAction(a),
-        onStatusInfo: (key) => this.statusInfoForKey(key),
-        onPermissionChoice: (a) => this.handlePermissionChoice(a),
-        onElicitChoice: (a) => this.handleElicitChoice(a),
-        log: this.log,
-        boltDebug: cfg.logging.level === 'debug' || cfg.logging.level === 'trace'
-      })
+        this.opts.slackAppFactory
+      )
       this.log.info(
         `slack: connecting (${group.integrations.length} integration(s): ${group.integrations.map((i) => i.agentId).join(', ')})…`
       )
@@ -4316,22 +4323,25 @@ export class Daemon {
       // New appToken: open an isolated socket (tier 2). Guard so a bad token logs
       // and leaves existing sockets intact instead of throwing out of reconcile.
       try {
-        const conn: SlackConnection = new SlackConnection({
-          group,
-          newTraceId: () => randomUUID(),
-          onMessage: (msg) => {
-            this.nameResolver?.noteMessage(conn, msg)
-            this.onInbound(msg, this.srcIntegrationIds(conn))
+        const conn: SlackConnection = new SlackConnection(
+          {
+            group,
+            newTraceId: () => randomUUID(),
+            onMessage: (msg) => {
+              this.nameResolver?.noteMessage(conn, msg)
+              this.onInbound(msg, this.srcIntegrationIds(conn))
+            },
+            onChannelsChanged: () => void this.refreshChannels(conn),
+            onMessageShortcut: (shortcut) => this.slackShortcutSession(shortcut, this.srcIntegrationIds(conn)),
+            onStatusAction: (a) => this.handleStatusAction(a),
+            onStatusInfo: (key) => this.statusInfoForKey(key),
+            onPermissionChoice: (a) => this.handlePermissionChoice(a),
+            onElicitChoice: (a) => this.handleElicitChoice(a),
+            log: this.log,
+            boltDebug: this.cfg.logging.level === 'debug' || this.cfg.logging.level === 'trace'
           },
-          onChannelsChanged: () => void this.refreshChannels(conn),
-          onMessageShortcut: (shortcut) => this.slackShortcutSession(shortcut, this.srcIntegrationIds(conn)),
-          onStatusAction: (a) => this.handleStatusAction(a),
-          onStatusInfo: (key) => this.statusInfoForKey(key),
-          onPermissionChoice: (a) => this.handlePermissionChoice(a),
-          onElicitChoice: (a) => this.handleElicitChoice(a),
-          log: this.log,
-          boltDebug: this.cfg.logging.level === 'debug' || this.cfg.logging.level === 'trace'
-        })
+          this.opts.slackAppFactory
+        )
         this.log.info(
           `slack: opening new socket at runtime (${group.integrations.length} integration(s): ${group.integrations
             .map((i) => i.agentId)
@@ -4378,17 +4388,20 @@ export class Daemon {
       let conn = this.slackSharedPool.find(slackSharedKey(group))
       let bound = false
       if (!conn) {
-        conn = new SlackConnection({
-          group,
-          sendOnly: true,
-          newTraceId: () => randomUUID(),
-          onMessage: () => {}, // never called (relay owns inbound)
-          onStatusAction: (a) => this.handleStatusAction(a),
-          onStatusInfo: (key) => this.statusInfoForKey(key),
-          onPermissionChoice: (a) => this.handlePermissionChoice(a),
-          onElicitChoice: (a) => this.handleElicitChoice(a),
-          log: this.log
-        })
+        conn = new SlackConnection(
+          {
+            group,
+            sendOnly: true,
+            newTraceId: () => randomUUID(),
+            onMessage: () => {}, // never called (relay owns inbound)
+            onStatusAction: (a) => this.handleStatusAction(a),
+            onStatusInfo: (key) => this.statusInfoForKey(key),
+            onPermissionChoice: (a) => this.handlePermissionChoice(a),
+            onElicitChoice: (a) => this.handleElicitChoice(a),
+            log: this.log
+          },
+          this.opts.slackAppFactory
+        )
         try {
           await conn.start()
           this.slackSharedPool.add(conn)
