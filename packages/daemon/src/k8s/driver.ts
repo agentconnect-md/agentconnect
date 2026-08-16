@@ -116,11 +116,13 @@ const MAX_MODE_ATTEMPTS = 5
 export type SandboxReadiness = 'ready' | 'starting' | 'absent'
 
 /** Per-agent launch state the driver keeps: the Sandbox it bound and which launch it is. */
-interface Launch {
+export interface Launch {
   agentId: string
   sandboxName: string
   sandboxUid: string
   generation: number
+  /** When this member started holding the launch; the idle floor when no activity is recorded. */
+  since: number
 }
 
 /**
@@ -146,6 +148,10 @@ export class K8sDriver implements SpawnDriver {
   private readonly suspending = new Map<string, Promise<void>>()
   /** Logical channels per agent, which survive the shim's credential renewals. */
   private readonly sessions = new Map<string, ShimSession>()
+  /** Takeover re-derivations in flight, per agent; a concurrent acquisition waits for the answer. */
+  private readonly adopting = new Map<string, Promise<Launch | undefined>>()
+  /** Bumped by `releaseAgent`; an acquisition in flight across a bump records nothing. */
+  private readonly releases = new Map<string, number>()
   /** Workspace mount per agent, as the bound pod's shim reported it. */
   private readonly workspaceRoots = new Map<string, string>()
   private readonly clock: Clock
@@ -173,8 +179,12 @@ export class K8sDriver implements SpawnDriver {
     // a new one — the same resume this call would have done a moment later anyway.
     const suspending = this.suspending.get(agentId)
     if (suspending) await suspending
+    // A takeover re-derivation is the same answer from the cluster; wait for it rather than race it.
+    const adopting = this.adopting.get(agentId)
+    if (adopting) await adopting
     const existing = this.launches.get(agentId)
     if (existing) return existing
+    const releasedAt = this.releases.get(agentId) ?? 0
     const name = this.claimName(agentId)
     const orgId = this.deps.orgForAgent(agentId)
     if (!orgId) throw new Error(`cannot resolve sandbox organization for agent ${agentId}`)
@@ -206,12 +216,59 @@ export class K8sDriver implements SpawnDriver {
     )
     const sandboxUid = sandbox.metadata?.uid
     if (!sandboxUid) throw new Error(`sandbox ${sandboxName} has no metadata.uid to bind against`)
+    this.assertStillServed(agentId, releasedAt)
+    return this.recordLaunch(agentId, sandboxName, sandboxUid)
+  }
+
+  // Allocation and record with no await between them: the last recorder holds the highest generation.
+  private recordLaunch(agentId: string, sandboxName: string, sandboxUid: string): Launch {
     // Allocated from durable install-wide state, not from this process: the pod this launch is
     // about to dial may have been bound by a member that has since been rolled away.
     const generation = this.deps.generations.nextSandboxGeneration(agentId)
-    const launch: Launch = { agentId, sandboxName, sandboxUid, generation }
+    const launch: Launch = { agentId, sandboxName, sandboxUid, generation, since: this.clock.now() }
     this.launches.set(agentId, launch)
     return launch
+  }
+
+  private assertStillServed(agentId: string, releasedAt: number): void {
+    if ((this.releases.get(agentId) ?? 0) !== releasedAt) {
+      throw new Error(`agent ${agentId} left this member while its sandbox was being acquired`)
+    }
+  }
+
+  /** Takeover: re-derive the launch from the cluster (claim → bound Sandbox → mode), creating nothing. */
+  // Only a Running pod is recorded — its idleness is now this member's to own; a suspended or unclaimed
+  // agent needs no launch until its next turn claims one.
+  adoptAgent(agentId: string): Promise<Launch | undefined> {
+    const inFlight = this.adopting.get(agentId)
+    if (inFlight) return inFlight
+    const run = (async (): Promise<Launch | undefined> => {
+      const existing = this.launches.get(agentId)
+      if (existing) return existing
+      const releasedAt = this.releases.get(agentId) ?? 0
+      const claim = await this.deps.api.getClaim(this.claimName(agentId)).catch((err: unknown) => {
+        if (err instanceof K8sApiError && err.isNotFound) return undefined
+        throw err
+      })
+      const sandboxName = claim?.status?.sandbox?.name
+      if (!sandboxName) return undefined
+      const sandbox = await this.deps.api.getSandbox(sandboxName).catch((err: unknown) => {
+        if (err instanceof K8sApiError && err.isNotFound) return undefined
+        throw err
+      })
+      const sandboxUid = sandbox?.metadata?.uid
+      if (!sandbox || !sandboxUid || (sandbox.spec?.operatingMode ?? 'Running') !== 'Running') return undefined
+      // A turn that did not wait acquired it meanwhile, or the agent already left again.
+      const current = this.launches.get(agentId)
+      if (current) return current
+      if ((this.releases.get(agentId) ?? 0) !== releasedAt) return undefined
+      this.deps.log.info(`cluster: agent ${agentId} taken over with sandbox ${sandboxName} running`)
+      return this.recordLaunch(agentId, sandboxName, sandboxUid)
+    })().finally(() => {
+      if (this.adopting.get(agentId) === run) this.adopting.delete(agentId)
+    })
+    this.adopting.set(agentId, run)
+    return run
   }
 
   /** How long a pod may take to come up, as this driver itself waits for it. One definition, so
@@ -323,9 +380,9 @@ export class K8sDriver implements SpawnDriver {
     }
   }
 
-  /** Agents this daemon currently holds a Sandbox for — the candidates an idle sweep considers. */
-  launchedAgents(): string[] {
-    return [...this.launches.keys()]
+  /** Agents this daemon holds a Sandbox for, and since when — the idle sweep's candidates. */
+  launchedAgents(): Array<{ agentId: string; since: number }> {
+    return [...this.launches.values()].map(({ agentId, since }) => ({ agentId, since }))
   }
 
   /**
@@ -469,15 +526,20 @@ export class K8sDriver implements SpawnDriver {
 
   /** Forget an agent and delete its claim; the volume goes with it, which is the intent. */
   async removeAgent(agentId: string): Promise<void> {
+    this.releaseAgent(agentId)
+    await this.deps.api.deleteClaim(this.claimName(agentId))
+  }
+
+  /** "No longer served here", not removal: launch, session, root and holds go; claim and volume stay. */
+  releaseAgent(agentId: string): void {
+    this.releases.set(agentId, (this.releases.get(agentId) ?? 0) + 1)
     const launch = this.launches.get(agentId)
     this.launches.delete(agentId)
     if (launch) this.forgetSandbox(launch.sandboxName)
     this.workspaceRoots.delete(agentId)
-    // The session outlives the claim otherwise, and `runsInSandbox` would keep answering true for
-    // an agent whose pod is being deleted — sending the workspace seam into a sandbox that is gone.
+    // Otherwise `runsInSandbox` keeps answering true for a pod that is not this member's to use.
     this.sessions.delete(agentId)
     this.deps.revokeChannel?.(agentId)
-    await this.deps.api.deleteClaim(this.claimName(agentId))
   }
 
   /**
@@ -547,6 +609,7 @@ export class K8sDriver implements SpawnDriver {
     timer: LaunchTimer | undefined,
     grants: ShimCapability[]
   ): Promise<ShimConnection> {
+    const releasedAt = this.releases.get(agentId) ?? 0
     // Resume before waiting because suspension deleted the pod and readiness cannot arrive first.
     const modeBeforeWake = await this.setMode(agentId, 'Running')
     // A launch this daemon already has cached returns from ensureSandbox before any sandbox
@@ -580,6 +643,11 @@ export class K8sDriver implements SpawnDriver {
         throw err
       })
     timer?.mark('shim_handshake')
+    // Released mid-bind: the pod is another member's to serve now, so the channel is dropped.
+    if ((this.releases.get(agentId) ?? 0) !== releasedAt) {
+      this.deps.revokeChannel?.(agentId)
+      throw new Error(`agent ${agentId} left this member while its sandbox channel was being bound`)
+    }
     this.recordWorkspaceRoot(agentId, connection)
     // The session is created HERE rather than in `launch`, because a channel bound for workspace
     // preparation needs one too — and a second session per agent would mean the runtime and the

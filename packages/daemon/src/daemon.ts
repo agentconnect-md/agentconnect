@@ -12928,6 +12928,7 @@ export class Daemon {
    *  ingress is never re-checked per message. */
   private settleDutyChange(result: DutyApplyResult): void {
     for (const agentId of result.agentsLost) this.stopServingAgent(agentId)
+    for (const agentId of result.agentsGained) this.adoptClusterSandbox(agentId)
     const changed = result.added.length + result.updated.length + result.agentsGained.length + result.agentsLost.length
     if (changed === 0) return
     // Report the new digest immediately. The CP publishes the projections that address this member
@@ -13289,11 +13290,13 @@ export class Daemon {
     // Behind a FAILED earlier stop the host is still stopped (a later host must not leak), but the
     // failure keeps propagating: that agent stays unconfirmed for the rest of this process.
     const stop: Promise<void> = prior.then(
-      () => this.stopHost(agentId),
+      () => this.stopHost(agentId).finally(() => this.releaseClusterSandbox(agentId)),
       (err: unknown) =>
-        this.stopHost(agentId).then(() => {
-          throw err
-        })
+        this.stopHost(agentId)
+          .finally(() => this.releaseClusterSandbox(agentId))
+          .then(() => {
+            throw err
+          })
     )
     this.dutyHostStops.set(agentId, stop)
     void stop.then(
@@ -19757,15 +19760,16 @@ export class Daemon {
   private sweepIdleSandboxes(now: number, ttl: number): void {
     const plane = this.k8sPlane
     if (!plane) return
-    for (const agentId of plane.launchedAgents()) {
+    for (const { agentId, since } of plane.launchedAgents()) {
+      // Suspend is the holder's decision (k8s-daemon-pool §4); an ex-holder must not touch its successor's pod.
+      if (this.dutyEnforced() && !this.duties.holdsAgent(agentId)) continue
       // A live host owns the decision above; suspending under it would pull the pod out from
       // beneath a runtime that is merely between turns.
       if (this.hosts.has(agentId)) continue
       if ((this.activeDispatchesByAgent.get(agentId)?.size ?? 0) > 0) continue
       if ([...this.pending.values()].some((p) => p.agentId === agentId)) continue
-      // No host means no `hostStartedAt` floor to fall back on, so an agent that has never served
-      // a turn reads as idle-since-epoch — which is correct here: nothing is running in its pod.
-      const last = this.store.agentLastActivityTs(agentId) ?? 0
+      // Shared-store activity, floored at when this member took the launch: a full window, not epoch-idle.
+      const last = Math.max(this.store.agentLastActivityTs(agentId) ?? 0, since)
       if (now - last <= ttl) continue
       void plane
         .suspendIdle(agentId)
@@ -19778,6 +19782,29 @@ export class Daemon {
         })
         .catch((err) => this.log.warn(`idle: suspending the sandbox for agent "${agentId}" failed: ${formatErr(err)}`))
     }
+  }
+
+  /** Cluster only: take over the sandbox of an agent this member just started serving, from the cluster. */
+  // So a Running pod nobody here launched (a rollout, a moved duty) has a holder that can suspend it.
+  // Behind any teardown still settling for the agent, so a lose-then-regain cannot forget the adoption.
+  private adoptClusterSandbox(agentId: string): void {
+    const plane = this.k8sPlane
+    if (!plane) return
+    const prior = this.dutyHostStops.get(agentId) ?? Promise.resolve()
+    void prior
+      .catch(() => undefined)
+      .then(async () => {
+        if (this.dutyEnforced() && !this.duties.holdsAgent(agentId)) return
+        await plane.adoptAgent(agentId)
+      })
+      .catch((err) =>
+        this.log.warn(`cluster: taking over the sandbox for agent "${agentId}" failed: ${formatErr(err)}`)
+      )
+  }
+
+  /** Cluster only: the sandbox half of "no longer served here"; the claim and volume stay. */
+  private releaseClusterSandbox(agentId: string): void {
+    this.k8sPlane?.releaseAgent(agentId)
   }
 
   /**

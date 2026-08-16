@@ -161,6 +161,17 @@ cluster. Anything that would "recreate" a sandbox must go through
 suspend/resume, never delete-and-claim-again, or it silently deletes the
 agent's work.
 
+**Sleep is the holder's decision, and the holder is the only member that
+knows the launch.** A member's launch record (`K8sDriver.launches`) is scoped
+to the duties it holds: gaining an agent re-derives the launch from the cluster
+(claim → bound Sandbox → mode, recording only a Running pod), losing it — a
+revoke, a self-fence, a drain release — forgets the launch, its shim channel,
+its tunnel proxy and any loss watch without touching the claim. The idle sweep
+suspends only agents this member holds, and floors idleness at the time it
+took the launch when the shared store records no activity. So a Running pod
+has exactly one member that owns its idleness, an ex-holder can never suspend
+a successor's pod, and a rollout leaves no pod without a candidate to suspend it.
+
 A sleeping agent still belongs to a duty group (§6), and if that group
 contains a daemon-held bot the group stays claimed while the agent sleeps —
 that held duty is precisely what lets the wake message arrive. A singleton
