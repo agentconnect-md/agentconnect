@@ -14,7 +14,7 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { WebSocket } from 'ws'
-import { isFrame, type AnyFrame } from '@agentconnect.md/protocol'
+import { MAX_FRAME_BYTES, isFrame, type AnyFrame } from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
 import { buildDaemonApp, type DaemonApp } from '../fakes/build-app.js'
 
@@ -104,6 +104,30 @@ describe('ws gateway — real socket handshake over agentconnect.v1', () => {
       expect(row?.status).toBe('ready')
       expect(row?.sessionEpoch).toBe(1n)
       expect(row?.host).toBe('host-1')
+    } finally {
+      ws.close()
+    }
+  })
+
+  it('survives an oversized frame from an unauthenticated peer and still accepts the next daemon', async () => {
+    const { url, token } = await start()
+    // 256 KiB + 1 from a peer that presented no key: an unlistened payload-cap 'error' ends the process.
+    const intruder = await dial(url, SUBPROTOCOL)
+    const seen: string[] = []
+    intruder.on('message', (data: Buffer) => seen.push(data.toString()))
+    const intruderClosed = new Promise<void>((resolve) => intruder.once('close', () => resolve()))
+    intruder.send('x'.repeat(MAX_FRAME_BYTES + 1))
+    await intruderClosed
+    // Not one frame: an unproved peer learns nothing about this control plane.
+    expect(seen).toEqual([])
+
+    // The gateway is still up — a real daemon completes the full handshake behind it.
+    const ws = await dial(url, SUBPROTOCOL)
+    try {
+      sendFrame(ws, 'auth', { apiKey: token, daemonId: DAEMON, agentVersion: '1.4.0' })
+      const ok = await nextFrame(ws, 'auth/ok')
+      if (!isFrame('auth/ok')(ok)) throw new Error('expected auth/ok')
+      expect(ok.payload.daemonId).toBe(DAEMON)
     } finally {
       ws.close()
     }
