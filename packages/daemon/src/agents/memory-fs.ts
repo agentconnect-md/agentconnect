@@ -98,13 +98,6 @@ export interface MemoryFs {
   utimes(rel: string, mtime: string): Promise<void>
 }
 
-/** What callers may pass where a memory tree is expected: a local agent root, or a port. */
-export type MemoryRoot = string | MemoryFs
-
-export function memoryFsOf(root: MemoryRoot): MemoryFs {
-  return typeof root === 'string' ? new LocalMemoryFs(root) : root
-}
-
 /** Split a root-relative path into plain components; `''` is the root itself. */
 export function memoryRelSegments(rel: string): string[] {
   if (isAbsolute(rel)) throw new MemoryPathError('absolute paths are not allowed')
@@ -359,4 +352,29 @@ export class LocalMemoryFs implements MemoryFs {
       // best-effort: a vanished file keeps whatever mtime it has
     }
   }
+}
+
+/** The sandbox plane as the factory sees it: the port over a bound sandbox volume, or nothing. */
+export interface SandboxMemoryFsSource {
+  memoryFsFor(agentId: string): MemoryFs | undefined
+}
+
+/**
+ * The ONE decision about where an agent's managed memory tree lives. With a sandbox plane (every
+ * agent of a `--k8s` daemon runs in a pod) it is the port over the agent's sandbox volume, reachable
+ * exactly while the pod is bound — no fallback to this member's disk, since a duty move would leave
+ * the memory behind; without one, the local port over the agent dir.
+ */
+export function resolveMemoryFs(
+  agent: { id: string; dir: string },
+  sandbox: SandboxMemoryFsSource | undefined
+): MemoryFs {
+  if (!sandbox) return new LocalMemoryFs(agent.dir)
+  const fs = sandbox.memoryFsFor(agent.id)
+  if (!fs) {
+    throw new MemorySandboxUnavailableError(
+      `agent "${agent.id}" has no running sandbox, so its memory cannot be reached`
+    )
+  }
+  return fs
 }

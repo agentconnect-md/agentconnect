@@ -417,7 +417,7 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     },
     memoryFsFor: (agentId) => {
       if (!runsInSandbox(agentId)) return undefined
-      return new ShimMemoryFs(driver.sessionFor(agentId)!, sandboxMemoryRoot(driver.workspaceRootFor(agentId)), agentId)
+      return new ShimMemoryFs(driver.sessionFor(agentId)!, sandboxMemoryRoot(driver.workspaceRootFor(agentId)))
     },
     runsInSandbox,
     clearPath: async (agentId, root) => {

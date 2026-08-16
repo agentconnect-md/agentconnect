@@ -104,9 +104,13 @@ export function pathExecutor(): MemoryFsExecutor {
 }
 
 /** A requester that answers `read`-capability frames the way a bound shim would, counting them. */
-export function shimRequester(anchor: string, executor: MemoryFsExecutor): ShimRequester & { frames: string[] } {
+export function shimRequester(
+  anchor: string,
+  executor: MemoryFsExecutor
+): ShimRequester & { agentId: string; frames: string[] } {
   const frames: string[] = []
   return {
+    agentId: 'bot-a',
     frames,
     async request(capability, payload) {
       expect(capability).toBe('read')
@@ -122,5 +126,5 @@ export function pod(): { mount: string; root: string; fs: ShimMemoryFs; requeste
   const mount = mkdtempSync(join(tmpdir(), 'ac-pod-'))
   const root = join(mount, '.agentconnect', 'memory')
   const requester = shimRequester(mount, pathExecutor())
-  return { mount, root, fs: new ShimMemoryFs(requester, root, 'bot-a'), requester }
+  return { mount, root, fs: new ShimMemoryFs(requester, root), requester }
 }

@@ -356,7 +356,8 @@ import {
   type MemoryScope,
   type PreparedExternalMemoryCapture
 } from './agents/memory-provider.js'
-import { memoryChannelKey, MemorySandboxUnavailableError, type MemoryRoot } from './agents/memory.js'
+import { memoryChannelKey, MemorySandboxUnavailableError, type MemoryFs } from './agents/memory.js'
+import { resolveMemoryFs } from './agents/memory-fs.js'
 import { createWorkspaceGit } from './cp/workspace-git.js'
 import { DAEMON_VERSION } from './version.js'
 import { CpCronRegistry } from './cp/cp-cron.js'
@@ -1938,30 +1939,31 @@ export class Daemon {
   // runtime's own memory redirected under the private runtime HOME only while the
   // agent runs in the sandbox). Backs the memory MCP tools, the session-start index
   // injection, and the CP console's memory reads.
-  private memory: DispatchingMemoryProvider = createMemoryProvider(
-    (id) => {
+  private memory: DispatchingMemoryProvider = createMemoryProvider({
+    memoryFsFor: (id) => this.memoryFsFor(id),
+    agentDirByAgent: (id) => {
       const agent = this.agents.get(id)
       if (!agent) return undefined
       return memoryKindOf(agent) === 'native' && this.agentRunsInSandbox(agent) ? runtimeHomePath(agent.dir) : agent.dir
     },
-    (id) => {
+    runtimeFor: (id) => {
       const a = this.agents.get(id)
       return a ? this.runtimes[a.runtime] : undefined
     },
-    (id) => {
+    providerKindFor: (id) => {
       const a = this.agents.get(id)
       return a ? memoryKindOf(a) : 'managed'
     },
-    (id) => {
+    autoDistillFor: (id) => {
       const memory = this.agents.get(id)?.memory
       return memory?.provider !== 'external' && memory?.autoDistill === true
     },
-    (id, prompt) => this.runMemoryExtraction(id, prompt),
-    (id) => {
+    extract: (id, prompt) => this.runMemoryExtraction(id, prompt),
+    externalBindingFor: (id) => {
       const binding = this.agents.get(id)?.memory
       return binding?.provider === 'external' ? binding : undefined
     },
-    {
+    externalDeps: {
       registry: {
         connectionIds: () => this.memoryConnections?.connectionIds() ?? [],
         clientFor: (connectionId) => this.memoryConnections?.clientFor(connectionId),
@@ -1975,12 +1977,8 @@ export class Daemon {
           return this.memoryOutbox.enqueue(input)
         }
       }
-    },
-    (id) => {
-      const agent = this.agents.get(id)
-      return agent ? this.managedMemoryRoot(agent) : undefined
     }
-  )
+  })
   /** Provider-neutral serialized post-turn work. Managed distills; external enqueues capture. */
   private memoryPostTurnChains = new Map<string, Promise<void>>()
   private memoryExtractionCollectors = new Map<string, MemoryExtractionCollector>()
@@ -5219,18 +5217,12 @@ export class Daemon {
     })
   }
 
-  /** Where an agent's MANAGED memory tree lives: under --k8s the sandbox volume, reachable exactly
-   *  while the pod is bound (one resolution, no fallback to this member's disk — a duty move would
-   *  otherwise leave the memory behind); locally the agent dir. */
-  private managedMemoryRoot(agent: LoadedAgent): MemoryRoot {
-    if (!this.k8sPlane) return agent.dir
-    const fs = this.k8sPlane.memoryFsFor(agent.id)
-    if (!fs) {
-      throw new MemorySandboxUnavailableError(
-        `agent "${agent.id}" has no running sandbox, so its memory cannot be reached`
-      )
-    }
-    return fs
+  /** The one factory every memory consumer is built on: the port over the agent's managed memory
+   *  tree, decided by placement (`resolveMemoryFs`); undefined for an unknown agent, and it throws
+   *  `MemorySandboxUnavailableError` for a cluster agent whose sandbox is not bound. */
+  private memoryFsFor(agentId: string): MemoryFs | undefined {
+    const agent = this.agents.get(agentId)
+    return agent ? resolveMemoryFs(agent, this.k8sPlane) : undefined
   }
 
   /** The one daemon-owned workspace preparation contract used by ordinary
@@ -6631,10 +6623,7 @@ export class Daemon {
   private dreamRunner(): DreamRunner {
     this.dreamRunnerInstance ??= new DreamRunner({
       agentDirByAgent: (id) => this.agents.get(id)?.dir,
-      memoryRootByAgent: (id) => {
-        const agent = this.agents.get(id)
-        return agent ? this.managedMemoryRoot(agent) : undefined
-      },
+      memoryFsFor: (id) => this.memoryFsFor(id),
       dreamingPolicyFor: (id) => dreamingPolicyOf(this.agents.get(id)),
       operationPolicy: this.dreamOperationsAllowed() ? (this.opts.hostFactory ? 'test-only' : 'enabled') : 'blocked',
       store: this.store,
@@ -22553,10 +22542,7 @@ export class Daemon {
         claimDuty: async (id) => this.dutyEnforced() && (await this.claimDutyForTrigger(id)).granted,
         log: this.log
       }),
-      memoryReader: createMemoryReader((id) => {
-        const agent = this.agents.get(id)
-        return agent ? this.managedMemoryRoot(agent) : undefined
-      }, this.memory),
+      memoryReader: createMemoryReader((id) => this.memoryFsFor(id), this.memory),
       dreamReader: createDreamReader(this.dreamRunner()),
       localSkillsReader: createLocalSkillsReader(
         this.workspaces,

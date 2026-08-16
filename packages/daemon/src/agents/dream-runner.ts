@@ -30,16 +30,13 @@ import {
   clampMemoryHistoryValue,
   enforceMemoryHistoryRetentionHoldingLock,
   listMemory,
-  memoryFsOf,
   memoryWriteMarks,
   recordExternalMemoryMutation,
   readMemoryFile,
   snapshotMemoryHistoryHoldingLock,
   type MemoryFs,
   type MemoryHistoryRecord,
-  type MemoryRoot,
-  withMemoryDirLock,
-  LocalMemoryFs
+  withMemoryDirLock
 } from './memory.js'
 import {
   buildDreamExplorationPrompt,
@@ -172,9 +169,9 @@ export interface DreamLifecycleEvent {
 export interface DreamRunnerDeps {
   /** The agent's LOCAL root (accepted skills publish under it); undefined for an unknown agent. */
   agentDirByAgent(agentId: string): string | undefined
-  /** Where the agent's managed memory tree is; defaults to the local root. May refuse with
-   *  `MemorySandboxUnavailableError` for a cluster agent whose sandbox is not running. */
-  memoryRootByAgent?(agentId: string): MemoryRoot | undefined
+  /** The port over the agent's managed memory tree, where every staging and store touch goes. May
+   *  refuse with `MemorySandboxUnavailableError` for a cluster agent whose sandbox is not running. */
+  memoryFsFor(agentId: string): MemoryFs | undefined
   /** The agent's dreaming policy, or undefined when dreaming is not enabled
    *  (missing binding, non-managed provider, or enabled:false). */
   dreamingPolicyFor(agentId: string): MemoryDreamingPolicy | undefined
@@ -350,10 +347,10 @@ export class DreamRunner {
     return dir
   }
 
-  /** The agent's memory tree, as the port every staging and store touch goes through. */
   private fsFor(agentId: string): MemoryFs {
-    const dir = this.dirFor(agentId)
-    return memoryFsOf(this.deps.memoryRootByAgent?.(agentId) ?? dir)
+    const fs = this.deps.memoryFsFor(agentId)
+    if (!fs) throw new DreamViolationError(`unknown agent ${agentId}`)
+    return fs
   }
 
   /** One dream's staging area, relative to the memory root. */
@@ -527,10 +524,10 @@ export class DreamRunner {
     })
   }
 
-  private async readLiveStore(root: MemoryRoot): Promise<{ name: string; content: string }[]> {
+  private async readLiveStore(fs: MemoryFs): Promise<{ name: string; content: string }[]> {
     const files: { name: string; content: string }[] = []
-    for (const entry of await listMemory(root)) {
-      files.push({ name: entry.name, content: await readMemoryFile(root, entry.name) })
+    for (const entry of await listMemory(fs)) {
+      files.push({ name: entry.name, content: await readMemoryFile(fs, entry.name) })
     }
     return files
   }
@@ -1536,9 +1533,8 @@ export class DreamRunner {
   }
 
   /**
-   * A staged skill candidate as a LOCAL directory for the skill snapshot walker: the tree itself
-   * when the memory root is on this disk, else a temp copy pulled through the port (a mined skill
-   * is bounded — a SKILL.md and a few scripts). Callers dispose it.
+   * A staged skill candidate as a LOCAL directory for the skill snapshot walker: a temp copy pulled
+   * through the port (a mined skill is bounded — a SKILL.md and a few scripts). Callers dispose it.
    */
   private async localStagedSkill(
     agentId: string,
@@ -1547,7 +1543,6 @@ export class DreamRunner {
   ): Promise<{ path: string; dispose: () => Promise<void> }> {
     const fs = this.fsFor(agentId)
     const rel = join(this.dreamDir(agentId, dreamId), 'skills', name)
-    if (fs instanceof LocalMemoryFs) return { path: join(fs.root, rel), dispose: async () => {} }
     const temp = await mkdtemp(join(tmpdir(), 'agentconnect-dream-skill-'))
     const dispose = () => rm(temp, { recursive: true, force: true }).catch(() => {})
     try {

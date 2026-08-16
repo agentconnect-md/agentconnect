@@ -7,6 +7,7 @@ import {
   MemoryConflictError,
   MemoryPathError,
   MemorySandboxUnavailableError,
+  resolveMemoryFs,
   type MemoryFs
 } from '../src/agents/memory-fs.js'
 import {
@@ -155,12 +156,24 @@ describe('ShimMemoryFs over the read capability (the port over a sandbox volume)
   })
 })
 
+describe('resolveMemoryFs (the one placement decision)', () => {
+  it('gives a local agent the local port, a bound cluster agent the shim port, and refuses an unbound one', () => {
+    const agent = { id: 'bot-a', dir: tempRoot() }
+    const local = resolveMemoryFs(agent, undefined)
+    expect(local).toBeInstanceOf(LocalMemoryFs)
+    expect(local.root).toBe(agent.dir)
+    const { fs } = pod()
+    expect(resolveMemoryFs(agent, { memoryFsFor: () => fs })).toBe(fs)
+    expect(() => resolveMemoryFs(agent, { memoryFsFor: () => undefined })).toThrow(MemorySandboxUnavailableError)
+  })
+})
+
 describe.skipIf(process.platform !== 'linux')('the descriptor-bound executor (pod side)', () => {
   it('serves the primitives from the anchor and refuses a root outside the mount', async () => {
     const mount = tempRoot('ac-pod-fd-')
     const root = join(mount, '.agentconnect', 'memory')
     const requester = shimRequester(mount, createFdMemoryFsExecutor(mount))
-    const fs = new ShimMemoryFs(requester, root, 'bot-a')
+    const fs = new ShimMemoryFs(requester, root)
     await ensureMemory(fs, 'bot-a')
     const st = await writeMemoryFile(fs, 'deploys.md', 'é'.repeat(120_000), undefined, 'tool')
     expect(await readMemoryFile(fs, 'deploys.md')).toBe('é'.repeat(120_000))
@@ -184,7 +197,7 @@ describe.skipIf(process.platform !== 'linux')('the descriptor-bound executor (po
     mkdirSync(join(root, 'memory'), { recursive: true })
     symlinkSync(outside, join(root, 'memory', 'link'))
     await expect(fs.readFile('memory/link/x')).rejects.toBeInstanceOf(MemoryPathError)
-    const elsewhere = new ShimMemoryFs(requester, '/etc', 'bot-a')
+    const elsewhere = new ShimMemoryFs(requester, '/etc')
     await expect(elsewhere.readdir('')).rejects.toBeInstanceOf(MemoryPathError)
     // The exec handler routes memory-fs frames on the `read` capability beside the workspace ones.
     const handled = await createExecHandler({ workspaceRoot: mount })('read', {

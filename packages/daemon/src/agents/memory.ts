@@ -3,8 +3,8 @@
  * the workspace so it survives a workspace reset / re-clone and is never committed
  * into a github-workspace repo. The root is a `MemoryFs` (agents/memory-fs.ts): the
  * agent dir on this disk for a local agent, one root on the sandbox volume reached
- * through the shim for a cluster agent — every function here takes a `MemoryRoot`
- * (a local dir path or a port) and never touches `node:fs` itself.
+ * through the shim for a cluster agent — every function here takes the port and
+ * never touches `node:fs` itself.
  *
  * Index-plus-topics shape (the structure Claude Code's auto-memory uses): a lean
  * `MEMORY.md` index — injected into the prompt every session, so it must stay small
@@ -29,10 +29,8 @@ import {
   MemoryConflictError,
   MemoryPathError,
   MemoryTooLargeError,
-  memoryFsOf,
   type MemoryFs,
-  type MemoryFsFileStat,
-  type MemoryRoot
+  type MemoryFsFileStat
 } from './memory-fs.js'
 
 export {
@@ -43,9 +41,7 @@ export {
   atomicWriteContainedMemoryFile,
   readContainedMemoryFile,
   LocalMemoryFs,
-  memoryFsOf,
-  type MemoryFs,
-  type MemoryRoot
+  type MemoryFs
 } from './memory-fs.js'
 
 export const MEMORY_DIRNAME = 'memory'
@@ -135,13 +131,9 @@ function assertChannelKey(channelKey: string): void {
  *  used exactly like an agent root. `channelKey` MUST be a pre-sanitized single
  *  path segment (from {@link memoryChannelKey}); anything else is rejected so a
  *  crafted key cannot escape the agent tree. */
-export function channelMemoryRoot(root: string, channelKey: string): string
-export function channelMemoryRoot(root: MemoryFs, channelKey: string): MemoryFs
-export function channelMemoryRoot(root: MemoryRoot, channelKey: string): MemoryRoot
-export function channelMemoryRoot(root: MemoryRoot, channelKey: string): MemoryRoot {
+export function channelMemoryRoot(fs: MemoryFs, channelKey: string): MemoryFs {
   assertChannelKey(channelKey)
-  if (typeof root === 'string') return join(root, CHANNEL_MEMORY_DIRNAME, channelKey)
-  return root.subdir(`${CHANNEL_MEMORY_DIRNAME}/${channelKey}`)
+  return fs.subdir(`${CHANNEL_MEMORY_DIRNAME}/${channelKey}`)
 }
 
 /** Source identity of a channel memory folder, so the console can render a name
@@ -156,26 +148,20 @@ const CHANNEL_META_FILENAME = 'channel.json'
 /** Record the source channel identity for a channel memory folder (idempotent
  *  best-effort; a write failure never blocks memory itself). Lives at the channel
  *  root, outside `memory/`, so it never appears as a memory topic. */
-export async function writeChannelMemoryMeta(
-  root: MemoryRoot,
-  channelKey: string,
-  meta: ChannelMemoryMeta
-): Promise<void> {
+export async function writeChannelMemoryMeta(fs: MemoryFs, channelKey: string, meta: ChannelMemoryMeta): Promise<void> {
   assertChannelKey(channelKey)
   const body = JSON.stringify({
     channel: meta.channel,
     ...(meta.transportScope ? { transportScope: meta.transportScope } : {})
   })
-  await memoryFsOf(root)
-    .writeFile(`${CHANNEL_MEMORY_DIRNAME}/${channelKey}/${CHANNEL_META_FILENAME}`, body)
-    .catch(() => {})
+  await fs.writeFile(`${CHANNEL_MEMORY_DIRNAME}/${channelKey}/${CHANNEL_META_FILENAME}`, body).catch(() => {})
 }
 
 /** Read a channel memory folder's source identity, or null if absent/unreadable. */
-export async function readChannelMemoryMeta(root: MemoryRoot, channelKey: string): Promise<ChannelMemoryMeta | null> {
+export async function readChannelMemoryMeta(fs: MemoryFs, channelKey: string): Promise<ChannelMemoryMeta | null> {
   assertChannelKey(channelKey)
   try {
-    const file = await memoryFsOf(root).readFile(`${CHANNEL_MEMORY_DIRNAME}/${channelKey}/${CHANNEL_META_FILENAME}`)
+    const file = await fs.readFile(`${CHANNEL_MEMORY_DIRNAME}/${channelKey}/${CHANNEL_META_FILENAME}`)
     if (!file) return null
     const parsed = JSON.parse(file.content) as ChannelMemoryMeta
     if (parsed && typeof parsed.channel === 'string') return parsed
@@ -187,8 +173,8 @@ export async function readChannelMemoryMeta(root: MemoryRoot, channelKey: string
 
 /** List the channelKeys that have a memory subtree under an agent root (the folder
  *  names under `channels/`). Absent ⇒ none. */
-export async function listChannelMemoryKeys(root: MemoryRoot): Promise<string[]> {
-  const entries = await memoryFsOf(root).readdir(CHANNEL_MEMORY_DIRNAME)
+export async function listChannelMemoryKeys(fs: MemoryFs): Promise<string[]> {
+  const entries = await fs.readdir(CHANNEL_MEMORY_DIRNAME)
   return entries
     .filter((d) => d.kind === 'dir' && CHANNEL_KEY_RE.test(d.name))
     .map((d) => d.name)
@@ -205,12 +191,12 @@ export async function listChannelMemoryKeys(root: MemoryRoot): Promise<string[]>
  */
 const memoryDirLocks = new Map<string, Promise<unknown>>()
 
-function lockKey(root: MemoryRoot): string {
-  return `${memoryFsOf(root).key}::${MEMORY_DIRNAME}`
+function lockKey(fs: MemoryFs): string {
+  return `${fs.key}::${MEMORY_DIRNAME}`
 }
 
-export function withMemoryDirLock<T>(root: MemoryRoot, fn: () => Promise<T>): Promise<T> {
-  const key = lockKey(root)
+export function withMemoryDirLock<T>(fs: MemoryFs, fn: () => Promise<T>): Promise<T> {
+  const key = lockKey(fs)
   const prev = memoryDirLocks.get(key) ?? Promise.resolve()
   const result = prev.then(fn, fn)
   memoryDirLocks.set(
@@ -238,12 +224,6 @@ export function memoryTopicName(relPath: string): string {
   return rel
 }
 
-/** Resolve a memory-dir-relative path to an absolute one under a LOCAL agent dir,
- *  contained to the dir (see {@link memoryTopicName} for the rules). */
-export function resolveInMemoryDir(agentDir: string, relPath: string): string {
-  return join(memoryDir(agentDir), memoryTopicName(relPath))
-}
-
 function topicPath(relPath: string): string {
   return `${MEMORY_DIRNAME}/${memoryTopicName(relPath)}`
 }
@@ -252,8 +232,7 @@ const HISTORY_PATH = `${MEMORY_DIRNAME}/${MEMORY_HISTORY_FILENAME}`
 
 /** Seed `<root>/memory/MEMORY.md` with a header if the dir/index is absent
  *  (idempotent). Called at session start so a brand-new agent always has an index. */
-export async function ensureMemory(root: MemoryRoot, agentName: string): Promise<void> {
-  const fs = memoryFsOf(root)
+export async function ensureMemory(fs: MemoryFs, agentName: string): Promise<void> {
   await fs.mkdir(MEMORY_DIRNAME)
   if ((await fs.readFile(`${MEMORY_DIRNAME}/${MEMORY_INDEX}`)) !== null) return
   await fs.writeFile(
@@ -265,10 +244,10 @@ export async function ensureMemory(root: MemoryRoot, agentName: string): Promise
 
 /** Read the memory index (`MEMORY.md`) for prompt injection, trimmed to the inject
  *  cap so a large index can't blow up the prompt; '' when absent. */
-export async function readIndex(root: MemoryRoot): Promise<string> {
+export async function readIndex(fs: MemoryFs): Promise<string> {
   let text: string
   try {
-    text = await readMemoryFile(root, MEMORY_INDEX)
+    text = await readMemoryFile(fs, MEMORY_INDEX)
   } catch (err) {
     // This runs at session start for EVERY new session, and its contract is already
     // "'' when absent". A rejected index — a symlink planted where MEMORY.md belongs —
@@ -288,15 +267,15 @@ export async function readIndex(root: MemoryRoot): Promise<string> {
 }
 
 /** Read a memory file's text; '' when it does not exist (never throws on absence). */
-export async function readMemoryFile(root: MemoryRoot, relPath: string): Promise<string> {
-  return (await readMemoryFileIfPresent(root, relPath)) ?? ''
+export async function readMemoryFile(fs: MemoryFs, relPath: string): Promise<string> {
+  return (await readMemoryFileIfPresent(fs, relPath)) ?? ''
 }
 
 /** Like {@link readMemoryFile} but distinguishes absent (`null`) from present-but-
  *  empty (`''`). The channel/base overlay needs this so an intentionally-empty
  *  channel file still shadows a non-empty base file instead of falling through. */
-export async function readMemoryFileIfPresent(root: MemoryRoot, relPath: string): Promise<string | null> {
-  const file = await memoryFsOf(root).readFile(topicPath(relPath))
+export async function readMemoryFileIfPresent(fs: MemoryFs, relPath: string): Promise<string | null> {
+  const file = await fs.readFile(topicPath(relPath))
   return file === null ? null : file.content
 }
 
@@ -376,15 +355,15 @@ async function readHistoryRaw(fs: MemoryFs): Promise<string> {
 /** Take a canonical history snapshot while the caller already holds the memory-dir
  * lock. Dream adoption uses this in the same critical section as its final live-store
  * snapshot and directory swap. */
-export async function snapshotMemoryHistoryHoldingLock(root: MemoryRoot): Promise<string> {
-  const raw = await readHistoryRaw(memoryFsOf(root))
+export async function snapshotMemoryHistoryHoldingLock(fs: MemoryFs): Promise<string> {
+  const raw = await readHistoryRaw(fs)
   return raw ? canonicalizeMemoryHistory(raw) : ''
 }
 
 /** Take a canonical snapshot for a replacement store. The brief shared lock makes the
  * copied sidecar line up with ordinary appends. */
-export function snapshotMemoryHistory(root: MemoryRoot): Promise<string> {
-  return withMemoryDirLock(root, () => snapshotMemoryHistoryHoldingLock(root))
+export function snapshotMemoryHistory(fs: MemoryFs): Promise<string> {
+  return withMemoryDirLock(fs, () => snapshotMemoryHistoryHoldingLock(fs))
 }
 
 /** Compact one sidecar atomically. Invalid legacy/torn rows are discarded and
@@ -400,14 +379,14 @@ async function compactHistoryFile(fs: MemoryFs): Promise<void> {
 /** Apply system retention while the caller already holds the memory-dir lock.
  * Exported for dream adoption, whose directory swap is one larger critical
  * section. Calling this without the shared lock would race ordinary writes. */
-export async function enforceMemoryHistoryRetentionHoldingLock(root: MemoryRoot): Promise<void> {
-  await compactHistoryFile(memoryFsOf(root))
+export async function enforceMemoryHistoryRetentionHoldingLock(fs: MemoryFs): Promise<void> {
+  await compactHistoryFile(fs)
 }
 
 /** Apply system retention to an existing sidecar (including legacy files).
  * Callers decide whether failure is best-effort. */
-export function enforceMemoryHistoryRetention(root: MemoryRoot): Promise<void> {
-  return withMemoryDirLock(root, () => enforceMemoryHistoryRetentionHoldingLock(root))
+export function enforceMemoryHistoryRetention(fs: MemoryFs): Promise<void> {
+  return withMemoryDirLock(fs, () => enforceMemoryHistoryRetentionHoldingLock(fs))
 }
 
 /** Append one line to the memory change log and enforce fixed retention: the current
@@ -420,9 +399,9 @@ async function appendHistoryHoldingLock(fs: MemoryFs, record: MemoryHistoryRecor
   await fs.writeFile(HISTORY_PATH, next, { mode: 0o600 })
 }
 
-export async function appendHistory(root: MemoryRoot, record: MemoryHistoryRecord): Promise<void> {
+export async function appendHistory(fs: MemoryFs, record: MemoryHistoryRecord): Promise<void> {
   try {
-    await withMemoryDirLock(root, () => appendHistoryHoldingLock(memoryFsOf(root), record))
+    await withMemoryDirLock(fs, () => appendHistoryHoldingLock(fs, record))
   } catch {
     // Provenance is best-effort — retry compaction on the next append/read.
   }
@@ -436,7 +415,7 @@ export async function appendHistory(root: MemoryRoot, record: MemoryHistoryRecor
  * of truth, so one torn or legacy row must not make every valid row unreadable.
  */
 export async function listMemoryHistory(
-  root: MemoryRoot,
+  fs: MemoryFs,
   relPath: string,
   cursor: string | undefined,
   limit: number
@@ -444,9 +423,8 @@ export async function listMemoryHistory(
   // Apply the same containment/flat-path validation as ordinary memory reads,
   // even though `relPath` is used only as a filter below.
   memoryTopicName(relPath)
-  const fs = memoryFsOf(root)
 
-  return withMemoryDirLock(root, async () => {
+  return withMemoryDirLock(fs, async () => {
     // Enforce retention on first access too, so a legacy oversized file is
     // tightened even before the next managed memory write.
     try {
@@ -522,8 +500,8 @@ const WRITE_MARK_GENERATION = randomUUID()
 const writeMarks = new Map<string, { total: number; nonDistill: number }>()
 
 /** A snapshot copy of one store's write marks (zeroed when never written). */
-export function memoryWriteMarks(root: MemoryRoot): MemoryWriteMarks {
-  const marks = writeMarks.get(lockKey(root)) ?? { total: 0, nonDistill: 0 }
+export function memoryWriteMarks(fs: MemoryFs): MemoryWriteMarks {
+  const marks = writeMarks.get(lockKey(fs)) ?? { total: 0, nonDistill: 0 }
   return { generation: WRITE_MARK_GENERATION, ...marks }
 }
 
@@ -534,12 +512,12 @@ export function memoryWriteMarks(root: MemoryRoot): MemoryWriteMarks {
  * snapshot classify the first adoption as distill-only drift and roll over it.
  * Callers must already hold the memory-dir lock.
  */
-export function recordExternalMemoryMutation(root: MemoryRoot, source: MemoryWriteSource): void {
-  bumpWriteMarks(root, source)
+export function recordExternalMemoryMutation(fs: MemoryFs, source: MemoryWriteSource): void {
+  bumpWriteMarks(fs, source)
 }
 
-function bumpWriteMarks(root: MemoryRoot, source: MemoryWriteSource): void {
-  const key = lockKey(root)
+function bumpWriteMarks(fs: MemoryFs, source: MemoryWriteSource): void {
+  const key = lockKey(fs)
   const marks = writeMarks.get(key) ?? { total: 0, nonDistill: 0 }
   marks.total++
   if (source !== 'distill') marks.nonDistill++
@@ -557,7 +535,7 @@ function bumpWriteMarks(root: MemoryRoot, source: MemoryWriteSource): void {
  *    clobber a newer write. A brand-new file (no mtime) matches `ifMatchMtime`
  *    only when the caller passes none (or the empty string). */
 export function writeMemoryFile(
-  root: MemoryRoot,
+  fs: MemoryFs,
   relPath: string,
   content: string,
   ifMatchMtime?: string,
@@ -565,7 +543,7 @@ export function writeMemoryFile(
 ): Promise<{ size: number; mtime: string }> {
   // Serialize every write behind the shared per-dir lock so it can't interleave
   // with a dream adoption's fence-and-swap (nor another write).
-  return withMemoryDirLock(root, () => writeMemoryFileHoldingLock(root, relPath, content, ifMatchMtime, source))
+  return withMemoryDirLock(fs, () => writeMemoryFileHoldingLock(fs, relPath, content, ifMatchMtime, source))
 }
 
 /**
@@ -576,7 +554,7 @@ export function writeMemoryFile(
  * so calling {@link writeMemoryFile} from inside it would deadlock.
  */
 export async function writeMemoryFileHoldingLock(
-  root: MemoryRoot,
+  fs: MemoryFs,
   relPath: string,
   content: string,
   ifMatchMtime: string | undefined,
@@ -585,14 +563,13 @@ export async function writeMemoryFileHoldingLock(
   if (Buffer.byteLength(content) > MAX_MEMORY_FILE_BYTES) {
     throw new MemoryTooLargeError(`memory file exceeds the ${MAX_MEMORY_FILE_BYTES}-byte limit`)
   }
-  const fs = memoryFsOf(root)
   const path = topicPath(relPath)
   const current = await fs.readFile(path)
   const st: MemoryFsFileStat = await fs.writeFile(path, content, ifMatchMtime ? { ifMatchMtime } : {})
   // Bump the authoritative ledger the moment the write is durable — BEFORE the
   // best-effort history append, which is allowed to fail silently. The dream
   // adoption fence authorizes from these counters, never from `.history`.
-  bumpWriteMarks(root, source)
+  bumpWriteMarks(fs, source)
 
   const existed = current !== null
   const beforeClamped = existed ? clampMemoryHistoryValue(current.content) : undefined
@@ -623,9 +600,9 @@ export interface MemoryFile {
 
 /** List the files in the memory dir (flat; index + topics), sorted with the index
  *  first. Empty when the dir does not exist. `.tmp` write artifacts are skipped. */
-export async function listMemory(root: MemoryRoot): Promise<MemoryFile[]> {
+export async function listMemory(fs: MemoryFs): Promise<MemoryFile[]> {
   const files: MemoryFile[] = []
-  for (const d of await memoryFsOf(root).readdir(MEMORY_DIRNAME)) {
+  for (const d of await fs.readdir(MEMORY_DIRNAME)) {
     // Skip non-files, `.tmp` write artifacts, and dotfiles (the `.history` change log
     // is a sidecar, not a topic the agent/console should see).
     if (d.kind !== 'file' || d.name.endsWith('.tmp') || d.name.startsWith('.')) continue

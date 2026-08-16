@@ -11,6 +11,7 @@ import {
   type MemoryProviderKind
 } from '../src/agents/memory-provider.js'
 import { MEMORY_INDEX, MemoryConflictError, MemoryPathError } from '../src/agents/memory.js'
+import { LocalMemoryFs } from '../src/agents/memory-fs.js'
 import { isNativeRuntimeSupported, nativeRuntimeEnv } from '../src/agents/native-memory.js'
 
 function newDir(): string {
@@ -128,11 +129,12 @@ describe('DispatchingMemoryProvider (per-agent routing)', () => {
   const kinds: Record<string, MemoryProviderKind> = { 'bot-m': 'managed', 'bot-n': 'native', 'bot-0': 'none' }
   const runtimes: Record<string, RuntimeDef> = { 'bot-m': claude, 'bot-n': claude, 'bot-0': claude }
   function provider() {
-    return createMemoryProvider(
-      (id) => roots[id],
-      (id) => runtimes[id],
-      (id) => kinds[id] ?? 'managed'
-    )
+    return createMemoryProvider({
+      memoryFsFor: (id) => (roots[id] === undefined ? undefined : new LocalMemoryFs(roots[id]!)),
+      agentDirByAgent: (id) => roots[id],
+      runtimeFor: (id) => runtimes[id],
+      providerKindFor: (id) => kinds[id] ?? 'managed'
+    })
   }
 
   it('managed agent: tools present, list/write hit our <root>/memory dir, index injects', async () => {

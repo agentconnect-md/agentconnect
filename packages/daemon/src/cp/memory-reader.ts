@@ -4,7 +4,7 @@
  * canonical records; `none` exposes neither. Bodies live only on the daemon and
  * transit the CP as correlated replies (§1/§12).
  *
- * Path containment stays inside each file provider (`resolveInMemoryDir` for
+ * Path containment stays inside each file provider (`memoryTopicName` for
  * managed, nested containment for native): an escape throws `MemoryPathError` →
  * `BAD_PAYLOAD`. An unknown agent is also `BAD_PAYLOAD`; a not-yet-created
  * file/dir is data (`exists:false`), not an error. Frame-size safety mirrors the
@@ -53,7 +53,7 @@ import {
   MemoryTooLargeError,
   MemoryConflictError,
   MemorySandboxUnavailableError,
-  type MemoryRoot
+  type MemoryFs
 } from '../agents/memory.js'
 import type { MemoryAdminSurface, MemoryScope } from '../agents/memory-provider.js'
 
@@ -92,17 +92,17 @@ function isErrno(err: unknown, code: string): boolean {
   return (err as NodeJS.ErrnoException | null)?.code === code
 }
 
-/** `memoryRootByAgent` resolves an agent id → its managed memory root (a local dir
- *  or a port; holds `memory/`), undefined for an unknown agent; it throws
- *  `MemorySandboxUnavailableError` for a cluster agent whose sandbox is not running. */
+/** `memoryFsFor` resolves an agent id → the port over its managed memory tree
+ *  (undefined for an unknown agent); it throws `MemorySandboxUnavailableError` for a
+ *  cluster agent whose sandbox is not running. */
 export function createMemoryReader(
-  memoryRootByAgent: (agentId: string) => MemoryRoot | undefined,
+  memoryFsFor: (agentId: string) => MemoryFs | undefined,
   provider?: AgentMemoryAdminResolver
 ): MemoryReader {
-  function dirFor(agentId: string): MemoryRoot {
-    const root = memoryRootByAgent(agentId)
-    if (!root) throw new MemoryViolationError(`unknown agent "${agentId}"`)
-    return root
+  function dirFor(agentId: string): MemoryFs {
+    const fs = memoryFsFor(agentId)
+    if (!fs) throw new MemoryViolationError(`unknown agent "${agentId}"`)
+    return fs
   }
 
   /** Identity only: a known agent whose sandbox is asleep is still a known agent. */

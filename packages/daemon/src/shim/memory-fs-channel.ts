@@ -170,6 +170,9 @@ const WRITE_CHUNK_BYTES = 128 * 1024
 /** How often a whole-file read restarts when the file changed underneath its slices. */
 const READ_RESTARTS = 3
 
+/** A bound shim channel that knows which agent it serves (a `ShimSession`). */
+export type ShimMemoryChannel = ShimRequester & { readonly agentId: string }
+
 /**
  * The daemon's side: the port over an agent's bound shim channel. Every containment check and every
  * refusal happens on the pod, where the files are; this class only reassembles what one frame cannot
@@ -180,20 +183,19 @@ export class ShimMemoryFs implements MemoryFs {
   readonly key: string
 
   constructor(
-    private readonly requester: ShimRequester,
+    private readonly channel: ShimMemoryChannel,
     readonly root: string,
-    private readonly agentId: string,
     private readonly timeoutMs = 30_000
   ) {
-    this.key = `sandbox:${agentId}:${root}`
+    this.key = `sandbox:${channel.agentId}:${root}`
   }
 
   subdir(rel: string): MemoryFs {
-    return new ShimMemoryFs(this.requester, joinRel(this.root, rel), this.agentId, this.timeoutMs)
+    return new ShimMemoryFs(this.channel, joinRel(this.root, rel), this.timeoutMs)
   }
 
   private async run<T>(payload: MemoryFsPayload, schema: z.ZodType<T>): Promise<T> {
-    const raw = await this.requester.request('read', payload, { timeoutMs: this.timeoutMs })
+    const raw = await this.channel.request('read', payload, { timeoutMs: this.timeoutMs })
     const reply = MemoryFsReplySchema.parse(raw)
     // Rebuilt as the SAME classes the local port throws, so callers cannot tell the two trees apart.
     if (!reply.ok) {

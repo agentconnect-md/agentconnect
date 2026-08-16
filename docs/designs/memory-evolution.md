@@ -189,9 +189,12 @@ native and managed memory. This is the default provider.
 #### 3.2.1 Where the managed tree lives (per placement)
 
 The managed store is a directory abstraction over a small file-system port
-(`agents/memory-fs.ts`, `MemoryFs`): `memory.ts`, the managed provider, the
-dream runner, and the CP memory reader never touch `node:fs` directly, so the
-tree's home is a placement decision:
+(`agents/memory-fs.ts`, `MemoryFs`) with exactly two implementations,
+`LocalMemoryFs(rootDir)` and `ShimMemoryFs(channel, rootPath)`: `memory.ts`, the
+managed provider, the distiller, the dream runner, and the CP memory reader take
+the port and never touch `node:fs`, and one daemon factory (`resolveMemoryFs`)
+picks the implementation from the agent's placement, so the tree's home is a
+single decision:
 
 | Placement                            | Memory root                                                                                                                            | Reachable                                                                                                                                                                                              |
 | ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
