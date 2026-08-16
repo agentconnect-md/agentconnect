@@ -64,6 +64,8 @@ import type {
   WorkspaceGitMessageReq,
   WorkspaceGitMessageResult,
   TaskListReq,
+  AgentWakeReq,
+  AgentWakeOk,
   TaskList,
   MemoryChannelsReq,
   MemoryChannelsPage,
@@ -926,5 +928,13 @@ export class ControlSender {
   async taskList(daemonId: string, req: TaskListReq): Promise<TaskList> {
     const c = this.must(daemonId)
     return c.conn.request<TaskList>('task/list', req, { epoch: c.sessionEpoch })
+  }
+
+  // Bring an agent's cluster sandbox to Running WITHOUT a turn (REQ → `agent/wake/ok`). Addressed at the
+  // DISPATCH daemon, which may not hold the agent yet (it claims on receipt like a trigger), so the org
+  // is passed explicitly rather than read from the connection's agent index, where it is absent.
+  async agentWake(daemonId: string, req: AgentWakeReq, orgId: string): Promise<AgentWakeOk> {
+    const c = this.must(daemonId)
+    return c.conn.request<AgentWakeOk>('agent/wake', req, { epoch: c.sessionEpoch }, undefined, orgId)
   }
 }

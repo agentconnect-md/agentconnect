@@ -43,6 +43,7 @@ import {
   WORKSPACE_GIT_REVIEW_FEATURE,
   WORKSPACE_GIT_WRITE_FEATURE,
   TASK_LIST_FEATURE,
+  AGENT_WAKE_FEATURE,
   WorkspaceErrorReason,
   TaskErrorReason,
   gitRepoLabel,
@@ -86,6 +87,7 @@ import { resolveShareSet } from '../sharing.js'
 import { resolveAgentIconUrl, type IconUrlBases } from '../../agents/agent-icon.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
 import { AgentMoveConflict, AgentMoveFailed, AgentMoveService } from '../../orchestrator/agentMove.js'
+import { AgentWakeCoordinator } from '../../orchestrator/agentWake.js'
 import { convergeIntegrationGating } from '../../orchestrator/integrationPush.js'
 import { ProtocolError } from '../../domain/errors.js'
 import {
@@ -132,6 +134,7 @@ import {
   WorkspaceGitMessageResultDto,
   AgentTasksQueryDto,
   AgentTasksDto,
+  AgentWakeDto,
   AgentMemoryDto,
   MemoryFilesDto,
   MemoryFilesQueryDto,
@@ -3091,6 +3094,54 @@ export function agentRoutes(deps: HttpDeps) {
         } catch (err) {
           if (sendWorkspaceMutationFailure(reply, err)) return
           throw err
+        }
+      }
+    )
+
+    // Wake: bring a cluster agent's sandbox to Running WITHOUT a turn, so a Files read that refused
+    // with `sandbox-unavailable` has something explicit to press (#1070). A GET never wakes anything.
+    const wakes = new AgentWakeCoordinator(deps.clock)
+    r.post(
+      '/agents/:id/wake',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'Wake the agent’s sandbox',
+          description:
+            'Ask the daemon serving this agent to bring its cluster sandbox to Running without starting a turn, so the workspace reads become available again. Answers with what the daemon observed: 202 with running (reachable now) or starting (resume in flight — poll the workspace read); 200 with unsupported when there is nothing to wake (a machine-placed agent, or a daemon that runs no sandboxes). Wakes are debounced per agent: one in flight is joined, and one settled within the last 30 s is answered from its result. For a pool agent nobody currently serves, the wake reaches a live member, which claims the agent the way a turn would. Requires edit access; 503 when no daemon can be reached.',
+          operationId: 'wakeAgent',
+          params: IdParam,
+          response: { 200: AgentWakeDto, 202: AgentWakeDto, 403: ErrorDto, 404: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (denyViewerWrite(req, reply)) return
+        const agent = await getOrgAgent(req, req.params.id)
+        if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+        if (!canEdit(agent, ctxOf(req))) {
+          return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this agent' })
+        }
+        // DISPATCH, not serving: a set agent whose lease lapsed is served by nobody for one horizon,
+        // and the wake is exactly the trigger that gives it a holder again.
+        const daemonId = await deps.placementResolver.dispatchDaemon(agent)
+        if (!daemonId) {
+          return reply
+            .code(503)
+            .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
+        }
+        // A daemon that runs no sandboxes never advertises the wake, and is never sent one.
+        const daemon = await deps.registry.getAvailable(agent.orgId, daemonId)
+        if (!daemon?.capabilities.features.includes(AGENT_WAKE_FEATURE))
+          return reply.code(200).send({ state: 'unsupported' })
+        try {
+          const outcome = await wakes.wake(agent.id, () =>
+            deps.control.agentWake(daemonId, { agentId: agent.id }, agent.orgId)
+          )
+          return reply.code(outcome.state === 'unsupported' ? 200 : 202).send({ state: outcome.state })
+        } catch (err) {
+          const unavailable = daemonEdgeFailure(err)
+          if (unavailable === null) throw err
+          return reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: unavailable })
         }
       }
     )
