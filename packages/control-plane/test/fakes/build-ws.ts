@@ -10,7 +10,7 @@
  * real socket.
  */
 import type { PrismaClient } from '../../src/generated/prisma/client.js'
-import type { RelayRosterEntry } from '@agentconnect.md/protocol'
+import type { CollabRoutesSnapshot, RelayRosterEntry } from '@agentconnect.md/protocol'
 import {
   PgDaemonRepo,
   PgDaemonLifecycleOpRepo,
@@ -59,7 +59,6 @@ import { HookService } from '../../src/hooks/hook.service.js'
 import { AgentRoutingConverger } from '../../src/orchestrator/agentRouting.js'
 import { FrameRouter } from '../../src/ws/handlers/index.js'
 import { DaemonConnection } from '../../src/ws/connection.js'
-import { RelayRegistry } from '../../src/ws/relay-registry.js'
 import type { DaemonWsDeps } from '../../src/ws/deps.js'
 import { InMemorySessionEventSink } from '../../src/events/sink.js'
 import { DaemonId, OrgId } from '../../src/domain/ids.js'
@@ -92,6 +91,8 @@ export interface WsHarness {
    *  addresses a daemon, so "ingress follows the holder" is assertable on it directly. */
   hookAssigns: CapturedHookRule[]
   hookRemovals: string[]
+  /** Every relay-facing collab-routes push, in order — the peer directory as a relay would hold it. */
+  collabSnapshots: CollabRoutesSnapshot[]
   /** The resolver the projections read through — lets a test ask what the peer directory would
    *  publish right now without reaching through the orchestrator. */
   placement: PlacementResolver
@@ -180,13 +181,6 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
   const registry = new DaemonRegistryService(repos.daemon, repos.runtimeProfile, repos.daemonLifecycleOp, clock)
   const connReg = new ConnectionRegistry()
   const sender = new ControlSender(connReg, repos.launch)
-  const collabRoutes = new CollabRoutesService(
-    repos.daemon,
-    repos.integration,
-    repos.agent,
-    new RelayControlSender(new RelayRegistry()),
-    sender
-  )
   const relays = opts.relays ?? []
   const dutyGroupRepo = new PgDutyGroupRepo(prisma)
   const memberSets = new PgMemberSetRepo(prisma)
@@ -201,6 +195,23 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
     },
     clock
   })
+  // The relay-facing collab pushes are captured, not sent: `collabSnapshots` is literally the
+  // directory a relay would route a peer wake through, latest last. Wired like prod — resolver +
+  // duty ledger — so a pool member's held agents put their org into the snapshot.
+  const collabSnapshots: CollabRoutesSnapshot[] = []
+  const collabRoutes = new CollabRoutesService(
+    repos.daemon,
+    repos.integration,
+    repos.agent,
+    {
+      collabRoutes: (snapshot: CollabRoutesSnapshot) => void collabSnapshots.push(snapshot),
+      collabRoutesTo: (_ch: unknown, snapshot: CollabRoutesSnapshot) => void collabSnapshots.push(snapshot)
+    } as unknown as RelayControlSender,
+    sender,
+    placementResolver,
+    dutyGroupRepo,
+    clock
+  )
   const orchestrator = new Placement(
     repos.daemon,
     repos.agent,
@@ -318,6 +329,7 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
     clock,
     hookAssigns,
     hookRemovals,
+    collabSnapshots,
     placement: placementResolver,
     codec,
     mintPoolMember: async (daemonId: string) => {

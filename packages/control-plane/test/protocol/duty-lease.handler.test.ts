@@ -1226,6 +1226,36 @@ describe('a grant is not a route until the digest confirms it (protocol level, r
     expect(await directoryRowFor(h, AGENT)).toMatchObject({ daemonId: DAEMON })
   })
 
+  // The relay holds the LAST push, and after an ungraceful holder death that push still names the
+  // expired holder. The grant is not a route, but it is a state change: it must re-push at once so the
+  // relay's copy turns the agent PENDING (retryable `not_ready`) instead of answering a terminal
+  // `offline` for the dead holder throughout the grant→digest window — while the claimant is
+  // still withheld until its digest confirms.
+  it('re-publishes the directory on the grant: pending at once, the claimant only on confirmation', async () => {
+    const start = 1_700_000_000_000
+    const h = buildWsHarness(prisma)
+    await seedPooledAgent()
+    await seedGroup({ holder: OTHER, term: 4n, expiresAt: new Date(start - 1) })
+    const { stub } = await ready(h)
+    const pushesBefore = h.collabSnapshots.length
+
+    await beat(stub, { held: [], headroom: 4 })
+    await stub.expectFrame('duty/grant')
+    h.clock.advance(1)
+    await vi.waitFor(() => expect(h.collabSnapshots.length).toBeGreaterThan(pushesBefore), SETTLE)
+    const pending = h.collabSnapshots.at(-1)!.agents.find((a) => a.agentId === AGENT)
+    expect(pending).toBeDefined()
+    expect(pending!.daemonId).toBeUndefined()
+    expect(h.collabSnapshots.at(-1)!.agents.some((a) => a.daemonId === OTHER)).toBe(false)
+
+    await beat(stub, { held: [{ groupId: GROUP, term: '5' }], headroom: 4 })
+    h.clock.advance(1)
+    await vi.waitFor(
+      () => expect(h.collabSnapshots.at(-1)!.agents.find((a) => a.agentId === AGENT)?.daemonId).toBe(DAEMON),
+      SETTLE
+    )
+  })
+
   it('publishes the hook rule on confirmation, not on the grant', async () => {
     // Same property on the other pushed projection, and the one with a spy on the wire.
     const start = 1_700_000_000_000
