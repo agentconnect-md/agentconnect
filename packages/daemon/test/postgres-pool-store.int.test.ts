@@ -187,6 +187,37 @@ describe.skipIf(!databaseUrl)('PostgreSQL pool member store', () => {
       expect(second.store.recoverPermissionRequests([agentId], 201)).toBe(1)
       expect(second.store.listPermissionRequests(agentId)[0]).toMatchObject({ status: 'expired', resolvedAt: 201 })
       expect(second.store.recoverMemoryCaptures(101)).toEqual({ retried: 0, ambiguous: 0 })
+      // #1035: the hook terminal-report outbox is install-wide here, so a member
+      // may drain only its own rows and may never release a peer's body.
+      const hookId = `hook-${suffix}`
+      expect(
+        first.store.appendInbox({
+          id: hookId,
+          sessionKey: `hook:${suffix}:d-1:${agentId}`,
+          agentId,
+          msg: '{}',
+          hookContext: '{}',
+          enqueuedAt: '00000000000000000002'
+        })
+      ).toBe(true)
+      expect(first.store.completeHookInbox(hookId, '{"status":"success"}', 1_000, `daemon-a-${suffix}`)).toBe(
+        'completed'
+      )
+      const drained = (ownerId: string, now: number) =>
+        second.store
+          .listHookTerminalReports(now, ownerId, [agentId])
+          .filter((row) => row.id === hookId)
+          .map((row) => row.terminalReport)
+      expect(drained(`daemon-b-${suffix}`, 1_500)).toEqual([])
+      expect(second.store.claimHookTerminalReport(hookId, `daemon-b-${suffix}`, 1_500)).toBe(false)
+      expect(second.store.acknowledgeHookInbox(hookId, { ownerId: `daemon-b-${suffix}` })).toBe(false)
+      const lapsed = 1_000 + 2 * 60 * 1_000 + 1
+      expect(drained(`daemon-b-${suffix}`, lapsed)).toEqual(['{"status":"success"}'])
+      expect(second.store.claimHookTerminalReport(hookId, `daemon-b-${suffix}`, lapsed)).toBe(true)
+      expect(second.store.releaseHookTerminalReport(hookId, `daemon-a-${suffix}`, lapsed)).toBe(true)
+      expect(drained(`daemon-a-${suffix}`, lapsed)).toEqual(['{"status":"success"}'])
+      expect(first.store.acknowledgeHookInbox(hookId, { ownerId: `daemon-a-${suffix}` })).toBe(true)
+      second.store.removeInbox(hookId)
       expect(first.store.attachActivationEnvelope(`activation-${suffix}`, '{}', 10_000).dispatch).toBe(true)
       expect(second.store.attachActivationEnvelope(`activation-${suffix}`, '{}', 10_000).dispatch).toBe(false)
       expect(second.store.recoverMemoryCaptures(120_101, true, [`other-connection-${suffix}`])).toEqual({
@@ -221,6 +252,42 @@ describe.skipIf(!databaseUrl)('PostgreSQL pool member store', () => {
         getSpy.mockRestore()
       }
     } finally {
+      await second.close()
+      await first.close()
+    }
+  })
+
+  it('keeps each member on its own runtime model catalog', async () => {
+    // The rollout case against the real schema: two members, two fingerprints, one table.
+    const suffix = randomUUID()
+    const runtimeId = `runtime-${suffix}`
+    const config = { version: 1 as const, databaseUrl: databaseUrl!, maxConnections: 2 }
+    const first = await PostgresDataPlane.open(config, () => undefined)
+    const second = await PostgresDataPlane.open(config, () => undefined)
+    try {
+      first.store.recordRuntimeCatalogMeta({ runtimeId, fingerprint: 'fp-1', source: 'acp', observedAt: 100 })
+      first.store.upsertRuntimeModelCap({ runtimeId, modelId: 'a', fingerprint: 'fp-1', caps: {}, observedAt: 100 })
+      first.store.markRuntimeCatalogComplete(runtimeId, 'fp-1', 'hash-1', 100)
+
+      second.store.recordRuntimeCatalogMeta({ runtimeId, fingerprint: 'fp-2', source: 'acp', observedAt: 200 })
+      second.store.upsertRuntimeModelCap({ runtimeId, modelId: 'b', fingerprint: 'fp-2', caps: {}, observedAt: 200 })
+      second.store.pruneRuntimeModelCaps(runtimeId, ['b'])
+
+      expect(first.store.getRuntimeCatalogMeta(runtimeId)).toMatchObject({
+        fingerprint: 'fp-1',
+        complete: true,
+        modelsHash: 'hash-1'
+      })
+      expect(second.store.getRuntimeCatalogMeta(runtimeId)).toMatchObject({ fingerprint: 'fp-2', complete: false })
+      expect(first.store.listRuntimeModelCaps(runtimeId).map((row) => row.modelId)).toEqual(['a'])
+      expect(second.store.listRuntimeModelCaps(runtimeId).map((row) => row.modelId)).toEqual(['b'])
+
+      // A departed member's cache is unreadable by anyone, so the shorter window takes it.
+      second.store.gcRuntimeCatalog(1, 150)
+      expect(first.store.getRuntimeCatalogMeta(runtimeId)).toBeUndefined()
+      expect(second.store.getRuntimeCatalogMeta(runtimeId)).toMatchObject({ fingerprint: 'fp-2' })
+    } finally {
+      second.store.gcRuntimeCatalog(Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER)
       await second.close()
       await first.close()
     }

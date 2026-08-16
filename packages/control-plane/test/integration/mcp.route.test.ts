@@ -14,7 +14,8 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
-import { seedAgent, seedDaemon } from '../fixtures/seed.js'
+import { seedAgent, seedDaemon, seedDutyGroup } from '../fixtures/seed.js'
+import { joinPool, poolSetId } from '../fakes/member-set.js'
 import { buildHttpApp, TEST_API_KEY_PEPPER, type HttpApp } from '../fakes/build-http.js'
 import { MCP_TOOLS } from '../../src/http/mcp/tools.js'
 import { McpRateLimiter } from '../../src/http/mcp/rate-limit.js'
@@ -169,12 +170,31 @@ describe('POST /api/v1/mcp — auth', () => {
 })
 
 describe('delegated webchat MCP operations', () => {
-  async function delegatedFixture(opts: { registerSession?: boolean } = {}) {
+  /** An org-less pool member holding the agent's duty — the shape whose `agent.daemonId` is null
+   *  and whose row the reaper deletes on every rollout. */
+  async function seedPoolMember(daemonId: string, agentId: string): Promise<void> {
+    await prisma.daemon.create({
+      data: { id: daemonId, orgId: null, maxAgents: 8, status: 'ready', sessionEpoch: 1n }
+    })
+    await joinPool(prisma, daemonId)
+    await seedDutyGroup(prisma, randomUUID(), daemonId, [agentId])
+  }
+
+  async function delegatedFixture(opts: { registerSession?: boolean; pool?: boolean } = {}) {
     const daemonId = randomUUID()
     const hostAgentId = randomUUID()
     const conversationId = randomUUID()
-    await seedDaemon(prisma, daemonId)
-    await seedAgent(prisma, hostAgentId, { daemonId })
+    if (opts.pool) {
+      await seedAgent(prisma, hostAgentId)
+      await prisma.agent.update({
+        where: { id: hostAgentId },
+        data: { placementKind: 'set', setId: await poolSetId(prisma), daemonId: null }
+      })
+      await seedPoolMember(daemonId, hostAgentId)
+    } else {
+      await seedDaemon(prisma, daemonId)
+      await seedAgent(prisma, hostAgentId, { daemonId })
+    }
     await prisma.webchatConversation.create({
       data: {
         id: conversationId,
@@ -191,7 +211,6 @@ describe('delegated webchat MCP operations', () => {
         userId: DEFAULT_OWNER_ID,
         orgId: DEFAULT_ORG_ID,
         agentId: hostAgentId,
-        daemonId,
         expiresAt: new Date(Date.now() + 60_000)
       }
     })
@@ -239,9 +258,11 @@ describe('delegated webchat MCP operations', () => {
       })
     }
 
+    // Mutable so a test can retire the holding member and connect its replacement.
+    const liveDaemons = new Set<string>([daemonId])
     const app = buildHttpApp(prisma, undefined, {
       get: (id) =>
-        id === daemonId
+        liveDaemons.has(id)
           ? {
               reachable: true,
               state: 'READY',
@@ -265,7 +286,18 @@ describe('delegated webchat MCP operations', () => {
     const remoteRpc = (id: number, name: string, args: Record<string, unknown>) =>
       remoteMethod({ id, method: 'tools/call', params: { name, arguments: args } })
     const decisionPath = `/api/v1/orgs/${DEFAULT_ORG_ID}/agents/${hostAgentId}/webchat/${conversationId}/mcp-operations`
-    return { app, daemonId, hostAgentId, conversationId, remoteRpc, remoteMethod, decisionPath, credential }
+    return {
+      app,
+      daemonId,
+      hostAgentId,
+      conversationId,
+      liveDaemons,
+      seedPoolMember,
+      remoteRpc,
+      remoteMethod,
+      decisionPath,
+      credential
+    }
   }
 
   /** Submit a delegated write and return its pending operationId. */
@@ -344,6 +376,37 @@ describe('delegated webchat MCP operations', () => {
     const call = await remoteRpc(3, 'listAgents', {})
     expect(call.statusCode).toBe(401)
     expect(call.headers['www-authenticate']).toBeUndefined()
+  })
+
+  // A pool agent names no machine of its own: `agent.daemonId` is null and the member serving it
+  // is whoever holds its duty. Reading the column here refused every entitlement (#1028).
+  it('entitles a pool agent through its duty holder rather than a placement column', async () => {
+    const { hostAgentId, remoteRpc } = await delegatedFixture({ pool: true })
+
+    const read = await remoteRpc(1, 'listAgents', {})
+    expect(read.statusCode).toBe(200)
+    expect(toolText(mcpMessage(read).result as unknown as ToolCallResult)).toContain(hostAgentId)
+  })
+
+  it('keeps a pool agent delegation across a rollout that retires and replaces the holder', async () => {
+    const fixture = await delegatedFixture({ pool: true })
+    const { daemonId, hostAgentId, liveDaemons, remoteRpc } = fixture
+    expect((await remoteRpc(1, 'listAgents', {})).statusCode).toBe(200)
+
+    // The reaper deletes the retired member's row. The delegation used to cascade away with it.
+    await prisma.dutyGroup.deleteMany({ where: { holder: daemonId } })
+    await prisma.daemon.delete({ where: { id: daemonId } })
+    liveDaemons.delete(daemonId)
+    expect(await prisma.webchatMcpDelegation.count({ where: { agentId: hostAgentId, revokedAt: null } })).toBe(1)
+    // Nothing serves the agent for the handoff window, so the grant is refused rather than honored.
+    expect((await remoteRpc(2, 'listAgents', {})).statusCode).toBe(401)
+
+    const replacement = randomUUID()
+    await fixture.seedPoolMember(replacement, hostAgentId)
+    liveDaemons.add(replacement)
+
+    // Same authority, same grant token: the new holder redeems it without a fresh browser dial.
+    expect((await remoteRpc(3, 'listAgents', {})).statusCode).toBe(200)
   })
 
   it('keeps denying tools/call while the current session is not private', async () => {

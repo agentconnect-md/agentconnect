@@ -292,7 +292,10 @@ describe('daemon --k8s mode', () => {
       root: root({ declared: { runtimes: [{ id: 'claude' }] } }),
       k8s: true,
       plane: {
-        launchedAgents: () => ['quiet', 'serving'],
+        launchedAgents: () => [
+          { agentId: 'quiet', since: 0 },
+          { agentId: 'serving', since: 0 }
+        ],
         suspendIdle: async (agentId: string) => {
           suspended.push(agentId)
           return 'suspended'
@@ -308,6 +311,173 @@ describe('daemon --k8s mode', () => {
       ;(k8sDaemon as any).sweepIdle()
       await vi.waitFor(() => expect(suspended).toEqual(['quiet']))
     } finally {
+      await k8sDaemon.stop()
+    }
+  })
+
+  it('counts idleness from when the launch was taken over when no activity is recorded', async () => {
+    const suspended: string[] = []
+    const k8sDaemon = daemon({
+      root: root({ declared: { runtimes: [{ id: 'claude' }] } }),
+      k8s: true,
+      plane: {
+        // No session row exists for either agent, so activity alone would read as idle since epoch.
+        launchedAgents: () => [
+          { agentId: 'fresh', since: Date.now() },
+          { agentId: 'stale', since: Date.now() - 24 * 3_600_000 }
+        ],
+        suspendIdle: async (agentId: string) => {
+          suspended.push(agentId)
+          return 'suspended'
+        }
+      }
+    })
+    try {
+      await k8sDaemon.start()
+      ;(k8sDaemon as any).sweepIdle()
+      await vi.waitFor(() => expect(suspended).toEqual(['stale']))
+    } finally {
+      await k8sDaemon.stop()
+    }
+  })
+
+  it('never suspends the sandbox of an agent whose duty is held elsewhere', async () => {
+    const suspended: string[] = []
+    const k8sDaemon = daemon({
+      root: root({ declared: { runtimes: [{ id: 'claude' }] } }),
+      k8s: true,
+      plane: {
+        launchedAgents: () => [
+          { agentId: 'held', since: 0 },
+          { agentId: 'moved', since: 0 }
+        ],
+        suspendIdle: async (agentId: string) => {
+          suspended.push(agentId)
+          return 'suspended'
+        }
+      }
+    })
+    try {
+      await k8sDaemon.start()
+      // An install-wide member: the duty ledger decides which agents it serves.
+      ;(k8sDaemon as any).cpClient = { organizationScope: () => 'frame', stop: async () => {} }
+      ;(k8sDaemon as any).duties.applyGrant([
+        {
+          groupId: '11111111-1111-4111-8111-111111111111',
+          orgId: 'org-1',
+          term: '1',
+          members: [{ kind: 'agent', refId: 'held' }]
+        }
+      ])
+      ;(k8sDaemon as any).sweepIdle()
+      await vi.waitFor(() => expect(suspended).toEqual(['held']))
+      ;(k8sDaemon as any).sweepIdle()
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      expect(suspended).toEqual(['held', 'held'])
+    } finally {
+      ;(k8sDaemon as any).cpClient = undefined
+      await k8sDaemon.stop()
+    }
+  })
+
+  it('takes over the sandbox when a duty arrives and releases it — after the host stop — when the duty leaves', async () => {
+    const AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1'
+    const GROUP = '11111111-1111-4111-8111-111111111111'
+    const events: string[] = []
+    const k8sDaemon = daemon({
+      root: root({ declared: { runtimes: [{ id: 'claude' }] } }),
+      k8s: true,
+      plane: {
+        adoptAgent: async (agentId: string) => void events.push(`adopt:${agentId}`),
+        releaseAgent: (agentId: string) => void events.push(`release:${agentId}`)
+      }
+    })
+    try {
+      await k8sDaemon.start()
+      ;(k8sDaemon as any).cpClient = {
+        organizationScope: () => 'frame',
+        stop: async () => {},
+        releaseDuties: vi.fn(async () => {}),
+        reportDutiesNow: vi.fn(() => {}),
+        fetchDutyAgent: vi.fn(async () => ({
+          bundle: {
+            agentId: AGENT,
+            spec: {
+              orgId: 'org-1',
+              name: 'scout',
+              runtime: 'claude',
+              workspace: { mode: 'scratch', isolation: 'shared' }
+            },
+            integrations: [],
+            crons: []
+          }
+        }))
+      }
+      const grant = { groupId: GROUP, orgId: 'org-1', term: '1', members: [{ kind: 'agent', refId: AGENT }] }
+      await (k8sDaemon as any).admitDutyGrants([grant])
+      await vi.waitFor(() => expect(events).toEqual([`adopt:${AGENT}`]))
+      // A stopped host stands in for the ex-holder's runtime; the release must wait for it to be down.
+      let hostDown = false
+      ;(k8sDaemon as any).hosts.set(AGENT, {
+        stop: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 20))
+          hostDown = true
+        }
+      })
+      ;(k8sDaemon as any).applyDutyRevoke([{ groupId: GROUP, reason: 'superseded' }])
+      expect(events).toEqual([`adopt:${AGENT}`])
+      await vi.waitFor(() => expect(events).toEqual([`adopt:${AGENT}`, `release:${AGENT}`]))
+      expect(hostDown).toBe(true)
+    } finally {
+      ;(k8sDaemon as any).cpClient = undefined
+      await k8sDaemon.stop()
+    }
+  })
+
+  it('clears a readiness marker left on a mounted path before it waits on the control plane (#1043)', async () => {
+    const rootDir = root()
+    const marker = join(rootDir, 'ready')
+    writeFileSync(marker, 'ready\n')
+    vi.stubEnv('AC_READINESS_FILE', marker)
+    let release!: () => void
+    const startControlPlane = vi.fn(() => new Promise<void>((resolve) => (release = resolve)))
+    const instance = daemon({ root: rootDir, k8s: true, startControlPlane })
+    const starting = instance.start()
+    try {
+      // The marker outlives the container that wrote it, and startup blocks here for as long as the
+      // CP is down — so it has to be gone before the wait, not after it.
+      await vi.waitFor(() => expect(startControlPlane).toHaveBeenCalledOnce())
+      expect(existsSync(marker)).toBe(false)
+      expect(instance.readinessState()).toEqual({ ready: false, reason: 'starting' })
+      release()
+      await starting
+      // Startup is done; what is left is the member's own registration.
+      expect(instance.readinessState()).toEqual({ ready: false, reason: 'control-plane-unregistered' })
+      expect(existsSync(marker)).toBe(false)
+    } finally {
+      await starting.catch(() => undefined)
+      await instance.stop()
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it('is not ready until the install-wide sandbox runtime probe returns (#1043)', async () => {
+    let settle!: (table: unknown) => void
+    const k8sDaemon = daemon({
+      root: root(),
+      k8s: true,
+      plane: { probeRuntimes: () => new Promise((resolve) => (settle = resolve)) }
+    })
+    try {
+      await k8sDaemon.start()
+      // Registered, but the member still advertises nothing: the CP would assign it no agent, so
+      // process health is not servability and the probe is the half only this member can settle.
+      ;(k8sDaemon as any).cpClient = { state: 'READY' }
+      expect(k8sDaemon.readinessState()).toEqual({ ready: false, reason: 'runtime-probe-pending' })
+      settle({ runtimes: [{ id: 'claude', version: '1.2.3' }] })
+      await vi.waitFor(() => expect(k8sDaemon.readinessState()).toEqual({ ready: true, reason: 'ready' }))
+    } finally {
+      ;(k8sDaemon as any).cpClient = undefined
       await k8sDaemon.stop()
     }
   })

@@ -65,6 +65,9 @@ export interface VisibilityPushDeps {
 function toPush(s: SessionMetaRecord): SessionVisibilityPush {
   return {
     sessionId: s.id,
+    // The gate is keyed by (agent, ACP session id) on the daemon: ACP ids are
+    // runtime-local, so the id alone would answer for a colliding neighbour.
+    agentId: s.agentId,
     visibility: s.visibility,
     // An external-source session (Slack/Feishu channel) is no longer memory-
     // excluded just for being external — `external` visibility now captures like

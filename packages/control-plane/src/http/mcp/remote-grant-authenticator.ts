@@ -12,6 +12,7 @@ export interface InvocationContext {
   grantId: string
   authorityGeneration: number
   agentId: string
+  /** The daemon serving the agent for this invocation, resolved live — never a stored member id. */
   daemonId: string
   orgId: string
   userId: string
@@ -69,12 +70,13 @@ export class RemoteGrantAuthenticator {
     if (!authority || authority.revokedAt || authority.expiresAt <= now) {
       return { kind: 'denied', reason: 'authority_inactive' }
     }
+    // No daemon identity on this seam — the grant arrives over HTTP from the agent's adapter — so
+    // the live check asks the resolver for whichever daemon serves the agent now.
     const live = await resolveLiveWebchatMcpAuthority(this.deps, {
       conversationId: authority.conversationId,
       expectedUserId: authority.userId,
       orgId: authority.orgId,
-      agentId: authority.agentId,
-      daemonId: authority.daemonId
+      agentId: authority.agentId
     })
     if (!live.ok) return { kind: 'denied', reason: live.reason }
 
@@ -119,7 +121,7 @@ export class RemoteGrantAuthenticator {
         grantId: grant.id,
         authorityGeneration: authority.generation,
         agentId: authority.agentId,
-        daemonId: authority.daemonId,
+        daemonId: live.daemonId,
         orgId: authority.orgId,
         userId: authority.userId,
         startedAt: now,

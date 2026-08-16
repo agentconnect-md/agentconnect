@@ -6,6 +6,7 @@ import { mkdtemp } from 'node:fs/promises'
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar'
 import { loadConfig, persistDaemonId, persistRelays, type FlatOverrides } from './config/load-config.js'
 import { readCliEntry, runCliUpgrade } from './lifecycle/cli-upgrade.js'
+import { ReadinessGate, readinessSinksFromEnv, readinessState, type ReadinessState } from './readiness.js'
 import { sessionRetentionMs, type Config, type RuntimeDef } from './config/config-schema.js'
 import { discoverAgentsTolerant, type LoadedAgent } from './agents/load-agents.js'
 import { agentChildEnv } from './agents/agent-env.js'
@@ -253,7 +254,13 @@ import {
   type DiscordComponents
 } from './discord/render.js'
 import { FeishuConverger, type FeishuAction } from './feishu/render.js'
-import { Scheduler, buildSyntheticMessage } from './scheduler/scheduler.js'
+import {
+  Scheduler,
+  buildSyntheticMessage,
+  missedOccurrence,
+  scheduleFingerprint,
+  type ScheduleDefinition
+} from './scheduler/scheduler.js'
 import { DreamScheduler } from './scheduler/dream-scheduler.js'
 import { planChannelIntros, buildIntroMessage } from './agents/channel-intro.js'
 import { buildHookMessage, githubOpensReviewGeneration, hookAnchorText } from './messages/hook-message.js'
@@ -810,6 +817,18 @@ const MAX_TOTAL_TURNS_PER_WINDOW = 60
 // several CP retries, so admitting an unbounded retained backlog at reconnect
 // would turn a long outage into a memory/socket fan-out spike.
 const MAX_HOOK_REPORT_INFLIGHT = 100
+
+/** The daemon whose dispatch the CP accepts this report from — the outbox row's owner.
+ *  On a pool's shared store that is the only member allowed to release its body. */
+function hookReportOwner(report: HookReport, daemonId?: string): string | undefined {
+  return report.dispatchDaemonId ?? daemonId
+}
+
+/** True when the CP can only be answering about a peer's dispatch. Unproven ownership
+ *  counts as foreign: keeping a report body is always recoverable, nulling it is not. */
+function foreignHookDispatch(report: HookReport, daemonId?: string): boolean {
+  return report.dispatchDaemonId !== undefined && report.dispatchDaemonId !== daemonId
+}
 
 /** Backoff after a session-metadata persistence failure while the socket remains READY. */
 const SESSION_METADATA_RETRY_MS = 5_000
@@ -2196,6 +2215,11 @@ export class Daemon {
   // `draining` so the CP stops granting to this member (sticky for the registration), and turns the
   // shutdown into a duty drain: hold and serve until each group's turns settle, then release it.
   private shutdownDraining = false
+  // Kubernetes readiness (#1043): the two sinks a pod probe reads, and the one fact only this
+  // member knows — that the install-wide sandbox runtime probe came back.
+  private readiness?: ReadinessGate
+  private k8sRuntimeProbed = false
+  private startupComplete = false
   // The shutdown duty drain in progress: its deadline, its counters, and the release of every grant
   // that landed after the latch, so the summary and `stop()` can wait for all of them.
   private shutdownDutyDrain?: ShutdownDutyDrain
@@ -2457,6 +2481,9 @@ export class Daemon {
   private hookReportRetryTimer?: TimerHandle
   private transcriptActivityTimers = new Map<string, { timer: TimerHandle; activity: SessionActivity }>()
   private readonly hookReportInflight = new Set<string>()
+  // Outbox rows this member proved it may not report — a peer owns the dispatch,
+  // or the receipt is unreleasable here. Kept out of the drain for this process.
+  private readonly hookReportForeign = new Set<string>()
   // A timer callback may already be inside conn.start() when an agent detaches.
   // Track those runs so detach can await them and prevent a stale socket from
   // appearing after its strict close pass has ACKed.
@@ -2872,6 +2899,10 @@ export class Daemon {
   }
 
   async start(): Promise<void> {
+    // FIRST, before any await that can block for as long as the control plane is down: the file
+    // sink clears its marker here, and a marker on a mounted path outlives the container that
+    // wrote it — left in place, `test -f` would call an unregistered replacement ready.
+    if (this.k8s || this.opts.supervisor === K8S_SUPERVISOR) await this.startReadinessGate()
     // A service-installed daemon normally arrives through the CLI run shell's
     // login-shell launch with a full user env (cli service-spawn.ts). This is
     // the backstop for legacy direct-ExecStart units and bare docker runs:
@@ -3441,7 +3472,7 @@ export class Daemon {
       // like post-turn distillation). Resolved from trusted session coords at call
       // time so a policy change takes effect for an already-running ACP session.
       memoryAccessAllowed: (ctx, mode) =>
-        mode === 'read' || !this.store.isCaptureExcluded(this.acpSessionIdForToolCall(ctx)),
+        mode === 'read' || !this.store.isCaptureExcluded(ctx.agentId, this.acpSessionIdForToolCall(ctx)),
       memoryScope: (ctx) => this.memoryScope(ctx.agentId, ctx.channel, ctx.transportScope),
       recordOutbound: (ctx, channel, thread, text, ts, integrationId) =>
         this.store.appendTranscript({
@@ -3734,6 +3765,8 @@ export class Daemon {
     void this.probeRuntimesAndEmit(false).finally(() => this.armRuntimeProbeRefresh())
     if (!this.k8s) startControlPlane(root)
     this.armIdleSweep()
+    this.startupComplete = true
+    this.readiness?.refresh()
     this.log.info('daemon ready')
   }
 
@@ -3851,8 +3884,8 @@ export class Daemon {
   private dutyConnectionsRequested = 0
   private dutyConnectionsConverged = 0
   private dutyConvergeRetryTimer?: TimerHandle
-  // Register snapshots publish agents before integrations. Carry newly-owned
-  // inbox rows across coalesced passes and retry only after convergence is idle.
+  // Register snapshots publish agents before integrations. Carry newly-owned (installed or
+  // duty-gained) inbox rows across coalesced passes and replay only after convergence is idle.
   private readonly pendingInboxReplayAgents = new Set<string>()
   async reconcile(): Promise<void> {
     if (this.reconcileRun) {
@@ -5711,7 +5744,7 @@ export class Daemon {
     // launch-correlated one) must never be distilled into it. The gate is checked
     // HERE — before both the managed distillation and the external capture outbox
     // — and fails closed on unknown state.
-    if (this.store.isCaptureExcluded(sessionId)) return
+    if (this.store.isCaptureExcluded(agentId, sessionId)) return
     const provider = binding?.provider ?? 'managed'
     const observableCapture = provider === 'managed' || provider === 'external'
     const record = async () => {
@@ -9287,7 +9320,9 @@ export class Daemon {
       ...(req.needsReply === true && originSessionId !== undefined ? { needsReply: true } : {}),
       // §5.1: seal the child's capture gate when the waking session is private.
       // Tighten-only — see CallMeta.parentPrivate.
-      ...(originSessionId !== undefined && this.store.isCaptureExcluded(originSessionId) ? { parentPrivate: true } : {})
+      ...(originSessionId !== undefined && this.store.isCaptureExcluded(req.callerAgentId, originSessionId)
+        ? { parentPrivate: true }
+        : {})
     }
 
     const normalized: NormalizedMessage = {
@@ -9470,7 +9505,7 @@ export class Daemon {
       ...(externalOrigin ? { externalOrigin } : {}),
       // §5.1: seal the child's capture gate when the waking session is private.
       // Tighten-only — see CallMeta.parentPrivate.
-      ...(replierSessionId !== undefined && this.store.isCaptureExcluded(replierSessionId)
+      ...(replierSessionId !== undefined && this.store.isCaptureExcluded(req.callerAgentId, replierSessionId)
         ? { parentPrivate: true }
         : {})
     }
@@ -10015,7 +10050,7 @@ export class Daemon {
       },
       // §5.1: seal the child's capture gate when the waking session is private.
       // Tighten-only — see CallMeta.parentPrivate.
-      ...(originSessionId && this.store.isCaptureExcluded(originSessionId) ? { parentPrivate: true } : {})
+      ...(originSessionId && this.store.isCaptureExcluded(req.agentId, originSessionId) ? { parentPrivate: true } : {})
     }
     const transportScope = this.transportScopeForIntegrationIds(
       req.integrationId !== undefined ? [req.integrationId] : undefined
@@ -10092,7 +10127,7 @@ export class Daemon {
       const ack = await this.relays.sendAgentMsg({
         claimedFromAgentId: req.callerAgentId,
         // Tighten-only privacy hint for the remote child's capture gate (§5.1).
-        ...(ctx.originSessionId !== undefined && this.store.isCaptureExcluded(ctx.originSessionId)
+        ...(ctx.originSessionId !== undefined && this.store.isCaptureExcluded(req.callerAgentId, ctx.originSessionId)
           ? { parentPrivate: true }
           : {}),
         toAgentId: req.toAgentId,
@@ -12098,6 +12133,7 @@ export class Daemon {
         leaderHookContext: JSON.stringify(nextHook),
         followerId: follower.inboxId,
         followerTerminalReport: JSON.stringify(report),
+        followerOwnerId: hookReportOwner(report, this.cfg.daemonId),
         completedAt: this.clock.now()
       })
       if (!committed) return false
@@ -12928,6 +12964,12 @@ export class Daemon {
    *  ingress is never re-checked per message. */
   private settleDutyChange(result: DutyApplyResult): void {
     for (const agentId of result.agentsLost) this.stopServingAgent(agentId)
+    for (const agentId of result.agentsGained) this.adoptClusterSandbox(agentId)
+    this.reclaimInterruptedWork(result.agentsGained)
+    // A duty newly held here replays that agent's shared inbox backlog even when its replica was
+    // already installed and the grant fetched nothing (#1034): a crashed holder's admitted rows
+    // must run on the successor. Drained by the reconcile below, once its connections converge.
+    for (const agentId of result.agentsGained) this.pendingInboxReplayAgents.add(agentId)
     const changed = result.added.length + result.updated.length + result.agentsGained.length + result.agentsLost.length
     if (changed === 0) return
     // Report the new digest immediately. The CP publishes the projections that address this member
@@ -12936,6 +12978,8 @@ export class Daemon {
     // heartbeat. Outside the duty gate below on purpose: the CP acts on the digest either way.
     this.cpClient?.reportDutiesNow()
     this.onDutyChanged()
+    // After the arm, so a catch-up runs against the schedules this member now actually holds.
+    this.catchUpMissedSchedules(result.agentsGained)
   }
 
   /**
@@ -13260,6 +13304,87 @@ export class Daemon {
     const serve = this.servesAgent(a.id)
     this.scheduler.sync(a.id, serve ? a.crons : [])
     this.dreamScheduler.sync(a.id, serve ? this.dreamSchedulePolicyFor(a) : undefined)
+    // An unserved replica only disarms its own jobs — the stamps are the holder's to write.
+    if (serve) this.reconcileScheduleStamps(a)
+  }
+
+  /** The definition a cron entry fires under — an entry with no explicit `enabled` is enabled. */
+  private cronDefinition(cron: CronDef): ScheduleDefinition {
+    return { schedule: cron.schedule, timezone: cron.timezone, enabled: cron.enabled !== false }
+  }
+
+  /** The definition an agent's dream schedule fires under; an absent or scheduleless policy is
+   *  "unscheduled", which is itself a definition a later re-enable must differ from. */
+  private dreamDefinition(a: { memory?: Agent['memory'] }): ScheduleDefinition {
+    const policy = this.dreamSchedulePolicyFor(a)
+    const schedule = policy?.schedule ?? ''
+    return { schedule, timezone: policy?.timezone, enabled: policy?.enabled === true && schedule !== '' }
+  }
+
+  /**
+   * Retire a stamp whose definition has moved on (#1031). A stamp proves a fire of the definition it
+   * was written under, so an edited expression, a changed timezone, or a disable/re-enable makes the
+   * recorded moment meaningless — re-stamp NOW under the new definition, and the new definition
+   * starts clean instead of inheriting a catch-up for a moment it never covered. A cron that is GONE
+   * gets its row dropped rather than re-stamped: ids are re-mintable, and a recreated one must start
+   * from no evidence at all. Only an existing row is ever rewritten — writing one would fabricate a
+   * fire that never happened.
+   *
+   * Ownership is re-checked here rather than trusted from the caller: these rows are shared by the
+   * whole pool, so a member that does not serve the agent must never overwrite the holder's evidence
+   * with its own, possibly stale, view of the definitions.
+   */
+  private reconcileScheduleStamps(a: { id: string; crons: CronDef[]; memory?: Agent['memory'] }): void {
+    if (!this.servesAgent(a.id)) return
+    const now = this.clock.now()
+    const active = new Set(a.crons.map((cron) => `${a.id}:${cron.id}`))
+    for (const key of this.store.cronRunKeys(a.id)) if (!active.has(key)) this.store.deleteCronRun(key)
+    for (const cron of a.crons) {
+      const key = `${a.id}:${cron.id}`
+      const fingerprint = scheduleFingerprint(this.cronDefinition(cron))
+      const run = this.store.cronRun(key)
+      if (run && run.definition !== fingerprint) this.store.setCronLastRun(key, now, fingerprint)
+    }
+    // A removed dreaming policy is "unscheduled", a fingerprint no live policy ever matches.
+    const dream = scheduleFingerprint(this.dreamDefinition(a))
+    const dreamRun = this.store.dreamRun(a.id)
+    if (dreamRun && dreamRun.definition !== dream) this.store.setDreamLastRun(a.id, now, dream)
+  }
+
+  /**
+   * Compensate the fires a duty handover swallowed (#1031). The old holder unregisters an agent's
+   * schedules before the moment and the new holder arms a `Cron` that knows nothing of a moment
+   * already passed, so a cron or dream inside the window runs NOWHERE — no error, no late run, no
+   * log line. On gaining an agent this replays at most ONE occurrence per schedule (the newest
+   * missed moment, inside its grace window — never a backlog), and every fire is a CAS claim on the
+   * shared stamp, so two members racing the same handoff compensate it exactly once.
+   */
+  private catchUpMissedSchedules(agentIds: string[]): void {
+    const now = this.clock.now()
+    for (const agentId of agentIds) {
+      // Gained, then withdrawn again inside the same settle: the fire belongs to whoever holds it.
+      if (!this.servesAgent(agentId)) continue
+      const agent = this.agents.get(agentId)
+      if (!agent) continue
+      for (const cron of agent.crons) {
+        const key = `${agentId}:${cron.id}`
+        const definition = this.cronDefinition(cron)
+        const fingerprint = scheduleFingerprint(definition)
+        const due = missedOccurrence(definition, this.store.cronRun(key), now)
+        if (due === undefined || !this.store.claimCronCatchUp(key, due, now, fingerprint)) continue
+        this.log.info(`cron "${cron.id}" of agent "${agentId}": firing the occurrence a duty handover missed`)
+        const { msg } = buildSyntheticMessage(agentId, cron, randomUUID())
+        void this.onCronFire(agentId, msg, cron).catch((err) =>
+          this.log.error(`cron catch-up dispatch failed for agent "${agentId}": ${formatErr(err)}`)
+        )
+      }
+      const dream = this.dreamDefinition(agent)
+      const dueDream = missedOccurrence(dream, this.store.dreamRun(agentId), now)
+      if (dueDream === undefined || !this.store.claimDreamCatchUp(agentId, dueDream, now, scheduleFingerprint(dream)))
+        continue
+      this.log.info(`dream schedule of agent "${agentId}": firing the occurrence a duty handover missed`)
+      this.onDreamScheduleFire(agentId)
+    }
   }
 
   /** Stop serving one agent because its duty moved — the light teardown: no
@@ -13289,11 +13414,13 @@ export class Daemon {
     // Behind a FAILED earlier stop the host is still stopped (a later host must not leak), but the
     // failure keeps propagating: that agent stays unconfirmed for the rest of this process.
     const stop: Promise<void> = prior.then(
-      () => this.stopHost(agentId),
+      () => this.stopHost(agentId).finally(() => this.releaseClusterSandbox(agentId)),
       (err: unknown) =>
-        this.stopHost(agentId).then(() => {
-          throw err
-        })
+        this.stopHost(agentId)
+          .finally(() => this.releaseClusterSandbox(agentId))
+          .then(() => {
+            throw err
+          })
     )
     this.dutyHostStops.set(agentId, stop)
     void stop.then(
@@ -13558,7 +13685,12 @@ export class Daemon {
     let reportInboxId: string | undefined
     if (owner?.inboxId) {
       try {
-        const completed = this.store.completeHookInbox(owner.inboxId, JSON.stringify(report), this.clock.now())
+        const completed = this.store.completeHookInbox(
+          owner.inboxId,
+          JSON.stringify(report),
+          this.clock.now(),
+          hookReportOwner(report, this.cfg.daemonId)
+        )
         if (completed === 'already-terminal') {
           owner.hookTerminalReceipt = true
           this.liveInboxIds.delete(owner.inboxId)
@@ -13596,6 +13728,9 @@ export class Daemon {
       this.scheduleHookReportRetry()
       return
     }
+    // On a pool's shared store the outbox is one table for every member. Emit only
+    // under a live claim, so a peer's unacknowledged row stays with its owner.
+    if (inboxId && !this.claimHookReport(inboxId)) return
     if (inboxId) this.hookReportInflight.add(inboxId)
     let refillDrainSlot = false
     void Promise.resolve(this.cpClient.emitHookReport(report))
@@ -13603,7 +13738,7 @@ export class Daemon {
         if (!inboxId) return
         refillDrainSlot = true
         try {
-          this.store.acknowledgeHookInbox(inboxId)
+          this.store.acknowledgeHookInbox(inboxId, { ownerId: this.cfg.daemonId })
         } catch (err) {
           // An ACKed report may be re-sent if the local GC write fails. CP
           // persistence is idempotent, so retaining it is the safe direction.
@@ -13614,11 +13749,25 @@ export class Daemon {
         const permanentlyRejected =
           typeof err === 'object' && err !== null && 'retryable' in err && err.retryable === false
         if (permanentlyRejected && inboxId) {
-          // A dispatch-fence CONFLICT can never become valid. Keep the bounded
+          // A CONFLICT raised against a PEER's dispatch says nothing about this row:
+          // the CP is refusing us as the reporter, not the completion. Hand the claim
+          // back to its owner with the body intact instead of dead-lettering it.
+          if (foreignHookDispatch(report, this.cfg.daemonId)) {
+            this.hookReportForeign.add(inboxId)
+            const owner = report.dispatchDaemonId
+            try {
+              if (owner) this.store.releaseHookTerminalReport(inboxId, owner, this.clock.now())
+            } catch (releaseError) {
+              this.log.warn(`durable inbox: hook report release failed for ${inboxId}: ${formatErr(releaseError)}`)
+            }
+            this.log.warn(`hook report left for its dispatching daemon: ${inboxId}`)
+            return
+          }
+          // Our own dispatch-fence CONFLICT can never become valid. Keep the bounded
           // stable-id receipt for relay dedup, but dead-letter its report body.
           refillDrainSlot = true
           try {
-            this.store.acknowledgeHookInbox(inboxId)
+            this.store.acknowledgeHookInbox(inboxId, { ownerId: this.cfg.daemonId })
           } catch (cleanupError) {
             this.log.warn(`durable inbox: hook report dead-letter failed for ${inboxId}: ${formatErr(cleanupError)}`)
           }
@@ -13634,6 +13783,16 @@ export class Daemon {
         // Transient failures use the 5s backoff instead.
         if (refillDrainSlot) this.scheduleHookReportRetry(250)
       })
+  }
+
+  /** Renew (or take over) this member's claim on one durable report row. */
+  private claimHookReport(inboxId: string): boolean {
+    try {
+      return this.store.claimHookTerminalReport(inboxId, this.cfg.daemonId, this.clock.now())
+    } catch (err) {
+      this.log.warn(`durable inbox: hook report claim failed for ${inboxId}: ${formatErr(err)}`)
+      return false
+    }
   }
 
   private scheduleHookReportRetry(delayMs = 5_000): void {
@@ -18290,7 +18449,7 @@ export class Daemon {
       // Never let classification break a turn — but fail CLOSED: an unclassified
       // session keeps memory capture excluded until the CP confirms otherwise.
       this.log.warn(`session visibility: classification failed for ${acpSessionId} (${formatErr(err)})`)
-      this.store.setLocalCaptureGate(acpSessionId, true)
+      this.store.setLocalCaptureGate(agentId, acpSessionId, true)
     }
   }
 
@@ -18513,7 +18672,7 @@ export class Daemon {
     // stay private.
     const locallyPrivate =
       !isEvaluation && (isA2aChild || msg.isDm || msg.platform === 'webchat' || launchCorrelationId !== undefined)
-    this.store.setLocalCaptureGate(acpSessionId, locallyPrivate)
+    this.store.setLocalCaptureGate(agentId, acpSessionId, locallyPrivate)
   }
 
   /** The ACP session id behind an MCP tool call, from the caller's trusted
@@ -19757,15 +19916,16 @@ export class Daemon {
   private sweepIdleSandboxes(now: number, ttl: number): void {
     const plane = this.k8sPlane
     if (!plane) return
-    for (const agentId of plane.launchedAgents()) {
+    for (const { agentId, since } of plane.launchedAgents()) {
+      // Suspend is the holder's decision (k8s-daemon-pool §4); an ex-holder must not touch its successor's pod.
+      if (this.dutyEnforced() && !this.duties.holdsAgent(agentId)) continue
       // A live host owns the decision above; suspending under it would pull the pod out from
       // beneath a runtime that is merely between turns.
       if (this.hosts.has(agentId)) continue
       if ((this.activeDispatchesByAgent.get(agentId)?.size ?? 0) > 0) continue
       if ([...this.pending.values()].some((p) => p.agentId === agentId)) continue
-      // No host means no `hostStartedAt` floor to fall back on, so an agent that has never served
-      // a turn reads as idle-since-epoch — which is correct here: nothing is running in its pod.
-      const last = this.store.agentLastActivityTs(agentId) ?? 0
+      // Shared-store activity, floored at when this member took the launch: a full window, not epoch-idle.
+      const last = Math.max(this.store.agentLastActivityTs(agentId) ?? 0, since)
       if (now - last <= ttl) continue
       void plane
         .suspendIdle(agentId)
@@ -19778,6 +19938,29 @@ export class Daemon {
         })
         .catch((err) => this.log.warn(`idle: suspending the sandbox for agent "${agentId}" failed: ${formatErr(err)}`))
     }
+  }
+
+  /** Cluster only: take over the sandbox of an agent this member just started serving, from the cluster. */
+  // So a Running pod nobody here launched (a rollout, a moved duty) has a holder that can suspend it.
+  // Behind any teardown still settling for the agent, so a lose-then-regain cannot forget the adoption.
+  private adoptClusterSandbox(agentId: string): void {
+    const plane = this.k8sPlane
+    if (!plane) return
+    const prior = this.dutyHostStops.get(agentId) ?? Promise.resolve()
+    void prior
+      .catch(() => undefined)
+      .then(async () => {
+        if (this.dutyEnforced() && !this.duties.holdsAgent(agentId)) return
+        await plane.adoptAgent(agentId)
+      })
+      .catch((err) =>
+        this.log.warn(`cluster: taking over the sandbox for agent "${agentId}" failed: ${formatErr(err)}`)
+      )
+  }
+
+  /** Cluster only: the sandbox half of "no longer served here"; the claim and volume stay. */
+  private releaseClusterSandbox(agentId: string): void {
+    this.k8sPlane?.releaseAgent(agentId)
   }
 
   /**
@@ -20196,6 +20379,19 @@ export class Daemon {
     }
   }
 
+  /** Take over the durable work of agents this member has just been made responsible for. On a
+   *  shared store starting proves nothing — peers keep serving through a rollout — so the duty
+   *  grant, not process start, is what makes a stranded row this member's to recover. */
+  private reclaimInterruptedWork(agentIds: readonly string[]): void {
+    if (agentIds.length === 0) return
+    const grants = this.store.reclaimWebchatMcpGrants(agentIds, 'session_closed', this.clock.now())
+    if (grants) {
+      this.log.info(`remote MCP: reclaimed ${grants} grant(s) from a former owner`)
+      void this.drainWebchatMcpRevocations()
+    }
+    this.dreamRunner().reclaimDreams(agentIds)
+  }
+
   /** Await the single-flight reconcile and any coalesced trailing pass. Registry
    *  callbacks fire a background reconcile before lifecycle handlers explicitly
    *  await it, so one plain `await reconcile()` can otherwise observe only the
@@ -20531,7 +20727,7 @@ export class Daemon {
     this.serialQueue.clear()
   }
 
-  /** Re-admit durable inbox rows through the serial gate at startup while preserving replay ownership and FIFO. */
+  /** Re-admit durable inbox rows through the serial gate — at startup, on install, or on a duty gain — preserving replay ownership and FIFO. */
   private replayInbox(agentIds?: ReadonlySet<string>): void {
     let rows: InboxRow[]
     try {
@@ -20554,9 +20750,11 @@ export class Daemon {
       // Idempotency: a row already backing a live gate entry (re-admitted this startup, or a
       // duplicate id) is not re-dispatched.
       if (this.liveInboxIds.has(row.id)) continue
-      // Skip (leave the row) for an agent this daemon doesn't own — another owner may hold it.
-      if (!this.agents.has(row.agentId)) {
-        this.log.warn(`durable inbox: skipping replay of ${row.id} — unknown agent "${row.agentId}"`)
+      // Leave the row for its holder: an agent this daemon lacks, or a replica whose duty lives
+      // elsewhere. On a shared store the whole fleet's backlog is here, so that is not an anomaly.
+      if (!this.agents.has(row.agentId) || !this.servesAgent(row.agentId)) {
+        const level = this.dataPlane ? 'debug' : 'warn'
+        this.log[level](`durable inbox: skipping replay of ${row.id} — agent "${row.agentId}" is not served here`)
         continue
       }
       let msg: NormalizedMessage
@@ -20664,13 +20862,15 @@ export class Daemon {
   private replayHookTerminalReports(): void {
     let rows: InboxRow[]
     try {
-      rows = this.store.listInboxBySessionKeyFifo()
+      rows = this.store.listHookTerminalReports(this.clock.now(), this.cfg.daemonId, [...this.agents.keys()])
     } catch (err) {
       this.log.warn(`durable inbox: terminal report read failed: ${formatErr(err)}`)
       this.scheduleHookReportRetry()
       return
     }
-    const pending = rows.filter((row) => row.terminalReport && !this.hookReportInflight.has(row.id))
+    const pending = rows.filter(
+      (row) => row.terminalReport && !this.hookReportInflight.has(row.id) && !this.hookReportForeign.has(row.id)
+    )
     const available = Math.max(0, MAX_HOOK_REPORT_INFLIGHT - this.hookReportInflight.size)
     const batch = pending.slice(0, available)
     let emitted = 0
@@ -20682,7 +20882,10 @@ export class Daemon {
       } catch (err) {
         this.log.warn(`durable inbox: corrupt terminal hook receipt ${row.id}: ${formatErr(err)}`)
         try {
-          this.store.acknowledgeHookInbox(row.id)
+          // Undecodable, so ownership cannot be proven from the body — claim first
+          // and leave a peer's row alone rather than destroying it on their behalf.
+          if (this.claimHookReport(row.id)) this.store.acknowledgeHookInbox(row.id, { ownerId: this.cfg.daemonId })
+          else this.hookReportForeign.add(row.id)
         } catch (cleanupError) {
           this.log.warn(`durable inbox: corrupt receipt cleanup failed for ${row.id}: ${formatErr(cleanupError)}`)
         }
@@ -21414,12 +21617,18 @@ export class Daemon {
       // settlements and cascades); the daemon only enforces the resulting
       // capture gate. Ordering is by the CP's durable revision, so retransmits
       // and out-of-order delivery are safe.
-      applySessionVisibility: (p: SessionVisibilityPush): 'applied' | 'superseded' =>
-        this.store.applyCpCaptureGate(
+      applySessionVisibility: (p: SessionVisibilityPush): 'applied' | 'superseded' => {
+        // A CP too old to name the agent leaves only the runtime-local ACP id: use the
+        // sole local holder, and where there is none leave the gate closed (still ACKed).
+        const agentId = p.agentId ?? this.store.soleAgentForAcpSession(p.sessionId)
+        if (!agentId) return 'superseded'
+        return this.store.applyCpCaptureGate(
+          agentId,
           p.sessionId,
           p.sharedMemoryExcluded ?? p.visibility === 'private',
           p.visibilityRev
         )
+      }
     }
   }
 
@@ -21626,6 +21835,12 @@ export class Daemon {
    * between the reconcile and the tick simply does nothing.
    */
   private onDreamScheduleFire(agentId: string): void {
+    // Stamped before the gates, as a cron fire stamps cron_runs: this moment was SERVICED here (#1031).
+    this.store.setDreamLastRun(
+      agentId,
+      this.clock.now(),
+      scheduleFingerprint(this.dreamDefinition(this.agents.get(agentId) ?? {}))
+    )
     // Lifecycle gates first — a scheduled dream is background work that spawns a
     // runtime host and burns model tokens, so it obeys the same operator stops as
     // any other scheduled trigger. The cron stays REGISTERED throughout: these are
@@ -21681,7 +21896,7 @@ export class Daemon {
       if (cron.origin === 'cp')
         this.cpClient?.emitCronReport({ cronId: cron.id, agentId, firedAt: firedAtIso, ...update })
     }
-    this.store.setCronLastRun(`${agentId}:${cron.id}`, firedAt)
+    this.store.setCronLastRun(`${agentId}:${cron.id}`, firedAt, scheduleFingerprint(this.cronDefinition(cron)))
     // CP-owned crons report the fire, attach the session as soon as it exists,
     // then close the run when the turn ends. Hand-authored crons stay local.
     report()
@@ -21953,6 +22168,7 @@ export class Daemon {
       // may have missed emits while we were disconnected; latest-wins upsert).
       onReady: () => {
         resolveInitialRegistry()
+        this.readiness?.refresh()
         void this.probeRuntimesAndEmit()
         void this.syncOrganizationSuggestions().catch((err) =>
           this.log.warn(`cp: organization suggestion replay failed (${err instanceof Error ? err.name : 'unknown'})`)
@@ -21976,7 +22192,7 @@ export class Daemon {
         for (const a of this.effectiveAgents())
           for (const c of a.crons) {
             if (c.origin !== 'cp') continue
-            const at = this.store.getCronLastRun(`${a.id}:${c.id}`)
+            const at = this.store.cronRun(`${a.id}:${c.id}`)?.lastRunAt
             if (at !== undefined)
               this.cpClient?.emitCronReport({ cronId: c.id, agentId: a.id, firedAt: new Date(at).toISOString() })
           }
@@ -22071,9 +22287,8 @@ export class Daemon {
       },
       (agentId) => this.cpAgents?.orgForAgent(agentId)
     )
-    // Grants recorded by a previous process have no surviving descriptor or
-    // plaintext — queue them for remote revocation before the first connect.
-    const orphaned = this.store.markAllWebchatMcpGrantsRevoking('session_closed', this.clock.now())
+    // Grants this process recorded lose their descriptor and plaintext with it; a peer's are not ours to sweep.
+    const orphaned = this.store.markOwnedWebchatMcpGrantsRevoking('session_closed', this.clock.now())
     if (orphaned) this.log.info(`remote MCP: queued ${orphaned} orphaned grant revocation(s) from previous run`)
     this.cpClient.start()
     this.log.info(`cp: connecting to ${url}…`)
@@ -22196,6 +22411,10 @@ export class Daemon {
         this.runtimeProbedVersions.set(id, entry.version || (this.runtimeProbedVersions.get(id) ?? ''))
       }
       this.applyK8sDeclaredFacts()
+      // The half of readiness only this call can settle: before it the member advertises nothing
+      // and the CP would assign it nothing, so it is not servable however healthy it looks.
+      this.k8sRuntimeProbed = true
+      this.readiness?.refresh()
       this.log.info(
         `runtimes ready (probed): ${table.runtimes.map((entry) => `${entry.id}@${entry.version}`).join(', ') || '(none)'}`
       )
@@ -22217,6 +22436,39 @@ export class Daemon {
           : `runtimes: sandbox probe failed — advertising none (${message})`
       )
     }
+  }
+
+  /**
+   * What a Kubernetes readiness probe reads (#1043) — one predicate, so the HTTP endpoint, the
+   * readiness file, and the tests can never answer differently.
+   */
+  readinessState(): ReadinessState {
+    return readinessState({
+      startupComplete: this.startupComplete,
+      cpRegistered: this.cpClient?.state === 'READY',
+      // No execution plane means no image to interrogate, so a k8s-supervised daemon that runs its
+      // runtimes locally is not held behind a probe it never makes.
+      runtimeProbed: !this.k8sPlane || this.k8sRuntimeProbed,
+      // Both gates: the shutdown latch, and the drain a failed data plane requests an exit behind.
+      draining: this.draining || this.shutdownDraining
+    })
+  }
+
+  /** Start the readiness sinks — under Kubernetes only, since elsewhere the process being up IS
+   *  the signal. Their configuration is environment, not daemon config: the pod spec that declares
+   *  the probe is the same thing that sets the port and path it reads. */
+  private async startReadinessGate(): Promise<void> {
+    const gate = new ReadinessGate({
+      ...readinessSinksFromEnv(process.env, (message) => this.log.warn(message)),
+      state: () => this.readinessState(),
+      log: { info: (message) => this.log.info(message), warn: (message) => this.log.warn(message) }
+    })
+    try {
+      await gate.start()
+    } catch (error) {
+      throw new Error(`daemon startup refused: the readiness endpoint could not listen — ${formatErr(error)}`)
+    }
+    this.readiness = gate
   }
 
   private projectDeclaredRuntimes(
@@ -22249,10 +22501,13 @@ export class Daemon {
    *  that would wipe the CP's learned state until the sweep completes. Rows for
    *  runtimes not in the installed catalog are ignored (kept on disk — the
    *  runtime may only be temporarily unresolved); rows older than 30 days are
-   *  garbage-collected. */
+   *  garbage-collected. The store reads only this member's rows, so a member can
+   *  never boot advertising models a peer's image runs and its own does not. */
   private hydrateRuntimeCatalogCache(): void {
     try {
-      this.store.gcRuntimeCatalog(this.clock.now() - 30 * 24 * 3600_000)
+      // A member's own last-good catalogs keep the 30-day window; a departed member's are
+      // reclaimed after 7 days, long enough that a quiet live peer keeps its cache.
+      this.store.gcRuntimeCatalog(this.clock.now() - 30 * 24 * 3600_000, this.clock.now() - 7 * 24 * 3600_000)
       for (const meta of this.store.listRuntimeCatalogMetas()) {
         if (!this.runtimeCatalog.entries[meta.runtimeId]) continue
         this.rebuildRuntimeCatalog(meta.runtimeId)
@@ -22625,6 +22880,9 @@ export class Daemon {
     // digest says `draining` with zero headroom — sent now rather than at the next tick, so the CP
     // stops granting to this member within one round trip of the SIGTERM.
     this.shutdownDraining = true
+    // Flip readiness with the latch, not on the next sync tick: the endpoints controller has to
+    // stop routing here while the pod keeps running for the whole drain.
+    this.readiness?.refresh()
     this.dutyClaimsSuspended = true
     const drainDeadlineAt = this.clock.now() + this.shutdownDrainBudgetMs()
     const shutdownDrain: ShutdownDutyDrain = {
@@ -22743,6 +23001,8 @@ export class Daemon {
     // would cut in-flight turns and closing it before host teardown would leave `AcpHost.stop()`
     // unable to send its ACP close — a sandbox process still running, and reconnecting.
     await this.k8sPlane?.stop().catch(() => undefined)
+    await this.readiness?.stop().catch(() => undefined)
+    this.readiness = undefined
     setWorkspaceGitRunnerResolver(undefined)
     setWorkspacePathClearer(undefined)
     setSandboxWorkspaceMode(false)

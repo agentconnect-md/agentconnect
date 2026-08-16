@@ -3,10 +3,19 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { LocalStore, sessionKey } from '../src/store/local-store.js'
+import { LocalStore, sessionKey, type StoreDatabase } from '../src/store/local-store.js'
 
 function store(): LocalStore {
   return new LocalStore(join(mkdtempSync(join(tmpdir(), 'ac-db-')), 'local.sqlite'))
+}
+
+/** Two pool members over ONE database — what the shared Postgres schema is during a rollout. */
+function sharedMembers(first: string, second: string): [LocalStore, LocalStore] {
+  const database = new DatabaseSync(':memory:') as unknown as StoreDatabase
+  return [
+    new LocalStore({ database, shared: true, ownerId: first }),
+    new LocalStore({ database, shared: true, ownerId: second })
+  ]
 }
 
 describe('LocalStore schema versioning', () => {
@@ -46,20 +55,112 @@ describe('LocalStore schema versioning', () => {
     old.exec('DROP INDEX session_metadata_outbox_attempt')
     old.exec('ALTER TABLE session_metadata_outbox DROP COLUMN failedAttempts')
     old.exec('ALTER TABLE session_metadata_outbox DROP COLUMN nextAttemptAt')
+    old.exec('ALTER TABLE dreams DROP COLUMN ownerId')
+    old.exec('ALTER TABLE webchat_mcp_grant_ledger DROP COLUMN ownerId')
+    old.exec('ALTER TABLE inbox DROP COLUMN reportOwnerId')
+    old.exec('ALTER TABLE inbox DROP COLUMN reportClaimedAt')
+    old.exec('ALTER TABLE cron_runs DROP COLUMN definition')
     old.exec('PRAGMA user_version = 1')
     old.close()
 
     new LocalStore(path).close()
 
     const upgraded = new DatabaseSync(path)
-    const columns = upgraded.prepare('PRAGMA table_info(permission_requests)').all() as { name: string }[]
-    const outboxColumns = upgraded.prepare('PRAGMA table_info(session_metadata_outbox)').all() as { name: string }[]
+    const columnsOf = (table: string): string[] =>
+      (upgraded.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((column) => column.name)
+    const columns = columnsOf('permission_requests')
+    const outboxColumns = columnsOf('session_metadata_outbox')
+    const dreamColumns = columnsOf('dreams')
+    const grantColumns = columnsOf('webchat_mcp_grant_ledger')
+    const inboxColumns = columnsOf('inbox')
+    const cronColumns = columnsOf('cron_runs')
     upgraded.close()
-    expect(columns.map((column) => column.name)).toContain('ownerId')
-    expect(outboxColumns.map((column) => column.name)).toEqual(
-      expect.arrayContaining(['failedAttempts', 'nextAttemptAt'])
-    )
-    expect(userVersion(path)).toBe(3)
+    expect(columns).toContain('ownerId')
+    expect(outboxColumns).toEqual(expect.arrayContaining(['failedAttempts', 'nextAttemptAt']))
+    // Recovery ownership: a pool member must be able to tell its own rows from a peer's.
+    expect(dreamColumns).toContain('ownerId')
+    expect(grantColumns).toContain('ownerId')
+    expect(inboxColumns).toEqual(expect.arrayContaining(['reportOwnerId', 'reportClaimedAt']))
+    // A stamp is only comparable to a fire of the same schedule definition (#1031).
+    expect(cronColumns).toContain('definition')
+    expect(userVersion(path)).toBe(8)
+  })
+
+  it('re-keys the capture gate by agent when upgrading a v5 store', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v5-')), 'local.sqlite')
+    new LocalStore(path).close()
+    const old = new DatabaseSync(path)
+    old.exec('DROP TABLE session_gates')
+    old.exec(`CREATE TABLE session_gates (
+      acpSessionId TEXT PRIMARY KEY, localExcluded INTEGER NOT NULL DEFAULT 1,
+      cpPrivate INTEGER, cpRev INTEGER NOT NULL DEFAULT 0, updatedAt INTEGER
+    )`)
+    old.exec(`INSERT INTO sessions (key, agentId, acpSessionId) VALUES
+      ('a', 'bot-a', 'acp-1'), ('b', 'bot-b', 'acp-2'), ('c', 'bot-c', 'acp-2')`)
+    old.exec(`INSERT INTO session_gates (acpSessionId, localExcluded, cpPrivate, cpRev) VALUES
+      ('acp-1', 1, 0, 4), ('acp-2', 0, 0, 7), ('acp-orphan', 0, 0, 1)`)
+    old.exec('ALTER TABLE cron_runs DROP COLUMN definition')
+    old.exec('PRAGMA user_version = 5')
+    old.close()
+
+    const upgraded = new LocalStore(path)
+    // Attributable: the CP verdict follows the one agent that held the id.
+    expect(upgraded.isCaptureExcluded('bot-a', 'acp-1')).toBe(false)
+    // Held by two agents: the stored verdict was never attributable to either, so
+    // both start from the fail-closed state and wait for their own CP push.
+    expect(upgraded.isCaptureExcluded('bot-b', 'acp-2')).toBe(true)
+    expect(upgraded.isCaptureExcluded('bot-c', 'acp-2')).toBe(true)
+    expect(upgraded.applyCpCaptureGate('bot-b', 'acp-2', false, 1)).toBe('applied')
+    expect(upgraded.isCaptureExcluded('bot-b', 'acp-2')).toBe(false)
+    expect(upgraded.isCaptureExcluded('bot-c', 'acp-2')).toBe(true)
+    upgraded.close()
+
+    expect(userVersion(path)).toBe(8)
+  })
+
+  it('re-keys the runtime catalog cache on its owning member when upgrading a v7 store', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v7-')), 'local.sqlite')
+    new LocalStore(path).close()
+    const old = new DatabaseSync(path)
+    old.exec(`
+      DROP TABLE runtime_catalog_meta;
+      DROP TABLE runtime_model_catalog;
+      CREATE TABLE runtime_catalog_meta (
+        runtimeId TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, source TEXT NOT NULL, defaultModel TEXT,
+        permissionModes TEXT, defaultPermissionMode TEXT, complete INTEGER NOT NULL DEFAULT 0,
+        modelsHash TEXT, observedAt INTEGER NOT NULL
+      );
+      CREATE TABLE runtime_model_catalog (
+        runtimeId TEXT NOT NULL, modelId TEXT NOT NULL, fingerprint TEXT NOT NULL,
+        capsJson TEXT NOT NULL, observedAt INTEGER NOT NULL, PRIMARY KEY (runtimeId, modelId)
+      );
+      INSERT INTO runtime_catalog_meta (runtimeId, fingerprint, source, complete, observedAt)
+        VALUES ('claude', 'fp-1', 'acp', 1, 100);
+      INSERT INTO runtime_model_catalog (runtimeId, modelId, fingerprint, capsJson, observedAt)
+        VALUES ('claude', 'opus', 'fp-1', '{}', 100);
+    `)
+    old.exec('PRAGMA user_version = 7')
+    old.close()
+
+    const upgraded = new LocalStore(path)
+    // Pre-upgrade rows name no member, so no member can honestly claim them; the next
+    // probe refills the cache this one owns.
+    expect(upgraded.getRuntimeCatalogMeta('claude')).toBeUndefined()
+    expect(upgraded.listRuntimeModelCaps()).toEqual([])
+    upgraded.close()
+
+    const after = new DatabaseSync(path)
+    const metaColumns = after.prepare('PRAGMA table_info(runtime_catalog_meta)').all() as { name: string; pk: number }[]
+    const capColumns = after.prepare('PRAGMA table_info(runtime_model_catalog)').all() as { name: string; pk: number }[]
+    after.close()
+    const primaryKey = (columns: { name: string; pk: number }[]): string[] =>
+      columns
+        .filter((column) => column.pk > 0)
+        .sort((a, b) => a.pk - b.pk)
+        .map((column) => column.name)
+    expect(primaryKey(metaColumns)).toEqual(['ownerId', 'runtimeId'])
+    expect(primaryKey(capColumns)).toEqual(['ownerId', 'runtimeId', 'modelId'])
+    expect(userVersion(path)).toBe(8)
   })
 
   it('refuses a store written by a newer daemon WITHOUT touching it first', () => {
@@ -268,14 +369,47 @@ describe('LocalStore', () => {
     s.close()
   })
 
-  it('round-trips per-cron last-run stamps (latest-wins)', () => {
+  it('round-trips per-cron last-run stamps with their definition (latest-wins)', () => {
     const s = store()
-    expect(s.getCronLastRun('bot-a:daily')).toBeUndefined()
-    s.setCronLastRun('bot-a:daily', 1000)
-    s.setCronLastRun('bot-a:daily', 2000)
-    s.setCronLastRun('bot-b:weekly', 1500)
-    expect(s.getCronLastRun('bot-a:daily')).toBe(2000)
-    expect(s.getCronLastRun('bot-b:weekly')).toBe(1500)
+    expect(s.cronRun('bot-a:daily')).toBeUndefined()
+    s.setCronLastRun('bot-a:daily', 1000, 'def-1')
+    s.setCronLastRun('bot-a:daily', 2000, 'def-2')
+    s.setCronLastRun('bot-b:weekly', 1500, 'def-1')
+    expect(s.cronRun('bot-a:daily')).toEqual({ lastRunAt: 2000, definition: 'def-2' })
+    expect(s.cronRun('bot-b:weekly')).toEqual({ lastRunAt: 1500, definition: 'def-1' })
+    s.close()
+  })
+
+  it('claims a catch-up only for the definition the stamp was written under', () => {
+    const s = store()
+    s.setCronLastRun('bot-a:daily', 1000, 'def-1')
+    s.setDreamLastRun('bot-a', 1000, 'def-1')
+    // A definition that has moved on cannot claim the moment the old one left behind.
+    expect(s.claimCronCatchUp('bot-a:daily', 2000, 3000, 'def-2')).toBe(false)
+    expect(s.claimDreamCatchUp('bot-a', 2000, 3000, 'def-2')).toBe(false)
+    expect(s.cronRun('bot-a:daily')).toEqual({ lastRunAt: 1000, definition: 'def-1' })
+    // The same definition claims once; the loser of the race sees a stamp past the occurrence.
+    expect(s.claimCronCatchUp('bot-a:daily', 2000, 3000, 'def-1')).toBe(true)
+    expect(s.claimCronCatchUp('bot-a:daily', 2000, 3000, 'def-1')).toBe(false)
+    expect(s.claimDreamCatchUp('bot-a', 2000, 3000, 'def-1')).toBe(true)
+    expect(s.claimDreamCatchUp('bot-a', 2000, 3000, 'def-1')).toBe(false)
+    // Never claimed for a schedule that has never stamped a run.
+    expect(s.claimCronCatchUp('bot-b:weekly', 2000, 3000, 'def-1')).toBe(false)
+    s.close()
+  })
+
+  it("enumerates and drops one agent's stamp keys without matching a neighbour", () => {
+    const s = store()
+    s.setCronLastRun('bot-a:daily', 1000, 'def-1')
+    s.setCronLastRun('bot-a:weekly', 1000, 'def-1')
+    // A prefix match must be exact: an agent id is not a LIKE pattern, and a longer id that merely
+    // starts with this one is a different agent.
+    s.setCronLastRun('bot-ab:daily', 1000, 'def-1')
+    s.setCronLastRun('bot%:daily', 1000, 'def-1')
+    expect(s.cronRunKeys('bot-a').sort()).toEqual(['bot-a:daily', 'bot-a:weekly'])
+    expect(s.cronRunKeys('bot%')).toEqual(['bot%:daily'])
+    s.deleteCronRun('bot-a:weekly')
+    expect(s.cronRunKeys('bot-a')).toEqual(['bot-a:daily'])
     s.close()
   })
 
@@ -997,7 +1131,7 @@ describe('LocalStore session retention GC (#485)', () => {
     const s = store()
     seed(s, 'gone', 'closed', 100)
     s.setSessionMuted('gone', true)
-    s.setLocalCaptureGate('acp-gone', true)
+    s.setLocalCaptureGate('bot-a', 'acp-gone', true)
     s.appendInbox({ id: 'm1', sessionKey: 'gone', agentId: 'bot-a', msg: '{}', enqueuedAt: '0000000001' })
     // An unacknowledged terminal hook report is an outbox toward the CP and must
     // survive the session delete (same rule as removeInboxByAgentId).
@@ -1053,7 +1187,7 @@ describe('LocalStore session retention GC (#485)', () => {
     s.close()
   })
 
-  it('deleteSession keeps a capture gate another agent still references through the same ACP id', () => {
+  it('deleteSession drops only the deleted agent gate for a shared ACP id', () => {
     const s = store()
     // ACP session ids are runtime-local: bot-a and bot-b can both hold `acp-shared`.
     const put = (key: string, agentId: string) =>
@@ -1070,16 +1204,16 @@ describe('LocalStore session retention GC (#485)', () => {
       })
     put('a', 'bot-a')
     put('b', 'bot-b')
-    s.setLocalCaptureGate('acp-shared', false) // capture open (not excluded)
-    expect(s.isCaptureExcluded('acp-shared')).toBe(false)
+    s.setLocalCaptureGate('bot-a', 'acp-shared', false) // capture open (not excluded)
+    s.setLocalCaptureGate('bot-b', 'acp-shared', false)
 
-    // bot-a's session expires first: bot-b still references the id — gate survives.
+    // bot-a's session expires: its own gate goes, bot-b's is untouched.
     expect(s.deleteSession('a')).toBe(true)
-    expect(s.isCaptureExcluded('acp-shared')).toBe(false)
+    expect(s.isCaptureExcluded('bot-a', 'acp-shared')).toBe(true) // no row ⇒ excluded-by-default
+    expect(s.isCaptureExcluded('bot-b', 'acp-shared')).toBe(false)
 
-    // The last referencing session goes: the gate is finally collected too.
     expect(s.deleteSession('b')).toBe(true)
-    expect(s.isCaptureExcluded('acp-shared')).toBe(true) // no row ⇒ excluded-by-default
+    expect(s.isCaptureExcluded('bot-b', 'acp-shared')).toBe(true)
     s.close()
   })
 
@@ -1285,7 +1419,94 @@ describe('LocalStore runtime model-catalog cache (runtime-model-catalog.md §4)'
     expect(s.getRuntimeCatalogMeta('old-rt')).toBeUndefined()
     expect(s.getRuntimeCatalogMeta('fresh-rt')).toBeDefined()
     expect(s.listRuntimeModelCaps().map((c) => c.runtimeId)).toEqual(['fresh-rt'])
+    // A single daemon owns every row, so the departed-member window never reaches them.
+    s.gcRuntimeCatalog(500, 5000)
+    expect(s.getRuntimeCatalogMeta('fresh-rt')).toBeDefined()
+    expect(s.listRuntimeModelCaps().map((c) => c.runtimeId)).toEqual(['fresh-rt'])
     s.close()
+  })
+
+  it('gcRuntimeCatalog keeps a refreshed catalog whole, models discovery found included', () => {
+    // Staleness is per catalog, not per row: a phase-1 refresh re-stamps the meta row and the
+    // seed model only, so sweeping row by row would strip the older model rows while leaving
+    // complete/modelsHash standing — a closed gate over a permanently partial matrix.
+    const s = store()
+    s.recordRuntimeCatalogMeta(meta('claude', 'fp-1', 100))
+    s.upsertRuntimeModelCap(cap('claude', 'opus', 100))
+    s.upsertRuntimeModelCap(cap('claude', 'sonnet', 100))
+    s.markRuntimeCatalogComplete('claude', 'fp-1', 'hash-1', 100)
+    s.recordRuntimeCatalogMeta(meta('claude', 'fp-1', 900))
+    s.upsertRuntimeModelCap(cap('claude', 'opus', 900))
+
+    s.gcRuntimeCatalog(500)
+    expect(s.getRuntimeCatalogMeta('claude')).toMatchObject({ complete: true, modelsHash: 'hash-1' })
+    expect(s.listRuntimeModelCaps('claude').map((c) => c.modelId)).toEqual(['opus', 'sonnet'])
+    s.close()
+  })
+
+  it('keeps two members of one shared store on independent catalogs', () => {
+    // The rollout case: two image generations, one Postgres schema. Each member reads and
+    // writes only its own rows, so neither sees the other's fingerprint as a change.
+    const [a, b] = sharedMembers('member-a', 'member-b')
+    a.recordRuntimeCatalogMeta(meta('claude', 'fp-a'))
+    a.upsertRuntimeModelCap(cap('claude', 'opus'))
+    a.markRuntimeCatalogComplete('claude', 'fp-a', 'hash-a', 200)
+
+    b.recordRuntimeCatalogMeta(meta('claude', 'fp-b'))
+    b.upsertRuntimeModelCap(cap('claude', 'haiku'))
+    b.upsertRuntimeModelCap(cap('claude', 'sonnet'))
+    b.pruneRuntimeModelCaps('claude', ['haiku'])
+
+    // a's gate stays closed on its own generation; the prune-on-success stayed inside b.
+    expect(a.getRuntimeCatalogMeta('claude')).toMatchObject({
+      fingerprint: 'fp-a',
+      complete: true,
+      modelsHash: 'hash-a',
+      observedAt: 200
+    })
+    expect(b.getRuntimeCatalogMeta('claude')).toMatchObject({ fingerprint: 'fp-b', complete: false })
+    expect(a.listRuntimeModelCaps('claude').map((c) => c.modelId)).toEqual(['opus'])
+    expect(b.listRuntimeModelCaps('claude').map((c) => c.modelId)).toEqual(['haiku'])
+    // Hydration too: a member boots on its own catalog, never a peer image's.
+    expect(a.listRuntimeCatalogMetas().map((m) => m.fingerprint)).toEqual(['fp-a'])
+    expect(b.listRuntimeModelCaps().map((c) => c.modelId)).toEqual(['haiku'])
+    // And a completion from the other member cannot close a's gate on a's fingerprint.
+    b.markRuntimeCatalogComplete('claude', 'fp-a', 'hash-a', 300)
+    expect(b.getRuntimeCatalogMeta('claude')?.complete).toBe(false)
+    a.close()
+  })
+
+  it('gcRuntimeCatalog reclaims a departed member at the shorter cutoff', () => {
+    const [live, gone] = sharedMembers('member-live', 'member-gone')
+    live.recordRuntimeCatalogMeta(meta('claude', 'fp-live', 100))
+    live.upsertRuntimeModelCap(cap('claude', 'opus', 100))
+    gone.recordRuntimeCatalogMeta(meta('claude', 'fp-gone', 100))
+    gone.upsertRuntimeModelCap(cap('claude', 'sonnet', 100))
+
+    live.gcRuntimeCatalog(50, 500)
+    expect(live.getRuntimeCatalogMeta('claude')).toMatchObject({ fingerprint: 'fp-live' })
+    expect(live.listRuntimeModelCaps('claude').map((c) => c.modelId)).toEqual(['opus'])
+    expect(gone.getRuntimeCatalogMeta('claude')).toBeUndefined()
+    expect(gone.listRuntimeModelCaps()).toEqual([])
+    live.close()
+  })
+
+  it('a peer sweep cannot strip a live member catalog down the middle', () => {
+    // The live member last ran a full discovery long ago and has only been refreshing phase-1
+    // since. Its meta row is fresh, its older model rows are not — and its gate stays closed on
+    // an unchanged fingerprint, so anything a peer deletes here is never rediscovered.
+    const [live, peer] = sharedMembers('member-live', 'member-peer')
+    live.recordRuntimeCatalogMeta(meta('claude', 'fp-live', 100))
+    live.upsertRuntimeModelCap(cap('claude', 'opus', 100))
+    live.upsertRuntimeModelCap(cap('claude', 'sonnet', 100))
+    live.markRuntimeCatalogComplete('claude', 'fp-live', 'hash-live', 100)
+    live.recordRuntimeCatalogMeta(meta('claude', 'fp-live', 900))
+    live.upsertRuntimeModelCap(cap('claude', 'opus', 900))
+
+    peer.gcRuntimeCatalog(50, 500)
+    expect(live.getRuntimeCatalogMeta('claude')).toMatchObject({ complete: true, modelsHash: 'hash-live' })
+    expect(live.listRuntimeModelCaps('claude').map((c) => c.modelId)).toEqual(['opus', 'sonnet'])
+    live.close()
   })
 
   it('finds a pending skill proposal behind many skill-bearing dreams', () => {
@@ -1364,11 +1585,11 @@ describe('LocalStore webchat MCP grant ledger', () => {
     s.close()
   })
 
-  it('marks all leftover active grants revoking on the startup orphan sweep', () => {
+  it('marks the leftover active grants of an exclusively owned store revoking on the startup sweep', () => {
     const s = store()
     s.recordWebchatMcpGrant({ ...tuple, now: 10 })
     s.recordWebchatMcpGrant({ ...tuple, conversationId: 'conv-2', now: 10 })
-    expect(s.markAllWebchatMcpGrantsRevoking('session_closed', 50)).toBe(2)
+    expect(s.markOwnedWebchatMcpGrantsRevoking('session_closed', 50)).toBe(2)
     const due = s.listDueWebchatMcpRevocations(50)
     expect(due.map((r) => r.conversationId).sort()).toEqual(['conv-1', 'conv-2'])
     expect(due.every((r) => r.reason === 'session_closed')).toBe(true)
@@ -1418,6 +1639,104 @@ describe('LocalStore webchat MCP grant ledger', () => {
     expect(JSON.parse(row.attachmentsJson ?? 'null')).toEqual([
       { name: 'shot.png', mimeType: 'image/png', data: 'aW1n' }
     ])
+    s.close()
+  })
+})
+
+describe('LocalStore recovery scope on a shared store (daemon pool)', () => {
+  // One store, many members. A member's own id is its PROCESS incarnation, so a starting
+  // member owns nothing yet — which is exactly why boot must recover nothing here.
+  const tuple = {
+    conversationId: 'conv-1',
+    agentId: 'agent-1',
+    authorityId: 'auth-1',
+    authorityGeneration: 3
+  }
+  const openDream = (dreamId: string, agentId = 'agent-1') => ({
+    dreamId,
+    agentId,
+    status: 'running' as const,
+    trigger: 'manual' as const,
+    sessionIds: [],
+    snapshotDigest: 'sha256:x',
+    createdAt: '2026-01-01T00:00:00.000Z'
+  })
+
+  const sharedPath = (): string => join(mkdtempSync(join(tmpdir(), 'ac-pool-')), 'shared.sqlite')
+  const member = (path: string, ownerId: string): LocalStore =>
+    new LocalStore({ database: new DatabaseSync(path), shared: true, ownerId })
+
+  it("a starting member leaves a peer's live grant and running dream untouched", () => {
+    const path = sharedPath()
+    const a = member(path, 'member-a')
+    a.recordWebchatMcpGrant({ ...tuple, now: 10 })
+    a.insertDream(openDream('drm-a'))
+
+    // A rolling update starts a new Pod: a new owner, while A keeps serving.
+    const b = member(path, 'member-b')
+    expect(b.markOwnedWebchatMcpGrantsRevoking('session_closed', 50)).toBe(0)
+    expect(b.openDreams()).toEqual([])
+    expect(b.listDueWebchatMcpRevocations(10_000)).toEqual([])
+    expect(a.listDueWebchatMcpRevocations(10_000)).toEqual([])
+    expect(a.getDream('agent-1', 'drm-a')?.status).toBe('running')
+    a.close()
+    b.close()
+  })
+
+  it("reclaims a former owner's rows only for the agents this member was handed", () => {
+    const path = sharedPath()
+    const a = member(path, 'member-a')
+    a.recordWebchatMcpGrant({ ...tuple, now: 10 })
+    a.insertDream(openDream('drm-a'))
+    const b = member(path, 'member-b')
+
+    expect(b.reclaimWebchatMcpGrants(['other-agent'], 'session_closed', 60)).toBe(0)
+    expect(b.strandedDreams(['other-agent'])).toEqual([])
+
+    expect(b.reclaimWebchatMcpGrants(['agent-1'], 'session_closed', 60)).toBe(1)
+    expect(b.listDueWebchatMcpRevocations(60)[0]).toMatchObject({
+      conversationId: 'conv-1',
+      state: 'revoking',
+      ownerId: 'member-b'
+    })
+    // The queue moved with the duty: its former owner no longer drains it.
+    expect(a.listDueWebchatMcpRevocations(10_000)).toEqual([])
+
+    const stranded = b.strandedDreams(['agent-1'])
+    expect(stranded.map((dream) => dream.dreamId)).toEqual(['drm-a'])
+    const failed = { ...stranded[0]!, status: 'failed' as const, endedAt: '2026-01-01T00:01:00.000Z' }
+    expect(b.failOpenDream(failed)).toBe(true)
+    // Idempotent: the row is terminal now, so a replayed recovery writes nothing.
+    expect(b.failOpenDream(failed)).toBe(false)
+    expect(b.strandedDreams(['agent-1'])).toEqual([])
+    a.close()
+    b.close()
+  })
+
+  it("the recovery CAS keeps the outcome the dream's own runner recorded", () => {
+    const path = sharedPath()
+    const a = member(path, 'member-a')
+    a.insertDream(openDream('drm-a'))
+    const b = member(path, 'member-b')
+    const stranded = b.strandedDreams(['agent-1'])[0]!
+
+    // A finishes between B's read and B's write — the completion must survive.
+    a.updateDream({ ...openDream('drm-a'), status: 'completed', endedAt: '2026-01-01T00:00:30.000Z' })
+    expect(b.failOpenDream({ ...stranded, status: 'failed', endedAt: '2026-01-01T00:01:00.000Z' })).toBe(false)
+    expect(a.getDream('agent-1', 'drm-a')?.status).toBe('completed')
+    a.close()
+    b.close()
+  })
+
+  it('an exclusively owned store still recovers everything it left behind at boot', () => {
+    const s = store()
+    s.recordWebchatMcpGrant({ ...tuple, now: 10 })
+    s.insertDream(openDream('drm-a'))
+    expect(s.markOwnedWebchatMcpGrantsRevoking('session_closed', 50)).toBe(1)
+    expect(s.openDreams().map((dream) => dream.dreamId)).toEqual(['drm-a'])
+    // There is no duty axis on a single-daemon store — boot already covered it.
+    expect(s.strandedDreams(['agent-1'])).toEqual([])
+    expect(s.reclaimWebchatMcpGrants(['agent-1'], 'session_closed', 60)).toBe(0)
     s.close()
   })
 })

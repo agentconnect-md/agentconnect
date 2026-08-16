@@ -592,4 +592,26 @@ describe('the rendezvous claim ordering', () => {
     expect(registries(daemon).agents.has(AGENT)).toBe(false)
     await daemon.stop()
   })
+
+  it("reclaims a former owner's interrupted work for the agents the grant GAINED (#1033)", async () => {
+    // Boot cannot be the trigger on a pool: peers keep serving through a rollout. The duty
+    // grant is what makes a stranded grant ledger row or dream this member's to recover.
+    const daemon = await boot({ fetchDutyAgent: vi.fn(async () => ({ bundle: bundle() })) })
+    const grants = vi.spyOn((daemon as any).store, 'reclaimWebchatMcpGrants')
+    const dreams = vi.spyOn((daemon as any).dreamRunner(), 'reclaimDreams')
+
+    await (daemon as any).admitDutyGrants([grant()])
+
+    expect(duties(daemon).holdsAgent(AGENT)).toBe(true)
+    expect(grants).toHaveBeenCalledWith([AGENT], 'session_closed', expect.any(Number))
+    expect(dreams).toHaveBeenCalledWith([AGENT])
+
+    // A re-grant of a group already held gains no agent, so it reclaims nothing.
+    grants.mockClear()
+    dreams.mockClear()
+    await (daemon as any).admitDutyGrants([grant()])
+    expect(grants).not.toHaveBeenCalled()
+    expect(dreams).not.toHaveBeenCalled()
+    await daemon.stop()
+  })
 })

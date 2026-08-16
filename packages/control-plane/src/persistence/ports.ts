@@ -41,7 +41,7 @@ import type {
 } from '../domain/ids.js'
 import type { SessionKey } from '../domain/sessionKey.js'
 import type { DutyMemberKey, DutyReconcilePlan, DutyEdge, AgentSeed } from '../domain/duty.js'
-import type { PlacementKind, PlacementTarget } from '../domain/placement.js'
+import type { PlacementKind, PlacementRef, PlacementTarget } from '../domain/placement.js'
 import type {
   OrganizationEnvironmentAudience,
   OrganizationEnvironmentKind,
@@ -1094,6 +1094,7 @@ export interface SessionVisibilityChange {
 /** One entry of the §5.1 register-time gate snapshot. */
 export interface SessionVisibilityState {
   orgId: OrgId
+  agentId: AgentId
   sessionId: SessionId
   visibility: SessionVisibility
   sharedMemoryExcluded: boolean
@@ -1156,6 +1157,9 @@ export interface SessionMetaRecord {
   permissionMode: string | null
   outputMode: string | null
   daemonId: DaemonId | null
+  /** The member set whose shared store holds this session's content; null ⇒ the recorder kept a
+   *  private one. Session-bound provenance that outlives `daemonId` (domain/session-content.ts). */
+  contentSetId: string | null
   workspaceIsolation: 'shared' | 'session' | null
   activityState: ActivityState
   // ── session visibility (session-visibility.md §3) ──
@@ -1504,7 +1508,9 @@ export interface EstablishWebchatMcpDelegationInput {
   userId: string
   orgId: OrgId
   agentId: AgentId
-  daemonId: DaemonId
+  /** The placement the caller resolved its live authority against, re-checked under the agent row
+   *  lock so a concurrent move cannot slip a delegation past the revocation that move performs. */
+  expectedPlacement: PlacementRef
   now: Date
   expiresAt: Date
 }
@@ -1516,7 +1522,6 @@ export interface WebchatMcpDelegationRecord {
   userId: string
   orgId: string
   agentId: string
-  daemonId: string
   createdAt: Date
   expiresAt: Date
   revokedAt: Date | null
@@ -1530,7 +1535,6 @@ export interface RevokeWebchatMcpDelegationInput {
   userId: string
   orgId: OrgId
   agentId: AgentId
-  daemonId: DaemonId
   revokedAt: Date
   reason: string
 }
@@ -1545,9 +1549,9 @@ export interface WebchatMcpDelegationRepo {
    * Serialize on the durable conversation owner. Reconnects reuse matching,
    * unexpired authority without extending it. An earlier requested expiry
    * atomically shortens the reused row without rotating its generation.
-   * An already-expired row or a placement change rotates its generation.
-   * A foreign/unknown conversation binding, wrong daemon, or unplaced agent
-   * returns null without mutating the current generation.
+   * An already-expired row rotates its generation, as does a placement change,
+   * which revokes the live row where it lands. A foreign/unknown conversation
+   * binding or a moved placement returns null without mutating the current generation.
    */
   establish(input: EstablishWebchatMcpDelegationInput): Promise<WebchatMcpDelegationRecord | null>
   /** Conditional, generation-fenced revocation. An already-revoked exact match is idempotently true. */
@@ -1585,7 +1589,6 @@ export interface IssueWebchatMcpGrantInput {
   authorityGeneration: number
   conversationId: string
   descriptorInstanceId: string
-  authenticatedDaemonId: string
   tokenHash: string
   now: Date
   pendingExpiresAt: Date
@@ -1599,7 +1602,6 @@ export interface AcceptWebchatMcpGrantInput {
   conversationId: string
   descriptorInstanceId: string
   grantRevision: number
-  authenticatedDaemonId: string
   now: Date
 }
 
@@ -1607,7 +1609,6 @@ export interface RevokeWebchatMcpGrantsInput {
   authorityId: string
   authorityGeneration: number
   conversationId: string
-  authenticatedDaemonId: string
   now: Date
   reason: string
 }
@@ -2475,8 +2476,8 @@ export interface HookRepo {
     input: HookReviewAttemptInput
   ): Promise<HookReviewAttemptResult>
   recordReviewResult(hookId: HookId, reportingDaemonId: DaemonId, input: HookReviewResultInput): Promise<boolean>
-  /** Apply a daemon `hook/report` completion. Scoped: the hook's owning agent
-   *  must be placed on the REPORTING daemon. Last-writer-wins; a completion with
+  /** Apply a daemon `hook/report` completion. Scoped: the REPORTING daemon must be the run's
+   *  accepted dispatch target or serve its agent now. Last-writer-wins; a completion with
    *  no prior delivery row (rc/run-report lost) still creates one, with
    *  `startedAt` estimated as `at − durationMs`. Returns acceptance. */
   recordReport(hookId: HookId, reportingDaemonId: DaemonId, input: HookReportInput, at: Date): Promise<boolean>
@@ -5027,6 +5028,10 @@ export interface MemberSetRepo {
   setIdOf(daemonId: DaemonId): Promise<string | null>
   /** The set's members, sorted. The read path for "who could serve a `set`-placed agent". */
   memberIdsOf(setId: string): Promise<string[]>
+  /** The set's members, sorted, but ONLY for a set whose members share one content store — the
+   *  org-less install-wide pool. An org set answers `[]`: its machines may keep private stores, so
+   *  none of them can stand in for another's transcripts (domain/session-content.ts). */
+  sharedStoreMemberIdsOf(setId: string): Promise<string[]>
   /** Record a membership under the set's tenancy invariant; throws MemberSetTenancyMismatch. */
   enroll(setId: string, daemonId: DaemonId): Promise<void>
 }

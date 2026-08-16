@@ -188,6 +188,42 @@ describe('SessionRepo.recordMilestone — milestone-only (real Postgres)', () =>
     expect(row?.daemonId).toBe(DAEMON)
   })
 
+  // The recorder's row is deleted 15 minutes after a pool Pod goes silent and takes `daemonId`
+  // with it, so where the bodies went has to be recorded beside it, at the one moment it is
+  // knowable (domain/session-content.ts).
+  it('stamps the shared content store of a pool recorder, and nothing for a private one', async () => {
+    await fixtures()
+    const setId = (await prisma.memberSet.findFirstOrThrow({ where: { orgId: null } })).id
+    const POOL_MEMBER = 'd3333333-3333-4333-8333-333333333333'
+    await prisma.daemon.create({ data: { id: POOL_MEMBER, orgId: null, sessionEpoch: 1n, status: 'ready' } })
+    await prisma.memberSetMember.create({ data: { setId, daemonId: POOL_MEMBER } })
+    const repo = new PgSessionRepo(prisma)
+
+    await repo.recordMilestone(ev('start', { daemonId: DaemonId(POOL_MEMBER) }))
+    expect((await prisma.sessionMeta.findUnique({ where: { id: SESSION } }))?.contentSetId).toBe(setId)
+
+    // DAEMON is org-scoped and in no set — its store is its own, so no peer may read it.
+    await prisma.sessionMeta.delete({ where: { id: SESSION } })
+    await repo.recordMilestone(ev('start', { daemonId: DaemonId(DAEMON) }))
+    expect((await prisma.sessionMeta.findUnique({ where: { id: SESSION } }))?.contentSetId).toBeNull()
+  })
+
+  it('never lets a later reporter claim the content store of a session it did not record', async () => {
+    await fixtures()
+    const setId = (await prisma.memberSet.findFirstOrThrow({ where: { orgId: null } })).id
+    const POOL_MEMBER = 'd4444444-4444-4444-8444-444444444444'
+    await prisma.daemon.create({ data: { id: POOL_MEMBER, orgId: null, sessionEpoch: 1n, status: 'ready' } })
+    await prisma.memberSetMember.create({ data: { setId, daemonId: POOL_MEMBER } })
+    const repo = new PgSessionRepo(prisma)
+
+    await repo.recordMilestone(ev('start', { daemonId: DaemonId(DAEMON) }))
+    await repo.recordMilestone(ev('end', { daemonId: DaemonId(POOL_MEMBER) }))
+
+    const row = await prisma.sessionMeta.findUnique({ where: { id: SESSION } })
+    expect(row?.daemonId).toBe(DAEMON)
+    expect(row?.contentSetId).toBeNull()
+  })
+
   it('keeps the recorded execution config when a later milestone omits it', async () => {
     await fixtures()
     const repo = new PgSessionRepo(prisma)

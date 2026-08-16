@@ -74,6 +74,7 @@ function toRecord(s: SessionMeta): SessionMetaRecord {
     permissionMode: s.permissionMode,
     outputMode: s.outputMode,
     daemonId: s.daemonId ? DaemonId(s.daemonId) : null,
+    contentSetId: s.contentSetId,
     workspaceIsolation: s.workspaceIsolation as 'shared' | 'session' | null,
     activityState: s.activityState as ActivityState,
     orgId: OrgId(s.orgId),
@@ -782,7 +783,7 @@ export class PgSessionRepo implements SessionRepo {
         "thread", "tenantScope", "phase", "link", "summary", "title", "status",
         "lastActivityAt", "triggeredBy", "channelName", "triggeredByName",
         "threadUrl", "runtime", "model", "effort", "fastMode",
-        "permissionMode", "outputMode", "daemonId", "workspaceIsolation", "orgId", "visibility",
+        "permissionMode", "outputMode", "daemonId", "contentSetId", "workspaceIsolation", "orgId", "visibility",
         "ownerIdentity", "visibilitySource", "externalProvider",
         "externalScopeId", "externalResolution", "legacyUnresolved",
         "classifiedPolicyRev", "startedAt", "endedAt", "updatedAt"
@@ -796,6 +797,14 @@ export class PgSessionRepo implements SessionRepo {
         ${ev.runtime ?? null}, ${ev.model ?? null}, ${ev.effort ?? null},
         ${ev.fastMode ?? null}, ${ev.permissionMode ?? null},
         ${ev.outputMode ?? null}, ${ev.daemonId ?? null},
+        -- Read from the reporting daemon's membership in this same statement, so the store the
+        -- bodies are going to can never drift from the daemon it describes. Restricted to the
+        -- org-less pool: that is the set whose members provably share one data-plane store.
+        (
+          SELECT msm."setId" FROM "member_set_member" msm
+          JOIN "member_set" ms ON ms."id" = msm."setId"
+          WHERE msm."daemonId" = ${ev.daemonId ?? null}::uuid AND ms."orgId" IS NULL
+        ),
         ${ev.workspaceIsolation ?? null}::"WorkspaceIsolation",
         ${orgId},
         ${cls.visibility}::"SessionVisibility", ${cls.ownerIdentity},
@@ -851,6 +860,14 @@ export class PgSessionRepo implements SessionRepo {
         -- reports the session. A later milestone must not move daemon-local
         -- transcript/worktree provenance when the agent itself is reassigned.
         "daemonId" = COALESCE("session_meta"."daemonId", EXCLUDED."daemonId"),
+        -- Filled only while the reporter IS the recorded content owner, so a milestone from a
+        -- daemon that merely serves the agent now cannot claim this session's rows for its store.
+        -- Null is a REAL value here (a private store), which is why this is not a COALESCE.
+        "contentSetId" = CASE
+          WHEN "session_meta"."daemonId" IS DISTINCT FROM EXCLUDED."daemonId"
+            THEN "session_meta"."contentSetId"
+          ELSE COALESCE("session_meta"."contentSetId", EXCLUDED."contentSetId")
+        END,
         "workspaceIsolation" = COALESCE(
           EXCLUDED."workspaceIsolation",
           "session_meta"."workspaceIsolation"
@@ -1615,9 +1632,16 @@ export class PgSessionRepo implements SessionRepo {
     // matter how old it is — a plain newest-first window would drop it past the
     // cap and leave the daemon capturing with a stale `org` gate forever.
     const rows = await this.db.$queryRaw<
-      Array<{ id: string; orgId: string; visibility: string; externalProvider: string | null; visibilityRev: number }>
+      Array<{
+        id: string
+        orgId: string
+        agentId: string
+        visibility: string
+        externalProvider: string | null
+        visibilityRev: number
+      }>
     >(Prisma.sql`
-      SELECT "id", "orgId", "visibility", "externalProvider", "visibilityRev"
+      SELECT "id", "orgId", "agentId", "visibility", "externalProvider", "visibilityRev"
       FROM "session_meta"
       WHERE "agentId" = ANY(${[...agentIds]}::uuid[])
         AND (${includeExternal} OR "externalProvider" IS NULL)
@@ -1627,6 +1651,7 @@ export class PgSessionRepo implements SessionRepo {
     `)
     return rows.map((r) => ({
       orgId: OrgId(r.orgId),
+      agentId: AgentId(r.agentId),
       sessionId: SessionId(r.id),
       visibility: r.visibility as SessionVisibility,
       // External-source sessions are no longer memory-excluded just for being

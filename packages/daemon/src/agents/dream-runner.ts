@@ -102,13 +102,17 @@ export type DreamOperationPolicy = 'blocked' | 'test-only' | 'enabled'
 export interface DreamStorePort {
   insertDream(dream: DreamInfo): void
   updateDream(dream: DreamInfo): void
+  /** Crash-recovery write, CAS'd on the open statuses so a peer's terminal outcome survives. */
+  failOpenDream(dream: DreamInfo): boolean
   getDream(agentId: string, dreamId: string): DreamInfo | undefined
   listDreams(agentId: string, limit: number): DreamInfo[]
   /** Dreams still holding an unreviewed skill candidate, independent of the
    *  bounded history page — a proposal outlives the store lifecycle. */
   pendingSkillDreams(agentId: string, limit: number): DreamInfo[]
-  /** Non-terminal dreams (pending|running) for crash recovery at boot. */
+  /** Non-terminal dreams (pending|running) THIS process left behind — crash recovery at boot. */
   openDreams(): DreamInfo[]
+  /** Non-terminal dreams stranded by a former owner of these agents, once this process owns them. */
+  strandedDreams(agentIds: readonly string[]): DreamInfo[]
   /** Every completed store proposal for one agent, without the public list cap. */
   completedDreams(agentId: string): DreamInfo[]
   /** Proposals reconciled as superseded during a store upgrade. */
@@ -264,19 +268,8 @@ export class DreamRunner {
   }
 
   constructor(private readonly deps: DreamRunnerDeps) {
-    // Crash recovery: a dream that was pending|running when the daemon died can
-    // never complete (its extraction session is gone). Fail it, keep the staging
-    // for inspection.
-    for (const dream of this.deps.store.openDreams()) {
-      const failed: DreamInfo = {
-        ...dream,
-        status: 'failed',
-        error: { type: 'daemon_restart', message: 'the daemon restarted while this dream was in flight' },
-        endedAt: this.nowIso()
-      }
-      this.deps.store.updateDream(failed)
-      this.emitLifecycle({ type: 'memory.dream.failed', dream: failed })
-    }
+    // Crash recovery: fail what THIS process left in flight (staging kept); a peer's dream waits for its duty grant.
+    this.failInterrupted(this.deps.store.openDreams())
     // The LocalStore migration marks proposals stranded by adoptions made on an
     // older daemon. Their metadata is already safe; sweep the corresponding
     // store staging now that the runner can resolve agent directories. Proposed
@@ -290,6 +283,25 @@ export class DreamRunner {
           )
         })
       }
+    }
+  }
+
+  /** Reclaim the dreams of agents this process has just been made responsible for: their
+   *  former owner is no longer running them, so they can only be failed. */
+  reclaimDreams(agentIds: readonly string[]): void {
+    this.failInterrupted(this.deps.store.strandedDreams(agentIds))
+  }
+
+  private failInterrupted(dreams: readonly DreamInfo[]): void {
+    for (const dream of dreams) {
+      const failed: DreamInfo = {
+        ...dream,
+        status: 'failed',
+        error: { type: 'daemon_restart', message: 'the daemon restarted while this dream was in flight' },
+        endedAt: this.nowIso()
+      }
+      // The CAS makes reclaim safe: a row that reached its own terminal state keeps it, and announces nothing.
+      if (this.deps.store.failOpenDream(failed)) this.emitLifecycle({ type: 'memory.dream.failed', dream: failed })
     }
   }
 

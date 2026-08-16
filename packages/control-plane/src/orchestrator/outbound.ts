@@ -503,25 +503,31 @@ export class ControlSender {
   }
 
   /**
-   * Pull one page of a session's history from the owning daemon for the console
+   * Pull one page of a session's history from a daemon holding it for the console
    * (REQ → `session/history/page`). Read-only — the CP proxies the bodies to the
    * UI live and never stores them (body-locality, §1/§12).
+   *
+   * Explicit orgId, for the same reason the agent frames take one: an install-wide pool
+   * member resolves an org from `orgByAgent`, which holds only the agents that connection
+   * was told about, and a shared-store peer answering for a retired member was told about
+   * none of them — so a bare agent id is SCOPE_DENIED before the frame leaves the CP.
    */
-  async sessionHistory(daemonId: string, req: SessionHistoryReq): Promise<SessionHistoryPage> {
+  async sessionHistory(daemonId: string, orgId: string, req: SessionHistoryReq): Promise<SessionHistoryPage> {
     const c = this.must(daemonId)
-    return c.conn.request<SessionHistoryPage>('session/history', req, { epoch: c.sessionEpoch })
+    return c.conn.request<SessionHistoryPage>('session/history', req, { epoch: c.sessionEpoch }, undefined, orgId)
   }
 
   /**
-   * Fetch one frame-budgeted byte slice of a tool call's FULL ToolBody JSON from
-   * the owning daemon for the console (REQ → `session/tool-body/chunk`). Read-only
+   * Fetch one frame-budgeted byte slice of a tool call's FULL ToolBody JSON from a
+   * daemon holding the session (REQ → `session/tool-body/chunk`), with an explicit org for
+   * the same scoping reason as {@link ControlSender.sessionHistory}. Read-only
    * — the CP proxies the bytes to the UI live and never stores them (body-locality,
    * §1/§12). The console pages by `offset` until `nextOffset` is absent, then
    * concatenates and JSON.parses the assembled string.
    */
-  async sessionToolBody(daemonId: string, req: SessionToolBodyReq): Promise<SessionToolBodyChunk> {
+  async sessionToolBody(daemonId: string, orgId: string, req: SessionToolBodyReq): Promise<SessionToolBodyChunk> {
     const c = this.must(daemonId)
-    return c.conn.request<SessionToolBodyChunk>('session/tool-body', req, { epoch: c.sessionEpoch })
+    return c.conn.request<SessionToolBodyChunk>('session/tool-body', req, { epoch: c.sessionEpoch }, undefined, orgId)
   }
 
   /**

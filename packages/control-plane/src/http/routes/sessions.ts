@@ -7,9 +7,10 @@
  *
  * - `GET /sessions` lists CP-stored session metadata synced by daemon
  *   `event/session` snapshots. Transcript bodies still stay daemon-local.
- * - `GET /sessions/:id/messages` pulls one transcript page from the owning
- *   daemon (resolved via the row's `agentId`) and proxies it through. Bodies
- *   transit the CP live for display only, never persisted (body-locality §1/§12).
+ * - `GET /sessions/:id/messages` pulls one transcript page from a daemon that can
+ *   serve it — the recorded one, else a member of the shared store the session was
+ *   written to — and proxies it through. Bodies transit the CP live for display
+ *   only, never persisted (body-locality §1/§12).
  */
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { z } from 'zod'
@@ -23,6 +24,8 @@ import { originKindOf, WEBCHAT_SESSION_CONTINUATION_FEATURE } from '@agentconnec
 import { makeSessionAccessResolver } from '../session-access.js'
 import { Tag } from '../plugins/openapi.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
+import { ConnectionClosed } from '../../ws/registry.js'
+import { sessionContentReaders } from '../../domain/session-content.js'
 import { visibilityStateOf } from '../../orchestrator/visibilityPush.js'
 import type { PullRequestView } from '../../github/pull-request-view.service.js'
 import { GithubApiError } from '../../github/api.js'
@@ -416,6 +419,43 @@ export function sessionRoutes(deps: HttpDeps) {
       if (!canViewSession(session, ctxOf(req), access.identitySet, access.externalAccess)) return null
       return { session, access }
     }
+
+    // Daemon-local session content, read through a daemon that can still serve it. The recorded
+    // daemon owns it, but a pool member is replaceable: retiring one deletes its row and nulls the
+    // session's `daemonId`, while every peer on the store it wrote to reads the same rows. So:
+    // recorded daemon first, then the members of THIS session's `contentSetId` — nobody at all
+    // when that store was private, which is how a move keeps answering 503 rather than serving a
+    // false empty page from a machine that never held the session.
+    type ContentRead<T> = { ok: true; value: T } | { ok: false; reason: 'unplaced' | 'offline' }
+    const readSessionContent = async <T>(
+      session: { daemonId: string | null; contentSetId: string | null },
+      read: (daemonId: string) => Promise<T>
+    ): Promise<ContentRead<T>> => {
+      const readers = sessionContentReaders({
+        recordedDaemonId: session.daemonId,
+        sharedStoreMembers: session.contentSetId
+          ? await deps.repos.memberSet.sharedStoreMemberIdsOf(session.contentSetId)
+          : []
+      })
+      if (readers.length === 0) return { ok: false, reason: session.daemonId ? 'offline' : 'unplaced' }
+      for (const daemonId of readers) {
+        try {
+          return { ok: true, value: await read(daemonId) }
+        } catch (err) {
+          // Not reachable — try the next holder of the same store. A socket that dies between the
+          // registry lookup and the reply is ordinary during a rollout, and is unavailability too.
+          if (!(err instanceof NoConnection) && !(err instanceof ConnectionClosed)) throw err
+        }
+      }
+      return { ok: false, reason: 'offline' }
+    }
+
+    // The two 503s the content proxies answer with when nothing served the read.
+    const contentUnavailable = (reason: 'unplaced' | 'offline') => ({
+      error: 'Service Unavailable',
+      statusCode: 503 as const,
+      message: reason === 'unplaced' ? 'session has no recorded daemon' : 'owning daemon is offline'
+    })
 
     type ExternalAccessProvider = 'slack' | 'github' | 'feishu'
     const externalAccessAvailable = (provider: ExternalAccessProvider) =>
@@ -865,10 +905,10 @@ export function sessionRoutes(deps: HttpDeps) {
       }
     )
 
-    // Replay view: proxy a page of the session's chat history live from the
-    // session-recorded daemon. CP stores list/detail metadata only, not transcript
-    // bodies. Agent placement may have changed since this session ran; content
-    // stays on its original daemon and does not follow that move.
+    // Replay view: proxy a page of the session's chat history live from a daemon that can
+    // serve it. CP stores list/detail metadata only, not transcript bodies. The recorded daemon
+    // is tried first; only a session written to a shared store has other daemons holding the
+    // same rows, and an agent move never changes which store that was.
     r.get(
       '/sessions/:id/messages',
       {
@@ -876,7 +916,7 @@ export function sessionRoutes(deps: HttpDeps) {
           tags: [Tag.Sessions],
           summary: 'Get session messages',
           description:
-            "Proxies a page of the session's chat history live from the daemon recorded on the session; 503 if that daemon is unknown or offline.",
+            "Proxies a page of the session's chat history live from a daemon holding it — the recording daemon, or a member of the shared store it was written to; 503 when none is reachable.",
           operationId: 'getSessionMessages',
           params: IdParam,
           querystring: SessionHistoryQueryDto,
@@ -898,46 +938,34 @@ export function sessionRoutes(deps: HttpDeps) {
         if (session.contentPurgedAt) {
           return { sessionId: session.id, messages: [], nextCursor: null, liveCursor: null, liveMore: false }
         }
-        if (!session.daemonId) {
-          return reply
-            .code(503)
-            .send({ error: 'Service Unavailable', statusCode: 503, message: 'session has no recorded daemon' })
-        }
-
-        try {
-          const page = await deps.control.sessionHistory(session.daemonId, {
+        const read = await readSessionContent(session, (daemonId) =>
+          deps.control.sessionHistory(daemonId, session.orgId, {
             agentId: session.agentId,
             sessionId: session.id,
             ...(req.query.cursor !== undefined ? { cursor: req.query.cursor } : {}),
             ...(req.query.after !== undefined ? { after: req.query.after } : {}),
             limit: req.query.limit ?? 50
           })
-          // Provider membership and identity can be revoked while the daemon is
-          // answering. Re-run the complete predicate before any body leaves CP.
-          if (!(await getOrgViewableSession(req, req.params.id))) {
-            return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'session not found' })
-          }
-          return {
-            sessionId: page.sessionId,
-            messages: page.messages,
-            nextCursor: page.nextCursor ?? null,
-            liveCursor: page.liveCursor ?? null,
-            liveMore: page.liveMore ?? false
-          }
-        } catch (err) {
-          if (err instanceof NoConnection) {
-            return reply
-              .code(503)
-              .send({ error: 'Service Unavailable', statusCode: 503, message: 'owning daemon is offline' })
-          }
-          throw err
+        )
+        if (!read.ok) return reply.code(503).send(contentUnavailable(read.reason))
+        // Provider membership and identity can be revoked while the daemon is
+        // answering. Re-run the complete predicate before any body leaves CP.
+        if (!(await getOrgViewableSession(req, req.params.id))) {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'session not found' })
+        }
+        const page = read.value
+        return {
+          sessionId: page.sessionId,
+          messages: page.messages,
+          nextCursor: page.nextCursor ?? null,
+          liveCursor: page.liveCursor ?? null,
+          liveMore: page.liveMore ?? false
         }
       }
     )
 
-    // Full-body view follows the same immutable session-content owner as history.
-    // The console pages by offset until nextOffset is null. 503 if the recorded
-    // daemon is unknown or offline.
+    // Full-body view resolves the same content readers as history. The console pages by
+    // offset until nextOffset is null. 503 when no reader is reachable.
     r.get(
       '/sessions/:id/tool-body',
       {
@@ -945,7 +973,7 @@ export function sessionRoutes(deps: HttpDeps) {
           tags: [Tag.Sessions],
           summary: 'Get a tool-call body',
           description:
-            "Proxies one byte slice of a tool call's untruncated ToolBody JSON live from the daemon recorded on the session; the console pages by offset until nextOffset is null. 503 if that daemon is unknown or offline.",
+            "Proxies one byte slice of a tool call's untruncated ToolBody JSON live from a daemon holding the session; the console pages by offset until nextOffset is null. 503 when none is reachable.",
           operationId: 'getSessionToolBody',
           params: IdParam,
           querystring: SessionToolBodyQueryDto,
@@ -958,36 +986,25 @@ export function sessionRoutes(deps: HttpDeps) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'session not found' })
         }
         const { session } = owned
-        if (!session.daemonId) {
-          return reply
-            .code(503)
-            .send({ error: 'Service Unavailable', statusCode: 503, message: 'session has no recorded daemon' })
-        }
-
-        try {
-          const chunk = await deps.control.sessionToolBody(session.daemonId, {
+        const read = await readSessionContent(session, (daemonId) =>
+          deps.control.sessionToolBody(daemonId, session.orgId, {
             agentId: session.agentId,
             sessionId: session.id,
             toolCallId: req.query.toolCallId,
             offset: req.query.offset ?? 0
           })
-          if (!(await getOrgViewableSession(req, req.params.id))) {
-            return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'session not found' })
-          }
-          return {
-            sessionId: chunk.sessionId,
-            toolCallId: chunk.toolCallId,
-            data: chunk.data,
-            totalBytes: chunk.totalBytes,
-            nextOffset: chunk.nextOffset ?? null
-          }
-        } catch (err) {
-          if (err instanceof NoConnection) {
-            return reply
-              .code(503)
-              .send({ error: 'Service Unavailable', statusCode: 503, message: 'owning daemon is offline' })
-          }
-          throw err
+        )
+        if (!read.ok) return reply.code(503).send(contentUnavailable(read.reason))
+        if (!(await getOrgViewableSession(req, req.params.id))) {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'session not found' })
+        }
+        const chunk = read.value
+        return {
+          sessionId: chunk.sessionId,
+          toolCallId: chunk.toolCallId,
+          data: chunk.data,
+          totalBytes: chunk.totalBytes,
+          nextOffset: chunk.nextOffset ?? null
         }
       }
     )

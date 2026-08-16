@@ -4,7 +4,7 @@ import type {
   WebchatMcpGrantRevoke,
   WebchatRemoteMcpEntitlement
 } from '@agentconnect.md/protocol'
-import { AgentId, DaemonId, OrgId } from '../domain/ids.js'
+import { AgentId, OrgId } from '../domain/ids.js'
 import type { Clock } from '../domain/clock.js'
 import type { WebchatMcpAccessGrantRepo, WebchatMcpDelegationRepo } from '../persistence/ports.js'
 import type { WebchatMcpGrantTokenCodec } from './webchatMcpGrantToken.js'
@@ -45,7 +45,7 @@ export class WebchatRemoteMcpService {
       expectedUserId: input.verifiedUserId,
       orgId: input.orgId,
       agentId: input.agentId,
-      daemonId: input.daemonId
+      actingDaemonId: input.daemonId
     })
     if (!live.ok) return null
     const authority = await this.deps.authorities.establish({
@@ -53,7 +53,7 @@ export class WebchatRemoteMcpService {
       userId: live.userId,
       orgId: OrgId(input.orgId),
       agentId: AgentId(input.agentId),
-      daemonId: DaemonId(input.daemonId),
+      expectedPlacement: live.placement,
       now,
       expiresAt
     })
@@ -73,19 +73,20 @@ export class WebchatRemoteMcpService {
       !authority ||
       authority.generation !== input.authorityGeneration ||
       authority.conversationId !== input.conversationId ||
-      authority.daemonId !== input.authenticatedDaemonId ||
       (input.authenticatedOrgId && authority.orgId !== input.authenticatedOrgId) ||
       authority.revokedAt ||
       authority.expiresAt <= now
     ) {
       return null
     }
+    // The connected daemon must be one that serves the agent right now — the fence the row's
+    // daemon column used to stand in for, and the one it got wrong for a pool agent.
     const live = await resolveLiveWebchatMcpAuthority(this.deps, {
       conversationId: authority.conversationId,
       expectedUserId: authority.userId,
       orgId: authority.orgId,
       agentId: authority.agentId,
-      daemonId: authority.daemonId
+      actingDaemonId: input.authenticatedDaemonId
     })
     if (!live.ok) return null
 
@@ -115,7 +116,8 @@ export class WebchatRemoteMcpService {
 
   async accept(input: WebchatMcpGrantAccept & { authenticatedDaemonId: string; authenticatedOrgId?: string }) {
     const authority = await this.deps.authorities.getCurrent(input.authorityId)
-    if (input.authenticatedOrgId && authority?.orgId !== input.authenticatedOrgId) return null
+    if (!authority || (input.authenticatedOrgId && authority.orgId !== input.authenticatedOrgId)) return null
+    if (!(await this.mayAct(authority.agentId, input.authenticatedDaemonId))) return null
     return this.deps.grants.accept({ ...input, now: new Date(this.deps.clock.now()) })
   }
 
@@ -123,10 +125,17 @@ export class WebchatRemoteMcpService {
     input: WebchatMcpGrantRevoke & { authenticatedDaemonId: string; authenticatedOrgId?: string }
   ): Promise<boolean> {
     const authority = await this.deps.authorities.getCurrent(input.authorityId)
-    if (input.authenticatedOrgId && authority?.orgId !== input.authenticatedOrgId) return false
+    if (!authority || (input.authenticatedOrgId && authority.orgId !== input.authenticatedOrgId)) return false
+    if (!(await this.mayAct(authority.agentId, input.authenticatedDaemonId))) return false
     return this.deps.grants.revokeAuthority({
       ...input,
       now: new Date(this.deps.clock.now())
     })
+  }
+
+  /** The daemon fence the grant SQL no longer carries: authority is a live resolver question. */
+  private async mayAct(agentId: string, daemonId: string): Promise<boolean> {
+    const agent = await this.deps.agents.getUnscoped(AgentId(agentId))
+    return agent ? this.deps.placement.mayAct(agent, daemonId) : false
   }
 }

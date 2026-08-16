@@ -1,6 +1,8 @@
 import { WEBCHAT_REMOTE_MCP_FEATURE } from '@agentconnect.md/protocol'
 import { AgentId, OrgId } from '../domain/ids.js'
 import { canView } from '../authorization/policy.js'
+import type { PlacementRef } from '../domain/placement.js'
+import type { PlacementResolver } from '../orchestrator/placementResolver.js'
 import type { AgentRepo, OrgRepo, PresetAgentStore, WebchatConversationRepo } from '../persistence/ports.js'
 
 export type WebchatMcpAuthorityDenialReason =
@@ -25,10 +27,13 @@ export interface LiveWebchatMcpAuthorityDeps {
   agents: Pick<AgentRepo, 'getUnscoped'>
   presets: Pick<PresetAgentStore, 'get'>
   daemons: { get(daemonId: string): LiveDaemon | undefined }
+  /** The only answer to "which daemons serve this agent" / "may this one act for it". */
+  placement: Pick<PlacementResolver, 'mayAct' | 'servingDaemons'>
 }
 
 export type LiveWebchatMcpAuthorityResult =
-  { ok: true; userId: string } | { ok: false; reason: WebchatMcpAuthorityDenialReason }
+  | { ok: true; userId: string; daemonId: string; placement: PlacementRef }
+  | { ok: false; reason: WebchatMcpAuthorityDenialReason }
 
 /** Shared live-fact policy used both when issuing and when consuming a remote-MCP grant. */
 export async function resolveLiveWebchatMcpAuthority(
@@ -38,7 +43,9 @@ export async function resolveLiveWebchatMcpAuthority(
     expectedUserId: string
     orgId: string
     agentId: string
-    daemonId: string
+    /** The daemon asking to act. Absent where the caller carries no daemon identity (a grant
+     *  redeemed over HTTP), and then any serving daemon satisfies the live check. */
+    actingDaemonId?: string
   }
 ): Promise<LiveWebchatMcpAuthorityResult> {
   const owner = await deps.conversations.findOwner(input.conversationId, AgentId(input.agentId))
@@ -73,16 +80,21 @@ export async function resolveLiveWebchatMcpAuthority(
 
   const preset = await deps.presets.get(OrgId(input.orgId), 'general')
   if (preset?.agentId !== input.agentId) return { ok: false, reason: 'preset_mismatch' }
-  if (!agent.daemonId || agent.daemonId !== input.daemonId) {
-    return { ok: false, reason: 'placement_mismatch' }
-  }
 
-  const daemon = deps.daemons.get(input.daemonId)
-  if (!daemon?.reachable || daemon.state !== 'READY') {
-    return { ok: false, reason: 'daemon_unavailable' }
-  }
-  if (!daemon.capabilities?.features?.includes(WEBCHAT_REMOTE_MCP_FEATURE)) {
-    return { ok: false, reason: 'daemon_feature_missing' }
-  }
-  return { ok: true, userId: owner }
+  // Placement is the resolver's answer, never the column: a pool agent names no machine, and the
+  // member serving it is whoever holds its duty at this moment.
+  const candidates = input.actingDaemonId
+    ? (await deps.placement.mayAct(agent, input.actingDaemonId))
+      ? [input.actingDaemonId]
+      : []
+    : await deps.placement.servingDaemons(agent)
+  if (candidates.length === 0) return { ok: false, reason: 'placement_mismatch' }
+
+  const live = candidates
+    .map((daemonId) => ({ daemonId, daemon: deps.daemons.get(daemonId) }))
+    .filter(({ daemon }) => daemon?.reachable && daemon.state === 'READY')
+  if (live.length === 0) return { ok: false, reason: 'daemon_unavailable' }
+  const featured = live.find(({ daemon }) => daemon!.capabilities?.features?.includes(WEBCHAT_REMOTE_MCP_FEATURE))
+  if (!featured) return { ok: false, reason: 'daemon_feature_missing' }
+  return { ok: true, userId: owner, daemonId: featured.daemonId, placement: agent }
 }

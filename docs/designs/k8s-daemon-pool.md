@@ -161,6 +161,17 @@ cluster. Anything that would "recreate" a sandbox must go through
 suspend/resume, never delete-and-claim-again, or it silently deletes the
 agent's work.
 
+**Sleep is the holder's decision, and the holder is the only member that
+knows the launch.** A member's launch record (`K8sDriver.launches`) is scoped
+to the duties it holds: gaining an agent re-derives the launch from the cluster
+(claim → bound Sandbox → mode, recording only a Running pod), losing it — a
+revoke, a self-fence, a drain release — forgets the launch, its shim channel,
+its tunnel proxy and any loss watch without touching the claim. The idle sweep
+suspends only agents this member holds, and floors idleness at the time it
+took the launch when the shared store records no activity. So a Running pod
+has exactly one member that owns its idleness, an ex-holder can never suspend
+a successor's pod, and a rollout leaves no pod without a candidate to suspend it.
+
 A sleeping agent still belongs to a duty group (§6), and if that group
 contains a daemon-held bot the group stays claimed while the agent sleeps —
 that held duty is precisely what lets the wake message arrive. A singleton
@@ -436,6 +447,35 @@ the holder is already the agent's home, so the wake is §8 with no routing step
 at all. `CronDef.lastRunAt` keeps its advisory, daemon-authoritative
 semantics; the dream scheduler is scoped identically.
 
+**The handover window is compensated, not ignored.** A schedule is armed only
+while its holder holds the duty, and a freshly constructed `croner` job knows
+nothing of a moment that has already passed — so a fire landing between the old
+holder unregistering and the new one arming used to run nowhere, silently, on
+every rollout. On GAINING an agent, a member now replays the one occurrence its
+stamp says ran nowhere: the newest missed moment only (never a backlog), inside
+a grace window of one interval capped at an hour, and taken by a CAS on the
+stamp row so two members racing the same handoff fire it once. `cron_runs` is
+what that stamp was declared for; `dream_runs` is its dream twin.
+
+A stamp is only evidence about the definition it was written under, so both rows
+carry a `definition` fingerprint (expression + timezone + enabled) alongside the
+timestamp. Schedules are edited in place: "daily, last fired 03:00" then
+"switched to hourly at 12:30" would otherwise owe a 12:00 fire the hourly
+definition never covered, and a disable/re-enable would owe every moment inside
+the disabled window. A catch-up is eligible only when the stored fingerprint
+equals the active one, and the reconcile that arms the schedules retires a stamp
+whose definition has moved — re-stamping NOW, so the new definition starts clean.
+A schedule that is GONE has its row dropped instead: ids are re-mintable, so a
+recreated one must start from no evidence rather than inherit the deleted
+schedule's last run. A row written before the fingerprint existed carries NULL
+and is simply ineligible until its next real fire.
+
+Only the holder writes those rows. They are shared by the whole pool, so a
+member that arms nothing for an agent reconciles nothing for it either — a stale
+non-holder re-stamping under its own view of the definitions would erase the very
+gap the holder is there to compensate. The check is at the write, not only at its
+caller.
+
 **The lease is what fixes the offline-cron hole, not a new trigger path.** A
 cron whose owning daemon is offline simply does not fire today, and nothing
 notices; under the ledger, a dead holder's group goes vacant at T_reassign, a
@@ -548,6 +588,18 @@ most one move per agent (#1016):
   missing-regrant re-issue all skip a draining member until it registers
   afresh, so a vacated group can only land on a member that is staying —
   even if the scale-down is not simultaneous. Renewal continues meanwhile.
+- **Ready means servable, not merely up.** A member under `--k8s` publishes one
+  predicate (`packages/daemon/src/readiness.ts`, `readinessState`) on the two
+  sinks a pod probe can read — HTTP `/readyz` on `AC_READINESS_PORT` and a file
+  at `AC_READINESS_FILE` (default `/var/run/agentconnect/ready`) — true only once
+  the CP registration is acknowledged **and** the install-wide sandbox runtime
+  probe has returned, and false again the instant the SIGTERM latch closes, so
+  the endpoints controller stops routing while the pod keeps running for the
+  drain. That makes the rollout barrier the fact rather than a timed
+  `minReadySeconds` (#1043). The gate is the FIRST thing `start()` does — a
+  marker file on a mounted path outlives the container that wrote it, so it is
+  cleared before startup blocks on the CP registry, and readiness reads
+  `starting` until `start()` returns.
 - **Drain is real, slow-safe, and acknowledged.** Per member
   (`Daemon.stop()` → `releaseDutiesForShutdown`): in-flight turns are never
   cut to speed the rollout up; each held group is withdrawn locally (the same
@@ -785,3 +837,4 @@ shrinking every actor's permissions.
 | Relay re-route                                                         | `packages/relay/src/relay-ingress-manager.ts` (`sendWithRendezvous`), `relay-browser-connection.ts`   |
 | Shim dial-in                                                           | `packages/daemon/src/shim/{dialer,server}.ts`                                                         |
 | Pod-bound member identity                                              | `packages/control-plane/src/cluster/daemon-identity.ts`                                               |
+| Member readiness (probe sinks)                                         | `packages/daemon/src/readiness.ts`, `src/daemon.ts` (`readinessState`)                                |

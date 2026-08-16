@@ -15,10 +15,10 @@ export class PgWebchatMcpAccessGrantRepo implements WebchatMcpAccessGrantRepo {
 
   async issue(input: IssueWebchatMcpGrantInput): Promise<WebchatMcpAccessGrantRecord | null> {
     return this.db.$transaction(async (tx) => {
-      const [authority] = await tx.$queryRaw<
-        { id: string; generation: number; conversationId: string; daemonId: string }[]
-      >(Prisma.sql`
-        SELECT "id", "generation", "conversationId", "daemonId"
+      // No daemon predicate: which member may act for the agent is the placement resolver's
+      // answer, checked live by the caller — this row is keyed on the agent, not on a member.
+      const [authority] = await tx.$queryRaw<{ id: string; generation: number; conversationId: string }[]>(Prisma.sql`
+        SELECT "id", "generation", "conversationId"
         FROM "webchat_mcp_delegation"
         WHERE "id" = ${input.authorityId}
           AND "revokedAt" IS NULL
@@ -28,8 +28,7 @@ export class PgWebchatMcpAccessGrantRepo implements WebchatMcpAccessGrantRepo {
       if (
         !authority ||
         authority.generation !== input.authorityGeneration ||
-        authority.conversationId !== input.conversationId ||
-        authority.daemonId !== input.authenticatedDaemonId
+        authority.conversationId !== input.conversationId
       ) {
         return null
       }
@@ -70,7 +69,6 @@ export class PgWebchatMcpAccessGrantRepo implements WebchatMcpAccessGrantRepo {
           AND g."grantRevision" = ${input.grantRevision}
           AND a."generation" = ${input.authorityGeneration}
           AND a."conversationId" = ${input.conversationId}
-          AND a."daemonId" = ${input.authenticatedDaemonId}
           AND a."revokedAt" IS NULL
           AND a."expiresAt" > ${input.now}
         FOR UPDATE
@@ -104,7 +102,6 @@ export class PgWebchatMcpAccessGrantRepo implements WebchatMcpAccessGrantRepo {
         WHERE "id" = ${input.authorityId}
           AND "generation" = ${input.authorityGeneration}
           AND "conversationId" = ${input.conversationId}
-          AND "daemonId" = ${input.authenticatedDaemonId}
         FOR UPDATE
       `)
       if (!authority) return false

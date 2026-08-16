@@ -35,6 +35,14 @@ describe('session/visibility frames (session-visibility.md §5.1)', () => {
     expect(SessionVisibilityPush.safeParse({ ...push, sessionId: '' }).success).toBe(false)
   })
 
+  it('carries the owning agent, optional so an older CP still decodes (#1037)', () => {
+    // ACP session ids are runtime-local, so the daemon keys its capture gate by
+    // (agent, session id) — the id alone would answer for a colliding neighbour.
+    expect(SessionVisibilityPush.parse(push).agentId).toBeUndefined()
+    expect(SessionVisibilityPush.parse({ ...push, agentId: AGENT_ID }).agentId).toBe(AGENT_ID)
+    expect(SessionVisibilityPush.safeParse({ ...push, agentId: '' }).success).toBe(false)
+  })
+
   it('SessionVisibilityOk carries both settlement statuses — superseded is an ACK, not an error', () => {
     const ok = { sessionId: 'acp-sess-01H9', visibilityRev: 3, status: 'applied' }
     expect(SessionVisibilityOk.parse(ok).status).toBe('applied')

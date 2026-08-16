@@ -478,6 +478,16 @@ to run once dreaming has usage data.
   tick landing while a dream is in flight is skipped, never queued. Each fire
   also obeys the agent lifecycle gates (pause, safety-drain, per-agent drain,
   daemon drain) — as skips, so the schedule resumes by itself on unpause.
+  Every tick stamps its occurrence in the shared store's `dream_runs` (the dream
+  twin of `cron_runs`) BEFORE those gates, so the stamp records that the moment
+  was serviced here rather than that a dream ran. On gaining an agent's duty a
+  member compensates the one occurrence a handover swallowed — the newest missed
+  moment only, inside a grace window of one interval capped at an hour, claimed
+  by a CAS on the stamp so two members racing a handoff dream once. The row also
+  fingerprints the policy fields that define the schedule (enabled + expression +
+  timezone), because a mutable policy makes a bare stamp meaningless: a catch-up
+  is eligible only under the same definition, and a reconcile that sees a moved
+  one retires the stamp so the new policy starts clean.
 - **Idle-triggered (later)** — "N hours since the last consolidation and the
   agent has been active since" fits the daemon (it already tracks per-agent
   activity), as a follow-up once scheduled dreams are proven.

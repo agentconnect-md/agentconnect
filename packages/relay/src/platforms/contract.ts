@@ -122,7 +122,11 @@ export interface RelayIngressHost {
    *  parsed action semantics); core owns the dedup table on the daemon side.
    *  `route` is the target the plugin resolved through the directory — the
    *  three directory lookups are three distinct trust models, so delivery must
-   *  not re-resolve and silently substitute a different one. */
+   *  not re-resolve and silently substitute a different one. Core still honours
+   *  the activation rendezvous on top of that route: a recorded member that has
+   *  since handed the duty on answers `not_holder`, and the SAME frame is
+   *  re-sent once to the member it names, so the ack returned here is the true
+   *  holder's verdict (including its `response` body). */
   forwardAction(msg: RdMsgPlatformAction, route: RouteTarget): Promise<RdAck>
   /** Report the bot's channel-membership snapshot (queued while the CP link is
    *  down; a newer snapshot supersedes). */

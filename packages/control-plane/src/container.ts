@@ -155,7 +155,7 @@ import { CollabRoutesService } from './orchestrator/collabRoutes.service.js'
 import { DutyLeaseService, DUTY_LEASE_DEFAULTS } from './orchestrator/dutyLease.js'
 import { AgentDelivery } from './orchestrator/agentDelivery.js'
 import { AgentRoutingConverger } from './orchestrator/agentRouting.js'
-import { PlacementResolver } from './orchestrator/placementResolver.js'
+import { PlacementResolver, type ResolvableAgent } from './orchestrator/placementResolver.js'
 import { DutyRecomputeSweep } from './orchestrator/dutyRecompute.js'
 import { AgentMutationGate } from './orchestrator/agentMutationGate.js'
 import { AgentMoveService } from './orchestrator/agentMove.js'
@@ -364,7 +364,13 @@ export function buildContainer(
     cron: new PgCronRepo(prisma),
     dutyGroup: new PgDutyGroupRepo(prisma),
     memberSet: new PgMemberSetRepo(prisma),
-    hook: new PgHookRepo(prisma),
+    // Fenced hook writes ask "may this daemon act for the hook's agent" — placement ∪ live duty
+    // holders, which a join on `agent.daemonId` cannot express. Lazy over `placementResolver`
+    // (assigned below; only ever called at report time).
+    hook: new PgHookRepo(prisma, {
+      servingDaemons: (agent: ResolvableAgent): Promise<string[]> => placementResolver.servingDaemons(agent),
+      routableDaemon: (agent: ResolvableAgent): Promise<DaemonId | null> => placementResolver.routableDaemon(agent)
+    }),
     hookSecret: new PgHookSecretStore(prisma, secretCipher),
     runtimeProfile: new PgRuntimeProfileRepo(prisma),
     audit: new PgAuditRepo(prisma),
@@ -541,6 +547,22 @@ export function buildContainer(
   // The derived in-memory connection index every hot lookup hits.
   const connReg = new ConnectionRegistry()
 
+  // The ONE answer to "which daemons serve this agent" — what its placement names, plus every
+  // current duty holder (orchestrator/placementResolver.ts).
+  const placementResolver = new PlacementResolver({
+    duties: repos.dutyGroup,
+    // The set's members ready to take a trigger. Only the rendezvous fallback reads this: a set
+    // agent whose lease lapsed has no holder, and any member can claim it on receipt.
+    liveMembers: async (setId) => {
+      const members = new Set(await repos.memberSet.memberIdsOf(setId))
+      return connReg
+        .reachableDaemons()
+        .filter((d) => d.state === 'READY' && members.has(d.daemonId))
+        .map((d) => d.daemonId)
+    },
+    clock
+  })
+
   // Built-in general-preset webchat entitlement and short-lived access grants.
   const webchatMcpGrantToken = new WebchatMcpGrantTokenCodec(config.API_KEY_PEPPER)
   const webchatRemoteMcp = new WebchatRemoteMcpService({
@@ -551,6 +573,7 @@ export function buildContainer(
     agents: repos.agent,
     presets: repos.presetAgent,
     daemons: connReg,
+    placement: placementResolver,
     authorities: repos.webchatMcpDelegation,
     grants: repos.webchatMcpAccessGrant,
     // The daemon installs this verbatim into the adapter's `agentconnect-admin`
@@ -565,6 +588,7 @@ export function buildContainer(
     agents: repos.agent,
     presets: repos.presetAgent,
     daemons: connReg,
+    placement: placementResolver,
     grants: repos.webchatMcpAccessGrant,
     authorities: repos.webchatMcpDelegation,
     sessions: repos.session,
@@ -588,22 +612,6 @@ export function buildContainer(
   // Regional Login Apps mirrored from Logto. Their credentials are the stable
   // deployment tenant anchor used to admit Bot Apps from the same organization.
   const feishuPlatformApps = resolveFeishuPlatformApps(config)
-
-  // The ONE answer to "which daemons serve this agent" — what its placement names, plus every
-  // current duty holder (orchestrator/placementResolver.ts).
-  const placementResolver = new PlacementResolver({
-    duties: repos.dutyGroup,
-    // The set's members ready to take a trigger. Only the rendezvous fallback reads this: a set
-    // agent whose lease lapsed has no holder, and any member can claim it on receipt.
-    liveMembers: async (setId) => {
-      const members = new Set(await repos.memberSet.memberIdsOf(setId))
-      return connReg
-        .reachableDaemons()
-        .filter((d) => d.state === 'READY' && members.has(d.daemonId))
-        .map((d) => d.daemonId)
-    },
-    clock
-  })
 
   // Hook compiler/converger (webhook-triggers-and-github-events.md): CRUD routes
   // broadcast through it, and a (re)registering relay gets the full-set replay.
@@ -845,7 +853,13 @@ export function buildContainer(
   // The console PR panel's read projection — long-lived so its short TTL cache actually absorbs mounts.
   const pullRequestView = github ? new PullRequestViewService(github.tokens, clock, opts.githubFetch) : undefined
   const githubReviewBroker = github
-    ? new GithubReviewBrokerService({ hook: repos.hook, agent: repos.agent, github, clock })
+    ? new GithubReviewBrokerService({
+        hook: repos.hook,
+        agent: repos.agent,
+        github,
+        clock,
+        placement: placementResolver
+      })
     : undefined
   const githubCommentAuthz = github
     ? new GithubCommentAuthzService({
