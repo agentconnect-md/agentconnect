@@ -254,7 +254,7 @@ import {
   type DiscordComponents
 } from './discord/render.js'
 import { FeishuConverger, type FeishuAction } from './feishu/render.js'
-import { Scheduler, buildSyntheticMessage } from './scheduler/scheduler.js'
+import { Scheduler, buildSyntheticMessage, missedOccurrence } from './scheduler/scheduler.js'
 import { DreamScheduler } from './scheduler/dream-scheduler.js'
 import { planChannelIntros, buildIntroMessage } from './agents/channel-intro.js'
 import { buildHookMessage, githubOpensReviewGeneration, hookAnchorText } from './messages/hook-message.js'
@@ -12972,6 +12972,8 @@ export class Daemon {
     // heartbeat. Outside the duty gate below on purpose: the CP acts on the digest either way.
     this.cpClient?.reportDutiesNow()
     this.onDutyChanged()
+    // After the arm, so a catch-up runs against the schedules this member now actually holds.
+    this.catchUpMissedSchedules(result.agentsGained)
   }
 
   /**
@@ -13296,6 +13298,42 @@ export class Daemon {
     const serve = this.servesAgent(a.id)
     this.scheduler.sync(a.id, serve ? a.crons : [])
     this.dreamScheduler.sync(a.id, serve ? this.dreamSchedulePolicyFor(a) : undefined)
+  }
+
+  /**
+   * Compensate the fires a duty handover swallowed (#1031). The old holder unregisters an agent's
+   * schedules before the moment and the new holder arms a `Cron` that knows nothing of a moment
+   * already passed, so a cron or dream inside the window runs NOWHERE — no error, no late run, no
+   * log line. On gaining an agent this replays at most ONE occurrence per schedule (the newest
+   * missed moment, inside its grace window — never a backlog), and every fire is a CAS claim on the
+   * shared stamp, so two members racing the same handoff compensate it exactly once.
+   */
+  private catchUpMissedSchedules(agentIds: string[]): void {
+    const now = this.clock.now()
+    for (const agentId of agentIds) {
+      // Gained, then withdrawn again inside the same settle: the fire belongs to whoever holds it.
+      if (!this.servesAgent(agentId)) continue
+      const agent = this.agents.get(agentId)
+      if (!agent) continue
+      for (const cron of agent.crons) {
+        if (cron.enabled === false) continue
+        const key = `${agentId}:${cron.id}`
+        const due = missedOccurrence(cron.schedule, cron.timezone, this.store.getCronLastRun(key), now)
+        if (due === undefined || !this.store.claimCronCatchUp(key, due, now)) continue
+        this.log.info(`cron "${cron.id}" of agent "${agentId}": firing the occurrence a duty handover missed`)
+        const { msg } = buildSyntheticMessage(agentId, cron, randomUUID())
+        void this.onCronFire(agentId, msg, cron).catch((err) =>
+          this.log.error(`cron catch-up dispatch failed for agent "${agentId}": ${formatErr(err)}`)
+        )
+      }
+      const dreaming = this.dreamSchedulePolicyFor(agent)
+      if (!dreaming?.enabled || !dreaming.schedule) continue
+      const stamp = this.store.getDreamLastRun(agentId)
+      const dueDream = missedOccurrence(dreaming.schedule, dreaming.timezone, stamp, now)
+      if (dueDream === undefined || !this.store.claimDreamCatchUp(agentId, dueDream, now)) continue
+      this.log.info(`dream schedule of agent "${agentId}": firing the occurrence a duty handover missed`)
+      this.onDreamScheduleFire(agentId)
+    }
   }
 
   /** Stop serving one agent because its duty moved — the light teardown: no
@@ -21746,6 +21784,8 @@ export class Daemon {
    * between the reconcile and the tick simply does nothing.
    */
   private onDreamScheduleFire(agentId: string): void {
+    // Stamped before the gates, as a cron fire stamps cron_runs: this moment was SERVICED here (#1031).
+    this.store.setDreamLastRun(agentId, this.clock.now())
     // Lifecycle gates first — a scheduled dream is background work that spawns a
     // runtime host and burns model tokens, so it obeys the same operator stops as
     // any other scheduled trigger. The cron stays REGISTERED throughout: these are

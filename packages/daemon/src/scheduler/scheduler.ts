@@ -29,6 +29,40 @@ export function buildSyntheticMessage(
   return { agentId, msg }
 }
 
+/** Staleness cap on a catch-up: past this, a swallowed moment is history rather than a late fire. */
+const CATCH_UP_GRACE_CAP_MS = 60 * 60 * 1_000
+
+/**
+ * The one occurrence a duty handover swallowed, or undefined when nothing is owed (#1031).
+ *
+ * A freshly constructed `Cron` knows nothing of a moment that has already passed, so a schedule
+ * whose moment lands between the old holder unregistering and the new one arming runs nowhere.
+ * This answers "was a fire due since `lastRunAt`" from the schedule alone: the previous occurrence,
+ * when it is newer than the stamp and still within one interval (capped). Only the NEWEST missed
+ * moment is returned — a catch-up compensates a gap, it never replays a backlog. An absent stamp
+ * is not a missed fire: nothing durable says this schedule has ever been due.
+ */
+export function missedOccurrence(
+  schedule: string,
+  timezone: string | undefined,
+  lastRunAt: number | undefined,
+  now: number
+): number | undefined {
+  if (lastRunAt === undefined) return undefined
+  let runs: Date[]
+  try {
+    // Pattern-only: croner schedules nothing without a handler, so this is a pure query.
+    runs = new Cron(schedule, timezone ? { timezone } : {}).previousRuns(2, new Date(now))
+  } catch {
+    return undefined // malformed patterns are warned about where they are armed
+  }
+  const [previous, before] = runs
+  if (!previous || previous.getTime() <= lastRunAt) return undefined
+  const interval = before ? previous.getTime() - before.getTime() : CATCH_UP_GRACE_CAP_MS
+  const grace = Math.min(interval, CATCH_UP_GRACE_CAP_MS)
+  return now - previous.getTime() <= grace ? previous.getTime() : undefined
+}
+
 /**
  * Local scheduler for `agent.json.crons[]` (D5). Jobs are keyed per agent so the
  * reconciler can converge them on any agent change (design §5.2: crons change →

@@ -447,6 +447,16 @@ the holder is already the agent's home, so the wake is §8 with no routing step
 at all. `CronDef.lastRunAt` keeps its advisory, daemon-authoritative
 semantics; the dream scheduler is scoped identically.
 
+**The handover window is compensated, not ignored.** A schedule is armed only
+while its holder holds the duty, and a freshly constructed `croner` job knows
+nothing of a moment that has already passed — so a fire landing between the old
+holder unregistering and the new one arming used to run nowhere, silently, on
+every rollout. On GAINING an agent, a member now replays the one occurrence its
+stamp says ran nowhere: the newest missed moment only (never a backlog), inside
+a grace window of one interval capped at an hour, and taken by a CAS on the
+stamp row so two members racing the same handoff fire it once. `cron_runs` is
+what that stamp was declared for; `dream_runs` is its dream twin.
+
 **The lease is what fixes the offline-cron hole, not a new trigger path.** A
 cron whose owning daemon is offline simply does not fire today, and nothing
 notices; under the ledger, a dead holder's group goes vacant at T_reassign, a

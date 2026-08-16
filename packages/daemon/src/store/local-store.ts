@@ -900,6 +900,11 @@ export class LocalStore {
       CREATE TABLE IF NOT EXISTS cron_runs (
         key TEXT PRIMARY KEY, lastRunAt INTEGER NOT NULL
       );
+      -- The dream half of cron_runs (#1031): a dream schedule's only durable last-fired, so a
+      -- handover can tell a swallowed occurrence from one that already ran. One row per agent.
+      CREATE TABLE IF NOT EXISTS dream_runs (
+        agentId TEXT PRIMARY KEY, lastRunAt INTEGER NOT NULL
+      );
       -- §6.9 #353 durable inbox: an ADMITTED-but-QUEUED message persisted BEFORE the
       -- admission ACK, so a hard kill / agent move can't lose a message the caller was
       -- already told delivered:true. Replayed FIFO-by-sessionKey on startup and removed
@@ -3237,6 +3242,42 @@ export class LocalStore {
     const row = this.db.prepare('SELECT lastRunAt FROM cron_runs WHERE key = ?').get(key) as
       { lastRunAt: number } | undefined
     return row?.lastRunAt
+  }
+
+  /** Stamp a dream-schedule fire (one row per agent). */
+  setDreamLastRun(agentId: string, lastRunAt: number): void {
+    this.db
+      .prepare(
+        `INSERT INTO dream_runs (agentId, lastRunAt) VALUES (@agentId, @lastRunAt)
+         ON CONFLICT(agentId) DO UPDATE SET lastRunAt=excluded.lastRunAt`
+      )
+      .run({ agentId, lastRunAt })
+  }
+
+  getDreamLastRun(agentId: string): number | undefined {
+    const row = this.db.prepare('SELECT lastRunAt FROM dream_runs WHERE agentId = ?').get(agentId) as
+      { lastRunAt: number } | undefined
+    return row?.lastRunAt
+  }
+
+  /** CAS claim on a cron occurrence a handover missed (#1031): take it iff the stamp is still older
+   *  than the occurrence, so two members racing one handoff compensate it exactly once. A schedule
+   *  with no stamp has nothing to compensate and is never claimed. */
+  claimCronCatchUp(key: string, occurrence: number, claimedAt: number): boolean {
+    return (
+      this.db
+        .prepare('UPDATE cron_runs SET lastRunAt = ? WHERE key = ? AND lastRunAt < ?')
+        .run(claimedAt, key, occurrence).changes === 1
+    )
+  }
+
+  /** The dream twin of {@link claimCronCatchUp}, over the per-agent dream stamp. */
+  claimDreamCatchUp(agentId: string, occurrence: number, claimedAt: number): boolean {
+    return (
+      this.db
+        .prepare('UPDATE dream_runs SET lastRunAt = ? WHERE agentId = ? AND lastRunAt < ?')
+        .run(claimedAt, agentId, occurrence).changes === 1
+    )
   }
 
   /** Self-introduce-on-join (issue #536). The set of channels this agent has already
