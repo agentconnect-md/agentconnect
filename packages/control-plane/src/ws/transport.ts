@@ -41,6 +41,8 @@ export class WsTransport implements Transport {
   ) {
     this.subprotocol = ws.protocol
     this.remoteAddr = remoteAddr
+    // An unlistened 'error' (oversized frame, reset) crashes the process; terminate() folds it into close.
+    ws.on('error', () => ws.terminate())
   }
 
   send(text: string): void {
