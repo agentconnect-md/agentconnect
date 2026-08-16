@@ -1097,8 +1097,8 @@ describe('session visibility — PUT /sessions/:id/visibility (§4.3)', () => {
         SELECT count(*)::int AS n FROM pg_stat_activity
         WHERE datname = current_database() AND wait_event_type = 'Lock'`
       if ((waiters[0]?.n ?? 0) > 0) break
-      if (i > 400) throw new Error('the queued PUT never blocked on the row lock')
-      await new Promise((resolve) => setTimeout(resolve, 25))
+      if (i > 2_000) throw new Error('the queued PUT never blocked on the row lock')
+      await new Promise((resolve) => setTimeout(resolve, 10))
     }
     commitTighten()
     await tighten

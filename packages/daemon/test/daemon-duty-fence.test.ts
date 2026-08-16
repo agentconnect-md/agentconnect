@@ -9,6 +9,7 @@ import type { DutyGrantEntry } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
 import type { DutyRegistry } from '../src/cp/duty-registry.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
+import { VirtualClock, runVirtual } from './fakes/virtual-clock.js'
 
 const AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1'
 const AGENT_B = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2'
@@ -77,10 +78,13 @@ const bundle = (
   ]
 })
 
-/** A daemon holding one granted duty, with a stub CP client — only the duty surface runs. */
+/** A daemon holding one granted duty, with a stub CP client — only the duty surface runs.
+ *  The convergence retry the fence falls back to is armed on the injected clock, so a test can
+ *  elapse it in virtual time rather than sleeping out its real one-second ladder. */
 async function boot(scope: 'frame' | 'connection' = 'frame') {
   const root = scaffold()
-  const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root })
+  const clock = new VirtualClock()
+  const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, clock })
   await daemon.start()
   const fetchDutyAgent = vi.fn(async () => ({ bundle: bundle() }))
   ;(daemon as any).cpClient = {
@@ -94,7 +98,7 @@ async function boot(scope: 'frame' | 'connection' = 'frame') {
     fetchDutyAgent
   }
   await (daemon as any).admitDutyGrants([grant()])
-  return { daemon, root, fetchDutyAgent }
+  return { daemon, root, clock, fetchDutyAgent }
 }
 
 /** A daemon with an admission held open at the `duty/fetch` round trip, so a withdrawal can land
@@ -222,7 +226,7 @@ describe('the duty self-fence', () => {
     // A reconcile has a dozen ways to throw before it reaches the platform layer (workspace
     // authority, host teardown, a platform close). If the request were consumed by that pass, the
     // fenced agent would keep its socket — and its direct ingress — indefinitely.
-    const { daemon } = await boot()
+    const { daemon, clock } = await boot()
     const conn = liveSlackSocket(daemon)
     const realLoad = (daemon as any).loadAgentList.bind(daemon)
     let failures = 0
@@ -233,8 +237,13 @@ describe('the duty self-fence', () => {
 
     fence(daemon)
 
-    // The pass that carried the fence threw; the retry converges it anyway.
-    await vi.waitFor(() => expect(conn.stop).toHaveBeenCalled(), { timeout: 10_000 })
+    // The pass that carried the fence threw; the retry converges it anyway. Its one-second
+    // backoff is elapsed on the injected clock, so what is asserted is that a retry HAPPENS —
+    // never that a loaded runner got through the real ladder inside the test budget.
+    await runVirtual(
+      clock,
+      vi.waitFor(() => expect(conn.stop).toHaveBeenCalled(), { timeout: 20_000, interval: 5 })
+    )
     expect(failures).toBeGreaterThan(1) // the first pass really did throw
     expect(pooled(daemon)).not.toContain(conn)
     await daemon.stop()
