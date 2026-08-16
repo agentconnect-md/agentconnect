@@ -189,7 +189,7 @@ const route = (daemon: Daemon, msg: unknown, on: string[] = ['int-bot-b']) => (d
 function pairingKey(daemon: Daemon, targetAgentId = 'bot-b'): string {
   const integrationId = (daemon as any).resolveCpAgent(targetAgentId, 'slack')?.integrationId
   const scope = integrationId ? (daemon as any).transportScopeForIntegrationIds([integrationId]) : undefined
-  return ['slack', scope ?? '', '1720000000.000200', targetAgentId].join('\u0000')
+  return ['slack', scope ?? '', '1720000000.000200', targetAgentId].join('\u001f')
 }
 
 describe('agent-authored platform mentions (send-message-routing-rework.md §6)', () => {

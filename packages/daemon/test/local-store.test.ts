@@ -4,9 +4,19 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { LocalStore, sessionKey, type StoreDatabase } from '../src/store/local-store.js'
+import { openPostgresLocalStore, usingPostgresStore } from './store-postgres/backend.js'
+
+/** True in the `store-postgres` project, where every store below is the real pool store. */
+const pg = usingPostgresStore()
 
 function store(): LocalStore {
+  if (pg) return openPostgresLocalStore()
   return new LocalStore(join(mkdtempSync(join(tmpdir(), 'ac-db-')), 'local.sqlite'))
+}
+
+/** A second handle on the same durable store — a daemon restart, not a new store. */
+function reopen(path: string): LocalStore {
+  return pg ? openPostgresLocalStore() : new LocalStore(path)
 }
 
 /** Every agent a shared-store test names belongs to one org unless the test says otherwise. */
@@ -14,6 +24,11 @@ const oneOrg = () => 'org-1'
 
 /** Two pool members over ONE database — what the shared Postgres schema is during a rollout. */
 function sharedMembers(first: string, second: string): [LocalStore, LocalStore] {
+  if (pg)
+    return [
+      openPostgresLocalStore({ shared: true, ownerId: first, orgForAgent: oneOrg }),
+      openPostgresLocalStore({ shared: true, ownerId: second, orgForAgent: oneOrg })
+    ]
   const database = new DatabaseSync(':memory:') as unknown as StoreDatabase
   return [
     new LocalStore({ database, shared: true, ownerId: first, orgForAgent: oneOrg }),
@@ -44,7 +59,7 @@ const dropTranscriptOrg = (db: DatabaseSync): void => {
   `)
 }
 
-describe('LocalStore schema versioning', () => {
+describe.skipIf(pg)('LocalStore schema versioning', () => {
   const userVersion = (path: string): number => {
     const db = new DatabaseSync(path)
     const v = (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version
@@ -121,7 +136,7 @@ describe('LocalStore schema versioning', () => {
     expect(userVersion(path)).toBe(11)
   })
 
-  it('never persists the CP routing map on a shared store, and still does on an owned one', () => {
+  it.skipIf(pg)('never persists the CP routing map on a shared store, and still does on an owned one', () => {
     // One row and many members: each member's save used to erase every other member's, and each
     // boot hydrated whichever map was written last — a foreign `routingEpoch` with it. A shared
     // member now writes nothing and reads nothing, so it starts from an empty map at epoch 0.
@@ -317,7 +332,7 @@ describe('LocalStore', () => {
 
   it('persists only explicitly pending session snapshots and fences stale ACKs', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'ac-session-outbox-')), 'local.sqlite')
-    const first = new LocalStore(path)
+    const first = reopen(path)
     first.upsertSession({
       key: sessionKey('slack', 'C1', '100.1', 'bot-a'),
       agentId: 'bot-a',
@@ -337,7 +352,7 @@ describe('LocalStore', () => {
     expect(first.saveSessionMetadataSnapshot('bot-a', 'acp-1', '{"phase":"start"}', true, 2)).toBe(1)
     first.close()
 
-    const restored = new LocalStore(path)
+    const restored = reopen(path)
     expect(restored.nextSessionMetadataSnapshot()).toMatchObject({
       agentId: 'bot-a',
       sessionId: 'acp-1',
@@ -355,7 +370,7 @@ describe('LocalStore', () => {
     expect(restored.nextSessionMetadataAttemptAt()).toBe(100)
     restored.close()
 
-    const deferred = new LocalStore(path)
+    const deferred = reopen(path)
     expect(deferred.pendingSessionMetadataSnapshot('bot-a', 'acp-1')).toMatchObject({
       failedAttempts: 1,
       nextAttemptAt: 100
@@ -484,7 +499,7 @@ describe('LocalStore', () => {
 
   it('stores a bounded editor approval history and expires live requests after restart', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'ac-permission-')), 'local.sqlite')
-    const s = new LocalStore(path)
+    const s = reopen(path)
     s.createPermissionRequest({
       id: 'request-1',
       agentId: 'bot-a',
@@ -516,7 +531,7 @@ describe('LocalStore', () => {
     ])
     s.close()
 
-    const reopened = new LocalStore(path)
+    const reopened = reopen(path)
     expect(reopened.listPermissionRequests('bot-a')).toMatchObject([
       { id: 'request-2', status: 'allowed', resolvedAt: 250 },
       { id: 'request-1', status: 'expired' }
@@ -599,7 +614,7 @@ describe('LocalStore', () => {
     s.close()
   })
 
-  it('keeps an increment a concurrent writer would otherwise have erased', () => {
+  it.skipIf(pg)('keeps an increment a concurrent writer would otherwise have erased', () => {
     // The pool shape: two members touch one session across a handover. `usage` is one JSON blob, so
     // a plain read-merge-write silently drops whichever writer commits first. The compare-and-set
     // notices and re-merges instead.
@@ -1100,7 +1115,7 @@ describe('LocalStore session lifecycle (§7.3/#111/#118)', () => {
 
   it('setSessionMuted persists a cold !stop tombstone across reopen and later session creation', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'ac-mute-')), 'local.sqlite')
-    let s = new LocalStore(path)
+    let s = reopen(path)
     const key = sessionKey('slack', 'C1', 'T1', 'bot-a')
     expect(s.getSession(key)).toBeUndefined()
     expect(s.isSessionMuted(key)).toBe(false)
@@ -1110,7 +1125,7 @@ describe('LocalStore session lifecycle (§7.3/#111/#118)', () => {
     s.close()
 
     // A daemon restart before SessionManager creates the row must retain the mute.
-    s = new LocalStore(path)
+    s = reopen(path)
     expect(s.isSessionMuted(key)).toBe(true)
     // Creating/upserting the actual session mirrors but never overwrites the tombstone.
     seed(s, key, 'bot-a', 'idle', 100)
@@ -1121,7 +1136,7 @@ describe('LocalStore session lifecycle (§7.3/#111/#118)', () => {
     expect(s.isSessionMuted(key)).toBe(false)
     s.close()
 
-    const reopened = new LocalStore(path)
+    const reopened = reopen(path)
     expect(reopened.isSessionMuted(key)).toBe(false)
     expect(reopened.getSession(key)?.muted).toBe(0)
     reopened.close()
@@ -1784,7 +1799,9 @@ describe('LocalStore recovery scope on a shared store (daemon pool)', () => {
 
   const sharedPath = (): string => join(mkdtempSync(join(tmpdir(), 'ac-pool-')), 'shared.sqlite')
   const member = (path: string, ownerId: string): LocalStore =>
-    new LocalStore({ database: new DatabaseSync(path), shared: true, ownerId, orgForAgent: oneOrg })
+    pg
+      ? openPostgresLocalStore({ shared: true, ownerId, orgForAgent: oneOrg })
+      : new LocalStore({ database: new DatabaseSync(path), shared: true, ownerId, orgForAgent: oneOrg })
 
   it("a starting member leaves a peer's live grant and running dream untouched", () => {
     const path = sharedPath()
@@ -1943,7 +1960,7 @@ describe('LocalStore recovery scope on a shared store (daemon pool)', () => {
 })
 
 describe('LocalStore activation rendezvous (send-message-routing-rework.md §3.2/§8.6)', () => {
-  const KEY = ['slack', 'scope-1', '1720000000.000100', 'agent-target'].join('\u0000')
+  const KEY = ['slack', 'scope-1', '1720000000.000100', 'agent-target'].join('\u001f')
   const ENVELOPE = JSON.stringify({ callFrom: 'agent-author', hopCount: 3 })
 
   it('admits an internal-wake-first pairing exactly once and replays the same child', () => {
@@ -2079,8 +2096,8 @@ describe('LocalStore activation rendezvous (send-message-routing-rework.md §3.2
     // time; admitting both would strand a delivery that never persisted. The inbox row is
     // the only evidence that distinguishes them.
     const s = store()
-    const durable = ['slack', 'scope-1', 'ts-durable', 'agent-target'].join('\u0000')
-    const lost = ['slack', 'scope-1', 'ts-lost', 'agent-target'].join('\u0000')
+    const durable = ['slack', 'scope-1', 'ts-durable', 'agent-target'].join('\u001f')
+    const lost = ['slack', 'scope-1', 'ts-lost', 'agent-target'].join('\u001f')
     expect(s.attachActivationEnvelope(durable, ENVELOPE, 1000, 'delivery-durable').dispatch).toBe(true)
     expect(s.attachActivationEnvelope(lost, ENVELOPE, 1000, 'delivery-lost').dispatch).toBe(true)
     // Only the first one's turn actually reached the durable queue before the crash.
@@ -2114,8 +2131,8 @@ describe('LocalStore activation rendezvous (send-message-routing-rework.md §3.2
     // §3.2: one channel-root post can address several agents; each must be admitted once,
     // and one target's admission must not consume another's.
     const s = store()
-    const a = ['slack', 'scope-1', 'ts-1', 'agent-a'].join('\u0000')
-    const b = ['slack', 'scope-1', 'ts-1', 'agent-b'].join('\u0000')
+    const a = ['slack', 'scope-1', 'ts-1', 'agent-a'].join('\u001f')
+    const b = ['slack', 'scope-1', 'ts-1', 'agent-b'].join('\u001f')
     expect(s.attachActivationEnvelope(a, ENVELOPE, 1000).dispatch).toBe(true)
     expect(s.attachActivationEnvelope(b, ENVELOPE, 1000).dispatch).toBe(true)
     s.admitActivation(a, 'child-a')
@@ -2136,10 +2153,10 @@ describe('sandbox generations', () => {
 
   it('survives a reopen, because the sandbox pod the number fences does', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'ac-generations-')), 'local.sqlite')
-    const first = new LocalStore(path)
+    const first = reopen(path)
     expect(first.nextSandboxGeneration('agent-a')).toBe(1)
     first.close()
-    const reopened = new LocalStore(path)
+    const reopened = reopen(path)
     expect(reopened.nextSandboxGeneration('agent-a')).toBe(2)
     reopened.close()
   })
@@ -2238,7 +2255,7 @@ describe('transcript org fence on a shared store', () => {
   })
 })
 
-describe('transcript org migration from a v10 store', () => {
+describe.skipIf(pg)('transcript org migration from a v10 store', () => {
   const v10Store = (prefix: string): string => {
     const path = join(mkdtempSync(join(tmpdir(), prefix)), 'local.sqlite')
     new LocalStore(path).close()

@@ -33,6 +33,7 @@
     "start": "node dist/index.js run",
     "test": "vitest run",
     "test:runtime-matrix": "vitest run test/acp-matrix/acp-matrix.test.ts",
+    "test:store:postgres": "vitest run --config vitest.postgres.config.ts",
     "test:unit": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.typecheck.json"
@@ -74,6 +75,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@testcontainers/postgresql": "^12.0.4",
     "@types/node": "^24.13.3",
     "@types/pg": "^8.20.0",
     "@types/ws": "^8.18.1",
