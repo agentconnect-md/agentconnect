@@ -32,6 +32,8 @@ export class DutyRecomputeSweep {
   private cursor: string | null = null
   private readonly kicked = new Set<string>()
   private kickTimer: TimerHandle | undefined
+  // Recomputes already fired — awaited by settle(), since stop() cancels timers, not running work.
+  private readonly inFlight = new Set<Promise<unknown>>()
 
   constructor(
     private readonly repo: Pick<
@@ -64,6 +66,17 @@ export class DutyRecomputeSweep {
     this.kicked.clear()
   }
 
+  /** Await recomputes already fired — the shutdown counterpart to stop(), so Prisma is not disconnected mid-write. */
+  async settle(): Promise<void> {
+    await Promise.allSettled([...this.inFlight])
+  }
+
+  // Fire-and-forget, but never unobserved: shutdown and tests settle on these.
+  private track(work: Promise<unknown>): void {
+    this.inFlight.add(work)
+    void work.finally(() => this.inFlight.delete(work))
+  }
+
   /**
    * Recompute one org promptly instead of waiting for its rotation slice — the
    * ledger's inputs just changed (an integration, a cron's enabled flag, a bot
@@ -81,18 +94,22 @@ export class DutyRecomputeSweep {
       const orgs = [...this.kicked]
       this.kicked.clear()
       for (const org of orgs) {
-        void this.recomputeOrg(org).catch((err) => this.log?.error({ err, orgId: org }, 'duty recompute kick failed'))
+        this.track(
+          this.recomputeOrg(org).catch((err) => this.log?.error({ err, orgId: org }, 'duty recompute kick failed'))
+        )
       }
     }, this.cfg.kickDelayMs)
   }
 
   private arm(): void {
     this.timer = this.clock.setTimeout(() => {
-      void this.tick()
-        .catch((err) => this.log?.error({ err }, 'duty recompute sweep failed'))
-        .finally(() => {
-          if (!this.stopped) this.arm()
-        })
+      this.track(
+        this.tick()
+          .catch((err) => this.log?.error({ err }, 'duty recompute sweep failed'))
+          .finally(() => {
+            if (!this.stopped) this.arm()
+          })
+      )
     }, this.cfg.intervalMs)
   }
 

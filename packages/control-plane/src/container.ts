@@ -1747,6 +1747,7 @@ export function buildContainer(
         ...relayRegistrationTasks,
         visibilityPush.settle(),
         sessionAccessWarmer.settle(),
+        dutyRecompute.settle(),
         ...(installationDoorbell ? [installationDoorbell.settle()] : [])
       ])
       await rootPrisma.$disconnect()
