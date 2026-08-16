@@ -2439,6 +2439,19 @@
     padding: 0;
     font-size: inherit;
   }
+  @media (max-width: 768px) {
+    /* Preserve diagrams and command output on narrow screens. Wrapping preformatted
+       text made columns unreadable and could still leave the right side concealed
+       beneath the sticky composer; a contained horizontal scroller keeps the chat
+       column fixed while letting the reader inspect the original layout. */
+    .mdtxt pre {
+      overflow-x: auto;
+      overflow-y: hidden;
+      white-space: pre;
+      overflow-wrap: normal;
+      word-break: normal;
+    }
+  }
   .mdtxt a {
     color: var(--text-link);
     text-decoration: none;
