@@ -241,4 +241,30 @@ describe('session sweeps on a daemon pool are holder-only (#1032)', () => {
     await stop()
     for (const local of locals) local.close()
   }, 15_000)
+
+  it('gaining a duty after the socket came up replays the receipt a prior holder left, once', async () => {
+    const { a, b, root, stop } = await bootPool()
+    const path = statePath(root)
+    const locals: LocalStore[] = [a.inner.store, b.inner.store]
+    a.inner.store = new LocalStore({ database: new DatabaseSync(path), shared: true, ownerId: 'daemon-a' })
+    b.inner.store = new LocalStore({ database: new DatabaseSync(path), shared: true, ownerId: 'daemon-b' })
+    const shared: LocalStore = b.inner.store
+    // The prior holder purged this session and died before its receipt was ACKed.
+    seedSession(shared, 'left', AGENT_A, 'closed', 0)
+    shared.deleteSession('left', { reason: 'retention', at: 1_000, ownerId: 'daemon-a' })
+    await advance(b, 1_000 + 2 * 60_000 + 1)
+
+    // A fresh member's READY replay runs before its post-register grant is admitted: nothing is served yet.
+    await b.inner.drainSessionPurges()
+    expect(b.emitSessionPurged).not.toHaveBeenCalled()
+    // The grant lands: the receipt is this member's to report now, and it is reported exactly once.
+    b.inner.settleDutyChange(b.inner.duties.applyGrant([grant(GROUP_A, AGENT_A)]))
+    await vi.waitFor(() => expect(b.emitSessionPurged).toHaveBeenCalledOnce())
+    expect(b.emitSessionPurged.mock.calls[0]![0]).toMatchObject({ agentId: AGENT_A, sessionIds: ['acp-left'] })
+    await b.inner.drainSessionPurges()
+    expect(b.emitSessionPurged).toHaveBeenCalledOnce()
+    expect(shared.listSessionPurges(10, b.clock.now(), 'daemon-b', [AGENT_A])).toEqual([])
+    await stop()
+    for (const local of locals) local.close()
+  }, 15_000)
 })

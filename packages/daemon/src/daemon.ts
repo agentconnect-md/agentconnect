@@ -2462,6 +2462,7 @@ export class Daemon {
   // Single-flight for the purge-receipt drain (#485): the sweep and a CP reconnect
   // can both trigger it, and each batch awaits a correlated ACK.
   private sessionPurgeDrainInFlight = false
+  private sessionPurgeDrainRerun = false
   // One-at-a-time durable session metadata sync. Sequential ACKs provide natural
   // CP/DB backpressure after an outage; the promise is joined during shutdown.
   private sessionMetadataDrain?: Promise<void>
@@ -12980,6 +12981,8 @@ export class Daemon {
     this.onDutyChanged()
     // After the arm, so a catch-up runs against the schedules this member now actually holds.
     this.catchUpMissedSchedules(result.agentsGained)
+    // The purge-receipt drain is holder-scoped, so a receipt a prior holder left is owed by this member now.
+    if (result.agentsGained.length) void this.drainSessionPurges()
   }
 
   /**
@@ -19692,8 +19695,13 @@ export class Daemon {
     // reconnect drains them, so attempting the request here would only log a
     // failure every sweep for a daemon that is deliberately running local.
     if (!cp || (cp.state !== 'READY' && cp.state !== 'DRAINING')) return
-    if (this.sessionPurgeDrainInFlight) return
+    // Coalesced, not dropped: a trigger that lands mid-drain (a duty gained) runs one more pass after it.
+    if (this.sessionPurgeDrainInFlight) {
+      this.sessionPurgeDrainRerun = true
+      return
+    }
     this.sessionPurgeDrainInFlight = true
+    this.sessionPurgeDrainRerun = false
     try {
       const stale = this.store.pruneSessionPurges(this.clock.now() - SESSION_PURGE_RECEIPT_TTL_MS)
       if (stale)
@@ -19787,6 +19795,7 @@ export class Daemon {
     } finally {
       this.sessionPurgeDrainInFlight = false
     }
+    if (this.sessionPurgeDrainRerun) await this.drainSessionPurges()
   }
 
   private sweepIdle(): void {
@@ -19821,6 +19830,8 @@ export class Daemon {
       void this.sweepSessionRetention().catch((err) =>
         this.log.warn(`retention: session GC sweep failed (${formatErr(err)})`)
       )
+      // Backstop for receipts this member came to own without a sweep of its own (a lapsed peer's).
+      void this.drainSessionPurges()
     }
     const ttl = this.cfg.limits.agentIdleTimeoutMs
     const maxLifetime = this.cfg.limits.agentMaxLifetimeMs
