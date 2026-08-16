@@ -168,7 +168,7 @@ async function report(
     payload: { hookId, agentId, deliveryKey, ...outcome }
   } as AnyFrame
   const deps = { hook: repo(), clock: systemClock } as unknown as DaemonWsDeps
-  const conn = { daemonId, replyTo: vi.fn(), sendError: vi.fn() }
+  const conn = { daemonId, orgId: DEFAULT_ORG_ID, replyTo: vi.fn(), sendError: vi.fn() }
   await handleHookReport(frame, conn as unknown as DaemonConnection, deps)
   return { frame, conn }
 }

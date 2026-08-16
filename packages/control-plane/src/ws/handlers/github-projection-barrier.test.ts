@@ -26,6 +26,7 @@ const snapshot = {
 function fakeConn() {
   return {
     daemonId: DAEMON_ID,
+    orgId: 'org-a',
     replyTo: vi.fn(),
     sendError: vi.fn()
   } as unknown as DaemonConnection & { replyTo: ReturnType<typeof vi.fn>; sendError: ReturnType<typeof vi.fn> }
@@ -147,7 +148,7 @@ describe('GitHub projection request barriers', () => {
       }
     } as AnyFrame
     const deps = {
-      hook: { recordReport },
+      hook: { recordReport, get: async () => ({ id: HOOK_ID }) },
       githubRunCoordinator: { afterReport },
       clock: { now: () => 1_700_000_000_000 }
     } as unknown as DaemonWsDeps
@@ -193,7 +194,7 @@ describe('GitHub projection request barriers', () => {
       }
     } as AnyFrame
     const deps = {
-      hook: { recordReport },
+      hook: { recordReport, get: async () => ({ id: HOOK_ID }) },
       githubRunCoordinator: { afterReport },
       clock: { now: () => 1_700_000_000_000 }
     } as unknown as DaemonWsDeps
@@ -234,7 +235,7 @@ describe('GitHub projection request barriers', () => {
       }
     } as AnyFrame
     const deps = {
-      hook: { recordReport },
+      hook: { recordReport, get: async () => ({ id: HOOK_ID }) },
       githubRunCoordinator: { afterReport },
       clock: { now: () => 1_700_000_000_000 }
     } as unknown as DaemonWsDeps

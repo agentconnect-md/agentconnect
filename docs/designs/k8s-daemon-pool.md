@@ -587,9 +587,15 @@ it is not extended into a platform-message bus (R5). The rendezvous adds a
 hints, no presence streams: **the ledger is the sole directory**.
 
 Org context travels on the frame, not on a subscription. The install-wide
-connection carries `orgId` on every org-scoped frame; auth, register,
-heartbeat, fleet facts, rosters, and daemon lifecycle frames legitimately omit
-it. Reconnect state is a combined multi-org snapshot or revision-fenced stream
+connection carries `orgId` on every org-scoped request, event, control frame
+and correlated reply; auth, register, heartbeat, fleet facts, rosters, duty
+lease frames and daemon lifecycle frames legitimately omit it — and must, on
+that connection. Both peers enforce it with the shared classification in
+`packages/protocol/src/frame-scope.ts`: an org-scoped frame without an org, an
+install-wide frame with one, an org that does not own the targeted resource,
+or a reply that does not carry its request's org is refused with
+`SCOPE_DENIED` and never applied (the contract in detail:
+[`org-scoped-data-layer.md`](org-scoped-data-layer.md) §4.1). Reconnect state is a combined multi-org snapshot or revision-fenced stream
 on the same member connection — deliberately **not** `subscribe(org)`, an org
 room, or an org-specific socket — reusing the watermark machinery that already
 exists in production (`Agent.configRevision` with the daemon-side

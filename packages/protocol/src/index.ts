@@ -104,6 +104,16 @@ export { isFrameType as isKnownFrameType }
 export { decodeEnvelope, buildEnvelope, encode, MAX_FRAME_BYTES } from './codec.js'
 export type { DecodeResult, BuildOpts, InboundControlExt } from './codec.js'
 
+// ── which frames carry an organization (k8s-daemon-pool.md M4) ──
+export {
+  INSTALL_WIDE_FRAME_TYPES,
+  GENERIC_REPLY_FRAME_TYPES,
+  isInstallWideFrameType,
+  checkInboundFrameOrg,
+  checkReplyFrameOrg
+} from './frame-scope.js'
+export type { OrganizationMode, FrameOrgPeer, FrameOrgRef, FrameOrgVerdict } from './frame-scope.js'
+
 // ── relay wires (separate frame unions; shared-bot-relay.md §7/§8) ──
 export * from './frames/relay-cp.js'
 // Manifest-declared Slack shortcut id — defined in the bundler-facing

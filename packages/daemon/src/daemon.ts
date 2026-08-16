@@ -22503,6 +22503,10 @@ export class Daemon {
         const agentId = this.cpIntegrations?.agentForIntegration(integrationId)
         return agentId ? (this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId)) : undefined
       },
+      orgForCron: (cronId) => {
+        const agentId = this.cpCrons?.agentForCron(cronId)
+        return agentId ? (this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId)) : undefined
+      },
       degradedScopes: () => this.cpDegradedScopes(),
       duties: () => this.dutyDigest(),
       dutyPending: () => this.pendingDutyAdmissions(),
