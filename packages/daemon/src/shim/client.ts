@@ -79,6 +79,8 @@ export class ShimClient {
   private transport?: ShimTransport
   private bound?: ShimBound
   private stopped = false
+  /** Settles an in-flight `connectOnce` handshake, so `stop()` leaves no timer behind. */
+  private abortHandshake?: () => void
   /** The channel in service. Every transport callback compares against this before
    *  mutating shared state: a delayed close from a transport being replaced must not tear
    *  down the healthy replacement that already bound. */
@@ -152,6 +154,7 @@ export class ShimClient {
 
   stop(): void {
     this.stopped = true
+    this.abortHandshake?.()
     if (this.transport) this.abortTransportWork(this.transport, 'shim stopping')
     this.bound = undefined
     this.channel?.end?.('lost')
@@ -214,8 +217,15 @@ export class ShimClient {
         if (settled) return
         settled = true
         clearHandshakeTimer()
+        this.abortHandshake = undefined
         reject(new Error(message))
       }
+      // `stop()` cancels this timer. It must NOT settle the promise: the transport close `stop()`
+      // performs already does that through onClose, and rejecting here too lands on a promise the
+      // supervision loop may have stopped awaiting. Left armed, the timer outlives the stopped
+      // client and rejects into nobody — which under a shared test registry surfaces as an
+      // unhandled rejection long after the test that built the client finished.
+      this.abortHandshake = clearHandshakeTimer
       handshakeTimer = this.clock.setTimeout(() => {
         transport.close(4408, 'binding timeout')
         fail('binding timed out')

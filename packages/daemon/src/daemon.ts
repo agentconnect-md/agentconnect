@@ -3498,6 +3498,10 @@ export class Daemon {
     )
 
     this.sessions = new SessionManager({
+      // THIS daemon's plane. Omitting it hands the manager a local-mode one, and
+      // `additionalWorkspaceDirectories` would then `realpathSync` a `--k8s` workspace's pod-side
+      // cwd against this filesystem — failing session create/load before the runtime call.
+      workspaces: this.workspaces,
       memoryScopeFor: (agentId, msg, integrationId) =>
         this.memoryScope(
           agentId,
