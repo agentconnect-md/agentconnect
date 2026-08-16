@@ -131,20 +131,6 @@ jobs:
           pnpm_config_enable_pre_post_scripts: false
           VITEST_JOB_SUMMARY_DIR: ${{ runner.temp }}
         run: GITHUB_STEP_SUMMARY="$CAPTURED_JOB_SUMMARY" pnpm test:unit
-      # The three evaluation gates in ONE Vitest run. As separate steps they each paid Vitest
-      # startup, config load and transform, and `eval:parity`'s three files could not fill four
-      # workers — 95.5s together against 43.3s merged, locally. `scripts/eval-gates.test.mjs`
-      # fails if the merged list drifts from the three per-gate scripts, which stay for local use.
-      #
-      # Covers: evaluation contracts, the Collaboration Arena gate (collaboration-arena.md §14
-      # step 3), and cross-surface activation parity (docs/designs/activation-parity.md) — a PR
-      # that changes "who does this message activate" must keep every leg green or declare the
-      # divergence in evals/parity/spec.ts with a citation.
-      - name: Evaluation gates
-        env:
-          CAPTURED_JOB_SUMMARY: ${{ runner.temp }}/unit-test-summary.md
-          PROMPTFOO_DISABLE_TELEMETRY: '1'
-        run: GITHUB_STEP_SUMMARY="$CAPTURED_JOB_SUMMARY" pnpm eval:gates
       - name: Merge unit test summaries
         if: ${{ !cancelled() }}
         env:
@@ -179,6 +165,42 @@ jobs:
             cat "$CAPTURED_JOB_SUMMARY"
             echo '__AGENTCONNECT_UNIT_TEST_SUMMARY__'
           } >> "$GITHUB_OUTPUT"
+
+  # The evaluation gates, off the Unit Test job's critical path. They are ~48s of the ~3m27s that
+  # job took, and it is the slowest in the workflow, so they buy back most of that on their own
+  # runner. `evals/README.md` calls these the deterministic, credential-free layer — the real
+  # Promptfoo evaluation (`eval:addons`) needs model credentials and never ran here.
+  #
+  # No `prisma:generate` step: this closure reaches evals/, packages/daemon and the protocol-side
+  # packages, none of which import the generated client.
+  evals:
+    name: Evaluation Gates
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+        with:
+          cache: true
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      # Evaluation contracts, the Collaboration Arena gate (collaboration-arena.md §14 step 3), and
+      # cross-surface activation parity (docs/designs/activation-parity.md) — a PR that changes
+      # "who does this message activate" on one surface must either keep every leg green or declare
+      # the divergence in evals/parity/spec.ts with a citation.
+      #
+      # One Vitest run rather than three: `scripts/eval-gates.test.mjs` keeps the merged list equal
+      # to the union of the three per-gate scripts, which stay for local use.
+      - name: Evaluation gates
+        env:
+          PROMPTFOO_DISABLE_TELEMETRY: '1'
+        run: pnpm eval:gates
 
   # Exercise the daemon's core sandbox boundaries and confined skills pipeline
   # under the real Linux kernel sandbox. These cases self-skip in the bwrap-free
