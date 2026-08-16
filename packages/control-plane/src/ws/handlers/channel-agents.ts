@@ -43,7 +43,7 @@
  */
 import { PLACEMENT_ONLY } from '../../orchestrator/placementResolver.js'
 import { isFrame } from '@agentconnect.md/protocol'
-import { DaemonId, OrgId } from '../../domain/ids.js'
+import { AgentId, DaemonId, OrgId } from '../../domain/ids.js'
 import { isSessionIdentityPlatform } from '../../persistence/platform.js'
 import type { ChannelAgentRecord } from '../../persistence/ports.js'
 import type { Handler } from './index.js'
@@ -97,11 +97,11 @@ export const handleChannelAgents: Handler = async (frame, conn, deps) => {
     // ONE org-scoped read, feeding both scopes and the bind (see the header). It is also
     // literally the read `buildCollabSnapshot` builds `agents[]` from, which is what keeps
     // "discoverable" and "callable" from disagreeing.
+    const resolver = deps.placementResolver ?? PLACEMENT_ONLY
+    const directory = await deps.agent.orgDirectory(orgId)
     // Resolved through the placement resolver, so a pool agent is listed against the member that
     // currently serves it rather than dropped for naming no machine.
-    const orgRoster = await (deps.placementResolver ?? PLACEMENT_ONLY).resolveDirectory(
-      await deps.agent.orgDirectory(orgId)
-    )
+    const orgRoster = await resolver.resolveDirectory(directory)
 
     // THE DAEMON-OWNERSHIP BIND (§2.2/§6.1) — the read-side twin of the relay's
     // `claimedFromAgentId` / `caller.daemonId !== fromDaemonId` check. `requesterAgentId`
@@ -127,14 +127,29 @@ export const handleChannelAgents: Handler = async (frame, conn, deps) => {
     // practice near-unreachable — `AgentMoveService` takes the move only when the source is
     // idle and detaches it before the placement CAS — so treat this as fail-closed
     // belt-and-braces, not a window anything depends on.
-    const requester = orgRoster.find((a) => a.agentId === requesterAgentId)
-    if (requester?.daemonId !== conn.daemonId) return [] // null/undefined never equals a daemonId
+    //
+    // Bound off `mayAct` (holders) and the UNRESOLVED directory, never off `orgRoster`, which is
+    // the ingress projection (confirmed holders only). A member is a holder from the grant but a
+    // confirmed one only from its first reporting digest, so binding on the projection refused a
+    // member that genuinely held the agent and answered it "you have no peers".
+    const requester = directory.find((a) => a.agentId === requesterAgentId)
+    if (!requester || !(await resolver.mayAct({ ...requester, id: requester.agentId }, conn.daemonId))) return []
 
-    if (channel === undefined) return orgRoster
+    // The requester's OWN row rides along even while nothing routes to it — the other half of the
+    // same window. `visibleToRequester` fails closed on a requester missing from the roster, so a
+    // member still holding an unconfirmed grant would pass the bind and then be told it has no
+    // peers anyway. Its peers stay filtered by routability; an agent never wakes itself.
+    const withRequester = (roster: ChannelAgentRecord[], eligible: boolean): ChannelAgentRecord[] =>
+      eligible && !roster.some((a) => a.agentId === requesterAgentId) ? [...roster, requester] : roster
+
+    if (channel === undefined) return withRequester(orgRoster, true)
     // The channel scope is a literal INTERSECTION: `agentsInChannel` supplies the membership
     // id set, the org roster supplies the records (and the placement filter).
     const inChannel = new Set((await deps.integration.agentsInChannel(orgId, platform, channel)).map((a) => a.agentId))
-    return orgRoster.filter((a) => inChannel.has(a.agentId))
+    return withRequester(
+      orgRoster.filter((a) => inChannel.has(a.agentId)),
+      inChannel.has(AgentId(requesterAgentId))
+    )
   })()
 
   const visible = visibleToRequester(roster, requesterAgentId)
