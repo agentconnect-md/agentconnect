@@ -7,9 +7,11 @@ import { dirname } from 'node:path'
 // deployment side can only guess at the gap with a fixed minReadySeconds.
 
 /** Why a member is not servable; `ready` is the only servable value. */
-export type ReadinessReason = 'ready' | 'draining' | 'control-plane-unregistered' | 'runtime-probe-pending'
+export type ReadinessReason = 'ready' | 'draining' | 'starting' | 'control-plane-unregistered' | 'runtime-probe-pending'
 
 export interface ReadinessInputs {
+  /** `start()` returned. False from the first instruction of the process, before anything is dialled. */
+  startupComplete: boolean
   /** The CP connection is authenticated AND this daemon's registration was acknowledged. */
   cpRegistered: boolean
   /** The install-wide sandbox runtime probe returned, so the member advertises what it can launch. */
@@ -28,6 +30,9 @@ export function readinessState(inputs: ReadinessInputs): ReadinessState {
   // Draining wins over everything: a draining member is still registered and still probed, and the
   // point of the signal at SIGTERM is that neither makes it servable any more.
   if (inputs.draining) return { ready: false, reason: 'draining' }
+  // Answered before the daemon has done anything at all: startup blocks on the CP registry, and a
+  // marker left on a mounted path by the previous container must not read as ready meanwhile.
+  if (!inputs.startupComplete) return { ready: false, reason: 'starting' }
   if (!inputs.cpRegistered) return { ready: false, reason: 'control-plane-unregistered' }
   if (!inputs.runtimeProbed) return { ready: false, reason: 'runtime-probe-pending' }
   return { ready: true, reason: 'ready' }

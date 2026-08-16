@@ -26,32 +26,29 @@ async function get(port: number, path = READINESS_HTTP_PATH): Promise<{ status: 
 }
 
 describe('readinessState', () => {
+  const up = { startupComplete: true, cpRegistered: true, runtimeProbed: true, draining: false }
+
   it('is ready once the member is registered and the runtime probe has returned', () => {
-    expect(readinessState({ cpRegistered: true, runtimeProbed: true, draining: false })).toEqual({
-      ready: true,
-      reason: 'ready'
-    })
+    expect(readinessState(up)).toEqual({ ready: true, reason: 'ready' })
+  })
+
+  it('is not ready while startup has not finished, whatever else already holds', () => {
+    expect(readinessState({ ...up, startupComplete: false })).toEqual({ ready: false, reason: 'starting' })
   })
 
   it('is not ready while the control-plane registration is unacknowledged', () => {
-    expect(readinessState({ cpRegistered: false, runtimeProbed: true, draining: false })).toEqual({
+    expect(readinessState({ ...up, cpRegistered: false })).toEqual({
       ready: false,
       reason: 'control-plane-unregistered'
     })
   })
 
   it('is not ready while the install-wide runtime probe is outstanding', () => {
-    expect(readinessState({ cpRegistered: true, runtimeProbed: false, draining: false })).toEqual({
-      ready: false,
-      reason: 'runtime-probe-pending'
-    })
+    expect(readinessState({ ...up, runtimeProbed: false })).toEqual({ ready: false, reason: 'runtime-probe-pending' })
   })
 
   it('is not ready while draining, however registered and probed the member is', () => {
-    expect(readinessState({ cpRegistered: true, runtimeProbed: true, draining: true })).toEqual({
-      ready: false,
-      reason: 'draining'
-    })
+    expect(readinessState({ ...up, draining: true })).toEqual({ ready: false, reason: 'draining' })
   })
 })
 

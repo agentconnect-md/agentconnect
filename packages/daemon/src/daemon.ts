@@ -2201,6 +2201,7 @@ export class Daemon {
   // member knows — that the install-wide sandbox runtime probe came back.
   private readiness?: ReadinessGate
   private k8sRuntimeProbed = false
+  private startupComplete = false
   // The shutdown duty drain in progress: its deadline, its counters, and the release of every grant
   // that landed after the latch, so the summary and `stop()` can wait for all of them.
   private shutdownDutyDrain?: ShutdownDutyDrain
@@ -2877,6 +2878,10 @@ export class Daemon {
   }
 
   async start(): Promise<void> {
+    // FIRST, before any await that can block for as long as the control plane is down: the file
+    // sink clears its marker here, and a marker on a mounted path outlives the container that
+    // wrote it — left in place, `test -f` would call an unregistered replacement ready.
+    if (this.k8s || this.opts.supervisor === K8S_SUPERVISOR) await this.startReadinessGate()
     // A service-installed daemon normally arrives through the CLI run shell's
     // login-shell launch with a full user env (cli service-spawn.ts). This is
     // the backstop for legacy direct-ExecStart units and bare docker runs:
@@ -3739,9 +3744,8 @@ export class Daemon {
     void this.probeRuntimesAndEmit(false).finally(() => this.armRuntimeProbeRefresh())
     if (!this.k8s) startControlPlane(root)
     this.armIdleSweep()
-    // Under Kubernetes only: elsewhere the process being up IS the signal, and nothing reads a
-    // readiness sink. Last, so the endpoint exists exactly when the rest of the daemon does.
-    if (this.k8s || this.opts.supervisor === K8S_SUPERVISOR) await this.startReadinessGate()
+    this.startupComplete = true
+    this.readiness?.refresh()
     this.log.info('daemon ready')
   }
 
@@ -22278,6 +22282,7 @@ export class Daemon {
    */
   readinessState(): ReadinessState {
     return readinessState({
+      startupComplete: this.startupComplete,
       cpRegistered: this.cpClient?.state === 'READY',
       // No execution plane means no image to interrogate, so a k8s-supervised daemon that runs its
       // runtimes locally is not held behind a probe it never makes.
@@ -22287,8 +22292,9 @@ export class Daemon {
     })
   }
 
-  /** Start the readiness sinks. Their configuration is environment, not daemon config: the pod
-   *  spec that declares the probe is the same thing that sets the port and path it reads. */
+  /** Start the readiness sinks — under Kubernetes only, since elsewhere the process being up IS
+   *  the signal. Their configuration is environment, not daemon config: the pod spec that declares
+   *  the probe is the same thing that sets the port and path it reads. */
   private async startReadinessGate(): Promise<void> {
     const gate = new ReadinessGate({
       ...readinessSinksFromEnv(process.env, (message) => this.log.warn(message)),

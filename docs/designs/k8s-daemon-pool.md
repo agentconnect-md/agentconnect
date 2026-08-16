@@ -567,7 +567,10 @@ most one move per agent (#1016):
   probe has returned, and false again the instant the SIGTERM latch closes, so
   the endpoints controller stops routing while the pod keeps running for the
   drain. That makes the rollout barrier the fact rather than a timed
-  `minReadySeconds` (#1043).
+  `minReadySeconds` (#1043). The gate is the FIRST thing `start()` does — a
+  marker file on a mounted path outlives the container that wrote it, so it is
+  cleared before startup blocks on the CP registry, and readiness reads
+  `starting` until `start()` returns.
 - **Drain is real, slow-safe, and acknowledged.** Per member
   (`Daemon.stop()` → `releaseDutiesForShutdown`): in-flight turns are never
   cut to speed the rollout up; each held group is withdrawn locally (the same
