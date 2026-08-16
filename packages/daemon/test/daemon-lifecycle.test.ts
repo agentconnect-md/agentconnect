@@ -1999,7 +1999,7 @@ describe('Daemon session retention GC (#485)', () => {
     })
     expect(emitSessionPurged.mock.calls[0]![0].sessionIds.sort()).toEqual(['acp-expired-a', 'acp-expired-b'])
     // ACKed ⇒ the durable receipts are released.
-    expect((daemon as any).store.listSessionPurges(10)).toEqual([])
+    expect((daemon as any).store.listSessionPurges(10, 0)).toEqual([])
 
     await daemon.stop()
   }, 15_000)
@@ -2033,7 +2033,7 @@ describe('Daemon session retention GC (#485)', () => {
     expect(frames[0]!.ts).toBe(new Date(1_000).toISOString())
     expect(frames[1]!.sessionIds).toEqual(['acp-sweep-2'])
     expect(frames[1]!.ts).toBe(new Date(2_000).toISOString())
-    expect(store.listSessionPurges(10)).toEqual([])
+    expect(store.listSessionPurges(10, 0)).toEqual([])
 
     await daemon.stop()
   }, 15_000)
@@ -2052,7 +2052,7 @@ describe('Daemon session retention GC (#485)', () => {
     // Not even attempted: the receipt is durable and the reconnect drains it, so a
     // request here would only log a failure on every sweep of a local-only daemon.
     expect(emitSessionPurged).not.toHaveBeenCalled()
-    expect((daemon as any).store.listSessionPurges(10)).toHaveLength(1)
+    expect((daemon as any).store.listSessionPurges(10, 0)).toHaveLength(1)
 
     await daemon.stop()
   }, 15_000)
@@ -2074,7 +2074,7 @@ describe('Daemon session retention GC (#485)', () => {
     await (daemon as any).sweepSessionRetention()
     await (daemon as any).drainSessionPurges()
 
-    expect((daemon as any).store.listSessionPurges(10)).toMatchObject([
+    expect((daemon as any).store.listSessionPurges(10, 0)).toMatchObject([
       { agentId: 'bot-a', sessionId: 'acp-expired-a', reason: 'retention' }
     ])
 
@@ -2087,7 +2087,7 @@ describe('Daemon session retention GC (#485)', () => {
       stop: vi.fn()
     }
     await (daemon as any).drainSessionPurges()
-    expect((daemon as any).store.listSessionPurges(10)).toHaveLength(1)
+    expect((daemon as any).store.listSessionPurges(10, 0)).toHaveLength(1)
 
     await daemon.stop()
   }, 15_000)

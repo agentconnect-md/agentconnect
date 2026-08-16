@@ -10306,7 +10306,7 @@ export class Daemon {
     this.orchestrationDeadlines.set(orchestrationId, handle)
   }
 
-  /** Whether this member serves the agent's ingress edges (crons, deadlines): the duty holder, or any local daemon. */
+  /** Whether this member serves the agent's ingress edges and sweeps: the duty holder, or any local daemon. */
   private servesAgent(agentId: string): boolean {
     return !this.dutyEnforced() || this.duties.holdsAgent(agentId)
   }
@@ -19559,9 +19559,11 @@ export class Daemon {
    *  state stays reachable through the same logical session. */
   /** The retention sweep's active-turn exclusion, beyond the durable-state filter:
    *  a claimed serial gate (owns cold dispatch + queued arrivals), a live Pending
-   *  turn, pending durable inbox work, or unsettled SDK background tasks. */
+   *  turn, pending durable inbox work, or unsettled SDK background tasks. All are
+   *  member-local, so an agent this member does not serve counts as active (#1032). */
   private sessionRetentionActive(rec: { key: string; agentId: string; acpSessionId: string | null }): boolean {
     return (
+      !this.servesAgent(rec.agentId) ||
       this.drainingAgents.has(rec.agentId) ||
       this.inflight.has(rec.key) ||
       [...this.pending.values()].some((p) => p.sessionKey === rec.key) ||
@@ -19607,7 +19609,10 @@ export class Daemon {
     if (this.sessionRetentionSweepInFlight) return
     this.sessionRetentionSweepInFlight = true
     try {
-      const expired = this.store.listExpiredSessions(this.clock.now() - windowMs)
+      // Holder-only on a pool: the active-turn exclusions are member-local, so only the holder can judge a row.
+      const expired = this.store
+        .listExpiredSessions(this.clock.now() - windowMs)
+        .filter((rec) => this.servesAgent(rec.agentId))
       if (!expired.length) return
       // ONE stamp for the whole pass, not one per session: it is the sweep that
       // deleted them, and a shared value lets the drain report a pass as a single
@@ -19651,7 +19656,7 @@ export class Daemon {
         // The purge receipt is written in deleteSession's transaction: the CP holds
         // the only surviving record of this session, and it must be told that the
         // content behind it is gone (drained below, durably, on ACK).
-        if (this.store.deleteSession(rec.key, { reason: 'retention', at: purgedAt })) {
+        if (this.store.deleteSession(rec.key, { reason: 'retention', at: purgedAt, ownerId: this.cfg.daemonId })) {
           removed += 1
           if (rec.acpSessionId) this.sdkLease.delete(sdkLeaseKey(rec.agentId, rec.acpSessionId))
         }
@@ -19699,7 +19704,14 @@ export class Daemon {
         )
       // Bounded per pass: whatever is left is picked up by the next sweep or
       // reconnect, so a large backlog drains steadily instead of in one burst.
-      const owed = this.store.listSessionPurges(MAX_SESSION_PURGE_BATCH * 10)
+      // Shared on a pool: offered its own rows, unowned ones, and a lapsed peer's for agents it serves.
+      const served = [...this.agents.keys()].filter((agentId) => this.servesAgent(agentId))
+      const owed = this.store.listSessionPurges(
+        MAX_SESSION_PURGE_BATCH * 10,
+        this.clock.now(),
+        this.cfg.daemonId,
+        served
+      )
       if (!owed.length) return
       // One group per (agent, reason, purge time): the frame states all three for
       // every session it carries, so rows that disagree on any of them must not
@@ -19718,8 +19730,15 @@ export class Daemon {
       }
       let reported = 0
       let skippedReasons = 0
+      let leftForHolder = 0
       for (const rows of groups.values()) {
         const { agentId, reason, purgedAt } = rows[0]!
+        // The CP ACKs a non-holder without marking, so a foreign agent's rows are left for the holder
+        // (the claim lapses) — and skipped, never returned on, so they cannot block the groups behind them.
+        if (!this.servesAgent(agentId)) {
+          leftForHolder += rows.length
+          continue
+        }
         // A reason this build cannot express on the wire would be silently
         // mislabeled as something else, so report the gap and keep the receipts.
         const parsed = SessionPurgeReason.safeParse(reason)
@@ -19729,10 +19748,18 @@ export class Daemon {
         }
         for (let i = 0; i < rows.length; i += MAX_SESSION_PURGE_BATCH) {
           const batch = rows.slice(i, i + MAX_SESSION_PURGE_BATCH)
+          // Emit only under a live claim: a row a peer took over since the read stays with it.
+          const sessionIds = this.store.claimSessionPurges(
+            agentId,
+            batch.map((row) => row.sessionId),
+            this.cfg.daemonId,
+            this.clock.now()
+          )
+          if (!sessionIds.length) continue
           try {
             const result = await cp.emitSessionPurged({
               agentId,
-              sessionIds: batch.map((row) => row.sessionId),
+              sessionIds,
               reason: parsed.data,
               ts: new Date(purgedAt).toISOString()
             })
@@ -19740,19 +19767,18 @@ export class Daemon {
               this.log.debug('retention: control plane does not accept purge receipts yet — keeping them')
               return
             }
-            this.store.acknowledgeSessionPurges(
-              agentId,
-              batch.map((row) => row.sessionId)
-            )
-            reported += batch.length
+            this.store.acknowledgeSessionPurges(agentId, sessionIds, this.cfg.daemonId)
+            reported += sessionIds.length
           } catch (err) {
             // Keep the receipts. The report is idempotent on the CP, so re-sending
             // an already-applied batch after a lost ACK is safe.
             this.log.warn(`retention: purge receipt report failed for agent ${agentId} (${formatErr(err)})`)
-            return
+            break
           }
         }
       }
+      if (leftForHolder)
+        this.log.debug(`retention: ${leftForHolder} purge receipt(s) belong to agents another member serves — kept`)
       if (skippedReasons)
         this.log.warn(`retention: ${skippedReasons} purge receipt(s) carry a reason this build cannot report — kept`)
       if (reported) this.log.info(`retention: reported ${reported} purged session(s) to the control plane`)
@@ -19799,11 +19825,12 @@ export class Daemon {
     const ttl = this.cfg.limits.agentIdleTimeoutMs
     const maxLifetime = this.cfg.limits.agentMaxLifetimeMs
     // §7.3 idle→closed: a thread untouched past the TTL stops catching up — UNLESS it
-    // still has in-flight background work (the SDK lease), which keeps it open.
+    // still has in-flight background work (the SDK lease), which keeps it open. The
+    // lease is member-local, so on a pool only the agent's holder decides its rows.
     const closed = this.store.closeIdleSessions(
       now,
       ttl,
-      (agentId, acpSessionId) => !this.sessionSdkQuiescent(agentId, acpSessionId)
+      (agentId, acpSessionId) => !this.servesAgent(agentId) || !this.sessionSdkQuiescent(agentId, acpSessionId)
     )
     if (closed.length) this.log.info(`idle: TTL-closed ${closed.length} session(s) (>${Math.round(ttl / 1000)}s)`)
     // A failed remote revoke is queued durably by the grant ledger; the periodic
