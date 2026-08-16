@@ -19,6 +19,8 @@ const HOURLY = '0 * * * *'
 const AGENT = 'bot-a'
 const GROUP = '11111111-1111-4111-8111-111111111111'
 const HOUR_MS = 60 * 60_000
+const CRON = { id: 'report', schedule: HOURLY, trigger: 'run the report' }
+const DREAMING = { enabled: true, schedule: HOURLY }
 
 function scaffold(): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-catchup-'))
@@ -43,8 +45,8 @@ function scaffold(): string {
       integrations: [],
       output: { mode: 'low' },
       // Target-less ⇒ a headless fire, so the catch-up needs no live platform connection.
-      crons: [{ id: 'report', schedule: HOURLY, trigger: 'run the report' }],
-      memory: { provider: 'managed', dreaming: { enabled: true, schedule: HOURLY } }
+      crons: [CRON],
+      memory: { provider: 'managed', dreaming: DREAMING }
     })
   )
   return root
@@ -112,19 +114,21 @@ function stampsBefore(inner: any, msAgo: number): void {
   inner.store.setDreamLastRun(AGENT, at, scheduleFingerprint(inner.dreamDefinition(agent)))
 }
 
-/** Edit the cron entry and the dreaming policy on disk, then reconcile every member — the path a
- *  real definition change takes, and where a moved definition retires its stamp. */
-async function editSchedules(
-  root: string,
-  members: { inner: any }[],
-  over: { schedule?: string; enabled?: boolean }
-): Promise<void> {
+/** Rewrite agent.json, then reconcile every listed member — the path a real definition change
+ *  takes, and where a moved definition retires its stamp. */
+async function editAgent(root: string, members: { inner: any }[], mutate: (agent: any) => void): Promise<void> {
   const path = join(root, 'agents', AGENT, 'agent.json')
   const agent = JSON.parse(readFileSync(path, 'utf8'))
-  for (const target of [agent.crons[0], agent.memory.dreaming]) Object.assign(target, over)
+  mutate(agent)
   writeFileSync(path, JSON.stringify(agent))
   for (const member of members) await member.inner.reconcile()
 }
+
+/** Move both schedules the same way, as a console edit of the agent would. */
+const editSchedules = (root: string, members: { inner: any }[], over: { schedule?: string; enabled?: boolean }) =>
+  editAgent(root, members, (agent) => {
+    for (const target of [agent.crons[0], agent.memory.dreaming]) Object.assign(target, over)
+  })
 
 /** croner fires are async under the hood; let the stubbed dispatch settle. */
 const settle = () => new Promise((r) => setTimeout(r, 30))
@@ -217,6 +221,43 @@ describe('missed-fire compensation across a duty handover', () => {
     // Same cadence, different moments: :30 past the hour is due on its own, but the stamp is
     // evidence about the :00 schedule that no longer exists.
     await editSchedules(root, [a, b], { schedule: '30 * * * *' })
+    hold(b.inner)
+    await settle()
+    expect(b.crons).toEqual([])
+    expect(b.dreams).toEqual([])
+    await stop()
+  })
+
+  it('a member that does not serve the agent never rewrites the shared stamps', async () => {
+    const { a, b, root, stop } = await bootPool()
+    hold(a.inner)
+    stampsBefore(a.inner, 2 * HOUR_MS)
+    const cron = a.inner.store.cronRun(`${AGENT}:report`)
+    const dream = a.inner.store.dreamRun(AGENT)
+    // b holds nothing. Its reconcile disarms its own jobs; the shared evidence is the holder's,
+    // and a stale non-holder rewriting it would erase the very gap the holder must compensate.
+    await editSchedules(root, [b], { schedule: '30 * * * *' })
+    expect(b.inner.store.cronRun(`${AGENT}:report`)).toEqual(cron)
+    expect(b.inner.store.dreamRun(AGENT)).toEqual(dream)
+    await stop()
+  })
+
+  it('a cron id deleted and recreated starts from no evidence', async () => {
+    const { a, b, root, stop } = await bootPool()
+    hold(a.inner)
+    stampsBefore(a.inner, 2 * HOUR_MS)
+    // Deleting drops the row outright — ids are re-mintable, so leaving one would let a later
+    // schedule of the same name inherit a run it never had.
+    await editAgent(root, [a], (agent) => {
+      agent.crons = []
+      delete agent.memory.dreaming
+    })
+    expect(a.inner.store.cronRun(`${AGENT}:report`)).toBeUndefined()
+    await editAgent(root, [a, b], (agent) => {
+      agent.crons = [CRON]
+      agent.memory.dreaming = DREAMING
+    })
+    drop(a.inner)
     hold(b.inner)
     await settle()
     expect(b.crons).toEqual([])

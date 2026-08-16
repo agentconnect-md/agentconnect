@@ -465,8 +465,16 @@ definition never covered, and a disable/re-enable would owe every moment inside
 the disabled window. A catch-up is eligible only when the stored fingerprint
 equals the active one, and the reconcile that arms the schedules retires a stamp
 whose definition has moved — re-stamping NOW, so the new definition starts clean.
-A row written before the fingerprint existed carries NULL and is simply
-ineligible until its next real fire.
+A schedule that is GONE has its row dropped instead: ids are re-mintable, so a
+recreated one must start from no evidence rather than inherit the deleted
+schedule's last run. A row written before the fingerprint existed carries NULL
+and is simply ineligible until its next real fire.
+
+Only the holder writes those rows. They are shared by the whole pool, so a
+member that arms nothing for an agent reconciles nothing for it either — a stale
+non-holder re-stamping under its own view of the definitions would erase the very
+gap the holder is there to compensate. The check is at the write, not only at its
+caller.
 
 **The lease is what fixes the offline-cron hole, not a new trigger path.** A
 cron whose owning daemon is offline simply does not fire today, and nothing

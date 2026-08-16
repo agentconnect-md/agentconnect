@@ -90,6 +90,7 @@ describe('LocalStore schema versioning', () => {
       ('a', 'bot-a', 'acp-1'), ('b', 'bot-b', 'acp-2'), ('c', 'bot-c', 'acp-2')`)
     old.exec(`INSERT INTO session_gates (acpSessionId, localExcluded, cpPrivate, cpRev) VALUES
       ('acp-1', 1, 0, 4), ('acp-2', 0, 0, 7), ('acp-orphan', 0, 0, 1)`)
+    old.exec('ALTER TABLE cron_runs DROP COLUMN definition')
     old.exec('PRAGMA user_version = 5')
     old.close()
 
@@ -340,6 +341,21 @@ describe('LocalStore', () => {
     expect(s.claimDreamCatchUp('bot-a', 2000, 3000, 'def-1')).toBe(false)
     // Never claimed for a schedule that has never stamped a run.
     expect(s.claimCronCatchUp('bot-b:weekly', 2000, 3000, 'def-1')).toBe(false)
+    s.close()
+  })
+
+  it("enumerates and drops one agent's stamp keys without matching a neighbour", () => {
+    const s = store()
+    s.setCronLastRun('bot-a:daily', 1000, 'def-1')
+    s.setCronLastRun('bot-a:weekly', 1000, 'def-1')
+    // A prefix match must be exact: an agent id is not a LIKE pattern, and a longer id that merely
+    // starts with this one is a different agent.
+    s.setCronLastRun('bot-ab:daily', 1000, 'def-1')
+    s.setCronLastRun('bot%:daily', 1000, 'def-1')
+    expect(s.cronRunKeys('bot-a').sort()).toEqual(['bot-a:daily', 'bot-a:weekly'])
+    expect(s.cronRunKeys('bot%')).toEqual(['bot%:daily'])
+    s.deleteCronRun('bot-a:weekly')
+    expect(s.cronRunKeys('bot-a')).toEqual(['bot-a:daily'])
     s.close()
   })
 

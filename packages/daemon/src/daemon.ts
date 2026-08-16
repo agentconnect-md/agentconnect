@@ -13304,7 +13304,8 @@ export class Daemon {
     const serve = this.servesAgent(a.id)
     this.scheduler.sync(a.id, serve ? a.crons : [])
     this.dreamScheduler.sync(a.id, serve ? this.dreamSchedulePolicyFor(a) : undefined)
-    this.reconcileScheduleStamps(a)
+    // An unserved replica only disarms its own jobs — the stamps are the holder's to write.
+    if (serve) this.reconcileScheduleStamps(a)
   }
 
   /** The definition a cron entry fires under — an entry with no explicit `enabled` is enabled. */
@@ -13320,19 +13321,31 @@ export class Daemon {
     return { schedule, timezone: policy?.timezone, enabled: policy?.enabled === true && schedule !== '' }
   }
 
-  /** Retire a stamp whose definition has moved on (#1031). A stamp proves a fire of the definition
-   *  it was written under, so an edited expression, a changed timezone, or a disable/re-enable makes
-   *  the recorded moment meaningless — re-stamp NOW under the new definition, and the new definition
-   *  starts clean instead of inheriting a catch-up for a moment it never covered. Only an existing
-   *  row is reset: writing one would fabricate a fire that never happened. */
+  /**
+   * Retire a stamp whose definition has moved on (#1031). A stamp proves a fire of the definition it
+   * was written under, so an edited expression, a changed timezone, or a disable/re-enable makes the
+   * recorded moment meaningless — re-stamp NOW under the new definition, and the new definition
+   * starts clean instead of inheriting a catch-up for a moment it never covered. A cron that is GONE
+   * gets its row dropped rather than re-stamped: ids are re-mintable, and a recreated one must start
+   * from no evidence at all. Only an existing row is ever rewritten — writing one would fabricate a
+   * fire that never happened.
+   *
+   * Ownership is re-checked here rather than trusted from the caller: these rows are shared by the
+   * whole pool, so a member that does not serve the agent must never overwrite the holder's evidence
+   * with its own, possibly stale, view of the definitions.
+   */
   private reconcileScheduleStamps(a: { id: string; crons: CronDef[]; memory?: Agent['memory'] }): void {
+    if (!this.servesAgent(a.id)) return
     const now = this.clock.now()
+    const active = new Set(a.crons.map((cron) => `${a.id}:${cron.id}`))
+    for (const key of this.store.cronRunKeys(a.id)) if (!active.has(key)) this.store.deleteCronRun(key)
     for (const cron of a.crons) {
       const key = `${a.id}:${cron.id}`
       const fingerprint = scheduleFingerprint(this.cronDefinition(cron))
       const run = this.store.cronRun(key)
       if (run && run.definition !== fingerprint) this.store.setCronLastRun(key, now, fingerprint)
     }
+    // A removed dreaming policy is "unscheduled", a fingerprint no live policy ever matches.
     const dream = scheduleFingerprint(this.dreamDefinition(a))
     const dreamRun = this.store.dreamRun(a.id)
     if (dreamRun && dreamRun.definition !== dream) this.store.setDreamLastRun(a.id, now, dream)

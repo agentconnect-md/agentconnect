@@ -3248,6 +3248,24 @@ export class LocalStore {
       ScheduleRun | undefined
   }
 
+  /** Every stamp key this agent still carries — the substring match is exact, so an agent id with
+   *  LIKE metacharacters cannot widen it. */
+  cronRunKeys(agentId: string): string[] {
+    const prefix = `${agentId}:`
+    return (
+      this.db.prepare('SELECT key FROM cron_runs WHERE substr(key, 1, @len) = @prefix').all({
+        len: prefix.length,
+        prefix
+      }) as { key: string }[]
+    ).map((row) => row.key)
+  }
+
+  /** Drop a cron's stamp: the definition it fingerprints is gone, and a re-minted id of the same
+   *  name must start from no evidence rather than inherit the deleted schedule's last run. */
+  deleteCronRun(key: string): void {
+    this.db.prepare('DELETE FROM cron_runs WHERE key = ?').run(key)
+  }
+
   /** Stamp a dream-schedule fire (one row per agent), under the definition that fired. */
   setDreamLastRun(agentId: string, lastRunAt: number, definition: string): void {
     this.db
