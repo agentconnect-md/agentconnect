@@ -9,6 +9,8 @@ import {
   RdAgentMsg,
   RdAgentMsgAck,
   RdAgentMsgFwd,
+  RD_AGENTMSG_NOT_READY,
+  isRetryableAgentMsgAck,
   RdSlackAction,
   MAX_AGENT_CALL_HOPS,
   hasReachedAgentCallHopLimit,
@@ -769,6 +771,17 @@ describe('relay↔daemon wire — union separation (§8 standalone frame union)'
     for (const t of RELAY_DAEMON_FRAME_TYPES) expect(isRelayDaemonFrameType(t)).toBe(true)
     expect(isRelayDaemonFrameType('webchat/output')).toBe(false)
     expect(isRelayDaemonFrameType('rc/verify')).toBe(false)
+  })
+})
+
+describe('RdAgentMsgAck — the retryable not_ready verdict', () => {
+  it('parses not_ready and classifies only it as retryable', () => {
+    const ack = (over: Partial<RdAgentMsgAck>): RdAgentMsgAck =>
+      RdAgentMsgAck.parse({ deliveryId: 'd1', delivered: false, ...over })
+    expect(isRetryableAgentMsgAck(ack({ reason: RD_AGENTMSG_NOT_READY }))).toBe(true)
+    expect(isRetryableAgentMsgAck(ack({ reason: 'not_found' }))).toBe(false)
+    expect(isRetryableAgentMsgAck(ack({ reason: 'offline' }))).toBe(false)
+    expect(isRetryableAgentMsgAck(ack({ delivered: true }))).toBe(false)
   })
 })
 

@@ -1184,17 +1184,24 @@ describe('a grant is not a route until the digest confirms it (protocol level, r
 
   /** The flat peer directory as the relay and every daemon receive it — what an A2A wake resolves
    *  through, and what `admits()` fails closed against. */
-  async function directoryDaemonFor(h: ReturnType<typeof buildWsHarness>, agentId: string): Promise<string | null> {
+  async function directoryRowFor(
+    h: ReturnType<typeof buildWsHarness>,
+    agentId: string
+  ): Promise<{ daemonId: string | null } | undefined> {
     const rows = await h.placement.resolveDirectory(await h.deps.agent.orgDirectory(OrgId(DEFAULT_ORG_ID)))
-    return rows.find((r) => r.agentId === agentId)?.daemonId ?? null
+    return rows.find((r) => r.agentId === agentId)
+  }
+  async function directoryDaemonFor(h: ReturnType<typeof buildWsHarness>, agentId: string): Promise<string | null> {
+    return (await directoryRowFor(h, agentId))?.daemonId ?? null
   }
 
   // The #976 shape, on a projection: the gate must not open before the fact. A grant commits the
   // lease; the member has NOT installed yet (`duty/fetch` is still in flight), and #972 applies the
   // grant only once that install succeeds — so "reported in the digest" is the first moment the
-  // member is provably serving. Publishing at grant time makes the relay and the target both cache
-  // a terminal `not_found` against that deliveryId, which stays dead even after the member is ready.
-  it('does not name the new holder in the peer directory until it reports the group', async () => {
+  // member is provably serving. Inside that window the row is PENDING (present, no daemon): a peer
+  // wake then gets the retryable `not_ready` instead of a terminal `not_found` cached against its
+  // deliveryId (#987).
+  it('carries the agent as pending, not routable, until the new holder reports the group', async () => {
     const start = 1_700_000_000_000
     const h = buildWsHarness(prisma)
     await seedPooledAgent()
@@ -1208,14 +1215,15 @@ describe('a grant is not a route until the digest confirms it (protocol level, r
     if (!isFrame('duty/grant')(grant)) throw new Error('expected duty/grant')
     expect((await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })).holder).toBe(DAEMON)
 
-    // ...and the directory still names nobody: a lease is not yet a route.
+    // ...and the directory still names nobody — a lease is not yet a route — but it carries the
+    // agent as pending rather than dropping it.
     expect(await isConfirmed(GROUP)).toBe(false)
-    expect(await directoryDaemonFor(h, AGENT)).toBeNull()
+    expect(await directoryRowFor(h, AGENT)).toMatchObject({ agentId: AGENT, daemonId: null })
 
     // Beat 2 carries the group in the digest — the member installed and opened its gate.
     await beat(stub, { held: [{ groupId: GROUP, term: '5' }], headroom: 4 })
     expect(await isConfirmed(GROUP)).toBe(true)
-    expect(await directoryDaemonFor(h, AGENT)).toBe(DAEMON)
+    expect(await directoryRowFor(h, AGENT)).toMatchObject({ daemonId: DAEMON })
   })
 
   it('publishes the hook rule on confirmation, not on the grant', async () => {

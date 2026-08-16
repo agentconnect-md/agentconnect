@@ -434,7 +434,7 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
   async confirmedHoldersOf(agentId: AgentId, now: Date): Promise<DaemonId[]> {
     // `holdersOf` with the confirmation term: the same live-lease join, restricted to holders whose
     // reported hold is the one the row currently describes. INGRESS addressing uses this — naming a
-    // member that is still installing turns a routable message into a terminal miss, and matching
+    // member that is still installing sends a routable message to a daemon that refuses it, and matching
     // on (holder, term) rather than on "a confirmation exists" is what stops a re-take, a
     // composition rewrite or a stale-term digest from inheriting one it never earned.
     const rows = await this.prisma.$queryRaw<{ holder: string }[]>(Prisma.sql`

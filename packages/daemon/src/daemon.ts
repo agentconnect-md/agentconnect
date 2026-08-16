@@ -308,6 +308,7 @@ import { nodeExecArgvModuleEntries } from './runtimes/node-exec-argv.js'
 import { makeLogger, type Logger } from './log.js'
 import { CpClient, CP_SUBPROTOCOL, CP_WS_PATH, type BootstrapUpgradeOutcome } from './cp/client.js'
 import { RelayManager } from './cp/relay-manager.js'
+import { sendAgentMsgUntilReady } from './cp/agentmsg-retry.js'
 import { CP_IDENTITY_TOKEN_PATH, readClusterIdentityToken } from './cp/cluster-identity.js'
 import { CpCollabRoutes, isSyntheticA2aChannel } from './cp/cp-collab-routes.js'
 import { ClientTransport, systemClock, type Clock, type TimerHandle } from '@agentconnect.md/connection'
@@ -347,6 +348,7 @@ import {
   WireFeishuCardActionEvent,
   gitRepoLabel,
   hasReachedAgentCallHopLimit,
+  RD_AGENTMSG_NOT_READY,
   normalizeGitCloneUrl,
   normalizeGithubRepoUrl,
   MAX_AGENT_CALL_HOPS,
@@ -8731,9 +8733,10 @@ export class Daemon {
 
     const { platform, channel, thread } = msg.coords
 
-    // The target must actually be a local agent (the relay resolved it to us, but we
-    // don't trust that blindly — this is the placement authority for OUR agents).
-    if (!this.agents.get(msg.toAgentId)) return record(nak('not_found'))
+    // Local placement authority: an agent the directory knows but we do not run is a stale route → retryable, uncached; unknown everywhere → terminal.
+    if (!this.agents.get(msg.toAgentId)) {
+      return this.cpCollab.agent(msg.toAgentId) ? nak(RD_AGENTMSG_NOT_READY) : record(nak('not_found'))
+    }
 
     // TERMINAL-VERIFY against the local collaboration snapshot (§2.5 #4), now ORG-scoped
     // rather than (org, channel)-scoped: the relay's asserted org must be the org this
@@ -8741,8 +8744,14 @@ export class Daemon {
     // caller→target. Channel is only the session coordinate here (A2A is postless, #854), so
     // a caller and target that share no channel — or a target with no IM integration at all —
     // is legitimate. Missing snapshot / unknown agent ⇒ fail closed, as before.
-    if (this.cpCollab.orgForAgent(msg.toAgentId) !== msg.orgId) {
-      this.log.warn(`relay: rd/agentmsg/fwd terminal-verify failed (no placement) for ${msg.toAgentId} — fail closed`)
+    const targetOrg = this.cpCollab.orgForAgent(msg.toAgentId)
+    // Our directory copy may still be catching up with the grant: refuse retryably, uncached.
+    if (targetOrg === undefined) {
+      this.log.info(`relay: rd/agentmsg/fwd not_ready — ${msg.toAgentId} is not in this daemon's directory yet`)
+      return nak(RD_AGENTMSG_NOT_READY)
+    }
+    if (targetOrg !== msg.orgId) {
+      this.log.warn(`relay: rd/agentmsg/fwd terminal-verify failed (org mismatch) for ${msg.toAgentId} — fail closed`)
       return record(nak('not_allowed'))
     }
     if (!this.cpCollab.admits(msg.trustedFromAgentId, msg.toAgentId)) {
@@ -10131,37 +10140,49 @@ export class Daemon {
     if (!this.relays) {
       return { delivered: false, targetSession: ctx.targetSession, reason: 'not_local' }
     }
+    const relays = this.relays
     try {
-      const ack = await this.relays.sendAgentMsg({
-        claimedFromAgentId: req.callerAgentId,
-        // Tighten-only privacy hint for the remote child's capture gate (§5.1).
-        ...(ctx.originSessionId !== undefined && this.store.isCaptureExcluded(req.callerAgentId, ctx.originSessionId)
-          ? { parentPrivate: true }
-          : {}),
-        toAgentId: req.toAgentId,
-        text: req.text,
-        coords: {
-          platform: ctx.platform,
-          channel: ctx.channel,
-          ...(ctx.thread !== undefined ? { thread: ctx.thread } : {})
+      // #987: `not_ready` re-sends the SAME deliveryId for a bounded window; only a terminal verdict is recorded below.
+      const ack = await sendAgentMsgUntilReady(
+        {
+          claimedFromAgentId: req.callerAgentId,
+          // Tighten-only privacy hint for the remote child's capture gate (§5.1).
+          ...(ctx.originSessionId !== undefined && this.store.isCaptureExcluded(req.callerAgentId, ctx.originSessionId)
+            ? { parentPrivate: true }
+            : {}),
+          toAgentId: req.toAgentId,
+          text: req.text,
+          coords: {
+            platform: ctx.platform,
+            channel: ctx.channel,
+            ...(ctx.thread !== undefined ? { thread: ctx.thread } : {})
+          },
+          ...(ctx.correlationId !== undefined ? { correlationId: ctx.correlationId } : {}),
+          hopCount: ctx.sourceHopCount,
+          deliveryId: ctx.deliveryId,
+          // Visible-post ts (if this wake was a `toAgent`+`channel` send) so the remote target
+          // dedups the wake against the post it fetches from the shared thread and keeps a
+          // canonical read cursor — same guarantee as the same-daemon path.
+          ...(req.transcriptTs !== undefined ? { transcriptTs: req.transcriptTs } : {}),
+          ...(ctx.originSessionId !== undefined ? { originSessionId: ctx.originSessionId } : {}),
+          ...(ctx.originCoords !== undefined ? { originCoords: ctx.originCoords } : {}),
+          ...(ctx.externalOrigin !== undefined ? { externalOrigin: ctx.externalOrigin } : {}),
+          ...(ctx.lineageReplyTo !== undefined ? { lineageReplyTo: ctx.lineageReplyTo } : {}),
+          // §5.4: ask the remote child to report its outcome back into our origin session. Gated on
+          // having an origin for exactly the reason the local path is — there is nothing to report to
+          // without one, and the target ignores it in that case anyway.
+          ...(req.needsReply === true && ctx.originSessionId !== undefined ? { needsReply: true } : {}),
+          ...(ctx.deliveryKind !== undefined ? { deliveryKind: ctx.deliveryKind } : {})
         },
-        ...(ctx.correlationId !== undefined ? { correlationId: ctx.correlationId } : {}),
-        hopCount: ctx.sourceHopCount,
-        deliveryId: ctx.deliveryId,
-        // Visible-post ts (if this wake was a `toAgent`+`channel` send) so the remote target
-        // dedups the wake against the post it fetches from the shared thread and keeps a
-        // canonical read cursor — same guarantee as the same-daemon path.
-        ...(req.transcriptTs !== undefined ? { transcriptTs: req.transcriptTs } : {}),
-        ...(ctx.originSessionId !== undefined ? { originSessionId: ctx.originSessionId } : {}),
-        ...(ctx.originCoords !== undefined ? { originCoords: ctx.originCoords } : {}),
-        ...(ctx.externalOrigin !== undefined ? { externalOrigin: ctx.externalOrigin } : {}),
-        ...(ctx.lineageReplyTo !== undefined ? { lineageReplyTo: ctx.lineageReplyTo } : {}),
-        // §5.4: ask the remote child to report its outcome back into our origin session. Gated on
-        // having an origin for exactly the reason the local path is — there is nothing to report to
-        // without one, and the target ignores it in that case anyway.
-        ...(req.needsReply === true && ctx.originSessionId !== undefined ? { needsReply: true } : {}),
-        ...(ctx.deliveryKind !== undefined ? { deliveryKind: ctx.deliveryKind } : {})
-      })
+        {
+          send: (payload) => relays.sendAgentMsg(payload),
+          clock: this.clock,
+          onRetry: (attempt, delayMs) =>
+            this.log.info(
+              `messageAgent: ${req.toAgentId} not routable yet (attempt ${attempt}) — retrying delivery ${ctx.deliveryId} in ${delayMs}ms`
+            )
+        }
+      )
       // §5.4: prefer the CANONICAL key the target computed — its transport scope depends on the
       // reply integration the relay chose, which we cannot derive. Fall back to our own guess only
       // for an older target daemon that returns none (it then simply won't be followable).

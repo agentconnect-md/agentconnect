@@ -335,8 +335,9 @@ export class DutyLeaseService {
     // applied daemon-side only after its install succeeds (#972), so a group appearing in the
     // digest is the proof that the member is actually serving it. Publishing at grant time is the
     // same error #976 fixed for the fence — the gate opening before the fact — and on a pushed
-    // projection it costs a message: relay ingress recovers through the rendezvous, but a
-    // cross-daemon peer wake forwards ONCE and takes a terminal miss.
+    // projection it costs a message: relay ingress recovers through the rendezvous, and a
+    // cross-daemon peer wake rides the directory's PENDING entry (retryable `not_ready`) until
+    // this confirmation names the member.
     //
     // The digest's TERMS ride along, not just its ids: a member mid-admission of a re-grant still
     // reports the previous term, and that confirms the previous grant, never the current one. Same
