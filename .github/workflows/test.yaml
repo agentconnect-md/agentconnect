@@ -283,6 +283,30 @@ jobs:
           test/skill-workspace-lock.test.ts
           test/skill-install-ledger.test.ts
 
+  # The daemon's store suites again, with `LocalStore` opened over `PostgresSyncDatabase`
+  # instead of `node:sqlite`, against a Testcontainers `postgres:16-alpine`. The pool runs
+  # that SQL for real, so a SQLite-only construct fails here rather than on a cluster.
+  # Needs Docker, so it gets its own runner off the critical path.
+  daemon-store-postgres:
+    name: Daemon Store (PostgreSQL)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+        with:
+          cache: true
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Daemon store suites on PostgreSQL
+        run: pnpm --filter @agentconnect.md/daemon test:store:postgres
+
   # control-plane integration tests against a real Postgres booted by
   # Testcontainers. Each Vitest worker gets an isolated database cloned from one
   # migrated template, so files run concurrently without cross-test TRUNCATEs.
