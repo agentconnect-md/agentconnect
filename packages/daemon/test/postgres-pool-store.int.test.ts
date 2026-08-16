@@ -81,7 +81,7 @@ describe.skipIf(!databaseUrl)('PostgreSQL pool member store', () => {
       createdAt: 1,
       updatedAt: 1
     })
-    first.store.setCronLastRun(`${agentId}:cron`, 42)
+    first.store.setCronLastRun(`${agentId}:cron`, 42, '{}')
     first.store.setDisplayName(`U-${suffix}`, 'Cloud user', 1)
     first.store.saveSessionMetadataSnapshot(agentId, `session-${suffix}`, '{"title":"Cloud"}', true, 7)
     first.store.insertDream({
@@ -116,7 +116,7 @@ describe.skipIf(!databaseUrl)('PostgreSQL pool member store', () => {
         expect.objectContaining({ id: `delivery-${suffix}`, sessionKey, loopGuardCounted: 1 })
       )
       expect(second.store.nextMemoryCaptureDueAt()).toBe(1234)
-      expect(second.store.getCronLastRun(`${agentId}:cron`)).toBe(42)
+      expect(second.store.cronRun(`${agentId}:cron`)?.lastRunAt).toBe(42)
       expect(second.store.getDisplayNames([`U-${suffix}`]).get(`U-${suffix}`)).toBe('Cloud user')
       expect(second.store.pendingSessionMetadataSnapshot(agentId, `session-${suffix}`)?.snapshot).toBe(
         '{"title":"Cloud"}'
@@ -251,6 +251,56 @@ describe.skipIf(!databaseUrl)('PostgreSQL pool member store', () => {
       } finally {
         getSpy.mockRestore()
       }
+    } finally {
+      await second.close()
+      await first.close()
+    }
+  })
+
+  it('leases session-metadata snapshots per member and wakes when the claim lapses', async () => {
+    // #1023 against the real engine: the outbox is install-wide here, and the refill check's
+    // "when does this become workable" query must run on PostgreSQL, not just SQLite.
+    const suffix = randomUUID()
+    const agentId = `agent-${suffix}`
+    const sessionId = `session-${suffix}`
+    const ownerA = `daemon-a-${suffix}`
+    const ownerB = `daemon-b-${suffix}`
+    const lease = 2 * 60 * 1_000
+    const config = { version: 1 as const, databaseUrl: databaseUrl!, maxConnections: 2 }
+    const orgForAgent = (id: string) => (id === agentId ? `org-${suffix}` : undefined)
+    const first = await PostgresDataPlane.open(config, orgForAgent)
+    const second = await PostgresDataPlane.open(config, orgForAgent)
+    try {
+      expect(first.store.saveSessionMetadataSnapshot(agentId, sessionId, '{"phase":"end"}', true, 1_000, ownerA)).toBe(
+        1
+      )
+      // A's claim is live: B is not offered the row, cannot take it, and cannot release it.
+      expect(second.store.nextSessionMetadataSnapshot(1_500, ownerB, [agentId])).toBeUndefined()
+      expect(second.store.claimSessionMetadataSnapshot(agentId, sessionId, 1, ownerB, 1_500)).toBe(false)
+      expect(second.store.acknowledgeSessionMetadataSnapshot(agentId, sessionId, 1, ownerB)).toBe(false)
+      // ...but B's wake is armed for the moment it lapses, so nothing waits on a duty change.
+      expect(second.store.nextSessionMetadataAttemptAt(ownerB, [agentId])).toBe(1_000 + lease)
+
+      const lapsed = 1_000 + lease + 1
+      expect(second.store.nextSessionMetadataSnapshot(lapsed, ownerB, [agentId])?.sessionId).toBe(sessionId)
+      expect(second.store.claimSessionMetadataSnapshot(agentId, sessionId, 1, ownerB, lapsed)).toBe(true)
+      // Parking returns the row to the pool with its body and failure count intact.
+      expect(second.store.parkSessionMetadataSnapshot(agentId, sessionId, 1, lapsed + 60_000)).toBe(true)
+      expect(second.store.pendingSessionMetadataSnapshot(agentId, sessionId)).toMatchObject({
+        failedAttempts: 0,
+        snapshot: '{"phase":"end"}'
+      })
+      expect(second.store.nextSessionMetadataSnapshot(lapsed, ownerB, [agentId])).toBeUndefined()
+
+      // The duty comes back to A: the reclaim drops the backoff and settles under A's fence.
+      expect(first.store.reclaimSessionMetadataSnapshots([agentId], ownerA)).toBe(1)
+      expect(first.store.nextSessionMetadataAttemptAt(ownerA, [agentId])).toBe(0)
+      expect(first.store.nextSessionMetadataSnapshot(lapsed, ownerA, [agentId])?.sessionId).toBe(sessionId)
+      expect(first.store.claimSessionMetadataSnapshot(agentId, sessionId, 1, ownerA, lapsed)).toBe(true)
+      expect(first.store.releaseOwnedSessionMetadataSnapshots(ownerA)).toBe(1)
+      expect(first.store.acknowledgeSessionMetadataSnapshot(agentId, sessionId, 1, ownerA)).toBe(true)
+      expect(first.store.hasPendingSessionMetadata(ownerA, [agentId])).toBe(false)
+      expect(first.store.nextSessionMetadataAttemptAt(ownerA, [agentId])).toBeUndefined()
     } finally {
       await second.close()
       await first.close()

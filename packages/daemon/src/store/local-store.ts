@@ -2569,16 +2569,19 @@ export class LocalStore {
   }
 
   /** When the earliest row this member is answerable for becomes workable: its own backoff,
-   *  or — for a row a peer still holds — the moment that claim lapses. Without the second
-   *  half a graceful handoff leaves a live foreign claim with nothing armed to outlast it. */
+   *  or — for a row a peer still holds — the later of that backoff and the moment the claim
+   *  lapses. Without the second half a graceful handoff leaves a live foreign claim with
+   *  nothing armed to outlast it. Written as one CASE rather than a two-argument `max()`: the
+   *  same statement text runs on the pool's PostgreSQL, where `MAX` is only an aggregate. */
   nextSessionMetadataAttemptAt(ownerId?: string, agentIds?: readonly string[]): number | undefined {
     const scope = this.sessionMetadataWorkScope(ownerId, agentIds)
-    const lapse = this.shared
-      ? `MAX(COALESCE(nextAttemptAt, 0), CASE WHEN ownerId IS NOT NULL AND ownerId <> @ownerId
-             THEN COALESCE(claimedAt, 0) + @lease ELSE 0 END)`
+    const workableAt = this.shared
+      ? `CASE WHEN ownerId IS NOT NULL AND ownerId <> @ownerId
+                AND COALESCE(claimedAt, 0) + @lease > COALESCE(nextAttemptAt, 0)
+           THEN COALESCE(claimedAt, 0) + @lease ELSE COALESCE(nextAttemptAt, 0) END`
       : 'COALESCE(nextAttemptAt, 0)'
     const row = this.db
-      .prepare(`SELECT MIN(${lapse}) AS attemptAt FROM session_metadata_outbox WHERE 1 = 1${scope.sql}`)
+      .prepare(`SELECT MIN(${workableAt}) AS attemptAt FROM session_metadata_outbox WHERE 1 = 1${scope.sql}`)
       .get({ ...scope.params, ...(this.shared ? { lease: SHARED_OUTBOX_LEASE_MS } : {}) }) as
       { attemptAt: number | null } | undefined
     return row?.attemptAt === null || row?.attemptAt === undefined ? undefined : Number(row.attemptAt)
