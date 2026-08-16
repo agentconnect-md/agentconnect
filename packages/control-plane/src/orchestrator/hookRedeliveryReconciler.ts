@@ -16,20 +16,25 @@
  *    waste — the next tick retries once a relay is back);
  *  - a per-GUID attempt cap breaks the no-HookRun re-list loop. Retryable
  *    delivery-stage HookRuns instead carry their bounded due schedule in
- *    Postgres, so a CP restart cannot reset their budget.
+ *    Postgres, so a CP restart cannot reset their budget;
+ *  - coverage is only ever claimed for what was actually listed, and the first
+ *    sweep of a process runs early — the outage worth recovering is usually the
+ *    one that restarted this process.
  *
  * Same Clock-driven self-rescheduling shape as {@link CronRunReaper}; armed by
  * `startBackground()` only when the GitHub App is configured.
  */
 import type { Clock, TimerHandle } from '../domain/clock.js'
 import type { HookId } from '../domain/ids.js'
-import type { GhHookDelivery } from '../github/service.js'
+import type { GhHookDeliveryPage } from '../github/service.js'
 import type { HookRecord, RelayRecord } from '../persistence/ports.js'
 
 /** The families the relay matches (everything else never produces a run). */
 const SUBSCRIPTION_EVENTS = new Set(['issues', 'pull_request', 'issue_comment', 'pull_request_review_comment', 'push'])
 /** Redeliveries requested per GUID before giving up (loop breaker). */
 const MAX_ATTEMPTS = 3
+/** Delay before the first sweep of a process — see {@link HookRedeliveryReconciler.start}. */
+const FIRST_SWEEP_DELAY_MS = 60_000
 /** Durable due gates for HookRuns that landed as a definite pre-dispatch
  * failure. Ambiguous dispatch timeouts are deliberately terminal until an
  * end-to-end admission fence or cross-daemon idempotency exists. The 10-minute
@@ -42,12 +47,13 @@ export const FAILED_DELIVERY_BACKOFF_MS = [30_000] as const
 /** Attempt-map bound (flush-at-cap, the daemon dedup-map precedent). */
 const MAX_TRACKED = 5_000
 /** Hard ceiling on how far back a post-outage catch-up may reach. GitHub's own
- *  redelivery window is 3 days; one 100-item page bounds the practical reach
- *  anyway (a full page is warned about, never silent). */
+ *  redelivery window is 3 days; the delivery listing walks its cursor to the
+ *  window floor and, when a firehose exhausts its page budget first, coverage
+ *  stops where the listing stopped and the next sweep resumes from there. */
 const MAX_LOOKBACK_MS = 24 * 60 * 60 * 1000
 
 export interface HookRedeliveryGithub {
-  listHookDeliveries(perPage?: number): Promise<GhHookDelivery[]>
+  listHookDeliveries(opts?: { perPage?: number; maxPages?: number; deliveredSince?: Date }): Promise<GhHookDeliveryPage>
   redeliverHookDelivery(deliveryId: string): Promise<void>
 }
 
@@ -137,10 +143,13 @@ export class HookRedeliveryReconciler {
     private readonly log?: ReconcilerLog
   ) {}
 
-  /** Arm the periodic sweep. Idempotent — a second call re-arms from now. */
+  /** Arm the periodic sweep. Idempotent — a second call re-arms from now. The
+   *  FIRST sweep comes early: the window a fresh process most needs to recover
+   *  is the one its own restart interrupted, and a deployment that restarts the
+   *  CP more often than `intervalMs` would otherwise never sweep at all. */
   start(): void {
     this.stopped = false
-    this.arm()
+    this.arm(Math.min(FIRST_SWEEP_DELAY_MS, this.cfg.intervalMs))
   }
 
   stop(): void {
@@ -151,10 +160,10 @@ export class HookRedeliveryReconciler {
     }
   }
 
-  private arm(): void {
+  private arm(delayMs = this.cfg.intervalMs): void {
     if (this.stopped) return
     if (this.timer !== undefined) this.clock.clearTimeout(this.timer)
-    this.timer = this.clock.setTimeout(() => void this.tick(), this.cfg.intervalMs)
+    this.timer = this.clock.setTimeout(() => void this.tick(), delayMs)
   }
 
   /** One sweep. Errors are logged and swallowed — a GitHub/DB blip must never
@@ -210,13 +219,22 @@ export class HookRedeliveryReconciler {
       return
     }
 
-    const deliveries = await this.github.listHookDeliveries()
-    if (deliveries.length >= 100) {
-      // One page only (the cursor rides a Link header we don't surface) — say
-      // so instead of silently under-covering the window.
+    const { deliveries, truncated } = await this.github.listHookDeliveries({ deliveredSince: new Date(oldest) })
+    // A truncated walk saw everything down to its oldest entry and nothing
+    // below it. Coverage stops THERE — advancing the cursor to `newest` would
+    // declare a slice swept that was never listed, which is exactly how a lost
+    // delivery stays lost.
+    const oldestListedMs = deliveries.length > 0 ? Date.parse(deliveries[deliveries.length - 1]!.delivered_at) : NaN
+    const truncatedFloor =
+      truncated && !Number.isNaN(oldestListedMs) && oldestListedMs > oldest ? oldestListedMs : undefined
+    // …and never PAST `newest`: everything above that ceiling is inside the
+    // grace window and was skipped below, so a budget exhausted entirely inside
+    // the grace period must not carry coverage over the deliveries it withheld.
+    const sweptUntil = truncatedFloor === undefined ? newest : Math.min(newest, truncatedFloor)
+    if (sweptUntil !== newest) {
       this.log?.warn(
-        { count: deliveries.length },
-        'hook-redelivery: delivery page full — the look-back window may be under-covered'
+        { count: deliveries.length, reachedBack: new Date(sweptUntil).toISOString() },
+        'hook-redelivery: delivery list ran out before the look-back window — the rest retries next sweep'
       )
     }
 
@@ -235,7 +253,7 @@ export class HookRedeliveryReconciler {
       return true
     })
     if (matching.length === 0) {
-      this.coveredUntilMs = newest
+      this.coveredUntilMs = sweptUntil
       return
     }
 
@@ -280,6 +298,6 @@ export class HookRedeliveryReconciler {
     if (redelivered > 0) {
       this.log?.info({ redelivered, scanned: deliveries.length }, 'hook-redelivery: re-posted lost deliveries')
     }
-    this.coveredUntilMs = oldestFailedAt !== undefined ? Math.min(newest, oldestFailedAt - 1) : newest
+    this.coveredUntilMs = oldestFailedAt !== undefined ? Math.min(sweptUntil, oldestFailedAt - 1) : sweptUntil
   }
 }

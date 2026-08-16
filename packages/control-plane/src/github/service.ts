@@ -23,7 +23,7 @@ import type {
   AgentRepoAuthorizationRepo,
   RepoAccess
 } from '../persistence/ports.js'
-import { githubRequest, mintAppJwt, GithubApiError, type FetchLike } from './api.js'
+import { githubRequest, githubRequestPage, mintAppJwt, GithubApiError, type FetchLike, type GithubPage } from './api.js'
 import { githubAppBotIdentity, type GithubAppConfig } from './config.js'
 import { InstallationTokenService, type CapabilityLevels, type MintedGitCred } from './installation-token.service.js'
 import { deriveInstallStateKey, mintInstallState, verifyInstallState } from './install-state.js'
@@ -76,6 +76,15 @@ export interface GhHookDelivery {
   installation_id: number | null
 }
 
+/** A delivery listing plus how honest it is about its own reach. */
+export interface GhHookDeliveryPage {
+  /** Newest first, across every page walked. */
+  deliveries: GhHookDelivery[]
+  /** The walk stopped on its page budget with a cursor left — the caller has
+   *  NOT seen everything back to `deliveredSince`, and must not claim it did. */
+  truncated: boolean
+}
+
 export interface GithubServiceDeps {
   cfg: GithubAppConfig
   clock: Clock
@@ -100,6 +109,8 @@ export interface GithubServiceDeps {
 const OUTDATED_INSTALLATIONS_CACHE_MS = 30_000
 const REPO_PAGE_CACHE_MS = 5 * 60_000
 const MAX_REPO_PAGE_CACHE_ENTRIES = 1_000
+/** Delivery-list pages one sweep may walk — the firehose bound, not the window. */
+const MAX_DELIVERY_PAGES = 10
 
 type RepoPageLookup = { ins: GithubInstallationRecord; page: number; perPage: number }
 
@@ -469,13 +480,29 @@ export class GithubService {
 
   /**
    * The App's recent webhook deliveries, newest first (P2.5 redelivery
-   * reconciliation). ONE page of `perPage` — the deliveries cursor rides a Link
-   * header `githubRequest` doesn't surface; the reconciler logs when the page
-   * is full so an under-covered window is visible, never silent.
+   * reconciliation). Follows the Link cursor until `deliveredSince` is reached
+   * — one page is a few minutes of traffic on a busy App, far less than the
+   * reconciler's look-back window — and stops at `maxPages` so a firehose
+   * bounds the sweep instead of the sweep bounding itself. The caller sees how
+   * far back the result actually reaches and reports the shortfall.
    */
-  async listHookDeliveries(perPage = 100): Promise<GhHookDelivery[]> {
+  async listHookDeliveries(
+    opts: { perPage?: number; maxPages?: number; deliveredSince?: Date } = {}
+  ): Promise<GhHookDeliveryPage> {
+    const floorMs = opts.deliveredSince?.getTime()
+    const deliveries: GhHookDelivery[] = []
     // bigIdsAsStrings: delivery ids overflow Number.MAX_SAFE_INTEGER — see GhHookDelivery.id.
-    return this.appRequest<GhHookDelivery[]>(`/app/hook/deliveries?per_page=${perPage}`, 'GET', true)
+    let path = `/app/hook/deliveries?per_page=${opts.perPage ?? 100}`
+    for (let page = 0; page < (opts.maxPages ?? MAX_DELIVERY_PAGES); page++) {
+      const rep: GithubPage<GhHookDelivery[]> = await this.appRequestPage<GhHookDelivery[]>(path, true)
+      deliveries.push(...rep.data)
+      const oldest = rep.data[rep.data.length - 1]
+      // No cursor left, or this page already reaches past the floor: complete.
+      if (!rep.nextPath || !oldest) return { deliveries, truncated: false }
+      if (floorMs !== undefined && Date.parse(oldest.delivered_at) <= floorMs) return { deliveries, truncated: false }
+      path = rep.nextPath
+    }
+    return { deliveries, truncated: true }
   }
 
   /** Ask GitHub to redeliver one delivery (202; lands on the relay pool again —
@@ -1063,8 +1090,17 @@ export class GithubService {
     method: 'GET' | 'POST' | 'DELETE' = 'GET',
     bigIdsAsStrings = false
   ): Promise<T> {
+    return (await this.appRequestPage<T>(path, bigIdsAsStrings, method)).data
+  }
+
+  /** {@link appRequest} keeping the `rel="next"` cursor (paginated list reads). */
+  private async appRequestPage<T>(
+    path: string,
+    bigIdsAsStrings = false,
+    method: 'GET' | 'POST' | 'DELETE' = 'GET'
+  ): Promise<GithubPage<T>> {
     const jwt = await mintAppJwt(this.deps.cfg)
-    return githubRequest<T>(path, {
+    return githubRequestPage<T>(path, {
       method,
       auth: jwt,
       fetchImpl: this.deps.fetchImpl,
