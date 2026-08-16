@@ -291,10 +291,11 @@ export class GithubReviewBrokerService {
   }
 
   /** Persist the exact start barrier before a GitHub hook enters the prompt. */
-  async start(input: HookStart, reportingDaemonId: DaemonId): Promise<void> {
+  async start(input: HookStart, reportingDaemonId: DaemonId, reportingOrgId?: string): Promise<void> {
     const hookId = HookId(input.hookId)
     const initial = await this.deps.hook.getRun(hookId, input.deliveryKey)
     if (!initial) denied('review dispatch fence does not match the accepted hook run')
+    if (reportingOrgId && initial.orgId !== reportingOrgId) denied('organization does not match the accepted hook run')
     if (initial.agentId === null || initial.agentId !== AgentId(input.agentId)) {
       denied('hook start agent does not match the accepted hook run')
     }

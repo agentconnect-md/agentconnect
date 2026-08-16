@@ -16,11 +16,18 @@ import { isFrame } from '@agentconnect.md/protocol'
 import { AgentId, DaemonId, HookId } from '../../domain/ids.js'
 import { githubProjectionIntent } from '../../github/projection-intent.js'
 import { hookRuntimeProjectionState } from '../../github/projection-state.js'
+import { frameOrgId } from './frame-org.js'
 import type { Handler } from './index.js'
 
 export const handleHookReport: Handler = async (frame, conn, deps) => {
   if (!isFrame('hook/report')(frame)) return
   const p = frame.payload
+  // The hook must live in the org the frame acts in (M4): a cross-org id reads as absent through the scoped read.
+  const orgId = frameOrgId(frame, conn)
+  if (!orgId || !(await deps.hook.get(orgId, HookId(p.hookId)))) {
+    conn.sendError(frame.id, 'SCOPE_DENIED', 'hook is not in the organization this frame acts in', false)
+    return
+  }
   const projectionIntent = githubProjectionIntent(p.event, p.github, p.reviewPolicy)
   const projectionDesiredState =
     p.reviewResult?.state === 'submitted'

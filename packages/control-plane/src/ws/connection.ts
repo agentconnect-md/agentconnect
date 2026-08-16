@@ -12,7 +12,16 @@
  * control via `request`/`send`) — but in Phase 2 only the inbound `auth`/
  * `register` path and the legal-frame gate are exercised.
  */
-import { AnyFrame, type ControlExt, type ErrorCode, isFrame } from '@agentconnect.md/protocol'
+import {
+  AnyFrame,
+  type ControlExt,
+  type ErrorCode,
+  checkInboundFrameOrg,
+  checkReplyFrameOrg,
+  isFrame,
+  isInstallWideFrameType,
+  type FrameOrgPeer
+} from '@agentconnect.md/protocol'
 import { decodeEnvelope, buildEnvelope, encode, type InboundControlExt } from './codec.js'
 import { ReqRep, type RequestOpts } from './correlator.js'
 import type { Transport } from './transport.js'
@@ -21,34 +30,6 @@ import type { DaemonWsDeps } from './deps.js'
 import type { FrameRouter } from './handlers/index.js'
 import { FencingState, checkFencing } from '../orchestrator/fencing.js'
 import { ProtocolError } from '../domain/errors.js'
-
-const INSTALL_WIDE_FRAME_TYPES = new Set([
-  'register',
-  'register/ok',
-  'heartbeat',
-  'capabilities/update',
-  'facts/daemon-runtimes',
-  'facts/memory-connections',
-  'relay/roster',
-  'collaboration/routes',
-  'daemon/drain',
-  'drain/progress',
-  'drain/done',
-  'daemon/restart',
-  'daemon/upgrade',
-  'daemon/bootstrap/result',
-  'config/push',
-  // Duty lease exchange: groups span orgs on one member; grants carry per-entry orgId.
-  'duty/grant',
-  'duty/renewed',
-  'duty/revoke',
-  'duty/release',
-  'duty/claim',
-  'duty/claim/ok',
-  // Existence query from the pool's orphan reconciler: the ids it asks about span every org.
-  'agent/exists',
-  'agent/exists/ok'
-])
 
 export class DaemonConnection implements ConnChannel {
   state: LifecycleState = 'CONNECTING'
@@ -102,8 +83,23 @@ export class DaemonConnection implements ConnChannel {
     }
     const frame = decoded.frame
 
-    // A correlated REP/error settles a CP-issued REQ — never re-dispatched.
-    if (frame.corr && this.correlator.settle(frame)) return
+    // A correlated REP/error settles a CP-issued REQ — never re-dispatched. It is fenced on the
+    // org of the REQ it answers first: a reply naming another org fails that REQ and applies nothing.
+    if (frame.corr) {
+      const request = this.correlator.requested(frame.corr)
+      if (request) {
+        const verdict = checkReplyFrameOrg(request, frame, this.orgPeer())
+        if (!verdict.ok) {
+          this.deps.log.error(
+            { daemonId: this.daemonId, type: frame.type, corr: frame.corr },
+            `daemon reply rejected: ${verdict.message}`
+          )
+          this.correlator.reject(frame.corr, new ProtocolError('SCOPE_DENIED', verdict.message, { retryable: false }))
+          return
+        }
+      }
+      if (this.correlator.settle(frame)) return
+    }
 
     // §2.1 legal-frame gate.
     if (!this.isLegalInState(frame.type)) {
@@ -134,27 +130,29 @@ export class DaemonConnection implements ConnChannel {
     }
   }
 
-  /** Enforce connection-scoped tenancy for ordinary daemons and frame-scoped tenancy for a pool member. */
+  private orgPeer(): FrameOrgPeer {
+    return this.orgId ? { mode: 'connection', orgId: this.orgId } : { mode: 'frame', orgId: null }
+  }
+
+  /**
+   * Connection-scoped tenancy for an ordinary daemon, frame-scoped for a pool member: the shared
+   * frame-scope gate first (org required on an org-scoped frame, forbidden on an install-wide one, equal
+   * to the connection's where it has one), then the org named against the resource the frame targets.
+   */
   private gateOrganization(frame: AnyFrame): boolean {
     if (this.state === 'AUTHENTICATING' || this.state === 'REGISTERING') return true
-    if (this.orgId) {
-      if (frame.orgId && frame.orgId !== this.orgId) {
-        this.sendError(frame.id, 'SCOPE_DENIED', 'organization does not match authenticated connection', false)
-        return false
-      }
-      return true
+    const verdict = checkInboundFrameOrg(frame, this.orgPeer())
+    if (!verdict.ok) {
+      this.sendError(frame.id, 'SCOPE_DENIED', verdict.message, false)
+      return false
     }
-    if (frame.orgId) {
-      const targetedOrgId = this.organizationForInbound(frame)
-      if (targetedOrgId === null || (targetedOrgId && targetedOrgId !== frame.orgId)) {
-        this.sendError(frame.id, 'SCOPE_DENIED', 'organization does not match the targeted resource', false)
-        return false
-      }
-      return true
+    if (!frame.orgId || this.orgId) return true
+    const targetedOrgId = this.organizationForInbound(frame)
+    if (targetedOrgId === null || (targetedOrgId && targetedOrgId !== frame.orgId)) {
+      this.sendError(frame.id, 'SCOPE_DENIED', 'organization does not match the targeted resource', false)
+      return false
     }
-    if (INSTALL_WIDE_FRAME_TYPES.has(frame.type)) return true
-    this.sendError(frame.id, 'SCOPE_DENIED', 'organization is required on an install-wide connection', false)
-    return false
+    return true
   }
 
   private organizationForInbound(frame: AnyFrame): string | null | undefined {
@@ -239,7 +237,7 @@ export class DaemonConnection implements ConnChannel {
     opts?: RequestOpts,
     orgId?: string
   ): Promise<TReply> {
-    const scopedOrgId = orgId ?? this.organizationFor(type, payload)
+    const scopedOrgId = this.outboundOrganization(type, payload, orgId)
     const frame = buildEnvelope(type as Parameters<typeof buildEnvelope>[0], payload, {
       ...(ext ? { ext } : {}),
       ...(scopedOrgId ? { orgId: scopedOrgId } : {})
@@ -250,7 +248,7 @@ export class DaemonConnection implements ConnChannel {
 
   /** Fire-and-forget EVT (C→D). */
   send(type: string, payload: unknown, ext?: ControlExt, orgId?: string): void {
-    const scopedOrgId = orgId ?? this.organizationFor(type, payload)
+    const scopedOrgId = this.outboundOrganization(type, payload, orgId)
     const frame = buildEnvelope(type as Parameters<typeof buildEnvelope>[0], payload, {
       ...(ext ? { ext } : {}),
       ...(scopedOrgId ? { orgId: scopedOrgId } : {})
@@ -258,9 +256,15 @@ export class DaemonConnection implements ConnChannel {
     this.transport.send(encode(frame))
   }
 
+  /** An install-wide frame to a pool member never carries an org, whatever a caller passed; the rest resolve one. */
+  private outboundOrganization(type: string, payload: unknown, explicit?: string): string | undefined {
+    if (!this.orgId && isInstallWideFrameType(type)) return undefined
+    return explicit ?? this.organizationFor(type, payload)
+  }
+
   private organizationFor(type: string, payload: unknown): string | undefined {
     if (this.orgId) return this.orgId
-    if (INSTALL_WIDE_FRAME_TYPES.has(type)) return undefined
+    if (isInstallWideFrameType(type)) return undefined
     const p = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
     const spec = p.spec && typeof p.spec === 'object' ? (p.spec as Record<string, unknown>) : undefined
     const state = this.deps.connReg.get(this.daemonId)
