@@ -123,22 +123,6 @@ export class PgDaemonRepo implements DaemonRepo {
     }
   }
 
-  async findClusterIdentity(daemonId: DaemonId): Promise<{ orgId: string | null; clusterIdentity: string } | null> {
-    const row = await this.db.daemon.findUnique({
-      where: { id: daemonId },
-      select: { orgId: true, clusterIdentity: true }
-    })
-    return row?.clusterIdentity ? { orgId: row.orgId, clusterIdentity: row.clusterIdentity } : null
-  }
-
-  async clusterBoundIds(orgId: OrgId): Promise<string[]> {
-    const rows = await this.db.daemon.findMany({
-      where: { orgId, clusterIdentity: { not: null } },
-      select: { id: true }
-    })
-    return rows.map((row) => row.id)
-  }
-
   async upsertOnAuth(input: AuthReqInput): Promise<{ daemon: DaemonRecord; sessionEpoch: bigint }> {
     return withAmbientTx(this.db, async (tx) => {
       const daemon = await tx.daemon.upsert({
