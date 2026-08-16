@@ -148,9 +148,14 @@ One logical AgentConnect session owns one ACP host when key-server mode is activ
 Provider credentials are process-level settings, so sharing a runtime would let
 concurrent sessions use whichever key was written last. Internal model jobs use their
 own opaque session identities and revoke their grants when their one-off host stops.
-OpenCode derives the credential provider from the effective session model. A live
-credential-scoped session rejects a model switch to another provider; after the host
-is released, the next activation may select and issue for the new provider.
+OpenCode derives the credential provider from the effective session model. A started
+host is authoritative for its whole working life: while its session still has live SDK
+work, a model switch to another provider is recorded as the sticky session override but
+never pushed to the running process, whose options only ever received the key and base
+URL of the provider it was started for. The next start after the work settles reads that
+override, issues for the new provider, and rebinds. Without a key server the shared
+static-credential host has no per-session start to rebind at, so it refuses a
+cross-provider selection outright instead of storing one that could never be honoured.
 
 ## 5. Caching, rotation, and revocation
 
@@ -161,9 +166,13 @@ is released, the next activation may select and issue for the new provider.
 - **Expiring keys lapse.** The daemon replaces one once its refresh hint has passed,
   before the session's next activation; if refresh fails before expiry, the current
   host remains usable for the rest of its granted window. Live SDK background work
-  defers a non-expired rotation so refresh never terminates it. At expiry, a new
-  activation fails instead of stopping that work; rotation resumes once the session
-  becomes quiescent.
+  pins the host to its start-time credential: rotation never terminates work in flight,
+  and past expiry the pinned host keeps running on the lapsed grant until the session
+  becomes quiescent — a request the issuer has stopped honouring fails upstream, which
+  is strictly better than the daemon killing background work to enforce the boundary.
+- **A host is never handed out to a released session.** Teardown joins an in-progress
+  start rather than observing an entry that has no host yet, so a host born after its
+  release is stopped instead of leaking untracked.
 - **Long-lived keys are revoked, not expired.** The daemon calls `RevokeKey` when
   a session holding one ends. `RevokeKey` is idempotent — unknown and
   already-revoked ids succeed, because the caller wants "ensure it is dead", not

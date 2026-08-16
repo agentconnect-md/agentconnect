@@ -91,7 +91,7 @@ describe('daemon model-key session lifecycle', () => {
     expect(h.firstHost.stop).toHaveBeenCalledOnce()
   })
 
-  it('does not stop live SDK work when its credential reaches expiry', async () => {
+  it('keeps a working host on its start-time credential past expiry', async () => {
     const h = harness([
       { keyId: 'key-1', key: 'old', requestedAtMs: 1_000, refreshAtMs: 1_500, expiresAtMs: 2_000 },
       { keyId: 'key-2', key: 'new', requestedAtMs: 2_000 }
@@ -109,15 +109,17 @@ describe('daemon model-key session lifecycle', () => {
     })
     h.clock.advance(1_000)
 
-    await expect(h.daemon.ensureModelSessionHost(agent, 'session-a')).rejects.toThrow(
-      /credential expired.*live SDK work/
-    )
+    const pinned = await h.daemon.ensureModelSessionHost(agent, 'session-a')
+    expect(pinned.host).toBe(h.firstHost)
     expect(h.issue).toHaveBeenCalledOnce()
     expect(h.firstHost.stop).not.toHaveBeenCalled()
   })
 
-  it('uses the effective OpenCode model and rejects a live cross-provider switch', async () => {
-    const h = harness([{ keyId: 'key-1', key: 'secret', requestedAtMs: 1_000 }])
+  it('pins a working host to its provider and applies the switch at the next start', async () => {
+    const h = harness([
+      { keyId: 'key-1', key: 'secret', requestedAtMs: 1_000 },
+      { keyId: 'key-2', key: 'next', requestedAtMs: 1_000 }
+    ])
     const opencodeAgent = {
       id: 'agent-a',
       runtime: 'opencode',
@@ -126,17 +128,73 @@ describe('daemon model-key session lifecycle', () => {
     }
     h.daemon.runtimes = { opencode: { command: 'opencode', args: ['acp'], env: [] } }
     h.daemon.store.getModelOverride = () => 'anthropic/claude-opus-4'
+    h.daemon.agents.set('agent-a', opencodeAgent)
 
     await h.daemon.ensureModelSessionHost(opencodeAgent, 'session-a')
     expect(h.issue).toHaveBeenCalledWith(expect.objectContaining({ provider: 'anthropic' }))
 
+    // Live SDK work: the switch is recorded, but the running host keeps its binding.
+    h.daemon.store.getSession = () => ({ agentId: 'agent-a', acpSessionId: 'acp-1' })
+    h.daemon.sdkLease.set(JSON.stringify(['agent-a', 'acp-1']), {
+      agentId: 'agent-a',
+      tasks: new Map([['task-1', {}]]),
+      settled: [],
+      sdkState: 'idle',
+      bgWakes: 0,
+      armedWakes: 0,
+      deliveringWakes: 0
+    })
     const setModelOverride = vi.fn()
-    h.daemon.agents.set('agent-a', opencodeAgent)
-    h.daemon.store = {
-      getSession: () => ({ agentId: 'agent-a', acpSessionId: null }),
-      setModelOverride
+    h.daemon.store.setModelOverride = setModelOverride
+    expect(h.daemon.setModelByKey('session-a', 'openai/gpt-5')).toBe(true)
+    expect(setModelOverride).toHaveBeenCalledWith('session-a', 'openai/gpt-5')
+
+    h.daemon.store.getModelOverride = () => 'openai/gpt-5'
+    const pinned = await h.daemon.ensureModelSessionHost(opencodeAgent, 'session-a')
+    expect(pinned.host).toBe(h.firstHost)
+    expect(h.issue).toHaveBeenCalledOnce()
+
+    // Once the work settles, the next start honours the recorded provider.
+    h.daemon.sdkLease.clear()
+    const rebound = await h.daemon.ensureModelSessionHost(opencodeAgent, 'session-a')
+    expect(rebound.host).toBe(h.secondHost)
+    expect(h.firstHost.stop).toHaveBeenCalledOnce()
+    expect(h.issue).toHaveBeenLastCalledWith(expect.objectContaining({ provider: 'openai' }))
+  })
+
+  it('refuses a cross-provider switch on the shared static-credential host', () => {
+    const daemon = new Daemon({ k8s: true, clock: new FakeClock(1_000) }) as any
+    daemon.staticModelCredential = { key: 'static-token' }
+    const opencodeAgent = {
+      id: 'agent-a',
+      runtime: 'opencode',
+      allowRuntimeChangesInChat: true,
+      runtimeOverrides: { model: 'openai/gpt-5', env: [], secrets: [] }
     }
-    expect(h.daemon.setModelByKey('session-a', 'openai/gpt-5')).toBe(false)
+    daemon.runtimes = { opencode: { command: 'opencode', args: ['acp'], env: [] } }
+    daemon.agents.set('agent-a', opencodeAgent)
+    const setModelOverride = vi.fn()
+    daemon.store = { getSession: () => ({ agentId: 'agent-a', acpSessionId: null }), setModelOverride }
+
+    expect(daemon.setModelByKey('session-a', 'anthropic/claude-opus-4')).toBe(false)
     expect(setModelOverride).not.toHaveBeenCalled()
+    expect(daemon.setModelByKey('session-a', 'openai/gpt-5-codex')).toBe(true)
+    expect(setModelOverride).toHaveBeenCalledWith('session-a', 'openai/gpt-5-codex')
+  })
+
+  it('stops a host started after its entry was released', async () => {
+    const h = harness([{ keyId: 'key-1', key: 'secret', requestedAtMs: 1_000 }])
+    let settleStart: (host: unknown) => void = () => {}
+    h.daemon.startModelSessionRuntime = vi.fn(() => new Promise((resolve) => (settleStart = resolve)))
+
+    const starting = h.daemon.ensureModelSessionHost(agent, 'session-a')
+    await vi.waitFor(() => expect(h.daemon.startModelSessionRuntime).toHaveBeenCalled())
+    const released = h.daemon.releaseModelSessionHost('session-a')
+    settleStart(h.firstHost)
+
+    await expect(starting).rejects.toThrow(/released during startup/)
+    await released
+    expect(h.firstHost.stop).toHaveBeenCalledOnce()
+    expect(h.revoke).toHaveBeenCalledWith('key-1')
   })
 })

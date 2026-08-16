@@ -1472,7 +1472,10 @@ interface ModelSessionHost {
   target: ModelProviderTarget
   grant: KeyGrant
   host?: AcpHost
+  /** In-progress start, joined by release so a host born after teardown is still stopped. */
+  starting?: Promise<AcpHost>
   stopping?: Promise<void>
+  released?: boolean
 }
 
 type TurnLifecycleCleanupOutcome = { blocked: false } | { blocked: true; error: unknown }
@@ -5620,23 +5623,25 @@ export class Daemon {
     if (!target) throw new Error(`runtime "${agent.runtime}" does not support MODEL_TOKEN translation`)
     const now = this.modelKeyNow()
     let entry = this.modelSessionHosts.get(sessionKey)
-    if (entry?.stopping) await entry.stopping
+    if (entry?.stopping) {
+      await entry.stopping
+      entry = this.modelSessionHosts.get(sessionKey) // a concurrent release may have dropped it
+    }
     const targetChanged = entry !== undefined && JSON.stringify(entry.target) !== JSON.stringify(target)
-    if (entry && targetChanged && !this.modelSessionSdkQuiescent(entry)) {
-      throw new Error(`cannot change model provider while session ${sessionKey} has live SDK work`)
+    const refreshDue = entry?.grant.refreshAtMs !== undefined && now >= entry.grant.refreshAtMs
+    const expired = entry?.grant.expiresAtMs !== undefined && now >= entry.grant.expiresAtMs
+    // A started host is authoritative for its whole working life: while its session still has
+    // live SDK work, a provider change or a credential refresh is recorded and honoured at the
+    // next start, never by swapping the process out from under the work in flight.
+    if (entry?.host && (targetChanged || refreshDue || expired) && !this.modelSessionSdkQuiescent(entry)) {
+      this.log.debug(`session ${sessionKey}: model host pinned to its start-time credential while SDK work is live`)
+      return this.selectedModelTurnHost(entry, entry.host)
     }
     if (targetChanged) {
       await this.releaseModelSessionHost(sessionKey)
       entry = undefined
     }
 
-    const refreshDue = entry?.grant.refreshAtMs !== undefined && now >= entry.grant.refreshAtMs
-    const expired = entry?.grant.expiresAtMs !== undefined && now >= entry.grant.expiresAtMs
-    if (entry?.host && (refreshDue || expired) && !this.modelSessionSdkQuiescent(entry)) {
-      if (expired) throw new Error(`model credential expired while session ${sessionKey} has live SDK work`)
-      this.log.debug(`key-server refresh deferred for session ${sessionKey} until SDK work is quiescent`)
-      return this.selectedModelTurnHost(entry, entry.host)
-    }
     if (!entry || refreshDue || expired) {
       let grant: KeyGrant
       try {
@@ -5659,8 +5664,50 @@ export class Daemon {
       this.modelSessionHosts.set(sessionKey, entry)
     }
 
-    if (!entry.host) entry.host = await this.startModelSessionRuntime(agent, entry)
-    return this.selectedModelTurnHost(entry, entry.host)
+    const owner = entry
+    let host = owner.host
+    if (!host) {
+      // Publish the start before awaiting it: a concurrent release joins this promise instead
+      // of seeing an entry with no host, stopping nothing, and leaking the process it misses.
+      const starting: Promise<AcpHost> = (owner.starting ??= this.startModelSessionRuntime(agent, owner)
+        .then((started) => {
+          owner.host = started
+          return started
+        })
+        .finally(() => {
+          if (owner.starting === starting) owner.starting = undefined
+        }))
+      host = await starting
+      if (owner.released || this.modelSessionHosts.get(sessionKey) !== owner) {
+        await this.stopModelSessionRuntime(owner, host).catch(() => {})
+        throw new Error(`model session host for ${sessionKey} was released during startup`)
+      }
+    }
+    return this.selectedModelTurnHost(owner, host)
+  }
+
+  /** The provider binding the session's current host was started with, when this daemon is the
+   *  one injecting its credential. Undefined means nothing is bound — the runtime carries its
+   *  own auth — so any model the runtime offers is applicable. */
+  private boundModelTarget(sessionKey: string, agentId: string): ModelProviderTarget | undefined {
+    const credentialHost = this.modelSessionHosts.get(sessionKey)
+    if (credentialHost) return credentialHost.target
+    if (this.keyServer || !this.k8s || !this.staticModelCredential) return undefined
+    const agent = this.agents.get(agentId)
+    const runtime = agent ? this.runtimes[agent.runtime] : undefined
+    return agent && runtime ? modelProviderTarget(agent, runtime) : undefined
+  }
+
+  /** Whether a model resolves to a different provider than the one the session's host was
+   *  started for. OpenCode model ids are provider-prefixed, so such a pick would land on a
+   *  provider whose options never received a key or base URL. */
+  private modelCrossesHostProvider(sessionKey: string, agentId: string, model: string): boolean {
+    const bound = this.boundModelTarget(sessionKey, agentId)
+    if (!bound) return false
+    const agent = this.agents.get(agentId)
+    const runtime = agent ? this.runtimes[agent.runtime] : undefined
+    const target = agent && runtime ? modelProviderTarget(agent, runtime, model) : undefined
+    return !target || JSON.stringify(target) !== JSON.stringify(bound)
   }
 
   private modelSessionSdkQuiescent(entry: ModelSessionHost): boolean {
@@ -5741,6 +5788,9 @@ export class Daemon {
     const entry = this.modelSessionHosts.get(sessionKey)
     if (!entry) return
     this.modelSessionHosts.delete(sessionKey)
+    entry.released = true
+    // Join an in-progress start so the host it produces is stopped rather than left untracked.
+    if (entry.starting) await entry.starting.catch(() => undefined)
     let stopError: unknown
     try {
       await this.stopModelSessionRuntime(entry, entry.host, deadlineMs)
@@ -8063,18 +8113,22 @@ export class Daemon {
   private setModelByKey(key: string, model: string): boolean {
     const rec = this.chatRuntimeSession(key)
     if (!rec) return false
-    const credentialHost = this.modelSessionHosts.get(key)
-    if (credentialHost) {
-      const agent = this.agents.get(rec.agentId)
-      const runtime = agent ? this.runtimes[agent.runtime] : undefined
-      const target = agent && runtime ? modelProviderTarget(agent, runtime, model) : undefined
-      if (!target || JSON.stringify(target) !== JSON.stringify(credentialHost.target)) {
-        this.log.warn(`session ${key}: cross-provider model switch rejected while its credential host is active`)
-        return false
-      }
+    const crossProvider = this.modelCrossesHostProvider(key, rec.agentId, model)
+    // The shared static-credential host has no per-session restart to pick a new binding up,
+    // so a cross-provider pick there could never be credentialed — refuse it outright rather
+    // than storing an override that can only ever fail.
+    if (crossProvider && !this.modelSessionHosts.has(key)) {
+      this.log.warn(`session ${key}: cross-provider model switch rejected — the static credential host is bound`)
+      return false
     }
     this.store.setModelOverride(key, model)
     this.log.info(`session ${key} model override → "${model}"`)
+    // A running credential host keeps the provider it started with; the sticky override is
+    // what the next start reads, so the switch lands there instead of live.
+    if (crossProvider) {
+      this.log.info(`session ${key}: provider change applies when its credential host next starts`)
+      return true
+    }
     const acpSessionId = rec.acpSessionId
     const host = acpSessionId ? this.hostForStoredSession(rec.agentId, acpSessionId) : undefined
     if (!acpSessionId || !host?.hasSession(acpSessionId)) return true // no live session — applies next turn
@@ -14805,7 +14859,11 @@ export class Daemon {
       // switch) before the turn runs — the agent's default model was applied at
       // session/new, so this layers the per-session choice on top each turn. Best-effort.
       const override = allowRuntimeChangesInChat ? this.store.getModelOverride(key) : undefined
-      if (override) {
+      if (override && this.modelCrossesHostProvider(key, agentId, override)) {
+        // The host is bound to the provider it was started for — pushing a foreign one live
+        // would run the turn against options that never received a key or base URL.
+        this.log.debug(`model override "${override}" deferred — host is bound to its start-time provider`)
+      } else if (override) {
         await host
           .setSessionModel(sessionId, override)
           .catch((err) => this.log.debug(`model override "${override}" not applied: ${(err as Error).message}`))
