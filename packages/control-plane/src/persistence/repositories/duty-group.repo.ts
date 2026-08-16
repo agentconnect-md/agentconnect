@@ -10,7 +10,8 @@ import type {
   DutyGrantRecord,
   DutyGroupRecord,
   DutyGroupRepo,
-  DutyReconcilePlanner
+  DutyReconcilePlanner,
+  PoolTelemetryRow
 } from '../ports.js'
 import type { AgentId, DaemonId, OrgId } from '../../domain/ids.js'
 import { withTx } from '../prisma.js'
@@ -402,6 +403,83 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
       LIMIT 1
     `)
     return rows.length > 0
+  }
+
+  async poolTelemetry(now: Date, liveMs: number, maxMembers: number): Promise<PoolTelemetryRow[]> {
+    // Liveness is the ledger's one notion of it, as everywhere else: seen within the lease horizon.
+    const liveSince = new Date(now.getTime() - liveMs)
+    return this.prisma.$queryRaw<PoolTelemetryRow[]>(Prisma.sql`
+      WITH live AS (
+        SELECT d.id, msm."setId", d."maxAgents"
+        FROM "daemon" d JOIN "member_set_member" msm ON msm."daemonId" = d.id
+        WHERE d."lastSeenAt" >= ${liveSince}
+      ),
+      -- maxAgents <= 0 is the daemon's UNBOUNDED sentinel, not a ceiling of zero
+      -- (Daemon.dutyHeadroomForPendingClaim returns +Infinity for it; the heartbeat's finite
+      -- number is only a batching hint). Summing it raw would report a member that accepts
+      -- everything as contributing nothing, so a pool with no ceiling would read as permanently
+      -- full. Counted separately instead, and the capacity sum covers the bounded members only —
+      -- which also keeps a negative value, allowed by the wire schema, out of the arithmetic.
+      cap AS (
+        SELECT "setId",
+               count(*)::int AS members,
+               count(*) FILTER (WHERE "maxAgents" <= 0)::int AS unbounded,
+               COALESCE(sum("maxAgents") FILTER (WHERE "maxAgents" > 0), 0)::int AS capacity
+        FROM live GROUP BY "setId"
+      ),
+      -- Used capacity read the way the member gates itself (§12): duty-covered agents, deduped,
+      -- under UNEXPIRED leases only, so a lapsed lease frees its headroom here exactly when it
+      -- frees it at the claim.
+      used AS (
+        SELECT l."setId", count(DISTINCT m."refId")::int AS agents
+        FROM "duty_group" g
+        JOIN live l ON l.id = g."holder"
+        JOIN "duty_group_member" m ON m."groupId" = g.id AND m."kind" = 'agent'
+        WHERE g."expiresAt" IS NOT NULL AND g."expiresAt" > ${now}
+        GROUP BY l."setId"
+      ),
+      -- A vacancy counts against a set only when that set could actually take it, which is the
+      -- claimVacant eligibility gate restated set-wise: every RESOLVABLE agent in the group is
+      -- set-placed into one and the same set. Without this the count is dominated by the singleton
+      -- rows of machine-placed agents, which are vacant by design and forever (§6).
+      vacant AS (
+        SELECT g.id,
+               -- Single-valued by the HAVING below; uuid has no min(), so take it from the array.
+               (array_agg(DISTINCT a."setId"))[1] AS "setId",
+               GREATEST(EXTRACT(EPOCH FROM (${now}::timestamptz - COALESCE(g."expiresAt", g."updatedAt"))), 0) AS age,
+               (SELECT count(*) FROM "duty_group_member" dm WHERE dm."groupId" = g.id) AS size
+        FROM "duty_group" g
+        JOIN "duty_group_member" m ON m."groupId" = g.id AND m."kind" = 'agent'
+        JOIN "agent" a ON a.id = m."refId"
+        WHERE g."holder" IS NULL OR g."expiresAt" IS NULL OR g."expiresAt" < ${now}
+        GROUP BY g.id
+        HAVING count(*) FILTER (WHERE a."placementKind" <> 'set' OR a."setId" IS NULL) = 0
+           AND count(DISTINCT a."setId") = 1
+      ),
+      -- Oversized groups are split out, never folded into the claimable count: they are
+      -- undeliverable on this wire at any pool size (§5), so counting them as unmet demand would
+      -- pin a capacity alert high forever. They are their own signal — D16, a dedicated daemon.
+      vac AS (
+        SELECT "setId",
+               count(*) FILTER (WHERE size <= ${maxMembers})::int AS groups,
+               count(*) FILTER (WHERE size > ${maxMembers})::int AS oversized,
+               COALESCE(max(age) FILTER (WHERE size <= ${maxMembers}), 0)::double precision AS oldest
+        FROM vacant GROUP BY "setId"
+      )
+      SELECT s.id AS "setId", s.name AS "setName", (s."orgId" IS NULL) AS "installWide",
+             COALESCE(cap.members, 0)::int AS "liveMembers",
+             COALESCE(cap.unbounded, 0)::int AS "unboundedMembers",
+             COALESCE(cap.capacity, 0)::int AS "capacityAgents",
+             COALESCE(used.agents, 0)::int AS "dutyAgents",
+             COALESCE(vac.groups, 0)::int AS "vacantGroups",
+             COALESCE(vac.oversized, 0)::int AS "oversizedVacantGroups",
+             COALESCE(vac.oldest, 0)::double precision AS "oldestVacancySec"
+      FROM "member_set" s
+      LEFT JOIN cap ON cap."setId" = s.id
+      LEFT JOIN used ON used."setId" = s.id
+      LEFT JOIN vac ON vac."setId" = s.id
+      ORDER BY s.id
+    `)
   }
 
   async confirmHeld(holder: DaemonId, reported: readonly DutyDigestEntry[]): Promise<string[]> {
