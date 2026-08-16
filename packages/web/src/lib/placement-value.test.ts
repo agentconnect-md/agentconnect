@@ -49,6 +49,11 @@ describe('agentDaemonLabel', () => {
   it('uses the Agent projection outside the visible fleet and never falls back to a raw daemon id', () => {
     const daemonId = 'd8e6ea1f-c9bb-4d7b-8b75-e4db14e84999'
     expect(agentDaemonLabel({ daemon: daemonId, daemonName: 'Daemon A', placementKind: 'daemon' }, [])).toBe('Daemon A')
+    expect(
+      agentDaemonLabel({ daemon: daemonId, daemonName: 'Old name', placementKind: 'daemon' }, [
+        { daemonId, name: 'Renamed daemon' }
+      ])
+    ).toBe('Renamed daemon')
     expect(agentDaemonLabel({ daemon: daemonId, placementKind: 'daemon' }, [])).toBe('—')
     expect(agentDaemonLabel({ daemon: POOL_PLACEMENT, placementKind: 'set' }, [])).toBe(POOL_LABEL)
   })
