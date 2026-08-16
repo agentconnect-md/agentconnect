@@ -27,6 +27,7 @@ const canonicalColumns = [
   'capsJson',
   'channelId',
   'childSessionId',
+  'claimedAt',
   'completedAt',
   'connectionId',
   'connectionRevision',

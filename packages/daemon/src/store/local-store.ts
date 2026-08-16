@@ -636,7 +636,7 @@ function restrictPath(path: string, mode: number): void {
  * change that edits a `CREATE TABLE` below, and append the matching step to
  * {@link SCHEMA_MIGRATIONS}.
  */
-const SCHEMA_VERSION = 8
+const SCHEMA_VERSION = 9
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -712,6 +712,11 @@ const SCHEMA_MIGRATIONS: ((db: StoreDatabase) => void)[] = [
     db.exec(`
       DROP TABLE IF EXISTS runtime_catalog_meta;
       DROP TABLE IF EXISTS runtime_model_catalog;
+    `),
+  (db) =>
+    db.exec(`
+      ALTER TABLE session_purges ADD COLUMN ownerId TEXT;
+      ALTER TABLE session_purges ADD COLUMN claimedAt INTEGER;
     `)
 ]
 
@@ -823,12 +828,15 @@ export class LocalStore {
       -- losing it would leave the console rendering a permanently empty transcript
       -- with no explanation. Rows are dropped only on the CP's ACK.
       -- Keyed by (agentId, sessionId): ACP session ids are runtime-local, so two
-      -- agents can both have purged an acp-1.
+      -- agents can both have purged an acp-1. On a shared pool store ownerId /
+      -- claimedAt lease each receipt to one member the way inbox.reportOwnerId does.
       CREATE TABLE IF NOT EXISTS session_purges (
         agentId TEXT NOT NULL,
         sessionId TEXT NOT NULL,
         reason TEXT NOT NULL,
         purgedAt INTEGER NOT NULL,
+        ownerId TEXT,
+        claimedAt INTEGER,
         PRIMARY KEY (agentId, sessionId)
       );
       CREATE INDEX IF NOT EXISTS session_purges_fifo ON session_purges (purgedAt);
@@ -2323,7 +2331,7 @@ export class LocalStore {
    *  permission_requests and the capture gate are both scoped by agentId, so a
    *  neighbour holding the same runtime-local `acp-1` keeps its own rows.
    *  Returns false when the row is already gone (idempotent). */
-  deleteSession(key: string, purge?: { reason: string; at: number }): boolean {
+  deleteSession(key: string, purge?: { reason: string; at: number; ownerId?: string }): boolean {
     const rec = this.getSession(key)
     if (!rec) return false
     this.db.exec('BEGIN')
@@ -2336,9 +2344,13 @@ export class LocalStore {
       // re-created for the same id — the console should show when the content
       // actually went away, not when the daemon last retried.
       if (purge && rec.acpSessionId) {
+        // Stamped to the deleting member on a shared store: its drain owns the receipt.
         this.db
-          .prepare('INSERT OR IGNORE INTO session_purges (agentId, sessionId, reason, purgedAt) VALUES (?, ?, ?, ?)')
-          .run(rec.agentId, rec.acpSessionId, purge.reason, purge.at)
+          .prepare(
+            `INSERT OR IGNORE INTO session_purges (agentId, sessionId, reason, purgedAt, ownerId, claimedAt)
+             VALUES (?, ?, ?, ?, ?, ?)`
+          )
+          .run(rec.agentId, rec.acpSessionId, purge.reason, purge.at, purge.ownerId ?? null, purge.at)
       }
       this.db.prepare('DELETE FROM sessions WHERE key = ?').run(key)
       this.db.prepare('DELETE FROM session_mutes WHERE key = ?').run(key)
@@ -2462,21 +2474,76 @@ export class LocalStore {
 
   /** Retention-GC receipts still owed to the CP, oldest purge first, bounded.
    *  Grouped per agent by the caller: one `event/session-purged` frame reports one
-   *  agent, because the CP authorizes the report against that agent's placement. */
-  listSessionPurges(limit: number): SessionPurgeRow[] {
+   *  agent, because the CP authorizes the report against that agent's placement.
+   *  A local store owns every receipt outright. On a shared pool store a row is
+   *  offered only when this member owns it, when it is unowned (pre-pool), or when
+   *  its owner's claim lapsed AND this member serves the agent — the same lease
+   *  the hook-completion outbox uses, so a live peer's receipt stays with its owner. */
+  listSessionPurges(limit: number, now: number, ownerId?: string, agentIds?: readonly string[]): SessionPurgeRow[] {
+    const columns = 'SELECT agentId, sessionId, reason, purgedAt FROM session_purges'
+    const order = ' ORDER BY purgedAt ASC LIMIT @limit'
+    if (!this.shared) return this.db.prepare(`${columns}${order}`).all({ limit }) as unknown as SessionPurgeRow[]
+    const scope = idScope('agentId', agentIds)
     return this.db
-      .prepare('SELECT agentId, sessionId, reason, purgedAt FROM session_purges ORDER BY purgedAt ASC LIMIT ?')
-      .all(limit) as unknown as SessionPurgeRow[]
+      .prepare(
+        `${columns}
+         WHERE (ownerId IS NULL OR ownerId = @ownerId
+                OR (COALESCE(claimedAt, 0) <= @staleBefore${scope.sql}))${order}`
+      )
+      .all({
+        limit,
+        ownerId: ownerId ?? null,
+        staleBefore: now - SHARED_OUTBOX_LEASE_MS,
+        ...scope.params
+      }) as unknown as SessionPurgeRow[]
+  }
+
+  /** Take or renew this member's claim on the receipts of one frame before emitting
+   *  it, returning the session ids actually claimed — a row a peer took over between
+   *  the list and this CAS is left out. Local stores never lease: everything is claimed. */
+  claimSessionPurges(
+    agentId: string,
+    sessionIds: readonly string[],
+    ownerId: string | undefined,
+    now: number
+  ): string[] {
+    if (!this.shared) return [...sessionIds]
+    const claim = this.db.prepare(
+      `UPDATE session_purges
+       SET ownerId = @ownerId, claimedAt = @now
+       WHERE agentId = @agentId AND sessionId = @sessionId
+         AND (ownerId IS NULL OR ownerId = @ownerId OR COALESCE(claimedAt, 0) <= @staleBefore)`
+    )
+    const staleBefore = now - SHARED_OUTBOX_LEASE_MS
+    const claimed: string[] = []
+    this.db.exec('BEGIN')
+    try {
+      for (const sessionId of sessionIds) {
+        if (claim.run({ agentId, sessionId, ownerId: ownerId ?? null, now, staleBefore }).changes === 1)
+          claimed.push(sessionId)
+      }
+      this.db.exec('COMMIT')
+    } catch (err) {
+      this.db.exec('ROLLBACK')
+      throw err
+    }
+    return claimed
   }
 
   /** Settle receipts the CP has ACKed. Scoped by agent: the same ACP id may still
-   *  be owed for a different agent (ids are runtime-local). */
-  acknowledgeSessionPurges(agentId: string, sessionIds: string[]): void {
+   *  be owed for a different agent (ids are runtime-local). On a shared store only
+   *  the claim holder (or nobody) may release a row — never a peer. */
+  acknowledgeSessionPurges(agentId: string, sessionIds: string[], ownerId?: string): void {
     if (sessionIds.length === 0) return
-    const stmt = this.db.prepare('DELETE FROM session_purges WHERE agentId = ? AND sessionId = ?')
+    const fence = this.shared ? ' AND (ownerId IS NULL OR ownerId = @ownerId)' : ''
+    const stmt = this.db.prepare(
+      `DELETE FROM session_purges WHERE agentId = @agentId AND sessionId = @sessionId${fence}`
+    )
     this.db.exec('BEGIN')
     try {
-      for (const sessionId of sessionIds) stmt.run(agentId, sessionId)
+      for (const sessionId of sessionIds) {
+        stmt.run({ agentId, sessionId, ...(fence ? { ownerId: ownerId ?? null } : {}) })
+      }
       this.db.exec('COMMIT')
     } catch (err) {
       this.db.exec('ROLLBACK')

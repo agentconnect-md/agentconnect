@@ -60,6 +60,8 @@ describe('LocalStore schema versioning', () => {
     old.exec('ALTER TABLE inbox DROP COLUMN reportOwnerId')
     old.exec('ALTER TABLE inbox DROP COLUMN reportClaimedAt')
     old.exec('ALTER TABLE cron_runs DROP COLUMN definition')
+    old.exec('ALTER TABLE session_purges DROP COLUMN ownerId')
+    old.exec('ALTER TABLE session_purges DROP COLUMN claimedAt')
     old.exec('PRAGMA user_version = 1')
     old.close()
 
@@ -74,6 +76,7 @@ describe('LocalStore schema versioning', () => {
     const grantColumns = columnsOf('webchat_mcp_grant_ledger')
     const inboxColumns = columnsOf('inbox')
     const cronColumns = columnsOf('cron_runs')
+    const purgeColumns = columnsOf('session_purges')
     upgraded.close()
     expect(columns).toContain('ownerId')
     expect(outboxColumns).toEqual(expect.arrayContaining(['failedAttempts', 'nextAttemptAt']))
@@ -83,7 +86,9 @@ describe('LocalStore schema versioning', () => {
     expect(inboxColumns).toEqual(expect.arrayContaining(['reportOwnerId', 'reportClaimedAt']))
     // A stamp is only comparable to a fire of the same schedule definition (#1031).
     expect(cronColumns).toContain('definition')
-    expect(userVersion(path)).toBe(8)
+    // Purge receipts are leased per pool member (#1032).
+    expect(purgeColumns).toEqual(expect.arrayContaining(['ownerId', 'claimedAt']))
+    expect(userVersion(path)).toBe(9)
   })
 
   it('never persists the CP routing map on a shared store, and still does on an owned one', () => {
@@ -124,6 +129,8 @@ describe('LocalStore schema versioning', () => {
     old.exec(`INSERT INTO session_gates (acpSessionId, localExcluded, cpPrivate, cpRev) VALUES
       ('acp-1', 1, 0, 4), ('acp-2', 0, 0, 7), ('acp-orphan', 0, 0, 1)`)
     old.exec('ALTER TABLE cron_runs DROP COLUMN definition')
+    old.exec('ALTER TABLE session_purges DROP COLUMN ownerId')
+    old.exec('ALTER TABLE session_purges DROP COLUMN claimedAt')
     old.exec('PRAGMA user_version = 5')
     old.close()
 
@@ -139,7 +146,7 @@ describe('LocalStore schema versioning', () => {
     expect(upgraded.isCaptureExcluded('bot-c', 'acp-2')).toBe(true)
     upgraded.close()
 
-    expect(userVersion(path)).toBe(8)
+    expect(userVersion(path)).toBe(9)
   })
 
   it('re-keys the runtime catalog cache on its owning member when upgrading a v7 store', () => {
@@ -163,6 +170,8 @@ describe('LocalStore schema versioning', () => {
       INSERT INTO runtime_model_catalog (runtimeId, modelId, fingerprint, capsJson, observedAt)
         VALUES ('claude', 'opus', 'fp-1', '{}', 100);
     `)
+    old.exec('ALTER TABLE session_purges DROP COLUMN ownerId')
+    old.exec('ALTER TABLE session_purges DROP COLUMN claimedAt')
     old.exec('PRAGMA user_version = 7')
     old.close()
 
@@ -184,7 +193,7 @@ describe('LocalStore schema versioning', () => {
         .map((column) => column.name)
     expect(primaryKey(metaColumns)).toEqual(['ownerId', 'runtimeId'])
     expect(primaryKey(capColumns)).toEqual(['ownerId', 'runtimeId', 'modelId'])
-    expect(userVersion(path)).toBe(8)
+    expect(userVersion(path)).toBe(9)
   })
 
   it('refuses a store written by a newer daemon WITHOUT touching it first', () => {
@@ -1315,7 +1324,7 @@ describe('LocalStore session retention GC (#485)', () => {
     s.deleteSession('gone', { reason: 'retention', at: 1_700 })
     s.deleteSession('unbound', { reason: 'retention', at: 1_800 })
 
-    expect(s.listSessionPurges(10)).toEqual([
+    expect(s.listSessionPurges(10, 0)).toEqual([
       { agentId: 'bot-a', sessionId: 'acp-gone', reason: 'retention', purgedAt: 1_700 }
     ])
     s.close()
@@ -1338,10 +1347,10 @@ describe('LocalStore session retention GC (#485)', () => {
     })
     s.deleteSession('a', { reason: 'retention', at: 100 })
     s.deleteSession('b', { reason: 'retention', at: 200 })
-    expect(s.listSessionPurges(10)).toHaveLength(2)
+    expect(s.listSessionPurges(10, 0)).toHaveLength(2)
 
     s.acknowledgeSessionPurges('bot-a', ['acp-a'])
-    expect(s.listSessionPurges(10)).toEqual([
+    expect(s.listSessionPurges(10, 0)).toEqual([
       { agentId: 'bot-b', sessionId: 'acp-a', reason: 'retention', purgedAt: 200 }
     ])
     s.close()
@@ -1355,7 +1364,7 @@ describe('LocalStore session retention GC (#485)', () => {
     s.deleteSession('recent', { reason: 'retention', at: 900 })
 
     expect(s.pruneSessionPurges(500)).toBe(1)
-    expect(s.listSessionPurges(10).map((row) => row.sessionId)).toEqual(['acp-recent'])
+    expect(s.listSessionPurges(10, 0).map((row) => row.sessionId)).toEqual(['acp-recent'])
     expect(s.pruneSessionPurges(500)).toBe(0)
     s.close()
   })
@@ -1812,6 +1821,87 @@ describe('LocalStore recovery scope on a shared store (daemon pool)', () => {
     // There is no duty axis on a single-daemon store — boot already covered it.
     expect(s.strandedDreams(['agent-1'])).toEqual([])
     expect(s.reclaimWebchatMcpGrants(['agent-1'], 'session_closed', 60)).toBe(0)
+    s.close()
+  })
+
+  // Purge receipts (#1032): one session_purges table for the whole pool, leased per
+  // member exactly like the hook-completion outbox — a peer's live row is never
+  // offered, claimed, or released by anyone but its owner.
+  const LEASE_MS = 2 * 60 * 1_000
+  const purged = (s: LocalStore, key: string, agentId: string, ownerId: string, at: number) => {
+    s.upsertSession({
+      key,
+      agentId,
+      platform: 'slack',
+      channel: 'C1',
+      thread: key,
+      acpSessionId: `acp-${key}`,
+      state: 'closed',
+      lastDeliveredTs: null,
+      updatedAt: 0
+    })
+    expect(s.deleteSession(key, { reason: 'retention', at, ownerId })).toBe(true)
+  }
+  const ids = (rows: { sessionId: string }[]) => rows.map((row) => row.sessionId)
+
+  it("offers a pool member its own purge receipts, never a live peer's", () => {
+    const path = sharedPath()
+    const a = member(path, 'store-a')
+    const b = member(path, 'store-b')
+    purged(a, 'from-a', 'agent-a', 'daemon-a', 1_000)
+    purged(b, 'from-b', 'agent-b', 'daemon-b', 1_000)
+
+    expect(ids(a.listSessionPurges(10, 1_500, 'daemon-a', ['agent-a']))).toEqual(['acp-from-a'])
+    // B serves both agents and still may not touch A's row: A's claim is live.
+    expect(ids(b.listSessionPurges(10, 1_500, 'daemon-b', ['agent-a', 'agent-b']))).toEqual(['acp-from-b'])
+    expect(b.claimSessionPurges('agent-a', ['acp-from-a'], 'daemon-b', 1_500)).toEqual([])
+    // Nor release it: the ACK fence is the claim holder.
+    b.acknowledgeSessionPurges('agent-a', ['acp-from-a'], 'daemon-b')
+    expect(ids(a.listSessionPurges(10, 1_500, 'daemon-a', []))).toEqual(['acp-from-a'])
+    // The owner renews and settles its own row.
+    expect(a.claimSessionPurges('agent-a', ['acp-from-a'], 'daemon-a', 1_500)).toEqual(['acp-from-a'])
+    a.acknowledgeSessionPurges('agent-a', ['acp-from-a'], 'daemon-a')
+    expect(a.listSessionPurges(10, 1_500, 'daemon-a', [])).toEqual([])
+    a.close()
+    b.close()
+  })
+
+  it('lets the member that serves the agent take over a purge receipt after the owner claim lapses', () => {
+    const path = sharedPath()
+    const a = member(path, 'store-a')
+    const b = member(path, 'store-b')
+    purged(a, 'from-a', 'agent-a', 'daemon-a', 1_000)
+    const lapsed = 1_000 + LEASE_MS + 1
+
+    // Still not B's to take while B does not serve the agent.
+    expect(b.listSessionPurges(10, lapsed, 'daemon-b', ['agent-b'])).toEqual([])
+    expect(ids(b.listSessionPurges(10, lapsed, 'daemon-b', ['agent-a']))).toEqual(['acp-from-a'])
+    expect(b.claimSessionPurges('agent-a', ['acp-from-a'], 'daemon-b', lapsed)).toEqual(['acp-from-a'])
+    // The takeover is exclusive: the dead owner's id no longer holds the row.
+    expect(a.listSessionPurges(10, lapsed, 'daemon-a', [])).toEqual([])
+    expect(a.claimSessionPurges('agent-a', ['acp-from-a'], 'daemon-a', lapsed)).toEqual([])
+    a.close()
+    b.close()
+  })
+
+  it('a single-daemon store drains and settles every receipt unfenced', () => {
+    const s = store()
+    s.upsertSession({
+      key: 'k',
+      agentId: 'agent-1',
+      platform: 'slack',
+      channel: 'C1',
+      thread: 'k',
+      acpSessionId: 'acp-k',
+      state: 'closed',
+      lastDeliveredTs: null,
+      updatedAt: 0
+    })
+    s.deleteSession('k', { reason: 'retention', at: 1_000 })
+    expect(ids(s.listSessionPurges(10, 1_500, 'daemon-a', []))).toEqual(['acp-k'])
+    expect(s.claimSessionPurges('agent-1', ['acp-k'], undefined, 1_500)).toEqual(['acp-k'])
+    s.acknowledgeSessionPurges('agent-1', ['acp-k'])
+    expect(s.listSessionPurges(10, 1_500)).toEqual([])
     s.close()
   })
 })
