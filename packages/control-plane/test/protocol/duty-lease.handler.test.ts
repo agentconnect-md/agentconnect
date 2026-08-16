@@ -75,23 +75,18 @@ async function ready(h: ReturnType<typeof buildWsHarness>, opts: { orgScoped?: b
 /** A bounded deadline, not a fixed pause: a loaded runner costs latency here, never a red test (#1024). */
 const SETTLE = { timeout: 10_000, interval: 5 }
 
-/** Inject one beat and wait for ITS renewal confirmation. `expectFrame` resolves from a frame
- *  already sent, so a multi-beat test has to count instead — otherwise the next inject races the
- *  running exchange and the lane drops it. */
+/** Inject one beat and drain its whole dispatch — persistence, the duty exchange the handler
+ *  awaits, everything. The renewal confirmation closes that exchange, so once the dispatch has
+ *  settled every grant and revocation this beat owed is already on the wire and the count is an
+ *  assertion rather than something to poll for. */
 async function beat(
   stub: InMemoryDaemonStub,
   duties: { held: { groupId: string; term: string }[]; headroom: number; draining?: boolean }
 ): Promise<void> {
   const before = stub.sent.filter((f) => f.type === 'duty/renewed').length
   stub.inject('heartbeat', heartbeat(duties))
-  // The confirmation closes the exchange, so on arrival every grant and revocation is already sent.
-  await vi.waitFor(() => expect(stub.sent.filter((f) => f.type === 'duty/renewed').length).toBe(before + 1), SETTLE)
-}
-
-/** Drain the member's duty lane — the barrier for a beat whose correct answer is no frame at all. */
-async function settleDuty(h: ReturnType<typeof buildWsHarness>): Promise<void> {
-  // Releasing nothing touches no row but chains on the lane, so a wrongly started exchange ends first.
-  await h.deps.dutyLease.release(DaemonId(DAEMON), [])
+  await stub.settled()
+  expect(stub.sent.filter((f) => f.type === 'duty/renewed').length).toBe(before + 1)
 }
 
 function heartbeat(duties?: { held: { groupId: string; term: string }[]; headroom: number; draining?: boolean }) {
@@ -111,7 +106,7 @@ describe('duty lease exchange (protocol level, real Postgres)', () => {
 
     stub.inject('heartbeat', heartbeat())
     stub.inject('heartbeat', heartbeat())
-    await settleDuty(h)
+    await stub.settled()
     expect(stub.sent.filter((f) => f.type.startsWith('duty/'))).toEqual([])
   })
 
@@ -187,7 +182,8 @@ describe('duty lease exchange (protocol level, real Postgres)', () => {
       },
       { id: REL_ID }
     )
-    await vi.waitFor(() => expect(stub.sent.filter((f) => f.type === 'register/ok').length).toBe(2), SETTLE)
+    await stub.settled()
+    expect(stub.sent.filter((f) => f.type === 'register/ok').length).toBe(2)
     stub.inject('heartbeat', heartbeat({ held: [], headroom: 4 }))
     await stub.expectFrame('duty/grant')
     expect((await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })).holder).toBe(DAEMON)
@@ -616,7 +612,7 @@ describe('duty lease exchange — scope gate and allocation coherence', () => {
     const { stub } = await ready(h, { orgScoped: true })
 
     stub.inject('heartbeat', heartbeat({ held: [], headroom: 4 }))
-    await settleDuty(h)
+    await stub.settled()
     expect(stub.sent.filter((f) => f.type.startsWith('duty/'))).toEqual([])
     const row = await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })
     expect(row.holder).toBeNull()
@@ -694,12 +690,10 @@ describe('duty lease exchange — wire safety', () => {
     const { stub } = await ready(h)
 
     stub.inject('heartbeat', heartbeat({ held: [], headroom: 3 }))
+    await stub.settled()
     const first = await stub.expectFrame('duty/grant')
     if (!isFrame('duty/grant')(first)) throw new Error('expected duty/grant')
-    await vi.waitFor(() => {
-      const frames = stub.sent.filter((f) => f.type === 'duty/grant')
-      expect(frames).toHaveLength(2)
-    }, SETTLE)
+    expect(stub.sent.filter((f) => f.type === 'duty/grant')).toHaveLength(2)
     const sizes = stub.sent
       .filter((f) => f.type === 'duty/grant')
       .map((f) => (f.payload as { grants: unknown[] }).grants.length)
@@ -814,8 +808,7 @@ describe('duty lease exchange — wire safety', () => {
     stub.inject('heartbeat', heartbeat({ held: [], headroom: 1 }))
     stub.inject('heartbeat', heartbeat({ held: [], headroom: 1 }))
     await stub.expectFrame('duty/grant')
-    // The dropped beat is refused synchronously at dispatch, so a drained lane is the whole story.
-    await settleDuty(h)
+    await stub.settled()
 
     const grantedTotal = stub.sent
       .filter((f) => f.type === 'duty/grant')
