@@ -9,6 +9,8 @@ import {
   type SessionImageAttachment
 } from '@agentconnect.md/protocol'
 import { SESSION_TITLE_TOOL_TITLES } from '../mcp/session-title-tool.js'
+import type { ScheduleRun } from '../scheduler/scheduler.js'
+import type { StoreRetentionCandidate, StoreRetentionRule } from './retention.js'
 
 /** Per-tool-row rawInput budget in the mining prompt — enough for a command
  *  line or path, short enough that N tool rows can't crowd out the store. */
@@ -35,9 +37,29 @@ export interface StoreDatabase {
   close(): void
 }
 
-export type LocalStoreSource = string | { database: StoreDatabase; shared?: boolean; ownerId?: string }
+/** The daemon's agent registry, projected to the org that owns one agent. */
+export type OrgForAgent = (agentId: string) => string | undefined
 
-const SHARED_MEMORY_CAPTURE_LEASE_MS = 2 * 60 * 1_000
+export type LocalStoreSource =
+  string | { database: StoreDatabase; shared?: boolean; ownerId?: string; orgForAgent?: OrgForAgent }
+
+/** Transcript org partition of a store no pool shares: it holds exactly one daemon's
+ *  threads, so it owns one partition forever, the way `cacheOwnerId` owns one. */
+const LOCAL_TRANSCRIPT_ORG = ''
+
+/** How long a shared-store claim survives without renewal. A pool member renews on
+ *  every drain attempt, so a lapsed claim means its owner is gone and a peer may take
+ *  the row over. Local (single-owner) stores never lease. */
+const SHARED_OUTBOX_LEASE_MS = 2 * 60 * 1_000
+
+/** Every column dreamToRow produces must appear here: node:sqlite rejects a bound parameter the
+ *  statement never references. triggerKind/createdAt are immutable in practice but are still
+ *  assigned, so the row shape and the SQL can't drift apart. */
+const DREAM_UPDATE_SET = `status = @status, triggerKind = @triggerKind, sessionIds = @sessionIds,
+  snapshotDigest = @snapshotDigest, executionSessionId = @executionSessionId, runtime = @runtime,
+  model = @model, stopReason = @stopReason, snapshotWrites = @snapshotWrites, instructions = @instructions,
+  skills = @skills, organizationSuggestions = @organizationSuggestions, usage = @usage, error = @error,
+  createdAt = @createdAt, endedAt = @endedAt, ownerId = @ownerId`
 
 function idScope(column: string, values: readonly string[] | undefined): { sql: string; params: SqlParams } {
   if (values === undefined) return { sql: '', params: {} }
@@ -202,6 +224,20 @@ export type TokenCounts = Pick<
 /** Context-window + cost snapshot (from a `usage_update`), latest-wins. */
 export type UsageSnapshot = Pick<StoredUsage, 'contextUsed' | 'contextSize' | 'costAmount' | 'costCurrency'>
 
+/** `{}` for an unrecorded or unreadable blob — an unparseable one is not worth failing a turn over. */
+function parseUsage(raw: string | null): StoredUsage {
+  if (!raw) return {}
+  try {
+    return JSON.parse(raw) as StoredUsage
+  } catch {
+    return {}
+  }
+}
+
+/** CAS attempts before the usage merge writes blind. One session has one writer plus, at most, a
+ *  handover peer, so losing four in a row means something other than contention is going on. */
+const USAGE_MERGE_ATTEMPTS = 5
+
 /** A session row as read back for `session/list`, carrying the raw usage JSON. */
 export interface SessionListRow extends SessionRecord {
   usage: string | null
@@ -263,6 +299,10 @@ export interface TranscriptEntry {
    *  unrouted messages. Lets the console session view show what one agent actually
    *  received + produced instead of the whole shared (channel, thread) thread. */
   recipient?: string
+  /** Names the org that owns this row when neither `sender` nor `recipient` is an agent —
+   *  an inbound observed before routing picks one. Attribution only: never a column, and
+   *  never a delivery, so it cannot widen any agent's scoped view. */
+  orgAgentId?: string
 }
 
 /** A transcript row as read back, including its insertion-order sequence. The
@@ -332,7 +372,7 @@ export function transcriptChannelKey(channel: string, transportScope?: string | 
  */
 const AGENT_DELIVERY_SCOPE_SQL = `(sender = ? OR recipient = ? OR (transcript.kind = 'text' AND EXISTS (
         SELECT 1 FROM transcript_recipient tr
-        WHERE tr.channel = transcript.channel AND tr.thread = transcript.thread
+        WHERE tr.orgId = transcript.orgId AND tr.channel = transcript.channel AND tr.thread = transcript.thread
           AND tr.ts = transcript.ts AND tr.agentId = ?)))`
 
 /**
@@ -359,6 +399,11 @@ export interface InboxRow {
   /** A redacted, metadata-only HookReport retained as the durable dedup receipt
    * after the model turn finishes. Completed hook rows are never replayed. */
   terminalReport?: string | null
+  /** Daemon entitled to emit the retained report — the dispatch the CP will accept
+   *  it from. NULL on a local store and on rows written before pool ownership. */
+  reportOwnerId?: string | null
+  /** Epoch (ms) the owner last renewed its claim; a lapsed claim is takeable. */
+  reportClaimedAt?: number | null
   completedAt?: number | null
   isQueueCmd?: number | null
   /** 1 once this delivery no longer needs replay accounting (charged when applicable).
@@ -372,7 +417,6 @@ export interface InboxRow {
  *  its expiry before being swept. Long enough that a late retry still reads back its
  *  `childSessionId` instead of opening a second session, short enough that a busy
  *  channel's table stays bounded. */
-const ACTIVATION_RETENTION_MS = 24 * 60 * 60 * 1000
 
 /**
  * One activation rendezvous record (send-message-routing-rework.md §8.6).
@@ -454,6 +498,8 @@ export interface SessionMetadataOutboxRow {
   revision: number
   snapshot: string
   queuedAt: number
+  failedAttempts: number
+  nextAttemptAt: number | null
 }
 
 /**
@@ -510,6 +556,8 @@ export interface WebchatMcpGrantLedgerRow {
   attempts: number
   nextAttemptAt: number | null
   updatedAt: number
+  /** The daemon incarnation answerable for this row; NULL on an exclusively owned store. */
+  ownerId: string | null
 }
 
 /** §3.4/§6.8 main-agent orchestration record (daemon-local). `status` is the
@@ -600,7 +648,7 @@ function restrictPath(path: string, mode: number): void {
  * change that edits a `CREATE TABLE` below, and append the matching step to
  * {@link SCHEMA_MIGRATIONS}.
  */
-const SCHEMA_VERSION = 2
+const SCHEMA_VERSION = 11
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -623,14 +671,108 @@ const SCHEMA_VERSION = 2
  * in the `CREATE` block, which runs afterwards and is `IF NOT EXISTS`, so it
  * covers fresh and upgraded stores from the one description.
  */
-const SCHEMA_MIGRATIONS: ((db: StoreDatabase) => void)[] = [
-  (db) => db.exec('ALTER TABLE permission_requests ADD COLUMN ownerId TEXT')
+const SCHEMA_MIGRATIONS: ((db: StoreDatabase, store: { shared: boolean }) => void)[] = [
+  (db) => db.exec('ALTER TABLE permission_requests ADD COLUMN ownerId TEXT'),
+  (db) =>
+    db.exec(`
+      ALTER TABLE session_metadata_outbox ADD COLUMN failedAttempts INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE session_metadata_outbox ADD COLUMN nextAttemptAt INTEGER;
+    `),
+  (db) =>
+    db.exec(`
+      ALTER TABLE dreams ADD COLUMN ownerId TEXT;
+      ALTER TABLE webchat_mcp_grant_ledger ADD COLUMN ownerId TEXT;
+    `),
+  (db) =>
+    db.exec(`
+      ALTER TABLE inbox ADD COLUMN reportOwnerId TEXT;
+      ALTER TABLE inbox ADD COLUMN reportClaimedAt INTEGER;
+    `),
+  // session_gates gains the owning agent in its key. Existing rows are attributed
+  // through the sessions row that holds the ACP id; a row no session claims is
+  // dropped, and an id several agents claim is rewritten to the fail-closed state
+  // because its stored verdict was never attributable to one of them.
+  (db) =>
+    db.exec(`
+      CREATE TABLE session_gates_keyed (
+        agentId TEXT NOT NULL,
+        acpSessionId TEXT NOT NULL,
+        localExcluded INTEGER NOT NULL DEFAULT 1,
+        cpPrivate INTEGER,
+        cpRev INTEGER NOT NULL DEFAULT 0,
+        updatedAt INTEGER,
+        PRIMARY KEY (agentId, acpSessionId)
+      );
+      INSERT INTO session_gates_keyed (agentId, acpSessionId, localExcluded, cpPrivate, cpRev, updatedAt)
+      SELECT o.agentId, g.acpSessionId, g.localExcluded, g.cpPrivate, g.cpRev, g.updatedAt
+      FROM session_gates g
+      JOIN (
+        SELECT DISTINCT agentId, acpSessionId FROM sessions
+        WHERE agentId IS NOT NULL AND acpSessionId IS NOT NULL
+      ) o ON o.acpSessionId = g.acpSessionId;
+      UPDATE session_gates_keyed SET localExcluded = 1, cpPrivate = NULL, cpRev = 0
+      WHERE acpSessionId IN (
+        SELECT acpSessionId FROM session_gates_keyed GROUP BY acpSessionId HAVING COUNT(*) > 1
+      );
+      DROP TABLE session_gates;
+      ALTER TABLE session_gates_keyed RENAME TO session_gates;
+    `),
+  (db) => db.exec('ALTER TABLE cron_runs ADD COLUMN definition TEXT'),
+  // The catalog cache is re-keyed on its owning member (#1039): pre-owner rows name none, so
+  // they are dropped rather than misattributed and the CREATE block rebuilds both tables.
+  (db) =>
+    db.exec(`
+      DROP TABLE IF EXISTS runtime_catalog_meta;
+      DROP TABLE IF EXISTS runtime_model_catalog;
+    `),
+  (db) =>
+    db.exec(`
+      ALTER TABLE session_purges ADD COLUMN ownerId TEXT;
+      ALTER TABLE session_purges ADD COLUMN claimedAt INTEGER;
+    `),
+  (db) =>
+    db.exec(`
+      ALTER TABLE session_metadata_outbox ADD COLUMN ownerId TEXT;
+      ALTER TABLE session_metadata_outbox ADD COLUMN claimedAt INTEGER;
+    `),
+  // Transcripts gain the owning org in their key (#1041 item 7). A store no pool shares
+  // holds one daemon's threads, so every existing row belongs to its single partition and
+  // the added default IS the backfill. A shared store cannot attribute what it already
+  // holds: nothing here records an agent's org — the daemon learns it from the CP at
+  // runtime — so sessions → agent → org resolves to nothing at migration time and the rows
+  // are dropped rather than misfiled into one org's fenced reads. Only test data exists on
+  // any shared store today, which is why dropping is the accepted price of the fence.
+  // The recipient table is rebuilt rather than altered: its PRIMARY KEY gains the org, and
+  // the transcript indexes are dropped so the CREATE block re-emits them org-first.
+  (db, store) => {
+    if (store.shared) db.exec('DELETE FROM transcript; DELETE FROM transcript_recipient;')
+    db.exec(`
+      ALTER TABLE transcript ADD COLUMN orgId TEXT NOT NULL DEFAULT '';
+      DROP INDEX IF EXISTS transcript_thread_seq;
+      DROP INDEX IF EXISTS transcript_text_ts;
+      DROP INDEX IF EXISTS transcript_agent_tool_call;
+      DROP INDEX IF EXISTS transcript_thread_event_time;
+      DROP INDEX IF EXISTS transcript_thread_revision;
+      CREATE TABLE transcript_recipient_orged (
+        orgId TEXT NOT NULL, channel TEXT NOT NULL, thread TEXT NOT NULL, ts TEXT NOT NULL, agentId TEXT NOT NULL,
+        PRIMARY KEY (orgId, channel, thread, ts, agentId)
+      );
+      INSERT INTO transcript_recipient_orged (orgId, channel, thread, ts, agentId)
+      SELECT '', channel, thread, ts, agentId FROM transcript_recipient;
+      DROP TABLE transcript_recipient;
+      ALTER TABLE transcript_recipient_orged RENAME TO transcript_recipient;
+    `)
+  }
 ]
 
 export class LocalStore {
   private db: StoreDatabase
   private readonly shared: boolean
   private readonly ownerId?: string
+  /** Partition key for per-member cache rows; a single-daemon store owns one partition forever. */
+  private readonly cacheOwnerId: string
+  /** Set only on a shared store, where transcript rows of several orgs share one table. */
+  private readonly orgForAgent?: OrgForAgent
   private transcriptRevision = 0
   private transcriptMutationListener?: (mutation: TranscriptMutation) => void
 
@@ -659,8 +801,11 @@ export class LocalStore {
       this.db = source.database
       this.shared = source.shared === true
       this.ownerId = source.ownerId
+      this.orgForAgent = source.orgForAgent
       if (this.shared && !this.ownerId) throw new Error('shared LocalStore requires an ownerId')
+      if (this.shared && !this.orgForAgent) throw new Error('shared LocalStore requires an orgForAgent resolver')
     }
+    this.cacheOwnerId = this.ownerId ?? ''
     // Decided BEFORE the CREATE block, which is what makes an empty file
     // indistinguishable from an old one a moment later.
     const freshDatabase =
@@ -688,34 +833,47 @@ export class LocalStore {
       CREATE TABLE IF NOT EXISTS session_mutes (
         key TEXT PRIMARY KEY
       );
-      -- Per-session memory-capture gate (session-visibility.md §5.1). Keyed by ACP
-      -- session id, NOT the logical session key: the CP addresses sessions by the
-      -- id it knows, and its push can arrive before (or after a resume recreates)
-      -- the sessions row — so this table stands alone, like session_mutes.
+      -- Per-session memory-capture gate (session-visibility.md §5.1). Keyed by
+      -- (agentId, acpSessionId), NOT the logical session key: the CP addresses
+      -- sessions by the id it knows, and its push can arrive before (or after a
+      -- resume recreates) the sessions row — so this table stands alone, like
+      -- session_mutes. The agent is part of the key because ACP session ids are
+      -- runtime-local: on a pool's shared store every agent of every org can hold
+      -- an acp-1, and one org's push must never answer for another org's gate.
       --   localExcluded: the daemon-local initial verdict (DM/webchat/launch/A2A).
       --   cpPrivate    : the CP-confirmed bit; authoritative once it is set.
       --   cpRev        : the CP's durable visibilityRev — the dedup/order key.
       -- (localExcluded, not "excluded": SQLite's upsert pseudo-table owns that name.)
       CREATE TABLE IF NOT EXISTS session_gates (
-        acpSessionId TEXT PRIMARY KEY,
+        agentId TEXT NOT NULL,
+        acpSessionId TEXT NOT NULL,
         localExcluded INTEGER NOT NULL DEFAULT 1,
         cpPrivate INTEGER,
         cpRev INTEGER NOT NULL DEFAULT 0,
-        updatedAt INTEGER
+        updatedAt INTEGER,
+        PRIMARY KEY (agentId, acpSessionId)
       );
       -- Latest-wins session metadata awaiting a correlated CP persistence ACK.
       -- This is deliberately separate from sessions: an upgrade starts with an
       -- empty outbox and never treats historical session rows as pending work.
+      -- On a shared pool store ownerId / claimedAt lease each snapshot to one
+      -- member the way inbox.reportOwnerId and session_purges.ownerId do.
       CREATE TABLE IF NOT EXISTS session_metadata_outbox (
         agentId TEXT NOT NULL,
         sessionId TEXT NOT NULL,
         revision INTEGER NOT NULL,
         snapshot TEXT NOT NULL,
         queuedAt INTEGER NOT NULL,
+        failedAttempts INTEGER NOT NULL DEFAULT 0,
+        nextAttemptAt INTEGER,
+        ownerId TEXT,
+        claimedAt INTEGER,
         PRIMARY KEY (agentId, sessionId)
       );
       CREATE INDEX IF NOT EXISTS session_metadata_outbox_fifo
         ON session_metadata_outbox (queuedAt);
+      CREATE INDEX IF NOT EXISTS session_metadata_outbox_attempt
+        ON session_metadata_outbox (nextAttemptAt, queuedAt);
       -- Retention-GC receipts (#485): sessions this daemon has already deleted
       -- locally, still owed to the CP as an event/session-purged report. Durable
       -- because the local row is GONE — unlike every other D→C report, an
@@ -723,12 +881,15 @@ export class LocalStore {
       -- losing it would leave the console rendering a permanently empty transcript
       -- with no explanation. Rows are dropped only on the CP's ACK.
       -- Keyed by (agentId, sessionId): ACP session ids are runtime-local, so two
-      -- agents can both have purged an acp-1.
+      -- agents can both have purged an acp-1. On a shared pool store ownerId /
+      -- claimedAt lease each receipt to one member the way inbox.reportOwnerId does.
       CREATE TABLE IF NOT EXISTS session_purges (
         agentId TEXT NOT NULL,
         sessionId TEXT NOT NULL,
         reason TEXT NOT NULL,
         purgedAt INTEGER NOT NULL,
+        ownerId TEXT,
+        claimedAt INTEGER,
         PRIMARY KEY (agentId, sessionId)
       );
       CREATE INDEX IF NOT EXISTS session_purges_fifo ON session_purges (purgedAt);
@@ -784,47 +945,62 @@ export class LocalStore {
       );
       CREATE INDEX IF NOT EXISTS permission_requests_agent_created
         ON permission_requests (agentId, createdAt DESC);
+      -- orgId fences every thread on the org that owns it (#1041 item 7): a pool's shared
+      -- store carries several orgs' threads, and platform channel/thread ids are only
+      -- unique WITHIN one of them. A store no pool shares holds one org and stores ''.
       CREATE TABLE IF NOT EXISTS transcript (
         seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        orgId TEXT NOT NULL DEFAULT '',
         channel TEXT NOT NULL, thread TEXT NOT NULL, ts TEXT,
         sender TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL,
         tool_call_id TEXT, body TEXT, recipient TEXT, eventTimeUs INTEGER,
         attachmentsJson TEXT, quoteJson TEXT, trustedAgentBot INTEGER, revision INTEGER NOT NULL DEFAULT 0,
         postId TEXT
       );
-      CREATE INDEX IF NOT EXISTS transcript_thread_seq ON transcript (channel, thread, seq);
+      CREATE INDEX IF NOT EXISTS transcript_thread_seq ON transcript (orgId, channel, thread, seq);
       -- Dedup conversational rows by platform ts (double-fired inbound / redelivery);
       -- internal events have no platform ts and are intentionally never deduped here.
       CREATE UNIQUE INDEX IF NOT EXISTS transcript_text_ts
-        ON transcript (channel, thread, ts) WHERE kind = 'text';
+        ON transcript (orgId, channel, thread, ts) WHERE kind = 'text';
       -- Per-agent DELIVERY of a shared thread message. The transcript row itself is deduped
-      -- by (channel, thread, ts), so the recipient column only records the FIRST agent a
+      -- by (orgId, channel, thread, ts), so the recipient column only records the FIRST agent a
       -- message reached; when several agents on one daemon each catch up on the same message
       -- their deliveries are recorded here so no agent's scoped session view (transcriptPage-
       -- ForAgent) hides a message it actually received.
       CREATE TABLE IF NOT EXISTS transcript_recipient (
+        orgId TEXT NOT NULL DEFAULT '',
         channel TEXT NOT NULL, thread TEXT NOT NULL, ts TEXT NOT NULL, agentId TEXT NOT NULL,
-        PRIMARY KEY (channel, thread, ts, agentId)
+        PRIMARY KEY (orgId, channel, thread, ts, agentId)
       );
       -- ACP tool ids are session-local, so same-thread agents may legitimately reuse
       -- them; the uniqueness that matters is per agent.
       CREATE UNIQUE INDEX IF NOT EXISTS transcript_agent_tool_call
-        ON transcript (channel, thread, sender, tool_call_id) WHERE tool_call_id IS NOT NULL;
+        ON transcript (orgId, channel, thread, sender, tool_call_id) WHERE tool_call_id IS NOT NULL;
       -- Chronological history key: rows carry both an insertion-order seq and an
       -- event time, and the console reads in event-time order.
       CREATE INDEX IF NOT EXISTS transcript_thread_event_time
-        ON transcript (channel, thread, eventTimeUs DESC, seq DESC);
+        ON transcript (orgId, channel, thread, eventTimeUs DESC, seq DESC);
       -- Stable-row updates need a cursor independent of insertion-order seq.
       CREATE INDEX IF NOT EXISTS transcript_thread_revision
-        ON transcript (channel, thread, revision);
+        ON transcript (orgId, channel, thread, revision);
+      -- Written ONLY by an exclusively owned store: a shared store's members would each
+      -- serialize their own map over this one row, so they do not persist here at all.
       CREATE TABLE IF NOT EXISTS cp_routing (
         id INTEGER PRIMARY KEY CHECK (id = 1),
         routingEpoch INTEGER, assignments TEXT, globalRules TEXT
       );
       -- Authoritative last-run per cron (protocol §5.4 — missed-fire compensation).
       -- key = "<agentId>:<cronId>" (cron defs themselves live in agent.json).
+      -- The definition column fingerprints the entry the stamp was written under (#1031): schedules are
+      -- edited in place, so a stamp is only comparable to a fire of the SAME definition. NULL on
+      -- rows written before it existed, which simply makes them ineligible for a catch-up.
       CREATE TABLE IF NOT EXISTS cron_runs (
-        key TEXT PRIMARY KEY, lastRunAt INTEGER NOT NULL
+        key TEXT PRIMARY KEY, lastRunAt INTEGER NOT NULL, definition TEXT
+      );
+      -- The dream half of cron_runs (#1031): a dream schedule's only durable last-fired, so a
+      -- handover can tell a swallowed occurrence from one that already ran. One row per agent.
+      CREATE TABLE IF NOT EXISTS dream_runs (
+        agentId TEXT PRIMARY KEY, lastRunAt INTEGER NOT NULL, definition TEXT
       );
       -- §6.9 #353 durable inbox: an ADMITTED-but-QUEUED message persisted BEFORE the
       -- admission ACK, so a hard kill / agent move can't lose a message the caller was
@@ -845,6 +1021,8 @@ export class LocalStore {
         hookContext TEXT,
         posterPublishState TEXT,
         terminalReport TEXT,
+        reportOwnerId TEXT,
+        reportClaimedAt INTEGER,
         completedAt INTEGER,
         isQueueCmd INTEGER,
         loopGuardCounted INTEGER NOT NULL DEFAULT 0,
@@ -894,7 +1072,8 @@ export class LocalStore {
         reason TEXT,
         attempts INTEGER NOT NULL DEFAULT 0,
         nextAttemptAt INTEGER,
-        updatedAt INTEGER NOT NULL
+        updatedAt INTEGER NOT NULL,
+        ownerId TEXT                      -- daemon incarnation holding the grant; NULL on an exclusively owned store
       );
       CREATE INDEX IF NOT EXISTS webchat_mcp_grant_ledger_due
         ON webchat_mcp_grant_ledger (state, nextAttemptAt);
@@ -993,8 +1172,11 @@ export class LocalStore {
       -- Failures never clear rows; models are pruned only after a COMPLETE successful
       -- discovery. complete stays 0 on phase-1 probe writes so the discovery gate
       -- can tell "never fully discovered" from "last-good on file".
+      -- ownerId leads both keys (#1039): the cache describes an image, so on a store every
+      -- pool member shares, two rollout generations would re-probe and prune each other.
       CREATE TABLE IF NOT EXISTS runtime_catalog_meta (
-        runtimeId TEXT PRIMARY KEY,
+        ownerId TEXT NOT NULL DEFAULT '', -- the owning member; '' is the single-daemon store
+        runtimeId TEXT NOT NULL,
         fingerprint TEXT NOT NULL,
         source TEXT NOT NULL,             -- 'native' | 'acp'
         defaultModel TEXT,
@@ -1002,15 +1184,17 @@ export class LocalStore {
         defaultPermissionMode TEXT,       -- mode select currentValue on a fresh probe session
         complete INTEGER NOT NULL DEFAULT 0,
         modelsHash TEXT,                  -- hash of probed models[] at last complete discovery
-        observedAt INTEGER NOT NULL
+        observedAt INTEGER NOT NULL,
+        PRIMARY KEY (ownerId, runtimeId)
       );
       CREATE TABLE IF NOT EXISTS runtime_model_catalog (
+        ownerId TEXT NOT NULL DEFAULT '',
         runtimeId TEXT NOT NULL,
         modelId TEXT NOT NULL,
         fingerprint TEXT NOT NULL,
         capsJson TEXT NOT NULL,           -- JSON {name?, efforts?: [{value,name?,description?}], defaultEffort?, fastMode?}
         observedAt INTEGER NOT NULL,
-        PRIMARY KEY (runtimeId, modelId)
+        PRIMARY KEY (ownerId, runtimeId, modelId)
       );
       -- Memory dream jobs (docs/designs/memory-dreaming.md §4). METADATA ONLY —
       -- staged store bodies live on disk under <agent-root>/memory-dreams/ and
@@ -1035,16 +1219,25 @@ export class LocalStore {
         usage TEXT,                       -- JSON DreamUsage (tokens/cost + bounded byte counts)
         error TEXT,                       -- JSON {type, message}
         createdAt TEXT NOT NULL,
-        endedAt TEXT
+        endedAt TEXT,
+        ownerId TEXT                      -- daemon incarnation running it; NULL on an exclusively owned store
       );
       CREATE INDEX IF NOT EXISTS dreams_agent_created ON dreams (agentId, createdAt DESC);
+      -- Monotonic shim-binding generation per agent. Durable and install-shared because a sandbox
+      -- pod outlives the daemon holding it: a member that restarted the count would dial below the
+      -- generation that pod already bound, which its shim refuses for the rest of the pod's life.
+      CREATE TABLE IF NOT EXISTS sandbox_generations (
+        agentId TEXT PRIMARY KEY,
+        generation INTEGER NOT NULL
+      );
     `)
     // Stamped only once the CREATE block above has actually emitted that schema, so
     // a store that failed halfway through creation is not left claiming to be current.
     if (freshDatabase) this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`)
     // The revision counter is in-memory but the rows it numbers are durable, so it
     // must resume from the database on every open — starting a restarted daemon back
-    // at 0 would hand already-issued revisions to new rows.
+    // at 0 would hand already-issued revisions to new rows. Deliberately unfenced: it
+    // allocates across every org partition, so it must clear the highest of them all.
     this.transcriptRevision = (
       this.db.prepare('SELECT COALESCE(MAX(revision), 0) AS revision FROM transcript').get() as { revision: number }
     ).revision
@@ -1090,7 +1283,7 @@ export class LocalStore {
       if (!step) throw new Error(`local store is missing a migration step for schema v${version}`)
       this.db.exec('BEGIN')
       try {
-        step(this.db)
+        step(this.db, { shared: this.shared })
         this.db.exec(`PRAGMA user_version = ${version + 1}`)
         this.db.exec('COMMIT')
       } catch (err) {
@@ -1330,6 +1523,44 @@ export class LocalStore {
       .get(agentId, acpSessionId) as SessionRecord | undefined
   }
 
+  /**
+   * The org partition one transcript read or write belongs to. A store no pool shares owns
+   * a single partition whatever the agent; a shared store resolves the agent's org through
+   * the daemon's registry and refuses a row it cannot attribute, since an unattributed one
+   * would be served to whichever org happened to reuse the same channel/thread ids.
+   */
+  private orgFor(agentId: string | undefined): string {
+    if (!this.shared) return LOCAL_TRANSCRIPT_ORG
+    const orgId = agentId ? this.orgForAgent?.(agentId) : undefined
+    if (!orgId) throw new Error(`cannot resolve the transcript organization for agent ${agentId ?? '(none)'}`)
+    return orgId
+  }
+
+  /** The org of a row written from a message rather than by an agent: its recipient or
+   *  sender when either names one, else an agent already holding a session in the thread —
+   *  an observed inbound is recorded before routing picks a recipient, and only a thread
+   *  with live work is recorded at all. */
+  private transcriptOrg(channel: string, thread: string, ...candidates: Array<string | undefined>): string {
+    if (!this.shared) return LOCAL_TRANSCRIPT_ORG
+    for (const candidate of candidates) {
+      const orgId = candidate ? this.orgForAgent?.(candidate) : undefined
+      if (orgId) return orgId
+    }
+    return this.orgFor(this.threadSessionAgent(channel, thread))
+  }
+
+  /** An agent holding a session in a transcript thread, for that fallback attribution. */
+  private threadSessionAgent(channel: string, thread: string): string | undefined {
+    const rows = this.db
+      .prepare(
+        'SELECT DISTINCT agentId, channel, transportScope FROM sessions WHERE thread = ? AND agentId IS NOT NULL'
+      )
+      .all(thread) as { agentId: string; channel: string; transportScope: string | null }[]
+    return rows.find(
+      (row) => transcriptChannelKey(row.channel, row.transportScope) === channel && this.orgForAgent?.(row.agentId)
+    )?.agentId
+  }
+
   /** Addressable session ids whose authorized transcript scope may have changed. */
   sessionIdsForTranscript(agentId: string, channel: string, thread: string): string[] {
     const rows = this.db
@@ -1343,11 +1574,12 @@ export class LocalStore {
       .map((row) => row.acpSessionId)
   }
 
-  currentTranscriptRevision(_agentId?: string): number {
-    const row = this.db.prepare('SELECT COALESCE(MAX(revision), 0) AS revision FROM transcript').get() as {
-      revision: number
-    }
-    this.transcriptRevision = row.revision
+  currentTranscriptRevision(agentId?: string): number {
+    const row = this.db
+      .prepare('SELECT COALESCE(MAX(revision), 0) AS revision FROM transcript WHERE orgId = ?')
+      .get(this.orgFor(agentId)) as { revision: number }
+    // The in-memory allocator spans every partition; only the answer is org-scoped.
+    this.transcriptRevision = Math.max(this.transcriptRevision, row.revision)
     return row.revision
   }
 
@@ -1361,31 +1593,36 @@ export class LocalStore {
    * by an older daemon disappear after upgrade. Pages backward via `beforeSeq` (the
    * lowest seq already seen; null ⇒ newest page). Over-fetches one row to detect
    * `hasMore` without a second query. Rows stay seq DESC.
+   *
+   * `agentId` names the org partition only, never a delivery scope, and may be omitted on
+   * a store no pool shares — a shared store has no single partition to fall back on.
    */
   transcriptPage(
     channel: string,
     thread: string,
     beforeSeq: number | null,
-    limit: number
+    limit: number,
+    agentId?: string
   ): { rows: TranscriptRow[]; hasMore: boolean } {
+    const orgId = this.orgFor(agentId)
     const hiddenToolTitles = [...SESSION_TITLE_TOOL_TITLES]
     const rows = (beforeSeq !== null
       ? this.db
           .prepare(
             `SELECT * FROM transcript
-             WHERE channel = ? AND thread = ? AND seq < ?
+             WHERE orgId = ? AND channel = ? AND thread = ? AND seq < ?
                AND NOT (kind = 'tool' AND text IN (?, ?))
              ORDER BY seq DESC LIMIT ?`
           )
-          .all(channel, thread, beforeSeq, ...hiddenToolTitles, limit + 1)
+          .all(orgId, channel, thread, beforeSeq, ...hiddenToolTitles, limit + 1)
       : this.db
           .prepare(
             `SELECT * FROM transcript
-             WHERE channel = ? AND thread = ?
+             WHERE orgId = ? AND channel = ? AND thread = ?
                AND NOT (kind = 'tool' AND text IN (?, ?))
              ORDER BY seq DESC LIMIT ?`
           )
-          .all(channel, thread, ...hiddenToolTitles, limit + 1)) as unknown as TranscriptRow[]
+          .all(orgId, channel, thread, ...hiddenToolTitles, limit + 1)) as unknown as TranscriptRow[]
     const hasMore = rows.length > limit
     return { rows: hasMore ? rows.slice(0, limit) : rows, hasMore }
   }
@@ -1416,24 +1653,26 @@ export class LocalStore {
     // same ts would be pulled back in. Deliveries only ever concern conversational messages;
     // own internal rows still surface via `sender`.
     const scope = AGENT_DELIVERY_SCOPE_SQL
+    const orgId = this.orgFor(agentId)
     const hiddenToolTitles = [...SESSION_TITLE_TOOL_TITLES]
     const rows = (beforeSeq !== null
       ? this.db
           .prepare(
-            `SELECT * FROM transcript WHERE channel = ? AND thread = ? AND seq < ?
+            `SELECT * FROM transcript WHERE orgId = ? AND channel = ? AND thread = ? AND seq < ?
                AND ${scope}
                AND NOT (kind = 'tool' AND text IN (?, ?))
              ORDER BY seq DESC LIMIT ?`
           )
-          .all(channel, thread, beforeSeq, agentId, agentId, agentId, ...hiddenToolTitles, limit + 1)
+          .all(orgId, channel, thread, beforeSeq, agentId, agentId, agentId, ...hiddenToolTitles, limit + 1)
       : this.db
           .prepare(
-            `SELECT * FROM transcript WHERE channel = ? AND thread = ?
+            `SELECT * FROM transcript WHERE orgId = ? AND channel = ? AND thread = ?
                AND ${scope}
                AND NOT (kind = 'tool' AND text IN (?, ?))
              ORDER BY seq DESC LIMIT ?`
           )
           .all(
+            orgId,
             channel,
             thread,
             agentId,
@@ -1464,17 +1703,19 @@ export class LocalStore {
     limit: number
   ): { rows: TranscriptRow[]; hasMore: boolean } {
     const scope = AGENT_DELIVERY_SCOPE_SQL
+    const orgId = this.orgFor(agentId)
     const hiddenToolTitles = [...SESSION_TITLE_TOOL_TITLES]
     const rows = (before !== null
       ? this.db
           .prepare(
-            `SELECT * FROM transcript WHERE channel = ? AND thread = ?
+            `SELECT * FROM transcript WHERE orgId = ? AND channel = ? AND thread = ?
                AND (eventTimeUs < ? OR (eventTimeUs = ? AND seq < ?))
                AND ${scope}
                AND NOT (kind = 'tool' AND text IN (?, ?))
              ORDER BY eventTimeUs DESC, seq DESC LIMIT ?`
           )
           .all(
+            orgId,
             channel,
             thread,
             before.eventTimeUs,
@@ -1488,12 +1729,13 @@ export class LocalStore {
           )
       : this.db
           .prepare(
-            `SELECT * FROM transcript WHERE channel = ? AND thread = ?
+            `SELECT * FROM transcript WHERE orgId = ? AND channel = ? AND thread = ?
                AND ${scope}
                AND NOT (kind = 'tool' AND text IN (?, ?))
              ORDER BY eventTimeUs DESC, seq DESC LIMIT ?`
           )
           .all(
+            orgId,
             channel,
             thread,
             agentId,
@@ -1522,12 +1764,13 @@ export class LocalStore {
     const rows = this.db
       .prepare(
         `SELECT * FROM transcript
-         WHERE channel = ? AND thread = ? AND revision > ?
+         WHERE orgId = ? AND channel = ? AND thread = ? AND revision > ?
            AND ${scope}
            AND NOT (kind = 'tool' AND text IN (?, ?))
          ORDER BY revision ASC LIMIT ?`
       )
       .all(
+        this.orgFor(agentId),
         channel,
         thread,
         afterRevision,
@@ -1542,7 +1785,7 @@ export class LocalStore {
     return {
       rows: kept,
       hasMore,
-      cursor: hasMore ? kept[kept.length - 1]!.revision : this.currentTranscriptRevision()
+      cursor: hasMore ? kept[kept.length - 1]!.revision : this.currentTranscriptRevision(agentId)
     }
   }
 
@@ -1665,15 +1908,15 @@ export class LocalStore {
 
   /** Seed the local verdict for a session the daemon just created. Never lowers
    *  `cpRev`: a CP push that arrived first stays authoritative. */
-  setLocalCaptureGate(acpSessionId: string, localExcluded: boolean): void {
+  setLocalCaptureGate(agentId: string, acpSessionId: string, localExcluded: boolean): void {
     this.db
       .prepare(
-        `INSERT INTO session_gates (acpSessionId, localExcluded, cpRev, updatedAt)
-         VALUES (?, ?, 0, ?)
-         ON CONFLICT(acpSessionId) DO UPDATE SET
+        `INSERT INTO session_gates (agentId, acpSessionId, localExcluded, cpRev, updatedAt)
+         VALUES (?, ?, ?, 0, ?)
+         ON CONFLICT(agentId, acpSessionId) DO UPDATE SET
            localExcluded = excluded.localExcluded, updatedAt = excluded.updatedAt`
       )
-      .run(acpSessionId, localExcluded ? 1 : 0, Date.now())
+      .run(agentId, acpSessionId, localExcluded ? 1 : 0, Date.now())
   }
 
   /**
@@ -1681,22 +1924,33 @@ export class LocalStore {
    * rev is at or below what we hold is NOT reapplied but IS still acknowledged
    * (`superseded`) — "ignore" must never mean "don't ACK", or a lost ack leaves
    * the CP retrying forever.
+   *
+   * The revision test is the upsert's own `WHERE`, not a prior `SELECT`: two members
+   * on the shared store otherwise interleave read and write and land the older rev last.
    */
-  applyCpCaptureGate(acpSessionId: string, isPrivate: boolean, rev: number): 'applied' | 'superseded' {
-    const row = this.db.prepare('SELECT cpRev FROM session_gates WHERE acpSessionId = ?').get(acpSessionId) as
-      { cpRev: number } | undefined
+  applyCpCaptureGate(agentId: string, acpSessionId: string, isPrivate: boolean, rev: number): 'applied' | 'superseded' {
     // rev 0 is a legitimate first revision (a session ingested and never
     // changed), so it applies once — but only while we hold nothing newer.
-    if (row && (rev > 0 ? row.cpRev >= rev : row.cpRev > 0)) return 'superseded'
-    this.db
+    const changes = this.db
       .prepare(
-        `INSERT INTO session_gates (acpSessionId, localExcluded, cpPrivate, cpRev, updatedAt)
-         VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(acpSessionId) DO UPDATE SET
-           cpPrivate = excluded.cpPrivate, cpRev = excluded.cpRev, updatedAt = excluded.updatedAt`
+        `INSERT INTO session_gates (agentId, acpSessionId, localExcluded, cpPrivate, cpRev, updatedAt)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(agentId, acpSessionId) DO UPDATE SET
+           cpPrivate = excluded.cpPrivate, cpRev = excluded.cpRev, updatedAt = excluded.updatedAt
+         WHERE session_gates.cpRev < excluded.cpRev
+            OR (excluded.cpRev = 0 AND session_gates.cpRev = 0)`
       )
-      .run(acpSessionId, isPrivate ? 1 : 0, isPrivate ? 1 : 0, rev, Date.now())
-    return 'applied'
+      .run(agentId, acpSessionId, isPrivate ? 1 : 0, isPrivate ? 1 : 0, rev, Date.now()).changes
+    return Number(changes) > 0 ? 'applied' : 'superseded'
+  }
+
+  /** The one agent holding this ACP id locally, or undefined when none or several
+   *  do — how a push from a CP too old to name the agent is attributed. */
+  soleAgentForAcpSession(acpSessionId: string): string | undefined {
+    const rows = this.db
+      .prepare('SELECT DISTINCT agentId FROM sessions WHERE acpSessionId = ? AND agentId IS NOT NULL LIMIT 2')
+      .all(acpSessionId) as { agentId: string }[]
+    return rows.length === 1 ? rows[0]!.agentId : undefined
   }
 
   /**
@@ -1704,7 +1958,7 @@ export class LocalStore {
    * we have one; otherwise the local verdict; otherwise excluded. An A2A child
    * therefore starts closed and only a CP-confirmed `org` state opens it.
    */
-  isCaptureExcluded(acpSessionId: string | undefined): boolean {
+  isCaptureExcluded(agentId: string, acpSessionId: string | undefined): boolean {
     if (!acpSessionId) return true
     // External-source binding (a Slack/Feishu channel = external identity domain)
     // no longer forces memory exclusion: such channels behave like any other
@@ -1713,8 +1967,8 @@ export class LocalStore {
     // §5.1). DM / webchat / A2A / launch-correlated sessions stay private through
     // those same layers.
     const row = this.db
-      .prepare('SELECT localExcluded, cpPrivate FROM session_gates WHERE acpSessionId = ?')
-      .get(acpSessionId) as { localExcluded: number; cpPrivate: number | null } | undefined
+      .prepare('SELECT localExcluded, cpPrivate FROM session_gates WHERE agentId = ? AND acpSessionId = ?')
+      .get(agentId, acpSessionId) as { localExcluded: number; cpPrivate: number | null } | undefined
     if (!row) return true
     if (row.cpPrivate !== null) return row.cpPrivate === 1
     return row.localExcluded === 1
@@ -1992,16 +2246,41 @@ export class LocalStore {
   getUsage(key: string): StoredUsage {
     const row = this.db.prepare('SELECT usage FROM sessions WHERE key = ?').get(key) as
       { usage: string | null } | undefined
-    if (!row?.usage) return {}
-    try {
-      return JSON.parse(row.usage) as StoredUsage
-    } catch {
-      return {}
-    }
+    return parseUsage(row?.usage ?? null)
   }
 
-  private writeUsage(key: string, u: StoredUsage): void {
-    this.db.prepare('UPDATE sessions SET usage = ? WHERE key = ?').run(JSON.stringify(u), key)
+  /**
+   * Read-merge-write `sessions.usage` under a compare-and-set on the value read, retried when a
+   * concurrent writer wins. `addTokenUsage` and `addCost` are genuinely additive, so a plain
+   * read-then-write drops the loser's increment; on a shared store two members touch one session
+   * across a handover. A relative UPDATE would be simpler but the column is one JSON blob and the
+   * two backends spell JSON mutation differently, whereas a CAS is plain SQL in both.
+   *
+   * `merge` runs again on every attempt, so it must be safe to repeat; returning undefined aborts.
+   */
+  private mergeUsage(key: string, merge: (u: StoredUsage) => StoredUsage | undefined): void {
+    for (let attempt = 1; attempt <= USAGE_MERGE_ATTEMPTS; attempt++) {
+      const row = this.db.prepare('SELECT usage FROM sessions WHERE key = ?').get(key) as
+        { usage: string | null } | undefined
+      if (!row) return // unknown key: the row is created first (unchanged from the plain write)
+      const merged = merge(parseUsage(row.usage))
+      if (!merged) return
+      const next = JSON.stringify(merged)
+      // The last attempt writes unconditionally. Losing an increment is exactly the behavior this
+      // replaces, so it is the floor to degrade to rather than dropping the write entirely.
+      if (attempt === USAGE_MERGE_ATTEMPTS) {
+        this.db.prepare('UPDATE sessions SET usage = ? WHERE key = ?').run(next, key)
+        return
+      }
+      // Two statements, not one NULL-safe comparison: `IS` / `IS NOT DISTINCT FROM` are spelled
+      // differently by the two backends, and which case applies is already known here.
+      const changes =
+        row.usage === null
+          ? this.db.prepare('UPDATE sessions SET usage = ? WHERE key = ? AND usage IS NULL').run(next, key).changes
+          : this.db.prepare('UPDATE sessions SET usage = ? WHERE key = ? AND usage = ?').run(next, key, row.usage)
+              .changes
+      if (changes > 0) return
+    }
   }
 
   /** Record the latest token counts for a session when an adapter reports a
@@ -2009,54 +2288,63 @@ export class LocalStore {
    *  additive. Only provided fields are updated; the context/cost snapshot is
    *  left intact. No-op on an unknown key (the row is created first). */
   setTokenUsage(key: string, counts: TokenCounts): void {
-    const u = this.getUsage(key)
-    if (counts.totalTokens !== undefined) u.totalTokens = counts.totalTokens
-    if (counts.inputTokens !== undefined) u.inputTokens = counts.inputTokens
-    if (counts.outputTokens !== undefined) u.outputTokens = counts.outputTokens
-    if (counts.thoughtTokens !== undefined) u.thoughtTokens = counts.thoughtTokens
-    if (counts.cachedReadTokens !== undefined) u.cachedReadTokens = counts.cachedReadTokens
-    if (counts.cachedWriteTokens !== undefined) u.cachedWriteTokens = counts.cachedWriteTokens
-    this.writeUsage(key, u)
+    this.mergeUsage(key, (u) => {
+      if (counts.totalTokens !== undefined) u.totalTokens = counts.totalTokens
+      if (counts.inputTokens !== undefined) u.inputTokens = counts.inputTokens
+      if (counts.outputTokens !== undefined) u.outputTokens = counts.outputTokens
+      if (counts.thoughtTokens !== undefined) u.thoughtTokens = counts.thoughtTokens
+      if (counts.cachedReadTokens !== undefined) u.cachedReadTokens = counts.cachedReadTokens
+      if (counts.cachedWriteTokens !== undefined) u.cachedWriteTokens = counts.cachedWriteTokens
+      return u
+    })
   }
 
   /** Add one turn's token counts to the session total. codex-acp currently maps
    *  Codex's `last_token_usage` into PromptResponse.usage, so its values are a
    *  per-turn delta even though other ACP adapters return a session snapshot. */
   addTokenUsage(key: string, counts: TokenCounts): void {
-    const u = this.getUsage(key)
-    const add = (field: keyof TokenCounts, value: number | undefined) => {
-      if (value !== undefined) u[field] = (u[field] ?? 0) + value
-    }
-    add('totalTokens', counts.totalTokens)
-    add('inputTokens', counts.inputTokens)
-    add('outputTokens', counts.outputTokens)
-    add('thoughtTokens', counts.thoughtTokens)
-    add('cachedReadTokens', counts.cachedReadTokens)
-    add('cachedWriteTokens', counts.cachedWriteTokens)
-    this.writeUsage(key, u)
+    this.mergeUsage(key, (u) => {
+      const add = (field: keyof TokenCounts, value: number | undefined) => {
+        if (value !== undefined) u[field] = (u[field] ?? 0) + value
+      }
+      add('totalTokens', counts.totalTokens)
+      add('inputTokens', counts.inputTokens)
+      add('outputTokens', counts.outputTokens)
+      add('thoughtTokens', counts.thoughtTokens)
+      add('cachedReadTokens', counts.cachedReadTokens)
+      add('cachedWriteTokens', counts.cachedWriteTokens)
+      return u
+    })
   }
 
   /** Overwrite the session's context-window + cost snapshot (latest `usage_update`
    *  wins). Only provided fields are updated. No-op on an unknown key. */
   setUsageSnapshot(key: string, snap: UsageSnapshot): void {
-    const u = this.getUsage(key)
-    if (snap.contextUsed !== undefined) u.contextUsed = snap.contextUsed
-    if (snap.contextSize !== undefined) u.contextSize = snap.contextSize
-    if (snap.costAmount !== undefined) u.costAmount = snap.costAmount
-    if (snap.costCurrency !== undefined) u.costCurrency = snap.costCurrency
-    this.writeUsage(key, u)
+    this.mergeUsage(key, (u) => {
+      if (snap.contextUsed !== undefined) u.contextUsed = snap.contextUsed
+      if (snap.contextSize !== undefined) u.contextSize = snap.contextSize
+      if (snap.costAmount !== undefined) u.costAmount = snap.costAmount
+      if (snap.costCurrency !== undefined) u.costCurrency = snap.costCurrency
+      return u
+    })
   }
 
   /** Add one turn's fallback cost to the session running total. Refuse to mix
    *  currencies; a later ACP usage_update can still replace the total snapshot. */
   addCost(key: string, amount: number, currency: string): boolean {
     if (!Number.isFinite(amount) || amount <= 0 || !currency) return false
-    const u = this.getUsage(key)
-    if (u.costCurrency !== undefined && u.costCurrency !== currency) return false
-    u.costAmount = (u.costAmount ?? 0) + amount
-    u.costCurrency = currency
-    this.writeUsage(key, u)
-    return true
+    // Set at most once and only by the refusal branch, so repeating the merge cannot change it.
+    let mixedCurrency = false
+    this.mergeUsage(key, (u) => {
+      if (u.costCurrency !== undefined && u.costCurrency !== currency) {
+        mixedCurrency = true
+        return undefined
+      }
+      u.costAmount = (u.costAmount ?? 0) + amount
+      u.costCurrency = currency
+      return u
+    })
+    return !mixedCurrency
   }
 
   /** Most-recent activity across an agent's non-closed sessions (epoch ms), or null
@@ -2144,11 +2432,10 @@ export class LocalStore {
    *  - unacknowledged terminal hook reports (`terminalReport IS NOT NULL`) — an
    *    outbox the CP has not converged yet, preserved exactly like
    *    removeInboxByAgentId does.
-   *  permission_requests is scoped by agentId, and the capture gate is dropped
-   *  only when no surviving session still references the ACP id: ACP session ids
-   *  are runtime-local, so two agents can both hold an `acp-1`.
+   *  permission_requests and the capture gate are both scoped by agentId, so a
+   *  neighbour holding the same runtime-local `acp-1` keeps its own rows.
    *  Returns false when the row is already gone (idempotent). */
-  deleteSession(key: string, purge?: { reason: string; at: number }): boolean {
+  deleteSession(key: string, purge?: { reason: string; at: number; ownerId?: string }): boolean {
     const rec = this.getSession(key)
     if (!rec) return false
     this.db.exec('BEGIN')
@@ -2161,9 +2448,13 @@ export class LocalStore {
       // re-created for the same id — the console should show when the content
       // actually went away, not when the daemon last retried.
       if (purge && rec.acpSessionId) {
+        // Stamped to the deleting member on a shared store: its drain owns the receipt.
         this.db
-          .prepare('INSERT OR IGNORE INTO session_purges (agentId, sessionId, reason, purgedAt) VALUES (?, ?, ?, ?)')
-          .run(rec.agentId, rec.acpSessionId, purge.reason, purge.at)
+          .prepare(
+            `INSERT OR IGNORE INTO session_purges (agentId, sessionId, reason, purgedAt, ownerId, claimedAt)
+             VALUES (?, ?, ?, ?, ?, ?)`
+          )
+          .run(rec.agentId, rec.acpSessionId, purge.reason, purge.at, purge.ownerId ?? null, purge.at)
       }
       this.db.prepare('DELETE FROM sessions WHERE key = ?').run(key)
       this.db.prepare('DELETE FROM session_mutes WHERE key = ?').run(key)
@@ -2175,16 +2466,9 @@ export class LocalStore {
         this.db
           .prepare('DELETE FROM session_metadata_outbox WHERE agentId = ? AND sessionId = ?')
           .run(rec.agentId, rec.acpSessionId)
-        // session_gates is keyed by the ACP id ALONE, and ACP ids are runtime-local
-        // — another agent's still-live `acp-1` may share the key. Drop the gate only
-        // once no surviving session references it (the sessions row above is already
-        // deleted inside this transaction, so a self-reference cannot pin it).
-        const stillReferenced = this.db
-          .prepare('SELECT 1 AS present FROM sessions WHERE acpSessionId = ? LIMIT 1')
-          .get(rec.acpSessionId)
-        if (!stillReferenced) {
-          this.db.prepare('DELETE FROM session_gates WHERE acpSessionId = ?').run(rec.acpSessionId)
-        }
+        this.db
+          .prepare('DELETE FROM session_gates WHERE agentId = ? AND acpSessionId = ?')
+          .run(rec.agentId, rec.acpSessionId)
         this.db
           .prepare('DELETE FROM permission_requests WHERE agentId = ? AND sessionId = ?')
           .run(rec.agentId, rec.acpSessionId)
@@ -2208,78 +2492,310 @@ export class LocalStore {
     sessionId: string,
     snapshot: string,
     enqueue: boolean,
-    queuedAt: number
+    queuedAt: number,
+    ownerId?: string
   ): number | undefined {
+    // Stamped to the writing member: the daemon that produced the snapshot serves the
+    // agent, so it is the one that can scope the frame's organization right now.
+    const owner = ownerId ?? null
     const row = enqueue
       ? (this.db
           .prepare(
-            `INSERT INTO session_metadata_outbox (agentId, sessionId, revision, snapshot, queuedAt)
-             VALUES (?, ?, 1, ?, ?)
+            `INSERT INTO session_metadata_outbox
+               (agentId, sessionId, revision, snapshot, queuedAt, failedAttempts, nextAttemptAt, ownerId, claimedAt)
+             VALUES (?, ?, 1, ?, ?, 0, NULL, ?, ?)
              ON CONFLICT (agentId, sessionId) DO UPDATE SET
                revision = session_metadata_outbox.revision + 1,
                snapshot = excluded.snapshot,
-               queuedAt = excluded.queuedAt
+               queuedAt = excluded.queuedAt,
+               failedAttempts = 0,
+               nextAttemptAt = NULL,
+               ownerId = excluded.ownerId,
+               claimedAt = excluded.claimedAt
              RETURNING revision`
           )
-          .get(agentId, sessionId, snapshot, queuedAt) as { revision: number } | undefined)
+          .get(agentId, sessionId, snapshot, queuedAt, owner, queuedAt) as { revision: number } | undefined)
       : (this.db
           .prepare(
             `UPDATE session_metadata_outbox
-             SET revision = revision + 1, snapshot = ?, queuedAt = ?
+             SET revision = revision + 1, snapshot = ?, queuedAt = ?, failedAttempts = 0, nextAttemptAt = NULL,
+                 ownerId = ?, claimedAt = ?
              WHERE agentId = ? AND sessionId = ?
              RETURNING revision`
           )
-          .get(snapshot, queuedAt, agentId, sessionId) as { revision: number } | undefined)
+          .get(snapshot, queuedAt, owner, queuedAt, agentId, sessionId) as { revision: number } | undefined)
     return row?.revision
   }
 
   pendingSessionMetadataSnapshot(agentId: string, sessionId: string): SessionMetadataOutboxRow | undefined {
     return this.db
       .prepare(
-        `SELECT agentId, sessionId, revision, snapshot, queuedAt
+        `SELECT agentId, sessionId, revision, snapshot, queuedAt, failedAttempts, nextAttemptAt
          FROM session_metadata_outbox WHERE agentId = ? AND sessionId = ?`
       )
       .get(agentId, sessionId) as unknown as SessionMetadataOutboxRow | undefined
   }
 
-  nextSessionMetadataSnapshot(): SessionMetadataOutboxRow | undefined {
+  /** The scope of the outbox this member may work on. A local store owns every row
+   *  outright. On a shared pool store a row is offered when this member owns it, or
+   *  when it is unowned / its owner's claim lapsed AND this member serves the agent.
+   *  Unlike the hook outbox, an unowned row is NOT offered install-wide: the frame
+   *  carries the agent's organization, which only a serving member can resolve, so a
+   *  parked snapshot must wait for that member instead of circling the pool (#1023). */
+  private sessionMetadataScope(
+    now: number,
+    ownerId?: string,
+    agentIds?: readonly string[]
+  ): { sql: string; params: SqlParams } {
+    if (!this.shared) return { sql: '', params: {} }
+    const scope = idScope('agentId', agentIds)
+    return {
+      sql: ` AND (ownerId = @ownerId OR ((ownerId IS NULL OR COALESCE(claimedAt, 0) <= @staleBefore)${scope.sql}))`,
+      params: { ownerId: ownerId ?? null, staleBefore: now - SHARED_OUTBOX_LEASE_MS, ...scope.params }
+    }
+  }
+
+  /** Everything this member is eventually answerable for: its own rows plus every row of
+   *  an agent it serves, whoever holds the claim right now. Wider than the claimable-now
+   *  scope on purpose — a peer's live claim on a served agent's row still has to arm this
+   *  member's wake, or nothing would run when that claim lapses. */
+  private sessionMetadataWorkScope(ownerId?: string, agentIds?: readonly string[]): { sql: string; params: SqlParams } {
+    if (!this.shared) return { sql: '', params: {} }
+    const scope = idScope('agentId', agentIds)
+    return {
+      sql: ` AND (ownerId = @ownerId OR 1 = 1${scope.sql})`,
+      params: { ownerId: ownerId ?? null, ...scope.params }
+    }
+  }
+
+  nextSessionMetadataSnapshot(
+    now = Date.now(),
+    ownerId?: string,
+    agentIds?: readonly string[]
+  ): SessionMetadataOutboxRow | undefined {
+    const scope = this.sessionMetadataScope(now, ownerId, agentIds)
     return this.db
       .prepare(
-        `SELECT agentId, sessionId, revision, snapshot, queuedAt
-         FROM session_metadata_outbox ORDER BY queuedAt ASC LIMIT 1`
+        `SELECT agentId, sessionId, revision, snapshot, queuedAt, failedAttempts, nextAttemptAt
+         FROM session_metadata_outbox
+         WHERE (nextAttemptAt IS NULL OR nextAttemptAt <= @now)${scope.sql}
+         ORDER BY queuedAt ASC LIMIT 1`
       )
-      .get() as unknown as SessionMetadataOutboxRow | undefined
+      .get({ now, ...scope.params }) as unknown as SessionMetadataOutboxRow | undefined
   }
 
-  hasPendingSessionMetadata(): boolean {
-    return this.db.prepare('SELECT 1 AS pending FROM session_metadata_outbox LIMIT 1').get() !== undefined
+  /** Take or renew this member's claim on one snapshot before emitting it. Local
+   *  stores never lease: the single owner claims everything. */
+  claimSessionMetadataSnapshot(
+    agentId: string,
+    sessionId: string,
+    revision: number,
+    ownerId: string | undefined,
+    now: number
+  ): boolean {
+    if (!this.shared) return true
+    return (
+      this.db
+        .prepare(
+          `UPDATE session_metadata_outbox
+           SET ownerId = @ownerId, claimedAt = @now
+           WHERE agentId = @agentId AND sessionId = @sessionId AND revision = @revision
+             AND (ownerId IS NULL OR ownerId = @ownerId OR COALESCE(claimedAt, 0) <= @staleBefore)`
+        )
+        .run({
+          agentId,
+          sessionId,
+          revision,
+          ownerId: ownerId ?? null,
+          now,
+          staleBefore: now - SHARED_OUTBOX_LEASE_MS
+        }).changes === 1
+    )
   }
 
-  /** Clear exactly the revision the CP ACKed. A newer coalesced snapshot wins. */
-  acknowledgeSessionMetadataSnapshot(agentId: string, sessionId: string, revision: number): boolean {
+  /** Hand a snapshot this member cannot scope back to the pool: the claim is released
+   *  so the member serving the agent picks it up, the body and the failure count are
+   *  untouched, and the backoff keeps it out of this member's next pass. Returns false
+   *  on a local store, where there is no other member to park it for. */
+  parkSessionMetadataSnapshot(agentId: string, sessionId: string, revision: number, retryAt: number): boolean {
+    if (!this.shared) return false
+    return (
+      this.db
+        .prepare(
+          `UPDATE session_metadata_outbox
+           SET ownerId = NULL, claimedAt = NULL, nextAttemptAt = @retryAt
+           WHERE agentId = @agentId AND sessionId = @sessionId AND revision = @revision`
+        )
+        .run({ agentId, sessionId, revision, retryAt }).changes === 1
+    )
+  }
+
+  /** Hand the snapshots of agents a member has just gained back to the pool: the parked
+   *  ones lose their backoff and a previous holder's claim — live or not — is released,
+   *  because the duty ledger has already proved that member no longer serves the agent.
+   *  This member's own claims are left alone; only it knows whether they are in flight. */
+  reclaimSessionMetadataSnapshots(agentIds: readonly string[], ownerId?: string): number {
+    if (!this.shared || agentIds.length === 0) return 0
+    const scope = idScope('agentId', agentIds)
+    return Number(
+      this.db
+        .prepare(
+          `UPDATE session_metadata_outbox
+           SET ownerId = NULL, claimedAt = NULL, nextAttemptAt = NULL
+           WHERE (ownerId IS NULL OR ownerId <> @ownerId)${scope.sql}`
+        )
+        .run({ ownerId: ownerId ?? null, ...scope.params }).changes
+    )
+  }
+
+  /** Release every claim this member still holds, at shutdown: it will not emit again, so
+   *  a successor must not wait out the lease. Bodies, revisions and backoffs survive. */
+  releaseOwnedSessionMetadataSnapshots(ownerId?: string): number {
+    if (!this.shared) return 0
+    return Number(
+      this.db
+        .prepare(
+          `UPDATE session_metadata_outbox
+           SET ownerId = NULL, claimedAt = NULL, nextAttemptAt = NULL
+           WHERE ownerId = @ownerId`
+        )
+        .run({ ownerId: ownerId ?? null }).changes
+    )
+  }
+
+  /** When the earliest row this member is answerable for becomes workable: its own backoff,
+   *  or — for a row a peer still holds — the later of that backoff and the moment the claim
+   *  lapses. Without the second half a graceful handoff leaves a live foreign claim with
+   *  nothing armed to outlast it. Written as one CASE rather than a two-argument `max()`: the
+   *  same statement text runs on the pool's PostgreSQL, where `MAX` is only an aggregate. */
+  nextSessionMetadataAttemptAt(ownerId?: string, agentIds?: readonly string[]): number | undefined {
+    const scope = this.sessionMetadataWorkScope(ownerId, agentIds)
+    const workableAt = this.shared
+      ? `CASE WHEN ownerId IS NOT NULL AND ownerId <> @ownerId
+                AND COALESCE(claimedAt, 0) + @lease > COALESCE(nextAttemptAt, 0)
+           THEN COALESCE(claimedAt, 0) + @lease ELSE COALESCE(nextAttemptAt, 0) END`
+      : 'COALESCE(nextAttemptAt, 0)'
+    const row = this.db
+      .prepare(`SELECT MIN(${workableAt}) AS attemptAt FROM session_metadata_outbox WHERE 1 = 1${scope.sql}`)
+      .get({ ...scope.params, ...(this.shared ? { lease: SHARED_OUTBOX_LEASE_MS } : {}) }) as
+      { attemptAt: number | null } | undefined
+    return row?.attemptAt === null || row?.attemptAt === undefined ? undefined : Number(row.attemptAt)
+  }
+
+  recordSessionMetadataSnapshotFailure(
+    agentId: string,
+    sessionId: string,
+    revision: number,
+    nextAttemptAt: number | null,
+    ownerId?: string
+  ): Pick<SessionMetadataOutboxRow, 'failedAttempts' | 'nextAttemptAt'> | undefined {
+    const fence = this.shared ? ' AND (ownerId IS NULL OR ownerId = @ownerId)' : ''
+    return this.db
+      .prepare(
+        `UPDATE session_metadata_outbox
+         SET failedAttempts = failedAttempts + 1, nextAttemptAt = @nextAttemptAt
+         WHERE agentId = @agentId AND sessionId = @sessionId AND revision = @revision${fence}
+         RETURNING failedAttempts, nextAttemptAt`
+      )
+      .get({ agentId, sessionId, revision, nextAttemptAt, ...(fence ? { ownerId: ownerId ?? null } : {}) }) as
+      Pick<SessionMetadataOutboxRow, 'failedAttempts' | 'nextAttemptAt'> | undefined
+  }
+
+  /** Any row this member is answerable for, workable now or once a peer's claim lapses. */
+  hasPendingSessionMetadata(ownerId?: string, agentIds?: readonly string[]): boolean {
+    const scope = this.sessionMetadataWorkScope(ownerId, agentIds)
+    return (
+      this.db
+        .prepare(`SELECT 1 AS pending FROM session_metadata_outbox WHERE 1 = 1${scope.sql} LIMIT 1`)
+        .get(scope.params) !== undefined
+    )
+  }
+
+  /** Clear exactly the revision the CP ACKed. A newer coalesced snapshot wins. On a
+   *  shared store only the claim holder may drop a row — never a peer's. */
+  acknowledgeSessionMetadataSnapshot(agentId: string, sessionId: string, revision: number, ownerId?: string): boolean {
+    const fence = this.shared ? ' AND (ownerId IS NULL OR ownerId = @ownerId)' : ''
     const result = this.db
-      .prepare('DELETE FROM session_metadata_outbox WHERE agentId = ? AND sessionId = ? AND revision = ?')
-      .run(agentId, sessionId, revision)
+      .prepare(
+        `DELETE FROM session_metadata_outbox
+         WHERE agentId = @agentId AND sessionId = @sessionId AND revision = @revision${fence}`
+      )
+      .run({ agentId, sessionId, revision, ...(fence ? { ownerId: ownerId ?? null } : {}) })
     return result.changes === 1
   }
 
   /** Retention-GC receipts still owed to the CP, oldest purge first, bounded.
    *  Grouped per agent by the caller: one `event/session-purged` frame reports one
-   *  agent, because the CP authorizes the report against that agent's placement. */
-  listSessionPurges(limit: number): SessionPurgeRow[] {
+   *  agent, because the CP authorizes the report against that agent's placement.
+   *  A local store owns every receipt outright. On a shared pool store a row is
+   *  offered only when this member owns it, when it is unowned (pre-pool), or when
+   *  its owner's claim lapsed AND this member serves the agent — the same lease
+   *  the hook-completion outbox uses, so a live peer's receipt stays with its owner. */
+  listSessionPurges(limit: number, now: number, ownerId?: string, agentIds?: readonly string[]): SessionPurgeRow[] {
+    const columns = 'SELECT agentId, sessionId, reason, purgedAt FROM session_purges'
+    const order = ' ORDER BY purgedAt ASC LIMIT @limit'
+    if (!this.shared) return this.db.prepare(`${columns}${order}`).all({ limit }) as unknown as SessionPurgeRow[]
+    const scope = idScope('agentId', agentIds)
     return this.db
-      .prepare('SELECT agentId, sessionId, reason, purgedAt FROM session_purges ORDER BY purgedAt ASC LIMIT ?')
-      .all(limit) as unknown as SessionPurgeRow[]
+      .prepare(
+        `${columns}
+         WHERE (ownerId IS NULL OR ownerId = @ownerId
+                OR (COALESCE(claimedAt, 0) <= @staleBefore${scope.sql}))${order}`
+      )
+      .all({
+        limit,
+        ownerId: ownerId ?? null,
+        staleBefore: now - SHARED_OUTBOX_LEASE_MS,
+        ...scope.params
+      }) as unknown as SessionPurgeRow[]
+  }
+
+  /** Take or renew this member's claim on the receipts of one frame before emitting
+   *  it, returning the session ids actually claimed — a row a peer took over between
+   *  the list and this CAS is left out. Local stores never lease: everything is claimed. */
+  claimSessionPurges(
+    agentId: string,
+    sessionIds: readonly string[],
+    ownerId: string | undefined,
+    now: number
+  ): string[] {
+    if (!this.shared) return [...sessionIds]
+    const claim = this.db.prepare(
+      `UPDATE session_purges
+       SET ownerId = @ownerId, claimedAt = @now
+       WHERE agentId = @agentId AND sessionId = @sessionId
+         AND (ownerId IS NULL OR ownerId = @ownerId OR COALESCE(claimedAt, 0) <= @staleBefore)`
+    )
+    const staleBefore = now - SHARED_OUTBOX_LEASE_MS
+    const claimed: string[] = []
+    this.db.exec('BEGIN')
+    try {
+      for (const sessionId of sessionIds) {
+        if (claim.run({ agentId, sessionId, ownerId: ownerId ?? null, now, staleBefore }).changes === 1)
+          claimed.push(sessionId)
+      }
+      this.db.exec('COMMIT')
+    } catch (err) {
+      this.db.exec('ROLLBACK')
+      throw err
+    }
+    return claimed
   }
 
   /** Settle receipts the CP has ACKed. Scoped by agent: the same ACP id may still
-   *  be owed for a different agent (ids are runtime-local). */
-  acknowledgeSessionPurges(agentId: string, sessionIds: string[]): void {
+   *  be owed for a different agent (ids are runtime-local). On a shared store only
+   *  the claim holder (or nobody) may release a row — never a peer. */
+  acknowledgeSessionPurges(agentId: string, sessionIds: string[], ownerId?: string): void {
     if (sessionIds.length === 0) return
-    const stmt = this.db.prepare('DELETE FROM session_purges WHERE agentId = ? AND sessionId = ?')
+    const fence = this.shared ? ' AND (ownerId IS NULL OR ownerId = @ownerId)' : ''
+    const stmt = this.db.prepare(
+      `DELETE FROM session_purges WHERE agentId = @agentId AND sessionId = @sessionId${fence}`
+    )
     this.db.exec('BEGIN')
     try {
-      for (const sessionId of sessionIds) stmt.run(agentId, sessionId)
+      for (const sessionId of sessionIds) {
+        stmt.run({ agentId, sessionId, ...(fence ? { ownerId: ownerId ?? null } : {}) })
+      }
       this.db.exec('COMMIT')
     } catch (err) {
       this.db.exec('ROLLBACK')
@@ -2287,14 +2803,55 @@ export class LocalStore {
     }
   }
 
-  /** Abandon receipts older than `cutoff`, returning how many were dropped so the
-   *  caller can report it. Bounds the outbox for a daemon that never reaches a CP
-   *  new enough to accept the report: after this long the CP row (if it exists at
-   *  all) is stale metadata no one is waiting on, and an unbounded table would be
-   *  the worse outcome. */
-  pruneSessionPurges(cutoff: number): number {
-    const result = this.db.prepare('DELETE FROM session_purges WHERE purgedAt < ?').run(cutoff)
-    return Number(result.changes)
+  // ── retention (docs/designs/k8s-daemon-pool.md §4; the rule table in store/retention.ts) ──
+
+  /** True on a pool's shared data-plane store — the only place a row can outlive its writer. */
+  get isShared(): boolean {
+    return this.shared
+  }
+
+  /** The partition this process stamps its per-member cache rows with. The retention sweep
+   *  compares against it to tell its own rows from a departed writer's. */
+  get cacheOwner(): string {
+    return this.cacheOwnerId
+  }
+
+  /** Every row one retention rule is about, oldest first, with the clock it is judged by.
+   *  Reads only: which of these are collectable is policy and lives in the rule table. */
+  listRetentionCandidates(rule: StoreRetentionRule, limit = 5_000): StoreRetentionCandidate[] {
+    const columns = [
+      ...new Set([
+        ...rule.key,
+        ...(rule.agentColumn ? [rule.agentColumn] : []),
+        ...(rule.ownerColumn ? [rule.ownerColumn] : [])
+      ])
+    ]
+    const rows = this.db
+      .prepare(
+        `SELECT ${columns.join(', ')}, ${rule.clock} AS touchedAt FROM ${rule.table}
+         WHERE ${rule.where ?? '1 = 1'} ORDER BY ${rule.clock} ASC LIMIT @limit`
+      )
+      .all({ limit }) as unknown as Record<string, string | number | null>[]
+    return rows.map((row) => ({
+      key: Object.fromEntries(rule.key.map((column) => [column, row[column] as string | number])),
+      ...(rule.agentColumn && row[rule.agentColumn] != null ? { agentId: String(row[rule.agentColumn]) } : {}),
+      ...(rule.ownerColumn && row[rule.ownerColumn] != null ? { ownerId: String(row[rule.ownerColumn]) } : {}),
+      touchedAt: Number(row.touchedAt)
+    }))
+  }
+
+  /** Collect one row the sweeper decided is collectable. The clock it was judged on rides the
+   *  DELETE, so a row anything wrote between the read and here is left alone. */
+  deleteRetentionRow(rule: StoreRetentionRule, candidate: StoreRetentionCandidate): boolean {
+    const key = rule.key.map((column) => `${column} = @key_${column}`).join(' AND ')
+    const params = Object.fromEntries(rule.key.map((column) => [`key_${column}`, candidate.key[column]!]))
+    const result = this.db
+      .prepare(
+        `DELETE FROM ${rule.table}
+         WHERE ${key} AND ${rule.clock} <= @touchedAt${rule.where ? ` AND ${rule.where}` : ''}`
+      )
+      .run({ ...params, touchedAt: candidate.touchedAt } as SqlParams)
+    return Number(result.changes) === 1
   }
 
   // ── memory dream jobs (docs/designs/memory-dreaming.md §4; DreamStorePort) ──
@@ -2318,7 +2875,8 @@ export class LocalStore {
       usage: dream.usage ? JSON.stringify(dream.usage) : null,
       error: dream.error ? JSON.stringify(dream.error) : null,
       createdAt: dream.createdAt,
-      endedAt: dream.endedAt ?? null
+      endedAt: dream.endedAt ?? null,
+      ownerId: this.ownerId ?? null
     }
   }
 
@@ -2358,29 +2916,35 @@ export class LocalStore {
       .prepare(
         `INSERT INTO dreams (dreamId, agentId, status, triggerKind, sessionIds, snapshotDigest,
            executionSessionId, runtime, model, stopReason, snapshotWrites, instructions, skills, organizationSuggestions,
-           usage, error, createdAt, endedAt)
+           usage, error, createdAt, endedAt, ownerId)
          VALUES (@dreamId, @agentId, @status, @triggerKind, @sessionIds, @snapshotDigest,
            @executionSessionId, @runtime, @model, @stopReason, @snapshotWrites, @instructions, @skills,
-           @organizationSuggestions, @usage, @error, @createdAt, @endedAt)`
+           @organizationSuggestions, @usage, @error, @createdAt, @endedAt, @ownerId)`
       )
       .run(this.dreamToRow(dream))
   }
 
+  /** Whoever writes a dream row is the process running it, so every write re-stamps
+   *  ownership — a reclaimed dream never reads as its former owner's. */
   updateDream(dream: DreamInfo): void {
     this.db
-      .prepare(
-        // Every column dreamToRow produces must appear here: better-sqlite3
-        // rejects a bound parameter the statement never references ("Unknown
-        // named parameter"). triggerKind/createdAt are immutable in practice but
-        // are still assigned, so the row shape and the SQL can't drift apart.
-        `UPDATE dreams SET status = @status, triggerKind = @triggerKind, sessionIds = @sessionIds,
-           snapshotDigest = @snapshotDigest, executionSessionId = @executionSessionId, runtime = @runtime,
-           model = @model, stopReason = @stopReason, snapshotWrites = @snapshotWrites, instructions = @instructions,
-           skills = @skills, organizationSuggestions = @organizationSuggestions, usage = @usage, error = @error,
-           createdAt = @createdAt, endedAt = @endedAt
-         WHERE dreamId = @dreamId AND agentId = @agentId`
-      )
+      .prepare(`UPDATE dreams SET ${DREAM_UPDATE_SET} WHERE dreamId = @dreamId AND agentId = @agentId`)
       .run(this.dreamToRow(dream))
+  }
+
+  /** Crash-recovery write, CAS'd on the open statuses so a losing race can never overwrite
+   *  the terminal outcome the dream's own runner recorded. */
+  failOpenDream(dream: DreamInfo): boolean {
+    return (
+      Number(
+        this.db
+          .prepare(
+            `UPDATE dreams SET ${DREAM_UPDATE_SET}
+             WHERE dreamId = @dreamId AND agentId = @agentId AND status IN ('pending', 'running')`
+          )
+          .run(this.dreamToRow(dream)).changes
+      ) === 1
+    )
   }
 
   getDream(agentId: string, dreamId: string): DreamInfo | undefined {
@@ -2436,10 +3000,29 @@ export class LocalStore {
     )
   }
 
-  /** Non-terminal dreams — the boot-time crash-recovery sweep. */
+  /** Non-terminal dreams this process is answerable for — the boot-time crash-recovery sweep. On a
+   *  shared store that is only what this incarnation started: a peer's in-flight dream is live work. */
   openDreams(): DreamInfo[] {
+    const owned = this.shared ? ' AND ownerId = @ownerId' : ''
     return (
-      this.db.prepare("SELECT * FROM dreams WHERE status IN ('pending', 'running')").all() as Record<string, unknown>[]
+      this.db
+        .prepare(`SELECT * FROM dreams WHERE status IN ('pending', 'running')${owned}`)
+        .all(...(this.shared ? [{ ownerId: this.ownerId! }] : [])) as Record<string, unknown>[]
+    ).map((row) => this.dreamFromRow(row))
+  }
+
+  /** Non-terminal dreams left behind by a FORMER owner of these agents. Only the CP handing
+   *  this process the duty makes them recoverable — mirrors recoverPermissionRequests. */
+  strandedDreams(agentIds: readonly string[]): DreamInfo[] {
+    if (!this.shared || agentIds.length === 0) return []
+    const scope = idScope('agentId', agentIds)
+    return (
+      this.db
+        .prepare(
+          `SELECT * FROM dreams
+           WHERE status IN ('pending', 'running') AND (ownerId IS NULL OR ownerId != @ownerId)${scope.sql}`
+        )
+        .all({ ownerId: this.ownerId!, ...scope.params }) as Record<string, unknown>[]
     ).map((row) => this.dreamFromRow(row))
   }
 
@@ -2529,15 +3112,25 @@ export class LocalStore {
         // mining prompt. Deliveries only ever concern conversational messages;
         // this agent's own tool rows still surface through `sender`.
         `SELECT sender, text, kind, body FROM transcript
-         WHERE channel = ? AND thread = ? AND kind ${includeTools ? "IN ('text','tool')" : "= 'text'"}
+         WHERE orgId = ? AND channel = ? AND thread = ? AND kind ${includeTools ? "IN ('text','tool')" : "= 'text'"}
            AND (sender = ? OR recipient = ? OR (transcript.kind = 'text' AND EXISTS (
              SELECT 1 FROM transcript_recipient tr
-             WHERE tr.channel = transcript.channel AND tr.thread = transcript.thread
+             WHERE tr.orgId = transcript.orgId AND tr.channel = transcript.channel
+               AND tr.thread = transcript.thread
                AND tr.ts = transcript.ts AND tr.agentId = ?)))
            AND NOT (kind = 'tool' AND text IN (?, ?))
          ORDER BY seq DESC LIMIT ?`
       )
-      .all(transcriptChannel, thread, agentId, agentId, agentId, ...SESSION_TITLE_TOOL_TITLES, limit) as {
+      .all(
+        this.orgFor(agentId),
+        transcriptChannel,
+        thread,
+        agentId,
+        agentId,
+        agentId,
+        ...SESSION_TITLE_TOOL_TITLES,
+        limit
+      ) as {
       sender: string
       text: string
       kind?: string
@@ -2560,28 +3153,35 @@ export class LocalStore {
   transcriptTextAt(
     channel: string,
     thread: string,
-    ts: string
+    ts: string,
+    row: { sender: string; recipient?: string }
   ): { sender: string; text: string; postId: string | null } | undefined {
+    // Attributed exactly like the append it guards, or the probe would read a partition
+    // the write does not land in and every slot would look free.
+    const orgId = this.transcriptOrg(channel, thread, row.recipient, row.sender)
     return this.db
       .prepare(
-        `SELECT sender, text, postId FROM transcript WHERE channel = ? AND thread = ? AND ts = ? AND kind = 'text'`
+        `SELECT sender, text, postId FROM transcript
+         WHERE orgId = ? AND channel = ? AND thread = ? AND ts = ? AND kind = 'text'`
       )
-      .get(channel, thread, ts) as { sender: string; text: string; postId: string | null } | undefined
+      .get(orgId, channel, thread, ts) as { sender: string; text: string; postId: string | null } | undefined
   }
 
   appendTranscript(e: TranscriptEntry): void {
-    const { attachments, trustedAgentBot, quoted, quoteJson, authoritative, ...entry } = e
+    const { attachments, trustedAgentBot, quoted, quoteJson, authoritative, orgAgentId, ...entry } = e
     const durableQuoteJson = quoted?.text ? JSON.stringify(quoted) : (quoteJson ?? null)
+    const orgId = this.transcriptOrg(e.channel, e.thread, e.recipient, e.sender, orgAgentId)
     const revision = this.transcriptRevision + 1
     const inserted = this.db
       .prepare(
         `INSERT OR IGNORE INTO transcript
-           (channel, thread, ts, sender, kind, text, recipient, eventTimeUs, attachmentsJson, quoteJson, trustedAgentBot, revision, postId)
+           (orgId, channel, thread, ts, sender, kind, text, recipient, eventTimeUs, attachmentsJson, quoteJson, trustedAgentBot, revision, postId)
          VALUES
-           (@channel, @thread, @ts, @sender, @kind, @text, @recipient, @eventTimeUs, @attachmentsJson, @quoteJson, @trustedAgentBot, @revision, @postId)`
+           (@orgId, @channel, @thread, @ts, @sender, @kind, @text, @recipient, @eventTimeUs, @attachmentsJson, @quoteJson, @trustedAgentBot, @revision, @postId)`
       )
       .run({
         ...entry,
+        orgId,
         recipient: e.recipient ?? null,
         postId: e.postId ?? null,
         eventTimeUs: e.eventTimeUs ?? transcriptEventTimeUs(e.ts),
@@ -2590,7 +3190,7 @@ export class LocalStore {
         trustedAgentBot: trustedAgentBot ? 1 : null,
         revision
       } as unknown as SqlParams)
-    if (Number(inserted.changes) === 1) this.transcriptRevision = this.threadTranscriptRevision(e.channel, e.thread)
+    if (Number(inserted.changes) === 1) this.transcriptRevision = this.threadRevisionInOrg(orgId, e.channel, e.thread)
     // The closing edit of a streamed reply lands on the row its own post created, so the
     // text is refreshed in place rather than lost to INSERT OR IGNORE. Scoped to text
     // rows on identical coordinates, and only ever toward the authoritative version.
@@ -2599,11 +3199,11 @@ export class LocalStore {
       const refreshed = this.db
         .prepare(
           `UPDATE transcript SET text = ?, revision = ?
-           WHERE channel = ? AND thread = ? AND ts = ? AND kind = 'text' AND text IS NOT ?`
+           WHERE orgId = ? AND channel = ? AND thread = ? AND ts = ? AND kind = 'text' AND text IS NOT ?`
         )
-        .run(e.text, rev, e.channel, e.thread, e.ts, e.text)
+        .run(e.text, rev, orgId, e.channel, e.thread, e.ts, e.text)
       if (Number(refreshed.changes) === 1) {
-        this.transcriptRevision = this.threadTranscriptRevision(e.channel, e.thread)
+        this.transcriptRevision = this.threadRevisionInOrg(orgId, e.channel, e.thread)
         this.notifyTranscriptMutation(e.channel, e.thread, e.recipient ? [e.recipient] : [], this.transcriptRevision)
       }
     }
@@ -2615,10 +3215,10 @@ export class LocalStore {
         ? this.db
             .prepare(
               `UPDATE transcript SET trustedAgentBot = 1
-               WHERE channel = ? AND thread = ? AND ts = ? AND kind = 'text'
+               WHERE orgId = ? AND channel = ? AND thread = ? AND ts = ? AND kind = 'text'
                  AND COALESCE(trustedAgentBot, 0) = 0`
             )
-            .run(e.channel, e.thread, e.ts)
+            .run(orgId, e.channel, e.thread, e.ts)
         : undefined
     // The same canonical post can be recorded first by a pre-upgrade write (no
     // postId column value) and re-observed by a copy that carries it. Upgrade in
@@ -2628,9 +3228,9 @@ export class LocalStore {
         ? this.db
             .prepare(
               `UPDATE transcript SET postId = ?
-               WHERE channel = ? AND thread = ? AND ts = ? AND kind = 'text' AND postId IS NULL`
+               WHERE orgId = ? AND channel = ? AND thread = ? AND ts = ? AND kind = 'text' AND postId IS NULL`
             )
-            .run(e.postId, e.channel, e.thread, e.ts)
+            .run(e.postId, orgId, e.channel, e.thread, e.ts)
         : undefined
     // A later duplicate can be the first copy that carries the AUTHORITATIVE
     // provider send time (an early observer wrote the row with the derived
@@ -2640,9 +3240,9 @@ export class LocalStore {
         ? this.db
             .prepare(
               `UPDATE transcript SET eventTimeUs = ?
-               WHERE channel = ? AND thread = ? AND ts = ? AND kind = 'text' AND eventTimeUs IS NOT ?`
+               WHERE orgId = ? AND channel = ? AND thread = ? AND ts = ? AND kind = 'text' AND eventTimeUs IS NOT ?`
             )
-            .run(e.eventTimeUs, e.channel, e.thread, e.ts, e.eventTimeUs)
+            .run(e.eventTimeUs, orgId, e.channel, e.thread, e.ts, e.eventTimeUs)
         : undefined
     // The observer often wins the INSERT race against SessionManager's authoritative
     // append, and only that append has fetched the image bytes — upgrade the row in
@@ -2653,9 +3253,9 @@ export class LocalStore {
         ? this.db
             .prepare(
               `UPDATE transcript SET attachmentsJson = ?
-               WHERE channel = ? AND thread = ? AND ts = ? AND kind = 'text' AND attachmentsJson IS NULL`
+               WHERE orgId = ? AND channel = ? AND thread = ? AND ts = ? AND kind = 'text' AND attachmentsJson IS NULL`
             )
-            .run(JSON.stringify(attachments), e.channel, e.thread, e.ts)
+            .run(JSON.stringify(attachments), orgId, e.channel, e.thread, e.ts)
         : undefined
     // A later duplicate can be the first copy that carries provider reply metadata
     // (or a corrected selected passage). Upgrade it without ever clearing a quote when
@@ -2665,10 +3265,10 @@ export class LocalStore {
         ? this.db
             .prepare(
               `UPDATE transcript SET quoteJson = ?
-               WHERE channel = ? AND thread = ? AND ts = ? AND kind = 'text'
+               WHERE orgId = ? AND channel = ? AND thread = ? AND ts = ? AND kind = 'text'
                  AND COALESCE(quoteJson, '') <> ?`
             )
-            .run(durableQuoteJson, e.channel, e.thread, e.ts, durableQuoteJson)
+            .run(durableQuoteJson, orgId, e.channel, e.thread, e.ts, durableQuoteJson)
         : undefined
     // Record the delivery separately so it survives the text-row dedup above: if this same
     // (channel, thread, ts) was already recorded by another agent, the INSERT OR IGNORE
@@ -2676,8 +3276,10 @@ export class LocalStore {
     const delivered =
       e.recipient && e.ts
         ? this.db
-            .prepare('INSERT OR IGNORE INTO transcript_recipient (channel, thread, ts, agentId) VALUES (?, ?, ?, ?)')
-            .run(e.channel, e.thread, e.ts, e.recipient)
+            .prepare(
+              'INSERT OR IGNORE INTO transcript_recipient (orgId, channel, thread, ts, agentId) VALUES (?, ?, ?, ?, ?)'
+            )
+            .run(orgId, e.channel, e.thread, e.ts, e.recipient)
         : undefined
 
     if (Number(inserted.changes) === 1) {
@@ -2692,17 +3294,19 @@ export class LocalStore {
     ) {
       const deliveryRevision = this.transcriptRevision + 1
       this.db
-        .prepare("UPDATE transcript SET revision = ? WHERE channel = ? AND thread = ? AND ts = ? AND kind = 'text'")
-        .run(deliveryRevision, e.channel, e.thread, e.ts)
-      this.transcriptRevision = this.threadTranscriptRevision(e.channel, e.thread)
+        .prepare(
+          "UPDATE transcript SET revision = ? WHERE orgId = ? AND channel = ? AND thread = ? AND ts = ? AND kind = 'text'"
+        )
+        .run(deliveryRevision, orgId, e.channel, e.thread, e.ts)
+      this.transcriptRevision = this.threadRevisionInOrg(orgId, e.channel, e.thread)
       // An in-place upgrade mutates the SHARED row: every agent whose scoped
       // view already contains it must be invalidated, not just this append's
       // sender/recipient — a co-hosted participant delivered earlier would
       // otherwise keep serving the stale copy until an unrelated mutation.
       const sharedRecipients = (
         this.db
-          .prepare('SELECT agentId FROM transcript_recipient WHERE channel = ? AND thread = ? AND ts = ?')
-          .all(e.channel, e.thread, e.ts) as { agentId: string }[]
+          .prepare('SELECT agentId FROM transcript_recipient WHERE orgId = ? AND channel = ? AND thread = ? AND ts = ?')
+          .all(orgId, e.channel, e.thread, e.ts) as { agentId: string }[]
       ).map((r) => r.agentId)
       this.notifyTranscriptMutation(
         e.channel,
@@ -2726,14 +3330,16 @@ export class LocalStore {
     title: string
     body: string
   }): void {
+    const orgId = this.orgFor(e.sender)
     const revision = this.transcriptRevision + 1
     const inserted = this.db
       .prepare(
         `INSERT OR IGNORE INTO transcript
-           (channel, thread, ts, sender, kind, text, tool_call_id, body, eventTimeUs, revision)
-         VALUES (@channel, @thread, @ts, @sender, 'tool', @text, @toolCallId, @body, @eventTimeUs, @revision)`
+           (orgId, channel, thread, ts, sender, kind, text, tool_call_id, body, eventTimeUs, revision)
+         VALUES (@orgId, @channel, @thread, @ts, @sender, 'tool', @text, @toolCallId, @body, @eventTimeUs, @revision)`
       )
       .run({
+        orgId,
         channel: e.channel,
         thread: e.thread,
         ts: e.ts,
@@ -2745,7 +3351,7 @@ export class LocalStore {
         revision
       })
     if (Number(inserted.changes) === 1) {
-      this.transcriptRevision = this.threadTranscriptRevision(e.channel, e.thread)
+      this.transcriptRevision = this.threadRevisionInOrg(orgId, e.channel, e.thread)
       this.notifyTranscriptMutation(e.channel, e.thread, [e.sender], this.transcriptRevision)
     }
   }
@@ -2759,16 +3365,17 @@ export class LocalStore {
     toolCallId: string,
     patch: { title: string; body: string }
   ): void {
+    const orgId = this.orgFor(agentId)
     const revision = this.transcriptRevision + 1
     const updated = this.db
       .prepare(
         `UPDATE transcript SET text = ?, body = ?, revision = ?
-         WHERE channel = ? AND thread = ? AND sender = ? AND tool_call_id = ?
+         WHERE orgId = ? AND channel = ? AND thread = ? AND sender = ? AND tool_call_id = ?
            AND (text IS NOT ? OR body IS NOT ?)`
       )
-      .run(patch.title, patch.body, revision, channel, thread, agentId, toolCallId, patch.title, patch.body)
+      .run(patch.title, patch.body, revision, orgId, channel, thread, agentId, toolCallId, patch.title, patch.body)
     if (Number(updated.changes) === 1) {
-      this.transcriptRevision = this.threadTranscriptRevision(channel, thread)
+      this.transcriptRevision = this.threadRevisionInOrg(orgId, channel, thread)
       this.notifyTranscriptMutation(channel, thread, [agentId], this.transcriptRevision)
     }
   }
@@ -2791,8 +3398,10 @@ export class LocalStore {
   /** One agent's full stored ToolBody JSON, or undefined if unknown/not owned. */
   getToolBodyForAgent(channel: string, thread: string, agentId: string, toolCallId: string): string | undefined {
     const row = this.db
-      .prepare('SELECT body FROM transcript WHERE channel = ? AND thread = ? AND sender = ? AND tool_call_id = ?')
-      .get(channel, thread, agentId, toolCallId) as { body: string | null } | undefined
+      .prepare(
+        'SELECT body FROM transcript WHERE orgId = ? AND channel = ? AND thread = ? AND sender = ? AND tool_call_id = ?'
+      )
+      .get(this.orgFor(agentId), channel, thread, agentId, toolCallId) as { body: string | null } | undefined
     return row?.body ?? undefined
   }
 
@@ -2801,15 +3410,21 @@ export class LocalStore {
    * are audit/UI data and must never be replayed back into an agent's prompt. Ordered by
    * platform `ts` (every text row carries one), compared against the session marker.
    */
-  transcriptSince(channel: string, thread: string, sinceTs: string | null): TranscriptEntry[] {
+  transcriptSince(channel: string, thread: string, sinceTs: string | null, agentId: string): TranscriptEntry[] {
+    const orgId = this.orgFor(agentId)
     if (sinceTs === null) {
       return this.db
-        .prepare("SELECT * FROM transcript WHERE channel = ? AND thread = ? AND kind = 'text' ORDER BY ts ASC")
-        .all(channel, thread) as unknown as TranscriptEntry[]
+        .prepare(
+          "SELECT * FROM transcript WHERE orgId = ? AND channel = ? AND thread = ? AND kind = 'text' ORDER BY ts ASC"
+        )
+        .all(orgId, channel, thread) as unknown as TranscriptEntry[]
     }
     return this.db
-      .prepare("SELECT * FROM transcript WHERE channel = ? AND thread = ? AND kind = 'text' AND ts > ? ORDER BY ts ASC")
-      .all(channel, thread, sinceTs) as unknown as TranscriptEntry[]
+      .prepare(
+        `SELECT * FROM transcript WHERE orgId = ? AND channel = ? AND thread = ? AND kind = 'text' AND ts > ?
+         ORDER BY ts ASC`
+      )
+      .all(orgId, channel, thread, sinceTs) as unknown as TranscriptEntry[]
   }
 
   /**
@@ -2821,20 +3436,21 @@ export class LocalStore {
    * pair's rows, or siblings see each other's private deliveries (#967).
    */
   transcriptSinceForAgent(channel: string, thread: string, sinceTs: string | null, agentId: string): TranscriptEntry[] {
+    const orgId = this.orgFor(agentId)
     if (sinceTs === null) {
       return this.db
         .prepare(
-          `SELECT * FROM transcript WHERE channel = ? AND thread = ? AND kind = 'text'
+          `SELECT * FROM transcript WHERE orgId = ? AND channel = ? AND thread = ? AND kind = 'text'
              AND ${AGENT_DELIVERY_SCOPE_SQL} ORDER BY ts ASC`
         )
-        .all(channel, thread, agentId, agentId, agentId) as unknown as TranscriptEntry[]
+        .all(orgId, channel, thread, agentId, agentId, agentId) as unknown as TranscriptEntry[]
     }
     return this.db
       .prepare(
-        `SELECT * FROM transcript WHERE channel = ? AND thread = ? AND kind = 'text' AND ts > ?
+        `SELECT * FROM transcript WHERE orgId = ? AND channel = ? AND thread = ? AND kind = 'text' AND ts > ?
            AND ${AGENT_DELIVERY_SCOPE_SQL} ORDER BY ts ASC`
       )
-      .all(channel, thread, sinceTs, agentId, agentId, agentId) as unknown as TranscriptEntry[]
+      .all(orgId, channel, thread, sinceTs, agentId, agentId, agentId) as unknown as TranscriptEntry[]
   }
 
   /**
@@ -2842,22 +3458,29 @@ export class LocalStore {
    * `transcriptSince`, this never compares provider message ids from different
    * ordering domains; it follows the daemon's monotonic observation revision.
    */
-  threadTranscriptRevision(channel: string, thread: string): number {
+  threadTranscriptRevision(channel: string, thread: string, agentId?: string): number {
+    return this.threadRevisionInOrg(this.transcriptOrg(channel, thread, agentId), channel, thread)
+  }
+
+  /** {@link threadTranscriptRevision} for a partition already resolved by a write. */
+  private threadRevisionInOrg(orgId: string, channel: string, thread: string): number {
     const row = this.db
-      .prepare('SELECT COALESCE(MAX(revision), 0) AS revision FROM transcript WHERE channel = ? AND thread = ?')
-      .get(channel, thread) as { revision: number }
+      .prepare(
+        'SELECT COALESCE(MAX(revision), 0) AS revision FROM transcript WHERE orgId = ? AND channel = ? AND thread = ?'
+      )
+      .get(orgId, channel, thread) as { revision: number }
     return row.revision
   }
 
   /** Conversation and audit rows observed after a thread-local revision fence. */
-  transcriptSinceRevision(channel: string, thread: string, afterRevision: number): TranscriptRow[] {
+  transcriptSinceRevision(channel: string, thread: string, afterRevision: number, agentId: string): TranscriptRow[] {
     return this.db
       .prepare(
         `SELECT * FROM transcript
-         WHERE channel = ? AND thread = ? AND revision > ?
+         WHERE orgId = ? AND channel = ? AND thread = ? AND revision > ?
          ORDER BY revision ASC, seq ASC`
       )
-      .all(channel, thread, afterRevision) as unknown as TranscriptRow[]
+      .all(this.orgFor(agentId), channel, thread, afterRevision) as unknown as TranscriptRow[]
   }
 
   /** `transcriptSinceRevision`, scoped to one agent's sent/received rows — the
@@ -2872,11 +3495,19 @@ export class LocalStore {
     return this.db
       .prepare(
         `SELECT * FROM transcript
-         WHERE channel = ? AND thread = ? AND revision > ?
+         WHERE orgId = ? AND channel = ? AND thread = ? AND revision > ?
            AND ${AGENT_DELIVERY_SCOPE_SQL}
          ORDER BY revision ASC, seq ASC`
       )
-      .all(channel, thread, afterRevision, agentId, agentId, agentId) as unknown as TranscriptRow[]
+      .all(
+        this.orgFor(agentId),
+        channel,
+        thread,
+        afterRevision,
+        agentId,
+        agentId,
+        agentId
+      ) as unknown as TranscriptRow[]
   }
 
   /** The earliest inbound (non-agent) `text` message in a thread — the triggering user
@@ -2887,17 +3518,19 @@ export class LocalStore {
   firstMessageText(channel: string, thread: string, agentId: string): string | undefined {
     const row = this.db
       .prepare(
-        "SELECT text FROM transcript WHERE channel = ? AND thread = ? AND kind = 'text' AND sender != ? ORDER BY seq ASC LIMIT 1"
+        `SELECT text FROM transcript WHERE orgId = ? AND channel = ? AND thread = ? AND kind = 'text'
+           AND sender != ? ORDER BY seq ASC LIMIT 1`
       )
-      .get(channel, thread, agentId) as { text: string } | undefined
+      .get(this.orgFor(agentId), channel, thread, agentId) as { text: string } | undefined
     return row?.text
   }
 
-  /** Full activity log for a thread (all kinds), in insertion order — for the Web UI. */
-  threadTranscript(channel: string, thread: string): TranscriptRow[] {
+  /** Full activity log for a thread (all kinds), in insertion order — for the Web UI.
+   *  `agentId` names the org partition only, and may be omitted on a store no pool shares. */
+  threadTranscript(channel: string, thread: string, agentId?: string): TranscriptRow[] {
     return this.db
-      .prepare('SELECT * FROM transcript WHERE channel = ? AND thread = ? ORDER BY seq ASC')
-      .all(channel, thread) as unknown as TranscriptRow[]
+      .prepare('SELECT * FROM transcript WHERE orgId = ? AND channel = ? AND thread = ? ORDER BY seq ASC')
+      .all(this.orgFor(agentId), channel, thread) as unknown as TranscriptRow[]
   }
 
   /**
@@ -2907,6 +3540,11 @@ export class LocalStore {
    * a human reply to a bot message (`reply_to_message.message_id`) resolves to the
    * session that bot message was posted in. Undefined when the id was never recorded
    * as text (e.g. a reply to transient chrome, or an unknown message).
+   *
+   * The one transcript read with no org fence, because it runs BEFORE routing picks an
+   * agent. It is safe unfenced: `channel` is the physical-bot-scoped transcript key, one
+   * integration owns that bot, one org owns that integration — and it returns a thread id,
+   * never content.
    */
   telegramThreadForMessage(channel: string, messageId: string): string | undefined {
     const row = this.db
@@ -3061,12 +3699,28 @@ export class LocalStore {
     return out
   }
 
+  /**
+   * The persisted CP routing map — one row, and therefore EXCLUSIVELY OWNED STORES ONLY.
+   *
+   * `CpRoutingLayer` serializes its whole in-memory map on every mutation, so on a shared store
+   * each member's write erased every other member's and each boot hydrated a foreign map — a
+   * foreign `routingEpoch` with it, which then made `applyUpdate`'s stale guard discard legitimate
+   * global-rule updates until the real epoch caught up. Partitioning the row per member does not
+   * fix it either: `ownerId` is a process incarnation, so the key would change on every restart,
+   * leaking a row each time and still hydrating nothing.
+   *
+   * A shared member therefore starts from an empty map at epoch 0, which is the safe direction: it
+   * accepts the first `route/update` it is pushed, and `converge()` restates assignments from the
+   * CP snapshot on register/ok. An exclusively owned store keeps persisting exactly as before.
+   */
   getCpRouting(): { routingEpoch: number; assignments: string; globalRules: string } | undefined {
+    if (this.shared) return undefined
     return this.db.prepare('SELECT routingEpoch, assignments, globalRules FROM cp_routing WHERE id = 1').get() as
       { routingEpoch: number; assignments: string; globalRules: string } | undefined
   }
 
   setCpRouting(routingEpoch: number, assignments: string, globalRules: string): void {
+    if (this.shared) return
     this.db
       .prepare(
         `INSERT INTO cp_routing (id, routingEpoch, assignments, globalRules) VALUES (1, @routingEpoch, @assignments, @globalRules)
@@ -3076,19 +3730,72 @@ export class LocalStore {
   }
 
   /** Stamp a cron fire (key = `<agentId>:<cronId>`). */
-  setCronLastRun(key: string, lastRunAt: number): void {
+  setCronLastRun(key: string, lastRunAt: number, definition: string): void {
     this.db
       .prepare(
-        `INSERT INTO cron_runs (key, lastRunAt) VALUES (@key, @lastRunAt)
-         ON CONFLICT(key) DO UPDATE SET lastRunAt=excluded.lastRunAt`
+        `INSERT INTO cron_runs (key, lastRunAt, definition) VALUES (@key, @lastRunAt, @definition)
+         ON CONFLICT(key) DO UPDATE SET lastRunAt=excluded.lastRunAt, definition=excluded.definition`
       )
-      .run({ key, lastRunAt })
+      .run({ key, lastRunAt, definition })
   }
 
-  getCronLastRun(key: string): number | undefined {
-    const row = this.db.prepare('SELECT lastRunAt FROM cron_runs WHERE key = ?').get(key) as
-      { lastRunAt: number } | undefined
-    return row?.lastRunAt
+  cronRun(key: string): ScheduleRun | undefined {
+    return this.db.prepare('SELECT lastRunAt, definition FROM cron_runs WHERE key = ?').get(key) as
+      ScheduleRun | undefined
+  }
+
+  /** Every stamp key this agent still carries — the substring match is exact, so an agent id with
+   *  LIKE metacharacters cannot widen it. */
+  cronRunKeys(agentId: string): string[] {
+    const prefix = `${agentId}:`
+    return (
+      this.db.prepare('SELECT key FROM cron_runs WHERE substr(key, 1, @len) = @prefix').all({
+        len: prefix.length,
+        prefix
+      }) as { key: string }[]
+    ).map((row) => row.key)
+  }
+
+  /** Drop a cron's stamp: the definition it fingerprints is gone, and a re-minted id of the same
+   *  name must start from no evidence rather than inherit the deleted schedule's last run. */
+  deleteCronRun(key: string): void {
+    this.db.prepare('DELETE FROM cron_runs WHERE key = ?').run(key)
+  }
+
+  /** Stamp a dream-schedule fire (one row per agent), under the definition that fired. */
+  setDreamLastRun(agentId: string, lastRunAt: number, definition: string): void {
+    this.db
+      .prepare(
+        `INSERT INTO dream_runs (agentId, lastRunAt, definition) VALUES (@agentId, @lastRunAt, @definition)
+         ON CONFLICT(agentId) DO UPDATE SET lastRunAt=excluded.lastRunAt, definition=excluded.definition`
+      )
+      .run({ agentId, lastRunAt, definition })
+  }
+
+  dreamRun(agentId: string): ScheduleRun | undefined {
+    return this.db.prepare('SELECT lastRunAt, definition FROM dream_runs WHERE agentId = ?').get(agentId) as
+      ScheduleRun | undefined
+  }
+
+  /** CAS claim on a cron occurrence a handover missed (#1031): take it iff the stamp is still older
+   *  than the occurrence AND was written under the definition asking for it, so two members racing
+   *  one handoff compensate it exactly once and an edited schedule replays nothing. A row with no
+   *  stamp, or one fingerprinted differently, is never claimed. */
+  claimCronCatchUp(key: string, occurrence: number, claimedAt: number, definition: string): boolean {
+    return (
+      this.db
+        .prepare('UPDATE cron_runs SET lastRunAt = ? WHERE key = ? AND lastRunAt < ? AND definition = ?')
+        .run(claimedAt, key, occurrence, definition).changes === 1
+    )
+  }
+
+  /** The dream twin of {@link claimCronCatchUp}, over the per-agent dream stamp. */
+  claimDreamCatchUp(agentId: string, occurrence: number, claimedAt: number, definition: string): boolean {
+    return (
+      this.db
+        .prepare('UPDATE dream_runs SET lastRunAt = ? WHERE agentId = ? AND lastRunAt < ? AND definition = ?')
+        .run(claimedAt, agentId, occurrence, definition).changes === 1
+    )
   }
 
   /** Self-introduce-on-join (issue #536). The set of channels this agent has already
@@ -3204,6 +3911,7 @@ export class LocalStore {
     leaderHookContext: string
     followerId: string
     followerTerminalReport: string
+    followerOwnerId?: string
     completedAt: number
   }): boolean {
     if (input.leaderId === input.followerId) return false
@@ -3225,12 +3933,14 @@ export class LocalStore {
           `UPDATE inbox
            SET msg = '{}', integrationId = NULL, callMeta = NULL, hookContext = NULL,
                posterPublishState = 'settled', terminalReport = @followerTerminalReport,
+               reportOwnerId = @followerOwnerId, reportClaimedAt = @completedAt,
                completedAt = @completedAt, isQueueCmd = NULL
            WHERE id = @followerId AND hookContext IS NOT NULL AND completedAt IS NULL`
         )
         .run({
           followerId: input.followerId,
           followerTerminalReport: input.followerTerminalReport,
+          followerOwnerId: input.followerOwnerId ?? null,
           completedAt: input.completedAt
         })
       if (leader.changes !== 1 || follower.changes !== 1) {
@@ -3253,17 +3963,19 @@ export class LocalStore {
   completeHookInbox(
     id: string,
     terminalReport: string,
-    completedAt: number
+    completedAt: number,
+    ownerId?: string
   ): 'completed' | 'already-terminal' | 'missing' {
     const result = this.db
       .prepare(
         `UPDATE inbox
          SET msg = '{}', integrationId = NULL, callMeta = NULL, hookContext = NULL,
              posterPublishState = 'settled', terminalReport = @terminalReport,
+             reportOwnerId = @ownerId, reportClaimedAt = @completedAt,
              completedAt = @completedAt, isQueueCmd = NULL
          WHERE id = @id AND hookContext IS NOT NULL AND completedAt IS NULL`
       )
-      .run({ id, terminalReport, completedAt })
+      .run({ id, terminalReport, completedAt, ownerId: ownerId ?? null })
     if (result.changes === 1) return 'completed'
 
     const row = this.db.prepare('SELECT completedAt FROM inbox WHERE id = ?').get(id) as
@@ -3273,15 +3985,19 @@ export class LocalStore {
 
   /** A CP-correlated ACK releases only the report payload. Keep a bounded
    * metadata-only stable-id receipt so relay redelivery still cannot rerun the
-   * model; unacknowledged reports are never capacity-evicted. */
-  acknowledgeHookInbox(id: string, maxAcknowledgedReceipts = 10_000): boolean {
+   * model; unacknowledged reports are never capacity-evicted. On a shared pool
+   * store only the claim holder may release a body — a peer's verdict about its
+   * own dispatch says nothing about this row. */
+  acknowledgeHookInbox(id: string, options: { ownerId?: string; maxAcknowledgedReceipts?: number } = {}): boolean {
+    const maxAcknowledgedReceipts = options.maxAcknowledgedReceipts ?? 10_000
+    const fence = this.shared ? ' AND (reportOwnerId IS NULL OR reportOwnerId = @ownerId)' : ''
     const result = this.db
       .prepare(
         `UPDATE inbox
-         SET terminalReport = NULL
-         WHERE id = @id AND completedAt IS NOT NULL AND terminalReport IS NOT NULL`
+         SET terminalReport = NULL, reportOwnerId = NULL, reportClaimedAt = NULL
+         WHERE id = @id AND completedAt IS NOT NULL AND terminalReport IS NOT NULL${fence}`
       )
-      .run({ id })
+      .run({ id, ...(fence ? { ownerId: options.ownerId ?? null } : {}) })
     if (result.changes === 1) {
       this.db
         .prepare(
@@ -3296,6 +4012,68 @@ export class LocalStore {
         .run({ maxAcknowledgedReceipts })
     }
     return result.changes === 1
+  }
+
+  /** Unacknowledged hook terminal reports this member may emit right now.
+   *
+   * A local store owns every row outright, so it drains the whole outbox as
+   * before. On a shared pool store the outbox is one table for every member, so
+   * a row is offered only when this member owns it, when it is unowned (legacy
+   * or pre-pool), or when its owner's claim lapsed AND this member currently
+   * serves the agent — draining a live peer's row would only earn a CONFLICT
+   * for a dispatch that is not ours. */
+  listHookTerminalReports(now: number, ownerId?: string, agentIds?: readonly string[]): InboxRow[] {
+    const order = ' ORDER BY sessionKey ASC, enqueuedAt ASC'
+    if (!this.shared) {
+      return this.db
+        .prepare(`SELECT * FROM inbox WHERE terminalReport IS NOT NULL${order}`)
+        .all() as unknown as InboxRow[]
+    }
+    const scope = idScope('agentId', agentIds)
+    return this.db
+      .prepare(
+        `SELECT * FROM inbox
+         WHERE terminalReport IS NOT NULL
+           AND (reportOwnerId IS NULL OR reportOwnerId = @ownerId
+                OR (COALESCE(reportClaimedAt, 0) <= @staleBefore${scope.sql}))${order}`
+      )
+      .all({
+        ownerId: ownerId ?? null,
+        staleBefore: now - SHARED_OUTBOX_LEASE_MS,
+        ...scope.params
+      }) as unknown as InboxRow[]
+  }
+
+  /** Take or renew this member's claim on one report before emitting it. */
+  claimHookTerminalReport(id: string, ownerId: string | undefined, now: number): boolean {
+    if (!this.shared) return true
+    return (
+      this.db
+        .prepare(
+          `UPDATE inbox
+           SET reportOwnerId = @ownerId, reportClaimedAt = @now
+           WHERE id = @id AND terminalReport IS NOT NULL
+             AND (reportOwnerId IS NULL OR reportOwnerId = @ownerId
+                  OR COALESCE(reportClaimedAt, 0) <= @staleBefore)`
+        )
+        .run({ id, ownerId: ownerId ?? null, now, staleBefore: now - SHARED_OUTBOX_LEASE_MS }).changes === 1
+    )
+  }
+
+  /** Hand a claimed report back to the daemon whose dispatch the CP accepts it
+   * from. The body is never released here: a CONFLICT raised against a peer's
+   * dispatch means "not mine to report", not "this can never be valid". */
+  releaseHookTerminalReport(id: string, ownerId: string, now: number): boolean {
+    if (!this.shared) return false
+    return (
+      this.db
+        .prepare(
+          `UPDATE inbox
+           SET reportOwnerId = @ownerId, reportClaimedAt = @now
+           WHERE id = @id AND terminalReport IS NOT NULL`
+        )
+        .run({ id, ownerId, now }).changes === 1
+    )
   }
 
   /** Remove an ordinary inbox row once its turn reaches a terminal state. Hook
@@ -3425,29 +4203,22 @@ export class LocalStore {
 
   /** Next age/retention deadline even when there is no due send. This keeps a
    * quiet daemon from retaining terminal dedup receipts indefinitely. */
-  nextMemoryCaptureMaintenanceAt(
-    activeAgeMs: number,
-    terminalRetentionMs: number,
-    connectionIds?: readonly string[]
-  ): number | undefined {
+  nextMemoryCaptureMaintenanceAt(activeAgeMs: number, connectionIds?: readonly string[]): number | undefined {
     const scope = idScope('connectionId', connectionIds)
     const row = this.db
       .prepare(
         `SELECT
            MIN(CASE WHEN state IN ('pending', 'accepted') THEN createdAt + @activeAgeMs END) AS activeAt,
-           MIN(CASE WHEN state IN ('completed', 'failed', 'ambiguous')
-                    THEN updatedAt + @terminalRetentionMs END) AS terminalAt,
            MIN(CASE WHEN state = 'sending' THEN updatedAt + @recoveryLeaseMs END) AS recoveryAt
          FROM memory_capture_outbox
          WHERE 1 = 1${scope.sql}`
       )
       .get({
         activeAgeMs,
-        terminalRetentionMs,
-        recoveryLeaseMs: this.shared ? SHARED_MEMORY_CAPTURE_LEASE_MS : 0,
+        recoveryLeaseMs: this.shared ? SHARED_OUTBOX_LEASE_MS : 0,
         ...scope.params
-      }) as { activeAt: number | null; terminalAt: number | null; recoveryAt: number | null } | undefined
-    const deadlines = [row?.activeAt, row?.terminalAt, row?.recoveryAt].filter(
+      }) as { activeAt: number | null; recoveryAt: number | null } | undefined
+    const deadlines = [row?.activeAt, row?.recoveryAt].filter(
       (value): value is number => value !== null && value !== undefined
     )
     return deadlines.length ? Math.min(...deadlines) : undefined
@@ -3545,7 +4316,7 @@ export class LocalStore {
     const scope = idScope('connectionId', !this.shared && !staleOnly ? undefined : connectionIds)
     const staleClause = this.shared ? ' AND updatedAt <= @staleBefore' : ''
     const params = this.shared
-      ? { now, staleBefore: now - SHARED_MEMORY_CAPTURE_LEASE_MS, ...scope.params }
+      ? { now, staleBefore: now - SHARED_OUTBOX_LEASE_MS, ...scope.params }
       : { now, ...scope.params }
     const retried = this.db
       .prepare(
@@ -3567,29 +4338,21 @@ export class LocalStore {
     return { retried: Number(retried), ambiguous: Number(ambiguous) }
   }
 
-  expireMemoryCaptures(
-    activeBefore: number,
-    terminalBefore: number,
-    now: number,
-    connectionIds?: readonly string[]
-  ): { expired: number; purged: number } {
+  /** Age out a capture that never settled: a state change with a redaction and a metric, so it
+   *  stays here. Dropping the terminal row afterwards is retention and belongs to the rule table. */
+  expireMemoryCaptures(activeBefore: number, now: number, connectionIds?: readonly string[]): number {
     const scope = idScope('connectionId', connectionIds)
-    const expired = this.db
-      .prepare(
-        `UPDATE memory_capture_outbox
-         SET state = 'failed', nextAttemptAt = @now, updatedAt = @now,
-             reasonCode = 'retention_expired', config = '{}', input = '', output = '',
-             sessionId = NULL, payloadBytes = 0
-         WHERE state IN ('pending', 'accepted') AND createdAt <= @activeBefore${scope.sql}`
-      )
-      .run({ now, activeBefore, ...scope.params }).changes
-    const purged = this.db
-      .prepare(
-        `DELETE FROM memory_capture_outbox
-         WHERE state IN ('completed', 'failed', 'ambiguous') AND updatedAt <= @terminalBefore${scope.sql}`
-      )
-      .run({ terminalBefore, ...scope.params }).changes
-    return { expired: Number(expired), purged: Number(purged) }
+    return Number(
+      this.db
+        .prepare(
+          `UPDATE memory_capture_outbox
+           SET state = 'failed', nextAttemptAt = @now, updatedAt = @now,
+               reasonCode = 'retention_expired', config = '{}', input = '', output = '',
+               sessionId = NULL, payloadBytes = 0
+           WHERE state IN ('pending', 'accepted') AND createdAt <= @activeBefore${scope.sql}`
+        )
+        .run({ now, activeBefore, ...scope.params }).changes
+    )
   }
 
   memoryCaptureStats(connectionIds?: readonly string[]): MemoryCaptureOutboxStats {
@@ -3623,16 +4386,17 @@ export class LocalStore {
     this.db
       .prepare(
         `INSERT INTO webchat_mcp_grant_ledger
-           (conversationId, agentId, authorityId, authorityGeneration, state, reason, attempts, nextAttemptAt, updatedAt)
-         VALUES (@conversationId, @agentId, @authorityId, @authorityGeneration, 'active', NULL, 0, NULL, @now)
+           (conversationId, agentId, authorityId, authorityGeneration, state, reason, attempts, nextAttemptAt,
+            updatedAt, ownerId)
+         VALUES (@conversationId, @agentId, @authorityId, @authorityGeneration, 'active', NULL, 0, NULL, @now, @ownerId)
          ON CONFLICT (conversationId) DO UPDATE SET
            agentId = excluded.agentId,
            authorityId = excluded.authorityId,
            authorityGeneration = excluded.authorityGeneration,
            state = 'active', reason = NULL, attempts = 0, nextAttemptAt = NULL,
-           updatedAt = excluded.updatedAt`
+           updatedAt = excluded.updatedAt, ownerId = excluded.ownerId`
       )
-      .run(input)
+      .run({ ...input, ownerId: this.ownerId ?? null })
   }
 
   /** Queue a durable revocation for a grant authority whose remote revoke failed
@@ -3649,15 +4413,17 @@ export class LocalStore {
     this.db
       .prepare(
         `INSERT INTO webchat_mcp_grant_ledger
-           (conversationId, agentId, authorityId, authorityGeneration, state, reason, attempts, nextAttemptAt, updatedAt)
-         VALUES (@conversationId, @agentId, @authorityId, @authorityGeneration, 'revoking', @reason, 0, @now, @now)
+           (conversationId, agentId, authorityId, authorityGeneration, state, reason, attempts, nextAttemptAt,
+            updatedAt, ownerId)
+         VALUES (@conversationId, @agentId, @authorityId, @authorityGeneration, 'revoking', @reason, 0, @now, @now,
+            @ownerId)
          ON CONFLICT (conversationId) DO UPDATE SET
            state = 'revoking', reason = excluded.reason, nextAttemptAt = excluded.nextAttemptAt,
-           updatedAt = excluded.updatedAt
+           updatedAt = excluded.updatedAt, ownerId = excluded.ownerId
          WHERE webchat_mcp_grant_ledger.authorityId = excluded.authorityId
            AND webchat_mcp_grant_ledger.authorityGeneration <= excluded.authorityGeneration`
       )
-      .run(input)
+      .run({ ...input, ownerId: this.ownerId ?? null })
   }
 
   /** Drop the ledger row after the CP confirmed revocation — only for the exact
@@ -3671,29 +4437,51 @@ export class LocalStore {
       .run(conversationId, authorityId, authorityGeneration)
   }
 
-  /** Startup orphan sweep: descriptors from a previous process no longer exist,
-   *  so any still-'active' ledger row must be revoked at the CP. */
-  markAllWebchatMcpGrantsRevoking(reason: string, now: number): number {
+  /** Startup orphan sweep over the grants THIS incarnation recorded: its descriptors and
+   *  plaintext died with it. On a shared store an 'active' row may be a peer's live authority
+   *  for a conversation in progress, so ownership — not process start — decides. */
+  markOwnedWebchatMcpGrantsRevoking(reason: string, now: number): number {
+    const owned = this.shared ? ' AND ownerId = @ownerId' : ''
     return Number(
       this.db
         .prepare(
           `UPDATE webchat_mcp_grant_ledger
-           SET state = 'revoking', reason = ?, nextAttemptAt = ?, updatedAt = ?
-           WHERE state = 'active'`
+           SET state = 'revoking', reason = @reason, nextAttemptAt = @now, updatedAt = @now
+           WHERE state = 'active'${owned}`
         )
-        .run(reason, now, now).changes
+        .run({ reason, now, ...(this.shared ? { ownerId: this.ownerId! } : {}) }).changes
     )
   }
 
+  /** Take over the grant rows of a former owner of these agents once the CP makes this process
+   *  responsible for them: the plaintext went with the owner, so the authority must be revoked. */
+  reclaimWebchatMcpGrants(agentIds: readonly string[], reason: string, now: number): number {
+    if (!this.shared || agentIds.length === 0) return 0
+    const scope = idScope('agentId', agentIds)
+    return Number(
+      this.db
+        .prepare(
+          `UPDATE webchat_mcp_grant_ledger
+           SET state = 'revoking', reason = @reason, attempts = 0, nextAttemptAt = @now,
+               updatedAt = @now, ownerId = @ownerId
+           WHERE (ownerId IS NULL OR ownerId != @ownerId)${scope.sql}`
+        )
+        .run({ reason, now, ownerId: this.ownerId!, ...scope.params }).changes
+    )
+  }
+
+  /** The revocations this process must deliver: its own queue, plus rows written before ownership was
+   *  recorded. A peer's queued revoke is the peer's to land — here it would duplicate the CP call. */
   listDueWebchatMcpRevocations(now: number, limit = 50): WebchatMcpGrantLedgerRow[] {
+    const owned = this.shared ? ' AND (ownerId IS NULL OR ownerId = @ownerId)' : ''
     return this.db
       .prepare(
         `SELECT * FROM webchat_mcp_grant_ledger
-         WHERE state = 'revoking' AND (nextAttemptAt IS NULL OR nextAttemptAt <= ?)
+         WHERE state = 'revoking' AND (nextAttemptAt IS NULL OR nextAttemptAt <= @now)${owned}
          ORDER BY nextAttemptAt ASC, conversationId ASC
-         LIMIT ?`
+         LIMIT @limit`
       )
-      .all(now, limit) as unknown as WebchatMcpGrantLedgerRow[]
+      .all({ now, limit, ...(this.shared ? { ownerId: this.ownerId! } : {}) }) as unknown as WebchatMcpGrantLedgerRow[]
   }
 
   /** Reschedule one failed revocation attempt (exact-tuple fenced). */
@@ -3732,67 +4520,69 @@ export class LocalStore {
          WHERE trippedAt IS NULL AND windowStartedAt <= @cutoff AND automaticWindowStartedAt <= @cutoff`
       )
       .run({ cutoff: now - limits.windowMs })
-    const current = this.getLoopGuard(scopeKey)
-    if (current?.trippedAt !== null && current?.trippedAt !== undefined) {
-      return {
-        allowed: false,
-        trippedNow: false,
-        totalCount: current.totalCount,
-        automaticCount: current.automaticCount,
-        ...(current.reason ? { reason: current.reason } : {})
-      }
-    }
+    // The charge is one relative, window-aware statement, never a JS read-modify-write:
+    // pool members sharing this store charge the same conversation concurrently, and an
+    // absolute upsert would let the faster loop lose exactly the increments that matter.
+    // The DO UPDATE guard makes a latched circuit skip the charge and return no row.
+    const charged = this.db
+      .prepare(
+        `INSERT INTO loop_guard
+           (scopeKey, windowStartedAt, totalCount, automaticWindowStartedAt, automaticCount, trippedAt, reason)
+         VALUES (@scopeKey, @now, 1, @now, @automatic, NULL, NULL)
+         ON CONFLICT(scopeKey) DO UPDATE SET
+           windowStartedAt=CASE WHEN @now - loop_guard.windowStartedAt >= @windowMs
+             THEN @now ELSE loop_guard.windowStartedAt END,
+           totalCount=CASE WHEN @now - loop_guard.windowStartedAt >= @windowMs
+             THEN 1 ELSE loop_guard.totalCount + 1 END,
+           automaticWindowStartedAt=CASE WHEN @automatic = 0
+             OR @now - loop_guard.automaticWindowStartedAt >= @windowMs
+             THEN @now ELSE loop_guard.automaticWindowStartedAt END,
+           automaticCount=CASE WHEN @automatic = 0 THEN 0
+             WHEN @now - loop_guard.automaticWindowStartedAt >= @windowMs
+             THEN 1 ELSE loop_guard.automaticCount + 1 END
+         WHERE loop_guard.trippedAt IS NULL
+         RETURNING totalCount, automaticCount`
+      )
+      .get({ scopeKey, now, automatic: automatic ? 1 : 0, windowMs: limits.windowMs }) as
+      { totalCount: number; automaticCount: number } | undefined
+    if (!charged) return this.latchedLoopGuardVerdict(scopeKey)
 
-    const totalWindowExpired = !current || now - current.windowStartedAt >= limits.windowMs
-    const automaticWindowExpired = !current || now - current.automaticWindowStartedAt >= limits.windowMs
-    const windowStartedAt = totalWindowExpired ? now : current.windowStartedAt
-    const totalCount = totalWindowExpired ? 1 : current.totalCount + 1
-    const automaticWindowStartedAt = automaticWindowExpired || !automatic ? now : current.automaticWindowStartedAt
-    const automaticCount = automatic ? (automaticWindowExpired ? 1 : current.automaticCount + 1) : 0
+    const totalCount = Number(charged.totalCount)
+    const automaticCount = Number(charged.automaticCount)
     const reason =
       automaticCount > limits.maxAutomatic
         ? 'automatic_turn_burst'
         : totalCount > limits.maxTotal
           ? 'turn_rate_burst'
           : undefined
-    const trippedAt = reason ? now : null
+    if (!reason) return { allowed: true, trippedNow: false, totalCount, automaticCount }
+    // The verdict is computed from what was actually stored, so the latch is a CAS: a
+    // member that loses it still refuses the turn but runs no duplicate side effects.
+    const latched =
+      this.db
+        .prepare('UPDATE loop_guard SET trippedAt=@now, reason=@reason WHERE scopeKey=@scopeKey AND trippedAt IS NULL')
+        .run({ scopeKey, now, reason }).changes === 1
+    return { allowed: false, trippedNow: latched, totalCount, automaticCount, reason }
+  }
 
-    this.db
-      .prepare(
-        `INSERT INTO loop_guard
-           (scopeKey, windowStartedAt, totalCount, automaticWindowStartedAt, automaticCount, trippedAt, reason)
-         VALUES (@scopeKey, @windowStartedAt, @totalCount, @automaticWindowStartedAt, @automaticCount, @trippedAt, @reason)
-         ON CONFLICT(scopeKey) DO UPDATE SET
-           windowStartedAt=excluded.windowStartedAt,
-           totalCount=excluded.totalCount,
-           automaticWindowStartedAt=excluded.automaticWindowStartedAt,
-           automaticCount=excluded.automaticCount,
-           trippedAt=excluded.trippedAt,
-           reason=excluded.reason`
-      )
-      .run({
-        scopeKey,
-        windowStartedAt,
-        totalCount,
-        automaticWindowStartedAt,
-        automaticCount,
-        trippedAt,
-        reason: reason ?? null
-      })
-
+  /** The verdict for a scope another writer already latched: refuse, own no side effects. */
+  private latchedLoopGuardVerdict(scopeKey: string): LoopGuardVerdict {
+    const current = this.getLoopGuard(scopeKey)
     return {
-      allowed: reason === undefined,
-      trippedNow: reason !== undefined,
-      totalCount,
-      automaticCount,
-      ...(reason ? { reason } : {})
+      allowed: false,
+      trippedNow: false,
+      totalCount: Number(current?.totalCount ?? 0),
+      automaticCount: Number(current?.automaticCount ?? 0),
+      ...(current?.reason ? { reason: current.reason } : {})
     }
   }
 
-  /** Charge a migrated inbox delivery and advance its marker in one SQLite transaction.
-   *  A crash can therefore neither lose the charge nor charge the same retained row again
-   *  after ownership moves. A tripping delivery is intentionally left at marker 0: the
-   *  newly-open durable circuit makes its whole scope terminal and replay purges it. */
+  /** Charge a migrated inbox delivery and advance its marker in one transaction, so a crash
+   *  can neither lose the charge nor charge the same retained row again after ownership moves.
+   *  The transaction buys atomicity only — the charge itself is a relative SQL statement and
+   *  never depends on an exclusive writer, which a shared PostgreSQL store cannot give it.
+   *  A tripping delivery is intentionally left at marker 0: the newly-open durable circuit
+   *  makes its whole scope terminal and replay purges it. */
   recordLoopGuardTurnForInbox(
     inboxId: string,
     scopeKey: string,
@@ -3815,38 +4605,25 @@ export class LocalStore {
     }
   }
 
-  /** Open a loop circuit immediately for a structurally-invalid platform event. */
+  /** Open a loop circuit immediately for a structurally-invalid platform event. The latch
+   *  is a single guarded statement, so concurrent members elect exactly one side-effect owner. */
   tripLoopGuard(scopeKey: string, now: number, reason: string): LoopGuardVerdict {
-    const current = this.getLoopGuard(scopeKey)
-    if (current?.trippedAt !== null && current?.trippedAt !== undefined) {
-      return {
-        allowed: false,
-        trippedNow: false,
-        totalCount: current.totalCount,
-        automaticCount: current.automaticCount,
-        ...(current.reason ? { reason: current.reason } : {})
-      }
-    }
-    const row = current ?? {
-      scopeKey,
-      windowStartedAt: now,
-      totalCount: 0,
-      automaticWindowStartedAt: now,
-      automaticCount: 0
-    }
-    this.db
+    const latched = this.db
       .prepare(
         `INSERT INTO loop_guard
            (scopeKey, windowStartedAt, totalCount, automaticWindowStartedAt, automaticCount, trippedAt, reason)
-         VALUES (@scopeKey, @windowStartedAt, @totalCount, @automaticWindowStartedAt, @automaticCount, @trippedAt, @reason)
-         ON CONFLICT(scopeKey) DO UPDATE SET trippedAt=excluded.trippedAt, reason=excluded.reason`
+         VALUES (@scopeKey, @now, 0, @now, 0, @now, @reason)
+         ON CONFLICT(scopeKey) DO UPDATE SET trippedAt=@now, reason=@reason
+         WHERE loop_guard.trippedAt IS NULL
+         RETURNING totalCount, automaticCount`
       )
-      .run({ ...row, trippedAt: now, reason })
+      .get({ scopeKey, now, reason }) as { totalCount: number; automaticCount: number } | undefined
+    if (!latched) return this.latchedLoopGuardVerdict(scopeKey)
     return {
       allowed: false,
       trippedNow: true,
-      totalCount: row.totalCount,
-      automaticCount: row.automaticCount,
+      totalCount: Number(latched.totalCount),
+      automaticCount: Number(latched.automaticCount),
       reason
     }
   }
@@ -4051,11 +4828,6 @@ export class LocalStore {
            WHERE state = 'pending' AND callEnvelope IS NOT NULL AND expiresAt <= ?`
         )
         .run(now).changes
-      // Terminal records are pure history once they are well past expiry; drop them so
-      // the table stays bounded in a busy channel.
-      this.db
-        .prepare(`DELETE FROM activation_rendezvous WHERE state != 'pending' AND expiresAt <= ?`)
-        .run(now - ACTIVATION_RETENTION_MS)
       this.db.exec('COMMIT')
       return { transcriptOnly, released: Number(released) }
     } catch (err) {
@@ -4191,6 +4963,18 @@ export class LocalStore {
       .run(deadline, updatedAt, orchestrationId)
   }
 
+  /** CAS fire claim: clear the deadline iff it is still the armed one — every member sharing the
+   *  store may hold a timer for it, and exactly one of them gets `true`. */
+  claimOrchestrationDeadline(orchestrationId: string, deadline: number, updatedAt: number): boolean {
+    return (
+      this.db
+        .prepare(
+          "UPDATE orchestration SET deadline=NULL, updatedAt=? WHERE orchestrationId=? AND status='active' AND deadline=?"
+        )
+        .run(updatedAt, orchestrationId, deadline).changes === 1
+    )
+  }
+
   // ── runtime model-catalog cache (runtime-model-catalog.md §4) ──
 
   /** Upsert a runtime's catalog metadata (phase-1 probe fold or a discovery run).
@@ -4201,21 +4985,25 @@ export class LocalStore {
     this.db.exec('BEGIN')
     try {
       const existing = this.db
-        .prepare('SELECT fingerprint, complete, modelsHash FROM runtime_catalog_meta WHERE runtimeId = ?')
-        .get(meta.runtimeId) as { fingerprint: string; complete: number; modelsHash: string | null } | undefined
+        .prepare(
+          'SELECT fingerprint, complete, modelsHash FROM runtime_catalog_meta WHERE ownerId = ? AND runtimeId = ?'
+        )
+        .get(this.cacheOwnerId, meta.runtimeId) as
+        { fingerprint: string; complete: number; modelsHash: string | null } | undefined
       const sameGeneration = existing && existing.fingerprint === meta.fingerprint ? existing : undefined
       this.db
         .prepare(
           `INSERT INTO runtime_catalog_meta
-             (runtimeId, fingerprint, source, defaultModel, permissionModes, defaultPermissionMode, complete, modelsHash, observedAt)
-           VALUES (@runtimeId, @fingerprint, @source, @defaultModel, @permissionModes, @defaultPermissionMode, @complete, @modelsHash, @observedAt)
-           ON CONFLICT(runtimeId) DO UPDATE SET
+             (ownerId, runtimeId, fingerprint, source, defaultModel, permissionModes, defaultPermissionMode, complete, modelsHash, observedAt)
+           VALUES (@ownerId, @runtimeId, @fingerprint, @source, @defaultModel, @permissionModes, @defaultPermissionMode, @complete, @modelsHash, @observedAt)
+           ON CONFLICT(ownerId, runtimeId) DO UPDATE SET
              fingerprint=excluded.fingerprint, source=excluded.source, defaultModel=excluded.defaultModel,
              permissionModes=excluded.permissionModes, defaultPermissionMode=excluded.defaultPermissionMode,
              complete=excluded.complete,
              modelsHash=excluded.modelsHash, observedAt=excluded.observedAt`
         )
         .run({
+          ownerId: this.cacheOwnerId,
           runtimeId: meta.runtimeId,
           fingerprint: meta.fingerprint,
           source: meta.source,
@@ -4241,9 +5029,9 @@ export class LocalStore {
       .prepare(
         `UPDATE runtime_catalog_meta
          SET complete = 1, modelsHash = @modelsHash, observedAt = @observedAt
-         WHERE runtimeId = @runtimeId AND fingerprint = @fingerprint`
+         WHERE ownerId = @ownerId AND runtimeId = @runtimeId AND fingerprint = @fingerprint`
       )
-      .run({ runtimeId, fingerprint, modelsHash, observedAt })
+      .run({ ownerId: this.cacheOwnerId, runtimeId, fingerprint, modelsHash, observedAt })
   }
 
   /** Upsert one model's capability row (latest-wins). Written incrementally as each
@@ -4251,12 +5039,13 @@ export class LocalStore {
   upsertRuntimeModelCap(rec: RuntimeModelCapRecord): void {
     this.db
       .prepare(
-        `INSERT INTO runtime_model_catalog (runtimeId, modelId, fingerprint, capsJson, observedAt)
-         VALUES (@runtimeId, @modelId, @fingerprint, @capsJson, @observedAt)
-         ON CONFLICT(runtimeId, modelId) DO UPDATE SET
+        `INSERT INTO runtime_model_catalog (ownerId, runtimeId, modelId, fingerprint, capsJson, observedAt)
+         VALUES (@ownerId, @runtimeId, @modelId, @fingerprint, @capsJson, @observedAt)
+         ON CONFLICT(ownerId, runtimeId, modelId) DO UPDATE SET
            fingerprint=excluded.fingerprint, capsJson=excluded.capsJson, observedAt=excluded.observedAt`
       )
       .run({
+        ownerId: this.cacheOwnerId,
         runtimeId: rec.runtimeId,
         modelId: rec.modelId,
         fingerprint: rec.fingerprint,
@@ -4272,29 +5061,35 @@ export class LocalStore {
     // the runtime's rows — correct for a runtime whose catalog came back empty.
     const placeholders = keepModelIds.map(() => '?').join(', ')
     this.db
-      .prepare(`DELETE FROM runtime_model_catalog WHERE runtimeId = ? AND modelId NOT IN (${placeholders})`)
-      .run(runtimeId, ...keepModelIds)
+      .prepare(
+        `DELETE FROM runtime_model_catalog
+         WHERE ownerId = ? AND runtimeId = ? AND modelId NOT IN (${placeholders})`
+      )
+      .run(this.cacheOwnerId, runtimeId, ...keepModelIds)
   }
 
   getRuntimeCatalogMeta(runtimeId: string): RuntimeCatalogMetaRecord | undefined {
-    const row = this.db.prepare('SELECT * FROM runtime_catalog_meta WHERE runtimeId = ?').get(runtimeId) as
-      RuntimeCatalogMetaRow | undefined
+    const row = this.db
+      .prepare('SELECT * FROM runtime_catalog_meta WHERE ownerId = ? AND runtimeId = ?')
+      .get(this.cacheOwnerId, runtimeId) as RuntimeCatalogMetaRow | undefined
     return row ? runtimeCatalogMetaFromRow(row) : undefined
   }
 
   listRuntimeCatalogMetas(): RuntimeCatalogMetaRecord[] {
     const rows = this.db
-      .prepare('SELECT * FROM runtime_catalog_meta ORDER BY runtimeId ASC')
-      .all() as unknown as RuntimeCatalogMetaRow[]
+      .prepare('SELECT * FROM runtime_catalog_meta WHERE ownerId = ? ORDER BY runtimeId ASC')
+      .all(this.cacheOwnerId) as unknown as RuntimeCatalogMetaRow[]
     return rows.map(runtimeCatalogMetaFromRow)
   }
 
   listRuntimeModelCaps(runtimeId?: string): RuntimeModelCapRecord[] {
     const rows = (runtimeId !== undefined
-      ? this.db.prepare('SELECT * FROM runtime_model_catalog WHERE runtimeId = ? ORDER BY modelId ASC').all(runtimeId)
+      ? this.db
+          .prepare('SELECT * FROM runtime_model_catalog WHERE ownerId = ? AND runtimeId = ? ORDER BY modelId ASC')
+          .all(this.cacheOwnerId, runtimeId)
       : this.db
-          .prepare('SELECT * FROM runtime_model_catalog ORDER BY runtimeId ASC, modelId ASC')
-          .all()) as unknown as RuntimeModelCapRow[]
+          .prepare('SELECT * FROM runtime_model_catalog WHERE ownerId = ? ORDER BY runtimeId ASC, modelId ASC')
+          .all(this.cacheOwnerId)) as unknown as RuntimeModelCapRow[]
     return rows.map((row) => ({
       runtimeId: row.runtimeId,
       modelId: row.modelId,
@@ -4304,11 +5099,18 @@ export class LocalStore {
     }))
   }
 
-  /** Startup GC (§4 rule 6): drop rows unseen for the caller-computed retention window
-   *  (30 days) from both tables, so uninstalled runtimes cannot accumulate forever. */
-  gcRuntimeCatalog(cutoffEpochMs: number): void {
-    this.db.prepare('DELETE FROM runtime_catalog_meta WHERE observedAt < ?').run(cutoffEpochMs)
-    this.db.prepare('DELETE FROM runtime_model_catalog WHERE observedAt < ?').run(cutoffEpochMs)
+  /** Next shim-binding generation for an agent's sandbox: one atomic upsert, so two members cannot tie. */
+  // The row outlives the claim on purpose — nothing here may hand out a number a pod has seen before.
+  nextSandboxGeneration(agentId: string): number {
+    const row = this.db
+      .prepare(
+        `INSERT INTO sandbox_generations (agentId, generation) VALUES (?, 1)
+         ON CONFLICT(agentId) DO UPDATE SET generation = sandbox_generations.generation + 1
+         RETURNING generation`
+      )
+      .get(agentId) as { generation: number } | undefined
+    if (row === undefined) throw new Error(`could not allocate a sandbox generation for agent ${agentId}`)
+    return Number(row.generation)
   }
 
   close(): void {

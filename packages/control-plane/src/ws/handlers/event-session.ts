@@ -14,12 +14,16 @@
  * Trust boundary: the reported agent must still be placed on the authenticated
  * daemon, and an existing sessionId remains bound to its first agent.
  */
+import { PLACEMENT_ONLY } from '../../orchestrator/placementResolver.js'
 import { isFrame, type EventSession } from '@agentconnect.md/protocol'
-import { AgentId, BotId, DaemonId, HookId, IntegrationId, LaunchId, SessionId } from '../../domain/ids.js'
+import { AgentId, BotId, DaemonId, HookId, IntegrationId, LaunchId, OrgId, SessionId } from '../../domain/ids.js'
 import { classifySession } from '../../domain/session-visibility.js'
 import type { DaemonWsDeps } from '../deps.js'
+import { frameOrgId } from './frame-org.js'
 import type { Handler } from './index.js'
 import { runForReportingAgent } from './reporting-agent.js'
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /**
  * Resolve the ownership lookups the §4.2 classification needs, then classify.
@@ -55,21 +59,21 @@ async function classifyMilestone(p: EventSession, agentId: AgentId, deps: Daemon
   })
 }
 
-async function externalCandidate(p: EventSession, agentId: AgentId, deps: DaemonWsDeps) {
+async function externalCandidate(p: EventSession, orgId: OrgId, agentId: AgentId, deps: DaemonWsDeps) {
   const origin = p.externalOrigin
-  // New daemons pin source provenance in their local session row. An explicit
-  // local binding is authoritative for synthetic/platform-shaped coordinates;
-  // absence still takes the conservative mixed-version fallback below.
+  // An explicit local source binding is authoritative; absent provenance uses the mixed-version fallback below.
   if (p.sourceBindingKind === 'local' && !origin) return undefined
   if (!origin) {
+    // A2A children inherit their audience from the parent and never claim a legacy hook scope.
+    if (p.parentSessionId) return undefined
     const triggerId = p.triggeredBy?.startsWith('hook:')
       ? p.triggeredBy.slice('hook:'.length)
       : p.platform === 'hook'
         ? p.channel
         : undefined
-    // Daemon trust domain: the hook a reporting daemon named as a session's
-    // trigger; the `hook.agentId === agentId` check below binds it (§4).
-    const hook = triggerId ? await deps.hook.getUnscoped(HookId(triggerId)) : null
+    // The reporting daemon names the hook; the frame's org fences it and the agent check below
+    // binds that trust (§4).
+    const hook = triggerId && UUID_RE.test(triggerId) ? await deps.hook.get(orgId, HookId(triggerId)) : null
     const legacyGithub = hook?.kind === 'github' && hook.agentId === agentId
     if (legacyGithub) return { provider: 'github', resolution: 'pending' as const }
 
@@ -117,10 +121,9 @@ async function externalCandidate(p: EventSession, agentId: AgentId, deps: Daemon
     }
   }
   if (!origin.integrationId || !origin.realmKey) return pending
-  // Daemon trust domain: the integration a reporting daemon named as the origin
-  // of a session it already proved it owns (org-scoped-data-layer.md §4). The
-  // ownership checks below still bind it to the reporting agent.
-  const integration = await deps.integration.getUnscoped(IntegrationId(origin.integrationId))
+  // The integration a reporting daemon named as the origin of a session it already proved it
+  // owns, fenced on the frame's org; the ownership checks below still bind it to the agent.
+  const integration = await deps.integration.get(orgId, IntegrationId(origin.integrationId))
   if (
     !integration ||
     integration.agentId !== agentId ||
@@ -129,9 +132,8 @@ async function externalCandidate(p: EventSession, agentId: AgentId, deps: Daemon
   ) {
     return { provider: origin.provider, resolution: 'invalid' as const }
   }
-  // Daemon trust domain: the bot behind an integration row this resolver already
-  // matched against the reporting agent (org-scoped-data-layer.md §4).
-  const bot = await deps.bot?.getUnscoped(BotId(integration.botId))
+  // The bot behind an integration row this resolver already matched against the reporting agent.
+  const bot = await deps.bot?.get(orgId, BotId(integration.botId))
   const feishuRegion = bot?.platform === 'feishu' ? (bot.feishuRegion ?? 'feishu') : undefined
   const feishuAppId = bot?.feishuAppId ?? undefined
   const realmKey =
@@ -164,6 +166,7 @@ async function externalCandidate(p: EventSession, agentId: AgentId, deps: Daemon
 
 async function recordEventSession(
   p: EventSession,
+  orgId: OrgId,
   agentId: AgentId,
   daemonId: DaemonId,
   deps: DaemonWsDeps,
@@ -175,7 +178,7 @@ async function recordEventSession(
 ): Promise<void> {
   const [classification, candidate] = await Promise.all([
     classifyMilestone(p, agentId, deps),
-    externalCandidate(p, agentId, deps)
+    externalCandidate(p, orgId, agentId, deps)
   ])
   const { recorded, session, settled } = await deps.session.recordMilestone({
     sessionId: SessionId(p.sessionId),
@@ -235,11 +238,13 @@ async function recordEventSession(
 
 export const handleEventSession: Handler = async (frame, conn, deps) => {
   if (!isFrame('event/session')(frame)) return
+  const orgId = frameOrgId(frame, conn)
+  if (!orgId) return
   const p = frame.payload
   const agentId = AgentId(p.agentId)
   const daemonId = DaemonId(conn.daemonId)
-  await runForReportingAgent(agentId, daemonId, deps, () =>
-    recordEventSession(p, agentId, daemonId, deps, deps.sessionAccessWarmer)
+  await runForReportingAgent(orgId, agentId, daemonId, deps, () =>
+    recordEventSession(p, orgId, agentId, daemonId, deps, deps.sessionAccessWarmer)
   )
 }
 
@@ -247,6 +252,11 @@ export const handleEventSession: Handler = async (frame, conn, deps) => {
  * permanent rejection and is ACKed so the old daemon can collect its outbox. */
 export const handleEventSessionSync: Handler = async (frame, conn, deps) => {
   if (!isFrame('event/session-sync')(frame)) return
+  const orgId = frameOrgId(frame, conn)
+  if (!orgId) {
+    conn.sendError(frame.id, 'SCOPE_DENIED', 'organization is required', false)
+    return
+  }
   const p = frame.payload
   const agentId = AgentId(p.agentId)
   const daemonId = DaemonId(conn.daemonId)
@@ -256,13 +266,18 @@ export const handleEventSessionSync: Handler = async (frame, conn, deps) => {
     return
   }
   try {
-    const agent = await deps.agent.getUnscoped(agentId)
-    if (agent?.daemonId === daemonId) await recordEventSession(p, agentId, daemonId, deps)
+    const agent = await deps.agent.get(orgId, agentId)
+    if (agent && (await (deps.placementResolver ?? PLACEMENT_ONLY).mayAct(agent, daemonId)))
+      await recordEventSession(p, orgId, agentId, daemonId, deps)
     // ACK only after recordEventSession's transaction has committed. An agent
     // placed elsewhere (or deleted) can never accept this daemon's stale row, so
     // retaining it forever would be worse than collecting it.
     conn.replyTo(frame, 'ack', { ok: true })
-  } catch {
+  } catch (err) {
+    deps.log.error(
+      { err, daemonId, agentId, sessionId: p.sessionId },
+      'event/session-sync: metadata snapshot persistence failed'
+    )
     conn.sendError(frame.id, 'INTERNAL', 'session metadata snapshot failed to persist', true)
   } finally {
     release()

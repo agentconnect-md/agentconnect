@@ -81,15 +81,17 @@ export function webchatMcpOperationRoutes(deps: HttpDeps) {
     }) => {
       const agent = await deps.repos.agent.get(req.orgCtx!.orgId, AgentId(req.params.agentId))
       const userId = req.principal!.userId
-      if (!agent || !agent.daemonId || agent.orgId !== req.params.orgId || !canView(agent, ctxOf(req as never)))
-        return null
+      if (!agent || agent.orgId !== req.params.orgId || !canView(agent, ctxOf(req as never))) return null
+      // Who serves the agent is the resolver's answer; a pool agent names no machine of its own.
+      const daemonId = await deps.placementResolver.servingDaemon(agent)
+      if (!daemonId) return null
       const owns = await deps.repos.webchatConversation.owns({
         conversationId: req.params.conversationId,
         orgId: OrgId(req.params.orgId),
         agentId: AgentId(req.params.agentId),
         userId
       })
-      return owns ? { agent, userId } : null
+      return owns ? { agent, daemonId, userId } : null
     }
 
     r.get(
@@ -206,7 +208,7 @@ export function webchatMcpOperationRoutes(deps: HttpDeps) {
           grantId: operation.sourceGrantId,
           authorityGeneration: operation.createdAuthorityGeneration,
           agentId: auth.agent.id,
-          daemonId: auth.agent.daemonId!,
+          daemonId: auth.daemonId,
           orgId: auth.agent.orgId,
           userId: auth.userId,
           startedAt: now,

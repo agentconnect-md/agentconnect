@@ -9,8 +9,9 @@ import { ShimClient, type ShimTransport } from '../src/shim/client.js'
 import { ShimDialer } from '../src/shim/dialer.js'
 import { ShimServer } from '../src/shim/server.js'
 import { K8sApiError } from '@agentconnect.md/k8s-client'
-import type { Sandbox, SandboxClaim } from '../src/k8s/sandbox-api.js'
+import { GuardedResumeRejectedError, type Sandbox, type SandboxClaim } from '../src/k8s/sandbox-api.js'
 import type { SpawnRecord } from '../src/shim/binding.js'
+import { fakeGenerations } from './fake-generations.js'
 
 /**
  * A complete ACP turn through the cluster path: driver → listener → shim → runtime → back.
@@ -45,7 +46,10 @@ function fakeApi() {
         uid: 'sandbox-uid-1',
         annotations: { 'agents.x-k8s.io/pod-name': 'runtime-1' }
       },
-      spec: { operatingMode: 'Suspended' as 'Running' | 'Suspended' },
+      spec: {
+        operatingMode: 'Suspended' as 'Running' | 'Suspended',
+        podTemplate: { spec: { containers: [{ name: 'runtime', image: 'runtime:1' }] } }
+      },
       status: { conditions: [{ type: 'Ready', status: 'True' }], podIPs: ['127.0.0.1'] }
     } as Sandbox,
     claim: undefined as SandboxClaim | undefined
@@ -65,9 +69,43 @@ function fakeApi() {
         state.claim = undefined
       },
       getSandbox: async () => state.sandbox,
+      getWarmPool: async () => ({ spec: { sandboxTemplateRef: { name: 'runtime-template' } } }),
+      getSandboxTemplate: async () => ({
+        spec: { podTemplate: { spec: { containers: [{ name: 'runtime', image: 'runtime:1' }] } } }
+      }),
+      resumeWithRuntimeImage: async (
+        _name: string,
+        image: { containerIndex: number; observedName: string; observedImage: string; targetImage: string }
+      ) => {
+        const current = state.sandbox.spec?.podTemplate?.spec?.containers?.[image.containerIndex]
+        if (
+          state.mode !== 'Suspended' ||
+          current?.name !== image.observedName ||
+          current.image !== image.observedImage
+        ) {
+          throw new GuardedResumeRejectedError('sb-1', new K8sApiError(422, 'Invalid', 'guard rejected'))
+        }
+        state.mode = 'Running'
+        state.sandbox = {
+          ...state.sandbox,
+          spec: {
+            ...state.sandbox.spec,
+            operatingMode: 'Running',
+            podTemplate: {
+              ...state.sandbox.spec?.podTemplate,
+              spec: {
+                containers: (state.sandbox.spec?.podTemplate?.spec?.containers ?? []).map((container, index) =>
+                  index === image.containerIndex ? { ...container, image: image.targetImage } : container
+                )
+              }
+            }
+          }
+        }
+        return state.sandbox
+      },
       setOperatingMode: async (_name: string, desired: 'Running' | 'Suspended') => {
         state.mode = desired
-        state.sandbox = { ...state.sandbox, spec: { operatingMode: desired } }
+        state.sandbox = { ...state.sandbox, spec: { ...state.sandbox.spec, operatingMode: desired } }
         return state.sandbox
       },
       watchClaims: vi.fn(),
@@ -122,6 +160,7 @@ async function clusterUnderTest(options: { credentialTtlMs?: number } = {}): Pro
     api: api.api as never,
     orgForAgent: () => 'org-1',
     warmPoolName: 'pool',
+    generations: fakeGenerations(),
     connectChannel: (record: SpawnRecord, _podIp, timeoutMs) =>
       dialer.connect(`ws://127.0.0.1:${port}`, record, timeoutMs),
     revokeChannel: (agentId) => dialer.revokeAgent(agentId),

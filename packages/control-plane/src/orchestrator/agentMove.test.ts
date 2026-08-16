@@ -1,3 +1,4 @@
+import { onDaemon, onSet, placementTargetOf, samePlacement, type PlacementTarget } from '../domain/placement.js'
 import { describe, expect, it } from 'vitest'
 import type { Ack, AgentActivate, AgentDetach } from '@agentconnect.md/protocol'
 import { AgentId, BotId, CronId, DaemonId, IntegrationId, OrgId } from '../domain/ids.js'
@@ -39,6 +40,9 @@ const TARGET = DaemonId('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb')
 const INTEGRATION = IntegrationId('22222222-2222-4222-8222-222222222222')
 const BOT = BotId('33333333-3333-4333-8333-333333333333')
 const CRON = CronId('44444444-4444-4444-8444-444444444444')
+const MEMBER = DaemonId('cccccccc-cccc-4ccc-8ccc-cccccccccccc')
+const OFFLINE_MEMBER = DaemonId('dddddddd-dddd-4ddd-8ddd-dddddddddddd')
+const SET = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
 const MODIFIED_AT = new Date('2026-07-11T00:00:00.000Z')
 const SESSION_KEY = { platform: 'slack' as const, channel: 'C-move', thread: 'T-move' }
 const WORKSPACE_REPO_ID = 4242n
@@ -154,11 +158,20 @@ function make(
     workspaceRepoId?: bigint
     sourceDetachStarted?: () => void
     waitSourceDetach?: Promise<void>
+    /** Which set each daemon belongs to (absent daemon ⇒ no set) + each set's members. */
+    sets?: { setIdOf: Record<string, string>; members: Record<string, string[]> }
+    /** Daemon ids the liveness fake reports READY; others read as disconnected. */
+    readyDaemons?: string[]
+    /** Placement columns merged over the initial record (e.g. a `set` placement). */
+    placement?: Partial<AgentRecord>
   } = {}
 ) {
   let current: AgentRecord = {
     ...agent(opts.unplaced ? null : SOURCE),
-    ...(opts.workspace ? { workspace: opts.workspace, workspaceRepoId: opts.workspaceRepoId ?? WORKSPACE_REPO_ID } : {})
+    ...(opts.workspace
+      ? { workspace: opts.workspace, workspaceRepoId: opts.workspaceRepoId ?? WORKSPACE_REPO_ID }
+      : {}),
+    ...(opts.placement ?? {})
   }
   let cronRows = [cron]
   const calls: string[] = []
@@ -211,9 +224,9 @@ function make(
       return current
     },
     setWorkspaceRepoId: async () => true,
-    movePlacement: async (_id: string, expected: string | null, target: string | null) => {
-      if (opts.casMiss || current.daemonId !== expected) return null
-      current = agent(target)
+    movePlacement: async (_id: string, expected: PlacementTarget, target: PlacementTarget) => {
+      if (opts.casMiss || !samePlacement(placementTargetOf(current), expected)) return null
+      current = agent(target.kind === 'daemon' ? target.daemonId : null)
       return current
     }
   } as unknown as AgentRepo
@@ -295,7 +308,23 @@ function make(
     httpBot: { syncBot: async () => void calls.push('http') } as unknown as HttpBotOrchestrator,
     collabRoutes: { broadcast: async () => void calls.push('collab') } as unknown as CollabRoutesService,
     mutations,
-    sessionOwners: { releaseSession: (key) => void releasedLive.push(key as typeof SESSION_KEY) }
+    sessionOwners: { releaseSession: (key) => void releasedLive.push(key as typeof SESSION_KEY) },
+    ...(opts.sets
+      ? {
+          memberSets: {
+            setIdOf: async (daemonId: string) => opts.sets!.setIdOf[daemonId] ?? null,
+            memberIdsOf: async (setId: string) => opts.sets!.members[setId] ?? []
+          }
+        }
+      : {}),
+    ...(opts.readyDaemons
+      ? {
+          liveness: {
+            get: (daemonId: string) =>
+              opts.readyDaemons!.includes(daemonId) ? { state: 'READY', reachable: true, sessionEpoch: 1 } : undefined
+          }
+        }
+      : {})
   })
   return { service, calls, activations, detaches, frameOrgs, mutations, releasedLive, current: () => current }
 }
@@ -314,14 +343,14 @@ describe('AgentMoveService', () => {
     // nor an agent it has never installed can supply one, so an unscoped frame is
     // refused with SCOPE_DENIED before it leaves the CP.
     const t = make()
-    await t.service.move(t.current(), TARGET)
+    await t.service.move(t.current(), onDaemon(TARGET))
     expect(t.frameOrgs.length).toBeGreaterThan(0)
     expect(t.frameOrgs.every((orgId) => orgId === ORG)).toBe(true)
   })
 
   it('hard-cuts the source, bootstraps the complete target bundle, and activates last', async () => {
     const t = make()
-    const moved = await t.service.move(t.current(), TARGET)
+    const moved = await t.service.move(t.current(), onDaemon(TARGET))
     expect(moved.daemonId).toBe(TARGET)
     expect(t.calls).toEqual([
       `detach:${SOURCE}`,
@@ -466,7 +495,7 @@ describe('AgentMoveService', () => {
 
   it('on target activation failure, confirms target detach then restores the full source bundle before activate', async () => {
     const t = make({ failTargetActivate: true })
-    await expect(t.service.move(t.current(), TARGET)).rejects.toBeInstanceOf(AgentMoveFailed)
+    await expect(t.service.move(t.current(), onDaemon(TARGET))).rejects.toBeInstanceOf(AgentMoveFailed)
     expect(t.current().daemonId).toBe(SOURCE)
     expect(t.calls).toEqual([
       `detach:${SOURCE}`,
@@ -481,20 +510,20 @@ describe('AgentMoveService', () => {
 
   it('fails closed when target detach is not acknowledged: DB stays on target and source is not restored', async () => {
     const t = make({ failTargetActivate: true, failRollbackTargetDetach: true })
-    await expect(t.service.move(t.current(), TARGET)).rejects.toThrow('placement remains on target')
+    await expect(t.service.move(t.current(), onDaemon(TARGET))).rejects.toThrow('placement remains on target')
     expect(t.current().daemonId).toBe(TARGET)
     expect(t.calls).not.toContain(`activate:${SOURCE}`)
   })
 
   it('restores the full source bundle after a CAS miss', async () => {
     const t = make({ casMiss: true })
-    await expect(t.service.move(t.current(), TARGET)).rejects.toThrow('changed concurrently')
+    await expect(t.service.move(t.current(), onDaemon(TARGET))).rejects.toThrow('changed concurrently')
     expect(t.calls).toEqual([`detach:${SOURCE}`, `release:${SOURCE}`, `detach:${SOURCE}`, `activate:${SOURCE}`])
   })
 
   it('re-stages with a fresh token when the bundle changes across activate ACK', async () => {
     const t = make({ changeBundleAfterFirstActivate: true })
-    await expect(t.service.move(t.current(), TARGET)).resolves.toMatchObject({ daemonId: TARGET })
+    await expect(t.service.move(t.current(), onDaemon(TARGET))).resolves.toMatchObject({ daemonId: TARGET })
 
     const targetActivations = t.activations.filter((_value, index) => index < 2)
     expect(targetActivations.map((value) => value.crons[0]?.schedule)).toEqual(['0 0 * * *', '5 * * * *'])
@@ -545,9 +574,9 @@ describe('AgentMoveService', () => {
     const sourceDetachStarted = new Promise<void>((resolve) => (markStarted = resolve))
     const t = make({ waitSourceDetach, sourceDetachStarted: markStarted })
 
-    const first = t.service.move(t.current(), TARGET)
+    const first = t.service.move(t.current(), onDaemon(TARGET))
     await sourceDetachStarted
-    await expect(t.service.move(t.current(), TARGET)).rejects.toBeInstanceOf(AgentMoveConflict)
+    await expect(t.service.move(t.current(), onDaemon(TARGET))).rejects.toBeInstanceOf(AgentMoveConflict)
     expect(t.mutations.tryBeginMutation(AGENT)).toBeNull()
     releaseSource()
     await expect(first).resolves.toMatchObject({ daemonId: TARGET })
@@ -555,8 +584,172 @@ describe('AgentMoveService', () => {
 
   it('detaches target and fails closed when DB ownership changes after activation', async () => {
     const t = make({ moveOwnershipAfterFirstActivate: true })
-    await expect(t.service.move(t.current(), TARGET)).rejects.toThrow('placement changed during move')
+    await expect(t.service.move(t.current(), onDaemon(TARGET))).rejects.toThrow('placement changed during move')
     expect(t.calls.at(-1)).toBe(`detach:${TARGET}`)
     expect(t.calls).not.toContain(`activate:${SOURCE}`)
+  })
+
+  it('a set commit broadcasts a token-less unstage to live members the move never staged (#1093)', async () => {
+    const t = make({
+      sets: { setIdOf: { [MEMBER]: SET }, members: { [SET]: [MEMBER, OFFLINE_MEMBER] } },
+      readyDaemons: [MEMBER]
+    })
+    await expect(t.service.move(t.current(), onSet(SET))).resolves.toBeDefined()
+
+    // The machine source stays fenced; the live member's possible stale fence is released token-less.
+    expect(t.calls).not.toContain(`activate:${SOURCE}`)
+    expect(t.calls).not.toContain(`activate:${OFFLINE_MEMBER}`)
+    expect(t.calls).toContain(`activate:${MEMBER}`)
+    expect(t.activations).toHaveLength(1)
+    expect(t.activations[0]?.agentId).toBe(AGENT)
+    expect(t.activations[0]?.moveId).toBeUndefined()
+  })
+
+  it('a staged source that is itself a member keeps its exact token and is not broadcast to twice', async () => {
+    const t = make({
+      sets: { setIdOf: { [SOURCE]: SET }, members: { [SET]: [SOURCE] } },
+      readyDaemons: [SOURCE]
+    })
+    await expect(t.service.move(t.current(), onSet(SET))).resolves.toBeDefined()
+
+    expect(t.activations).toHaveLength(1)
+    expect(t.activations[0]?.moveId).toBe(t.detaches[0]?.moveId)
+  })
+
+  it('reconnect recovery releases a reported stale fence for an eligible member that serves nothing', async () => {
+    const t = make({
+      placement: { placementKind: 'set', setId: SET, daemonId: null },
+      sets: { setIdOf: { [MEMBER]: SET }, members: { [SET]: [MEMBER] } },
+      readyDaemons: [MEMBER]
+    })
+    await t.service.recoverStaged(AGENT, MEMBER, STAGED_MOVE)
+
+    // Token-less, exactly like the commit broadcast: `mayAct` was false, so the reporter releases
+    // its fence without being told to run the agent — the daemon leaves the host down (#1093).
+    expect(t.detaches).toEqual([])
+    expect(t.activations).toHaveLength(1)
+    expect(t.activations[0]).toMatchObject({ agentId: AGENT })
+    expect(t.activations[0]?.moveId).toBeUndefined()
+  })
+
+  it('reconnect recovery leaves a fence armed when the reporter is not an eligible holder', async () => {
+    // A daemon in no set reporting a fence for a set-placed agent stays fenced.
+    const nonMember = make({
+      placement: { placementKind: 'set', setId: SET, daemonId: null },
+      sets: { setIdOf: {}, members: { [SET]: [] } },
+      readyDaemons: []
+    })
+    await nonMember.service.recoverStaged(AGENT, SOURCE, STAGED_MOVE)
+    expect(nonMember.activations).toEqual([])
+
+    // A member reporting a fence for a MACHINE-placed agent stays fenced too.
+    const pinned = make({
+      sets: { setIdOf: { [MEMBER]: SET }, members: { [SET]: [MEMBER] } },
+      readyDaemons: [MEMBER]
+    })
+    await pinned.service.recoverStaged(AGENT, MEMBER, STAGED_MOVE)
+    expect(pinned.activations).toEqual([])
+  })
+})
+
+/**
+ * `bundleFor` is the `duty/fetch` reply. An AgentSpec only NAMES its MCP servers
+ * and its memory connection, so a member that installs the bundle on a daemon the
+ * agent is not placed on would come up referencing definitions it never received
+ * (#979). Both now ride the bundle, through the SAME projector the reconnect
+ * roster uses, scoped to this one agent's references.
+ */
+describe('AgentMoveService.bundleFor — the duty/fetch install bundle', () => {
+  const PROVIDER = '88888888-8888-4888-8888-888888888888'
+  const CONNECTION = '99999999-9999-4999-8999-999999999999'
+  const INSTALLATION = 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa'
+
+  function bundleService(over: { mcpServers?: string[]; connectionId?: string } = {}) {
+    const record = {
+      ...agent(SOURCE),
+      mcpServers: over.mcpServers ?? [],
+      memory: over.connectionId ? { provider: 'external', connectionId: over.connectionId } : null
+    } as AgentRecord
+    const service = new AgentMoveService({
+      agents: { getUnscoped: async () => record } as unknown as AgentRepo,
+      integrations: { listForAgent: async () => [] } as unknown as ConstructorParameters<
+        typeof AgentMoveService
+      >[0]['integrations'],
+      integrationChannels: { listForIntegration: async () => [] } as unknown as ConstructorParameters<
+        typeof AgentMoveService
+      >[0]['integrationChannels'],
+      bots: { getUnscoped: async () => bot } as unknown as ConstructorParameters<typeof AgentMoveService>[0]['bots'],
+      botSecrets: { get: async () => ({}) } as unknown as ConstructorParameters<
+        typeof AgentMoveService
+      >[0]['botSecrets'],
+      platforms: PLATFORMS,
+      specs: new AgentSpecAssembler({
+        get: async () => ({}),
+        merge: async () => {},
+        keys: async () => new Map()
+      } as unknown as ConstructorParameters<typeof AgentSpecAssembler>[0]),
+      crons: { listForAgent: async () => [] } as unknown as ConstructorParameters<typeof AgentMoveService>[0]['crons'],
+      assignments: {} as unknown as ConstructorParameters<typeof AgentMoveService>[0]['assignments'],
+      mcp: {
+        providers: { listForOrg: async () => [{ id: PROVIDER, orgId: ORG, name: 'docs' }] },
+        grants: { activeForProvider: async () => [{ id: 'g1', key: 'oct_docs', createdAt: new Date(2_000) }] },
+        relayRoster: { entries: async () => [{ relayId: 'r1', name: 'r1', url: 'wss://relay.example.test' }] }
+      } as unknown as ConstructorParameters<typeof AgentMoveService>[0]['mcp'],
+      memory: {
+        connections: {
+          get: async (_orgId: string, id: string) =>
+            id === CONNECTION
+              ? { id: CONNECTION, orgId: ORG, installationId: INSTALLATION, revision: 1, config: {} }
+              : null
+        },
+        installations: {
+          get: async () => ({
+            id: INSTALLATION,
+            pluginId: 'ai.example.memory',
+            transport: 'stdio',
+            commandRef: 'operator-mem0',
+            expectedManifestDigest: `sha256:${'a'.repeat(64)}`,
+            secretHeaders: []
+          })
+        },
+        secrets: { get: async () => ({}), keys: async () => [] },
+        grants: { activeForConnection: async () => [] },
+        relayRoster: { entries: async () => [] }
+      } as unknown as ConstructorParameters<typeof AgentMoveService>[0]['memory'],
+      control: {} as unknown as ControlSender,
+      hooks: {} as unknown as HookService,
+      httpBot: {} as unknown as HttpBotOrchestrator,
+      collabRoutes: {} as unknown as CollabRoutesService,
+      mutations: new AgentMutationGate(),
+      sessionOwners: { releaseSession: () => {} }
+    })
+    return { service, record }
+  }
+
+  it('carries the proxy def for every MCP server the spec names', async () => {
+    const { service, record } = bundleService({ mcpServers: ['docs'] })
+    const bundle = await service.bundleFor(record)
+    expect(bundle.spec.mcpServers).toEqual(['docs'])
+    // Not just present — the grant-bearing proxy def, so the holder can actually call it.
+    expect(bundle.mcpServers).toEqual([
+      expect.objectContaining({
+        name: 'docs',
+        url: `https://relay.example.test/mcp/${PROVIDER}`,
+        headers: [{ name: 'Authorization', value: 'Bearer oct_docs' }]
+      })
+    ])
+  })
+
+  it('carries the external-memory connection the spec binds', async () => {
+    const { service, record } = bundleService({ connectionId: CONNECTION })
+    const bundle = await service.bundleFor(record)
+    expect(bundle.memoryConnections.map((c) => c.connectionId)).toEqual([CONNECTION])
+  })
+
+  it('an agent that names neither gets neither — the bundle is scoped to its references', async () => {
+    const { service, record } = bundleService()
+    const bundle = await service.bundleFor(record)
+    expect(bundle.mcpServers).toEqual([])
+    expect(bundle.memoryConnections).toEqual([])
   })
 })

@@ -103,7 +103,7 @@ export const RcVerify = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('daemon-token'),
     credential: z.string().min(1),
-    // The daemonId claimed on `rd/hello`, forwarded unverified. CP binds a cloud token's
+    // The daemonId claimed on `rd/hello`, forwarded unverified. CP binds a pool member token's
     // reviewed Pod UID to one member record and refuses any different claim.
     daemonId: z.string().uuid().optional()
   }),

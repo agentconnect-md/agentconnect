@@ -8,6 +8,8 @@ let client
 
 function rewrite(sql) {
   let out = sql
+    // PostgreSQL has no SQLite exclusive-writer transaction, so IMMEDIATE is dropped: a
+    // shared-store statement must be a CAS or a relative write, never a read-then-write.
     .replace(/BEGIN\s+IMMEDIATE/gi, 'BEGIN')
     .replace(/INTEGER\s+PRIMARY\s+KEY\s+AUTOINCREMENT/gi, 'BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY')
     .replace(/\bINTEGER\b/gi, 'BIGINT')

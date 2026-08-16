@@ -41,12 +41,17 @@ export class InMemoryDaemonStub implements Transport {
   readonly subprotocol: string
   readonly remoteAddr: string
 
-  private messageCb: ((text: string) => void) | undefined
+  private messageCb: ((text: string) => void | Promise<void>) | undefined
   private closeCb: ((code: number, reason: string) => void) | undefined
+  /** Dispatches started by `injectRaw` that have not settled yet — see {@link settled}. */
+  private inflight: Promise<void>[] = []
   /** Resolvers waiting on `expectFrame(type)`. */
   private waiters: Array<{ type: FrameType; resolve: (f: CapturedFrame) => void }> = []
-  /** Auto-responders: REQ type → (reqFrame) → REP {type,payload}. */
-  private responders = new Map<FrameType, (req: CapturedFrame) => { type: FrameType; payload: unknown }>()
+  /** Auto-responders: REQ type → (reqFrame) → REP {type,payload,orgId?} (frame mode: an org-scoped REQ's reply must carry its org). */
+  private responders = new Map<
+    FrameType,
+    (req: CapturedFrame) => { type: FrameType; payload: unknown; orgId?: string }
+  >()
 
   constructor(opts: StubOpts = {}) {
     this.subprotocol = opts.subprotocol ?? 'agentconnect.v1'
@@ -58,7 +63,10 @@ export class InMemoryDaemonStub implements Transport {
    * would. The responder maps the request frame to the reply payload. Lets a test
    * drive flows (e.g. rebalance) that block on an ack without hand-injecting each.
    */
-  respondTo(type: FrameType, responder: (req: CapturedFrame) => { type: FrameType; payload: unknown }): void {
+  respondTo(
+    type: FrameType,
+    responder: (req: CapturedFrame) => { type: FrameType; payload: unknown; orgId?: string }
+  ): void {
     this.responders.set(type, responder)
   }
 
@@ -83,12 +91,12 @@ export class InMemoryDaemonStub implements Transport {
     // the issuing `request(...)` has returned its promise first).
     const responder = this.responders.get(frame.type)
     if (responder) {
-      const { type, payload } = responder(frame)
-      queueMicrotask(() => this.reply(frame.id, type, payload))
+      const { type, payload, orgId } = responder(frame)
+      queueMicrotask(() => this.inject(type, payload, { corr: frame.id, ...(orgId ? { orgId } : {}) }))
     }
   }
 
-  onMessage(cb: (text: string) => void): void {
+  onMessage(cb: (text: string) => void | Promise<void>): void {
     this.messageCb = cb
   }
 
@@ -107,7 +115,22 @@ export class InMemoryDaemonStub implements Transport {
   /** Simulate a D→C frame: hand a raw JSON envelope to the connection. */
   injectRaw(text: string): void {
     if (!this.messageCb) throw new Error('connection has not started (no onMessage)')
-    this.messageCb(text)
+    const dispatched = this.messageCb(text)
+    if (dispatched) this.inflight.push(dispatched)
+  }
+
+  /**
+   * Await every injected frame's dispatch — the barrier for asserting that something did NOT
+   * happen. `DaemonConnection` returns the promise for the whole handler (persistence, the duty
+   * exchange it awaits, everything), so this is the real completion signal rather than a fixed
+   * pause that a loaded runner outlives. Loops because a settling dispatch may inject more.
+   */
+  async settled(): Promise<void> {
+    while (this.inflight.length > 0) {
+      const pending = this.inflight
+      this.inflight = []
+      await Promise.allSettled(pending)
+    }
   }
 
   /**

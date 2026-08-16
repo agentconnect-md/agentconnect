@@ -4,7 +4,7 @@
  * the unauthenticated OAuth callback (create / re-install / cross-org refusal),
  * and the revocation path from `rc/bot-revoked`.
  */
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
@@ -21,6 +21,23 @@ import type {
   SlackOAuthExchangeResult,
   SlackRotateResult
 } from '../../src/http/slack-config-api.js'
+
+/** Wait until a backend is genuinely queued on a row lock — the interleaving each race below is
+ *  written for. Sleeping a fixed guess instead runs a DIFFERENT interleaving whenever the runner
+ *  is slower than the guess, silently, and the race the test names then goes uncovered. */
+async function awaitLockWaiter(): Promise<void> {
+  await vi.waitFor(
+    async () => {
+      const rows = await prisma.$queryRaw<Array<{ waiting: bigint }>>`
+        SELECT count(*)::bigint AS "waiting"
+        FROM pg_stat_activity
+        WHERE datname = current_database() AND wait_event_type = 'Lock'
+      `
+      expect(Number(rows[0]?.waiting ?? 0n)).toBeGreaterThanOrEqual(1)
+    },
+    { timeout: 20_000, interval: 10 }
+  )
+}
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 const PLATFORM = {
@@ -782,7 +799,7 @@ describe('GET /integrations/slack/platform/callback', () => {
     // The toggle: its optimistic pre-check reads ONE member (the review's stale
     // snapshot), then blocks on the row lock inside setShareable.
     const toggle = app.app.inject({ method: 'PATCH', url: `${ORG}/bots/${bot.id}`, payload: { shareable: false } })
-    await new Promise((resolve) => setTimeout(resolve, 150)) // let the toggle reach the lock
+    await awaitLockWaiter() // the toggle is on the lock, so the admission below really is the loser
     admit()
     await admission
     const res = await toggle
@@ -1059,7 +1076,7 @@ describe('GET /integrations/slack/platform-install/:id (completion signal)', () 
       url: `${ORG}/integrations`,
       payload: { platform: 'slack', agentId: target, botId }
     })
-    await new Promise((resolve) => setTimeout(resolve, 150))
+    await awaitLockWaiter()
     disable()
     await winner
     const res = await reuse
@@ -1091,7 +1108,7 @@ describe('GET /integrations/slack/platform-install/:id (completion signal)', () 
       url: `${ORG}/integrations`,
       payload: { platform: 'slack', agentId: target, botId }
     })
-    await new Promise((resolve) => setTimeout(resolve, 150))
+    await awaitLockWaiter()
     admitOther()
     await winner
     const res = await reuse
@@ -1125,7 +1142,7 @@ describe('GET /integrations/slack/platform-install/:id (completion signal)', () 
       url: `${ORG}/integrations`,
       payload: { platform: 'slack', agentId: target, botId }
     })
-    await new Promise((resolve) => setTimeout(resolve, 150))
+    await awaitLockWaiter()
     revoke()
     await winner
     const res = await reuse

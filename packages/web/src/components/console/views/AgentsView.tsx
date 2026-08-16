@@ -2,7 +2,15 @@
 
 import Link from 'next/link'
 import { useMemo, useState } from 'react'
-import { agentLabel, agentModelDisplay, effectiveAgentStatus, runtimeLabel, status, type Agent } from '@/lib/data'
+import {
+  agentDaemonLabel,
+  agentLabel,
+  agentModelDisplay,
+  effectiveAgentStatus,
+  runtimeLabel,
+  status,
+  type Agent
+} from '@/lib/data'
 import { creatorLabel, fmtCost, fmtCountCompact, memberDisplayName } from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
 import { IntegrationMarks } from '@/components/console/IntegrationMarks'
@@ -64,10 +72,8 @@ export default function AgentsView() {
   // name ran long.)
   const cols =
     'grid-cols-[minmax(148px,1.6fr)_92px_minmax(80px,.85fr)_72px_minmax(90px,1.2fr)_minmax(140px,.95fr)_108px_88px_80px_28px]'
-  // Resolve an agent's owning daemonId to the daemon's display name (never the raw
-  // UUID/host); short id if it's not in the fleet, '—' if unplaced.
-  const daemonName = (id: string) =>
-    daemons.find((d) => d.daemonId === id)?.name ?? (id.length > 12 ? id.slice(0, 8) : id)
+  // Prefer the Agent projection because its daemon may be outside this viewer's fleet.
+  const daemonName = (agent: Agent) => agentDaemonLabel(agent, daemons)
   // Live 24h usage (GET /usage?range=d1) keyed by agent for the Tokens 24h column.
   const usageByAgent = new Map((usage24h?.agents ?? []).map((u) => [u.agentId, u]))
   // Per-agent "Sessions 24h": the live usage rollup when the CP reports one, else the
@@ -162,7 +168,7 @@ export default function AgentsView() {
     const by: Record<SortKey, (x: Agent, y: Agent) => number> = {
       agent: (x, y) => agentLabel(x).localeCompare(agentLabel(y)),
       status: (x, y) => statusRank(x) - statusRank(y),
-      daemon: (x, y) => daemonName(x.daemon).localeCompare(daemonName(y.daemon)),
+      daemon: (x, y) => daemonName(x).localeCompare(daemonName(y)),
       creator: (x, y) => creatorText(x).localeCompare(creatorText(y)),
       repo: (x, y) => repoText(x).localeCompare(repoText(y)),
       sessions: (x, y) => sessions24h(x.id) - sessions24h(y.id),
@@ -618,7 +624,7 @@ export default function AgentsView() {
                   the dash — same affordance as the Integrations cell (preset-agents.md
                   §3.4): with no daemon in the org yet it launches the join-command
                   dialog; otherwise the edit modal carries the daemon picker. */}
-                {daemonName(a.daemon) === '—' ? (
+                {daemonName(a) === '—' ? (
                   <div className="min-w-0 pr-3">
                     <span
                       className="addchip"
@@ -634,11 +640,8 @@ export default function AgentsView() {
                     </span>
                   </div>
                 ) : (
-                  <div
-                    className="mono min-w-0 truncate pr-3 text-[12px] text-(--text-primary)"
-                    title={daemonName(a.daemon)}
-                  >
-                    {daemonName(a.daemon)}
+                  <div className="mono min-w-0 truncate pr-3 text-[12px] text-(--text-primary)" title={daemonName(a)}>
+                    {daemonName(a)}
                   </div>
                 )}
                 {a.createdBy ? (

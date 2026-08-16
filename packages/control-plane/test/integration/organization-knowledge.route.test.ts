@@ -12,12 +12,13 @@ import {
   organizationSuggestionCanonical
 } from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
-import { DEF_ORG, seedAgent, seedDaemon } from '../fixtures/seed.js'
+import { DEF_ORG, seedAgent, seedDaemon, seedDutyGroup } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import { NoConnection, type ControlSender } from '../../src/orchestrator/outbound.js'
 import { AgentId } from '../../src/domain/ids.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
+import { poolSetId } from '../fakes/member-set.js'
 import type { DaemonLiveness } from '../../src/ports.js'
 import type { OrgMemberRole } from '../../src/persistence/ports.js'
 import { organizationSuggestionSnapshotToken } from '../../src/organization-knowledge/suggestion-snapshot.js'
@@ -976,5 +977,105 @@ describe('managed organization skills', () => {
     expect(
       (await owner.app.inject({ method: 'GET', url: `${ORG}/managed-skills?includeArchived=true` })).json()
     ).toHaveLength(1)
+  })
+})
+
+describe('Dream organization suggestion review on a pool member', () => {
+  // #968: a pool agent names no machine, so `agent.daemonId` can never equal the member that
+  // staged the bytes. Review has to resolve the target the way every other update now does.
+  it('reaches the duty holder that dreamt it, not the agent placement', async () => {
+    const sourceAgentId = randomUUID()
+    await seedDaemon(prisma, DAEMON, {
+      capabilities: {
+        platforms: [],
+        runtimes: ['claude'],
+        acp: true,
+        features: [ORGANIZATION_KNOWLEDGE_FEATURE, ORGANIZATION_SUGGESTION_REVIEW_FEATURE]
+      }
+    })
+    await seedAgent(prisma, sourceAgentId, { name: 'pool-dreamer' })
+    await prisma.agent.update({
+      where: { id: sourceAgentId },
+      data: { placementKind: 'set', setId: await poolSetId(prisma), daemonId: null }
+    })
+    await seedDutyGroup(prisma, randomUUID(), DAEMON, [sourceAgentId])
+
+    const control = new KnowledgeControl()
+    const owner = app({ control, connected: true })
+    const repo = owner.deps.repos.organizationKnowledge!
+    const [pending] = await repo.syncSuggestions(DEF_ORG, DAEMON, [
+      {
+        sourceAgentId,
+        dreamId: 'dream-pool-1',
+        candidateId: randomUUID(),
+        kind: 'knowledge',
+        operation: 'create',
+        title: 'Staged on the holder',
+        digest: digest('unused'),
+        contentBytes: 16,
+        state: 'proposed',
+        sessionIds: ['session-1'],
+        createdAt: '2026-08-01T00:00:00.000Z'
+      }
+    ])
+
+    const listed = await owner.app.inject({ method: 'GET', url: `${ORG}/knowledge-suggestions?state=pending` })
+    expect(listed.json()).toMatchObject([{ id: pending!.id, contentAvailable: true }])
+
+    const rejected = await owner.app.inject({
+      method: 'POST',
+      url: `${ORG}/knowledge-suggestions/${pending!.id}/review`,
+      payload: { decision: 'reject', reason: 'not useful' }
+    })
+
+    expect(rejected.statusCode).toBe(200)
+    expect(control.reviews).toMatchObject([{ daemonId: DAEMON, request: { sourceAgentId, state: 'rejected' } }])
+  })
+
+  it('reports the suggestion unavailable once the holder no longer serves the agent', async () => {
+    const sourceAgentId = randomUUID()
+    await seedDaemon(prisma, DAEMON, {
+      capabilities: {
+        platforms: [],
+        runtimes: ['claude'],
+        acp: true,
+        features: [ORGANIZATION_KNOWLEDGE_FEATURE, ORGANIZATION_SUGGESTION_REVIEW_FEATURE]
+      }
+    })
+    await seedAgent(prisma, sourceAgentId, { name: 'pool-dreamer-expired' })
+    await prisma.agent.update({
+      where: { id: sourceAgentId },
+      data: { placementKind: 'set', setId: await poolSetId(prisma), daemonId: null }
+    })
+    // An expired lease is how the ledger says "this member stopped serving it".
+    await seedDutyGroup(prisma, randomUUID(), DAEMON, [sourceAgentId], { expiresAt: new Date(Date.now() - 60_000) })
+
+    const control = new KnowledgeControl()
+    const owner = app({ control, connected: true })
+    const repo = owner.deps.repos.organizationKnowledge!
+    const [pending] = await repo.syncSuggestions(DEF_ORG, DAEMON, [
+      {
+        sourceAgentId,
+        dreamId: 'dream-pool-2',
+        candidateId: randomUUID(),
+        kind: 'knowledge',
+        operation: 'create',
+        title: 'Staged on a member that left',
+        digest: digest('unused'),
+        contentBytes: 16,
+        state: 'proposed',
+        sessionIds: ['session-1'],
+        createdAt: '2026-08-01T00:00:00.000Z'
+      }
+    ])
+
+    const rejected = await owner.app.inject({
+      method: 'POST',
+      url: `${ORG}/knowledge-suggestions/${pending!.id}/review`,
+      payload: { decision: 'reject', reason: 'not useful' }
+    })
+
+    expect(rejected.statusCode).toBe(503)
+    expect(control.reviews).toEqual([])
   })
 })

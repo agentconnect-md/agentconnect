@@ -1,8 +1,8 @@
 /**
  * Placement primitives shared by the agent repository and the one writer that has to settle
- * placements from OUTSIDE it: retiring an install-wide cloud member, where the daemon delete
+ * placements from OUTSIDE it: retiring an install-wide pool member, where the daemon delete
  * and the settlement of every agent it hosted must land in one transaction
- * (`daemon.repo.ts#retireCloudMember`).
+ * (`daemon.repo.ts#retirePoolMember`).
  *
  * Placement/delegation lock order:
  *   Agent FOR UPDATE → active WebchatMcpDelegation rows.
@@ -11,15 +11,26 @@
  * agent deletion cannot form an inverse cycle.
  */
 import { Prisma } from '../../generated/prisma/client.js'
+import type { PlacementKind } from '../../domain/placement.js'
 
+/** Every placement column under the row lock, plus the agent's org — `daemonId` alone stopped
+ *  being the placement when a set became a target that names no machine, and the org is what the
+ *  set placement invariant is judged against. */
 export async function lockAgentPlacement(
   tx: Prisma.TransactionClient,
   agentId: string
-): Promise<{ daemonId: string | null } | null> {
-  const [row] = await tx.$queryRaw<{ daemonId: string | null }[]>(
-    Prisma.sql`SELECT "daemonId" FROM "agent" WHERE "id" = ${agentId} FOR UPDATE`
+): Promise<LockedPlacement | null> {
+  const [row] = await tx.$queryRaw<LockedPlacement[]>(
+    Prisma.sql`SELECT "orgId", "placementKind", "daemonId", "setId" FROM "agent" WHERE "id" = ${agentId} FOR UPDATE`
   )
   return row ?? null
+}
+
+export interface LockedPlacement {
+  orgId: string
+  placementKind: PlacementKind
+  daemonId: string | null
+  setId: string | null
 }
 
 export async function revokeActiveWebchatMcpDelegations(
@@ -44,10 +55,13 @@ export async function revokeActiveWebchatMcpDelegations(
  */
 export async function settleCascadedUnplacement(tx: Prisma.TransactionClient, agentId: string): Promise<boolean> {
   const current = await lockAgentPlacement(tx, agentId)
-  if (!current || current.daemonId !== null) return false
+  // A `set` agent has no daemonId for the FK to have nulled, so it is not this removal's to
+  // settle: it was never placed on the departing member, only served by it, and the ledger
+  // hands its duty to another member on the next beat.
+  if (!current || current.placementKind !== 'daemon' || current.daemonId !== null) return false
   await tx.agent.update({
     // No daemonId write — the cascade already did that; what is missing is everything
-    // `setPlacement(null)` pairs with it, including the revision the next owner compares.
+    // `setPlacement(unplaced)` pairs with it, including the revision the next owner compares.
     where: { id: agentId },
     data: { status: 'inactive', configRevision: { increment: 1 } }
   })

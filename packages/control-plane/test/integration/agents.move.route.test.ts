@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { randomUUID } from 'node:crypto'
-import type { Ack, AgentActivate, MemoryConnectionSpec } from '@agentconnect.md/protocol'
+import type { Ack, AgentActivate, AgentDetach, MemoryConnectionSpec } from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
 import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
@@ -12,6 +12,7 @@ import type { CollabRoutesService } from '../../src/orchestrator/collabRoutes.se
 import { AgentMutationGate } from '../../src/orchestrator/agentMutationGate.js'
 import { OrgId } from '../../src/domain/ids.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
+import { joinPool, poolSetId } from '../fakes/member-set.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 const SOURCE = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
@@ -35,15 +36,21 @@ class MoveControlSpy {
   failSourceDetach = false
   readonly calls: string[] = []
   readonly activations: AgentActivate[] = []
+  /** Per-target detach/activate records — the staging fence is a (daemon, moveId) pair, so a test
+   *  that asserts it was RELEASED has to compare the tokens, not just the call order. */
+  readonly detaches: { daemonId: string; value: AgentDetach }[] = []
+  readonly activateCalls: { daemonId: string; value: AgentActivate }[] = []
 
-  async agentDetach(daemonId: string): Promise<Ack> {
+  async agentDetach(daemonId: string, value: AgentDetach): Promise<Ack> {
     this.calls.push(`detach:${daemonId}`)
+    this.detaches.push({ daemonId, value })
     if (daemonId === SOURCE && this.failSourceDetach) throw new Error('source is unavailable')
     return { ok: true }
   }
   async agentActivate(daemonId: string, value: AgentActivate): Promise<Ack> {
     this.calls.push(`activate:${daemonId}`)
     this.activations.push(value)
+    this.activateCalls.push({ daemonId, value })
     return { ok: true }
   }
   async memoryConnectionUpsert(daemonId: string, spec: MemoryConnectionSpec): Promise<void> {
@@ -57,6 +64,30 @@ class MoveControlSpy {
 
 const live: DaemonLiveness = {
   get: (id) => ([SOURCE, TARGET].includes(id) ? { state: 'READY', reachable: true, sessionEpoch: 1 } : undefined)
+}
+
+/** One install-wide pool member, live alongside the two machines. Org-less AND Pod-bound: that
+ *  shape is what makes a row visible to every org's placement list. */
+const MEMBER = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+const seedPoolMember = async () => {
+  const daemon = await prisma.daemon.create({
+    data: {
+      id: MEMBER,
+      orgId: null,
+      clusterIdentity: 'system:serviceaccount:ac-example:ac-cloud-daemon',
+      clusterPodUid: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      maxAgents: 8,
+      status: 'ready',
+      capabilities: MOVE_CAPS
+    }
+  })
+  // What `upsertOnAuth` writes for a real Pod: the org-less row is a member of the org-less set.
+  await joinPool(prisma, MEMBER)
+  return daemon
+}
+const poolLive: DaemonLiveness = {
+  get: (id) =>
+    [SOURCE, TARGET, MEMBER].includes(id) ? { state: 'READY', reachable: true, sessionEpoch: 1 } : undefined
 }
 
 async function seedMoveDaemons(): Promise<void> {
@@ -574,5 +605,275 @@ describe('PUT /agents/:id/daemon', () => {
     })
     expect(cron.statusCode).toBe(409)
     expect(await prisma.cronDef.count({ where: { id: cronId } })).toBe(0)
+  })
+})
+
+describe('PUT /agents/:id/daemon — the pool as a placement target', () => {
+  // The pool is not a member id. Moving onto it commits kind `pool` and CLEARS `daemonId`; the
+  // ledger then grants the agent's group to whichever member is live, which is what makes the
+  // placement survive a rollout instead of naming a Pod that no longer exists.
+  it('moves onto the pool: kind pool, no member id, and no synchronous activation', async () => {
+    await seedMoveDaemons()
+    await seedPoolMember()
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: SOURCE })
+    const control = new MoveControlSpy()
+    running = buildHttpApp(prisma, undefined, poolLive, control as unknown as ControlSender)
+
+    const res = await running.app.inject({
+      method: 'PUT',
+      url: `${ORG}/agents/${agentId}/daemon`,
+      payload: { placementKind: 'pool' }
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({ placementKind: 'set', setId: await poolSetId(prisma), daemonId: null })
+    expect(await prisma.agent.findUnique({ where: { id: agentId } })).toMatchObject({
+      placementKind: 'set',
+      daemonId: null,
+      status: 'active'
+    })
+    // The source is quiesced and no member is chosen — install-on-grant does that when the ledger
+    // picks one. The only member traffic is the token-less stale-fence release (#1093).
+    expect(control.calls.filter((c) => c.startsWith('detach:'))).toContain(`detach:${SOURCE}`)
+    expect(control.activateCalls.map((a) => [a.daemonId, a.value.moveId])).toEqual([[MEMBER, undefined]])
+  })
+
+  it('moves back off the pool onto a machine, quiescing the member that holds it', async () => {
+    await seedMoveDaemons()
+    await seedPoolMember()
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId)
+    await prisma.agent.update({
+      where: { id: agentId },
+      data: { placementKind: 'set', setId: await poolSetId(prisma), daemonId: null }
+    })
+    // The member currently holding its duty is the source to quiesce — placement names none.
+    const groupId = randomUUID()
+    await prisma.dutyGroup.create({
+      data: {
+        id: groupId,
+        orgId: DEFAULT_ORG_ID,
+        holder: MEMBER,
+        term: 1n,
+        expiresAt: new Date(Date.now() + 120_000)
+      }
+    })
+    await prisma.dutyGroupMember.create({
+      data: { kind: 'agent', refId: agentId, groupId, orgId: DEFAULT_ORG_ID }
+    })
+    const control = new MoveControlSpy()
+    running = buildHttpApp(prisma, undefined, poolLive, control as unknown as ControlSender)
+
+    const res = await running.app.inject({
+      method: 'PUT',
+      url: `${ORG}/agents/${agentId}/daemon`,
+      payload: { daemonId: TARGET }
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({ placementKind: 'daemon', daemonId: TARGET })
+    expect(control.calls).toContain(`detach:${MEMBER}`)
+    expect(control.calls).toContain(`activate:${TARGET}`)
+  })
+
+  it('refuses a pool target when no member is ready', async () => {
+    await seedMoveDaemons()
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: SOURCE })
+    const control = new MoveControlSpy()
+    // `live` knows only SOURCE and TARGET — there is no install-wide member at all.
+    running = buildHttpApp(prisma, undefined, live, control as unknown as ControlSender)
+
+    const res = await running.app.inject({
+      method: 'PUT',
+      url: `${ORG}/agents/${agentId}/daemon`,
+      payload: { placementKind: 'pool' }
+    })
+
+    expect(res.statusCode).toBe(409)
+    expect(res.json().message).toContain('no cloud daemon member is ready')
+    expect(await prisma.agent.findUnique({ where: { id: agentId } })).toMatchObject({
+      placementKind: 'daemon',
+      daemonId: SOURCE
+    })
+  })
+
+  it('rejects a body that names both a pool placement and a member id', async () => {
+    await seedMoveDaemons()
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: SOURCE })
+    running = buildHttpApp(prisma, undefined, live, new MoveControlSpy() as unknown as ControlSender)
+
+    const res = await running.app.inject({
+      method: 'PUT',
+      url: `${ORG}/agents/${agentId}/daemon`,
+      payload: { placementKind: 'pool', daemonId: TARGET }
+    })
+
+    expect(res.statusCode).toBe(400)
+  })
+})
+
+describe('POST /agents — the pool as a create-time placement', () => {
+  it('creates ON the pool: kind pool, no member id, active', async () => {
+    // The console submits `placementKind: 'pool'`. Dropping it on the floor lands the agent as an
+    // inactive daemon placement with no ref — unplaced — which reads to the user as "create
+    // silently did nothing".
+    await seedMoveDaemons()
+    await seedPoolMember()
+    running = buildHttpApp(prisma, undefined, poolLive, new MoveControlSpy() as unknown as ControlSender)
+
+    const res = await running.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents`,
+      payload: { name: 'pooled-create', runtime: 'Claude Code', placementKind: 'pool' }
+    })
+
+    expect(res.statusCode).toBe(201)
+    expect(res.json()).toMatchObject({ placementKind: 'set', daemonId: null, status: 'active' })
+    const row = await prisma.agent.findFirstOrThrow({ where: { name: 'pooled-create' } })
+    expect(row).toMatchObject({
+      placementKind: 'set',
+      setId: await poolSetId(prisma),
+      daemonId: null,
+      status: 'active'
+    })
+  })
+
+  it('refuses a pool create when no member is ready, instead of landing it unplaced', async () => {
+    await seedMoveDaemons()
+    running = buildHttpApp(prisma, undefined, live, new MoveControlSpy() as unknown as ControlSender)
+
+    const res = await running.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents`,
+      payload: { name: 'pooled-create', runtime: 'Claude Code', placementKind: 'pool' }
+    })
+
+    expect(res.statusCode).toBe(409)
+    expect(await prisma.agent.findFirst({ where: { name: 'pooled-create' } })).toBeNull()
+  })
+})
+
+describe('PUT /agents/:id/daemon — converting a member-pinned agent to the pool', () => {
+  // The transition that differs from every other move: the source is itself an eligible holder of
+  // the NEW placement. Leaving it fenced would let the ledger grant it back the group it was
+  // staged out of — and `installGrantedAgents` skips a move-staged agent, so it would hold the
+  // lease, install nothing, and serve nothing, with no other member able to claim it.
+  it('clears the source member’s staging fence so it is a usable holder again', async () => {
+    await seedMoveDaemons()
+    await seedPoolMember()
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId)
+    // Pinned to the MEMBER, which is the shape today's pool agents actually have.
+    await prisma.agent.update({ where: { id: agentId }, data: { daemonId: MEMBER } })
+    const control = new MoveControlSpy()
+    running = buildHttpApp(prisma, undefined, poolLive, control as unknown as ControlSender)
+
+    const res = await running.app.inject({
+      method: 'PUT',
+      url: `${ORG}/agents/${agentId}/daemon`,
+      payload: { placementKind: 'pool' }
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({ placementKind: 'set', daemonId: null })
+    // Detached to stop it serving as a PLACEMENT, then activated with the SAME token so the fence
+    // it armed is released and its replica is current for a re-grant.
+    const detach = control.detaches.find((d) => d.daemonId === MEMBER)
+    const activate = control.activateCalls.find((a) => a.daemonId === MEMBER)
+    expect(detach).toBeDefined()
+    expect(activate).toBeDefined()
+    expect(activate!.value.moveId).toBe(detach!.value.moveId)
+    expect(control.calls.indexOf(`detach:${MEMBER}`)).toBeLessThan(control.calls.indexOf(`activate:${MEMBER}`))
+  })
+
+  it('leaves a LOCAL daemon fenced on the same conversion — it may not serve a pool agent', async () => {
+    // The asymmetry, stated as a test: a local daemon is not an eligible holder, so the fence is
+    // exactly right there and clearing it would invite the split brain a hard cutover prevents.
+    await seedMoveDaemons()
+    await seedPoolMember()
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: SOURCE })
+    const control = new MoveControlSpy()
+    running = buildHttpApp(prisma, undefined, poolLive, control as unknown as ControlSender)
+
+    const res = await running.app.inject({
+      method: 'PUT',
+      url: `${ORG}/agents/${agentId}/daemon`,
+      payload: { placementKind: 'pool' }
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(control.calls).toContain(`detach:${SOURCE}`)
+    expect(control.calls).not.toContain(`activate:${SOURCE}`)
+  })
+})
+
+describe('PUT /agents/:id/daemon — a two-hop move back onto the pool (#1093)', () => {
+  // pool → machine leaves the sourcing member fenced by design; moving back used to unstage only
+  // the SECOND hop's sources, so the first-hop fence survived on the still-alive member — the
+  // ledger could then grant it the group and `installGrantedAgents` would skip the fenced agent,
+  // a lease held while serving nothing. The set commit now also broadcasts a token-less activate.
+  it('releases the member’s first-hop fence when the agent moves back onto the pool', async () => {
+    await seedMoveDaemons()
+    await seedPoolMember()
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId)
+    await prisma.agent.update({
+      where: { id: agentId },
+      data: { placementKind: 'set', setId: await poolSetId(prisma), daemonId: null }
+    })
+    // MEMBER holds the agent's duty, so hop 1 quiesces (and fences) it as a source.
+    const groupId = randomUUID()
+    await prisma.dutyGroup.create({
+      data: {
+        id: groupId,
+        orgId: DEFAULT_ORG_ID,
+        holder: MEMBER,
+        term: 1n,
+        expiresAt: new Date(Date.now() + 120_000)
+      }
+    })
+    await prisma.dutyGroupMember.create({
+      data: { kind: 'agent', refId: agentId, groupId, orgId: DEFAULT_ORG_ID }
+    })
+    const control = new MoveControlSpy()
+    running = buildHttpApp(prisma, undefined, poolLive, control as unknown as ControlSender)
+
+    const hop1 = await running.app.inject({
+      method: 'PUT',
+      url: `${ORG}/agents/${agentId}/daemon`,
+      payload: { daemonId: TARGET }
+    })
+    expect(hop1.statusCode, hop1.body).toBe(200)
+    // The member is fenced and correctly left fenced while the agent is machine-placed.
+    expect(control.detaches.some((d) => d.daemonId === MEMBER)).toBe(true)
+    expect(control.activateCalls.filter((a) => a.daemonId === MEMBER)).toEqual([])
+
+    // Model the ledger sweep dropping the group once the agent left the pool.
+    await prisma.dutyGroupMember.deleteMany({ where: { groupId } })
+    await prisma.dutyGroup.delete({ where: { id: groupId } })
+    const hop1Activates = control.activateCalls.length
+
+    const hop2 = await running.app.inject({
+      method: 'PUT',
+      url: `${ORG}/agents/${agentId}/daemon`,
+      payload: { placementKind: 'pool' }
+    })
+    expect(hop2.statusCode, hop2.body).toBe(200)
+    expect(hop2.json()).toMatchObject({ placementKind: 'set', daemonId: null })
+
+    // The commit broadcasts a token-less activate to the member the second hop never staged.
+    const memberUnstage = control.activateCalls.slice(hop1Activates).filter((a) => a.daemonId === MEMBER)
+    expect(memberUnstage).toHaveLength(1)
+    expect(memberUnstage[0]!.value.agentId).toBe(agentId)
+    // Token-less across BOTH hops is what leaves the released member's host down: the daemon reads it
+    // as "release the fence, run nothing", so only a later duty grant can start the agent there.
+    expect(control.activateCalls.filter((a) => a.daemonId === MEMBER).map((a) => a.value.moveId)).toEqual([undefined])
+    // The second hop's machine source is not an eligible holder: fenced and left fenced.
+    expect(control.detaches.some((d) => d.daemonId === TARGET)).toBe(true)
+    expect(control.activateCalls.slice(hop1Activates).filter((a) => a.daemonId === TARGET)).toEqual([])
   })
 })

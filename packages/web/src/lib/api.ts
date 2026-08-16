@@ -13,9 +13,10 @@ import type {
   ResourceVisibility,
   Session,
   SessionImage,
-  Workspace
+  Workspace,
+  PlacementKindValue
 } from '@/lib/data'
-import { CLOUD_DAEMON_LABEL, isSelfSender, lifecycleStatus, MOCK_MODE } from '@/lib/data'
+import { POOL_LABEL, isSelfSender, lifecycleStatus, MOCK_MODE, placementValueOf } from '@/lib/data'
 import type { AgentIcon } from '@/lib/agent-icon'
 import { withIconUrl } from '@/lib/agent-icon'
 import {
@@ -313,7 +314,12 @@ export interface AgentDto {
   organizationVariables?: Array<{ key: string; value: string }>
   organizationSecretKeys?: string[]
   status: string
+  // Placement is a TARGET: `set` names a member set through `setId` and carries no member id.
+  placementKind?: PlacementKindValue
+  placementReady?: boolean
   daemonId: string | null
+  daemonName: string | null
+  setId?: string | null
   workspace: AgentWorkspaceDto
   workspaceRepoId?: string | null
   capabilities: string[]
@@ -1038,8 +1044,8 @@ export interface DaemonViewDto {
    *  `status` is expiry-projected server-side. The console tracks its OWN command by `id`. */
   lifecycleOp: DaemonLifecycleOpDto | null
   status: string
-  /** An install-wide cloud member — managed infrastructure shared by every org, one row
-   *  per cloud-daemon Pod. Absent from an older CP ⇒ treat as a plain daemon. */
+  /** An install-wide pool member — managed infrastructure shared by every org, one row
+   *  per pool member Pod. Absent from an older CP ⇒ treat as a plain daemon. */
   cloud?: boolean
   health: string
   capabilities: DaemonCapabilitiesDto
@@ -1080,6 +1086,8 @@ export interface DaemonLifecycleOpDto {
 }
 
 export interface CreateAgentInput {
+  /** `pool` is the API sugar for the pool member set; the CP resolves it and stores `set`. */
+  placementKind?: 'pool'
   name: string // slug — the CP rejects anything but ^[a-z0-9]+(-[a-z0-9]+)*$
   displayName?: string
   icon?: AgentIcon // absent ⇒ the CP assigns a random glyph+color
@@ -1800,7 +1808,13 @@ export function agentFromDto(d: AgentDto): Agent {
     // the pre-feature console did.
     organizationVariables: (d.organizationVariables ?? []).map((e) => ({ k: e.key, v: e.value })),
     organizationSecretKeys: d.organizationSecretKeys ?? [],
-    daemon: d.daemonId ?? PLACEHOLDER,
+    // A `pool` placement names no member, on purpose: whichever member holds the agent's duty
+    // serves it, so the row carries the KIND and a server-computed readiness instead of a Pod id
+    // that a rollout invalidates.
+    placementKind: d.placementKind ?? 'daemon',
+    placementReady: d.placementReady ?? false,
+    daemon: placementValueOf(d) ?? PLACEHOLDER,
+    ...(d.daemonName ? { daemonName: d.daemonName } : {}),
     region: PLACEHOLDER,
     repo: ws.mode === 'github' ? ws.repo : PLACEHOLDER,
     workdir: ws.mode === 'github' ? ws.agentDir : PLACEHOLDER,
@@ -2031,16 +2045,17 @@ export function mergeSessionDetailUsage(local: Session, detail: Session | null):
 }
 
 export function daemonFromDto(d: DaemonViewDto): DaemonRow {
-  const cloud = d.cloud ?? false
+  // `cloud` is the CP DTO's field name (a REST contract); the console's own word is `pool`.
+  const pool = d.cloud ?? false
   return {
     daemonId: d.daemonId,
-    cloud,
+    pool,
     // Display label: the daemon name (the CP seeds it from the hostname on first
     // register, so a connected daemon always has one), else a short id for a
-    // provisioned-but-never-connected row. Never the raw hostname. A cloud member's
+    // provisioned-but-never-connected row. Never the raw hostname. A pool member's
     // name is its Pod, which is meaningless outside the cluster and changes on every
     // roll — the pool is one managed thing everywhere it is named, so use that label.
-    name: cloud ? CLOUD_DAEMON_LABEL : d.name || d.daemonId.slice(0, 8),
+    name: pool ? POOL_LABEL : d.name || d.daemonId.slice(0, 8),
     version: d.agentVersion || PLACEHOLDER,
     latestVersion: d.latestVersion,
     releaseChannel: d.releaseChannel,
@@ -3199,6 +3214,18 @@ export interface AgentTasksDto {
 // Read one ACP session's background tasks. `sessionId` is REQUIRED, unlike the workspace reads:
 // the lease is per (agent, ACP session) and there is no per-agent aggregate to answer with. There
 // is no cancel counterpart — no agent-protocol primitive can address a single background task.
+// POST /agents/:id/wake — bring a cluster agent's sandbox to Running WITHOUT a turn, so a Files read that
+// refused with the sandbox-asleep code has something to press. What the daemon observed, never a promise:
+// `starting` means poll the read; `unsupported` means there was nothing to wake (a machine-placed agent).
+export type AgentWakeState = 'running' | 'starting' | 'unsupported'
+export interface AgentWakeDto {
+  state: AgentWakeState
+}
+
+export async function wakeAgent(agentId: string): Promise<AgentWakeDto> {
+  return apiPost<AgentWakeDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/wake`, {})
+}
+
 export async function fetchAgentTasks(agentId: string, sessionId: string): Promise<AgentTasksDto> {
   const q = new URLSearchParams({ sessionId })
   return apiGet<AgentTasksDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/tasks?${q.toString()}`)
@@ -3414,17 +3441,24 @@ export async function setAgentWorkspace(agentId: string, input: SetAgentWorkspac
 // acknowledged source fence/cancel and destination activation; `force` is the
 // explicit recovery path when the source cannot ACK. This stays separate from
 // the ordinary spec PATCH because placement changes have runtime side effects.
-export async function moveAgent(agentId: string, daemonId: string, options: { force?: boolean } = {}): Promise<Agent> {
+/** A move target: one machine, or the pool member set as a whole (submitted as the `pool` sugar). */
+export type AgentPlacementTarget = { kind: 'daemon'; daemonId: string } | { kind: 'pool' }
+
+export async function moveAgent(
+  agentId: string,
+  target: AgentPlacementTarget,
+  options: { force?: boolean } = {}
+): Promise<Agent> {
   const moved = agentFromDto(
     await apiPut<AgentDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/daemon`, {
-      daemonId,
+      ...(target.kind === 'pool' ? { placementKind: 'pool' } : { daemonId: target.daemonId }),
       ...(options.force ? { force: true } : {})
     })
   )
   track('agent_moved', {
     org_id: apiOrgId,
     agent_id: moved.id,
-    to_daemon_id: daemonId,
+    to_daemon_id: target.kind === 'pool' ? 'pool' : target.daemonId,
     force: options.force === true
   })
   return moved

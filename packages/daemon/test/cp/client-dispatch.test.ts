@@ -2,7 +2,9 @@ import { describe, it, expect, vi } from 'vitest'
 import { buildEnvelope, decodeEnvelope, MAX_FRAME_BYTES, SESSION_LIVE_TAIL_FEATURE } from '@agentconnect.md/protocol'
 import { CpClient, type CpClientDeps } from '../../src/cp/client.js'
 import { WorkspaceConflictError, WorkspaceViolationError } from '../../src/cp/workspace-reader.js'
+import { MemorySandboxUnavailableError } from '../../src/cp/memory-reader.js'
 import { TaskViolationError } from '../../src/cp/task-reader.js'
+import { AgentWakeViolationError } from '../../src/cp/agent-wake.js'
 import { FakeTransport } from './fake-transport.js'
 import { FakeClock } from './fake-clock.js'
 
@@ -854,6 +856,26 @@ describe('CpClient dispatch', () => {
     expect(err.payload.details).toEqual({ reason: 'path-escape' })
   })
 
+  it('refuses a memory read of a sleeping sandbox with the same reason the workspace reader carries', async () => {
+    // The memory tree of a cluster agent is on its sandbox volume: the CP maps this reason to the
+    // transient 503 + code the console answers by waking the sandbox, not to a bad request.
+    const { t } = await readyClient({
+      memoryReader: {
+        list: async () => {
+          throw new MemorySandboxUnavailableError('agent "a1" has no running sandbox, so its memory cannot be reached')
+        }
+      } as any
+    })
+    const f = JSON.parse(frame('memory/list', { agentId: 'a1' }, { epoch: 5 }))
+    t.pushInbound(JSON.stringify(f))
+    await tick()
+    const err = JSON.parse(t.sent[0]!)
+    expect(err.type).toBe('error')
+    expect(err.corr).toBe(f.id)
+    expect(err.payload.code).toBe('BAD_PAYLOAD')
+    expect(err.payload.details).toEqual({ reason: 'sandbox-unavailable' })
+  })
+
   it('maps an unknown-agent workspace git violation to BAD_PAYLOAD', async () => {
     const { t } = await readyClient({
       workspaceGit: {
@@ -910,6 +932,43 @@ describe('CpClient dispatch', () => {
       } as any
     })
     const f = JSON.parse(frame('task/list', { agentId: 'nope', sessionId: 'acp-1' }, { epoch: 5 }))
+    t.pushInbound(JSON.stringify(f))
+    await tick()
+    const err = JSON.parse(t.sent[0]!)
+    expect(err.type).toBe('error')
+    expect(err.corr).toBe(f.id)
+    expect(err.payload.code).toBe('BAD_PAYLOAD')
+    expect(err.payload.details).toEqual({ reason: 'unknown-agent' })
+  })
+
+  it('replies agent/wake/ok from the waker seam, and unsupported when none is wired', async () => {
+    const wake = vi.fn(async (req: { agentId: string }) => ({ agentId: req.agentId, state: 'starting' as const }))
+    const { t } = await readyClient({ agentWake: { wake } })
+    const f = JSON.parse(frame('agent/wake', { agentId: 'a1' }, { epoch: 5 }))
+    t.pushInbound(JSON.stringify(f))
+    await tick()
+    expect(wake).toHaveBeenCalledWith({ agentId: 'a1' })
+    const rep = JSON.parse(t.sent[0]!)
+    expect(rep.type).toBe('agent/wake/ok')
+    expect(rep.corr).toBe(f.id)
+    expect(rep.payload).toEqual({ agentId: 'a1', state: 'starting' })
+
+    const bare = await readyClient()
+    const g = JSON.parse(frame('agent/wake', { agentId: 'a1' }, { epoch: 5 }))
+    bare.t.pushInbound(JSON.stringify(g))
+    await tick()
+    expect(JSON.parse(bare.t.sent[0]!).payload).toEqual({ agentId: 'a1', state: 'unsupported' })
+  })
+
+  it('maps an unknown-agent wake violation to BAD_PAYLOAD with its reason', async () => {
+    const { t } = await readyClient({
+      agentWake: {
+        wake: async () => {
+          throw new AgentWakeViolationError('unknown agent "nope"', 'unknown-agent')
+        }
+      }
+    })
+    const f = JSON.parse(frame('agent/wake', { agentId: 'nope' }, { epoch: 5 }))
     t.pushInbound(JSON.stringify(f))
     await tick()
     const err = JSON.parse(t.sent[0]!)

@@ -147,7 +147,7 @@ function toDto(
         }
       : null,
     status: liveStatus(view, liveness, graceMs, nowMs),
-    // Org-less ⇒ an install-wide cloud member; the console groups the pool under one entry.
+    // Org-less ⇒ an install-wide pool member; the console groups the pool under one entry.
     cloud: !orgOwned,
     health: view.health,
     capabilities: view.capabilities,
@@ -212,7 +212,7 @@ export function daemonRoutes(deps: HttpDeps) {
           tags: [Tag.Daemons],
           summary: 'List daemons',
           description:
-            'The org’s available daemon fleet, including install-wide cloud members, overlaid with live connection status.',
+            'The org’s available daemon fleet, including install-wide pool members, overlaid with live connection status.',
           operationId: 'listDaemons',
           response: { 200: DaemonListDto }
         }

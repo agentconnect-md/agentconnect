@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { rotateProviderGrant, serializeByProvider, serializeByProviderNames } from './mcp-providers.js'
-import { grantKeyHash } from '../../orchestrator/mcpProvider.js'
+import { currentMcpGrant, grantKeyHash, type GrantView } from '../../orchestrator/mcpProvider.js'
 import type { McpProviderRecord, McpGrantRecord, McpGrantRepo, McpHeader } from '../../persistence/ports.js'
 import type { OrgId } from '../../domain/ids.js'
 
@@ -56,9 +56,9 @@ describe('rotateProviderGrant', () => {
       [],
       provider.orgId,
       { ...repo, revoke: async (id) => (calls.push('revoke'), revoked.push(id)) },
-      async (_p, _h, grantKey) => {
+      async (_p, _h, grant) => {
         calls.push('assign')
-        pushed.push(grantKey)
+        pushed.push(grant.key)
       },
       (providerId, hash) => {
         calls.push('unassign')
@@ -162,16 +162,16 @@ describe('rotateProviderGrant', () => {
         active.delete(id)
       }
     }
-    const pushAssign = async (_p: McpProviderRecord, _h: McpHeader[], key: string) => {
+    const pushAssign = async (_p: McpProviderRecord, _h: McpHeader[], grant: GrantView) => {
       await yieldTick()
-      published = key
+      published = grant.key
     }
     // rotation + a PATCH-style re-push (read active inside the lock, then push it) race
     await Promise.all([
       rotateProviderGrant(provider, [], provider.orgId, repo, pushAssign, () => {}),
       serializeByProvider(provider.orgId, provider.name, async () => {
-        const grant = (await repo.activeForProvider(provider.id))[0]
-        if (grant) await pushAssign(provider, [], grant.key, provider.orgId)
+        const grant = currentMcpGrant(await repo.activeForProvider(provider.id))
+        if (grant) await pushAssign(provider, [], grant, provider.orgId)
       })
     ])
 

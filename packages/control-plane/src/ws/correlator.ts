@@ -19,6 +19,8 @@ import { ProtocolError } from '../domain/errors.js'
 
 interface Pending {
   id: string
+  /** The REQ as issued — a correlated reply is fenced against its type and org (frame-scope). */
+  request: { type: string; orgId?: string | undefined }
   encoded: string
   resolve: (frame: AnyFrame) => void
   reject: (err: unknown) => void
@@ -52,6 +54,7 @@ export class ReqRep {
     return new Promise<AnyFrame>((resolve, reject) => {
       const entry: Pending = {
         id: frame.id,
+        request: { type: frame.type, ...(frame.orgId ? { orgId: frame.orgId } : {}) },
         encoded,
         resolve,
         reject,
@@ -93,6 +96,11 @@ export class ReqRep {
     if (entry.timer !== undefined) this.clock.clearTimeout(entry.timer)
     entry.resolve(frame)
     return true
+  }
+
+  /** The still-pending REQ a reply with `corr` would settle, if any — read before `settle` to fence the reply. */
+  requested(corr: string): { type: string; orgId?: string | undefined } | undefined {
+    return this.pending.get(corr)?.request
   }
 
   /** Reject one pending request by correlation id when the peer's REP envelope

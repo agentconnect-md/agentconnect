@@ -101,11 +101,18 @@ export class DaemonRegistryService implements DaemonRegistry {
   ) {}
 
   async upsertOnRegister(daemonId: DaemonId, req: RegisterReq): Promise<void> {
-    await this.daemons.applyRegister(daemonId, {
-      host: req.host,
-      capabilities: req.capabilities,
-      maxAgents: req.maxAgents
-    })
+    await this.daemons.applyRegister(
+      daemonId,
+      { host: req.host, capabilities: req.capabilities, maxAgents: req.maxAgents, generation: req.generation },
+      new Date(this.clock.now())
+    )
+  }
+
+  /** Observer registration (k8s-daemon-pool.md §4): drop the membership `upsertOnAuth` minted for
+   *  this identity and backdate its liveness, so the ledger cannot grant it and the pool-member
+   *  reaper retires the row on its next sweep instead of at the ordinary silence window. */
+  async withdrawObserver(daemonId: DaemonId): Promise<void> {
+    await this.daemons.withdrawObserver(daemonId)
   }
 
   async updateCapabilities(daemonId: DaemonId, capabilities: RegisterReq['capabilities']): Promise<void> {
@@ -206,11 +213,11 @@ export class DaemonRegistryService implements DaemonRegistry {
     await this.daemons.delete(orgId, daemonId)
   }
 
-  async retireCloudMember(
+  async retirePoolMember(
     daemonId: DaemonId,
     fence: { retiredBefore: Date; sessionEpoch: bigint }
   ): Promise<{ deleted: boolean; settled: { id: AgentId; orgId: OrgId }[] }> {
-    return this.daemons.retireCloudMember(daemonId, fence)
+    return this.daemons.retirePoolMember(daemonId, fence)
   }
 
   /** Org-fenced (org-scoped-data-layer.md §3): the repo read is filtered, so a

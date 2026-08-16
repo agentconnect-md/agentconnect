@@ -26,6 +26,7 @@ import type {
   HookSecretStore
 } from '../persistence/ports.js'
 import type { RelayControlSender } from '../orchestrator/relayControl.js'
+import { PLACEMENT_ONLY, type PlacementResolver } from '../orchestrator/placementResolver.js'
 import type { RelayChannel } from '../ws/relay-registry.js'
 import { toDbPlatform } from '../persistence/platform.js'
 
@@ -44,6 +45,8 @@ export class HookService {
     private readonly secrets: HookSecretStore,
     private readonly agents: HookAgentReads,
     private readonly relayControl: RelayControlSender,
+    /** Names the member a compiled rule dispatches to (placement, or the current duty holder). */
+    private readonly placement: Pick<PlacementResolver, 'routableDaemon'> = PLACEMENT_ONLY,
     /** github-kind compile source: the org's live installation set (the relay's
      *  runtime attribution gate, decision 6). Absent ⇒ github hooks never compile
      *  (deployment without the GitHub App). */
@@ -63,7 +66,11 @@ export class HookService {
   async compile(hook: HookRecord): Promise<RcHookAssign | null> {
     if (!hook.enabled || !hook.agentId) return null
     const agent = await this.agents.getUnscoped(hook.agentId)
-    if (!agent?.daemonId) return null
+    // The relay needs one member to address; for a pool agent that is the current duty holder,
+    // since placement names none. Nothing serving it ⇒ the rule leaves the relay pool, exactly as
+    // an unplaced agent's does.
+    const agentDaemonId = agent ? await this.placement.routableDaemon(agent) : null
+    if (!agent || !agentDaemonId) return null
     const snapshot =
       typeof hook.configRevision === 'bigint' &&
       typeof hook.dispatchRevision === 'bigint' &&
@@ -73,7 +80,7 @@ export class HookService {
         ? {
             configRevision: hook.configRevision.toString(),
             dispatchRevision: hook.dispatchRevision.toString(),
-            dispatchDaemonId: agent.daemonId,
+            dispatchDaemonId: agentDaemonId,
             reviewPolicy: hook.kind === 'github' ? hook.reviewPolicy : ('off' as const),
             reportingMode: hook.kind === 'github' ? hook.reportingMode : ('off' as const),
             gateMode: hook.kind === 'github' ? hook.gateMode : ('informational' as const)
@@ -82,7 +89,7 @@ export class HookService {
     const base = {
       hookId: hook.id,
       agentId: hook.agentId,
-      daemonId: agent.daemonId,
+      daemonId: agentDaemonId,
       ...snapshot,
       sessionMode: hook.sessionMode,
       // Anchoring target only when a channel is set (null channel ⇒ headless);

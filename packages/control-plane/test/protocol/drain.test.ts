@@ -126,10 +126,18 @@ function build(): Built {
   const clock = new FakeClock(1_700_000_000_000)
   const connReg = new ConnectionRegistry()
   const deps: DaemonWsDeps = {
+    log: { error: vi.fn() },
     auth: {} as DaemonWsDeps['auth'],
     lifecycleOps: {} as DaemonWsDeps['lifecycleOps'],
     registry: {} as DaemonWsDeps['registry'],
     orchestrator: {} as DaemonWsDeps['orchestrator'],
+    placementResolver: {
+      mayAct: async () => true,
+      servingDaemon: async () => null,
+      servingDaemons: async () => [],
+      dispatchDaemon: async () => null,
+      resolveDirectory: async (rows: unknown[]) => rows
+    } as unknown as DaemonWsDeps['placementResolver'],
     connReg,
     agent: {} as DaemonWsDeps['agent'],
     session: {} as DaemonWsDeps['session'],

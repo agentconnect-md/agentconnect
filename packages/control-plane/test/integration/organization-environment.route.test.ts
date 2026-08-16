@@ -18,7 +18,8 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { AgentUpsert } from '@agentconnect.md/protocol'
 import { AGENT_CONFIG_REVISION_FEATURE } from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
-import { seedAgent, seedDaemon } from '../fixtures/seed.js'
+import { seedAgent, seedDaemon, seedDutyGroup } from '../fixtures/seed.js'
+import { poolSetId } from '../fakes/member-set.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import { NoConnection, type ControlSender } from '../../src/orchestrator/outbound.js'
@@ -669,6 +670,37 @@ describe('organization environment — daemon feature gate', () => {
     expect(bind.statusCode).toBe(409)
     expect(bind.body).toContain('does not yet support')
     expect(await prisma.organizationEnvironmentAssignment.count({ where: { entryId: entry.id } })).toBe(0)
+  })
+
+  it('gates a SET-placed agent on the member holding it, not on the column it never fills', async () => {
+    // The inverse of the refusal above, and the one this gate used to get wrong: a pool agent is
+    // placed but names no machine, so `agent.daemonId === null` read as "unplaced, always fine"
+    // and skipped the configRevision precondition entirely — a silent pass where every other
+    // finding of this class is a silent refusal.
+    await seedDaemon(prisma, LEGACY_DAEMON, { capabilities: LEGACY })
+    const poolAgent = randomUUID()
+    await seedAgent(prisma, poolAgent, { setId: await poolSetId(prisma), name: 'pool-bot' })
+    await seedDutyGroup(prisma, randomUUID(), LEGACY_DAEMON, [poolAgent])
+    const http = app({ control: new RecordingControl() })
+
+    const entry = (await createEntry(http, { key: 'POOLED', kind: 'variable', value: 'v', audience: 'selected' })).entry
+    const bind = await http.app.inject({ method: 'PUT', url: `${ENV}/${entry.id}/agents/${poolAgent}` })
+    expect(bind.statusCode).toBe(409)
+    expect(bind.body).toContain('does not yet support')
+    expect(await prisma.organizationEnvironmentAssignment.count({ where: { entryId: entry.id } })).toBe(0)
+  })
+
+  it('lets a SET-placed agent through once the member holding it carries the fence', async () => {
+    await seedDaemon(prisma, DAEMON, { capabilities: CAPABLE })
+    const poolAgent = randomUUID()
+    await seedAgent(prisma, poolAgent, { setId: await poolSetId(prisma), name: 'pool-ok-bot' })
+    await seedDutyGroup(prisma, randomUUID(), DAEMON, [poolAgent])
+    const http = app({ control: new RecordingControl() })
+
+    const entry = (await createEntry(http, { key: 'POOLED_OK', kind: 'variable', value: 'v', audience: 'selected' }))
+      .entry
+    const bind = await http.app.inject({ method: 'PUT', url: `${ENV}/${entry.id}/agents/${poolAgent}` })
+    expect(bind.statusCode).toBe(200)
   })
 
   it('SKIPS an agent on an incompatible daemon from `all` enrollment instead of refusing', async () => {

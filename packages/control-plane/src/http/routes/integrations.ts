@@ -24,7 +24,9 @@ import { Tag } from '../plugins/openapi.js'
 import type { HttpDeps } from '../deps.js'
 import type { AgentRecord, BotRecord, IntegrationRecord, IntegrationChannelRecord } from '../../persistence/ports.js'
 import { AgentId, BotId, IntegrationId, OrgId } from '../../domain/ids.js'
+import type { ResolvableAgent } from '../../orchestrator/placementResolver.js'
 import { denyViewerWrite, ctxOf, orgOf } from '../rbac.js'
+import { refreshMutationAgent as refreshAgentUnderMutation } from '../mutation-agent.js'
 import { canView, canEdit } from '../../authorization/policy.js'
 import { integrationToSpec, isGatedAgent } from '../../orchestrator/placement.js'
 import { conversationOwnerRow, pickConversationOwner } from '../../orchestrator/httpBot.js'
@@ -32,6 +34,7 @@ import { NoConnection } from '../../orchestrator/outbound.js'
 import { installNewBot } from '../install-bot.js'
 import { BotExternalIdentityTaken } from '../../persistence/errors.js'
 import { integrationPlatformAvailability } from '../daemon-platform-capability.js'
+import { relayIngress } from '../relay-ingress.js'
 import { buildCreateIntegrationBody, credentialBlockOf } from '../dto/create-integration-body.js'
 import type { CpConfigRefusal } from '../../platforms/provider.js'
 import { MULTI_AGENT_UNSUPPORTED_MESSAGE, supportsMultiAgentBots } from '../../platforms/sharing.js'
@@ -84,22 +87,15 @@ export function integrationRoutes(deps: HttpDeps) {
     const CreateIntegrationBody = buildCreateIntegrationBody(deps.platforms)
     // The caller's active org — every read/write below is scoped to it.
     const orgIdOf = (req: { orgCtx?: { orgId: OrgId } }) => req.orgCtx!.orgId
-    const refreshMutationAgent = async (observed: AgentRecord): Promise<AgentRecord | null> => {
-      const current = await deps.repos.agent.get(observed.orgId, observed.id)
-      if (
-        !current ||
-        current.daemonId !== observed.daemonId ||
-        current.lastModifiedAt.getTime() !== observed.lastModifiedAt.getTime()
-      ) {
-        return null
-      }
-      return current
-    }
+    const refreshMutationAgent = (observed: AgentRecord) => refreshAgentUnderMutation(deps.repos.agent, observed)
 
-    // Push the full spec (metadata + tokens + per-conversation bindRules) to the owning
-    // daemon. Best-effort: if the daemon is offline the reconcile roster carries it
-    // on the next connect. Token-bearing — never log the spec.
-    const replicateUpsert = async (i: IntegrationRecord, daemonId: string): Promise<void> => {
+    // Push the full spec (metadata + tokens + per-conversation bindRules) to every
+    // daemon that serves the owning agent — its placement AND any duty holder
+    // (`deps.agentDelivery` is the one resolver; a holder left on stale credentials
+    // or stale bind rules is the frozen-bundle failure one level down). Best-effort:
+    // an offline daemon picks it up from the reconcile roster on the next connect.
+    // Token-bearing — never log the spec.
+    const replicateUpsert = async (i: IntegrationRecord, owningAgent: ResolvableAgent): Promise<void> => {
       // The bot row joins the reads: it is a required input of the §9 projector
       // that now assembles the spec payload (`orchestrator/placement.ts`). Every
       // caller here is already on the socket-transport arm, so the projector
@@ -111,15 +107,18 @@ export function integrationRoutes(deps: HttpDeps) {
         deps.repos.bot.get(i.orgId, i.botId)
       ])
       if (!secret || !bot) return
-      try {
-        await deps.control.integrationUpsert(
-          daemonId,
-          await integrationToSpec(deps.platforms, i, bot, secret, channels, owner ? isGatedAgent(owner) : false)
-        )
-      } catch (err) {
+      const spec = await integrationToSpec(
+        deps.platforms,
+        i,
+        bot,
+        secret,
+        channels,
+        owner ? isGatedAgent(owner) : false
+      )
+      await deps.agentDelivery.integrationUpsert(owningAgent, spec, (err, target) => {
         if (!(err instanceof NoConnection)) throw err
-        app.log.debug({ integrationId: i.id, daemonId }, 'integration/upsert skipped: daemon offline')
-      }
+        app.log.debug({ integrationId: i.id, daemonId: target }, 'integration/upsert skipped: daemon offline')
+      })
     }
 
     // Shareable-install preconditions (shared-bot-relay.md §6): Slack-only for now, a
@@ -136,15 +135,9 @@ export function integrationRoutes(deps: HttpDeps) {
           body: { error: 'Bad Request', statusCode: 400, message: MULTI_AGENT_UNSUPPORTED_MESSAGE }
         }
       }
-      if (!deps.httpBot.hasConnectedRelay()) {
-        return {
-          code: 409,
-          body: {
-            error: 'Conflict',
-            statusCode: 409,
-            message: 'HTTP callback delivery is unavailable on this deployment'
-          }
-        }
+      const ingress = relayIngress(deps)
+      if (!ingress.ok) {
+        return { code: 409, body: { error: 'Conflict', statusCode: 409, message: ingress.message } }
       }
       if (bot.agentIds.includes(agentId)) {
         return { code: 409, body: { error: 'Conflict', statusCode: 409, message: 'this agent already uses this bot' } }
@@ -164,14 +157,17 @@ export function integrationRoutes(deps: HttpDeps) {
         message: refusal.message
       })
 
-    const replicateRemove = async (integrationId: string, daemonId: string | null): Promise<void> => {
-      if (!daemonId) return
-      try {
-        await deps.control.integrationRemove(daemonId, { integrationId })
-      } catch (err) {
+    const replicateRemove = async (
+      i: Pick<IntegrationRecord, 'id' | 'agentId' | 'orgId'>,
+      owningAgent: ResolvableAgent
+    ): Promise<void> => {
+      const { id: integrationId } = i
+      // The row's own org rides the send: `integration/remove` carries only an id,
+      // so a holder that never registered this integration has nothing to resolve.
+      await deps.agentDelivery.integrationRemove(owningAgent, i.id, i.orgId, (err, target) => {
         if (!(err instanceof NoConnection)) throw err
-        app.log.debug({ integrationId, daemonId }, 'integration/remove skipped: daemon offline')
-      }
+        app.log.debug({ integrationId, daemonId: target }, 'integration/remove skipped: daemon offline')
+      })
     }
 
     r.post(
@@ -203,14 +199,17 @@ export function integrationRoutes(deps: HttpDeps) {
         if (!canEdit(agent, ctxOf(req))) {
           return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this agent' })
         }
-        // Delivery is daemon-scoped; refuse until the agent is placed (no backfill hook).
-        if (!agent.daemonId) {
+        // Delivery is daemon-scoped; refuse until the agent is placed (no backfill hook). A pool
+        // agent IS placed and names no machine, so the capability probe below asks whichever
+        // member serves it.
+        const installDaemonId = await deps.placementResolver.servingDaemon(agent)
+        if (!installDaemonId) {
           return reply
             .code(409)
             .send({ error: 'Conflict', statusCode: 409, message: 'agent must be placed on a daemon first' })
         }
         const platformAvailability = await integrationPlatformAvailability(deps, {
-          daemonId: agent.daemonId,
+          daemonId: installDaemonId,
           orgId,
           viewer: ctxOf(req),
           platform: req.body.platform
@@ -251,8 +250,9 @@ export function integrationRoutes(deps: HttpDeps) {
             })
           }
           agent = current
-          const daemonId = current.daemonId
-          if (!daemonId) {
+          // Re-taken under the lease, and RESOLVED: the column is null for a pool agent, which is
+          // served without naming a machine. Nothing serving it is what "no longer placed" means.
+          if (!(await deps.placementResolver.servingDaemon(current))) {
             return reply.code(409).send({
               error: 'Conflict',
               statusCode: 409,
@@ -313,12 +313,11 @@ export function integrationRoutes(deps: HttpDeps) {
                 const shareableErr = await validateShareableInstall(bot, agent.id, req.body.platform)
                 if (shareableErr) return reply.code(shareableErr.code).send(shareableErr.body)
                 if (!bot.shareable) await deps.repos.bot.setShareable(orgId, bot.id, true)
-              } else if (!deps.httpBot.hasConnectedRelay()) {
-                return reply.code(409).send({
-                  error: 'Conflict',
-                  statusCode: 409,
-                  message: 'HTTP callback delivery is unavailable on this deployment'
-                })
+              } else {
+                const ingress = relayIngress(deps)
+                if (!ingress.ok) {
+                  return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: ingress.message })
+                }
               }
               // Membership admission is ATOMIC with the bot row — the same
               // primitive as the platform callback. The checks above are the
@@ -380,7 +379,7 @@ export function integrationRoutes(deps: HttpDeps) {
             })
             // A socket-transport install is a new duty edge (design §4.4).
             deps.recomputeDuties?.(orgId)
-            await replicateUpsert(integration, daemonId)
+            await replicateUpsert(integration, agent)
             return reply.code(201).send(toDto(integration))
           }
 
@@ -404,18 +403,17 @@ export function integrationRoutes(deps: HttpDeps) {
               message: 'HTTP callback delivery currently supports Slack and Feishu only'
             })
           }
-          // Relay availability is CORE's 409 (§9 — core, not the provider, knows
+          // Public relay ingress is CORE's 409 (§9 — core, not the provider, knows
           // the relay pool), and it now precedes the provider round-trip on every
           // platform: a deployment that cannot serve http ingress at all is a
           // deployment-level blocker, so there is no point spending a provider API
           // call first. (Feishu already checked in this order; Slack checked after.
           // The two refusals can only race when the credential is ALSO bad.)
-          if (transport === 'http' && !deps.httpBot.hasConnectedRelay()) {
-            return reply.code(409).send({
-              error: 'Conflict',
-              statusCode: 409,
-              message: 'HTTP callback delivery is unavailable on this deployment'
-            })
+          if (transport === 'http') {
+            const ingress = relayIngress(deps)
+            if (!ingress.ok) {
+              return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: ingress.message })
+            }
           }
 
           // The chosen platform's credential block: validated by the provider's OWN
@@ -619,7 +617,7 @@ export function integrationRoutes(deps: HttpDeps) {
       agent: AgentRecord
     ): Promise<void> => {
       if (bot.transport === 'http') await deps.httpBot.syncRoutes(bot.id)
-      else if (agent.daemonId) await replicateUpsert(integration, agent.daemonId)
+      else await replicateUpsert(integration, agent)
     }
 
     /**
@@ -666,9 +664,12 @@ export function integrationRoutes(deps: HttpDeps) {
           message: 'the daemon is offline, so this conversation would be listed again — retry once it reconnects'
         }
       }
-      if (!agent.daemonId) return undeliverable
+      // The suppression goes to whoever serves the agent right now — its placement, or the member
+      // holding its duty. A pool agent names no machine, so the column would refuse every one.
+      const target = await deps.placementResolver.servingDaemon(agent)
+      if (!target) return undeliverable
       try {
-        const ack = await deps.control.integrationForget(agent.daemonId, { integrationId: integration.id, channels })
+        const ack = await deps.control.integrationForget(target, { integrationId: integration.id, channels })
         if (ack.ok) return { ok: true }
         return {
           ok: false,
@@ -884,8 +885,8 @@ export function integrationRoutes(deps: HttpDeps) {
           // bot re-pushes its recomputed bindRules to the owning daemon.
           if (bot.transport === 'http') {
             if (!routesSynced) await deps.httpBot.syncRoutes(bot.id)
-          } else if (agent.daemonId) {
-            await replicateUpsert(integration, agent.daemonId)
+          } else {
+            await replicateUpsert(integration, agent)
           }
           return toChannelDto(updated!)
         } finally {
@@ -1068,8 +1069,9 @@ export function integrationRoutes(deps: HttpDeps) {
           }
           // The daemon holding this integration owns provider egress for it in BOTH
           // transports — a relay-managed bot still keeps send credentials — so the
-          // platform call belongs to the agent's own daemon either way.
-          if (!placed.daemonId) {
+          // platform call belongs to whichever member serves the agent, resolved not read.
+          const egressDaemonId = await deps.placementResolver.servingDaemon(placed)
+          if (!egressDaemonId) {
             return reply.code(409).send({
               error: 'Conflict',
               statusCode: 409,
@@ -1078,7 +1080,7 @@ export function integrationRoutes(deps: HttpDeps) {
           }
           let verdict
           try {
-            verdict = await deps.control.integrationLeave(placed.daemonId, { integrationId: integration.id, target })
+            verdict = await deps.control.integrationLeave(egressDaemonId, { integrationId: integration.id, target })
           } catch (err) {
             return reply.code(502).send({
               error: 'Bad Gateway',
@@ -1173,7 +1175,7 @@ export function integrationRoutes(deps: HttpDeps) {
             await deps.repos.bot.markFreed(orgIdOf(req), existing.botId, new Date(), agent.name ?? null)
           }
           // Tell the removed agent's daemon to drop the spec either way.
-          await replicateRemove(existing.id, agent.daemonId ?? null)
+          await replicateRemove(existing, agent)
           // HTTP bot: recompute the relay's routes + members (or release it if this
           // was the last install).
           if (botBefore?.transport === 'http') await deps.httpBot.syncBot(existing.botId)

@@ -6,7 +6,7 @@
  * sessions, leases, and crons have valid foreign keys to hang off. All default
  * to the seeded `DEFAULT_ORG_ID`.
  */
-import type { PrismaClient } from '../../src/generated/prisma/client.js'
+import type { Prisma, PrismaClient } from '../../src/generated/prisma/client.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import { AgentId, DaemonId, OrgId, type Epoch } from '../../src/domain/ids.js'
 
@@ -63,24 +63,56 @@ export async function seedAgent(
     /** GithubInstallation row-id provenance hint ⇒ github-APP credential mode. */
     installationId?: string
     gitAccess?: 'read' | 'write'
+    /** `runtimeOverrides` JSON — where the MCP enable-list and memory binding live. */
+    runtimeOverrides?: Record<string, unknown>
+    /** A `set` placement: placed, but naming no machine — which member serves it is the ledger's. */
+    setId?: string
+    /** Owning organization; defaults to the seeded one (multi-org tests pass their own). */
+    orgId?: string
   } = {}
 ): Promise<AgentId> {
   await prisma.agent.create({
     data: {
       id,
-      orgId: DEFAULT_ORG_ID,
+      orgId: opts.orgId ?? DEFAULT_ORG_ID,
       name: opts.name ?? `agent-${id.slice(0, 4)}`,
       runtime: opts.runtime ?? 'claude',
       daemonId: opts.daemonId,
+      ...(opts.setId ? { placementKind: 'set' as const, setId: opts.setId } : {}),
       ...(opts.visibility ? { visibility: opts.visibility } : {}),
       ...(opts.sharedWith ? { sharedWith: opts.sharedWith } : {}),
       ...(opts.createdByUserId ? { createdByUserId: opts.createdByUserId } : {}),
       ...(opts.gitRepo ? { workspaceMode: 'github' as const, gitRepo: opts.gitRepo } : {}),
       ...(opts.installationId ? { installationId: opts.installationId } : {}),
-      ...(opts.gitAccess ? { gitAccess: opts.gitAccess } : {})
+      ...(opts.gitAccess ? { gitAccess: opts.gitAccess } : {}),
+      ...(opts.runtimeOverrides ? { runtimeOverrides: opts.runtimeOverrides as Prisma.InputJsonValue } : {})
     }
   })
   return AgentId(id)
+}
+
+/** A held duty group covering `agentIds`. The lease is live by default — an
+ *  expired one is how a test states "this member no longer serves it". */
+export async function seedDutyGroup(
+  prisma: PrismaClient,
+  groupId: string,
+  holder: string,
+  agentIds: string[],
+  opts: { expiresAt?: Date; term?: bigint; orgId?: string } = {}
+): Promise<void> {
+  const orgId = opts.orgId ?? DEFAULT_ORG_ID
+  await prisma.dutyGroup.create({
+    data: {
+      id: groupId,
+      orgId,
+      holder,
+      term: opts.term ?? 1n,
+      expiresAt: opts.expiresAt ?? new Date(Date.now() + 120_000)
+    }
+  })
+  await prisma.dutyGroupMember.createMany({
+    data: agentIds.map((refId) => ({ kind: 'agent' as const, refId, groupId, orgId }))
+  })
 }
 
 /** A converged session milestone row. `visibility`/`ownerIdentity` default to
@@ -98,13 +130,15 @@ export async function seedSessionMeta(
     parentSessionId?: string
     lastActivityAt?: Date
     model?: string
+    /** Owning organization; defaults to the seeded one (multi-org tests pass their own). */
+    orgId?: string
   } = {}
 ): Promise<string> {
   await prisma.sessionMeta.create({
     data: {
       id,
       agentId,
-      orgId: DEFAULT_ORG_ID,
+      orgId: opts.orgId ?? DEFAULT_ORG_ID,
       platform: opts.platform ?? 'slack',
       channel: opts.channel ?? '#general',
       phase: 'start',

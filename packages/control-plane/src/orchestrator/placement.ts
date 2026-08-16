@@ -34,10 +34,9 @@ import type {
   IntegrationBindRule,
   IntegrationCoreEnvelope,
   McpServerSpec,
-  MemoryConnectionSpec,
-  RelayRosterEntry
+  MemoryConnectionSpec
 } from '@agentconnect.md/protocol'
-import { RESERVED_MCP_SERVER_NAME, SessionRetentionSetting } from '@agentconnect.md/protocol'
+import { SessionRetentionSetting } from '@agentconnect.md/protocol'
 import type {
   AgentRepo,
   AgentRecord,
@@ -55,18 +54,17 @@ import type {
   BotRecord,
   BotRepo,
   IntegrationChannelRepo,
-  IntegrationChannelRecord,
-  McpProviderRepo,
-  McpGrantRepo,
-  ExternalMemoryConnectionRepo,
-  ExternalMemoryConnectionSecretStore,
-  ExternalMemoryGrantRepo,
-  MemoryPluginInstallationRepo
+  IntegrationChannelRecord
 } from '../persistence/ports.js'
 import type { CpPlatformRegistry } from '../platforms/provider.js'
-import { mcpProxyDef, relayHttpOrigin } from './mcpProvider.js'
-import { memoryConnectionSpec, stdioMemoryConnectionSpec } from './memoryConnection.js'
-import type { DaemonId } from '../domain/ids.js'
+import { servedAgents, type ServedAgents } from './servedAgents.js'
+import {
+  mcpDefsForAgents,
+  memoryDefsForAgents,
+  type McpDefinitionDeps,
+  type MemoryDefinitionDeps
+} from './agentDefinitions.js'
+import type { AgentId, DaemonId } from '../domain/ids.js'
 import { AgentId as toAgentId, DaemonId as toDaemonId, IntegrationId as toIntegrationId } from '../domain/ids.js'
 import { sessionKeyStr, type SessionKey } from '../domain/sessionKey.js'
 import { toDbPlatform } from '../persistence/platform.js'
@@ -74,17 +72,13 @@ import type { AgentSpecAssembler } from './agentSpecAssembler.js'
 import { buildCollabSnapshot } from './collabSnapshot.js'
 import type { ConnectionRegistry, DaemonConnState } from '../ws/registry.js'
 import type { ControlSender } from './outbound.js'
+import { PLACEMENT_ONLY, type PlacementResolver } from './placementResolver.js'
 import type { EpochService } from './epoch.js'
 import type { Clock } from '../domain/clock.js'
 
 /** The narrow service the register handler depends on (design §2.3 `Orchestrator.reconcile`). */
 export interface ReconcileService {
   reconcile(daemonId: DaemonId, req: RegisterReq): Promise<RegisterOk>
-}
-
-/** Minimal view of the relay roster the reconcile MCP block picks a proxy base from. */
-export interface RelayRosterView {
-  entries(): Promise<RelayRosterEntry[]>
 }
 
 /** The live-orchestration collaborators Placement needs beyond the C6 repos. */
@@ -95,17 +89,16 @@ export interface PlacementOrchDeps {
   clock: Clock
   config: { REASSIGN_GRACE_SEC: number; ACK_TIMEOUT_MS: number }
   /** MCP-proxy reconcile bundle (centralized-tool-management.md §7): the org providers
-   *  a daemon's agents enabled, their active grant keys, and the relay roster to pick a
-   *  proxy base from. Grouped here (not positional repos) so the whole concern is one
+   *  this daemon's agents enabled, their active grant keys, and the relay roster to pick
+   *  a proxy base from. Grouped here (not positional repos) so the whole concern is one
    *  optional seam — absent (tests / no orch) ⇒ reconcile ships no MCP defs. */
-  mcp?: { providers: McpProviderRepo; grants: McpGrantRepo; relayRoster: RelayRosterView }
-  memory?: {
-    connections: ExternalMemoryConnectionRepo
-    installations: MemoryPluginInstallationRepo
-    secrets: ExternalMemoryConnectionSecretStore
-    grants: ExternalMemoryGrantRepo
-    relayRoster: RelayRosterView
-  }
+  mcp?: McpDefinitionDeps
+  memory?: MemoryDefinitionDeps
+  /** The duty ledger read that makes the reconcile roster `pinned-to-me ∪ agents
+   *  in the duties I hold`. Absent (tests / no pool) ⇒ placement alone. */
+  duties?: { heldAgentIds(holder: DaemonId, now: Date): Promise<AgentId[]> }
+  /** Resolves the peer directory's routing targets. Absent ⇒ placement alone. */
+  placement?: Pick<PlacementResolver, 'resolveDirectory'>
   /** Optional structured logger for reconcile-time skips (no live relay). */
   log?: { warn(obj: object, msg: string): void }
   // NOTE: icon URL bases moved into the AgentSpecAssembler (it owns spec assembly).
@@ -330,6 +323,14 @@ async function projectSpec(
   return { orgId: i.orgId, integrationId: i.id, agentId: i.agentId, platform: i.platform, core, config }
 }
 
+/** Union two roster halves by row id, keeping the first occurrence — the placement
+ *  half and the duty half legitimately overlap when a member holds what it hosts. */
+function dedupeById<T extends { id: string }>(first: readonly T[], second: readonly T[]): T[] {
+  const byId = new Map<string, T>()
+  for (const row of [...first, ...second]) if (!byId.has(row.id)) byId.set(row.id, row)
+  return [...byId.values()]
+}
+
 /** A session to re-home: its key + the agent/workspace that should own it. */
 function recordToSessionKey(a: AssignmentRecord): SessionKey {
   return {
@@ -368,6 +369,16 @@ export class Placement implements ReconcileService {
     return this.orch
   }
 
+  /** The agents this member currently holds a duty for. No ledger wired ⇒ none,
+   *  which is exactly the pre-duty roster. */
+  private async servedAgents(daemonId: DaemonId): Promise<ServedAgents> {
+    return servedAgents(daemonId, {
+      agents: this.agents,
+      ...(this.orch?.duties ? { duties: this.orch.duties } : {}),
+      now: new Date(this.orch?.clock.now() ?? Date.now())
+    })
+  }
+
   async reconcile(daemonId: DaemonId, req: RegisterReq): Promise<RegisterOk> {
     // Daemon trust domain: reconcile runs for the registering connection's own
     // daemon (org-scoped-data-layer.md §4).
@@ -377,13 +388,24 @@ export class Placement implements ReconcileService {
       throw new Error(`reconcile: unknown daemon ${daemonId}`)
     }
 
-    const [activeAssignments, ownedAgents, daemonCrons, activeLeases, activeIntegrations] = await Promise.all([
-      this.assignments.activeForDaemon(daemonId),
-      this.agents.listForDaemon(daemonId),
-      this.crons.listForDaemon(daemonId),
-      this.leases.activeForDaemon(daemonId),
-      this.integrations.activeForDaemon(daemonId)
-    ])
+    // The roster is `pinned-to-me ∪ agents in the duties I hold`. A duty grant is
+    // how a pool member comes to serve an agent it is not the placement of, and
+    // its install (`duty/fetch`) has to survive a reconnect: an agent absent from
+    // the desired set is a stale-replica candidate below and would be PRUNED,
+    // undoing the install. Its integrations and crons ride along for the same
+    // reason — a served group whose sockets the reconcile dropped serves nothing.
+    const { heldAgentIds, agents: ownedAgents } = await this.servedAgents(daemonId)
+    const [activeAssignments, daemonCrons, heldCrons, activeLeases, daemonIntegrations, heldIntegrations] =
+      await Promise.all([
+        this.assignments.activeForDaemon(daemonId),
+        this.crons.listForDaemon(daemonId),
+        this.crons.listForAgents(heldAgentIds),
+        this.leases.activeForDaemon(daemonId),
+        this.integrations.activeForDaemon(daemonId),
+        this.integrations.activeForAgents(heldAgentIds)
+      ])
+    const activeIntegrations = dedupeById(daemonIntegrations, heldIntegrations)
+    const ownedCrons = dedupeById(daemonCrons, heldCrons)
 
     const quarantinedAgentIds = new Set<string>()
     // Conversation gating (§14): derived per-agent from restricted visibility. This
@@ -421,8 +443,10 @@ export class Placement implements ReconcileService {
       )
     ])
 
-    // Integrations FILTERED to this daemon (via agent.daemonId) — each carries
-    // plaintext tokens, so this must never be the org-wide set. Tokens are pulled
+    // Integrations FILTERED to the agents this daemon serves (placed on it or held
+    // by it) — each carries plaintext tokens, so this must never be the org-wide
+    // set, and the duty half is exactly what the ledger says this member won.
+    // Tokens are pulled
     // from the secret store (the only decrypt/read seam); NEVER log this array.
     // ALL platforms belong in the roster (Slack + Telegram): the roster is the
     // backstop when the live integration/upsert was skipped (daemon offline) or
@@ -436,18 +460,17 @@ export class Placement implements ReconcileService {
     const desiredAssignments = activeAssignments
       .filter((assignment) => !quarantinedAgentIds.has(assignment.agentId))
       .map(assignmentToRoute)
-    // The agent-config replica for THIS daemon: only the agents placed on it
-    // (1 agent : 1 machine). A daemon never receives specs for agents owned by
-    // other machines. Unplaced agents (daemonId null) go to no daemon. The daemon
-    // converges its replica to this set (CP wins); live edits ride
-    // `agent/upsert`/`agent/remove`; this snapshot is the reconnect backstop.
+    // The agent-config replica for THIS daemon: the agents placed on it, plus the
+    // agents whose duty it holds. A daemon never receives specs for agents that
+    // are neither. Unplaced, unheld agents go to no daemon. The daemon converges
+    // its replica to this set (CP wins); live edits ride `agent/upsert`/
+    // `agent/remove` over the same union; this snapshot is the reconnect backstop.
     // The assembler owns secret loading + icon bases — same spec shape as the
     // live agent/upsert emit, structurally. Historical unsafe repository rows
     // are quarantined above without stranding the rest of this daemon's roster.
-    // Crons FILTERED to this daemon (via agent.daemonId) — a cron drives one
-    // agent, so its def lands only on that agent's daemon (same rule as
-    // integrations above). Orphaned rows map to null and are never pushed.
-    const desiredCrons = daemonCrons
+    // Crons scoped the same way — a cron drives one agent, so its def lands on the
+    // daemons that serve that agent. Orphaned rows map to null and are never pushed.
+    const desiredCrons = ownedCrons
       .map(cronToUpsert)
       .filter((cron): cron is CronUpsert => cron !== null && !quarantinedAgentIds.has(cron.agentId))
     const desiredLeases = activeLeases.map(leaseToGrant)
@@ -470,7 +493,15 @@ export class Placement implements ReconcileService {
         this.integrations.channelPlacements(orgId),
         this.agents.orgDirectory(orgId)
       ])
-      const snapshot = buildCollabSnapshot(orgId, placements, Number(daemon.routingEpoch), orgDirectory)
+      const snapshot = buildCollabSnapshot(
+        orgId,
+        placements,
+        Number(daemon.routingEpoch),
+        // Placement names the target for a machine-placed peer; the ledger names it for a pool
+        // one, and marks a pool agent nobody may be addressed at yet as pending. The resolver is
+        // the only producer of that shape, so a graph without one still goes through it.
+        await (this.orch?.placement ?? PLACEMENT_ONLY).resolveDirectory(orgDirectory)
+      )
       collabRoutes.channels.push(...snapshot.channels)
       collabRoutes.agents.push(...snapshot.agents)
       collabRoutes.platformKinds = snapshot.platformKinds
@@ -482,6 +513,12 @@ export class Placement implements ReconcileService {
     // belongs elsewhere (the backstop for moves missed while this daemon was
     // disconnected). New replicas carry origin=cp and can also converge a missed
     // delete after the durable row is gone.
+    // The desired sets are the UNION computed above, so a duty-held replica is
+    // never a candidate here at all — its CP row names another daemon, which is
+    // exactly the `record.daemonId !== daemonId` detach below. That is the whole
+    // pruning bug: subtracting from the placement-only set undid the install.
+    // An agent the ledger still names but whose row is gone stays a candidate and
+    // is removed on its own merits — a deleted agent must not keep being served.
     const desiredKeySet = new Set(desiredAssignments.map((a) => sessionKeyStr(a.sessionKey)))
     const desiredCronSet = new Set(desiredCrons.map((c) => c.cronId))
     const desiredAgentSet = new Set(desiredAgents.map((a) => a.agentId))
@@ -555,8 +592,12 @@ export class Placement implements ReconcileService {
       agents: desiredAgents, // full spec-set the daemon replicates (direct-edge launch needs a local replica)
       crons: desiredCrons,
       integrations: desiredIntegrations, // daemon-scoped platform integrations (token-bearing)
-      mcpServers: await this.desiredMcpServers(daemonId), // proxied MCP defs (relay url + grant key; token-bearing)
-      memoryConnections: await this.desiredMemoryConnections(daemonId),
+      // Both definition kinds are scoped by the SAME roster union as the agents
+      // above — an AgentSpec only names its MCP servers and its memory
+      // connection, so a duty-held replica whose definitions were resolved by
+      // placement would come up with neither. `ownedAgents`, not a second read.
+      mcpServers: await this.desiredMcpServers(daemonId, ownedAgents), // token-bearing (relay url + grant key)
+      memoryConnections: await this.desiredMemoryConnections(daemonId, ownedAgents),
       leases: desiredLeases,
       relays: [], // relay roster — populated once CP relay orchestration lands (shared-bot-relay.md A2)
       collabRoutes, // bot-agnostic collaboration routing snapshot (agent-collaboration P2)
@@ -570,74 +611,20 @@ export class Placement implements ReconcileService {
   }
 
   /**
-   * The proxied MCP defs THIS daemon should hold: for every org provider one of its
-   * placed agents enabled by name (`activeForDaemon`), a relay-proxied `http` def
-   * carrying the RELAY proxy URL + the provider's active plaintext grant key —
-   * NEVER the upstream url or its secret (centralized-tool-management.md §7).
-   * Token-bearing result: NEVER log it. Reserved name excluded (the daemon injects
-   * its own `agentconnect` server). No relay live ⇒ skip (backstop is the next
-   * register once a relay appears).
+   * The proxied MCP defs THIS daemon should hold, keyed on the agents it SERVES
+   * (placed on it or held by duty) rather than on placement — see
+   * `orchestrator/agentDefinitions.ts` for the projector and its security note.
    */
-  private async desiredMcpServers(daemonId: DaemonId): Promise<McpServerSpec[]> {
-    const mcp = this.orch?.mcp
-    if (!mcp) return []
-    const providers = (await mcp.providers.activeForDaemon(daemonId)).filter((p) => p.name !== RESERVED_MCP_SERVER_NAME)
-    if (providers.length === 0) return []
-    const relay = (await mcp.relayRoster.entries())[0]
-    if (!relay) {
-      this.orch?.log?.warn({ daemonId }, 'reconcile: MCP providers enabled but no live relay — skipping MCP defs')
-      return []
-    }
-    // The roster url is the relay's rd/* WS dial address; the MCP proxy is HTTP on the
-    // same origin — normalize wss→https so the `http` def points at a reachable endpoint.
-    const relayBaseUrl = relayHttpOrigin(relay.url)
-    const specs: McpServerSpec[] = []
-    for (const p of providers) {
-      const grant = (await mcp.grants.activeForProvider(p.orgId, p.id))[0]
-      if (grant) specs.push(mcpProxyDef(p, grant.key, relayBaseUrl))
-    }
-    return specs
+  private async desiredMcpServers(daemonId: DaemonId, agents: readonly AgentRecord[]): Promise<McpServerSpec[]> {
+    return mcpDefsForAgents(agents, this.orch?.mcp, this.orch?.log, { daemonId })
   }
 
-  /** Daemon-private connection defs referenced by agents placed on this daemon. */
-  private async desiredMemoryConnections(daemonId: DaemonId): Promise<MemoryConnectionSpec[]> {
-    const memory = this.orch?.memory
-    if (!memory) return []
-    const connections = await memory.connections.activeForDaemon(daemonId)
-    if (connections.length === 0) return []
-    const relay = (await memory.relayRoster.entries())[0]
-    const relayBaseUrl = relay ? relayHttpOrigin(relay.url) : undefined
-    const specs: MemoryConnectionSpec[] = []
-    let skippedRemote = false
-    for (const connection of connections) {
-      const installation = await memory.installations.get(connection.installationId)
-      if (!installation) continue
-      if (installation.transport === 'stdio') {
-        const secrets = (await memory.secrets.get(connection.orgId, connection.id)) ?? {}
-        specs.push(stdioMemoryConnectionSpec(connection, installation, secrets))
-        continue
-      }
-      if (!relayBaseUrl) {
-        skippedRemote = true
-        continue
-      }
-      const [grant, secretKeys] = await Promise.all([
-        // Rotation overlaps old+new grants until every projection has the fresh
-        // key. Prefer the newest active grant so a reconnect in that window does
-        // not receive the key that is about to be retired.
-        memory.grants.activeForConnection(connection.orgId, connection.id).then((rows) => rows.at(-1)),
-        memory.secrets.keys(connection.orgId, connection.id)
-      ])
-      if (!grant) continue
-      specs.push(memoryConnectionSpec(connection, installation, secretKeys, grant.key, relayBaseUrl))
-    }
-    if (skippedRemote) {
-      this.orch?.log?.warn(
-        { daemonId },
-        'reconcile: remote external memory connections have no live relay — local stdio definitions remain available'
-      )
-    }
-    return specs
+  /** Connection defs referenced by the agents this daemon serves — same union. */
+  private async desiredMemoryConnections(
+    daemonId: DaemonId,
+    agents: readonly AgentRecord[]
+  ): Promise<MemoryConnectionSpec[]> {
+    return memoryDefsForAgents(agents, this.orch?.memory, this.orch?.log, { daemonId })
   }
 
   // ── Live placement / rebalance (Phase 3) ──────────────────────────────────

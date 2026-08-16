@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { prisma } from '../setup.db.js'
-import { DEF_ORG, seedAgent, seedDaemon } from '../fixtures/seed.js'
+import { DEF_ORG } from '../fixtures/seed.js'
 import {
   PgExternalMemoryConnectionRepo,
   PgExternalMemoryConnectionSecretStore,
@@ -8,7 +8,7 @@ import {
   PgMemoryPluginInstallationRepo
 } from '../../src/persistence/repositories/memory-connection.repo.js'
 import type { SecretCipher } from '../../src/secrets/cipher.js'
-import { DaemonId, OrgId } from '../../src/domain/ids.js'
+import { OrgId } from '../../src/domain/ids.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 
 const DAEMON_ID = '11111111-1111-4111-8111-111111111111'
@@ -106,26 +106,5 @@ describe('external-memory persistence (real Postgres)', () => {
     await connections.delete(DEF_ORG, connection.id)
     expect(await prisma.externalMemoryConnectionSecret.count()).toBe(0)
     expect(await prisma.externalMemoryGrant.count()).toBe(0)
-  })
-
-  it('derives a deduplicated daemon-private registry only from placed external bindings', async () => {
-    const { connections, connection } = await fixture()
-    await seedDaemon(prisma, DAEMON_ID)
-    await seedAgent(prisma, AGENT_ID, { daemonId: DAEMON_ID })
-    await prisma.agent.update({
-      where: { id: AGENT_ID },
-      data: {
-        runtimeOverrides: {
-          memory: {
-            provider: 'external',
-            connectionId: connection.id,
-            recall: { mode: 'auto', topK: 5, maxBytes: 8192, timeoutMs: 1000 },
-            capture: { mode: 'turn' }
-          }
-        }
-      }
-    })
-    await seedAgent(prisma, '33333333-3333-4333-8333-333333333333', { daemonId: DAEMON_ID })
-    expect((await connections.activeForDaemon(DaemonId(DAEMON_ID))).map((row) => row.id)).toEqual([connection.id])
   })
 })

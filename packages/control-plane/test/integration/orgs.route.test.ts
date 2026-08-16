@@ -347,8 +347,8 @@ describe('DELETE /orgs/:orgId', () => {
     }
   })
 
-  it('does not treat install-wide cloud daemons as org deletion blockers', async () => {
-    const cloud = await new PgDaemonRepo(prisma).resolveCloudClusterIdentity(
+  it('does not treat install-wide pool members as org deletion blockers', async () => {
+    const poolMember = await new PgDaemonRepo(prisma).resolvePoolClusterIdentity(
       'system:serviceaccount:agentconnect:ac-cloud-daemon',
       'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
     )
@@ -360,7 +360,7 @@ describe('DELETE /orgs/:orgId', () => {
 
       expect((await app.inject({ method: 'DELETE', url: `/api/v1/orgs/${created.id}` })).statusCode).toBe(204)
       expect(await prisma.org.findUnique({ where: { id: created.id } })).toBeNull()
-      expect(await prisma.daemon.findUnique({ where: { id: cloud.id } })).not.toBeNull()
+      expect(await prisma.daemon.findUnique({ where: { id: poolMember.id } })).not.toBeNull()
     } finally {
       await close()
     }

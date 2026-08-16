@@ -13,9 +13,8 @@ export const AuthReq = z.object({
   // by that unique hash (see docs/designs/daemon-api-key-auth.md). A daemon with no Kubernetes
   // identity carries this; an in-cluster one sends `serviceAccountToken` instead.
   apiKey: z.string().optional(),
-  // Projected ServiceAccount token of an operator-provisioned daemon pod, audience-scoped to
-  // CP_TOKEN_AUDIENCE and verified by TokenReview against the org's cluster (see "Daemon
-  // identity" in docs/designs/agentconnect-org-operator.md). Takes precedence over `apiKey`.
+  // Projected ServiceAccount token of an in-cluster daemon Pod, audience-scoped to CP_TOKEN_AUDIENCE
+  // and verified by TokenReview (k8s-daemon-pool.md §3, "Identity is per Pod, not per org"). Beats `apiKey`.
   serviceAccountToken: z.string().optional(),
   // Optional echo of the daemonId. If present it must equal the daemonId the ApiKey row
   // resolves to; otherwise the daemon adopts the authoritative id from `auth/ok`.
@@ -44,8 +43,12 @@ export const AuthOk = z.object({
   daemonId: z.string().uuid(),
   sessionEpoch: z.number().int(), // monotonic; bumped each successful (re)auth — fencing token
   heartbeatSec: z.number().int(), // cadence the daemon must emit heartbeat at
+  // How long the CP keeps a duty lease alive past the last heartbeat it renewed from
+  // (T_reassign). The member self-fences strictly earlier, so it must be told the CP's
+  // own value rather than duplicate it. Optional: an older CP omits it.
+  dutyLeaseMs: z.number().int().positive().optional(),
   serverTime: z.string().datetime(),
-  // Single-org daemons inherit tenant context from auth; install-wide cloud daemons require
+  // Single-org daemons inherit tenant context from auth; install-wide pool members require
   // every org-scoped post-auth frame to carry `Envelope.orgId`.
   organizationMode: z.enum(['connection', 'frame']).default('connection'),
   // Base URL of the Web App console (the CP's own public origin), so the daemon can build

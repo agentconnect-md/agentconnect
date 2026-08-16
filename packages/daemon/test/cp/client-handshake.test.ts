@@ -91,6 +91,8 @@ describe('CpClient handshake', () => {
     expect(reg.payload.localState.agents).toEqual([])
     expect(reg.payload.localState.integrations).toEqual([])
     expect(reg.payload.localState.stagedAgents).toEqual([])
+    // A local daemon has no rollout generation, so the optional field is simply absent.
+    expect(reg.payload).not.toHaveProperty('generation')
 
     // 4. CP replies register/ok → snapshot applied, READY
     t.pushInbound(
@@ -176,6 +178,28 @@ describe('CpClient handshake', () => {
     expect(client.state).toBe('CLOSED')
     expect(ready).toBe(false)
     expect(t.sent.map((value) => JSON.parse(value)).some((frame) => frame.type === 'facts/daemon-runtimes')).toBe(false)
+  })
+
+  it('a pool member reports its rollout generation on register', async () => {
+    const t = new FakeTransport()
+    const client = new CpClient(makeDeps(t, { generation: 'abc123' }))
+    client.start()
+    await tick()
+    const auth = t.lastSent()
+    t.pushInbound(
+      JSON.stringify(
+        buildEnvelope(
+          'auth/ok',
+          { daemonId: DAEMON_ID, sessionEpoch: 1, heartbeatSec: 20, serverTime: '2026-06-26T00:00:00.000Z' },
+          { corr: auth.id }
+        )
+      )
+    )
+    await tick()
+    const reg = t.lastSent()
+    expect(reg.type).toBe('register')
+    expect(reg.payload.generation).toBe('abc123')
+    await client.stop()
   })
 
   it('queues controls after register/ok until snapshot convergence and drains them FIFO before READY', async () => {

@@ -258,7 +258,7 @@ describe('onboarding — configure the built-in agent', () => {
     await render()
     await click('Save and continue')
     expect(mocks.updateAgent).toHaveBeenCalledWith('ag_ac', { runtime: 'claude', model: 'claude-sonnet-4-5' })
-    expect(mocks.moveAgent).toHaveBeenCalledWith('ag_ac', 'dmn_new')
+    expect(mocks.moveAgent).toHaveBeenCalledWith('ag_ac', { kind: 'daemon', daemonId: 'dmn_new' })
     // Order matters: the CP rejects a move on a runtime-less agent.
     const updateOrder = mocks.updateAgent.mock.invocationCallOrder[0] ?? 0
     const moveOrder = mocks.moveAgent.mock.invocationCallOrder[0] ?? Infinity

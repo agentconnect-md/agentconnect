@@ -28,7 +28,7 @@ import { denyViewerWrite, orgOf } from '../rbac.js'
 import { SlackBotRefreshDto, ErrorDto, IdParam, type SlackBotRefreshDtoT } from '../dto/index.js'
 import { Tag } from '../plugins/openapi.js'
 import { checkSlackBotScopes, mergeManagedSlackManifest, slackOAuthRedirectUri } from '../slack-manifest.js'
-import { relayHttpBase } from './slack-install.js'
+import { relayHttpBase } from '../relay-ingress.js'
 
 /** Slack errors from the manifest export/update that mean "this app is not
  *  managed by the caller's config token" — a graceful `manual_update_required`,

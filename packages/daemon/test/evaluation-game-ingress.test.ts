@@ -11,6 +11,7 @@ import {
   type OutboundEffectResult,
   type VirtualConnectionWorldPort
 } from '../src/evaluation/index.js'
+import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
 const AGENT_ID = 'game-agent'
 const OTHER_AGENT_ID = 'other-agent'
@@ -142,6 +143,7 @@ afterEach(async () => {
 
 async function startDaemon(world: RecordingWorld): Promise<Daemon> {
   daemon = new Daemon({
+    slackAppFactory: fakeSlackAppFactory(),
     root: scaffold([AGENT_ID, OTHER_AGENT_ID]),
     hostFactory: echoHostFactory(),
     evaluation: {

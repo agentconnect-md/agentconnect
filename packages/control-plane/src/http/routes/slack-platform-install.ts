@@ -39,7 +39,8 @@ import { resolveWebAppUrl } from '../../config/env.js'
 import { checkSlackBotScopes, SLACK_BOT_SCOPES, slackPlatformOAuthRedirectUri } from '../slack-manifest.js'
 import { installNewSlackBot } from '../install-slack.js'
 import { BotWorkspaceClaimed } from '../../persistence/errors.js'
-import { closePageHtml, relayHttpBase } from './slack-install.js'
+import { closePageHtml } from './slack-install.js'
+import { relayIngress } from '../relay-ingress.js'
 import type { SlackRouteSeams } from '../platform-route-seams.js'
 import {
   SlackPlatformInstallStartBody,
@@ -78,12 +79,9 @@ export function slackPlatformInstallRoutes(deps: HttpDeps, slack: SlackRouteSeam
         }
         const orgId = req.orgCtx!.orgId
         // Events-API-only: same relay precondition as an http quick-install.
-        if (!relayHttpBase(deps.config.PUBLIC_RELAY_URL) || !deps.httpBot.hasConnectedRelay()) {
-          return reply.code(409).send({
-            error: 'Conflict',
-            statusCode: 409,
-            message: 'HTTP-mode Slack requires a connected relay (PUBLIC_RELAY_URL + a running relay)'
-          })
+        const ingress = relayIngress(deps)
+        if (!ingress.ok) {
+          return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: ingress.message })
         }
         let agentId: AgentId | undefined
         let expectedBotId: BotId | undefined

@@ -1,8 +1,10 @@
 /**
- * Durable browser-conversation MCP authority. Establishment serializes on the
- * conversation row so concurrent tabs converge on one generation.
+ * Durable browser-conversation MCP authority, keyed on the AGENT. Establishment serializes on the
+ * conversation row so concurrent tabs converge on one generation, and fences on the agent's
+ * placement — not on a member id, which a pool rollout replaces under a live delegation.
  */
 import { Prisma, type WebchatMcpDelegation } from '../../generated/prisma/client.js'
+import type { PlacementKind, PlacementRef } from '../../domain/placement.js'
 import type { PrismaLike } from '../prisma.js'
 import type {
   EstablishWebchatMcpDelegationInput,
@@ -15,6 +17,10 @@ import type { WebchatMcpMetrics } from '../../observability/webchat-mcp.js'
 
 const toRecord = (row: WebchatMcpDelegation): WebchatMcpDelegationRecord => ({ ...row })
 const WEBCHAT_MCP_DELEGATION_REAP_BATCH_SIZE = 500
+
+/** All three placement columns, compared as one value — never a daemon id on its own. */
+const samePlacement = (left: PlacementRef, right: PlacementRef): boolean =>
+  left.placementKind === right.placementKind && left.daemonId === right.daemonId && left.setId === right.setId
 
 export class PgWebchatMcpDelegationRepo implements WebchatMcpDelegationRepo {
   constructor(
@@ -32,9 +38,9 @@ export class PgWebchatMcpDelegationRepo implements WebchatMcpDelegationRepo {
       // Global lock order is Agent → Conversation → Delegation. FOR SHARE
       // conflicts with placement UPDATE and agent DELETE while allowing two
       // independent conversations on this agent to establish concurrently.
-      const [agent] = await tx.$queryRaw<{ daemonId: string | null }[]>(
-        Prisma.sql`SELECT "daemonId" FROM "agent" WHERE "id" = ${input.agentId} FOR SHARE`
-      )
+      const [agent] = await tx.$queryRaw<
+        { placementKind: PlacementKind; daemonId: string | null; setId: string | null }[]
+      >(Prisma.sql`SELECT "placementKind", "daemonId", "setId" FROM "agent" WHERE "id" = ${input.agentId} FOR SHARE`)
       const [conversation] = await tx.$queryRaw<
         { id: string; userId: string; orgId: string; agentId: string }[]
       >(Prisma.sql`
@@ -49,7 +55,7 @@ export class PgWebchatMcpDelegationRepo implements WebchatMcpDelegationRepo {
         conversation.userId !== input.userId ||
         conversation.orgId !== input.orgId ||
         conversation.agentId !== input.agentId ||
-        agent.daemonId !== input.daemonId
+        !samePlacement(agent, input.expectedPlacement)
       ) {
         return { record: null, events: [] as const }
       }
@@ -66,10 +72,7 @@ export class PgWebchatMcpDelegationRepo implements WebchatMcpDelegationRepo {
         FOR UPDATE
       `)
       const sameAuthority =
-        latest?.userId === input.userId &&
-        latest.orgId === input.orgId &&
-        latest.agentId === input.agentId &&
-        latest.daemonId === input.daemonId
+        latest?.userId === input.userId && latest.orgId === input.orgId && latest.agentId === input.agentId
       if (latest && !latest.revokedAt && latest.expiresAt.getTime() > input.now.getTime() && sameAuthority) {
         if (input.expiresAt.getTime() < latest.expiresAt.getTime()) {
           const shortened = await tx.webchatMcpDelegation.updateMany({
@@ -93,10 +96,7 @@ export class PgWebchatMcpDelegationRepo implements WebchatMcpDelegationRepo {
       if (latest && !latest.revokedAt) {
         await tx.webchatMcpDelegation.updateMany({
           where: { id: latest.id, generation: latest.generation, revokedAt: null },
-          data: {
-            revokedAt: input.now,
-            revokedReason: expired ? 'expired' : sameAuthority ? 'rotated' : 'placement_changed'
-          }
+          data: { revokedAt: input.now, revokedReason: expired ? 'expired' : sameAuthority ? 'rotated' : 'rebound' }
         })
       }
 
@@ -112,7 +112,6 @@ export class PgWebchatMcpDelegationRepo implements WebchatMcpDelegationRepo {
           userId: input.userId,
           orgId: input.orgId,
           agentId: input.agentId,
-          daemonId: input.daemonId,
           createdAt: input.now,
           expiresAt: input.expiresAt
         }
@@ -141,8 +140,7 @@ export class PgWebchatMcpDelegationRepo implements WebchatMcpDelegationRepo {
       generation: input.generation,
       userId: input.userId,
       orgId: input.orgId,
-      agentId: input.agentId,
-      daemonId: input.daemonId
+      agentId: input.agentId
     }
     const changed = await this.db.webchatMcpDelegation.updateMany({
       where: { ...exactAuthority, revokedAt: null },
@@ -171,6 +169,38 @@ export class PgWebchatMcpDelegationRepo implements WebchatMcpDelegationRepo {
       WHERE delegation."id" = ${delegationId}
     `)
     return row ? toRecord(row) : null
+  }
+
+  /**
+   * Revoke the delegations of agents nothing serves any more — the rows a retired pool member
+   * leaves behind now that `WebchatMcpDelegation` is agent-keyed rather than daemon-keyed (#1057).
+   *
+   * The predicate is exactly `PlacementResolver.servingDaemons(agent) === []`, spelled in SQL:
+   * neither placement column names a target, and no unexpired duty lease holds the agent. Such a
+   * row is already inert — `resolveLiveWebchatMcpAuthority` answers `placement_mismatch` on every
+   * use — so this changes no reachable behaviour; it makes the ledger say what is true, and lets
+   * `reapExpired` count the row as revoked rather than as a live authority that quietly expired.
+   * A `set` agent between grants is deliberately excluded: `setId` still names its target.
+   */
+  async revokeUnplaced(now: Date): Promise<number> {
+    const result = await this.db.$executeRaw(Prisma.sql`
+      UPDATE "webchat_mcp_delegation" AS delegation
+      SET "revokedAt" = ${now}, "revokedReason" = 'agent_unplaced'
+      WHERE delegation."revokedAt" IS NULL
+        AND EXISTS (
+          SELECT 1 FROM "agent"
+          WHERE "agent"."id" = delegation."agentId"
+            AND "agent"."daemonId" IS NULL
+            AND "agent"."setId" IS NULL
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM "duty_group_member" member
+          JOIN "duty_group" duty ON duty."id" = member."groupId"
+          WHERE member."kind" = 'agent' AND member."refId" = delegation."agentId"
+            AND duty."holder" IS NOT NULL AND duty."expiresAt" IS NOT NULL AND duty."expiresAt" > ${now}
+        )
+    `)
+    return Number(result)
   }
 
   async reapExpired(expiredBefore: Date): Promise<ReapWebchatMcpDelegationsResult> {

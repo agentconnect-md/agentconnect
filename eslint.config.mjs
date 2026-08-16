@@ -78,5 +78,23 @@ export default defineConfig([
         }
       ]
     }
+  },
+  {
+    // Same fence on the daemon WS surface (k8s-daemon-pool.md M4): an install-wide
+    // member carries many orgs on one socket, so a handler resolves resources with
+    // the frame's org (`frame.orgId`) or the connection's (`conn.orgId`) — never by
+    // reading a row unscoped and trusting the org it happens to carry. An
+    // install-wide read may disable this inline with a justification.
+    files: ['packages/control-plane/src/ws/**/*.ts'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: 'CallExpression[callee.property.name=/Unscoped$/]',
+          message:
+            'Tenancy-unscoped reads are forbidden on the daemon WS surface — use the org-fenced method with the frame or connection org (docs/designs/org-scoped-data-layer.md §6).'
+        }
+      ]
+    }
   }
 ])

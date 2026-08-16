@@ -1,3 +1,4 @@
+import { PLACEMENT_ONLY } from '../orchestrator/placementResolver.js'
 import { describe, it, expect, vi } from 'vitest'
 import {
   buildRelayCpFrame,
@@ -254,6 +255,7 @@ function buildWebchatVerifier(
       },
       sessions: { getUnscoped: async (id) => over.sessionById?.[id] ?? null },
       orgs: { roleOf: async () => (over.role === undefined ? 'collaborator' : over.role) },
+      placement: PLACEMENT_ONLY,
       remoteMcp: { establish }
     })
   }
@@ -626,7 +628,7 @@ describe('RelayConnection FSM', () => {
       }
     })
     await toReady(transport)
-    // The claimed id travels with the token: a cloud daemon's identity names no org, so it
+    // The claimed id travels with the token: a pool member's identity names no org, so it
     // is checked against the install-wide daemon record.
     const claimedId = '99999999-9999-4999-8999-999999999999'
     transport.feed('rc/verify', { kind: 'daemon-token', credential: 'projected', daemonId: claimedId })

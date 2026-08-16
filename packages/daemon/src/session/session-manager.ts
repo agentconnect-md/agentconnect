@@ -3,7 +3,7 @@ import { LocalStore, sessionKey, transcriptChannelKey, type TranscriptEntry } fr
 import { isSyntheticA2aChannel } from '../cp/cp-collab-routes.js'
 import { monotonicTs } from '../store/monotonic-ts.js'
 import { SLACK_RESPONSE_FINAL_EVENT_TAG } from '@agentconnect.md/message'
-import { additionalWorkspaceDirectories, prepareWorkspace } from '../workspace/workspace-manager.js'
+import { WorkspaceManager } from '../workspace/workspace-manager.js'
 import { initiatorLabel } from '../workspace/session-branch.js'
 import { memoryKindOf, type MemoryProvider, type MemoryScope } from '../agents/memory-provider.js'
 import { MAX_INDEX_INJECT_BYTES } from '../agents/memory.js'
@@ -235,6 +235,13 @@ function abortable<T>(start: () => PromiseLike<T> | T, signal?: AbortSignal): Pr
 }
 
 export class SessionManager {
+  /** The owning daemon's plane when it supplied one; otherwise a private plane, so two harnesses
+   *  in one process still cannot see each other's registrations. */
+  private get workspaces(): WorkspaceManager {
+    return (this.ownWorkspaces ??= this.deps.workspaces ?? new WorkspaceManager())
+  }
+  private ownWorkspaces?: WorkspaceManager
+
   constructor(
     private deps: {
       store: LocalStore
@@ -243,6 +250,9 @@ export class SessionManager {
        * own preparation itself when resolvePreparedWorkspace is also supplied. */
       isHostRunning?: (agentId: string) => boolean
       agentById: (id: string) => LoadedAgent | undefined
+      /** The owning daemon's workspace plane. Absent only in lightweight harnesses, which get
+       *  their own so nothing is shared between them. */
+      workspaces?: WorkspaceManager
       /** Daemon seam for the unified Git/managed/accepted-local skill
        * reconciliation. Tests and the standalone chat CLI use the ordinary
        * workspace preparer. Production also passes the ordinary warm host so
@@ -437,9 +447,6 @@ export class SessionManager {
     // agent, else the agent-level store (#653). Reused for seeding, injection, and
     // recall so all three hit the same store.
     const memScope = this.deps.memoryScopeFor?.(agentId, msg, integrationId) ?? { agentId }
-    // Seed the agent's memory file at its ROOT dir (outside the workspace) if absent,
-    // so the prompt injection below and the `updateMemory` tool always have a file.
-    if (memoryEnabled) this.deps.memory.ensure(memScope, agent.name)
     const { thread, ts: coordTs } = transcriptCoords(msg)
     // webchat's msgId is stable per-conversation, so transcriptCoords yields the SAME ts
     // for every turn — the transcript's (channel,thread,ts) unique index would then dedup
@@ -475,7 +482,10 @@ export class SessionManager {
     if (msg.platform === 'webchat') {
       let slot = BigInt(ts)
       for (let attempt = 0; attempt < 32; attempt++) {
-        const existing = this.deps.store.transcriptTextAt(transcriptChannel, thread, String(slot))
+        const existing = this.deps.store.transcriptTextAt(transcriptChannel, thread, String(slot), {
+          sender: msg.sender.id,
+          recipient: agentId
+        })
         // Mirror the daemon-side probe (§6): matching canonical postId is what
         // proves the occupant is this same post; (sender, text) only decides
         // for legacy rows without an id on either side.
@@ -606,7 +616,9 @@ export class SessionManager {
     let preparedCwd =
       hostCold && !this.deps.resolvePreparedWorkspace
         ? await abortable(
-            () => this.deps.prepareWorkspace?.(agent, undefined, workspaceRequest) ?? prepareWorkspace(agent),
+            () =>
+              this.deps.prepareWorkspace?.(agent, undefined, workspaceRequest) ??
+              this.workspaces.prepareWorkspace(agent),
             signal
           )
         : undefined
@@ -629,7 +641,7 @@ export class SessionManager {
       return { value, chatSelected: value !== undefined }
     }
     const runtimeWorkspaceDirectories = (cwd: string): string[] =>
-      additionalWorkspaceDirectories(agent, cwd, {
+      this.workspaces.additionalWorkspaceDirectories(agent, cwd, {
         sessionKey: key,
         isolation: workspaceIsolation
       })
@@ -702,6 +714,10 @@ export class SessionManager {
     // Every session may READ shared memory (#653): the index is injected whenever
     // memory is enabled, regardless of session isolation. Only WRITES (the memory
     // write tools + post-turn distillation) stay gated for private sessions.
+    // Seeded HERE, after the host is up: a cluster agent's memory home is its sandbox
+    // volume, reachable only once the pod is bound. Idempotent, so a resumed session pays
+    // one cheap check.
+    if (memoryEnabled) await abortable(() => this.deps.memory.ensure(memScope, agent.name), signal)
     const memoryIndex = memoryEnabled
       ? (await abortable(() => this.deps.memory.standingContextAtSessionStart(memScope), signal)).trim()
       : ''
@@ -907,7 +923,9 @@ export class SessionManager {
         options.preparedWorkspaceCwd ??
         (workspaceIsolation === 'shared' ? preparedCwd : undefined) ??
         (await abortable(
-          () => this.deps.prepareWorkspace?.(agent, expectedWarmHost, workspaceRequest) ?? prepareWorkspace(agent),
+          () =>
+            this.deps.prepareWorkspace?.(agent, expectedWarmHost, workspaceRequest) ??
+            this.workspaces.prepareWorkspace(agent),
           signal
         ))
       const ordinaryMcpServers =
@@ -968,7 +986,9 @@ export class SessionManager {
         options.preparedWorkspaceCwd ??
         (workspaceIsolation === 'shared' ? preparedCwd : undefined) ??
         (await abortable(
-          () => this.deps.prepareWorkspace?.(agent, expectedWarmHost, workspaceRequest) ?? prepareWorkspace(agent),
+          () =>
+            this.deps.prepareWorkspace?.(agent, expectedWarmHost, workspaceRequest) ??
+            this.workspaces.prepareWorkspace(agent),
           signal
         ))
       // Resolved once, shared by both paths: session/load must re-attach the same
@@ -1106,12 +1126,12 @@ export class SessionManager {
     // a sibling must never see another child's role/task delivery or report.
     const blocks: ContentBlock[] = []
     let contextEventTs: string[] = []
-    let contextRevision = this.deps.store.threadTranscriptRevision(transcriptChannel, thread)
+    let contextRevision = this.deps.store.threadTranscriptRevision(transcriptChannel, thread, agentId)
     {
       const gap = (
         isSyntheticA2aChannel(transcriptChannel)
           ? this.deps.store.transcriptSinceForAgent(transcriptChannel, thread, markerBefore, agentId)
-          : this.deps.store.transcriptSince(transcriptChannel, thread, markerBefore)
+          : this.deps.store.transcriptSince(transcriptChannel, thread, markerBefore, agentId)
       ).filter((e) => withinSnapshot(e.ts))
       // SQLite's text order puts UUID-like legacy coordinates after real platform
       // ids. Keep those old rows as context, but before the real timeline — which
@@ -1217,7 +1237,7 @@ export class SessionManager {
         contextEventTs = [...context.map((entry) => entry.ts), ts]
       }
       rec.lastDeliveredTs = deliveredThrough ?? ts
-      contextRevision = this.deps.store.threadTranscriptRevision(transcriptChannel, thread)
+      contextRevision = this.deps.store.threadTranscriptRevision(transcriptChannel, thread, agentId)
     }
 
     // §9.2 attachments on the current message → image/resource/resource_link blocks.

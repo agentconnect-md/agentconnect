@@ -64,6 +64,8 @@ import type {
   WorkspaceGitMessageReq,
   WorkspaceGitMessageResult,
   TaskListReq,
+  AgentWakeReq,
+  AgentWakeOk,
   TaskList,
   MemoryChannelsReq,
   MemoryChannelsPage,
@@ -394,10 +396,14 @@ export class ControlSender {
     c.conn.send('integration/upsert', u, { epoch: c.sessionEpoch, agentId: u.agentId })
   }
 
-  /** Tell a running daemon an integration was removed (live, epoch-fenced EVT). */
-  async integrationRemove(daemonId: string, r: IntegrationRemove): Promise<void> {
+  /** Tell a running daemon an integration was removed (live, epoch-fenced EVT).
+   *  Takes an explicit orgId for the same reason the agent frames do: the payload
+   *  is an id alone, so an install-wide connection has nothing to resolve the org
+   *  from — and a duty holder that acquired the integration through `duty/fetch`
+   *  never registered it, so the connection's id→org map has nothing either. */
+  async integrationRemove(daemonId: string, r: IntegrationRemove, orgId?: string): Promise<void> {
     const c = this.must(daemonId)
-    c.conn.send('integration/remove', r, { epoch: c.sessionEpoch })
+    c.conn.send('integration/remove', r, { epoch: c.sessionEpoch }, orgId)
   }
 
   /** Tell a daemon to stop REPORTING conversations an operator forgot (REQ → ack).
@@ -475,10 +481,12 @@ export class ControlSender {
     return c.conn.request<Ack>('cron/upsert', u, { epoch: c.sessionEpoch })
   }
 
-  /** Remove a cron from a running daemon (live CRUD, epoch-fenced REQ → ack, §5.4). */
-  async cronRemove(daemonId: string, r: CronRemove): Promise<Ack> {
+  /** Remove a cron from a running daemon (live CRUD, epoch-fenced REQ → ack, §5.4).
+   *  Explicit orgId for the same reason as `integrationRemove`: the payload is a
+   *  bare cronId, and a duty holder never registered the cron. */
+  async cronRemove(daemonId: string, r: CronRemove, orgId?: string): Promise<Ack> {
     const c = this.must(daemonId)
-    return c.conn.request<Ack>('cron/remove', r, { epoch: c.sessionEpoch })
+    return c.conn.request<Ack>('cron/remove', r, { epoch: c.sessionEpoch }, undefined, orgId)
   }
 
   /** Fire a cron immediately on its daemon (console "Run now"; REQ → ack — the
@@ -497,25 +505,31 @@ export class ControlSender {
   }
 
   /**
-   * Pull one page of a session's history from the owning daemon for the console
+   * Pull one page of a session's history from a daemon holding it for the console
    * (REQ → `session/history/page`). Read-only — the CP proxies the bodies to the
    * UI live and never stores them (body-locality, §1/§12).
+   *
+   * Explicit orgId, for the same reason the agent frames take one: an install-wide pool
+   * member resolves an org from `orgByAgent`, which holds only the agents that connection
+   * was told about, and a shared-store peer answering for a retired member was told about
+   * none of them — so a bare agent id is SCOPE_DENIED before the frame leaves the CP.
    */
-  async sessionHistory(daemonId: string, req: SessionHistoryReq): Promise<SessionHistoryPage> {
+  async sessionHistory(daemonId: string, orgId: string, req: SessionHistoryReq): Promise<SessionHistoryPage> {
     const c = this.must(daemonId)
-    return c.conn.request<SessionHistoryPage>('session/history', req, { epoch: c.sessionEpoch })
+    return c.conn.request<SessionHistoryPage>('session/history', req, { epoch: c.sessionEpoch }, undefined, orgId)
   }
 
   /**
-   * Fetch one frame-budgeted byte slice of a tool call's FULL ToolBody JSON from
-   * the owning daemon for the console (REQ → `session/tool-body/chunk`). Read-only
+   * Fetch one frame-budgeted byte slice of a tool call's FULL ToolBody JSON from a
+   * daemon holding the session (REQ → `session/tool-body/chunk`), with an explicit org for
+   * the same scoping reason as {@link ControlSender.sessionHistory}. Read-only
    * — the CP proxies the bytes to the UI live and never stores them (body-locality,
    * §1/§12). The console pages by `offset` until `nextOffset` is absent, then
    * concatenates and JSON.parses the assembled string.
    */
-  async sessionToolBody(daemonId: string, req: SessionToolBodyReq): Promise<SessionToolBodyChunk> {
+  async sessionToolBody(daemonId: string, orgId: string, req: SessionToolBodyReq): Promise<SessionToolBodyChunk> {
     const c = this.must(daemonId)
-    return c.conn.request<SessionToolBodyChunk>('session/tool-body', req, { epoch: c.sessionEpoch })
+    return c.conn.request<SessionToolBodyChunk>('session/tool-body', req, { epoch: c.sessionEpoch }, undefined, orgId)
   }
 
   /**
@@ -708,7 +722,8 @@ export class ControlSender {
 
   async organizationSuggestionRead(
     daemonId: string,
-    req: Omit<OrganizationSuggestionReadReq, 'offset' | 'limit'>
+    req: Omit<OrganizationSuggestionReadReq, 'offset' | 'limit'>,
+    orgId?: string
   ): Promise<OrganizationSuggestionContent> {
     const c = this.must(daemonId)
     const chunks: Buffer[] = []
@@ -719,7 +734,9 @@ export class ControlSender {
       const chunk = await c.conn.request<OrganizationSuggestionChunk>(
         'knowledge/suggestion/read',
         { ...req, offset, limit: ORGANIZATION_SUGGESTION_CHUNK_BYTES },
-        { epoch: c.sessionEpoch }
+        { epoch: c.sessionEpoch },
+        undefined,
+        orgId
       )
       if (
         chunk.sourceAgentId !== req.sourceAgentId ||
@@ -789,9 +806,14 @@ export class ControlSender {
     }
   }
 
-  async organizationSuggestionReview(daemonId: string, req: OrganizationSuggestionReviewReq): Promise<Ack> {
+  /** `orgId` is explicit: an install-wide holder resolves no org from a bare source-agent id. */
+  async organizationSuggestionReview(
+    daemonId: string,
+    req: OrganizationSuggestionReviewReq,
+    orgId?: string
+  ): Promise<Ack> {
     const c = this.must(daemonId)
-    return c.conn.request<Ack>('knowledge/suggestion/review', req, { epoch: c.sessionEpoch })
+    return c.conn.request<Ack>('knowledge/suggestion/review', req, { epoch: c.sessionEpoch }, undefined, orgId)
   }
 
   /**
@@ -906,5 +928,13 @@ export class ControlSender {
   async taskList(daemonId: string, req: TaskListReq): Promise<TaskList> {
     const c = this.must(daemonId)
     return c.conn.request<TaskList>('task/list', req, { epoch: c.sessionEpoch })
+  }
+
+  // Bring an agent's cluster sandbox to Running WITHOUT a turn (REQ → `agent/wake/ok`). Addressed at the
+  // DISPATCH daemon, which may not hold the agent yet (it claims on receipt like a trigger), so the org
+  // is passed explicitly rather than read from the connection's agent index, where it is absent.
+  async agentWake(daemonId: string, req: AgentWakeReq, orgId: string): Promise<AgentWakeOk> {
+    const c = this.must(daemonId)
+    return c.conn.request<AgentWakeOk>('agent/wake', req, { epoch: c.sessionEpoch }, undefined, orgId)
   }
 }

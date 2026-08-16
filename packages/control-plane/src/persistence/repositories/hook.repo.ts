@@ -51,6 +51,7 @@ import { toDbPlatform } from '../platform.js'
 import type { SecretCipher } from '../../secrets/cipher.js'
 import { orgScope } from '../../secrets/scope.js'
 import { AgentId, HookId, IntegrationId, OrgId, type DaemonId } from '../../domain/ids.js'
+import { PLACEMENT_ONLY, type PlacementResolver, type ResolvableAgent } from '../../orchestrator/placementResolver.js'
 import { ORPHANED_RUN_REASON } from './cron.repo.js'
 import {
   lockHookReviewAgentLifecycleScope,
@@ -371,8 +372,61 @@ async function lockGithubRepoIdentityScope(tx: Prisma.TransactionClient, orgId: 
   `)
 }
 
+/** The placement columns a dispatch fence reads. A `set` agent leaves `daemonId` null, so the
+ *  resolver — not a join — is the only thing that can name who serves it. */
+const PLACEMENT_REF_SELECT = { placementKind: true, daemonId: true, setId: true } as const
+
+/** Who may act for one hook's agent, resolved BEFORE the fenced transaction: asking the duty
+ *  ledger while holding one would trade a pooled connection for a lock. `agentId` is what the hook
+ *  named at resolve time, and every fence re-reads it in the transaction, so this cannot widen. */
+interface HookDispatchAuthority {
+  agentId: string | null
+  /** The resolver's view of the agent, kept for the callers that also need a dispatch target. */
+  ref: ResolvableAgent | null
+  /** Placement ∪ live duty holders. */
+  serving: readonly string[]
+}
+
+const NO_AUTHORITY: HookDispatchAuthority = { agentId: null, ref: null, serving: [] }
+
+/** May `daemonId` act for this hook, given the agent the transaction actually reads? */
+function servedBy(
+  authority: HookDispatchAuthority,
+  agentId: string | null,
+  daemonId: string | null | undefined
+): boolean {
+  return agentId !== null && agentId === authority.agentId && !!daemonId && authority.serving.includes(daemonId)
+}
+
+/** May `reportingDaemonId` close a run of `agentId` that was dispatched to `dispatchDaemonId`?
+ *  The accepted dispatch target is a provenance snapshot, not the fence: a pool member can be
+ *  retired mid-run, and the member that serves the agent afterwards reclaims the completion. */
+function mayReport(
+  authority: HookDispatchAuthority,
+  agentId: string | null,
+  reportingDaemonId: string,
+  dispatchDaemonId: string | null | undefined
+): boolean {
+  return dispatchDaemonId === reportingDaemonId || servedBy(authority, agentId, reportingDaemonId)
+}
+
 export class PgHookRepo implements HookRepo {
-  constructor(private readonly db: PrismaLike) {}
+  constructor(
+    private readonly db: PrismaLike,
+    /** Absent (tests, or a deployment with no member set) ⇒ placement alone, the pre-duty behavior. */
+    private readonly placement: Pick<PlacementResolver, 'servingDaemons' | 'routableDaemon'> = PLACEMENT_ONLY
+  ) {}
+
+  /** Resolve one hook's dispatch authority. Called outside the fenced transaction. */
+  private async dispatchAuthority(hookId: HookId): Promise<HookDispatchAuthority> {
+    const hook = await this.db.hookDef.findUnique({
+      where: { id: hookId },
+      select: { agentId: true, agent: { select: PLACEMENT_REF_SELECT } }
+    })
+    if (!hook?.agentId || !hook.agent) return NO_AUTHORITY
+    const ref = { ...hook.agent, id: hook.agentId }
+    return { agentId: hook.agentId, ref, serving: await this.placement.servingDaemons(ref) }
+  }
 
   private transaction<T>(fn: (tx: Prisma.TransactionClient) => Promise<T>, options?: { timeout?: number }): Promise<T> {
     if ('$transaction' in this.db) return (this.db as PrismaClient).$transaction(fn, options)
@@ -696,6 +750,7 @@ export class PgHookRepo implements HookRepo {
   }
 
   async recordDeliveryResult(hookId: HookId, r: HookDeliveryInput): Promise<HookDeliveryRecordResult> {
+    const authority = await this.dispatchAuthority(hookId)
     return this.transaction(async (tx) => {
       // Organization deletion takes this lock before its final HookRun sweep.
       // Serialize both legacy and fenced delivery creation with that sweep so
@@ -727,8 +782,7 @@ export class PgHookRepo implements HookRepo {
                 agentId: true,
                 configRevision: true,
                 dispatchRevision: true,
-                projectionEpoch: true,
-                agent: { select: { daemonId: true } }
+                projectionEpoch: true
               }
             })
           : null
@@ -737,7 +791,7 @@ export class PgHookRepo implements HookRepo {
           current.agentId === r.agentId &&
           current.configRevision === r.configRevision &&
           current.dispatchRevision === r.dispatchRevision &&
-          current.agent?.daemonId === r.dispatchDaemonId
+          servedBy(authority, current.agentId, r.dispatchDaemonId)
         const preservesTriggerAuthority = existing.agentId === r.agentId && existing.configRevision === r.configRevision
         const remainsRetryable =
           hasFence &&
@@ -799,8 +853,7 @@ export class PgHookRepo implements HookRepo {
           projectionEpoch: true,
           reviewPolicy: true,
           reportingMode: true,
-          gateMode: true,
-          agent: { select: { daemonId: true } }
+          gateMode: true
         }
       })
       if (!hook) return { accepted: false, newlyObserved: false }
@@ -826,7 +879,7 @@ export class PgHookRepo implements HookRepo {
         (hook.agentId !== r.agentId ||
           hook.configRevision !== r.configRevision ||
           hook.dispatchRevision !== r.dispatchRevision ||
-          hook.agent?.daemonId !== r.dispatchDaemonId ||
+          !servedBy(authority, hook.agentId, r.dispatchDaemonId) ||
           (r.reviewPolicySnapshot !== undefined && hook.reviewPolicy !== r.reviewPolicySnapshot) ||
           (r.reportingModeSnapshot !== undefined && hook.reportingMode !== r.reportingModeSnapshot) ||
           (r.gateModeSnapshot !== undefined && hook.gateMode !== r.gateModeSnapshot))
@@ -1141,6 +1194,7 @@ export class PgHookRepo implements HookRepo {
   }
 
   async recordStart(hookId: HookId, reportingDaemonId: DaemonId, r: HookStartInput): Promise<boolean> {
+    const authority = await this.dispatchAuthority(hookId)
     return this.transaction(async (tx) => {
       await lockHookReviewLifecycleScope(tx, hookId)
       await lockHookDeliveryRedeliveryScope(tx, r.deliveryKey)
@@ -1170,7 +1224,7 @@ export class PgHookRepo implements HookRepo {
             reviewPolicy: true,
             reportingMode: true,
             gateMode: true,
-            agent: { select: { daemonId: true, status: true } }
+            agent: { select: { status: true } }
           }
         })
         if (
@@ -1180,7 +1234,7 @@ export class PgHookRepo implements HookRepo {
           current.agentId !== r.agentId ||
           current.configRevision !== r.configRevision ||
           current.dispatchRevision !== r.dispatchRevision ||
-          current.agent?.daemonId !== r.dispatchDaemonId ||
+          !servedBy(authority, current.agentId, r.dispatchDaemonId) ||
           current.agent?.status !== 'active' ||
           reportingDaemonId !== r.dispatchDaemonId ||
           run.agentId !== r.agentId ||
@@ -1452,6 +1506,7 @@ export class PgHookRepo implements HookRepo {
   }
 
   async recordReport(hookId: HookId, reportingDaemonId: DaemonId, r: HookReportInput, at: Date): Promise<boolean> {
+    const authority = await this.dispatchAuthority(hookId)
     return this.transaction(async (tx) => {
       // Completion-first recovery can create a FK-less HookRun row. Share the
       // hook lifecycle lock with organization deletion so its final metadata
@@ -1463,10 +1518,10 @@ export class PgHookRepo implements HookRepo {
       })
       let run = found ? await this.lockHookRunById(tx, found.id) : null
       if (!run) {
-        // Completion-first recovery is accepted only from the current placement;
-        // when a full tuple is present it must also match current hook fences.
-        const hook = await tx.hookDef.findFirst({
-          where: { id: hookId, agent: { daemonId: reportingDaemonId } },
+        // Completion-first recovery is accepted only from a daemon that currently serves the
+        // hook's agent; when a full tuple is present it must also match current hook fences.
+        const hookRow = await tx.hookDef.findUnique({
+          where: { id: hookId },
           select: {
             orgId: true,
             agentId: true,
@@ -1481,6 +1536,7 @@ export class PgHookRepo implements HookRepo {
             gateMode: true
           }
         })
+        const hook = hookRow && servedBy(authority, hookRow.agentId, reportingDaemonId) ? hookRow : null
         // A GitHub review token can only have been authorized against an
         // existing HookRun reservation, so completion-first may never invent
         // review metadata.
@@ -1512,7 +1568,6 @@ export class PgHookRepo implements HookRepo {
           (r.agentId !== undefined && hook.agentId !== r.agentId) ||
           (r.configRevision !== undefined && hook.configRevision !== r.configRevision) ||
           (r.dispatchRevision !== undefined && hook.dispatchRevision !== r.dispatchRevision) ||
-          (r.dispatchDaemonId !== undefined && r.dispatchDaemonId !== reportingDaemonId) ||
           (r.reviewPolicySnapshot !== undefined && hook.reviewPolicy !== r.reviewPolicySnapshot) ||
           (r.reportingModeSnapshot !== undefined && hook.reportingMode !== r.reportingModeSnapshot) ||
           (r.gateModeSnapshot !== undefined && hook.gateMode !== r.gateModeSnapshot)
@@ -1590,7 +1645,7 @@ export class PgHookRepo implements HookRepo {
             r.reviewPolicySnapshot === undefined ||
             r.reportingModeSnapshot === undefined ||
             r.gateModeSnapshot === undefined ||
-            r.dispatchDaemonId !== reportingDaemonId ||
+            !mayReport(authority, run.agentId, reportingDaemonId, r.dispatchDaemonId) ||
             run.agentId !== r.agentId ||
             run.configRevision !== r.configRevision ||
             (run.event !== null && r.event !== undefined && run.event !== r.event) ||
@@ -1629,7 +1684,7 @@ export class PgHookRepo implements HookRepo {
                 reviewPolicy: true,
                 reportingMode: true,
                 gateMode: true,
-                agent: { select: { daemonId: true, status: true } }
+                agent: { select: { status: true } }
               }
             })
             if (
@@ -1639,7 +1694,7 @@ export class PgHookRepo implements HookRepo {
               current.agentId !== r.agentId ||
               current.configRevision !== r.configRevision ||
               current.dispatchRevision !== r.dispatchRevision ||
-              current.agent?.daemonId !== r.dispatchDaemonId ||
+              !servedBy(authority, current.agentId, r.dispatchDaemonId) ||
               current.agent?.status !== 'active' ||
               current.reviewPolicy !== r.reviewPolicySnapshot ||
               current.reportingMode !== r.reportingModeSnapshot ||
@@ -1737,22 +1792,21 @@ export class PgHookRepo implements HookRepo {
             run.agentId !== r.agentId ||
             run.configRevision !== r.configRevision ||
             run.dispatchRevision !== r.dispatchRevision ||
-            run.dispatchDaemonId !== r.dispatchDaemonId ||
-            r.dispatchDaemonId !== reportingDaemonId)
+            run.dispatchDaemonId !== r.dispatchDaemonId)
         )
           return false
+        // The accepted dispatch target stays a provenance snapshot; who may close the row is the
+        // daemon that dispatched it or the one that serves its agent now.
         const acceptedDaemon = run.dispatchDaemonId
-        if (acceptedDaemon ? acceptedDaemon !== reportingDaemonId : false) return false
+        if (acceptedDaemon && !mayReport(authority, run.agentId, reportingDaemonId, acceptedDaemon)) return false
         if (!acceptedDaemon) {
-          const current = await tx.hookDef.findFirst({
-            where: { id: hookId, agent: { daemonId: reportingDaemonId } },
-            select: { agentId: true }
-          })
+          const current = await tx.hookDef.findUnique({ where: { id: hookId }, select: { agentId: true } })
           // Legacy HookRun rows predate the accepted dispatch tuple, but their
-          // daemon report still carries the owning agentId. Fall back to the
-          // hook's current placement without weakening that agent boundary: a
-          // different agent on the same daemon must not be able to close it.
-          if (!current || (r.agentId !== undefined && current.agentId !== r.agentId)) return false
+          // daemon report still carries the owning agentId. Fall back to who serves the hook's
+          // agent now, without weakening that agent boundary: a different agent on the same
+          // daemon must not be able to close it.
+          if (!current || !servedBy(authority, current.agentId, reportingDaemonId)) return false
+          if (r.agentId !== undefined && current.agentId !== r.agentId) return false
         }
         if (
           (r.agentId !== undefined && run.agentId !== null && run.agentId !== r.agentId) ||
@@ -1952,6 +2006,16 @@ export class PgHookRepo implements HookRepo {
     if (backoffMs.length === 0) return false
     const expected = [...new Set(expectedHookIds)].sort()
     if (expected.length === 0) return false
+    const authorities = new Map<string, HookDispatchAuthority>()
+    // Where a redelivered event lands, exactly as the relay rule names it: the placement for a
+    // machine-placed agent, the current duty holder for a set-placed one.
+    const dispatchTargets = new Map<string, string>()
+    for (const hookId of expected) {
+      const authority = await this.dispatchAuthority(hookId)
+      authorities.set(hookId, authority)
+      const routable = authority.ref ? await this.placement.routableDaemon(authority.ref) : null
+      if (routable) dispatchTargets.set(hookId, routable)
+    }
     return this.transaction(async (tx) => {
       // Hook-definition mutation paths take the lifecycle lock. Serialize the
       // expected fanout before the delivery lock; a placement move that commits
@@ -2001,24 +2065,23 @@ export class PgHookRepo implements HookRepo {
           reviewPolicy: true,
           reportingMode: true,
           gateMode: true,
-          agent: { select: { daemonId: true, status: true } }
+          agent: { select: { status: true } }
         }
       })
       const currentById = new Map(currentHooks.map((hook) => [hook.id, hook]))
       const attempt = Math.max(...rows.map((row) => row.redeliveryAttempts))
       const authoritySafe = rows.every((row) => {
         const current = currentById.get(row.hookId)
-        if (!current?.agentId || !current.agent?.daemonId || current.agent.status !== 'active') return false
+        if (!current?.agentId || current.agent?.status !== 'active') return false
+        const target = dispatchTargets.get(row.hookId)
+        if (authorities.get(row.hookId)?.agentId !== current.agentId || !target) return false
         // A definite offline failure may follow a placement-only move, but not
         // an agent/config edit that would reinterpret the old event. Once one
         // external POST has been requested, pin later attempts to its captured
         // dispatch: same-daemon durable inbox dedup is available, cross-daemon
         // dedup is not.
         if (row.agentId !== current.agentId || row.configRevision !== current.configRevision) return false
-        if (
-          attempt > 0 &&
-          (row.dispatchRevision !== current.dispatchRevision || row.dispatchDaemonId !== current.agent.daemonId)
-        )
+        if (attempt > 0 && (row.dispatchRevision !== current.dispatchRevision || row.dispatchDaemonId !== target))
           return false
         return true
       })
@@ -2050,7 +2113,7 @@ export class PgHookRepo implements HookRepo {
           data: {
             dispatchRevision: current.dispatchRevision,
             projectionEpoch: current.projectionEpoch,
-            dispatchDaemonId: current.agent!.daemonId!,
+            dispatchDaemonId: dispatchTargets.get(row.hookId)!,
             reviewPolicySnapshot: current.reviewPolicy,
             reportingModeSnapshot: current.reportingMode,
             gateModeSnapshot: current.gateMode,

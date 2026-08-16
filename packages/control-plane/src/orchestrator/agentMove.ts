@@ -20,6 +20,7 @@ import {
   gitRepoLabel,
   type Ack,
   type AgentActivate,
+  type DutyAgentBundle,
   type AgentSkillEntry,
   type ManagedSkillEntry,
   type CronUpsert,
@@ -32,13 +33,32 @@ import type {
   BotRepo,
   BotSecretStore,
   CronRepo,
+  MemberSetRepo,
   AgentWorkspace,
   IntegrationChannelRepo,
   IntegrationRepo
 } from '../persistence/ports.js'
 import { AgentWorkspaceIntegrationConflict } from '../persistence/errors.js'
 import type { AgentId, DaemonId } from '../domain/ids.js'
+import {
+  claimScopeOf,
+  isPlaced,
+  mayHold,
+  placementColumns,
+  placementLabel,
+  placementTargetOf,
+  samePlacement,
+  type PlacementTarget
+} from '../domain/placement.js'
+import { PLACEMENT_ONLY, type PlacementResolver } from './placementResolver.js'
+import { convergeAgentRouting } from './agentRouting.js'
 import { cronToUpsert, integrationToSpec, isGatedAgent, httpIntegrationToSpec } from './placement.js'
+import {
+  mcpDefsForAgents,
+  memoryDefsForAgents,
+  type McpDefinitionDeps,
+  type MemoryDefinitionDeps
+} from './agentDefinitions.js'
 import type { CpPlatformRegistry } from '../platforms/provider.js'
 import type { AgentSpecAssembler } from './agentSpecAssembler.js'
 import type { OrganizationEnvironmentValues } from './organizationEnvironment.js'
@@ -48,6 +68,7 @@ import type { HttpBotOrchestrator } from './httpBot.js'
 import type { CollabRoutesService } from './collabRoutes.service.js'
 import type { AgentMutationGate } from './agentMutationGate.js'
 import type { SessionKey } from '../domain/sessionKey.js'
+import type { DaemonLiveness } from '../ports.js'
 
 export class AgentMoveConflict extends Error {
   constructor(message: string) {
@@ -86,12 +107,25 @@ export interface AgentMoveDeps {
   /** Owns AgentSpec assembly (secret loading + icon bases) for the activation definition. */
   specs: AgentSpecAssembler
   crons: CronRepo
+  /** The `duty/fetch` bundle's MCP and external-memory projections — the same
+   *  optional seams `PlacementOrchDeps` carries, so the bundle and the reconnect
+   *  snapshot are one projector. Absent (tests / no orch) ⇒ neither kind ships. */
+  mcp?: McpDefinitionDeps
+  memory?: MemoryDefinitionDeps
   control: ControlSender
   hooks: HookService
   httpBot: HttpBotOrchestrator
   collabRoutes: CollabRoutesService
   mutations: AgentMutationGate
   sessionOwners: { releaseSession(key: SessionKey): void }
+  /** Set membership, for deciding whether a detached source is still an eligible holder of the
+   *  new placement. Absent ⇒ no source is ever unstaged, the pre-pool behavior. */
+  memberSets?: Pick<MemberSetRepo, 'setIdOf' | 'memberIdsOf'>
+  /** Live-connection reads for the set-commit unstage broadcast. Absent ⇒ no member is broadcast to. */
+  liveness?: DaemonLiveness
+  /** Resolves the members currently serving an agent — the sources a move must quiesce when
+   *  placement names no machine of its own. Absent ⇒ placement alone (the pre-duty behavior). */
+  placement?: PlacementResolver
   log?: AgentMoveLog
   /** Placement decides duty incumbency (design §4.4 soak policy), so a completed
    *  move re-derives the org's groups. Fire-and-forget; the sweep is the backstop. */
@@ -158,7 +192,7 @@ function isUnchangedWorkspace(agent: AgentRecord | null, original: AgentRecord):
     agent !== null &&
     sameWorkspaceDefinition(agent.workspace, original.workspace) &&
     agent.workspaceRepoId === original.workspaceRepoId &&
-    agent.daemonId === original.daemonId &&
+    samePlacement(placementTargetOf(agent), placementTargetOf(original)) &&
     agent.lastModifiedAt.getTime() === original.lastModifiedAt.getTime()
   )
 }
@@ -182,18 +216,18 @@ export class AgentMoveService {
     }
   }
 
-  async move(agent: AgentRecord, targetDaemonId: DaemonId, editor?: string): Promise<AgentRecord> {
+  async move(agent: AgentRecord, target: PlacementTarget, editor?: string): Promise<AgentRecord> {
     return this.withMoveGate(agent.id, async () =>
-      this.moveLocked(await this.reloadAfterGate(agent), targetDaemonId, editor, 'required')
+      this.moveLocked(await this.reloadAfterGate(agent), target, editor, 'required')
     )
   }
 
   /** Disaster recovery for a source daemon that cannot confirm detach. Target
    * admission and activation remain fully acknowledged; only the source handoff
    * becomes best-effort. */
-  async forceReassign(agent: AgentRecord, targetDaemonId: DaemonId, editor?: string): Promise<AgentRecord> {
+  async forceReassign(agent: AgentRecord, target: PlacementTarget, editor?: string): Promise<AgentRecord> {
     return this.withMoveGate(agent.id, async () =>
-      this.moveLocked(await this.reloadAfterGate(agent), targetDaemonId, editor, 'best-effort')
+      this.moveLocked(await this.reloadAfterGate(agent), target, editor, 'best-effort')
     )
   }
 
@@ -215,7 +249,7 @@ export class AgentMoveService {
     const current = await this.deps.agents.getUnscoped(observed.id)
     if (!current) throw new AgentMoveConflict('agent was deleted while preparing the move; refresh and retry')
     if (
-      current.daemonId !== observed.daemonId ||
+      !samePlacement(placementTargetOf(current), placementTargetOf(observed)) ||
       current.lastModifiedAt.getTime() !== observed.lastModifiedAt.getTime()
     ) {
       throw new AgentMoveConflict('agent changed while preparing the move; refresh and retry')
@@ -237,7 +271,12 @@ export class AgentMoveService {
     const release = await this.deps.mutations.beginMoveWhenIdle(agentId)
     try {
       const current = await this.deps.agents.getUnscoped(agentId)
-      if (!current || current.daemonId !== daemonId) return
+      if (!current) return
+      if (!(await (this.deps.placement ?? PLACEMENT_ONLY).mayAct(current, daemonId))) {
+        // A member that missed a set-commit unstage while offline reports its stale fence here (#1093).
+        await this.unstageReportedFence(current, daemonId)
+        return
+      }
 
       const candidate = await this.snapshotOwned(agentId, daemonId, current.orgId)
       const resumed = await this.deps.control.agentActivate(
@@ -255,7 +294,7 @@ export class AgentMoveService {
         const observed = await this.snapshotOwned(agentId, daemonId, current.orgId)
         if (candidate.fingerprint === observed.fingerprint) {
           const confirmed = await this.deps.agents.getUnscoped(agentId)
-          if (!confirmed || confirmed.daemonId !== daemonId) {
+          if (!confirmed || !(await (this.deps.placement ?? PLACEMENT_ONLY).mayAct(confirmed, daemonId))) {
             return this.failClosedOwnership(agentId, daemonId, current.orgId)
           }
           stable = { ...observed, agent: confirmed }
@@ -279,10 +318,20 @@ export class AgentMoveService {
   }
 
   private async ensureActiveLocked(agent: AgentRecord): Promise<AgentRecord> {
-    if (!agent.daemonId) throw new AgentMoveConflict('agent is not placed')
+    const placement = placementTargetOf(agent)
+    if (placement.kind === 'unplaced') throw new AgentMoveConflict('agent is not placed')
+    // Repairing a pool placement is the ledger's job: re-derive the duty group, clear any stale
+    // member fence that would make the next grant a dark hold, and let the lease exchange install.
+    if (placement.kind !== 'daemon') {
+      this.deps.recomputeDuties?.(agent.orgId)
+      await this.unstageEligibleSources(agent, new Map(), placement)
+      await this.convergeDerived(agent, (await this.snapshot(agent)).httpBotIds)
+      return agent
+    }
+    const daemonId = placement.daemonId
     let stable: ActivationSnapshot
     try {
-      stable = await this.activateUntilStable(agent.id, agent.daemonId, 'target repair', agent.orgId, {
+      stable = await this.activateUntilStable(agent.id, daemonId, 'target repair', agent.orgId, {
         reconcileWorkspace: true
       })
     } catch (err) {
@@ -302,21 +351,24 @@ export class AgentMoveService {
     if (workspace.mode === 'github' && workspaceRepoId === undefined) {
       throw new AgentMoveConflict('a GitHub workspace requires a resolved repository')
     }
+    // The member to fence and re-activate: placement when it names a machine, otherwise whichever
+    // pool member currently holds the agent. Nothing serving it ⇒ this is a cold edit.
+    const servingDaemonId = await (this.deps.placement ?? PLACEMENT_ONLY).servingDaemon(agent)
     if (sameWorkspace(agent, workspace, workspaceRepoId)) {
-      if (!agent.daemonId) {
+      if (!servingDaemonId) {
         await this.finalizeWorkspaceChange(agent, workspaceRepoId, [])
         return agent
       }
       // Lost-response repair: the daemon's durable materialization marker makes
       // this replay idempotent even when the prior edit changed repo/branch/mode.
-      const stable = await this.activateUntilStable(agent.id, agent.daemonId, 'workspace edit repair', agent.orgId, {
+      const stable = await this.activateUntilStable(agent.id, servingDaemonId, 'workspace edit repair', agent.orgId, {
         reconcileWorkspace: true
       })
       await this.finalizeWorkspaceChange(stable.agent, workspaceRepoId, stable.bundle.httpBotIds)
       return stable.agent
     }
 
-    if (!agent.daemonId) {
+    if (!servingDaemonId) {
       let converted: AgentRecord | null = null
       try {
         converted = await this.deps.agents.setWorkspace(
@@ -330,7 +382,7 @@ export class AgentMoveService {
         )
       } catch (err) {
         const observed = await this.deps.agents.getUnscoped(agent.id).catch(() => null)
-        if (observed?.daemonId === null && sameWorkspace(observed, workspace, workspaceRepoId)) {
+        if (observed && !isPlaced(observed) && sameWorkspace(observed, workspace, workspaceRepoId)) {
           converted = observed
         } else if (err instanceof AgentWorkspaceIntegrationConflict) {
           throw new AgentMoveConflict(err.message)
@@ -343,7 +395,7 @@ export class AgentMoveService {
       return converted
     }
 
-    const daemonId = agent.daemonId
+    const daemonId = servingDaemonId
     const bundle = await this.snapshot(agent)
     const moveId = randomUUID()
     let detached: Ack
@@ -384,7 +436,7 @@ export class AgentMoveService {
         })
       }
 
-      if (observed?.daemonId === daemonId && sameWorkspace(observed, workspace, workspaceRepoId)) {
+      if (observed && isPlaced(observed) && sameWorkspace(observed, workspace, workspaceRepoId)) {
         // The CAS committed and only its response was lost. Continue from the
         // durable GitHub definition instead of reviving stale scratch authority.
         converted = observed
@@ -437,21 +489,28 @@ export class AgentMoveService {
 
   private async moveLocked(
     agent: AgentRecord,
-    targetDaemonId: DaemonId,
+    target: PlacementTarget,
     editor: string | undefined,
     sourceDetachMode: SourceDetachMode
   ): Promise<AgentRecord> {
-    const sourceDaemonId = agent.daemonId
+    const source = placementTargetOf(agent)
+    // Every member serving the agent today, not only the one placement names: a `pool` agent is
+    // served by whoever holds its duty, so moving it onto a machine has to quiesce that member or
+    // the machine it lands on and the member it left both run it.
+    const sourceDaemonIds = (await (this.deps.placement ?? PLACEMENT_ONLY).servingDaemons(agent)) as DaemonId[]
     // Retained only as compensation input if the source is detached but the
     // placement CAS never commits. The target always receives a fresh post-CAS
     // snapshot, never this pre-detach copy.
     const sourceBundle = await this.snapshot(agent)
 
-    if (sourceDaemonId) {
+    const stagedSources = new Map<DaemonId, string>()
+    for (const sourceDaemonId of sourceDaemonIds) {
+      const moveId = randomUUID()
+      stagedSources.set(sourceDaemonId, moveId)
       try {
         requireAck(
           'source cutover',
-          await this.detach(sourceDaemonId, agent.id, agent.orgId, { discardActiveTurns: true })
+          await this.detach(sourceDaemonId, agent.id, agent.orgId, { moveId, discardActiveTurns: true })
         )
       } catch (err) {
         if (sourceDetachMode === 'required') {
@@ -459,7 +518,7 @@ export class AgentMoveService {
           throw new AgentMoveFailed('source daemon cutover failed', err)
         }
         this.deps.log?.warn(
-          { err, agentId: agent.id, sourceDaemonId, targetDaemonId },
+          { err, agentId: agent.id, sourceDaemonId, target: placementLabel(target) },
           'agent force reassign: source detach unconfirmed; continuing by operator request'
         )
       }
@@ -479,17 +538,28 @@ export class AgentMoveService {
 
     let moved: AgentRecord | null
     try {
-      moved = await this.deps.agents.movePlacement(agent.id, sourceDaemonId, targetDaemonId, editor)
+      moved = await this.deps.agents.movePlacement(agent.id, source, target, editor)
       if (moved) this.deps.recomputeDuties?.(moved.orgId)
     } catch (err) {
-      await this.restoreSourceIfStillOwner(agent, sourceDaemonId, sourceBundle)
+      await this.restoreSourceIfStillOwner(agent, source, sourceBundle)
       throw new AgentMoveFailed('failed to persist agent placement', err)
     }
     if (!moved) {
-      await this.restoreSourceIfStillOwner(agent, sourceDaemonId, sourceBundle)
+      await this.restoreSourceIfStillOwner(agent, source, sourceBundle)
       throw new AgentMoveConflict('agent placement changed concurrently; refresh and retry')
     }
 
+    // A pool target has no daemon to bootstrap, and that is the design rather than a gap: the
+    // ledger grants the agent's group to a live member, which installs exactly this bundle
+    // through `duty/fetch` and starts serving. Committing the placement IS the move — a
+    // synchronous activation would only name one member the ledger is free to replace next beat.
+    if (target.kind !== 'daemon') {
+      await this.unstageEligibleSources(moved, stagedSources, target)
+      await this.convergeDerived(moved, sourceBundle.httpBotIds)
+      return moved
+    }
+
+    const targetDaemonId = target.daemonId
     let stable: ActivationSnapshot
     try {
       // Re-read the full wire definition only AFTER the placement CAS. The
@@ -498,7 +568,7 @@ export class AgentMoveService {
       stable = await this.activateUntilStable(moved.id, targetDaemonId, 'target', moved.orgId)
     } catch (err) {
       if (err instanceof AgentMoveFailClosed) throw err
-      const rolledBack = await this.rollback(agent, moved, sourceDaemonId, targetDaemonId, editor, sourceBundle)
+      const rolledBack = await this.rollback(agent, moved, source, targetDaemonId, editor, sourceBundle)
       if (!rolledBack) {
         throw new AgentMoveFailed(
           'target bootstrap failed and target detach was not confirmed; placement remains on target for manual recovery',
@@ -511,6 +581,75 @@ export class AgentMoveService {
 
     await this.convergeDerived(stable.agent, stable.bundle.httpBotIds)
     return stable.agent
+  }
+
+  /** Clear staging fences wherever the new placement makes a daemon an eligible holder again (#1093). */
+  private async unstageEligibleSources(
+    agent: AgentRecord,
+    stagedSources: ReadonlyMap<DaemonId, string>,
+    target: PlacementTarget
+  ): Promise<void> {
+    const memberSets = this.deps.memberSets
+    if (!memberSets) return
+    // A set commit also clears fences from EARLIER moves off that set (pool→machine→pool), token-less.
+    const staleMembers =
+      target.kind === 'set'
+        ? (await this.liveSetMembers(target.setId)).filter((daemonId) => !stagedSources.has(daemonId))
+        : []
+    if (stagedSources.size === 0 && staleMembers.length === 0) return
+    const columns = placementColumns(target)
+    const bundle = await this.snapshot(agent)
+    // The arming token releases the fence and leaves the replica current; non-members stay fenced.
+    for (const [daemonId, moveId] of stagedSources) {
+      const setId = await memberSets.setIdOf(daemonId)
+      if (!mayHold(columns, { daemonId, scope: claimScopeOf({ setId }) })) continue
+      await this.bestEffortUnstage(agent, bundle, daemonId, moveId)
+    }
+    for (const daemonId of staleMembers) await this.bestEffortUnstage(agent, bundle, daemonId)
+  }
+
+  private async bestEffortUnstage(
+    agent: AgentRecord,
+    bundle: MoveBundle,
+    daemonId: DaemonId,
+    moveId?: string
+  ): Promise<void> {
+    try {
+      requireAck(
+        'source unstage',
+        await this.deps.control.agentActivate(
+          daemonId,
+          { ...this.activationDefinition(agent, bundle), ...(moveId === undefined ? {} : { moveId }) },
+          agent.orgId
+        )
+      )
+    } catch (err) {
+      this.deps.log?.warn(
+        { err, agentId: agent.id, daemonId },
+        'agent move: could not clear the source staging fence; its reconnect reconcile is the backstop'
+      )
+    }
+  }
+
+  /** Reconnect backstop: release a reported fence when the reporter is an eligible set member. */
+  private async unstageReportedFence(agent: AgentRecord, daemonId: DaemonId): Promise<void> {
+    const memberSets = this.deps.memberSets
+    const target = placementTargetOf(agent)
+    if (!memberSets || target.kind !== 'set') return
+    const setId = await memberSets.setIdOf(daemonId)
+    if (!mayHold(placementColumns(target), { daemonId, scope: claimScopeOf({ setId }) })) return
+    // Token-less like the commit broadcast: `mayAct` said no, so this member must release without running.
+    await this.bestEffortUnstage(agent, await this.snapshot(agent), daemonId)
+  }
+
+  /** The target set's READY members — who a set commit may need to unstage. */
+  private async liveSetMembers(setId: string): Promise<DaemonId[]> {
+    const { memberSets, liveness } = this.deps
+    if (!memberSets || !liveness) return []
+    return (await memberSets.memberIdsOf(setId)).filter((daemonId) => {
+      const live = liveness.get(daemonId)
+      return live?.reachable === true && live.state === 'READY'
+    }) as DaemonId[]
   }
 
   private async restoreDetachedWorkspace(
@@ -575,7 +714,7 @@ export class AgentMoveService {
     // applied. Replaying `original` therefore could not restore anything the target had accepted —
     // every rejected edit ended fail-closed with the agent staged and offline.
     await this.restoreDetachedWorkspace(
-      converted.daemonId!,
+      (await (this.deps.placement ?? PLACEMENT_ONLY).servingDaemon(converted))!,
       restored,
       bundle,
       moveId,
@@ -610,6 +749,29 @@ export class AgentMoveService {
       this.deps.log?.warn({ err, agentId: agent.id }, 'workspace edit: repository grant cleanup deferred')
     }
     await this.convergeDerived(agent, httpBotIds)
+  }
+
+  /**
+   * The complete installable definition of one agent — secrets, org environment,
+   * skills, integration specs, crons, and the two definition kinds the spec only
+   * NAMES (its proxied MCP servers and its external-memory connection) — with no
+   * move token, staging fence, or placement assertion attached.
+   *
+   * Used only by `duty/fetch`. The MCP and memory defs come from the SAME
+   * projector the reconnect roster uses, scoped to this one agent's references,
+   * so a holder's install and its next snapshot cannot disagree and the reply
+   * carries nothing beyond what the duty it already holds covers. A move keeps
+   * its narrower `activationDefinition` — placement moves converge these two
+   * kinds through their own live pushes and the target's register.
+   */
+  async bundleFor(agent: AgentRecord): Promise<DutyAgentBundle> {
+    const log = { warn: (obj: object, msg: string) => this.deps.log?.warn(obj, msg) }
+    const [snapshot, mcpServers, memoryConnections] = await Promise.all([
+      this.snapshot(agent),
+      mcpDefsForAgents([agent], this.deps.mcp, log, { agentId: agent.id }),
+      memoryDefsForAgents([agent], this.deps.memory, log, { agentId: agent.id })
+    ])
+    return { ...this.activationDefinition(agent, snapshot), mcpServers, memoryConnections }
   }
 
   /** Read every placement-dependent wire definition. */
@@ -680,7 +842,9 @@ export class AgentMoveService {
 
   private async snapshotOwned(agentId: AgentId, targetDaemonId: DaemonId, orgId: string): Promise<ActivationSnapshot> {
     const agent = await this.deps.agents.getUnscoped(agentId)
-    if (!agent || agent.daemonId !== targetDaemonId) {
+    // "Still ours" is the resolver's answer, not placement equality: a pool member legitimately
+    // acts for an agent whose placement names no machine, and only the ledger can say so.
+    if (!agent || !(await (this.deps.placement ?? PLACEMENT_ONLY).mayAct(agent, targetDaemonId))) {
       return this.failClosedOwnership(agentId, targetDaemonId, orgId)
     }
     const bundle = await this.snapshot(agent)
@@ -714,7 +878,7 @@ export class AgentMoveService {
         // Explicit final ownership read: an agent deleted or re-placed after the
         // ACK must never leave this target serving an orphaned copy.
         const confirmed = await this.deps.agents.getUnscoped(agentId)
-        if (!confirmed || confirmed.daemonId !== targetDaemonId) {
+        if (!confirmed || !(await (this.deps.placement ?? PLACEMENT_ONLY).mayAct(confirmed, targetDaemonId))) {
           return this.failClosedOwnership(agentId, targetDaemonId, orgId)
         }
         return { ...observed, agent: confirmed }
@@ -758,7 +922,7 @@ export class AgentMoveService {
   private async rollback(
     sourceAgent: AgentRecord,
     moved: AgentRecord,
-    sourceDaemonId: DaemonId | null,
+    source: PlacementTarget,
     targetDaemonId: DaemonId,
     editor: string | undefined,
     bundle: MoveBundle
@@ -777,26 +941,33 @@ export class AgentMoveService {
     }
     let restored: AgentRecord | null = null
     try {
-      restored = await this.deps.agents.movePlacement(moved.id, targetDaemonId, sourceDaemonId, editor)
+      restored = await this.deps.agents.movePlacement(
+        moved.id,
+        { kind: 'daemon', daemonId: targetDaemonId },
+        source,
+        editor
+      )
       if (restored) this.deps.recomputeDuties?.(restored.orgId)
     } catch (err) {
       this.deps.log?.warn({ err, agentId: moved.id }, 'agent move: placement rollback failed')
     }
-    if (restored && sourceDaemonId) {
-      await this.bestEffortBootstrap('source bootstrap rollback', sourceDaemonId, sourceAgent, bundle)
+    // Only a machine source has a bootstrap to restore. A pool source is restored by the ledger:
+    // the placement is back, so the next sweep re-grants the group and install-on-grant replays.
+    if (restored && source.kind === 'daemon') {
+      await this.bestEffortBootstrap('source bootstrap rollback', source.daemonId, sourceAgent, bundle)
     }
     return restored !== null
   }
 
   private async restoreSourceIfStillOwner(
     agent: AgentRecord,
-    sourceDaemonId: DaemonId | null,
+    source: PlacementTarget,
     bundle: MoveBundle
   ): Promise<void> {
-    if (!sourceDaemonId) return
+    if (source.kind !== 'daemon') return
     const current = await this.deps.agents.getUnscoped(agent.id).catch(() => null)
-    if (current?.daemonId !== sourceDaemonId) return
-    await this.bestEffortBootstrap('source bootstrap after CAS failure', sourceDaemonId, agent, bundle)
+    if (!current || !samePlacement(placementTargetOf(current), source)) return
+    await this.bestEffortBootstrap('source bootstrap after CAS failure', source.daemonId, agent, bundle)
   }
 
   /** Stage first, then install one authoritative bundle under the daemon gate. */
@@ -840,21 +1011,16 @@ export class AgentMoveService {
     }
   }
 
+  /** The placement and daemon activation are already committed, and every one of these projections
+   *  has a reconnect/replay backstop, so a transient fan-out error is logged rather than turning a
+   *  committed move into a 500. Shared with the duty path (`orchestrator/agentRouting.ts`): a
+   *  holder change moves who serves the agent exactly as a placement move does, and two copies of
+   *  this list would be two chances to forget one. */
   private async convergeDerived(agent: AgentRecord, httpBotIds: string[]): Promise<void> {
-    const jobs: Array<{ label: string; run: () => Promise<void> }> = [
-      { label: 'hook routes', run: () => this.deps.hooks.rebroadcastForAgent(agent.id) },
-      { label: 'collaboration routes', run: () => this.deps.collabRoutes.broadcast(agent.orgId) },
-      ...httpBotIds.map((botId) => ({ label: `HTTP bot ${botId}`, run: () => this.deps.httpBot.syncBot(botId) }))
-    ]
-    for (const job of jobs) {
-      try {
-        await job.run()
-      } catch (err) {
-        // The placement and daemon activation are already committed. Each of
-        // these derived tables has a reconnect/replay convergence backstop, so a
-        // transient fan-out error is logged rather than turning success into 500.
-        this.deps.log?.warn({ err, agentId: agent.id, job: job.label }, 'agent move: derived convergence deferred')
-      }
-    }
+    await convergeAgentRouting(
+      this.deps,
+      { agentId: agent.id, orgId: agent.orgId, httpBotIds },
+      { warn: (obj, msg) => this.deps.log?.warn(obj, msg) }
+    )
   }
 }

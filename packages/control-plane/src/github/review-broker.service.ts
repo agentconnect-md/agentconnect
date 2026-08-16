@@ -27,6 +27,7 @@ import type {
   HookReviewResultInput,
   HookRunRecord
 } from '../persistence/ports.js'
+import { PLACEMENT_ONLY, type PlacementResolver } from '../orchestrator/placementResolver.js'
 import { GitCredDeniedError, type GithubService } from './service.js'
 
 type ReviewBrokerCode = Extract<ErrorCode, 'SCOPE_DENIED' | 'LEASE_DENIED' | 'RATE_LIMITED' | 'CONFLICT' | 'INTERNAL'>
@@ -48,6 +49,8 @@ export interface GithubReviewBrokerDeps {
   agent: Pick<AgentRepo, 'getUnscoped'>
   github: Pick<GithubService, 'mintReviewForAgent' | 'validateReviewForAgent'>
   clock: Pick<Clock, 'now'>
+  /** Absent (tests, or a deployment with no member set) ⇒ placement alone, the pre-duty behavior. */
+  placement?: Pick<PlacementResolver, 'mayAct'>
 }
 
 const POLICY_RANK = {
@@ -165,7 +168,9 @@ function requireCurrentActionAuthority(
   agent: AgentRecord | null,
   run: HookRunRecord,
   daemonId: DaemonId,
-  event: HookReviewEvent
+  event: HookReviewEvent,
+  /** Whether the reporting daemon still serves the agent — placement ∪ live duty holders. */
+  agentIsServed: boolean
 ): { hook: HookRecord; agent: AgentRecord } {
   if (
     !hook ||
@@ -189,7 +194,7 @@ function requireCurrentActionAuthority(
     !agent ||
     agent.id !== run.agentId ||
     agent.status !== 'active' ||
-    agent.daemonId !== daemonId ||
+    !agentIsServed ||
     run.dispatchDaemonId !== daemonId
   ) {
     denied('agent is no longer active on the accepted dispatch daemon')
@@ -235,6 +240,31 @@ function submittedVerdictIsValid(event: HookReviewEvent, verdict: 'pass' | 'fail
 export class GithubReviewBrokerService {
   constructor(private readonly deps: GithubReviewBrokerDeps) {}
 
+  /** May the reporting daemon act for this agent — its placement, or a duty it currently holds. */
+  private serves(agent: AgentRecord, daemonId: DaemonId): Promise<boolean> {
+    return (this.deps.placement ?? PLACEMENT_ONLY).mayAct(agent, daemonId)
+  }
+
+  /** Re-read hook + agent and re-apply the current action fence at one authorization checkpoint. */
+  private async requireLiveActionAuthority(
+    hookId: HookId,
+    agentId: AgentId,
+    run: HookRunRecord,
+    reportingDaemonId: DaemonId,
+    event: HookReviewEvent
+  ): Promise<{ hook: HookRecord; agent: AgentRecord }> {
+    const hook = await this.deps.hook.getUnscoped(hookId)
+    const agent = await this.deps.agent.getUnscoped(agentId)
+    return requireCurrentActionAuthority(
+      hook,
+      agent,
+      run,
+      reportingDaemonId,
+      event,
+      agent ? await this.serves(agent, reportingDaemonId) : false
+    )
+  }
+
   /** Re-read the durable attempt at each authorization checkpoint. Keeping
    * this guard named makes the repeated TOCTOU fences visible without
    * repeating their field-by-field comparison. */
@@ -261,10 +291,11 @@ export class GithubReviewBrokerService {
   }
 
   /** Persist the exact start barrier before a GitHub hook enters the prompt. */
-  async start(input: HookStart, reportingDaemonId: DaemonId): Promise<void> {
+  async start(input: HookStart, reportingDaemonId: DaemonId, reportingOrgId?: string): Promise<void> {
     const hookId = HookId(input.hookId)
     const initial = await this.deps.hook.getRun(hookId, input.deliveryKey)
     if (!initial) denied('review dispatch fence does not match the accepted hook run')
+    if (reportingOrgId && initial.orgId !== reportingOrgId) denied('organization does not match the accepted hook run')
     if (initial.agentId === null || initial.agentId !== AgentId(input.agentId)) {
       denied('hook start agent does not match the accepted hook run')
     }
@@ -331,7 +362,7 @@ export class GithubReviewBrokerService {
     )
     requireCurrentHookForStart(await this.deps.hook.getUnscoped(hookId), run, reportingDaemonId)
     const agent = await this.deps.agent.getUnscoped(run.agentId!)
-    if (!agent || agent.status !== 'active' || agent.daemonId !== reportingDaemonId) {
+    if (!agent || agent.status !== 'active' || !(await this.serves(agent, reportingDaemonId))) {
       denied('agent is no longer active on the accepted dispatch daemon')
     }
 
@@ -358,9 +389,9 @@ export class GithubReviewBrokerService {
       denied('requested review event and verdict are incompatible')
     }
     const target = requireTrustedPullTarget(initial)
-    const current = requireCurrentActionAuthority(
-      await this.deps.hook.getUnscoped(hookId),
-      await this.deps.agent.getUnscoped(initial.agentId),
+    const current = await this.requireLiveActionAuthority(
+      hookId,
+      initial.agentId,
       initial,
       reportingDaemonId,
       input.requestedEvent
@@ -411,9 +442,9 @@ export class GithubReviewBrokerService {
       'review attempt reservation changed while authorizing'
     )
     try {
-      const finalAuthority = requireCurrentActionAuthority(
-        await this.deps.hook.getUnscoped(hookId),
-        await this.deps.agent.getUnscoped(initial.agentId),
+      const finalAuthority = await this.requireLiveActionAuthority(
+        hookId,
+        initial.agentId,
         finalRun,
         reportingDaemonId,
         input.requestedEvent
@@ -439,9 +470,9 @@ export class GithubReviewBrokerService {
         reportingDaemonId,
         'review attempt reservation changed while authorizing'
       )
-      requireCurrentActionAuthority(
-        await this.deps.hook.getUnscoped(hookId),
-        await this.deps.agent.getUnscoped(initial.agentId),
+      await this.requireLiveActionAuthority(
+        hookId,
+        initial.agentId,
         exposureRun,
         reportingDaemonId,
         input.requestedEvent

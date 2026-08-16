@@ -2,7 +2,8 @@ import { MessageChannel, receiveMessageOnPort, Worker } from 'node:worker_thread
 import type { DataPlaneConfig } from './postgres-config.js'
 import type { StoreDatabase, StoreRunResult, StoreStatement } from './local-store.js'
 
-const CLOUD_STORE_SCHEMA = 'agentconnect_cloud_store'
+// Stored schema name — the pool's data lives here, so the literal outlives the vocabulary rename.
+const POOL_STORE_SCHEMA = 'agentconnect_cloud_store'
 
 type WorkerReply = { id: number; ok: true; value?: unknown } | { id: number; ok: false; error: string }
 
@@ -15,6 +16,7 @@ const canonicalColumns = [
   'agentCallDeliveryId',
   'agentId',
   'attachmentsJson',
+  'attemptAt',
   'authorityGeneration',
   'authorityId',
   'automaticCount',
@@ -25,6 +27,7 @@ const canonicalColumns = [
   'capsJson',
   'channelId',
   'childSessionId',
+  'claimedAt',
   'completedAt',
   'connectionId',
   'connectionRevision',
@@ -52,6 +55,7 @@ const canonicalColumns = [
   'externalRealmKey',
   'externalResourceKey',
   'externalResourceKind',
+  'failedAttempts',
   'fastModeOverride',
   'globalRules',
   'hookContext',
@@ -81,6 +85,7 @@ const canonicalColumns = [
   'operationId',
   'orchestrationId',
   'organizationSuggestions',
+  'orgId',
   'originSessionId',
   'ownerId',
   'outputModeOverride',
@@ -100,6 +105,8 @@ const canonicalColumns = [
   'quoteJson',
   'reasonCode',
   'replyTarget',
+  'reportClaimedAt',
+  'reportOwnerId',
   'requesterId',
   'requesterName',
   'recoveryAt',
@@ -125,6 +132,7 @@ const canonicalColumns = [
   'threadUrl',
   'toAgentId',
   'toolCallId',
+  'touchedAt',
   'totalCount',
   'transportScope',
   'transcriptCoordinates',
@@ -177,7 +185,7 @@ export class PostgresSyncDatabase implements StoreDatabase {
     this.worker = new Worker(new URL('./postgres-store-worker.js', import.meta.url), {
       workerData: {
         databaseUrl: config.databaseUrl,
-        schema: CLOUD_STORE_SCHEMA,
+        schema: POOL_STORE_SCHEMA,
         columnNames,
         replyPort: channel.port2,
         readySignal
@@ -186,10 +194,10 @@ export class PostgresSyncDatabase implements StoreDatabase {
     })
     if (Atomics.wait(readySignal, 0, 0, 30_000) === 'timed-out') {
       void this.worker.terminate()
-      throw new Error('PostgreSQL cloud store startup timed out after 30 seconds')
+      throw new Error('PostgreSQL pool store startup timed out after 30 seconds')
     }
     const ready = this.waitForReply(0)
-    if (!ready.ok) throw new Error(`PostgreSQL cloud store failed to open: ${ready.error}`)
+    if (!ready.ok) throw new Error(`PostgreSQL pool store failed to open: ${ready.error}`)
   }
 
   exec(sql: string): void {
@@ -218,12 +226,12 @@ export class PostgresSyncDatabase implements StoreDatabase {
   }
 
   private request(kind: string, sql: string, params: unknown[]): unknown {
-    if (this.closed) throw new Error('PostgreSQL cloud store is closed')
+    if (this.closed) throw new Error('PostgreSQL pool store is closed')
     const id = this.nextId++
     const signal = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT))
     this.worker.postMessage({ id, kind, sql, params, signal })
     if (Atomics.wait(signal, 0, 0, 30_000) === 'timed-out') {
-      const error = new Error('PostgreSQL cloud store operation timed out after 30 seconds')
+      const error = new Error('PostgreSQL pool store operation timed out after 30 seconds')
       this.onFailure(error)
       throw error
     }

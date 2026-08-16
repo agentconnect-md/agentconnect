@@ -76,9 +76,10 @@ describe('DreamScheduler', () => {
   it('fires onFire for the scheduled agent', async () => {
     const { fired, scheduler } = make()
     scheduler.sync('a1', { enabled: true, schedule: EVERY_SECOND })
-    await new Promise((r) => setTimeout(r, 1400))
+    // Wait for the tick itself, not for a window a tick usually fits in: the cron is real, so a
+    // runner slow enough to miss a fixed one-second-and-a-bit sleep failed this for no reason.
+    await vi.waitFor(() => expect(fired.length).toBeGreaterThanOrEqual(1), { timeout: 30_000, interval: 10 })
     scheduler.stop()
-    expect(fired.length).toBeGreaterThanOrEqual(1)
     expect(new Set(fired)).toEqual(new Set(['a1']))
   })
 
@@ -86,6 +87,8 @@ describe('DreamScheduler', () => {
     const { fired, scheduler } = make()
     scheduler.sync('a1', { enabled: true, schedule: EVERY_SECOND })
     scheduler.stop()
+    // A genuine real wait, and deliberately so: proving nothing fires needs a window in which a
+    // live job WOULD have. Slowness only widens it, so this cannot fail from a loaded runner.
     await new Promise((r) => setTimeout(r, 1200))
     expect(fired).toHaveLength(0)
   })
@@ -125,11 +128,14 @@ describe('scheduled dream lifecycle gates (daemon)', () => {
     let started = false
     const inner = daemon as unknown as {
       onDreamScheduleFire(id: string): void
+      store?: { setDreamLastRun(id: string, at: number): void }
       dreamRunner(): {
         start(id: string, opts: unknown): Promise<unknown>
         hasNewSessionsSinceLastDream(id: string): boolean
       }
     }
+    // The tick stamps its occurrence (#1031) ahead of the gates, and these daemons never start.
+    inner.store ??= { setDreamLastRun: () => {} }
     inner.dreamRunner = () => ({
       start: async () => {
         started = true

@@ -48,6 +48,19 @@ function connReg(opts: { connected?: boolean; feature?: boolean; externalFeature
   } as never
 }
 
+/**
+ * The agent repo as the service reads it from BOTH sides: the live push resolves one agent's
+ * serving member, the replay asks which agents the connecting member serves.
+ */
+function agentRepo(daemonId: string | null | undefined = DAEMON) {
+  const agent = daemonId ? { id: AGENT, daemonId } : { id: AGENT }
+  return {
+    getUnscoped: vi.fn(async () => agent),
+    listForDaemon: vi.fn(async () => (daemonId ? [agent] : [])),
+    listByIds: vi.fn(async () => [])
+  } as never
+}
+
 function deps(
   over: {
     connReg?: never
@@ -58,6 +71,8 @@ function deps(
       Array<{ orgId: string; sessionId: string; visibility: 'private' | 'org' | 'external'; visibilityRev: number }>
     >
     unackedAfter?: number[]
+    /** Successive PRIVATE pages (phase 2), newest call first. */
+    privatePages?: Array<Array<{ orgId: string; sessionId: string; visibility: 'private'; visibilityRev: number }>>
   } = {}
 ) {
   const recordVisibilityAck = vi.fn(async () => {})
@@ -71,23 +86,27 @@ function deps(
   const daemonId = over.daemonId === undefined ? DAEMON : over.daemonId
   const pages = [...(over.snapshotPages ?? [[]])]
   const unacked = [...(over.unackedAfter ?? [0])]
-  const visibilitySnapshotForDaemon = vi.fn(async () => pages.shift() ?? [])
-  const countUnackedVisibility = vi.fn(async () => unacked.shift() ?? 0)
+  const privatePages = [...(over.privatePages ?? [[]])]
+  const visibilitySnapshotForAgents = vi.fn(async () => pages.shift() ?? [])
+  const countUnackedVisibilityForAgents = vi.fn(async () => unacked.shift() ?? 0)
+  const privateVisibilityPage = vi.fn(async () => privatePages.shift() ?? [])
   const sessionVisibilitySnapshot = vi.fn(async () => ({ ok: true }))
   return {
     recordVisibilityAck,
     sessionVisibility,
-    visibilitySnapshotForDaemon,
+    visibilitySnapshotForAgents,
+    privateVisibilityPage,
     sessionVisibilitySnapshot,
     push: new SessionVisibilityPushService({
       repos: {
         session: {
           recordVisibilityAck,
-          visibilitySnapshotForDaemon,
-          countUnackedVisibility,
+          visibilitySnapshotForAgents,
+          countUnackedVisibilityForAgents,
+          privateVisibilityPage,
           get: vi.fn(async () => null)
         } as never,
-        agent: { getUnscoped: vi.fn(async () => (daemonId ? { id: AGENT, daemonId } : { id: AGENT })) } as never
+        agent: agentRepo(daemonId)
       },
       control: { sessionVisibility, sessionVisibilitySnapshot } as never,
       connReg: over.connReg ?? connReg(),
@@ -101,8 +120,10 @@ describe('notifySessions', () => {
     const { push, sessionVisibility, recordVisibilityAck } = deps()
     await push.notifySessions([session()])
 
+    // The agent rides along: the daemon keys its gate by (agent, ACP session id).
     expect(sessionVisibility).toHaveBeenCalledWith(DAEMON, ORG, {
       sessionId: 'acp-1',
+      agentId: AGENT,
       visibility: 'private',
       sharedMemoryExcluded: true,
       visibilityRev: 2
@@ -193,7 +214,7 @@ describe('replayTo — register-time convergence', () => {
     const d = deps({ snapshotPages: [page(3)] })
     await d.push.replayTo(DAEMON as never)
     expect(d.sessionVisibilitySnapshot).toHaveBeenCalledTimes(1)
-    expect(d.visibilitySnapshotForDaemon).toHaveBeenCalledTimes(1)
+    expect(d.visibilitySnapshotForAgents).toHaveBeenCalledTimes(1)
   })
 
   it('splits a shared daemon snapshot into one organization-scoped request per org', async () => {
@@ -224,18 +245,19 @@ describe('replayTo — register-time convergence', () => {
       // as fast as we ack. A round cap would walk away from gates we KNOW are
       // stale; the loop must yield and come back instead.
       const warn = vi.fn()
-      const visibilitySnapshotForDaemon = vi.fn(async () => page(500))
-      const countUnackedVisibility = vi.fn(async () => 5_000)
+      const visibilitySnapshotForAgents = vi.fn(async () => page(500))
+      const countUnackedVisibilityForAgents = vi.fn(async () => 5_000)
       const sessionVisibilitySnapshot = vi.fn(async () => ({ ok: true }))
       const push = new SessionVisibilityPushService({
         repos: {
           session: {
             recordVisibilityAck: vi.fn(async () => {}),
-            visibilitySnapshotForDaemon,
-            countUnackedVisibility,
+            visibilitySnapshotForAgents,
+            countUnackedVisibilityForAgents,
+            privateVisibilityPage: vi.fn(async () => []),
             get: vi.fn(async () => null)
           } as never,
-          agent: { getUnscoped: vi.fn(async () => ({ id: AGENT, daemonId: DAEMON })) } as never
+          agent: agentRepo(DAEMON)
         },
         control: { sessionVisibility: vi.fn(), sessionVisibilitySnapshot } as never,
         connReg: connReg(),
@@ -267,17 +289,18 @@ describe('replayTo — register-time convergence', () => {
       // A repo read rejects OUTSIDE sendSnapshotChunk's catch. Left unhandled it
       // would both surface as an unhandled rejection and strand the gates we
       // already know are stale.
-      const visibilitySnapshotForDaemon = vi.fn().mockRejectedValueOnce(new Error('db down')).mockResolvedValue(page(2))
+      const visibilitySnapshotForAgents = vi.fn().mockRejectedValueOnce(new Error('db down')).mockResolvedValue(page(2))
       const sessionVisibilitySnapshot = vi.fn(async () => ({ ok: true }))
       const push = new SessionVisibilityPushService({
         repos: {
           session: {
             recordVisibilityAck: vi.fn(async () => {}),
-            visibilitySnapshotForDaemon,
-            countUnackedVisibility: vi.fn(async () => 0),
+            visibilitySnapshotForAgents,
+            countUnackedVisibilityForAgents: vi.fn(async () => 0),
+            privateVisibilityPage: vi.fn(async () => []),
             get: vi.fn(async () => null)
           } as never,
-          agent: { getUnscoped: vi.fn(async () => ({ id: AGENT, daemonId: DAEMON })) } as never
+          agent: agentRepo(DAEMON)
         },
         control: { sessionVisibility: vi.fn(), sessionVisibilitySnapshot } as never,
         connReg: connReg(),
@@ -299,16 +322,17 @@ describe('replayTo — register-time convergence', () => {
   it('stops scheduling once shut down, and settles a resume that already fired', async () => {
     vi.useFakeTimers()
     try {
-      const visibilitySnapshotForDaemon = vi.fn(async () => page(500))
+      const visibilitySnapshotForAgents = vi.fn(async () => page(500))
       const push = new SessionVisibilityPushService({
         repos: {
           session: {
             recordVisibilityAck: vi.fn(async () => {}),
-            visibilitySnapshotForDaemon,
-            countUnackedVisibility: vi.fn(async () => 5_000),
+            visibilitySnapshotForAgents,
+            countUnackedVisibilityForAgents: vi.fn(async () => 5_000),
+            privateVisibilityPage: vi.fn(async () => []),
             get: vi.fn(async () => null)
           } as never,
-          agent: { getUnscoped: vi.fn(async () => ({ id: AGENT, daemonId: DAEMON })) } as never
+          agent: agentRepo(DAEMON)
         },
         control: { sessionVisibility: vi.fn(), sessionVisibilitySnapshot: vi.fn(async () => ({ ok: true })) } as never,
         connReg: connReg(),
@@ -317,13 +341,13 @@ describe('replayTo — register-time convergence', () => {
 
       await push.replayTo(DAEMON as never) // stalls, arms a resume
       push.stop()
-      const callsAtShutdown = visibilitySnapshotForDaemon.mock.calls.length
+      const callsAtShutdown = visibilitySnapshotForAgents.mock.calls.length
       await vi.advanceTimersByTimeAsync(60_000)
       await push.settle()
       // Nothing re-armed and nothing touched the database after shutdown.
-      expect(visibilitySnapshotForDaemon.mock.calls.length).toBe(callsAtShutdown)
+      expect(visibilitySnapshotForAgents.mock.calls.length).toBe(callsAtShutdown)
       await expect(push.replayTo(DAEMON as never)).resolves.toBeUndefined()
-      expect(visibilitySnapshotForDaemon.mock.calls.length).toBe(callsAtShutdown)
+      expect(visibilitySnapshotForAgents.mock.calls.length).toBe(callsAtShutdown)
     } finally {
       vi.useRealTimers()
     }
@@ -342,11 +366,12 @@ describe('replayTo — register-time convergence', () => {
         repos: {
           session: {
             recordVisibilityAck: vi.fn(async () => {}),
-            visibilitySnapshotForDaemon: vi.fn(async () => page(2)),
-            countUnackedVisibility: vi.fn(async () => 0),
+            visibilitySnapshotForAgents: vi.fn(async () => page(2)),
+            countUnackedVisibilityForAgents: vi.fn(async () => 0),
+            privateVisibilityPage: vi.fn(async () => []),
             get: vi.fn(async () => null)
           } as never,
-          agent: { getUnscoped: vi.fn(async () => ({ id: AGENT, daemonId: DAEMON })) } as never
+          agent: agentRepo(DAEMON)
         },
         control: { sessionVisibility: vi.fn(), sessionVisibilitySnapshot } as never,
         connReg: connReg(),
@@ -372,11 +397,12 @@ describe('replayTo — register-time convergence', () => {
         repos: {
           session: {
             recordVisibilityAck,
-            visibilitySnapshotForDaemon: vi.fn(async () => page(2)),
-            countUnackedVisibility: vi.fn(async () => 0),
+            visibilitySnapshotForAgents: vi.fn(async () => page(2)),
+            countUnackedVisibilityForAgents: vi.fn(async () => 0),
+            privateVisibilityPage: vi.fn(async () => []),
             get: vi.fn(async () => null)
           } as never,
-          agent: { getUnscoped: vi.fn(async () => ({ id: AGENT, daemonId: DAEMON })) } as never
+          agent: agentRepo(DAEMON)
         },
         control: { sessionVisibility: vi.fn(), sessionVisibilitySnapshot } as never,
         connReg: connReg(),
@@ -400,16 +426,17 @@ describe('replayTo — register-time convergence', () => {
       const sessionVisibilitySnapshot = vi.fn(async () => {
         throw new NoConnection(DAEMON)
       })
-      const visibilitySnapshotForDaemon = vi.fn(async () => page(500))
+      const visibilitySnapshotForAgents = vi.fn(async () => page(500))
       const push = new SessionVisibilityPushService({
         repos: {
           session: {
             recordVisibilityAck: vi.fn(async () => {}),
-            visibilitySnapshotForDaemon,
-            countUnackedVisibility: vi.fn(async () => 10),
+            visibilitySnapshotForAgents,
+            countUnackedVisibilityForAgents: vi.fn(async () => 10),
+            privateVisibilityPage: vi.fn(async () => []),
             get: vi.fn(async () => null)
           } as never,
-          agent: { getUnscoped: vi.fn(async () => ({ id: AGENT, daemonId: DAEMON })) } as never
+          agent: agentRepo(DAEMON)
         },
         control: { sessionVisibility: vi.fn(), sessionVisibilitySnapshot } as never,
         connReg: connReg(),
@@ -419,17 +446,58 @@ describe('replayTo — register-time convergence', () => {
       await push.replayTo(DAEMON as never)
       await vi.advanceTimersByTimeAsync(60_000)
       await push.settle()
-      expect(visibilitySnapshotForDaemon).toHaveBeenCalledTimes(1)
+      expect(visibilitySnapshotForAgents).toHaveBeenCalledTimes(1)
       push.stop()
     } finally {
       vi.useRealTimers()
     }
   })
 
+  // The ACK watermark is per SESSION, not per daemon: once duty can move a session's server, a
+  // previous holder's ack marks a gate "delivered" to a member that never saw it. Phase 1 then
+  // stops on `unacked === 0` and the older private gates are never sent. Phase 2 is what covers
+  // them, so it must run even when phase 1 reports full convergence.
+  it('re-sends the private gates after the unacked phase reports nothing outstanding', async () => {
+    const priv = [{ orgId: ORG, sessionId: 'acp-old-private', visibility: 'private' as const, visibilityRev: 3 }]
+    const d = deps({ snapshotPages: [page(500)], unackedAfter: [0], privatePages: [priv] })
+    await d.push.replayTo(DAEMON as never)
+
+    expect(d.privateVisibilityPage).toHaveBeenCalledTimes(1)
+    const sent = d.sessionVisibilitySnapshot.mock.calls.at(-1)!
+    expect((sent[2] as Array<{ sessionId: string }>).map((e) => e.sessionId)).toEqual(['acp-old-private'])
+  })
+
+  it('cursors the private phase on the last id of a full page', async () => {
+    const full = Array.from({ length: 500 }, (_, i) => ({
+      orgId: ORG,
+      sessionId: `acp-p-${String(i).padStart(3, '0')}`,
+      visibility: 'private' as const,
+      visibilityRev: 1
+    }))
+    const tail = [{ orgId: ORG, sessionId: 'acp-p-500', visibility: 'private' as const, visibilityRev: 1 }]
+    const d = deps({ privatePages: [full, tail] })
+    await d.push.replayTo(DAEMON as never)
+
+    expect(d.privateVisibilityPage).toHaveBeenCalledTimes(2)
+    // Blind to the watermark, so the cursor is the ONLY thing that ends the walk.
+    expect(d.privateVisibilityPage.mock.calls[1]![3]).toBe('acp-p-499')
+  })
+
+  it('does not start the private phase when the unacked phase aborted', async () => {
+    const d = deps({ snapshotPages: [page(500), page(500, 500)], unackedAfter: [500, 0] })
+    d.sessionVisibilitySnapshot.mockImplementationOnce(async () => {
+      throw new NoConnection(DAEMON)
+    })
+    await d.push.replayTo(DAEMON as never)
+
+    // The daemon is gone; its next register redoes both phases from scratch.
+    expect(d.privateVisibilityPage).not.toHaveBeenCalled()
+  })
+
   it('sends nothing to a daemon that does not advertise the feature', async () => {
     const d = deps({ snapshotPages: [page(3)], connReg: connReg({ feature: false }) as never })
     await d.push.replayTo(DAEMON as never)
-    expect(d.visibilitySnapshotForDaemon).not.toHaveBeenCalled()
+    expect(d.visibilitySnapshotForAgents).not.toHaveBeenCalled()
   })
 })
 

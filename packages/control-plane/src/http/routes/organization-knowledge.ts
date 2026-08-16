@@ -176,8 +176,12 @@ async function suggestionReviewAvailable(
     deps.registry.getAvailable(orgId, DaemonId(sourceDaemonId)),
     deps.repos.agent.get(orgId, AgentId(sourceAgentId))
   ])
+  if (!agent) return false
+  // The staged bytes sit on the member that dreamt them, so ask the delivery seam whether it still
+  // serves the agent — `agent.daemonId` alone misses a duty holder, and a pool agent names nobody.
+  const serving = await deps.agentDelivery.daemonsFor(agent)
   return (
-    agent?.daemonId === sourceDaemonId &&
+    serving.includes(sourceDaemonId) &&
     daemon?.capabilities.features.includes(ORGANIZATION_KNOWLEDGE_FEATURE) === true &&
     daemon.capabilities.features.includes(ORGANIZATION_SUGGESTION_REVIEW_FEATURE)
   )
@@ -214,15 +218,11 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
         agent.managedSkills.includes(managedSkillId)
       )
       await Promise.all(
-        agents.map(async (agent) => {
-          if (!agent.daemonId) return
-          try {
-            const spec = await deps.agentSpecs.assemble(agent)
-            await deps.control.agentUpsert(agent.daemonId, { agentId: agent.id, spec }, agent.orgId)
-          } catch (err) {
-            app.log.warn({ err, agentId: agent.id }, 'managed-skill fan-out deferred to reconnect roster')
-          }
-        })
+        agents.map((agent) =>
+          deps.agentDelivery.upsert(agent, (err, daemonId) => {
+            app.log.warn({ err, agentId: agent.id, daemonId }, 'managed-skill fan-out deferred to reconnect roster')
+          })
+        )
       )
     }
 
@@ -535,12 +535,16 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
           return unavailable(reply)
         }
         try {
-          const content = await deps.control.organizationSuggestionRead(suggestion.sourceDaemonId, {
-            sourceAgentId: suggestion.sourceAgentId,
-            dreamId: suggestion.dreamId,
-            candidateId: suggestion.candidateId,
-            kind: suggestion.kind
-          })
+          const content = await deps.control.organizationSuggestionRead(
+            suggestion.sourceDaemonId,
+            {
+              sourceAgentId: suggestion.sourceAgentId,
+              dreamId: suggestion.dreamId,
+              candidateId: suggestion.candidateId,
+              kind: suggestion.kind
+            },
+            orgOf(req)
+          )
           if (!content.exists || !content.body || !suggestionContentMatches(suggestion, content.digest, content.body)) {
             return reply.code(409).send({
               error: 'Conflict',
@@ -618,12 +622,16 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
             })
           }
           void deps.control
-            .organizationSuggestionReview(suggestion.sourceDaemonId, {
-              sourceAgentId: suggestion.sourceAgentId,
-              dreamId: suggestion.dreamId,
-              candidateId: suggestion.candidateId,
-              state: 'rejected'
-            })
+            .organizationSuggestionReview(
+              suggestion.sourceDaemonId,
+              {
+                sourceAgentId: suggestion.sourceAgentId,
+                dreamId: suggestion.dreamId,
+                candidateId: suggestion.candidateId,
+                state: 'rejected'
+              },
+              orgOf(req)
+            )
             .catch((err) =>
               app.log.warn(
                 { err, suggestionId: suggestion.id, decision: 'rejected' },
@@ -648,12 +656,16 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
         }
         let content
         try {
-          content = await deps.control.organizationSuggestionRead(suggestion.sourceDaemonId, {
-            sourceAgentId: suggestion.sourceAgentId,
-            dreamId: suggestion.dreamId,
-            candidateId: suggestion.candidateId,
-            kind: suggestion.kind
-          })
+          content = await deps.control.organizationSuggestionRead(
+            suggestion.sourceDaemonId,
+            {
+              sourceAgentId: suggestion.sourceAgentId,
+              dreamId: suggestion.dreamId,
+              candidateId: suggestion.candidateId,
+              kind: suggestion.kind
+            },
+            orgOf(req)
+          )
         } catch (err) {
           if (suggestionReadUnavailable(err)) {
             app.log.warn({ err, suggestionId: suggestion.id }, 'organization suggestion acceptance read unavailable')
@@ -722,12 +734,16 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
         }
 
         void deps.control
-          .organizationSuggestionReview(suggestion.sourceDaemonId, {
-            sourceAgentId: suggestion.sourceAgentId,
-            dreamId: suggestion.dreamId,
-            candidateId: suggestion.candidateId,
-            state: 'accepted'
-          })
+          .organizationSuggestionReview(
+            suggestion.sourceDaemonId,
+            {
+              sourceAgentId: suggestion.sourceAgentId,
+              dreamId: suggestion.dreamId,
+              candidateId: suggestion.candidateId,
+              state: 'accepted'
+            },
+            orgOf(req)
+          )
           .catch((err) =>
             app.log.warn(
               { err, suggestionId: suggestion.id, decision: 'accepted' },

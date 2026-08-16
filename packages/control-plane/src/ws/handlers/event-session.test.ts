@@ -7,6 +7,7 @@ import { handleEventSession, handleEventSessionSync } from './event-session.js'
 
 const DAEMON_ID = 'd1d1d1d1-dddd-4ddd-8ddd-dddddddddddd'
 const AGENT_ID = 'a0a0a0a0-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+const ORG_ID = 'org-1'
 const SESSION_ID = 'session-407'
 const INTEGRATION_ID = '11111111-1111-4111-8111-111111111111'
 const BOT_ID = '22222222-2222-4222-8222-222222222222'
@@ -15,9 +16,10 @@ const GITHUB_INSTALLATION_ROW_ID = '44444444-4444-4444-8444-444444444444'
 
 function scopedDeps(extra: Record<string, unknown>): DaemonWsDeps {
   return {
-    agent: { getUnscoped: vi.fn().mockResolvedValue({ daemonId: DAEMON_ID }) },
+    log: { error: vi.fn() },
+    agent: { get: vi.fn().mockResolvedValue({ daemonId: DAEMON_ID }) },
     agentMutations: { tryBeginMutation: vi.fn(() => vi.fn()) },
-    hook: { getUnscoped: vi.fn().mockResolvedValue(null) },
+    hook: { get: vi.fn().mockResolvedValue(null) },
     ...extra
   } as unknown as DaemonWsDeps
 }
@@ -70,6 +72,7 @@ describe('handleEventSession', () => {
     const frame = eventSessionFrame('event/session-sync')
     const conn = {
       daemonId: DAEMON_ID,
+      orgId: ORG_ID,
       replyTo,
       sendError: vi.fn()
     } as unknown as DaemonConnection
@@ -89,19 +92,26 @@ describe('handleEventSession', () => {
     const frame = eventSessionFrame('event/session-sync')
     const replyTo = vi.fn()
     const sendError = vi.fn()
+    const error = vi.fn()
+    const failure = new Error('db unavailable')
     const deps = scopedDeps({
-      session: { recordMilestone: vi.fn().mockRejectedValue(new Error('db unavailable')) },
+      log: { error },
+      session: { recordMilestone: vi.fn().mockRejectedValue(failure) },
       events: { publish: vi.fn() }
     })
 
     await handleEventSessionSync(
       frame,
-      { daemonId: DAEMON_ID, replyTo, sendError } as unknown as DaemonConnection,
+      { daemonId: DAEMON_ID, orgId: ORG_ID, replyTo, sendError } as unknown as DaemonConnection,
       deps
     )
 
     expect(replyTo).not.toHaveBeenCalled()
     expect(sendError).toHaveBeenCalledWith(frame.id, 'INTERNAL', expect.any(String), true)
+    expect(error).toHaveBeenCalledWith(
+      { err: failure, daemonId: DAEMON_ID, agentId: AGENT_ID, sessionId: SESSION_ID },
+      'event/session-sync: metadata snapshot persistence failed'
+    )
   })
 
   it('publishes the milestone only after it has been persisted', async () => {
@@ -123,7 +133,7 @@ describe('handleEventSession', () => {
       session: { recordMilestone },
       events: { publish }
     })
-    const conn = { daemonId: DAEMON_ID } as DaemonConnection
+    const conn = { daemonId: DAEMON_ID, orgId: ORG_ID } as DaemonConnection
     const frame = eventSessionFrame()
 
     const handling = handleEventSession(frame, conn, deps)
@@ -156,7 +166,7 @@ describe('handleEventSession', () => {
       outputMode: 'medium'
     })
 
-    await handleEventSession(frame, { daemonId: DAEMON_ID } as DaemonConnection, deps)
+    await handleEventSession(frame, { daemonId: DAEMON_ID, orgId: ORG_ID } as DaemonConnection, deps)
 
     expect(recordMilestone).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -192,7 +202,7 @@ describe('handleEventSession', () => {
       parentSessionId: 'parent-session'
     })
 
-    await handleEventSession(frame, { daemonId: DAEMON_ID } as DaemonConnection, deps)
+    await handleEventSession(frame, { daemonId: DAEMON_ID, orgId: ORG_ID } as DaemonConnection, deps)
 
     expect(findOwner).not.toHaveBeenCalled()
     expect(recordMilestone).toHaveBeenCalledWith(
@@ -210,7 +220,7 @@ describe('handleEventSession', () => {
     const deps = scopedDeps({
       session: { recordMilestone },
       integration: {
-        getUnscoped: vi.fn().mockResolvedValue({
+        get: vi.fn().mockResolvedValue({
           id: INTEGRATION_ID,
           agentId: AGENT_ID,
           botId: BOT_ID,
@@ -220,7 +230,7 @@ describe('handleEventSession', () => {
         })
       },
       bot: {
-        getUnscoped: vi.fn().mockResolvedValue({
+        get: vi.fn().mockResolvedValue({
           id: BOT_ID,
           orgId: 'org-1',
           platform: 'slack',
@@ -242,7 +252,7 @@ describe('handleEventSession', () => {
       }
     })
 
-    await handleEventSession(frame, { daemonId: DAEMON_ID } as DaemonConnection, deps)
+    await handleEventSession(frame, { daemonId: DAEMON_ID, orgId: ORG_ID } as DaemonConnection, deps)
 
     expect(recordMilestone).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -266,7 +276,7 @@ describe('handleEventSession', () => {
     const deps = scopedDeps({
       session: { recordMilestone },
       integration: {
-        getUnscoped: vi.fn().mockResolvedValue({
+        get: vi.fn().mockResolvedValue({
           id: INTEGRATION_ID,
           agentId: AGENT_ID,
           botId: BOT_ID,
@@ -276,7 +286,7 @@ describe('handleEventSession', () => {
         })
       },
       bot: {
-        getUnscoped: vi.fn().mockResolvedValue({
+        get: vi.fn().mockResolvedValue({
           id: BOT_ID,
           orgId: 'org-1',
           platform: 'feishu',
@@ -300,7 +310,7 @@ describe('handleEventSession', () => {
       }
     })
 
-    await handleEventSession(frame, { daemonId: DAEMON_ID } as DaemonConnection, deps)
+    await handleEventSession(frame, { daemonId: DAEMON_ID, orgId: ORG_ID } as DaemonConnection, deps)
 
     expect(recordMilestone).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -324,7 +334,7 @@ describe('handleEventSession', () => {
     const deps = scopedDeps({
       session: { recordMilestone },
       integration: {
-        getUnscoped: vi.fn().mockResolvedValue({
+        get: vi.fn().mockResolvedValue({
           id: INTEGRATION_ID,
           agentId: AGENT_ID,
           botId: BOT_ID,
@@ -334,7 +344,7 @@ describe('handleEventSession', () => {
         })
       },
       bot: {
-        getUnscoped: vi.fn().mockResolvedValue({
+        get: vi.fn().mockResolvedValue({
           id: BOT_ID,
           orgId: 'org-1',
           platform: 'feishu',
@@ -358,7 +368,7 @@ describe('handleEventSession', () => {
       }
     })
 
-    await handleEventSession(frame, { daemonId: DAEMON_ID } as DaemonConnection, deps)
+    await handleEventSession(frame, { daemonId: DAEMON_ID, orgId: ORG_ID } as DaemonConnection, deps)
 
     expect(recordMilestone).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -384,7 +394,7 @@ describe('handleEventSession', () => {
       events: { publish: vi.fn() }
     })
 
-    await handleEventSession(eventSessionFrame(), { daemonId: DAEMON_ID } as DaemonConnection, deps)
+    await handleEventSession(eventSessionFrame(), { daemonId: DAEMON_ID, orgId: ORG_ID } as DaemonConnection, deps)
 
     expect(recordMilestone).toHaveBeenCalledWith(
       expect.objectContaining({ externalCandidate: { provider: 'slack', resolution: 'pending' } })
@@ -407,7 +417,7 @@ describe('handleEventSession', () => {
     const frame = eventSessionFrame()
     Object.assign(frame.payload as Record<string, unknown>, { sourceBindingKind: 'local' })
 
-    await handleEventSession(frame, { daemonId: DAEMON_ID } as DaemonConnection, deps)
+    await handleEventSession(frame, { daemonId: DAEMON_ID, orgId: ORG_ID } as DaemonConnection, deps)
 
     const milestone = recordMilestone.mock.calls[0]![0]
     expect(milestone).not.toHaveProperty('externalCandidate')
@@ -418,7 +428,7 @@ describe('handleEventSession', () => {
     const deps = scopedDeps({
       session: { recordMilestone },
       integration: {
-        getUnscoped: vi.fn().mockResolvedValue({
+        get: vi.fn().mockResolvedValue({
           id: INTEGRATION_ID,
           agentId: AGENT_ID,
           botId: BOT_ID,
@@ -428,7 +438,7 @@ describe('handleEventSession', () => {
         })
       },
       bot: {
-        getUnscoped: vi.fn().mockResolvedValue({
+        get: vi.fn().mockResolvedValue({
           id: BOT_ID,
           orgId: 'org-1',
           platform: 'slack',
@@ -450,7 +460,7 @@ describe('handleEventSession', () => {
       }
     })
 
-    await handleEventSession(frame, { daemonId: DAEMON_ID } as DaemonConnection, deps)
+    await handleEventSession(frame, { daemonId: DAEMON_ID, orgId: ORG_ID } as DaemonConnection, deps)
 
     expect(recordMilestone).toHaveBeenCalledWith(
       expect.objectContaining({ externalCandidate: { provider: 'slack', resolution: 'invalid' } })
@@ -492,7 +502,7 @@ describe('handleEventSession', () => {
       }
     })
 
-    await handleEventSession(frame, { daemonId: DAEMON_ID } as DaemonConnection, deps)
+    await handleEventSession(frame, { daemonId: DAEMON_ID, orgId: ORG_ID } as DaemonConnection, deps)
 
     expect(recordMilestone).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -542,7 +552,7 @@ describe('handleEventSession', () => {
       }
     })
 
-    await handleEventSession(frame, { daemonId: DAEMON_ID } as DaemonConnection, deps)
+    await handleEventSession(frame, { daemonId: DAEMON_ID, orgId: ORG_ID } as DaemonConnection, deps)
 
     expect(recordMilestone).toHaveBeenCalledWith(
       expect.objectContaining({ externalCandidate: { provider: 'github', resolution: 'invalid' } })
@@ -555,7 +565,7 @@ describe('handleEventSession', () => {
     const deps = scopedDeps({
       session: { recordMilestone },
       hook: {
-        getUnscoped: vi.fn().mockResolvedValue({ kind: 'github', agentId: AGENT_ID })
+        get: vi.fn().mockResolvedValue({ kind: 'github', agentId: AGENT_ID })
       },
       events: { publish: vi.fn() }
     })
@@ -566,11 +576,68 @@ describe('handleEventSession', () => {
       triggeredBy: `hook:${HOOK_ID}`
     })
 
-    await handleEventSession(frame, { daemonId: DAEMON_ID } as DaemonConnection, deps)
+    await handleEventSession(frame, { daemonId: DAEMON_ID, orgId: ORG_ID } as DaemonConnection, deps)
 
     expect(recordMilestone).toHaveBeenCalledWith(
       expect.objectContaining({ externalCandidate: { provider: 'github', resolution: 'pending' } })
     )
+  })
+
+  it('inherits a hook A2A child audience without querying its synthetic channel as a hook id', async () => {
+    const recordMilestone = vi.fn().mockResolvedValue(recorded({ parentSessionId: 'parent-session' }))
+    const get = vi.fn().mockRejectedValue(new Error('synthetic channel reached HookRepo'))
+    const replyTo = vi.fn()
+    const sendError = vi.fn()
+    const deps = scopedDeps({
+      session: { recordMilestone },
+      hook: { get },
+      events: { publish: vi.fn() }
+    })
+    const frame = eventSessionFrame('event/session-sync')
+    Object.assign(frame.payload as Record<string, unknown>, {
+      platform: 'hook',
+      channel: `a2a:${AGENT_ID}`,
+      parentSessionId: 'parent-session',
+      triggeredBy: undefined
+    })
+
+    await handleEventSessionSync(
+      frame,
+      { daemonId: DAEMON_ID, orgId: ORG_ID, replyTo, sendError } as unknown as DaemonConnection,
+      deps
+    )
+
+    expect(get).not.toHaveBeenCalled()
+    expect(recordMilestone).toHaveBeenCalledWith(
+      expect.objectContaining({
+        parentSessionId: 'parent-session',
+        classification: expect.objectContaining({ inherit: true })
+      })
+    )
+    expect(recordMilestone.mock.calls[0]![0].externalCandidate).toBeUndefined()
+    expect(replyTo).toHaveBeenCalledWith(frame, 'ack', { ok: true })
+    expect(sendError).not.toHaveBeenCalled()
+  })
+
+  it('treats a non-UUID legacy hook coordinate as a miss', async () => {
+    const recordMilestone = vi.fn().mockResolvedValue(recorded())
+    const get = vi.fn().mockRejectedValue(new Error('invalid hook id reached Prisma'))
+    const deps = scopedDeps({
+      session: { recordMilestone },
+      hook: { get },
+      events: { publish: vi.fn() }
+    })
+    const frame = eventSessionFrame()
+    Object.assign(frame.payload as Record<string, unknown>, {
+      platform: 'hook',
+      channel: `a2a:${AGENT_ID}`,
+      triggeredBy: undefined
+    })
+
+    await handleEventSession(frame, { daemonId: DAEMON_ID, orgId: ORG_ID } as DaemonConnection, deps)
+
+    expect(get).not.toHaveBeenCalled()
+    expect(recordMilestone.mock.calls[0]![0].externalCandidate).toBeUndefined()
   })
 
   it('pokes the session-access warmer only after the commit-then-publish point', async () => {
@@ -591,7 +658,7 @@ describe('handleEventSession', () => {
       sessionAccessWarmer: { poke }
     })
 
-    await handleEventSession(eventSessionFrame(), { daemonId: DAEMON_ID } as DaemonConnection, deps)
+    await handleEventSession(eventSessionFrame(), { daemonId: DAEMON_ID, orgId: ORG_ID } as DaemonConnection, deps)
 
     expect(order).toEqual(['publish', 'poke'])
     expect(poke).toHaveBeenCalledWith('org-1', 'scope-1')
@@ -607,7 +674,7 @@ describe('handleEventSession', () => {
       sessionAccessWarmer: { poke }
     })
 
-    await handleEventSession(eventSessionFrame(), { daemonId: DAEMON_ID } as DaemonConnection, deps)
+    await handleEventSession(eventSessionFrame(), { daemonId: DAEMON_ID, orgId: ORG_ID } as DaemonConnection, deps)
 
     expect(poke).not.toHaveBeenCalled()
   })
@@ -632,7 +699,7 @@ describe('handleEventSession', () => {
 
     await handleEventSessionSync(
       eventSessionFrame('event/session-sync'),
-      { daemonId: DAEMON_ID, replyTo: vi.fn(), sendError: vi.fn() } as unknown as DaemonConnection,
+      { daemonId: DAEMON_ID, orgId: ORG_ID, replyTo: vi.fn(), sendError: vi.fn() } as unknown as DaemonConnection,
       deps
     )
 
@@ -648,7 +715,7 @@ describe('handleEventSession', () => {
     })
 
     await expect(
-      handleEventSession(eventSessionFrame(), { daemonId: DAEMON_ID } as DaemonConnection, deps)
+      handleEventSession(eventSessionFrame(), { daemonId: DAEMON_ID, orgId: ORG_ID } as DaemonConnection, deps)
     ).rejects.toBe(failure)
     expect(publish).not.toHaveBeenCalled()
   })
@@ -660,7 +727,7 @@ describe('handleEventSession', () => {
       events: { publish }
     })
 
-    await handleEventSession(eventSessionFrame(), { daemonId: DAEMON_ID } as DaemonConnection, deps)
+    await handleEventSession(eventSessionFrame(), { daemonId: DAEMON_ID, orgId: ORG_ID } as DaemonConnection, deps)
 
     expect(publish).not.toHaveBeenCalled()
   })
@@ -670,13 +737,13 @@ describe('handleEventSession', () => {
     const recordMilestone = vi.fn()
     const publish = vi.fn()
     const deps = scopedDeps({
-      agent: { getUnscoped: vi.fn().mockResolvedValue({ daemonId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee' }) },
+      agent: { get: vi.fn().mockResolvedValue({ daemonId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee' }) },
       agentMutations: { tryBeginMutation: vi.fn(() => release) },
       session: { recordMilestone },
       events: { publish }
     })
 
-    await handleEventSession(eventSessionFrame(), { daemonId: DAEMON_ID } as DaemonConnection, deps)
+    await handleEventSession(eventSessionFrame(), { daemonId: DAEMON_ID, orgId: ORG_ID } as DaemonConnection, deps)
 
     expect(recordMilestone).not.toHaveBeenCalled()
     expect(publish).not.toHaveBeenCalled()

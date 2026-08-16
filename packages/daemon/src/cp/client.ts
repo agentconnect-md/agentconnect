@@ -10,8 +10,10 @@ import type {
   Heartbeat,
   HeartbeatDuties,
   DutyGrant,
+  DutyRenewed,
   DutyRevoke,
   DutyClaimOk,
+  DutyFetchOk,
   FactsRuntimeProfile,
   FactsMcpServer,
   UsageReport,
@@ -50,6 +52,7 @@ import type {
   WorkspaceGitPushReq,
   WorkspaceGitMessageReq,
   TaskListReq,
+  AgentWakeReq,
   WorkspaceGitMessageResult,
   GitCredRequest,
   GitCredGrant,
@@ -102,7 +105,9 @@ import type {
   ManagedSkillChunk,
   OrganizationSuggestionReadReq,
   OrganizationSuggestionReviewReq,
-  BootstrapLifecycle
+  BootstrapLifecycle,
+  FrameOrgPeer,
+  OrganizationMode
 } from '@agentconnect.md/protocol'
 import {
   buildEnvelope,
@@ -113,13 +118,17 @@ import {
   SESSION_METADATA_ACK_FEATURE,
   SESSION_PURGE_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
-  DAEMON_BOOTSTRAP_PROTOCOL_VERSION
+  DAEMON_BOOTSTRAP_PROTOCOL_VERSION,
+  checkInboundFrameOrg,
+  checkReplyFrameOrg,
+  isInstallWideFrameType
 } from '@agentconnect.md/protocol'
 import type { SessionReader } from './session-reader.js'
 import { WorkspaceConflictError, WorkspaceViolationError, type WorkspaceReader } from './workspace-reader.js'
 import {
   MemoryViolationError,
   MemoryPathError,
+  MemorySandboxUnavailableError,
   MemoryTooLargeError,
   MemoryConflictError,
   type MemoryReader
@@ -127,6 +136,8 @@ import {
 import type { WorkspaceGit } from './workspace-git.js'
 import type { TaskReader } from './task-reader.js'
 import { TaskViolationError } from './task-reader.js'
+import type { AgentWaker } from './agent-wake.js'
+import { AgentWakeViolationError } from './agent-wake.js'
 import type { DreamReader } from './dream-reader.js'
 import type { LocalSkillsReader } from './local-skills-reader.js'
 import { DreamViolationError, DreamStateError } from '../agents/dream-runner.js'
@@ -139,26 +150,19 @@ import type { Logger } from '../log.js'
  *  sites (`./cp/client.js`) keep working unchanged. */
 export { CP_SUBPROTOCOL, CP_WS_PATH } from '@agentconnect.md/protocol'
 
-// Frames that carry no org because they are daemon-level: the CP applies the
-// same list at its edge (ws/connection.ts INSTALL_WIDE_FRAME_TYPES). Duty groups
-// span orgs on one member, so grants carry a per-entry orgId instead.
-const INSTALL_WIDE_FRAME_TYPES = new Set([
-  'relay/roster',
-  'collaboration/routes',
-  'daemon/drain',
-  'daemon/restart',
-  'daemon/upgrade',
-  'config/push',
-  'duty/grant',
-  'duty/revoke',
-  'duty/release',
-  'duty/claim',
-  'duty/claim/ok'
-])
-
 const ACK_TIMEOUT_MS = 5000
 const BACKOFF_BASE_MS = 1000
 const BACKOFF_CAP_MS = 30000
+// No-split invariant `T_reassign > T_fence`. The CP frees a lease at `renewedAt + leaseMs` and tells the member
+// that horizon on each renewal it performed (`duty/renewed`), so the member fences this fraction of it measured
+// from RECEIPT — receipt is strictly after the CP's renew, and both ends of the subtraction are the daemon's own
+// clock, so no skew enters. The remaining quarter is pure slop: the confirmation's one-way delivery, the daemon's
+// scheduling delay, and the teardown itself. Breaking the invariant would take a confirmation delivered more than
+// a quarter of the horizon late (30s at the shipped 120s) — a link that dead delivers nothing at all.
+const DUTY_FENCE_HORIZON_FRACTION = 0.75
+// Horizon assumed when `auth/ok` carries none (a CP older than the field); mirrors the CP's shipped default.
+// Deliberately a copy: it is a guess about a peer that cannot answer, and guessing beats silently never fencing.
+const DUTY_LEASE_FALLBACK_MS = 120_000
 const REGISTERING_CONTROL_QUEUE_LIMIT = 1024
 const utf8Bytes = (value: string) => new TextEncoder().encode(value).length
 
@@ -188,6 +192,8 @@ export interface CpClientDeps {
   daemonId?: string
   agentVersion: string
   host: string
+  /** Rollout generation (pod-template hash) — a pool member's; absent for a local daemon. */
+  generation?: string
   heartbeatDefaultMs: number
   maxAgents: number
   capabilities: () => RegisterReq['capabilities']
@@ -204,12 +210,21 @@ export interface CpClientDeps {
   orgForAgent?: (agentId: string) => string | undefined
   /** Tenant lookup for integration reports whose payload has no agent id. */
   orgForIntegration?: (integrationId: string) => string | undefined
+  /** Tenant lookup for cron control frames, which name only the cron. */
+  orgForCron?: (cronId: string) => string | undefined
   /** Unservable CP-rule agentIds, surfaced in heartbeat.degradedScopes. Defaults to []. */
   degradedScopes?: () => string[]
   /** Duty-lease digest + headroom for the heartbeat (frames/duty.ts). Only read on
    *  an install-wide (frame-mode) connection; absent ⇒ this daemon does not
    *  participate in the ledger and the CP-side exchange stays dormant. */
   duties?: () => HeartbeatDuties | undefined
+  /** Groups whose admission is in flight — intended to be held, not yet in the digest. Their deadlines must
+   *  survive a renewal's prune: dropping one is exactly what would leave an admitted group with no fence. */
+  dutyPending?: () => string[]
+  /** Duty self-fence: these groups' leases are about to go vacant at the CP, so stop serving them first. Called
+   *  with the groups whose OWN deadline elapsed — never the whole held set — so a member sheds exactly what it
+   *  can no longer prove it holds and keeps serving the rest. */
+  onDutyFence?: (groupIds: string[]) => void
   configApply: ConfigApply
   /** Read-only session list/history seam over the local store (§1/§12). */
   sessionRead: SessionReader
@@ -223,6 +238,8 @@ export interface CpClientDeps {
   workspaceGit: WorkspaceGit
   /** Read-only projection of the in-memory background-task lease (§3.5 of webchat-side-panels.md). */
   taskReader: TaskReader
+  /** The console's sandbox wake (`agent/wake`); absent ⇒ every wake answers `unsupported`. */
+  agentWake?: AgentWaker
   /** Read/write seam over the agents' memory dirs (`<agent-root>/memory/`, §1/§12). */
   memoryReader: MemoryReader
   /** Dream-job lifecycle + staged-output review seam (docs/designs/memory-dreaming.md §10). */
@@ -265,12 +282,26 @@ export class CpClient {
   private stopped = false
   private fatal = false // 4401 — never auto-retry
   private serverFeatures = new Set<string>()
-  private organizationMode: 'connection' | 'frame' = 'connection'
+  private organizationMode: OrganizationMode = 'connection'
   private attempt = 0
   private reconnectTimer?: TimerHandle
   private lastAuthedEpoch = 0 // for resume on reconnect (per-agent seq tail is out of scope)
   private heartbeatTimer?: TimerHandle
+  /** Debounce for {@link CpClient.reportDutiesNow} — one extra beat per admission, not per group. */
+  private dutyReportTimer?: TimerHandle
   private heartbeatMs = 0
+  /** Lease horizon: the CP's `auth/ok` value, replaced by each renewal's own. */
+  private dutyLeaseMs?: number
+  /** True when this CP confirms renewals (`auth/ok` carried a horizon ⇒ it also sends `duty/renewed`), so the
+   *  anchor is evidence the CP renewed rather than evidence we queued a frame. */
+  private dutyRenewalsConfirmed = false
+  /** One fence deadline PER HELD GROUP, keyed by groupId, each anchored on the receipt that restarted it:
+   *  `duty/renewed` (all of them), a `duty/grant`, or a won `duty/claim/ok` (just that one). The CP expires each
+   *  lease independently, so a single global deadline would let a fresh grant or claim postpone an older group
+   *  past its own unchanged expiry — and would leave a group granted without a following confirmation with no
+   *  deadline at all. Empty ⇒ no lease this member could lose. */
+  private readonly dutyDeadlines = new Map<string, { anchoredAt: number; deadline: number }>()
+  private dutyFenceTimer?: TimerHandle
   private connectRun?: Promise<void>
   /** `stop()` must join snapshot convergence after a transport has connected,
    *  but it cannot wait forever for a connector whose dial is not cancellable.
@@ -314,6 +345,9 @@ export class CpClient {
       this.reconnectTimer = undefined
     }
     this.stopHeartbeat()
+    // A local shutdown tears down every agent anyway — a fence timer outliving it would
+    // only fire into a daemon that has already stopped serving.
+    this.clearDutyFence()
     this.correlator.rejectAll(new Error('stopping'))
     this.registerControlBarrier = undefined
     this.transport?.close(1000, 'shutdown')
@@ -421,13 +455,24 @@ export class CpClient {
       daemonId: string
       sessionEpoch: number
       heartbeatSec: number
+      dutyLeaseMs?: number
       webAppUrl?: string
       orgSlug?: string
-      organizationMode?: 'connection' | 'frame'
+      organizationMode?: OrganizationMode
       lifecycle?: BootstrapLifecycle
     }
     this.sessionEpoch = ok.sessionEpoch
     this.organizationMode = ok.organizationMode ?? 'connection'
+    this.dutyLeaseMs = ok.dutyLeaseMs
+    // A CP that announces its horizon is a CP that confirms renewals — both landed together.
+    this.dutyRenewalsConfirmed = ok.dutyLeaseMs !== undefined
+    // Once per connection, and only where a lease can exist: a member fencing on a guess should say so.
+    if (!this.dutyRenewalsConfirmed && this.organizationMode === 'frame' && this.deps.duties) {
+      this.deps.log.warn(
+        `cp: no duty lease horizon in auth/ok — self-fencing on the built-in ${DUTY_LEASE_FALLBACK_MS}ms default, ` +
+          'anchored on the heartbeats sent rather than on renewals confirmed'
+      )
+    }
     this.lastAuthedEpoch = ok.sessionEpoch
     // Adopt the authoritative daemonId the CP assigned (no-op if we already had one).
     if (ok.daemonId && ok.daemonId !== this.deps.daemonId) {
@@ -465,6 +510,7 @@ export class CpClient {
     this.lastSentCapabilities = JSON.stringify(registerCapabilities)
     const register = buildEnvelope('register', {
       host: this.deps.host,
+      ...(this.deps.generation ? { generation: this.deps.generation } : {}),
       capabilities: registerCapabilities,
       maxAgents: this.deps.maxAgents,
       localState: this.deps.localState()
@@ -510,6 +556,10 @@ export class CpClient {
     this.updateCapabilities()
     this.heartbeatMs = ok.heartbeatSec > 0 ? ok.heartbeatSec * 1000 : this.deps.heartbeatDefaultMs
     this.armHeartbeat()
+    // A member with a running fence beats immediately instead of a cadence from now: only a CONFIRMED
+    // renewal lifts the fence, and a reconnect that waits for the next scheduled beat can be fenced with
+    // the link already healthy. The confirmation this elicits is what actually cancels it.
+    if (this.state === 'READY' && this.dutyDeadlines.size > 0) this.sendHeartbeat()
     this.deps.log.info(`cp: READY (epoch=${this.sessionEpoch}, routingEpoch=${this.routingEpoch})`)
 
     // Report the observed runtime snapshot (D→C `facts/daemon-runtimes`,
@@ -820,7 +870,7 @@ export class CpClient {
   /**
    * `duty/release` (D→C REQ → `ack`) — surrender duty groups on drain instead of
    * waiting out the CP's reassignment window. Install-wide: duty groups span
-   * orgs, so the frame carries no org (see {@link INSTALL_WIDE_FRAME_TYPES}).
+   * orgs, so the frame carries no org (protocol `INSTALL_WIDE_FRAME_TYPES`).
    * Best-effort by contract — a failed release just falls back to lease expiry,
    * so callers log rather than fail the drain.
    */
@@ -831,6 +881,9 @@ export class CpClient {
     }
     const rep = await this.request('duty/release', { groupIds })
     if (rep.type !== 'ack') throw new WireError('INTERNAL', `expected ack, got ${rep.type}`, false)
+    // Handed back, so their deadlines are not ours to run any more — and a released group must not
+    // sit in the map holding the timer earlier than a group this member still serves.
+    this.forgetLeaseDeadlines(groupIds)
   }
 
   /**
@@ -847,7 +900,32 @@ export class CpClient {
     if (rep.type !== 'duty/claim/ok') {
       throw new WireError('INTERNAL', `expected duty/claim/ok, got ${rep.type}`, false)
     }
-    return rep.payload as DutyClaimOk
+    const claim = rep.payload as DutyClaimOk
+    // A won claim CREATES this member's lease (`claimAgentHome` writes `expiresAt = now + leaseMs`) and it starts
+    // serving at once — often the member's FIRST lease, with no heartbeat confirmed for it yet, so without this
+    // the rendezvous would serve with no countdown running. Only THIS group's deadline moves: the claim renewed
+    // nothing else, and postponing an older group here is exactly the hole per-group deadlines close.
+    if (claim.granted && claim.grant) this.noteLeasesGranted([claim.grant.groupId])
+    return claim
+  }
+
+  /**
+   * `duty/fetch` (D→C REQ → `duty/fetch/ok`) — pull the complete definition of
+   * an agent this member won a duty for but does not have. A grant only opens
+   * the serving gate; installation is this pull. The frame carries the granted
+   * entry's `orgId` rather than joining the install-wide set: it is about ONE
+   * agent in ONE org, and the CP still resolves the owning org from the agent
+   * itself before authorizing on the duty holding.
+   */
+  async fetchDutyAgent(agentId: string, orgId: string): Promise<DutyFetchOk> {
+    if ((this.state !== 'READY' && this.state !== 'DRAINING') || !this.transport) {
+      throw new WireError('INTERNAL', `control plane unreachable (client ${this.state})`, true)
+    }
+    const rep = await this.request('duty/fetch', { agentId }, orgId)
+    if (rep.type !== 'duty/fetch/ok') {
+      throw new WireError('INTERNAL', `expected duty/fetch/ok, got ${rep.type}`, false)
+    }
+    return rep.payload as DutyFetchOk
   }
 
   /** How this connection is tenanted: `connection` = one org (an API-key daemon),
@@ -998,8 +1076,20 @@ export class CpClient {
       // the handshake continuation gets a chance to run.
       barrier.snapshotApplying = true
     }
-    // A correlated REP/error settles a pending daemon-issued REQ.
-    if (frame.corr && this.correlator.settle(frame)) return
+    // A correlated REP/error settles a pending daemon-issued REQ — after the org fence: a reply that
+    // does not carry the org of the REQ it answers fails that REQ locally and is never applied.
+    if (frame.corr) {
+      const request = this.correlator.requested(frame.corr)
+      if (request) {
+        const verdict = checkReplyFrameOrg(request, frame, this.orgPeer())
+        if (!verdict.ok) {
+          this.deps.log.warn(`cp: dropped ${frame.type} reply to ${request.type}: ${verdict.message}`)
+          this.correlator.reject(frame.corr, new WireError('SCOPE_DENIED', verdict.message, false))
+          return
+        }
+      }
+      if (this.correlator.settle(frame)) return
+    }
     if (barrier?.transport === source && barrier.snapshotApplying) {
       if (barrier.controls.length >= REGISTERING_CONTROL_QUEUE_LIMIT) {
         this.sendError(frame.id, 'PROTOCOL_STATE', 'post-register control queue full', true)
@@ -1033,16 +1123,26 @@ export class CpClient {
       this.sendError(frame.id, 'STALE_EPOCH', 'epoch < current', true)
       return
     }
-    if (this.organizationMode === 'frame' && !frame.orgId && !this.installWideControl(frame.type)) {
-      this.sendError(frame.id, 'SCOPE_DENIED', 'organization is required on an install-wide connection', false)
+    // Org fence (M4): the shared frame-scope gate, then the org named against the resource this
+    // daemon knows the frame targets. A frame that fails is refused with an error and never applied.
+    const verdict = checkInboundFrameOrg(frame, this.orgPeer())
+    if (!verdict.ok) {
+      this.deps.log.warn(`cp: refused ${frame.type}: ${verdict.message}`)
+      this.sendError(frame.id, 'SCOPE_DENIED', verdict.message, false)
       return
     }
     const expectedOrgId = this.organizationForControl(frame)
     if (frame.orgId && expectedOrgId && frame.orgId !== expectedOrgId) {
+      this.deps.log.warn(`cp: refused ${frame.type}: organization does not match the targeted resource`)
       this.sendError(frame.id, 'SCOPE_DENIED', 'organization does not match the targeted resource', false)
       return
     }
     this.dispatchControl(frame)
+  }
+
+  /** How this end reads the wire: frame mode knows no connection org; connection mode learns none either (the CP owns it). */
+  private orgPeer(): FrameOrgPeer {
+    return { mode: this.organizationMode, orgId: null }
   }
 
   private organizationForControl(frame: AnyFrame): string | undefined {
@@ -1061,14 +1161,13 @@ export class CpClient {
     ].find((value): value is string => typeof value === 'string')
     if (agentId) return this.deps.orgForAgent?.(agentId)
     if (typeof payload.integrationId === 'string') return this.deps.orgForIntegration?.(payload.integrationId)
+    if (typeof payload.cronId === 'string') return this.deps.orgForCron?.(payload.cronId)
     return undefined
   }
 
-  private installWideControl(type: string): boolean {
-    return INSTALL_WIDE_FRAME_TYPES.has(type)
-  }
-
+  /** Every D→C send resolves its org here: install-wide frames carry none, org-scoped ones must resolve one in frame mode. */
   private scopedFrame(type: string, payload: unknown, explicitOrgId?: string): AnyFrame {
+    if (isInstallWideFrameType(type)) return buildEnvelope(type as Parameters<typeof buildEnvelope>[0], payload)
     let orgId = explicitOrgId
     if (!orgId && payload && typeof payload === 'object') {
       const p = payload as Record<string, unknown>
@@ -1077,7 +1176,7 @@ export class CpClient {
       )
       if (agentId) orgId = this.deps.orgForAgent?.(agentId)
     }
-    if (this.organizationMode === 'frame' && !orgId && !INSTALL_WIDE_FRAME_TYPES.has(type)) {
+    if (this.organizationMode === 'frame' && !orgId) {
       throw new WireError('SCOPE_DENIED', `cannot resolve organization for ${type}`, false)
     }
     return buildEnvelope(type as Parameters<typeof buildEnvelope>[0], payload, orgId ? { orgId } : {})
@@ -1111,6 +1210,8 @@ export class CpClient {
     this.transport = undefined
     if (this.registerControlBarrier?.transport === source) this.registerControlBarrier = undefined
     this.correlator.rejectAll(new WireError('INTERNAL', 'connection closed', true))
+    // The fence needs nothing here: it has been running off the last confirmed renewal since that
+    // renewal arrived, and a closed socket is simply one more way for the next one not to.
     if (code === 4401) {
       this.fatal = true
       this.state = 'CLOSED'
@@ -1129,24 +1230,99 @@ export class CpClient {
     this.heartbeatTimer = this.deps.clock.setTimeout(() => {
       // Skip the send mid-drain (we report `degraded` differently), but keep the
       // loop alive so heartbeats resume once we transition DRAINING → READY.
-      if (this.state === 'READY') {
-        // The duty lease exchange rides this beat (frames/duty.ts). Absent on a
-        // single-org daemon, which keeps the whole CP-side path dormant.
-        const duties = this.organizationMode === 'frame' ? this.deps.duties?.() : undefined
-        this.transport?.send(
-          encode(
-            buildEnvelope('heartbeat', {
-              load: this.deps.loadSnapshot(),
-              health: 'ok',
-              activeSessions: this.deps.activeSessions(),
-              degradedScopes: this.deps.degradedScopes?.() ?? [],
-              ...(duties ? { duties } : {})
-            })
-          )
-        )
-      }
+      if (this.state === 'READY') this.sendHeartbeat()
       if (this.state === 'READY' || this.state === 'DRAINING') this.armHeartbeat()
     }, this.heartbeatMs)
+  }
+
+  /**
+   * Report the duty digest NOW instead of waiting out the interval.
+   *
+   * The digest is the CP's proof that a grant is installed — a grant is applied here only after
+   * its install succeeds, so "in the digest" is the first moment this member is provably serving,
+   * and the CP holds every projection that ADDRESSES this member until it sees one. Letting an
+   * admission sit until the next tick therefore costs up to a full heartbeat of unroutable time
+   * for an agent that is already running, which is the gap a peer wake falls into.
+   *
+   * Coalesced onto one extra beat: an admission routinely settles several groups, and each one
+   * calls this. Dormant off a frame-mode connection, where there is no digest at all.
+   */
+  reportDutiesNow(): void {
+    if (this.organizationMode !== 'frame' || this.state !== 'READY' || this.dutyReportTimer !== undefined) return
+    this.dutyReportTimer = this.deps.clock.setTimeout(() => {
+      this.dutyReportTimer = undefined
+      if (this.state === 'READY') this.sendHeartbeat()
+    }, 0)
+  }
+
+  private sendHeartbeat(): void {
+    // The duty lease exchange rides this beat (frames/duty.ts). Absent on a
+    // single-org daemon, which keeps the whole CP-side path dormant.
+    const duties = this.organizationMode === 'frame' ? this.deps.duties?.() : undefined
+    const live = this.transport
+    live?.send(
+      encode(
+        buildEnvelope('heartbeat', {
+          load: this.deps.loadSnapshot(),
+          health: 'ok',
+          activeSessions: this.deps.activeSessions(),
+          degradedScopes: this.deps.degradedScopes?.() ?? [],
+          ...(duties ? { duties } : {})
+        })
+      )
+    )
+    // Sending is not renewing: on a half-open socket this `send` succeeds locally and the CP never runs
+    // `renewHeld`, so against a confirming CP the anchor moves only in `onDutyRenewed`. Against one that
+    // confirms nothing this is the best evidence available, and it is weaker on exactly that failure.
+    if (duties && live && !this.dutyRenewalsConfirmed) this.noteLeasesRenewed()
+  }
+
+  /** `duty/renewed` EVT — the CP renewed this member's leases for `leaseMs` more, as of a moment strictly before
+   *  this frame arrived. The only thing that restarts the fence countdown against a confirming CP. */
+  private onDutyRenewed(leaseMs: number): void {
+    this.dutyLeaseMs = leaseMs
+    this.noteLeasesRenewed()
+  }
+
+  /** A renewal restarts the countdown of EVERY group this member holds — `renewHeld` renews by holder with no id
+   *  filter, so one confirmation genuinely does refresh them all, and the per-group map collapses back to a single
+   *  value after each one. It is also where the map is pruned: the daemon's digest is the authoritative held set. */
+  private noteLeasesRenewed(): void {
+    // "What we intend to hold" = the digest PLUS the admissions still in flight. A pending group is
+    // absent from the digest by design (it is not servable yet), and pruning its deadline here is what
+    // would leave it serving with no fence the moment its admission completes.
+    const ours = new Set([
+      ...(this.deps.duties?.()?.held ?? []).map((entry) => entry.groupId),
+      ...(this.deps.dutyPending?.() ?? [])
+    ])
+    for (const groupId of this.dutyDeadlines.keys()) if (!ours.has(groupId)) this.dutyDeadlines.delete(groupId)
+    const now = this.deps.clock.now()
+    for (const groupId of ours) this.dutyDeadlines.set(groupId, this.deadlineFrom(now))
+    this.armDutyFence()
+  }
+
+  /** A grant or a won claim CREATES (or re-terms) exactly one lease, so only that group's countdown restarts —
+   *  postponing an older group's deadline because a new one arrived is precisely the split this prevents.
+   *  Receipt-anchored: the CP wrote `expiresAt` strictly before the frame reached us. This is also what arms a
+   *  first grant whose renewal confirmation never lands, and what re-arms a group granted back after a fence. */
+  private noteLeasesGranted(groupIds: string[]): void {
+    if (groupIds.length === 0) return
+    const now = this.deps.clock.now()
+    for (const groupId of groupIds) this.dutyDeadlines.set(groupId, this.deadlineFrom(now))
+    this.armDutyFence()
+  }
+
+  /** A revoked group is no longer ours to fence — drop its deadline so it cannot fire, and so it cannot hold the
+   *  timer at an earlier point than any group still held. */
+  private forgetLeaseDeadlines(groupIds: string[]): void {
+    let dropped = false
+    for (const groupId of groupIds) dropped = this.dutyDeadlines.delete(groupId) || dropped
+    if (dropped) this.armDutyFence()
+  }
+
+  private deadlineFrom(now: number): { anchoredAt: number; deadline: number } {
+    const horizon = this.dutyLeaseMs ?? DUTY_LEASE_FALLBACK_MS
+    return { anchoredAt: now, deadline: now + Math.floor(horizon * DUTY_FENCE_HORIZON_FRACTION) }
   }
 
   private stopHeartbeat(): void {
@@ -1156,18 +1332,76 @@ export class CpClient {
     }
   }
 
+  /** Arm on the EARLIEST deadline any held group has. Deliberately armed while the link is UP, not on disconnect:
+   *  a half-open socket produces no close event and no renewal either, and only a running deadline fences it.
+   *  A healthy member simply re-arms every renewal, long before the deadline it set the time before. */
+  private armDutyFence(): void {
+    this.clearDutyFence()
+    if (!this.deps.onDutyFence || this.dutyDeadlines.size === 0) return // no lease the CP could reassign
+    let earliest = Infinity
+    for (const { deadline } of this.dutyDeadlines.values()) earliest = Math.min(earliest, deadline)
+    const delay = Math.max(0, earliest - this.deps.clock.now())
+    this.dutyFenceTimer = this.deps.clock.setTimeout(() => {
+      this.dutyFenceTimer = undefined
+      this.fireDutyFence()
+    }, delay)
+  }
+
+  /** Fence the groups whose own deadline has passed and re-arm at the next earliest — a group whose lease the CP
+   *  still honours keeps serving. Each fenced group's deadline is dropped, so nothing re-arms it but a fresh grant
+   *  or renewal: a link that flaps for an hour fences a given group once, not once per drop. */
+  private fireDutyFence(): void {
+    const now = this.deps.clock.now()
+    const expired: string[] = []
+    let oldest = now
+    for (const [groupId, entry] of this.dutyDeadlines) {
+      if (entry.deadline > now) continue
+      expired.push(groupId)
+      oldest = Math.min(oldest, entry.anchoredAt)
+      this.dutyDeadlines.delete(groupId)
+    }
+    if (expired.length > 0) {
+      this.deps.log.warn(
+        `cp: duty self-fence — ${expired.length} group(s) with no confirmed lease renewal for ${now - oldest}ms; ` +
+          `releasing them before the CP can reassign them (${this.dutyDeadlines.size} still leased)`
+      )
+      this.deps.onDutyFence?.(expired)
+    }
+    this.armDutyFence()
+  }
+
+  private clearDutyFence(): void {
+    if (this.dutyFenceTimer !== undefined) {
+      this.deps.clock.clearTimeout(this.dutyFenceTimer)
+      this.dutyFenceTimer = undefined
+    }
+  }
+
   /** C→D control dispatch. The CP changes config, never live routing. */
   private dispatchControl(frame: AnyFrame): void {
     switch (frame.type) {
       case 'config/push':
         this.deps.configApply.applyConfigPush((frame.payload as { keys: Record<string, unknown> }).keys)
         return // EVT — no reply
-      case 'duty/grant':
-        this.deps.configApply.applyDutyGrant((frame.payload as DutyGrant).grants)
+      case 'duty/grant': {
+        const { grants } = frame.payload as DutyGrant
+        // BEFORE admission, which is async: the CP's lease on these groups is already running, and a grant whose
+        // renewal confirmation never arrives must still fence — the receipt of the grant is what arms it.
+        this.noteLeasesGranted(grants.map((entry) => entry.groupId))
+        this.deps.configApply.applyDutyGrant(grants)
         return // EVT — no reply
-      case 'duty/revoke':
-        this.deps.configApply.applyDutyRevoke((frame.payload as DutyRevoke).revocations)
+      }
+      case 'duty/renewed':
+        this.onDutyRenewed((frame.payload as DutyRenewed).leaseMs)
         return // EVT — no reply
+      case 'duty/revoke': {
+        const { revocations } = frame.payload as DutyRevoke
+        this.deps.configApply.applyDutyRevoke(revocations)
+        // Not ours any more: a revoked group must not keep a deadline that could fence it a second time, nor
+        // hold the timer earlier than any group still held.
+        this.forgetLeaseDeadlines(revocations.map((revocation) => revocation.groupId))
+        return // EVT — no reply
+      }
       case 'cron/upsert':
         try {
           this.deps.configApply.upsertCron(frame.payload as Parameters<ConfigApply['upsertCron']>[0])
@@ -1554,6 +1788,16 @@ export class CpClient {
           .catch((err) => this.taskError(frame.id, 'task/list', err))
         return
       }
+      case 'agent/wake': {
+        // A sandbox resume with no turn; a daemon with no waker has nothing to wake.
+        const wake = frame.payload as AgentWakeReq
+        const answer =
+          this.deps.agentWake?.wake(wake) ?? Promise.resolve({ agentId: wake.agentId, state: 'unsupported' as const })
+        answer
+          .then((result) => this.reply(frame, 'agent/wake/ok', result))
+          .catch((err) => this.wakeError(frame.id, err))
+        return
+      }
       case 'memory/channels': {
         this.deps.memoryReader
           .channels(frame.payload as MemoryChannelsReq)
@@ -1779,6 +2023,16 @@ export class CpClient {
     this.sendError(corr, 'INTERNAL', `${op} failed`, false)
   }
 
+  /** Unknown agent → BAD_PAYLOAD with the machine reason (the CP maps it like a workspace read's); else INTERNAL. */
+  private wakeError(corr: string, err: unknown): void {
+    if (err instanceof AgentWakeViolationError) {
+      this.sendError(corr, 'BAD_PAYLOAD', `agent/wake failed: ${err.message}`, false, { reason: err.reason })
+      return
+    }
+    this.deps.log.warn(`cp: agent/wake failed: ${(err as Error)?.message}`)
+    this.sendError(corr, 'INTERNAL', 'agent/wake failed', false)
+  }
+
   /** Unknown agent → BAD_PAYLOAD with the machine reason; anything else → INTERNAL with a generic
    *  message. There is no CONFLICT arm because `task/list` reads in-memory state and mutates
    *  nothing, so no lifecycle state can make it a legal-but-refused request. */
@@ -1799,6 +2053,11 @@ export class CpClient {
       this.sendError(corr, 'BAD_PAYLOAD', `${op} failed: ${err.message}`, false)
       return
     }
+    // A cluster agent's staging is on its sandbox volume: asleep is transient, and carries the reason.
+    if (err instanceof MemorySandboxUnavailableError) {
+      this.sendError(corr, 'BAD_PAYLOAD', `${op} failed: ${err.message}`, false, { reason: err.reason })
+      return
+    }
     if (err instanceof DreamStateError) {
       this.sendError(corr, 'CONFLICT', `${op} failed: ${err.message}`, false)
       return
@@ -1810,6 +2069,12 @@ export class CpClient {
   private memoryError(corr: string, op: string, err: unknown): void {
     if (err instanceof MemoryConflictError) {
       this.sendError(corr, 'CONFLICT', `${op} failed: ${err.message}`, false)
+      return
+    }
+    // The memory tree is on a sandbox that is not running: refused with the workspace reader's
+    // reason, so the CP answers 503 with the code the console wakes on (#1077) — not a 400.
+    if (err instanceof MemorySandboxUnavailableError) {
+      this.sendError(corr, 'BAD_PAYLOAD', `${op} failed: ${err.message}`, false, { reason: err.reason })
       return
     }
     if (err instanceof MemoryViolationError || err instanceof MemoryPathError || err instanceof MemoryTooLargeError) {

@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 /**
- * A cloud member is a Pod: the pool rolls, every replacement mints another daemon row, and
+ * A pool member is a Pod: the pool rolls, every replacement mints another daemon row, and
  * all of them are visible to every org. Listed one card each, a healthy 3-replica deployment
  * read as a dozen look-alike "daemons" nobody could rename, restart or delete. The page
  * therefore shows the pool as ONE entry — and the machines someone actually connected as
@@ -19,7 +19,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: mocks.push }) }))
 vi.mock('@/lib/org-context', () => ({
-  useOrgs: () => ({ activeOrg: { id: 'org-cloud' }, myRole: 'viewer', orgPath: (p: string) => `/acme${p}` })
+  useOrgs: () => ({ activeOrg: { id: 'org-pool' }, myRole: 'viewer', orgPath: (p: string) => `/acme${p}` })
 }))
 vi.mock('@/lib/data-context', () => ({
   useConsoleData: () => ({
@@ -37,7 +37,7 @@ const DaemonsView = (await import('./DaemonsView')).default
 function daemon(over: Partial<DaemonRow>): DaemonRow {
   return {
     daemonId: 'd',
-    cloud: false,
+    pool: false,
     name: 'edge-1',
     version: '1.41.0',
     latestVersion: '1.41.0',
@@ -70,12 +70,12 @@ function daemon(over: Partial<DaemonRow>): DaemonRow {
   } as DaemonRow
 }
 
-/** A cloud member as the CP reports it: org-less, named after its Pod. `daemonFromDto`
+/** A pool member as the CP reports it: org-less, named after its Pod. `daemonFromDto`
  *  relabels it, which is why the pod name lives in `host` alone. */
 const member = (id: string, over: Partial<DaemonRow> = {}): DaemonRow =>
-  daemon({ daemonId: id, cloud: true, name: 'AgentConnect Cloud', host: `cloud-daemon-${id}`, ...over })
+  daemon({ daemonId: id, pool: true, name: 'AgentConnect Cloud', host: `pool-member-${id}`, ...over })
 
-const onCloud = (id: string, daemonId: string): Agent => ({ id, daemon: daemonId }) as Agent
+const onPool = (id: string, daemonId: string): Agent => ({ id, daemon: daemonId }) as Agent
 
 function render(): string {
   const host = document.createElement('div')
@@ -96,7 +96,7 @@ beforeEach(() => {
   mocks.push.mockClear()
 })
 
-describe('DaemonsView cloud pool', () => {
+describe('DaemonsView pool', () => {
   it('shows one Cloud entry for the whole pool, however many Pods are in it', () => {
     mocks.daemons = [member('p1'), member('p2'), member('p3', { status: 'offline' })]
 
@@ -106,12 +106,12 @@ describe('DaemonsView cloud pool', () => {
     // Serving nodes only: a row left behind by a replaced Pod must not inflate the count.
     expect(html).toContain('2 nodes')
     // Pod identity is cluster churn — never a name this page puts in front of anyone.
-    expect(html).not.toContain('cloud-daemon-p1')
+    expect(html).not.toContain('pool-member-p1')
   })
 
   it('counts the agents across every member, not just the one it links to', () => {
     mocks.daemons = [member('p1'), member('p2')]
-    mocks.agents = [onCloud('a1', 'p1'), onCloud('a2', 'p2'), onCloud('a3', 'p2')]
+    mocks.agents = [onPool('a1', 'p1'), onPool('a2', 'p2'), onPool('a3', 'p2')]
 
     const html = render()
 

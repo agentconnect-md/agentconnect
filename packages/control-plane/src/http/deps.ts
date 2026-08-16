@@ -26,6 +26,7 @@ import type {
   AgentSecretStore,
   AgentConfigWriter,
   McpProviderRepo,
+  MemberSetRepo,
   McpProviderSecretStore,
   McpGrantRepo,
   SkillSourceRepo,
@@ -63,6 +64,8 @@ import type { WebchatTokenService } from '../registry/webchatToken.js'
 import type { OrgInviteLinkService } from '../registry/orgInviteLinkService.js'
 import type { WaitlistService } from '../registry/waitlistService.js'
 import type { ControlSender } from '../orchestrator/outbound.js'
+import type { AgentDelivery } from '../orchestrator/agentDelivery.js'
+import type { PlacementResolver } from '../orchestrator/placementResolver.js'
 import type { SessionVisibilityPushService } from '../orchestrator/visibilityPush.js'
 import type { AgentSpecAssembler } from '../orchestrator/agentSpecAssembler.js'
 import type { RelayControlSender } from '../orchestrator/relayControl.js'
@@ -72,6 +75,7 @@ import type { AgentMutationGate } from '../orchestrator/agentMutationGate.js'
 import type { SessionEventSink } from '../events/sink.js'
 import type { HumanAuthConfig } from './plugins/auth.js'
 import type { SkillRegistrySearcher } from './skills-registry.js'
+import type { PublicRepoResolver } from '../github/public-repo.js'
 import type { Readiness } from './readiness.js'
 import type { McpRateLimiter } from './mcp/rate-limit.js'
 import type { RemoteGrantAuthenticator } from './mcp/remote-grant-authenticator.js'
@@ -169,6 +173,8 @@ export interface HttpDeps {
     /** Transactional agent-row + secret-row writer — REST create/PATCH go through
      *  this so a failure between the two writes can't leave a partial definition. */
     agentConfig: AgentConfigWriter
+    /** The sets a duty may be claimed within — the console resolves a placement target to one. */
+    memberSet: MemberSetRepo
     /** Org-level MCP provider metadata (never upstream header values / grant keys). */
     mcpProvider: McpProviderRepo
     /** The ONLY read/write path for upstream MCP auth headers (store-only, never DTO'd). */
@@ -265,6 +271,14 @@ export interface HttpDeps {
   /** The fencing site for C→D control. REST agent CRUD pushes `agent/upsert`/
    *  `agent/remove` through it to replicate config to the owning daemon. */
   control: ControlSender
+  /** Resolves an agent's delivery set — placement ∪ current duty holders — and
+   *  fans `agent/upsert`/`agent/remove` out over it. EVERY replicate site routes
+   *  through this; none of them reads `agent.daemonId` to decide delivery. */
+  agentDelivery: AgentDelivery
+  /** The ONE answer to "which daemons serve this agent" (placement ∪ duty holders). Routes ask it
+   *  instead of reading `agent.daemonId`, which stopped naming a machine when a member set became
+   *  a placement target. */
+  placementResolver: PlacementResolver
   /** Pushes the per-session memory-capture gate to the owning daemons after a
    *  §4.3 visibility change, and answers the pending/applied cutover state
    *  (session-visibility.md §5.1). Absent ⇒ changes converge on register. */
@@ -325,6 +339,10 @@ export interface HttpDeps {
    *  search route reports the index unreachable and the console offers the GitHub
    *  import path instead). */
   searchSkillRegistry?: SkillRegistrySearcher
+  /** Anonymous GitHub repo lookup that binds a skill source's numeric identity when
+   *  no org installation covers the owner (the skills.sh case). Optional/injectable
+   *  so tests stay offline; absent ⇒ only the installation path can bind. */
+  resolvePublicRepo?: PublicRepoResolver
   /** github-app workspaces façade; absent ⇒ feature disabled (GITHUB_APP_* unset) and
    *  every github route 404s. */
   github?: GithubService

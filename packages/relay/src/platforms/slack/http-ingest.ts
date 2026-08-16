@@ -2,7 +2,7 @@
  * `SlackHttpIngest` (shared-bot-relay.md §12) — per-HTTP-bot inbound handler,
  * held by the relay. Inbound no longer rides a Socket Mode websocket: the relay
  * exposes ONE shared HTTP Events API surface (`/slack/events` + `/slack/interactions`,
- * see `slack-http-ingress.ts`) behind the pool's stable public URL, and after the
+ * see `http-ingress.ts`) behind the pool's stable public URL, and after the
  * POST is demuxed to a bot + its signing secret verified, the route calls
  * {@link SlackHttpIngest.handleEvent} / {@link SlackHttpIngest.handleInteraction}.
  * There is no MANUAL-ack seam anymore: Slack's HTTP 200 IS the ack. We answer 200

@@ -15,7 +15,7 @@
  *   3. on success → mint the next monotonic `sessionEpoch` via `EpochService`
  *      (persisted in C6) and return the `auth/ok` frame.
  *
- * TokenReview resolves an envelope to one org or a cloud Pod to one install-wide member.
+ * TokenReview resolves an envelope to one org or a pool member Pod to one install-wide member.
  *
  * A DB error during lookup or the epoch bump closes `1011` (SERVER_INTERNAL) so the
  * daemon backs off and retries rather than treating a transient blip as a dead
@@ -33,6 +33,9 @@ import { ApiKeyCodec } from './apiKey.js'
 /** Config slice the auth service needs. */
 export interface AuthServiceConfig {
   HEARTBEAT_SEC: number
+  /** Duty lease horizon handed to the daemon so its self-fence tracks THIS CP's
+   *  `DUTY_LEASE_DEFAULTS.leaseMs` instead of a duplicated constant. */
+  DUTY_LEASE_MS: number
   /** Web App console origin sent to daemons on `auth/ok` for session deep links.
    *  Undefined ⇒ no `webAppUrl` in the reply (daemon falls back to its own config). */
   WEB_APP_URL?: string
@@ -145,6 +148,9 @@ export class DaemonAuthService implements DaemonAuth {
       daemonId, // authoritative id (what the credential resolves to) — the daemon adopts this
       sessionEpoch: Number(sessionEpoch), // wire is a JS number; DB stores bigint
       heartbeatSec: this.config.HEARTBEAT_SEC,
+      // The daemon's duty self-fence deadline is derived from this, so it can never
+      // outlive the vacancy window this same CP reassigns on.
+      dutyLeaseMs: this.config.DUTY_LEASE_MS,
       serverTime: new Date(nowMs).toISOString(),
       organizationMode: orgId ? 'connection' : 'frame',
       ...(this.config.WEB_APP_URL ? { webAppUrl: this.config.WEB_APP_URL } : {}),

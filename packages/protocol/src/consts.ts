@@ -81,6 +81,11 @@ export const WORKSPACE_GIT_MESSAGE_FEATURE = 'workspace-git-message-v1'
  * hides the Tasks tab on a daemon without it rather than showing a tab that can never answer. */
 export const TASK_LIST_FEATURE = 'task-list-v1'
 
+/** Daemon serves `agent/wake` — the console's "start this agent's sandbox" for a Files/Memory read.
+ * Advertised only by a daemon that runs agents in cluster sandboxes: on any other daemon there is
+ * nothing to wake, and the CP answers `unsupported` without sending a frame it would ignore. */
+export const AGENT_WAKE_FEATURE = 'agent-wake-v1'
+
 /** How long the CP must let ONE `workspace/gitmessage` REQ run before giving up, and it must send it
  * single-shot (`{ ackTimeoutMs: WORKSPACE_GIT_MESSAGE_BUDGET_MS, maxTries: 1 }`). The default 5s ack
  * timeout would retransmit an in-flight model pass four times: identical frame ids, so the daemon
@@ -191,7 +196,7 @@ export const MAX_ENVIRONMENT_VALUE_LENGTH = 64 * 1024
 export const RESERVED_RESTART_CODE = 75
 
 /**
- * `AGENTCONNECT_SUPERVISOR` value a cloud daemon runs under: Kubernetes, where the
+ * `AGENTCONNECT_SUPERVISOR` value a pool member runs under: Kubernetes, where the
  * kubelet takes the place of launchd/systemd AND of the CLI's version store.
  *
  * It supervises restart — `restartPolicy: Always` brings the container back after
@@ -223,7 +228,7 @@ export const CP_TOKEN_AUDIENCE = 'ac-control-plane'
 export const ENVELOPE_DAEMON_SA_NAME = 'ac-daemon'
 
 /**
- * ServiceAccount a cloud daemon runs as. A cloud daemon serves EVERY org, so it lives in the
+ * ServiceAccount a pool member runs as. A pool member serves EVERY org, so it lives in the
  * install's control namespace rather than in an org namespace, and no namespace⇒org mapping
  * can name its org — the org is a per-connection selector it declares in `auth`, which is
  * safe precisely because this ServiceAccount is an install-level principal. The
@@ -243,3 +248,10 @@ export const CP_IDENTITY_TOKEN_PATH = '/var/run/ac-cp-identity/token'
  *  `spec.controlPlane.url`. The pod has no config file to read it from, and a URL is not a
  *  secret. Same two-sided agreement as the token path: the operator sets it, the daemon reads it. */
 export const CP_URL_ENV = 'AC_CP_URL'
+/** A pool member's rollout generation (its pod-template hash), reported on register (frames/register.ts). */
+export const POD_TEMPLATE_HASH_ENV = 'AC_POD_TEMPLATE_HASH'
+
+/** CP answers the `agent/exists` batch existence query the pool's orphan reconciler
+ *  asks before collecting a leaked sandbox object; a daemon that does not see it
+ *  skips the sweep rather than emit a frame an older CP rejects as `UNKNOWN_FRAME`. */
+export const AGENT_EXISTS_FEATURE = 'agent-exists-v1'

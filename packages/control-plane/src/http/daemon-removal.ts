@@ -8,7 +8,7 @@
  * `daemon_offline` until a re-register replays them.
  *
  * Three callers need the whole sequence — `DELETE /daemons/:id`, organization deletion
- * (which retires the cluster envelope's own daemon), and the cloud-member reaper — and a
+ * (which retires the cluster envelope's own daemon), and the pool-member reaper — and a
  * partial copy in any of them is a bug that only shows up in the console days later. So it
  * lives here rather than in whichever route wrote it first.
  *
@@ -16,11 +16,12 @@
  * already decided, so it unplaces first and then deletes — and a crash between the two leaves
  * a live daemon with unplaced agents, which converges. The reaper's decision is a guess about
  * a row it read moments ago, so its delete comes FIRST as a fenced claim, which puts the
- * cascade before the settlement and makes the pair a transaction (`retireCloudMember`) rather
+ * cascade before the settlement and makes the pair a transaction (`retirePoolMember`) rather
  * than an ordering.
  */
 import type { FastifyBaseLogger } from 'fastify'
 import type { AgentId, DaemonId, OrgId } from '../domain/ids.js'
+import { UNPLACED } from '../domain/placement.js'
 import type { HttpDeps } from './deps.js'
 
 /** Just enough of an agent to re-converge what pointed at it. */
@@ -47,14 +48,14 @@ export async function detachDaemon(
   // `daemonId` with `status` — and going through the repo is also what revokes
   // the agents' webchat MCP delegations and bumps their hook dispatchRevision,
   // exactly as an operator-initiated unplacement would.
-  for (const agent of placedAgents) await deps.repos.agent.setPlacement(agent.id, null)
+  for (const agent of placedAgents) await deps.repos.agent.setPlacement(agent.id, UNPLACED)
   await deps.registry.remove(orgId, daemonId)
   await settleAfterRemoval(deps, daemonId, placedAgents, log)
 }
 
 /**
- * Retire one install-wide cloud member whose Pod is gone
- * (`orchestrator/cloudDaemonReaper.ts`). No org owns the row, so the org-fenced delete
+ * Retire one install-wide pool member whose Pod is gone
+ * (`orchestrator/poolMemberReaper.ts`). No org owns the row, so the org-fenced delete
  * cannot reach it — and its placements may span every organization, which is the whole
  * reason it goes through this sequence instead of a bare delete.
  *
@@ -67,7 +68,7 @@ export async function detachDaemon(
  * What follows the transaction is only the out-of-database convergence, which is best-effort
  * by nature and backstopped by `register/ok` on the next reconnect.
  */
-export async function retireCloudDaemonMember(
+export async function retirePoolMember(
   deps: DaemonRemovalDeps,
   member: { daemonId: DaemonId; sessionEpoch: bigint },
   retiredBefore: Date,
@@ -76,7 +77,7 @@ export async function retireCloudDaemonMember(
   const { daemonId, sessionEpoch } = member
   // One transaction for both database halves — the delete and the unplacement it cascades —
   // so nothing here can be interrupted into leaving an agent active with nowhere to run.
-  const { deleted, settled } = await deps.registry.retireCloudMember(daemonId, { retiredBefore, sessionEpoch })
+  const { deleted, settled } = await deps.registry.retirePoolMember(daemonId, { retiredBefore, sessionEpoch })
   if (!deleted) return false
   await settleAfterRemoval(deps, daemonId, settled, log)
   return true
@@ -98,7 +99,7 @@ async function settleAfterRemoval(
   // relay can only answer 'offline' to. Best-effort, after the row is already
   // gone; `register/ok` carries the corrected directory as the reconnect backstop.
   // Which organizations need one is derived from the placements the row held, because a
-  // cloud member's agents are not one org's.
+  // pool member's agents are not one org's.
   for (const orgId of new Set(unplacedAgents.map((agent) => agent.orgId))) {
     try {
       await deps.collabRoutes.broadcast(orgId)

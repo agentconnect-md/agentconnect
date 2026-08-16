@@ -41,6 +41,14 @@ const MIGRATIONS: readonly string[] = [
       agent_id TEXT NOT NULL,
       PRIMARY KEY (org_id, channel, thread, ts, agent_id)
     );
+  `,
+  // #1041 item 7: this pair was constructed and never read or written — every transcript
+  // went to the pool store's own `transcript`/`transcript_recipient`, which now carry the
+  // org fence themselves. One store carries it, so this one gives its tables back.
+  `
+    DROP TABLE IF EXISTS transcript_recipient;
+    DROP TABLE IF EXISTS transcript;
+    DROP SEQUENCE IF EXISTS transcript_revision_seq;
   `
 ]
 

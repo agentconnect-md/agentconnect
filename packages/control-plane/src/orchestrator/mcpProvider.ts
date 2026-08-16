@@ -15,6 +15,7 @@
 import { createHash, randomBytes } from 'node:crypto'
 import net from 'node:net'
 import type { McpServerSpec, RcMcpAssign } from '@agentconnect.md/protocol'
+import { privateV4, privateV6 } from '../net/private-address.js'
 
 /** The provider fields the mappers read (structural subset of the McpProvider row). */
 interface ProviderView {
@@ -22,36 +23,6 @@ interface ProviderView {
   orgId: string
   name: string
   url: string
-}
-
-function privateV4(ip: string): boolean {
-  const o = ip.split('.').map(Number)
-  const a = o[0] ?? -1
-  const b = o[1] ?? -1
-  if (a === 0 || a === 127) return true // this-host / loopback
-  if (a === 10) return true // 10/8
-  if (a === 172 && b >= 16 && b <= 31) return true // 172.16/12
-  if (a === 192 && b === 168) return true // 192.168/16
-  if (a === 169 && b === 254) return true // link-local incl. 169.254.169.254 (cloud metadata)
-  if (a === 100 && b >= 64 && b <= 127) return true // 100.64/10 CGNAT
-  return false
-}
-
-function privateV6(ip: string): boolean {
-  const l = ip.toLowerCase()
-  if (l === '::1' || l === '::') return true // loopback / unspecified
-  const mapped = l.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/) // IPv4-mapped (dotted)
-  if (mapped?.[1]) return privateV4(mapped[1])
-  const hex = l.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/) // IPv4-mapped (URL-normalized hex)
-  if (hex?.[1] && hex[2]) {
-    const hi = parseInt(hex[1], 16)
-    const lo = parseInt(hex[2], 16)
-    return privateV4(`${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`)
-  }
-  const head = l.split(':')[0] ?? ''
-  if (/^f[cd]/.test(head)) return true // fc00::/7 ULA
-  if (/^fe[89ab]/.test(head)) return true // fe80::/10 link-local
-  return false
 }
 
 /**
@@ -104,18 +75,39 @@ export function relayHttpOrigin(relayUrl: string): string {
   return u.origin
 }
 
+/** The grant fields every projection needs: the key it ships and the instant that
+ *  orders it. Taken together off ONE row so the two can never disagree. */
+export interface GrantView {
+  key: string
+  createdAt: Date
+}
+
+/**
+ * The current grant of a provider's active set — the ONE selector, because
+ * rotation deliberately leaves the retiring and the fresh grant both active until
+ * the fresh one is distributed. `activeForProvider` orders by `createdAt` ascending,
+ * so the newest is last; taking `[0]` inside that window projects the key the CP is
+ * about to revoke. The same discipline (and the same reason) as the external-memory
+ * projector's `activeForConnection(...).at(-1)`.
+ */
+export function currentMcpGrant<T extends GrantView>(active: readonly T[]): T | undefined {
+  return active.at(-1)
+}
+
 /**
  * The daemon proxy def for a provider: an `http` MCP server pointing at the relay
  * proxy URL with the PLAINTEXT grant key as its bearer. NEVER carries the upstream
- * url or upstream secret headers.
+ * url or upstream secret headers. Takes the grant ROW, not a bare key, so the
+ * ordering marker and the key it orders always come from the same grant.
  */
-export function mcpProxyDef(provider: ProviderView, grantKey: string, relayBaseUrl: string): McpServerSpec {
+export function mcpProxyDef(provider: ProviderView, grant: GrantView, relayBaseUrl: string): McpServerSpec {
   return {
     orgId: provider.orgId,
     name: provider.name,
+    issuedAt: grant.createdAt.getTime(),
     transport: 'http',
     url: `${relayBaseUrl}/mcp/${provider.id}`,
-    headers: [{ name: 'Authorization', value: `Bearer ${grantKey}` }],
+    headers: [{ name: 'Authorization', value: `Bearer ${grant.key}` }],
     args: [],
     env: []
   }

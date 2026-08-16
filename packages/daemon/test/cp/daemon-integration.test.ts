@@ -9,6 +9,7 @@ import { CpRoutingLayer } from '../../src/router/cp-routing-layer.js'
 import { resolveCpRule } from '../../src/router/routing-rule.js'
 import { routeRules } from '../../src/router/routing-table.js'
 import type { NormalizedMessage } from '../../src/messages/normalized.js'
+import { fakeSlackAppFactory } from '../fakes/slack-app.js'
 
 const roots: string[] = []
 function freshRoot(): string {
@@ -32,7 +33,7 @@ describe('Daemon ↔ CP integration', () => {
       }) + '\n'
     )
     // Must not throw or hang even though the CP refuses the connection.
-    const daemon = new Daemon({ root })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root })
     await daemon.start()
     expect(true).toBe(true)
     await daemon.stop()
@@ -40,7 +41,7 @@ describe('Daemon ↔ CP integration', () => {
 
   it('mints and persists a daemonId when none is configured', async () => {
     const root = freshRoot()
-    const daemon = new Daemon({ root })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root })
     await daemon.start()
     await daemon.stop()
     const cfg = JSON.parse(readFileSync(join(root, 'config.json'), 'utf8'))

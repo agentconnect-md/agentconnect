@@ -40,7 +40,8 @@ import type {
   OrgId
 } from '../domain/ids.js'
 import type { SessionKey } from '../domain/sessionKey.js'
-import type { DutyMemberKey, DutyReconcilePlan, DutyEdge, CronSeed } from '../domain/duty.js'
+import type { DutyMemberKey, DutyReconcilePlan, DutyEdge, AgentSeed } from '../domain/duty.js'
+import type { PlacementKind, PlacementRef, PlacementTarget } from '../domain/placement.js'
 import type {
   OrganizationEnvironmentAudience,
   OrganizationEnvironmentKind,
@@ -142,11 +143,13 @@ export interface RegisterReqInput {
   host: RegisterReq['host']
   capabilities: RegisterReq['capabilities']
   maxAgents: RegisterReq['maxAgents']
+  /** Rollout generation (pod-template hash); absent ⇒ stored null. */
+  generation?: RegisterReq['generation']
 }
 
 export interface DaemonRecord {
   id: DaemonId
-  /** Null only for an install-wide cloud-daemon member. */
+  /** Null only for an install-wide pool member. */
   orgId: OrgId | null
   host: string | null
   /** Human-assigned display name (console-set); null until a user names it. */
@@ -186,42 +189,22 @@ export interface DaemonRepo {
    * `createdByUserId` stamps the WebUI principal who provisioned it (console "Created" row).
    */
   provision(daemonId: DaemonId, orgId: OrgId, createdByUserId?: string): Promise<DaemonRecord>
-  /**
-   * The daemon record bound to a verified Kubernetes identity, JIT-provisioning one on
-   * first sight — the same shape as `UserRepo`'s OIDC-subject provisioning. The store's
-   * envelope-only unique index makes the binding one-to-one, so an envelope never ends up
-   * with two records competing for its placements; the identity is namespace-derived, so
-   * a rebuilt envelope resolves back to the same row and keeps its history.
-   *
-   * `adoptDaemonId` names the record the retired API-key path already pinned for this
-   * envelope. On the first token connect it is bound to the identity rather than left
-   * beside a fresh one, so an org provisioned before this path keeps its placements and
-   * history. Ignored once the identity is bound, or if that record is another org's or
-   * already carries an identity.
-   *
-   * Null when the identity is already bound to a daemon in ANOTHER org: an envelope identity may
-   * not move tenants, and refusing is the only answer that cannot leak one org's
-   * placements to another.
-   */
-  resolveClusterIdentity(
-    orgId: OrgId,
-    clusterIdentity: string,
-    opts?: { adoptDaemonId?: string }
-  ): Promise<DaemonRecord | null>
-  /** Resolve one install-wide cloud member by its reviewed ServiceAccount subject and Pod UID. */
-  resolveCloudClusterIdentity(clusterIdentity: string, clusterPodUid: string): Promise<DaemonRecord>
-  /** The Kubernetes identity a daemon record is bound to, or null for an unknown/key daemon. */
-  findClusterIdentity(daemonId: DaemonId): Promise<{ orgId: string | null; clusterIdentity: string } | null>
-  /** Ids of the org's daemons bound to a Kubernetes identity — the ones the control
-   *  plane provisioned for a cluster envelope rather than a human attaching a machine. */
-  clusterBoundIds(orgId: OrgId): Promise<string[]>
+  /** Resolve one install-wide pool member by its reviewed ServiceAccount subject and Pod UID. */
+  resolvePoolClusterIdentity(clusterIdentity: string, clusterPodUid: string): Promise<DaemonRecord>
   /**
    * Idempotent on `daemonId`. Bumps `sessionEpoch` (the fencing root) in ONE
    * transaction and sets status `authenticating`. Returns the new strictly-
    * increasing epoch. First call for a daemon creates the row.
    */
   upsertOnAuth(input: AuthReqInput): Promise<{ daemon: DaemonRecord; sessionEpoch: bigint }>
-  applyRegister(daemonId: DaemonId, reg: RegisterReqInput): Promise<DaemonRecord>
+  /**
+   * Undo the automatic pool enrollment for a connection that registered as an OBSERVER, and
+   * backdate its liveness so the pool-member reaper retires the row on its next sweep. An
+   * observer holds no membership, so `claimVacant`'s eligibility gate can never reach it.
+   */
+  withdrawObserver(daemonId: DaemonId): Promise<void>
+  /** Also records `generation`, stamping `generationSince` only when the value changes. */
+  applyRegister(daemonId: DaemonId, reg: RegisterReqInput, now: Date): Promise<DaemonRecord>
   /** Full-replace the stored capabilities from a mid-connection `capabilities/update`. */
   setCapabilities(daemonId: DaemonId, capabilities: RegisterReqInput['capabilities']): Promise<void>
   /** Replace the daemon-level MCP-server list (`facts/daemon-runtimes.mcpServers`) wholesale. */
@@ -258,27 +241,27 @@ export interface DaemonRepo {
    */
   delete(orgId: OrgId, daemonId: DaemonId): Promise<void>
   /**
-   * Install-wide cloud members nothing has been heard from since `cutoff` — the rows left
+   * Install-wide pool members nothing has been heard from since `cutoff` — the rows left
    * behind by replaced Pods, which no org's DELETE can reach because no org owns them
-   * (agentconnect-org-operator.md §"The cloud daemon, which serves every org": a replacement
-   * Pod gets a new daemon ID). System-tier and deliberately fleet-wide, like
+   * (k8s-daemon-pool.md §3 "Identity is per Pod, not per org": a replacement Pod gets a new
+   * daemon ID). System-tier and deliberately fleet-wide, like
    * {@link DaemonRepo.findReassignable}. Never-connected rows are judged by `createdAt`.
    */
-  findRetiredCloudMembers(cutoff: Date): Promise<DaemonRecord[]>
+  findRetiredPoolMembers(cutoff: Date): Promise<DaemonRecord[]>
   /**
-   * Retire ONE install-wide cloud member: the fenced delete (cascading exactly like
+   * Retire ONE install-wide pool member: the fenced delete (cascading exactly like
    * {@link DaemonRepo.delete}) plus the database-side settlement of every agent it hosted, in
    * one transaction — so no crash can leave an agent unplaced but still `active`.
    *
    * A compare-and-delete, not a delete: the whole fence rides one statement — the org-less
-   * cloud shape (so it cannot touch an org's own daemon), the same `retiredBefore` cutoff the
+   * pool shape (so it cannot touch an org's own daemon), the same `retiredBefore` cutoff the
    * worklist selected on, and the `sessionEpoch` observed there, which a (re)auth bumps before
    * the first heartbeat moves `lastSeenAt`. A row that stopped matching yields
    * `deleted: false`, having written nothing, so nothing downstream runs for a member that
    * came back. `settled` is the agents this call actually unplaced — the audience for the
    * out-of-database pushes that follow, excluding any a concurrent writer had already moved.
    */
-  retireCloudMember(
+  retirePoolMember(
     daemonId: DaemonId,
     fence: { retiredBefore: Date; sessionEpoch: bigint }
   ): Promise<{ deleted: boolean; settled: { id: AgentId; orgId: OrgId }[] }>
@@ -289,9 +272,9 @@ export interface DaemonRepo {
   /** Daemons unreachable for longer than `graceSec` — reassignment candidates (§4.9).
    *  System-tier: the watchdog's worklist is deliberately fleet-wide. */
   findReassignable(graceSec: number, now: Date): Promise<DaemonRecord[]>
-  /** Org-owned point read; shared cloud members are deliberately absent. */
+  /** Org-owned point read; shared pool members are deliberately absent. */
   get(orgId: OrgId, daemonId: DaemonId): Promise<DaemonRecord | null>
-  /** Placement/display read admitting both org-owned daemons and install-wide cloud members. */
+  /** Placement/display read admitting both org-owned daemons and install-wide pool members. */
   getAvailable(orgId: OrgId, daemonId: DaemonId): Promise<DaemonRecord | null>
   /** Tenancy-UNSCOPED read for internal trust domains — WS handlers resolving
    *  their own connection's daemon, orchestration/placement resolving a daemon
@@ -300,7 +283,7 @@ export interface DaemonRepo {
   getUnscoped(daemonId: DaemonId): Promise<DaemonRecord | null>
   /** Owned fleet, optionally filtered to one org; undefined is the internal fleet-wide read. */
   list(orgId?: OrgId, viewer?: ViewCtx): Promise<DaemonRecord[]>
-  /** Display/placement fleet including install-wide cloud members. */
+  /** Display/placement fleet including install-wide pool members. */
   listAvailable(orgId: OrgId, viewer?: ViewCtx): Promise<DaemonRecord[]>
 }
 
@@ -639,7 +622,10 @@ export interface CreateAgentInput {
   managedSkills?: string[] // accepted managed_skill ids, explicitly enabled
   memory?: AgentMemoryBinding // memory backend
   icon?: AgentIcon // console avatar; absent ⇒ the repo assigns a random glyph+color combo
+  /** Placement at create time: `set` needs `setId`, `daemon` needs `daemonId`. Absent ⇒ unplaced. */
+  placementKind?: PlacementKind
   daemonId?: DaemonId // the owning machine, if chosen at create time
+  setId?: string // the owning member set, if placed on one at create time
   workspace?: AgentWorkspace // absent ⇒ scratch
   /** Rename-proof numeric identity of the github workspace repository. This is
    *  control-plane metadata only and never rides AgentWorkspace on the wire. */
@@ -735,7 +721,14 @@ export interface AgentRecord {
   managedSkills: string[] // accepted managed_skill ids ([] ⇒ none)
   memory: AgentMemoryBinding | null // runtimeOverrides.memory
   status: 'active' | 'inactive' | 'paused'
+  /** What placement NAMES (domain/placement.ts): `daemon` resolves through `daemonId`, `set`
+   *  resolves through `setId`. Never branch on it directly. */
+  placementKind: PlacementKind
+  /** The `daemon`-kind ref, and null for every other kind — placement, never "who serves it now".
+   *  Ask {@link PlacementResolver} for that. */
   daemonId: DaemonId | null
+  /** The `set`-kind ref, null for a `daemon` placement. Which MEMBER serves it is the ledger's. */
+  setId: string | null
   workspace: AgentWorkspace
   /** Nullable on scratch/anonymous and pre-R2a rows; action-time authorization
    *  fails closed until a legacy github workspace is lazily repaired. */
@@ -884,18 +877,18 @@ export interface AgentRepo {
   ): Promise<AgentRecord>
   /** Serialize on the Agent row. A real placement change atomically revokes all
    *  active webchat MCP delegations; a same-placement write does not. */
-  setPlacement(agentId: AgentId, daemonId: DaemonId | null): Promise<void>
+  setPlacement(agentId: AgentId, target: PlacementTarget): Promise<void>
   /**
-   * Atomically move an agent only when its current owner still matches
-   * `expectedDaemonId`. Returns the updated row, or null when another move won
-   * the compare-and-set race. A real move revokes active webchat MCP authority
-   * in the same transaction. This is the persistence fence for the explicit
-   * cold daemon-switch action.
+   * Atomically move an agent only when its current placement still matches `expected` — the whole
+   * target, so moving between a set and a machine is fenced exactly like moving between two
+   * machines. Returns the updated row, or null when another move won the compare-and-set race. A
+   * real move revokes active webchat MCP authority in the same transaction. This is the
+   * persistence fence for the explicit cold placement-switch action.
    */
   movePlacement(
     agentId: AgentId,
-    expectedDaemonId: DaemonId | null,
-    daemonId: DaemonId | null,
+    expected: PlacementTarget,
+    target: PlacementTarget,
     byUserId?: string
   ): Promise<AgentRecord | null>
   /** Atomically enumerate the agent's HookDefs, tombstone their durable review
@@ -910,6 +903,12 @@ export interface AgentRepo {
   /** Agents placed on a specific daemon — the reconcile roster (`register/ok.agents`).
    *  A daemon only ever receives the specs of the agents it owns (1 agent : 1 machine). */
   listForDaemon(daemonId: DaemonId): Promise<AgentRecord[]>
+  /** Unscoped batch read by id — the duty half of the reconcile roster, whose
+   *  agents are named by the ledger rather than by placement. */
+  listByIds(agentIds: readonly AgentId[]): Promise<AgentRecord[]>
+  /** The current `configRevision` of each agent — the freshness signal stamped
+   *  onto a duty grant's agent members (orchestrator/dutyLease.ts). */
+  configRevisions(agentIds: readonly AgentId[]): Promise<Map<string, bigint>>
   /**
    * The org's PEER directory: every agent, with only the fields the collaboration
    * roster filter needs. This is the channel-free discovery/authorization input —
@@ -929,7 +928,10 @@ export interface AgentRepo {
  *  scopes) plus the owning daemon, which the flat `CollabRoutesSnapshot.agents[]`
  *  entry routes on. `daemonId` is null for an unplaced agent (not routable). */
 export interface OrgAgentRecord extends ChannelAgentRecord {
+  /** The placement columns, so a consumer can resolve the serving daemon (domain/placement.ts). */
+  placementKind: PlacementKind
   daemonId: string | null
+  setId: string | null
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -1071,6 +1073,7 @@ export interface SessionVisibilityChange {
 /** One entry of the §5.1 register-time gate snapshot. */
 export interface SessionVisibilityState {
   orgId: OrgId
+  agentId: AgentId
   sessionId: SessionId
   visibility: SessionVisibility
   sharedMemoryExcluded: boolean
@@ -1133,6 +1136,9 @@ export interface SessionMetaRecord {
   permissionMode: string | null
   outputMode: string | null
   daemonId: DaemonId | null
+  /** The member set whose shared store holds this session's content; null ⇒ the recorder kept a
+   *  private one. Session-bound provenance that outlives `daemonId` (domain/session-content.ts). */
+  contentSetId: string | null
   workspaceIsolation: 'shared' | 'session' | null
   activityState: ActivityState
   // ── session visibility (session-visibility.md §3) ──
@@ -1379,28 +1385,38 @@ export interface SessionRepo {
   /** Raise the daemon-ack watermark (§5.1). Monotonic: a late ack for an older
    *  revision never lowers it, so the tighten stays `applied`. */
   recordVisibilityAck(sessionId: SessionId, visibilityRev: number): Promise<void>
-  /** The §5.1 register-time gate snapshot for one daemon: the current
-   *  `(sessionId, visibility, visibilityRev)` set for the sessions it reported,
-   *  newest first and bounded. A snapshot, not a diff. */
-  visibilitySnapshotForDaemon(
-    daemonId: DaemonId,
+  /** The §5.1 register-time gate snapshot for a daemon, keyed on the AGENTS it serves (the
+   *  caller resolves that set): the current `(sessionId, visibility, visibilityRev)` set,
+   *  unacked first then newest-active, and bounded. A snapshot, not a diff. */
+  visibilitySnapshotForAgents(
+    agentIds: readonly string[],
     limit: number,
     includeExternal?: boolean
   ): Promise<SessionVisibilityState[]>
-  /** How many of a daemon's sessions still owe an ack — used to report when a
+  /** How many of those agents' sessions still owe an ack — used to report when a
    *  bounded snapshot could not carry them all (never a silent truncation). */
-  countUnackedVisibility(daemonId: DaemonId, includeExternal?: boolean): Promise<number>
+  countUnackedVisibilityForAgents(agentIds: readonly string[], includeExternal?: boolean): Promise<number>
+  /** Every currently-PRIVATE session of those agents, ordered by id and cursored on `afterId`.
+   *  Deliberately blind to `visibilityAckedRev`: that watermark is per session, not per daemon, so
+   *  a previous holder's ack cannot prove this member ever received the gate. */
+  privateVisibilityPage(
+    agentIds: readonly string[],
+    limit: number,
+    includeExternal?: boolean,
+    afterId?: string
+  ): Promise<SessionVisibilityState[]>
   /** A session plus every descendant — the set a tightening cascade rewrote, so
    *  the detail view's cutover state covers the whole subtree, not just the root.
    *  System-tier: driven by the visibility-push orchestrator from a row it holds. */
   visibilitySubtree(sessionId: SessionId, limit: number): Promise<SessionMetaRecord[]>
   /** Resolve the agent that owns a bot's `(channel, thread)` — the most-recently-active session
-   *  keyed there whose agent still has an active integration for that bot and a current daemon
-   *  placement. Backstop for shared-bot thread-affinity lookup: a daemon-created session (e.g.
-   *  an agent's own channel-root post, session-concept §7.2 case 2a) never goes through the
-   *  relay's mention/switch REPORT leg, so no `thread-assign` seeds the affinity store — this
-   *  lets `lookupThread` still find the owner. Null when none. */
-  findThreadOwner(botId: BotId, channel: string, thread: string): Promise<{ agentId: string; daemonId: string } | null>
+   *  keyed there whose agent still has an active integration for that bot. Backstop for
+   *  shared-bot thread-affinity lookup: a daemon-created session (e.g. an agent's own channel-root
+   *  post, session-concept §7.2 case 2a) never goes through the relay's mention/switch REPORT leg,
+   *  so no `thread-assign` seeds the affinity store — this lets `lookupThread` still find the
+   *  owner. Null when none. Placement is deliberately NOT a predicate here: which daemon serves
+   *  the agent is {@link PlacementResolver}'s answer, and a pool agent names no machine. */
+  findThreadOwner(botId: BotId, channel: string, thread: string): Promise<{ agentId: string } | null>
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -1472,7 +1488,9 @@ export interface EstablishWebchatMcpDelegationInput {
   userId: string
   orgId: OrgId
   agentId: AgentId
-  daemonId: DaemonId
+  /** The placement the caller resolved its live authority against, re-checked under the agent row
+   *  lock so a concurrent move cannot slip a delegation past the revocation that move performs. */
+  expectedPlacement: PlacementRef
   now: Date
   expiresAt: Date
 }
@@ -1484,7 +1502,6 @@ export interface WebchatMcpDelegationRecord {
   userId: string
   orgId: string
   agentId: string
-  daemonId: string
   createdAt: Date
   expiresAt: Date
   revokedAt: Date | null
@@ -1498,7 +1515,6 @@ export interface RevokeWebchatMcpDelegationInput {
   userId: string
   orgId: OrgId
   agentId: AgentId
-  daemonId: DaemonId
   revokedAt: Date
   reason: string
 }
@@ -1513,9 +1529,9 @@ export interface WebchatMcpDelegationRepo {
    * Serialize on the durable conversation owner. Reconnects reuse matching,
    * unexpired authority without extending it. An earlier requested expiry
    * atomically shortens the reused row without rotating its generation.
-   * An already-expired row or a placement change rotates its generation.
-   * A foreign/unknown conversation binding, wrong daemon, or unplaced agent
-   * returns null without mutating the current generation.
+   * An already-expired row rotates its generation, as does a placement change,
+   * which revokes the live row where it lands. A foreign/unknown conversation
+   * binding or a moved placement returns null without mutating the current generation.
    */
   establish(input: EstablishWebchatMcpDelegationInput): Promise<WebchatMcpDelegationRecord | null>
   /** Conditional, generation-fenced revocation. An already-revoked exact match is idempotently true. */
@@ -1529,6 +1545,8 @@ export interface WebchatMcpDelegationRepo {
    * been observed, including rows marked expired during reconnect rotation.
    */
   reapExpired(expiredBefore: Date): Promise<ReapWebchatMcpDelegationsResult>
+  /** Revoke live delegations of agents nothing serves any more; returns how many were revoked. */
+  revokeUnplaced(now: Date): Promise<number>
 }
 
 export type WebchatMcpGrantStatus = 'pending' | 'active' | 'revoked' | 'expired'
@@ -1553,7 +1571,6 @@ export interface IssueWebchatMcpGrantInput {
   authorityGeneration: number
   conversationId: string
   descriptorInstanceId: string
-  authenticatedDaemonId: string
   tokenHash: string
   now: Date
   pendingExpiresAt: Date
@@ -1567,7 +1584,6 @@ export interface AcceptWebchatMcpGrantInput {
   conversationId: string
   descriptorInstanceId: string
   grantRevision: number
-  authenticatedDaemonId: string
   now: Date
 }
 
@@ -1575,7 +1591,6 @@ export interface RevokeWebchatMcpGrantsInput {
   authorityId: string
   authorityGeneration: number
   conversationId: string
-  authenticatedDaemonId: string
   now: Date
   reason: string
 }
@@ -1953,14 +1968,14 @@ export interface CronRepo {
   /** Every cron definition owned by one agent (cold placement-move snapshot).
    *  System-tier (§3.4): agent-fenced, orchestration-only. */
   listForAgent(agentId: AgentId): Promise<CronRecord[]>
-  /** Apply a daemon `cron/report`. Scoped: the cron's owning agent must be
-   *  placed on the REPORTING daemon (a daemon can never write another daemon's
-   *  cron). `lastRunAt` is latest-wins (re-asserts / out-of-order reports never
+  /** Apply a daemon `cron/report`. The reporting daemon's authority is settled by the caller
+   *  against the placement resolver (placement ∪ live duty holders), never by a join here.
+   *  `lastRunAt` is latest-wins (re-asserts / out-of-order reports never
    *  regress it); the run row upserts on (cronId, firedAt) — the fire report
    *  opens it `running`, a progress report can attach its session, and the
    *  completion report closes it. Returns whether the report was accepted
-   *  (false ⇒ unknown/foreign cron, dropped). */
-  recordReport(cronId: CronId, reportingDaemonId: DaemonId, report: CronReportInput): Promise<boolean>
+   *  (false ⇒ unknown cron, dropped). */
+  recordReport(cronId: CronId, report: CronReportInput): Promise<boolean>
   /** Run history for the console detail page, newest first. Run rows carry
    *  their own `orgId`, so the fence rides this query directly rather than only
    *  through the parent cron (§3.6). */
@@ -1976,10 +1991,12 @@ export interface CronRepo {
    *  (`register/ok.crons[]`, same scope rule as integrations §3.11).
    *  System-tier: daemon-fenced. */
   listForDaemon(daemonId: DaemonId): Promise<CronRecord[]>
+  /** The crons of these agents — the duty half of the reconcile roster, whose
+   *  agents are named by the ledger, not by placement. */
+  listForAgents(agentIds: readonly string[]): Promise<CronRecord[]>
   /** Org-fenced point read (§3): a cross-org id reads as absent, exactly like a
-   *  missing row. Crons have no internal-trust-domain reader — the daemon-facing
-   *  paths are `listForDaemon` and `recordReport`, both fenced by the daemon
-   *  axis — so this port deliberately grows no `getUnscoped`. */
+   *  missing row. Also the `cron/report` fence's read — it needs the cron's OWNING AGENT before
+   *  it can ask the resolver who serves it, fenced on the frame's org like every WS read. */
   get(orgId: OrgId, cronId: CronId): Promise<CronRecord | null>
 }
 
@@ -2439,8 +2456,8 @@ export interface HookRepo {
     input: HookReviewAttemptInput
   ): Promise<HookReviewAttemptResult>
   recordReviewResult(hookId: HookId, reportingDaemonId: DaemonId, input: HookReviewResultInput): Promise<boolean>
-  /** Apply a daemon `hook/report` completion. Scoped: the hook's owning agent
-   *  must be placed on the REPORTING daemon. Last-writer-wins; a completion with
+  /** Apply a daemon `hook/report` completion. Scoped: the REPORTING daemon must be the run's
+   *  accepted dispatch target or serve its agent now. Last-writer-wins; a completion with
    *  no prior delivery row (rc/run-report lost) still creates one, with
    *  `startedAt` estimated as `at − durationMs`. Returns acceptance. */
   recordReport(hookId: HookId, reportingDaemonId: DaemonId, input: HookReportInput, at: Date): Promise<boolean>
@@ -3438,6 +3455,10 @@ export interface IntegrationRepo {
    * org-wide) since the delivered spec carries plaintext tokens.
    */
   activeForDaemon(daemonId: DaemonId): Promise<IntegrationRecord[]>
+  /** Active integrations of these agents — the duty half of the reconcile roster,
+   *  whose agents are named by the ledger, not by placement. Token-bearing once
+   *  projected, so callers pass only the agents that daemon is entitled to. */
+  activeForAgents(agentIds: readonly string[]): Promise<IntegrationRecord[]>
   /**
    * The agents present in a channel (agent-collaboration directory, §channel).
    * Joins the channel's active integrations to their agents, ACROSS all daemons
@@ -4132,8 +4153,8 @@ export interface McpProviderRepo {
   /** Org-fenced point read (docs/designs/org-scoped-data-layer.md §3): a
    *  cross-org id reads as absent, exactly like a missing row. This port has no
    *  `getUnscoped` — the daemon and relay reach providers through
-   *  {@link McpProviderRepo.activeForDaemon} and {@link McpProviderRepo.listAll},
-   *  so no internal trust domain needs an id-addressed escape hatch. */
+   *  {@link McpProviderRepo.listForOrg} and {@link McpProviderRepo.listAll}, so no
+   *  internal trust domain needs an id-addressed escape hatch. */
   get(orgId: OrgId, id: string): Promise<McpProviderRecord | null>
   /** The org's providers, filtered to what a supplied human principal may see
    *  (org-visible OR owned-by-them OR shared-with-them). Undefined is reserved
@@ -4151,13 +4172,6 @@ export interface McpProviderRepo {
   update(orgId: OrgId, id: string, patch: UpdateMcpProviderInput): Promise<McpProviderRecord>
   /** Org-fenced: a cross-org id throws the same P2025 as a missing row. */
   delete(orgId: OrgId, id: string): Promise<void>
-  /**
-   * Providers that should be pushed to `daemonId`: an org provider whose `name` is
-   * enabled (in `runtimeOverrides.mcpServers`) by some agent placed on the daemon.
-   * Mirrors {@link IntegrationRepo.activeForDaemon} but org-scoped (v1 visibility='org'):
-   * a daemon receives the proxy def only when one of its agents opted the provider in.
-   */
-  activeForDaemon(daemonId: DaemonId): Promise<McpProviderRecord[]>
   /** EVERY provider across all orgs — the pool-wide set replayed to a relay that just
    *  (re)registered (its in-memory binding table starts empty; bindings are pool-wide,
    *  like bots/hooks). System-tier: deployment-level infrastructure by design. */
@@ -4598,7 +4612,7 @@ export interface ExternalMemoryConnectionRepo {
   }): Promise<ExternalMemoryConnectionRecord>
   /** Org-fenced point read (org-scoped-data-layer.md §3): a cross-org id reads
    *  as absent, exactly like a missing row. No `getUnscoped` — the daemon and
-   *  relay reach connections through `activeForDaemon` / `listAll`, never by id. */
+   *  relay reach connections through `listForOrg` / `listAll`, never by id. */
   get(orgId: OrgId, id: string): Promise<ExternalMemoryConnectionRecord | null>
   listForOrg(orgId: OrgId): Promise<ExternalMemoryConnectionRecord[]>
   /** System-tier: the pool-wide set replayed to a relay that just (re)registered. */
@@ -4607,9 +4621,6 @@ export interface ExternalMemoryConnectionRepo {
   update(orgId: OrgId, id: string, patch: { config?: Record<string, unknown> }): Promise<ExternalMemoryConnectionRecord>
   /** Org-fenced: a cross-org id throws the same P2025 as a missing row. */
   delete(orgId: OrgId, id: string): Promise<void>
-  /** Connections referenced by an external-memory agent placed on this daemon.
-   *  System-tier: daemon-fenced. */
-  activeForDaemon(daemonId: DaemonId): Promise<ExternalMemoryConnectionRecord[]>
   /** Revision-fenced probe fact update; stale daemon facts are ignored.
    *  System-tier: daemon-reported, fenced by the revision CAS. */
   updateProbeFact(
@@ -4978,7 +4989,40 @@ export interface OrgInviteLinkRepo {
   accept(tokenHash: string, userId: string, now: Date): Promise<OrgInviteAcceptResult>
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// MemberSetRepo — the sets a duty may be claimed within (daemon-groups.md §2)
+// ───────────────────────────────────────────────────────────────────────────
+
+/** A member set. `orgId` null means CROSS-ORG (the install-wide pool), never "unassigned". */
+export interface MemberSetRecord {
+  id: string
+  orgId: string | null
+  name: string
+}
+
+export interface MemberSetRepo {
+  /** The install-wide pool: the one org-less row. Null only before the migration that mints it. */
+  crossOrgSetId(): Promise<string | null>
+  get(setId: string): Promise<MemberSetRecord | null>
+  /** Which set this daemon is a member of — the claim scope of its connection (§3). */
+  setIdOf(daemonId: DaemonId): Promise<string | null>
+  /** The set's members, sorted. The read path for "who could serve a `set`-placed agent". */
+  memberIdsOf(setId: string): Promise<string[]>
+  /** The set's members, sorted, but ONLY for a set whose members share one content store — the
+   *  org-less install-wide pool. An org set answers `[]`: its machines may keep private stores, so
+   *  none of them can stand in for another's transcripts (domain/session-content.ts). */
+  sharedStoreMemberIdsOf(setId: string): Promise<string[]>
+  /** Record a membership under the set's tenancy invariant; throws MemberSetTenancyMismatch. */
+  enroll(setId: string, daemonId: DaemonId): Promise<void>
+}
+
 // DutyGroupRepo (k8s daemons) — the CP-hosted duty ledger
+
+/** One entry of a member's heartbeat duty digest: the group, at the term it believes it holds. */
+export interface DutyDigestEntry {
+  groupId: string
+  term: bigint
+}
 
 /** A ledger row plus its derived membership projection. */
 export interface DutyGroupRecord {
@@ -5002,14 +5046,40 @@ export interface DutyGrantRecord {
 
 export interface AgentHomeClaim {
   granted: boolean
-  groupId: string
-  term: bigint
+  /** Absent only when the claim was refused before any group was read or minted — an ineligible
+   *  claimant, which has no group to name and must not learn of one. */
+  groupId?: string
+  term?: bigint
   /** The live holder — the caller when granted, the incumbent for a `not_holder` answer otherwise. */
   holder: DaemonId | null
 }
 
 /** Pure plan callback run inside the reconcile transaction's org snapshot (orchestrator/dutyGroup.ts). */
 export type DutyReconcilePlanner = (existing: DutyGroupRecord[]) => DutyReconcilePlan
+
+/** One member set's capacity and unmet demand, as {@link DutyGroupRepo.poolTelemetry} reads it. */
+export interface PoolTelemetryRow {
+  setId: string
+  setName: string
+  /** The org-less set — the install-wide pool. */
+  installWide: boolean
+  /** Members seen within the lease horizon. */
+  liveMembers: number
+  /** Of those, the ones running UNBOUNDED (`maxAgents <= 0`, the daemon's sentinel for no ceiling).
+   *  Non-zero means this set has no finite budget, so capacity and headroom are not defined for it. */
+  unboundedMembers: number
+  /** Σ `maxAgents` over the BOUNDED members — the duty budget the pool can currently spend.
+   *  Meaningless while {@link PoolTelemetryRow.unboundedMembers} is non-zero. */
+  capacityAgents: number
+  /** Distinct agents covered by unexpired leases those members hold — the budget spent. */
+  dutyAgents: number
+  /** Vacant groups this set is eligible to claim and CAN deliver — unmet demand. */
+  vacantGroups: number
+  /** Vacant, eligible, but over the wire's member cap: never claimable at any pool size (D16). */
+  oversizedVacantGroups: number
+  /** Age of the oldest {@link PoolTelemetryRow.vacantGroups} entry. Sustained ⇒ nothing could take it. */
+  oldestVacancySec: number
+}
 
 export interface DutyGroupRepo {
   /** Recompute input + console/introspection read. */
@@ -5028,30 +5098,37 @@ export interface DutyGroupRepo {
     opts: { now: Date; leaseMs: number }
   ): Promise<DutyReconcilePlan>
   /** "Grant me up to `max` vacant groups": first valid claim wins (SKIP LOCKED),
-   *  each grant bumps the term. Install-wide — capacity gating is the caller's.
+   *  each grant bumps the term. Capacity gating is the caller's.
    *  `maxMembers` excludes undeliverable (oversized) groups at the claim
    *  boundary, so they never churn or starve the vacancies behind them.
-   *  `incumbentOnly` restricts vacancies to groups with an agent already placed
-   *  on the claimant (`agent.daemonId`) — the soak-phase grant policy that pins
-   *  duties where state already lives until the shared data plane arrives. */
+   *  Eligibility is read from the HOLDER's own set membership (domain/placement.ts), never
+   *  asserted by the caller: a group is claimable only when the claimant may hold EVERY agent in
+   *  it, which is what keeps a pool member off the agents a local daemon is already serving.
+   *  `excludeGroupIds` carries the caller's refusal backoff. */
   claimVacant(
     holder: DaemonId,
     max: number,
     now: Date,
     leaseMs: number,
-    opts?: { maxMembers?: number; incumbentOnly?: boolean }
+    opts?: { maxMembers?: number; excludeGroupIds?: readonly string[] }
   ): Promise<DutyGrantRecord[]>
-  /** The group-computation inputs for one org: active integrations on
-   *  daemon-held (socket, unrevoked) bots as edges; enabled crons as seeds. */
-  computeInputs(orgId: OrgId): Promise<{ edges: DutyEdge[]; seeds: CronSeed[] }>
+  /** The group-computation inputs for one org: every agent as a node, plus
+   *  active integrations on daemon-held (socket, unrevoked) bots as edges. */
+  computeInputs(orgId: OrgId): Promise<{ edges: DutyEdge[]; agents: AgentSeed[] }>
   /** Keyset rotation over orgs that can need a recompute — any org owning an
-   *  integration, an enabled cron, or an existing duty group. */
+   *  agent or an existing duty group. */
   listDutyOrgs(afterOrgId: string | null, limit: number): Promise<string[]>
-  /** Soak-phase placement fence: vacate every held group whose holder no longer
-   *  hosts ANY of its agents (a full placement move-away), so the new incumbent
-   *  can claim. Partial occupancy keeps the lease — split groups never flap.
-   *  Returns the vacated groupIds. */
-  vacateNonIncumbent(orgId: OrgId): Promise<string[]>
+  /** Per-set capacity and unmet demand, for the pool gauges (observability/pool-metrics.ts).
+   *  Read-only and derived entirely from the ledger, so it states what the claim paths would
+   *  decide rather than a second opinion about it: `liveMs` is the same liveness horizon
+   *  {@link DutyGroupRepo.newerGenerationLive} uses, `maxMembers` the same deliverability cap
+   *  {@link DutyGroupRepo.claimVacant} gates on. */
+  poolTelemetry(now: Date, liveMs: number, maxMembers: number): Promise<PoolTelemetryRow[]>
+  /** The placement fence, re-derived from the eligibility predicate: vacate every held group its
+   *  holder may no longer hold — an agent moved off a set onto a machine, or off one machine
+   *  onto another. Same rule as {@link DutyGroupRepo.claimVacant}, read from the holder's side, so
+   *  a lease can never outlive the placement that justified it. Returns the vacated groupIds. */
+  vacateIneligible(orgId: OrgId): Promise<string[]>
   /** Batched renewal — one write per heartbeat covering every held group.
    *  Term-preserving; a reassigned group simply stops matching. Returns the
    *  renewed groupIds for digest comparison. */
@@ -5060,6 +5137,38 @@ export interface DutyGroupRepo {
   release(holder: DaemonId, groupIds: string[]): Promise<void>
   /** First-trigger claim for a botless agent: creates the singleton home if none
    *  exists ("claiming creates the lease"), grants if vacant, otherwise names
-   *  the incumbent. Idempotent for the current holder (no term churn). */
+   *  the incumbent. Idempotent for the current holder (no term churn). Gated by
+   *  the SAME eligibility predicate as {@link DutyGroupRepo.claimVacant}, read
+   *  inside the transaction — the rendezvous is a claim path too, and a member
+   *  must not reach through it for an agent it may not hold. */
   claimAgentHome(orgId: OrgId, agentId: AgentId, holder: DaemonId, now: Date, leaseMs: number): Promise<AgentHomeClaim>
+  /** Does `holder` currently hold an unexpired lease on a group covering this
+   *  agent? The authorization for `duty/fetch`: a member may pull exactly the
+   *  agent definitions it has won, and nothing else. */
+  holdsAgent(holder: DaemonId, agentId: AgentId, now: Date): Promise<boolean>
+  /** The rollout barrier (k8s-daemon-pool.md §12): is there a LIVE member of the claimant's set — one
+   *  seen within `liveMs` — whose generation is different and NEWER than the claimant's? Generations
+   *  are ordered by the earliest live member's `generationSince`. A claimant with a null generation,
+   *  or in no set, is never held back; that is what keeps local daemons and older pods unaffected. */
+  newerGenerationLive(holder: DaemonId, now: Date, liveMs: number): Promise<boolean>
+  /** Record the holds this member reports in its heartbeat digest, returning the ones that became
+   *  confirmed on THIS beat. A grant is applied daemon-side only after its install succeeds
+   *  (#972), so the digest IS the proof that the member is serving — the same signal the
+   *  self-fence and CP renewal already ride, not a new one.
+   *
+   *  Scoped to the exact grant: an entry only confirms while its `term` still matches the row's,
+   *  so a beat that crossed a re-grant confirms nothing. */
+  confirmHeld(holder: DaemonId, reported: readonly DutyDigestEntry[]): Promise<string[]>
+  /** {@link DutyGroupRepo.holdersOf} restricted to CONFIRMED holds — who INGRESS may be addressed
+   *  at. A holder that is still installing is a live lease and not yet a route. */
+  confirmedHoldersOf(agentId: AgentId, now: Date): Promise<DaemonId[]>
+  /** Every member currently holding an unexpired lease on a group covering this
+   *  agent — the delivery half of {@link DutyGroupRepo.holdsAgent}, so a live
+   *  update reaches whoever serves the agent rather than only where it is placed
+   *  (orchestrator/agentDelivery.ts). Deliberately membership-only: the agent row
+   *  may already be gone (a delete replicates AFTER the cascade). */
+  holdersOf(agentId: AgentId, now: Date): Promise<DaemonId[]>
+  /** Every agent covered by the unexpired leases `holder` holds — the duty half
+   *  of the `register/ok` reconcile roster, which is `pinned-to-me ∪ held-by-me`. */
+  heldAgentIds(holder: DaemonId, now: Date): Promise<AgentId[]>
 }

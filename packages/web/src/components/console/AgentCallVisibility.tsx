@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { Agent, AgentCallPolicy, DaemonRow } from '@/lib/data'
-import { agentLabel, agentModelDisplay } from '@/lib/data'
+import { agentDaemonLabel, agentLabel, agentModelDisplay } from '@/lib/data'
 import { AgentIconView } from '@/components/marks'
 import { Icon } from '@/components/ui'
 
@@ -37,10 +37,6 @@ export interface AgentCallVisibilityProps {
   variant?: 'card' | 'inline' | 'section'
   /** Extra classes for the root (e.g. the detail grid's `order-*`). */
   className?: string
-}
-
-function daemonLabel(agent: Agent): string {
-  return !agent.daemon || agent.daemon === '—' ? 'unplaced' : agent.daemon
 }
 
 /** Stands in for granted peers this viewer can't resolve (restricted agents are
@@ -127,12 +123,12 @@ export function AgentCallVisibility({
     const q = query.trim().toLowerCase()
     if (!q) return availablePeers
     return availablePeers.filter((candidate) =>
-      [agentLabel(candidate), candidate.name, candidate.model, candidate.runtime, daemonLabel(candidate)]
+      [agentLabel(candidate), candidate.name, candidate.model, candidate.runtime, agentDaemonLabel(candidate, daemons)]
         .join(' ')
         .toLowerCase()
         .includes(q)
     )
-  }, [availablePeers, query])
+  }, [availablePeers, daemons, query])
 
   useEffect(() => {
     const onPointerDown = (event: PointerEvent) => {
@@ -350,7 +346,7 @@ export function AgentCallVisibility({
                       </span>
                     </span>
                     <span className="max-w-[90px] flex-none truncate font-mono text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                      {daemonLabel(peer)}
+                      {agentDaemonLabel(peer, daemons)}
                     </span>
                   </button>
                 ))

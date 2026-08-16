@@ -663,6 +663,9 @@ export type RdAgentMsgFwd = z.infer<typeof RdAgentMsgFwd>
 // `offline` — the target IS reachable, it is simply too old to honor this delivery kind,
 // so the caller learns the reply was refused rather than having it land in the wrong
 // session.
+// `not_ready` is the one RETRYABLE verdict: the target is known but nobody is addressable for it YET (an
+// unconfirmed pool grant, a lapsed lease awaiting a claim, a lagging directory copy). No hop caches it
+// against the `deliveryId`; the SOURCE daemon re-sends the same id with backoff for a bounded window.
 export const RdAgentMsgReason = z.enum([
   'busy',
   'offline',
@@ -670,9 +673,13 @@ export const RdAgentMsgReason = z.enum([
   'not_allowed',
   'not_found',
   'hop_limit',
-  'unsupported'
+  'unsupported',
+  'not_ready'
 ])
 export type RdAgentMsgReason = z.infer<typeof RdAgentMsgReason>
+
+/** The retryable `rd/agentmsg/ack` reason — see {@link RdAgentMsgReason}. */
+export const RD_AGENTMSG_NOT_READY = 'not_ready' satisfies RdAgentMsgReason
 
 export const RdAgentMsgAck = z.object({
   deliveryId: z.string().min(1),
@@ -687,6 +694,11 @@ export const RdAgentMsgAck = z.object({
   childSessionId: z.string().min(1).optional()
 })
 export type RdAgentMsgAck = z.infer<typeof RdAgentMsgAck>
+
+/** Is this admission verdict one the sender should retry (same `deliveryId`) rather than record? */
+export function isRetryableAgentMsgAck(ack: Pick<RdAgentMsgAck, 'delivered' | 'reason'>): boolean {
+  return !ack.delivered && ack.reason === RD_AGENTMSG_NOT_READY
+}
 
 // ── webchat output stream (D→R) ──────────────────────────────────────────────
 

@@ -46,6 +46,12 @@ export class FakeClock implements Clock {
     return this.t
   }
 
+  /** Armed-timer count — how a test waits for the code under test to park on a delay
+   *  instead of guessing from a side effect that lands earlier. */
+  get pending(): number {
+    return this.timers.size
+  }
+
   setTimeout(fn: () => void, ms: number): TimerHandle {
     const id = ++this.seq
     this.timers.set(id, { at: this.t + Math.max(0, ms), fn })

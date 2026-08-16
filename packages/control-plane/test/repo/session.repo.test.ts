@@ -13,6 +13,7 @@ import { PgSessionRepo } from '../../src/persistence/repositories/session.repo.j
 import { DEF_ORG, seedAgent, seedDaemon, seedLaunch } from '../fixtures/seed.js'
 import { DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 import { AgentId, BotId, DaemonId, LaunchId, SessionId } from '../../src/domain/ids.js'
+import { poolSetId } from '../fakes/member-set.js'
 
 const AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const OTHER_AGENT = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
@@ -188,6 +189,42 @@ describe('SessionRepo.recordMilestone — milestone-only (real Postgres)', () =>
     expect(row?.daemonId).toBe(DAEMON)
   })
 
+  // The recorder's row is deleted 15 minutes after a pool Pod goes silent and takes `daemonId`
+  // with it, so where the bodies went has to be recorded beside it, at the one moment it is
+  // knowable (domain/session-content.ts).
+  it('stamps the shared content store of a pool recorder, and nothing for a private one', async () => {
+    await fixtures()
+    const setId = (await prisma.memberSet.findFirstOrThrow({ where: { orgId: null } })).id
+    const POOL_MEMBER = 'd3333333-3333-4333-8333-333333333333'
+    await prisma.daemon.create({ data: { id: POOL_MEMBER, orgId: null, sessionEpoch: 1n, status: 'ready' } })
+    await prisma.memberSetMember.create({ data: { setId, daemonId: POOL_MEMBER } })
+    const repo = new PgSessionRepo(prisma)
+
+    await repo.recordMilestone(ev('start', { daemonId: DaemonId(POOL_MEMBER) }))
+    expect((await prisma.sessionMeta.findUnique({ where: { id: SESSION } }))?.contentSetId).toBe(setId)
+
+    // DAEMON is org-scoped and in no set — its store is its own, so no peer may read it.
+    await prisma.sessionMeta.delete({ where: { id: SESSION } })
+    await repo.recordMilestone(ev('start', { daemonId: DaemonId(DAEMON) }))
+    expect((await prisma.sessionMeta.findUnique({ where: { id: SESSION } }))?.contentSetId).toBeNull()
+  })
+
+  it('never lets a later reporter claim the content store of a session it did not record', async () => {
+    await fixtures()
+    const setId = (await prisma.memberSet.findFirstOrThrow({ where: { orgId: null } })).id
+    const POOL_MEMBER = 'd4444444-4444-4444-8444-444444444444'
+    await prisma.daemon.create({ data: { id: POOL_MEMBER, orgId: null, sessionEpoch: 1n, status: 'ready' } })
+    await prisma.memberSetMember.create({ data: { setId, daemonId: POOL_MEMBER } })
+    const repo = new PgSessionRepo(prisma)
+
+    await repo.recordMilestone(ev('start', { daemonId: DaemonId(DAEMON) }))
+    await repo.recordMilestone(ev('end', { daemonId: DaemonId(POOL_MEMBER) }))
+
+    const row = await prisma.sessionMeta.findUnique({ where: { id: SESSION } })
+    expect(row?.daemonId).toBe(DAEMON)
+    expect(row?.contentSetId).toBeNull()
+  })
+
   it('keeps the recorded execution config when a later milestone omits it', async () => {
     await fixtures()
     const repo = new PgSessionRepo(prisma)
@@ -333,7 +370,7 @@ describe('SessionRepo.recordMilestone — milestone-only (real Postgres)', () =>
     expect(await repo.list({ platform: 'telegram' })).toHaveLength(0)
   })
 
-  it("scopes shared-bot thread fallback to the bot's active, currently placed agent", async () => {
+  it("scopes shared-bot thread fallback to the bot's active agent, whatever places it", async () => {
     await fixtures()
     await seedDaemon(prisma, OTHER_DAEMON)
     await seedAgent(prisma, OTHER_AGENT, { daemonId: OTHER_DAEMON })
@@ -378,33 +415,36 @@ describe('SessionRepo.recordMilestone — milestone-only (real Postgres)', () =>
       })
     )
 
-    expect(await repo.findThreadOwner(BotId(botId), 'C1', 'T1')).toEqual({
-      agentId: AGENT,
-      daemonId: DAEMON
-    })
-    expect(await repo.findThreadOwner(BotId(otherBotId), 'C1', 'T1')).toEqual({
-      agentId: OTHER_AGENT,
-      daemonId: OTHER_DAEMON
-    })
+    // The AGENT is the answer; which member serves it is the placement resolver's, so the
+    // reply carries no daemon and asks nothing about placement.
+    expect(await repo.findThreadOwner(BotId(botId), 'C1', 'T1')).toEqual({ agentId: AGENT })
+    expect(await repo.findThreadOwner(BotId(otherBotId), 'C1', 'T1')).toEqual({ agentId: OTHER_AGENT })
 
     await prisma.integration.update({ where: { id: integrationId }, data: { status: 'revoked' } })
     expect(await repo.findThreadOwner(BotId(botId), 'C1', 'T1')).toBeNull()
 
     await prisma.integration.update({ where: { id: integrationId }, data: { status: 'active' } })
     await prisma.agent.update({ where: { id: AGENT }, data: { daemonId: OTHER_DAEMON } })
-    expect(await repo.findThreadOwner(BotId(botId), 'C1', 'T1')).toEqual({
-      agentId: AGENT,
-      daemonId: OTHER_DAEMON
-    })
+    expect(await repo.findThreadOwner(BotId(botId), 'C1', 'T1')).toEqual({ agentId: AGENT })
 
     await prisma.daemon.delete({ where: { id: DAEMON } })
-    expect(await repo.findThreadOwner(BotId(botId), 'C1', 'T1')).toEqual({
-      agentId: AGENT,
-      daemonId: OTHER_DAEMON
-    })
+    expect(await repo.findThreadOwner(BotId(botId), 'C1', 'T1')).toEqual({ agentId: AGENT })
 
-    await prisma.agent.update({ where: { id: AGENT }, data: { daemonId: null, status: 'inactive' } })
-    expect(await repo.findThreadOwner(BotId(botId), 'C1', 'T1')).toBeNull()
+    // A SET placement — placed, naming no machine. The old predicate required a non-null
+    // `agent.daemonId`, so every pool agent fell out of this fallback entirely.
+    await prisma.agent.update({
+      where: { id: AGENT },
+      data: { daemonId: null, placementKind: 'set', setId: await poolSetId(prisma) }
+    })
+    expect(await repo.findThreadOwner(BotId(botId), 'C1', 'T1')).toEqual({ agentId: AGENT })
+
+    // Unplaced entirely is still an answer here: only the integration gates this read now, and
+    // `lookupThread` refuses the target when nothing is routable for the agent.
+    await prisma.agent.update({
+      where: { id: AGENT },
+      data: { placementKind: 'daemon', setId: null, status: 'inactive' }
+    })
+    expect(await repo.findThreadOwner(BotId(botId), 'C1', 'T1')).toEqual({ agentId: AGENT })
   })
 
   it('joins usage into list() and sorts by latest activity', async () => {

@@ -4,7 +4,7 @@
 // The tree and git-status read model is `workspace-tree.tsx`, shared with the dock's Files panel; this file owns the preview, the editor and the pull, and file bytes are proxied live from the owning daemon (body-locality), so a 503 is an expected state rendered as a notice.
 // It projects the git read model into a <WorkspaceHeaderInfo> for `renderHeader` rather than drawing the card, which also carries source and repository-authorization controls needing agent-level data this component has no business fetching.
 
-import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import dynamic from 'next/dynamic'
 import {
   ApiError,
@@ -41,8 +41,15 @@ import {
   useWorkspaceGitStatus,
   useWorkspaceTree,
   workspaceDirtyMap,
-  workspaceEntryIcon
+  workspaceEntryIcon,
+  workspaceRootReadState
 } from '@/components/console/workspace-tree'
+import { useSandboxWake } from '@/components/console/sandbox-wake'
+import {
+  SANDBOX_ASLEEP_NOTICE,
+  SandboxAsleepNotice,
+  SandboxStartingNotice
+} from '@/components/console/SandboxWakeNotice'
 
 // react-markdown + remark-gfm are heavy and only needed when a markdown file is
 // previewed, so keep them out of the main console bundle (lazy client chunk).
@@ -107,6 +114,7 @@ export function WorkspaceFiles({
   sessionId,
   workdir,
   canEdit,
+  sandboxed = false,
   renderWorkspacePicker,
   renderHeader
 }: {
@@ -116,6 +124,8 @@ export function WorkspaceFiles({
   sessionId?: string
   workdir?: string
   canEdit: boolean
+  /** The agent runs in a cluster sandbox: its files are readable only through a running pod, so opening the tab wakes it rather than waiting for the read to refuse. */
+  sandboxed?: boolean
   /** Checkout control rendered opposite the breadcrumb. The branch comes from
    *  the primary checkout's live git status, even while browsing a worktree. */
   renderWorkspacePicker?: (primaryBranch: string | null) => ReactNode
@@ -138,6 +148,9 @@ export function WorkspaceFiles({
   const { dirs, expanded, toggleDir, loadMoreDir, openPath } = useWorkspaceTree(agentId, sessionId, refreshTick)
   // `git` is null while loading, for a non-repo workspace, and when the owning daemon is offline — the workspace card falls back to the agent's configured source in all three.
   const { git, primaryBranch } = useWorkspaceGitStatus(agentId, sessionId, refreshTick)
+  // The sandbox wake: pressed once when the root read refuses with the asleep code (or on open for a sandboxed agent), then the read is polled through this same refresh until it answers.
+  const retryRoot = useCallback(() => setRefreshTick((tick) => tick + 1), [])
+  const wake = useSandboxWake(agentId, workspaceRootReadState(dirs['']), retryRoot, { sandboxed })
   // One-shot: on first entry, auto-preview the project guide (CLAUDE.md / README.md).
   const autoOpenedRef = useRef(false)
   // A path check alone cannot distinguish A → B → A requests. Sequence every file
@@ -611,15 +624,27 @@ export function WorkspaceFiles({
           </div>
         )}
 
-        {!editor && root?.err && !root.entries && (
-          <div className="flex items-start gap-[10px] px-[18px] py-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary)">
-            <Icon name="triangle-alert" size={15} color="var(--amber-500)" />
-            <span>
-              Couldn&apos;t browse the workspace — the owning daemon may be offline. Files live only on that machine and
-              are read live from it, so they&apos;re unavailable while it is disconnected.
-            </span>
-          </div>
-        )}
+        {!editor &&
+          root?.err &&
+          !root.entries &&
+          (wake.phase === 'starting' ? (
+            <SandboxStartingNotice />
+          ) : (
+            <SandboxAsleepNotice
+              wake={wake}
+              startable={sandboxed || workspaceRootReadState(root) === 'asleep'}
+              notice={
+                <div className="flex items-start gap-[10px] px-[18px] py-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary)">
+                  <Icon name="triangle-alert" size={15} color="var(--amber-500)" />
+                  <span>
+                    {workspaceRootReadState(root) === 'asleep'
+                      ? SANDBOX_ASLEEP_NOTICE
+                      : 'Couldn’t browse the workspace — the owning daemon may be offline. Files live only on that machine and are read live from it, so they’re unavailable while it is disconnected.'}
+                  </span>
+                </div>
+              }
+            />
+          ))}
 
         {!editor && root && !root.loading && !root.err && !root.exists && (
           <EmptyNote

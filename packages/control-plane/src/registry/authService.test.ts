@@ -3,6 +3,7 @@ import { DaemonAuthService } from './authService.js'
 import { ApiKeyCodec } from './apiKey.js'
 import type { ApiKeyRepo, ApiKeyRecord } from '../persistence/ports.js'
 import type { EpochService } from '../orchestrator/epoch.js'
+import { DUTY_LEASE_DEFAULTS } from '../orchestrator/dutyLease.js'
 import type { Clock } from '../domain/clock.js'
 import type { ClientCtx, ClusterDaemonIdentity } from '../ports.js'
 import { OrgId, DaemonId } from '../domain/ids.js'
@@ -52,7 +53,14 @@ function svc(
   webAppUrl?: string,
   orgs: { slugById: (orgId: string) => Promise<string | null> } = { slugById: async () => null }
 ): DaemonAuthService {
-  return new DaemonAuthService(codec, repo, epoch, clock, { HEARTBEAT_SEC: 15, WEB_APP_URL: webAppUrl }, orgs)
+  return new DaemonAuthService(
+    codec,
+    repo,
+    epoch,
+    clock,
+    { HEARTBEAT_SEC: 15, DUTY_LEASE_MS: DUTY_LEASE_DEFAULTS.leaseMs, WEB_APP_URL: webAppUrl },
+    orgs
+  )
 }
 
 const okEpoch = makeEpoch(async () => ({ sessionEpoch: 7n }))
@@ -66,6 +74,8 @@ describe('DaemonAuthService.authenticate — close-code contract', () => {
     if (!r.ok) throw new Error('expected ok')
     expect(r.okFrame.sessionEpoch).toBe(7)
     expect(r.okFrame.heartbeatSec).toBe(15)
+    // The daemon's self-fence is derived from this, so it must be THIS CP's horizon.
+    expect(r.okFrame.dutyLeaseMs).toBe(DUTY_LEASE_DEFAULTS.leaseMs)
     expect(r.okFrame.webAppUrl).toBeUndefined() // omitted when WEB_APP_URL is unset
     expect(repo.touchLastUsed).toHaveBeenCalledOnce()
   })
@@ -186,7 +196,15 @@ describe('DaemonAuthService.authenticate — the in-cluster token path', () => {
   const orgs = { slugById: async () => 'cluster-org' }
 
   function withIdentity(verify: ClusterDaemonIdentity['verify'], repo = makeRepo()): DaemonAuthService {
-    return new DaemonAuthService(codec, repo, okEpoch, clock, { HEARTBEAT_SEC: 15 }, orgs, { verify })
+    return new DaemonAuthService(
+      codec,
+      repo,
+      okEpoch,
+      clock,
+      { HEARTBEAT_SEC: 15, DUTY_LEASE_MS: DUTY_LEASE_DEFAULTS.leaseMs },
+      orgs,
+      { verify }
+    )
   }
 
   it('a verified token authenticates without any API key', async () => {
@@ -226,9 +244,17 @@ describe('DaemonAuthService.authenticate — the in-cluster token path', () => {
     const epoch = makeEpoch(async () => {
       throw new Error('must not be reached')
     })
-    const service = new DaemonAuthService(codec, makeRepo(), epoch, clock, { HEARTBEAT_SEC: 15 }, orgs, {
-      verify: async () => null
-    })
+    const service = new DaemonAuthService(
+      codec,
+      makeRepo(),
+      epoch,
+      clock,
+      { HEARTBEAT_SEC: 15, DUTY_LEASE_MS: DUTY_LEASE_DEFAULTS.leaseMs },
+      orgs,
+      {
+        verify: async () => null
+      }
+    )
     const r = await service.authenticate({ serviceAccountToken: 'projected', agentVersion: '1' }, ctx)
     expect(r).toMatchObject({ ok: false, closeCode: 4401 })
   })
@@ -250,9 +276,9 @@ describe('DaemonAuthService.authenticate — the in-cluster token path', () => {
     expect(claims).toEqual([{ daemonId: verified.daemonId }])
   })
 
-  it('authenticates an install-wide cloud daemon in frame-scoped organization mode', async () => {
-    const cloud = { daemonId: verified.daemonId, scope: 'install' as const }
-    const r = await withIdentity(async () => cloud).authenticate(
+  it('authenticates an install-wide pool member in frame-scoped organization mode', async () => {
+    const poolMember = { daemonId: verified.daemonId, scope: 'install' as const }
+    const r = await withIdentity(async () => poolMember).authenticate(
       { serviceAccountToken: 'projected', agentVersion: '1' },
       ctx
     )

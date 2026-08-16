@@ -3,13 +3,63 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { LocalStore, sessionKey } from '../src/store/local-store.js'
+import { LocalStore, sessionKey, type StoreDatabase } from '../src/store/local-store.js'
+import { openPostgresLocalStore, usingPostgresStore } from './store-postgres/backend.js'
+
+/** True in the `store-postgres` project, where every store below is the real pool store. */
+const pg = usingPostgresStore()
 
 function store(): LocalStore {
+  if (pg) return openPostgresLocalStore()
   return new LocalStore(join(mkdtempSync(join(tmpdir(), 'ac-db-')), 'local.sqlite'))
 }
 
-describe('LocalStore schema versioning', () => {
+/** A second handle on the same durable store — a daemon restart, not a new store. */
+function reopen(path: string): LocalStore {
+  return pg ? openPostgresLocalStore() : new LocalStore(path)
+}
+
+/** Every agent a shared-store test names belongs to one org unless the test says otherwise. */
+const oneOrg = () => 'org-1'
+
+/** Two pool members over ONE database — what the shared Postgres schema is during a rollout. */
+function sharedMembers(first: string, second: string): [LocalStore, LocalStore] {
+  if (pg)
+    return [
+      openPostgresLocalStore({ shared: true, ownerId: first, orgForAgent: oneOrg }),
+      openPostgresLocalStore({ shared: true, ownerId: second, orgForAgent: oneOrg })
+    ]
+  const database = new DatabaseSync(':memory:') as unknown as StoreDatabase
+  return [
+    new LocalStore({ database, shared: true, ownerId: first, orgForAgent: oneOrg }),
+    new LocalStore({ database, shared: true, ownerId: second, orgForAgent: oneOrg })
+  ]
+}
+
+/** Undo the v11 transcript fence, so a fixture looks like a store an older daemon wrote. */
+const dropTranscriptOrg = (db: DatabaseSync): void => {
+  db.exec(`
+    DROP INDEX transcript_thread_seq;
+    DROP INDEX transcript_text_ts;
+    DROP INDEX transcript_agent_tool_call;
+    DROP INDEX transcript_thread_event_time;
+    DROP INDEX transcript_thread_revision;
+    ALTER TABLE transcript DROP COLUMN orgId;
+    DROP TABLE transcript_recipient;
+    CREATE TABLE transcript_recipient (
+      channel TEXT NOT NULL, thread TEXT NOT NULL, ts TEXT NOT NULL, agentId TEXT NOT NULL,
+      PRIMARY KEY (channel, thread, ts, agentId)
+    );
+    CREATE INDEX transcript_thread_seq ON transcript (channel, thread, seq);
+    CREATE UNIQUE INDEX transcript_text_ts ON transcript (channel, thread, ts) WHERE kind = 'text';
+    CREATE UNIQUE INDEX transcript_agent_tool_call
+      ON transcript (channel, thread, sender, tool_call_id) WHERE tool_call_id IS NOT NULL;
+    CREATE INDEX transcript_thread_event_time ON transcript (channel, thread, eventTimeUs DESC, seq DESC);
+    CREATE INDEX transcript_thread_revision ON transcript (channel, thread, revision);
+  `)
+}
+
+describe.skipIf(pg)('LocalStore schema versioning', () => {
   const userVersion = (path: string): number => {
     const db = new DatabaseSync(path)
     const v = (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version
@@ -38,21 +88,163 @@ describe('LocalStore schema versioning', () => {
     expect(userVersion(path)).toBe(stamped)
   })
 
-  it('adds permission ownership when upgrading a v1 store', () => {
+  it('adds permission ownership, recovery ownership and per-owner routing when upgrading a v1 store', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v1-')), 'local.sqlite')
     new LocalStore(path).close()
     const old = new DatabaseSync(path)
     old.exec('ALTER TABLE permission_requests DROP COLUMN ownerId')
+    old.exec('DROP INDEX session_metadata_outbox_attempt')
+    old.exec('ALTER TABLE session_metadata_outbox DROP COLUMN failedAttempts')
+    old.exec('ALTER TABLE session_metadata_outbox DROP COLUMN nextAttemptAt')
+    old.exec('ALTER TABLE dreams DROP COLUMN ownerId')
+    old.exec('ALTER TABLE webchat_mcp_grant_ledger DROP COLUMN ownerId')
+    old.exec('ALTER TABLE inbox DROP COLUMN reportOwnerId')
+    old.exec('ALTER TABLE inbox DROP COLUMN reportClaimedAt')
+    old.exec('ALTER TABLE cron_runs DROP COLUMN definition')
+    old.exec('ALTER TABLE session_purges DROP COLUMN ownerId')
+    old.exec('ALTER TABLE session_purges DROP COLUMN claimedAt')
+    old.exec('ALTER TABLE session_metadata_outbox DROP COLUMN ownerId')
+    old.exec('ALTER TABLE session_metadata_outbox DROP COLUMN claimedAt')
+    dropTranscriptOrg(old)
     old.exec('PRAGMA user_version = 1')
     old.close()
 
     new LocalStore(path).close()
 
     const upgraded = new DatabaseSync(path)
-    const columns = upgraded.prepare('PRAGMA table_info(permission_requests)').all() as { name: string }[]
+    const columnsOf = (table: string): string[] =>
+      (upgraded.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((column) => column.name)
+    const columns = columnsOf('permission_requests')
+    const outboxColumns = columnsOf('session_metadata_outbox')
+    const dreamColumns = columnsOf('dreams')
+    const grantColumns = columnsOf('webchat_mcp_grant_ledger')
+    const inboxColumns = columnsOf('inbox')
+    const cronColumns = columnsOf('cron_runs')
+    const purgeColumns = columnsOf('session_purges')
     upgraded.close()
-    expect(columns.map((column) => column.name)).toContain('ownerId')
-    expect(userVersion(path)).toBe(2)
+    expect(columns).toContain('ownerId')
+    // Session-metadata snapshots are leased per pool member too (#1023).
+    expect(outboxColumns).toEqual(expect.arrayContaining(['failedAttempts', 'nextAttemptAt', 'ownerId', 'claimedAt']))
+    // Recovery ownership: a pool member must be able to tell its own rows from a peer's.
+    expect(dreamColumns).toContain('ownerId')
+    expect(grantColumns).toContain('ownerId')
+    expect(inboxColumns).toEqual(expect.arrayContaining(['reportOwnerId', 'reportClaimedAt']))
+    // A stamp is only comparable to a fire of the same schedule definition (#1031).
+    expect(cronColumns).toContain('definition')
+    // Purge receipts are leased per pool member (#1032).
+    expect(purgeColumns).toEqual(expect.arrayContaining(['ownerId', 'claimedAt']))
+    expect(userVersion(path)).toBe(11)
+  })
+
+  it.skipIf(pg)('never persists the CP routing map on a shared store, and still does on an owned one', () => {
+    // One row and many members: each member's save used to erase every other member's, and each
+    // boot hydrated whichever map was written last — a foreign `routingEpoch` with it. A shared
+    // member now writes nothing and reads nothing, so it starts from an empty map at epoch 0.
+    const database = new DatabaseSync(join(mkdtempSync(join(tmpdir(), 'ac-schema-shared-')), 'local.sqlite'))
+    const first = new LocalStore({ database, shared: true, ownerId: 'member-1', orgForAgent: oneOrg })
+    const second = new LocalStore({ database, shared: true, ownerId: 'member-2', orgForAgent: oneOrg })
+
+    first.setCpRouting(1, '{"a":[]}', '[]')
+    second.setCpRouting(9, '{"b":[]}', '[{"kind":"global"}]')
+    expect(first.getCpRouting()).toBeUndefined()
+    expect(second.getCpRouting()).toBeUndefined()
+    // Not even a row to leak: `ownerId` is a process incarnation, so any partition key a member
+    // could write here would be abandoned on its next restart.
+    expect(database.prepare('SELECT COUNT(*) AS n FROM cp_routing').get()).toMatchObject({ n: 0 })
+    database.close()
+
+    // An exclusively owned store is untouched: it is the one store where the row survives a restart.
+    const solo = store()
+    solo.setCpRouting(4, '{"solo":[]}', '[{"kind":"global"}]')
+    expect(solo.getCpRouting()).toMatchObject({ routingEpoch: 4, assignments: '{"solo":[]}' })
+    solo.close()
+  })
+
+  it('re-keys the capture gate by agent when upgrading a v5 store', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v5-')), 'local.sqlite')
+    new LocalStore(path).close()
+    const old = new DatabaseSync(path)
+    old.exec('DROP TABLE session_gates')
+    old.exec(`CREATE TABLE session_gates (
+      acpSessionId TEXT PRIMARY KEY, localExcluded INTEGER NOT NULL DEFAULT 1,
+      cpPrivate INTEGER, cpRev INTEGER NOT NULL DEFAULT 0, updatedAt INTEGER
+    )`)
+    old.exec(`INSERT INTO sessions (key, agentId, acpSessionId) VALUES
+      ('a', 'bot-a', 'acp-1'), ('b', 'bot-b', 'acp-2'), ('c', 'bot-c', 'acp-2')`)
+    old.exec(`INSERT INTO session_gates (acpSessionId, localExcluded, cpPrivate, cpRev) VALUES
+      ('acp-1', 1, 0, 4), ('acp-2', 0, 0, 7), ('acp-orphan', 0, 0, 1)`)
+    old.exec('ALTER TABLE cron_runs DROP COLUMN definition')
+    old.exec('ALTER TABLE session_purges DROP COLUMN ownerId')
+    old.exec('ALTER TABLE session_purges DROP COLUMN claimedAt')
+    old.exec('ALTER TABLE session_metadata_outbox DROP COLUMN ownerId')
+    old.exec('ALTER TABLE session_metadata_outbox DROP COLUMN claimedAt')
+    dropTranscriptOrg(old)
+    old.exec('PRAGMA user_version = 5')
+    old.close()
+
+    const upgraded = new LocalStore(path)
+    // Attributable: the CP verdict follows the one agent that held the id.
+    expect(upgraded.isCaptureExcluded('bot-a', 'acp-1')).toBe(false)
+    // Held by two agents: the stored verdict was never attributable to either, so
+    // both start from the fail-closed state and wait for their own CP push.
+    expect(upgraded.isCaptureExcluded('bot-b', 'acp-2')).toBe(true)
+    expect(upgraded.isCaptureExcluded('bot-c', 'acp-2')).toBe(true)
+    expect(upgraded.applyCpCaptureGate('bot-b', 'acp-2', false, 1)).toBe('applied')
+    expect(upgraded.isCaptureExcluded('bot-b', 'acp-2')).toBe(false)
+    expect(upgraded.isCaptureExcluded('bot-c', 'acp-2')).toBe(true)
+    upgraded.close()
+
+    expect(userVersion(path)).toBe(11)
+  })
+
+  it('re-keys the runtime catalog cache on its owning member when upgrading a v7 store', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v7-')), 'local.sqlite')
+    new LocalStore(path).close()
+    const old = new DatabaseSync(path)
+    old.exec(`
+      DROP TABLE runtime_catalog_meta;
+      DROP TABLE runtime_model_catalog;
+      CREATE TABLE runtime_catalog_meta (
+        runtimeId TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, source TEXT NOT NULL, defaultModel TEXT,
+        permissionModes TEXT, defaultPermissionMode TEXT, complete INTEGER NOT NULL DEFAULT 0,
+        modelsHash TEXT, observedAt INTEGER NOT NULL
+      );
+      CREATE TABLE runtime_model_catalog (
+        runtimeId TEXT NOT NULL, modelId TEXT NOT NULL, fingerprint TEXT NOT NULL,
+        capsJson TEXT NOT NULL, observedAt INTEGER NOT NULL, PRIMARY KEY (runtimeId, modelId)
+      );
+      INSERT INTO runtime_catalog_meta (runtimeId, fingerprint, source, complete, observedAt)
+        VALUES ('claude', 'fp-1', 'acp', 1, 100);
+      INSERT INTO runtime_model_catalog (runtimeId, modelId, fingerprint, capsJson, observedAt)
+        VALUES ('claude', 'opus', 'fp-1', '{}', 100);
+    `)
+    old.exec('ALTER TABLE session_purges DROP COLUMN ownerId')
+    old.exec('ALTER TABLE session_purges DROP COLUMN claimedAt')
+    old.exec('ALTER TABLE session_metadata_outbox DROP COLUMN ownerId')
+    old.exec('ALTER TABLE session_metadata_outbox DROP COLUMN claimedAt')
+    dropTranscriptOrg(old)
+    old.exec('PRAGMA user_version = 7')
+    old.close()
+
+    const upgraded = new LocalStore(path)
+    // Pre-upgrade rows name no member, so no member can honestly claim them; the next
+    // probe refills the cache this one owns.
+    expect(upgraded.getRuntimeCatalogMeta('claude')).toBeUndefined()
+    expect(upgraded.listRuntimeModelCaps()).toEqual([])
+    upgraded.close()
+
+    const after = new DatabaseSync(path)
+    const metaColumns = after.prepare('PRAGMA table_info(runtime_catalog_meta)').all() as { name: string; pk: number }[]
+    const capColumns = after.prepare('PRAGMA table_info(runtime_model_catalog)').all() as { name: string; pk: number }[]
+    after.close()
+    const primaryKey = (columns: { name: string; pk: number }[]): string[] =>
+      columns
+        .filter((column) => column.pk > 0)
+        .sort((a, b) => a.pk - b.pk)
+        .map((column) => column.name)
+    expect(primaryKey(metaColumns)).toEqual(['ownerId', 'runtimeId'])
+    expect(primaryKey(capColumns)).toEqual(['ownerId', 'runtimeId', 'modelId'])
+    expect(userVersion(path)).toBe(11)
   })
 
   it('refuses a store written by a newer daemon WITHOUT touching it first', () => {
@@ -140,7 +332,7 @@ describe('LocalStore', () => {
 
   it('persists only explicitly pending session snapshots and fences stale ACKs', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'ac-session-outbox-')), 'local.sqlite')
-    const first = new LocalStore(path)
+    const first = reopen(path)
     first.upsertSession({
       key: sessionKey('slack', 'C1', '100.1', 'bot-a'),
       agentId: 'bot-a',
@@ -160,22 +352,43 @@ describe('LocalStore', () => {
     expect(first.saveSessionMetadataSnapshot('bot-a', 'acp-1', '{"phase":"start"}', true, 2)).toBe(1)
     first.close()
 
-    const restored = new LocalStore(path)
+    const restored = reopen(path)
     expect(restored.nextSessionMetadataSnapshot()).toMatchObject({
       agentId: 'bot-a',
       sessionId: 'acp-1',
       revision: 1,
-      snapshot: '{"phase":"start"}'
+      snapshot: '{"phase":"start"}',
+      failedAttempts: 0,
+      nextAttemptAt: null
+    })
+
+    expect(restored.recordSessionMetadataSnapshotFailure('bot-a', 'acp-1', 1, 100)).toEqual({
+      failedAttempts: 1,
+      nextAttemptAt: 100
+    })
+    expect(restored.nextSessionMetadataSnapshot(99)).toBeUndefined()
+    expect(restored.nextSessionMetadataAttemptAt()).toBe(100)
+    restored.close()
+
+    const deferred = reopen(path)
+    expect(deferred.pendingSessionMetadataSnapshot('bot-a', 'acp-1')).toMatchObject({
+      failedAttempts: 1,
+      nextAttemptAt: 100
     })
 
     // A newer projection replaces the payload and revision. Its predecessor's
     // delayed ACK cannot delete it.
-    expect(restored.saveSessionMetadataSnapshot('bot-a', 'acp-1', '{"phase":"end"}', false, 3)).toBe(2)
-    expect(restored.acknowledgeSessionMetadataSnapshot('bot-a', 'acp-1', 1)).toBe(false)
-    expect(restored.nextSessionMetadataSnapshot()).toMatchObject({ revision: 2, snapshot: '{"phase":"end"}' })
-    expect(restored.acknowledgeSessionMetadataSnapshot('bot-a', 'acp-1', 2)).toBe(true)
-    expect(restored.hasPendingSessionMetadata()).toBe(false)
-    restored.close()
+    expect(deferred.saveSessionMetadataSnapshot('bot-a', 'acp-1', '{"phase":"end"}', false, 3)).toBe(2)
+    expect(deferred.acknowledgeSessionMetadataSnapshot('bot-a', 'acp-1', 1)).toBe(false)
+    expect(deferred.nextSessionMetadataSnapshot()).toMatchObject({
+      revision: 2,
+      snapshot: '{"phase":"end"}',
+      failedAttempts: 0,
+      nextAttemptAt: null
+    })
+    expect(deferred.acknowledgeSessionMetadataSnapshot('bot-a', 'acp-1', 2)).toBe(true)
+    expect(deferred.hasPendingSessionMetadata()).toBe(false)
+    deferred.close()
   })
 
   it('does not recursively mine dream execution sessions as dream sources', () => {
@@ -240,20 +453,53 @@ describe('LocalStore', () => {
     s.close()
   })
 
-  it('round-trips per-cron last-run stamps (latest-wins)', () => {
+  it('round-trips per-cron last-run stamps with their definition (latest-wins)', () => {
     const s = store()
-    expect(s.getCronLastRun('bot-a:daily')).toBeUndefined()
-    s.setCronLastRun('bot-a:daily', 1000)
-    s.setCronLastRun('bot-a:daily', 2000)
-    s.setCronLastRun('bot-b:weekly', 1500)
-    expect(s.getCronLastRun('bot-a:daily')).toBe(2000)
-    expect(s.getCronLastRun('bot-b:weekly')).toBe(1500)
+    expect(s.cronRun('bot-a:daily')).toBeUndefined()
+    s.setCronLastRun('bot-a:daily', 1000, 'def-1')
+    s.setCronLastRun('bot-a:daily', 2000, 'def-2')
+    s.setCronLastRun('bot-b:weekly', 1500, 'def-1')
+    expect(s.cronRun('bot-a:daily')).toEqual({ lastRunAt: 2000, definition: 'def-2' })
+    expect(s.cronRun('bot-b:weekly')).toEqual({ lastRunAt: 1500, definition: 'def-1' })
+    s.close()
+  })
+
+  it('claims a catch-up only for the definition the stamp was written under', () => {
+    const s = store()
+    s.setCronLastRun('bot-a:daily', 1000, 'def-1')
+    s.setDreamLastRun('bot-a', 1000, 'def-1')
+    // A definition that has moved on cannot claim the moment the old one left behind.
+    expect(s.claimCronCatchUp('bot-a:daily', 2000, 3000, 'def-2')).toBe(false)
+    expect(s.claimDreamCatchUp('bot-a', 2000, 3000, 'def-2')).toBe(false)
+    expect(s.cronRun('bot-a:daily')).toEqual({ lastRunAt: 1000, definition: 'def-1' })
+    // The same definition claims once; the loser of the race sees a stamp past the occurrence.
+    expect(s.claimCronCatchUp('bot-a:daily', 2000, 3000, 'def-1')).toBe(true)
+    expect(s.claimCronCatchUp('bot-a:daily', 2000, 3000, 'def-1')).toBe(false)
+    expect(s.claimDreamCatchUp('bot-a', 2000, 3000, 'def-1')).toBe(true)
+    expect(s.claimDreamCatchUp('bot-a', 2000, 3000, 'def-1')).toBe(false)
+    // Never claimed for a schedule that has never stamped a run.
+    expect(s.claimCronCatchUp('bot-b:weekly', 2000, 3000, 'def-1')).toBe(false)
+    s.close()
+  })
+
+  it("enumerates and drops one agent's stamp keys without matching a neighbour", () => {
+    const s = store()
+    s.setCronLastRun('bot-a:daily', 1000, 'def-1')
+    s.setCronLastRun('bot-a:weekly', 1000, 'def-1')
+    // A prefix match must be exact: an agent id is not a LIKE pattern, and a longer id that merely
+    // starts with this one is a different agent.
+    s.setCronLastRun('bot-ab:daily', 1000, 'def-1')
+    s.setCronLastRun('bot%:daily', 1000, 'def-1')
+    expect(s.cronRunKeys('bot-a').sort()).toEqual(['bot-a:daily', 'bot-a:weekly'])
+    expect(s.cronRunKeys('bot%')).toEqual(['bot%:daily'])
+    s.deleteCronRun('bot-a:weekly')
+    expect(s.cronRunKeys('bot-a')).toEqual(['bot-a:daily'])
     s.close()
   })
 
   it('stores a bounded editor approval history and expires live requests after restart', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'ac-permission-')), 'local.sqlite')
-    const s = new LocalStore(path)
+    const s = reopen(path)
     s.createPermissionRequest({
       id: 'request-1',
       agentId: 'bot-a',
@@ -285,7 +531,7 @@ describe('LocalStore', () => {
     ])
     s.close()
 
-    const reopened = new LocalStore(path)
+    const reopened = reopen(path)
     expect(reopened.listPermissionRequests('bot-a')).toMatchObject([
       { id: 'request-2', status: 'allowed', resolvedAt: 250 },
       { id: 'request-1', status: 'expired' }
@@ -366,6 +612,57 @@ describe('LocalStore', () => {
     s.setUsageSnapshot(key, { costAmount: 0.25, costCurrency: 'USD' })
     expect(s.getUsage(key)).toMatchObject({ costAmount: 0.25, costCurrency: 'USD' })
     s.close()
+  })
+
+  it.skipIf(pg)('keeps an increment a concurrent writer would otherwise have erased', () => {
+    // The pool shape: two members touch one session across a handover. `usage` is one JSON blob, so
+    // a plain read-merge-write silently drops whichever writer commits first. The compare-and-set
+    // notices and re-merges instead.
+    const database = new DatabaseSync(join(mkdtempSync(join(tmpdir(), 'ac-usage-race-')), 'local.sqlite'))
+    const peer = new LocalStore({ database, shared: true, ownerId: 'member-2', orgForAgent: oneOrg })
+    const key = sessionKey('slack', 'C1', 'T1', 'bot-a')
+
+    // Slip the peer's whole write in between our read and our compare-and-set, exactly once.
+    let raced = false
+    const racing: StoreDatabase = {
+      exec: (sql) => database.exec(sql),
+      close: () => database.close(),
+      prepare: (sql) => {
+        const statement = database.prepare(sql)
+        if (!sql.startsWith('SELECT usage FROM sessions')) return statement
+        return {
+          run: (...params) => statement.run(...params),
+          all: (...params) => statement.all(...params),
+          get: (...params) => {
+            const row = statement.get(...params)
+            if (!raced) {
+              raced = true
+              peer.addTokenUsage(key, { totalTokens: 5 })
+            }
+            return row
+          }
+        }
+      }
+    }
+    const member = new LocalStore({ database: racing, shared: true, ownerId: 'member-1', orgForAgent: oneOrg })
+    member.upsertSession({
+      key,
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: 'T1',
+      acpSessionId: 'acp-1',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 1
+    })
+
+    member.addTokenUsage(key, { totalTokens: 10 })
+
+    expect(raced).toBe(true)
+    // 15, not 10: the peer's 5 survived our write instead of being overwritten by it.
+    expect(peer.getUsage(key)).toMatchObject({ totalTokens: 15 })
+    database.close()
   })
 })
 
@@ -818,7 +1115,7 @@ describe('LocalStore session lifecycle (§7.3/#111/#118)', () => {
 
   it('setSessionMuted persists a cold !stop tombstone across reopen and later session creation', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'ac-mute-')), 'local.sqlite')
-    let s = new LocalStore(path)
+    let s = reopen(path)
     const key = sessionKey('slack', 'C1', 'T1', 'bot-a')
     expect(s.getSession(key)).toBeUndefined()
     expect(s.isSessionMuted(key)).toBe(false)
@@ -828,7 +1125,7 @@ describe('LocalStore session lifecycle (§7.3/#111/#118)', () => {
     s.close()
 
     // A daemon restart before SessionManager creates the row must retain the mute.
-    s = new LocalStore(path)
+    s = reopen(path)
     expect(s.isSessionMuted(key)).toBe(true)
     // Creating/upserting the actual session mirrors but never overwrites the tombstone.
     seed(s, key, 'bot-a', 'idle', 100)
@@ -839,7 +1136,7 @@ describe('LocalStore session lifecycle (§7.3/#111/#118)', () => {
     expect(s.isSessionMuted(key)).toBe(false)
     s.close()
 
-    const reopened = new LocalStore(path)
+    const reopened = reopen(path)
     expect(reopened.isSessionMuted(key)).toBe(false)
     expect(reopened.getSession(key)?.muted).toBe(0)
     reopened.close()
@@ -969,7 +1266,7 @@ describe('LocalStore session retention GC (#485)', () => {
     const s = store()
     seed(s, 'gone', 'closed', 100)
     s.setSessionMuted('gone', true)
-    s.setLocalCaptureGate('acp-gone', true)
+    s.setLocalCaptureGate('bot-a', 'acp-gone', true)
     s.appendInbox({ id: 'm1', sessionKey: 'gone', agentId: 'bot-a', msg: '{}', enqueuedAt: '0000000001' })
     // An unacknowledged terminal hook report is an outbox toward the CP and must
     // survive the session delete (same rule as removeInboxByAgentId).
@@ -1025,7 +1322,7 @@ describe('LocalStore session retention GC (#485)', () => {
     s.close()
   })
 
-  it('deleteSession keeps a capture gate another agent still references through the same ACP id', () => {
+  it('deleteSession drops only the deleted agent gate for a shared ACP id', () => {
     const s = store()
     // ACP session ids are runtime-local: bot-a and bot-b can both hold `acp-shared`.
     const put = (key: string, agentId: string) =>
@@ -1042,16 +1339,16 @@ describe('LocalStore session retention GC (#485)', () => {
       })
     put('a', 'bot-a')
     put('b', 'bot-b')
-    s.setLocalCaptureGate('acp-shared', false) // capture open (not excluded)
-    expect(s.isCaptureExcluded('acp-shared')).toBe(false)
+    s.setLocalCaptureGate('bot-a', 'acp-shared', false) // capture open (not excluded)
+    s.setLocalCaptureGate('bot-b', 'acp-shared', false)
 
-    // bot-a's session expires first: bot-b still references the id — gate survives.
+    // bot-a's session expires: its own gate goes, bot-b's is untouched.
     expect(s.deleteSession('a')).toBe(true)
-    expect(s.isCaptureExcluded('acp-shared')).toBe(false)
+    expect(s.isCaptureExcluded('bot-a', 'acp-shared')).toBe(true) // no row ⇒ excluded-by-default
+    expect(s.isCaptureExcluded('bot-b', 'acp-shared')).toBe(false)
 
-    // The last referencing session goes: the gate is finally collected too.
     expect(s.deleteSession('b')).toBe(true)
-    expect(s.isCaptureExcluded('acp-shared')).toBe(true) // no row ⇒ excluded-by-default
+    expect(s.isCaptureExcluded('bot-b', 'acp-shared')).toBe(true)
     s.close()
   })
 
@@ -1078,7 +1375,7 @@ describe('LocalStore session retention GC (#485)', () => {
     s.deleteSession('gone', { reason: 'retention', at: 1_700 })
     s.deleteSession('unbound', { reason: 'retention', at: 1_800 })
 
-    expect(s.listSessionPurges(10)).toEqual([
+    expect(s.listSessionPurges(10, 0)).toEqual([
       { agentId: 'bot-a', sessionId: 'acp-gone', reason: 'retention', purgedAt: 1_700 }
     ])
     s.close()
@@ -1101,25 +1398,12 @@ describe('LocalStore session retention GC (#485)', () => {
     })
     s.deleteSession('a', { reason: 'retention', at: 100 })
     s.deleteSession('b', { reason: 'retention', at: 200 })
-    expect(s.listSessionPurges(10)).toHaveLength(2)
+    expect(s.listSessionPurges(10, 0)).toHaveLength(2)
 
     s.acknowledgeSessionPurges('bot-a', ['acp-a'])
-    expect(s.listSessionPurges(10)).toEqual([
+    expect(s.listSessionPurges(10, 0)).toEqual([
       { agentId: 'bot-b', sessionId: 'acp-a', reason: 'retention', purgedAt: 200 }
     ])
-    s.close()
-  })
-
-  it('pruneSessionPurges drops only receipts older than the cutoff and reports the count', () => {
-    const s = store()
-    seed(s, 'old', 'closed', 100)
-    seed(s, 'recent', 'closed', 100)
-    s.deleteSession('old', { reason: 'retention', at: 100 })
-    s.deleteSession('recent', { reason: 'retention', at: 900 })
-
-    expect(s.pruneSessionPurges(500)).toBe(1)
-    expect(s.listSessionPurges(10).map((row) => row.sessionId)).toEqual(['acp-recent'])
-    expect(s.pruneSessionPurges(500)).toBe(0)
     s.close()
   })
 })
@@ -1247,17 +1531,36 @@ describe('LocalStore runtime model-catalog cache (runtime-model-catalog.md §4)'
     s.close()
   })
 
-  it('gcRuntimeCatalog drops rows older than the cutoff from both tables', () => {
-    const s = store()
-    s.recordRuntimeCatalogMeta(meta('old-rt', 'fp-old', 100))
-    s.recordRuntimeCatalogMeta(meta('fresh-rt', 'fp-new', 900))
-    s.upsertRuntimeModelCap(cap('old-rt', 'm1', 100))
-    s.upsertRuntimeModelCap(cap('fresh-rt', 'm2', 900))
-    s.gcRuntimeCatalog(500)
-    expect(s.getRuntimeCatalogMeta('old-rt')).toBeUndefined()
-    expect(s.getRuntimeCatalogMeta('fresh-rt')).toBeDefined()
-    expect(s.listRuntimeModelCaps().map((c) => c.runtimeId)).toEqual(['fresh-rt'])
-    s.close()
+  it('keeps two members of one shared store on independent catalogs', () => {
+    // The rollout case: two image generations, one Postgres schema. Each member reads and
+    // writes only its own rows, so neither sees the other's fingerprint as a change.
+    const [a, b] = sharedMembers('member-a', 'member-b')
+    a.recordRuntimeCatalogMeta(meta('claude', 'fp-a'))
+    a.upsertRuntimeModelCap(cap('claude', 'opus'))
+    a.markRuntimeCatalogComplete('claude', 'fp-a', 'hash-a', 200)
+
+    b.recordRuntimeCatalogMeta(meta('claude', 'fp-b'))
+    b.upsertRuntimeModelCap(cap('claude', 'haiku'))
+    b.upsertRuntimeModelCap(cap('claude', 'sonnet'))
+    b.pruneRuntimeModelCaps('claude', ['haiku'])
+
+    // a's gate stays closed on its own generation; the prune-on-success stayed inside b.
+    expect(a.getRuntimeCatalogMeta('claude')).toMatchObject({
+      fingerprint: 'fp-a',
+      complete: true,
+      modelsHash: 'hash-a',
+      observedAt: 200
+    })
+    expect(b.getRuntimeCatalogMeta('claude')).toMatchObject({ fingerprint: 'fp-b', complete: false })
+    expect(a.listRuntimeModelCaps('claude').map((c) => c.modelId)).toEqual(['opus'])
+    expect(b.listRuntimeModelCaps('claude').map((c) => c.modelId)).toEqual(['haiku'])
+    // Hydration too: a member boots on its own catalog, never a peer image's.
+    expect(a.listRuntimeCatalogMetas().map((m) => m.fingerprint)).toEqual(['fp-a'])
+    expect(b.listRuntimeModelCaps().map((c) => c.modelId)).toEqual(['haiku'])
+    // And a completion from the other member cannot close a's gate on a's fingerprint.
+    b.markRuntimeCatalogComplete('claude', 'fp-a', 'hash-a', 300)
+    expect(b.getRuntimeCatalogMeta('claude')?.complete).toBe(false)
+    a.close()
   })
 
   it('finds a pending skill proposal behind many skill-bearing dreams', () => {
@@ -1336,11 +1639,11 @@ describe('LocalStore webchat MCP grant ledger', () => {
     s.close()
   })
 
-  it('marks all leftover active grants revoking on the startup orphan sweep', () => {
+  it('marks the leftover active grants of an exclusively owned store revoking on the startup sweep', () => {
     const s = store()
     s.recordWebchatMcpGrant({ ...tuple, now: 10 })
     s.recordWebchatMcpGrant({ ...tuple, conversationId: 'conv-2', now: 10 })
-    expect(s.markAllWebchatMcpGrantsRevoking('session_closed', 50)).toBe(2)
+    expect(s.markOwnedWebchatMcpGrantsRevoking('session_closed', 50)).toBe(2)
     const due = s.listDueWebchatMcpRevocations(50)
     expect(due.map((r) => r.conversationId).sort()).toEqual(['conv-1', 'conv-2'])
     expect(due.every((r) => r.reason === 'session_closed')).toBe(true)
@@ -1394,8 +1697,189 @@ describe('LocalStore webchat MCP grant ledger', () => {
   })
 })
 
+describe('LocalStore recovery scope on a shared store (daemon pool)', () => {
+  // One store, many members. A member's own id is its PROCESS incarnation, so a starting
+  // member owns nothing yet — which is exactly why boot must recover nothing here.
+  const tuple = {
+    conversationId: 'conv-1',
+    agentId: 'agent-1',
+    authorityId: 'auth-1',
+    authorityGeneration: 3
+  }
+  const openDream = (dreamId: string, agentId = 'agent-1') => ({
+    dreamId,
+    agentId,
+    status: 'running' as const,
+    trigger: 'manual' as const,
+    sessionIds: [],
+    snapshotDigest: 'sha256:x',
+    createdAt: '2026-01-01T00:00:00.000Z'
+  })
+
+  const sharedPath = (): string => join(mkdtempSync(join(tmpdir(), 'ac-pool-')), 'shared.sqlite')
+  const member = (path: string, ownerId: string): LocalStore =>
+    pg
+      ? openPostgresLocalStore({ shared: true, ownerId, orgForAgent: oneOrg })
+      : new LocalStore({ database: new DatabaseSync(path), shared: true, ownerId, orgForAgent: oneOrg })
+
+  it("a starting member leaves a peer's live grant and running dream untouched", () => {
+    const path = sharedPath()
+    const a = member(path, 'member-a')
+    a.recordWebchatMcpGrant({ ...tuple, now: 10 })
+    a.insertDream(openDream('drm-a'))
+
+    // A rolling update starts a new Pod: a new owner, while A keeps serving.
+    const b = member(path, 'member-b')
+    expect(b.markOwnedWebchatMcpGrantsRevoking('session_closed', 50)).toBe(0)
+    expect(b.openDreams()).toEqual([])
+    expect(b.listDueWebchatMcpRevocations(10_000)).toEqual([])
+    expect(a.listDueWebchatMcpRevocations(10_000)).toEqual([])
+    expect(a.getDream('agent-1', 'drm-a')?.status).toBe('running')
+    a.close()
+    b.close()
+  })
+
+  it("reclaims a former owner's rows only for the agents this member was handed", () => {
+    const path = sharedPath()
+    const a = member(path, 'member-a')
+    a.recordWebchatMcpGrant({ ...tuple, now: 10 })
+    a.insertDream(openDream('drm-a'))
+    const b = member(path, 'member-b')
+
+    expect(b.reclaimWebchatMcpGrants(['other-agent'], 'session_closed', 60)).toBe(0)
+    expect(b.strandedDreams(['other-agent'])).toEqual([])
+
+    expect(b.reclaimWebchatMcpGrants(['agent-1'], 'session_closed', 60)).toBe(1)
+    expect(b.listDueWebchatMcpRevocations(60)[0]).toMatchObject({
+      conversationId: 'conv-1',
+      state: 'revoking',
+      ownerId: 'member-b'
+    })
+    // The queue moved with the duty: its former owner no longer drains it.
+    expect(a.listDueWebchatMcpRevocations(10_000)).toEqual([])
+
+    const stranded = b.strandedDreams(['agent-1'])
+    expect(stranded.map((dream) => dream.dreamId)).toEqual(['drm-a'])
+    const failed = { ...stranded[0]!, status: 'failed' as const, endedAt: '2026-01-01T00:01:00.000Z' }
+    expect(b.failOpenDream(failed)).toBe(true)
+    // Idempotent: the row is terminal now, so a replayed recovery writes nothing.
+    expect(b.failOpenDream(failed)).toBe(false)
+    expect(b.strandedDreams(['agent-1'])).toEqual([])
+    a.close()
+    b.close()
+  })
+
+  it("the recovery CAS keeps the outcome the dream's own runner recorded", () => {
+    const path = sharedPath()
+    const a = member(path, 'member-a')
+    a.insertDream(openDream('drm-a'))
+    const b = member(path, 'member-b')
+    const stranded = b.strandedDreams(['agent-1'])[0]!
+
+    // A finishes between B's read and B's write — the completion must survive.
+    a.updateDream({ ...openDream('drm-a'), status: 'completed', endedAt: '2026-01-01T00:00:30.000Z' })
+    expect(b.failOpenDream({ ...stranded, status: 'failed', endedAt: '2026-01-01T00:01:00.000Z' })).toBe(false)
+    expect(a.getDream('agent-1', 'drm-a')?.status).toBe('completed')
+    a.close()
+    b.close()
+  })
+
+  it('an exclusively owned store still recovers everything it left behind at boot', () => {
+    const s = store()
+    s.recordWebchatMcpGrant({ ...tuple, now: 10 })
+    s.insertDream(openDream('drm-a'))
+    expect(s.markOwnedWebchatMcpGrantsRevoking('session_closed', 50)).toBe(1)
+    expect(s.openDreams().map((dream) => dream.dreamId)).toEqual(['drm-a'])
+    // There is no duty axis on a single-daemon store — boot already covered it.
+    expect(s.strandedDreams(['agent-1'])).toEqual([])
+    expect(s.reclaimWebchatMcpGrants(['agent-1'], 'session_closed', 60)).toBe(0)
+    s.close()
+  })
+
+  // Purge receipts (#1032): one session_purges table for the whole pool, leased per
+  // member exactly like the hook-completion outbox — a peer's live row is never
+  // offered, claimed, or released by anyone but its owner.
+  const LEASE_MS = 2 * 60 * 1_000
+  const purged = (s: LocalStore, key: string, agentId: string, ownerId: string, at: number) => {
+    s.upsertSession({
+      key,
+      agentId,
+      platform: 'slack',
+      channel: 'C1',
+      thread: key,
+      acpSessionId: `acp-${key}`,
+      state: 'closed',
+      lastDeliveredTs: null,
+      updatedAt: 0
+    })
+    expect(s.deleteSession(key, { reason: 'retention', at, ownerId })).toBe(true)
+  }
+  const ids = (rows: { sessionId: string }[]) => rows.map((row) => row.sessionId)
+
+  it("offers a pool member its own purge receipts, never a live peer's", () => {
+    const path = sharedPath()
+    const a = member(path, 'store-a')
+    const b = member(path, 'store-b')
+    purged(a, 'from-a', 'agent-a', 'daemon-a', 1_000)
+    purged(b, 'from-b', 'agent-b', 'daemon-b', 1_000)
+
+    expect(ids(a.listSessionPurges(10, 1_500, 'daemon-a', ['agent-a']))).toEqual(['acp-from-a'])
+    // B serves both agents and still may not touch A's row: A's claim is live.
+    expect(ids(b.listSessionPurges(10, 1_500, 'daemon-b', ['agent-a', 'agent-b']))).toEqual(['acp-from-b'])
+    expect(b.claimSessionPurges('agent-a', ['acp-from-a'], 'daemon-b', 1_500)).toEqual([])
+    // Nor release it: the ACK fence is the claim holder.
+    b.acknowledgeSessionPurges('agent-a', ['acp-from-a'], 'daemon-b')
+    expect(ids(a.listSessionPurges(10, 1_500, 'daemon-a', []))).toEqual(['acp-from-a'])
+    // The owner renews and settles its own row.
+    expect(a.claimSessionPurges('agent-a', ['acp-from-a'], 'daemon-a', 1_500)).toEqual(['acp-from-a'])
+    a.acknowledgeSessionPurges('agent-a', ['acp-from-a'], 'daemon-a')
+    expect(a.listSessionPurges(10, 1_500, 'daemon-a', [])).toEqual([])
+    a.close()
+    b.close()
+  })
+
+  it('lets the member that serves the agent take over a purge receipt after the owner claim lapses', () => {
+    const path = sharedPath()
+    const a = member(path, 'store-a')
+    const b = member(path, 'store-b')
+    purged(a, 'from-a', 'agent-a', 'daemon-a', 1_000)
+    const lapsed = 1_000 + LEASE_MS + 1
+
+    // Still not B's to take while B does not serve the agent.
+    expect(b.listSessionPurges(10, lapsed, 'daemon-b', ['agent-b'])).toEqual([])
+    expect(ids(b.listSessionPurges(10, lapsed, 'daemon-b', ['agent-a']))).toEqual(['acp-from-a'])
+    expect(b.claimSessionPurges('agent-a', ['acp-from-a'], 'daemon-b', lapsed)).toEqual(['acp-from-a'])
+    // The takeover is exclusive: the dead owner's id no longer holds the row.
+    expect(a.listSessionPurges(10, lapsed, 'daemon-a', [])).toEqual([])
+    expect(a.claimSessionPurges('agent-a', ['acp-from-a'], 'daemon-a', lapsed)).toEqual([])
+    a.close()
+    b.close()
+  })
+
+  it('a single-daemon store drains and settles every receipt unfenced', () => {
+    const s = store()
+    s.upsertSession({
+      key: 'k',
+      agentId: 'agent-1',
+      platform: 'slack',
+      channel: 'C1',
+      thread: 'k',
+      acpSessionId: 'acp-k',
+      state: 'closed',
+      lastDeliveredTs: null,
+      updatedAt: 0
+    })
+    s.deleteSession('k', { reason: 'retention', at: 1_000 })
+    expect(ids(s.listSessionPurges(10, 1_500, 'daemon-a', []))).toEqual(['acp-k'])
+    expect(s.claimSessionPurges('agent-1', ['acp-k'], undefined, 1_500)).toEqual(['acp-k'])
+    s.acknowledgeSessionPurges('agent-1', ['acp-k'])
+    expect(s.listSessionPurges(10, 1_500)).toEqual([])
+    s.close()
+  })
+})
+
 describe('LocalStore activation rendezvous (send-message-routing-rework.md §3.2/§8.6)', () => {
-  const KEY = ['slack', 'scope-1', '1720000000.000100', 'agent-target'].join('\u0000')
+  const KEY = ['slack', 'scope-1', '1720000000.000100', 'agent-target'].join('\u001f')
   const ENVELOPE = JSON.stringify({ callFrom: 'agent-author', hopCount: 3 })
 
   it('admits an internal-wake-first pairing exactly once and replays the same child', () => {
@@ -1531,8 +2015,8 @@ describe('LocalStore activation rendezvous (send-message-routing-rework.md §3.2
     // time; admitting both would strand a delivery that never persisted. The inbox row is
     // the only evidence that distinguishes them.
     const s = store()
-    const durable = ['slack', 'scope-1', 'ts-durable', 'agent-target'].join('\u0000')
-    const lost = ['slack', 'scope-1', 'ts-lost', 'agent-target'].join('\u0000')
+    const durable = ['slack', 'scope-1', 'ts-durable', 'agent-target'].join('\u001f')
+    const lost = ['slack', 'scope-1', 'ts-lost', 'agent-target'].join('\u001f')
     expect(s.attachActivationEnvelope(durable, ENVELOPE, 1000, 'delivery-durable').dispatch).toBe(true)
     expect(s.attachActivationEnvelope(lost, ENVELOPE, 1000, 'delivery-lost').dispatch).toBe(true)
     // Only the first one's turn actually reached the durable queue before the crash.
@@ -1566,12 +2050,157 @@ describe('LocalStore activation rendezvous (send-message-routing-rework.md §3.2
     // §3.2: one channel-root post can address several agents; each must be admitted once,
     // and one target's admission must not consume another's.
     const s = store()
-    const a = ['slack', 'scope-1', 'ts-1', 'agent-a'].join('\u0000')
-    const b = ['slack', 'scope-1', 'ts-1', 'agent-b'].join('\u0000')
+    const a = ['slack', 'scope-1', 'ts-1', 'agent-a'].join('\u001f')
+    const b = ['slack', 'scope-1', 'ts-1', 'agent-b'].join('\u001f')
     expect(s.attachActivationEnvelope(a, ENVELOPE, 1000).dispatch).toBe(true)
     expect(s.attachActivationEnvelope(b, ENVELOPE, 1000).dispatch).toBe(true)
     s.admitActivation(a, 'child-a')
     expect(s.getActivation(b)?.state).toBe('pending')
     s.close()
+  })
+})
+
+describe('sandbox generations', () => {
+  it('never hands the same number out twice for an agent, and starts each agent at 1', () => {
+    const s = store()
+    expect(s.nextSandboxGeneration('agent-a')).toBe(1)
+    expect(s.nextSandboxGeneration('agent-a')).toBe(2)
+    expect(s.nextSandboxGeneration('agent-b')).toBe(1)
+    expect(s.nextSandboxGeneration('agent-a')).toBe(3)
+    s.close()
+  })
+
+  it('survives a reopen, because the sandbox pod the number fences does', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-generations-')), 'local.sqlite')
+    const first = reopen(path)
+    expect(first.nextSandboxGeneration('agent-a')).toBe(1)
+    first.close()
+    const reopened = reopen(path)
+    expect(reopened.nextSandboxGeneration('agent-a')).toBe(2)
+    reopened.close()
+  })
+})
+
+describe('transcript org fence on a shared store', () => {
+  const orgs: Record<string, string> = { 'agent-a': 'org-a', 'agent-b': 'org-b' }
+  const twoOrgMembers = (): [LocalStore, LocalStore] => {
+    const database = new DatabaseSync(':memory:') as unknown as StoreDatabase
+    const orgForAgent = (agentId: string): string | undefined => orgs[agentId]
+    return [
+      new LocalStore({ database, shared: true, ownerId: 'member-1', orgForAgent }),
+      new LocalStore({ database, shared: true, ownerId: 'member-2', orgForAgent })
+    ]
+  }
+
+  it('keeps two orgs holding the SAME channel/thread key independent', () => {
+    // Platform ids are unique only inside one org, so a pool store keyed on (channel, thread)
+    // alone let one org's dedup swallow another org's message, and served one org's rows to
+    // the other org's console.
+    const [a, b] = twoOrgMembers()
+    const row = { channel: 'C1', thread: 'T1', ts: '1', sender: 'U', kind: 'text' as const }
+    a.appendTranscript({ ...row, recipient: 'agent-a', text: 'org A' })
+    b.appendTranscript({ ...row, recipient: 'agent-b', text: 'org B' })
+
+    expect(a.threadTranscript('C1', 'T1', 'agent-a').map((r) => r.text)).toEqual(['org A'])
+    expect(b.threadTranscript('C1', 'T1', 'agent-b').map((r) => r.text)).toEqual(['org B'])
+    expect(a.transcriptPageForAgent('C1', 'T1', 'agent-a', null, 10).rows.map((r) => r.text)).toEqual(['org A'])
+    expect(b.transcriptPageForAgent('C1', 'T1', 'agent-b', null, 10).rows.map((r) => r.text)).toEqual(['org B'])
+    expect(a.transcriptSince('C1', 'T1', null, 'agent-a').map((e) => e.text)).toEqual(['org A'])
+    expect(a.firstMessageText('C1', 'T1', 'agent-a')).toBe('org A')
+    expect(b.firstMessageText('C1', 'T1', 'agent-b')).toBe('org B')
+    a.close()
+  })
+
+  it('keeps a tool call, its body and the thread revision inside one org', () => {
+    const [a, b] = twoOrgMembers()
+    const call = { channel: 'C1', thread: 'T1', ts: '2', toolCallId: 'call-1', title: 'Bash' }
+    a.insertToolCall({ ...call, sender: 'agent-a', body: '{"rawInput":"A"}' })
+    b.insertToolCall({ ...call, sender: 'agent-b', body: '{"rawInput":"B"}' })
+    expect(a.getToolBodyForAgent('C1', 'T1', 'agent-a', 'call-1')).toBe('{"rawInput":"A"}')
+    expect(b.getToolBodyForAgent('C1', 'T1', 'agent-b', 'call-1')).toBe('{"rawInput":"B"}')
+
+    // A peer org's update can never reach this row: the fence is in the WHERE clause.
+    b.updateToolCall('C1', 'T1', 'agent-b', 'call-1', { title: 'Bash', body: '{"rawInput":"B2"}' })
+    expect(a.getToolBodyForAgent('C1', 'T1', 'agent-a', 'call-1')).toBe('{"rawInput":"A"}')
+
+    // One org's write never moves the other org's context fence for the same thread key.
+    const peerRevision = b.threadTranscriptRevision('C1', 'T1', 'agent-b')
+    a.appendTranscript({ channel: 'C1', thread: 'T1', ts: '3', sender: 'agent-a', kind: 'text', text: 'A reply' })
+    expect(b.threadTranscriptRevision('C1', 'T1', 'agent-b')).toBe(peerRevision)
+    expect(a.currentTranscriptRevision('agent-a')).toBe(a.threadTranscriptRevision('C1', 'T1', 'agent-a'))
+    a.close()
+  })
+
+  it('refuses a row it cannot attribute rather than filing it where anyone may read it', () => {
+    const [a] = twoOrgMembers()
+    expect(() =>
+      a.appendTranscript({ channel: 'C1', thread: 'T9', ts: '1', sender: 'U', kind: 'text', text: 'nobody owns this' })
+    ).toThrow(/transcript organization/)
+    // A session in the thread is enough: an observed inbound is recorded before routing
+    // names a recipient, and the thread's owner is what attributes it.
+    a.upsertSession({
+      key: sessionKey('slack', 'C1', 'T9', 'agent-a'),
+      agentId: 'agent-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: 'T9',
+      acpSessionId: 'acp-1',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 1
+    })
+    a.appendTranscript({ channel: 'C1', thread: 'T9', ts: '1', sender: 'U', kind: 'text', text: 'observed' })
+    expect(a.threadTranscript('C1', 'T9', 'agent-a').map((r) => r.text)).toEqual(['observed'])
+    a.close()
+  })
+})
+
+describe.skipIf(pg)('transcript org migration from a v10 store', () => {
+  const v10Store = (prefix: string): string => {
+    const path = join(mkdtempSync(join(tmpdir(), prefix)), 'local.sqlite')
+    new LocalStore(path).close()
+    const old = new DatabaseSync(path)
+    dropTranscriptOrg(old)
+    old.exec(`INSERT INTO transcript (channel, thread, ts, sender, kind, text, recipient, eventTimeUs, revision)
+      VALUES ('C1', 'T1', '1', 'U', 'text', 'kept', 'agent-a', 1000000, 1)`)
+    old.exec("INSERT INTO transcript_recipient (channel, thread, ts, agentId) VALUES ('C1', 'T1', '1', 'agent-b')")
+    old.exec('PRAGMA user_version = 10')
+    old.close()
+    return path
+  }
+
+  it('backfills a store no pool shares with its single partition, keeping every row', () => {
+    const path = v10Store('ac-transcript-v10-')
+    const upgraded = new LocalStore(path)
+    expect(upgraded.threadTranscript('C1', 'T1').map((r) => r.text)).toEqual(['kept'])
+    // The delivery table came across too, so the co-hosted recipient still sees the row.
+    expect(upgraded.transcriptPageForAgent('C1', 'T1', 'agent-b', null, 10).rows.map((r) => r.text)).toEqual(['kept'])
+    upgraded.close()
+
+    const after = new DatabaseSync(path)
+    const recipientKey = (
+      after.prepare('PRAGMA table_info(transcript_recipient)').all() as { name: string; pk: number }[]
+    )
+      .filter((column) => column.pk > 0)
+      .sort((first, second) => first.pk - second.pk)
+      .map((column) => column.name)
+    expect(recipientKey).toEqual(['orgId', 'channel', 'thread', 'ts', 'agentId'])
+    after.close()
+  })
+
+  it('drops what a shared store cannot attribute, because no org survives in its rows', () => {
+    // Nothing here records an agent's org — the daemon learns it from the CP at runtime — so
+    // sessions → agent → org resolves to nothing and a kept row would be readable by whichever
+    // org reused the channel/thread ids.
+    const path = v10Store('ac-transcript-v10-shared-')
+    const shared = new LocalStore({
+      database: new DatabaseSync(path),
+      shared: true,
+      ownerId: 'member-1',
+      orgForAgent: () => 'org-a'
+    })
+    expect(shared.threadTranscript('C1', 'T1', 'agent-a')).toEqual([])
+    expect(shared.transcriptPageForAgent('C1', 'T1', 'agent-b', null, 10).rows).toEqual([])
+    shared.close()
   })
 })

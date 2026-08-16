@@ -10,6 +10,7 @@
 // ── cross-package wire + lifecycle constants ──
 export {
   AGENT_CONFIG_REVISION_FEATURE,
+  AGENT_WAKE_FEATURE,
   DAEMON_BOOTSTRAP_PROTOCOL_VERSION,
   DAEMON_BOOTSTRAP_UPGRADE_FEATURE,
   CLOUD_DAEMON_SA_NAME,
@@ -17,6 +18,7 @@ export {
   CP_SUBPROTOCOL,
   CP_TOKEN_AUDIENCE,
   CP_URL_ENV,
+  POD_TEMPLATE_HASH_ENV,
   CP_WS_PATH,
   ENVELOPE_DAEMON_SA_NAME,
   hasReachedAgentCallHopLimit,
@@ -29,6 +31,7 @@ export {
   ORGANIZATION_SUGGESTION_REVIEW_FEATURE,
   RESERVED_RESTART_CODE,
   K8S_SUPERVISOR,
+  AGENT_EXISTS_FEATURE,
   SESSION_LIVE_TAIL_FEATURE,
   SESSION_METADATA_ACK_FEATURE,
   SESSION_PURGE_FEATURE,
@@ -100,6 +103,16 @@ export { isFrameType as isKnownFrameType }
 // ── wire codec (shared by daemon + control-plane) ──
 export { decodeEnvelope, buildEnvelope, encode, MAX_FRAME_BYTES } from './codec.js'
 export type { DecodeResult, BuildOpts, InboundControlExt } from './codec.js'
+
+// ── which frames carry an organization (k8s-daemon-pool.md M4) ──
+export {
+  INSTALL_WIDE_FRAME_TYPES,
+  GENERIC_REPLY_FRAME_TYPES,
+  isInstallWideFrameType,
+  checkInboundFrameOrg,
+  checkReplyFrameOrg
+} from './frame-scope.js'
+export type { OrganizationMode, FrameOrgPeer, FrameOrgRef, FrameOrgVerdict } from './frame-scope.js'
 
 // ── relay wires (separate frame unions; shared-bot-relay.md §7/§8) ──
 export * from './frames/relay-cp.js'

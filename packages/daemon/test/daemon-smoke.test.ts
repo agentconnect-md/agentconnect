@@ -5,6 +5,8 @@ import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Daemon } from '../src/daemon.js'
 import { GITCRED_AGENT_ENV, GITCRED_CAPABILITY_ENV } from '../src/cp/gitcred-server.js'
+import { FakeClock } from './cp/fake-clock.js'
+import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
 // vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a
 // cold session boot (workspace + host + session/new) can stall well past a second.
@@ -48,6 +50,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
   it('sandboxes a host only when the agent opts in — skills are not force-sandboxed (#36)', async () => {
     const root = scaffold()
     const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
       root,
       sandboxMechanism: 'bwrap',
       probeRuntimes: async () => []
@@ -81,14 +84,14 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       JSON.stringify({ version: 1, controlPlane: { enabled: false }, security: { requireSandbox: true } })
     )
 
-    await expect(new Daemon({ root, sandboxMechanism: null }).start()).rejects.toThrow(
-      /daemon startup refused.*requireSandbox.*no supported Linux SRT\/bwrap/
-    )
+    await expect(
+      new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, sandboxMechanism: null }).start()
+    ).rejects.toThrow(/daemon startup refused.*requireSandbox.*no supported Linux SRT\/bwrap/)
   })
 
   it('does not force the skill sandbox or fail closed when the host has no sandbox mechanism (#36)', async () => {
     const root = scaffold()
-    const daemon = new Daemon({ root, sandboxMechanism: null })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, sandboxMechanism: null })
     try {
       // Sandbox-optional principle: skills are NOT force-sandboxed fleet-wide, so
       // boot/reconcile must not throw on a host with no OS sandbox (the exact
@@ -106,7 +109,12 @@ describe('Daemon (no Slack, injected ACP host)', () => {
 
   it('enables production Dream operations (security hold lifted) without a host factory (#36 Phase C)', async () => {
     const root = scaffold()
-    const daemon = new Daemon({ root, sandboxMechanism: null, probeRuntimes: async () => [] })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root,
+      sandboxMechanism: null,
+      probeRuntimes: async () => []
+    })
     try {
       await daemon.start()
       // The production security hold is lifted: a real (no host-factory) daemon
@@ -122,7 +130,12 @@ describe('Daemon (no Slack, injected ACP host)', () => {
 
   it('lets a dream session run its org-context tools off the chat-turn queue (#36 canRun carve-out)', async () => {
     const root = scaffold()
-    const daemon = new Daemon({ root, sandboxMechanism: null, probeRuntimes: async () => [] })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root,
+      sandboxMechanism: null,
+      probeRuntimes: async () => []
+    })
     try {
       await daemon.start()
       // A dream never populates activeGateEntries (it runs off the chat-turn
@@ -143,7 +156,12 @@ describe('Daemon (no Slack, injected ACP host)', () => {
 
   it('keeps agent tool credentials out of the dream host without re-enabling repository hooks', async () => {
     const root = scaffold()
-    const daemon = new Daemon({ root, sandboxMechanism: 'bwrap', probeRuntimes: async () => [] })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root,
+      sandboxMechanism: 'bwrap',
+      probeRuntimes: async () => []
+    })
     try {
       await daemon.start()
       const agent = (daemon as any).agents.get('bot-a')
@@ -204,7 +222,12 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       })
     )
 
-    const daemon = new Daemon({ root, agentName: 'bot-a', sandboxMechanism: 'bwrap' })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root,
+      agentName: 'bot-a',
+      sandboxMechanism: 'bwrap'
+    })
     try {
       await expect(daemon.start()).rejects.toThrow(/workspace cwd.*not inside the agent dir/)
     } finally {
@@ -230,7 +253,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       })
     )
 
-    const daemon = new Daemon({ root, sandboxMechanism: 'bwrap' })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, sandboxMechanism: 'bwrap' })
     try {
       await expect(daemon.start()).rejects.toThrow(/duplicate active agent id "bot-a"/)
     } finally {
@@ -253,7 +276,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       cancel: vi.fn(),
       stop: vi.fn()
     }
-    const daemon = new Daemon({ root, hostFactory: () => fakeHost as any })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => fakeHost as any })
     await daemon.start()
     // directly exercise dispatch via the scheduler path
     await (daemon as any).dispatch('bot-a', {
@@ -283,7 +306,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       cancel: vi.fn(),
       stop: vi.fn()
     }
-    const daemon = new Daemon({ root, hostFactory: () => fakeHost as any })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => fakeHost as any })
     await daemon.start()
     await (daemon as any).dispatch('bot-a', {
       msgId: 'slack:C1:1',
@@ -314,7 +337,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       cancel: vi.fn(),
       stop: vi.fn()
     }
-    const daemon = new Daemon({ root, hostFactory: () => fakeHost as any })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => fakeHost as any })
     await daemon.start()
     await (daemon as any).dispatch('bot-a', {
       msgId: 'slack:C1:1',
@@ -360,7 +383,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       cancel: vi.fn(),
       stop: vi.fn()
     }
-    const daemon = new Daemon({ root, hostFactory: () => fakeHost as any })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => fakeHost as any })
     await daemon.start()
     // Inject a fake CP client so the fire-and-forget emit is observable (no real WS).
     const emitEventSession = vi.fn()
@@ -458,7 +481,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     writeFileSync(configPath, JSON.stringify(config))
     const agentId = 'a0a0a0a0-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
     const sessionId = 'acp-durable-1'
-    const first = new Daemon({ root, probeRuntimes: async () => [] })
+    const first = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, probeRuntimes: async () => [] })
     let firstStopped = false
     let restored: Daemon | undefined
     try {
@@ -495,7 +518,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       await first.stop()
       firstStopped = true
 
-      restored = new Daemon({ root, probeRuntimes: async () => [] })
+      restored = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, probeRuntimes: async () => [] })
       ;(restored as any).startCpClient = vi.fn()
       await restored.start()
       const replayed = vi.fn().mockResolvedValue('acknowledged')
@@ -525,6 +548,81 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     }
   }, 15_000)
 
+  it('preempts a deferred session metadata retry when work is ready sooner', async () => {
+    const root = scaffold()
+    const clock = new FakeClock()
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, clock, probeRuntimes: async () => [] })
+    await daemon.start()
+    const drain = vi.spyOn(daemon as any, 'drainSessionMetadataSnapshots').mockResolvedValue(undefined)
+
+    try {
+      ;(daemon as any).scheduleSessionMetadataRetry(5 * 60_000)
+      ;(daemon as any).scheduleSessionMetadataRetry(0)
+      clock.advance(0)
+
+      expect(drain).toHaveBeenCalledTimes(1)
+      expect(clock.pending()).not.toContain(5 * 60_000)
+    } finally {
+      await daemon.stop()
+      rmSync(root, { recursive: true, force: true })
+    }
+  }, 15_000)
+
+  it('defers a poisoned session metadata snapshot and drains unrelated sessions', async () => {
+    const root = scaffold()
+    const clock = new FakeClock()
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, clock, probeRuntimes: async () => [] })
+    await daemon.start()
+    const agentId = 'a0a0a0a0-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const poison = {
+      sessionId: 'acp-poison',
+      agentId,
+      phase: 'start',
+      ts: '2026-08-15T00:00:00.000Z'
+    }
+    const healthy = { ...poison, sessionId: 'acp-healthy' }
+    const syncEventSession = vi.fn(async (event: typeof poison) => {
+      if (event.sessionId === poison.sessionId) {
+        throw Object.assign(new Error('permanent persistence rejection'), { retryable: true })
+      }
+      return 'acknowledged' as const
+    })
+    const warn = vi.fn()
+    ;(daemon as any).log.warn = warn
+    ;(daemon as any).cpClient = {
+      state: 'READY',
+      supportsServerFeature: (feature: string) => feature === 'session-metadata-ack-v1',
+      syncEventSession,
+      stop: vi.fn(async () => {})
+    }
+    ;(daemon as any).store.saveSessionMetadataSnapshot(agentId, poison.sessionId, JSON.stringify(poison), true, 1)
+    ;(daemon as any).store.saveSessionMetadataSnapshot(agentId, healthy.sessionId, JSON.stringify(healthy), true, 2)
+
+    try {
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        await (daemon as any).drainSessionMetadataSnapshots()
+      }
+
+      expect(syncEventSession.mock.calls.map(([event]) => event.sessionId)).toEqual([
+        'acp-poison',
+        'acp-poison',
+        'acp-poison',
+        'acp-poison',
+        'acp-poison',
+        'acp-healthy'
+      ])
+      expect((daemon as any).store.pendingSessionMetadataSnapshot(agentId, poison.sessionId)).toMatchObject({
+        failedAttempts: 5,
+        nextAttemptAt: 300_000
+      })
+      expect((daemon as any).store.pendingSessionMetadataSnapshot(agentId, healthy.sessionId)).toBeUndefined()
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('snapshot deferred after 5 failures'))
+    } finally {
+      await daemon.stop()
+      rmSync(root, { recursive: true, force: true })
+    }
+  }, 15_000)
+
   it('re-emits session metadata when a runtime session title update arrives', async () => {
     const root = scaffold()
     let onUpdate!: (sid: string, update: unknown) => void
@@ -541,6 +639,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       stop: vi.fn()
     }
     const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
       root,
       hostFactory: (_agent, update) => {
         onUpdate = update
@@ -610,6 +709,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       stop: vi.fn()
     }
     const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
       root,
       hostFactory: (_agent, update) => {
         onUpdate = update
@@ -684,6 +784,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       stop: vi.fn()
     }
     const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
       root,
       hostFactory: (_agent, update) => {
         onUpdate = update
@@ -753,6 +854,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       })
     }
     const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
       root,
       hostFactory: (_agent, update) => {
         onUpdate = update
@@ -834,6 +936,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     const releases = new Map<string, () => void>()
     const updates = new Map<string, (sessionId: string, update: unknown) => void>()
     const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
       root,
       hostFactory: (agent, onUpdate) => {
         updates.set(agent.id, onUpdate)
@@ -906,6 +1009,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
         stop: vi.fn()
       }
       const daemon = new Daemon({
+        slackAppFactory: fakeSlackAppFactory(),
         root,
         hostFactory: (_agent, update) => {
           onUpdate = update
@@ -971,6 +1075,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
         stop: vi.fn()
       }
       const daemon = new Daemon({
+        slackAppFactory: fakeSlackAppFactory(),
         root,
         hostFactory: (_agent, update) => {
           onUpdate = update
@@ -1044,7 +1149,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
         cancel: vi.fn(),
         stop: vi.fn()
       }
-      const daemon = new Daemon({ root, hostFactory: () => fakeHost as any })
+      const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => fakeHost as any })
       await daemon.start()
       const postMessage = vi.fn(async () => 'failure-ts')
       vi.spyOn(daemon as any, 'replyConnFor').mockReturnValue({
@@ -1087,7 +1192,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       cancel: vi.fn(),
       stop: vi.fn()
     }
-    const daemon = new Daemon({ root, hostFactory: () => fakeHost as any })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => fakeHost as any })
     await daemon.start()
     const emitEventSession = vi.fn()
     ;(daemon as any).cpClient = { emitEventSession, emitUsageReport: vi.fn(), stop: vi.fn() }
@@ -1134,7 +1239,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       cancel: vi.fn(),
       stop: vi.fn()
     }
-    const daemon = new Daemon({ root, hostFactory: () => fakeHost as any })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => fakeHost as any })
     await daemon.start()
     const msg = {
       msgId: 'cron:x:2',
@@ -1185,6 +1290,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       stop: vi.fn()
     }
     const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
       root,
       hostFactory: (_agent, update) => {
         onUpdate = update
@@ -1249,6 +1355,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       stop: vi.fn()
     }
     const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
       root,
       hostFactory: (_agent, update) => {
         onUpdate = update
@@ -1303,7 +1410,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       cancel: vi.fn(),
       stop: vi.fn()
     }
-    const daemon = new Daemon({ root, hostFactory: () => fakeHost as any })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => fakeHost as any })
     await daemon.start()
     const posts: string[] = []
     vi.spyOn(daemon as any, 'replyConnFor').mockReturnValue({
@@ -1349,7 +1456,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       cancel: vi.fn(),
       stop: vi.fn()
     }
-    const daemon = new Daemon({ root, hostFactory: () => fakeHost as any })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => fakeHost as any })
     await daemon.start()
     const dispatchSpy = vi.spyOn(daemon as any, 'dispatch')
     const msg = {
@@ -1382,7 +1489,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       cancel: vi.fn(),
       stop: vi.fn()
     }
-    const daemon = new Daemon({ root, hostFactory: () => fakeHost as any })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => fakeHost as any })
     await daemon.start()
     vi.spyOn(daemon as any, 'mergedRules').mockReturnValue([
       {
@@ -1431,7 +1538,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       cancel: vi.fn(),
       stop: stopSpy
     }
-    const daemon = new Daemon({ root, hostFactory: () => fakeHost as any })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => fakeHost as any })
     await daemon.start()
     // trigger host creation so it ends up in hosts map
     await (daemon as any).dispatch('bot-a', {
@@ -1484,7 +1591,13 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       cancel: vi.fn(),
       stop: vi.fn()
     }
-    const daemon = new Daemon({ root, agentName: 'solo', overrides: { agentsDir }, hostFactory: () => fakeHost as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root,
+      agentName: 'solo',
+      overrides: { agentsDir },
+      hostFactory: () => fakeHost as any
+    })
     await daemon.start()
     expect((daemon as any).agents.size).toBe(1)
     expect((daemon as any).agents.has('solo')).toBe(true)
@@ -1515,7 +1628,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       cancel: vi.fn(),
       stop: vi.fn()
     }
-    const daemon = new Daemon({ root, hostFactory: () => fakeHost as any })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => fakeHost as any })
     await daemon.start()
 
     const statuses: string[] = []
@@ -1572,6 +1685,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       })
     )
     const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
       root,
       agentName: 'paused-bot',
       overrides: { agentsDir },

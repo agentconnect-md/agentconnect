@@ -208,8 +208,9 @@ export interface MessageAgentReq {
 }
 
 /** The result of an agent→agent delivery. `delivered:false` carries a typed `reason`
- *  (`self` / `invalid_target` / `not_allowed` / `not_local` / `no_agent`). `targetSession` is the local
- *  session key the message was (or would be) delivered into. */
+ *  (`self` / `invalid_target` / `not_allowed` / `not_local` / `no_agent`, or a cross-daemon
+ *  verdict such as `not_ready` — a target nobody could be addressed at within the retry
+ *  window). `targetSession` is the local session key the message was (or would be) delivered into. */
 export interface MessageAgentResult {
   delivered: boolean
   targetSession: string
@@ -305,6 +306,7 @@ export interface ReplyToSessionResult {
     | 'queue_full'
     | 'not_allowed'
     | 'unsupported'
+    | 'not_ready'
 }
 
 /** One subtask of a {@link StartOrchestrationReq}: an instruction for one worker. */

@@ -13,6 +13,7 @@ import {
 import { Daemon } from '../src/daemon.js'
 import { LocalStore, sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
 import { statePath } from '../src/paths.js'
+import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
 // vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a
 // cold session boot (workspace + host + session/new) can stall well past a second.
@@ -134,7 +135,11 @@ const dm = (ts: string, text: string) => ({
 describe('Daemon in-conversation commands', () => {
   it('!resume explicitly resets a durable loop guard; anonymous events cannot reset it', async () => {
     const blocked = blockingHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => blocked.host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => blocked.host as any
+    })
     await daemon.start()
     const conn = makeRoutable(daemon)
     const scope = LOOP_SCOPE
@@ -153,7 +158,11 @@ describe('Daemon in-conversation commands', () => {
 
   it('lets an authorized human recover a top-level loop latch from its ownerless warning thread', async () => {
     const blocked = blockingHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => blocked.host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => blocked.host as any
+    })
     await daemon.start()
     const conn = makeRoutable(daemon)
     const integration = (daemon as any).agents.get('bot-a').integrations[0]
@@ -187,7 +196,11 @@ describe('Daemon in-conversation commands', () => {
 
   it('shared-bot rd/msg(im) only lets a human reset the loop guard', async () => {
     const blocked = blockingHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => blocked.host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => blocked.host as any
+    })
     await daemon.start()
     const conn = makeRoutable(daemon)
     const scope = LOOP_SCOPE
@@ -405,7 +418,11 @@ describe('Daemon in-conversation commands', () => {
 
   it('shared-bot rd/msg(im) honors a !stop thread mute: implicit traffic drops, an @mention un-mutes', async () => {
     const blocked = blockingHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => blocked.host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => blocked.host as any
+    })
     await daemon.start()
     makeRoutable(daemon)
     // The session the HTTP bot's inbound keys to (sessionKey(platform, channel, thread, agent)).
@@ -444,7 +461,11 @@ describe('Daemon in-conversation commands', () => {
 
   it('!queue buffers a message and dispatches it once the turn goes idle', async () => {
     const blocked = blockingHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => blocked.host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => blocked.host as any
+    })
     await daemon.start()
     const conn = makeRoutable(daemon)
 
@@ -471,7 +492,11 @@ describe('Daemon in-conversation commands', () => {
 
   it('!queue runs immediately when the agent is idle', async () => {
     const blocked = blockingHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => blocked.host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => blocked.host as any
+    })
     await daemon.start()
     makeRoutable(daemon)
 
@@ -487,7 +512,11 @@ describe('Daemon in-conversation commands', () => {
 
   it('!queue rejects once the per-session cap (10) is reached', async () => {
     const blocked = blockingHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => blocked.host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => blocked.host as any
+    })
     await daemon.start()
     const conn = makeRoutable(daemon)
 
@@ -507,7 +536,11 @@ describe('Daemon in-conversation commands', () => {
 
   it('!stop cancels the in-flight turn', async () => {
     const blocked = blockingHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => blocked.host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => blocked.host as any
+    })
     await daemon.start()
     const conn = makeRoutable(daemon)
 
@@ -538,7 +571,7 @@ describe('Daemon in-conversation commands', () => {
       stop: vi.fn(async () => {})
     }
     const root = scaffold()
-    const daemon = new Daemon({ root, hostFactory: () => host as any })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => host as any })
     await daemon.start()
     makeRoutable(daemon)
     const key = SESSION_KEY
@@ -578,7 +611,11 @@ describe('Daemon in-conversation commands', () => {
       cancel: vi.fn(async () => {}),
       stop: vi.fn(async () => {})
     }
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => host as any
+    })
     await daemon.start()
     makeRoutable(daemon)
     const oldKey = SESSION_KEY
@@ -614,7 +651,11 @@ describe('Daemon in-conversation commands', () => {
 
   it('!cancel interrupts the in-flight turn WITHOUT muting the thread', async () => {
     const blocked = blockingHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => blocked.host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => blocked.host as any
+    })
     await daemon.start()
     const conn = makeRoutable(daemon)
 
@@ -635,7 +676,11 @@ describe('Daemon in-conversation commands', () => {
 
   it('!cancel with no in-flight turn just reports (no mute)', async () => {
     const blocked = blockingHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => blocked.host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => blocked.host as any
+    })
     await daemon.start()
     const conn = makeRoutable(daemon)
 
@@ -647,7 +692,11 @@ describe('Daemon in-conversation commands', () => {
 
   it('!stop drops queued messages so they do not run after cancellation', async () => {
     const blocked = blockingHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => blocked.host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => blocked.host as any
+    })
     await daemon.start()
     makeRoutable(daemon)
 
@@ -671,7 +720,11 @@ describe('Daemon in-conversation commands', () => {
 
   it('!stop mutes the thread: follow-ups are dropped (but transcribed) until an explicit @mention', async () => {
     const blocked = blockingHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => blocked.host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => blocked.host as any
+    })
     await daemon.start()
     makeRoutable(daemon)
     const store = (daemon as any).store
@@ -714,7 +767,11 @@ describe('Daemon in-conversation commands', () => {
     // latest session — otherwise every idle agent in the channel replies "Nothing is
     // running" to a command meant for whoever owns that thread.
     const host = quietHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => host as any
+    })
     await daemon.start()
     const conn = makeRoutable(daemon)
     const store = (daemon as any).store
@@ -745,7 +802,11 @@ describe('Daemon in-conversation commands', () => {
 
   it('!stop with no in-flight turn still mutes an open thread; without a session it just reports', async () => {
     const host = quietHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => host as any
+    })
     await daemon.start()
     const conn = makeRoutable(daemon)
     const store = (daemon as any).store
@@ -771,7 +832,11 @@ describe('Daemon in-conversation commands', () => {
   }, 15_000)
 
   it('!status replies with the session status line; reports when no session exists', async () => {
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => quietHost() as any
+    })
     await daemon.start()
     const conn = makeRoutable(daemon)
 
@@ -793,7 +858,11 @@ describe('Daemon in-conversation commands', () => {
   }, 15_000)
 
   it('!fast on|off records the sticky override; bare /fast prints usage', async () => {
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => quietHost() as any
+    })
     await daemon.start()
     const conn = makeRoutable(daemon)
     ;(daemon as any).agents.get('bot-a').allowRuntimeChangesInChat = true
@@ -817,7 +886,11 @@ describe('Daemon in-conversation commands', () => {
 
   it('/models · /effort · /permission list the choices and apply a selection', async () => {
     const host = selectHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => host as any
+    })
     await daemon.start()
     const conn = makeRoutable(daemon)
     ;(daemon as any).agents.get('bot-a').allowRuntimeChangesInChat = true
@@ -873,7 +946,11 @@ describe('Daemon in-conversation commands', () => {
       })),
       setSessionApprovalsReviewer: vi.fn(async () => true)
     }
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => host as any
+    })
     await daemon.start()
     const conn = makeRoutable(daemon)
     const store = (daemon as any).store
@@ -939,7 +1016,11 @@ describe('Daemon in-conversation commands', () => {
 
   it('a command from a non-routable thread is ignored (no dispatch, no crash)', async () => {
     const blocked = blockingHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => blocked.host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => blocked.host as any
+    })
     await daemon.start()
     // no integration attached → routeRules resolves nothing
     ;(daemon as any).onInbound(dm('100', '!stop'))
@@ -980,7 +1061,11 @@ function selectHost() {
 describe('Daemon managed-agent bot ingress', () => {
   it('ignores managed agent bot messages in mention and every-message paths but admits an external bot mention', async () => {
     const host = quietHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => host as any
+    })
     await daemon.start()
     // This test mutates the in-memory fixture directly; it does not need the agent
     // directory watcher that start() opens for production hot reload.
@@ -1051,7 +1136,11 @@ describe('Daemon managed-agent bot ingress', () => {
 
 describe('Daemon transcript recording (§8.5 unrouted)', () => {
   it('records an unrouted mention into a live thread', async () => {
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => quietHost() as any
+    })
     await daemon.start()
     makeRoutable(daemon)
     const store = (daemon as any).store
@@ -1081,7 +1170,11 @@ describe('Daemon transcript recording (§8.5 unrouted)', () => {
   }, 15_000)
 
   it('backfill relabels the agent’s own bot frames to agentId and folds in attachment mentions', async () => {
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => quietHost() as any
+    })
     await daemon.start()
     const conn = makeRoutable(daemon) as any
     conn.botUserId = 'UBOT'
@@ -1114,7 +1207,11 @@ describe('Daemon transcript recording (§8.5 unrouted)', () => {
     // Slack hands out an auth-gated file URL, so the row can only carry the image if the
     // daemon fetches it — without that the console showed just `[attached: …]`. The fetch
     // is independent of the agent's image capability (quietHost advertises none).
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => quietHost() as any
+    })
     await daemon.start()
     const conn = makeRoutable(daemon) as any
     const bytes = Buffer.from('PNGBYTES')
@@ -1141,7 +1238,11 @@ describe('Daemon transcript recording (§8.5 unrouted)', () => {
   }, 15_000)
 
   it('backfill preserves a remote agent author carried by an HTTP Slack bot', async () => {
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => quietHost() as any
+    })
     await daemon.start()
     const conn = makeRoutable(daemon) as any
     conn.botUserId = 'USHARED'
@@ -1170,7 +1271,11 @@ describe('Daemon transcript recording (§8.5 unrouted)', () => {
   }, 15_000)
 
   it('backfill ignores AgentConnect metadata from an unrelated Slack app', async () => {
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => quietHost() as any
+    })
     await daemon.start()
     const conn = makeRoutable(daemon) as any
     conn.botUserId = 'UOWN'
@@ -1207,7 +1312,11 @@ describe('Daemon transcript recording (§8.5 unrouted)', () => {
 
   it('records an unrouted message while a long turn is in flight even if the session looks idle-stale', async () => {
     const blocked = blockingHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => blocked.host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => blocked.host as any
+    })
     await daemon.start()
     makeRoutable(daemon)
     const store = (daemon as any).store
@@ -1247,7 +1356,11 @@ describe('Daemon transcript recording (§8.5 unrouted)', () => {
   }, 15_000)
 
   it('does not record an unrouted message when no session is open in its thread', async () => {
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => quietHost() as any
+    })
     await daemon.start()
     makeRoutable(daemon)
     const store = (daemon as any).store
@@ -1318,7 +1431,11 @@ describe('Slack interactive status bar', () => {
 
   it('posts one session status line and updates it on later turns', async () => {
     const { host, release } = modelHost()
-    const daemon = new Daemon({ root: scaffold(AGENT_IDENTITY), hostFactory: () => host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(AGENT_IDENTITY),
+      hostFactory: () => host as any
+    })
     await daemon.start()
     const conn = routableWithBlocks(daemon)
 
@@ -1363,7 +1480,7 @@ describe('Slack interactive status bar', () => {
     // Exercise the hidden branch without starting the daemon's unrelated file watchers.
     // Config/default replication is covered separately; this proves the Slack cleanup
     // action deletes the remembered row and dedupes later usage/turn-end refreshes.
-    const daemon = new Daemon({ root: scaffold() })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
     const conn = {
       deleteMessage: vi.fn(async () => true),
       getThreadReplies: vi.fn(async () => [{ ts: 'legacy', text: ':bar_chart: legacy', isBot: true }])
@@ -1402,7 +1519,11 @@ describe('Slack interactive status bar', () => {
 
   it('keeps the session status bar pinned above cards that need human input', async () => {
     const { host, release } = modelHost()
-    const daemon = new Daemon({ root: scaffold(AGENT_IDENTITY), hostFactory: () => host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(AGENT_IDENTITY),
+      hostFactory: () => host as any
+    })
     await daemon.start()
     const conn = routableWithBlocks(daemon)
 
@@ -1443,7 +1564,11 @@ describe('Slack interactive status bar', () => {
 
   it('posts shareable channel status with agent identity and one compact overflow', async () => {
     const { host, release } = modelHost()
-    const daemon = new Daemon({ root: scaffold(AGENT_IDENTITY), hostFactory: () => host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(AGENT_IDENTITY),
+      hostFactory: () => host as any
+    })
     await daemon.start()
     const conn = routableWithBlocks(daemon)
     const integration = (daemon as any).agents.get('bot-a').integrations[0]
@@ -1496,7 +1621,11 @@ describe('Slack interactive status bar', () => {
 
   it('drops Switch agent for a non-shareable HTTP bot while keeping agent identity + relay routing', async () => {
     const { host, release } = modelHost()
-    const daemon = new Daemon({ root: scaffold(AGENT_IDENTITY), hostFactory: () => host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(AGENT_IDENTITY),
+      hostFactory: () => host as any
+    })
     await daemon.start()
     const conn = routableWithBlocks(daemon)
     const integration = (daemon as any).agents.get('bot-a').integrations[0]
@@ -1538,7 +1667,11 @@ describe('Slack interactive status bar', () => {
   }, 15_000)
 
   it('§6.6: a platform_action envelope decodes per-platform and NAKs unsupported items', async () => {
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => blockingHost().host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => blockingHost().host as any
+    })
     await daemon.start()
     makeRoutable(daemon)
     const integration = (daemon as any).agents.get('bot-a').integrations[0]
@@ -1586,7 +1719,11 @@ describe('Slack interactive status bar', () => {
   })
 
   it('handles shared session interactions only for the exact local integration and session owner', async () => {
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => blockingHost().host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => blockingHost().host as any
+    })
     await daemon.start()
     makeRoutable(daemon)
     const integration = (daemon as any).agents.get('bot-a').integrations[0]
@@ -1758,7 +1895,11 @@ describe('Slack interactive status bar', () => {
   })
 
   it('handles shared Feishu card actions only through the exact local integration', async () => {
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => blockingHost().host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => blockingHost().host as any
+    })
     await daemon.start()
     const agent = (daemon as any).agents.get('bot-a')
     agent.integrations = [
@@ -1804,7 +1945,11 @@ describe('Slack interactive status bar', () => {
 
   it('adopts the first existing status line in a Slack thread', async () => {
     const { host, release } = modelHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => host as any
+    })
     await daemon.start()
     const conn = routableWithBlocks(daemon)
     ;(conn as any).botId = 'B1'
@@ -1857,7 +2002,11 @@ describe('Slack interactive status bar', () => {
     // lets a bot chat.update its own messages. Adopting the sibling's bar would fail
     // with cant_update_message on every usage tick (and show the wrong session's data).
     const { host, release } = modelHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => host as any
+    })
     await daemon.start()
     const conn = routableWithBlocks(daemon)
     ;(conn as any).botId = 'B-MINE'
@@ -1886,7 +2035,11 @@ describe('Slack interactive status bar', () => {
 
   it('never adopts a sibling Agent status line when both share one Slack app', async () => {
     const { host, release } = modelHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => host as any
+    })
     await daemon.start()
     const conn = routableWithBlocks(daemon)
     ;(conn as any).botId = 'B-SHARED'
@@ -1921,7 +2074,11 @@ describe('Slack interactive status bar', () => {
     // on the session keeps failing chat.update forever — after an explicit false the
     // ts must be discarded so a later status emit posts a fresh, editable bar.
     const { host, release } = modelHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => host as any
+    })
     await daemon.start()
     const conn = routableWithBlocks(daemon)
 
@@ -1962,7 +2119,11 @@ describe('Slack interactive status bar', () => {
 
   it('fetchThreadHistory skips daemon chrome (metadata-marked + status-bar text) but keeps conversation', async () => {
     const { host } = modelHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => host as any
+    })
     await daemon.start()
     const conn = routableWithBlocks(daemon)
     ;(conn as any).botId = 'B-X'
@@ -1994,7 +2155,11 @@ describe('Slack interactive status bar', () => {
     // The bar must still appear as soon as the turn begins (overflow + View), filling in
     // the model later via chat.update — regression for "no status bar until first message".
     const blocked = blockingHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => blocked.host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => blocked.host as any
+    })
     await daemon.start()
     const conn = routableWithBlocks(daemon)
 
@@ -2011,7 +2176,11 @@ describe('Slack interactive status bar', () => {
 
   it('the Configure modal (statusInfoForKey) carries the CP-provided View-session link', async () => {
     const { host, release } = modelHost()
-    const daemon = new Daemon({ root: scaffold(AGENT_IDENTITY), hostFactory: () => host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(AGENT_IDENTITY),
+      hostFactory: () => host as any
+    })
     await daemon.start()
     routableWithBlocks(daemon)
     ;(daemon as any).agents.get('bot-a').allowRuntimeChangesInChat = true
@@ -2040,7 +2209,7 @@ describe('Slack interactive status bar', () => {
   }, 15_000)
 
   it('uses the local Web App default when neither local nor CP configuration provides an origin', () => {
-    const daemon = new Daemon({ root: scaffold() })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
     ;(daemon as any).cfg = {}
     expect((daemon as any).sessionLink('acp-1')).toBe('http://localhost:3000/sessions/acp-1')
     expect((daemon as any).sessionLink('acp-1', 'slack')).toBe('http://localhost:3000/sessions/acp-1?source=slack')
@@ -2071,7 +2240,11 @@ describe('Slack interactive status bar', () => {
 
   it('falls back to the probed runtime models when the persisted session is cold', async () => {
     const { host, release } = modelHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => host as any
+    })
     await daemon.start()
     ;(daemon as any).agents.get('bot-a').allowRuntimeChangesInChat = true
     routableWithBlocks(daemon)
@@ -2101,7 +2274,11 @@ describe('Slack interactive status bar', () => {
 
   it('handleStatusAction routes set-model / cancel by session key', async () => {
     const { host, release } = modelHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => host as any
+    })
     await daemon.start()
     ;(daemon as any).agents.get('bot-a').allowRuntimeChangesInChat = true
     const conn = routableWithBlocks(daemon)

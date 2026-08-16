@@ -1,8 +1,9 @@
 /**
- * `CloudDaemonReaper` (agentconnect-org-operator.md §"The cloud daemon, which serves every
- * org") — retires the daemon rows replaced cloud Pods leave behind.
+ * `PoolMemberReaper` (k8s-daemon-pool.md §3 "Identity is per Pod, not per org") — retires the
+ * daemon rows replaced pool member Pods leave behind, and collects the rows a retirement leaves
+ * inert instead of cascading away.
  *
- * A cloud member is bound to its reviewed Pod UID, so a replacement Pod gets a NEW daemon
+ * A pool member is bound to its reviewed Pod UID, so a replacement Pod gets a NEW daemon
  * record and the old one lingers: org-less, never reachable again, and visible in every
  * organization's fleet because install-wide infrastructure is shared. Nothing else can clear
  * them — no org owns the row, so `DELETE /daemons/:id` cannot name it.
@@ -14,49 +15,51 @@
  *
  * The sweep only nominates. Retiring re-checks the same cutoff and the epoch this read saw
  * INSIDE the delete statement, so a member that comes back between the two loses nothing:
- * see `http/daemon-removal.ts#retireCloudDaemonMember`.
+ * see `http/daemon-removal.ts#retirePoolMember`.
  *
  * Clock-driven via a self-rescheduling `setTimeout` (like {@link RelaySweeper}) so tests
  * advance a `FakeClock`; armed by the container's `startBackground()`, never in tests.
  * Every replica running it is fine — the delete is idempotent and fenced to the org-less
- * cloud shape, so a row another replica just retired reads as "no longer retired".
+ * pool shape, so a row another replica just retired reads as "no longer retired".
  */
 import type { Clock, TimerHandle } from '../domain/clock.js'
 import type { DaemonId } from '../domain/ids.js'
 import type { DaemonLiveness } from '../ports.js'
-import type { DaemonRepo } from '../persistence/ports.js'
+import type { DaemonRepo, WebchatMcpDelegationRepo } from '../persistence/ports.js'
 
 /** How often the sweep runs. */
-export const CLOUD_DAEMON_REAP_INTERVAL_MS = 5 * 60_000
+export const POOL_MEMBER_REAP_INTERVAL_MS = 5 * 60_000
 
 /**
- * How long a cloud member must go unheard-from before its row is retired. Two orders of
+ * How long a pool member must go unheard-from before its row is retired. Two orders of
  * magnitude past the watchdog's freeze threshold (missed beats × heartbeat): by then its
  * sessions have long been rebalanced, and the window is what keeps a network partition from
  * deleting the record of a Pod that is still running.
  */
-export const CLOUD_DAEMON_REAP_AFTER_MS = 15 * 60_000
+export const POOL_MEMBER_REAP_AFTER_MS = 15 * 60_000
 
 /** Optional structured log sink (the Fastify logger in prod; omitted in tests). */
-export interface CloudDaemonReaperLog {
+export interface PoolMemberReaperLog {
   info(obj: unknown, msg?: string): void
   warn(obj: unknown, msg?: string): void
   error(obj: unknown, msg?: string): void
 }
 
-export interface CloudDaemonReaperConfig {
+export interface PoolMemberReaperConfig {
   /** Silence after which a member's row is retired. */
   retireAfterMs: number
   /** How often the sweep runs. */
   intervalMs: number
 }
 
-export class CloudDaemonReaper {
+export class PoolMemberReaper {
   private timer: TimerHandle | undefined
   private stopped = false
 
   constructor(
-    private readonly daemons: Pick<DaemonRepo, 'findRetiredCloudMembers'>,
+    private readonly daemons: Pick<DaemonRepo, 'findRetiredPoolMembers'>,
+    /** Rows a retirement leaves inert rather than cascading away — see {@link PoolMemberReaper.tick}. */
+    private readonly delegations: Pick<WebchatMcpDelegationRepo, 'revokeUnplaced'>,
     /** The full detach sequence for one member (`http/daemon-removal.ts`), re-fenced on the
      *  cutoff and epoch this sweep read; false ⇒ not retired after all (a reconnect, or a
      *  peer replica got there first) and nothing was written. */
@@ -66,8 +69,8 @@ export class CloudDaemonReaper {
     ) => Promise<boolean>,
     private readonly liveness: DaemonLiveness,
     private readonly clock: Clock,
-    private readonly cfg: CloudDaemonReaperConfig,
-    private readonly log?: CloudDaemonReaperLog
+    private readonly cfg: PoolMemberReaperConfig,
+    private readonly log?: PoolMemberReaperLog
   ) {}
 
   /** Arm the periodic sweep. Idempotent — a second call re-arms from now. */
@@ -92,16 +95,17 @@ export class CloudDaemonReaper {
   }
 
   /**
-   * One sweep. Members are retired one at a time: each carries a cascade plus a
-   * collaboration push, and a failure on one must not cost the rest of the batch. Errors
-   * are logged and swallowed — a transient DB failure waits for the next tick rather than
-   * killing the loop. Exposed for tests (call directly).
+   * One sweep: retire the members whose Pods are gone, then collect what a retirement leaves
+   * inert. Members are retired one at a time: each carries a cascade plus a collaboration push,
+   * and a failure on one must not cost the rest of the batch. Errors are logged and swallowed —
+   * a transient DB failure waits for the next tick rather than killing the loop. Exposed for
+   * tests (call directly).
    */
   async tick(): Promise<void> {
     this.timer = undefined
     try {
       const cutoff = new Date(this.clock.now() - this.cfg.retireAfterMs)
-      const retired = await this.daemons.findRetiredCloudMembers(cutoff)
+      const retired = await this.daemons.findRetiredPoolMembers(cutoff)
       let removed = 0
       for (const member of retired) {
         if (this.stopped) break
@@ -112,17 +116,25 @@ export class CloudDaemonReaper {
         try {
           if (await this.retire({ daemonId: member.id, sessionEpoch: member.sessionEpoch }, cutoff)) removed++
         } catch (err) {
-          this.log?.warn({ err, daemonId: member.id }, 'cloud-daemon-reaper: retiring one member failed')
+          this.log?.warn({ err, daemonId: member.id }, 'pool-member-reaper: retiring one member failed')
         }
       }
       if (removed > 0) {
         this.log?.info(
           { removed, considered: retired.length, cutoff: cutoff.toISOString() },
-          'cloud-daemon-reaper: retired cloud members whose Pods are gone'
+          'pool-member-reaper: retired pool members whose Pods are gone'
         )
       }
+      // What a retirement leaves behind rather than cascading away: `WebchatMcpDelegation` is keyed
+      // on the agent since #1057, so deleting a member no longer takes its agents' delegations with
+      // it. Swept here rather than at each removal path because a row can also be orphaned by an
+      // unplacement this reaper never saw. No dry run: the rows are already inert — nothing serves
+      // the agent, so the live check answers `placement_mismatch` on every use — and the write only
+      // records that.
+      const revoked = await this.delegations.revokeUnplaced(new Date(this.clock.now()))
+      if (revoked > 0) this.log?.info({ revoked }, 'pool-member-reaper: revoked delegations of unplaced agents')
     } catch (err) {
-      this.log?.error({ err }, 'cloud-daemon-reaper: sweep failed')
+      this.log?.error({ err }, 'pool-member-reaper: sweep failed')
     } finally {
       this.arm()
     }

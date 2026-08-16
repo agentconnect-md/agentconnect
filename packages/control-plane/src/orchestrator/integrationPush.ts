@@ -13,7 +13,8 @@ import type {
   IntegrationChannelRepo,
   IntegrationRepo
 } from '../persistence/ports.js'
-import { NoConnection, type ControlSender } from './outbound.js'
+import { NoConnection } from './outbound.js'
+import type { AgentDelivery } from './agentDelivery.js'
 import { integrationToSpec, isGatedAgent } from './placement.js'
 import type { CpPlatformRegistry } from '../platforms/provider.js'
 import { AgentId } from '../domain/ids.js'
@@ -25,7 +26,7 @@ export interface GatingPushDeps {
     botSecret: BotSecretStore
     integrationChannel: IntegrationChannelRepo
   }
-  control: ControlSender
+  agentDelivery: AgentDelivery
   httpBot: { syncBot(botId: string): Promise<void> }
   /** §9 platform providers — the projector behind the re-pushed spec's payload.
    *  `HttpDeps` already carries this field, so the caller passes its bundle
@@ -56,16 +57,19 @@ export async function convergeIntegrationGating(
       // integration→bot FK is non-null and `onDelete: Restrict` — but a spec
       // without it would be a fabricated identity, so skip like a missing secret.
       if (!bot) continue
-      if (!agent.daemonId) continue
       const [secret, channels] = await Promise.all([
         deps.repos.botSecret.get(i.orgId, i.botId),
         deps.repos.integrationChannel.listForIntegration(i.id)
       ])
       if (!secret) continue
-      await deps.control.integrationUpsert(
-        agent.daemonId,
-        await integrationToSpec(deps.platforms, i, bot, secret, channels, gated)
-      )
+      // Every daemon serving the agent, not just its placement: a gating flip that
+      // reaches only the placement leaves a holder admitting conversations the
+      // agent's new visibility forbids.
+      const spec = await integrationToSpec(deps.platforms, i, bot, secret, channels, gated)
+      await deps.agentDelivery.integrationUpsert(agent, spec, (err) => {
+        if (err instanceof NoConnection) return // offline daemon → reconcile roster carries it
+        throw err
+      })
     } catch (err) {
       if (err instanceof NoConnection) continue // offline daemon → reconcile roster carries it
       log?.warn({ integrationId: i.id, err: (err as Error).message }, 'gating converge: integration push failed')

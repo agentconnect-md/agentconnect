@@ -159,6 +159,13 @@ export class CpAgentRegistry {
     return this.active.has(agentId)
   }
 
+  /** The greatest spec revision applied for this agent — undefined when it was
+   *  never applied, or applied from an unfenced spec. The freshness half of
+   *  `has`: presence says the replica exists, this says how current it is. */
+  appliedRevision(agentId: string): bigint | undefined {
+    return this.revisions.get(agentId)?.revision
+  }
+
   agents(): LoadedAgent[] {
     return [...this.active.values()]
   }

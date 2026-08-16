@@ -10,16 +10,29 @@ import {
   AgentStop,
   AgentUpsert,
   AgentRemove,
+  AgentExists,
+  AgentExistsOk,
   AgentDetach,
   AgentActivate,
   AgentActivity,
   AgentScopeDenied,
   AgentPermissionRequestList,
   AgentPermissionRequestPage,
-  AgentPermissionDecision
+  AgentPermissionDecision,
+  AgentWakeReq,
+  AgentWakeOk
 } from './frames/agent.js'
 import { CronUpsert, CronRemove, CronReport, CronRunNow } from './frames/cron.js'
-import { DutyGrant, DutyRevoke, DutyRelease, DutyClaim, DutyClaimOk } from './frames/duty.js'
+import {
+  DutyGrant,
+  DutyRenewed,
+  DutyRevoke,
+  DutyRelease,
+  DutyClaim,
+  DutyClaimOk,
+  DutyFetch,
+  DutyFetchOk
+} from './frames/duty.js'
 import {
   GithubReviewAuthorize,
   GithubReviewAuthorized,
@@ -197,16 +210,21 @@ export const FRAME_SCHEMAS = {
   // ── telemetry ──
   heartbeat: Heartbeat,
   'duty/grant': DutyGrant,
+  'duty/renewed': DutyRenewed,
   'duty/revoke': DutyRevoke,
   'duty/release': DutyRelease,
   'duty/claim': DutyClaim,
   'duty/claim/ok': DutyClaimOk,
+  'duty/fetch': DutyFetch,
+  'duty/fetch/ok': DutyFetchOk,
   // ── agent lifecycle / delivery ──
   'agent/launch': AgentLaunch,
   'agent/launched': AgentLaunched,
   'agent/stop': AgentStop,
   'agent/upsert': AgentUpsert,
   'agent/remove': AgentRemove,
+  'agent/exists': AgentExists,
+  'agent/exists/ok': AgentExistsOk,
   'agent/detach': AgentDetach,
   'agent/activate': AgentActivate,
   'agent/activity': AgentActivity,
@@ -214,6 +232,9 @@ export const FRAME_SCHEMAS = {
   'agent/permission-requests': AgentPermissionRequestList,
   'agent/permission-requests/page': AgentPermissionRequestPage,
   'agent/permission-decision': AgentPermissionDecision,
+  // ── sandbox wake: a console-initiated resume with no turn (agent.ts `AgentWakeReq`).
+  'agent/wake': AgentWakeReq,
+  'agent/wake/ok': AgentWakeOk,
   // ── routing / orchestration ──
   'route/assign': RouteAssign,
   'route/assign/ack': RouteAssignAck,
@@ -454,15 +475,20 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('collaboration/routes', FRAME_SCHEMAS['collaboration/routes']),
   frame('heartbeat', FRAME_SCHEMAS['heartbeat']),
   frame('duty/grant', FRAME_SCHEMAS['duty/grant']),
+  frame('duty/renewed', FRAME_SCHEMAS['duty/renewed']),
   frame('duty/revoke', FRAME_SCHEMAS['duty/revoke']),
   frame('duty/release', FRAME_SCHEMAS['duty/release']),
   frame('duty/claim', FRAME_SCHEMAS['duty/claim']),
   frame('duty/claim/ok', FRAME_SCHEMAS['duty/claim/ok']),
+  frame('duty/fetch', FRAME_SCHEMAS['duty/fetch']),
+  frame('duty/fetch/ok', FRAME_SCHEMAS['duty/fetch/ok']),
   frame('agent/launch', FRAME_SCHEMAS['agent/launch']),
   frame('agent/launched', FRAME_SCHEMAS['agent/launched']),
   frame('agent/stop', FRAME_SCHEMAS['agent/stop']),
   frame('agent/upsert', FRAME_SCHEMAS['agent/upsert']),
   frame('agent/remove', FRAME_SCHEMAS['agent/remove']),
+  frame('agent/exists', FRAME_SCHEMAS['agent/exists']),
+  frame('agent/exists/ok', FRAME_SCHEMAS['agent/exists/ok']),
   frame('agent/detach', FRAME_SCHEMAS['agent/detach']),
   frame('agent/activate', FRAME_SCHEMAS['agent/activate']),
   frame('agent/activity', FRAME_SCHEMAS['agent/activity']),
@@ -470,6 +496,8 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('agent/permission-requests', FRAME_SCHEMAS['agent/permission-requests']),
   frame('agent/permission-requests/page', FRAME_SCHEMAS['agent/permission-requests/page']),
   frame('agent/permission-decision', FRAME_SCHEMAS['agent/permission-decision']),
+  frame('agent/wake', FRAME_SCHEMAS['agent/wake']),
+  frame('agent/wake/ok', FRAME_SCHEMAS['agent/wake/ok']),
   // ── routing and daemon control ──
   frame('route/assign', FRAME_SCHEMAS['route/assign']),
   frame('route/assign/ack', FRAME_SCHEMAS['route/assign/ack']),

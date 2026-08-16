@@ -6,6 +6,7 @@ import { Daemon } from '../src/daemon.js'
 import { routeRules } from '../src/router/routing-table.js'
 import { sessionKey } from '../src/store/local-store.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
+import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
 function scaffold(): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-tg-thread-'))
@@ -103,7 +104,7 @@ const owner = (daemon: Daemon) => (c: string, t: string) => (daemon as any).sess
 
 describe('Telegram conversation discovery', () => {
   it('reports a public DM as a configurable direct row', async () => {
-    const daemon = new Daemon({ root: scaffold() })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
     await daemon.start()
     makeTelegramRoutable(daemon)
     vi.spyOn(daemon as any, 'dispatch').mockResolvedValue('acp')
@@ -121,7 +122,7 @@ describe('Telegram conversation discovery', () => {
   })
 
   it('reports an explicitly mentioned Off group before routing drops the message', async () => {
-    const daemon = new Daemon({ root: scaffold() })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
     await daemon.start()
     const conn = makeTelegramGated(daemon)
     const emitIntegrationChannels = vi.fn()
@@ -141,7 +142,7 @@ describe('Telegram conversation discovery', () => {
   })
 
   it('reports a newly joined group without routing its membership service message', async () => {
-    const daemon = new Daemon({ root: scaffold() })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
     await daemon.start()
     makeTelegramGated(daemon)
     const emitIntegrationChannels = vi.fn()
@@ -162,7 +163,7 @@ describe('Telegram conversation discovery', () => {
 
 describe('Telegram ingress attribution', () => {
   it('routes and deduplicates DMs within the bot connection that received them', async () => {
-    const daemon = new Daemon({ root: scaffold() })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
     await daemon.start()
     const wrong = (daemon as any).agents.get('bot-a')
     wrong.integrations = [
@@ -210,7 +211,11 @@ describe('Telegram ingress attribution', () => {
       cancel: vi.fn(async () => {}),
       stop: vi.fn(async () => {})
     }
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => host as any
+    })
     await daemon.start()
     const agent = (daemon as any).agents.get('bot-a')
     agent.integrations = [
@@ -252,7 +257,7 @@ describe('Telegram ingress attribution', () => {
 
 describe('canonicalizeTelegramThread', () => {
   it('roots a fresh group @mention at its own message (tg:<id>)', async () => {
-    const daemon = new Daemon({ root: scaffold() })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
     await daemon.start()
     const m = tg(100, { mentionedBots: ['mybot'] })
     ;(daemon as any).canonicalizeTelegramThread(m)
@@ -260,7 +265,7 @@ describe('canonicalizeTelegramThread', () => {
   })
 
   it('uses the forum-topic id as the thread', async () => {
-    const daemon = new Daemon({ root: scaffold() })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
     await daemon.start()
     const m = tg(101, { topicId: '555', mentionedBots: ['mybot'] })
     ;(daemon as any).canonicalizeTelegramThread(m)
@@ -268,7 +273,7 @@ describe('canonicalizeTelegramThread', () => {
   })
 
   it('§6.5: keys off the GENERIC coordinates alone (post-window emission)', async () => {
-    const daemon = new Daemon({ root: scaffold() })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
     await daemon.start()
     const topic = tg(103, { topicId: '555', mentionedBots: ['mybot'] })
     ;(daemon as any).canonicalizeTelegramThread(topic)
@@ -283,7 +288,7 @@ describe('canonicalizeTelegramThread', () => {
   })
 
   it('collapses a DM to one continuous session (dm)', async () => {
-    const daemon = new Daemon({ root: scaffold() })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
     await daemon.start()
     const m = tg(102, { channel: '42', isDm: true })
     ;(daemon as any).canonicalizeTelegramThread(m)
@@ -291,7 +296,7 @@ describe('canonicalizeTelegramThread', () => {
   })
 
   it('keys a plain-supergroup reply thread by its native root — matching the opening @mention', async () => {
-    const daemon = new Daemon({ root: scaffold() })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
     await daemon.start()
     // The opening @mention (message 6) is top-level: no topic, no root, no reply.
     const mention = tg(6, { mentionedBots: ['mybot'] })
@@ -306,7 +311,7 @@ describe('canonicalizeTelegramThread', () => {
   })
 
   it('does not treat a plain-supergroup reply-thread root as a forum topic', async () => {
-    const daemon = new Daemon({ root: scaffold() })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
     await daemon.start()
     // Only a real forum topic yields the bare numeric thread (postable as
     // message_thread_id); a reply-thread root is prefixed so it never is.
@@ -319,7 +324,7 @@ describe('canonicalizeTelegramThread', () => {
   })
 
   it('continues the session a replied-to message belongs to', async () => {
-    const daemon = new Daemon({ root: scaffold() })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
     await daemon.start()
     // A prior bot reply (message 500) recorded under the session thread tg:100.
     ;(daemon as any).store.appendTranscript({
@@ -336,7 +341,7 @@ describe('canonicalizeTelegramThread', () => {
   })
 
   it('roots a basic-group reply on the replied-to message when the transcript has no record', async () => {
-    const daemon = new Daemon({ root: scaffold() })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
     await daemon.start()
     // No message_thread_id (basic group) and message 999 was never recorded (cold /
     // restarted): fall back to rooting the thread on the replied-to message.
@@ -346,7 +351,7 @@ describe('canonicalizeTelegramThread', () => {
   })
 
   it('leaves non-telegram messages untouched', async () => {
-    const daemon = new Daemon({ root: scaffold() })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
     await daemon.start()
     const m = { ...tg(1), platform: 'slack' as const, thread: undefined }
     ;(daemon as any).canonicalizeTelegramThread(m)
@@ -356,7 +361,7 @@ describe('canonicalizeTelegramThread', () => {
 
 describe('reply-based session continuity (routing)', () => {
   it('routes a reply-to-bot to the session owner via thread affinity — no @mention needed', async () => {
-    const daemon = new Daemon({ root: scaffold() })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
     await daemon.start()
     makeTelegramRoutable(daemon)
     // Simulate an established session for thread tg:100 + its bot reply (message 500).
@@ -389,7 +394,7 @@ describe('reply-based session continuity (routing)', () => {
   })
 
   it('resolves identical thread coordinates independently on each receiving bot', async () => {
-    const daemon = new Daemon({ root: scaffold() })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
     await daemon.start()
     makeScopedTelegramPair(daemon)
     seedSession(daemon, '-100', 'tg:77', { agentId: 'bot-a', integrationId: 'i-a' })
@@ -407,7 +412,7 @@ describe('reply-based session continuity (routing)', () => {
   })
 
   it('a fresh @mention with no reply starts a new, distinct session thread', async () => {
-    const daemon = new Daemon({ root: scaffold() })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
     await daemon.start()
     makeTelegramRoutable(daemon)
     const m = tg(800, { mentionedBots: ['mybot'] })
@@ -420,7 +425,7 @@ describe('reply-based session continuity (routing)', () => {
 
 describe('reply targeting', () => {
   it('a command reply threads under the triggering Telegram message', async () => {
-    const daemon = new Daemon({ root: scaffold() })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
     await daemon.start()
     const conn = makeTelegramRoutable(daemon)
     // A DM `/status` with no live session → the "no session" note, replied to message 900.
@@ -431,7 +436,7 @@ describe('reply targeting', () => {
   })
 
   it('an agent-call turn falls back to the session thread root as its reply anchor', async () => {
-    const daemon = new Daemon({ root: scaffold() })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
     await daemon.start()
     const replyTarget = (m: NormalizedMessage) => (daemon as any).telegramReplyTarget(m)
     // A synthesized agent-call delivery (replyToSession / peer wake) — its msgId carries
@@ -535,7 +540,7 @@ function makeScopedTelegramPair(daemon: Daemon) {
 
 describe('group command routing (no mention entity)', () => {
   it('routes a bare group /status@bot to the channel latest session — replies under the command', async () => {
-    const daemon = new Daemon({ root: scaffold() })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
     await daemon.start()
     const conn = makeTelegramRoutable(daemon)
     seedSession(daemon, '-100', 'tg:100')
@@ -549,7 +554,7 @@ describe('group command routing (no mention entity)', () => {
   })
 
   it('finds the latest eligible session on the bot that received the command', async () => {
-    const daemon = new Daemon({ root: scaffold() })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
     await daemon.start()
     const { connA, connB } = makeScopedTelegramPair(daemon)
     const now = Date.now()
@@ -590,7 +595,7 @@ function injectHost(daemon: Daemon) {
 
 describe('session-control cards (/models tappable buttons)', () => {
   it('renders a tappable card for a bare /models with the current model flagged', async () => {
-    const daemon = new Daemon({ root: scaffold() })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
     await daemon.start()
     ;(daemon as any).agents.get('bot-a').allowRuntimeChangesInChat = true
     const conn = makeTelegramRoutable(daemon)
@@ -605,7 +610,7 @@ describe('session-control cards (/models tappable buttons)', () => {
   })
 
   it('applies the tapped button, acks it, and re-renders the card', async () => {
-    const daemon = new Daemon({ root: scaffold() })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
     await daemon.start()
     ;(daemon as any).agents.get('bot-a').allowRuntimeChangesInChat = true
     const conn = makeTelegramRoutable(daemon)
@@ -622,7 +627,7 @@ describe('session-control cards (/models tappable buttons)', () => {
   })
 
   it('attributes an applied tap to the tapping user, and records nothing when refused', async () => {
-    const daemon = new Daemon({ root: scaffold() })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
     await daemon.start()
     ;(daemon as any).agents.get('bot-a').allowRuntimeChangesInChat = true
     const conn = makeTelegramRoutable(daemon)
@@ -650,7 +655,7 @@ describe('session-control cards (/models tappable buttons)', () => {
   })
 
   it('applies a callback only to a session owned by the bot that delivered the tap', async () => {
-    const daemon = new Daemon({ root: scaffold() })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
     await daemon.start()
     const { agentA, agentB, connB } = makeScopedTelegramPair(daemon)
     agentA.allowRuntimeChangesInChat = true
@@ -717,7 +722,7 @@ describe('continue-the-topic hint delivery', () => {
   }
 
   it('sends the hint with the reply but keeps it out of the transcript', async () => {
-    const daemon = new Daemon({ root: scaffold() })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
     await daemon.start()
     const { conn, p, apply } = pending(daemon)
 
@@ -734,7 +739,7 @@ describe('continue-the-topic hint delivery', () => {
   })
 
   it('edits the hint onto the body already sent when the turn ends empty', async () => {
-    const daemon = new Daemon({ root: scaffold() })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
     await daemon.start()
     const { conn, apply } = pending(daemon)
 
@@ -749,7 +754,7 @@ describe('continue-the-topic hint delivery', () => {
   })
 
   it('skips the edit when no body was sent, or when the suffix would breach the cap', async () => {
-    const daemon = new Daemon({ root: scaffold() })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
     await daemon.start()
     const { conn, apply } = pending(daemon)
 

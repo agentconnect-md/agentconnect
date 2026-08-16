@@ -551,10 +551,14 @@ from `isDm`/webchat/launch-correlation alone. The gate therefore has two layers:
    - The daemon **acknowledges** the frame and persists the gate state (with
      its rev) in its local store alongside the session; the CP retries
      unacked frames, per the WS channel's existing command semantics.
+   - The frame names the **owning agent** as well as the session, and the
+     stored gate is keyed by that pair. ACP session ids are runtime-local, so
+     on a pool's install-wide shared store the id alone would let one
+     organization's push answer for another organization's gate.
    - On daemon **register/reconnect**, the CP replays the current
-     `(sessionId, private?, visibilityRev)` set for the daemon's active
-     sessions (a snapshot, not a diff), closing the window where a change
-     happened while the daemon was offline.
+     `(agentId, sessionId, private?, visibilityRev)` set for the daemon's
+     active sessions (a snapshot, not a diff), closing the window where a
+     change happened while the daemon was offline.
    - **Fail closed on known-unknown state:** a session whose _locally stored_
      gate state is missing or pre-snapshot (e.g. right after a daemon
      restart) is treated as private for capture until the snapshot confirms

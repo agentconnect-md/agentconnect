@@ -1,15 +1,17 @@
-import { createHash } from 'node:crypto'
 import { K8sHttp, loadInClusterConfig } from '@agentconnect.md/k8s-client'
-import { K8sDriver, PROBE_GRANTS } from './driver.js'
+import { K8sDriver, PROBE_GRANTS, type LaunchGenerations } from './driver.js'
 import { SandboxApi } from './sandbox-api.js'
+import { PROBE_CLAIM_EXPIRES_ANNOTATION, PROBE_CLAIM_LABEL, PROBE_CLAIM_TTL_MS, probeAgentId } from './probe-claim.js'
 import { clusterMetrics } from './cluster-metrics.js'
 import { ShimDialer } from '../shim/dialer.js'
 import { ShimGitRunner } from '../shim/git-exec.js'
 import { TunnelProxy } from '../shim/tunnel-proxy.js'
 import { ShimFileSink } from '../shim/channels.js'
 import { ShimWorkspaceFiles } from '../shim/workspace-files-channel.js'
+import { ShimMemoryFs } from '../shim/memory-fs-channel.js'
 import type { WorkspaceFiles } from '../workspace/workspace-files.js'
-import { DEFAULT_SHIM_LISTEN_PORT } from '../shim/protocol.js'
+import type { MemoryFs } from '../agents/memory-fs.js'
+import { DEFAULT_SHIM_LISTEN_PORT, DEFAULT_SHIM_WORKSPACE_ROOT } from '../shim/protocol.js'
 import type { TunnelName } from '../shim/tunnel.js'
 import type { ShimSession } from '../shim/session.js'
 import { K8sRuntimeTableSchema, type K8sRuntimeTable } from '../runtimes/k8s-runtimes.js'
@@ -17,48 +19,20 @@ import type { GitRunner } from '../workspace/git-runner.js'
 
 const SILENT = { info: () => {}, warn: () => {} }
 
-/** Reserved prefix for member-scoped runtime probes; the Control Plane never assigns it. */
-export const PROBE_AGENT_ID_PREFIX = 'ac-runtime-probe'
-export const PROBE_CLAIM_LABEL = 'agentconnect.md/runtime-probe'
-export const PROBE_CLAIM_EXPIRES_ANNOTATION = 'agentconnect.md/runtime-probe-expires-at'
 /** A probe drives every runtime through `initialize` plus a session, on a possibly cold pod. */
 const PROBE_TIMEOUT_MS = 180_000
-/** Bounds an abandoned probe claim while leaving ample room for cold scheduling and the probe. */
-export const PROBE_CLAIM_TTL_MS = 15 * 60_000
-const PROBE_CLAIM_GC_INTERVAL_MS = 5 * 60_000
 
-/** A deterministic, DNS-safe probe identity unique to one daemon member. */
-export function probeAgentId(memberId: string): string {
-  const memberHash = createHash('sha256').update(memberId).digest('hex').slice(0, 16)
-  return `${PROBE_AGENT_ID_PREFIX}-${memberHash}`
-}
+/** How long a pod that is UP may go without a shim channel before the launch counts as lost. */
+const DEFAULT_REBIND_GRACE_MS = 20_000
 
-/** Delete only expired probe claims; ordinary agent claims never match. */
-export async function reapExpiredProbeClaims(
-  api: Pick<SandboxApi, 'deleteClaimIfCurrent' | 'listClaims'>,
-  now: number,
-  log: { warn: (message: string) => void } = SILENT
-): Promise<void> {
-  const claims = await api.listClaims(`${PROBE_CLAIM_LABEL}=true`)
-  await Promise.all(
-    claims.map(async (claim) => {
-      const name = claim.metadata?.name
-      if (!name || claim.metadata?.labels?.[PROBE_CLAIM_LABEL] !== 'true') return
-      const uid = claim.metadata.uid
-      if (!uid) return
-      const rawExpiry = claim.metadata?.annotations?.[PROBE_CLAIM_EXPIRES_ANNOTATION]
-      const expiresAt = rawExpiry ? Date.parse(rawExpiry) : Number.NaN
-      if (!Number.isFinite(expiresAt) || expiresAt > now) return
-      await api
-        .deleteClaimIfCurrent(name, {
-          uid,
-          ...(claim.metadata.resourceVersion ? { resourceVersion: claim.metadata.resourceVersion } : {})
-        })
-        .catch((err: unknown) => {
-          log.warn(`k8s: expired probe claim ${name} teardown failed: ${(err as Error).message}`)
-        })
-    })
-  )
+/** One agent's pending loss decision: why the channel dropped, and how long the pod may take. */
+interface LossWatch {
+  reason: string
+  timer?: NodeJS.Timeout
+  /** Set once the pod has been observed coming up, so its arrival restarts the grace window. */
+  podWasStarting: boolean
+  /** When an unbound channel becomes a loss whatever the pod is doing. */
+  ceiling: number
 }
 
 /**
@@ -71,9 +45,12 @@ export async function reapExpiredProbeClaims(
  * daemon's own host and no Sandbox was ever created.
  */
 export interface K8sRuntimePlaneOptions {
-  /** Connection-scoped org for an envelope daemon; absent for an install-wide cloud daemon. */
+  /** Durable, install-shared allocator for launch generations — in production the daemon store,
+   *  which every pool member shares, so an agent that moves between members keeps counting up. */
+  generations: LaunchGenerations
+  /** Connection-scoped org for an envelope daemon; absent for an install-wide pool member. */
   orgId?: string
-  /** Per-agent tenant lookup used by an install-wide cloud daemon. */
+  /** Per-agent tenant lookup used by an install-wide pool member. */
   orgForAgent?: (agentId: string) => string | undefined
   /** Warm pool the claims reference. v1beta1 requires one; a cold pool is `replicas: 0`. */
   warmPoolName?: string
@@ -101,6 +78,11 @@ export interface K8sRuntimePlaneOptions {
   /** Lifetime of an issued session credential. The shim renews at half of it, so a test that has
    *  to cross a renewal shortens it rather than waiting out the default. */
   credentialTtlMs?: number
+  /** How long a pod that is up may go without a shim channel before the launch counts as lost.
+   *  Injected so a test can cross the window in milliseconds rather than waiting out the default. */
+  rebindGraceMs?: number
+  /** Fired when an agent's shim channel binds — the moment its volume (and memory tree) becomes reachable. */
+  onSandboxBound?: (agentId: string) => void
   log?: { info: (m: string) => void; warn: (m: string) => void; debug?: (m: string) => void }
 }
 
@@ -122,7 +104,7 @@ export const K8S_SHIM_PORT_ENV = 'AC_K8S_SHIM_PORT'
 export const DEFAULT_SHIM_PORT = DEFAULT_SHIM_LISTEN_PORT
 
 /** Explicit options win per FIELD, so a caller may name one and leave the rest to the env. */
-export function resolveK8sPlaneSettings(options: K8sRuntimePlaneOptions = {}): K8sPlaneSettings {
+export function resolveK8sPlaneSettings(options: Partial<K8sRuntimePlaneOptions> = {}): K8sPlaneSettings {
   const env = options.env ?? process.env
   const orgId = options.orgId ?? env[K8S_ORG_ID_ENV]?.trim()
   const warmPoolName = options.warmPoolName ?? env[K8S_WARM_POOL_ENV]?.trim()
@@ -161,6 +143,10 @@ export interface K8sRuntimePlane {
    *  git runner because they are separate capabilities (`read` vs `exec`) and a channel is not a
    *  blanket permission — not because the two ever disagree about which filesystem to use. */
   workspaceFilesFor: (agentId: string) => WorkspaceFiles | undefined
+  /** The agent's managed memory tree on that same volume, on the same condition: one root beside
+   *  the checkout (`<mount>/.agentconnect/memory`), so it follows the agent across members and
+   *  survives a rollout, and is reachable exactly when the sandbox is. */
+  memoryFsFor: (agentId: string) => MemoryFs | undefined
   /** Whether this agent's work runs in a pod right now — the SAME condition `gitRunnerFor`
    *  answers on. Callers that build paths for that work read it here rather than re-deriving it,
    *  so an environment can never describe one filesystem while the execution happens in another. */
@@ -172,9 +158,13 @@ export interface K8sRuntimePlane {
   /** Where the agent's bound pod mounts its workspace, as its shim reported; undefined before a
    *  bind or from a legacy shim (callers fall back to DEFAULT_SHIM_WORKSPACE_ROOT). */
   workspaceRootFor: (agentId: string) => string | undefined
-  /** Agents this daemon holds a Sandbox for — the candidate set for an idle sweep. Read from the
-   *  driver rather than inferred from live hosts: a launch outlives the host it was made for. */
-  launchedAgents: () => string[]
+  /** Agents this daemon holds a Sandbox for, and since when — the idle sweep's candidates. Read from
+   *  the driver, not inferred from live hosts: a launch outlives the host it was made for. */
+  launchedAgents: () => Array<{ agentId: string; since: number }>
+  /** Take over an agent's sandbox from the cluster (claim → Sandbox → mode) so this member can suspend it. */
+  adoptAgent: (agentId: string) => Promise<void>
+  /** No longer served here: launch, channel, tunnel and loss watch go; claim and volume stay. */
+  releaseAgent: (agentId: string) => void
   /** Suspend a quiet agent's pod, keeping its Sandbox and workspace volume. `busy` means work
    *  still holds it and the caller should try again later; `absent` means there is nothing to
    *  suspend. Waking is not a separate call — the next launch's bind does it. */
@@ -207,9 +197,9 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     metrics: clusterMetrics,
     onConnection: (connection) => {
       // A rebind cancels any pending loss check: this IS the replacement it was waiting for.
-      clearTimeout(lossTimers.get(connection.binding.agentId))
-      lossTimers.delete(connection.binding.agentId)
+      cancelLossCheck(connection.binding.agentId)
       driver.onChannelBound(connection)
+      options.onSandboxBound?.(connection.binding.agentId)
     },
     // A closed socket is not a lost launch; renewals reconnect underneath the logical session.
     // `ShimSession.lose()` is terminal — reporting loss here killed the runtime on every
@@ -263,6 +253,7 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
         ? (settings.orgId ?? 'install')
         : (options.orgForAgent?.(agentId) ?? settings.orgId),
     warmPoolName: settings.warmPoolName,
+    generations: options.generations,
     claimMetadataForAgent: (agentId) =>
       agentId === runtimeProbeAgentId
         ? {
@@ -283,34 +274,90 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
 
   // A renewal reconnects immediately, so a
   // replacement that has not arrived well inside the request deadline is a pod that is gone.
-  const REBIND_GRACE_MS = 20_000
-  const lossTimers = new Map<string, NodeJS.Timeout>()
-  let stopped = false
-  let probeGcTimer: NodeJS.Timeout | undefined
+  const REBIND_GRACE_MS = options.rebindGraceMs ?? DEFAULT_REBIND_GRACE_MS
+  // How often to re-read a pod that is still coming up. Deliberately well under the grace: this
+  // is a wait for an event, not a window being spent, and the pod's arrival restarts the window.
+  const POD_UP_POLL_MS = Math.max(1, Math.min(2_000, Math.floor(REBIND_GRACE_MS / 4)))
+  const lossWatches = new Map<string, LossWatch>()
   let probeInFlight: Promise<K8sRuntimeTable> | undefined
 
-  async function runProbeClaimGc(): Promise<void> {
-    await reapExpiredProbeClaims(api, Date.now(), options.log ?? SILENT).catch((err: unknown) =>
-      options.log?.warn(`k8s: probe claim sweep failed: ${(err as Error).message}`)
-    )
-    if (stopped) return
-    probeGcTimer = setTimeout(() => void runProbeClaimGc(), PROBE_CLAIM_GC_INTERVAL_MS)
-    probeGcTimer.unref?.()
+  /**
+   * Start the grace window for a channel that dropped, measured from the right event.
+   *
+   * The window is for a pod that IS up and whose shim has not come back. While the pod is still
+   * coming up nothing can dial it at all — a cold start pays PVC provisioning and an image pull —
+   * so that time is waited out rather than counted, and the window restarts once the pod is
+   * Ready. `driver.podUpTimeoutMs` is the ceiling: a pod that never arrives still reports loss.
+   */
+  function scheduleLossCheck(agentId: string, reason: string): void {
+    cancelLossCheck(agentId)
+    const watch: LossWatch = {
+      reason,
+      podWasStarting: false,
+      ceiling: Date.now() + driver.podUpTimeoutMs + REBIND_GRACE_MS
+    }
+    lossWatches.set(agentId, watch)
+    armLossCheck(agentId, watch, REBIND_GRACE_MS)
   }
 
-  void runProbeClaimGc()
+  function armLossCheck(agentId: string, watch: LossWatch, delayMs: number): void {
+    watch.timer = setTimeout(() => void runLossCheck(agentId, watch), delayMs)
+    watch.timer.unref?.()
+  }
 
-  function scheduleLossCheck(agentId: string, reason: string): void {
-    clearTimeout(lossTimers.get(agentId))
-    lossTimers.set(
-      agentId,
-      setTimeout(() => {
-        lossTimers.delete(agentId)
-        if (dialer.connectionsFor(agentId).length > 0) return
-        options.log?.warn(`k8s: no shim channel for agent ${agentId} after ${REBIND_GRACE_MS}ms — reporting loss`)
-        driver.onChannelLost(agentId, reason)
-      }, REBIND_GRACE_MS).unref?.() as NodeJS.Timeout
+  function cancelLossCheck(agentId: string): void {
+    const watch = lossWatches.get(agentId)
+    if (!watch) return
+    clearTimeout(watch.timer)
+    lossWatches.delete(agentId)
+  }
+
+  /** True while this watch is still the current one and nothing has rebound underneath it. */
+  function lossWatchStillOpen(agentId: string, watch: LossWatch): boolean {
+    if (lossWatches.get(agentId) !== watch) return false
+    if (dialer.connectionsFor(agentId).length === 0) return true
+    cancelLossCheck(agentId)
+    return false
+  }
+
+  async function runLossCheck(agentId: string, watch: LossWatch): Promise<void> {
+    if (!lossWatchStillOpen(agentId, watch)) return
+    // The read itself is bounded by what is LEFT of the ceiling, and by nothing else. The API
+    // server has no request deadline of its own, so a read that is accepted and never answered
+    // would hold this decision open forever — the launch stuck, its host dead, and nothing to
+    // rebuild it: the outcome this whole window exists to remove.
+    const remainingMs = watch.ceiling - Date.now()
+    const readiness =
+      remainingMs <= 0
+        ? ('absent' as const)
+        : await driver.sandboxReadiness(agentId, { signal: AbortSignal.timeout(remainingMs) }).catch((err: unknown) => {
+            // An unreadable Sandbox proves nothing about the pod, so it counts as still coming
+            // up — and the ceiling below, which the abort cannot outlive, decides in the end.
+            options.log?.warn(`k8s: could not read the sandbox for agent ${agentId} — ${(err as Error).message}`)
+            return 'starting' as const
+          })
+    // Re-checked after the round trip: a replacement may have bound, or the agent gone away.
+    if (!lossWatchStillOpen(agentId, watch)) return
+    if (Date.now() < watch.ceiling) {
+      if (readiness === 'starting') {
+        watch.podWasStarting = true
+        options.log?.debug?.(`k8s: agent ${agentId} has no shim channel yet — its sandbox pod is still coming up`)
+        armLossCheck(agentId, watch, POD_UP_POLL_MS)
+        return
+      }
+      // The pod has just come up, so its shim gets the whole grace window to dial in — the clock
+      // starts here rather than at a socket that dropped while there was no pod to dial at all.
+      if (readiness === 'ready' && watch.podWasStarting) {
+        watch.podWasStarting = false
+        armLossCheck(agentId, watch, REBIND_GRACE_MS)
+        return
+      }
+    }
+    lossWatches.delete(agentId)
+    options.log?.warn(
+      `k8s: no shim channel for agent ${agentId} after ${REBIND_GRACE_MS}ms with its pod ${readiness} — reporting loss`
     )
+    driver.onChannelLost(agentId, watch.reason)
   }
 
   function probeRuntimes(): Promise<K8sRuntimeTable> {
@@ -328,6 +375,7 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
           return K8sRuntimeTableSchema.parse(raw)
         })
       } finally {
+        // Best-effort: a claim left behind here expires and the orphan reconciler collects it.
         await driver.removeAgent(runtimeProbeAgentId).catch((err: unknown) => {
           options.log?.warn(`k8s: probe sandbox teardown failed: ${(err as Error).message}`)
         })
@@ -336,6 +384,16 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
       probeInFlight = undefined
     })
     return probeInFlight
+  }
+
+  function releaseAgent(agentId: string, reason = 'agent no longer served here'): void {
+    // Close the pod's channel first: it may otherwise keep using a binding this member no longer honours.
+    dialer.revokeAgent(agentId)
+    // After the revoke, whose close schedules one: nobody here waits on a loss for an agent not served here.
+    cancelLossCheck(agentId)
+    proxies.get(agentId)?.proxy.stop(reason)
+    proxies.delete(agentId)
+    driver.releaseAgent(agentId)
   }
 
   return {
@@ -357,6 +415,10 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
       if (!runsInSandbox(agentId)) return undefined
       return new ShimWorkspaceFiles(driver.sessionFor(agentId)!)
     },
+    memoryFsFor: (agentId) => {
+      if (!runsInSandbox(agentId)) return undefined
+      return new ShimMemoryFs(driver.sessionFor(agentId)!, sandboxMemoryRoot(driver.workspaceRootFor(agentId)))
+    },
     runsInSandbox,
     clearPath: async (agentId, root) => {
       const session = driver.sessionFor(agentId)
@@ -366,29 +428,26 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     workspaceRootFor: (agentId) => driver.workspaceRootFor(agentId),
     launchedAgents: () => driver.launchedAgents(),
     suspendIdle: (agentId) => driver.suspendIfIdle(agentId),
+    adoptAgent: async (agentId) => {
+      await driver.adoptAgent(agentId)
+    },
+    releaseAgent,
     discardAgent: async (agentId) => {
-      // Close and forget the pod's channel before the claim goes: the pod has its whole
-      // termination grace to keep using a binding this daemon no longer means to honour.
-      dialer.revokeAgent(agentId)
-      // Ordered after the revoke, whose close schedules one: a loss check for an agent that no
-      // longer exists would report a lost launch nobody is waiting for.
-      clearTimeout(lossTimers.get(agentId))
-      lossTimers.delete(agentId)
-      proxies.get(agentId)?.proxy.stop('agent removed')
-      proxies.delete(agentId)
+      releaseAgent(agentId, 'agent removed')
       await driver.removeAgent(agentId)
     },
     stop: async () => {
-      stopped = true
-      if (probeGcTimer) clearTimeout(probeGcTimer)
-      probeGcTimer = undefined
-      for (const timer of lossTimers.values()) clearTimeout(timer)
-      lossTimers.clear()
+      for (const agentId of [...lossWatches.keys()]) cancelLossCheck(agentId)
       for (const { proxy } of proxies.values()) proxy.stop('daemon is shutting down')
       proxies.clear()
       dialer.stop()
     }
   }
+}
+
+/** The managed memory root on a sandbox volume: outside the user's checkout, on the same PVC. */
+export function sandboxMemoryRoot(workspaceRoot: string | undefined): string {
+  return `${(workspaceRoot ?? DEFAULT_SHIM_WORKSPACE_ROOT).replace(/\/+$/, '')}/.agentconnect/memory`
 }
 
 /** WebSocket URL for a Pod IP, including the brackets an IPv6 literal requires. */

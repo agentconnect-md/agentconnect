@@ -5,6 +5,7 @@ import useSWR from 'swr'
 import Link from 'next/link'
 import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import {
+  agentDaemonLabel,
   agentEffortDisplay,
   agentLabel,
   agentModelDisplay,
@@ -13,6 +14,7 @@ import {
   effortField,
   enrichSessionWithAgent,
   flattenFiles,
+  isPoolPlacementKind,
   MOCK_MODE,
   MOCK_PREFIX,
   runtimeLabel,
@@ -464,14 +466,10 @@ export default function AgentDetailView() {
         refresh()
       }
     : undefined
-  // `da.daemon` is the owning daemonId — resolve it to the daemon's display name
-  // (never the raw UUID/host). Short id if the daemon isn't in the fleet; '—' if unplaced.
-  const daemonLabel = owningDaemon?.name ?? (da.daemon.length > 12 ? da.daemon.slice(0, 8) : da.daemon)
-  // Header + config Daemon row show "name · region"; region is a placeholder for
-  // live agents, so only append it when we actually have one.
+  const daemonLabel = agentDaemonLabel(da, daemons)
+  // Append region only when the Agent projection has a real one.
   const daemonLine = da.region && da.region !== '—' ? `${daemonLabel} · ${da.region}` : daemonLabel
-  // Link the daemon references (header meta + General card) to the daemon's detail
-  // page — but only when it's actually in the fleet, else the link would 404.
+  // Only a daemon in the viewer's fleet has a working detail route.
   const daemonHref = orgPath(`/daemons/${da.daemon}`)
   const outputModeLabel =
     da.outputMode && da.outputMode !== '—' ? da.outputMode[0]!.toUpperCase() + da.outputMode.slice(1) : da.outputMode
@@ -1627,6 +1625,7 @@ export default function AgentDetailView() {
               {...(selectedWorktreeSessionId ? { sessionId: selectedWorktreeSessionId } : {})}
               workdir={da.workdir}
               canEdit={selectedWorktreeSessionId === null && da.workspace.mode === 'scratch' && da.canEdit}
+              sandboxed={isPoolPlacementKind(da.placementKind)}
               renderWorkspacePicker={(primaryBranch) =>
                 da.workspace.mode === 'github' ? (
                   <WorkspaceScopePicker
@@ -1704,6 +1703,7 @@ export default function AgentDetailView() {
           memoryRecall={da.memoryRecall}
           memoryCaptureMode={da.memoryCaptureMode}
           sessionBasePath={orgPath('/sessions')}
+          sandboxed={isPoolPlacementKind(da.placementKind)}
         />
       )}
 

@@ -22,6 +22,7 @@ import type {
 import { visibilityWhere } from '../../authorization/policy.js'
 import { AgentId, DaemonId, OrgId } from '../../domain/ids.js'
 import { lockAgentPlacement, settleCascadedUnplacement } from './agent-placement.js'
+import { enrollDaemonInSet } from './member-set.repo.js'
 import type { Heartbeat, FactsMcpServer } from '@agentconnect.md/protocol'
 import { lockResourceWriteMemberships } from '../resource-membership-lock.js'
 
@@ -64,17 +65,16 @@ function toRecord(d: DaemonWithUsers): DaemonRecord {
   }
 }
 
-// What an install-wide cloud member is, as a where-clause: org-less, cluster-reviewed, and
-// bound to one Pod UID. An envelope daemon carries an identity but no Pod, so it never matches.
-const CLOUD_MEMBER_WHERE = { orgId: null, clusterIdentity: { not: null }, clusterPodUid: { not: null } } as const
+// What an install-wide pool member is, as a where-clause: org-less, cluster-reviewed, Pod-bound.
+const POOL_MEMBER_WHERE = { orgId: null, clusterIdentity: { not: null }, clusterPodUid: { not: null } } as const
 
 /** ONE definition of "retired", shared by the worklist read and the delete that acts on it: a
  *  claim fenced on a different predicate than the one that selected the row is not a claim.
  *  A row that never heartbeated is judged by its own age — `lastSeenAt` stays null for a Pod
  *  that authenticated and died before its first beat. */
-function retiredCloudMemberWhere(cutoff: Date) {
+function retiredPoolMemberWhere(cutoff: Date) {
   return {
-    ...CLOUD_MEMBER_WHERE,
+    ...POOL_MEMBER_WHERE,
     OR: [{ lastSeenAt: { lt: cutoff } }, { lastSeenAt: null, createdAt: { lt: cutoff } }]
   }
 }
@@ -104,40 +104,7 @@ export class PgDaemonRepo implements DaemonRepo {
     })
   }
 
-  async resolveClusterIdentity(
-    orgId: OrgId,
-    clusterIdentity: string,
-    opts: { adoptDaemonId?: string } = {}
-  ): Promise<DaemonRecord | null> {
-    const existing = await this.db.daemon.findFirst({
-      where: { clusterIdentity, clusterPodUid: null },
-      include: withUsers
-    })
-    if (existing) return existing.orgId === orgId ? toRecord(existing) : null
-    const adopted = opts.adoptDaemonId ? await this.adoptForIdentity(orgId, clusterIdentity, opts.adoptDaemonId) : null
-    if (adopted) return adopted
-    try {
-      return await withAmbientTx(this.db, async (tx) => {
-        await lockResourceWriteMemberships(tx, { orgId, visibility: 'org' })
-        const daemon = await tx.daemon.create({
-          data: { id: randomUUID(), orgId, clusterIdentity, status: 'provisioned' },
-          include: withUsers
-        })
-        return toRecord(daemon)
-      })
-    } catch (error) {
-      // A concurrent first connect won the unique index; its row is the binding.
-      if ((error as { code?: string }).code !== 'P2002') throw error
-      const raced = await this.db.daemon.findFirst({
-        where: { clusterIdentity, clusterPodUid: null },
-        include: withUsers
-      })
-      if (!raced) throw error
-      return raced.orgId === orgId ? toRecord(raced) : null
-    }
-  }
-
-  async resolveCloudClusterIdentity(clusterIdentity: string, clusterPodUid: string): Promise<DaemonRecord> {
+  async resolvePoolClusterIdentity(clusterIdentity: string, clusterPodUid: string): Promise<DaemonRecord> {
     const where = { clusterIdentity_clusterPodUid: { clusterIdentity, clusterPodUid } }
     const existing = await this.db.daemon.findUnique({ where, include: withUsers })
     if (existing) return toRecord(existing)
@@ -156,71 +123,59 @@ export class PgDaemonRepo implements DaemonRepo {
     }
   }
 
-  async findClusterIdentity(daemonId: DaemonId): Promise<{ orgId: string | null; clusterIdentity: string } | null> {
-    const row = await this.db.daemon.findUnique({
-      where: { id: daemonId },
-      select: { orgId: true, clusterIdentity: true }
-    })
-    return row?.clusterIdentity ? { orgId: row.orgId, clusterIdentity: row.clusterIdentity } : null
-  }
-
-  async clusterBoundIds(orgId: OrgId): Promise<string[]> {
-    const rows = await this.db.daemon.findMany({
-      where: { orgId, clusterIdentity: { not: null } },
-      select: { id: true }
-    })
-    return rows.map((row) => row.id)
-  }
-
-  /** Bind an envelope's existing daemon record — the one the API-key path pinned — to the
-   *  identity now authenticating for it, so an org provisioned before the token path keeps
-   *  its placements and history instead of gaining a second record beside them. Conditional
-   *  on the row being this org's and still unbound; anything else falls through to a create. */
-  private async adoptForIdentity(
-    orgId: OrgId,
-    clusterIdentity: string,
-    daemonId: string
-  ): Promise<DaemonRecord | null> {
-    try {
-      const claimed = await this.db.daemon.updateMany({
-        where: { id: daemonId, orgId, clusterIdentity: null },
-        data: { clusterIdentity }
-      })
-      if (claimed.count !== 1) return null
-    } catch (error) {
-      // Another identity claimed this record first; it is not this envelope's to adopt.
-      if ((error as { code?: string }).code !== 'P2002') throw error
-      return null
-    }
-    const daemon = await this.db.daemon.findUnique({ where: { id: daemonId }, include: withUsers })
-    return daemon ? toRecord(daemon) : null
-  }
-
   async upsertOnAuth(input: AuthReqInput): Promise<{ daemon: DaemonRecord; sessionEpoch: bigint }> {
-    const daemon = await this.db.daemon.upsert({
-      where: { id: input.daemonId },
-      create: {
-        id: input.daemonId,
-        orgId: input.orgId,
-        agentVersion: input.agentVersion,
-        machineId: input.machineId,
-        tokenFp: input.tokenFp,
-        sessionEpoch: 1n, // first successful auth mints epoch 1
-        status: 'authenticating'
-      },
-      update: {
-        agentVersion: input.agentVersion,
-        machineId: input.machineId,
-        tokenFp: input.tokenFp,
-        sessionEpoch: { increment: 1n }, // atomic monotonic bump (§3.13)
-        status: 'authenticating'
-      },
-      include: withUsers
+    return withAmbientTx(this.db, async (tx) => {
+      const daemon = await tx.daemon.upsert({
+        where: { id: input.daemonId },
+        create: {
+          id: input.daemonId,
+          orgId: input.orgId,
+          agentVersion: input.agentVersion,
+          machineId: input.machineId,
+          tokenFp: input.tokenFp,
+          sessionEpoch: 1n, // first successful auth mints epoch 1
+          status: 'authenticating'
+        },
+        update: {
+          agentVersion: input.agentVersion,
+          machineId: input.machineId,
+          tokenFp: input.tokenFp,
+          sessionEpoch: { increment: 1n }, // atomic monotonic bump (§3.13)
+          status: 'authenticating'
+        },
+        include: withUsers
+      })
+      // Pool membership stays AUTOMATIC (daemon-groups.md §6): an org-less row is a member of the
+      // org-less set, enrolled in the same transaction that mints it. An org-scoped row is never
+      // auto-enrolled anywhere — its set is an operator decision.
+      if (daemon.orgId === null) {
+        const pool = await tx.memberSet.findFirst({ where: { orgId: null }, select: { id: true } })
+        if (pool) await enrollDaemonInSet(tx, pool.id, daemon.id)
+      }
+      return { daemon: toRecord(daemon), sessionEpoch: daemon.sessionEpoch }
     })
-    return { daemon: toRecord(daemon), sessionEpoch: daemon.sessionEpoch }
   }
 
-  async applyRegister(daemonId: DaemonId, reg: RegisterReqInput): Promise<DaemonRecord> {
+  /** The observer's whole cost at the CP: no membership, and a row the reaper takes on its next
+   *  sweep. `new Date(0)` is older than any cutoff, and an observer sends no heartbeat to move it. */
+  async withdrawObserver(daemonId: DaemonId): Promise<void> {
+    await withAmbientTx(this.db, async (tx) => {
+      await tx.memberSetMember.deleteMany({ where: { daemonId } })
+      await tx.daemon.update({ where: { id: daemonId }, data: { lastSeenAt: new Date(0) } })
+    })
+  }
+
+  async applyRegister(daemonId: DaemonId, reg: RegisterReqInput, now: Date): Promise<DaemonRecord> {
+    // The generation's first-seen stamp moves only when the value does — it orders generations
+    // within a member set (duty-group.repo.ts `newerGenerationLive`), so a re-register must not
+    // make an old generation look new.
+    const generation = reg.generation ?? null
+    await this.db.$executeRaw`
+      UPDATE "daemon"
+      SET "generationSince" = CASE WHEN "generation" IS DISTINCT FROM ${generation} THEN ${now} ELSE "generationSince" END,
+          "generation" = ${generation}
+      WHERE id = ${daemonId}::uuid
+    `
     const daemon = await this.db.daemon.update({
       where: { id: daemonId },
       data: {
@@ -354,12 +309,12 @@ export class PgDaemonRepo implements DaemonRepo {
     await this.db.daemon.delete({ where: { id: daemonId, orgId } })
   }
 
-  /** The org-less-cloud shape rides every clause, so neither the worklist nor the delete can
+  /** The org-less pool shape rides every clause, so neither the worklist nor the delete can
    *  name an org's own daemon. A member still inside the window is left alone even if its Pod
    *  is long gone: only silence past `cutoff` retires a row. */
-  async findRetiredCloudMembers(cutoff: Date): Promise<DaemonRecord[]> {
+  async findRetiredPoolMembers(cutoff: Date): Promise<DaemonRecord[]> {
     const rows = await this.db.daemon.findMany({
-      where: retiredCloudMemberWhere(cutoff),
+      where: retiredPoolMemberWhere(cutoff),
       orderBy: { createdAt: 'asc' },
       include: withUsers
     })
@@ -367,13 +322,13 @@ export class PgDaemonRepo implements DaemonRepo {
   }
 
   /**
-   * Retire one cloud member: the fenced delete AND the settlement of every agent it hosted,
+   * Retire one pool member: the fenced delete AND the settlement of every agent it hosted,
    * in ONE transaction. Split across two commits, a process exit or a transient failure in
    * between would strand agents at `daemonId = null` with `status = 'active'` — nowhere to
    * run, live delegations, stale hook revisions — with no durable work item to retry from.
    *
    * The whole fence rides the DELETE statement, so this is a compare-and-delete and not a
-   * delete that trusts an earlier read: still an org-less cloud member, still silent past the
+   * delete that trusts an earlier read: still an org-less pool member, still silent past the
    * same cutoff the worklist selected on, still at the `sessionEpoch` it saw there. The epoch
    * is what makes it airtight — `upsertOnAuth` bumps it atomically on every (re)auth, while
    * `lastSeenAt` only moves on the first heartbeat AFTER one, so a member that just came back
@@ -382,7 +337,7 @@ export class PgDaemonRepo implements DaemonRepo {
    * The agents are locked BEFORE the daemon row, matching the placement path's Agent → Daemon
    * order (`agent-placement.ts`), so a concurrent move cannot deadlock against this.
    */
-  async retireCloudMember(
+  async retirePoolMember(
     daemonId: DaemonId,
     fence: { retiredBefore: Date; sessionEpoch: bigint }
   ): Promise<{ deleted: boolean; settled: { id: AgentId; orgId: OrgId }[] }> {
@@ -398,7 +353,7 @@ export class PgDaemonRepo implements DaemonRepo {
         })
         for (const agent of placed) await lockAgentPlacement(tx, agent.id)
         const { count } = await tx.daemon.deleteMany({
-          where: { id: daemonId, sessionEpoch: fence.sessionEpoch, ...retiredCloudMemberWhere(fence.retiredBefore) }
+          where: { id: daemonId, sessionEpoch: fence.sessionEpoch, ...retiredPoolMemberWhere(fence.retiredBefore) }
         })
         if (count !== 1) return { deleted: false, settled: [] }
         const settled: { id: AgentId; orgId: OrgId }[] = []

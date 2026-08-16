@@ -14,7 +14,7 @@
 import type { FastifyInstance, FastifyServerOptions } from 'fastify'
 import type { PrismaClient } from './generated/prisma/client.js'
 import type { WebSocketServer } from 'ws'
-import { HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED } from '@agentconnect.md/protocol'
+import { DUTY_GRANT_MEMBERS_MAX, HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED } from '@agentconnect.md/protocol'
 
 import { type AppConfig, resolveWebAppUrl } from './config/env.js'
 import { resolveGithubAppConfig } from './github/config.js'
@@ -86,6 +86,7 @@ import {
   PgSocialIdentityMutationGate,
   PgCronRepo,
   PgDutyGroupRepo,
+  PgMemberSetRepo,
   PgHookRepo,
   PgHookSecretStore,
   PgRuntimeProfileRepo,
@@ -104,10 +105,10 @@ import { Placement } from './orchestrator/placement.js'
 import { Watchdog } from './orchestrator/watchdog.js'
 import { CronRunReaper } from './orchestrator/cronRunReaper.js'
 import {
-  CloudDaemonReaper,
-  CLOUD_DAEMON_REAP_AFTER_MS,
-  CLOUD_DAEMON_REAP_INTERVAL_MS
-} from './orchestrator/cloudDaemonReaper.js'
+  PoolMemberReaper,
+  POOL_MEMBER_REAP_AFTER_MS,
+  POOL_MEMBER_REAP_INTERVAL_MS
+} from './orchestrator/poolMemberReaper.js'
 import { RelaySweeper } from './orchestrator/relaySweeper.js'
 import { RelayRoster } from './orchestrator/relayRoster.js'
 import { WebchatMcpOperationReaper } from './orchestrator/webchatMcpOperationReaper.js'
@@ -152,6 +153,10 @@ import { replayMemoryConnectionsTo, syncMemoryConnectionsToDaemons } from './orc
 import { relayHttpOrigin } from './orchestrator/mcpProvider.js'
 import { CollabRoutesService } from './orchestrator/collabRoutes.service.js'
 import { DutyLeaseService, DUTY_LEASE_DEFAULTS } from './orchestrator/dutyLease.js'
+import { registerPoolMetrics } from './observability/pool-metrics.js'
+import { AgentDelivery } from './orchestrator/agentDelivery.js'
+import { AgentRoutingConverger } from './orchestrator/agentRouting.js'
+import { PlacementResolver, type ResolvableAgent } from './orchestrator/placementResolver.js'
 import { DutyRecomputeSweep } from './orchestrator/dutyRecompute.js'
 import { AgentMutationGate } from './orchestrator/agentMutationGate.js'
 import { AgentMoveService } from './orchestrator/agentMove.js'
@@ -163,7 +168,7 @@ import type { RelayWsServerDeps } from './ws/relay-gateway.js'
 import { buildHttpServer } from './http/server.js'
 import type { HttpDeps } from './http/deps.js'
 import { createReadiness, type Readiness } from './http/readiness.js'
-import { retireCloudDaemonMember } from './http/daemon-removal.js'
+import { retirePoolMember } from './http/daemon-removal.js'
 import { McpRateLimiter } from './http/mcp/rate-limit.js'
 import { RemoteGrantAuthenticator } from './http/mcp/remote-grant-authenticator.js'
 import { InternalInvocationAuth } from './http/mcp/internal-invocation-auth.js'
@@ -174,6 +179,7 @@ import { runWithSharedTx, withSharedTxRouting } from './persistence/ambient-tx.j
 import { verifySlackBot, verifySlackAppToken } from './http/slack-identity.js'
 import { verifyTelegramBot } from './http/telegram-identity.js'
 import { searchSkillRegistry } from './http/skills-registry.js'
+import { createPublicRepoResolver } from './github/public-repo.js'
 import { createTelegramBotIconSyncer } from './http/telegram-bot-profile.js'
 import { ensureDiscordMessageContentIntent, verifyDiscordBot } from './http/discord-identity.js'
 import { createDiscordBotProfileSyncer } from './http/discord-bot-profile.js'
@@ -358,7 +364,14 @@ export function buildContainer(
     presetAgent: new PgPresetAgentStore(prisma),
     cron: new PgCronRepo(prisma),
     dutyGroup: new PgDutyGroupRepo(prisma),
-    hook: new PgHookRepo(prisma),
+    memberSet: new PgMemberSetRepo(prisma),
+    // Fenced hook writes ask "may this daemon act for the hook's agent" — placement ∪ live duty
+    // holders, which a join on `agent.daemonId` cannot express. Lazy over `placementResolver`
+    // (assigned below; only ever called at report time).
+    hook: new PgHookRepo(prisma, {
+      servingDaemons: (agent: ResolvableAgent): Promise<string[]> => placementResolver.servingDaemons(agent),
+      routableDaemon: (agent: ResolvableAgent): Promise<DaemonId | null> => placementResolver.routableDaemon(agent)
+    }),
     hookSecret: new PgHookSecretStore(prisma, secretCipher),
     runtimeProfile: new PgRuntimeProfileRepo(prisma),
     audit: new PgAuditRepo(prisma),
@@ -383,8 +396,8 @@ export function buildContainer(
 
   const codec = new ApiKeyCodec({ API_KEY_PEPPER: config.API_KEY_PEPPER })
   const webAppUrl = resolveWebAppUrl(config)
-  // In-cluster Kubernetes access: assembled ONLY when the switch is on. Hoisted above the
-  // auth service because an in-cluster daemon authenticates against this same cluster client.
+  // In-cluster Kubernetes access: assembled ONLY when the daemon pool is enabled. Hoisted
+  // above the auth service because an in-cluster daemon authenticates against this client.
   const clusterAccess = loadClusterAccess(config)
   const clusterHttp = clusterAccess ? new K8sHttp(clusterAccess) : undefined
   // The in-cluster daemon's token path; undefined ⇒ this deployment only accepts API keys.
@@ -392,12 +405,7 @@ export function buildContainer(
   // the relay — so the relay hop can never be the weaker one.
   const clusterIdentity =
     clusterAccess && clusterHttp
-      ? new ClusterDaemonIdentityService(
-          clusterHttp,
-          repos.daemon,
-          // Where this install's cloud daemons live; its own namespace unless told otherwise.
-          config.CLUSTER_CLOUD_DAEMON_NAMESPACE ?? clusterAccess.namespace
-        )
+      ? new ClusterDaemonIdentityService(clusterHttp, repos.daemon, clusterAccess.namespace)
       : undefined
   const auth = new DaemonAuthService(
     codec,
@@ -406,6 +414,9 @@ export function buildContainer(
     clock,
     {
       HEARTBEAT_SEC: config.HEARTBEAT_SEC,
+      // Single-sourced from the lease service's own horizon: the daemon derives its duty
+      // self-fence from this, so the two halves of `T_reassign > T_fence` cannot drift.
+      DUTY_LEASE_MS: DUTY_LEASE_DEFAULTS.leaseMs,
       // Web console origin for daemon-built session deep links: explicit PUBLIC_WEB_URL, else
       // a concrete CORS_ORIGIN (the browser console origin a two-origin deploy already lists),
       // else PUBLIC_CP_URL for single-origin deploys. All unset ⇒ no webAppUrl sent (daemon
@@ -537,6 +548,22 @@ export function buildContainer(
   // The derived in-memory connection index every hot lookup hits.
   const connReg = new ConnectionRegistry()
 
+  // The ONE answer to "which daemons serve this agent" — what its placement names, plus every
+  // current duty holder (orchestrator/placementResolver.ts).
+  const placementResolver = new PlacementResolver({
+    duties: repos.dutyGroup,
+    // The set's members ready to take a trigger. Only the rendezvous fallback reads this: a set
+    // agent whose lease lapsed has no holder, and any member can claim it on receipt.
+    liveMembers: async (setId) => {
+      const members = new Set(await repos.memberSet.memberIdsOf(setId))
+      return connReg
+        .reachableDaemons()
+        .filter((d) => d.state === 'READY' && members.has(d.daemonId))
+        .map((d) => d.daemonId)
+    },
+    clock
+  })
+
   // Built-in general-preset webchat entitlement and short-lived access grants.
   const webchatMcpGrantToken = new WebchatMcpGrantTokenCodec(config.API_KEY_PEPPER)
   const webchatRemoteMcp = new WebchatRemoteMcpService({
@@ -547,6 +574,7 @@ export function buildContainer(
     agents: repos.agent,
     presets: repos.presetAgent,
     daemons: connReg,
+    placement: placementResolver,
     authorities: repos.webchatMcpDelegation,
     grants: repos.webchatMcpAccessGrant,
     // The daemon installs this verbatim into the adapter's `agentconnect-admin`
@@ -561,6 +589,7 @@ export function buildContainer(
     agents: repos.agent,
     presets: repos.presetAgent,
     daemons: connReg,
+    placement: placementResolver,
     grants: repos.webchatMcpAccessGrant,
     authorities: repos.webchatMcpDelegation,
     sessions: repos.session,
@@ -593,6 +622,7 @@ export function buildContainer(
     repos.hookSecret,
     repos.agent,
     relayControl,
+    placementResolver,
     githubAppCfg ? repos.githubInstallation : undefined,
     githubAppCfg?.slug
   )
@@ -606,18 +636,59 @@ export function buildContainer(
     repos: { session: repos.session, agent: repos.agent },
     control: sender,
     connReg,
+    placement: placementResolver,
+    // The replay's inverse half: a reconnecting member's served set, not the recorded column.
+    duties: repos.dutyGroup,
+    clock,
     // Lazy over `http.log` (assigned below; only ever called at push time).
     log: { warn: (o, m) => http.log.warn(o, m) }
   })
 
   // Bot-agnostic collaboration routing snapshot fan-out (agent-collaboration
   // §2.3/§6.2): relays get the all-org table; daemons get their org-scoped copy.
-  const collabRoutes = new CollabRoutesService(repos.daemon, repos.integration, repos.agent, relayControl, sender)
+  const collabRoutes = new CollabRoutesService(
+    repos.daemon,
+    repos.integration,
+    repos.agent,
+    relayControl,
+    sender,
+    placementResolver,
+    repos.dutyGroup,
+    clock
+  )
+
+  // The fan-out that rides the resolver (orchestrator/agentDelivery.ts).
+  const agentDelivery = new AgentDelivery({ control: sender, specs: agentSpecs, placement: placementResolver })
+
+  // The projections that BAKE IN the serving daemon — hook rules, HTTP-bot assignment, the
+  // collaboration snapshot. A duty grant or release moves who serves an agent exactly as a
+  // placement move does, so both go through this one fan-out rather than two copies of the list.
+  const agentRouting = new AgentRoutingConverger({
+    hooks: hookService,
+    collabRoutes,
+    // Lazy over `httpBot` (assigned below; only ever called at convergence time), the same
+    // late-binding the logger wrappers use.
+    httpBot: { syncBot: (botId: string) => httpBot.syncBot(botId) },
+    agents: repos.agent,
+    integrations: repos.integration,
+    bots: repos.bot,
+    clock,
+    delayMs: 250,
+    log: { warn: (o, m) => http.log.warn(o, m) }
+  })
 
   // Duty lease exchange riding the heartbeat (k8s daemons; orchestrator/dutyLease.ts).
-  const dutyLease = new DutyLeaseService(repos.dutyGroup, clock, undefined, {
-    warn: (o, m) => http.log.warn(o, m)
-  })
+  // The revision reader stamps each granted agent member with the CP's current
+  // spec revision, so a member that already has the agent can tell frozen from current.
+  const dutyLease = new DutyLeaseService(
+    repos.dutyGroup,
+    clock,
+    undefined,
+    { warn: (o, m) => http.log.warn(o, m) },
+    repos.agent,
+    agentRouting,
+    visibilityPush
+  )
   // Duty-group projection: derived from Integration/CronDef rows on a rotation;
   // deltas reach daemons via the heartbeat lease exchange, never from the sweep.
   const dutyRecompute = new DutyRecomputeSweep(
@@ -627,11 +698,20 @@ export function buildContainer(
       intervalMs: 30_000,
       orgsPerTick: 25,
       leaseMs: DUTY_LEASE_DEFAULTS.leaseMs,
-      incumbentFence: DUTY_LEASE_DEFAULTS.grantPolicy === 'incumbent',
       kickDelayMs: 250
     },
-    { warn: (o, m) => http.log.warn(o, m), error: (o, m) => http.log.error(o, m) }
+    { warn: (o, m) => http.log.warn(o, m), error: (o, m) => http.log.error(o, m) },
+    agentRouting
   )
+  // Pool capacity gauges (observability/pool-metrics.ts) — the §12 "alarm on vacant-duty age",
+  // reading the same lease horizon and deliverability cap the claim paths gate on.
+  const poolMetrics = registerPoolMetrics({
+    repo: repos.dutyGroup,
+    clock,
+    liveMs: DUTY_LEASE_DEFAULTS.leaseMs,
+    maxMembers: DUTY_GRANT_MEMBERS_MAX,
+    log: { warn: (o, m) => http.log.warn(o, m) }
+  })
   const agentMutations = new AgentMutationGate()
 
   // Relay roster (shared-bot-relay.md §5): computed from the durable `relay` table
@@ -658,7 +738,9 @@ export function buildContainer(
       warn: (o, m) => http.log.warn(o, m),
       debug: (o, m) => http.log.debug(o, m)
     },
-    platforms
+    platforms,
+    agentDelivery,
+    placementResolver
   )
   const stagedAgentMoves = new AgentMoveService({
     agents: repos.agent,
@@ -670,12 +752,25 @@ export function buildContainer(
     platforms,
     specs: agentSpecs,
     crons: repos.cron,
+    // The `duty/fetch` bundle's MCP + external-memory projections (same seams the
+    // reconcile roster below is given, same projector).
+    mcp: { providers: repos.mcpProvider, grants: repos.mcpGrant, relayRoster },
+    memory: {
+      connections: repos.externalMemoryConnection,
+      installations: repos.memoryPluginInstallation,
+      secrets: repos.externalMemoryConnectionSecret,
+      grants: repos.externalMemoryGrant,
+      relayRoster
+    },
     control: sender,
     hooks: hookService,
     httpBot,
     collabRoutes,
     mutations: agentMutations,
     sessionOwners: connReg,
+    placement: placementResolver,
+    memberSets: repos.memberSet,
+    liveness: connReg,
     recomputeDuties: (orgId: string) => dutyRecompute.kick(orgId),
     log: { warn: (o, m) => http.log.warn(o, m) }
   })
@@ -712,6 +807,9 @@ export function buildContainer(
         grants: repos.externalMemoryGrant,
         relayRoster
       },
+      // The duty half of the reconcile roster: pinned-to-me ∪ held-by-me.
+      duties: repos.dutyGroup,
+      placement: placementResolver,
       log: { warn: (o, m) => http.log.warn(o, m) } // lazy over http.log (assigned below; called at reconcile time)
     }
   )
@@ -767,7 +865,13 @@ export function buildContainer(
   // The console PR panel's read projection — long-lived so its short TTL cache actually absorbs mounts.
   const pullRequestView = github ? new PullRequestViewService(github.tokens, clock, opts.githubFetch) : undefined
   const githubReviewBroker = github
-    ? new GithubReviewBrokerService({ hook: repos.hook, agent: repos.agent, github, clock })
+    ? new GithubReviewBrokerService({
+        hook: repos.hook,
+        agent: repos.agent,
+        github,
+        clock,
+        placement: placementResolver
+      })
     : undefined
   const githubCommentAuthz = github
     ? new GithubCommentAuthzService({
@@ -929,6 +1033,7 @@ export function buildContainer(
     repos: {
       agent: repos.agent,
       assignment: repos.assignment,
+      memberSet: repos.memberSet,
       daemonLifecycleOp: repos.daemonLifecycleOp,
       cron: repos.cron,
       hook: repos.hook,
@@ -979,6 +1084,8 @@ export function buildContainer(
     liveness: connReg,
     daemonConns: connReg,
     control: sender,
+    agentDelivery,
+    placementResolver,
     visibilityPush,
     relayControl,
     httpBot,
@@ -1005,6 +1112,7 @@ export function buildContainer(
     webchatMcpMetrics: defaultWebchatMcpMetrics,
     readiness,
     searchSkillRegistry,
+    resolvePublicRepo: createPublicRepoResolver(),
     ...(github ? { github } : {}),
     ...(pullRequestView ? { pullRequestView } : {}),
     ...(githubUserAuthz ? { githubUserAuthz } : {}),
@@ -1052,17 +1160,18 @@ export function buildContainer(
     defaultWebchatMcpMetrics
   )
 
-  // Retires the daemon rows replaced cloud Pods leave behind (a cloud member is bound to
+  // Retires the daemon rows replaced pool member Pods leave behind (a pool member is bound to
   // its Pod UID, so a new Pod means a new record). Org-less rows no `DELETE /daemons/:id`
   // can reach, which is why they accumulate in every org's fleet. Only where cluster tokens
-  // are accepted at all: nowhere else can a cloud member exist.
-  const cloudDaemonReaper = clusterIdentity
-    ? new CloudDaemonReaper(
+  // are accepted at all: nowhere else can a pool member exist.
+  const poolMemberReaper = clusterIdentity
+    ? new PoolMemberReaper(
         repos.daemon,
-        (member, retiredBefore) => retireCloudDaemonMember(httpDeps, member, retiredBefore, http.log),
+        repos.webchatMcpDelegation,
+        (member, retiredBefore) => retirePoolMember(httpDeps, member, retiredBefore, http.log),
         connReg,
         clock,
-        { retireAfterMs: CLOUD_DAEMON_REAP_AFTER_MS, intervalMs: CLOUD_DAEMON_REAP_INTERVAL_MS },
+        { retireAfterMs: POOL_MEMBER_REAP_AFTER_MS, intervalMs: POOL_MEMBER_REAP_INTERVAL_MS },
         http.log
       )
     : undefined
@@ -1113,7 +1222,8 @@ export function buildContainer(
           installations: repos.memoryPluginInstallation,
           secrets: repos.externalMemoryConnectionSecret,
           grants: repos.externalMemoryGrant,
-          daemons: repos.daemon,
+          agents: repos.agent,
+          delivery: agentDelivery,
           control: sender,
           log: http.log
         })
@@ -1274,7 +1384,9 @@ export function buildContainer(
 
   // ── daemon WS edge (mounted on the live http.Server after listen) ──────────
   const wsDeps: DaemonWsServerDeps = {
+    log: { error: (o, m) => http.log.error(o, m) },
     auth,
+    placementResolver,
     lifecycleOps: repos.daemonLifecycleOp,
     registry,
     orchestrator,
@@ -1296,6 +1408,7 @@ export function buildContainer(
     recoverStagedAgent: (agentId, daemonId, moveId) => stagedAgentMoves.recoverStaged(agentId, daemonId, moveId),
     collabRoutes,
     dutyLease,
+    agentBundle: (agent) => stagedAgentMoves.bundleFor(agent),
     cron: repos.cron,
     hook: repos.hook,
     agent: repos.agent,
@@ -1352,7 +1465,8 @@ export function buildContainer(
       conversations: repos.webchatConversation,
       sessions: repos.session,
       orgs: repos.org,
-      remoteMcp: webchatRemoteMcp
+      remoteMcp: webchatRemoteMcp,
+      placement: placementResolver
     }),
     // Current-permission fallback for GitHub comment webhooks whose
     // author_association snapshot is stale or inconsistent across event types.
@@ -1408,7 +1522,8 @@ export function buildContainer(
           if (!selected) return
           await syncMemoryConnectionsToDaemons(relayHttpOrigin(selected.url), {
             ...memoryDeps,
-            daemons: repos.daemon,
+            agents: repos.agent,
+            delivery: agentDelivery,
             control: sender
           })
         })().catch(() => http.log.error('relay: memory binding/daemon sync on register failed'))
@@ -1474,25 +1589,20 @@ export function buildContainer(
                 ...hooks.map((hook) => hookService.broadcast(hook)),
                 ...agentIds.map(async (agentId) => {
                   const agent = await repos.agent.getUnscoped(agentId)
-                  if (!agent?.daemonId) return
-                  try {
-                    await sender.agentUpsert(agent.daemonId, {
-                      agentId: agent.id,
-                      spec: await agentSpecs.assemble(agent)
-                    })
-                  } catch (err) {
+                  if (!agent) return
+                  await agentDelivery.upsert(agent, (err, daemonId) => {
                     if (err instanceof NoConnection) {
                       http.log.debug(
-                        { agentId, daemonId: agent.daemonId },
+                        { agentId, daemonId },
                         'github rename: workspace agent/upsert skipped — daemon offline'
                       )
                     } else {
                       http.log.warn(
-                        { err, agentId, daemonId: agent.daemonId },
+                        { err, agentId, daemonId },
                         'github rename: workspace agent/upsert failed (backstop: reconnect roster)'
                       )
                     }
-                  }
+                  })
                 })
               ])
             )
@@ -1617,7 +1727,7 @@ export function buildContainer(
     startBackground() {
       cronRunReaper.start()
       hookRunReaper.start()
-      cloudDaemonReaper?.start()
+      poolMemberReaper?.start()
       webchatMcpOperationReaper.start()
       githubRunReporter?.start()
       hookRedeliveryReconciler?.start()
@@ -1633,7 +1743,7 @@ export function buildContainer(
     async shutdown() {
       cronRunReaper.stop()
       hookRunReaper.stop()
-      cloudDaemonReaper?.stop()
+      poolMemberReaper?.stop()
       const webchatMcpOperationSettled = webchatMcpOperationReaper.stopAndSettle()
       githubRunReporter?.stop()
       hookRedeliveryReconciler?.stop()
@@ -1641,6 +1751,7 @@ export function buildContainer(
       for (const reaper of pendingInstallReapers) reaper.stop()
       relaySweeper.stop()
       dutyRecompute.stop()
+      poolMetrics.stop()
       sessionAccessWarmer.stop()
       for (const loop of backgroundLoops) loop.stop()
       visibilityPush.stop()
@@ -1649,6 +1760,7 @@ export function buildContainer(
         ...relayRegistrationTasks,
         visibilityPush.settle(),
         sessionAccessWarmer.settle(),
+        dutyRecompute.settle(),
         ...(installationDoorbell ? [installationDoorbell.settle()] : [])
       ])
       await rootPrisma.$disconnect()

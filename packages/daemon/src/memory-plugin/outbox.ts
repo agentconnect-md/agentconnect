@@ -1,5 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto'
-import type { MemoryConnectionSpec, MemoryPluginManifest } from '@agentconnect.md/protocol'
+import type {
+  CaptureReceipt,
+  MemoryConnectionSpec,
+  MemoryPluginCaptureInput,
+  MemoryPluginManifest,
+  MemoryPluginOperationStatusInput
+} from '@agentconnect.md/protocol'
 import { canonicalAgentMemoryKey } from '../agents/memory-recall.js'
 import type { LocalStore, MemoryCaptureOutboxRow } from '../store/local-store.js'
 import type { MemoryPluginClient } from './client.js'
@@ -10,7 +16,6 @@ export const MEMORY_CAPTURE_OUTPUT_MAX_BYTES = 32 * 1024
 export const MEMORY_CAPTURE_MAX_ACTIVE_ITEMS = 10_000
 export const MEMORY_CAPTURE_MAX_ACTIVE_BYTES = 64 * 1024 * 1024
 export const MEMORY_CAPTURE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1_000
-export const MEMORY_CAPTURE_TERMINAL_RETENTION_MS = 24 * 60 * 60 * 1_000
 
 const RETRY_BASE_MS = 1_000
 const RETRY_MAX_MS = 60_000
@@ -23,6 +28,28 @@ export interface MemoryCaptureConnectionRegistry {
   connectionIds(): readonly string[]
   clientFor(connectionId: string): MemoryPluginClient | undefined
   specFor(connectionId: string): MemoryConnectionSpec | undefined
+  markDegraded(connectionId: string, reasonCode?: string): void
+  markRecovered(connectionId: string, reasonCodes: readonly string[]): void
+}
+
+/** What the pump needs from a capture target: the plugin client's shape, so a daemon-owned target
+ *  (the managed distillation of a cluster agent) can stand in for a plugin connection. */
+export interface MemoryCaptureClient {
+  manifest: {
+    plugin: { id: string }
+    capabilities: { idempotency: MemoryPluginManifest['capabilities']['idempotency'] }
+  }
+  manifestDigest?: string
+  capture(input: MemoryPluginCaptureInput): Promise<CaptureReceipt>
+  operationStatus(input: MemoryPluginOperationStatusInput): Promise<CaptureReceipt>
+}
+
+/** The registry as the PUMP sees it — every plugin registry satisfies it, and so does a composite
+ *  that adds daemon-owned targets beside the plugin connections. */
+export interface MemoryCapturePumpRegistry {
+  connectionIds(): readonly string[]
+  clientFor(connectionId: string): MemoryCaptureClient | undefined
+  specFor(connectionId: string): Pick<MemoryConnectionSpec, 'revision'> | undefined
   markDegraded(connectionId: string, reasonCode?: string): void
   markRecovered(connectionId: string, reasonCodes: readonly string[]): void
 }
@@ -58,7 +85,6 @@ export interface MemoryCaptureOutboxOptions {
   acceptedPollMs?: number
   maxCaptureAttempts?: number
   maxAgeMs?: number
-  terminalRetentionMs?: number
 }
 
 function boundedIdentity(prefix: string, value: string): string {
@@ -124,8 +150,8 @@ function retryDelay(attempts: number, baseMs: number, maxMs: number): number {
 
 function definitionMismatch(
   row: MemoryCaptureOutboxRow,
-  spec: MemoryConnectionSpec,
-  client: MemoryPluginClient
+  spec: Pick<MemoryConnectionSpec, 'revision'>,
+  client: MemoryCaptureClient
 ): 'connection_revision_changed' | 'plugin_id_changed' | 'manifest_mismatch' | 'idempotency_changed' | undefined {
   if (spec.revision !== row.connectionRevision) return 'connection_revision_changed'
   if (client.manifest.plugin.id !== row.pluginId) return 'plugin_id_changed'
@@ -150,7 +176,7 @@ export class MemoryCaptureOutbox {
 
   constructor(
     private readonly store: LocalStore,
-    private readonly registry: MemoryCaptureConnectionRegistry,
+    private readonly registry: MemoryCapturePumpRegistry,
     private readonly options: MemoryCaptureOutboxOptions = {}
   ) {
     this.now = options.now ?? Date.now
@@ -286,7 +312,6 @@ export class MemoryCaptureOutbox {
     const dueAt = this.store.nextMemoryCaptureDueAt(connectionIds)
     const maintenanceAt = this.store.nextMemoryCaptureMaintenanceAt(
       this.options.maxAgeMs ?? MEMORY_CAPTURE_MAX_AGE_MS,
-      this.options.terminalRetentionMs ?? MEMORY_CAPTURE_TERMINAL_RETENTION_MS,
       connectionIds
     )
     const nextAt =
@@ -300,7 +325,7 @@ export class MemoryCaptureOutbox {
     this.timer.unref?.()
   }
 
-  private currentClient(row: MemoryCaptureOutboxRow): MemoryPluginClient | undefined {
+  private currentClient(row: MemoryCaptureOutboxRow): MemoryCaptureClient | undefined {
     const spec = this.registry.specFor(row.connectionId)
     const client = this.registry.clientFor(row.connectionId)
     if (!spec || !client) return undefined
@@ -503,15 +528,14 @@ export class MemoryCaptureOutbox {
   private expire(now: number): void {
     const connectionIds = this.registry.connectionIds()
     this.observeRecovery(this.store.recoverMemoryCaptures(now, true, connectionIds))
+    // Only the state change is this loop's; the terminal row it leaves is the retention
+    // rule table's to collect (store/retention.ts).
     const expired = this.store.expireMemoryCaptures(
       now - (this.options.maxAgeMs ?? MEMORY_CAPTURE_MAX_AGE_MS),
-      now - (this.options.terminalRetentionMs ?? MEMORY_CAPTURE_TERMINAL_RETENTION_MS),
       now,
       connectionIds
     )
-    if (expired.expired > 0) {
-      this.metrics.captureState('failed', { count: expired.expired, reason: 'retention_expired' })
-    }
+    if (expired > 0) this.metrics.captureState('failed', { count: expired, reason: 'retention_expired' })
   }
 
   private observeRecovery(recovered: { retried: number; ambiguous: number }): void {

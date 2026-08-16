@@ -7,6 +7,7 @@ import {
   type RegisterReq
 } from '@agentconnect.md/protocol'
 import { AgentId, OrgId, SessionId } from '../domain/ids.js'
+import type { PlacementResolver, ResolvableAgent } from '../orchestrator/placementResolver.js'
 import type { WebchatRemoteMcpService } from './webchatRemoteMcpService.js'
 import type { WebchatTokenService } from './webchatToken.js'
 
@@ -17,7 +18,7 @@ interface VerificationDaemon {
 
 export interface WebchatVerificationDeps {
   tokens: Pick<WebchatTokenService, 'verify'>
-  agents: { getUnscoped(agentId: AgentId): Promise<{ orgId: string; daemonId: string | null } | null> }
+  agents: { getUnscoped(agentId: AgentId): Promise<(ResolvableAgent & { orgId: string }) | null> }
   daemons: { get(daemonId: string): VerificationDaemon | undefined }
   /** Roster reads for multi-agent conversations (webchat-multi-agents.md §6.2). */
   conversations: {
@@ -38,6 +39,9 @@ export interface WebchatVerificationDeps {
   }
   orgs: { roleOf(orgId: string, userId: string): Promise<string | null> }
   remoteMcp: Pick<WebchatRemoteMcpService, 'establish'>
+  /** Resolves the daemon a webchat turn should reach — the holder, or any live member that can
+   *  claim the agent's duty on receipt. */
+  placement: Pick<PlacementResolver, 'dispatchDaemon'>
 }
 
 /**
@@ -65,8 +69,13 @@ export function createWebchatTokenVerifier(deps: WebchatVerificationDeps): (toke
     if (!claims) return { ok: false, reason: 'invalid token' }
     const agent = await deps.agents.getUnscoped(AgentId(claims.agentId))
     if (!agent || agent.orgId !== claims.orgId) return { ok: false, reason: 'invalid token' }
-    if (!agent.daemonId) return { ok: false, reason: 'agent unplaced' }
-    const daemon = deps.daemons.get(agent.daemonId)
+    // Readiness is the resolver's answer, not a member id the row happens to carry: a pool agent
+    // is dialable while ANY member is live, and after a rollout the member its row used to name is
+    // gone by construction — which is what made webchat permanently offline (#987). A lapsed lease
+    // resolves to a live member anyway; it claims the group on receipt.
+    const agentDaemonId = await deps.placement.dispatchDaemon(agent)
+    if (!agentDaemonId) return { ok: false, reason: 'agent unplaced' }
+    const daemon = deps.daemons.get(agentDaemonId)
     if (daemon?.state !== 'READY') return { ok: false, reason: 'daemon offline' }
 
     // The durable conversation row is required for every dial; a targeted row
@@ -82,7 +91,7 @@ export function createWebchatTokenVerifier(deps: WebchatVerificationDeps): (toke
       userId: claims.userId,
       user: claims.user,
       agentId: claims.agentId,
-      daemonId: agent.daemonId,
+      daemonId: agentDaemonId,
       orgId: claims.orgId,
       conversationId: claims.conversationId
     }
@@ -105,7 +114,7 @@ export function createWebchatTokenVerifier(deps: WebchatVerificationDeps): (toke
       }
       // Content ownership is daemon-local: the agent must still be on the
       // session's recorded daemon, and that daemon continuation-capable.
-      if (session.daemonId === null || session.daemonId !== agent.daemonId) {
+      if (session.daemonId === null || session.daemonId !== agentDaemonId) {
         return { ok: false, reason: 'continuation unavailable' }
       }
       if (!daemon.capabilities?.features.includes(WEBCHAT_SESSION_CONTINUATION_FEATURE)) {
@@ -114,7 +123,7 @@ export function createWebchatTokenVerifier(deps: WebchatVerificationDeps): (toke
       // Single fixed participant; no roster growth, no remote MCP entitlement.
       return {
         ...verifiedBase,
-        participants: [{ agentId: claims.agentId, daemonId: agent.daemonId, primary: true }],
+        participants: [{ agentId: claims.agentId, daemonId: agentDaemonId, primary: true }],
         targetSessionId
       }
     }
@@ -127,20 +136,21 @@ export function createWebchatTokenVerifier(deps: WebchatVerificationDeps): (toke
     const participants: RcWebchatParticipant[] = []
     for (const p of roster) {
       if (p.agentId === claims.agentId) {
-        participants.push({ agentId: p.agentId, daemonId: agent.daemonId, primary: true })
+        participants.push({ agentId: p.agentId, daemonId: agentDaemonId, primary: true })
         continue
       }
       const member = await deps.agents.getUnscoped(p.agentId)
-      const memberDaemon =
-        member && member.orgId === claims.orgId && member.daemonId ? deps.daemons.get(member.daemonId) : undefined
+      const memberDaemonId =
+        member && member.orgId === claims.orgId ? await deps.placement.dispatchDaemon(member) : null
+      const memberDaemon = memberDaemonId ? deps.daemons.get(memberDaemonId) : undefined
       participants.push({
         agentId: p.agentId,
-        ...(memberDaemon?.state === 'READY' ? { daemonId: member!.daemonId! } : {}),
+        ...(memberDaemon?.state === 'READY' && memberDaemonId ? { daemonId: memberDaemonId } : {}),
         ...(p.role === 'primary' ? { primary: true } : {})
       })
     }
     if (participants.length === 0) {
-      participants.push({ agentId: claims.agentId, daemonId: agent.daemonId, primary: true })
+      participants.push({ agentId: claims.agentId, daemonId: agentDaemonId, primary: true })
     }
 
     const verified: RcVerifyResult = { ...verifiedBase, participants }
@@ -156,7 +166,7 @@ export function createWebchatTokenVerifier(deps: WebchatVerificationDeps): (toke
       verifiedUserId: claims.userId,
       orgId: claims.orgId,
       agentId: claims.agentId,
-      daemonId: agent.daemonId
+      daemonId: agentDaemonId
     })
     return entitlement ? { ...verified, remoteMcp: entitlement } : verified
   }

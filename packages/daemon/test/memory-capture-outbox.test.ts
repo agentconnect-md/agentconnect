@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { MEMORY_PLUGIN_PROFILE, type MemoryConnectionSpec, type MemoryPluginManifest } from '@agentconnect.md/protocol'
 import { LocalStore, type MemoryCaptureOutboxRow } from '../src/store/local-store.js'
+import { openPostgresLocalStore, usingPostgresStore } from './store-postgres/backend.js'
 import {
   MEMORY_CAPTURE_INPUT_MAX_BYTES,
   MEMORY_CAPTURE_OUTPUT_MAX_BYTES,
@@ -16,7 +17,11 @@ import type { MemoryPluginMetrics } from '../src/memory-plugin/metrics.js'
 
 const connectionId = '11111111-1111-4111-8111-111111111111'
 
+/** True in the `store-postgres` project, where every store below is the real pool store. */
+const pg = usingPostgresStore()
+
 function store(path?: string): LocalStore {
+  if (pg) return openPostgresLocalStore()
   return new LocalStore(path ?? join(mkdtempSync(join(tmpdir(), 'ac-memory-outbox-')), 'local.sqlite'))
 }
 
@@ -351,7 +356,7 @@ describe('MemoryCaptureOutbox', () => {
     db.close()
   })
 
-  it('schedules age expiry and terminal-body cleanup even while the queue is otherwise quiet', async () => {
+  it('schedules age expiry even while the queue is otherwise quiet', async () => {
     const db = store()
     const unavailable: MemoryCaptureConnectionRegistry = {
       connectionIds: () => [connectionId],
@@ -363,7 +368,6 @@ describe('MemoryCaptureOutbox', () => {
     const outbox = new MemoryCaptureOutbox(db, unavailable, {
       metrics,
       maxAgeMs: 30,
-      terminalRetentionMs: 30,
       unavailableRetryMs: 1_000
     })
     try {
@@ -373,10 +377,8 @@ describe('MemoryCaptureOutbox', () => {
         timeout: 500,
         interval: 5
       })
-      await vi.waitFor(() => expect(db.getMemoryCapture(queued.operationId)).toBeUndefined(), {
-        timeout: 500,
-        interval: 5
-      })
+      // The terminal row it leaves is the retention rule table's to drop, not this loop's.
+      expect(db.getMemoryCapture(queued.operationId)?.state).toBe('failed')
     } finally {
       await outbox.stop()
       db.close()

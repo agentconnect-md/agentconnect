@@ -29,6 +29,20 @@ export const McpServerSpec = z
   .object({
     orgId: z.string().min(1).max(64).optional(),
     name: z.string(),
+    /**
+     * Monotonic ordering marker: epoch millis of the ACTIVE GRANT this definition
+     * was projected from — the only input that versions a proxy def, since the
+     * proxy url is derived from the provider id and the relay base.
+     *
+     * Grant rotation keeps the retiring and the fresh grant both active until the
+     * fresh one is distributed, so a definition projected inside that window can
+     * be applied AFTER the fresh live push and would otherwise silently reinstate
+     * a key the relay is about to retire. The daemon refuses a def strictly older
+     * than the one it already applied; equal-or-newer applies, so a relay-base
+     * change (same grant) still converges. Absent on daemon-local defs and from an
+     * older CP, which reads as "unordered — apply".
+     */
+    issuedAt: z.number().int().nonnegative().optional(),
     transport: z.enum(['stdio', 'http', 'sse']).default('stdio'),
     command: z.string().optional(),
     args: z.array(z.string()).default([]),

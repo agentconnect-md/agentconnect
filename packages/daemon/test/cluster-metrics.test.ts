@@ -4,7 +4,8 @@ import { FakeClock } from '@agentconnect.md/connection'
 import { K8sDriver, type ClusterDriverDeps } from '../src/k8s/driver.js'
 import { LaunchTimer, type ClusterMetrics, type LaunchPath, type LaunchStage } from '../src/k8s/cluster-metrics.js'
 import { K8sApiError } from '@agentconnect.md/k8s-client'
-import type { Sandbox, SandboxClaim } from '../src/k8s/sandbox-api.js'
+import { GuardedResumeRejectedError, type Sandbox, type SandboxClaim } from '../src/k8s/sandbox-api.js'
+import { fakeGenerations } from './fake-generations.js'
 
 // The acceptance criterion for D9 is a dashboard that settles "resume p95 ≤ 15s, cold start
 // p95 ≤ 60s" without log archaeology. That is only true if the cold/resume tag is right and the
@@ -68,9 +69,31 @@ function fakeApi(options: { claimExists: boolean; mode: 'Running' | 'Suspended' 
       getSandbox: async () =>
         ({
           metadata: { name: 'sb-1', uid: 'sandbox-uid-1' },
-          spec: { operatingMode: state.mode },
+          spec: {
+            operatingMode: state.mode,
+            podTemplate: { spec: { containers: [{ name: 'runtime', image: 'runtime:1' }] } }
+          },
           status: { conditions: [{ type: 'Ready', status: 'True' }], podIPs: ['10.0.0.8'] }
         }) as Sandbox,
+      getWarmPool: async () => ({ spec: { sandboxTemplateRef: { name: 'runtime-template' } } }),
+      getSandboxTemplate: async () => ({
+        spec: { podTemplate: { spec: { containers: [{ name: 'runtime', image: 'runtime:1' }] } } }
+      }),
+      resumeWithRuntimeImage: async (
+        _name: string,
+        image: { containerIndex: number; observedName: string; observedImage: string; targetImage: string }
+      ) => {
+        if (
+          state.mode !== 'Suspended' ||
+          image.containerIndex !== 0 ||
+          image.observedName !== 'runtime' ||
+          image.observedImage !== 'runtime:1'
+        ) {
+          throw new GuardedResumeRejectedError('sb-1', new K8sApiError(422, 'Invalid', 'guard rejected'))
+        }
+        state.mode = 'Running'
+        return {} as Sandbox
+      },
       setOperatingMode: async (_name: string, desired: 'Running' | 'Suspended') => {
         state.mode = desired
         return {} as Sandbox
@@ -131,6 +154,7 @@ function driverFor(
     api: api.api as never,
     orgForAgent: () => 'org-1',
     warmPoolName: 'pool',
+    generations: fakeGenerations(),
     connectChannel: awaitChannel
       ? async (record, _podIp, timeoutMs) => await awaitChannel(record.agentId, record.generation, timeoutMs)
       : async () => respondingConnection(open) as never,
@@ -287,7 +311,10 @@ describe('cluster launch metrics', () => {
     notReady.api.getSandbox = async () =>
       ({
         metadata: { name: 'sb-1', uid: 'sandbox-uid-1' },
-        spec: { operatingMode: notReady.state.mode },
+        spec: {
+          operatingMode: notReady.state.mode,
+          podTemplate: { spec: { containers: [{ name: 'runtime', image: 'runtime:1' }] } }
+        },
         status: { conditions: [{ type: 'Ready', status: 'False' }] }
       }) as Sandbox
     const podClock = new FakeClock()
@@ -349,13 +376,12 @@ describe('cluster launch metrics', () => {
     const retried = recorder()
     const api = fakeApi({ claimExists: true, mode: 'Suspended' })
     let attempts = 0
-    api.api.setOperatingMode = async (_name: string, desired: 'Running' | 'Suspended') => {
+    api.api.resumeWithRuntimeImage = async () => {
       attempts += 1
       if (attempts === 1) {
-        const { OperatingModeRejectedError } = await import('../src/k8s/sandbox-api.js')
-        throw new OperatingModeRejectedError('sb-1', 'Suspended', desired, new K8sApiError(422, 'Invalid', 'no'))
+        throw new GuardedResumeRejectedError('sb-1', new K8sApiError(422, 'Invalid', 'no'))
       }
-      api.state.mode = desired
+      api.state.mode = 'Running'
       return {} as Sandbox
     }
     await driverFor(retried.metrics, api).launch(launchRequest)

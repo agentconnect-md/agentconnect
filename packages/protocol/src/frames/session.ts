@@ -265,6 +265,11 @@ export type ChildSessionStatusProbe = z.infer<typeof ChildSessionStatusProbe>
  */
 export const SessionVisibilityPush = z.object({
   sessionId: z.string().min(1), // opaque ACP session id (agent-assigned; NOT a wire UUID)
+  // The session's owning agent. ACP session ids are runtime-local, so on a pool's
+  // shared store the id alone names a gate every org could claim. Optional for
+  // rolling upgrades: an older CP omits it and the daemon attributes the push to
+  // the sole local holder, or leaves the gate closed when there is no single one.
+  agentId: z.string().min(1).optional(),
   visibility: z.enum(['private', 'org', 'external']),
   // New daemons use this explicit capture/recall verdict. It is optional for
   // wire compatibility with older CPs and decouples the runtime safety gate

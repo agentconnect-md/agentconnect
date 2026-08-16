@@ -47,9 +47,20 @@ describe('computeDutyComponents', () => {
     expect(out).toEqual([comp(agent('a1'), agent('a2'), bot('shared'), bot('tg'))])
   })
 
-  it('an enabled cron seeds a singleton component for a botless agent', () => {
+  it('every agent seeds a component; a botless one gets a singleton', () => {
     const out = computeDutyComponents([{ agentId: 'a1', botId: 'b1' }], [{ agentId: 'lone' }, { agentId: 'a1' }])
     expect(out).toEqual([comp(agent('a1'), bot('b1')), comp(agent('lone'))])
+  })
+
+  it('an agent listed after its edge keeps the merged component, not a duplicate singleton', () => {
+    const out = computeDutyComponents(
+      [
+        { agentId: 'a1', botId: 'shared' },
+        { agentId: 'a2', botId: 'shared' }
+      ],
+      [{ agentId: 'a1' }, { agentId: 'a2' }, { agentId: 'a3' }]
+    )
+    expect(out).toEqual([comp(agent('a1'), agent('a2'), bot('shared')), comp(agent('a3'))])
   })
 
   it('is deterministic regardless of input order', () => {

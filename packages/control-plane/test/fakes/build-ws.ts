@@ -10,7 +10,7 @@
  * real socket.
  */
 import type { PrismaClient } from '../../src/generated/prisma/client.js'
-import type { RelayRosterEntry } from '@agentconnect.md/protocol'
+import type { CollabRoutesSnapshot, RelayRosterEntry } from '@agentconnect.md/protocol'
 import {
   PgDaemonRepo,
   PgDaemonLifecycleOpRepo,
@@ -32,13 +32,19 @@ import {
   PgLaunchRepo,
   PgMemoryPluginInstallationRepo,
   PgExternalMemoryConnectionRepo,
+  PgOrganizationKnowledgeRepo,
   PgExternalMemoryConnectionSecretStore,
   PgExternalMemoryGrantRepo,
-  PgDutyGroupRepo
+  PgMcpProviderRepo,
+  PgMcpGrantRepo,
+  PgDutyGroupRepo,
+  PgHookSecretStore
 } from '../../src/persistence/index.js'
+import { PgMemberSetRepo } from '../../src/persistence/repositories/member-set.repo.js'
 import { PlaintextSecretCipher } from '../../src/secrets/cipher.js'
 import { EpochService } from '../../src/orchestrator/epoch.js'
 import { Placement } from '../../src/orchestrator/placement.js'
+import { PlacementResolver } from '../../src/orchestrator/placementResolver.js'
 import { ControlSender } from '../../src/orchestrator/outbound.js'
 import { AgentSpecAssembler } from '../../src/orchestrator/agentSpecAssembler.js'
 import { ApiKeyCodec } from '../../src/registry/apiKey.js'
@@ -49,9 +55,10 @@ import { AgentMutationGate } from '../../src/orchestrator/agentMutationGate.js'
 import { CollabRoutesService } from '../../src/orchestrator/collabRoutes.service.js'
 import { DutyLeaseService, type DutyLeaseConfig } from '../../src/orchestrator/dutyLease.js'
 import { RelayControlSender } from '../../src/orchestrator/relayControl.js'
+import { HookService } from '../../src/hooks/hook.service.js'
+import { AgentRoutingConverger } from '../../src/orchestrator/agentRouting.js'
 import { FrameRouter } from '../../src/ws/handlers/index.js'
 import { DaemonConnection } from '../../src/ws/connection.js'
-import { RelayRegistry } from '../../src/ws/relay-registry.js'
 import type { DaemonWsDeps } from '../../src/ws/deps.js'
 import { InMemorySessionEventSink } from '../../src/events/sink.js'
 import { DaemonId, OrgId } from '../../src/domain/ids.js'
@@ -80,12 +87,23 @@ export const TEST_API_KEY_PEPPER = 'test-api-key-pepper-0123456789abcdef'
 export interface WsHarness {
   deps: DaemonWsDeps
   clock: FakeClock
+  /** Compiled hook rules the relay would have received, in order — the routing projection that
+   *  addresses a daemon, so "ingress follows the holder" is assertable on it directly. */
+  hookAssigns: CapturedHookRule[]
+  hookRemovals: string[]
+  /** Daemons the duty exchange asked for a session-visibility replay, in order. */
+  visibilityReplays: string[]
+  /** Every relay-facing collab-routes push, in order — the peer directory as a relay would hold it. */
+  collabSnapshots: CollabRoutesSnapshot[]
+  /** The resolver the projections read through — lets a test ask what the peer directory would
+   *  publish right now without reaching through the orchestrator. */
+  placement: PlacementResolver
   codec: ApiKeyCodec
   /** Provision a daemon row + mint an API key for `daemonId`; returns the plaintext `apiKey`. */
   mintToken(daemonId: string): Promise<string>
   /** Provision an org-less (install-wide, frame-mode) daemon row + a fake cluster
    *  ServiceAccount token for it; auth with `{ serviceAccountToken }`. */
-  mintCloudDaemon(daemonId: string): Promise<string>
+  mintPoolMember(daemonId: string): Promise<string>
   /** Open a fresh connection (started) over a new stub. */
   connect(stub?: InMemoryDaemonStub): { conn: DaemonConnection; stub: InMemoryDaemonStub }
 }
@@ -100,6 +118,13 @@ export interface HarnessOpts {
   relays?: RelayRosterEntry[]
   /** Duty lease knobs (defaults suit tests; recoveryGraceMs 0 so grants flow immediately). */
   dutyLease?: Partial<DutyLeaseConfig>
+}
+
+/** One compiled hook rule as the relay would receive it — the routing projection under test. */
+export interface CapturedHookRule {
+  hookId: string
+  agentId: string
+  daemonId: string
 }
 
 export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): WsHarness {
@@ -126,25 +151,31 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
     launch: new PgLaunchRepo(prisma),
     memoryPluginInstallation: new PgMemoryPluginInstallationRepo(prisma),
     externalMemoryConnection: new PgExternalMemoryConnectionRepo(prisma),
+    organizationKnowledge: new PgOrganizationKnowledgeRepo(prisma),
     externalMemoryConnectionSecret: new PgExternalMemoryConnectionSecretStore(prisma, cipher),
-    externalMemoryGrant: new PgExternalMemoryGrantRepo(prisma, cipher)
+    externalMemoryGrant: new PgExternalMemoryGrantRepo(prisma, cipher),
+    mcpProvider: new PgMcpProviderRepo(prisma),
+    mcpGrant: new PgMcpGrantRepo(prisma, cipher)
   }
 
   const codec = new ApiKeyCodec({ API_KEY_PEPPER: TEST_API_KEY_PEPPER })
 
+  // One horizon for both halves: auth/ok tells the daemon exactly what the lease service uses.
+  const dutyLeaseMs = opts.dutyLease?.leaseMs ?? 120_000
+
   const epoch = new EpochService(repos.daemon, clock)
   // Fake in-cluster identity: token → install-wide daemon, no TokenReview.
-  const cloudTokens = new Map<string, string>()
+  const poolTokens = new Map<string, string>()
   const auth = new DaemonAuthService(
     codec,
     repos.apiKey,
     epoch,
     clock,
-    { HEARTBEAT_SEC: opts.heartbeatSec ?? 15 },
+    { HEARTBEAT_SEC: opts.heartbeatSec ?? 15, DUTY_LEASE_MS: dutyLeaseMs },
     new PgOrgRepo(prisma),
     {
       verify: async (token: string) => {
-        const daemonId = cloudTokens.get(token)
+        const daemonId = poolTokens.get(token)
         return daemonId ? { daemonId: DaemonId(daemonId), scope: 'install' as const } : null
       }
     }
@@ -152,14 +183,37 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
   const registry = new DaemonRegistryService(repos.daemon, repos.runtimeProfile, repos.daemonLifecycleOp, clock)
   const connReg = new ConnectionRegistry()
   const sender = new ControlSender(connReg, repos.launch)
+  const relays = opts.relays ?? []
+  const dutyGroupRepo = new PgDutyGroupRepo(prisma)
+  const memberSets = new PgMemberSetRepo(prisma)
+  const placementResolver = new PlacementResolver({
+    duties: dutyGroupRepo,
+    liveMembers: async (setId) => {
+      const members = new Set(await memberSets.memberIdsOf(setId))
+      return connReg
+        .reachableDaemons()
+        .filter((d) => d.state === 'READY' && members.has(d.daemonId))
+        .map((d) => d.daemonId)
+    },
+    clock
+  })
+  // The relay-facing collab pushes are captured, not sent: `collabSnapshots` is literally the
+  // directory a relay would route a peer wake through, latest last. Wired like prod — resolver +
+  // duty ledger — so a pool member's held agents put their org into the snapshot.
+  const collabSnapshots: CollabRoutesSnapshot[] = []
   const collabRoutes = new CollabRoutesService(
     repos.daemon,
     repos.integration,
     repos.agent,
-    new RelayControlSender(new RelayRegistry()),
-    sender
+    {
+      collabRoutes: (snapshot: CollabRoutesSnapshot) => void collabSnapshots.push(snapshot),
+      collabRoutesTo: (_ch: unknown, snapshot: CollabRoutesSnapshot) => void collabSnapshots.push(snapshot)
+    } as unknown as RelayControlSender,
+    sender,
+    placementResolver,
+    dutyGroupRepo,
+    clock
   )
-  const relays = opts.relays ?? []
   const orchestrator = new Placement(
     repos.daemon,
     repos.agent,
@@ -181,35 +235,78 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
         REASSIGN_GRACE_SEC: 60,
         ACK_TIMEOUT_MS: opts.ackTimeoutMs ?? 5000
       },
+      mcp: { providers: repos.mcpProvider, grants: repos.mcpGrant, relayRoster: { entries: async () => relays } },
       memory: {
         connections: repos.externalMemoryConnection,
         installations: repos.memoryPluginInstallation,
         secrets: repos.externalMemoryConnectionSecret,
         grants: repos.externalMemoryGrant,
         relayRoster: { entries: async () => relays }
-      }
+      },
+      duties: dutyGroupRepo,
+      placement: placementResolver
     }
   )
 
-  const dutyLease = new DutyLeaseService(new PgDutyGroupRepo(prisma), clock, {
-    leaseMs: opts.dutyLease?.leaseMs ?? 120_000,
-    recoveryGraceMs: opts.dutyLease?.recoveryGraceMs ?? 0,
-    grantMaxPerTick: opts.dutyLease?.grantMaxPerTick ?? 32,
-    grantsPerFrame: opts.dutyLease?.grantsPerFrame ?? 50,
-    grantMembersPerFrame: opts.dutyLease?.grantMembersPerFrame ?? 2000,
-    revocationsPerFrame: opts.dutyLease?.revocationsPerFrame ?? 500,
-    // Wire tests use synthetic member refs with no agent rows; the incumbent
-    // policy is exercised by its own repo tests against real placements.
-    grantPolicy: opts.dutyLease?.grantPolicy ?? 'any'
+  // A REAL HookService over a capturing relay sender: `hookAssigns` is literally what a relay
+  // would dispatch on, so a test can assert that ingress follows a holder change rather than
+  // asserting that some internal seam was called.
+  const hookAssigns: CapturedHookRule[] = []
+  const hookRemovals: string[] = []
+  const hookService = new HookService(
+    repos.hook,
+    new PgHookSecretStore(prisma, cipher),
+    repos.agent,
+    {
+      hookAssign: (rule: { hookId: string; agentId: string; daemonId: string }) => void hookAssigns.push(rule),
+      hookRemove: (hookId: string) => void hookRemovals.push(hookId)
+    } as unknown as RelayControlSender,
+    placementResolver
+  )
+  const agentRouting = new AgentRoutingConverger({
+    hooks: hookService,
+    collabRoutes,
+    httpBot: { syncBot: async () => {} },
+    agents: repos.agent,
+    integrations: repos.integration,
+    bots: repos.bot,
+    clock,
+    delayMs: 0
   })
 
+  // Members the exchange asked for a capture-gate replay, in order. The snapshot's CONTENT is
+  // pinned in `session-visibility.route.test.ts`; what belongs here is that a confirmed grant
+  // triggers one at all — a member registers before it holds anything.
+  const visibilityReplays: string[] = []
+  const dutyLease = new DutyLeaseService(
+    dutyGroupRepo,
+    clock,
+    {
+      leaseMs: dutyLeaseMs,
+      recoveryGraceMs: opts.dutyLease?.recoveryGraceMs ?? 0,
+      grantMaxPerTick: opts.dutyLease?.grantMaxPerTick ?? 32,
+      grantsPerFrame: opts.dutyLease?.grantsPerFrame ?? 50,
+      grantMembersPerFrame: opts.dutyLease?.grantMembersPerFrame ?? 2000,
+      revocationsPerFrame: opts.dutyLease?.revocationsPerFrame ?? 500,
+      refusalsBeforeRelease: opts.dutyLease?.refusalsBeforeRelease ?? 3,
+      refusalBackoffMs: opts.dutyLease?.refusalBackoffMs ?? 300_000,
+      doubleMoveWindowMs: opts.dutyLease?.doubleMoveWindowMs ?? 600_000
+    },
+    undefined,
+    repos.agent,
+    agentRouting,
+    { replayTo: async (daemonId) => void visibilityReplays.push(daemonId) }
+  )
+
   const deps: DaemonWsDeps = {
+    log: { error: () => undefined },
     auth,
     lifecycleOps: repos.daemonLifecycleOp,
     registry,
     orchestrator,
     connReg,
     agent: repos.agent,
+    placementResolver,
     session: repos.session,
     events: new InMemorySessionEventSink(),
     sessionUsage: repos.sessionUsage,
@@ -222,6 +319,7 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
     cron: repos.cron,
     hook: repos.hook,
     externalMemoryConnection: repos.externalMemoryConnection,
+    organizationKnowledge: repos.organizationKnowledge,
     relayRoster: async () => relays,
     clock,
     config: {
@@ -236,11 +334,16 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
   return {
     deps,
     clock,
+    hookAssigns,
+    hookRemovals,
+    visibilityReplays,
+    collabSnapshots,
+    placement: placementResolver,
     codec,
-    mintCloudDaemon: async (daemonId: string) => {
+    mintPoolMember: async (daemonId: string) => {
       await prisma.daemon.create({ data: { id: daemonId, orgId: null, maxAgents: 8, status: 'ready' } })
       const token = `fake-sa-token-${daemonId}`
-      cloudTokens.set(token, daemonId)
+      poolTokens.set(token, daemonId)
       return token
     },
     mintToken: async (daemonId: string) => {

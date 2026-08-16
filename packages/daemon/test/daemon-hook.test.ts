@@ -28,8 +28,12 @@ import {
 import { GithubReplyCollector } from '../src/github/poster.js'
 import { transcriptCoords } from '../src/session/session-manager.js'
 import { sessionKey } from '../src/store/local-store.js'
-import { sessionWorktreePath } from '../src/workspace/workspace-manager.js'
+import { WorkspaceManager } from '../src/workspace/workspace-manager.js'
 import { FakeClock } from '@agentconnect.md/connection'
+import { fakeSlackAppFactory } from './fakes/slack-app.js'
+
+// One plane per test file — the isolation Vitest's per-file module registry used to give.
+const workspaces = new WorkspaceManager()
 
 // vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a
 // cold session boot (workspace + host + session/new) can stall well past a second.
@@ -97,6 +101,8 @@ function fakeCpClient() {
   return {
     hookReports,
     sessionEvents,
+    // An ordinary org-scoped daemon: it owns its agents outright and is not duty-governed.
+    organizationScope: () => 'connection' as const,
     stop: vi.fn(async () => {}),
     emitEventSession: (event: EventSession) => sessionEvents.push(event),
     emitHookReport: async (r: HookReport) => {
@@ -123,6 +129,7 @@ describe('Daemon rd/msg hook fires', () => {
     const { factory, host } = streamingHost()
     host.modelOptions.mockReturnValue({ current: 'claude-sonnet-4-5' } as never)
     const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
       root: scaffold({ name: 'review-bot', displayName: 'Review Bot', runtimeOverrides: { model: 'fallback-model' } }),
       hostFactory: factory
     })
@@ -142,7 +149,7 @@ describe('Daemon rd/msg hook fires', () => {
 
   it('accepts, runs headless through the turn engine, and reports success + sessionId', async () => {
     const { factory, host } = streamingHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
     await daemon.start()
     const cp = fakeCpClient()
     ;(daemon as never as { cpClient: unknown }).cpClient = cp
@@ -169,7 +176,7 @@ describe('Daemon rd/msg hook fires', () => {
 
   it('persists a structured initial title for a GitHub pull-request session', async () => {
     const { factory } = streamingHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
     await daemon.start()
     const cp = fakeCpClient()
     ;(daemon as never as { cpClient: unknown }).cpClient = cp
@@ -252,7 +259,7 @@ describe('Daemon rd/msg hook fires', () => {
     async ({ error, reason }) => {
       const { factory, host } = streamingHost()
       host.prompt.mockRejectedValue(error)
-      const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+      const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
       await daemon.start()
       const cp = fakeCpClient()
       ;(daemon as never as { cpClient: unknown }).cpClient = cp
@@ -311,6 +318,7 @@ describe('Daemon rd/msg hook fires', () => {
       stop: vi.fn(async () => {})
     }
     const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
       root: scaffold(),
       hostFactory: (_agent, cb) => {
         onUpdate = cb
@@ -451,6 +459,7 @@ describe('Daemon rd/msg hook fires', () => {
         stop: vi.fn(async () => {})
       }
       const daemon = new Daemon({
+        slackAppFactory: fakeSlackAppFactory(),
         root: scaffold(),
         clock,
         hostFactory: (_agent, cb) => {
@@ -552,7 +561,11 @@ describe('Daemon rd/msg hook fires', () => {
   )
 
   it('grants formal-review authority only when an issue_comment explicitly requests review', async () => {
-    const daemon = new Daemon({ root: scaffold(), hostFactory: streamingHost().factory })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: streamingHost().factory
+    })
     await daemon.start()
     const dispatchDaemonId = (daemon as any).cfg.daemonId as string
     const startHook = vi.fn(async () => ({ accepted: true }))
@@ -615,7 +628,7 @@ describe('Daemon rd/msg hook fires', () => {
         pullOnNewSession: true
       }
     })
-    const daemon = new Daemon({ root, hostFactory: streamingHost().factory })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: streamingHost().factory })
     await daemon.start()
     const dispatchDaemonId = (daemon as any).cfg.daemonId as string
     const prepare = vi.spyOn(daemon as any, 'prepareAgentWorkspace').mockResolvedValue('/agent/worktrees/review')
@@ -682,7 +695,7 @@ describe('Daemon rd/msg hook fires', () => {
         pullOnNewSession: true
       }
     })
-    const daemon = new Daemon({ root, hostFactory: streamingHost().factory })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: streamingHost().factory })
     await daemon.start()
     const dispatchDaemonId = (daemon as any).cfg.daemonId as string
     const prepare = vi
@@ -756,7 +769,7 @@ describe('Daemon rd/msg hook fires', () => {
         pullOnNewSession: true
       }
     })
-    const daemon = new Daemon({ root, hostFactory: streamingHost().factory })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: streamingHost().factory })
     await daemon.start()
     const dispatchDaemonId = (daemon as any).cfg.daemonId as string
     const prepare = vi.spyOn(daemon as any, 'prepareAgentWorkspace')
@@ -798,7 +811,11 @@ describe('Daemon rd/msg hook fires', () => {
   })
 
   it('disables formal-review authority by event family when a rolling relay omits inline ids', async () => {
-    const daemon = new Daemon({ root: scaffold(), hostFactory: streamingHost().factory })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: streamingHost().factory
+    })
     await daemon.start()
     const dispatchDaemonId = (daemon as any).cfg.daemonId as string
     const startHook = vi.fn(async () => ({ accepted: true }))
@@ -912,7 +929,7 @@ describe('Daemon rd/msg hook fires', () => {
         return host as never
       }
 
-      const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+      const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
       await daemon.start()
       const cp = fakeCpClient()
       ;(daemon as never as { cpClient: unknown }).cpClient = cp
@@ -1066,7 +1083,7 @@ describe('Daemon rd/msg hook fires', () => {
         return host as never
       }
 
-      const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+      const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
       await daemon.start()
       const cp = fakeCpClient()
       ;(daemon as never as { cpClient: unknown }).cpClient = cp
@@ -1109,7 +1126,11 @@ describe('Daemon rd/msg hook fires', () => {
   )
 
   it('durably clears an old not_submitted result before authorizing a fresh retry', async () => {
-    const daemon = new Daemon({ root: scaffold(), hostFactory: streamingHost().factory })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: streamingHost().factory
+    })
     await daemon.start()
 
     const oldAttemptId = '11111111-1111-4111-8111-111111111111'
@@ -1191,7 +1212,7 @@ describe('Daemon rd/msg hook fires', () => {
 
   it('fails closed after restart when a current attempt is unresolved but an older report was not_submitted', async () => {
     const root = scaffold()
-    const seed = new Daemon({ root, hostFactory: streamingHost().factory })
+    const seed = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: streamingHost().factory })
     await seed.start()
 
     const dispatchDaemonId = (seed as any).cfg.daemonId as string
@@ -1289,6 +1310,7 @@ describe('Daemon rd/msg hook fires', () => {
       stop: vi.fn(async () => {})
     }
     const restarted = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
       root,
       hostFactory: (_agent, cb) => {
         onUpdate = cb
@@ -1298,6 +1320,7 @@ describe('Daemon rd/msg hook fires', () => {
     const hookReports: HookReport[] = []
     const cp = {
       stop: vi.fn(async () => {}),
+      organizationScope: () => 'connection' as const,
       startHook: vi.fn(async () => ({ accepted: true })),
       authorizeGithubReview: vi.fn(async () => ({
         attemptId: currentAttemptId,
@@ -1345,7 +1368,7 @@ describe('Daemon rd/msg hook fires', () => {
 
   it('preserves the inline review-thread target through durable inbox replay', async () => {
     const root = scaffold()
-    const seed = new Daemon({ root, hostFactory: streamingHost().factory })
+    const seed = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: streamingHost().factory })
     await seed.start()
     const replayFire = fire({
       sessionKey: 'acme/infra#42',
@@ -1403,7 +1426,7 @@ describe('Daemon rd/msg hook fires', () => {
     await seed.stop()
 
     const { factory } = streamingHost()
-    const restarted = new Daemon({ root, hostFactory: factory })
+    const restarted = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: factory })
     const cp = fakeCpClient()
     ;(restarted as never as { cpClient: unknown }).cpClient = cp
     const poster = { publish: vi.fn(async () => {}) }
@@ -1487,14 +1510,14 @@ describe('Daemon rd/msg hook fires', () => {
       execFileSync('git', ['update-ref', 'refs/remotes/origin/main', 'HEAD'], { cwd: workspace })
 
       const { factory, host } = streamingHost()
-      const daemon = new Daemon({ root, hostFactory: factory })
+      const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: factory })
       await daemon.start()
       ;(daemon as any).hosts.set(AGENT_ID, host)
       const cp = fakeCpClient()
       ;(daemon as never as { cpClient: unknown }).cpClient = cp
       const agent = (daemon as any).agents.get(AGENT_ID)
       const key = sessionKey('hook', 'acme/infra', '42', AGENT_ID, 'github:123')
-      const worktree = sessionWorktreePath(agent, key)
+      const worktree = workspaces.sessionWorktreePath(agent, key)
       mkdirSync(join(agentDir, 'worktrees'), { recursive: true })
       execFileSync('git', ['worktree', 'add', '--detach', worktree, 'HEAD'], { cwd: workspace, stdio: 'ignore' })
       ;(daemon as any).store.upsertSession({
@@ -1574,7 +1597,7 @@ describe('Daemon rd/msg hook fires', () => {
   it('replays a retained GitHub deleted event as a maintenance no-op after restart', async () => {
     const root = scaffold()
     const seedHost = streamingHost()
-    const daemon = new Daemon({ root, hostFactory: seedHost.factory })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: seedHost.factory })
     await daemon.start()
     vi.spyOn(daemon as any, 'emitHookCompletion').mockImplementationOnce(() => {})
 
@@ -1585,7 +1608,7 @@ describe('Daemon rd/msg hook fires', () => {
     await daemon.stop()
 
     const restartedHost = streamingHost()
-    const restarted = new Daemon({ root, hostFactory: restartedHost.factory })
+    const restarted = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: restartedHost.factory })
     const cp = fakeCpClient()
     ;(restarted as never as { cpClient: unknown }).cpClient = cp
     await restarted.start()
@@ -1600,7 +1623,7 @@ describe('Daemon rd/msg hook fires', () => {
 
   it('keeps a deleted GitHub comment silent when the thread already has a session', async () => {
     const { factory, host } = streamingHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
     await daemon.start()
     const cp = fakeCpClient()
     ;(daemon as never as { cpClient: unknown }).cpClient = cp
@@ -1626,7 +1649,7 @@ describe('Daemon rd/msg hook fires', () => {
 
   it('rejects a fire for an agent not on this daemon (no_agent)', async () => {
     const { factory } = streamingHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
     await daemon.start()
 
     const ack = await (daemon as any).handleRelayMsg(fire({ agentId: 'ghost' }), () => {})
@@ -1636,7 +1659,11 @@ describe('Daemon rd/msg hook fires', () => {
 
   it('rejects a fire for a paused agent (paused)', async () => {
     const { factory } = streamingHost()
-    const daemon = new Daemon({ root: scaffold({ pause: true }), hostFactory: factory })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold({ pause: true }),
+      hostFactory: factory
+    })
     await daemon.start()
 
     const ack = await (daemon as any).handleRelayMsg(fire(), () => {})
@@ -1646,7 +1673,7 @@ describe('Daemon rd/msg hook fires', () => {
 
   it('rejects a fresh hook before durable admission when its conversation loop circuit is already open', async () => {
     const { factory, host } = streamingHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
     await daemon.start()
     const cp = fakeCpClient()
     ;(daemon as never as { cpClient: unknown }).cpClient = cp
@@ -1667,7 +1694,7 @@ describe('Daemon rd/msg hook fires', () => {
 
   it('rejects before the model turn when durable hook admission fails', async () => {
     const { factory, host } = streamingHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
     await daemon.start()
     vi.spyOn((daemon as any).store, 'appendInbox').mockImplementation(() => {
       throw new Error('disk full')
@@ -1681,7 +1708,7 @@ describe('Daemon rd/msg hook fires', () => {
 
   it('an anchored fire posts the trigger to the target channel and threads under it (P1.5)', async () => {
     const { factory } = streamingHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
     await daemon.start()
     const cp = fakeCpClient()
     ;(daemon as never as { cpClient: unknown }).cpClient = cp
@@ -1711,7 +1738,7 @@ describe('Daemon rd/msg hook fires', () => {
 
   it('uses only a bounded preparation pull credential when spawning a github-app workspace', async () => {
     const { factory, host } = streamingHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
     await daemon.start()
     const getCredential = vi.spyOn((daemon as any).gitCreds, 'get')
     const agent = (daemon as any).agents.get(AGENT_ID)
@@ -1738,7 +1765,7 @@ describe('Daemon rd/msg hook fires', () => {
 
   it('replays the original ack on a redelivered (sessionKey, msgId) without re-running', async () => {
     const { factory, host } = streamingHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
     await daemon.start()
     const cp = fakeCpClient()
     ;(daemon as never as { cpClient: unknown }).cpClient = cp
@@ -1770,6 +1797,7 @@ describe('Daemon rd/msg hook fires', () => {
       stop: vi.fn(async () => {})
     }
     const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
       root: scaffold(),
       hostFactory: (_agent, cb) => {
         onUpdate = cb
@@ -1820,6 +1848,7 @@ describe('Daemon rd/msg hook fires', () => {
     }
     const root = scaffold()
     const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
       root,
       hostFactory: (_agent, cb) => {
         onUpdate = cb
@@ -1935,7 +1964,7 @@ describe('Daemon rd/msg hook fires', () => {
     await daemon.stop()
 
     const restartedHost = streamingHost()
-    const restarted = new Daemon({ root, hostFactory: restartedHost.factory })
+    const restarted = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: restartedHost.factory })
     const restartedCp = fakeCpClient()
     ;(restarted as never as { cpClient: unknown }).cpClient = restartedCp
     ;(restarted as any).makeGithubReply = vi.fn(() => ({
@@ -1986,6 +2015,7 @@ describe('Daemon rd/msg hook fires', () => {
       stop: vi.fn(async () => {})
     }
     const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
       root: scaffold(),
       hostFactory: (_agent, cb) => {
         onUpdate = cb
@@ -2105,14 +2135,18 @@ describe('Daemon rd/msg hook fires', () => {
         stop: vi.fn(async () => {})
       }
       const root = scaffold()
-      const daemon = new Daemon({ root, hostFactory: () => host as never })
+      const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => host as never })
       await daemon.start()
       // An unreachable CP keeps the report in the durable outbox (retryable
       // failure), without leaving an unresolved request alive during teardown.
       const emitHookReport = vi.fn(async () => {
         throw new Error('cp unreachable')
       })
-      ;(daemon as never as { cpClient: unknown }).cpClient = { stop: vi.fn(async () => {}), emitHookReport }
+      ;(daemon as never as { cpClient: unknown }).cpClient = {
+        stop: vi.fn(async () => {}),
+        organizationScope: () => 'connection' as const,
+        emitHookReport
+      }
 
       const first = fire({ sessionKey: HOOK_ID })
       const second = fire({ sessionKey: HOOK_ID, msgId: `${HOOK_ID}:d-2`, deliveryKey: 'd-2' })
@@ -2156,10 +2190,14 @@ describe('Daemon rd/msg hook fires', () => {
 
   it('caps retained hook/report replay at 100 globally until requests settle', async () => {
     const { factory } = streamingHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
     await daemon.start()
     const emitHookReport = vi.fn(() => new Promise<'acknowledged'>(() => {}))
-    ;(daemon as never as { cpClient: unknown }).cpClient = { stop: vi.fn(async () => {}), emitHookReport }
+    ;(daemon as never as { cpClient: unknown }).cpClient = {
+      stop: vi.fn(async () => {}),
+      organizationScope: () => 'connection' as const,
+      emitHookReport
+    }
 
     const rows = Array.from({ length: 150 }, (_, i) => ({
       id: `${HOOK_ID}:backlog-${i}`,
@@ -2170,7 +2208,7 @@ describe('Daemon rd/msg hook fires', () => {
         status: 'success'
       })
     }))
-    vi.spyOn((daemon as any).store, 'listInboxBySessionKeyFifo').mockReturnValue(rows)
+    vi.spyOn((daemon as any).store, 'listHookTerminalReports').mockReturnValue(rows)
 
     ;(daemon as any).replayHookTerminalReports()
     expect(emitHookReport).toHaveBeenCalledTimes(100)
@@ -2182,11 +2220,11 @@ describe('Daemon rd/msg hook fires', () => {
 
   it('retries the durable report drain after local read or ACK-cleanup failures', async () => {
     const { factory } = streamingHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
     await daemon.start()
     ;(daemon as never as { cpClient: unknown }).cpClient = fakeCpClient()
     const retry = vi.spyOn(daemon as any, 'scheduleHookReportRetry').mockImplementation(() => {})
-    const list = vi.spyOn((daemon as any).store, 'listInboxBySessionKeyFifo').mockImplementation(() => {
+    const list = vi.spyOn((daemon as any).store, 'listHookTerminalReports').mockImplementation(() => {
       throw new Error('sqlite busy')
     })
 
@@ -2207,7 +2245,7 @@ describe('Daemon rd/msg hook fires', () => {
 
   it('keeps the first terminal owner as the only durable report writer', async () => {
     const { factory } = streamingHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
     await daemon.start()
     const cp = {
       hookReports: [] as HookReport[],
@@ -2250,9 +2288,69 @@ describe('Daemon rd/msg hook fires', () => {
     await daemon.stop()
   }, 15_000)
 
+  it("keeps a peer dispatch's report body when the CP answers a permanent CONFLICT", async () => {
+    // #1035: on a pool the outbox is one shared table. A member that emitted a peer's
+    // row is told CONFLICT because it is the wrong reporter — not because the
+    // completion is invalid — so nulling the body would lose a finished turn forever.
+    const { factory } = streamingHost()
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
+    await daemon.start()
+    const rejection = Object.assign(new Error('hook completion does not match the accepted dispatch'), {
+      retryable: false
+    })
+    ;(daemon as never as { cpClient: unknown }).cpClient = {
+      stop: vi.fn(async () => {}),
+      organizationScope: () => 'connection' as const,
+      emitHookReport: vi.fn(async () => {
+        throw rejection
+      })
+    }
+    const store = (daemon as any).store
+    const mine = `${HOOK_ID}:own-dispatch`
+    const peers = `${HOOK_ID}:peer-dispatch`
+    for (const deliveryKey of ['own-dispatch', 'peer-dispatch']) {
+      const id = `${HOOK_ID}:${deliveryKey}`
+      const message = buildHookMessage(fire({ msgId: id, deliveryKey }), `trace-${deliveryKey}`)
+      expect(
+        store.appendInbox({
+          id,
+          sessionKey: `${message.platform}:${message.channel}:${message.thread}:${AGENT_ID}`,
+          agentId: AGENT_ID,
+          msg: JSON.stringify(message),
+          hookContext: '{}',
+          enqueuedAt: '1'
+        })
+      ).toBe(true)
+      expect(store.completeHookInbox(id, JSON.stringify({ deliveryKey }), 1)).toBe('completed')
+    }
+    const report = (dispatchDaemonId?: string): HookReport => ({
+      hookId: HOOK_ID,
+      agentId: AGENT_ID,
+      deliveryKey: 'd-1',
+      status: 'success',
+      ...(dispatchDaemonId ? { dispatchDaemonId } : {})
+    })
+
+    ;(daemon as any).sendHookReport(report((daemon as any).cfg.daemonId), mine)
+    ;(daemon as any).sendHookReport(report('cccccccc-cccc-4ccc-8ccc-cccccccccccc'), peers)
+
+    const rowById = (id: string) =>
+      store.listInboxBySessionKeyFifo().find((row: { id: string }) => row.id === id) as {
+        terminalReport: string | null
+      }
+    // Our own dispatch fence can never become valid: dead-letter it as before.
+    await vi.waitFor(() => expect(rowById(mine).terminalReport).toBeNull(), WAIT)
+    expect(rowById(peers).terminalReport).not.toBeNull()
+    expect((daemon as any).hookReportForeign.has(peers)).toBe(true)
+    // And the drain leaves it alone on the next CP ready.
+    ;(daemon as any).replayHookTerminalReports()
+    expect(rowById(peers).terminalReport).not.toBeNull()
+    await daemon.stop()
+  }, 15_000)
+
   it('does not ACK-clean a live hook row when terminal redaction fails', async () => {
     const { factory } = streamingHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
     await daemon.start()
     const cp = fakeCpClient()
     ;(daemon as never as { cpClient: unknown }).cpClient = cp
@@ -2296,7 +2394,7 @@ describe('Daemon rd/msg hook fires', () => {
   it('retains a terminal receipt so redelivery after restart does not rerun the model', async () => {
     const root = scaffold()
     const firstHost = streamingHost()
-    const first = new Daemon({ root, hostFactory: firstHost.factory })
+    const first = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: firstHost.factory })
     await first.start()
     const firstCp = fakeCpClient()
     ;(first as never as { cpClient: unknown }).cpClient = firstCp
@@ -2315,7 +2413,7 @@ describe('Daemon rd/msg hook fires', () => {
     await first.stop()
 
     const secondHost = streamingHost()
-    const second = new Daemon({ root, hostFactory: secondHost.factory })
+    const second = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: secondHost.factory })
     await second.start()
     ;(second as never as { cpClient: unknown }).cpClient = fakeCpClient()
     const secondAnchor = {

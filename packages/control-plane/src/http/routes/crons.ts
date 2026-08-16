@@ -18,6 +18,7 @@ import type { HttpDeps } from '../deps.js'
 import { isSyntheticEmail, type AgentRecord, type CronRecord } from '../../persistence/ports.js'
 import { AgentId, CronId, IntegrationId } from '../../domain/ids.js'
 import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
+import { refreshMutationAgent as refreshAgentUnderMutation } from '../mutation-agent.js'
 import { canView, canEdit, canManageSharing, type ViewCtx } from '../../authorization/policy.js'
 import { resolveShareSet } from '../sharing.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
@@ -67,17 +68,7 @@ function toDto(c: CronRecord, ctx: ViewCtx): CronDtoT {
 export function cronRoutes(deps: HttpDeps) {
   return async function cronRoutesPlugin(app: FastifyInstance): Promise<void> {
     const r = app.withTypeProvider<ZodTypeProvider>()
-    const refreshMutationAgent = async (observed: AgentRecord): Promise<AgentRecord | null> => {
-      const current = await deps.repos.agent.get(observed.orgId, observed.id)
-      if (
-        !current ||
-        current.daemonId !== observed.daemonId ||
-        current.lastModifiedAt.getTime() !== observed.lastModifiedAt.getTime()
-      ) {
-        return null
-      }
-      return current
-    }
+    const refreshMutationAgent = (observed: AgentRecord) => refreshAgentUnderMutation(deps.repos.agent, observed)
 
     // Fetch a cron AND verify it's in the caller's org AND visible to them — a
     // cross-org id OR a restricted cron they can't see both read as absent (404).
@@ -88,24 +79,19 @@ export function cronRoutes(deps: HttpDeps) {
       return canView(cron, ctxOf(req)) ? cron : null
     }
 
-    // Live-sink a cron change to the owning agent's daemon. Best-effort: offline
-    // daemon ⇒ the register/ok reconcile snapshot carries it on the next connect.
-    async function pushLive(
-      daemonId: string | null,
-      what: string,
-      push: (daemonId: string) => Promise<unknown>
-    ): Promise<void> {
-      if (!daemonId) return // unplaced agent — reconcile is the backstop
-      try {
-        await push(daemonId) // non-null past the guard — no assertion at the call site
-      } catch (err) {
+    // Best-effort per-target log for a cron push. The delivery set itself is
+    // `deps.agentDelivery`'s call (placement ∪ duty holders): a cron drives the
+    // agent, so it belongs wherever the agent is served. Offline daemon ⇒ the
+    // register/ok reconcile snapshot carries it on the next connect.
+    const cronPushFailed =
+      (what: string) =>
+      (err: unknown, daemonId: string): void => {
         if (err instanceof NoConnection) {
           app.log.debug({ daemonId }, `${what} skipped: daemon offline`)
           return
         }
         app.log.warn({ daemonId, err }, `${what} live push failed — daemon converges on next register`)
       }
-    }
 
     r.put(
       '/crons/:id',
@@ -233,7 +219,7 @@ export function cronRoutes(deps: HttpDeps) {
             .catch(() => {})
           const wire = cronToUpsert(cron)
           if (wire) {
-            await pushLive(agent.daemonId, 'cron/upsert', (daemonId) => deps.control.cronUpsert(daemonId, wire))
+            await deps.agentDelivery.cronUpsert(agent, wire, cronPushFailed('cron/upsert'))
           }
           return toDto(cron, ctxOf(req))
         } finally {
@@ -340,8 +326,10 @@ export function cronRoutes(deps: HttpDeps) {
         if (!canEdit(cron, ctxOf(req))) {
           return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot run this cron' })
         }
-        let agent = cron.agentId ? await deps.repos.agent.get(orgOf(req), cron.agentId) : null
-        if (!agent?.daemonId) {
+        const agent = cron.agentId ? await deps.repos.agent.get(orgOf(req), cron.agentId) : null
+        // A manual run goes to whoever serves the agent right now — its placement, or the member
+        // holding its duty. Nothing serving it is a 503, exactly as an unplaced agent was.
+        if (!agent || !(await deps.placementResolver.servingDaemon(agent))) {
           return reply
             .code(503)
             .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent is not placed on a daemon' })
@@ -361,8 +349,9 @@ export function cronRoutes(deps: HttpDeps) {
               message: 'agent placement changed; refresh and retry the cron run'
             })
           }
-          agent = current
-          const daemonId = current.daemonId
+          // Re-resolved under the lease rather than read off the row, so the fire reaches the
+          // member serving a pool agent instead of refusing on a column that names no machine.
+          const daemonId = await deps.placementResolver.servingDaemon(current)
           if (!daemonId) {
             return reply
               .code(409)
@@ -449,9 +438,9 @@ export function cronRoutes(deps: HttpDeps) {
               details: { cronId: existing.id }
             })
             .catch(() => {})
-          await pushLive(agent.daemonId, 'cron/remove', (daemonId) =>
-            deps.control.cronRemove(daemonId, { cronId: existing.id })
-          )
+          // The row's own org rides the send: `cron/remove` carries only a cronId,
+          // so a holder that never registered this cron has nothing to resolve.
+          await deps.agentDelivery.cronRemove(agent, existing.id, existing.orgId, cronPushFailed('cron/remove'))
           return reply.code(204).send(null)
         } finally {
           release()

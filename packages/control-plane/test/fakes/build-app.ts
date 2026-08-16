@@ -16,6 +16,7 @@ import {
   PgApiKeyRepo,
   PgOrgRepo,
   PgAgentRepo,
+  PgDutyGroupRepo,
   PgAgentSecretStore,
   PgAssignmentRepo,
   PgCronRepo,
@@ -29,8 +30,10 @@ import {
   PgSessionRepo,
   PgSessionUsageRepo
 } from '../../src/persistence/index.js'
+import { PgMemberSetRepo } from '../../src/persistence/repositories/member-set.repo.js'
 import { PlaintextSecretCipher } from '../../src/secrets/cipher.js'
 import { EpochService } from '../../src/orchestrator/epoch.js'
+import { DUTY_LEASE_DEFAULTS } from '../../src/orchestrator/dutyLease.js'
 import { Placement } from '../../src/orchestrator/placement.js'
 import { AgentSpecAssembler } from '../../src/orchestrator/agentSpecAssembler.js'
 import { buildCpPlatformRegistry } from '../../src/platforms/registry.js'
@@ -48,6 +51,7 @@ import { createDaemonWsServer } from '../../src/ws/gateway.js'
 import type { DaemonWsDeps } from '../../src/ws/deps.js'
 import { InMemorySessionEventSink } from '../../src/events/sink.js'
 import { systemClock } from '../../src/domain/clock.js'
+import { PlacementResolver } from '../../src/orchestrator/placementResolver.js'
 import { DaemonId, OrgId } from '../../src/domain/ids.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 
@@ -100,7 +104,14 @@ export function buildDaemonApp(prisma: PrismaClient): DaemonApp {
 
   const codec = new ApiKeyCodec({ API_KEY_PEPPER: TEST_API_KEY_PEPPER })
   const epoch = new EpochService(repos.daemon, clock)
-  const auth = new DaemonAuthService(codec, repos.apiKey, epoch, clock, { HEARTBEAT_SEC: 15 }, new PgOrgRepo(prisma))
+  const auth = new DaemonAuthService(
+    codec,
+    repos.apiKey,
+    epoch,
+    clock,
+    { HEARTBEAT_SEC: 15, DUTY_LEASE_MS: DUTY_LEASE_DEFAULTS.leaseMs },
+    new PgOrgRepo(prisma)
+  )
   const registry = new DaemonRegistryService(repos.daemon, repos.runtimeProfile, repos.daemonLifecycleOp, clock)
   const orchestrator = new Placement(
     repos.daemon,
@@ -116,6 +127,18 @@ export function buildDaemonApp(prisma: PrismaClient): DaemonApp {
     PLATFORMS
   )
   const connReg = new ConnectionRegistry()
+  const memberSets = new PgMemberSetRepo(prisma)
+  const placementResolver = new PlacementResolver({
+    duties: new PgDutyGroupRepo(prisma),
+    liveMembers: async (setId) => {
+      const members = new Set(await memberSets.memberIdsOf(setId))
+      return connReg
+        .reachableDaemons()
+        .filter((d) => d.state === 'READY' && members.has(d.daemonId))
+        .map((d) => d.daemonId)
+    },
+    clock
+  })
 
   // Mount the daemon WS gateway once the HTTP server exists (after `listen`).
   let listening = false
@@ -123,12 +146,14 @@ export function buildDaemonApp(prisma: PrismaClient): DaemonApp {
     if (listening) return
     listening = true
     createDaemonWsServer(app, {
+      log: { error: (o, m) => app.log.error(o, m) },
       auth,
       lifecycleOps: repos.daemonLifecycleOp,
       registry,
       orchestrator,
       connReg,
       agent: repos.agent,
+      placementResolver,
       session: repos.session,
       events: new InMemorySessionEventSink(),
       sessionUsage: repos.sessionUsage,
@@ -139,7 +164,8 @@ export function buildDaemonApp(prisma: PrismaClient): DaemonApp {
       collabRoutes: { broadcast: async () => undefined } as unknown as DaemonWsDeps['collabRoutes'],
       dutyLease: {
         onHeartbeat: async () => undefined,
-        release: async () => undefined
+        release: async () => undefined,
+        onRegister: () => undefined
       } as unknown as DaemonWsDeps['dutyLease'],
       cron: repos.cron,
       hook: repos.hook,

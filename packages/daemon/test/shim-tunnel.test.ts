@@ -12,6 +12,7 @@ import { TunnelHost } from '../src/shim/tunnel-host.js'
 import { TunnelProxy } from '../src/shim/tunnel-proxy.js'
 import { K8sApiError } from '@agentconnect.md/k8s-client'
 import type { Sandbox, SandboxClaim } from '../src/k8s/sandbox-api.js'
+import { fakeGenerations } from './fake-generations.js'
 import type { ShimEvent } from '../src/shim/protocol.js'
 import type { TunnelName } from '../src/shim/tunnel.js'
 
@@ -128,6 +129,7 @@ async function clusterWithTunnel(
   const plane = await startK8sRuntimePlane({
     orgId: 'org-1',
     warmPoolName: 'pool',
+    generations: fakeGenerations(),
     sandboxNamespace: 'agent-sandboxes',
     memberId: 'member-a',
     shimPort,

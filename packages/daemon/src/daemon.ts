@@ -6,6 +6,7 @@ import { mkdtemp } from 'node:fs/promises'
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar'
 import { loadConfig, persistDaemonId, persistRelays, type FlatOverrides } from './config/load-config.js'
 import { readCliEntry, runCliUpgrade } from './lifecycle/cli-upgrade.js'
+import { ReadinessGate, readinessSinksFromEnv, readinessState, type ReadinessState } from './readiness.js'
 import { sessionRetentionMs, type Config, type RuntimeDef } from './config/config-schema.js'
 import { discoverAgentsTolerant, type LoadedAgent } from './agents/load-agents.js'
 import { agentChildEnv } from './agents/agent-env.js'
@@ -26,6 +27,7 @@ import {
   transcriptQuoted,
   type InboxRow,
   type OrchestrationRow,
+  type SessionMetadataOutboxRow,
   type SessionPurgeRow,
   type SessionRecord,
   type SubtaskRow,
@@ -35,7 +37,13 @@ import {
   type StoredUsage
 } from './store/local-store.js'
 import { AcpHost, turnFailureCode, turnFailureReason, type AcpPermissionPolicyEvent } from './acp/acp-host.js'
-import { detectSandbox, sandboxBoundary, SandboxError, type SandboxMechanism } from './acp/sandbox.js'
+import {
+  probeSandboxHost,
+  sandboxBoundary,
+  SandboxError,
+  type SandboxMechanism,
+  type SandboxProbe
+} from './acp/sandbox.js'
 import { effectiveRunInSandbox, prepareRuntimeLaunch } from './acp/runtime-launch.js'
 import {
   permissionModeDisplayLabel,
@@ -61,6 +69,7 @@ import { defaultTurnOutputMetrics } from './session/turn-output-metrics.js'
 import { recallQueryFromBlocks } from './agents/memory-recall.js'
 import { maskableSecrets, maskSecretsDeep } from './session/secret-mask.js'
 import { monotonicTs } from './store/monotonic-ts.js'
+import { StoreRetentionSweeper, resolveStoreRetentionSettings } from './store/retention.js'
 import { TranscriptRecorder, type TranscriptEvent } from './session/transcript-recorder.js'
 import { attachmentMention, transcriptImageAttachments } from './session/attachment-block.js'
 import { McpControlServer } from './mcp/control-server.js'
@@ -145,6 +154,7 @@ import {
   slackSharedKey,
   SlackConnection,
   type InteractionActor,
+  type SlackAppFactory,
   type SlackPostOptions,
   type SlackStatusOptions
 } from './slack/connection.js'
@@ -210,21 +220,7 @@ import {
 } from './platforms/slack/turn-output.js'
 import { ChannelNameResolver } from './messages/channel-name-resolver.js'
 import {
-  cleanupStaleWorkspaceClones,
-  clusterWorkspaceCwd,
-  consoleWorkspaceRoot,
-  convergeGithubAppWorkspaceRename,
-  ensureWorkspaceMaterialization,
-  isWorkspaceEmpty,
-  prepareClusterWorkspace,
-  prepareWorkspace,
-  prepareSessionWorkspace,
-  prepareWorkspaceForActivation,
-  resolvePreparedWorkspaceCwd,
-  prefetchWorkspace,
-  removeSessionWorktree,
-  sessionWorktreePath,
-  sessionWorktreeRoot,
+  WorkspaceManager,
   type PrepareSessionWorkspaceRequest,
   type SessionWorktreeRemoval
 } from './workspace/workspace-manager.js'
@@ -252,7 +248,13 @@ import {
   type DiscordComponents
 } from './discord/render.js'
 import { FeishuConverger, type FeishuAction } from './feishu/render.js'
-import { Scheduler, buildSyntheticMessage } from './scheduler/scheduler.js'
+import {
+  Scheduler,
+  buildSyntheticMessage,
+  missedOccurrence,
+  scheduleFingerprint,
+  type ScheduleDefinition
+} from './scheduler/scheduler.js'
 import { DreamScheduler } from './scheduler/dream-scheduler.js'
 import { planChannelIntros, buildIntroMessage } from './agents/channel-intro.js'
 import { buildHookMessage, githubOpensReviewGeneration, hookAnchorText } from './messages/hook-message.js'
@@ -273,11 +275,6 @@ import {
 import { resolveRuntimeCatalog, type ResolvedRuntimeCatalog } from './runtimes/registry.js'
 import { installedRuntimeCatalog, installedRuntimes, resolveCommandPath } from './runtimes/probe.js'
 import { K8S_ORG_ID_ENV, startK8sRuntimePlane, type K8sRuntimePlane } from './k8s/runtime-plane.js'
-import {
-  setSandboxWorkspaceMode,
-  setWorkspaceGitRunnerResolver,
-  setWorkspacePathClearer
-} from './workspace/workspace-manager.js'
 import { initiatorLabel } from './workspace/session-branch.js'
 import { declaredRuntimeCatalog, loadK8sRuntimeTable, type K8sRuntimeAcpSnapshot } from './runtimes/k8s-runtimes.js'
 import { ensureNodeBinOnPath } from './runtimes/exec-path.js'
@@ -309,6 +306,7 @@ import { nodeExecArgvModuleEntries } from './runtimes/node-exec-argv.js'
 import { makeLogger, type Logger } from './log.js'
 import { CpClient, CP_SUBPROTOCOL, CP_WS_PATH, type BootstrapUpgradeOutcome } from './cp/client.js'
 import { RelayManager } from './cp/relay-manager.js'
+import { sendAgentMsgUntilReady } from './cp/agentmsg-retry.js'
 import { CP_IDENTITY_TOKEN_PATH, readClusterIdentityToken } from './cp/cluster-identity.js'
 import { CpCollabRoutes, isSyntheticA2aChannel } from './cp/cp-collab-routes.js'
 import { ClientTransport, systemClock, type Clock, type TimerHandle } from '@agentconnect.md/connection'
@@ -322,6 +320,7 @@ import {
   HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED,
   HookReport,
   CP_URL_ENV,
+  POD_TEMPLATE_HASH_ENV,
   RELAY_DAEMON_SUBPROTOCOL,
   RELAY_DAEMON_WS_PATH,
   RESERVED_RESTART_CODE,
@@ -337,6 +336,7 @@ import {
   MAX_TASK_DETAIL,
   MAX_TASK_LIST_TASKS,
   TASK_LIST_FEATURE,
+  AGENT_WAKE_FEATURE,
   WORKSPACE_GIT_MESSAGE_FEATURE,
   WORKSPACE_GIT_REVIEW_FEATURE,
   WORKSPACE_GIT_WRITE_FEATURE,
@@ -347,6 +347,7 @@ import {
   WireFeishuCardActionEvent,
   gitRepoLabel,
   hasReachedAgentCallHopLimit,
+  RD_AGENTMSG_NOT_READY,
   normalizeGitCloneUrl,
   normalizeGithubRepoUrl,
   MAX_AGENT_CALL_HOPS,
@@ -359,6 +360,7 @@ import {
 import { isNoResponseBody, isNoResponsePrefix } from './session/no-response.js'
 import { createSessionReader } from './cp/session-reader.js'
 import { createWorkspaceReader, WorkspaceConflictError, type WorkspaceLocation } from './cp/workspace-reader.js'
+import { createAgentWaker } from './cp/agent-wake.js'
 import { TaskViolationError } from './cp/task-reader.js'
 import { createMemoryReader } from './cp/memory-reader.js'
 import {
@@ -370,11 +372,12 @@ import {
   type MemoryScope,
   type PreparedExternalMemoryCapture
 } from './agents/memory-provider.js'
-import { memoryChannelKey } from './agents/memory.js'
+import { memoryChannelKey, MemorySandboxUnavailableError, type MemoryFs } from './agents/memory.js'
+import { resolveMemoryFs } from './agents/memory-fs.js'
 import { createWorkspaceGit } from './cp/workspace-git.js'
 import { DAEMON_VERSION } from './version.js'
 import { CpCronRegistry } from './cp/cp-cron.js'
-import { DutyRegistry } from './cp/duty-registry.js'
+import { DutyRegistry, type DutyApplyResult } from './cp/duty-registry.js'
 import { CpAgentRegistry } from './cp/cp-agent-registry.js'
 import {
   agentRemovalTombstones,
@@ -391,8 +394,9 @@ import { CpIntegrationRegistry } from './cp/cp-integration-registry.js'
 import { CpMcpDefs } from './mcp/cp-mcp-defs.js'
 import { CpMemoryConnectionRegistry, type MemoryPluginConnector } from './cp/memory-connection-registry.js'
 import { MemoryCaptureOutbox } from './memory-plugin/outbox.js'
+import { managedDistillCapture, withManagedDistill } from './agents/managed-distill-outbox.js'
 import { defaultMemoryPluginMetrics } from './memory-plugin/metrics.js'
-import { openMountedPostgresDataPlane, type PostgresDataPlane } from './store/postgres-transcript-store.js'
+import { openMountedPostgresDataPlane, type PostgresDataPlane } from './store/postgres-data-plane.js'
 import {
   EvaluationCapabilityProfileSchema,
   EvaluationEventEmitter,
@@ -506,7 +510,9 @@ import type {
   ChannelAgentsOk,
   TaskList,
   TaskListReq,
+  DutyAgentBundle,
   DutyGrantEntry,
+  DutyMemberRef,
   DutyRevoke,
   HeartbeatDuties
 } from '@agentconnect.md/protocol'
@@ -798,11 +804,6 @@ const SESSION_RETENTION_SWEEP_INTERVAL_MS = 60 * 60_000
  *  which sits far under the frame budget (a batch of ACP ids is tiny). */
 const MAX_SESSION_PURGE_BATCH = 200
 
-/** How long an unacknowledged retention-GC receipt is retained. Bounds the outbox
- *  for a daemon that never reaches a CP new enough to accept the report; well past
- *  any realistic outage or upgrade lag, and the drop is logged, never silent. */
-const SESSION_PURGE_RECEIPT_TTL_MS = 30 * 24 * 3_600_000
-
 // Last-resort feedback-loop protection. The lower automatic threshold catches
 // agent/system/platform-echo chains; the higher all-turn threshold still stops a
 // platform bug that accidentally labels its own events as ordinary human messages.
@@ -816,9 +817,24 @@ const MAX_TOTAL_TURNS_PER_WINDOW = 60
 // would turn a long outage into a memory/socket fan-out spike.
 const MAX_HOOK_REPORT_INFLIGHT = 100
 
-/** Backoff after a session-metadata persistence request fails while the socket
- * remains READY. Reconnect also kicks the durable drain immediately. */
+/** The daemon whose dispatch the CP accepts this report from — the outbox row's owner.
+ *  On a pool's shared store that is the only member allowed to release its body. */
+function hookReportOwner(report: HookReport, daemonId?: string): string | undefined {
+  return report.dispatchDaemonId ?? daemonId
+}
+
+/** True when the CP can only be answering about a peer's dispatch. Unproven ownership
+ *  counts as foreign: keeping a report body is always recoverable, nulling it is not. */
+function foreignHookDispatch(report: HookReport, daemonId?: string): boolean {
+  return report.dispatchDaemonId !== undefined && report.dispatchDaemonId !== daemonId
+}
+
+/** Backoff after a session-metadata persistence failure while the socket remains READY. */
 const SESSION_METADATA_RETRY_MS = 5_000
+const SESSION_METADATA_FAILURES_BEFORE_DEFER = 5
+const SESSION_METADATA_DEFER_MS = 5 * 60_000
+// A snapshot this member cannot scope waits this long before it is offered again.
+const SESSION_METADATA_PARK_MS = 60_000
 
 /** Connectable when there is a URL and a credential: an API key, or — in-cluster — the
  *  projected ServiceAccount token this pod presents instead of one. */
@@ -960,6 +976,10 @@ const AGENT_CALL_HOP_LIMIT_NOTICE = `Agent conversation stopped after reaching t
  */
 const ACTIVATION_PAIRING_TTL_MS = 10 * 60 * 1000
 
+/** Composite-key separator for the activation rendezvous. NOT NUL: these keys and their
+ *  transcript coordinates are stored, and the pool store is PostgreSQL, whose TEXT rejects 0x00. */
+const ACTIVATION_KEY_SEPARATOR = '\u001f'
+
 /**
  * The key that makes one logical delivery admissible exactly once
  * (send-message-routing-rework.md §3.2).
@@ -974,7 +994,7 @@ function activationKey(
   platformMessageId: string,
   targetAgentId: string
 ): string {
-  return [platform, transportScope ?? '', platformMessageId, targetAgentId].join('\u0000')
+  return [platform, transportScope ?? '', platformMessageId, targetAgentId].join(ACTIVATION_KEY_SEPARATOR)
 }
 
 /** The platform `ts` inside a Slack `msgId` (`slack:<channel>:<ts>`). The ts — not the
@@ -1116,6 +1136,11 @@ interface CallMeta {
 }
 
 type TurnInterruptReason = 'pause' | 'loop protection' | 'stop' | 'cancel' | 'shutdown' | 'superseded'
+
+/** What an interrupt means for the agent's admitted-but-unrun durable rows. `reason` cannot say
+ *  it: removal and a duty handoff are both `stop`. `terminal` ends that work here (pause, removal,
+ *  host respawn); `handoff` leaves the rows for the successor holder to replay (#1050). */
+type TurnInterruptDisposition = 'terminal' | 'handoff'
 
 /** One durable loop-guard scope shared by every agent on one physical bot.
  *  DMs are keyed at channel level because malformed platform wrappers may lose
@@ -1533,6 +1558,9 @@ interface QueueEntry {
   /** The live inbox row was redacted into a durable terminal HookReport
    * receipt; removeInbox must retain it for restart-safe redelivery dedup. */
   hookTerminalReceipt?: boolean
+  /** A duty handoff released this row to the successor holder instead of ending it, so the
+   *  entry's later terminal settle must not delete it either (#1050). */
+  inboxHandedOff?: boolean
 }
 
 interface GithubQueueCandidate {
@@ -1907,7 +1935,23 @@ function pendingSessionKey(p: Pending): SessionKey {
 registerThreadPromotion(discordThreadPromotion)
 registerObservedChannels(discordObservedChannels)
 
+/** One shutdown duty drain: its bound, its counters, and the grants that landed after the latch. */
+interface ShutdownDutyDrain {
+  deadlineAt: number
+  stats: { groups: number; agents: number; late: number; acked: number; lapsing: number }
+  /** Grants that landed after the latch: never installed, never acknowledged before the loop is done. */
+  late: Map<string, DutyGrantEntry>
+  /** Agents of groups the loop left to lapse — a late grant covering any of them lapses too. */
+  lapsedAgents: Set<string>
+  /** Set once the main loop has finished with every held group. */
+  loopDone: boolean
+}
+
 export class Daemon {
+  // This daemon's workspace execution plane. Owned per instance, so two daemons in one process
+  // (the test suite, and a k8s daemon beside a local one) cannot inherit each other's git runner,
+  // path clearer or sandbox mode — which is what a module-level plane silently did.
+  readonly workspaces = new WorkspaceManager()
   private readonly evaluation: EvaluationEventEmitter
   private readonly evaluationProfile: EvaluationCapabilityProfile
   private store!: LocalStore
@@ -1918,30 +1962,31 @@ export class Daemon {
   // runtime's own memory redirected under the private runtime HOME only while the
   // agent runs in the sandbox). Backs the memory MCP tools, the session-start index
   // injection, and the CP console's memory reads.
-  private memory: DispatchingMemoryProvider = createMemoryProvider(
-    (id) => {
+  private memory: DispatchingMemoryProvider = createMemoryProvider({
+    memoryFsFor: (id) => this.memoryFsFor(id),
+    agentDirByAgent: (id) => {
       const agent = this.agents.get(id)
       if (!agent) return undefined
       return memoryKindOf(agent) === 'native' && this.agentRunsInSandbox(agent) ? runtimeHomePath(agent.dir) : agent.dir
     },
-    (id) => {
+    runtimeFor: (id) => {
       const a = this.agents.get(id)
       return a ? this.runtimes[a.runtime] : undefined
     },
-    (id) => {
+    providerKindFor: (id) => {
       const a = this.agents.get(id)
       return a ? memoryKindOf(a) : 'managed'
     },
-    (id) => {
+    autoDistillFor: (id) => {
       const memory = this.agents.get(id)?.memory
       return memory?.provider !== 'external' && memory?.autoDistill === true
     },
-    (id, prompt) => this.runMemoryExtraction(id, prompt),
-    (id) => {
+    extract: (id, prompt) => this.runMemoryExtraction(id, prompt),
+    externalBindingFor: (id) => {
       const binding = this.agents.get(id)?.memory
       return binding?.provider === 'external' ? binding : undefined
     },
-    {
+    externalDeps: {
       registry: {
         connectionIds: () => this.memoryConnections?.connectionIds() ?? [],
         clientFor: (connectionId) => this.memoryConnections?.clientFor(connectionId),
@@ -1956,7 +2001,7 @@ export class Daemon {
         }
       }
     }
-  )
+  })
   /** Provider-neutral serialized post-turn work. Managed distills; external enqueues capture. */
   private memoryPostTurnChains = new Map<string, Promise<void>>()
   private memoryExtractionCollectors = new Map<string, MemoryExtractionCollector>()
@@ -2171,10 +2216,47 @@ export class Daemon {
   // rendezvous claims cannot read the same capacity and collectively overshoot,
   // and a drain joins them so none can settle after `drain/done`.
   private readonly inFlightDutyClaims = new Set<Promise<unknown>>()
+  // Installs in flight per granted agent. The EVT path fires one and the
+  // rendezvous claim awaits one for the SAME grant, so both must join a single
+  // fetch+apply rather than race two of them.
+  private readonly dutyInstalls = new Map<string, Promise<void>>()
+  // Admissions in flight: groupId → the admission that owns it. Deadline tracking and every
+  // withdrawal are synchronous while admission is deliberately not, so this mark is what lets a
+  // withdrawal landing mid-admission win — and what tells the fence that a group absent from the
+  // digest is still intended to be held.
+  private readonly dutyAdmissions = new Map<string, number>()
+  private dutyAdmissionSeq = 0
+  // When each agent's install last failed. A dropped group is regranted on the
+  // next beat, so without this a permanently failing agent would be re-fetched
+  // once per regrant AND once per inbound trigger that claims its group.
+  private readonly dutyInstallFailures = new Map<string, number>()
+  // Retry window for a failed duty install: the default heartbeat cadence, which
+  // is how fast the CP's missing-regrant path can offer the group back.
+  private static readonly DUTY_INSTALL_RETRY_MS = 15_000
+  // Backoff for retrying the platform convergence a duty change needs, when the reconcile that
+  // carries it throws. It doubles to a slow poll and never gives up: the state it exists to leave
+  // is a fenced agent whose sockets are still open.
+  private static readonly DUTY_CONVERGE_RETRY_BASE_MS = 1_000
+  private static readonly DUTY_CONVERGE_RETRY_CAP_MS = 30_000
   // Latched for the WHOLE drain handoff, including the window after `draining`
   // reopens and before the leases are surrendered — a claim landing there would
   // install a grant the release snapshot has already passed by.
   private dutyClaimsSuspended = false
+  // Set by stop() only — never by a CP-commanded rebalance drain, which reopens. Rides the digest as
+  // `draining` so the CP stops granting to this member (sticky for the registration), and turns the
+  // shutdown into a duty drain: hold and serve until each group's turns settle, then release it.
+  private shutdownDraining = false
+  // Kubernetes readiness (#1043): the two sinks a pod probe reads, and the one fact only this
+  // member knows — that the install-wide sandbox runtime probe came back.
+  private readiness?: ReadinessGate
+  private k8sRuntimeProbed = false
+  private startupComplete = false
+  // The shutdown duty drain in progress: its deadline, its counters, and the release of every grant
+  // that landed after the latch, so the summary and `stop()` can wait for all of them.
+  private shutdownDutyDrain?: ShutdownDutyDrain
+  // The tail of the pool drain budget kept for the acknowledged releases themselves — a turn that
+  // would run into it is cancelled so the releases still land inside `poolShutdownDrainMs`.
+  private static readonly DUTY_RELEASE_RESERVE_MS = 30_000
   private scheduler!: Scheduler
   private dreamScheduler!: DreamScheduler
   private sessions!: SessionManager
@@ -2230,6 +2312,9 @@ export class Daemon {
   // per-agent requests are ineffective; security.requireSandbox refuses startup
   // (including on unsupported macOS/Windows hosts).
   private sandboxMechanism: SandboxMechanism | undefined
+  // The same detection, with the provider's failure text kept for the startup
+  // preflight log. undefined when this daemon never probes (--k8s, injected null).
+  private readonly sandboxProbe: SandboxProbe | undefined
   // `--k8s`: this daemon supervises runtimes in sandbox pods instead of local
   // subprocesses, so every "daemon and runtime share one machine" behavior is off.
   private readonly k8s: boolean
@@ -2403,6 +2488,7 @@ export class Daemon {
   private hostStopping = new Map<string, Promise<void>>()
   // Recurring idle sweep (reap idle hosts + TTL-close idle sessions).
   private idleSweepTimer?: TimerHandle
+  private storeRetentionTimer?: TimerHandle
   // Last probe-temp-root reclaim, so it rides the idle sweep at its own slower
   // cadence — the OS temp dir can hold thousands of entries to scan.
   private lastProbeRootSweepAt = 0
@@ -2414,10 +2500,12 @@ export class Daemon {
   // Single-flight for the purge-receipt drain (#485): the sweep and a CP reconnect
   // can both trigger it, and each batch awaits a correlated ACK.
   private sessionPurgeDrainInFlight = false
+  private sessionPurgeDrainRerun = false
   // One-at-a-time durable session metadata sync. Sequential ACKs provide natural
   // CP/DB backpressure after an outage; the promise is joined during shutdown.
   private sessionMetadataDrain?: Promise<void>
   private sessionMetadataRetryTimer?: TimerHandle
+  private sessionMetadataRetryAt?: number
   // §7.3 force-cancel backstops, keyed by (agentId, acpSessionId); cleared at turn end.
   private cancelTimers = new Map<string, TimerHandle>()
   // Backstop for an interrupt that lands before a Pending/ACP session id exists
@@ -2432,6 +2520,11 @@ export class Daemon {
   private hookReportRetryTimer?: TimerHandle
   private transcriptActivityTimers = new Map<string, { timer: TimerHandle; activity: SessionActivity }>()
   private readonly hookReportInflight = new Set<string>()
+  /** The one home for row retention across every store table (store/retention.ts). */
+  private storeRetention!: StoreRetentionSweeper
+  // Outbox rows this member proved it may not report — a peer owns the dispatch,
+  // or the receipt is unreleasable here. Kept out of the drain for this process.
+  private readonly hookReportForeign = new Set<string>()
   // A timer callback may already be inside conn.start() when an agent detaches.
   // Track those runs so detach can await them and prevent a stale socket from
   // appearing after its strict close pass has ACKed.
@@ -2444,6 +2537,9 @@ export class Daemon {
       overrides?: FlatOverrides
       agentName?: string
       hostFactory?: (agent: Agent, onUpdate: (sid: string, u: any) => void) => AcpHost
+      /** Builds the Slack app each connection drives. Injected by tests ONLY — unset, connections
+       * build the real client and reach slack.com, which is not something a unit suite should need. */
+      slackAppFactory?: SlackAppFactory
       /** Explicit test/evaluation-only Dream bypass. It is honored only with an
        * injected hostFactory, never by the production CLI/config surface. */
       dreamOperationPolicy?: DreamOperationPolicy
@@ -2472,7 +2568,7 @@ export class Daemon {
       startK8sPlane?: typeof startK8sRuntimePlane
       /** Test seam only; production `--k8s` always reads the fixed Secret mount. */
       openDataPlane?: typeof openMountedPostgresDataPlane
-      /** Test seam for the cloud startup barrier; production waits for CP register/ok. */
+      /** Test seam for the pool member startup barrier; production waits for CP register/ok. */
       startControlPlane?: (root: string) => Promise<void> | undefined
       /** Test seams for local catalog resolution and executable/state filtering. */
       resolveCatalog?: typeof resolveRuntimeCatalog
@@ -2501,8 +2597,13 @@ export class Daemon {
     this.clusterIdentityToken = this.k8s && readClusterIdentityToken() ? () => readClusterIdentityToken() : undefined
     // A k8s runtime is isolated by its own pod, so the in-process SRT mechanism is
     // not part of that shape — it stays off even if this host happens to support it.
-    this.sandboxMechanism =
-      opts.sandboxMechanism === null || this.k8s ? undefined : (opts.sandboxMechanism ?? detectSandbox())
+    this.sandboxProbe =
+      opts.sandboxMechanism === null || this.k8s
+        ? undefined
+        : opts.sandboxMechanism
+          ? { mechanism: opts.sandboxMechanism }
+          : probeSandboxHost()
+    this.sandboxMechanism = this.sandboxProbe?.mechanism
     this.clock = opts.clock ?? systemClock
     this.modelKeyNow = opts.clock ? () => this.clock.now() : () => performance.timeOrigin + performance.now()
     this.staticModelCredential = this.k8s ? configuredModelCredential(process.env) : undefined
@@ -2539,6 +2640,19 @@ export class Daemon {
       ttlMs: Daemon.PROBE_TTL_MS
     })
     this.requestExit = opts.requestExit ?? ((code) => process.exit(code))
+  }
+
+  /** Say what the boot probe found: missing SRT dependencies silently run agents unconfined AND fail every managed-skill install (#956). */
+  private logSandboxPreflight(): void {
+    // Linux-only: macOS/Windows have no mechanism by design, and --k8s isolates by pod.
+    if (this.k8s || process.platform !== 'linux' || !this.sandboxProbe) return
+    if (this.sandboxProbe.mechanism) {
+      this.log.info(`sandbox: ${this.sandboxProbe.mechanism} ready`)
+      return
+    }
+    this.log.warn(
+      `sandbox: unavailable — ${this.sandboxProbe.reason || 'the live SRT probe failed'}; agents run unconfined and managed skills cannot be installed. Install bwrap, socat, and rg on the daemon's own PATH (PATH=${process.env.PATH ?? ''})`
+    )
   }
 
   private emitEvaluation(input: EvaluationEventInput): void {
@@ -2868,6 +2982,10 @@ export class Daemon {
   }
 
   async start(): Promise<void> {
+    // FIRST, before any await that can block for as long as the control plane is down: the file
+    // sink clears its marker here, and a marker on a mounted path outlives the container that
+    // wrote it — left in place, `test -f` would call an unregistered replacement ready.
+    if (this.k8s || this.opts.supervisor === K8S_SUPERVISOR) await this.startReadinessGate()
     // A service-installed daemon normally arrives through the CLI run shell's
     // login-shell launch with a full user env (cli service-spawn.ts). This is
     // the backstop for legacy direct-ExecStart units and bare docker runs:
@@ -2884,6 +3002,7 @@ export class Daemon {
     })
     this.cfg = cfg
     configureWorkspaceGitOrigins(cfg.security.workspaceGitAllowedOrigins)
+    this.logSandboxPreflight()
     if (cfg.security.requireSandbox && !this.sandboxMechanism) {
       throw new Error(
         this.k8s
@@ -2908,7 +3027,7 @@ export class Daemon {
       // daemon cannot read its own grace period (it has no pod read), so it states the
       // number it will actually use and leaves the alignment to the deployment.
       this.log.info(
-        `k8s: shutdown drain deadline ${Math.round(cfg.limits.shutdownDrainMs / 1000)}s — ` +
+        `k8s: shutdown drain deadline ${Math.round(cfg.limits.poolShutdownDrainMs / 1000)}s — ` +
           `terminationGracePeriodSeconds must exceed it; supervisor=${this.opts.supervisor ?? 'unset'}` +
           `${this.opts.supervisor === K8S_SUPERVISOR ? '' : ' (restart requires AGENTCONNECT_SUPERVISOR=k8s)'}`
       )
@@ -2918,6 +3037,9 @@ export class Daemon {
       const startPlane = this.opts.startK8sPlane ?? startK8sRuntimePlane
       try {
         this.k8sPlane = await startPlane({
+          // The data plane opened above, so launch generations are counted in state every pool
+          // member shares — a per-process counter restarts at 1 and the agent's pod refuses it.
+          generations: this.dataPlane!.store,
           orgForAgent: (agentId) => this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId),
           // Which sockets this agent's pod needs, and where this daemon serves them. A GitHub-App
           // workspace is the one case today: its git reaches the credential helper over a unix
@@ -2927,6 +3049,8 @@ export class Daemon {
           tunnelsFor: (agentId) =>
             this.agents.get(agentId)?.workspace.gitCredential === 'github-app' ? ['gitcred'] : [],
           tunnelSocketPath: (tunnel) => (tunnel === 'gitcred' ? gitcredSocketPath(root) : undefined),
+          // A bound sandbox is a reachable memory tree: drain any managed capture that waited for it.
+          onSandboxBound: () => this.memoryOutbox?.wake(),
           log: {
             info: (message) => this.log.info(message),
             warn: (message) => this.log.warn(message),
@@ -2941,13 +3065,13 @@ export class Daemon {
       // Workspace git then runs where the workspace actually is. Registered for ALL agents; the
       // resolver answers undefined for any without a bound channel, so an agent this daemon has
       // not launched into a sandbox keeps its local behaviour.
-      setWorkspaceGitRunnerResolver((agentId, cwd, abort) => this.k8sPlane?.gitRunnerFor(agentId, cwd, abort))
+      this.workspaces.setGitRunnerResolver((agentId, cwd, abort) => this.k8sPlane?.gitRunnerFor(agentId, cwd, abort))
       // And the one destructive operation a cluster workspace needs, for the same reason: a
       // partial clone sits on a volume no `rmSync` here can reach.
-      setWorkspacePathClearer((agentId, root) => this.k8sPlane!.clearPath(agentId, root))
+      this.workspaces.setPathClearer((agentId, root) => this.k8sPlane!.clearPath(agentId, root))
       // And the mode itself, which decides what workspace operations are available at all: an
       // in-place conversion has no pod-side implementation of its rollback contract.
-      setSandboxWorkspaceMode(true)
+      this.workspaces.setSandboxMode(true)
       this.log.info('k8s: execution plane ready — daemon-to-sandbox shim dialing enabled')
     }
     // Sandbox-optional principle (#36): skills are NOT force-sandboxed fleet-wide.
@@ -3059,7 +3183,7 @@ export class Daemon {
     for (const agent of discoveredAgents) {
       if (!this.removedAgentTombstones.has(agent.id)) {
         try {
-          const removed = cleanupStaleWorkspaceClones(agent)
+          const removed = this.workspaces.cleanupStaleWorkspaceClones(agent)
           if (removed > 0) {
             this.log.info(`workspace: removed ${removed} stale conversion clone(s) for agent "${agent.id}"`)
           }
@@ -3111,7 +3235,7 @@ export class Daemon {
           }
         })()
       : this.k8s
-        ? this.declaredCloudCatalog(root, resolvedCatalog)
+        ? this.declaredPoolCatalog(root, resolvedCatalog)
         : installedRuntimeCatalog(resolvedCatalog)
     const { runtimes: installed, entries: installedEntries } = installedCatalog
     this.runtimeCatalog = installedCatalog
@@ -3147,10 +3271,52 @@ export class Daemon {
 
     this.store = this.dataPlane?.store ?? new LocalStore(statePath(root))
     this.store.setTranscriptMutationListener((mutation) => this.scheduleSessionActivity(mutation))
-    this.memoryOutbox = new MemoryCaptureOutbox(this.store, this.memoryConnections, {
-      log: { warn: (message) => this.log.warn(message) }
+    // Every table's row retention, from one rule table. This member owns the cache rows it
+    // stamped, so a peer's are reclaimed on the shorter window; no control-plane read here.
+    this.storeRetention = new StoreRetentionSweeper({
+      store: this.store,
+      settings: resolveStoreRetentionSettings(),
+      ownerId: this.store.cacheOwner,
+      clock: this.clock,
+      log: { info: (m) => this.log.info(m), warn: (m) => this.log.warn(m) }
     })
+    // The pump also drains a cluster agent's managed distillation once its sandbox is bound again —
+    // a turn captured after the pod was suspended waits here rather than being lost.
+    this.memoryOutbox = new MemoryCaptureOutbox(
+      this.store,
+      withManagedDistill(this.memoryConnections, {
+        agentIds: () =>
+          [...this.agents.values()]
+            .filter(
+              (agent) => memoryKindOf(agent) === 'managed' && (!this.dutyEnforced() || this.duties.holdsAgent(agent.id))
+            )
+            .map((agent) => agent.id),
+        reachable: (agentId) => !this.k8sPlane || this.k8sPlane.runsInSandbox(agentId),
+        distill: async (agentId, turn) => {
+          const agent = this.agents.get(agentId)
+          if (!agent) throw new Error(`unknown agent ${agentId}`)
+          await this.memory.recordTurnForBinding(
+            {
+              ...this.memoryScopeForSession(agentId, turn.sessionId ?? ''),
+              ...(turn.sessionId ? { sessionId: turn.sessionId } : {})
+            },
+            {
+              turnId: turn.turnId,
+              ...(turn.sessionId ? { sessionId: turn.sessionId } : {}),
+              input: turn.input,
+              output: turn.output
+            },
+            agent.memory
+          )
+        }
+      }),
+      { log: { warn: (message) => this.log.warn(message) } }
+    )
     this.memoryOutbox.start()
+    // Retention runs BEFORE the hydrate below, and synchronously, because the hydrate reads the
+    // model-catalog cache: a catalog past its window must already be gone, or this member boots
+    // advertising models it has not seen in a month.
+    this.storeRetention.sweepAgeOnly()
     // Model-catalog cache: synchronous last-good hydrate BEFORE the CP client
     // starts, so the register-time facts snapshot already carries models + the
     // capability matrix instead of blanking the CP until the sweep completes.
@@ -3434,7 +3600,7 @@ export class Daemon {
       // like post-turn distillation). Resolved from trusted session coords at call
       // time so a policy change takes effect for an already-running ACP session.
       memoryAccessAllowed: (ctx, mode) =>
-        mode === 'read' || !this.store.isCaptureExcluded(this.acpSessionIdForToolCall(ctx)),
+        mode === 'read' || !this.store.isCaptureExcluded(ctx.agentId, this.acpSessionIdForToolCall(ctx)),
       memoryScope: (ctx) => this.memoryScope(ctx.agentId, ctx.channel, ctx.transportScope),
       recordOutbound: (ctx, channel, thread, text, ts, integrationId) =>
         this.store.appendTranscript({
@@ -3456,6 +3622,10 @@ export class Daemon {
     )
 
     this.sessions = new SessionManager({
+      // THIS daemon's plane. Omitting it hands the manager a local-mode one, and
+      // `additionalWorkspaceDirectories` would then `realpathSync` a `--k8s` workspace's pod-side
+      // cwd against this filesystem — failing session create/load before the runtime call.
+      workspaces: this.workspaces,
       memoryScopeFor: (agentId, msg, integrationId) =>
         this.memoryScope(
           agentId,
@@ -3478,8 +3648,8 @@ export class Daemon {
       // the channel (and with it the pod's reported mount) has already bound.
       resolvePreparedWorkspace: (agent) =>
         this.k8sPlane
-          ? clusterWorkspaceCwd(agent, this.k8sPlane.workspaceRootFor(agent.id))
-          : resolvePreparedWorkspaceCwd(agent),
+          ? this.workspaces.clusterWorkspaceCwd(agent, this.k8sPlane.workspaceRootFor(agent.id))
+          : this.workspaces.resolvePreparedWorkspaceCwd(agent),
       memory: this.memory,
       onMemoryRecallError: (agentId, error) =>
         this.log.warn(
@@ -3611,11 +3781,11 @@ export class Daemon {
     // Install synthetic evaluation integrations before routing observes them; they never open sockets.
     this.installEvaluationEnvironment()
     const startControlPlane = this.opts.startControlPlane ?? ((cpRoot: string) => this.startCpClient(cpRoot))
-    const cloudCpReady = this.k8s ? startControlPlane(root) : undefined
-    if (this.k8s && !cloudCpReady)
+    const poolCpReady = this.k8s ? startControlPlane(root) : undefined
+    if (this.k8s && !poolCpReady)
       throw new Error('daemon startup refused: --k8s requires an authoritative CP organization registry')
-    if (cloudCpReady) this.log.info('data-plane: waiting for the initial CP organization registry before ingress')
-    await cloudCpReady
+    if (poolCpReady) this.log.info('data-plane: waiting for the initial CP organization registry before ingress')
+    await poolCpReady
     if (this.k8s) {
       this.store.recoverPermissionRequests(
         (this.cpAgents?.agents() ?? []).map((agent) => agent.id),
@@ -3626,22 +3796,25 @@ export class Daemon {
     if (groups.size === 0) this.log.info('slack: no slack integrations configured')
     else this.log.info(`slack: opening ${groups.size} socket connection(s)`)
     for (const group of groups.values()) {
-      const conn: SlackConnection = new SlackConnection({
-        group,
-        newTraceId: () => randomUUID(),
-        onMessage: (msg) => {
-          this.nameResolver?.noteMessage(conn, msg)
-          this.onInbound(msg, this.srcIntegrationIds(conn))
+      const conn: SlackConnection = new SlackConnection(
+        {
+          group,
+          newTraceId: () => randomUUID(),
+          onMessage: (msg) => {
+            this.nameResolver?.noteMessage(conn, msg)
+            this.onInbound(msg, this.srcIntegrationIds(conn))
+          },
+          onChannelsChanged: () => void this.refreshChannels(conn),
+          onMessageShortcut: (shortcut) => this.slackShortcutSession(shortcut, this.srcIntegrationIds(conn)),
+          onStatusAction: (a) => this.handleStatusAction(a),
+          onStatusInfo: (key) => this.statusInfoForKey(key),
+          onPermissionChoice: (a) => this.handlePermissionChoice(a),
+          onElicitChoice: (a) => this.handleElicitChoice(a),
+          log: this.log,
+          boltDebug: cfg.logging.level === 'debug' || cfg.logging.level === 'trace'
         },
-        onChannelsChanged: () => void this.refreshChannels(conn),
-        onMessageShortcut: (shortcut) => this.slackShortcutSession(shortcut, this.srcIntegrationIds(conn)),
-        onStatusAction: (a) => this.handleStatusAction(a),
-        onStatusInfo: (key) => this.statusInfoForKey(key),
-        onPermissionChoice: (a) => this.handlePermissionChoice(a),
-        onElicitChoice: (a) => this.handleElicitChoice(a),
-        log: this.log,
-        boltDebug: cfg.logging.level === 'debug' || cfg.logging.level === 'trace'
-      })
+        this.opts.slackAppFactory
+      )
       this.log.info(
         `slack: connecting (${group.integrations.length} integration(s): ${group.integrations.map((i) => i.agentId).join(', ')})…`
       )
@@ -3714,7 +3887,7 @@ export class Daemon {
       .on('unlink', debounced)
     this.log.info(`watching ${this.agentsDir} for agent changes`)
     this.replayInbox()
-    this.rearmOrchestrationDeadlines()
+    this.syncOrchestrationDeadlines()
     // #485 startup retention pass: reconcile what accumulated (or was orphaned by a
     // crash) while the daemon was down. Best-effort — never blocks readiness. Runs
     // AFTER replayInbox so replayed durable work is visible to its active-turn guard.
@@ -3727,6 +3900,9 @@ export class Daemon {
     void this.probeRuntimesAndEmit(false).finally(() => this.armRuntimeProbeRefresh())
     if (!this.k8s) startControlPlane(root)
     this.armIdleSweep()
+    this.armStoreRetentionSweep()
+    this.startupComplete = true
+    this.readiness?.refresh()
     this.log.info('daemon ready')
   }
 
@@ -3837,8 +4013,15 @@ export class Daemon {
    */
   private reconcileRun?: Promise<void>
   private reconcilePending = false
-  // Register snapshots publish agents before integrations. Carry newly-owned
-  // inbox rows across coalesced passes and retry only after convergence is idle.
+  // A duty change moves no agent FILE, so the agent diff is empty and platform convergence would
+  // be skipped — while the serving gate it feeds (`transportAgents`) has just changed. Counters,
+  // not a flag: a pass claims the requested value and publishes it only once the sockets are
+  // actually converged, so neither a failed pass nor a duty change landing mid-pass is lost.
+  private dutyConnectionsRequested = 0
+  private dutyConnectionsConverged = 0
+  private dutyConvergeRetryTimer?: TimerHandle
+  // Register snapshots publish agents before integrations. Carry newly-owned (installed or
+  // duty-gained) inbox rows across coalesced passes and replay only after convergence is idle.
   private readonly pendingInboxReplayAgents = new Set<string>()
   async reconcile(): Promise<void> {
     if (this.reconcileRun) {
@@ -3863,6 +4046,11 @@ export class Daemon {
   }
 
   private async runReconcile(): Promise<void> {
+    // CLAIMED, not consumed: the request is marked satisfied only where the sockets actually
+    // converge. This pass can throw at a dozen places before it reaches the platform layer, and a
+    // fence whose sockets are still open must not be forgotten because one reconcile failed.
+    const dutyClaimed = this.dutyConnectionsRequested
+    const dutyDirty = dutyClaimed !== this.dutyConnectionsConverged
     const snapshot = this.loadAgentList(true)
     const files = snapshot.agents
     const nextFileAgents = new Map(files.map((a) => [a.id, a]))
@@ -3936,7 +4124,7 @@ export class Daemon {
         this.drainingAgents.delete(id)
       }
     }
-    let connectionsDirty = toStart.length > 0 || toStop.length > 0
+    let connectionsDirty = dutyDirty || toStart.length > 0 || toStop.length > 0
     for (const change of toChange) {
       const a = change.agent
       const previous = this.agents.get(a.id)
@@ -3961,7 +4149,7 @@ export class Daemon {
       if (change.workspaceRepoRename) {
         try {
           await this.enqueueAgentWorkspacePreparation(a as LoadedAgent, () =>
-            convergeGithubAppWorkspaceRename(a as LoadedAgent)
+            this.workspaces.convergeGithubAppWorkspaceRename(a as LoadedAgent)
           )
         } catch (err) {
           workspaceNeedsColdRecovery = true
@@ -4044,6 +4232,10 @@ export class Daemon {
       await this.reconcileTelegramConnections()
       await this.reconcileDiscordConnections()
       await this.reconcileFeishuConnections()
+      // Converged for real: the sockets a duty change invalidated are closed. Publishing the
+      // CLAIMED value (not the current one) leaves a duty change that landed mid-pass outstanding,
+      // so the trailing re-run still converges it.
+      if (dutyDirty) this.dutyConnectionsConverged = dutyClaimed
     }
     // The live roster just changed shape — re-announce any agent-derived register
     // capabilities. No-op when nothing changed. Optional call: tests inject
@@ -4260,22 +4452,25 @@ export class Daemon {
       // New appToken: open an isolated socket (tier 2). Guard so a bad token logs
       // and leaves existing sockets intact instead of throwing out of reconcile.
       try {
-        const conn: SlackConnection = new SlackConnection({
-          group,
-          newTraceId: () => randomUUID(),
-          onMessage: (msg) => {
-            this.nameResolver?.noteMessage(conn, msg)
-            this.onInbound(msg, this.srcIntegrationIds(conn))
+        const conn: SlackConnection = new SlackConnection(
+          {
+            group,
+            newTraceId: () => randomUUID(),
+            onMessage: (msg) => {
+              this.nameResolver?.noteMessage(conn, msg)
+              this.onInbound(msg, this.srcIntegrationIds(conn))
+            },
+            onChannelsChanged: () => void this.refreshChannels(conn),
+            onMessageShortcut: (shortcut) => this.slackShortcutSession(shortcut, this.srcIntegrationIds(conn)),
+            onStatusAction: (a) => this.handleStatusAction(a),
+            onStatusInfo: (key) => this.statusInfoForKey(key),
+            onPermissionChoice: (a) => this.handlePermissionChoice(a),
+            onElicitChoice: (a) => this.handleElicitChoice(a),
+            log: this.log,
+            boltDebug: this.cfg.logging.level === 'debug' || this.cfg.logging.level === 'trace'
           },
-          onChannelsChanged: () => void this.refreshChannels(conn),
-          onMessageShortcut: (shortcut) => this.slackShortcutSession(shortcut, this.srcIntegrationIds(conn)),
-          onStatusAction: (a) => this.handleStatusAction(a),
-          onStatusInfo: (key) => this.statusInfoForKey(key),
-          onPermissionChoice: (a) => this.handlePermissionChoice(a),
-          onElicitChoice: (a) => this.handleElicitChoice(a),
-          log: this.log,
-          boltDebug: this.cfg.logging.level === 'debug' || this.cfg.logging.level === 'trace'
-        })
+          this.opts.slackAppFactory
+        )
         this.log.info(
           `slack: opening new socket at runtime (${group.integrations.length} integration(s): ${group.integrations
             .map((i) => i.agentId)
@@ -4322,17 +4517,20 @@ export class Daemon {
       let conn = this.slackSharedPool.find(slackSharedKey(group))
       let bound = false
       if (!conn) {
-        conn = new SlackConnection({
-          group,
-          sendOnly: true,
-          newTraceId: () => randomUUID(),
-          onMessage: () => {}, // never called (relay owns inbound)
-          onStatusAction: (a) => this.handleStatusAction(a),
-          onStatusInfo: (key) => this.statusInfoForKey(key),
-          onPermissionChoice: (a) => this.handlePermissionChoice(a),
-          onElicitChoice: (a) => this.handleElicitChoice(a),
-          log: this.log
-        })
+        conn = new SlackConnection(
+          {
+            group,
+            sendOnly: true,
+            newTraceId: () => randomUUID(),
+            onMessage: () => {}, // never called (relay owns inbound)
+            onStatusAction: (a) => this.handleStatusAction(a),
+            onStatusInfo: (key) => this.statusInfoForKey(key),
+            onPermissionChoice: (a) => this.handlePermissionChoice(a),
+            onElicitChoice: (a) => this.handleElicitChoice(a),
+            log: this.log
+          },
+          this.opts.slackAppFactory
+        )
         try {
           await conn.start()
           this.slackSharedPool.add(conn)
@@ -5025,24 +5223,27 @@ export class Daemon {
     this.log.info(
       `slack: background retry for appToken (${group.integrations.length} integration(s): ${group.integrations.map((i) => i.agentId).join(', ')})…`
     )
-    const conn: SlackConnection = new SlackConnection({
-      group,
-      newTraceId: () => randomUUID(),
-      onMessage: (msg) => {
-        // The arrow captures the NEW `conn` ref so nameResolver/onInbound use the
-        // successfully-retried connection, not a stale one from an earlier attempt.
-        this.nameResolver?.noteMessage(conn, msg)
-        this.onInbound(msg, this.srcIntegrationIds(conn))
+    const conn: SlackConnection = new SlackConnection(
+      {
+        group,
+        newTraceId: () => randomUUID(),
+        onMessage: (msg) => {
+          // The arrow captures the NEW `conn` ref so nameResolver/onInbound use the
+          // successfully-retried connection, not a stale one from an earlier attempt.
+          this.nameResolver?.noteMessage(conn, msg)
+          this.onInbound(msg, this.srcIntegrationIds(conn))
+        },
+        onChannelsChanged: () => void this.refreshChannels(conn),
+        onMessageShortcut: (shortcut) => this.slackShortcutSession(shortcut, this.srcIntegrationIds(conn)),
+        onStatusAction: (a) => this.handleStatusAction(a),
+        onStatusInfo: (key) => this.statusInfoForKey(key),
+        onPermissionChoice: (a) => this.handlePermissionChoice(a),
+        onElicitChoice: (a) => this.handleElicitChoice(a),
+        log: this.log,
+        boltDebug: this.cfg.logging.level === 'debug' || this.cfg.logging.level === 'trace'
       },
-      onChannelsChanged: () => void this.refreshChannels(conn),
-      onMessageShortcut: (shortcut) => this.slackShortcutSession(shortcut, this.srcIntegrationIds(conn)),
-      onStatusAction: (a) => this.handleStatusAction(a),
-      onStatusInfo: (key) => this.statusInfoForKey(key),
-      onPermissionChoice: (a) => this.handlePermissionChoice(a),
-      onElicitChoice: (a) => this.handleElicitChoice(a),
-      log: this.log,
-      boltDebug: this.cfg.logging.level === 'debug' || this.cfg.logging.level === 'trace'
-    })
+      this.opts.slackAppFactory
+    )
     try {
       await conn.start()
       // The roster may have changed while start() was in flight. Never publish a
@@ -5111,6 +5312,14 @@ export class Daemon {
     })
   }
 
+  /** The one factory every memory consumer is built on: the port over the agent's managed memory
+   *  tree, decided by placement (`resolveMemoryFs`); undefined for an unknown agent, and it throws
+   *  `MemorySandboxUnavailableError` for a cluster agent whose sandbox is not bound. */
+  private memoryFsFor(agentId: string): MemoryFs | undefined {
+    const agent = this.agents.get(agentId)
+    return agent ? resolveMemoryFs(agent, this.k8sPlane) : undefined
+  }
+
   /** The one daemon-owned workspace preparation contract used by ordinary
    * sessions and by the cold-host lifecycle gate below. Keeping the managed
    * cache, trusted installer state, and runtime CLI identity together prevents
@@ -5140,7 +5349,7 @@ export class Daemon {
         // The pod's own preparation: clone and pull happen on its volume through the runner, and
         // none of the local work below runs — its mkdir, `existsSync(.git)` and skills installation
         // all land on this daemon's disk, describing a filesystem the runtime never reads.
-        return await prepareClusterWorkspace(agent, plane.workspaceRootFor(agent.id), request)
+        return await this.workspaces.prepareClusterWorkspace(agent, plane.workspaceRootFor(agent.id), request)
       })
     }
     if (!this.opts.hostFactory) assertExclusiveAgentWorkspaces([agent as LoadedAgent])
@@ -5149,14 +5358,16 @@ export class Daemon {
       skillsStateDir: join(this.root, 'skill-installs'),
       skillsAgentId: this.runtimeCatalog.entries[agent.runtime]?.skillsAgentId ?? null
     }
-    return request ? prepareSessionWorkspace(agent, request, opts) : prepareWorkspace(agent, opts)
+    return request
+      ? this.workspaces.prepareSessionWorkspace(agent, request, opts)
+      : this.workspaces.prepareWorkspace(agent, opts)
   }
 
   private runAgentWorkspacePrefetch(agent: Agent): Promise<void> {
     // A cluster workspace materializes on the pod's volume at session time; a local prefetch
     // would clone the repository onto this daemon's own disk instead.
     if (this.k8sPlane) return Promise.resolve()
-    return prefetchWorkspace(agent)
+    return this.workspaces.prefetchWorkspace(agent)
   }
 
   private workspacePreparationAuthority(agent: Agent): string {
@@ -5473,7 +5684,9 @@ export class Daemon {
           ? this.sandboxRuntimeReadRoots(agent, runtime, launchEnv, githubAppCredentials)
           : undefined,
         trustedWorkspaceWriteRoots:
-          runInSandbox && agent.workspace.mode === 'git-repo' ? [sessionWorktreeRoot(agent)] : undefined,
+          runInSandbox && agent.workspace.mode === 'git-repo'
+            ? [this.workspaces.sessionWorktreeRoot(agent)]
+            : undefined,
         explicitEnv: launchEnv,
         sandboxMechanism: this.sandboxMechanism,
         mcpSocketPath: mcpSocketPath(this.root),
@@ -5493,6 +5706,9 @@ export class Daemon {
       }
       throw new Error(`agent "${agentId}" runtime launch preparation failed: ${formatErr(err)}`, { cause: err })
     }
+    // Filled right after construction, so the terminal reap can prove the host that exited is
+    // still the memoized one before evicting anything.
+    const constructed: { host?: AcpHost } = {}
     const host = new AcpHost(launchRuntime, {
       // In --k8s the runtime runs in the agent's own Sandbox pod; everywhere else AcpHost falls
       // back to its LocalDriver, which is what a self-hosted daemon wants.
@@ -5504,6 +5720,8 @@ export class Daemon {
         : {}),
       onElicit: (sid, params) => this.onAcpElicit(agentId, sid, params),
       onSdkLifecycle: (sid, message) => this.onSdkLifecycle(agentId, sid, message),
+      // Pairs the runtime's terminal exit with the ordinary rebuild — see reapTerminalHost.
+      onTerminal: () => this.reapTerminalHost(agentId, constructed.host),
       env: launch.env,
       inheritProcessEnv: launch.inheritProcessEnv,
       runtimeId: agent.runtime,
@@ -5518,7 +5736,30 @@ export class Daemon {
       },
       log: this.log
     })
+    constructed.host = host
     return { host, configFileState }
+  }
+
+  /**
+   * Reclaim a host whose runtime reached terminal exit, so the next message rebuilds it.
+   *
+   * A dead runtime leaves a host that can never serve again — its ACP connection is closed —
+   * yet it stays memoized, so every later turn is dispatched into it and fails with "ACP
+   * connection closed" until the daemon is replaced. A lost sandbox channel is exactly this
+   * shape: the pod goes and the runtime with it. The teardown is therefore paired here with the
+   * ordinary rebuild — `stopHost` returns the agent to provisioned and the next message starts
+   * a fresh host through `ensureHostAsync`, the same path a grant or an activation uses.
+   *
+   * A host that never became ready is deliberately left alone: `startHostWithRetry` reaps its
+   * own failed child, and evicting the start generation here would cancel its remaining attempts.
+   */
+  private reapTerminalHost(agentId: string, host?: AcpHost): void {
+    if (!host || this.hosts.get(agentId) !== host) return
+    if (!this.readyHosts.has(agentId)) return
+    this.log.warn(`acp: agent "${agentId}" runtime exited — reclaiming its host so the next message re-spawns it`)
+    void this.stopHost(agentId).catch((err) =>
+      this.log.warn(`acp: reclaiming the exited host for agent "${agentId}" failed: ${formatErr(err)}`)
+    )
   }
 
   /**
@@ -5545,6 +5786,8 @@ export class Daemon {
       'workspace-file-delete-v1',
       WORKSPACE_SESSION_READ_FEATURE,
       TASK_LIST_FEATURE,
+      // Only a cluster daemon has a sandbox to wake; elsewhere the CP answers `unsupported` unsent.
+      ...(this.k8s ? [AGENT_WAKE_FEATURE] : []),
       WORKSPACE_GIT_MESSAGE_FEATURE,
       WORKSPACE_GIT_REVIEW_FEATURE,
       WORKSPACE_GIT_WRITE_FEATURE,
@@ -5917,7 +6160,7 @@ export class Daemon {
     // launch-correlated one) must never be distilled into it. The gate is checked
     // HERE — before both the managed distillation and the external capture outbox
     // — and fails closed on unknown state.
-    if (this.store.isCaptureExcluded(sessionId)) return
+    if (this.store.isCaptureExcluded(agentId, sessionId)) return
     const provider = binding?.provider ?? 'managed'
     const observableCapture = provider === 'managed' || provider === 'external'
     const record = async () => {
@@ -5947,7 +6190,8 @@ export class Daemon {
           })
         }
       } catch (error) {
-        if (observableCapture) {
+        // A deferred managed capture (sandbox asleep) is not a failure: it completes from the outbox.
+        if (observableCapture && !(error instanceof MemorySandboxUnavailableError)) {
           this.emitEvaluation({
             type: 'memory.capture.failed',
             agentId,
@@ -5978,8 +6222,16 @@ export class Daemon {
       .then(async () => {
         await record()
       })
-      // Never log plugin/upstream response text: it may contain memory bodies or credentials.
-      .catch(logFailure)
+      .catch((err: unknown) => {
+        // The tree is on a sandbox that has gone to sleep since the turn: keep the capture durably and
+        // distill it once the pod is bound again, instead of dropping the turn with a warning.
+        if (err instanceof MemorySandboxUnavailableError && this.memoryOutbox) {
+          const result = this.memoryOutbox.enqueue(managedDistillCapture({ agentId, turnId, sessionId, input, output }))
+          if (result.status === 'inserted' || result.status === 'duplicate') return
+        }
+        // Never log plugin/upstream response text: it may contain memory bodies or credentials.
+        logFailure(err)
+      })
       .finally(() => {
         if (this.memoryPostTurnChains.get(agentId) === next) this.memoryPostTurnChains.delete(agentId)
       })
@@ -6740,32 +6992,37 @@ export class Daemon {
     const client = this.cpClient
     if (!client || !client.supportsServerFeature?.(ORGANIZATION_KNOWLEDGE_FEATURE)) return
     const runner = this.dreamRunner()
+    // Install-wide connection: this frame is org-scoped by nature and there is no connection org behind it.
+    const frameScoped = client.organizationScope?.() === 'frame'
     const byOrg = new Map<string | undefined, ReturnType<DreamRunner['organizationSuggestionInventory']>>()
     const inventory = runner.organizationSuggestionInventory()
     for (const suggestion of inventory) {
       const orgId = this.cpAgents?.orgForAgent(suggestion.sourceAgentId)
+      // An org we cannot name has no frame to ride; holding it back beats failing every other org's replay.
+      if (frameScoped && !orgId) continue
       const suggestions = byOrg.get(orgId) ?? []
       suggestions.push(suggestion)
       byOrg.set(orgId, suggestions)
     }
-    if (inventory.length === 0) {
+    if (byOrg.size === 0) {
       const orgIds = this.cpAgents?.organizationIds() ?? []
-      if (orgIds.length > 0) {
-        for (const orgId of orgIds) byOrg.set(orgId, [])
-      } else {
-        byOrg.set(undefined, [])
-      }
+      if (orgIds.length > 0) for (const orgId of orgIds) byOrg.set(orgId, [])
+      else if (!frameScoped) byOrg.set(undefined, [])
     }
-    const decisions = (
-      await Promise.all(
-        [...byOrg].map(([orgId, suggestions]) => {
-          const sync = orgId
-            ? client.syncOrganizationSuggestions({ suggestions }, orgId)
-            : client.syncOrganizationSuggestions({ suggestions })
-          return sync.then((reply) => reply.decisions)
-        })
+    // One org's refusal must not cost the others their decisions: the replay is per-org, not per-connection.
+    const replies = await Promise.allSettled(
+      [...byOrg].map(([orgId, suggestions]) =>
+        orgId
+          ? client.syncOrganizationSuggestions({ suggestions }, orgId)
+          : client.syncOrganizationSuggestions({ suggestions })
       )
-    ).flat()
+    )
+    for (const reply of replies)
+      if (reply.status === 'rejected')
+        this.log.warn(
+          `cp: organization suggestion sync refused for one organization (${reply.reason instanceof Error ? reply.reason.name : 'unknown'})`
+        )
+    const decisions = replies.flatMap((reply) => (reply.status === 'fulfilled' ? reply.value.decisions : []))
     // During the production hold, publish inventory but do not apply destructive review decisions.
     if (!this.dreamOperationsAllowed()) return
     for (const decision of decisions) await runner.organizationSuggestionReview(decision)
@@ -6774,6 +7031,7 @@ export class Daemon {
   private dreamRunner(): DreamRunner {
     this.dreamRunnerInstance ??= new DreamRunner({
       agentDirByAgent: (id) => this.agents.get(id)?.dir,
+      memoryFsFor: (id) => this.memoryFsFor(id),
       dreamingPolicyFor: (id) => dreamingPolicyOf(this.agents.get(id)),
       operationPolicy: this.dreamOperationsAllowed() ? (this.opts.hostFactory ? 'test-only' : 'enabled') : 'blocked',
       store: this.store,
@@ -6785,6 +7043,17 @@ export class Daemon {
         ),
       withSkillAcceptance: async (agentId, publish) => {
         return this.withWorkspaceFileWrite(agentId, publish)
+      },
+      // A dream is authorized background work like a turn: under --k8s wake and bind the sandbox
+      // (the memory tree and the dream host both live there) and hold it against the idle sweep
+      // for the job's duration; a local agent's home is always up.
+      withMemoryHome: async (agentId, work) => {
+        const plane = this.k8sPlane
+        if (!plane) return work()
+        return plane.withSandbox(agentId, async () => {
+          await plane.ensureChannel(agentId)
+          return work()
+        })
       },
       onEvent: (event) => this.recordDreamLifecycle(event),
       log: this.log
@@ -7184,7 +7453,7 @@ export class Daemon {
         {
           agentCallDeliveryId: verified.agentCallDeliveryId,
           platformMessageId,
-          transcriptCoordinates: `${transcriptChannelKey(msg.channel, msg.transportScope)}\u0000${msg.thread ?? ''}`
+          transcriptCoordinates: `${transcriptChannelKey(msg.channel, msg.transportScope)}${ACTIVATION_KEY_SEPARATOR}${msg.thread ?? ''}`
         },
         expiresAt
       )
@@ -8576,7 +8845,7 @@ export class Daemon {
         {
           agentCallDeliveryId: msg.trustedAgentCallDeliveryId,
           platformMessageId,
-          transcriptCoordinates: `${transcriptChannelKey(normalized.channel, normalized.transportScope)}\u0000${normalized.thread ?? ''}`
+          transcriptCoordinates: `${transcriptChannelKey(normalized.channel, normalized.transportScope)}${ACTIVATION_KEY_SEPARATOR}${normalized.thread ?? ''}`
         },
         this.clock.now() + ACTIVATION_PAIRING_TTL_MS
       )
@@ -8970,9 +9239,10 @@ export class Daemon {
 
     const { platform, channel, thread } = msg.coords
 
-    // The target must actually be a local agent (the relay resolved it to us, but we
-    // don't trust that blindly — this is the placement authority for OUR agents).
-    if (!this.agents.get(msg.toAgentId)) return record(nak('not_found'))
+    // Local placement authority: an agent the directory knows but we do not run is a stale route → retryable, uncached; unknown everywhere → terminal.
+    if (!this.agents.get(msg.toAgentId)) {
+      return this.cpCollab.agent(msg.toAgentId) ? nak(RD_AGENTMSG_NOT_READY) : record(nak('not_found'))
+    }
 
     // TERMINAL-VERIFY against the local collaboration snapshot (§2.5 #4), now ORG-scoped
     // rather than (org, channel)-scoped: the relay's asserted org must be the org this
@@ -8980,8 +9250,14 @@ export class Daemon {
     // caller→target. Channel is only the session coordinate here (A2A is postless, #854), so
     // a caller and target that share no channel — or a target with no IM integration at all —
     // is legitimate. Missing snapshot / unknown agent ⇒ fail closed, as before.
-    if (this.cpCollab.orgForAgent(msg.toAgentId) !== msg.orgId) {
-      this.log.warn(`relay: rd/agentmsg/fwd terminal-verify failed (no placement) for ${msg.toAgentId} — fail closed`)
+    const targetOrg = this.cpCollab.orgForAgent(msg.toAgentId)
+    // Our directory copy may still be catching up with the grant: refuse retryably, uncached.
+    if (targetOrg === undefined) {
+      this.log.info(`relay: rd/agentmsg/fwd not_ready — ${msg.toAgentId} is not in this daemon's directory yet`)
+      return nak(RD_AGENTMSG_NOT_READY)
+    }
+    if (targetOrg !== msg.orgId) {
+      this.log.warn(`relay: rd/agentmsg/fwd terminal-verify failed (org mismatch) for ${msg.toAgentId} — fail closed`)
       return record(nak('not_allowed'))
     }
     if (!this.cpCollab.admits(msg.trustedFromAgentId, msg.toAgentId)) {
@@ -9567,7 +9843,9 @@ export class Daemon {
       ...(req.needsReply === true && originSessionId !== undefined ? { needsReply: true } : {}),
       // §5.1: seal the child's capture gate when the waking session is private.
       // Tighten-only — see CallMeta.parentPrivate.
-      ...(originSessionId !== undefined && this.store.isCaptureExcluded(originSessionId) ? { parentPrivate: true } : {})
+      ...(originSessionId !== undefined && this.store.isCaptureExcluded(req.callerAgentId, originSessionId)
+        ? { parentPrivate: true }
+        : {})
     }
 
     const normalized: NormalizedMessage = {
@@ -9750,7 +10028,7 @@ export class Daemon {
       ...(externalOrigin ? { externalOrigin } : {}),
       // §5.1: seal the child's capture gate when the waking session is private.
       // Tighten-only — see CallMeta.parentPrivate.
-      ...(replierSessionId !== undefined && this.store.isCaptureExcluded(replierSessionId)
+      ...(replierSessionId !== undefined && this.store.isCaptureExcluded(req.callerAgentId, replierSessionId)
         ? { parentPrivate: true }
         : {})
     }
@@ -10295,7 +10573,7 @@ export class Daemon {
       },
       // §5.1: seal the child's capture gate when the waking session is private.
       // Tighten-only — see CallMeta.parentPrivate.
-      ...(originSessionId && this.store.isCaptureExcluded(originSessionId) ? { parentPrivate: true } : {})
+      ...(originSessionId && this.store.isCaptureExcluded(req.agentId, originSessionId) ? { parentPrivate: true } : {})
     }
     const transportScope = this.transportScopeForIntegrationIds(
       req.integrationId !== undefined ? [req.integrationId] : undefined
@@ -10368,37 +10646,49 @@ export class Daemon {
     if (!this.relays) {
       return { delivered: false, targetSession: ctx.targetSession, reason: 'not_local' }
     }
+    const relays = this.relays
     try {
-      const ack = await this.relays.sendAgentMsg({
-        claimedFromAgentId: req.callerAgentId,
-        // Tighten-only privacy hint for the remote child's capture gate (§5.1).
-        ...(ctx.originSessionId !== undefined && this.store.isCaptureExcluded(ctx.originSessionId)
-          ? { parentPrivate: true }
-          : {}),
-        toAgentId: req.toAgentId,
-        text: req.text,
-        coords: {
-          platform: ctx.platform,
-          channel: ctx.channel,
-          ...(ctx.thread !== undefined ? { thread: ctx.thread } : {})
+      // #987: `not_ready` re-sends the SAME deliveryId for a bounded window; only a terminal verdict is recorded below.
+      const ack = await sendAgentMsgUntilReady(
+        {
+          claimedFromAgentId: req.callerAgentId,
+          // Tighten-only privacy hint for the remote child's capture gate (§5.1).
+          ...(ctx.originSessionId !== undefined && this.store.isCaptureExcluded(req.callerAgentId, ctx.originSessionId)
+            ? { parentPrivate: true }
+            : {}),
+          toAgentId: req.toAgentId,
+          text: req.text,
+          coords: {
+            platform: ctx.platform,
+            channel: ctx.channel,
+            ...(ctx.thread !== undefined ? { thread: ctx.thread } : {})
+          },
+          ...(ctx.correlationId !== undefined ? { correlationId: ctx.correlationId } : {}),
+          hopCount: ctx.sourceHopCount,
+          deliveryId: ctx.deliveryId,
+          // Visible-post ts (if this wake was a `toAgent`+`channel` send) so the remote target
+          // dedups the wake against the post it fetches from the shared thread and keeps a
+          // canonical read cursor — same guarantee as the same-daemon path.
+          ...(req.transcriptTs !== undefined ? { transcriptTs: req.transcriptTs } : {}),
+          ...(ctx.originSessionId !== undefined ? { originSessionId: ctx.originSessionId } : {}),
+          ...(ctx.originCoords !== undefined ? { originCoords: ctx.originCoords } : {}),
+          ...(ctx.externalOrigin !== undefined ? { externalOrigin: ctx.externalOrigin } : {}),
+          ...(ctx.lineageReplyTo !== undefined ? { lineageReplyTo: ctx.lineageReplyTo } : {}),
+          // §5.4: ask the remote child to report its outcome back into our origin session. Gated on
+          // having an origin for exactly the reason the local path is — there is nothing to report to
+          // without one, and the target ignores it in that case anyway.
+          ...(req.needsReply === true && ctx.originSessionId !== undefined ? { needsReply: true } : {}),
+          ...(ctx.deliveryKind !== undefined ? { deliveryKind: ctx.deliveryKind } : {})
         },
-        ...(ctx.correlationId !== undefined ? { correlationId: ctx.correlationId } : {}),
-        hopCount: ctx.sourceHopCount,
-        deliveryId: ctx.deliveryId,
-        // Visible-post ts (if this wake was a `toAgent`+`channel` send) so the remote target
-        // dedups the wake against the post it fetches from the shared thread and keeps a
-        // canonical read cursor — same guarantee as the same-daemon path.
-        ...(req.transcriptTs !== undefined ? { transcriptTs: req.transcriptTs } : {}),
-        ...(ctx.originSessionId !== undefined ? { originSessionId: ctx.originSessionId } : {}),
-        ...(ctx.originCoords !== undefined ? { originCoords: ctx.originCoords } : {}),
-        ...(ctx.externalOrigin !== undefined ? { externalOrigin: ctx.externalOrigin } : {}),
-        ...(ctx.lineageReplyTo !== undefined ? { lineageReplyTo: ctx.lineageReplyTo } : {}),
-        // §5.4: ask the remote child to report its outcome back into our origin session. Gated on
-        // having an origin for exactly the reason the local path is — there is nothing to report to
-        // without one, and the target ignores it in that case anyway.
-        ...(req.needsReply === true && ctx.originSessionId !== undefined ? { needsReply: true } : {}),
-        ...(ctx.deliveryKind !== undefined ? { deliveryKind: ctx.deliveryKind } : {})
-      })
+        {
+          send: (payload) => relays.sendAgentMsg(payload),
+          clock: this.clock,
+          onRetry: (attempt, delayMs) =>
+            this.log.info(
+              `messageAgent: ${req.toAgentId} not routable yet (attempt ${attempt}) — retrying delivery ${ctx.deliveryId} in ${delayMs}ms`
+            )
+        }
+      )
       // §5.4: prefer the CANONICAL key the target computed — its transport scope depends on the
       // reply integration the relay chose, which we cannot derive. Fall back to our own guess only
       // for an older target daemon that returns none (it then simply won't be followable).
@@ -10551,12 +10841,28 @@ export class Daemon {
     this.orchestrationDeadlines.set(orchestrationId, handle)
   }
 
+  /** Whether this member serves the agent's ingress edges and sweeps: the duty holder, or any local daemon. */
+  private servesAgent(agentId: string): boolean {
+    return !this.dutyEnforced() || this.duties.holdsAgent(agentId)
+  }
+
   /** Deadline fired (§3.5): mark every still-open subtask timed_out, then WAKE the main's
    *  session so it re-reads getOrchestration and summarizes the partial result. The wake is
-   *  a direct dispatch to the stored session coords — no platform post, no new thread. */
+   *  a direct dispatch to the stored session coords — no platform post, no new thread.
+   *  Every pool member sharing the store may have a timer for this id, so the fire is gated
+   *  twice: the duty check (a dispatch binds the agent's sandbox, so only its holder may wake
+   *  it) and a CAS claim on the stored deadline, which makes a handoff race fire once. */
   private fireOrchestrationDeadline(orchestrationId: string): void {
     const orch = this.store.getOrchestration(orchestrationId)
-    if (!orch || orch.status !== 'active') return // cancelled / completed → nothing to do
+    if (!orch || orch.status !== 'active' || orch.deadline == null) return // cancelled / completed / already fired
+    if (!this.servesAgent(orch.mainAgentId)) {
+      this.log.debug(`orchestration ${orchestrationId}: deadline reached but ${orch.mainAgentId} is served elsewhere`)
+      return
+    }
+    if (!this.store.claimOrchestrationDeadline(orchestrationId, orch.deadline, this.clock.now())) {
+      this.log.debug(`orchestration ${orchestrationId}: deadline already claimed by another member`)
+      return
+    }
     // Mark unreported (delivered but not yet reported, or still sending/pending) as timed_out.
     for (const s of this.store.getSubtasks(orchestrationId)) {
       this.store.setSubtaskStatus(
@@ -10567,7 +10873,6 @@ export class Daemon {
         monotonicTs()
       )
     }
-    this.store.setOrchestrationDeadline(orchestrationId, null, this.clock.now())
     this.emitEvaluation({
       type: 'orchestration.state',
       agentId: orch.mainAgentId,
@@ -10715,10 +11020,12 @@ export class Daemon {
     return orch
   }
 
-  /** Startup re-arm (§3.5): re-arm the one-shot deadline for every still-active orchestration
-   *  from the durable `deadline` epoch. A deadline already in the past fires ~immediately.
-   *  Mirrors replayInbox's read-active-rows/re-schedule pattern; idempotent. */
-  private rearmOrchestrationDeadlines(): void {
+  /** Re-derive which deadlines this member arms from the durable `deadline` epochs (§3.5): arm
+   *  the held agents' still-active orchestrations, disarm what moved to another member. Runs at
+   *  startup and after every duty change; idempotent, and a stale timer is harmless because the
+   *  fire re-checks the duty and claims the deadline through the store. A deadline already in
+   *  the past fires ~immediately. */
+  private syncOrchestrationDeadlines(): void {
     let active: OrchestrationRow[]
     try {
       active = this.store.listActiveOrchestrations()
@@ -10727,12 +11034,20 @@ export class Daemon {
       return
     }
     let armed = 0
+    let disarmed = 0
     for (const orch of active) {
-      if (orch.deadline == null) continue
-      this.armOrchestrationDeadline(orch.orchestrationId, orch.deadline)
-      armed++
+      const held = this.servesAgent(orch.mainAgentId)
+      const handle = this.orchestrationDeadlines.get(orch.orchestrationId)
+      if (held && orch.deadline != null && handle === undefined) {
+        this.armOrchestrationDeadline(orch.orchestrationId, orch.deadline)
+        armed++
+      } else if (!held && handle !== undefined) {
+        this.clock.clearTimeout(handle)
+        this.orchestrationDeadlines.delete(orch.orchestrationId)
+        disarmed++
+      }
     }
-    if (armed) this.log.info(`orchestration: re-armed ${armed} deadline(s) on startup`)
+    if (armed || disarmed) this.log.info(`orchestration: armed ${armed} and disarmed ${disarmed} deadline(s)`)
   }
 
   /**
@@ -11614,7 +11929,7 @@ export class Daemon {
   ): string {
     let slot = BigInt(ts)
     for (let attempt = 0; attempt < 32; attempt++) {
-      const existing = this.store.transcriptTextAt(channel, thread, String(slot))
+      const existing = this.store.transcriptTextAt(channel, thread, String(slot), entry)
       // Canonical identity decides slot reuse (§6): two DISTINCT posts can share
       // sender, text, AND millisecond (`at` minting is connection-local, so two
       // tabs can collide) — only a matching postId proves the occupant IS this
@@ -11919,24 +12234,28 @@ export class Daemon {
     // the agent is still working, defeating the catch-up it's meant to enable.
     const sinceTs = Date.now() - this.cfg.limits.agentIdleTimeoutMs
     const recentlyActive = this.store.activeSessionCountSince(msg.channel, thread, sinceTs, msg.transportScope) > 0
-    const inFlight = [...this.pending.values()].some(
+    const inFlightAgent = [...this.pending.values()].find(
       (p) => p.transcriptChannel === transcriptChannel && p.statusThread === thread
-    )
-    const initializing = [...this.activeGateEntries.values()].some((entry) => {
+    )?.agentId
+    const initializingAgent = [...this.activeGateEntries.values()].find((entry) => {
       const coords = transcriptCoords(entry.msg)
       return (
         transcriptChannelKey(entry.msg.channel, entry.msg.transportScope) === transcriptChannel &&
         coords.thread === thread
       )
-    })
-    if (!recentlyActive && !inFlight && !initializing) return
+    })?.agentId
+    if (!recentlyActive && !inFlightAgent && !initializingAgent) return
     const mention = includeAttachment ? attachmentMention(msg.attachments) : ''
-    const before = this.store.threadTranscriptRevision(transcriptChannel, thread)
+    // The row is observed before routing names a recipient, so the org that owns it comes
+    // from whichever agent made the thread live — a shared store has no other partition.
+    const owner = recipient ?? inFlightAgent ?? initializingAgent
+    const before = this.store.threadTranscriptRevision(transcriptChannel, thread, owner)
     this.threadContext.observeInbound({
       channel: transcriptChannel,
       thread,
       ts,
       sender: msg.sender.id,
+      ...(owner ? { orgAgentId: owner } : {}),
       // The canonical webchat post identity must survive whichever writer wins the
       // first insert, or the browser's live frame cannot reconcile against the row.
       ...(msg.transcriptPostId ? { postId: msg.transcriptPostId } : {}),
@@ -11953,7 +12272,7 @@ export class Daemon {
       text: mention ? `${msg.text}\n${mention}`.trim() : msg.text,
       ...(msg.quoted?.text ? { quoted: msg.quoted } : {})
     })
-    const after = this.store.threadTranscriptRevision(transcriptChannel, thread)
+    const after = this.store.threadTranscriptRevision(transcriptChannel, thread, owner)
     if (after > before)
       this.log.debug(`transcript: observed inbound msg ch=${msg.channel} thread=${thread} ts=${ts} (live session)`)
   }
@@ -12117,7 +12436,12 @@ export class Daemon {
           afterRevision,
           pending.agentId
         )
-      : this.store.transcriptSinceRevision(pending.transcriptChannel, pending.statusThread, afterRevision)
+      : this.store.transcriptSinceRevision(
+          pending.transcriptChannel,
+          pending.statusThread,
+          afterRevision,
+          pending.agentId
+        )
     return rows
       .filter((row) => row.kind === 'text' && row.sender !== pending.agentId)
       .sort((a, b) => a.eventTimeUs - b.eventTimeUs || a.seq - b.seq)
@@ -12353,6 +12677,7 @@ export class Daemon {
         leaderHookContext: JSON.stringify(nextHook),
         followerId: follower.inboxId,
         followerTerminalReport: JSON.stringify(report),
+        followerOwnerId: hookReportOwner(report, this.cfg.daemonId),
         completedAt: this.clock.now()
       })
       if (!committed) return false
@@ -12435,6 +12760,10 @@ export class Daemon {
    *  not yet terminal). Guards startup replay from re-admitting a row whose entry is already
    *  live in the gate (idempotency — a duplicate/in-flight id is not double-processed). */
   private liveInboxIds = new Set<string>()
+  /** Loop scope → the `trippedAt` epoch this member has already enforced against its own live
+   *  work. A peer owns the trip's warning and its own backlog, so each member stops its turns
+   *  once per latch, on the first admission it refuses, not on every subsequent message. */
+  private enforcedLoopScopes = new Map<string, number>()
 
   private isSessionMuted(key: string): boolean {
     return this.store.isSessionMuted(key)
@@ -12667,6 +12996,7 @@ export class Daemon {
       }
       const wasOpen = this.store.isLoopGuardOpen(scope)
       this.store.resetLoopGuard(scope)
+      this.enforcedLoopScopes.delete(scope)
       const wasMuted = this.isSessionMuted(key)
       if (wasMuted) this.setSessionMuted(key, false)
       if (wasOpen || wasMuted) {
@@ -13042,7 +13372,10 @@ export class Daemon {
   /** The heartbeat's lease fields: what this daemon holds, and how many more
    *  groups it will accept. Capacity is the daemon's own call (design D14). */
   private dutyDigest(): HeartbeatDuties {
-    return { held: this.duties.digest(), headroom: this.dutyHeadroom() }
+    // A draining member — shutting down, or mid rebalance drain — asks for nothing; only the
+    // shutdown says so on the wire, because that bit is sticky for the registration at the CP.
+    const headroom = this.dutyClaimsSuspended || this.shutdownDraining ? 0 : this.dutyHeadroom()
+    return { held: this.duties.digest(), headroom, ...(this.shutdownDraining ? { draining: true } : {}) }
   }
 
   /** How many more duty-covered agents this member will accept. `maxAgents: 0`
@@ -13068,31 +13401,339 @@ export class Daemon {
     return max - this.duties.agents().size - Math.max(0, this.inFlightDutyClaims.size - 1)
   }
 
-  /** True when duty leases actually gate service. Off (the default) the exchange
-   *  still runs and the registry still tracks — only enforcement is withheld. */
+  /** True when duty leases gate service: a tenancy question, not an option. An install-wide
+   *  (frame-scope) member serves only what it holds a lease for; an org-scoped daemon owns its
+   *  agents outright and never participates in the ledger. */
   private dutyEnforced(): boolean {
-    // `cfg` lands in start(); transportAgents can run before that in tests.
-    return this.cfg?.features?.dutyEnforcement === true && this.cpClient?.organizationScope() === 'frame'
+    // `cpClient` lands in start(); transportAgents can run before that in tests.
+    return this.cpClient?.organizationScope?.() === 'frame'
   }
 
-  /** Apply a `duty/grant` EVT: bookkeeping first, then converge what we serve. */
+  /** `duty/grant` EVT: admit the grants off the frame-dispatch path, so a slow
+   *  CP cannot stall the socket. */
   private applyDutyGrant(grants: DutyGrantEntry[]): void {
-    const result = this.duties.applyGrant(grants)
-    this.log.info(
-      `duty: granted ${result.added.length} + re-granted ${result.updated.length} group(s); ` +
-        `holding ${this.duties.size()} covering ${this.duties.agents().size} agent(s)`
-    )
-    if (result.agentsGained.length > 0 || result.added.length > 0) this.onDutyChanged()
+    // A grant that wins after the shutdown latch — an exchange that began before the SIGTERM can
+    // still commit one — is never installed, but the ledger records this exiting member as its
+    // holder. One global rule, no per-case proof: record it, and acknowledge its release only once
+    // the release loop is done with every held group — by then nothing is served here any more —
+    // unless it covers an agent left to lapse. A small, bounded delay for those groups.
+    const drain = this.shutdownDutyDrain
+    if (drain) {
+      this.log.info(
+        `duty: ${grants.length} grant(s) landed while shutting down — held unserved until the drain completes`
+      )
+      for (const grant of grants) drain.late.set(grant.groupId, grant)
+      // Landed after the loop finished: settle them now rather than at the socket close.
+      if (drain.loopDone) void this.settleLateGrants(drain)
+      return
+    }
+    // A CP-commanded rebalance drain accepts no grant either: it would install a group the release
+    // snapshot has already passed by. The CP re-issues on the next beat once the member reopens.
+    if (this.dutyClaimsSuspended) {
+      this.log.info(`duty: ignoring ${grants.length} grant(s) while draining`)
+      return
+    }
+    void this.admitDutyGrants(grants)
+  }
+
+  /**
+   * Install first, open the serving gate second. Applying the grant is what
+   * makes this member routable for its agents — the CP and the relay resolve
+   * triggers to whoever holds the group — so a grant applied while its install
+   * is still in flight advertises service the daemon cannot yet give, and a
+   * trigger landing in that window is dropped without even being re-routable.
+   *
+   * A group whose install fails or comes back empty is therefore never applied
+   * at all. The digest omits it, the CP sees a lease this member does not
+   * report, and its existing missing-regrant path reissues it — that IS the
+   * retry, paced by the heartbeat rather than a private loop. Nothing needs the
+   * group present in the meantime: `renewHeld` renews by holder alone.
+   *
+   * Refusing a REPLACEMENT of a held group is not enough on its own: an addition is what failed,
+   * yet the entry also carries removals, and keeping the old composition keeps serving agents the
+   * CP has reassigned. So the removals are applied alone — the group shrinks to what both
+   * compositions share, at the OLD term, which is what makes the CP's stale-term branch reissue
+   * the whole replacement every beat until it installs.
+   *
+   * Returns the groupIds it refused — a failed install, or a withdrawal that landed while the
+   * install was in flight.
+   */
+  private async admitDutyGrants(entries: DutyGrantEntry[]): Promise<Set<string>> {
+    const admission = ++this.dutyAdmissionSeq
+    for (const entry of entries) this.dutyAdmissions.set(entry.groupId, admission)
+    try {
+      const failed = await this.installGrantedAgents(entries)
+      // The withdrawal fence, checked with NO await between it and `applyGrant`. Admission is
+      // deliberately async, so a fence, a revoke, or a drain release can land inside this window —
+      // and each of them means "this member must not serve that group". A withdrawal drops the
+      // group's admission mark, so the identity check below fails and the grant is never applied.
+      // A newer admission for the same group replaces the mark for the same reason.
+      const withdrawn = new Set(
+        entries.filter((entry) => this.dutyAdmissions.get(entry.groupId) !== admission).map((e) => e.groupId)
+      )
+      const refused = new Set([...withdrawn, ...failed])
+      const servable = entries.filter((entry) => !refused.has(entry.groupId))
+      if (servable.length > 0) {
+        const result = this.duties.applyGrant(servable)
+        this.log.info(
+          `duty: granted ${result.added.length} + re-granted ${result.updated.length} group(s); ` +
+            `holding ${this.duties.size()} covering ${this.duties.agents().size} agent(s)`
+        )
+        this.settleDutyChange(result)
+      }
+      // Same fence, same absence of an await: a group a withdrawal took away is not shrunk either,
+      // because it is not ours to write any more — it was revoked outright, or a newer admission
+      // owns it and will apply its own composition.
+      const shrinking = entries.filter((entry) => failed.has(entry.groupId) && !withdrawn.has(entry.groupId))
+      if (shrinking.length > 0) {
+        const result = this.duties.shrinkToGrant(shrinking)
+        if (result.updated.length > 0) {
+          this.log.warn(
+            `duty: refused ${shrinking.length} group(s) but applied their removals; ` +
+              `${result.agentsLost.length} agent(s) left service, ${result.updated.length} group(s) shrunk`
+          )
+        }
+        this.settleDutyChange(result)
+      }
+      if (withdrawn.size > 0) {
+        this.log.info(`duty: ${withdrawn.size} group(s) were withdrawn while being admitted — not held`)
+      }
+      return refused
+    } finally {
+      // Only ours to clear: a withdrawal already dropped it, and a newer admission owns it now.
+      for (const entry of entries) {
+        if (this.dutyAdmissions.get(entry.groupId) === admission) this.dutyAdmissions.delete(entry.groupId)
+      }
+    }
+  }
+
+  /** Settle what a registry write changed: an agent that left every held group stops being served
+   *  through the revoke teardown (#948 — workspace, sessions and registry entry survive), and any
+   *  change at all re-derives the physical half, since `transportAgents` gates sockets and direct
+   *  ingress is never re-checked per message. */
+  private settleDutyChange(result: DutyApplyResult): void {
+    for (const agentId of result.agentsLost) this.stopServingAgent(agentId)
+    for (const agentId of result.agentsGained) this.adoptClusterSandbox(agentId)
+    this.reclaimInterruptedWork(result.agentsGained)
+    // A duty newly held here replays that agent's shared inbox backlog even when its replica was
+    // already installed and the grant fetched nothing (#1034): a crashed holder's admitted rows
+    // must run on the successor. Drained by the reconcile below, once its connections converge.
+    for (const agentId of result.agentsGained) this.pendingInboxReplayAgents.add(agentId)
+    const changed = result.added.length + result.updated.length + result.agentsGained.length + result.agentsLost.length
+    if (changed === 0) return
+    // Report the new digest immediately. The CP publishes the projections that address this member
+    // only once it has SEEN the group held (the grant alone is not proof of an install), so waiting
+    // for the next tick leaves an agent this member is already serving unroutable for up to a
+    // heartbeat. Outside the duty gate below on purpose: the CP acts on the digest either way.
+    this.cpClient?.reportDutiesNow()
+    this.onDutyChanged()
+    // After the arm, so a catch-up runs against the schedules this member now actually holds.
+    this.catchUpMissedSchedules(result.agentsGained)
+    // The purge-receipt drain is holder-scoped, so a receipt a prior holder left is owed by this member now.
+    if (result.agentsGained.length) void this.drainSessionPurges()
+    // Same for the session-metadata outbox: a snapshot the previous holder parked is this member's to emit.
+    this.replayGainedSessionMetadata(result.agentsGained)
+  }
+
+  /**
+   * Withdraw these groups from service — a fence, a `duty/revoke`, or a drain release. Every one of
+   * them means the same thing, so they share one guard: a withdrawal that lands while an admission
+   * is in flight WINS, and that admission refuses to apply when it completes. Without this the group
+   * sits in a gap between grant receipt and `applyGrant` — not yet held, so nothing to withdraw —
+   * and then starts serving after the withdrawal that was meant to stop it.
+   *
+   * Returns the groups that were pending, for the caller's log; the retry story is unchanged, since
+   * the CP still leases them, does not see them in our digest, and reissues through missing-regrant.
+   */
+  private withdrawDutyGroups(groupIds: Iterable<string>): string[] {
+    const pending: string[] = []
+    for (const groupId of groupIds) if (this.dutyAdmissions.delete(groupId)) pending.push(groupId)
+    return pending
+  }
+
+  /** Groups whose admission is in flight: intended to be held, absent from the digest until applied. */
+  private pendingDutyAdmissions(): string[] {
+    return [...this.dutyAdmissions.keys()]
+  }
+
+  /**
+   * Install every agent these grants cover that this daemon does not already have
+   * AT THE GRANTED REVISION. Grants are thin by design, so the member pulls
+   * exactly what it lacks or what has moved on (`duty/fetch`) and applies the
+   * bundle the way an activation would — minus the move token, the staging fence,
+   * and workspace preparation.
+   *
+   * Returns the granted groups it could NOT install. A group is served as a
+   * unit, so its bots wait on its agents too — that is the point, not a cost.
+   */
+  private async installGrantedAgents(entries: DutyGrantEntry[]): Promise<Set<string>> {
+    const wanted = new Map<string, { orgId: string; groupId: string }>()
+    for (const entry of entries) {
+      for (const member of entry.members) {
+        if (member.kind !== 'agent' || !this.dutyBundleIsStale(member)) continue
+        // A duty grant must never resurrect an agent a move or removal is tearing down.
+        if (this.moveStagedAgents.has(member.refId) || this.agentRemovalPending(member.refId)) continue
+        wanted.set(member.refId, { orgId: entry.orgId, groupId: entry.groupId })
+      }
+    }
+    const failed = new Set<string>()
+    // Registered synchronously, then joined: a concurrent caller for the same
+    // grant finds every in-flight install rather than starting a second one.
+    const installs = [...wanted].map(async ([agentId, { orgId, groupId }]) => {
+      try {
+        await this.installDutyAgent(agentId, orgId)
+      } catch (err) {
+        this.log.warn(`duty: installing granted agent ${agentId} failed: ${err}`)
+        // The whole group goes: an entry may cover several agents, and a member
+        // missing one of them cannot serve that group's work.
+        failed.add(groupId)
+      }
+    })
+    await Promise.all(installs)
+    return failed
+  }
+
+  /**
+   * Does this granted agent need a (re)fetch? Presence is not freshness: an agent
+   * this member installed under a duty it later lost keeps its replica (#948 — a
+   * release is never a removal) while the CP goes on editing a spec this member is
+   * no longer a delivery target for. A regrant that skipped on presence alone
+   * would serve that frozen bundle forever. So the grant carries the CP's current
+   * `configRevision` and it is compared against the applied one — the same fence
+   * the install itself re-applies, never a second notion of freshness. Unstamped
+   * (an older CP, a bot member's group) falls back to presence.
+   */
+  private dutyBundleIsStale(member: DutyMemberRef): boolean {
+    if (!this.cpAgents?.has(member.refId)) return true
+    if (member.configRevision === undefined) return false
+    const applied = this.cpAgents.appliedRevision(member.refId)
+    return applied === undefined || BigInt(member.configRevision) > applied
+  }
+
+  /** Join the in-flight install for this agent, or start one. A failure is
+   *  remembered for one heartbeat cadence so a permanently broken agent cannot
+   *  make regrants spin faster than the beat that produces them. */
+  private installDutyAgent(agentId: string, orgId: string): Promise<void> {
+    const inFlight = this.dutyInstalls.get(agentId)
+    if (inFlight) return inFlight
+    const failedAt = this.dutyInstallFailures.get(agentId)
+    if (failedAt !== undefined && this.clock.now() - failedAt < Daemon.DUTY_INSTALL_RETRY_MS) {
+      return Promise.reject(new Error('a previous install failed within the retry window'))
+    }
+    const run = this.runDutyAgentInstall(agentId, orgId)
+      .then(
+        () => void this.dutyInstallFailures.delete(agentId),
+        (err) => {
+          this.dutyInstallFailures.set(agentId, this.clock.now())
+          throw err
+        }
+      )
+      .finally(() => {
+        if (this.dutyInstalls.get(agentId) === run) this.dutyInstalls.delete(agentId)
+      })
+    this.dutyInstalls.set(agentId, run)
+    return run
+  }
+
+  /** Fetch and apply one granted agent's bundle inside its lifecycle lane, so it
+   *  serializes against upsert/remove/activate like every other lifecycle write. */
+  private async runDutyAgentInstall(agentId: string, orgId: string): Promise<void> {
+    const reply = await this.cpClient?.fetchDutyAgent(agentId, orgId)
+    const bundle = reply?.bundle
+    // An absent bundle is the CP saying "you do not hold this duty, or the agent
+    // is gone" — the strongest signal of all that our local state disagrees with
+    // the ledger. Refuse the group rather than hold one we cannot serve.
+    if (!bundle) throw new Error('the control plane returned no bundle for this agent')
+    await this.queueAgentLifecycle(agentId, async () => {
+      if (this.moveStagedAgents.has(agentId) || this.agentRemovalPending(agentId)) {
+        this.log.info(`duty: skipping install of ${agentId} — a move or removal owns it`)
+        return
+      }
+      if (!this.cpAgents) return
+      // Definitions BEFORE the spec that names them, same order as the reconnect
+      // snapshot: an AgentSpec carries MCP server names and a memory connection id,
+      // and static memory admission must never observe the agent before at least a
+      // probing (fail-closed) connection entry exists. Applied unconditionally of
+      // the revision fence below — they are separate registries with their own
+      // fences, and a skipped spec still leaves a replica referencing them.
+      this.applyDutyDefinitions(bundle)
+      // The revision fence is the target's own (organization-secrets-and-variables.md
+      // §7): a bundle older than what we already applied never overwrites it.
+      const applied = this.cpAgents.upsert(agentId, bundle.spec)
+      if (applied === 'stale' || applied === 'conflict') {
+        this.log.warn(`duty: install of ${agentId} skipped — spec revision is ${applied}`)
+        return
+      }
+      for (const integration of bundle.integrations) this.cpIntegrations?.upsert(integration)
+      for (const cron of bundle.crons) this.cpCrons?.upsert(cron)
+      this.exactCpDependents(agentId, {
+        integrationIds: bundle.integrations.map((integration) => integration.integrationId),
+        cronIds: bundle.crons.map((cron) => cron.cronId)
+      })
+      await this.flushReconcile()
+      this.log.info(
+        `duty: installed granted agent ${agentId} (${bundle.integrations.length} integration(s), ` +
+          `${(bundle.mcpServers ?? []).length} MCP def(s), ${(bundle.memoryConnections ?? []).length} memory connection(s))`
+      )
+    })
+  }
+
+  /**
+   * Install the two definition kinds the granted agent's spec only NAMES. Additive
+   * (`upsert`, never `converge`): this member may already serve other agents whose
+   * definitions the bundle does not mention, and a duty install is never a
+   * full-replace of a tenant registry. An older CP omits both arrays.
+   *
+   * NEVER log the defs — an MCP proxy def's headers carry the bearer grant key and
+   * a memory def carries its grant plus secret leases.
+   */
+  private applyDutyDefinitions(bundle: DutyAgentBundle): void {
+    for (const spec of bundle.memoryConnections ?? []) this.memoryConnections?.upsert(spec)
+    let mcpChanged = false
+    for (const { orgId, name, issuedAt, ...def } of bundle.mcpServers ?? []) {
+      if (!orgId || name === RESERVED_MCP_SERVER_NAME) continue
+      // Same monotonic fence as the live push: a bundle projected before a grant
+      // rotation must never overwrite the fresh key it raced.
+      if (this.cpMcpDefs?.upsert(orgId, name, def, issuedAt)) mcpChanged = true
+    }
+    if (mcpChanged) this.onMcpDefsChanged()
   }
 
   /** Apply a `duty/revoke` EVT. Losing a duty is NOT a removal: the agent's
    *  workspace, sessions, and registry entry all survive — only the platform
    *  connections and schedules this daemon was running for it stop. */
   private applyDutyRevoke(revocations: DutyRevoke['revocations']): void {
+    // Same guard as the fence: a revoke landing while the group is still being admitted must stop
+    // that admission, or the member starts serving a group the CP has already taken away.
+    const pending = this.withdrawDutyGroups(revocations.map((revocation) => revocation.groupId))
+    if (pending.length > 0) this.log.info(`duty: revoked ${pending.length} group(s) mid-admission`)
     const result = this.duties.applyRevoke(revocations)
     this.log.info(
       `duty: revoked ${revocations.length} group(s) (${revocations.map((r) => r.reason).join(',')}); ` +
         `${result.agentsLost.length} agent(s) left service`
+    )
+    for (const agentId of result.agentsLost) this.stopServingAgent(agentId)
+    this.onDutyChanged()
+  }
+
+  // The duty self-fence (`T_reassign > T_fence`): stop serving these groups before the CP can hand them to a
+  // successor. Per group, because the CP expires each lease on its own schedule — a group whose lease is still
+  // honoured keeps serving. Literally a local `duty/revoke`: same registry path, same teardown, so workspace,
+  // sessions, and the registry entry all survive it (#948), and the omitted groups are what the CP's
+  // missing-regrant path reissues on reconnect.
+  private fenceDuties(groupIds: string[]): void {
+    // Not duty-governed (an org-scoped daemon) ⇒ a teardown would drop live traffic for no reason.
+    if (!this.dutyEnforced()) return
+    // BEFORE the held filter: a group still being admitted is not held yet, so there would be
+    // nothing to shed — and it would start serving the moment its admission completed.
+    const pending = this.withdrawDutyGroups(groupIds)
+    if (pending.length > 0) this.log.warn(`duty: self-fenced ${pending.length} group(s) mid-admission`)
+    const held = groupIds.filter((groupId) => this.duties.get(groupId) !== undefined)
+    if (held.length === 0) return
+    const result = this.duties.applyRevoke(held.map((groupId) => ({ groupId, reason: 'superseded' as const })))
+    this.log.warn(
+      `duty: self-fenced ${held.length} group(s); ${result.agentsLost.length} agent(s) left service, ` +
+        `${this.duties.size()} group(s) still held — no confirmed lease renewal before the CP's horizon`
     )
     for (const agentId of result.agentsLost) this.stopServingAgent(agentId)
     this.onDutyChanged()
@@ -13143,7 +13784,19 @@ export class Daemon {
           .catch((err) => this.log.warn(`duty: handing back ${grant.groupId} failed (it will lapse): ${err}`))
         return { granted: false }
       }
-      this.applyDutyGrant([grant])
+      // Load-bearing await: the rendezvous claim exists BECAUSE a trigger arrived
+      // for an agent this member does not serve, and the turn is dispatched right
+      // after. Install, then hold, then answer — answering `granted` before the
+      // agent is there reproduces the "no agent on this daemon" drop the claim is
+      // meant to prevent.
+      const failed = await this.admitDutyGrants([grant])
+      // Never applied, so the answer and the local state agree — a member that
+      // says "not me" while still holding the lease is the split brain this whole
+      // mechanism exists to avoid.
+      if (failed.has(grant.groupId)) {
+        this.log.warn(`duty: claimed ${grant.groupId} but could not install ${agentId} — handing the trigger back`)
+        return { granted: false }
+      }
       return { granted: true }
     } catch (err) {
       // A CP blip must not look like "someone else holds it" — answering with no
@@ -13167,30 +13820,191 @@ export class Daemon {
     }
   }
 
-  /** Re-derive platform connections and schedules from the new duty set. */
+  /** Re-derive platform connections and schedules from the new duty set. The physical
+   *  half is not optional: `transportAgents` gates which agents get sockets, and direct
+   *  ingress has no per-message duty check, so a group this member stopped serving keeps
+   *  receiving platform traffic until its connection is actually closed. */
   private onDutyChanged(): void {
     if (!this.dutyEnforced()) return
     for (const agent of this.agents.values()) this.syncAgentSchedules(agent)
-    void this.reconcile().catch((err) => this.log.warn(`duty: reconcile after a duty change failed: ${err}`))
+    this.syncOrchestrationDeadlines()
+    this.dutyConnectionsRequested++
+    this.convergeDutyConnections()
+  }
+
+  /** Reconcile until the duty-driven convergence has actually run. A pass that throws (a workspace
+   *  authority conflict, a host teardown, a platform close) leaves the request outstanding, and a
+   *  fence still holding its sockets open is the one state this must never settle in — so it
+   *  retries, backing off to a slow poll rather than giving up. Any other reconcile trigger
+   *  satisfies the same outstanding request and stops the loop. */
+  private convergeDutyConnections(delayMs = Daemon.DUTY_CONVERGE_RETRY_BASE_MS): void {
+    void this.reconcile().catch((err) => {
+      this.log.warn(`duty: reconcile after a duty change failed: ${formatErr(err)}`)
+      if (this.draining || this.dutyConnectionsRequested === this.dutyConnectionsConverged) return
+      this.log.warn(`duty: retrying platform convergence in ${delayMs}ms — a fenced agent may still be served`)
+      if (this.dutyConvergeRetryTimer !== undefined) this.clock.clearTimeout(this.dutyConvergeRetryTimer)
+      this.dutyConvergeRetryTimer = this.clock.setTimeout(() => {
+        this.dutyConvergeRetryTimer = undefined
+        if (this.dutyConnectionsRequested === this.dutyConnectionsConverged) return
+        this.convergeDutyConnections(Math.min(delayMs * 2, Daemon.DUTY_CONVERGE_RETRY_CAP_MS))
+      }, delayMs)
+    })
   }
 
   /** Arm this agent's cron + dream schedules, or disarm them when its duty lives
    *  elsewhere — a cron is an ingress edge, so it fires only at the holder. */
   private syncAgentSchedules(a: { id: string; crons: CronDef[]; memory?: Agent['memory'] }): void {
-    const serve = !this.dutyEnforced() || this.duties.holdsAgent(a.id)
+    const serve = this.servesAgent(a.id)
     this.scheduler.sync(a.id, serve ? a.crons : [])
     this.dreamScheduler.sync(a.id, serve ? this.dreamSchedulePolicyFor(a) : undefined)
+    // An unserved replica only disarms its own jobs — the stamps are the holder's to write.
+    if (serve) this.reconcileScheduleStamps(a)
+  }
+
+  /** The definition a cron entry fires under — an entry with no explicit `enabled` is enabled. */
+  private cronDefinition(cron: CronDef): ScheduleDefinition {
+    return { schedule: cron.schedule, timezone: cron.timezone, enabled: cron.enabled !== false }
+  }
+
+  /** The definition an agent's dream schedule fires under; an absent or scheduleless policy is
+   *  "unscheduled", which is itself a definition a later re-enable must differ from. */
+  private dreamDefinition(a: { memory?: Agent['memory'] }): ScheduleDefinition {
+    const policy = this.dreamSchedulePolicyFor(a)
+    const schedule = policy?.schedule ?? ''
+    return { schedule, timezone: policy?.timezone, enabled: policy?.enabled === true && schedule !== '' }
+  }
+
+  /**
+   * Retire a stamp whose definition has moved on (#1031). A stamp proves a fire of the definition it
+   * was written under, so an edited expression, a changed timezone, or a disable/re-enable makes the
+   * recorded moment meaningless — re-stamp NOW under the new definition, and the new definition
+   * starts clean instead of inheriting a catch-up for a moment it never covered. A cron that is GONE
+   * gets its row dropped rather than re-stamped: ids are re-mintable, and a recreated one must start
+   * from no evidence at all. Only an existing row is ever rewritten — writing one would fabricate a
+   * fire that never happened.
+   *
+   * Ownership is re-checked here rather than trusted from the caller: these rows are shared by the
+   * whole pool, so a member that does not serve the agent must never overwrite the holder's evidence
+   * with its own, possibly stale, view of the definitions.
+   */
+  private reconcileScheduleStamps(a: { id: string; crons: CronDef[]; memory?: Agent['memory'] }): void {
+    if (!this.servesAgent(a.id)) return
+    const now = this.clock.now()
+    const active = new Set(a.crons.map((cron) => `${a.id}:${cron.id}`))
+    for (const key of this.store.cronRunKeys(a.id)) if (!active.has(key)) this.store.deleteCronRun(key)
+    for (const cron of a.crons) {
+      const key = `${a.id}:${cron.id}`
+      const fingerprint = scheduleFingerprint(this.cronDefinition(cron))
+      const run = this.store.cronRun(key)
+      if (run && run.definition !== fingerprint) this.store.setCronLastRun(key, now, fingerprint)
+    }
+    // A removed dreaming policy is "unscheduled", a fingerprint no live policy ever matches.
+    const dream = scheduleFingerprint(this.dreamDefinition(a))
+    const dreamRun = this.store.dreamRun(a.id)
+    if (dreamRun && dreamRun.definition !== dream) this.store.setDreamLastRun(a.id, now, dream)
+  }
+
+  /**
+   * Compensate the fires a duty handover swallowed (#1031). The old holder unregisters an agent's
+   * schedules before the moment and the new holder arms a `Cron` that knows nothing of a moment
+   * already passed, so a cron or dream inside the window runs NOWHERE — no error, no late run, no
+   * log line. On gaining an agent this replays at most ONE occurrence per schedule (the newest
+   * missed moment, inside its grace window — never a backlog), and every fire is a CAS claim on the
+   * shared stamp, so two members racing the same handoff compensate it exactly once.
+   */
+  private catchUpMissedSchedules(agentIds: string[]): void {
+    const now = this.clock.now()
+    for (const agentId of agentIds) {
+      // Gained, then withdrawn again inside the same settle: the fire belongs to whoever holds it.
+      if (!this.servesAgent(agentId)) continue
+      const agent = this.agents.get(agentId)
+      if (!agent) continue
+      for (const cron of agent.crons) {
+        const key = `${agentId}:${cron.id}`
+        const definition = this.cronDefinition(cron)
+        const fingerprint = scheduleFingerprint(definition)
+        const due = missedOccurrence(definition, this.store.cronRun(key), now)
+        if (due === undefined || !this.store.claimCronCatchUp(key, due, now, fingerprint)) continue
+        this.log.info(`cron "${cron.id}" of agent "${agentId}": firing the occurrence a duty handover missed`)
+        const { msg } = buildSyntheticMessage(agentId, cron, randomUUID())
+        void this.onCronFire(agentId, msg, cron).catch((err) =>
+          this.log.error(`cron catch-up dispatch failed for agent "${agentId}": ${formatErr(err)}`)
+        )
+      }
+      const dream = this.dreamDefinition(agent)
+      const dueDream = missedOccurrence(dream, this.store.dreamRun(agentId), now)
+      if (dueDream === undefined || !this.store.claimDreamCatchUp(agentId, dueDream, now, scheduleFingerprint(dream)))
+        continue
+      this.log.info(`dream schedule of agent "${agentId}": firing the occurrence a duty handover missed`)
+      this.onDreamScheduleFire(agentId)
+    }
   }
 
   /** Stop serving one agent because its duty moved — the light teardown: no
    *  workspace deletion, no removal tombstone, no CP-drop latch, so a re-grant
    *  needs nothing from the CP to revive it. */
   private stopServingAgent(agentId: string): void {
-    if (!this.dutyEnforced()) return
-    this.interruptAgentTurns(agentId, 'stop')
+    void this.stopServingAgentSettled(agentId).catch((err) =>
+      this.log.warn(`duty: stopping host for ${agentId} failed: ${err}`)
+    )
+  }
+
+  // Host teardown per agent, observable by every duty path: the fire-and-forget wrapper and the
+  // settled variant both register here, and a later caller chains behind whatever is pending — a
+  // stop that FAILED stays recorded, so no path can later read that agent as torn down.
+  private readonly dutyHostStops = new Map<string, Promise<void>>()
+
+  /** The same light teardown, resolving once the agent's host is actually down — what the shutdown
+   *  release awaits before it lets a successor bind the agent's sandbox. Rejects when the host stop
+   *  failed (now, or in a still-recorded earlier attempt): the child may still be alive, so "no
+   *  longer served here" cannot be claimed. Immediate when no host exists. */
+  private stopServingAgentSettled(agentId: string): Promise<void> {
+    if (!this.dutyEnforced()) return Promise.resolve()
+    // A handoff, never a removal (#948): the turns stop here, but their admitted-but-unrun rows
+    // stay for whoever holds the duty next. Only a duty-governed member reaches this line, so a
+    // single daemon's terminal-purge semantics are untouched.
+    this.interruptAgentTurns(agentId, 'stop', 'handoff')
     this.scheduler.unregister(agentId)
     this.dreamScheduler.unregister(agentId)
-    void this.stopHost(agentId).catch((err) => this.log.warn(`duty: stopping host for ${agentId} failed: ${err}`))
+    const prior = this.dutyHostStops.get(agentId) ?? Promise.resolve()
+    // Behind a FAILED earlier stop the host is still stopped (a later host must not leak), but the
+    // failure keeps propagating: that agent stays unconfirmed for the rest of this process.
+    const stop: Promise<void> = prior.then(
+      () => this.stopHost(agentId).finally(() => this.releaseClusterSandbox(agentId)),
+      (err: unknown) =>
+        this.stopHost(agentId)
+          .finally(() => this.releaseClusterSandbox(agentId))
+          .then(() => {
+            throw err
+          })
+    )
+    this.dutyHostStops.set(agentId, stop)
+    void stop.then(
+      () => {
+        if (this.dutyHostStops.get(agentId) === stop) this.dutyHostStops.delete(agentId)
+      },
+      () => undefined
+    )
+    return stop
+  }
+
+  /** Prove a set of agents is no longer served here — hosts stopped, and the platform convergence
+   *  up to `target` run — within the deadline. Returns why not, or undefined when confirmed. */
+  private async confirmDutyTeardown(
+    agentIds: string[],
+    target: number,
+    deadlineAt: number
+  ): Promise<string | undefined> {
+    let stopsFailed: unknown
+    const stops = Promise.all(agentIds.map((agentId) => this.stopServingAgentSettled(agentId))).catch((err) => {
+      stopsFailed = err
+    })
+    if ((await this.raceDeadline(stops, deadlineAt - this.clock.now())) === 'timeout')
+      return 'host stop unfinished at the drain deadline'
+    if (stopsFailed !== undefined) return `host stop failed: ${stopsFailed}`
+    if (!(await this.awaitDutyConvergence(target, deadlineAt)))
+      return 'connection teardown unconfirmed at the drain deadline'
+    return undefined
   }
 
   private cpDegradedScopes(): string[] {
@@ -13427,7 +14241,12 @@ export class Daemon {
     let reportInboxId: string | undefined
     if (owner?.inboxId) {
       try {
-        const completed = this.store.completeHookInbox(owner.inboxId, JSON.stringify(report), this.clock.now())
+        const completed = this.store.completeHookInbox(
+          owner.inboxId,
+          JSON.stringify(report),
+          this.clock.now(),
+          hookReportOwner(report, this.cfg.daemonId)
+        )
         if (completed === 'already-terminal') {
           owner.hookTerminalReceipt = true
           this.liveInboxIds.delete(owner.inboxId)
@@ -13465,6 +14284,9 @@ export class Daemon {
       this.scheduleHookReportRetry()
       return
     }
+    // On a pool's shared store the outbox is one table for every member. Emit only
+    // under a live claim, so a peer's unacknowledged row stays with its owner.
+    if (inboxId && !this.claimHookReport(inboxId)) return
     if (inboxId) this.hookReportInflight.add(inboxId)
     let refillDrainSlot = false
     void Promise.resolve(this.cpClient.emitHookReport(report))
@@ -13472,7 +14294,7 @@ export class Daemon {
         if (!inboxId) return
         refillDrainSlot = true
         try {
-          this.store.acknowledgeHookInbox(inboxId)
+          this.store.acknowledgeHookInbox(inboxId, { ownerId: this.cfg.daemonId })
         } catch (err) {
           // An ACKed report may be re-sent if the local GC write fails. CP
           // persistence is idempotent, so retaining it is the safe direction.
@@ -13483,11 +14305,26 @@ export class Daemon {
         const permanentlyRejected =
           typeof err === 'object' && err !== null && 'retryable' in err && err.retryable === false
         if (permanentlyRejected && inboxId) {
-          // A dispatch-fence CONFLICT can never become valid. Keep the bounded
+          // A CONFLICT raised against a PEER's dispatch says nothing about this row: the CP is
+          // refusing us as the reporter, not the completion. Hand the claim back to its owner with
+          // the body intact instead of dead-lettering it; the reaper is what finally collects the
+          // row if that owner never comes back (store/orphan-reaper.ts).
+          if (foreignHookDispatch(report, this.cfg.daemonId)) {
+            this.hookReportForeign.add(inboxId)
+            const owner = report.dispatchDaemonId
+            try {
+              if (owner) this.store.releaseHookTerminalReport(inboxId, owner, this.clock.now())
+            } catch (releaseError) {
+              this.log.warn(`durable inbox: hook report release failed for ${inboxId}: ${formatErr(releaseError)}`)
+            }
+            this.log.warn(`hook report left for its dispatching daemon: ${inboxId}`)
+            return
+          }
+          // Our own dispatch-fence CONFLICT can never become valid. Keep the bounded
           // stable-id receipt for relay dedup, but dead-letter its report body.
           refillDrainSlot = true
           try {
-            this.store.acknowledgeHookInbox(inboxId)
+            this.store.acknowledgeHookInbox(inboxId, { ownerId: this.cfg.daemonId })
           } catch (cleanupError) {
             this.log.warn(`durable inbox: hook report dead-letter failed for ${inboxId}: ${formatErr(cleanupError)}`)
           }
@@ -13505,6 +14342,16 @@ export class Daemon {
       })
   }
 
+  /** Renew (or take over) this member's claim on one durable report row. */
+  private claimHookReport(inboxId: string): boolean {
+    try {
+      return this.store.claimHookTerminalReport(inboxId, this.cfg.daemonId, this.clock.now())
+    } catch (err) {
+      this.log.warn(`durable inbox: hook report claim failed for ${inboxId}: ${formatErr(err)}`)
+      return false
+    }
+  }
+
   private scheduleHookReportRetry(delayMs = 5_000): void {
     if (this.draining || this.hookReportRetryTimer !== undefined) return
     this.hookReportRetryTimer = this.clock.setTimeout(() => {
@@ -13516,10 +14363,16 @@ export class Daemon {
   /** Remove an entry's durable inbox row once its turn reaches ANY terminal state (success,
    *  reject/fail-stop, cancel, gate-drop) so it is not replayed on the next startup. No-op
    *  for a non-persisted entry (webchat / never-admitted). NOT called on graceful-shutdown
-   *  settle: those admitted-but-unrun rows are intentionally LEFT for startup replay. */
-  private removeInbox(entry: QueueEntry): void {
+   *  settle: those admitted-but-unrun rows are intentionally LEFT for startup replay.
+   *  `handoff` is the same retention for one agent: drop only this process's live claim so a
+   *  successor holder — or a later re-grant here — replays the row (#1050). */
+  private removeInbox(entry: QueueEntry, handoff = false): void {
     if (!entry.inboxId) return
     this.liveInboxIds.delete(entry.inboxId)
+    // Latched on the entry: the interrupted turn settles through dispatch's own terminal
+    // paths afterwards, and those must not delete the row the handoff just kept.
+    if (handoff) entry.inboxHandedOff = true
+    if (entry.inboxHandedOff) return
     // Hook rows become redacted terminal receipts in emitHookCompletion. If
     // that conversion failed (or shutdown deliberately skipped completion),
     // retaining the live row is the only restart-safe choice.
@@ -13550,7 +14403,9 @@ export class Daemon {
   /** Inbox rows intentionally keep the complete normalized message instead of a
    *  duplicated conversation column. A loop trip is rare, so scanning this small,
    *  already-bounded backlog keeps the persisted schema compatible while purging every
-   *  agent/session in the affected conversation. */
+   *  agent/session in the affected conversation THIS member serves. On a shared store the
+   *  scan sees the whole install's backlog, and a peer's queued row is its holder's to
+   *  discard — deleting it here would destroy work the peer is still about to run. */
   private purgeLoopScopeInbox(scope: string): number {
     let removed = 0
     try {
@@ -13559,6 +14414,7 @@ export class Daemon {
         // reports are an unacknowledged outbox. The interrupt/replay paths below
         // terminalize the former and the CP ACK releases the latter.
         if (row.hookContext || row.terminalReport) continue
+        if (!this.servesAgent(row.agentId)) continue
         let msg: NormalizedMessage
         try {
           msg = JSON.parse(row.msg) as NormalizedMessage
@@ -13580,15 +14436,10 @@ export class Daemon {
     return (usesLoopGuard(msg) || includeHook) && this.store.isLoopGuardOpen(loopGuardScope(msg))
   }
 
-  /** First-open side effects for a durable conversation circuit: purge restart work,
-   *  drop every matching serial queue, cancel live ACP turns across ALL agents sharing
-   *  the conversation, and emit exactly one operator-facing warning. */
-  private onLoopGuardTripped(
-    scope: string,
-    reason: string,
-    trigger: { agentId: string; msg: NormalizedMessage; integrationId?: string }
-  ): void {
-    const purged = this.purgeLoopScopeInbox(scope)
+  /** Stop this member's own live work in an open loop scope: drop every matching serial
+   *  queue and cancel live ACP turns across all agents it holds in that conversation. A
+   *  peer's turns are unreachable from here and are its own to stop when it next refuses. */
+  private interruptLoopScopeTurns(scope: string): number {
     const targets = new Map<string, { agentId: string; acpSessionId?: string }>()
     for (const [key, entry] of this.activeGateEntries) {
       if (loopGuardScope(entry.msg) !== scope) continue
@@ -13607,9 +14458,33 @@ export class Daemon {
     for (const [key, target] of targets) {
       this.interruptTurn(target.agentId, key, 'loop protection', target.acpSessionId, { dropQueued: true })
     }
+    const trippedAt = this.store.getLoopGuard(scope)?.trippedAt
+    this.enforcedLoopScopes.set(scope, trippedAt ?? this.clock.now())
+    return targets.size
+  }
+
+  /** A circuit a peer latched still has to stop this member's live turns, or the loop simply
+   *  keeps running here. Runs once per latch, on the first admission this member refuses. */
+  private enforceLatchedLoopScope(scope: string): void {
+    const trippedAt = this.store.getLoopGuard(scope)?.trippedAt
+    if (trippedAt === null || trippedAt === undefined) return
+    if (this.enforcedLoopScopes.get(scope) === trippedAt) return
+    const interrupted = this.interruptLoopScopeTurns(scope)
+    if (interrupted > 0) this.log.warn(`loop guard: OPEN ${scope} elsewhere; interrupted=${interrupted} here`)
+  }
+
+  /** First-open side effects for a durable conversation circuit: purge the restart work this
+   *  member owns, stop its live turns, and emit exactly one operator-facing warning. */
+  private onLoopGuardTripped(
+    scope: string,
+    reason: string,
+    trigger: { agentId: string; msg: NormalizedMessage; integrationId?: string }
+  ): void {
+    const purged = this.purgeLoopScopeInbox(scope)
+    const interrupted = this.interruptLoopScopeTurns(scope)
 
     this.log.warn(
-      `loop guard: OPEN ${scope} reason=${reason}; interrupted=${targets.size}, purgedInbox=${purged}; explicit !resume required`
+      `loop guard: OPEN ${scope} reason=${reason}; interrupted=${interrupted}, purgedInbox=${purged}; explicit !resume required`
     )
     if (trigger.msg.headless) return
     const conn = this.replyConnFor(trigger.agentId, trigger.integrationId)
@@ -13644,9 +14519,12 @@ export class Daemon {
       ? this.store.recordLoopGuardTurnForInbox(inboxReplayId, scope, this.clock.now(), !isTrustedHumanTurn(msg), limits)
       : this.store.recordLoopGuardTurn(scope, this.clock.now(), !isTrustedHumanTurn(msg), limits)
     if (verdict.allowed) return true
-    if (verdict.trippedNow)
+    if (verdict.trippedNow) {
       this.onLoopGuardTripped(scope, verdict.reason ?? 'turn_burst', { agentId, msg, integrationId })
-    else this.purgeLoopScopeInbox(scope)
+    } else {
+      this.purgeLoopScopeInbox(scope)
+      this.enforceLatchedLoopScope(scope)
+    }
     return false
   }
 
@@ -13840,6 +14718,9 @@ export class Daemon {
         // predate that purge; fresh spam is not yet in inbox, so avoid an O(inbox) scan
         // on every message while the durable latch is open.
         if (opts?.fromInboxReplay) this.purgeLoopScopeInbox(loopScope)
+        // The trip may have been owned by a peer, whose interrupts could not reach this
+        // member's turns. Stop them here once, or the loop keeps running on this member.
+        this.enforceLatchedLoopScope(loopScope)
         this.log.warn(`dispatch: skipped ${msg.msgId}; loop guard is open for ${loopScope}`)
         settleAdmission({ accepted: false, reason: 'loop_protection' })
         resolve(null)
@@ -13854,13 +14735,18 @@ export class Daemon {
           // lost its thread. Non-DM wrappers may each have a synthetic outer ts, so
           // drop them without creating an unbounded set of permanent latches.
           const verdict = this.store.tripLoopGuard(loopScope, this.clock.now(), 'malformed_platform_event')
-          if (verdict.trippedNow)
+          if (verdict.trippedNow) {
             this.onLoopGuardTripped(loopScope, verdict.reason ?? 'malformed_platform_event', {
               agentId,
               msg,
               integrationId
             })
-          else this.purgeLoopScopeInbox(loopScope)
+          } else {
+            // The CAS elected a peer (or the circuit was already open): this member still
+            // owns stopping its own turns, exactly like the counter-latch path below.
+            this.purgeLoopScopeInbox(loopScope)
+            this.enforceLatchedLoopScope(loopScope)
+          }
         } else {
           this.log.warn(`dispatch: dropped malformed Slack platform event ${msg.msgId}`)
         }
@@ -14984,7 +15870,7 @@ export class Daemon {
       let promptBlocks = [...blocks]
       let finalCaptureInput = handled.captureInput ?? msg.text
       let baseRevision =
-        handled.contextRevision ?? this.store.threadTranscriptRevision(p.transcriptChannel, p.statusThread)
+        handled.contextRevision ?? this.store.threadTranscriptRevision(p.transcriptChannel, p.statusThread, p.agentId)
       let providerCheckpoint = handled.providerCheckpoint
       if (p.stageAnswer || p.webchatRefresh) {
         // Recheck observations that landed while attachments, memory recall, or
@@ -15013,7 +15899,7 @@ export class Daemon {
           finalCaptureInput = recallQueryFromBlocks([{ type: 'text', text: finalCaptureInput }, ...deltaBlocks])
         }
         this.coalesceQueuedContext(key, sessionId, representedEventTs)
-        baseRevision = this.store.threadTranscriptRevision(p.transcriptChannel, p.statusThread)
+        baseRevision = this.store.threadTranscriptRevision(p.transcriptChannel, p.statusThread, p.agentId)
         providerCheckpoint = initialRefresh.providerCheckpoint ?? providerCheckpoint
       }
 
@@ -15130,7 +16016,7 @@ export class Daemon {
           // trigger's canonical ts is carried on the message — exclude it.
           .filter((event) => !p.webchatRefresh || msg.transcriptTs === undefined || event.ts !== msg.transcriptTs)
           .sort((a, b) => a.eventTimeUs - b.eventTimeUs || a.seq - b.seq)
-        const finalRevision = this.store.threadTranscriptRevision(p.transcriptChannel, p.statusThread)
+        const finalRevision = this.store.threadTranscriptRevision(p.transcriptChannel, p.statusThread, p.agentId)
 
         if (invalidatingEvents.length === 0) {
           if (p.stageAnswer) this.acceptStagedAttempt(p)
@@ -15232,7 +16118,7 @@ export class Daemon {
         }
         defaultTurnOutputMetrics.candidateDiscarded('context_changed')
         this.coalesceQueuedContext(key, sessionId, eventTs)
-        baseRevision = this.store.threadTranscriptRevision(p.transcriptChannel, p.statusThread)
+        baseRevision = this.store.threadTranscriptRevision(p.transcriptChannel, p.statusThread, p.agentId)
         generation += 1
         promptBlocks = [
           {
@@ -15695,6 +16581,8 @@ export class Daemon {
       preserveQueued?: boolean
       allowSameKeyAdmissions?: boolean
       allowGithubLane?: string
+      /** Duty handoff: stop running the work here, but leave its durable rows for the successor. */
+      handoffInbox?: boolean
     } = {}
   ): void {
     // The force-cancel fallback is host-wide. Hold NEW admissions until this exact
@@ -15715,7 +16603,7 @@ export class Daemon {
       if (reason === 'superseded' && activeEntry.hookContext) {
         this.emitHookCompletion(activeEntry.hookContext, 'failed', { reason }, activeEntry)
       } else {
-        this.removeInbox(activeEntry)
+        this.removeInbox(activeEntry, opts.handoffInbox)
       }
     }
     // Drop everything buffered behind this turn first (one unified queue) and settle each
@@ -15729,7 +16617,7 @@ export class Daemon {
         if (e.hookContext) {
           this.emitHookCompletion(e.hookContext, 'failed', { reason: opts.dropQueued ? 'dropped' : 'cancelled' }, e)
         }
-        this.removeInbox(e)
+        this.removeInbox(e, opts.handoffInbox)
         if (opts.dropQueued) e.resolve(null)
         else e.reject(new FailStopError(key))
       }
@@ -15795,11 +16683,17 @@ export class Daemon {
   /** Interrupt every logical session owned by an agent for a lifecycle gate (pause,
    *  removal, or host respawn). Active ACP turns are cancelled; queued turns are
    *  cleanly gate-dropped. A cold head is latched so it cannot resume after teardown. */
-  private interruptAgentTurns(agentId: string, reason: TurnInterruptReason): void {
+  private interruptAgentTurns(
+    agentId: string,
+    reason: TurnInterruptReason,
+    disposition: TurnInterruptDisposition = 'terminal'
+  ): void {
+    const handoffInbox = disposition === 'handoff'
     this.beginSafetyDrain(agentId, reason)
-    // The interruption is terminal for every already-admitted turn. Delete durable
-    // rows first so an immediate daemon stop cannot preserve and replay old work.
-    this.purgeAgentInbox(agentId, reason)
+    // A terminal interrupt ends every already-admitted turn: delete the durable rows first so an
+    // immediate daemon stop cannot preserve and replay old work. A handoff keeps them instead —
+    // on a pool's shared store those rows ARE the unrun work the successor holder must replay.
+    if (!handoffInbox) this.purgeAgentInbox(agentId, reason)
     const targets = new Map<string, string | undefined>()
     for (const [key, entry] of this.activeGateEntries) {
       if (entry.agentId !== agentId) continue
@@ -15817,7 +16711,7 @@ export class Daemon {
     if (targets.size > 0)
       this.log.info(`${reason}: interrupting ${targets.size} active session(s) for agent "${agentId}"`)
     for (const [key, acpSessionId] of targets) {
-      this.interruptTurn(agentId, key, reason, acpSessionId, { dropQueued: true })
+      this.interruptTurn(agentId, key, reason, acpSessionId, { dropQueued: true, handoffInbox })
     }
   }
 
@@ -16266,7 +17160,8 @@ export class Daemon {
           input.sessionId,
           JSON.stringify(snapshot),
           input.phase !== 'plan',
-          this.clock.now()
+          this.clock.now(),
+          this.cfg.daemonId
         ) !== undefined
     } catch (err) {
       // Preserve the pre-outbox behavior if the local write fails: a live CP may
@@ -16325,16 +17220,9 @@ export class Daemon {
     }
     const drain = this.runSessionMetadataDrain(cp).finally(() => {
       if (this.sessionMetadataDrain === drain) this.sessionMetadataDrain = undefined
-      // Close the empty-read/new-write race: a producer that observed the old
-      // in-flight promise relies on this final check to refill the drain.
       try {
-        if (
-          !this.draining &&
-          this.cpClient?.supportsServerFeature?.(SESSION_METADATA_ACK_FEATURE) &&
-          this.store.hasPendingSessionMetadata()
-        ) {
-          this.scheduleSessionMetadataRetry(0)
-        }
+        // Close the empty-read/new-write race and re-arm the earliest deferred snapshot.
+        this.schedulePendingSessionMetadataDrain()
       } catch (err) {
         this.log.warn(`event/session outbox refill check failed (${formatErr(err)})`)
       }
@@ -16345,34 +17233,162 @@ export class Daemon {
 
   private async runSessionMetadataDrain(cp: CpClient): Promise<void> {
     while (!this.draining && (cp.state === 'READY' || cp.state === 'DRAINING')) {
+      let row: SessionMetadataOutboxRow | undefined
       try {
-        const row = this.store.nextSessionMetadataSnapshot()
+        row = this.store.nextSessionMetadataSnapshot(this.clock.now(), this.cfg.daemonId, this.servedAgentIds())
         if (!row) return
+        // Emit only under a live claim: on a pool this outbox is one shared table, so a
+        // row a peer holds is that member's to report, never ours to duplicate or drop.
+        if (
+          !this.store.claimSessionMetadataSnapshot(
+            row.agentId,
+            row.sessionId,
+            row.revision,
+            this.cfg.daemonId,
+            this.clock.now()
+          )
+        ) {
+          continue
+        }
+        // The frame is scoped by the agent's organization, and only a member serving the
+        // agent can resolve it — leave the row for that member instead of failing it here.
+        if (!this.servesAgent(row.agentId) && this.parkSessionMetadataRow(row, 'agent served elsewhere')) continue
         const parsed = EventSessionSchema.safeParse(JSON.parse(row.snapshot))
         if (!parsed.success || parsed.data.agentId !== row.agentId || parsed.data.sessionId !== row.sessionId) {
           this.log.warn(`event/session outbox dropped an invalid snapshot for session ${row.sessionId}`)
-          this.store.acknowledgeSessionMetadataSnapshot(row.agentId, row.sessionId, row.revision)
+          this.store.acknowledgeSessionMetadataSnapshot(row.agentId, row.sessionId, row.revision, this.cfg.daemonId)
           continue
         }
         const result = await cp.syncEventSession(parsed.data)
         if (result === 'unsupported') return
         // Revision fencing: an event produced while this request was in flight
         // remains pending instead of being cleared by the older ACK.
-        this.store.acknowledgeSessionMetadataSnapshot(row.agentId, row.sessionId, row.revision)
+        this.store.acknowledgeSessionMetadataSnapshot(row.agentId, row.sessionId, row.revision, this.cfg.daemonId)
       } catch (err) {
-        this.log.debug(`event/session snapshot retained for retry (${formatErr(err)})`)
+        if (!row) {
+          this.log.warn(`event/session outbox read failed (${formatErr(err)})`)
+          this.scheduleSessionMetadataRetry()
+          return
+        }
+        // SCOPE_DENIED says this member cannot name the agent's organization, not that the
+        // snapshot is bad. Park it for the member that can rather than burning a failure.
+        if (
+          typeof err === 'object' &&
+          err !== null &&
+          'code' in err &&
+          err.code === 'SCOPE_DENIED' &&
+          this.parkSessionMetadataRow(row, 'organization unresolvable here')
+        ) {
+          continue
+        }
+        const nextFailure = row.failedAttempts + 1
+        const explicitlyPermanent =
+          typeof err === 'object' && err !== null && 'retryable' in err && err.retryable === false
+        const defer = explicitlyPermanent || nextFailure >= SESSION_METADATA_FAILURES_BEFORE_DEFER
+        let failure
+        try {
+          failure = this.store.recordSessionMetadataSnapshotFailure(
+            row.agentId,
+            row.sessionId,
+            row.revision,
+            defer ? this.clock.now() + SESSION_METADATA_DEFER_MS : null,
+            this.cfg.daemonId
+          )
+        } catch (storeErr) {
+          this.log.warn(`event/session outbox failure record failed (${formatErr(storeErr)})`)
+          this.scheduleSessionMetadataRetry()
+          return
+        }
+        // A newer revision replaced the failed request while it was in flight; drain that revision now.
+        if (!failure) continue
+        if (defer) {
+          this.log.warn(
+            `event/session snapshot deferred after ${failure.failedAttempts} failures for session ${row.sessionId} (${formatErr(err)})`
+          )
+          continue
+        }
+        const message = `event/session snapshot retained for retry (${formatErr(err)})`
+        if (failure.failedAttempts === 1) this.log.warn(message)
+        else this.log.debug(message)
         this.scheduleSessionMetadataRetry()
         return
       }
     }
   }
 
+  /** Agents whose shared-outbox rows this member may work on: the ones it serves. */
+  private servedAgentIds(): string[] {
+    return [...this.agents.keys()].filter((agentId) => this.servesAgent(agentId))
+  }
+
+  /** Release a snapshot this member cannot scope, so the member serving the agent drains
+   *  it. The body and the failure count survive; the backoff only keeps it out of this
+   *  member's next pass. False on a local store, where there is no other member. */
+  private parkSessionMetadataRow(row: SessionMetadataOutboxRow, why: string): boolean {
+    let parked = false
+    try {
+      parked = this.store.parkSessionMetadataSnapshot(
+        row.agentId,
+        row.sessionId,
+        row.revision,
+        this.clock.now() + SESSION_METADATA_PARK_MS
+      )
+    } catch (err) {
+      this.log.warn(`event/session outbox park failed (${formatErr(err)})`)
+      return false
+    }
+    if (parked) this.log.debug(`event/session snapshot parked for session ${row.sessionId} (${why})`)
+    return parked
+  }
+
+  /** A duty newly held here owns that agent's snapshots: take the parked ones off their
+   *  backoff and the previous holder's claim off the rest — it released the duty, so it
+   *  will never emit them — then replay at once instead of waiting out the lease. */
+  private replayGainedSessionMetadata(agentIds: readonly string[]): void {
+    if (!agentIds.length) return
+    try {
+      this.store.reclaimSessionMetadataSnapshots(agentIds, this.cfg.daemonId)
+    } catch (err) {
+      this.log.warn(`event/session outbox reclaim failed (${formatErr(err)})`)
+    }
+    void this.drainSessionMetadataSnapshots()
+  }
+
+  /** Shutdown counterpart: this member will not emit again, so every claim it still holds
+   *  goes back to the pool for its successor instead of blocking on the lease. */
+  private releaseOwnedSessionMetadata(): void {
+    try {
+      const released = this.store.releaseOwnedSessionMetadataSnapshots(this.cfg.daemonId)
+      if (released) this.log.debug(`event/session outbox released ${released} claim(s) for the pool`)
+    } catch (err) {
+      this.log.warn(`event/session outbox release failed (${formatErr(err)})`)
+    }
+  }
+
+  private schedulePendingSessionMetadataDrain(): void {
+    if (this.draining || !this.cpClient?.supportsServerFeature?.(SESSION_METADATA_ACK_FEATURE)) return
+    const served = this.servedAgentIds()
+    if (!this.store.hasPendingSessionMetadata(this.cfg.daemonId, served)) return
+    const attemptAt = this.store.nextSessionMetadataAttemptAt(this.cfg.daemonId, served)
+    if (attemptAt !== undefined) this.scheduleSessionMetadataRetry(Math.max(0, attemptAt - this.clock.now()))
+  }
+
   private scheduleSessionMetadataRetry(delayMs = SESSION_METADATA_RETRY_MS): void {
-    if (this.draining || this.sessionMetadataRetryTimer !== undefined) return
-    this.sessionMetadataRetryTimer = this.clock.setTimeout(() => {
-      this.sessionMetadataRetryTimer = undefined
-      void this.drainSessionMetadataSnapshots()
-    }, delayMs)
+    if (this.draining) return
+    const retryAt = this.clock.now() + Math.max(0, delayMs)
+    if (this.sessionMetadataRetryTimer !== undefined) {
+      if (this.sessionMetadataRetryAt !== undefined && this.sessionMetadataRetryAt <= retryAt) return
+      this.clock.clearTimeout(this.sessionMetadataRetryTimer)
+    }
+    this.sessionMetadataRetryAt = retryAt
+    this.sessionMetadataRetryTimer = this.clock.setTimeout(
+      () => {
+        this.sessionMetadataRetryTimer = undefined
+        this.sessionMetadataRetryAt = undefined
+        void this.drainSessionMetadataSnapshots()
+      },
+      Math.max(0, delayMs)
+    )
   }
 
   private emitSessionMetadataSnapshotsForDisplayName(id: string): void {
@@ -18129,7 +19145,7 @@ export class Daemon {
       // Never let classification break a turn — but fail CLOSED: an unclassified
       // session keeps memory capture excluded until the CP confirms otherwise.
       this.log.warn(`session visibility: classification failed for ${acpSessionId} (${formatErr(err)})`)
-      this.store.setLocalCaptureGate(acpSessionId, true)
+      this.store.setLocalCaptureGate(agentId, acpSessionId, true)
     }
   }
 
@@ -18352,7 +19368,7 @@ export class Daemon {
     // stay private.
     const locallyPrivate =
       !isEvaluation && (isA2aChild || msg.isDm || msg.platform === 'webchat' || launchCorrelationId !== undefined)
-    this.store.setLocalCaptureGate(acpSessionId, locallyPrivate)
+    this.store.setLocalCaptureGate(agentId, acpSessionId, locallyPrivate)
   }
 
   /** The ACP session id behind an MCP tool call, from the caller's trusted
@@ -18802,6 +19818,20 @@ export class Daemon {
     }
   }
 
+  /**
+   * Recurring store retention (store/retention.ts). Its OWN timer, not the idle sweep's: idle
+   * reclamation is a tuning knob an install may switch off (`idleSweepMs <= 0`), and every
+   * table would then grow without bound. Age only — the agent-existence proof needs a
+   * control-plane read that only `reconcile --once` has.
+   */
+  private armStoreRetentionSweep(): void {
+    this.storeRetentionTimer = this.clock.setTimeout(() => {
+      this.storeRetentionTimer = undefined
+      this.storeRetention.sweepAgeOnly()
+      if (!this.draining) this.armStoreRetentionSweep()
+    }, SESSION_RETENTION_SWEEP_INTERVAL_MS)
+  }
+
   /** Recurring idle sweep (§7.2/§7.3): reap idle adapter children and TTL-close
    *  idle sessions. Driven by the injected Clock so a FakeClock advances it in tests. */
   private armIdleSweep(): void {
@@ -19239,9 +20269,11 @@ export class Daemon {
    *  state stays reachable through the same logical session. */
   /** The retention sweep's active-turn exclusion, beyond the durable-state filter:
    *  a claimed serial gate (owns cold dispatch + queued arrivals), a live Pending
-   *  turn, pending durable inbox work, or unsettled SDK background tasks. */
+   *  turn, pending durable inbox work, or unsettled SDK background tasks. All are
+   *  member-local, so an agent this member does not serve counts as active (#1032). */
   private sessionRetentionActive(rec: { key: string; agentId: string; acpSessionId: string | null }): boolean {
     return (
+      !this.servesAgent(rec.agentId) ||
       this.drainingAgents.has(rec.agentId) ||
       this.inflight.has(rec.key) ||
       this.activeDispatchDoneByKey.has(rec.key) ||
@@ -19253,7 +20285,7 @@ export class Daemon {
 
   /** The one safe per-session worktree deletion path shared by age retention
    * and GitHub thread lifecycle cleanup. It deliberately preserves the current
-   * dirty/untracked and unique-commit protections in removeSessionWorktree(). */
+   * dirty/untracked and unique-commit protections in this.workspaces.removeSessionWorktree(). */
   private async cleanupSessionWorktree(rec: SessionRecord): Promise<SessionWorktreeCleanupResult> {
     if (this.sessionRetentionActive(rec)) return { outcome: 'active' }
     const agent = this.agents.get(rec.agentId)
@@ -19268,7 +20300,7 @@ export class Daemon {
       if (!currentAgent || currentAgent.workspace.mode !== 'git-repo' || rec.workspaceIsolation === 'shared') {
         return { outcome: 'not_applicable' }
       }
-      const result = await removeSessionWorktree(currentAgent, rec.key)
+      const result = await this.workspaces.removeSessionWorktree(currentAgent, rec.key)
       if ((result.outcome === 'removed' || result.outcome === 'absent') && rec.acpSessionId) {
         // The session row intentionally survives lifecycle cleanup. Evict only
         // this stale warm binding so the next reopened/comment turn recreates
@@ -19288,7 +20320,10 @@ export class Daemon {
     if (this.sessionRetentionSweepInFlight) return
     this.sessionRetentionSweepInFlight = true
     try {
-      const expired = this.store.listExpiredSessions(this.clock.now() - windowMs)
+      // Holder-only on a pool: the active-turn exclusions are member-local, so only the holder can judge a row.
+      const expired = this.store
+        .listExpiredSessions(this.clock.now() - windowMs)
+        .filter((rec) => this.servesAgent(rec.agentId))
       if (!expired.length) return
       // ONE stamp for the whole pass, not one per session: it is the sweep that
       // deleted them, and a shared value lets the drain report a pass as a single
@@ -19332,7 +20367,7 @@ export class Daemon {
         // The purge receipt is written in deleteSession's transaction: the CP holds
         // the only surviving record of this session, and it must be told that the
         // content behind it is gone (drained below, durably, on ACK).
-        if (this.store.deleteSession(rec.key, { reason: 'retention', at: purgedAt })) {
+        if (this.store.deleteSession(rec.key, { reason: 'retention', at: purgedAt, ownerId: this.cfg.daemonId })) {
           removed += 1
           if (rec.acpSessionId) this.sdkLease.delete(sdkLeaseKey(rec.agentId, rec.acpSessionId))
           await this.releaseModelSessionHost(rec.key)
@@ -19360,7 +20395,8 @@ export class Daemon {
    * CP authorizes each report against that agent's placement, and every session in
    * a frame must genuinely share the reason and timestamp the frame carries. A
    * receipt is released only on the ACK; a CP that is offline, older than the
-   * feature, or failing keeps them all for the next sweep or reconnect. Never
+   * feature, or failing keeps them all for the next sweep or reconnect. Bounding the
+   * table is the reconciler's job, not this drain's (store/orphan-reaper.ts). Never
    * throws: this rides the idle sweep.
    */
   private async drainSessionPurges(): Promise<void> {
@@ -19369,19 +20405,24 @@ export class Daemon {
     // reconnect drains them, so attempting the request here would only log a
     // failure every sweep for a daemon that is deliberately running local.
     if (!cp || (cp.state !== 'READY' && cp.state !== 'DRAINING')) return
-    if (this.sessionPurgeDrainInFlight) return
+    // Coalesced, not dropped: a trigger that lands mid-drain (a duty gained) runs one more pass after it.
+    if (this.sessionPurgeDrainInFlight) {
+      this.sessionPurgeDrainRerun = true
+      return
+    }
     this.sessionPurgeDrainInFlight = true
+    this.sessionPurgeDrainRerun = false
     try {
-      const stale = this.store.pruneSessionPurges(this.clock.now() - SESSION_PURGE_RECEIPT_TTL_MS)
-      if (stale)
-        this.log.warn(
-          `retention: dropped ${stale} unreported session-purge receipt(s) older than ${
-            SESSION_PURGE_RECEIPT_TTL_MS / (24 * 3_600_000)
-          }d — those sessions stay unmarked in the control plane`
-        )
       // Bounded per pass: whatever is left is picked up by the next sweep or
       // reconnect, so a large backlog drains steadily instead of in one burst.
-      const owed = this.store.listSessionPurges(MAX_SESSION_PURGE_BATCH * 10)
+      // Shared on a pool: offered its own rows, unowned ones, and a lapsed peer's for agents it serves.
+      const served = [...this.agents.keys()].filter((agentId) => this.servesAgent(agentId))
+      const owed = this.store.listSessionPurges(
+        MAX_SESSION_PURGE_BATCH * 10,
+        this.clock.now(),
+        this.cfg.daemonId,
+        served
+      )
       if (!owed.length) return
       // One group per (agent, reason, purge time): the frame states all three for
       // every session it carries, so rows that disagree on any of them must not
@@ -19400,8 +20441,15 @@ export class Daemon {
       }
       let reported = 0
       let skippedReasons = 0
+      let leftForHolder = 0
       for (const rows of groups.values()) {
         const { agentId, reason, purgedAt } = rows[0]!
+        // The CP ACKs a non-holder without marking, so a foreign agent's rows are left for the holder
+        // (the claim lapses) — and skipped, never returned on, so they cannot block the groups behind them.
+        if (!this.servesAgent(agentId)) {
+          leftForHolder += rows.length
+          continue
+        }
         // A reason this build cannot express on the wire would be silently
         // mislabeled as something else, so report the gap and keep the receipts.
         const parsed = SessionPurgeReason.safeParse(reason)
@@ -19411,10 +20459,18 @@ export class Daemon {
         }
         for (let i = 0; i < rows.length; i += MAX_SESSION_PURGE_BATCH) {
           const batch = rows.slice(i, i + MAX_SESSION_PURGE_BATCH)
+          // Emit only under a live claim: a row a peer took over since the read stays with it.
+          const sessionIds = this.store.claimSessionPurges(
+            agentId,
+            batch.map((row) => row.sessionId),
+            this.cfg.daemonId,
+            this.clock.now()
+          )
+          if (!sessionIds.length) continue
           try {
             const result = await cp.emitSessionPurged({
               agentId,
-              sessionIds: batch.map((row) => row.sessionId),
+              sessionIds,
               reason: parsed.data,
               ts: new Date(purgedAt).toISOString()
             })
@@ -19422,19 +20478,18 @@ export class Daemon {
               this.log.debug('retention: control plane does not accept purge receipts yet — keeping them')
               return
             }
-            this.store.acknowledgeSessionPurges(
-              agentId,
-              batch.map((row) => row.sessionId)
-            )
-            reported += batch.length
+            this.store.acknowledgeSessionPurges(agentId, sessionIds, this.cfg.daemonId)
+            reported += sessionIds.length
           } catch (err) {
             // Keep the receipts. The report is idempotent on the CP, so re-sending
             // an already-applied batch after a lost ACK is safe.
             this.log.warn(`retention: purge receipt report failed for agent ${agentId} (${formatErr(err)})`)
-            return
+            break
           }
         }
       }
+      if (leftForHolder)
+        this.log.debug(`retention: ${leftForHolder} purge receipt(s) belong to agents another member serves — kept`)
       if (skippedReasons)
         this.log.warn(`retention: ${skippedReasons} purge receipt(s) carry a reason this build cannot report — kept`)
       if (reported) this.log.info(`retention: reported ${reported} purged session(s) to the control plane`)
@@ -19443,6 +20498,7 @@ export class Daemon {
     } finally {
       this.sessionPurgeDrainInFlight = false
     }
+    if (this.sessionPurgeDrainRerun) await this.drainSessionPurges()
   }
 
   private sweepIdle(): void {
@@ -19477,11 +20533,14 @@ export class Daemon {
       void this.sweepSessionRetention().catch((err) =>
         this.log.warn(`retention: session GC sweep failed (${formatErr(err)})`)
       )
+      // Backstop for receipts this member came to own without a sweep of its own (a lapsed peer's).
+      void this.drainSessionPurges()
     }
     const ttl = this.cfg.limits.agentIdleTimeoutMs
     const maxLifetime = this.cfg.limits.agentMaxLifetimeMs
     // §7.3 idle→closed: a thread untouched past the TTL stops catching up — UNLESS it
-    // still has in-flight background work (the SDK lease), which keeps it open.
+    // still has in-flight background work (the SDK lease), which keeps it open. The
+    // lease is member-local, so on a pool only the agent's holder decides its rows.
     const closed = this.store.closeIdleSessions(now, ttl, (agentId, acpSessionId, key) =>
       this.sessionRetentionActive({ key, agentId, acpSessionId })
     )
@@ -19599,7 +20658,9 @@ export class Daemon {
   private sweepIdleSandboxes(now: number, ttl: number): void {
     const plane = this.k8sPlane
     if (!plane) return
-    for (const agentId of plane.launchedAgents()) {
+    for (const { agentId, since } of plane.launchedAgents()) {
+      // Suspend is the holder's decision (k8s-daemon-pool §4); an ex-holder must not touch its successor's pod.
+      if (this.dutyEnforced() && !this.duties.holdsAgent(agentId)) continue
       // A live host owns the decision above; suspending under it would pull the pod out from
       // beneath a runtime that is merely between turns.
       if (
@@ -19609,9 +20670,8 @@ export class Daemon {
         continue
       if ((this.activeDispatchesByAgent.get(agentId)?.size ?? 0) > 0) continue
       if ([...this.pending.values()].some((p) => p.agentId === agentId)) continue
-      // No host means no `hostStartedAt` floor to fall back on, so an agent that has never served
-      // a turn reads as idle-since-epoch — which is correct here: nothing is running in its pod.
-      const last = this.store.agentLastActivityTs(agentId) ?? 0
+      // Shared-store activity, floored at when this member took the launch: a full window, not epoch-idle.
+      const last = Math.max(this.store.agentLastActivityTs(agentId) ?? 0, since)
       if (now - last <= ttl) continue
       void plane
         .suspendIdle(agentId)
@@ -19626,6 +20686,29 @@ export class Daemon {
     }
   }
 
+  /** Cluster only: take over the sandbox of an agent this member just started serving, from the cluster. */
+  // So a Running pod nobody here launched (a rollout, a moved duty) has a holder that can suspend it.
+  // Behind any teardown still settling for the agent, so a lose-then-regain cannot forget the adoption.
+  private adoptClusterSandbox(agentId: string): void {
+    const plane = this.k8sPlane
+    if (!plane) return
+    const prior = this.dutyHostStops.get(agentId) ?? Promise.resolve()
+    void prior
+      .catch(() => undefined)
+      .then(async () => {
+        if (this.dutyEnforced() && !this.duties.holdsAgent(agentId)) return
+        await plane.adoptAgent(agentId)
+      })
+      .catch((err) =>
+        this.log.warn(`cluster: taking over the sandbox for agent "${agentId}" failed: ${formatErr(err)}`)
+      )
+  }
+
+  /** Cluster only: the sandbox half of "no longer served here"; the claim and volume stay. */
+  private releaseClusterSandbox(agentId: string): void {
+    this.k8sPlane?.releaseAgent(agentId)
+  }
+
   /**
    * Cluster only: destroy an agent's sandbox and, with it, its workspace volume. Called where the
    * local path deletes the agent's checkout — removal, and only removal. A detached or moved agent
@@ -19634,7 +20717,7 @@ export class Daemon {
    *
    * Best effort by construction: the durable local removal has already succeeded, and failing the
    * lifecycle ACK over a leaked claim would leave the CP and this daemon disagreeing about whether
-   * the agent exists. A failure is therefore reported with the command that finishes the job.
+   * the agent exists. One delete, logged on failure; the orphan reconciler collects what is left.
    */
   private async discardClusterSandbox(agentId: string): Promise<void> {
     const plane = this.k8sPlane
@@ -19643,8 +20726,8 @@ export class Daemon {
       await plane.discardAgent(agentId)
     } catch (err) {
       this.log.warn(
-        `cluster: could not delete the sandbox for removed agent "${agentId}" — its pod and workspace volume ` +
-          `are still allocated (${formatErr(err)}); delete sandboxclaim "${plane.driver.claimName(agentId)}" to reclaim them`
+        `cluster: could not delete the sandbox for removed agent "${agentId}" (${formatErr(err)}) — ` +
+          `sandboxclaim "${plane.driver.claimName(agentId)}" is left for the orphan reconciler`
       )
     }
   }
@@ -19774,6 +20857,10 @@ export class Daemon {
     // Join first: a claim still awaiting the CP would otherwise land after the
     // snapshot below and outlive the drain.
     await this.joinInFlightDutyClaims()
+    // A grant EVT can still be mid-admission here — the claim join covers the rendezvous path only.
+    // Withdraw those too, so nothing installs itself back into service after `drain/done`.
+    const pending = this.withdrawDutyGroups(this.pendingDutyAdmissions())
+    if (pending.length > 0) this.log.info(`duty: dropped ${pending.length} group(s) still being admitted on drain`)
     const groupIds = this.duties.releaseAll()
     if (groupIds.length === 0) return
     try {
@@ -19782,6 +20869,184 @@ export class Daemon {
     } catch (err) {
       this.log.warn(`duty: releasing ${groupIds.length} group(s) failed (leases will lapse): ${err}`)
     }
+  }
+
+  /** Does any agent of this group still own admitted work — an active dispatch lease, a pending
+   *  ACP turn, or a cold dispatch still initializing? The predicate the shutdown release waits on. */
+  private dutyGroupBusy(groupId: string): boolean {
+    const held = this.duties.get(groupId)
+    if (!held) return false
+    for (const agentId of held.agentIds) {
+      if ((this.activeDispatchesByAgent.get(agentId)?.size ?? 0) > 0) return true
+      for (const p of this.pending.values()) if (p.agentId === agentId) return true
+      for (const entry of this.activeGateEntries.values()) if (entry.agentId === agentId) return true
+      // A dream in flight is an in-flight job: its host and staging are on the sandbox this member holds.
+      if (this.dreamRunnerInstance?.inFlight(agentId)) return true
+    }
+    return false
+  }
+
+  /**
+   * SIGTERM on a duty-holding member: hand every held group back with an ACKNOWLEDGED
+   * `duty/release`, one group at a time, as soon as that group is idle — never cancelling a turn
+   * to move faster. A group whose agents are all idle goes at once (its successor claims it on
+   * the next beat while this member is still waiting on a busier group); a busy group goes when
+   * its last turn settles, or when the drain deadline has cancelled it. A release is sent only
+   * after the group's physical service here is gone — hosts stopped, platform connections
+   * converged — so a successor never binds a sandbox or a socket this member still holds. Past
+   * `deadlineAt`, or if that teardown cannot be confirmed, the group is NOT released: it is left
+   * to lapse at T_reassign, the pre-existing takeover path and the honest answer when "no longer
+   * served here" cannot be proven.
+   */
+  private async releaseDutiesForShutdown(drain: ShutdownDutyDrain): Promise<void> {
+    if (!this.dutyEnforced()) return
+    const startedAt = this.clock.now()
+    const { deadlineAt, stats } = drain
+    // Join first: a claim still awaiting the CP would otherwise land after the last release.
+    await this.joinInFlightDutyClaims()
+    const pending = this.withdrawDutyGroups(this.pendingDutyAdmissions())
+    if (pending.length > 0) this.log.info(`duty: dropped ${pending.length} group(s) still being admitted on shutdown`)
+    for (;;) {
+      const remaining = this.duties.groupIds()
+      if (remaining.length === 0) break
+      const forced = this.clock.now() >= deadlineAt
+      const ready = forced ? remaining : remaining.filter((groupId) => !this.dutyGroupBusy(groupId))
+      for (const groupId of ready) {
+        // Withdraw locally first — the same teardown a revoke runs — and wait for it to be real.
+        const held = this.duties.get(groupId)
+        const result = this.duties.applyRevoke([{ groupId, reason: 'superseded' }])
+        stats.groups++
+        stats.agents += result.agentsLost.length
+        this.onDutyChanged()
+        const why = await this.confirmDutyTeardown(held?.agentIds ?? [], this.dutyConnectionsRequested, deadlineAt)
+        if (why !== undefined) {
+          stats.lapsing++
+          for (const agentId of held?.agentIds ?? []) drain.lapsedAgents.add(agentId)
+          this.log.warn(`duty: ${groupId} may still be served here — not released, its lease lapses (${why})`)
+          continue
+        }
+        if (await this.releaseDutyAcknowledged(groupId, deadlineAt)) stats.acked++
+        else stats.lapsing++
+      }
+      if (forced) break
+      if (ready.length === 0) {
+        this.log.info(
+          `duty: ${remaining.length} held group(s) still have turns in flight — releasing each as it settles`
+        )
+        await this.sleepUntil(Math.min(this.clock.now() + 1_000, deadlineAt))
+      }
+    }
+    drain.loopDone = true
+    await this.settleLateGrants(drain)
+    if (stats.groups === 0 && stats.late === 0) return
+    this.log.info(
+      `duty: shutdown drain released ${stats.groups} group(s) covering ${stats.agents} agent(s) ` +
+        `plus ${stats.late} late grant(s) in ${Math.round((this.clock.now() - startedAt) / 1000)}s — ` +
+        `${stats.acked} acknowledged, ${stats.lapsing} left to lapse`
+    )
+  }
+
+  /** Grants that landed after the latch, settled once the release loop is done: every held group has
+   *  been withdrawn and torn down, or left to lapse, so nothing is served here any more. Each late
+   *  grant is released acknowledged unless it covers an agent of a lapsing group or one whose host
+   *  stop is still recorded as pending or failed — then it lapses too. Serialized, so a second call
+   *  (a grant landing between the loop and the socket close) waits for the first. */
+  private lateGrantSettling: Promise<void> = Promise.resolve()
+  private settleLateGrants(drain: ShutdownDutyDrain): Promise<void> {
+    const run = this.lateGrantSettling.then(async () => {
+      const { deadlineAt, stats } = drain
+      if (drain.late.size === 0) return
+      // One global proof for the whole batch: the platform convergence every duty change so far
+      // requested has run — a group revoked or fenced just before the SIGTERM never entered the
+      // loop, and only this closes the socket that revoke opened the teardown for. Unconfirmed
+      // (deadline, or the reconcile gave up) ⇒ every late grant lapses.
+      const converged = await this.awaitDutyConvergence(this.dutyConnectionsRequested, deadlineAt)
+      while (drain.late.size > 0) {
+        const [groupId, grant] = drain.late.entries().next().value as [string, DutyGrantEntry]
+        drain.late.delete(groupId)
+        stats.late++
+        if (!converged) {
+          stats.lapsing++
+          this.log.warn(`duty: late grant ${groupId} — connection teardown unconfirmed, not released, its lease lapses`)
+          continue
+        }
+        const agentIds = grant.members.filter((m) => m.kind === 'agent').map((m) => m.refId)
+        // A stop still in flight is given until the deadline; a failed one stays recorded.
+        for (const agentId of agentIds) {
+          const stop = this.dutyHostStops.get(agentId)
+          if (stop)
+            await this.raceDeadline(
+              stop.catch(() => undefined),
+              deadlineAt - this.clock.now()
+            )
+        }
+        const blocked = agentIds.find((agentId) => drain.lapsedAgents.has(agentId) || this.dutyHostStops.has(agentId))
+        if (blocked !== undefined) {
+          stats.lapsing++
+          this.log.warn(
+            `duty: late grant ${groupId} covers agent ${blocked}, whose teardown is unconfirmed — not released, its lease lapses`
+          )
+          continue
+        }
+        if (await this.releaseDutyAcknowledged(groupId, deadlineAt)) stats.acked++
+        else stats.lapsing++
+      }
+    })
+    this.lateGrantSettling = run.catch(() => undefined)
+    return run
+  }
+
+  /** Wait until the platform convergence a duty change requested has run — `dutyConnectionsConverged`
+   *  reaching `target` — or the deadline passes, or the reconcile carrying it gave up (a pass that
+   *  throws is not retried while draining). True only when convergence is confirmed. */
+  private async awaitDutyConvergence(target: number, deadlineAt: number): Promise<boolean> {
+    while (this.dutyConnectionsConverged < target) {
+      const remainingMs = deadlineAt - this.clock.now()
+      if (remainingMs <= 0) return false
+      const run = this.reconcileRun
+      if (run) {
+        if (
+          (await this.raceDeadline(
+            run.catch(() => undefined),
+            remainingMs
+          )) === 'timeout'
+        )
+          return false
+      } else if (this.reconcilePending) {
+        await this.sleepUntil(this.clock.now() + 20)
+      } else {
+        return false
+      }
+    }
+    return true
+  }
+
+  /** One `duty/release`, retried with backoff until acknowledged or the drain deadline passes. */
+  private async releaseDutyAcknowledged(groupId: string, deadlineAt: number): Promise<boolean> {
+    let backoffMs = 1_000
+    for (;;) {
+      try {
+        const release = this.cpClient!.releaseDuties([groupId])
+        const outcome = await this.raceDeadline(release, deadlineAt - this.clock.now())
+        release.catch(() => undefined)
+        if (outcome === 'timeout') throw new Error('no acknowledgement before the drain deadline')
+        return true
+      } catch (err) {
+        if (this.clock.now() + backoffMs >= deadlineAt) {
+          this.log.warn(`duty: releasing ${groupId} was not acknowledged before the drain deadline: ${err}`)
+          return false
+        }
+        this.log.warn(`duty: releasing ${groupId} failed, retrying in ${backoffMs}ms: ${err}`)
+        await this.sleepUntil(this.clock.now() + backoffMs)
+        backoffMs = Math.min(backoffMs * 2, 5_000)
+      }
+    }
+  }
+
+  private sleepUntil(at: number): Promise<void> {
+    return new Promise((resolve) => {
+      this.clock.setTimeout(resolve, Math.max(0, at - this.clock.now()))
+    })
   }
 
   /** `agent/stop` (§8.2): drain the agent's in-flight turns, stop its host, and
@@ -19862,6 +21127,19 @@ export class Daemon {
     } finally {
       this.webchatMcpRevokeDraining = false
     }
+  }
+
+  /** Take over the durable work of agents this member has just been made responsible for. On a
+   *  shared store starting proves nothing — peers keep serving through a rollout — so the duty
+   *  grant, not process start, is what makes a stranded row this member's to recover. */
+  private reclaimInterruptedWork(agentIds: readonly string[]): void {
+    if (agentIds.length === 0) return
+    const grants = this.store.reclaimWebchatMcpGrants(agentIds, 'session_closed', this.clock.now())
+    if (grants) {
+      this.log.info(`remote MCP: reclaimed ${grants} grant(s) from a former owner`)
+      void this.drainWebchatMcpRevocations()
+    }
+    this.dreamRunner().reclaimDreams(agentIds)
   }
 
   /** Await the single-flight reconcile and any coalesced trailing pass. Registry
@@ -20118,9 +21396,15 @@ export class Daemon {
     return undefined
   }
 
+  /** SIGTERM drain budget: a pool member holds duty leases and waits for turns instead of cutting
+   *  them (`poolShutdownDrainMs`); a local daemon keeps the short window its service manager allows. */
+  private shutdownDrainBudgetMs(): number {
+    return this.k8s || this.dutyEnforced() ? this.cfg.limits.poolShutdownDrainMs : this.cfg.limits.shutdownDrainMs
+  }
+
   /** §2.5 SIGTERM / daemon shutdown: gate new turns, then await in-flight turns up
-   *  to `shutdownDrainMs`, cancelling stragglers. Safe to call repeatedly. */
-  private async drainForShutdown(): Promise<void> {
+   *  to `deadlineMs` (the shutdown drain budget), cancelling stragglers. Safe to call repeatedly. */
+  private async drainForShutdown(deadlineMs = this.shutdownDrainBudgetMs()): Promise<void> {
     this.draining = true
     const active = [...new Set([...this.activeDispatchesByAgent.values()].flatMap((runs) => [...runs]))]
     const pendingKeys = new Set([...this.pending.values()].map((p) => p.sessionKey))
@@ -20146,7 +21430,6 @@ export class Daemon {
     const coldStops = [...coldAgents].map(stopFailClosed)
     const work = Promise.all([...active, ...coldStops])
     if (active.length > 0 || coldStops.length > 0) {
-      const deadlineMs = this.cfg.limits.shutdownDrainMs
       this.log.info(
         `shutdown: draining ${active.length} active dispatch(es) (deadline ${Math.round(deadlineMs / 1000)}s)`
       )
@@ -20194,7 +21477,7 @@ export class Daemon {
     this.serialQueue.clear()
   }
 
-  /** Re-admit durable inbox rows through the serial gate at startup while preserving replay ownership and FIFO. */
+  /** Re-admit durable inbox rows through the serial gate — at startup, on install, or on a duty gain — preserving replay ownership and FIFO. */
   private replayInbox(agentIds?: ReadonlySet<string>): void {
     let rows: InboxRow[]
     try {
@@ -20217,9 +21500,11 @@ export class Daemon {
       // Idempotency: a row already backing a live gate entry (re-admitted this startup, or a
       // duplicate id) is not re-dispatched.
       if (this.liveInboxIds.has(row.id)) continue
-      // Skip (leave the row) for an agent this daemon doesn't own — another owner may hold it.
-      if (!this.agents.has(row.agentId)) {
-        this.log.warn(`durable inbox: skipping replay of ${row.id} — unknown agent "${row.agentId}"`)
+      // Leave the row for its holder: an agent this daemon lacks, or a replica whose duty lives
+      // elsewhere. On a shared store the whole fleet's backlog is here, so that is not an anomaly.
+      if (!this.agents.has(row.agentId) || !this.servesAgent(row.agentId)) {
+        const level = this.dataPlane ? 'debug' : 'warn'
+        this.log[level](`durable inbox: skipping replay of ${row.id} — agent "${row.agentId}" is not served here`)
         continue
       }
       let msg: NormalizedMessage
@@ -20327,13 +21612,15 @@ export class Daemon {
   private replayHookTerminalReports(): void {
     let rows: InboxRow[]
     try {
-      rows = this.store.listInboxBySessionKeyFifo()
+      rows = this.store.listHookTerminalReports(this.clock.now(), this.cfg.daemonId, [...this.agents.keys()])
     } catch (err) {
       this.log.warn(`durable inbox: terminal report read failed: ${formatErr(err)}`)
       this.scheduleHookReportRetry()
       return
     }
-    const pending = rows.filter((row) => row.terminalReport && !this.hookReportInflight.has(row.id))
+    const pending = rows.filter(
+      (row) => row.terminalReport && !this.hookReportInflight.has(row.id) && !this.hookReportForeign.has(row.id)
+    )
     const available = Math.max(0, MAX_HOOK_REPORT_INFLIGHT - this.hookReportInflight.size)
     const batch = pending.slice(0, available)
     let emitted = 0
@@ -20345,7 +21632,10 @@ export class Daemon {
       } catch (err) {
         this.log.warn(`durable inbox: corrupt terminal hook receipt ${row.id}: ${formatErr(err)}`)
         try {
-          this.store.acknowledgeHookInbox(row.id)
+          // Undecodable, so ownership cannot be proven from the body — claim first
+          // and leave a peer's row alone rather than destroying it on their behalf.
+          if (this.claimHookReport(row.id)) this.store.acknowledgeHookInbox(row.id, { ownerId: this.cfg.daemonId })
+          else this.hookReportForeign.add(row.id)
         } catch (cleanupError) {
           this.log.warn(`durable inbox: corrupt receipt cleanup failed for ${row.id}: ${formatErr(cleanupError)}`)
         }
@@ -20600,7 +21890,7 @@ export class Daemon {
         this.cpMcpDefs?.converge(
           (snap.mcpServers ?? [])
             .filter((s) => s.name !== RESERVED_MCP_SERVER_NAME)
-            .flatMap(({ orgId, name, ...def }) => (orgId ? [[orgId, name, def] as const] : []))
+            .flatMap(({ orgId, name, issuedAt, ...def }) => (orgId ? [[orgId, name, def, issuedAt] as const] : []))
         )
         this.cpCollab.replace(snap.collabRoutes) // baseline collaboration routing snapshot (P2 terminal-verify)
         this.convergeRelays(snap.relays) // connect ingress only after its organization authority is installed
@@ -20715,7 +22005,7 @@ export class Daemon {
           // permission/subdirectory edit from a destructive mode/repo/branch
           // replacement, including after an ACK-loss retry.
           const currentWorkspace = this.agents.get(agentId)
-          if (currentWorkspace) ensureWorkspaceMaterialization(currentWorkspace)
+          if (currentWorkspace) this.workspaces.ensureWorkspaceMaterialization(currentWorkspace)
 
           // This is also the destination staging gate. An absent agent is expected:
           // ACK after arming the gate so the atomic activate bundle cannot serve early.
@@ -20748,7 +22038,7 @@ export class Daemon {
               ? `agent ${agentId} is not active on this daemon`
               : current.workspace.mode !== 'from-scratch'
                 ? 'workspace is no longer scratch'
-                : !isWorkspaceEmpty(current)
+                : !this.workspaces.isWorkspaceEmpty(current)
                   ? 'scratch workspace is not empty; remove or move its files before converting'
                   : undefined
             if (reason) {
@@ -20777,14 +22067,18 @@ export class Daemon {
       },
       applyAgentActivate: (activate: AgentActivate): Promise<Ack> => {
         const { agentId } = activate
-        return this.queueAgentMove('activate', agentId, activate.moveId, async () => {
+        return this.queueAgentMove('activate', agentId, activate.moveId ?? 'unstage', async () => {
           if (this.opts.agentName) {
             return { ok: false, reason: 'agent move is unavailable in --agent single-agent mode' }
           }
           const stage = this.moveStageMetadata.get(agentId)
-          if (stage?.moveId === activate.moveId && stage.state === 'committed') return { ok: true }
+          // A token-less activate releases whatever stale staging fence remains (#1093); none ⇒ no-op.
+          if (activate.moveId === undefined && stage?.state !== 'staging') return { ok: true }
+          // Token-less ⇒ adopt the stored fence's token, so commit supersedes the stale move exactly.
+          const moveId = activate.moveId ?? stage!.moveId
+          if (stage?.moveId === moveId && stage.state === 'committed') return { ok: true }
           if (
-            stage?.moveId !== activate.moveId ||
+            stage?.moveId !== moveId ||
             stage.state !== 'staging' ||
             !this.moveStagedAgents.has(agentId) ||
             !this.drainingAgents.has(agentId)
@@ -20840,10 +22134,12 @@ export class Daemon {
             if (this.agentRemovalPending(agentId)) {
               return { ok: false, reason: 'agent/activate: superseded by a newer agent removal' }
             }
-            // The staged-move gate remains closed, so an authoritative activate
-            // can safely clear a failed-removal crash tombstone before its
-            // reconcile/host proof. Any later failure restores the move gate.
+            // The staged gate stays closed, so a tokened activate may clear a crash tombstone here.
             if (this.removedAgentTombstones.has(agentId) || this.cpDroppedAgents.has(agentId)) {
+              // A token-less unstage is not an authoritative re-add: never resurrect a removed agent.
+              if (activate.moveId === undefined) {
+                return { ok: false, reason: 'agent/activate: a removal tombstone owns this agent' }
+              }
               this.clearRemovalForReadd(agentId)
             }
             // Dependents were pruned while the agent was still invisible. Publish the
@@ -20885,7 +22181,7 @@ export class Daemon {
                 rollbackPreparedWorkspace = await this.enqueueAgentWorkspacePreparation(
                   agent,
                   () =>
-                    prepareWorkspaceForActivation(agent, {
+                    this.workspaces.prepareWorkspaceForActivation(agent, {
                       allowExistingCheckout: stage.requireEmptyWorkspace !== true,
                       reconcileMaterialization: activate.reconcileWorkspace === true
                     }),
@@ -20899,24 +22195,30 @@ export class Daemon {
                 return { ok: false, reason: `agent/activate: workspace preparation failed: ${(err as Error).message}` }
               }
             }
-            // Prove the target can actually initialize ACP while the staging gate is
-            // still closed. Workspace reconciliation happens first so the spawned
-            // runtime and its sandbox bind the new directory, never an unlinked old one.
-            try {
-              if (this.keyServer) await this.prepareAgentWorkspace(agent, undefined, undefined, true)
-              else await this.ensureHostAsync(agentId, { allowAgentDrain: true })
-            } catch (err) {
-              this.moveStagedAgents.add(agentId)
-              await this.stopHost(agentId).catch(() => {})
+            // Prove ACP can initialize under the still-closed gate; the workspace reconciled first, so the
+            // spawned runtime and its sandbox bind the new directory rather than an unlinked old one.
+            // An unstage restores the replica, not serving authority: a non-holder must not bind the sandbox (#1093).
+            // Read HERE, never captured: a revoke landing during the awaits above already stopped this host.
+            // Tokened stays host-proving: its target is the placement, or a source whose duty the move never released.
+            if (activate.moveId !== undefined || this.servesAgent(agentId)) {
               try {
-                await rollbackPreparedWorkspace?.()
-              } catch (rollbackErr) {
-                this.log.error(
-                  `agent/activate: failed to roll workspace back for "${agentId}": ${formatErr(rollbackErr)}`
-                )
+                // Key-server mode gives every session its own credential-scoped host, so there is no
+                // shared agent host to prove — reconciling the workspace is the whole of the proof.
+                if (this.keyServer) await this.prepareAgentWorkspace(agent, undefined, undefined, true)
+                else await this.ensureHostAsync(agentId, { allowAgentDrain: true })
+              } catch (err) {
+                this.moveStagedAgents.add(agentId)
+                await this.stopHost(agentId).catch(() => {})
+                try {
+                  await rollbackPreparedWorkspace?.()
+                } catch (rollbackErr) {
+                  this.log.error(
+                    `agent/activate: failed to roll workspace back for "${agentId}": ${formatErr(rollbackErr)}`
+                  )
+                }
+                await this.flushReconcile().catch(() => {})
+                return { ok: false, reason: `agent/activate: ${(err as Error).message}` }
               }
-              await this.flushReconcile().catch(() => {})
-              return { ok: false, reason: `agent/activate: ${(err as Error).message}` }
             }
             if (this.agentDestructivePending(agentId)) {
               this.moveStagedAgents.add(agentId)
@@ -20937,7 +22239,7 @@ export class Daemon {
               }
             }
             try {
-              commitAgentMove(this.agentsDir, agentId, activate.moveId)
+              commitAgentMove(this.agentsDir, agentId, moveId)
             } catch (err) {
               await this.stopHost(agentId).catch(() => {})
               try {
@@ -20951,7 +22253,7 @@ export class Daemon {
               await this.flushReconcile().catch(() => {})
               return { ok: false, reason: `agent/activate: failed to commit staging fence: ${(err as Error).message}` }
             }
-            this.moveStageMetadata.set(agentId, { moveId: activate.moveId, state: 'committed' })
+            this.moveStageMetadata.set(agentId, { moveId, state: 'committed' })
             if (!this.agentDestructivePending(agentId)) this.drainingAgents.delete(agentId)
             return { ok: true }
           } finally {
@@ -20986,9 +22288,11 @@ export class Daemon {
           this.log.warn(`mcp: ignoring CP push for reserved server name "${spec.name}"`)
           return
         }
-        const { orgId, name, ...def } = spec
+        // `issuedAt` is the ordering marker, not part of the definition the runtime
+        // spawns with — strip it out of `def` at every apply site.
+        const { orgId, name, issuedAt, ...def } = spec
         if (!orgId) return
-        if (this.cpMcpDefs?.upsert(orgId, name, def)) {
+        if (this.cpMcpDefs?.upsert(orgId, name, def, issuedAt)) {
           this.onMcpDefsChanged()
           // NEVER log def values — an http proxy def's headers carry the bearer grant key.
           this.log.info(`mcp: applied CP server def "${name}" for organization ${orgId}`)
@@ -21077,12 +22381,18 @@ export class Daemon {
       // settlements and cascades); the daemon only enforces the resulting
       // capture gate. Ordering is by the CP's durable revision, so retransmits
       // and out-of-order delivery are safe.
-      applySessionVisibility: (p: SessionVisibilityPush): 'applied' | 'superseded' =>
-        this.store.applyCpCaptureGate(
+      applySessionVisibility: (p: SessionVisibilityPush): 'applied' | 'superseded' => {
+        // A CP too old to name the agent leaves only the runtime-local ACP id: use the
+        // sole local holder, and where there is none leave the gate closed (still ACKed).
+        const agentId = p.agentId ?? this.store.soleAgentForAcpSession(p.sessionId)
+        if (!agentId) return 'superseded'
+        return this.store.applyCpCaptureGate(
+          agentId,
           p.sessionId,
           p.sharedMemoryExcluded ?? p.visibility === 'private',
           p.visibilityRev
         )
+      }
     }
   }
 
@@ -21292,6 +22602,12 @@ export class Daemon {
    * between the reconcile and the tick simply does nothing.
    */
   private onDreamScheduleFire(agentId: string): void {
+    // Stamped before the gates, as a cron fire stamps cron_runs: this moment was SERVICED here (#1031).
+    this.store.setDreamLastRun(
+      agentId,
+      this.clock.now(),
+      scheduleFingerprint(this.dreamDefinition(this.agents.get(agentId) ?? {}))
+    )
     // Lifecycle gates first — a scheduled dream is background work that spawns a
     // runtime host and burns model tokens, so it obeys the same operator stops as
     // any other scheduled trigger. The cron stays REGISTERED throughout: these are
@@ -21347,7 +22663,7 @@ export class Daemon {
       if (cron.origin === 'cp')
         this.cpClient?.emitCronReport({ cronId: cron.id, agentId, firedAt: firedAtIso, ...update })
     }
-    this.store.setCronLastRun(`${agentId}:${cron.id}`, firedAt)
+    this.store.setCronLastRun(`${agentId}:${cron.id}`, firedAt, scheduleFingerprint(this.cronDefinition(cron)))
     // CP-owned crons report the fire, attach the session as soon as it exists,
     // then close the run when the turn ends. Hand-authored crons stay local.
     report()
@@ -21390,6 +22706,8 @@ export class Daemon {
     for (const a of this.effectiveAgents()) {
       const cron = a.crons.find((c) => c.id === cronId && c.origin === 'cp')
       if (!cron) continue
+      // A cron is an ingress edge: it fires only where the agent's duty is held.
+      if (!this.servesAgent(a.id)) return { ok: false, reason: 'agent is served by another member' }
       const { msg } = buildSyntheticMessage(a.id, cron, randomUUID())
       void this.onCronFire(a.id, msg, cron).catch((err) =>
         this.log.error(`cron/run dispatch failed for agent "${a.id}": ${formatErr(err)}`)
@@ -21450,10 +22768,10 @@ export class Daemon {
       }
       return undefined
     }
-    // A managed cloud daemon's credential is its Kubernetes identity, full stop.
+    // A pool member's credential is its Kubernetes identity, full stop.
     if (this.k8s && !process.env[K8S_ORG_ID_ENV]?.trim() && !this.clusterIdentityToken) {
       this.log.error(
-        `cp: not connecting — a cloud daemon authenticates with its projected identity token, expected at ${CP_IDENTITY_TOKEN_PATH}`
+        `cp: not connecting — a pool member authenticates with its projected identity token, expected at ${CP_IDENTITY_TOKEN_PATH}`
       )
       return
     }
@@ -21496,7 +22814,7 @@ export class Daemon {
       // A forwarded cross-daemon agent-call — terminal-verify + dispatch (P2).
       onRelayAgentMsg: (msg) => this.handleRelayAgentMsg(msg)
     })
-    // Self-hosted daemons boot-dial persisted relays; cloud ingress waits for fresh org authority.
+    // Self-hosted daemons boot-dial persisted relays; pool ingress waits for fresh org authority.
     if (this.cfg.relays.length && !this.k8s) this.relays.converge(this.cfg.relays)
 
     let resolveInitialRegistry!: () => void
@@ -21513,7 +22831,7 @@ export class Daemon {
       }
       const session = this.store.getSessionByAcpIdForAgent(id, sessionId)
       if (agent.workspace.mode !== 'git-repo' || session?.workspaceIsolation !== 'session') return undefined
-      return { root: sessionWorktreePath(agent, session.key), scratch: false }
+      return { root: this.workspaces.sessionWorktreePath(agent, session.key), scratch: false }
     }
 
     // Where that workspace actually is, which under --k8s is the sandbox pod's volume. ONE resolver
@@ -21525,7 +22843,7 @@ export class Daemon {
       const agent = this.agents.get(id)
       const local = daemonWorkspaceLocation(id, sessionId)
       if (!agent || !local) return undefined
-      const root = consoleWorkspaceRoot(
+      const root = this.workspaces.consoleWorkspaceRoot(
         agent,
         local.root,
         this.k8sPlane?.workspaceRootFor(id),
@@ -21538,6 +22856,7 @@ export class Daemon {
       workspaceLocation(id, sessionId)?.root
 
     const workspaceGit = createWorkspaceGit(
+      this.workspaces,
       workspaceGitRoot,
       (id) => {
         const workspace = this.agents.get(id)?.workspace
@@ -21588,6 +22907,9 @@ export class Daemon {
         : {}),
       agentVersion: DAEMON_VERSION,
       host: hostname(),
+      // The deployment side sets this from the pod-template-hash label; the ledger's rollout barrier
+      // lets only the newest live generation of the set claim vacated groups. Unset locally.
+      generation: process.env[POD_TEMPLATE_HASH_ENV]?.trim() || undefined,
       heartbeatDefaultMs: cp.heartbeatMs,
       maxAgents: this.cfg.limits.maxAgents,
       capabilities: () => ({
@@ -21614,6 +22936,7 @@ export class Daemon {
       // may have missed emits while we were disconnected; latest-wins upsert).
       onReady: () => {
         resolveInitialRegistry()
+        this.readiness?.refresh()
         void this.probeRuntimesAndEmit()
         void this.syncOrganizationSuggestions().catch((err) =>
           this.log.warn(`cp: organization suggestion replay failed (${err instanceof Error ? err.name : 'unknown'})`)
@@ -21637,7 +22960,7 @@ export class Daemon {
         for (const a of this.effectiveAgents())
           for (const c of a.crons) {
             if (c.origin !== 'cp') continue
-            const at = this.store.getCronLastRun(`${a.id}:${c.id}`)
+            const at = this.store.cronRun(`${a.id}:${c.id}`)?.lastRunAt
             if (at !== undefined)
               this.cpClient?.emitCronReport({ cronId: c.id, agentId: a.id, firedAt: new Date(at).toISOString() })
           }
@@ -21656,8 +22979,14 @@ export class Daemon {
         const agentId = this.cpIntegrations?.agentForIntegration(integrationId)
         return agentId ? (this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId)) : undefined
       },
+      orgForCron: (cronId) => {
+        const agentId = this.cpCrons?.agentForCron(cronId)
+        return agentId ? (this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId)) : undefined
+      },
       degradedScopes: () => this.cpDegradedScopes(),
       duties: () => this.dutyDigest(),
+      dutyPending: () => this.pendingDutyAdmissions(),
+      onDutyFence: (groupIds) => this.fenceDuties(groupIds),
       configApply: this.cpConfigApply(),
       sessionRead: createSessionReader(this.store, (session) => this.sessionThreadUrl(session)),
       // §5.4: serve a CP-forwarded status probe for a child session we own. Authorization is
@@ -21666,6 +22995,7 @@ export class Daemon {
       // The third argument is what makes a cluster agent's files reachable at all: the operations
       // run inside its pod, on the volume the root above names.
       workspaceRead: createWorkspaceReader(
+        this.workspaces,
         workspaceLocation,
         (id, write) => this.withWorkspaceFileWrite(id, write),
         (id) => this.k8sPlane?.workspaceFilesFor(id)
@@ -21690,9 +23020,25 @@ export class Daemon {
       // A pure projection of the in-memory lease — no I/O, no runtime, and nothing it can do to a
       // reclaim decision, so it needs neither of the workspace coordinators.
       taskReader: { list: async (req) => this.listBackgroundTasks(req) },
-      memoryReader: createMemoryReader((id) => this.agents.get(id)?.dir, this.memory),
+      // The console's "start this agent's sandbox": duty claim + channel bind, no host — the same
+      // condition the file reader serves on, reached without a turn. Local daemons have no plane.
+      agentWake: createAgentWaker({
+        ...(this.k8sPlane
+          ? {
+              sandbox: {
+                isRunning: (id) => this.k8sPlane!.runsInSandbox(id),
+                ensureChannel: (id) => this.k8sPlane!.ensureChannel(id)
+              }
+            }
+          : {}),
+        knowsAgent: (id) => this.agents.has(id) && (!this.dutyEnforced() || this.duties.holdsAgent(id)),
+        claimDuty: async (id) => this.dutyEnforced() && (await this.claimDutyForTrigger(id)).granted,
+        log: this.log
+      }),
+      memoryReader: createMemoryReader((id) => this.memoryFsFor(id), this.memory),
       dreamReader: createDreamReader(this.dreamRunner()),
       localSkillsReader: createLocalSkillsReader(
+        this.workspaces,
         // The workspace root in EXECUTION coordinates, like the file reader's: the skill roots the
         // console lists are the ones the agent's harness loads, and those are in the pod.
         (id) => workspaceLocation(id)?.root,
@@ -21730,9 +23076,8 @@ export class Daemon {
       },
       (agentId) => this.cpAgents?.orgForAgent(agentId)
     )
-    // Grants recorded by a previous process have no surviving descriptor or
-    // plaintext — queue them for remote revocation before the first connect.
-    const orphaned = this.store.markAllWebchatMcpGrantsRevoking('session_closed', this.clock.now())
+    // Grants this process recorded lose their descriptor and plaintext with it; a peer's are not ours to sweep.
+    const orphaned = this.store.markOwnedWebchatMcpGrantsRevoking('session_closed', this.clock.now())
     if (orphaned) this.log.info(`remote MCP: queued ${orphaned} orphaned grant revocation(s) from previous run`)
     this.cpClient.start()
     this.log.info(`cp: connecting to ${url}…`)
@@ -21813,7 +23158,7 @@ export class Daemon {
     }
   }
 
-  private declaredCloudCatalog(root: string, resolved: ResolvedRuntimeCatalog): ResolvedRuntimeCatalog {
+  private declaredPoolCatalog(root: string, resolved: ResolvedRuntimeCatalog): ResolvedRuntimeCatalog {
     // Kept for a file-supplied table (an override, or a daemon started before its first probe
     // returns). The authoritative answer comes from the sandbox itself — see probeK8sRuntimes.
     this.k8sResolvedCatalog = resolved
@@ -21855,6 +23200,10 @@ export class Daemon {
         this.runtimeProbedVersions.set(id, entry.version || (this.runtimeProbedVersions.get(id) ?? ''))
       }
       this.applyK8sDeclaredFacts()
+      // The half of readiness only this call can settle: before it the member advertises nothing
+      // and the CP would assign it nothing, so it is not servable however healthy it looks.
+      this.k8sRuntimeProbed = true
+      this.readiness?.refresh()
       this.log.info(
         `runtimes ready (probed): ${table.runtimes.map((entry) => `${entry.id}@${entry.version}`).join(', ') || '(none)'}`
       )
@@ -21876,6 +23225,39 @@ export class Daemon {
           : `runtimes: sandbox probe failed — advertising none (${message})`
       )
     }
+  }
+
+  /**
+   * What a Kubernetes readiness probe reads (#1043) — one predicate, so the HTTP endpoint, the
+   * readiness file, and the tests can never answer differently.
+   */
+  readinessState(): ReadinessState {
+    return readinessState({
+      startupComplete: this.startupComplete,
+      cpRegistered: this.cpClient?.state === 'READY',
+      // No execution plane means no image to interrogate, so a k8s-supervised daemon that runs its
+      // runtimes locally is not held behind a probe it never makes.
+      runtimeProbed: !this.k8sPlane || this.k8sRuntimeProbed,
+      // Both gates: the shutdown latch, and the drain a failed data plane requests an exit behind.
+      draining: this.draining || this.shutdownDraining
+    })
+  }
+
+  /** Start the readiness sinks — under Kubernetes only, since elsewhere the process being up IS
+   *  the signal. Their configuration is environment, not daemon config: the pod spec that declares
+   *  the probe is the same thing that sets the port and path it reads. */
+  private async startReadinessGate(): Promise<void> {
+    const gate = new ReadinessGate({
+      ...readinessSinksFromEnv(process.env, (message) => this.log.warn(message)),
+      state: () => this.readinessState(),
+      log: { info: (message) => this.log.info(message), warn: (message) => this.log.warn(message) }
+    })
+    try {
+      await gate.start()
+    } catch (error) {
+      throw new Error(`daemon startup refused: the readiness endpoint could not listen — ${formatErr(error)}`)
+    }
+    this.readiness = gate
   }
 
   private projectDeclaredRuntimes(
@@ -21908,10 +23290,10 @@ export class Daemon {
    *  that would wipe the CP's learned state until the sweep completes. Rows for
    *  runtimes not in the installed catalog are ignored (kept on disk — the
    *  runtime may only be temporarily unresolved); rows older than 30 days are
-   *  garbage-collected. */
+   *  garbage-collected. The store reads only this member's rows, so a member can
+   *  never boot advertising models a peer's image runs and its own does not. */
   private hydrateRuntimeCatalogCache(): void {
     try {
-      this.store.gcRuntimeCatalog(this.clock.now() - 30 * 24 * 3600_000)
       for (const meta of this.store.listRuntimeCatalogMetas()) {
         if (!this.runtimeCatalog.entries[meta.runtimeId]) continue
         this.rebuildRuntimeCatalog(meta.runtimeId)
@@ -22280,14 +23662,42 @@ export class Daemon {
     // from re-arming itself (its callback re-arms only `if (!this.draining)`), so a
     // sweep firing during the awaits below can't leave a dangling timer behind.
     this.draining = true
+    // Stop claiming before anything else: no rendezvous claim, no grant admitted, and the next
+    // digest says `draining` with zero headroom — sent now rather than at the next tick, so the CP
+    // stops granting to this member within one round trip of the SIGTERM.
+    this.shutdownDraining = true
+    // Flip readiness with the latch, not on the next sync tick: the endpoints controller has to
+    // stop routing here while the pod keeps running for the whole drain.
+    this.readiness?.refresh()
+    this.dutyClaimsSuspended = true
+    const drainDeadlineAt = this.clock.now() + this.shutdownDrainBudgetMs()
+    const shutdownDrain: ShutdownDutyDrain = {
+      deadlineAt: drainDeadlineAt,
+      stats: { groups: 0, agents: 0, late: 0, acked: 0, lapsing: 0 },
+      late: new Map(),
+      lapsedAgents: new Set(),
+      loopDone: false
+    }
+    if (this.dutyEnforced()) {
+      this.shutdownDutyDrain = shutdownDrain
+      this.cpClient?.reportDutiesNow?.()
+    }
     clearTimeout(this.debounceTimer)
     if (this.idleSweepTimer !== undefined) {
       this.clock.clearTimeout(this.idleSweepTimer)
       this.idleSweepTimer = undefined
     }
+    if (this.storeRetentionTimer !== undefined) {
+      this.clock.clearTimeout(this.storeRetentionTimer)
+      this.storeRetentionTimer = undefined
+    }
     if (this.runtimeProbeTimer !== undefined) {
       this.clock.clearTimeout(this.runtimeProbeTimer)
       this.runtimeProbeTimer = undefined
+    }
+    if (this.dutyConvergeRetryTimer !== undefined) {
+      this.clock.clearTimeout(this.dutyConvergeRetryTimer)
+      this.dutyConvergeRetryTimer = undefined
     }
     for (const t of this.bgWakeTimers) this.clock.clearTimeout(t)
     this.bgWakeTimers.clear()
@@ -22307,6 +23717,7 @@ export class Daemon {
       this.clock.clearTimeout(this.sessionMetadataRetryTimer)
       this.sessionMetadataRetryTimer = undefined
     }
+    this.sessionMetadataRetryAt = undefined
     // Clear any live orchestration deadline timers so they don't hold the process open
     // (the durable `orchestration.deadline` epoch re-arms them on the next startup).
     for (const t of this.orchestrationDeadlines.values()) this.clock.clearTimeout(t)
@@ -22315,7 +23726,17 @@ export class Daemon {
     await this.watcher?.close()
     // §2.5: gate new turns and let in-flight ones finish (deadline-bounded) BEFORE
     // tearing the hosts down — a hard kill mid-turn loses the reply + transcript.
-    await this.drainForShutdown()
+    // A duty-holding member releases alongside: each held group goes back to the CP, acknowledged,
+    // the moment its own turns are done — idle groups at once, busy ones as they settle — so a
+    // successor takes them while this member is still waiting on the slowest turn. The turn wait
+    // stops short of the budget by the release reserve, so the last releases still land inside it.
+    const dutyDrain = this.releaseDutiesForShutdown(shutdownDrain)
+    await this.drainForShutdown(
+      this.dutyEnforced()
+        ? Math.max(0, drainDeadlineAt - Daemon.DUTY_RELEASE_RESERVE_MS - this.clock.now())
+        : this.shutdownDrainBudgetMs()
+    )
+    await dutyDrain
     this.store.setTranscriptMutationListener()
     for (const { timer } of this.transcriptActivityTimers.values()) this.clock.clearTimeout(timer)
     this.transcriptActivityTimers.clear()
@@ -22341,8 +23762,13 @@ export class Daemon {
     // not deliver are replayed by the next boot's orphan sweep), so shutdown
     // proceeds without losing the revocation obligation.
     await this.revokeAllRemoteWebchatGrants('session_closed')
+    // A grant can land right up to the socket close; its release must be settled before that.
+    if (this.shutdownDutyDrain) await this.settleLateGrants(shutdownDrain)
+    this.shutdownDutyDrain = undefined
     await Promise.resolve(this.cpClient?.stop()).catch((e) => errors.push(e))
     await Promise.resolve(this.sessionMetadataDrain).catch((e) => errors.push(e))
+    // Nothing here can emit after this point; hand any claim this member still holds back.
+    this.releaseOwnedSessionMetadata()
     // The closed CP transport cannot admit another lifecycle frame. Drain every
     // remove/upsert/move already published into its per-agent queue before any
     // store or registry it may still touch is closed.
@@ -22370,9 +23796,11 @@ export class Daemon {
     // would cut in-flight turns and closing it before host teardown would leave `AcpHost.stop()`
     // unable to send its ACP close — a sandbox process still running, and reconnecting.
     await this.k8sPlane?.stop().catch(() => undefined)
-    setWorkspaceGitRunnerResolver(undefined)
-    setWorkspacePathClearer(undefined)
-    setSandboxWorkspaceMode(false)
+    await this.readiness?.stop().catch(() => undefined)
+    this.readiness = undefined
+    this.workspaces.setGitRunnerResolver(undefined)
+    this.workspaces.setPathClearer(undefined)
+    this.workspaces.setSandboxMode(false)
     await Promise.allSettled(hostStarts)
     // Shutdown backstop: dream extractions reclaim their own tombstone when the
     // dedicated host stops, and stopHost sweeps per-agent for warm hosts, but drop

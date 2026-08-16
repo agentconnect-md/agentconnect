@@ -12,6 +12,7 @@
  */
 import {
   isFrame,
+  AGENT_EXISTS_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
   SESSION_LIVE_TAIL_FEATURE,
   SESSION_METADATA_ACK_FEATURE,
@@ -26,7 +27,20 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
   const req = frame.payload
   const did = DaemonId(conn.daemonId)
 
+  // An observer (`reconcile --once`) is admitted on the identity a member presents but is not one:
+  // it serves nothing, so it must hold no membership the duty ledger could grant against. Refused
+  // on an org-scoped connection — that credential is an operator's daemon key, not a job's identity.
+  if (req.observer === true) {
+    if (conn.orgId !== null) {
+      conn.sendError(frame.id, 'SCOPE_DENIED', 'observer registration requires an install-wide connection', false)
+      return
+    }
+    await deps.registry.withdrawObserver(did)
+  }
+
   await deps.registry.upsertOnRegister(did, req)
+  // A fresh registration clears the member's draining declaration (frames/duty.ts).
+  deps.dutyLease.onRegister(did)
   const snap = await deps.orchestrator.reconcile(did, req)
 
   // Update the live index: capabilities/maxAgents + the bound session set.
@@ -73,7 +87,8 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
       SESSION_METADATA_ACK_FEATURE,
       SESSION_PURGE_FEATURE,
       SESSION_VISIBILITY_FEATURE,
-      ORGANIZATION_KNOWLEDGE_FEATURE
+      ORGANIZATION_KNOWLEDGE_FEATURE,
+      AGENT_EXISTS_FEATURE
     ]
   })
   deps.connReg.markReady(conn.daemonId, conn)

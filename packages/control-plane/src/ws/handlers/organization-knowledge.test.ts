@@ -6,6 +6,9 @@ import {
 } from '@agentconnect.md/protocol'
 import type { DaemonConnection } from '../connection.js'
 import type { DaemonWsDeps } from '../deps.js'
+import { PlacementResolver } from '../../orchestrator/placementResolver.js'
+import { systemClock } from '../../domain/clock.js'
+import type { DaemonId } from '../../domain/ids.js'
 import {
   handleKnowledgeSearch,
   handleKnowledgeList,
@@ -19,6 +22,42 @@ const AGENT = 'a0a0a0a0-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const FOREIGN_AGENT = 'a1a1a1a1-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const ORG = 'org-default'
 const SKILL = '51515151-5151-4515-8515-515151515151'
+const ORG_A = 'org-a'
+const ORG_B = 'org-b'
+
+const POOL_SET = '5e700000-0000-4000-8000-000000000001'
+
+const installWideCapabilities = {
+  features: [ORGANIZATION_KNOWLEDGE_FEATURE, ORGANIZATION_SUGGESTION_REVIEW_FEATURE]
+}
+
+/** A pool row: placed on the org-less set, naming no machine. `agent.daemonId` can never
+ *  authorize one. */
+function poolAgent(id: string) {
+  return { id, placementKind: 'set' as const, daemonId: null, setId: POOL_SET }
+}
+
+/** The live seam, keyed by who holds each agent's duty right now. */
+function holderOf(holds: Record<string, string[]>): PlacementResolver {
+  const of = async (agentId: string) => (holds[String(agentId)] ?? []) as DaemonId[]
+  return new PlacementResolver({ duties: { holdersOf: of, confirmedHoldersOf: of }, clock: systemClock })
+}
+
+function proposed(sourceAgentId: string) {
+  return {
+    sourceAgentId,
+    dreamId: `dream-${sourceAgentId.slice(0, 4)}`,
+    candidateId: '33333333-3333-4333-8333-333333333333',
+    kind: 'knowledge',
+    operation: 'create',
+    title: 'Candidate',
+    digest: `sha256:${'a'.repeat(64)}`,
+    contentBytes: 10,
+    state: 'proposed',
+    sessionIds: ['session-1'],
+    createdAt: '2026-08-01T00:00:00.000Z'
+  }
+}
 
 function frame(type: AnyFrame['type'], payload: Record<string, unknown>): AnyFrame {
   return {
@@ -64,7 +103,7 @@ describe('handleKnowledgeSearch', () => {
     ])
     const deps = {
       registry: featureRegistry,
-      agent: { getUnscoped: async () => ({ id: AGENT, orgId: ORG, daemonId: DAEMON }) },
+      agent: { get: async () => ({ id: AGENT, orgId: ORG, daemonId: DAEMON }) },
       organizationKnowledge: { searchKnowledge }
     } as unknown as DaemonWsDeps
     const connection = conn()
@@ -98,7 +137,7 @@ describe('handleKnowledgeSearch', () => {
       const searchKnowledge = vi.fn()
       const deps = {
         registry: featureRegistry,
-        agent: { getUnscoped: async () => requester },
+        agent: { get: async () => requester },
         organizationKnowledge: { searchKnowledge }
       } as unknown as DaemonWsDeps
       const connection = conn()
@@ -128,7 +167,7 @@ describe('handleKnowledgeList', () => {
     ])
     const deps = {
       registry: featureRegistry,
-      agent: { getUnscoped: async () => ({ id: AGENT, orgId: ORG, daemonId: DAEMON }) },
+      agent: { get: async () => ({ id: AGENT, orgId: ORG, daemonId: DAEMON }) },
       organizationKnowledge: { listKnowledge }
     } as unknown as DaemonWsDeps
     const connection = conn()
@@ -161,7 +200,7 @@ describe('handleKnowledgeList', () => {
     const listKnowledge = vi.fn()
     const deps = {
       registry: featureRegistry,
-      agent: { getUnscoped: async () => ({ id: AGENT, orgId: ORG, daemonId: 'another-daemon' }) },
+      agent: { get: async () => ({ id: AGENT, orgId: ORG, daemonId: 'another-daemon' }) },
       organizationKnowledge: { listKnowledge }
     } as unknown as DaemonWsDeps
     const connection = conn()
@@ -197,7 +236,7 @@ describe('handleKnowledgeList', () => {
     ])
     const deps = {
       registry: featureRegistry,
-      agent: { getUnscoped: async () => ({ id: AGENT, orgId: ORG, daemonId: DAEMON }) },
+      agent: { get: async () => ({ id: AGENT, orgId: ORG, daemonId: DAEMON }) },
       organizationKnowledge: { listKnowledge }
     } as unknown as DaemonWsDeps
     const connection = conn()
@@ -235,7 +274,7 @@ describe('handleOrgSkills', () => {
     const listManagedSkills = vi.fn(async () => rows)
     const deps = {
       registry: featureRegistry,
-      agent: { getUnscoped: async () => ({ id: AGENT, orgId: ORG, daemonId: DAEMON }) },
+      agent: { get: async () => ({ id: AGENT, orgId: ORG, daemonId: DAEMON }) },
       organizationKnowledge: { listManagedSkills }
     } as unknown as DaemonWsDeps
     const connection = conn()
@@ -268,7 +307,7 @@ describe('handleOrgSkills', () => {
     const listManagedSkills = vi.fn(async () => rows)
     const deps = {
       registry: featureRegistry,
-      agent: { getUnscoped: async () => ({ id: AGENT, orgId: ORG, daemonId: DAEMON }) },
+      agent: { get: async () => ({ id: AGENT, orgId: ORG, daemonId: DAEMON }) },
       organizationKnowledge: { listManagedSkills }
     } as unknown as DaemonWsDeps
     const connection = conn()
@@ -387,6 +426,103 @@ describe('handleOrganizationSuggestionsSync', () => {
     expect(syncSuggestions).toHaveBeenCalledWith(ORG, DAEMON, [suggestion])
     expect(connection.replyTo.mock.calls[0]![2]).toEqual({ decisions: [] })
   })
+
+  // #968: a pool member is an org-less per-Pod record, so the connection has no org to derive —
+  // and the agents it dreams for are pool rows naming no machine at all.
+  it('records each org-scoped frame from one install-wide member under the org it names', async () => {
+    const syncSuggestions = vi.fn(async (_orgId, _daemonId, suggestions) =>
+      suggestions.map((s: { sourceAgentId: string }) => ({ ...s, id: 'suggestion-id', state: 'pending' }))
+    )
+    const byOrg: Record<string, ReturnType<typeof poolAgent>[]> = {
+      [ORG_A]: [poolAgent(AGENT)],
+      [ORG_B]: [poolAgent(FOREIGN_AGENT)]
+    }
+    const deps = {
+      registry: { getUnscoped: async () => ({ id: DAEMON, orgId: null, capabilities: installWideCapabilities }) },
+      agent: { list: async (orgId: string) => byOrg[orgId] ?? [] },
+      placementResolver: holderOf({ [AGENT]: [DAEMON], [FOREIGN_AGENT]: [DAEMON] }),
+      organizationKnowledge: { syncSuggestions }
+    } as unknown as DaemonWsDeps
+    const connection = conn()
+
+    await handleOrganizationSuggestionsSync(
+      { ...frame('knowledge/suggestions/sync', { suggestions: [proposed(AGENT)] }), orgId: ORG_A },
+      connection,
+      deps
+    )
+    await handleOrganizationSuggestionsSync(
+      { ...frame('knowledge/suggestions/sync', { suggestions: [proposed(FOREIGN_AGENT)] }), orgId: ORG_B },
+      connection,
+      deps
+    )
+
+    expect(connection.sendError).not.toHaveBeenCalled()
+    expect(syncSuggestions).toHaveBeenNthCalledWith(1, ORG_A, DAEMON, [proposed(AGENT)])
+    expect(syncSuggestions).toHaveBeenNthCalledWith(2, ORG_B, DAEMON, [proposed(FOREIGN_AGENT)])
+  })
+
+  it('refuses an org-scoped frame that names an org the sending agent is not in', async () => {
+    const syncSuggestions = vi.fn(async () => [])
+    const deps = {
+      registry: { getUnscoped: async () => ({ id: DAEMON, orgId: null, capabilities: installWideCapabilities }) },
+      agent: { list: async () => [] },
+      placementResolver: holderOf({ [AGENT]: [DAEMON] }),
+      organizationKnowledge: { syncSuggestions }
+    } as unknown as DaemonWsDeps
+    const connection = conn()
+
+    await handleOrganizationSuggestionsSync(
+      { ...frame('knowledge/suggestions/sync', { suggestions: [proposed(AGENT)] }), orgId: ORG_B },
+      connection,
+      deps
+    )
+
+    // The allowed set is still the fence: an org that holds none of this member's agents records nothing.
+    expect(syncSuggestions).toHaveBeenCalledWith(ORG_B, DAEMON, [])
+  })
+
+  it('refuses a pool agent this member holds no duty for', async () => {
+    const syncSuggestions = vi.fn(async () => [])
+    const deps = {
+      registry: { getUnscoped: async () => ({ id: DAEMON, orgId: null, capabilities: installWideCapabilities }) },
+      agent: { list: async () => [poolAgent(AGENT), poolAgent(FOREIGN_AGENT)] },
+      // The foreign agent's duty is held by another member, so this connection may not report it.
+      placementResolver: holderOf({ [AGENT]: [DAEMON], [FOREIGN_AGENT]: ['another-member'] }),
+      organizationKnowledge: { syncSuggestions }
+    } as unknown as DaemonWsDeps
+    const connection = conn()
+
+    await handleOrganizationSuggestionsSync(
+      {
+        ...frame('knowledge/suggestions/sync', { suggestions: [proposed(AGENT), proposed(FOREIGN_AGENT)] }),
+        orgId: ORG_A
+      },
+      connection,
+      deps
+    )
+
+    expect(syncSuggestions).toHaveBeenCalledWith(ORG_A, DAEMON, [proposed(AGENT)])
+  })
+
+  it('refuses an unscoped frame from an install-wide member', async () => {
+    const syncSuggestions = vi.fn(async () => [])
+    const deps = {
+      registry: { getUnscoped: async () => ({ id: DAEMON, orgId: null, capabilities: installWideCapabilities }) },
+      agent: { list: async () => [poolAgent(AGENT)] },
+      placementResolver: holderOf({ [AGENT]: [DAEMON] }),
+      organizationKnowledge: { syncSuggestions }
+    } as unknown as DaemonWsDeps
+    const connection = conn()
+
+    await handleOrganizationSuggestionsSync(
+      frame('knowledge/suggestions/sync', { suggestions: [proposed(AGENT)] }),
+      connection,
+      deps
+    )
+
+    expect(syncSuggestions).not.toHaveBeenCalled()
+    expect(connection.sendError.mock.calls[0]![1]).toBe('SCOPE_DENIED')
+  })
 })
 
 describe('handleManagedSkillRead', () => {
@@ -394,7 +530,7 @@ describe('handleManagedSkillRead', () => {
     const archive = new Uint8Array([0, 1, 2, 3, 4, 5])
     const deps = {
       registry: featureRegistry,
-      agent: { getUnscoped: async () => ({ id: AGENT, orgId: ORG, daemonId: DAEMON, managedSkills: [SKILL] }) },
+      agent: { get: async () => ({ id: AGENT, orgId: ORG, daemonId: DAEMON, managedSkills: [SKILL] }) },
       organizationKnowledge: {
         getManagedSkill: async () => ({ id: SKILL, orgId: ORG, archivedAt: null }),
         getManagedSkillRevision: async () => ({
@@ -436,7 +572,7 @@ describe('handleManagedSkillRead', () => {
     const getManagedSkillRevision = vi.fn()
     const deps = {
       registry: featureRegistry,
-      agent: { getUnscoped: async () => ({ id: AGENT, orgId: ORG, daemonId: DAEMON, managedSkills: [] }) },
+      agent: { get: async () => ({ id: AGENT, orgId: ORG, daemonId: DAEMON, managedSkills: [] }) },
       organizationKnowledge: { getManagedSkillRevision }
     } as unknown as DaemonWsDeps
     const connection = conn()
@@ -461,7 +597,7 @@ describe('handleManagedSkillRead', () => {
     const searchKnowledge = vi.fn()
     const deps = {
       registry: { getUnscoped: async () => ({ id: DAEMON, orgId: ORG, capabilities: { features: [] } }) },
-      agent: { getUnscoped: vi.fn() },
+      agent: { get: vi.fn() },
       organizationKnowledge: { searchKnowledge }
     } as unknown as DaemonWsDeps
     const connection = conn()
@@ -474,7 +610,143 @@ describe('handleManagedSkillRead', () => {
 
     expect(connection.sendError).toHaveBeenCalledWith(expect.any(String), 'SCOPE_DENIED', expect.any(String), false)
     expect(searchKnowledge).not.toHaveBeenCalled()
-    expect(deps.agent.getUnscoped).not.toHaveBeenCalled()
+    expect(deps.agent.get).not.toHaveBeenCalled()
+  })
+})
+
+// #999: the four organization READS on an install-wide member. A pool agent names no machine, so
+// `agent.daemonId` refuses every read from the very member that runs it.
+describe('organization reads follow the serving member', () => {
+  const knowledgeRow = {
+    id: '11111111-1111-4111-8111-111111111111',
+    title: 'Runbook',
+    summary: null,
+    tags: ['runbook'],
+    currentRevision: 1,
+    updatedAt: new Date('2026-08-01T00:00:00.000Z'),
+    content: 'body'
+  }
+
+  /** A pool row with one managed skill enabled — the shape every read below asks about. */
+  const poolRequester = (orgId = ORG_A) => ({ ...poolAgent(AGENT), orgId, managedSkills: [SKILL] })
+  const machineRequester = () => ({
+    id: AGENT,
+    placementKind: 'daemon' as const,
+    daemonId: DAEMON,
+    orgId: ORG_A,
+    managedSkills: [SKILL]
+  })
+
+  function knowledgeRepo() {
+    return {
+      searchKnowledge: vi.fn(async () => [knowledgeRow]),
+      listKnowledge: vi.fn(async () => [knowledgeRow]),
+      listManagedSkills: vi.fn(async () => [
+        {
+          id: SKILL,
+          orgId: ORG_A,
+          name: 'release-service',
+          description: 'Release with rollback',
+          currentRevision: 1,
+          updatedAt: new Date('2026-08-01T00:00:00.000Z')
+        }
+      ]),
+      getManagedSkill: vi.fn(async () => ({ id: SKILL, orgId: ORG_A, archivedAt: null })),
+      getManagedSkillRevision: vi.fn(async () => ({
+        managedSkillId: SKILL,
+        revision: 1,
+        archive: new Uint8Array([1, 2, 3, 4]),
+        digest: `sha256:${'b'.repeat(64)}`
+      }))
+    }
+  }
+
+  const reads = [
+    {
+      type: 'knowledge/search' as const,
+      ok: 'knowledge/search/ok',
+      payload: { query: 'runbook', limit: 5, maxBytes: 1024 },
+      probe: 'searchKnowledge' as const,
+      handler: handleKnowledgeSearch
+    },
+    {
+      type: 'knowledge/list' as const,
+      ok: 'knowledge/list/ok',
+      payload: { limit: 5, maxBytes: 1024 },
+      probe: 'listKnowledge' as const,
+      handler: handleKnowledgeList
+    },
+    {
+      type: 'skills/org' as const,
+      ok: 'skills/org/ok',
+      payload: { limit: 5 },
+      probe: 'listManagedSkills' as const,
+      handler: handleOrgSkills
+    },
+    {
+      type: 'managed-skill/read' as const,
+      ok: 'managed-skill/chunk',
+      payload: { managedSkillId: SKILL, revision: 1, offset: 0, limit: 1024 },
+      probe: 'getManagedSkillRevision' as const,
+      handler: handleManagedSkillRead
+    }
+  ]
+
+  async function read(
+    spec: (typeof reads)[number],
+    requester: Record<string, unknown>,
+    holds: Record<string, string[]>
+  ) {
+    const organizationKnowledge = knowledgeRepo()
+    const deps = {
+      // An install-wide member: org-less, so the frame is the only thing that names an org.
+      registry: { getUnscoped: async () => ({ id: DAEMON, orgId: null, capabilities: installWideCapabilities }) },
+      // The org-fenced point read: a requester outside the frame's org reads as absent.
+      agent: { get: async (orgId: string) => (requester.orgId === orgId ? requester : null) },
+      placementResolver: holderOf(holds),
+      organizationKnowledge
+    } as unknown as DaemonWsDeps
+    const connection = conn()
+    await spec.handler(
+      { ...frame(spec.type, { requesterAgentId: AGENT, ...spec.payload }), orgId: ORG_A },
+      connection,
+      deps
+    )
+    return { connection, organizationKnowledge }
+  }
+
+  for (const spec of reads) {
+    it(`serves ${spec.type} for a pool agent whose duty this member holds`, async () => {
+      const { connection, organizationKnowledge } = await read(spec, poolRequester(), { [AGENT]: [DAEMON] })
+
+      expect(connection.sendError).not.toHaveBeenCalled()
+      expect(connection.replyTo.mock.calls[0]![1]).toBe(spec.ok)
+      expect(organizationKnowledge[spec.probe]).toHaveBeenCalled()
+    })
+
+    it(`refuses ${spec.type} for a pool agent another member holds`, async () => {
+      const { connection, organizationKnowledge } = await read(spec, poolRequester(), { [AGENT]: ['another-member'] })
+
+      expect(connection.replyTo).not.toHaveBeenCalled()
+      expect(connection.sendError.mock.calls[0]![1]).toBe('SCOPE_DENIED')
+      expect(organizationKnowledge[spec.probe]).not.toHaveBeenCalled()
+    })
+
+    it(`still serves ${spec.type} for an agent placed on this daemon`, async () => {
+      const { connection, organizationKnowledge } = await read(spec, machineRequester(), {})
+
+      expect(connection.sendError).not.toHaveBeenCalled()
+      expect(connection.replyTo.mock.calls[0]![1]).toBe(spec.ok)
+      expect(organizationKnowledge[spec.probe]).toHaveBeenCalled()
+    })
+  }
+
+  it('refuses a read whose requester belongs to another organization', async () => {
+    // Serving an agent is not standing in its org: the frame names ORG_A, the requester is in ORG_B.
+    const { connection, organizationKnowledge } = await read(reads[0]!, poolRequester(ORG_B), { [AGENT]: [DAEMON] })
+
+    expect(connection.sendError.mock.calls[0]![1]).toBe('SCOPE_DENIED')
+    expect(organizationKnowledge.searchKnowledge).not.toHaveBeenCalled()
   })
 })
 

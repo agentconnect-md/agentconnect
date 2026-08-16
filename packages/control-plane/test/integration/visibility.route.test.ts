@@ -75,6 +75,30 @@ describe('agent visibility — list & get', () => {
     expect(granteeList.length).toBe(2) // org + shared
     expect(otherList.length).toBe(1) // org only
   })
+
+  it('projects a visible agent’s daemon name even when that daemon is outside the viewer’s audience', async () => {
+    const viewer = await makeUser('agent-daemon-name-viewer', 'collaborator')
+    const daemonId = randomUUID()
+    const agentId = randomUUID()
+    await seedDaemon(prisma, daemonId, { visibility: 'restricted', sharedWith: [DEFAULT_OWNER_ID] })
+    await prisma.daemon.update({ where: { id: daemonId }, data: { name: 'Daemon A' } })
+    await seedAgent(prisma, agentId, { daemonId, visibility: 'org' })
+
+    const app = appAs(viewer).app
+    const daemons = await app.inject({ method: 'GET', url: `${ORG}/daemons` })
+    expect((daemons.json() as Array<{ daemonId: string }>).some((daemon) => daemon.daemonId === daemonId)).toBe(false)
+
+    const list = await app.inject({ method: 'GET', url: `${ORG}/agents` })
+    expect(list.statusCode).toBe(200)
+    expect((list.json() as Array<Record<string, unknown>>).find((agent) => agent.id === agentId)).toMatchObject({
+      daemonId,
+      daemonName: 'Daemon A'
+    })
+
+    const detail = await app.inject({ method: 'GET', url: `${ORG}/agents/${agentId}` })
+    expect(detail.statusCode).toBe(200)
+    expect(detail.json()).toMatchObject({ daemonId, daemonName: 'Daemon A' })
+  })
 })
 
 describe('agent visibility — write gates', () => {

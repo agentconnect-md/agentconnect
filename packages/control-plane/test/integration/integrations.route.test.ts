@@ -14,7 +14,8 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
-import { seedDaemon, seedAgent } from '../fixtures/seed.js'
+import { seedDaemon, seedAgent, seedDutyGroup } from '../fixtures/seed.js'
+import { seedPoolMember } from '../fakes/member-set.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { ControlSender } from '../../src/orchestrator/outbound.js'
 import type { IntegrationUpsert, IntegrationRemove } from '@agentconnect.md/protocol'
@@ -39,12 +40,14 @@ afterEach(async () => {
 /** A ControlSender spy recording the integration pushes the route makes. */
 class SpyControl {
   readonly upserts: Array<{ daemonId: string; u: IntegrationUpsert }> = []
-  readonly removes: Array<{ daemonId: string; r: IntegrationRemove }> = []
+  readonly removes: Array<{ daemonId: string; r: IntegrationRemove; orgId?: string }> = []
   async integrationUpsert(daemonId: string, u: IntegrationUpsert): Promise<void> {
     this.upserts.push({ daemonId, u })
   }
-  async integrationRemove(daemonId: string, r: IntegrationRemove): Promise<void> {
-    this.removes.push({ daemonId, r })
+  // `orgId` is recorded because a removal payload is a bare id: the send cannot
+  // derive an org on an install-wide connection, so dropping it here is the bug.
+  async integrationRemove(daemonId: string, r: IntegrationRemove, orgId?: string): Promise<void> {
+    this.removes.push({ daemonId, r, orgId })
   }
 }
 
@@ -58,7 +61,11 @@ function daemonCapabilities(platforms: string[]) {
 
 function withSpy(): { app: HttpApp; spy: SpyControl } {
   const spy = new SpyControl()
-  const app = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+  // A publicly reachable relay origin — the http-transport gate refuses a
+  // deployment whose PUBLIC_RELAY_URL is unset or loopback-only, so the tests
+  // that exercise http installs need the same config a real one would have.
+  const config = { PUBLIC_RELAY_URL: 'https://relay.example.test' }
+  const app = buildHttpApp(prisma, config, undefined, spy as unknown as ControlSender)
   running = app
   return { app, spy }
 }
@@ -209,13 +216,70 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
 
       expect(res.statusCode).toBe(409)
       expect((res.json() as { message: string }).message).toBe(
-        'HTTP callback delivery is unavailable on this deployment'
+        'HTTP callback delivery is unavailable on this deployment — no relay is connected.'
       )
       expect(verified).toBe(false)
       expect(await prisma.bot.count({ where: { orgId: DEFAULT_ORG_ID } })).toBe(0)
       await app.close()
       running = undefined
     }
+  })
+
+  it('POST refuses an http install when the connected relay is loopback-only', async () => {
+    // The default self-hosted Compose stack: a healthy, registered relay whose
+    // PUBLIC_RELAY_URL no platform can POST to. Availability is not reachability —
+    // and because transport is immutable, accepting one mints a bot that silently
+    // black-holes every inbound message.
+    const agentId = await placedAgent()
+    const spy = new SpyControl()
+    const app = buildHttpApp(
+      prisma,
+      { PUBLIC_RELAY_URL: 'http://localhost:8090' },
+      undefined,
+      spy as unknown as ControlSender
+    )
+    running = app
+    app.relayReg.add({ relayId: 'r1', send() {}, close() {} } as RelayChannel)
+    let verified = false
+    app.platformStubs.verifySlackBot = async () => {
+      verified = true
+      return {
+        status: 'ok',
+        name: 'http-bot',
+        appId: 'AHTTPBOT',
+        botUserId: 'U1',
+        teamId: 'T1',
+        teamName: 'Acme',
+        scopes: [...SLACK_BOT_SCOPES]
+      }
+    }
+
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: {
+        platform: 'slack',
+        agentId,
+        transport: 'http',
+        slack: { botToken: SLACK.botToken, signingSecret: 'signing-secret' }
+      }
+    })
+
+    expect(res.statusCode).toBe(409)
+    expect((res.json() as { message: string }).message).toContain('http://localhost:8090')
+    expect(verified).toBe(false)
+    expect(await prisma.bot.count({ where: { orgId: DEFAULT_ORG_ID } })).toBe(0)
+    // Socket transport is the escape hatch the refusal points at, and it still works.
+    const socket = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: {
+        platform: 'slack',
+        agentId,
+        slack: { botToken: SLACK.botToken, appToken: SLACK.appToken }
+      }
+    })
+    expect(socket.statusCode).toBe(201)
   })
 
   it('POST telegram check reports Group Privacy Mode without storing the token', async () => {
@@ -1066,7 +1130,9 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
     expect(bot?.lastUsedAt).not.toBeNull()
     expect(bot?.lastAgentName).toBe(`agent-${agentId.slice(0, 4)}`)
     expect(await prisma.botSecret.findUnique({ where: { botId: created.botId } })).not.toBeNull()
-    expect(spy.removes).toEqual([{ daemonId: DAEMON, r: { integrationId: created.id } }])
+    // The org rides every removal now: the payload is a bare id, so the send has
+    // nothing else to scope on when the connection is install-wide.
+    expect(spy.removes).toEqual([{ daemonId: DAEMON, r: { integrationId: created.id }, orgId: DEFAULT_ORG_ID }])
   })
 
   it('a freed bot can be reinstalled by botId — tokens reused, no new bot row', async () => {
@@ -1616,5 +1682,176 @@ describe('bot sharing capability (PATCH /bots/:id)', () => {
 
     expect(res.statusCode).toBe(400)
     expect(res.json()).toMatchObject({ message: 'multi-agent bots currently support Slack only' })
+  })
+})
+
+/**
+ * A dependent follows the DUTY HOLDER too (#973). `AgentDelivery` owns the agent
+ * frames; an integration spec is token-bearing and its bindRules are what the
+ * daemon admits on, so a holder that never receives the push keeps stale
+ * credentials and stale routing until it happens to reconnect — the same
+ * frozen-bundle failure one level down. These mutations do not advance
+ * `Agent.configRevision` either, so the grant-time freshness stamp gives the
+ * holder no reason to refetch: the live push IS the only in-session repair.
+ */
+describe('integration updates follow the duty holder', () => {
+  const HOLDER = 'd7777777-7777-4777-8777-777777777777'
+  const GROUP = '00000000-0000-4000-8000-0000000009b1'
+
+  /** A placed agent with a Slack install, plus a live duty held by HOLDER. */
+  async function installedWithHolder(): Promise<{ agentId: string; integrationId: string; app: HttpApp }> {
+    const agentId = await placedAgent()
+    await seedDaemon(prisma, HOLDER, { capabilities: daemonCapabilities(ALL_BOT_PLATFORMS) })
+    await seedDutyGroup(prisma, GROUP, HOLDER, [agentId])
+    const { app } = withSpy()
+    const created = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: { name: 'held-bot', platform: 'slack', agentId, slack: SLACK }
+    })
+    expect(created.statusCode).toBe(201)
+    return { agentId, integrationId: (created.json() as { id: string }).id, app }
+  }
+
+  it('the install push reaches the holder as well as the placement — with the credential', async () => {
+    const agentId = await placedAgent()
+    await seedDaemon(prisma, HOLDER, { capabilities: daemonCapabilities(ALL_BOT_PLATFORMS) })
+    await seedDutyGroup(prisma, GROUP, HOLDER, [agentId])
+    const { app, spy } = withSpy()
+
+    const created = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: { name: 'held-bot', platform: 'slack', agentId, slack: SLACK }
+    })
+    expect(created.statusCode).toBe(201)
+
+    expect(spy.upserts.map((u) => u.daemonId)).toEqual([DAEMON, HOLDER])
+    // A credential that reaches only the placement is the worst of the three:
+    // the holder would go on authenticating with whatever it last saw.
+    expect(JSON.stringify(spy.upserts.at(-1)!.u)).toContain(SLACK.botToken)
+  })
+
+  it('a bindRules change reaches the holder, and the holder is current WITHOUT a reconnect', async () => {
+    const { integrationId, app } = await installedWithHolder()
+    const spy = app.deps.control as unknown as SpyControl
+    await prisma.integrationChannel.create({
+      data: { integrationId, channelId: 'C900', kind: 'channel', trigger: 'mention' }
+    })
+    spy.upserts.length = 0
+
+    const patched = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/integrations/${integrationId}/channels/C900`,
+      payload: { trigger: 'any' }
+    })
+    expect(patched.statusCode).toBe(200)
+
+    // Arrival is not enough — the pinning assertion is that what ARRIVED is the
+    // new routing. No register/reconcile ran anywhere in this test.
+    const held = spy.upserts.find((u) => u.daemonId === HOLDER)
+    expect(held).toBeDefined()
+    expect(held!.u.core.bindRules).toContainEqual({ channel: 'C900', match: { kind: 'auto' } })
+  })
+
+  it('an integration removal reaches the holder', async () => {
+    const { integrationId, app } = await installedWithHolder()
+    const spy = app.deps.control as unknown as SpyControl
+
+    const deleted = await app.app.inject({ method: 'DELETE', url: `${ORG}/integrations/${integrationId}` })
+    expect(deleted.statusCode).toBe(204)
+
+    expect(spy.removes.map((r) => r.daemonId)).toEqual([DAEMON, HOLDER])
+    expect(spy.removes.every((r) => r.r.integrationId === integrationId)).toBe(true)
+    // The org is the assertion, not an incidental: `integration/remove` carries
+    // only an id, and this holder never registered the integration (it would have
+    // arrived through `duty/fetch`), so a send without the org is SCOPE_DENIED
+    // before it leaves the process — the delete 500s and the holder keeps serving.
+    expect(spy.removes.every((r) => r.orgId === DEFAULT_ORG_ID)).toBe(true)
+  })
+
+  it('the upsert path carries the org on the payload — verified, not assumed', async () => {
+    // `IntegrationSpec.orgId` is OPTIONAL on the wire (decode tolerance), so the
+    // guarantee is that the projector always stamps the row's org. Pin it: if a
+    // future producer omits it, upserts inherit exactly the removal bug.
+    const { app } = await installedWithHolder()
+    const spy = app.deps.control as unknown as SpyControl
+
+    expect(spy.upserts).not.toHaveLength(0)
+    expect(spy.upserts.every((u) => u.u.orgId === DEFAULT_ORG_ID)).toBe(true)
+  })
+
+  it('a gating flip re-pushes the derived spec to the holder', async () => {
+    const { agentId, app } = await installedWithHolder()
+    const spy = app.deps.control as unknown as SpyControl
+    spy.upserts.length = 0
+
+    // Visibility drives the derived conversation-gating flag; the converge path
+    // (orchestrator/integrationPush.ts) re-pushes every integration of the agent.
+    const shared = await app.app.inject({
+      method: 'PUT',
+      url: `${ORG}/agents/${agentId}/sharing`,
+      payload: { visibility: 'restricted', sharedWith: [DEFAULT_OWNER_ID] }
+    })
+    expect(shared.statusCode).toBe(200)
+
+    const held = spy.upserts.find((u) => u.daemonId === HOLDER)
+    expect(held).toBeDefined()
+    // A holder still admitting on the ungated defaults would serve conversations
+    // the agent's new visibility forbids.
+    expect(held!.u.core.gated).toBe(true)
+  })
+
+  // #1026: the create probed with the resolver and then finalized on `agent.daemonId`, which is
+  // NULL for a pool agent — so the whole install refused after its capability check had passed.
+  it('installs on a POOL agent through the member holding its duty (#1026)', async () => {
+    const setId = await seedPoolMember(prisma, HOLDER)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { setId })
+    await seedDutyGroup(prisma, GROUP, HOLDER, [agentId])
+    const { app, spy } = withSpy()
+
+    const created = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: { name: 'pool-bot', platform: 'slack', agentId, slack: SLACK }
+    })
+    expect({ status: created.statusCode, message: created.json() }).toMatchObject({ status: 201 })
+    expect(spy.upserts.map((u) => u.daemonId)).toEqual([HOLDER])
+    expect(await prisma.integration.count()).toBe(1)
+  })
+
+  it('a POOL agent nothing is serving is still refused with 409, and stores nothing', async () => {
+    const setId = await seedPoolMember(prisma, HOLDER)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { setId })
+    const { app, spy } = withSpy()
+
+    const created = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: { name: 'pool-bot', platform: 'slack', agentId, slack: SLACK }
+    })
+    expect(created.statusCode).toBe(409)
+    expect({
+      integrations: await prisma.integration.count(),
+      bots: await prisma.bot.count(),
+      pushes: spy.upserts
+    }).toEqual({ integrations: 0, bots: 0, pushes: [] })
+  })
+
+  it('an EXPIRED lease is not a holding — the dependent goes to the placement alone', async () => {
+    const agentId = await placedAgent()
+    await seedDaemon(prisma, HOLDER, { capabilities: daemonCapabilities(ALL_BOT_PLATFORMS) })
+    await seedDutyGroup(prisma, GROUP, HOLDER, [agentId], { expiresAt: new Date(Date.now() - 1000) })
+    const { app, spy } = withSpy()
+
+    const created = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: { name: 'lapsed-bot', platform: 'slack', agentId, slack: SLACK }
+    })
+    expect(created.statusCode).toBe(201)
+    expect(spy.upserts.map((u) => u.daemonId)).toEqual([DAEMON])
   })
 })

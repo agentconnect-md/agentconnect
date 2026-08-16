@@ -55,7 +55,7 @@ async function report(
     payload: { hookId, agentId, deliveryKey, ...outcome }
   } as AnyFrame
   const deps = { hook: repo(), clock: systemClock } as unknown as DaemonWsDeps
-  const conn = { daemonId, replyTo: vi.fn(), sendError: vi.fn() }
+  const conn = { daemonId, orgId: DEFAULT_ORG_ID, replyTo: vi.fn(), sendError: vi.fn() }
   await handleHookReport(frame, conn as unknown as DaemonConnection, deps)
   return { frame, conn }
 }
@@ -1021,13 +1021,13 @@ describe('HookRun bookkeeping — delivery opens, completion closes', () => {
     expect(runs[0]).toMatchObject({ deliveryKey: 'd-late', status: 'failed', reason: 'turn failed' })
   })
 
-  it('an unknown hookId completion returns a permanent conflict', async () => {
+  it('an unknown hookId completion is refused permanently — absent in the org the frame acts in', async () => {
     await seedDaemon(prisma, DAEMON)
     const rejected = await report(DAEMON, randomUUID(), randomUUID(), 'd-1', { status: 'success' })
     expect(rejected.conn.sendError).toHaveBeenCalledWith(
       rejected.frame.id,
-      'CONFLICT',
-      'hook completion does not match the accepted dispatch',
+      'SCOPE_DENIED',
+      'hook is not in the organization this frame acts in',
       false
     )
     expect(rejected.conn.replyTo).not.toHaveBeenCalled()

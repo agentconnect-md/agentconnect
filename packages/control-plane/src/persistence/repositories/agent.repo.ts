@@ -21,6 +21,13 @@ import type {
 } from '../ports.js'
 import { visibilityWhere } from '../../authorization/policy.js'
 import { AgentId, DaemonId, OrgId } from '../../domain/ids.js'
+import {
+  placementColumns,
+  placementTargetOf,
+  samePlacement,
+  type PlacementKind,
+  type PlacementTarget
+} from '../../domain/placement.js'
 import { parseAgentIcon, randomGlyphIcon } from '../../agents/agent-icon.js'
 import {
   lockHookReviewAgentLifecycleScope,
@@ -32,6 +39,20 @@ import { lockSkillSourceNameScopes } from '../skill-source-lock.js'
 import { tryLockMemoryConnectionScopes } from '../memory-connection-lock.js'
 import { PgHookRepo } from './hook.repo.js'
 import { lockAgentPlacement, revokeActiveWebchatMcpDelegations } from './agent-placement.js'
+import { assertAgentMayUseSet } from './member-set.repo.js'
+
+/** An agent may be created already placed. A `set` placement names a set rather than a machine, so
+ *  the create input carries a kind and the columns follow from it rather than from a daemon id. */
+function placementCreateColumns(input: { placementKind?: PlacementKind; daemonId?: string; setId?: string }): {
+  placementKind?: PlacementKind
+  daemonId?: string
+  setId?: string
+  status?: 'active'
+} {
+  if (input.placementKind === 'set' && input.setId)
+    return { placementKind: 'set', setId: input.setId, status: 'active' }
+  return input.daemonId ? { daemonId: input.daemonId, status: 'active' } : {}
+}
 import { fenceAgentLocalConfigWrite, lockOrgForConfigWrite, orgIdOfAgent } from './organization-environment-fence.js'
 import {
   AgentMissing,
@@ -215,7 +236,9 @@ function toRecord(a: AgentWithUsers): AgentRecord {
     managedSkills: a.managedSkills,
     memory: ov.memory ?? null,
     status: a.status as AgentRecord['status'],
+    placementKind: a.placementKind,
     daemonId: a.daemonId ? DaemonId(a.daemonId) : null,
+    setId: a.setId,
     workspace: workspaceOf(a),
     ...(a.workspaceRepoId !== null ? { workspaceRepoId: a.workspaceRepoId } : {}),
     capabilities: a.capabilities,
@@ -290,6 +313,9 @@ export class PgAgentRepo implements AgentRepo {
         actorUserId: input.createdByUserId,
         sharedWith: input.sharedWith
       })
+      // Third write-time invariant (daemon-groups.md §2): a create places too, so it takes it.
+      if (input.placementKind === 'set' && input.setId)
+        await assertAgentMayUseSet(tx, { id: input.id, orgId: input.orgId }, input.setId)
       const a = await tx.agent.create({
         data: {
           id: input.id,
@@ -301,7 +327,7 @@ export class PgAgentRepo implements AgentRepo {
           icon: (input.icon ?? randomGlyphIcon()) as Prisma.InputJsonValue,
           description: input.description ?? null,
           runtime: input.runtime,
-          ...(input.daemonId ? { daemonId: input.daemonId, status: 'active' } : {}),
+          ...placementCreateColumns(input),
           ...(input.managedSkills ? { managedSkills: input.managedSkills } : {}),
           ...(input.model ||
           input.reasoningEffort ||
@@ -799,19 +825,26 @@ export class PgAgentRepo implements AgentRepo {
     return toRecord(a)
   }
 
-  async setPlacement(agentId: AgentId, daemonId: DaemonId | null): Promise<void> {
+  async setPlacement(agentId: AgentId, target: PlacementTarget): Promise<void> {
     await this.transaction(async (tx) => {
       const current = await lockAgentPlacement(tx, agentId)
       if (!current) return
+      // Third write-time invariant (daemon-groups.md §2), inside the transaction that writes it.
+      if (target.kind === 'set') await assertAgentMayUseSet(tx, { id: agentId, orgId: current.orgId }, target.setId)
+      const columns = placementColumns(target)
       await tx.agent.update({
         where: { id: agentId },
         // A placement change makes a different daemon the spec's recipient. Bumping
         // here means the new owner's first snapshot is never mistaken for an older
         // revision it already applied during a previous residency.
-        data: { daemonId, status: daemonId ? 'active' : 'inactive', configRevision: { increment: 1 } }
+        data: {
+          ...columns,
+          status: target.kind === 'unplaced' ? 'inactive' : 'active',
+          configRevision: { increment: 1 }
+        }
       })
-      if (daemonId) await settlePresetPlacement(tx, agentId)
-      if (current.daemonId !== daemonId) {
+      if (target.kind !== 'unplaced') await settlePresetPlacement(tx, agentId)
+      if (!samePlacement(placementTargetOf(current), target)) {
         await revokeActiveWebchatMcpDelegations(tx, agentId, new Date())
         await tx.hookDef.updateMany({
           where: { agentId },
@@ -823,22 +856,30 @@ export class PgAgentRepo implements AgentRepo {
 
   async movePlacement(
     agentId: AgentId,
-    expectedDaemonId: DaemonId | null,
-    daemonId: DaemonId | null,
+    expected: PlacementTarget,
+    target: PlacementTarget,
     byUserId?: string
   ): Promise<AgentRecord | null> {
     // The explicit Agent lock serializes the compare-and-set read with all
-    // placement writers. Keep daemonId on the update as a defensive guard; a
+    // placement writers. Keep the expected columns on the update as a defensive guard; a
     // missing/deleted row still resolves to null rather than overwriting state.
+    const expectedColumns = placementColumns(expected)
+    const columns = placementColumns(target)
     try {
       return await this.transaction(async (tx) => {
         const current = await lockAgentPlacement(tx, agentId)
-        if (!current || current.daemonId !== expectedDaemonId) return null
+        if (!current || !samePlacement(placementTargetOf(current), expected)) return null
+        if (target.kind === 'set') await assertAgentMayUseSet(tx, { id: agentId, orgId: current.orgId }, target.setId)
         const a = await tx.agent.update({
-          where: { id: agentId, daemonId: expectedDaemonId },
+          where: {
+            id: agentId,
+            daemonId: expectedColumns.daemonId,
+            setId: expectedColumns.setId,
+            placementKind: expectedColumns.placementKind
+          },
           data: {
-            daemonId,
-            status: daemonId ? 'active' : 'inactive',
+            ...columns,
+            status: target.kind === 'unplaced' ? 'inactive' : 'active',
             lastModifiedAt: new Date(),
             ...(byUserId ? { lastModifiedByUserId: byUserId } : {}),
             // See setPlacement: a move re-targets who receives the spec, so the
@@ -847,8 +888,8 @@ export class PgAgentRepo implements AgentRepo {
           },
           include: withUsers
         })
-        if (daemonId) await settlePresetPlacement(tx, agentId)
-        if (expectedDaemonId !== daemonId) {
+        if (target.kind !== 'unplaced') await settlePresetPlacement(tx, agentId)
+        if (!samePlacement(expected, target)) {
           await revokeActiveWebchatMcpDelegations(tx, agentId, new Date())
           await tx.hookDef.updateMany({
             where: { agentId },
@@ -915,9 +956,33 @@ export class PgAgentRepo implements AgentRepo {
     return rows.map(toRecord)
   }
 
+  async listByIds(agentIds: readonly AgentId[]): Promise<AgentRecord[]> {
+    if (agentIds.length === 0) return []
+    const rows = await this.db.agent.findMany({
+      where: { id: { in: [...agentIds] } },
+      orderBy: { createdAt: 'asc' },
+      include: withUsers
+    })
+    return rows.map(toRecord)
+  }
+
+  async configRevisions(agentIds: readonly AgentId[]): Promise<Map<string, bigint>> {
+    if (agentIds.length === 0) return new Map()
+    const rows = await this.db.agent.findMany({
+      where: { id: { in: [...agentIds] } },
+      select: { id: true, configRevision: true }
+    })
+    return new Map(rows.map((r) => [r.id, r.configRevision]))
+  }
+
+  // The placement relation read from the MEMBER's side, and deliberately the row-wise mirror of
+  // `domain/placement.ts#placementTargets` read from the agent's side: `placementKind: 'daemon'`
+  // is what makes "this daemon is the placement" mean the same thing in both directions. Without
+  // it the two agree only by accident — because a `set` placement happens to store a null daemon
+  // ref — and a later kind that stores one would be placed here and unplaced there.
   async listForDaemon(daemonId: DaemonId): Promise<AgentRecord[]> {
     const rows = await this.db.agent.findMany({
-      where: { daemonId },
+      where: { daemonId, placementKind: 'daemon' },
       orderBy: { createdAt: 'asc' },
       include: withUsers
     })
@@ -932,16 +997,20 @@ export class PgAgentRepo implements AgentRepo {
   // integration join, so an agent with no IM integration is included — that is the
   // whole point of the flat directory.
   //
-  // `daemonId: { not: null }` is NOT an optimization: this one query feeds BOTH the
+  // Excluding the UNPLACED is not an optimization: this one query feeds BOTH the
   // `channel/agents` roster a model discovers peers from AND the flat
   // `CollabRoutesSnapshot.agents[]` wakes are authorized against, and
   // `buildCollabSnapshot` drops daemonId-less rows there (no owning daemon ⇒ nothing to
   // route a wake to). Listing an unplaced agent would therefore advertise a peer that is
   // discoverable but not callable — the model gets a bare 'not_allowed' and retries — so
   // the exclusion belongs in the shared read, where the two surfaces cannot disagree.
+  //
+  // A `set` agent IS placed and carries no daemonId, so the filter is on the placement, not on
+  // one column: each consumer fills the serving daemon in through the resolver, which is the only
+  // thing that knows which member holds it right now.
   async orgDirectory(orgId: OrgId): Promise<OrgAgentRecord[]> {
     const rows = await this.db.agent.findMany({
-      where: { orgId, daemonId: { not: null } },
+      where: { orgId, OR: [{ daemonId: { not: null } }, { setId: { not: null } }] },
       orderBy: { createdAt: 'asc' },
       select: {
         id: true,
@@ -949,7 +1018,9 @@ export class PgAgentRepo implements AgentRepo {
         displayName: true,
         description: true,
         status: true,
+        placementKind: true,
         daemonId: true,
+        setId: true,
         callPolicy: true,
         allowedCallerAgentIds: true,
         outboundPolicy: true,
@@ -962,7 +1033,9 @@ export class PgAgentRepo implements AgentRepo {
       displayName: row.displayName,
       description: row.description,
       status: row.status as OrgAgentRecord['status'],
+      placementKind: row.placementKind,
       daemonId: row.daemonId,
+      setId: row.setId,
       callPolicy: row.callPolicy as AgentCallPolicy,
       allowedCallerAgentIds: row.allowedCallerAgentIds,
       outboundPolicy: row.outboundPolicy as AgentCallPolicy,

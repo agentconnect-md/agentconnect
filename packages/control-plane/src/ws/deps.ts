@@ -24,10 +24,11 @@ import type {
   OrganizationKnowledgeRepo,
   BotRepo,
   GithubInstallationRepo,
-  DaemonLifecycleOpRepo
+  DaemonLifecycleOpRepo,
+  AgentRecord
 } from '../persistence/ports.js'
 import type { SessionVisibilityPushService } from '../orchestrator/visibilityPush.js'
-import type { RelayRosterEntry } from '@agentconnect.md/protocol'
+import type { DutyAgentBundle, RelayRosterEntry } from '@agentconnect.md/protocol'
 import type { GithubService } from '../github/service.js'
 import type { GithubReviewBrokerService } from '../github/review-broker.service.js'
 import type { GithubRunCoordinator } from '../github/run-reporter.js'
@@ -36,6 +37,7 @@ import type { ConnectionRegistry } from './registry.js'
 import type { Clock } from '../domain/clock.js'
 import type { SessionEventSink } from '../events/sink.js'
 import type { AgentMutationGate } from '../orchestrator/agentMutationGate.js'
+import type { PlacementResolver } from '../orchestrator/placementResolver.js'
 import type { CollabRoutesService } from '../orchestrator/collabRoutes.service.js'
 import type { DutyLeaseService } from '../orchestrator/dutyLease.js'
 import type { AgentId, DaemonId } from '../domain/ids.js'
@@ -52,6 +54,8 @@ export interface WsConfig {
 }
 
 export interface DaemonWsDeps {
+  /** Structured server log sink for failures handled at the daemon WS edge. */
+  log: { error: (obj: Record<string, unknown>, message: string) => void }
   auth: DaemonAuth
   /** Durable lifecycle intent exposed during auth-only bootstrap. */
   lifecycleOps: DaemonLifecycleOpRepo
@@ -100,6 +104,10 @@ export interface DaemonWsDeps {
   collabRoutes: CollabRoutesService
   /** The duty lease exchange riding the heartbeat (k8s daemons). */
   dutyLease: DutyLeaseService
+  /** Assembles one agent's complete installable definition for `duty/fetch` —
+   *  the same bundle an `agent/activate` carries; absent ⇒ the fetch answers
+   *  empty and the member installs nothing. */
+  agentBundle?: (agent: AgentRecord) => Promise<DutyAgentBundle>
   /** Stamps `lastRunAt` from the `cron/report` EVT (daemon-scoped, latest-wins). */
   cron: CronRepo
   /** Closes `HookRun` rows from the correlated `hook/report` completion request. */
@@ -107,6 +115,10 @@ export interface DaemonWsDeps {
   /** Viewer-free agent reads for the `gitcred/request` placement check — a DATA-PLANE
    *  path (resource-visibility §9): restricted-but-active agents must keep minting. */
   agent: AgentRepo
+  /** "May this connection act for that agent?" — placement OR a held duty. A pool member serves
+   *  agents its row does not name, so placement equality is no longer the fence. Absent ⇒
+   *  placement alone, which is the pre-duty behavior. */
+  placementResolver?: PlacementResolver
   /** Accepted Knowledge/skills and retained suggestion metadata. */
   organizationKnowledge?: OrganizationKnowledgeRepo
   /** Revision-fenced sink for daemon external-memory conformance facts. */

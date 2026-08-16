@@ -24,6 +24,7 @@ import type { ZodTypeProvider } from '../plugins/zod.js'
 import { Tag } from '../plugins/openapi.js'
 import type { HttpDeps } from '../deps.js'
 import { AgentId, OrgId } from '../../domain/ids.js'
+import { refreshMutationAgent } from '../mutation-agent.js'
 import { denyViewerWrite, ctxOf, orgOf } from '../rbac.js'
 import { canView, canEdit } from '../../authorization/policy.js'
 import { resolveWebAppUrl } from '../../config/env.js'
@@ -33,6 +34,7 @@ import { installNewSlackBot, slackAppIdFromAppToken } from '../install-slack.js'
 import { CONFIG_ACCESS_TTL_MS, configUsable } from '../slack-user-config.js'
 import type { SlackRouteSeams } from '../platform-route-seams.js'
 import { integrationPlatformAvailability } from '../daemon-platform-capability.js'
+import { relayHttpBase, relayIngress } from '../relay-ingress.js'
 import {
   SlackAppStartBody,
   SlackAppStartDto,
@@ -45,14 +47,6 @@ import {
   SlackInstallErrorDto,
   IdParam
 } from '../dto/index.js'
-
-/** The relay pool's public HTTPS base from PUBLIC_RELAY_URL, normalizing a
- *  `ws(s)://` origin to `http(s)://` (the Events API request_url is HTTP) and
- *  trimming a trailing slash. Null/undefined ⇒ null. */
-export function relayHttpBase(publicRelayUrl: string | undefined): string | null {
-  if (!publicRelayUrl) return null
-  return publicRelayUrl.replace(/^ws(s?):\/\//i, 'http$1://').replace(/\/$/, '')
-}
 
 /** Slack error strings from `apps.manifest.create` that mean the config token itself is
  *  invalid/expired (as opposed to a transient error or a rate limit). An ACCESS-ONLY stored
@@ -110,13 +104,16 @@ export function slackInstallRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
         if (!canEdit(agent, ctxOf(req))) {
           return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this agent' })
         }
-        if (!agent.daemonId) {
+        // Delivery is daemon-scoped; refuse until the agent is placed. A pool agent IS placed and
+        // names no machine, so the capability probe asks whichever member serves it.
+        const installDaemonId = await deps.placementResolver.servingDaemon(agent)
+        if (!installDaemonId) {
           return reply
             .code(409)
             .send({ error: 'Conflict', statusCode: 409, message: 'agent must be placed on a daemon first' })
         }
         const platformAvailability = await integrationPlatformAvailability(deps, {
-          daemonId: agent.daemonId,
+          daemonId: installDaemonId,
           orgId,
           viewer: ctxOf(req),
           platform: 'slack'
@@ -157,16 +154,13 @@ export function slackInstallRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
 
         // Transport (slack-http-mode): http ⇒ the CP builds an Events-API manifest and
         // captures the signing secret from apps.manifest.create, so finalize needs no
-        // manual paste. http requires a connected relay to receive the POSTs.
+        // manual paste. http requires a relay Slack itself can POST to.
         const transport = req.body.transport ?? 'socket'
-        const httpBase = transport === 'http' ? (relayHttpBase(deps.config.PUBLIC_RELAY_URL) ?? undefined) : undefined
-        if (transport === 'http' && (!httpBase || !deps.httpBot.hasConnectedRelay())) {
-          return reply.code(409).send({
-            error: 'Conflict',
-            statusCode: 409,
-            message: 'HTTP-mode install needs a connected relay — set PUBLIC_RELAY_URL and run a relay.'
-          })
+        const ingress = transport === 'http' ? relayIngress(deps) : null
+        if (ingress && !ingress.ok) {
+          return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: ingress.message })
         }
+        const httpBase = ingress?.ok ? ingress.base : undefined
 
         // The CP owns the manifest (chiefly `redirect_urls`): a client-supplied
         // redirect would be an open-redirect / token-theft hole.
@@ -353,13 +347,15 @@ export function slackInstallRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
         if (!canEdit(agent, ctxOf(req))) {
           return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this agent' })
         }
-        if (!agent.daemonId) {
+        // A pool agent IS placed and names no machine; the probe asks whichever member serves it.
+        const installDaemonId = await deps.placementResolver.servingDaemon(agent)
+        if (!installDaemonId) {
           return reply
             .code(409)
             .send({ error: 'Conflict', statusCode: 409, message: 'agent must be placed on a daemon first' })
         }
         const platformAvailability = await integrationPlatformAvailability(deps, {
-          daemonId: agent.daemonId,
+          daemonId: installDaemonId,
           orgId,
           viewer: ctxOf(req),
           platform: 'slack'
@@ -416,12 +412,8 @@ export function slackInstallRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
           // Token verification and capability checks above can take long enough
           // for placement to change. Re-read after taking the mutation side of
           // the move gate so the bot cannot be installed onto a stale daemon.
-          const current = await deps.repos.agent.get(orgOf(req), agent.id)
-          if (
-            !current ||
-            current.daemonId !== agent.daemonId ||
-            current.lastModifiedAt.getTime() !== agent.lastModifiedAt.getTime()
-          ) {
+          const current = await refreshMutationAgent(deps.repos.agent, agent)
+          if (!current) {
             return reply.code(409).send({
               error: 'Conflict',
               statusCode: 409,
@@ -508,9 +500,9 @@ export function slackConfigRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
       // The deployment half — a configured public callback origin — stays here,
       // which is what knows it.
       const credentialUsable = configUsable(row, now)
-      // HTTP mode is offerable here: a public relay origin is configured AND ≥1 relay
-      // is connected to receive the Events API POSTs.
-      const relayAvailable = !!relayPublicUrl && deps.httpBot.hasConnectedRelay()
+      // HTTP mode is offerable here: the SAME gate the http install paths refuse
+      // on, so the console never offers a transport the create call would reject.
+      const relayAvailable = relayIngress(deps).ok
       return {
         configured: !!row,
         durable,

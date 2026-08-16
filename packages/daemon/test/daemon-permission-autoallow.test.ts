@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import type { CreateElicitationRequest, RequestPermissionRequest } from '@agentclientprotocol/sdk'
 import { Daemon, noneSuppressedApprovalSurface, isBuiltinSystemTool, isBuiltinSystemToolCall } from '../src/daemon.js'
 import { ALL_TOOL_NAMES } from '../src/mcp/tools.js'
+import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
 /**
  * Auto-approve policy for the daemon's OWN built-in MCP tools (UX fix): a human should
@@ -141,7 +142,7 @@ describe('built-in MCP approvals use one policy on both ACP paths', () => {
   })
 
   it.each(ALL_TOOL_NAMES)('bypasses both approval paths for %s after a trusted tool event', async (name) => {
-    const daemon = new Daemon({ sandboxMechanism: null })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
     const pending = installPending(daemon)
     const toolCallId = `opaque-${name}`
 
@@ -166,7 +167,7 @@ describe('built-in MCP approvals use one policy on both ACP paths', () => {
   })
 
   it('queues non-system requests for an Agent editor even when `none` hides the chat surface', async () => {
-    const daemon = new Daemon({ sandboxMechanism: null })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
     const pending = installPending(daemon) as Record<string, unknown>
     pending.approvalSurfaceSuppressed = true
 
@@ -227,7 +228,7 @@ describe('built-in MCP approvals use one policy on both ACP paths', () => {
 
   it('routes non-Slack and webchat requests to Agent editors instead of auto-allowing them', async () => {
     for (const platform of ['telegram', 'discord', 'feishu', 'webchat']) {
-      const daemon = new Daemon({ sandboxMechanism: null })
+      const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
       const pending = installPending(daemon) as Record<string, unknown>
       pending.platform = platform
       pending.approvalSurfaceSuppressed = false
@@ -247,7 +248,7 @@ describe('built-in MCP approvals use one policy on both ACP paths', () => {
   })
 
   it('fails closed when the editor queue cannot be persisted', async () => {
-    const daemon = new Daemon({ sandboxMechanism: null })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
     installPending(daemon)
     ;(daemon as any).store.createPermissionRequest = vi.fn(() => {
       throw new Error('disk unavailable')
@@ -261,7 +262,7 @@ describe('built-in MCP approvals use one policy on both ACP paths', () => {
   })
 
   it('does not trust another server, an uncorrelated id, or malformed approval metadata', async () => {
-    const daemon = new Daemon({ sandboxMechanism: null })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
     const pending = installPending(daemon)
 
     ;(daemon as any).onAcpUpdate('agent-1', 's1', {

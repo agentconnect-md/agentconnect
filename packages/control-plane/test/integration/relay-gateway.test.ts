@@ -25,7 +25,7 @@ import {
   type RcVerifyResult
 } from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
-import { seedAgent, seedSessionMeta } from '../fixtures/seed.js'
+import { seedAgent, seedDutyGroup, seedSessionMeta } from '../fixtures/seed.js'
 import { buildApp, type App } from '../../src/app.js'
 import { AppConfigSchema, type AppConfig } from '../../src/config/env.js'
 import { systemClock } from '../../src/domain/clock.js'
@@ -166,6 +166,19 @@ async function connectDaemonReady(base: string, features: string[] = []): Promis
   })
   await nextFrame(ws, 'register/ok')
   return ws
+}
+
+/** Place agents on a MEMBER SET instead of a machine — the shape whose `agent.daemonId` is null,
+ *  exactly like a cloud-pool agent — and hand their duty to one member of that set. */
+async function placeOnSet(agentIds: string[], holder: string): Promise<void> {
+  const setId = randomUUID()
+  await prisma.memberSet.create({ data: { id: setId, orgId: DEFAULT_ORG_ID, name: 'gw-set' } })
+  await prisma.memberSetMember.create({ data: { setId, daemonId: holder } })
+  await prisma.agent.updateMany({
+    where: { id: { in: agentIds } },
+    data: { placementKind: 'set', setId, daemonId: null }
+  })
+  await seedDutyGroup(prisma, randomUUID(), holder, agentIds)
 }
 
 /** POST the webchat-token mint route as the devAuth owner (org-scoped). */
@@ -556,6 +569,54 @@ describe('relay control gateway — rc/* handshake over agentconnect.rc.v1', () 
     expect(result.remoteMcp).toBeUndefined()
     ws.close()
     daemonWs.close()
+  })
+
+  // A pool agent's row names no machine, so the pre-#1028 gate read a null `daemonId`, found no
+  // daemon, and refused every multi-agent conversation with 409.
+  it('POST …/webchat/conversations/token admits pool agents whose duty holder advertises the feature', async () => {
+    const { app, base } = await start({ PUBLIC_RELAY_URL: RELAY_URL })
+    const memberWs = await connectDaemonReady(base, [WEBCHAT_MULTI_AGENT_FEATURE])
+    await seedAgent(prisma, AGENT)
+    await seedAgent(prisma, AGENT_B, { name: 'agent-b' })
+    await placeOnSet([AGENT, AGENT_B], DAEMON)
+
+    const res = await app.http.inject({
+      method: 'POST',
+      url: `/api/v1/orgs/${DEFAULT_ORG_ID}/webchat/conversations/token`,
+      payload: { agentIds: [AGENT, AGENT_B] }
+    })
+    expect(res.statusCode).toBe(200)
+    const minted = res.json() as { token: string; conversationId: string }
+
+    // rc/verify resolves the same member for both participants.
+    const { ws, result } = await verifyWebchat(base, minted.token, 'pod-pool-multi')
+    expect(result.participants).toEqual([
+      { agentId: AGENT, daemonId: DAEMON, primary: true },
+      { agentId: AGENT_B, daemonId: DAEMON }
+    ])
+    ws.close()
+    memberWs.close()
+  })
+
+  it('POST …/webchat/conversations/:id/agents joins a pool agent mid-conversation', async () => {
+    const { app, base } = await start({ PUBLIC_RELAY_URL: RELAY_URL })
+    const memberWs = await connectDaemonReady(base, [WEBCHAT_MULTI_AGENT_FEATURE])
+    await seedAgent(prisma, AGENT)
+    await seedAgent(prisma, AGENT_B, { name: 'agent-b' })
+    await placeOnSet([AGENT, AGENT_B], DAEMON)
+    const fresh = (await mintWebchatToken(app, AGENT).then((r) => r.json())) as { conversationId: string }
+
+    const join = await app.http.inject({
+      method: 'POST',
+      url: `/api/v1/orgs/${DEFAULT_ORG_ID}/webchat/conversations/${fresh.conversationId}/agents`,
+      payload: { agentId: AGENT_B }
+    })
+    expect(join.statusCode).toBe(200)
+    expect((join.json() as { participants: unknown }).participants).toEqual([
+      { agentId: AGENT, primary: true },
+      { agentId: AGENT_B }
+    ])
+    memberWs.close()
   })
 
   it('POST …/webchat/conversations/token → 409 when a selected daemon lacks multi-agent support', async () => {

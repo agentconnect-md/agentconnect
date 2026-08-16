@@ -75,7 +75,9 @@ export class ThreadContextCoordinator {
         }
       }
       if (snapshot) {
-        for (const event of snapshot.events) this.store.appendTranscript(event)
+        // Provider history rows carry a platform author and no recipient: the refreshing
+        // agent is what names the org that owns them on a shared store.
+        for (const event of snapshot.events) this.store.appendTranscript({ ...event, orgAgentId: input.agentId })
         completeness = snapshot.completeness
         providerCheckpoint = snapshot.checkpoint ?? providerCheckpoint
       } else {
@@ -95,11 +97,11 @@ export class ThreadContextCoordinator {
             input.afterRevision,
             input.agentId
           )
-        : this.store.transcriptSinceRevision(input.transcriptChannel, input.thread, input.afterRevision)
+        : this.store.transcriptSinceRevision(input.transcriptChannel, input.thread, input.afterRevision, input.agentId)
     )
       .filter((row) => row.kind === 'text' && row.sender !== input.agentId)
       .sort((a, b) => a.eventTimeUs - b.eventTimeUs || a.seq - b.seq)
-    const revision = this.store.threadTranscriptRevision(input.transcriptChannel, input.thread)
+    const revision = this.store.threadTranscriptRevision(input.transcriptChannel, input.thread, input.agentId)
 
     return {
       events: rows,

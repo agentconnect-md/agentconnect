@@ -73,6 +73,7 @@ export class ShimServer {
         return
       }
       wss.handleUpgrade(req, socket, head, (ws) => {
+        // Constructed first: it arms the socket's 'error' guard, without which one oversized frame is fatal.
         const raw = new WsServerTransport(ws, req.socket.remoteAddress ?? 'unknown')
         const inbound = bufferInbound(raw)
         const transport: ShimTransport = {
@@ -111,6 +112,8 @@ export class ShimServer {
         resolve()
       })
     })
+    // The bind-failure listener is gone by now, and a post-listen accept error is fatal unheard.
+    server.on('error', (err) => this.deps.log?.warn(`shim: accept socket error: ${err.message}`))
     this.server = server
     this.wss = wss
     this.port = (server.address() as { port: number }).port

@@ -60,8 +60,10 @@ import {
   PgThreadAffinityStore,
   PgSlackUserConfigStore,
   PgPresetAgentStore,
-  PgIntegrationChannelRepo
+  PgIntegrationChannelRepo,
+  PgDutyGroupRepo
 } from '../../src/persistence/index.js'
+import { PgMemberSetRepo } from '../../src/persistence/repositories/member-set.repo.js'
 import { PlaintextSecretCipher } from '../../src/secrets/cipher.js'
 import { runWithSharedTx, withSharedTxRouting } from '../../src/persistence/ambient-tx.js'
 import { AgentSpecAssembler } from '../../src/orchestrator/agentSpecAssembler.js'
@@ -76,7 +78,10 @@ import { OrgInviteLinkCodec } from '../../src/registry/orgInviteLink.js'
 import { OrgInviteLinkService } from '../../src/registry/orgInviteLinkService.js'
 import { WaitlistService } from '../../src/registry/waitlistService.js'
 import { EpochService } from '../../src/orchestrator/epoch.js'
+import { DUTY_LEASE_DEFAULTS } from '../../src/orchestrator/dutyLease.js'
 import { ControlSender } from '../../src/orchestrator/outbound.js'
+import { AgentDelivery } from '../../src/orchestrator/agentDelivery.js'
+import { PlacementResolver } from '../../src/orchestrator/placementResolver.js'
 import { RelayControlSender } from '../../src/orchestrator/relayControl.js'
 import { HttpBotOrchestrator } from '../../src/orchestrator/httpBot.js'
 import { CollabRoutesService } from '../../src/orchestrator/collabRoutes.service.js'
@@ -190,6 +195,14 @@ export interface HttpApp {
 /** Empty liveness: no daemon is "connected right now" unless a test overrides it. */
 const NO_LIVENESS: DaemonLiveness = { get: () => undefined }
 
+/** Stable per-name repo id for the offline GitHub stand-in — distinct names get
+ *  distinct ids, and one name keeps its id across calls and across apps. */
+function fakeRepoId(fullName: string): bigint {
+  let h = 2166136261n
+  for (const ch of fullName) h = ((h ^ BigInt(ch.codePointAt(0)!)) * 16777619n) & 0xffffffffn
+  return h + 1n
+}
+
 export function buildHttpApp(
   prisma: PrismaClient,
   configOverrides?: Partial<HttpDeps['config']>,
@@ -235,6 +248,9 @@ export function buildHttpApp(
   const connReg = new ConnectionRegistry()
   const sender = control ?? new ControlSender(connReg, new PgLaunchRepo(prisma))
 
+  const dutyGroupRepo = new PgDutyGroupRepo(prisma)
+  const memberSets = new PgMemberSetRepo(prisma)
+
   const cipher = new PlaintextSecretCipher()
   const agentSecretStore = new PgAgentSecretStore(prisma, cipher)
   const integrationRepo = new PgIntegrationRepo(prisma)
@@ -272,6 +288,19 @@ export function buildHttpApp(
   // no-ops — exactly the prod graph with no relay dialed in, unless a test wires one up.
   const relayReg = new RelayRegistry()
   const relayControl = new RelayControlSender(relayReg)
+  // Same graph as prod: every replicate site resolves its targets here, so the
+  // duty ledger is a real repo and a holder actually receives the pushes.
+  const placementResolver = new PlacementResolver({
+    duties: dutyGroupRepo,
+    liveMembers: async (setId) => {
+      const members = new Set(await memberSets.memberIdsOf(setId))
+      return connReg
+        .reachableDaemons()
+        .filter((d) => d.state === 'READY' && members.has(d.daemonId))
+        .map((d) => d.daemonId)
+    },
+    clock
+  })
   const remoteGrantAuth =
     depsOverrides?.remoteGrantAuth ??
     new RemoteGrantAuthenticator({
@@ -282,12 +311,23 @@ export function buildHttpApp(
       agents: agentRepo,
       presets: presetAgentRepo,
       daemons: liveness,
+      placement: placementResolver,
       grants: webchatMcpAccessGrantRepo,
       authorities: webchatMcpDelegationRepo,
       sessions: sessionRepo,
       isCuratedTool: (toolName) => findTool(toolName) !== undefined
     })
   const internalInvocationAuth = depsOverrides?.internalInvocationAuth ?? new InternalInvocationAuth()
+
+  const agentSpecs = new AgentSpecAssembler(
+    agentSecretStore,
+    {},
+    skillSourceRepo,
+    organizationKnowledgeRepo,
+    undefined,
+    organizationEnvironmentResolver
+  )
+  const agentDelivery = new AgentDelivery({ control: sender, specs: agentSpecs, placement: placementResolver })
 
   // LATE-BOUND exactly as `buildContainer` binds it (§9): the providers below are
   // constructed WITH this dep bundle, because their funnel plugins are route
@@ -341,6 +381,7 @@ export function buildHttpApp(
     repos: {
       agent: agentRepo,
       assignment: new PgAssignmentRepo(prisma),
+      memberSet: memberSets,
       daemonLifecycleOp: daemonLifecycleOpRepo,
       cron: new PgCronRepo(prisma),
       hook: hookRepo,
@@ -385,19 +426,14 @@ export function buildHttpApp(
     },
     registry: new DaemonRegistryService(daemonRepo, new PgRuntimeProfileRepo(prisma), daemonLifecycleOpRepo, clock),
     platforms,
-    agentSpecs: new AgentSpecAssembler(
-      agentSecretStore,
-      {},
-      skillSourceRepo,
-      organizationKnowledgeRepo,
-      undefined,
-      organizationEnvironmentResolver
-    ),
+    agentSpecs,
     liveness,
     // Capability reads share the liveness fake: a test that needs a capable
     // daemon overrides `liveness` with one whose entries carry `capabilities`.
     daemonConns: liveness as HttpDeps['daemonConns'],
     control: sender,
+    agentDelivery,
+    placementResolver,
     relayControl,
     httpBot: new HttpBotOrchestrator(
       botRepo,
@@ -411,9 +447,19 @@ export function buildHttpApp(
       new PgThreadAffinityStore(prisma),
       new PgSessionRepo(prisma),
       { info() {}, warn() {}, debug() {} },
-      platforms
+      platforms,
+      agentDelivery,
+      placementResolver
     ),
-    collabRoutes: new CollabRoutesService(daemonRepo, integrationRepo, agentRepo, relayControl, sender),
+    collabRoutes: new CollabRoutesService(
+      daemonRepo,
+      integrationRepo,
+      agentRepo,
+      relayControl,
+      sender,
+      placementResolver,
+      dutyGroupRepo
+    ),
     agentMutations: new AgentMutationGate(),
     sessionOwners: connReg,
     // The installations repo feeds the github-kind compile — same graph as prod.
@@ -422,10 +468,18 @@ export function buildHttpApp(
       hookSecretStore,
       agentRepo,
       relayControl,
+      placementResolver,
       githubInstallationRepo,
       'agentconnect-test'
     ),
-    auth: new DaemonAuthService(codec, apiKeyRepo, epoch, clock, { HEARTBEAT_SEC: 15 }, new PgOrgRepo(prisma)),
+    auth: new DaemonAuthService(
+      codec,
+      apiKeyRepo,
+      epoch,
+      clock,
+      { HEARTBEAT_SEC: 15, DUTY_LEASE_MS: DUTY_LEASE_DEFAULTS.leaseMs },
+      new PgOrgRepo(prisma)
+    ),
     apiKeys: apiKeyService,
     oauth: new OAuthService(oauthRepo, apiKeyService, codec, clock),
     webchatTokens: new WebchatTokenService(TEST_API_KEY_PEPPER),
@@ -435,6 +489,15 @@ export function buildHttpApp(
     mcpRateLimit: new McpRateLimiter(clock),
     sharedTx: <T>(fn: () => Promise<T>) => rootPrisma.$transaction((tx) => runWithSharedTx(tx, fn)),
     readiness: createReadiness(() => pingDb(prisma)),
+    // Offline stand-in for the anonymous GitHub read that binds a skill source's
+    // numeric identity: every repo resolves, to a deterministic id per owner/repo.
+    // Suites that care about the unbindable paths override this dep.
+    resolvePublicRepo: async (owner: string, repo: string) => ({
+      repoId: fakeRepoId(`${owner}/${repo}`),
+      fullName: `${owner}/${repo}`,
+      private: false,
+      defaultBranch: 'main'
+    }),
     config: { DEFAULT_OWNER_ID, ...configOverrides },
     sessionAccessPlugins: [
       { provider: 'slack', available: false, resolve: async () => ({ allowedScopes: [], degraded: false }) },

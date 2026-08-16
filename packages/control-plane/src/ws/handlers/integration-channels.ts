@@ -13,19 +13,34 @@
  * applies alongside the upsert, so one report can both refresh what remains and
  * retire what is gone.
  *
- * Scope check: the integration's owning agent must be placed on the REPORTING
- * daemon (the same daemon-scoped join as `register/ok.integrations[]`) — a daemon
- * can never write channel rows for another daemon's integration.
+ * Scope check: the integration's owning agent must be SERVED by the reporting
+ * daemon — the same `pinned-to-me ∪ duties I hold` union `register/ok.integrations[]`
+ * ships under, so a duty holder may write for what it was given and nothing else.
+ * A daemon can never write channel rows for another daemon's integration.
  */
 import { isFrame } from '@agentconnect.md/protocol'
-import { AgentId, DaemonId } from '../../domain/ids.js'
+import { AgentId, DaemonId, OrgId } from '../../domain/ids.js'
 import { isGatedAgent } from '../../orchestrator/placement.js'
+import { servedAgents } from '../../orchestrator/servedAgents.js'
+import type { DaemonWsDeps } from '../deps.js'
+import type { IntegrationRecord } from '../../persistence/ports.js'
 import type { Handler } from './index.js'
+
+/** Active integrations of the agents this daemon serves — a pool member is the placement of
+ *  none of them, so `activeForDaemon` alone discarded every one of its reports. */
+async function activeForServedAgents(daemonId: DaemonId, deps: DaemonWsDeps): Promise<IntegrationRecord[]> {
+  const { agents } = await servedAgents(daemonId, {
+    agents: deps.agent,
+    ...(deps.dutyLease ? { duties: deps.dutyLease } : {}),
+    now: new Date(deps.clock.now())
+  })
+  return deps.integration.activeForAgents(agents.map((agent) => agent.id))
+}
 
 export const handleIntegrationChannels: Handler = async (frame, conn, deps) => {
   if (!isFrame('integration/channels')(frame)) return
   const p = frame.payload
-  const owned = await deps.integration.activeForDaemon(DaemonId(conn.daemonId))
+  const owned = await activeForServedAgents(DaemonId(conn.daemonId), deps)
   const integration = owned.find((i) => i.id === p.integrationId)
   if (!integration) return // unknown / just deleted / not this daemon's — drop silently
   // §4.2(4) session-access cross-check (session-access-cold-visit.md): a channel observed
@@ -43,14 +58,15 @@ export const handleIntegrationChannels: Handler = async (frame, conn, deps) => {
     // Re-check under the shared mutation lease before accepting this daemon's
     // latest-wins snapshot, otherwise a late source event can overwrite target
     // channel metadata after a cold move.
-    const current = await deps.integration.activeForDaemon(DaemonId(conn.daemonId))
+    const current = await activeForServedAgents(DaemonId(conn.daemonId), deps)
     if (!current.some((candidate) => candidate.id === integration.id && candidate.agentId === integration.agentId)) {
       return
     }
     // Conversation gating (resource-visibility.md §14): a gated (restricted-agent)
     // integration's fresh conversations start Off — an editor must enable them in
     // the console. Known rows keep their operator-chosen trigger either way.
-    const owner = await deps.agent.getUnscoped(AgentId(integration.agentId))
+    // Fenced on the org of the integration row this daemon just proved it owns.
+    const owner = await deps.agent.get(OrgId(integration.orgId), AgentId(integration.agentId))
     const defaultTrigger = owner && isGatedAgent(owner) ? ('off' as const) : undefined
     await deps.integrationChannel.replaceSnapshot(
       integration.id,

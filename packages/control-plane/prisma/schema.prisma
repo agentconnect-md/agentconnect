@@ -86,6 +86,7 @@ model Org {
   members                   Membership[]
   daemons                   Daemon[]
   agents                    Agent[]
+  memberSets                MemberSet[]
   crons                     CronDef[]
   hooks                     HookDef[]
   apiKeys                   ApiKey[]
@@ -107,7 +108,6 @@ model Org {
   externalScopes            ExternalScope[]
   sessionExternalAccess     SessionExternalAccessPolicy[]
   environmentEntries        OrganizationEnvironmentEntry[]
-  clusterExecution          OrgClusterExecution?
   dutyGroups                DutyGroup[]
 
   @@index([createdByUserId])
@@ -367,18 +367,21 @@ enum HealthState {
 
 model Daemon {
   id            String  @id @db.Uuid // AuthReq.daemonId (wire UUID)
-  orgId         String? // null only for an install-wide cloud-daemon member shared by every org
+  orgId         String? // null only for an install-wide pool member shared by every org
   host          String? // RegisterReq.host (display)
   name          String? // human-assigned display name (set via the console, never by the daemon)
   agentVersion  String?
   machineId     String? @db.Uuid // 🅼 AuthReq.machineId (stored, stub-enforced)
   tokenFp       String? // `id` of the authenticating ApiKey (audit; written by upsertOnAuth)
-  /// The Kubernetes ServiceAccount subject TokenReview reports. Envelope rows are unique by
-  /// subject; cloud members share the subject and are unique by the bound token's Pod UID.
+  /// The Kubernetes ServiceAccount subject TokenReview reports; pool members share it and are unique by the reviewed Pod UID.
   clusterIdentity String?
   clusterPodUid   String?
   attestationFp String? // 🅼 last accepted attestation digest
   capabilities  Json    @default("{}") @db.JsonB // {platforms[],runtimes[],acp,features[]}
+  /// Rollout generation a pool member reported on register (RegisterReq.generation, the pod-template
+  /// hash). Only the newest live generation of a set claims vacated duty groups; null never excludes.
+  generation      String?
+  generationSince DateTime? @db.Timestamptz(6) // when this row first reported its current generation
   mcpServers    Json    @default("[]") @db.JsonB // facts/daemon-runtimes MCP-server list (FactsMcpServer[] = {name,transport}); replaced whole per frame
   maxAgents     Int     @default(0)
 
@@ -434,7 +437,7 @@ model Daemon {
   apiKeys               ApiKey[]
   sessions              SessionMeta[]
   lifecycleOps          DaemonLifecycleOp[]
-  webchatMcpDelegations WebchatMcpDelegation[]
+  setMembership         MemberSetMember?
 
   @@unique([clusterIdentity, clusterPodUid], map: "daemon_cluster_identity_pod_key")
   @@index([orgId])
@@ -665,6 +668,56 @@ enum AgentStatus {
   paused
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// MemberSet / MemberSetMember — a named set of daemons within which an agent's
+//   duty may be claimed (docs/designs/daemon-groups.md §2). The install-wide
+//   pool is one ROW of it, not a kind of its own.
+// ───────────────────────────────────────────────────────────────────────────
+
+/// A named set of daemons within which an agent's duty may be claimed. `orgId` is nullable and
+/// NULL MEANS CROSS-ORG, never "unassigned": an org-less set is served by org-less daemons and
+/// holds every organization's agents. The install-wide pool is that row — one per install, which
+/// the partial unique index `member_set_cross_org_key` (migration-only; Prisma cannot express it)
+/// enforces.
+model MemberSet {
+  id        String   @id @db.Uuid
+  orgId     String? // NULL = cross-org (the install-wide pool), never "unassigned"
+  name      String
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  org      Org?              @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  members  MemberSetMember[]
+  agents   Agent[]
+  sessions SessionMeta[]     @relation("SessionContentStore")
+
+  @@index([orgId])
+  @@map("member_set")
+}
+
+/// One daemon in at most one set — the daemon IS the primary key. Two write-time invariants,
+/// enforced where the row is written (`member-set.repo.ts#enrollDaemonInSet`) and nowhere else:
+/// an org-less set accepts only org-less daemons, an org set only that org's daemons. They are
+/// what lets eligibility be a single membership lookup with no tenancy branch.
+model MemberSetMember {
+  setId    String   @db.Uuid
+  daemonId String   @id @db.Uuid
+  joinedAt DateTime @default(now()) @db.Timestamptz(6)
+
+  set    MemberSet @relation(fields: [setId], references: [id], onDelete: Cascade)
+  daemon Daemon    @relation(fields: [daemonId], references: [id], onDelete: Cascade)
+
+  @@index([setId])
+  @@map("member_set_member")
+}
+
+// Where an agent's duty may be held (docs/designs/daemon-groups.md §2). `daemon` names one
+// machine through `Agent.daemonId`; `set` names a member set through `Agent.setId` — the
+// install-wide pool is the org-less set. Read the pair through domain/placement.ts.
+enum AgentPlacementKind {
+  daemon
+  set
+}
+
 model Agent {
   id                    String             @id @db.Uuid // wire UUID across route/*, agent/*, event/session
   orgId                 String
@@ -680,7 +733,12 @@ model Agent {
   // requires one. When set it must be in Daemon.capabilities.runtimes.
   runtime               String?
   status                AgentStatus        @default(inactive)
-  daemonId              String?            @db.Uuid // 1 agent : 1 machine (null until placed)
+  // Placement is a TARGET, not only a member id. `daemon` (the default, so every pre-existing row
+  // keeps meaning what it meant) resolves through `daemonId`; `set` resolves through `setId`, the
+  // install-wide pool being the org-less set. Only domain/placement.ts reads the triple.
+  placementKind         AgentPlacementKind @default(daemon)
+  daemonId              String?            @db.Uuid // the `daemon`-kind ref: 1 agent : 1 machine (null until placed)
+  setId                 String?            @db.Uuid // the `set`-kind ref, null for a `daemon` placement as daemonId is for a `set` one
   // ── workspace (inline; §3.5) — daemon-generated path ──
   workspaceMode         WorkspaceMode      @default(scratch)
   workspaceIsolation    WorkspaceIsolation @default(shared)
@@ -730,6 +788,7 @@ model Agent {
 
   org                   Org                        @relation(fields: [orgId], references: [id], onDelete: Cascade)
   daemon                Daemon?                    @relation(fields: [daemonId], references: [id], onDelete: SetNull)
+  set                   MemberSet?                 @relation(fields: [setId], references: [id], onDelete: SetNull)
   createdBy             User?                      @relation("AgentCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
   lastModifiedBy        User?                      @relation("AgentModifiedBy", fields: [lastModifiedByUserId], references: [id], onDelete: SetNull)
   assignments           Assignment[]
@@ -755,6 +814,7 @@ model Agent {
   @@unique([id, orgId])
   @@index([orgId])
   @@index([daemonId])
+  @@index([setId])
   @@map("agent")
 }
 
@@ -980,7 +1040,15 @@ model SessionMeta {
   fastMode            Boolean?
   permissionMode      String? // runtime permission/approval mode
   outputMode          String? // daemon-side output verbosity (low/medium/high)
-  daemonId            String?             @db.Uuid // first daemon that reported the session; immutable content owner, stamped by the CP from the authenticated WS conn, never daemon-echoed
+  // First daemon that reported the session, stamped by the CP from the authenticated WS conn and
+  // never daemon-echoed. Provenance, NOT the only reader: the FK nulls it when that daemon is
+  // deleted, and a pool member's content outlives it in the store its peers share.
+  daemonId            String?             @db.Uuid
+  /// The member set whose shared data-plane store holds this session's content, stamped from the
+  /// recorder's own membership beside `daemonId`. Null ⇒ the recorder's private local store, which
+  /// nobody else can read. Session-bound on purpose: the agent's CURRENT placement is no evidence
+  /// about where a past session ran (`domain/session-content.ts`).
+  contentSetId        String?             @db.Uuid
   // Session-pinned checkout choice. Null is a legacy row whose daemon never
   // reported it; `session` identifies a daemon-local worktree eligible for the
   // authorized Workspace viewer.
@@ -1027,6 +1095,7 @@ model SessionMeta {
   agent         Agent          @relation(fields: [agentId], references: [id], onDelete: Cascade)
   launch        AgentLaunch?   @relation(fields: [launchId], references: [id], onDelete: SetNull)
   daemon        Daemon?        @relation(fields: [daemonId], references: [id], onDelete: SetNull)
+  contentSet    MemberSet?     @relation("SessionContentStore", fields: [contentSetId], references: [id], onDelete: SetNull)
   externalScope ExternalScope? @relation(fields: [externalScopeId, orgId, externalProvider], references: [id, orgId, provider], onDelete: Restrict, onUpdate: Restrict)
 
   webchatCurrentFor      WebchatConversation[]      @relation("WebchatCurrentSession")
@@ -1166,7 +1235,7 @@ model WebchatConversationAgent {
 }
 
 // Durable, generation-fenced authority for one browser conversation to invoke
-// curated AgentConnect MCP tools through its currently placed daemon.
+// curated AgentConnect MCP tools through whichever daemon serves the agent when it redeems one.
 model WebchatMcpDelegation {
   id             String    @id @default(uuid()) @db.Uuid
   conversationId String    @db.Uuid
@@ -1174,7 +1243,6 @@ model WebchatMcpDelegation {
   userId         String
   orgId          String
   agentId        String    @db.Uuid
-  daemonId       String    @db.Uuid
   createdAt      DateTime  @default(now()) @db.Timestamptz(6)
   expiresAt      DateTime  @db.Timestamptz(6)
   revokedAt      DateTime? @db.Timestamptz(6)
@@ -1184,7 +1252,6 @@ model WebchatMcpDelegation {
   user         User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
   org          Org                     @relation(fields: [orgId], references: [id], onDelete: Cascade)
   agent        Agent                   @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  daemon       Daemon                  @relation(fields: [daemonId], references: [id], onDelete: Cascade)
   grants       WebchatMcpAccessGrant[]
 
   @@unique([conversationId, generation])
@@ -2766,98 +2833,6 @@ model ExternalMemoryGrant {
   @@map("external_memory_grant")
 }
 
-// ── managed cluster execution (docs/designs/agentconnect-org-operator.md) ──
-
-/// Sandbox egress tier projected into `AgentConnectOrg.spec.egressPolicy`.
-enum ClusterEgressPolicy {
-  locked
-  curated
-  open
-}
-
-/// The organization's desired managed-execution envelope — the control plane's
-/// half of the `AgentConnectOrg` CR (docs/designs/agentconnect-org-operator.md
-/// §2). One row per org, written only through the cluster-execution routes; the
-/// provisioner projects it into the CR and the operator owns everything from
-/// there. Status is never mirrored here: it is read live from the CR, so a row
-/// can never disagree with the cluster.
-///
-/// `resourceName` — the CR's name in the control namespace — is derived once
-/// from the org id and never rewritten: it is the handle every later call
-/// addresses the envelope by. The envelope NAMESPACE is not stored at all; the
-/// operator derives it as `<install prefix><CR name>` and publishes it on
-/// `status.namespace`, which is the only place a consumer learns it.
-model OrgClusterExecution {
-  orgId String @id
-  /// False ⇒ the org has no CR in the control namespace. Flipping to false
-  /// deletes it, which hands the envelope to the operator's finalizer.
-  enabled              Boolean             @default(false)
-  /// Bumped on every write. The provisioner applies the current row and then
-  /// re-reads this: a changed value means a concurrent writer superseded the
-  /// snapshot it just applied, so it applies again. Without the fence two
-  /// interleaved writes leave the row and the resource apart until the periodic
-  /// re-apply's next rotation — the operator reconciles the CR, not this table.
-  specRevision         Int                 @default(1)
-  resourceName         String              @unique
-  /// Quiesce without tearing down: daemon to zero, sandboxes drained.
-  suspend              Boolean             @default(false)
-  daemonImage          String
-  daemonTier           String              @default("small")
-  /// The daemon record the retired API-key path minted this envelope's key for.
-  /// Nothing writes it any more: an in-cluster daemon authenticates with its
-  /// projected ServiceAccount token, and the binding lives on
-  /// `daemon.clusterIdentity`. It is kept because an envelope provisioned before
-  /// that path has no such binding until its pod reconnects — this is what the
-  /// first token connect adopts, so placements and session history survive, and
-  /// what excepts the envelope's own daemon from the org-delete guard until then.
-  legacyKeyDaemonId    String?             @db.Uuid
-  /// When the in-flight envelope transition was claimed, and by whom. The token
-  /// is the fencing half: every write in a transition is conditional on it, so a
-  /// holder whose lease expired and whose claim was taken over can no longer
-  /// mutate the row or unlock its successor. The timestamp only decides when a
-  /// takeover is allowed, so a process that dies mid-transition cannot wedge the
-  /// envelope. Enable, disable and the teardown drain all take it.
-  envelopeTransitionAt    DateTime?        @db.Timestamptz(6)
-  envelopeTransitionToken String?
-  runtimeImage         String
-  /// `{name, warmReplicas}[]` — the org's sandbox tiers and warm-pool sizes.
-  runtimeTiers         Json                @db.JsonB
-  quotaMaxAgents       Int                 @default(0) // 0 ⇒ unlimited, like the CRD
-  quotaCpu             String              @default("0")
-  quotaMemory          String              @default("0")
-  quotaStorage         String              @default("0")
-  egressPolicy         ClusterEgressPolicy @default(curated)
-  createdAt            DateTime            @default(now()) @db.Timestamptz(6)
-  updatedAt            DateTime            @updatedAt @db.Timestamptz(6)
-
-  org Org @relation(fields: [orgId], references: [id], onDelete: Cascade)
-
-  @@map("org_cluster_execution")
-}
-
-/// One row per deleted organization that still owns an `AgentConnectOrg`.
-/// Deleting the CR is a remote effect that cannot join the delete transaction,
-/// and the cascade above removes the only record of its `resourceName` — so
-/// without this tombstone the operator would keep a namespace, daemon, and
-/// sandboxes alive that nothing left could name.
-///
-/// Written inside the same transaction that deletes the organization, which is
-/// what makes it airtight: an enable that commits first is visible to that read,
-/// and one that has not committed is blocked by the org row's FOR UPDATE lock
-/// and then fails its foreign key. Drained by the cluster provisioner — kicked
-/// right after the deletion and swept periodically, so a deployment that had
-/// cluster execution switched off at delete time still cleans up once it is on.
-///
-/// Deliberately NO foreign key: the row's whole purpose is to outlive the
-/// organization it names.
-model PendingEnvelopeTeardown {
-  orgId        String   @id // the deleted org (identity + idempotency key)
-  resourceName String // the AgentConnectOrg to delete, in the control namespace
-  createdAt    DateTime @default(now()) @db.Timestamptz(6)
-
-  @@map("pending_envelope_teardown")
-}
-
 /// K8s duty ledger: one row per connected component of the
 /// agent↔daemon-held-bot graph (an enabled cron is an edge too), the only unit
 /// a k8s daemon ever claims. Deliberately NOT holder columns on Bot or
@@ -2876,6 +2851,16 @@ model DutyGroup {
   holder    String?   @db.Uuid // member (daemon) the group is granted to; null ⇒ never claimed or released
   term      BigInt    @default(0) // monotonic per group; bumped on EVERY grant/re-grant — the fencing token
   expiresAt DateTime? @db.Timestamptz(6) // renewal horizon written by the granter; past ⇒ vacant and grantable
+  // WHICH hold the member has reported in its heartbeat digest — a grant is applied daemon-side
+  // only after its install succeeded (#972), so the digest is the proof it is serving. Scoped to
+  // the exact grant it proves: confirmed ⟺ `confirmedTerm = term AND confirmedHolder = holder`.
+  // A bare timestamp could not say WHAT it confirmed, so a re-take, a composition rewrite, or a
+  // stale-term digest inherited a confirmation none of them earned. Every grant path bumps `term`
+  // and renewal never does (#939), which is exactly the identity this needs. Ingress addressing
+  // waits for it; delivery and `duty/fetch` deliberately do not (a member must receive its bundle
+  // to become confirmed at all).
+  confirmedTerm   BigInt?
+  confirmedHolder String? @db.Uuid
   createdAt DateTime  @default(now()) @db.Timestamptz(6)
   updatedAt DateTime  @updatedAt @db.Timestamptz(6)
 

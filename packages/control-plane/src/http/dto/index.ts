@@ -196,7 +196,7 @@ export const DaemonViewDto = z.object({
   lifecycleOp: DaemonLifecycleOpDto.nullable(),
   /** Live connection status overlaid from the in-memory index (not the stale durable field). */
   status: z.string(),
-  /** An install-wide cloud member (`Daemon.orgId === null`, one row per cloud-daemon Pod):
+  /** An install-wide pool member (`Daemon.orgId === null`, one row per pool member Pod):
    *  managed infrastructure every org shares, not a machine this org connected. The console
    *  collapses the whole pool into its single "AgentConnect Cloud" entry. */
   cloud: z.boolean(),
@@ -557,7 +557,11 @@ export const CreateAgentBody = z.object({
   skills: SkillEnableBody.optional(),
   managedSkills: ManagedSkillEnableBody.optional(),
   memory: MemoryConfigBody.optional(), // memory backend; absent ⇒ managed default
+  // Placement at create. `set` uses `setId`; `daemon` (the default) uses `daemonId`. `pool` is
+  // accepted API sugar for "the org-less set" and is resolved to it at the edge.
+  placementKind: z.enum(['daemon', 'pool', 'set']).optional(),
   daemonId: z.string().optional(), // the owning daemon, if chosen at create
+  setId: z.string().uuid().optional(), // the owning member set, for a `set` placement
   workspace: AgentWorkspaceInputBody.optional(), // absent ⇒ scratch; the cold editor can replace either mode later
   capabilities: z.array(z.string()).default([]),
   // Initial visibility (absent ⇒ 'org', visible to all members); `sharedWith` is
@@ -618,7 +622,29 @@ export const UpdateAgentBody = z
  * drains one daemon, reprovisions another, and does not migrate local state.
  * `force` is the explicit disaster-recovery path for a source that cannot ACK
  * its detach; every target-side admission check still applies. */
-export const SetAgentDaemonBody = z.object({ daemonId: z.string().uuid(), force: z.boolean().optional() }).strict()
+export const SetAgentDaemonBody = z
+  .object({
+    // The placement TARGET. `daemon` names one machine through `daemonId`; `set` names a member
+    // set through `setId` — whichever member holds the agent's duty serves it, so pinning one here
+    // is exactly the dead-Pod pointer this replaced. `pool` stays accepted API sugar for "the
+    // org-less set" (daemon-groups.md §4) and is resolved at the edge. Omitted ⇒ `daemon`, so an
+    // existing client that sends only `daemonId` still means what it meant.
+    placementKind: z.enum(['daemon', 'pool', 'set']).optional(),
+    daemonId: z.string().uuid().optional(),
+    setId: z.string().uuid().optional(),
+    force: z.boolean().optional()
+  })
+  .strict()
+  .refine((b) => (b.placementKind === 'set' ? b.setId !== undefined : b.setId === undefined), {
+    message: 'setId is required for a set placement and must be omitted otherwise'
+  })
+  .refine(
+    (b) =>
+      b.placementKind === 'pool' || b.placementKind === 'set' ? b.daemonId === undefined : b.daemonId !== undefined,
+    {
+      message: 'daemonId is required for a daemon placement and must be omitted for a set placement'
+    }
+  )
 
 /** Full desired workspace definition for the acknowledged cold edit path. */
 export const SetAgentWorkspaceBody = z.discriminatedUnion('mode', [
@@ -681,7 +707,16 @@ export const AgentDto = z.object({
   managedSkills: z.array(z.string().uuid()), // explicitly enabled accepted managed-skill ids
   memory: MemoryConfigBody.nullable(), // memory backend (null ⇒ managed default)
   status: z.string(),
+  // What the placement NAMES. `set` carries a null `daemonId` on purpose: no member id is
+  // durable, so the console must read readiness from `placementReady` rather than from a machine.
+  placementKind: z.enum(['daemon', 'set']),
   daemonId: z.string().nullable(),
+  daemonName: z.string().nullable(), // display-only placement metadata; does not grant daemon access
+  setId: z.string().nullable(), // the `set`-kind ref; null for a `daemon` placement
+  /** Can a session start right now? For a `daemon` placement that is its daemon's liveness; for a
+   *  `set` placement it is "some live member could serve this", which is the question the console
+   *  was answering with a dead Pod's id (#987). */
+  placementReady: z.boolean(),
   workspace: AgentWorkspaceBody,
   /** Rename-proof numeric identity of the GitHub workspace repository. Null
    * for scratch/anonymous or legacy rows that have not been repaired yet. */
@@ -886,8 +921,8 @@ export const CreateSkillSourceBody = z
   .object({
     name: SkillSourceName,
     source: SkillSourceArg,
-    // Exact decimal identity (BigInt on the wire). Optional only so historical
-    // unbound rows can be repaired; projection omits them until bound.
+    // Exact decimal identity (BigInt on the wire). Optional because the route
+    // resolves it from `source`; supplying it only overrides that lookup.
     githubRepoId: GithubRepoId.optional(),
     ref: SkillSourceRef.optional(),
     subDir: SkillSourceSubDir.optional(),
@@ -907,6 +942,8 @@ export const CreateSkillSourceBody = z
 export const UpdateSkillSourceBody = z
   .object({
     source: SkillSourceArg.optional(),
+    // `null` parses so the route can answer it with a 400 rather than a schema
+    // error: clearing the identity is exactly the non-installable state.
     githubRepoId: GithubRepoId.nullable().optional(),
     ref: SkillSourceRef.nullable().optional(),
     subDir: SkillSourceSubDir.nullable().optional(),
@@ -3189,6 +3226,11 @@ export const AgentTasksDto = z.object({
   truncated: z.boolean() // true ⇒ the daemon held more tasks than this page carries
 })
 
+/** `POST /agents/:id/wake` — what the serving daemon observed. `running` = the sandbox is reachable
+ *  now; `starting` = the resume is in flight, poll the read; `unsupported` = nothing to wake (a
+ *  machine-placed agent, or a daemon that runs no sandboxes). */
+export const AgentWakeDto = z.object({ state: z.enum(['running', 'starting', 'unsupported']) })
+
 // ── usage dashboard (aggregated from the persisted per-session usage store) ──
 export const UsageRange = z.enum(['d1', 'd7', 'd30', 'd90'])
 export const UsageQueryDto = z.object({
@@ -3313,4 +3355,5 @@ export type WorkspaceGitCommitResultDtoT = z.infer<typeof WorkspaceGitCommitResu
 export type WorkspaceGitPushResultDtoT = z.infer<typeof WorkspaceGitPushResultDto>
 export type WorkspaceGitMessageResultDtoT = z.infer<typeof WorkspaceGitMessageResultDto>
 export type AgentTasksDtoT = z.infer<typeof AgentTasksDto>
+export type AgentWakeDtoT = z.infer<typeof AgentWakeDto>
 export type ErrorDtoT = z.infer<typeof ErrorDto>

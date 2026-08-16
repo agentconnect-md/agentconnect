@@ -163,7 +163,7 @@ export function connectorRoutes(deps: HttpDeps) {
         try {
           await deps.repos.mcpProviderSecret.put(provider.orgId, provider.id, headers)
           const grant = await deps.repos.mcpGrant.mintFor(provider.orgId, provider.id)
-          await pushAssign(provider, headers, grant.key, orgId)
+          await pushAssign(provider, headers, grant, orgId)
 
           const dto = {
             id: provider.id,

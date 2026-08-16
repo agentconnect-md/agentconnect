@@ -145,6 +145,19 @@ program
     }
   })
 
+// The pool's orphan reconciler, as a one-shot job. It runs as a Kubernetes CronJob rather than a
+// timer inside every member, so the cluster owns the schedule and the mutual exclusion
+// (`concurrencyPolicy: Forbid`); a non-zero exit is a failed Job the cluster already reports.
+program
+  .command('reconcile')
+  .description('Sweep the sandbox namespace for orphaned sandbox objects once, then exit')
+  .requiredOption('--once', 'run exactly one sweep (the only mode)')
+  .action(async () => {
+    const opts = program.opts()
+    const { runReconcileOnce } = await import('./cli/reconcile.js')
+    return exit(await runReconcileOnce({ ...(opts.apiUrl ? { apiUrl: opts.apiUrl } : {}) }))
+  })
+
 // Hidden: the stdio MCP server spawned by an agent harness. Not user-facing —
 // it's referenced by `mcpServers[].command/args` at `session/new`. Reads its
 // target socket + session token from AC_MCP_ENDPOINT / AC_MCP_TOKEN.

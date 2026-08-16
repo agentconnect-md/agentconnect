@@ -14,8 +14,10 @@ import { describe, it, expect, afterEach } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
 import { seedDaemon, seedAgent } from '../fixtures/seed.js'
+import { joinPool } from '../fakes/member-set.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
-import { ControlSender } from '../../src/orchestrator/outbound.js'
+import { ControlSender, NoConnection } from '../../src/orchestrator/outbound.js'
+import { ConnectionClosed } from '../../src/ws/registry.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import type { DaemonLiveness } from '../../src/ports.js'
 import type { SessionListReq, SessionListPage, SessionHistoryReq, SessionHistoryPage } from '@agentconnect.md/protocol'
@@ -33,6 +35,8 @@ afterEach(async () => {
 
 const DAEMON = 'd0d0d0d0-dddd-4ddd-8ddd-dddddddddddd'
 const OTHER_DAEMON = 'e0e0e0e0-eeee-4eee-8eee-eeeeeeeeeeee'
+const POOL_MEMBER = 'b0b0b0b0-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+const OTHER_POOL_MEMBER = 'c0c0c0c0-cccc-4ccc-8ccc-cccccccccccc'
 const AGENT = 'a0a0a0a0-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const SESSION = '50505050-5555-4555-8555-555555555555'
 
@@ -41,32 +45,42 @@ const LIVE: DaemonLiveness = {
   get: (id) => (id === DAEMON ? { state: 'READY', reachable: true, sessionEpoch: 1 } : undefined)
 }
 
-/** A ControlSender spy answering sessionList + sessionHistory with canned data. */
+/** Both pool members connected — a store's readers are tried in order. */
+const POOL_LIVE: DaemonLiveness = {
+  get: (id) =>
+    id === POOL_MEMBER || id === OTHER_POOL_MEMBER ? { state: 'READY', reachable: true, sessionEpoch: 1 } : undefined
+}
+
+/** A ControlSender spy answering sessionList + sessionHistory with canned data. Daemons in
+ *  `unreachable` record the call and then throw `NoConnection`, as an absent socket would. */
 class SpyControl {
   listCalls: Array<{ daemonId: string; req: SessionListReq }> = []
-  histCalls: Array<{ daemonId: string; req: SessionHistoryReq }> = []
+  histCalls: Array<{ daemonId: string; orgId: string; req: SessionHistoryReq }> = []
   constructor(
     private readonly list: SessionListPage,
-    private readonly hist: SessionHistoryPage
+    private readonly hist: SessionHistoryPage,
+    private readonly unreachable: readonly string[] = []
   ) {}
   async sessionList(daemonId: string, req: SessionListReq): Promise<SessionListPage> {
     this.listCalls.push({ daemonId, req })
     return this.list
   }
-  async sessionHistory(daemonId: string, req: SessionHistoryReq): Promise<SessionHistoryPage> {
-    this.histCalls.push({ daemonId, req })
+  async sessionHistory(daemonId: string, orgId: string, req: SessionHistoryReq): Promise<SessionHistoryPage> {
+    this.histCalls.push({ daemonId, orgId, req })
+    if (this.unreachable.includes(daemonId)) throw new NoConnection(daemonId)
     return this.hist
   }
 }
 
 const emptyHist: SessionHistoryPage = { sessionId: SESSION, messages: [] }
 
-async function seedSession(agentId = AGENT, daemonId?: string): Promise<void> {
+async function seedSession(agentId = AGENT, daemonId?: string, contentSetId?: string): Promise<void> {
   await prisma.sessionMeta.create({
     data: {
       id: SESSION,
       agentId,
       ...(daemonId ? { daemonId } : {}),
+      ...(contentSetId ? { contentSetId } : {}),
       orgId: DEFAULT_ORG_ID,
       platform: 'slack',
       channel: '#deploys',
@@ -662,7 +676,9 @@ describe('GET /sessions/:id/messages (history pull via the session daemon)', () 
     const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${SESSION}/messages` })
 
     expect(res.statusCode).toBe(200)
-    expect(spy.histCalls).toEqual([{ daemonId: DAEMON, req: { agentId: AGENT, sessionId: SESSION, limit: 50 } }])
+    expect(spy.histCalls).toEqual([
+      { daemonId: DAEMON, orgId: DEFAULT_ORG_ID, req: { agentId: AGENT, sessionId: SESSION, limit: 50 } }
+    ])
   })
 
   it('503s when legacy session metadata has no recorded daemon', async () => {
@@ -685,5 +701,144 @@ describe('GET /sessions/:id/messages (history pull via the session daemon)', () 
     running = buildHttpApp(prisma, undefined, undefined, offline)
     const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${SESSION}/messages` })
     expect(res.statusCode).toBe(503)
+  })
+
+  // A pool member is bound to its Pod UID and reaped 15 min after it goes silent, which SetNulls
+  // `daemonId` on every session it recorded. The rows survive it — they were written to the store
+  // its peers share — so a live peer still serves them. The agent holds no duty anywhere here:
+  // readability is a property of the store, not of who serves the agent.
+  it('reads a retired pool recorder‘s session from a peer on its store', async () => {
+    await seedAgent(prisma, AGENT)
+    await prisma.daemon.create({ data: { id: POOL_MEMBER, orgId: null, status: 'ready', maxAgents: 4 } })
+    const setId = await joinPool(prisma, POOL_MEMBER)
+    await prisma.agent.update({ where: { id: AGENT }, data: { placementKind: 'set', setId, daemonId: null } })
+    await seedSession(AGENT, undefined, setId)
+    const spy = new SpyControl({ sessions: [] }, emptyHist)
+    running = buildHttpApp(prisma, undefined, POOL_LIVE, spy as unknown as ControlSender)
+
+    const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${SESSION}/messages` })
+
+    expect(res.statusCode).toBe(200)
+    // Explicit org: a peer that never served this agent resolves none from its id, and would
+    // answer SCOPE_DENIED before the frame left the CP.
+    expect(spy.histCalls).toEqual([
+      { daemonId: POOL_MEMBER, orgId: DEFAULT_ORG_ID, req: { agentId: AGENT, sessionId: SESSION, limit: 50 } }
+    ])
+  })
+
+  it('prefers the recording member over its peers while it is still connected', async () => {
+    await seedAgent(prisma, AGENT)
+    await prisma.daemon.createMany({
+      data: [POOL_MEMBER, OTHER_POOL_MEMBER].map((id) => ({ id, orgId: null, status: 'ready' as const, maxAgents: 4 }))
+    })
+    const setId = await joinPool(prisma, POOL_MEMBER, OTHER_POOL_MEMBER)
+    await prisma.agent.update({ where: { id: AGENT }, data: { placementKind: 'set', setId, daemonId: null } })
+    await seedSession(AGENT, OTHER_POOL_MEMBER, setId)
+    const spy = new SpyControl({ sessions: [] }, emptyHist)
+    running = buildHttpApp(prisma, undefined, POOL_LIVE, spy as unknown as ControlSender)
+
+    const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${SESSION}/messages` })
+
+    expect(res.statusCode).toBe(200)
+    expect(spy.histCalls.map((c) => c.daemonId)).toEqual([OTHER_POOL_MEMBER])
+  })
+
+  it('tries every peer on the store, not just the first', async () => {
+    await seedAgent(prisma, AGENT)
+    await prisma.daemon.createMany({
+      data: [POOL_MEMBER, OTHER_POOL_MEMBER].map((id) => ({ id, orgId: null, status: 'ready' as const, maxAgents: 4 }))
+    })
+    const setId = await joinPool(prisma, POOL_MEMBER, OTHER_POOL_MEMBER)
+    await prisma.agent.update({ where: { id: AGENT }, data: { placementKind: 'set', setId, daemonId: null } })
+    await seedSession(AGENT, undefined, setId)
+    const spy = new SpyControl({ sessions: [] }, emptyHist, [POOL_MEMBER])
+    running = buildHttpApp(prisma, undefined, POOL_LIVE, spy as unknown as ControlSender)
+
+    const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${SESSION}/messages` })
+
+    expect(res.statusCode).toBe(200)
+    expect(spy.histCalls.map((c) => c.daemonId)).toEqual([POOL_MEMBER, OTHER_POOL_MEMBER])
+  })
+
+  // Ordinary during a rollout: the socket is in the registry at send time and dies before the
+  // reply. That is unavailability, not a failed read — keep going.
+  it('falls through a peer whose socket dies mid-request', async () => {
+    await seedAgent(prisma, AGENT)
+    await prisma.daemon.createMany({
+      data: [POOL_MEMBER, OTHER_POOL_MEMBER].map((id) => ({ id, orgId: null, status: 'ready' as const, maxAgents: 4 }))
+    })
+    const setId = await joinPool(prisma, POOL_MEMBER, OTHER_POOL_MEMBER)
+    await prisma.agent.update({ where: { id: AGENT }, data: { placementKind: 'set', setId, daemonId: null } })
+    await seedSession(AGENT, undefined, setId)
+    const spy = new SpyControl({ sessions: [] }, emptyHist)
+    const firstDiesInFlight = {
+      ...spy,
+      sessionHistory: async (daemonId: string, orgId: string, req: SessionHistoryReq) => {
+        if (daemonId === POOL_MEMBER) throw new ConnectionClosed()
+        return spy.sessionHistory(daemonId, orgId, req)
+      }
+    }
+    running = buildHttpApp(prisma, undefined, POOL_LIVE, firstDiesInFlight as unknown as ControlSender)
+
+    const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${SESSION}/messages` })
+
+    expect(res.statusCode).toBe(200)
+    expect(spy.histCalls.map((c) => c.daemonId)).toEqual([OTHER_POOL_MEMBER])
+  })
+
+  // Content does not follow an agent move, so neither does reader eligibility. A session recorded
+  // on a private store gets no pool reader just because its agent has since moved onto the pool —
+  // the pool would answer an EMPTY page, dressing a lost transcript up as an empty one.
+  it('gives a session written on a private store no pool reader after its agent moves onto the pool', async () => {
+    await seedDaemon(prisma, DAEMON)
+    await prisma.daemon.create({ data: { id: POOL_MEMBER, orgId: null, status: 'ready', maxAgents: 4 } })
+    const setId = await joinPool(prisma, POOL_MEMBER)
+    await seedAgent(prisma, AGENT)
+    await prisma.agent.update({ where: { id: AGENT }, data: { placementKind: 'set', setId, daemonId: null } })
+    await seedSession(AGENT, DAEMON) // recorded on DAEMON's own store ⇒ no contentSetId
+    const spy = new SpyControl({ sessions: [] }, emptyHist, [DAEMON])
+    running = buildHttpApp(prisma, undefined, POOL_LIVE, spy as unknown as ControlSender)
+
+    const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${SESSION}/messages` })
+
+    expect(res.statusCode).toBe(503)
+    expect(res.json()).toMatchObject({ message: 'owning daemon is offline' })
+    expect(spy.histCalls.map((c) => c.daemonId)).toEqual([DAEMON])
+  })
+
+  // The mirror: the agent has moved off the pool, but the session it left behind is still in the
+  // pool's store, so the pool's members are still its readers.
+  it('keeps a pooled session readable after its agent moves off the pool', async () => {
+    await seedDaemon(prisma, DAEMON)
+    await prisma.daemon.create({ data: { id: POOL_MEMBER, orgId: null, status: 'ready', maxAgents: 4 } })
+    const setId = await joinPool(prisma, POOL_MEMBER)
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON }) // moved off: machine-placed, setId null
+    await seedSession(AGENT, undefined, setId)
+    const spy = new SpyControl({ sessions: [] }, emptyHist)
+    running = buildHttpApp(prisma, undefined, POOL_LIVE, spy as unknown as ControlSender)
+
+    const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${SESSION}/messages` })
+
+    expect(res.statusCode).toBe(200)
+    expect(spy.histCalls.map((c) => c.daemonId)).toEqual([POOL_MEMBER])
+  })
+
+  // An org set is an operator's grouping of machines that may each keep a private store.
+  it('never stands a peer in across an org set', async () => {
+    const setId = randomUUID()
+    await prisma.memberSet.create({ data: { id: setId, orgId: DEFAULT_ORG_ID, name: 'self-hosted' } })
+    await seedDaemon(prisma, DAEMON)
+    await prisma.memberSetMember.create({ data: { setId, daemonId: DAEMON } })
+    await seedAgent(prisma, AGENT)
+    await prisma.agent.update({ where: { id: AGENT }, data: { placementKind: 'set', setId, daemonId: null } })
+    await seedSession(AGENT, undefined, setId)
+    const spy = new SpyControl({ sessions: [] }, emptyHist)
+    running = buildHttpApp(prisma, undefined, LIVE, spy as unknown as ControlSender)
+
+    const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${SESSION}/messages` })
+
+    expect(res.statusCode).toBe(503)
+    expect(res.json()).toMatchObject({ message: 'session has no recorded daemon' })
+    expect(spy.histCalls).toEqual([])
   })
 })

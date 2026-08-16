@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { CpCollabRoutes } from '../../src/cp/cp-collab-routes.js'
 import { Daemon } from '../../src/daemon.js'
 import { sessionKey } from '../../src/store/local-store.js'
+import { fakeSlackAppFactory } from '../fakes/slack-app.js'
 
 /**
  * Org-scoped peer directory: `CpCollabRoutes.admits()` is THE agent-call authorization
@@ -349,7 +350,11 @@ function scaffold(): string {
 
 describe("daemon channelAgents dep: 'agent-directory-org-scope-v1' negotiation", () => {
   async function bootWithCp(supports: boolean) {
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => ({}) as never })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => ({}) as never
+    })
     await daemon.start()
     const sent: unknown[] = []
     ;(daemon as never as { cpClient: unknown }).cpClient = {

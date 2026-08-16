@@ -2335,4 +2335,52 @@ describe('RelayIngressManager — activation rendezvous', () => {
     expect(ack?.accepted).toBe(true)
     expect(holderSend).not.toHaveBeenCalled()
   })
+
+  it('a button clicked after the duty moved re-routes and answers with the holder’s verdict', async () => {
+    // The recorded member is still connected — it just handed the duty on between the
+    // projection that addressed the button and the click.
+    const staleSend = vi.fn(async (m: RdMsgPlatformAction): Promise<RdAck> => ({
+      msgId: m.msgId,
+      accepted: false,
+      reason: RD_ACK_NOT_HOLDER,
+      holderDaemonId: HOLDER_ID
+    }))
+    const response = { toast: { type: 'info' as const, content: 'Cancellation requested.' } }
+    const holderSend = vi.fn(async (m: RdMsgPlatformAction): Promise<RdAck> => ({
+      msgId: m.msgId,
+      accepted: true,
+      response
+    }))
+    const manager = new RelayIngressManager(
+      deps({
+        getDaemon: (id) =>
+          ({ [DAEMON_ID]: { sendMsg: staleSend }, [HOLDER_ID]: { sendMsg: holderSend } })[id] as unknown as
+            RelayDaemonConnection | undefined
+      })
+    )
+    const rd: RdMsgPlatformAction = {
+      source: 'platform_action',
+      platformId: 'slack',
+      agentId: AGENT_ID,
+      integrationId: INTEGRATION_ID,
+      sessionKey: SESSION_KEY,
+      msgId: 'slack-action:cancel',
+      botId: BOT_ID,
+      payload: { kind: 'cancel' }
+    }
+    const ack = await internalsOf(manager).ingressHost.forwardAction(rd, {
+      agentId: AGENT_ID,
+      daemonId: DAEMON_ID,
+      integrationId: INTEGRATION_ID
+    })
+
+    // The SAME frame, msgId included — the holder's own dedup is what protects a
+    // double-clicked button once the interaction lands twice.
+    expect(holderSend).toHaveBeenCalledTimes(1)
+    expect(holderSend).toHaveBeenCalledWith(rd)
+    // The plugin's synchronous answer (a Feishu toast, a Slack modal) is the true
+    // holder's, not the refusal that used to reach it.
+    expect(ack).toEqual({ msgId: rd.msgId, accepted: true, response })
+    expect(dropCount(manager)).toBe(0)
+  })
 })

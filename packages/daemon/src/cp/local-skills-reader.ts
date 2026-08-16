@@ -12,13 +12,14 @@ import { existsSync } from 'node:fs'
 import type { LocalSkillsList, LocalSkillsReq } from '@agentconnect.md/protocol'
 import { listLocalSkills, listSandboxSkills } from '../skills/local-skill-inventory.js'
 import type { WorkspaceFiles } from '../workspace/workspace-files.js'
-import { sandboxWorkspaceMode } from '../workspace/workspace-manager.js'
+import { WorkspaceManager } from '../workspace/workspace-manager.js'
 
 export interface LocalSkillsReader {
   list(req: LocalSkillsReq): Promise<LocalSkillsList>
 }
 
 export function createLocalSkillsReader(
+  workspaces: WorkspaceManager,
   workspacePathFor: (agentId: string) => string | undefined,
   stateDir: string,
   /** The filesystem that agent's workspace lives on; undefined ⇒ this daemon's. */
@@ -37,7 +38,7 @@ export function createLocalSkillsReader(
         // sits at that path on this daemon's filesystem. Unreachable is reported as unmaterialized —
         // the wire has no third answer here, and the two other seams refuse with `sandbox-unavailable`
         // because theirs does.
-        if (sandboxWorkspaceMode()) return { materialized: false, skills: [] }
+        if (workspaces.sandboxMode) return { materialized: false, skills: [] }
         if (!existsSync(cwd)) return { materialized: false, skills: [] }
         return { materialized: true, skills: await listLocalSkills(cwd, stateDir) }
       }

@@ -425,6 +425,26 @@ export const AgentRemove = z.object({
 })
 export type AgentRemove = z.infer<typeof AgentRemove>
 
+/** Hard cap on one existence query; a sweep with more candidates chunks. */
+export const AGENT_EXISTS_MAX = 1000
+
+/**
+ * D→C REQ (reply: `agent/exists/ok`) — which of these agents the control plane still knows.
+ * Install-wide: a pool member's orphan reconciler reads agent ids off cluster objects that
+ * span every org it serves and asks in one round trip. Existence only, no spec: the answer
+ * decides whether a leaked sandbox object may be collected, nothing more.
+ */
+export const AgentExists = z.object({
+  agentIds: z.array(z.string().uuid()).min(1).max(AGENT_EXISTS_MAX)
+})
+export type AgentExists = z.infer<typeof AgentExists>
+
+/** C→D REP to `agent/exists`: the subset of the asked ids that exist. An id absent here is gone. */
+export const AgentExistsOk = z.object({
+  existing: z.array(z.string().uuid()).max(AGENT_EXISTS_MAX)
+})
+export type AgentExistsOk = z.infer<typeof AgentExistsOk>
+
 /**
  * Safe move lifecycle (C→D REQ → generic `ack`). `agent/detach` fences the
  * source or stages the target and archives any daemon-local root;
@@ -448,7 +468,8 @@ export type AgentDetach = z.infer<typeof AgentDetach>
 
 export const AgentActivate = z.object({
   agentId: z.string().uuid(),
-  moveId: z.string().uuid(),
+  /** Absent ⇒ authoritative unstage: release any fence held, and start no host unless the duty is held. */
+  moveId: z.string().uuid().optional(),
   /**
    * One authoritative, acknowledged bootstrap bundle. Unlike the live CRUD
    * EVTs, these definitions are synchronously persisted under the staging gate
@@ -536,3 +557,17 @@ export const AgentPermissionDecision = z.object({
   decision: z.enum(['allow', 'deny'])
 })
 export type AgentPermissionDecision = z.infer<typeof AgentPermissionDecision>
+
+// `agent/wake` (C→D REQ → `agent/wake/ok`): bring a cluster agent's sandbox to Running WITHOUT a turn.
+// The daemon claims the agent's duty on receipt like any trigger, so a set agent with no holder is
+// served by whichever member the wake reached; it answers with what it observed, never a promise.
+export const AgentWakeReq = z.object({ agentId: z.string().min(1) })
+export type AgentWakeReq = z.infer<typeof AgentWakeReq>
+
+// `running` = the sandbox channel is bound; `starting` = the resume is in flight and the next read may
+// still refuse; `unsupported` = this daemon runs no sandboxes, so there is nothing to wake.
+export const AgentWakeState = z.enum(['running', 'starting', 'unsupported'])
+export type AgentWakeState = z.infer<typeof AgentWakeState>
+
+export const AgentWakeOk = z.object({ agentId: z.string().min(1), state: AgentWakeState })
+export type AgentWakeOk = z.infer<typeof AgentWakeOk>

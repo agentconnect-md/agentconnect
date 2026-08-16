@@ -12,8 +12,9 @@ import type { WebSocket } from 'ws'
 export interface Transport {
   /** Send one JSON envelope (already serialized) to the peer. */
   send(text: string): void
-  /** Register the inbound-frame callback (one JSON envelope per call). */
-  onMessage(cb: (text: string) => void): void
+  /** Register the inbound-frame callback (one JSON envelope per call). A callback may return the
+   *  dispatch it started; a live socket ignores it, an in-memory fake awaits it as a test barrier. */
+  onMessage(cb: (text: string) => void | Promise<void>): void
   /** Register the close callback. */
   onClose(cb: (code: number, reason: string) => void): void
   /** Close the connection with a WS close code + reason. */
@@ -40,6 +41,8 @@ export class WsTransport implements Transport {
   ) {
     this.subprotocol = ws.protocol
     this.remoteAddr = remoteAddr
+    // An unlistened 'error' (oversized frame, reset) crashes the process; terminate() folds it into close.
+    ws.on('error', () => ws.terminate())
   }
 
   send(text: string): void {

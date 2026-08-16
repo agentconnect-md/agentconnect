@@ -1,3 +1,4 @@
+import { onDaemon, UNPLACED } from '../../src/domain/placement.js'
 import { randomUUID } from 'node:crypto'
 import {
   HOOK_DELIVERY_REASON_DAEMON_OFFLINE,
@@ -1546,9 +1547,9 @@ describe('R1/R2a persistence foundation', () => {
     })
     expect((await hooks.getUnscoped(hookId))?.dispatchRevision).toBe(1n)
 
-    expect(await agents.movePlacement(agentId, D1, D2)).not.toBeNull()
+    expect(await agents.movePlacement(agentId, onDaemon(D1), onDaemon(D2))).not.toBeNull()
     expect((await hooks.getUnscoped(hookId))?.dispatchRevision).toBe(2n)
-    await agents.setPlacement(agentId, null)
+    await agents.setPlacement(agentId, UNPLACED)
     expect((await hooks.getUnscoped(hookId))?.dispatchRevision).toBe(3n)
   })
 

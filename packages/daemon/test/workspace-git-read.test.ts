@@ -7,7 +7,10 @@ import { MAX_FRAME_BYTES } from '@agentconnect.md/protocol'
 import { createWorkspaceGit } from '../src/cp/workspace-git.js'
 import { WorkspaceViolationError } from '../src/cp/workspace-reader.js'
 import { gitFor, workspaceGitLocalEnv } from '../src/workspace/git-injection.js'
-import { setSandboxWorkspaceMode, setWorkspaceGitRunnerResolver } from '../src/workspace/workspace-manager.js'
+import { WorkspaceManager } from '../src/workspace/workspace-manager.js'
+
+// One plane per test file — the isolation Vitest's per-file module registry used to give.
+const workspaces = new WorkspaceManager()
 import { LocalGitRunner } from '../src/workspace/git-runner.js'
 
 // The seam's git reads against a REAL repository: the mocked-simple-git suite
@@ -66,7 +69,9 @@ beforeAll(() => {
   git(repo, 'add', 'logo.png')
   writeFileSync(join(repo, 'untracked.txt'), 'brand new\n')
 
-  seam = createWorkspaceGit((agentId) => (agentId === AGENT ? repo : agentId === 'scratch-agent' ? scratch : undefined))
+  seam = createWorkspaceGit(workspaces, (agentId) =>
+    agentId === AGENT ? repo : agentId === 'scratch-agent' ? scratch : undefined
+  )
 })
 
 afterAll(() => rmSync(base, { recursive: true, force: true }))
@@ -145,7 +150,11 @@ describe('createWorkspaceGit.diff against a real repo', () => {
     git(doomed, 'add', '-A')
     git(doomed, 'commit', '-m', 'add doomed.txt')
     rmSync(join(doomed, 'doomed.txt'))
-    const d = await createWorkspaceGit(() => doomed).diff({ agentId: AGENT, path: 'doomed.txt', staged: false })
+    const d = await createWorkspaceGit(workspaces, () => doomed).diff({
+      agentId: AGENT,
+      path: 'doomed.txt',
+      staged: false
+    })
     expect(d.exists).toBe(true) // the path is gone from disk, but its CHANGE is what was asked for
     expect(d.diff).toContain('-here for now')
   })
@@ -289,6 +298,7 @@ describe('createWorkspaceGit.log against a real repo', () => {
 
     const seamFor = (root: string) =>
       createWorkspaceGit(
+        workspaces,
         () => root,
         () => ({}),
         () => target
@@ -332,7 +342,7 @@ describe('createWorkspaceGit.log against a real repo', () => {
     writeFileSync(join(orphan, 'a.txt'), 'a\n')
     git(orphan, 'add', '-A')
     git(orphan, 'commit', '-m', 'only commit')
-    const l = await createWorkspaceGit(() => orphan).log({ agentId: AGENT, limit: 20 })
+    const l = await createWorkspaceGit(workspaces, () => orphan).log({ agentId: AGENT, limit: 20 })
     expect(l.tracking).toBeUndefined()
     expect(l.commits).toHaveLength(1)
     expect(l.commits[0]!.pushed).toBe(false) // no upstream ⇒ not known to be on a remote
@@ -346,7 +356,7 @@ describe('createWorkspaceGit.log against a real repo', () => {
     git(fresh, 'init', '-b', 'main')
     writeFileSync(join(fresh, 'a.ts'), 'x\n')
     git(fresh, 'add', 'a.ts')
-    const s = await createWorkspaceGit(() => fresh).status(AGENT)
+    const s = await createWorkspaceGit(workspaces, () => fresh).status(AGENT)
     expect(s.isRepo).toBe(true)
     expect(s.files?.map((f) => f.path)).toEqual(['a.ts'])
     expect(s.files?.[0]).not.toHaveProperty('additions')
@@ -373,13 +383,13 @@ describe('createWorkspaceGit.log against a real repo', () => {
     const nowhere = join(base, 'no-daemon-checkout')
     mkdirSync(nowhere, { recursive: true })
 
-    setWorkspaceGitRunnerResolver(() => answering as never)
+    workspaces.setGitRunnerResolver(() => answering as never)
     try {
-      const status = await createWorkspaceGit(() => nowhere).status(AGENT)
+      const status = await createWorkspaceGit(workspaces, () => nowhere).status(AGENT)
       expect(status.isRepo).toBe(true)
       expect(seen.some((args) => args.includes('--show-prefix'))).toBe(true)
     } finally {
-      setWorkspaceGitRunnerResolver(undefined)
+      workspaces.setGitRunnerResolver(undefined)
     }
   })
 
@@ -398,7 +408,7 @@ describe('createWorkspaceGit.log against a real repo', () => {
     git(broken, 'commit', '-m', 'seed')
     rmSync(join(broken, '.git', 'objects'), { recursive: true, force: true })
 
-    expect(await createWorkspaceGit(() => broken).log({ agentId: AGENT, limit: 20 })).toEqual({
+    expect(await createWorkspaceGit(workspaces, () => broken).log({ agentId: AGENT, limit: 20 })).toEqual({
       agentId: AGENT,
       isRepo: false,
       commits: [],
@@ -410,7 +420,7 @@ describe('createWorkspaceGit.log against a real repo', () => {
     const empty = join(base, 'empty')
     mkdirSync(empty, { recursive: true })
     git(empty, 'init', '-b', 'main')
-    expect(await createWorkspaceGit(() => empty).log({ agentId: AGENT, limit: 20 })).toEqual({
+    expect(await createWorkspaceGit(workspaces, () => empty).log({ agentId: AGENT, limit: 20 })).toEqual({
       agentId: AGENT,
       isRepo: true,
       commits: [],
@@ -431,7 +441,7 @@ describe('createWorkspaceGit.log against a real repo', () => {
     writeFileSync(join(shouty, 'a.txt'), 'a\n')
     git(shouty, 'add', '-A')
     git(shouty, 'commit', '-m', 'x'.repeat(5_000))
-    const l = await createWorkspaceGit(() => shouty).log({ agentId: AGENT, limit: 20 })
+    const l = await createWorkspaceGit(workspaces, () => shouty).log({ agentId: AGENT, limit: 20 })
     expect(l.commits[0]!.subject).toHaveLength(200)
   })
 
@@ -448,16 +458,16 @@ describe('createWorkspaceGit against a workspace this daemon cannot see', () => 
   let clusterSeam: ReturnType<typeof createWorkspaceGit>
 
   beforeAll(() => {
-    setSandboxWorkspaceMode(true)
-    setWorkspaceGitRunnerResolver(
+    workspaces.setSandboxMode(true)
+    workspaces.setGitRunnerResolver(
       (_agentId, _cwd, abort) => new LocalGitRunner(gitFor(repo, abort), repo, (e) => gitFor(repo, abort).env(e))
     )
-    clusterSeam = createWorkspaceGit((agentId) => (agentId === AGENT ? POD_ROOT : undefined))
+    clusterSeam = createWorkspaceGit(workspaces, (agentId) => (agentId === AGENT ? POD_ROOT : undefined))
   })
 
   afterAll(() => {
-    setSandboxWorkspaceMode(false)
-    setWorkspaceGitRunnerResolver(undefined)
+    workspaces.setSandboxMode(false)
+    workspaces.setGitRunnerResolver(undefined)
   })
 
   it('reads the checkout at all — this is what answered isRepo:false over a real repository', async () => {

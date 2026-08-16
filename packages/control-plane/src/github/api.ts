@@ -62,8 +62,32 @@ export interface GithubRequestOpts {
   bigIdsAsStrings?: boolean
 }
 
+/** One page of a paginated GitHub list: the body plus the `rel="next"` cursor. */
+export interface GithubPage<T> {
+  data: T
+  /** Next page as a path under the SAME base — a `next` pointing anywhere else
+   *  is dropped rather than followed. */
+  nextPath?: string
+}
+
+/** `rel="next"` from a Link header, relative to `baseUrl`. */
+function nextPathFrom(link: string | null, baseUrl: string): string | undefined {
+  if (!link) return undefined
+  for (const part of link.split(',')) {
+    const url = /<([^>]+)>\s*;\s*rel="next"/.exec(part.trim())?.[1]
+    if (url?.startsWith(baseUrl)) return url.slice(baseUrl.length)
+  }
+  return undefined
+}
+
 /** One GitHub REST call → parsed JSON. Throws `GithubApiError` on any non-2xx. */
 export async function githubRequest<T>(path: string, opts: GithubRequestOpts): Promise<T> {
+  return (await githubRequestPage<T>(path, opts)).data
+}
+
+/** {@link githubRequest} keeping the pagination cursor — for the list endpoints
+ *  whose first page is not the whole answer. */
+export async function githubRequestPage<T>(path: string, opts: GithubRequestOpts): Promise<GithubPage<T>> {
   const fetchImpl = opts.fetchImpl ?? (fetch as FetchLike)
   let res: Response
   try {
@@ -83,11 +107,12 @@ export async function githubRequest<T>(path: string, opts: GithubRequestOpts): P
   }
   if (res.ok) {
     const text = await res.text()
-    if (!text) return undefined as T // 202-style empty success (e.g. redelivery accepted)
+    const nextPath = nextPathFrom(res.headers.get('link'), opts.baseUrl ?? API_BASE)
+    if (!text) return { data: undefined as T } // 202-style empty success (e.g. redelivery accepted)
     // Only `id` keys with ≥15 digits are re-quoted — small numeric ids
     // (repositories, installations) stay numbers for existing callers.
     const safe = opts.bigIdsAsStrings ? text.replace(/"id"\s*:\s*(\d{15,})/g, '"id":"$1"') : text
-    return JSON.parse(safe) as T
+    return { data: JSON.parse(safe) as T, ...(nextPath ? { nextPath } : {}) }
   }
 
   // Read the message for diagnostics; GitHub error bodies carry no secrets.

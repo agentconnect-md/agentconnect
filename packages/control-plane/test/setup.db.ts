@@ -1,15 +1,9 @@
-/**
- * Per-test DB harness for the `integration` project (design §5.2).
- *
- * - Each Vitest pool gets a `PrismaClient` pointed at its own cloned Postgres
- *   database from `global-setup.ts`; files on different pools cannot collide.
- * - `beforeEach` re-seeds the default Org/User so every test has a stable
- *   tenancy anchor for FKs after truncating every app table. Cleaning only
- *   before the next test avoids a redundant second truncate after every test.
- *
- * Imported as a `setupFiles` entry (NOT a global), so the hooks register per
- * test file while every concurrently active pool stays on its own database.
- */
+// Per-test DB harness for the `integration` project (design §5.2).
+// Each Vitest pool gets a `PrismaClient` on its own cloned database from `global-setup.ts`.
+// `beforeEach` empties every app table and re-seeds the default Org/User as the FK anchor.
+// Cleaning only before the next test avoids a redundant second sweep after every test.
+// A `setupFiles` entry (NOT a global), so hooks register per test file while pools stay isolated.
+import { randomUUID } from 'node:crypto'
 import { afterAll, beforeEach, inject } from 'vitest'
 import { PrismaPg } from '@prisma/adapter-pg'
 import { PrismaClient } from '../src/generated/prisma/client.js'
@@ -41,52 +35,37 @@ export const prisma = new PrismaClient({
   transactionOptions: { timeout: 20_000, maxWait: 10_000 }
 })
 
-/**
- * All app tables, in no particular order — `TRUNCATE … CASCADE` resolves FK
- * order for us. `_prisma_migrations` is intentionally excluded so the schema
- * stays applied between tests.
- */
-const TABLES = [
-  // FK-less deployment singleton; its secret side rows cascade from it.
-  'deployment_config',
-  'audit_event',
-  'cron_def',
-  'secret_lease',
-  'agent_launch',
-  'session_meta',
-  'assignment',
-  // R1/R2a history/outbox deliberately has no HookDef/Agent/Org FK so GitHub
-  // cleanup can survive owner deletion; truncate it explicitly between tests.
-  'hook_run',
-  'hook_review_projection',
-  'agent',
-  'runtime_profile',
-  'daemon',
-  // FK-less pending-state table — CASCADE from org/agent never reaches it, so it
-  // must be truncated explicitly or its rows leak across tests.
-  'slack_install',
-  // FK-less deployment infra (no org/daemon column) — same leak risk as slack_install.
-  'relay',
-  // FK-less OAuth AS protocol state (userId/orgId/clientId are plain strings, no
-  // relations) — CASCADE from org/user never reaches these, so truncate explicitly.
-  'oauth_client',
-  'oauth_code',
-  'oauth_grant',
-  // Keyed by OIDC subject, no FK to app_user (the row it describes is GONE) — so
-  // CASCADE never reaches it and a cutoff would otherwise outlive its test and
-  // reject the next test that reuses the subject.
-  'deleted_identity_cutoff',
-  // FK-less by design (it names an org that is GONE), so CASCADE never reaches
-  // it and a tombstone would otherwise outlive its test.
-  'pending_envelope_teardown',
-  'membership',
-  'app_user',
-  'org'
-] as const
+// One server-side sweep of every app table, resolved from the catalog instead of a hand-kept list.
+// Per-table `TRUNCATE` pays relfilenode + catalog + WAL work whether or not the table holds anything,
+// and the ~70-table CASCADE closure of `org` was ~60ms of that on EVERY test. `DELETE` skips the
+// relfilenode churn, and the `SELECT 1 … LIMIT 1` probe means only the handful of tables a test
+// actually wrote get touched — measured 60ms → 2ms on an idle database, 76ms → 11ms after a test
+// that wrote an org plus two daemons.
+//
+// Reading the table list from `pg_class` also closes a real isolation hole: the old list named 22
+// tables and leaned on CASCADE for the rest, which left `waitlist_entry`, `slack_platform_install`,
+// `feishu_app_registration`, `github_install_state`, `pending_key_shred`, `shared_thread_agent`, and
+// `shared_thread_participant` — 7 of 78 — surviving between tests. `_prisma_migrations` stays out so
+// the schema stays applied.
+//
+// `session_replication_role = replica` suspends FK triggers for the statement's transaction only, so
+// the sweep needs no dependency order; every table is emptied anyway. No `RESTART IDENTITY`: the one
+// sequence in the schema is `audit_event.id`, and every assertion over it is relative (`orderBy id`).
+const SWEEP_SQL = `DO $sweep$
+DECLARE t text; found int;
+BEGIN
+  PERFORM set_config('session_replication_role', 'replica', true);
+  FOR t IN SELECT c.relname FROM pg_class c
+           WHERE c.relnamespace = 'public'::regnamespace AND c.relkind = 'r' AND c.relname <> '_prisma_migrations'
+  LOOP
+    EXECUTE format('SELECT 1 FROM %I LIMIT 1', t) INTO found;
+    IF found IS NOT NULL THEN EXECUTE format('DELETE FROM %I', t); END IF;
+  END LOOP;
+END $sweep$;`
 
-/** Postgres deadlock_detected — the truncate lost the tie-break, not a schema fault. */
+/** Postgres deadlock_detected — the sweep lost the tie-break, not a schema fault. */
 const DEADLOCK_DETECTED = '40P01'
-const TRUNCATE_ATTEMPTS = 5
+const SWEEP_ATTEMPTS = 5
 
 /** Prisma reports the raw-query failure as P2010 and carries the driver's SQLSTATE underneath. */
 function isDeadlock(error: unknown): boolean {
@@ -99,24 +78,31 @@ function isDeadlock(error: unknown): boolean {
   return error instanceof Error && error.message.includes('deadlock detected')
 }
 
-/** A leftover in-flight reader and this TRUNCATE can want each other's table locks, so retry when we lose. */
-async function truncateAll(): Promise<void> {
-  const list = TABLES.map((t) => `"${t}"`).join(', ')
+/** A leftover in-flight writer and this sweep can want each other's row locks, so retry when we lose. */
+async function sweepAll(): Promise<void> {
   for (let attempt = 1; ; attempt += 1) {
     try {
-      await prisma.$executeRawUnsafe(`TRUNCATE TABLE ${list} RESTART IDENTITY CASCADE;`)
+      await prisma.$executeRawUnsafe(SWEEP_SQL)
       return
     } catch (error) {
-      if (!isDeadlock(error) || attempt === TRUNCATE_ATTEMPTS) throw error
+      if (!isDeadlock(error) || attempt === SWEEP_ATTEMPTS) throw error
       await new Promise((resolve) => setTimeout(resolve, 50 * attempt))
     }
   }
 }
 
+// The install-wide pool set is created by the MIGRATION, not by the seed, and the sweep empties it
+// along with everything else. Restoring it leaves every test on the migrated shape, where the pool is
+// a row and eligibility is a membership lookup (docs/designs/daemon-groups.md §8).
+async function restorePoolSet(): Promise<void> {
+  await prisma.memberSet.create({ data: { id: randomUUID(), orgId: null, name: 'AgentConnect Cloud' } })
+}
+
 beforeEach(async () => {
   // Clean slate, then re-seed the tenancy anchor.
-  await truncateAll()
+  await sweepAll()
   await seed(prisma)
+  await restorePoolSet()
 })
 
 afterAll(async () => {

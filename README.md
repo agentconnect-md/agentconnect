@@ -124,6 +124,12 @@ The Compose stack does not run agent daemons. Add a daemon from the Web console,
 then run its generated command on each machine that should host agents,
 workspaces, and runtime credentials.
 
+A Linux daemon host also needs `bwrap`, `socat`, and `rg` (ripgrep) on the
+daemon's own `PATH`, plus unprivileged user namespaces. They back the kernel
+sandbox that confines agent runtimes and installs managed skills; without them
+agents run unconfined and managed skills are unavailable. The daemon probes for
+them at startup and logs `sandbox: unavailable — …` when the probe fails.
+
 Past the local stack — sign-in, public URLs, and provider apps — a guided path
 helps. Open Claude Code in the checkout and ask it to set up AgentConnect:
 [`.claude/skills/agentconnect-setup`](.claude/skills/agentconnect-setup/SKILL.md)

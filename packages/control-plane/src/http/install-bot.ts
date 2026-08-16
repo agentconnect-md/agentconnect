@@ -118,10 +118,11 @@ export async function installNewBot(
     return { integration, bot }
   }
 
-  // Classic: push the full spec (metadata + credentials) to the owning daemon so
-  // it opens its connection. Best-effort — an offline daemon picks it up from the
-  // register/ok reconcile roster. Never log the token-bearing spec.
-  const daemonId = agent.daemonId! // caller guarantees placement for socket transport
+  // Classic: push the full spec (metadata + credentials) to every daemon serving
+  // this agent so it opens its connection — the placement and any duty holder,
+  // because a freshly pasted credential that reaches only the placement leaves the
+  // holder authenticating with the old one. Best-effort — an offline daemon picks
+  // it up from the register/ok reconcile roster. Never log the token-bearing spec.
   // The bot row joins the reads: it is a required input of the §9 projector that
   // assembles the spec payload (`orchestrator/placement.ts`). `bot` was created
   // above, so this is the same row, not a second fetch.
@@ -130,15 +131,11 @@ export async function installNewBot(
     deps.repos.integrationChannel.listForIntegration(id)
   ])
   if (secret) {
-    try {
-      await deps.control.integrationUpsert(
-        daemonId,
-        await integrationToSpec(deps.platforms, integration, bot, secret, channels, isGatedAgent(agent))
-      )
-    } catch (err) {
+    const spec = await integrationToSpec(deps.platforms, integration, bot, secret, channels, isGatedAgent(agent))
+    await deps.agentDelivery.integrationUpsert(agent, spec, (err, target) => {
       if (!(err instanceof NoConnection)) throw err
-      log.debug({ integrationId: id, daemonId }, 'integration/upsert skipped: daemon offline')
-    }
+      log.debug({ integrationId: id, daemonId: target }, 'integration/upsert skipped: daemon offline')
+    })
   }
   return { integration, bot }
 }

@@ -100,61 +100,6 @@ jobs:
 
   # Keep the fast, Docker-free suites away from the resource-heavy build group
   # so their short per-test timeouts measure code rather than runner contention.
-  daemon-image:
-    name: Daemon Image
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-      # A local tag only: this job proves the image is sound, publication is build.yaml's job.
-      # Built with a version arg so the release-version path is exercised: without it the image
-      # reports the repo's 1.0.0-dev, which the Control Plane would persist as the fleet version.
-      - name: Build the daemon pod image
-        run: docker build -f docker/Dockerfile --target daemon --build-arg DAEMON_VERSION=v9.9.9-ci -t ac-daemon:ci .
-      # Against the BUILT image: non-root, tini as PID 1, git and CA certs present, no ACP
-      # runtime smuggled in, and — the one that matters — `--k8s` refusing to start outside a
-      # pod instead of quietly running agent code on the daemon's own host.
-      - name: Verify the image properties
-        run: node scripts/verify-daemon-image.mjs ac-daemon:ci v9.9.9-ci
-
-  runtime-sandbox-image:
-    name: Runtime Sandbox Image
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-      - uses: pnpm/action-setup@v6
-        with:
-          cache: true
-      - uses: actions/setup-node@v6
-        with:
-          node-version-file: .nvmrc
-      - name: Install
-        run: pnpm install --frozen-lockfile
-      # A local tag only: this job proves the image is sound, it does not publish. Publication is
-      # build.yaml's `runtime-sandbox` bake target at release.
-      - name: Build the runtime sandbox image
-        run: docker build -f docker/runtime-sandbox.Dockerfile -t runtime-sandbox:ci .
-      # Against the BUILT image, not the Dockerfile: non-root, tini as PID 1, a root-owned shim
-      # the runtime cannot rewrite, a self-contained shim bundle, no smuggled service-account
-      # token, and the published runtime table agreeing with what the runtimes report.
-      - name: Verify the image properties and the runtime table
-        run: node scripts/verify-runtime-image.mjs runtime-sandbox:ci
-      # The smoke test's DAEMON side imports the listener from source, which imports the
-      # workspace packages by their built entry points. A tree that happens to have them built
-      # hides this — it passed locally and failed here, which is the same missing-build defect the
-      # image itself had one layer down.
-      - name: Build the workspace packages the daemon side imports
-        run: pnpm --filter "@agentconnect.md/daemon^..." build
-      # The acceptance criterion: a real container, the real shim dialling back, the real ACP
-      # runtime starting inside it, initialize and one session/new.
-      - name: Smoke test through the shim
-        run: pnpm --filter @agentconnect.md/daemon exec tsx scripts/smoke-runtime-image.mts runtime-sandbox:ci
-
   unit:
     name: Unit Test
     runs-on: ubuntu-latest
@@ -186,26 +131,6 @@ jobs:
           pnpm_config_enable_pre_post_scripts: false
           VITEST_JOB_SUMMARY_DIR: ${{ runner.temp }}
         run: GITHUB_STEP_SUMMARY="$CAPTURED_JOB_SUMMARY" pnpm test:unit
-      - name: Evaluation contracts
-        env:
-          CAPTURED_JOB_SUMMARY: ${{ runner.temp }}/unit-test-summary.md
-          PROMPTFOO_DISABLE_TELEMETRY: '1'
-        run: GITHUB_STEP_SUMMARY="$CAPTURED_JOB_SUMMARY" pnpm eval:contracts
-      # Collaboration Arena CI gate (collaboration-arena.md §14 step 3): the
-      # deterministic same-room counting game with scripted ACP hosts, plus the
-      # virtual-transport / world-authorization / ingress contract suites.
-      - name: Collaboration Arena contracts
-        env:
-          CAPTURED_JOB_SUMMARY: ${{ runner.temp }}/unit-test-summary.md
-        run: GITHUB_STEP_SUMMARY="$CAPTURED_JOB_SUMMARY" pnpm eval:collab:contracts
-      # Cross-surface activation parity (docs/designs/activation-parity.md):
-      # one scenario spec, per-surface legs — a PR that changes "who does this
-      # message activate" on one surface must either keep every leg green or
-      # declare the divergence in evals/parity/spec.ts with a citation.
-      - name: Activation parity contracts
-        env:
-          CAPTURED_JOB_SUMMARY: ${{ runner.temp }}/unit-test-summary.md
-        run: GITHUB_STEP_SUMMARY="$CAPTURED_JOB_SUMMARY" pnpm eval:parity
       - name: Merge unit test summaries
         if: ${{ !cancelled() }}
         env:
@@ -240,6 +165,42 @@ jobs:
             cat "$CAPTURED_JOB_SUMMARY"
             echo '__AGENTCONNECT_UNIT_TEST_SUMMARY__'
           } >> "$GITHUB_OUTPUT"
+
+  # The evaluation gates, off the Unit Test job's critical path. They are ~48s of the ~3m27s that
+  # job took, and it is the slowest in the workflow, so they buy back most of that on their own
+  # runner. `evals/README.md` calls these the deterministic, credential-free layer — the real
+  # Promptfoo evaluation (`eval:addons`) needs model credentials and never ran here.
+  #
+  # No `prisma:generate` step: this closure reaches evals/, packages/daemon and the protocol-side
+  # packages, none of which import the generated client.
+  evals:
+    name: Evaluation Gates
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+        with:
+          cache: true
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      # Evaluation contracts, the Collaboration Arena gate (collaboration-arena.md §14 step 3), and
+      # cross-surface activation parity (docs/designs/activation-parity.md) — a PR that changes
+      # "who does this message activate" on one surface must either keep every leg green or declare
+      # the divergence in evals/parity/spec.ts with a citation.
+      #
+      # One Vitest run rather than three: `scripts/eval-gates.test.mjs` keeps the merged list equal
+      # to the union of the three per-gate scripts, which stay for local use.
+      - name: Evaluation gates
+        env:
+          PROMPTFOO_DISABLE_TELEMETRY: '1'
+        run: pnpm eval:gates
 
   # Exercise the daemon's core sandbox boundaries and confined skills pipeline
   # under the real Linux kernel sandbox. These cases self-skip in the bwrap-free
@@ -282,6 +243,30 @@ jobs:
           test/unified-skills.test.ts
           test/skill-workspace-lock.test.ts
           test/skill-install-ledger.test.ts
+
+  # The daemon's store suites again, with `LocalStore` opened over `PostgresSyncDatabase`
+  # instead of `node:sqlite`, against a Testcontainers `postgres:16-alpine`. The pool runs
+  # that SQL for real, so a SQLite-only construct fails here rather than on a cluster.
+  # Needs Docker, so it gets its own runner off the critical path.
+  daemon-store-postgres:
+    name: Daemon Store (PostgreSQL)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+        with:
+          cache: true
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Daemon store suites on PostgreSQL
+        run: pnpm --filter @agentconnect.md/daemon test:store:postgres
 
   # control-plane integration tests against a real Postgres booted by
   # Testcontainers. Each Vitest worker gets an isolated database cloned from one

@@ -6,6 +6,7 @@ import { Daemon } from '../src/daemon.js'
 import { executeTool, type SessionContext } from '../src/mcp/ops.js'
 import { sessionKey } from '../src/store/local-store.js'
 import { FakeClock } from './cp/fake-clock.js'
+import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
 // vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a
 // cold session boot (workspace + host + session/new) can stall well past a second.
@@ -101,7 +102,11 @@ describe('Daemon interrupt safety gates', () => {
       cancel: vi.fn(async () => {}),
       stop: vi.fn(async () => {})
     }
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => host as any
+    })
     const stream = webchatSink()
     await daemon.start()
     ;(daemon as any).agents.get(AGENT_ID).allowRuntimeChangesInChat = true
@@ -154,7 +159,11 @@ describe('Daemon interrupt safety gates', () => {
       cancel: vi.fn(async () => {}),
       stop: vi.fn(async () => {})
     }
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => host as any
+    })
     const stream = webchatSink()
     await daemon.start()
 
@@ -211,7 +220,11 @@ describe('Daemon interrupt safety gates', () => {
       cancel: vi.fn(async () => {}),
       stop: vi.fn(async () => {})
     }
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => host as any
+    })
     await daemon.start()
 
     const t1Msg = dm('C1', 'T1', '100', 'T1 active')
@@ -227,7 +240,7 @@ describe('Daemon interrupt safety gates', () => {
       await vi.waitFor(() => expect(hasPending(daemon, 'acp-2')).toBe(true), WAIT)
       // DMs start private. Model the CP publishing this unrelated session so
       // the memory assertion below tests cancellation isolation, not privacy.
-      expect((daemon as any).store.applyCpCaptureGate('acp-2', false, 1)).toBe('applied')
+      expect((daemon as any).store.applyCpCaptureGate(AGENT_ID, 'acp-2', false, 1)).toBe('applied')
       t2Queued = (daemon as any).dispatch(AGENT_ID, t2QueuedMsg)
       const t2Key = sessionKey('slack', 'C2', 'T2', AGENT_ID)
       expect((daemon as any).serialQueue.get(t2Key)).toHaveLength(1)
@@ -287,7 +300,12 @@ describe('Daemon interrupt safety gates', () => {
       cancel: vi.fn(async () => {}),
       stop: vi.fn(async () => settleSession())
     }
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any, clock })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => host as any,
+      clock
+    })
     const stream = webchatSink()
     await daemon.start()
 
@@ -325,7 +343,12 @@ describe('Daemon interrupt safety gates', () => {
       cancel: vi.fn(async () => {}),
       stop: vi.fn(async () => {})
     }
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any, clock })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => host as any,
+      clock
+    })
     const stream = webchatSink()
     await daemon.start()
     const standingContext = vi.fn(() => memoryBlocked)
@@ -342,7 +365,7 @@ describe('Daemon interrupt safety gates', () => {
       lastDeliveredTs: null,
       updatedAt: Date.now()
     })
-    expect((daemon as any).store.applyCpCaptureGate('acp-memory', false, 1)).toBe('applied')
+    expect((daemon as any).store.applyCpCaptureGate(AGENT_ID, 'acp-memory', false, 1)).toBe('applied')
 
     const ack = (daemon as any).dispatchWebchatTurn(AGENT_ID, CONV_1, 'cold memory', 'alice', stream.sink)
     await vi.waitFor(() => expect(standingContext).toHaveBeenCalled(), WAIT)
@@ -376,7 +399,12 @@ describe('Daemon interrupt safety gates', () => {
         throw new Error('cannot stop child')
       })
     }
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any, clock })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => host as any,
+      clock
+    })
     const stream = webchatSink()
     await daemon.start()
 
@@ -425,7 +453,7 @@ describe('Daemon interrupt safety gates', () => {
     const hosts = [host1, host2]
     const factory = vi.fn(() => hosts.shift()!)
     const root = scaffold()
-    const daemon = new Daemon({ root, hostFactory: () => factory() as any })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => factory() as any })
     await daemon.start()
     await (daemon as any).watcher.close()
     ;(daemon as any).watcher = undefined
@@ -484,7 +512,7 @@ describe('Daemon interrupt safety gates', () => {
     }
     const factory = vi.fn(() => host)
     const root = scaffold()
-    const daemon = new Daemon({ root, hostFactory: () => factory() as any })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => factory() as any })
     await daemon.start()
     await (daemon as any).watcher.close()
     ;(daemon as any).watcher = undefined
@@ -541,7 +569,7 @@ describe('Daemon interrupt safety gates', () => {
     const hosts = [host1, host2]
     const factory = vi.fn(() => hosts.shift()!)
     const root = scaffold()
-    const daemon = new Daemon({ root, hostFactory: () => factory() as any })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => factory() as any })
     await daemon.start()
     await (daemon as any).watcher.close()
     ;(daemon as any).watcher = undefined
@@ -600,7 +628,7 @@ describe('Daemon interrupt safety gates', () => {
       cancel: vi.fn(async () => {}),
       stop: vi.fn(async () => {})
     }
-    const daemon = new Daemon({ root, hostFactory: () => host as any })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => host as any })
     await daemon.start()
     // Per-turn config rematerialization touches agents/**; on a slow runner the
     // debounced file-watch reconcile can then land mid-loop and revert the
@@ -728,7 +756,12 @@ describe('Daemon interrupt safety gates', () => {
       idleSweepMs: 30_000,
       shutdownDrainMs: 1_000
     })
-    const daemon = new Daemon({ root, hostFactory: () => factory() as any, clock })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root,
+      hostFactory: () => factory() as any,
+      clock
+    })
     await daemon.start()
     const store = (daemon as any).store
     const closeStore = store.close.bind(store)
@@ -765,7 +798,11 @@ describe('Daemon interrupt safety gates', () => {
       cancel: vi.fn(async () => {}),
       stop: vi.fn(async () => {})
     }
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => host as any
+    })
     const stream = webchatSink()
     await daemon.start()
 

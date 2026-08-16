@@ -171,15 +171,9 @@ export const ConfigSchema = z.object({
    * never negotiated through the control plane or placed on the message hot path. */
   features: z
     .object({
-      turnFinalContextRefresh: z.boolean().default(true),
-      // Duty leases decide which agents this daemon serves (k8s pools). The
-      // exchange itself always runs on an install-wide connection — the ledger
-      // needs the digest to converge — but ENFORCEMENT is opt-in: until this is
-      // on, a duty grant/revoke only moves bookkeeping, so the ledger can be
-      // observed converging before it gates a single platform connection.
-      dutyEnforcement: z.boolean().default(false)
+      turnFinalContextRefresh: z.boolean().default(true)
     })
-    .default({ turnFinalContextRefresh: true, dutyEnforcement: false }),
+    .default({ turnFinalContextRefresh: true }),
   sessions: z
     .object({
       // Local-DB retention for FINISHED sessions (issue #485): a session untouched
@@ -234,6 +228,10 @@ export const ConfigSchema = z.object({
       // SIGTERM/daemon-drain grace window: in-flight turns get this long to finish
       // before the daemon cancels stragglers and tears children down (§2.5/§5.3).
       shutdownDrainMs: z.number().int().default(25_000),
+      // The same window for a pool member (`--k8s`), which holds duty leases: a rollout waits for
+      // in-flight turns rather than cutting them, then releases every held group with an
+      // acknowledged `duty/release` inside this bound. terminationGracePeriodSeconds must exceed it.
+      poolShutdownDrainMs: z.number().int().default(300_000),
       // §7.3 force-cancel backstop: after `!stop` we send session/cancel and wait
       // this long; if the turn still hasn't yielded, we force-stop the host.
       cancelBackstopMs: z.number().int().default(30_000),
@@ -260,6 +258,7 @@ export const ConfigSchema = z.object({
       idleSweepMs: 60_000,
       configFilesIdleMs: 60_000,
       shutdownDrainMs: 25_000,
+      poolShutdownDrainMs: 300_000,
       cancelBackstopMs: 30_000,
       agentStartAttempts: 3,
       agentStartBackoffMs: 500,

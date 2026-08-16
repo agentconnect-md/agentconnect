@@ -160,9 +160,9 @@ describe('CronRepo — cron definitions (real Postgres)', () => {
     })
     expect(await repo.reapStaleRuns(new Date('2026-01-01T00:30:00Z'))).toBe(1)
 
-    // The daemon's completion finally arrives (owning daemon → accepted) and
+    // The daemon's completion finally arrives (the handler already fenced it) and
     // re-closes the reaped row with the real outcome — the reaper is non-destructive.
-    const ok = await repo.recordReport(CronId(CRON), DaemonId(DAEMON), {
+    const ok = await repo.recordReport(CronId(CRON), {
       firedAt,
       status: 'success',
       durationMs: 999,

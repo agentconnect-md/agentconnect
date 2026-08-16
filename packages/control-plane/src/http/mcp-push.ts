@@ -10,10 +10,12 @@
 import type { McpProviderRecord, McpHeader } from '../persistence/ports.js'
 import type { OrgId } from '../domain/ids.js'
 import type { HttpDeps } from './deps.js'
-import { mcpProxyDef, mcpRcAssign, relayHttpOrigin } from '../orchestrator/mcpProvider.js'
+import { mcpProxyDef, mcpRcAssign, relayHttpOrigin, type GrantView } from '../orchestrator/mcpProvider.js'
 
 export interface McpPush {
-  pushAssign(provider: McpProviderRecord, headers: McpHeader[], grantKey: string, orgId: OrgId): Promise<void>
+  /** Takes the grant ROW: the daemon def carries its issuance instant as the
+   *  ordering marker, and that must come from the same grant as the key. */
+  pushAssign(provider: McpProviderRecord, headers: McpHeader[], grant: GrantView, orgId: OrgId): Promise<void>
   pushUnassign(provider: McpProviderRecord, orgId: OrgId): Promise<void>
 }
 
@@ -28,21 +30,24 @@ export function makeMcpPush(deps: HttpDeps): McpPush {
     return url ? relayHttpOrigin(url) : null
   }
 
-  // Daemons with a placed agent that enabled `name` (runtimeOverrides.mcpServers).
+  // Every daemon SERVING an agent that enabled `name` — its placement plus any
+  // duty holder. Resolved through AgentDelivery, never `a.daemonId` inline: a
+  // holder that installed the agent through `duty/fetch` must see the provider's
+  // rotations and its removal, or it keeps calling with a retired grant key.
   const daemonsEnabling = async (orgId: OrgId, name: string): Promise<string[]> => {
-    const agents = await deps.repos.agent.list(orgId)
-    return [...new Set(agents.filter((a) => a.daemonId && a.mcpServers.includes(name)).map((a) => a.daemonId!))]
+    const agents = (await deps.repos.agent.list(orgId)).filter((a) => a.mcpServers.includes(name))
+    return deps.agentDelivery.daemonsForAgents(agents)
   }
 
   return {
     // Best-effort double-push (like integrations): the relay binding carries the
     // UPSTREAM secret headers; the daemon proxy def carries the grant key + relay URL.
     // NEVER logged. Swallows NoConnection per daemon (reconcile is the backstop).
-    async pushAssign(provider, headers, grantKey, orgId) {
-      deps.relayControl.mcpAssign(mcpRcAssign(provider, headers, [grantKey]))
+    async pushAssign(provider, headers, grant, orgId) {
+      deps.relayControl.mcpAssign(mcpRcAssign(provider, headers, [grant.key]))
       const base = await relayBaseUrl()
       if (!base) return
-      const spec = mcpProxyDef(provider, grantKey, base)
+      const spec = mcpProxyDef(provider, grant, base)
       for (const d of await daemonsEnabling(orgId, provider.name)) {
         try {
           await deps.control.mcpServerUpsert(d, spec)

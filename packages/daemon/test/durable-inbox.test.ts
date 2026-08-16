@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
+import { DatabaseSync } from 'node:sqlite'
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -7,6 +8,7 @@ import { statePath } from '../src/paths.js'
 import { Daemon } from '../src/daemon.js'
 import { stableMessageId } from '../src/messages/normalized.js'
 import type { WebchatOutput, WebchatDone } from '@agentconnect.md/protocol'
+import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
 // vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a
 // cold session boot (workspace + host + session/new) can stall well past a second.
@@ -167,11 +169,93 @@ describe('LocalStore inbox', () => {
       expect(s.completeHookInbox(id, JSON.stringify({ hookId: 'hook-1', deliveryKey: String(i) }), i)).toBe('completed')
     }
 
-    expect(s.acknowledgeHookInbox('hook-1:delivery-1', 1)).toBe(true)
-    expect(s.acknowledgeHookInbox('hook-1:delivery-2', 1)).toBe(true)
+    expect(s.acknowledgeHookInbox('hook-1:delivery-1', { maxAcknowledgedReceipts: 1 })).toBe(true)
+    expect(s.acknowledgeHookInbox('hook-1:delivery-2', { maxAcknowledgedReceipts: 1 })).toBe(true)
     const remaining = s.listInboxBySessionKeyFifo()
     expect(remaining.map((receipt) => receipt.id).sort()).toEqual(['hook-1:delivery-2', 'hook-1:delivery-3'])
     expect(remaining.find((receipt) => receipt.id.endsWith('-3'))?.terminalReport).not.toBeNull()
+    s.close()
+  })
+
+  // ── shared pool outbox (#1035) ────────────────────────────────────────────
+  // Every member of a daemon pool reads and writes ONE data-plane store, so the
+  // hook terminal-report outbox is install-wide. Ownership, not presence, decides
+  // who may emit a row: the CP accepts a completion only from the daemon its
+  // dispatch named, and answers every other member a permanent CONFLICT.
+  const LEASE_MS = 2 * 60 * 1_000
+
+  function poolMember(database: DatabaseSync, ownerId: string): LocalStore {
+    return new LocalStore({ database: database as never, shared: true, ownerId, orgForAgent: () => 'org-1' })
+  }
+
+  function pooledReport(s: LocalStore, id: string, agentId: string, ownerDaemonId: string, at: number): void {
+    const key = sessionKey('hook', 'hook-1', id, agentId)
+    expect(s.appendInbox({ ...row(id, key, String(at), agentId), hookContext: '{}' })).toBe(true)
+    expect(s.completeHookInbox(id, JSON.stringify({ id }), at, ownerDaemonId)).toBe('completed')
+  }
+
+  it("offers a pool member only the reports it owns, never a live peer's", () => {
+    const database = new DatabaseSync(':memory:')
+    const a = poolMember(database, 'store-a')
+    const b = poolMember(database, 'store-b')
+    pooledReport(a, 'from-a', 'agent-a', 'daemon-a', 1_000)
+    pooledReport(b, 'from-b', 'agent-b', 'daemon-b', 1_000)
+
+    const ids = (s: LocalStore, ownerId: string, agentIds: string[]) =>
+      s.listHookTerminalReports(1_500, ownerId, agentIds).map((entry) => entry.id)
+    expect(ids(a, 'daemon-a', ['agent-a'])).toEqual(['from-a'])
+    // B serves both agents and still may not touch A's row: A's claim is live.
+    expect(ids(b, 'daemon-b', ['agent-a', 'agent-b'])).toEqual(['from-b'])
+    expect(b.claimHookTerminalReport('from-a', 'daemon-b', 1_500)).toBe(false)
+    // An owner drains its own row wherever the agent is placed now.
+    expect(ids(a, 'daemon-a', [])).toEqual(['from-a'])
+    a.close()
+  })
+
+  it('lets the member that serves the agent take over after the owner claim lapses', () => {
+    const database = new DatabaseSync(':memory:')
+    const a = poolMember(database, 'store-a')
+    const b = poolMember(database, 'store-b')
+    pooledReport(a, 'from-a', 'agent-a', 'daemon-a', 1_000)
+    const lapsed = 1_000 + LEASE_MS + 1
+
+    // Still not B's to take while B does not serve the agent.
+    expect(b.listHookTerminalReports(lapsed, 'daemon-b', ['agent-b'])).toEqual([])
+    expect(b.listHookTerminalReports(lapsed, 'daemon-b', ['agent-a']).map((entry) => entry.id)).toEqual(['from-a'])
+    expect(b.claimHookTerminalReport('from-a', 'daemon-b', lapsed)).toBe(true)
+    // The takeover is exclusive: the dead owner's id no longer holds the row.
+    expect(a.listHookTerminalReports(lapsed, 'daemon-a', [])).toEqual([])
+    expect(a.claimHookTerminalReport('from-a', 'daemon-a', lapsed)).toBe(false)
+    a.close()
+  })
+
+  it('keeps a peer report body out of reach of every member but its owner', () => {
+    const database = new DatabaseSync(':memory:')
+    const a = poolMember(database, 'store-a')
+    const b = poolMember(database, 'store-b')
+    pooledReport(a, 'from-a', 'agent-a', 'daemon-a', 1_000)
+    const lapsed = 1_000 + LEASE_MS + 1
+    expect(b.claimHookTerminalReport('from-a', 'daemon-b', lapsed)).toBe(true)
+
+    // The CP rejects B as the reporter — B returns the row instead of dead-lettering it.
+    expect(b.releaseHookTerminalReport('from-a', 'daemon-a', lapsed)).toBe(true)
+    expect(b.acknowledgeHookInbox('from-a', { ownerId: 'daemon-b' })).toBe(false)
+    const retained = a.listHookTerminalReports(lapsed, 'daemon-a', [])
+    expect(retained.map((entry) => entry.id)).toEqual(['from-a'])
+    expect(retained[0]!.terminalReport).toBe('{"id":"from-a"}')
+    // Its owner still releases it on a real ACK.
+    expect(a.acknowledgeHookInbox('from-a', { ownerId: 'daemon-a' })).toBe(true)
+    a.close()
+  })
+
+  it('leaves a local store single-owner: every report drains and ACKs unfenced', () => {
+    const s = store()
+    pooledReport(s, 'local-1', 'bot-a', 'daemon-a', 1)
+    pooledReport(s, 'local-2', 'bot-b', 'daemon-b', 2)
+    expect(s.listHookTerminalReports(Number.MAX_SAFE_INTEGER).map((entry) => entry.id)).toEqual(['local-1', 'local-2'])
+    expect(s.claimHookTerminalReport('local-2', undefined, 3)).toBe(true)
+    expect(s.releaseHookTerminalReport('local-2', 'daemon-b', 3)).toBe(false)
+    expect(s.acknowledgeHookInbox('local-2')).toBe(true)
     s.close()
   })
 
@@ -348,7 +432,7 @@ function retainedHook(deliveryKey: string) {
 }
 
 async function boot(root: string, host: any) {
-  const daemon = new Daemon({ root, hostFactory: () => host as any })
+  const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => host as any })
   await daemon.start()
   return daemon
 }
@@ -930,6 +1014,7 @@ describe('daemon durable inbox', () => {
     const a = gatedHost('acp-a')
     const b = gatedHost('acp-b')
     const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
       root,
       hostFactory: (agent) => (agent.id === 'bot-a' ? a.host : b.host) as any
     })
@@ -1306,6 +1391,7 @@ describe('daemon durable inbox', () => {
       stop: vi.fn(async () => {})
     }
     const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
       root,
       hostFactory: (_agent, update) => {
         onUpdate = update

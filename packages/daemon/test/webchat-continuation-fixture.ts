@@ -79,7 +79,13 @@ export function scriptedHosts(replies: Record<string, (prompt: string) => string
 }
 
 export function fakeCpClient() {
-  return { emitUsageReport: vi.fn(), emitSessionActivity: vi.fn(), stop: vi.fn(async () => {}) }
+  // Org-scoped: this daemon owns its agents outright and is not duty-governed.
+  return {
+    emitUsageReport: vi.fn(),
+    emitSessionActivity: vi.fn(),
+    organizationScope: () => 'connection' as const,
+    stop: vi.fn(async () => {})
+  }
 }
 
 /** Frame factory bound to one conversation id — mirrors the relay's
@@ -162,4 +168,4 @@ export const settle = () => new Promise((r) => setTimeout(r, 300))
 
 /** Mirrors daemon.ts `activationKey(platform, transportScope, platformMessageId, target)`. */
 export const rendezvousKey = (postId: string, targetAgentId: string): string =>
-  ['webchat', '', postId, targetAgentId].join('\u0000')
+  ['webchat', '', postId, targetAgentId].join('\u001f')

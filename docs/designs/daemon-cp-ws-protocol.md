@@ -48,7 +48,7 @@ const Envelope = z.object({
 })
 ```
 
-An API-key or envelope-daemon connection is bound to one organization at auth time, so `orgId` may be omitted for rolling compatibility. Each cloud-daemon Pod has an install-wide connection and must carry `orgId` on every organization-scoped request, event, control frame, and correlated reply. Member-scoped frames such as auth, register, heartbeat, runtime facts, relay roster, collaboration routes, and daemon lifecycle control omit it.
+An API-key or envelope-daemon connection is bound to one organization at auth time, so `orgId` may be omitted for rolling compatibility. Each cloud-daemon Pod has an install-wide connection and must carry `orgId` on every organization-scoped request, event, control frame, and correlated reply. Member-scoped frames such as auth, register, heartbeat, runtime facts, relay roster, collaboration routes, duty lease frames, and daemon lifecycle control omit it — and on the install-wide connection must not carry it. The classification and the checks both peers run live in `packages/protocol/src/frame-scope.ts` (`INSTALL_WIDE_FRAME_TYPES`, `checkInboundFrameOrg`, `checkReplyFrameOrg`); [`org-scoped-data-layer.md`](org-scoped-data-layer.md) §4.1 spells out the contract.
 
 **Reply correlation.** A request-shaped frame (anything expecting an `ack`/result) is answered by a frame whose `corr` == the request's `id`. Fire-and-forget frames (most telemetry) carry no reply. Each frame type below is tagged **REQ** (expects a correlated reply), **REP** (is a reply), or **EVT** (fire-and-forget).
 
@@ -216,6 +216,8 @@ configuration, integration, MCP, memory, relay, and collaboration snapshots
 defined in `packages/protocol/src/frames/register.ts`.
 
 **Reconcile contract:** `register/ok` is the **source of truth**. On receipt the daemon: (1) starts/keeps every assignment & cron in the snapshot, (2) releases everything in `drop`, (3) adopts `routingEpoch` as its current routing fence. **CP wins all conflicts.** This makes reconnect convergence idempotent — re-issuing the same snapshot is a no-op.
+
+**Multi-org reconnect (install-wide members).** On a frame-mode connection `register/ok` is the **combined multi-org snapshot** (k8s-daemon-pool.md D9): the frame itself is install-wide and carries no envelope `orgId`, while every payload entry — agent spec, cron, integration, MCP and memory definition, collaboration route — names its own organization, and the roster is the union `pinned-to-me ∪ agents in the duties I hold` across every org the member serves, with ownership-aware `drop` sets for what moved or was deleted while it was away. Agent entries carry the current `Agent.configRevision`, so the daemon's `stale|conflict|idempotent|apply` compare converges edits missed offline. Two revision-fenced streams on the same connection finish the job: the register-time visibility replay re-sends the capture-gate set per organization as org-scoped `session/visibility/snapshot` frames, and the first heartbeat's duty exchange re-issues missing or stale-term grants revision-stamped (`frames/duty.ts`; k8s-daemon-pool.md §5), so the member refetches only frozen bundles. There is no `subscribe(org)`, org room, or per-org socket; `packages/control-plane/test/protocol/multi-org-reconnect.test.ts` pins the property end to end.
 
 ### 3.3a `capabilities/update` (EVT, D→C)
 
