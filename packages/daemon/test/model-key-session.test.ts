@@ -182,6 +182,23 @@ describe('daemon model-key session lifecycle', () => {
     expect(setModelOverride).toHaveBeenCalledWith('session-a', 'openai/gpt-5-codex')
   })
 
+  it('revokes the fresh grant when replacing the superseded host fails', async () => {
+    const h = harness([
+      { keyId: 'key-1', key: 'old', requestedAtMs: 1_000, refreshAtMs: 2_000 },
+      { keyId: 'key-2', key: 'new', requestedAtMs: 2_000 }
+    ])
+    await h.daemon.ensureModelSessionHost(agent, 'session-a')
+    h.firstHost.stop.mockRejectedValueOnce(new Error('stop refused'))
+    h.clock.advance(1_000)
+
+    await expect(h.daemon.ensureModelSessionHost(agent, 'session-a')).rejects.toThrow(/stop refused/)
+    await vi.waitFor(() => expect(h.revoke).toHaveBeenCalledWith('key-2'))
+    expect(h.revoke).not.toHaveBeenCalledWith('key-1')
+    // The old entry keeps owning key-1, so teardown still gives it back.
+    await h.daemon.releaseModelSessionHost('session-a')
+    expect(h.revoke).toHaveBeenCalledWith('key-1')
+  })
+
   it('stops a host started after its entry was released', async () => {
     const h = harness([{ keyId: 'key-1', key: 'secret', requestedAtMs: 1_000 }])
     let settleStart: (host: unknown) => void = () => {}

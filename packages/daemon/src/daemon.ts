@@ -5654,8 +5654,18 @@ export class Daemon {
         throw error
       }
       if (entry) {
-        await this.stopModelSessionRuntime(entry, entry.host)
         const staleKeyId = entry.grant.keyId
+        try {
+          await this.stopModelSessionRuntime(entry, entry.host)
+        } catch (error) {
+          // The map still holds the old entry, so a later release still revokes its key. The
+          // grant just issued has no owner at all and the protocol lets one never expire —
+          // this is the only place that can still give it back.
+          void keyServer
+            .revoke(grant.keyId)
+            .catch((e) => this.log.warn(`key-server revoke failed for ${grant.keyId} (${formatErr(e)})`))
+          throw error
+        }
         void keyServer
           .revoke(staleKeyId)
           .catch((error) => this.log.warn(`key-server revoke failed for ${staleKeyId} (${formatErr(error)})`))
@@ -14682,7 +14692,16 @@ export class Daemon {
     const initializedAgent = this.agents.get(agentId)
     const stagedRuntime =
       initializedAgent?.allowRuntimeChangesInChat === true && webchat?.runtime ? webchat.runtime : undefined
-    if (stagedRuntime?.model !== undefined) this.store.setModelOverride(key, stagedRuntime.model)
+    // The key-server host was started for this very model, so it only ever crosses on the
+    // shared static host, which has no per-session start to rebind at — persisting it there
+    // would leave the session showing an override no prompt could ever honour.
+    if (stagedRuntime?.model !== undefined) {
+      if (this.modelCrossesHostProvider(key, agentId, stagedRuntime.model)) {
+        this.log.warn(`session ${key}: first-turn model "${stagedRuntime.model}" refused — the static host is bound`)
+      } else {
+        this.store.setModelOverride(key, stagedRuntime.model)
+      }
+    }
     if (stagedRuntime?.effort !== undefined) this.store.setEffortOverride(key, stagedRuntime.effort)
     if (stagedRuntime?.permissionMode !== undefined) {
       this.store.setPermissionModeOverride(key, stagedRuntime.permissionMode)
