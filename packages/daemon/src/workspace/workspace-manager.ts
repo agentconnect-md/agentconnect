@@ -114,15 +114,63 @@ const CONVERSION_FILE = 'workspace-conversion.json'
 const SESSION_BRANCH_DRAWS = 5
 const GIT_OBJECT_ID = /^[0-9a-f]{40,64}$/i
 
-// Single-flight clone lock. Two concurrent sessions (especially multiple agents sharing one repo
-// checkout) must not race into the same dir — the second awaits the first's in-flight clone.
-const cloneInFlight = new Map<string, Promise<void>>()
+// The per-daemon execution plane every workspace operation resolves through: where an agent's git
+// runs, how a path this process cannot see gets emptied, whether workspaces live in sandboxes at
+// all, and the clone single-flight that coalesces concurrent sessions.
+//
+// Instance state, not module state, because a process can hold more than one daemon — the test
+// suite routinely does, and a k8s daemon and a local one disagree on every field here. While these
+// were module-level bindings the second daemon in a process silently inherited the first's plane.
+export class WorkspaceManager {
+  // Single-flight clone lock. Two concurrent sessions (especially multiple agents sharing one repo
+  // checkout) must not race into the same dir — the second awaits the first's in-flight clone.
+  readonly cloneInFlight = new Map<string, Promise<void>>()
+  private gitRunnerResolver: WorkspaceGitRunnerResolver | undefined
+  private pathClearer: WorkspacePathClearer | undefined
+  private workspacesLiveInSandboxes = false
 
-// The key is the cwd for a local workspace, where sharing a path means sharing a checkout and
-// coalescing is the intent. For a cluster workspace the same path is a DIFFERENT filesystem per
-// agent, so coalescing there would hand one agent the other's clone; the agent id disambiguates.
+  setGitRunnerResolver(resolver: WorkspaceGitRunnerResolver | undefined): void {
+    this.gitRunnerResolver = resolver
+  }
+
+  setPathClearer(clearer: WorkspacePathClearer | undefined): void {
+    this.pathClearer = clearer
+  }
+
+  setSandboxMode(enabled: boolean): void {
+    this.workspacesLiveInSandboxes = enabled
+  }
+
+  get sandboxMode(): boolean {
+    return this.workspacesLiveInSandboxes
+  }
+
+  /** The agent's own runner; undefined means its workspace is reachable locally. */
+  resolveGitRunner(agentId: string, cwd?: string, abort?: AbortSignal): GitRunner | undefined {
+    return this.gitRunnerResolver?.(agentId, cwd, abort)
+  }
+
+  /** The clearer's error message, or undefined when it succeeded or none is registered. */
+  async clearPath(agentId: string, root: string): Promise<string | undefined> {
+    return await this.pathClearer?.(agentId, root).catch((err: unknown) => (err as Error).message)
+  }
+
+  // The key is the cwd for a local workspace, where sharing a path means sharing a checkout and
+  // coalescing is the intent. For a cluster workspace the same path is a DIFFERENT filesystem per
+  // agent, so coalescing there would hand one agent the other's clone; the agent id disambiguates.
+  cloneKey(agentId: string, cwd: string): string {
+    return this.gitRunnerResolver?.(agentId, cwd) ? `${agentId}\u0000${cwd}` : cwd
+  }
+}
+
+// The plane the module-level entry points below still resolve through. Step 2 threads an explicit
+// instance down from the owning `Daemon`, and this — with the `set*` shims — goes away.
+const defaultWorkspaces = new WorkspaceManager()
+
+const cloneInFlight = defaultWorkspaces.cloneInFlight
+
 function cloneKey(agentId: string, cwd: string): string {
-  return resolveWorkspaceGitRunner?.(agentId, cwd) ? `${agentId}\u0000${cwd}` : cwd
+  return defaultWorkspaces.cloneKey(agentId, cwd)
 }
 
 function usesGithubApp(agent: Agent): boolean {
@@ -162,18 +210,15 @@ function isTrustedGithubOrigin(input: string): boolean {
 // that agent's own sandbox channel; undefined means local, so self-hosting needs no registration.
 export type WorkspaceGitRunnerResolver = (agentId: string, cwd?: string, abort?: AbortSignal) => GitRunner | undefined
 
-/** Module-level init, mirroring cloneInFlight and git-injection's own registration. */
-let resolveWorkspaceGitRunner: WorkspaceGitRunnerResolver | undefined
-
 export function setWorkspaceGitRunnerResolver(resolver: WorkspaceGitRunnerResolver | undefined): void {
-  resolveWorkspaceGitRunner = resolver
+  defaultWorkspaces.setGitRunnerResolver(resolver)
 }
 
 // Every git operation here routes through this: a direct gitFor still passes locally and then runs
 // a cluster agent's git on the wrong filesystem.
 function runnerFor(agentId: string, cwd?: string, abort?: AbortSignal): GitRunner {
   return (
-    resolveWorkspaceGitRunner?.(agentId, cwd, abort) ??
+    defaultWorkspaces.resolveGitRunner(agentId, cwd, abort) ??
     new LocalGitRunner(gitFor(cwd, abort), cwd, (env) => gitFor(cwd, abort).env(env))
   )
 }
@@ -187,35 +232,31 @@ function runnerFor(agentId: string, cwd?: string, abort?: AbortSignal): GitRunne
  */
 export type WorkspacePathClearer = (agentId: string, root: string) => Promise<string | undefined>
 
-let clearWorkspacePathInSandbox: WorkspacePathClearer | undefined
-
 export function setWorkspacePathClearer(clearer: WorkspacePathClearer | undefined): void {
-  clearWorkspacePathInSandbox = clearer
+  defaultWorkspaces.setPathClearer(clearer)
 }
 
 /**
  * Whether this daemon places workspaces in sandbox pods at all.
  *
- * Deliberately NOT `resolveWorkspaceGitRunner?.(id) !== undefined`: that answers per agent and is
+ * Deliberately NOT `resolveGitRunner(id) !== undefined`: that answers per agent and is
  * false before a channel binds, so an operation guarded by it would take the local path for a
  * cluster agent that simply has no pod yet — and clone onto the daemon's disk.
  */
-let workspacesLiveInSandboxes = false
-
 export function setSandboxWorkspaceMode(enabled: boolean): void {
-  workspacesLiveInSandboxes = enabled
+  defaultWorkspaces.setSandboxMode(enabled)
 }
 
 /** The same answer for callers OUTSIDE this module — a seam that would otherwise `stat` a workspace
  *  path that names a filesystem this process cannot see. */
 export function sandboxWorkspaceMode(): boolean {
-  return workspacesLiveInSandboxes
+  return defaultWorkspaces.sandboxMode
 }
 
 /** Empty a path belonging to a cluster agent. A daemon with no clearer registered has no sandbox to
  *  reach, so there is nothing to empty — the local path never calls this. */
 async function clearSandboxPath(agentId: string, root: string): Promise<void> {
-  const error = await clearWorkspacePathInSandbox?.(agentId, root).catch((err: unknown) => (err as Error).message)
+  const error = await defaultWorkspaces.clearPath(agentId, root)
   if (error) {
     workspaceLog.warn(`workspace: could not empty ${root} for agent "${agentId}" after a failed clone (${error})`)
   }
@@ -224,7 +265,7 @@ async function clearSandboxPath(agentId: string, root: string): Promise<void> {
 /** Empty a cluster path the caller cannot proceed without. A conversion that kept the old checkout
  *  would clone into a non-empty directory, or converge the new origin onto the previous tree. */
 async function requireEmptiedSandboxPath(agentId: string, root: string): Promise<void> {
-  const error = await clearWorkspacePathInSandbox?.(agentId, root).catch((err: unknown) => (err as Error).message)
+  const error = await defaultWorkspaces.clearPath(agentId, root)
   if (error) throw new Error(`workspace: could not replace ${root} for agent "${agentId}" (${error})`)
 }
 
@@ -241,9 +282,9 @@ async function requireEmptiedSandboxPath(agentId: string, root: string): Promise
  * caller can reintroduce it by ordering its own checks differently.
  */
 export function consoleWorkspaceGitRunner(agentId: string, cwd?: string, abort?: AbortSignal): GitRunner | undefined {
-  const remote = resolveWorkspaceGitRunner?.(agentId, cwd, abort)
+  const remote = defaultWorkspaces.resolveGitRunner(agentId, cwd, abort)
   if (remote) return remote
-  if (workspacesLiveInSandboxes) return undefined
+  if (defaultWorkspaces.sandboxMode) return undefined
   return new LocalGitRunner(gitFor(cwd, abort), cwd, (env) => gitFor(cwd, abort).env(env))
 }
 
@@ -968,7 +1009,7 @@ export function consoleWorkspaceRoot(
   runtimeRoot: string | undefined,
   request?: Pick<PrepareSessionWorkspaceRequest, 'isolation'>
 ): string | undefined {
-  if (local === undefined || !workspacesLiveInSandboxes) return local
+  if (local === undefined || !defaultWorkspaces.sandboxMode) return local
   refuseSessionIsolationInCluster(agent, request)
   return clusterWorkspaceCheckout(agent, runtimeRoot)
 }
@@ -1197,7 +1238,7 @@ export function additionalWorkspaceDirectories(
   request?: Pick<PrepareSessionWorkspaceRequest, 'sessionKey' | 'isolation'>
 ): string[] {
   if (agent.workspace.mode !== 'git-repo') return []
-  if (workspacesLiveInSandboxes) {
+  if (defaultWorkspaces.sandboxMode) {
     // `cwd` is in the POD's coordinates, which this daemon cannot `realpathSync` — the path exists
     // on no filesystem it can see, so the check below throws on the workspace it was handed. Undo
     // the lexical join `clusterWorkspaceCwd` made instead; the shim re-checks containment itself.
@@ -1306,7 +1347,7 @@ export async function prepareWorkspaceForActivation(
   // and writing the TARGET here would say it about a volume nothing has inspected — which cluster
   // preparation then reads back as proof of the repository, in a circle. Seeding at detach is a
   // different thing and stays: it names the definition the agent has been RUNNING on.
-  if (workspacesLiveInSandboxes) {
+  if (defaultWorkspaces.sandboxMode) {
     // Set, never taken back — not by the else branch of this condition, and not by the rollback
     // below, which is why there is nothing to roll back. `ensureHostAsync` runs before the ACK, so
     // preparation may already be replacing the volume when this activation is rejected, and no
