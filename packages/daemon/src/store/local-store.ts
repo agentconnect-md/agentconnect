@@ -4649,21 +4649,34 @@ export class LocalStore {
     }))
   }
 
-  /** Startup GC (§4 rule 6): drop rows unseen for the caller-computed retention window (30 days),
-   *  and another member's at the shorter `departedOwnerCutoffEpochMs` — an ownerId dies with the
-   *  process that minted it, so a rollout leaves caches nobody can read again. That window stays
+  /** Startup GC (§4 rule 6): drop catalogs unseen for the caller-computed retention window (30
+   *  days), and another member's at the shorter `departedOwnerCutoffEpochMs` — an ownerId dies with
+   *  the process that minted it, so a rollout leaves caches nobody can read again. That window stays
    *  conservative: a live member that has not re-probed inside it pays one re-discovery. A
-   *  single-daemon store owns every row, so only the first window ever reaches it. */
+   *  single-daemon store owns every row, so only the first window ever reaches it.
+   *
+   *  Staleness is a property of a whole `(ownerId, runtimeId)` catalog, never of one row. A phase-1
+   *  refresh re-stamps the meta row and the seed model only, so a row-by-row sweep would delete the
+   *  models discovery found while leaving `complete`/`modelsHash` standing — a gate that never
+   *  reopens over a matrix permanently missing those models. */
   gcRuntimeCatalog(cutoffEpochMs: number, departedOwnerCutoffEpochMs = cutoffEpochMs): void {
-    const params = { ownerId: this.cacheOwnerId, cutoff: cutoffEpochMs, departed: departedOwnerCutoffEpochMs }
     for (const table of ['runtime_catalog_meta', 'runtime_model_catalog']) {
-      this.db
-        .prepare(
-          `DELETE FROM ${table}
-           WHERE (ownerId = @ownerId AND observedAt < @cutoff)
-              OR (ownerId <> @ownerId AND observedAt < @departed)`
-        )
-        .run(params)
+      const unseen = (source: string): string =>
+        `NOT EXISTS (SELECT 1 FROM ${source} fresh
+                      WHERE fresh.ownerId = ${table}.ownerId AND fresh.runtimeId = ${table}.runtimeId
+                        AND fresh.observedAt >= @cutoff)`
+      const sweep = (ownerTest: string, cutoff: number): void => {
+        this.db
+          .prepare(
+            `DELETE FROM ${table}
+             WHERE ownerId ${ownerTest} @ownerId
+               AND ${unseen('runtime_catalog_meta')}
+               AND ${unseen('runtime_model_catalog')}`
+          )
+          .run({ ownerId: this.cacheOwnerId, cutoff })
+      }
+      sweep('=', cutoffEpochMs)
+      sweep('<>', departedOwnerCutoffEpochMs)
     }
   }
 

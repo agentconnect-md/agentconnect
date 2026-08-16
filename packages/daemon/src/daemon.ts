@@ -22505,7 +22505,7 @@ export class Daemon {
    *  never boot advertising models a peer's image runs and its own does not. */
   private hydrateRuntimeCatalogCache(): void {
     try {
-      // A member's own last-good rows keep the 30-day window; a departed member's are
+      // A member's own last-good catalogs keep the 30-day window; a departed member's are
       // reclaimed after 7 days, long enough that a quiet live peer keeps its cache.
       this.store.gcRuntimeCatalog(this.clock.now() - 30 * 24 * 3600_000, this.clock.now() - 7 * 24 * 3600_000)
       for (const meta of this.store.listRuntimeCatalogMetas()) {

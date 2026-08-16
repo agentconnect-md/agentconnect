@@ -412,12 +412,21 @@ Lifecycle rules:
 6. **Garbage collection**: during hydration, ignore runtime IDs absent from the
    current catalog resolved from registry/user/curated sources. Do not advertise
    or report them, but retain the rows because resolution may have failed
-   temporarily. At startup, delete rows with `observedAt` older than 30 days to
-   prevent unbounded growth. On a shared store, another member's rows go at a
-   shorter window (7 days): an `ownerId` dies with the process that minted it, so
-   a rollout leaves caches nobody can read again. The window stays conservative
-   because a live member that has not re-probed inside it pays one re-discovery
-   for the reclaim.
+   temporarily. At startup, delete catalogs unseen for 30 days to prevent
+   unbounded growth. On a shared store, another member's go at a shorter window
+   (7 days): an `ownerId` dies with the process that minted it, so a rollout
+   leaves caches nobody can read again. The window stays conservative because a
+   live member that has not re-probed inside it pays one re-discovery for the
+   reclaim.
+
+   **Staleness is a property of one whole `(ownerId, runtimeId)` catalog — its
+   meta row and its model rows together — never of a single row.** A phase-1
+   refresh (rule 1 of §3.3) re-stamps the meta row and the seed model only, so
+   the models a full discovery found keep their older `observedAt`. A row-by-row
+   sweep would delete exactly those while leaving `complete` and `modelsHash`
+   standing, and the discovery gate — same fingerprint, complete, matching model
+   hash — would never reopen: the matrix stays permanently short of those models.
+   A catalog is therefore kept whole or dropped whole.
 
 ## 5. Protocol and CP Persistence
 
