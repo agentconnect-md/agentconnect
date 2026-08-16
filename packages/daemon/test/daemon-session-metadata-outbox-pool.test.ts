@@ -22,6 +22,7 @@ const GROUP_A = '11111111-1111-4111-8111-111111111111'
 const GROUP_B = '22222222-2222-4222-8222-222222222222'
 const ORG = 'org-1'
 const PARK_MS = 60_000
+const LEASE_MS = 2 * 60_000
 
 function scaffold(): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-metadata-pool-'))
@@ -107,7 +108,7 @@ async function bootPool() {
     b,
     shared,
     stop: async () => {
-      await Promise.all([a.daemon.stop(), b.daemon.stop()])
+      await Promise.all([a.daemon.stop().catch(() => {}), b.daemon.stop().catch(() => {})])
       for (const local of locals) local.close()
     }
   }
@@ -215,6 +216,56 @@ describe('session-metadata outbox ownership on a daemon pool (#1023)', () => {
     await a.inner.drainSessionMetadataSnapshots()
     expect(a.synced).toEqual([{ orgId: ORG, agentId: AGENT_A, sessionId: 'acp-cold' }])
     expect(shared.hasPendingSessionMetadata()).toBe(false)
+    await stop()
+  }, 15_000)
+
+  it('takes over a claim the departed holder never released when the duty is gained', async () => {
+    const { a, b, shared, stop } = await bootPool()
+    // A wrote the snapshot, then released the duty on a graceful shutdown before parking it:
+    // the row still names A with a fresh claim, so nothing in the pool could touch it.
+    hold(a.inner, GROUP_A, AGENT_A)
+    seedSnapshot(shared, AGENT_A, 'acp-handoff', 1, 'daemon-a')
+
+    b.inner.settleDutyChange(b.inner.duties.applyGrant([grant(GROUP_A, AGENT_A)]))
+    await vi.waitFor(() => expect(b.syncEventSession).toHaveBeenCalledOnce())
+    expect(b.synced).toEqual([{ orgId: ORG, agentId: AGENT_A, sessionId: 'acp-handoff' }])
+    expect(shared.hasPendingSessionMetadata()).toBe(false)
+    await stop()
+  }, 15_000)
+
+  it("arms a wake at the lease expiry of a peer's claim on a served agent", async () => {
+    const { a, b, stop } = await bootPool()
+    // Both members read the duty as theirs — the takeover already happened, but no duty change
+    // fires here, so only the armed wake can outlast A's claim.
+    hold(a.inner, GROUP_A, AGENT_A)
+    hold(b.inner, GROUP_A, AGENT_A)
+    seedSnapshot(a.inner.store, AGENT_A, 'acp-lease', 1, 'daemon-a')
+
+    await b.inner.drainSessionMetadataSnapshots()
+    expect(b.syncEventSession).not.toHaveBeenCalled()
+    expect(b.clock.pending()).toContain(1 + LEASE_MS)
+
+    b.clock.advance(1 + LEASE_MS)
+    await vi.waitFor(() => expect(b.syncEventSession).toHaveBeenCalledOnce())
+    expect(b.synced).toEqual([{ orgId: ORG, agentId: AGENT_A, sessionId: 'acp-lease' }])
+    await stop()
+  }, 15_000)
+
+  it('releases the claims it still holds when it stops, so a successor drains at once', async () => {
+    const { a, b, stop } = await bootPool()
+    hold(a.inner, GROUP_A, AGENT_A)
+    hold(b.inner, GROUP_A, AGENT_A)
+    // Asserted through B's handle: stopping A closes the store handle A opened.
+    const survivor: LocalStore = b.inner.store
+    seedSnapshot(survivor, AGENT_A, 'acp-exit', 1, 'daemon-a')
+
+    await b.inner.drainSessionMetadataSnapshots()
+    expect(b.syncEventSession).not.toHaveBeenCalled()
+
+    await a.daemon.stop()
+    await b.inner.drainSessionMetadataSnapshots()
+    expect(b.synced).toEqual([{ orgId: ORG, agentId: AGENT_A, sessionId: 'acp-exit' }])
+    expect(survivor.hasPendingSessionMetadata()).toBe(false)
     await stop()
   }, 15_000)
 

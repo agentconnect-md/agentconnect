@@ -16810,23 +16810,35 @@ export class Daemon {
     return parked
   }
 
-  /** A duty newly held here owns that agent's parked snapshots: re-arm them so the
-   *  takeover replays them now instead of waiting out a departed holder's backoff. */
+  /** A duty newly held here owns that agent's snapshots: take the parked ones off their
+   *  backoff and the previous holder's claim off the rest — it released the duty, so it
+   *  will never emit them — then replay at once instead of waiting out the lease. */
   private replayGainedSessionMetadata(agentIds: readonly string[]): void {
     if (!agentIds.length) return
     try {
-      this.store.resumeSessionMetadataSnapshots(agentIds)
+      this.store.reclaimSessionMetadataSnapshots(agentIds, this.cfg.daemonId)
     } catch (err) {
-      this.log.warn(`event/session outbox resume failed (${formatErr(err)})`)
+      this.log.warn(`event/session outbox reclaim failed (${formatErr(err)})`)
     }
     void this.drainSessionMetadataSnapshots()
+  }
+
+  /** Shutdown counterpart: this member will not emit again, so every claim it still holds
+   *  goes back to the pool for its successor instead of blocking on the lease. */
+  private releaseOwnedSessionMetadata(): void {
+    try {
+      const released = this.store.releaseOwnedSessionMetadataSnapshots(this.cfg.daemonId)
+      if (released) this.log.debug(`event/session outbox released ${released} claim(s) for the pool`)
+    } catch (err) {
+      this.log.warn(`event/session outbox release failed (${formatErr(err)})`)
+    }
   }
 
   private schedulePendingSessionMetadataDrain(): void {
     if (this.draining || !this.cpClient?.supportsServerFeature?.(SESSION_METADATA_ACK_FEATURE)) return
     const served = this.servedAgentIds()
-    if (!this.store.hasPendingSessionMetadata(this.clock.now(), this.cfg.daemonId, served)) return
-    const attemptAt = this.store.nextSessionMetadataAttemptAt(this.clock.now(), this.cfg.daemonId, served)
+    if (!this.store.hasPendingSessionMetadata(this.cfg.daemonId, served)) return
+    const attemptAt = this.store.nextSessionMetadataAttemptAt(this.cfg.daemonId, served)
     if (attemptAt !== undefined) this.scheduleSessionMetadataRetry(Math.max(0, attemptAt - this.clock.now()))
   }
 
@@ -23165,6 +23177,8 @@ export class Daemon {
     this.shutdownDutyDrain = undefined
     await Promise.resolve(this.cpClient?.stop()).catch((e) => errors.push(e))
     await Promise.resolve(this.sessionMetadataDrain).catch((e) => errors.push(e))
+    // Nothing here can emit after this point; hand any claim this member still holds back.
+    this.releaseOwnedSessionMetadata()
     // The closed CP transport cannot admit another lifecycle frame. Drain every
     // remove/upsert/move already published into its per-agent queue before any
     // store or registry it may still touch is closed.

@@ -2460,6 +2460,19 @@ export class LocalStore {
     }
   }
 
+  /** Everything this member is eventually answerable for: its own rows plus every row of
+   *  an agent it serves, whoever holds the claim right now. Wider than the claimable-now
+   *  scope on purpose — a peer's live claim on a served agent's row still has to arm this
+   *  member's wake, or nothing would run when that claim lapses. */
+  private sessionMetadataWorkScope(ownerId?: string, agentIds?: readonly string[]): { sql: string; params: SqlParams } {
+    if (!this.shared) return { sql: '', params: {} }
+    const scope = idScope('agentId', agentIds)
+    return {
+      sql: ` AND (ownerId = @ownerId OR 1 = 1${scope.sql})`,
+      params: { ownerId: ownerId ?? null, ...scope.params }
+    }
+  }
+
   nextSessionMetadataSnapshot(
     now = Date.now(),
     ownerId?: string,
@@ -2522,25 +2535,52 @@ export class LocalStore {
     )
   }
 
-  /** Re-arm parked snapshots for agents a member has just gained: a takeover replays
-   *  them now instead of waiting out the backoff a departed holder wrote. */
-  resumeSessionMetadataSnapshots(agentIds: readonly string[]): number {
+  /** Hand the snapshots of agents a member has just gained back to the pool: the parked
+   *  ones lose their backoff and a previous holder's claim — live or not — is released,
+   *  because the duty ledger has already proved that member no longer serves the agent.
+   *  This member's own claims are left alone; only it knows whether they are in flight. */
+  reclaimSessionMetadataSnapshots(agentIds: readonly string[], ownerId?: string): number {
     if (!this.shared || agentIds.length === 0) return 0
     const scope = idScope('agentId', agentIds)
     return Number(
       this.db
-        .prepare(`UPDATE session_metadata_outbox SET nextAttemptAt = NULL WHERE ownerId IS NULL${scope.sql}`)
-        .run(scope.params).changes
+        .prepare(
+          `UPDATE session_metadata_outbox
+           SET ownerId = NULL, claimedAt = NULL, nextAttemptAt = NULL
+           WHERE (ownerId IS NULL OR ownerId <> @ownerId)${scope.sql}`
+        )
+        .run({ ownerId: ownerId ?? null, ...scope.params }).changes
     )
   }
 
-  nextSessionMetadataAttemptAt(now = Date.now(), ownerId?: string, agentIds?: readonly string[]): number | undefined {
-    const scope = this.sessionMetadataScope(now, ownerId, agentIds)
+  /** Release every claim this member still holds, at shutdown: it will not emit again, so
+   *  a successor must not wait out the lease. Bodies, revisions and backoffs survive. */
+  releaseOwnedSessionMetadataSnapshots(ownerId?: string): number {
+    if (!this.shared) return 0
+    return Number(
+      this.db
+        .prepare(
+          `UPDATE session_metadata_outbox
+           SET ownerId = NULL, claimedAt = NULL, nextAttemptAt = NULL
+           WHERE ownerId = @ownerId`
+        )
+        .run({ ownerId: ownerId ?? null }).changes
+    )
+  }
+
+  /** When the earliest row this member is answerable for becomes workable: its own backoff,
+   *  or — for a row a peer still holds — the moment that claim lapses. Without the second
+   *  half a graceful handoff leaves a live foreign claim with nothing armed to outlast it. */
+  nextSessionMetadataAttemptAt(ownerId?: string, agentIds?: readonly string[]): number | undefined {
+    const scope = this.sessionMetadataWorkScope(ownerId, agentIds)
+    const lapse = this.shared
+      ? `MAX(COALESCE(nextAttemptAt, 0), CASE WHEN ownerId IS NOT NULL AND ownerId <> @ownerId
+             THEN COALESCE(claimedAt, 0) + @lease ELSE 0 END)`
+      : 'COALESCE(nextAttemptAt, 0)'
     const row = this.db
-      .prepare(
-        `SELECT MIN(COALESCE(nextAttemptAt, 0)) AS attemptAt FROM session_metadata_outbox WHERE 1 = 1${scope.sql}`
-      )
-      .get(scope.params) as { attemptAt: number | null } | undefined
+      .prepare(`SELECT MIN(${lapse}) AS attemptAt FROM session_metadata_outbox WHERE 1 = 1${scope.sql}`)
+      .get({ ...scope.params, ...(this.shared ? { lease: SHARED_OUTBOX_LEASE_MS } : {}) }) as
+      { attemptAt: number | null } | undefined
     return row?.attemptAt === null || row?.attemptAt === undefined ? undefined : Number(row.attemptAt)
   }
 
@@ -2563,8 +2603,9 @@ export class LocalStore {
       Pick<SessionMetadataOutboxRow, 'failedAttempts' | 'nextAttemptAt'> | undefined
   }
 
-  hasPendingSessionMetadata(now = Date.now(), ownerId?: string, agentIds?: readonly string[]): boolean {
-    const scope = this.sessionMetadataScope(now, ownerId, agentIds)
+  /** Any row this member is answerable for, workable now or once a peer's claim lapses. */
+  hasPendingSessionMetadata(ownerId?: string, agentIds?: readonly string[]): boolean {
+    const scope = this.sessionMetadataWorkScope(ownerId, agentIds)
     return (
       this.db
         .prepare(`SELECT 1 AS pending FROM session_metadata_outbox WHERE 1 = 1${scope.sql} LIMIT 1`)
