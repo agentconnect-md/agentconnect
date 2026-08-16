@@ -261,6 +261,11 @@ export class DreamRunner {
    *  extraction promise settles promptly (releasing the reservation). */
   private readonly aborters = new Map<string, AbortController>()
 
+  /** dreamId of the agent's background job — home acquisition, run, and any auto-adoption — the
+   *  span a drain treats as in-flight work. Outlives the adoption reservation (`active`), which
+   *  ends before auto-adoption so `adopt` can proceed. */
+  private readonly backgroundJobs = new Map<string, string>()
+
   /** Per-agent serial mutex over the mutating critical sections (snapshot+reserve,
    *  the adopt fence/swap, discard). Ordering matters: the adopt swap must not
    *  interleave with a start snapshot or a discard on the same agent. A rejected
@@ -341,9 +346,9 @@ export class DreamRunner {
     return this.deps.withMemoryHome ? this.deps.withMemoryHome(agentId, work) : work()
   }
 
-  /** Whether a dream is running for the agent right now — in-flight work a drain waits on. */
+  /** Whether a dream job is under way for the agent — from home acquisition through auto-adoption. */
   inFlight(agentId: string): boolean {
-    return this.active.has(agentId)
+    return this.backgroundJobs.has(agentId)
   }
 
   private emitLifecycle(event: DreamLifecycleEvent): void {
@@ -535,6 +540,11 @@ export class DreamRunner {
     const aborter = new AbortController()
     this.aborters.set(dream.dreamId, aborter)
 
+    this.backgroundJobs.set(agentId, dream.dreamId)
+    const releaseReservation = (): void => {
+      this.aborters.delete(dream.dreamId)
+      if (this.active.get(agentId) === dream.dreamId) this.active.delete(agentId)
+    }
     // The home stays held across the run AND the auto-adoption that may follow it, so the idle
     // sweep never suspends a cluster agent's sandbox under a dream. Auto-adopt runs only AFTER
     // the reservation is released — `adopt` refuses while a dream is in flight.
@@ -542,11 +552,26 @@ export class DreamRunner {
       try {
         await this.run(dream, files, sources, aborter.signal)
       } finally {
-        this.aborters.delete(dream.dreamId)
-        if (this.active.get(agentId) === dream.dreamId) this.active.delete(agentId)
+        releaseReservation()
       }
       await this.maybeAutoAdopt(agentId, dream.dreamId)
-    }).catch(() => {})
+    })
+      .catch((err: unknown) => {
+        // `run` settles its own failures; a rejection here is the home not coming up before the
+        // callback ever ran (a wake that failed) — the dream must not stay pending forever.
+        if (this.deps.store.getDream(agentId, dream.dreamId)?.status === 'pending') {
+          this.finish(agentId, dream.dreamId, {
+            status: 'failed',
+            error: { type: 'pipeline_error', message: err instanceof Error ? err.message : 'unknown error' }
+          })
+        }
+      })
+      .finally(() => {
+        // Promise-wide, outside the callback: a rejected acquisition must not leave the
+        // reservation or the job marker registered forever.
+        releaseReservation()
+        if (this.backgroundJobs.get(agentId) === dream.dreamId) this.backgroundJobs.delete(agentId)
+      })
     return dream
   }
 

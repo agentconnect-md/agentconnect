@@ -629,6 +629,74 @@ describe('DreamRunner adoption', () => {
     await expect(runner.stagedFiles('a1', started.dreamId)).rejects.toBeInstanceOf(MemorySandboxUnavailableError)
   })
 
+  it('stays in flight through auto-adoption, so a shutdown drain sees the group busy until the swap is done', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
+    const { fs, requester } = pod()
+    await ensureMemory(fs, 'bot')
+    const store = new FakeStore()
+    const runner = new DreamRunner({
+      agentDirByAgent: (id) => (id === 'a1' ? dir : undefined),
+      memoryFsFor: (id) => (id === 'a1' ? fs : undefined),
+      dreamingPolicyFor: () => ({ enabled: true, autoAdopt: true }),
+      operationPolicy: 'test-only',
+      store,
+      extract: async () => ({ output: PROPOSAL }),
+      log: silent
+    })
+    // Hold the sandbox channel once the run has completed: auto-adoption's first frame parks here.
+    let gate: (() => void) | undefined
+    let dreamId = ''
+    const original = requester.request.bind(requester)
+    requester.request = async (capability, payload, options) => {
+      if (dreamId && store.dreams.get(dreamId)?.status === 'completed' && !gate) {
+        await new Promise<void>((resolve) => {
+          gate = resolve
+        })
+      }
+      return original(capability, payload, options)
+    }
+    const started = await runner.start('a1', { trigger: 'schedule' })
+    dreamId = started.dreamId
+    await settle(store, started.dreamId)
+    await vi.waitFor(() => expect(gate).toBeDefined())
+    // The reservation is released (a manual adopt could run) but the JOB is not over.
+    expect(runner.inFlight('a1')).toBe(true)
+    gate!()
+    await vi.waitFor(() => expect(store.dreams.get(started.dreamId)?.status).toBe('adopted'))
+    await vi.waitFor(() => expect(runner.inFlight('a1')).toBe(false))
+  })
+
+  it('leaves nothing registered when the home cannot be brought up before the run', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
+    await ensureMemory(local(dir), 'bot')
+    let acquisitions = 0
+    const store = new FakeStore()
+    const runner = new DreamRunner({
+      agentDirByAgent: (id) => (id === 'a1' ? dir : undefined),
+      memoryFsFor: (id) => (id === 'a1' ? local(dir) : undefined),
+      // The snapshot's acquisition succeeds; the run's rejects before its callback starts (a wake that failed).
+      withMemoryHome: async (_agentId, work) => {
+        acquisitions += 1
+        if (acquisitions === 2) throw new Error('sandbox did not come up')
+        return work()
+      },
+      dreamingPolicyFor: () => ({ enabled: true }),
+      operationPolicy: 'test-only',
+      store,
+      extract: async () => ({ output: PROPOSAL }),
+      log: silent
+    })
+    const started = await runner.start('a1', { trigger: 'schedule' })
+    const done = await settle(store, started.dreamId)
+    expect(done.status).toBe('failed')
+    expect(done.error?.message).toContain('sandbox did not come up')
+    await vi.waitFor(() => expect(runner.inFlight('a1')).toBe(false))
+    // No stuck reservation or aborter: a new dream starts, and cancelling the dead one is a plain state answer.
+    expect(() => runner.cancel('a1', started.dreamId)).toThrow(DreamStateError)
+    const again = await runner.start('a1', { trigger: 'manual' })
+    expect((await settle(store, again.dreamId)).status).toBe('completed')
+  })
+
   it('stages and adopts on a sandbox volume through the port, never on this disk', async () => {
     const { dir, store, runner, prompts, sandbox } = await setup({ sandbox: true })
     const { root, fs, requester } = sandbox!
