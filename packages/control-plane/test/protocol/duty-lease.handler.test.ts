@@ -1141,6 +1141,34 @@ describe('routing follows the holder (protocol level, real Postgres)', () => {
     expect(h.hookAssigns.every((rule) => rule.daemonId !== OTHER)).toBe(true)
   })
 
+  // The privacy half of the same moment (#1029). A member REGISTERS before it holds anything, so
+  // the register-time replay resolves an empty served set and returns; the duty then arrives on a
+  // beat, and `duty/fetch` carries no gate state. Without a replay here the member serves the
+  // agent with whatever gate it last had — for a re-acquired agent, a stale `org` on a session the
+  // user has since marked private.
+  //
+  // Mutation check: drop the `visibility?.replayTo(...)` from the confirmation branch and a member
+  // that acquires its first duty never converges its capture gates until it reconnects.
+  it('asks for a capture-gate replay at the moment the member confirms the grant', async () => {
+    const start = 1_700_000_000_000
+    const h = buildWsHarness(prisma)
+    await seedPooledAgentWithHook()
+    await seedGroup({ holder: OTHER, term: 4n, expiresAt: new Date(start - 1) })
+    const { stub } = await ready(h)
+    // Register replayed for a member that held nothing — that is exactly the empty one.
+    h.visibilityReplays.length = 0
+
+    await beat(stub, { held: [], headroom: 4 }) // claims; not serving yet
+    expect(h.visibilityReplays).toEqual([])
+
+    await beat(stub, { held: [{ groupId: GROUP, term: '5' }], headroom: 4 }) // confirms
+    await vi.waitFor(() => expect(h.visibilityReplays).toEqual([DAEMON]))
+
+    // Confirmation is stamped once per grant, so a repeat digest is not a replay storm.
+    await beat(stub, { held: [{ groupId: GROUP, term: '5' }], headroom: 4 })
+    expect(h.visibilityReplays).toEqual([DAEMON])
+  })
+
   it('withdraws the rule when the lease is handed back and nothing serves the agent', async () => {
     // The other half of the same property: a holder change AWAY from a member has to stop the
     // ingress it was receiving, or a dead member keeps being addressed.

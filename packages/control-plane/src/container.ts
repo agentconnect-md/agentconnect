@@ -676,7 +676,8 @@ export function buildContainer(
     undefined,
     { warn: (o, m) => http.log.warn(o, m) },
     repos.agent,
-    agentRouting
+    agentRouting,
+    visibilityPush
   )
   // Duty-group projection: derived from Integration/CronDef rows on a rotation;
   // deltas reach daemons via the heartbeat lease exchange, never from the sweep.
