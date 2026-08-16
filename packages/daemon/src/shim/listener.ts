@@ -136,6 +136,8 @@ export class ShimListener {
         resolve()
       })
     })
+    // The bind-failure listener is gone by now, and a post-listen accept error is fatal unheard.
+    server.on('error', (err) => this.deps.log.warn(`shim: listener socket error: ${err.message}`))
     this.server = server
     this.wss = wss
     this.port = (server.address() as { port: number }).port
@@ -192,6 +194,11 @@ export class ShimListener {
   }
 
   private accept(ws: WebSocket, remoteAddress: string): void {
+    // Attached first: an unlistened 'error' (an oversized frame from an unproved peer) crashes the daemon.
+    ws.on('error', (err: Error) => {
+      this.deps.log.warn(`shim: socket error from ${remoteAddress} (${err.message})`)
+      ws.terminate()
+    })
     let bound: ShimConnection | undefined
     let binding = false
     const frameListeners: Array<(text: string) => void> = []

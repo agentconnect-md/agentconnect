@@ -6,7 +6,11 @@ class FakeWs {
   protocol = 'agentconnect.rd.v1'
   sent: string[] = []
   closed?: { code: number; reason: string }
+  terminated = 0
   private handlers = new Map<string, Array<(...a: unknown[]) => void>>()
+  terminate(): void {
+    this.terminated += 1
+  }
   send(text: string): void {
     this.sent.push(text)
   }
@@ -65,5 +69,12 @@ describe('WsServerTransport', () => {
     const { ws, t } = make()
     t.close(4409, 'revoked')
     expect(ws.closed).toEqual({ code: 4409, reason: 'revoked' })
+  })
+
+  it('listens for socket errors from construction, so an oversized frame cannot go unhandled', () => {
+    // A real ws socket THROWS on an unlistened 'error', and the peer raising it need not be authenticated.
+    const { ws } = make()
+    ws.emit('error', new RangeError('Max payload size exceeded'))
+    expect(ws.terminated).toBe(1)
   })
 })

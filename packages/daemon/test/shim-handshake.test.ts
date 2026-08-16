@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Backoff, ClientTransport, FakeClock } from '@agentconnect.md/connection'
+import { MAX_FRAME_BYTES } from '@agentconnect.md/protocol'
 import { WebSocket } from 'ws'
 import { ShimBindingRegistry, type SpawnRecord } from '../src/shim/binding.js'
 import { noopClusterMetrics, type ClusterMetrics } from '../src/k8s/cluster-metrics.js'
@@ -372,6 +373,23 @@ describe('shim handshake', () => {
     client.socket.send('{not json')
     const { code } = await client.closed
     expect(code).toBe(4400)
+  })
+
+  it('drops an oversized frame from an unauthenticated peer without taking the listener down', async () => {
+    // 256 KiB + 1 from a peer that presented nothing: an unlistened payload-cap 'error' ends the daemon.
+    const { endpoint } = await listener({
+      verifier: verifier({ authenticated: true, podName: 'runtime-abc', podUid: 'pod-uid-1' })
+    })
+    const intruder = await rawConnect(endpoint)
+    intruder.socket.send('x'.repeat(MAX_FRAME_BYTES + 1))
+    await intruder.closed
+    // Nothing was disclosed to it either: it never got as far as a frame.
+    expect(intruder.frames).toEqual([])
+
+    const client = await rawConnect(endpoint)
+    client.send({ type: 'shim/hello', token: 'projected-token' })
+    await waitFor(() => client.frames.length > 0)
+    expect(client.frames[0]).toMatchObject({ type: 'shim/bound', agentId: 'agent-a', generation: 3 })
   })
 
   it('closes a second hello arriving while the first is still being reviewed', async () => {
