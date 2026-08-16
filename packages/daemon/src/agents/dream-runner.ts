@@ -200,6 +200,10 @@ export interface DreamRunnerDeps {
   /** Hold the daemon's per-agent host/admission gate while accepted source
    * publication runs. Tests without a live host may omit this seam. */
   withSkillAcceptance?(agentId: string, publish: () => Promise<void>): Promise<void>
+  /** Bring the agent's memory home up and hold it for a background job — a dream is authorized
+   *  work like a turn, so a cluster agent's sandbox is woken and bound before the store is read and
+   *  kept from the idle sweep until the run (and any auto-adoption) settles. Identity when absent. */
+  withMemoryHome?<T>(agentId: string, work: () => Promise<T>): Promise<T>
   log: { info(msg: string): void; warn(msg: string): void }
   now?(): Date
   /** Grace period after a cancel before the runner ABANDONS the extraction and
@@ -333,6 +337,15 @@ export class DreamRunner {
     return (this.deps.now?.() ?? new Date()).toISOString()
   }
 
+  private withMemoryHome<T>(agentId: string, work: () => Promise<T>): Promise<T> {
+    return this.deps.withMemoryHome ? this.deps.withMemoryHome(agentId, work) : work()
+  }
+
+  /** Whether a dream is running for the agent right now — in-flight work a drain waits on. */
+  inFlight(agentId: string): boolean {
+    return this.active.has(agentId)
+  }
+
   private emitLifecycle(event: DreamLifecycleEvent): void {
     try {
       this.deps.onEvent?.(event)
@@ -443,7 +456,7 @@ export class DreamRunner {
     // selection, reservation, and persistence. A blocked production request is
     // observationally equivalent to never having started a Dream.
     this.assertExecutionAllowed()
-    const fs = this.fsFor(agentId)
+    this.dirFor(agentId)
     const policy = this.deps.dreamingPolicyFor(agentId)
     if (!policy?.enabled) {
       throw new DreamStateError('dreaming is not enabled for this agent (managed provider + dreaming.enabled required)')
@@ -452,76 +465,89 @@ export class DreamRunner {
     // Reserve + snapshot under the per-agent lock, so the "one in flight" check
     // and the live-store read cannot interleave with a concurrent start or an
     // adopt swap. The lock is released once the run is scheduled; the run then
-    // proceeds asynchronously, holding only `active`.
+    // proceeds asynchronously, holding only `active`. The memory home is woken and
+    // held for the snapshot, and again for the whole run below.
     return this.withLock(agentId, async () => {
       if (this.active.has(agentId)) {
         throw new DreamStateError('a dream is already in flight for this agent')
       }
-      // An explicit sessionWindow (per-run manual override, or a legacy configured
-      // policy value) pins a fixed newest-N window; otherwise the window is chosen
-      // AUTOMATICALLY (sessions active since the last successful dream, capped).
-      const explicitWindow = opts.sessionWindow ?? policy.sessionWindow
-      const instructions = opts.instructions ?? policy.instructions
-      // Capture this dream's baseline watermark BEFORE selecting sources. This
-      // timestamp becomes the dream's `createdAt`, which the NEXT automatic dream
-      // uses as its cutoff (`updatedAt > cutoff`). If it were stamped after the
-      // source query instead, a session whose `updatedAt` fell between the query
-      // and the stamp would be in neither this dream (query already ran) nor any
-      // future one (its `updatedAt` < the new baseline) — a permanent drop. Taken
-      // first, the baseline is <= the query time, so the worst case is a thin band
-      // of sessions mined twice (safe), never a gap. better-sqlite3 is synchronous
-      // and single-threaded, so no session write can interleave between here and
-      // the query below.
-      const createdAt = this.nowIso()
-      // A dream distills EVERY session this agent participated in — channel, DM,
-      // webchat, external (GitHub), A2A, or launched alike. We deliberately do NOT
-      // apply the per-turn capture-visibility gate here: an agent's own transcript
-      // is content it already saw, so consolidating it into that same agent's own
-      // memory adds no new audience. Peer isolation is preserved by the source
-      // itself — dreamSessionSources is scoped to `agentId` and dreamTranscriptText
-      // returns only the rows this agent sent, received, or was delivered — so a
-      // peer's private session never enters. What used to be a hard pre-filter is
-      // now handled by the dream policy prompt: it must not surface a person's
-      // private/personal conversation as shared organization knowledge
-      // (session-visibility.md §5.1, #36 follow-up).
-      const sources = this.selectSessionSources(agentId, explicitWindow)
-
-      // Snapshot the live store — the digest is the adoption fence. Taken under
-      // the shared memory-dir lock so it cannot tear against a concurrent
-      // writeMemoryFile, and so the `.history` line count captured with it
-      // delimits the post-snapshot write window exactly (see `adopt`).
-      const { files, writes } = await withMemoryDirLock(fs, async () => ({
-        files: await this.readLiveStore(fs),
-        writes: memoryWriteMarks(fs)
-      }))
-      const dream: DreamInfo = {
-        dreamId: `drm-${randomUUID()}`,
-        agentId,
-        status: 'pending',
-        trigger: opts.trigger,
-        sessionIds: sources.map((s) => s.sessionId),
-        snapshotDigest: storeDigest(files),
-        snapshotWrites: writes,
-        ...(instructions ? { instructions } : {}),
-        createdAt
-      }
-      this.deps.store.insertDream(dream)
-      this.emitLifecycle({ type: 'memory.dream.started', dream })
-      this.active.set(agentId, dream.dreamId)
-      const aborter = new AbortController()
-      this.aborters.set(dream.dreamId, aborter)
-
-      void this.run(dream, files, sources, aborter.signal)
-        .finally(() => {
-          this.aborters.delete(dream.dreamId)
-          if (this.active.get(agentId) === dream.dreamId) this.active.delete(agentId)
-        })
-        // Auto-adopt runs only AFTER the reservation is released — `adopt` refuses
-        // while a dream is in flight, and this dream holds that slot until here.
-        .then(() => this.maybeAutoAdopt(agentId, dream.dreamId))
-        .catch(() => {})
-      return dream
+      return await this.withMemoryHome(agentId, () => this.reserve(agentId, policy, opts))
     })
+  }
+
+  private async reserve(
+    agentId: string,
+    policy: MemoryDreamingPolicy,
+    opts: { trigger: DreamTrigger; sessionWindow?: number; instructions?: string }
+  ): Promise<DreamInfo> {
+    const fs = this.fsFor(agentId)
+    // An explicit sessionWindow (per-run manual override, or a legacy configured
+    // policy value) pins a fixed newest-N window; otherwise the window is chosen
+    // AUTOMATICALLY (sessions active since the last successful dream, capped).
+    const explicitWindow = opts.sessionWindow ?? policy.sessionWindow
+    const instructions = opts.instructions ?? policy.instructions
+    // Capture this dream's baseline watermark BEFORE selecting sources. This
+    // timestamp becomes the dream's `createdAt`, which the NEXT automatic dream
+    // uses as its cutoff (`updatedAt > cutoff`). If it were stamped after the
+    // source query instead, a session whose `updatedAt` fell between the query
+    // and the stamp would be in neither this dream (query already ran) nor any
+    // future one (its `updatedAt` < the new baseline) — a permanent drop. Taken
+    // first, the baseline is <= the query time, so the worst case is a thin band
+    // of sessions mined twice (safe), never a gap. better-sqlite3 is synchronous
+    // and single-threaded, so no session write can interleave between here and
+    // the query below.
+    const createdAt = this.nowIso()
+    // A dream distills EVERY session this agent participated in — channel, DM,
+    // webchat, external (GitHub), A2A, or launched alike. We deliberately do NOT
+    // apply the per-turn capture-visibility gate here: an agent's own transcript
+    // is content it already saw, so consolidating it into that same agent's own
+    // memory adds no new audience. Peer isolation is preserved by the source
+    // itself — dreamSessionSources is scoped to `agentId` and dreamTranscriptText
+    // returns only the rows this agent sent, received, or was delivered — so a
+    // peer's private session never enters. What used to be a hard pre-filter is
+    // now handled by the dream policy prompt: it must not surface a person's
+    // private/personal conversation as shared organization knowledge
+    // (session-visibility.md §5.1, #36 follow-up).
+    const sources = this.selectSessionSources(agentId, explicitWindow)
+
+    // Snapshot the live store — the digest is the adoption fence. Taken under
+    // the shared memory-dir lock so it cannot tear against a concurrent
+    // writeMemoryFile, and so the `.history` line count captured with it
+    // delimits the post-snapshot write window exactly (see `adopt`).
+    const { files, writes } = await withMemoryDirLock(fs, async () => ({
+      files: await this.readLiveStore(fs),
+      writes: memoryWriteMarks(fs)
+    }))
+    const dream: DreamInfo = {
+      dreamId: `drm-${randomUUID()}`,
+      agentId,
+      status: 'pending',
+      trigger: opts.trigger,
+      sessionIds: sources.map((s) => s.sessionId),
+      snapshotDigest: storeDigest(files),
+      snapshotWrites: writes,
+      ...(instructions ? { instructions } : {}),
+      createdAt
+    }
+    this.deps.store.insertDream(dream)
+    this.emitLifecycle({ type: 'memory.dream.started', dream })
+    this.active.set(agentId, dream.dreamId)
+    const aborter = new AbortController()
+    this.aborters.set(dream.dreamId, aborter)
+
+    // The home stays held across the run AND the auto-adoption that may follow it, so the idle
+    // sweep never suspends a cluster agent's sandbox under a dream. Auto-adopt runs only AFTER
+    // the reservation is released — `adopt` refuses while a dream is in flight.
+    void this.withMemoryHome(agentId, async () => {
+      try {
+        await this.run(dream, files, sources, aborter.signal)
+      } finally {
+        this.aborters.delete(dream.dreamId)
+        if (this.active.get(agentId) === dream.dreamId) this.active.delete(agentId)
+      }
+      await this.maybeAutoAdopt(agentId, dream.dreamId)
+    }).catch(() => {})
+    return dream
   }
 
   private async readLiveStore(fs: MemoryFs): Promise<{ name: string; content: string }[]> {

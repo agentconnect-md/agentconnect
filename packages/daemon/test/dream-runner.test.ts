@@ -26,7 +26,7 @@ import {
   memoryDir,
   type MemoryHistoryRecord
 } from '../src/agents/memory.js'
-import { LocalMemoryFs } from '../src/agents/memory-fs.js'
+import { LocalMemoryFs, MemorySandboxUnavailableError } from '../src/agents/memory-fs.js'
 import { acceptedDreamSkillSources } from '../src/skills/dream-skills.js'
 import { storeDigest } from '../src/agents/memory-dreamer.js'
 import { inspectLocalSkillSource } from '../src/skills/skill-source-snapshot.js'
@@ -569,6 +569,64 @@ describe('DreamRunner adoption', () => {
     const history = await readFile(join(memoryDir(dir), MEMORY_HISTORY_FILENAME), 'utf8')
     expect(history).toContain('"source":"dream"')
     expect(history).toContain('"source":"tool"') // pre-adoption rows preserved
+  })
+
+  it('a scheduled dream on a suspended pool agent wakes the sandbox, holds it for the run, and adopts on it', async () => {
+    // Overnight the pod is suspended: the memory tree is unreachable until the sandbox is bound.
+    // A dream is authorized work like a turn, so the runner wakes and holds the home itself.
+    const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
+    const { fs, root } = pod()
+    await ensureMemory(fs, 'bot')
+    await writeMemoryFile(fs, 'prefs.md', '- uses tabs\n', undefined, 'tool')
+    let bound = false
+    let holds = 0
+    let maxHolds = 0
+    let heldDuringExtraction = 0
+    const store = new FakeStore()
+    const runner = new DreamRunner({
+      agentDirByAgent: (id) => (id === 'a1' ? dir : undefined),
+      memoryFsFor: (id) => {
+        if (id !== 'a1') return undefined
+        if (!bound) throw new MemorySandboxUnavailableError('agent "a1" has no running sandbox')
+        return fs
+      },
+      // The daemon's seam: `ensureChannel` + `withSandbox` — bind, then count the hold the idle sweep reads.
+      withMemoryHome: async (_agentId, work) => {
+        bound = true
+        holds += 1
+        maxHolds = Math.max(maxHolds, holds)
+        try {
+          return await work()
+        } finally {
+          holds -= 1
+        }
+      },
+      dreamingPolicyFor: () => ({ enabled: true, autoAdopt: true }),
+      operationPolicy: 'test-only',
+      store,
+      extract: async () => {
+        heldDuringExtraction = holds
+        return { output: PROPOSAL }
+      },
+      log: silent
+    })
+    expect(bound).toBe(false)
+    const started = await runner.start('a1', { trigger: 'schedule' })
+    expect(bound).toBe(true)
+    expect(runner.inFlight('a1')).toBe(true)
+    const done = await settle(store, started.dreamId)
+    expect(done.status).toBe('completed')
+    // Held while the extraction ran (a running dream counts as activity), released once it settled.
+    expect(heldDuringExtraction).toBeGreaterThan(0)
+    expect(maxHolds).toBeGreaterThan(0)
+    await vi.waitFor(() => expect(store.dreams.get(started.dreamId)?.status).toBe('adopted'))
+    await vi.waitFor(() => expect(holds).toBe(0))
+    expect(runner.inFlight('a1')).toBe(false)
+    expect(await readMemoryFile(fs, 'prefs.md')).toBe('- Uses tabs, not spaces (2026-07-24).\n')
+    expect(await readdir(join(root, 'memory-backups'))).toHaveLength(1)
+    // Console/admin reads keep the refusal: nothing here made an unbound tree readable on its own.
+    bound = false
+    await expect(runner.stagedFiles('a1', started.dreamId)).rejects.toBeInstanceOf(MemorySandboxUnavailableError)
   })
 
   it('stages and adopts on a sandbox volume through the port, never on this disk', async () => {

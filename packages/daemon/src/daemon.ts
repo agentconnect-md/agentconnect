@@ -6636,6 +6636,17 @@ export class Daemon {
       withSkillAcceptance: async (agentId, publish) => {
         return this.withWorkspaceFileWrite(agentId, publish)
       },
+      // A dream is authorized background work like a turn: under --k8s wake and bind the sandbox
+      // (the memory tree and the dream host both live there) and hold it against the idle sweep
+      // for the job's duration; a local agent's home is always up.
+      withMemoryHome: async (agentId, work) => {
+        const plane = this.k8sPlane
+        if (!plane) return work()
+        return plane.withSandbox(agentId, async () => {
+          await plane.ensureChannel(agentId)
+          return work()
+        })
+      },
       onEvent: (event) => this.recordDreamLifecycle(event),
       log: this.log
     })
@@ -20410,6 +20421,8 @@ export class Daemon {
       if ((this.activeDispatchesByAgent.get(agentId)?.size ?? 0) > 0) return true
       for (const p of this.pending.values()) if (p.agentId === agentId) return true
       for (const entry of this.activeGateEntries.values()) if (entry.agentId === agentId) return true
+      // A dream in flight is an in-flight job: its host and staging are on the sandbox this member holds.
+      if (this.dreamRunnerInstance?.inFlight(agentId)) return true
     }
     return false
   }
