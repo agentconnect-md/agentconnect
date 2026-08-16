@@ -1531,41 +1531,6 @@ describe('LocalStore runtime model-catalog cache (runtime-model-catalog.md §4)'
     s.close()
   })
 
-  it('gcRuntimeCatalog drops rows older than the cutoff from both tables', () => {
-    const s = store()
-    s.recordRuntimeCatalogMeta(meta('old-rt', 'fp-old', 100))
-    s.recordRuntimeCatalogMeta(meta('fresh-rt', 'fp-new', 900))
-    s.upsertRuntimeModelCap(cap('old-rt', 'm1', 100))
-    s.upsertRuntimeModelCap(cap('fresh-rt', 'm2', 900))
-    s.gcRuntimeCatalog(500)
-    expect(s.getRuntimeCatalogMeta('old-rt')).toBeUndefined()
-    expect(s.getRuntimeCatalogMeta('fresh-rt')).toBeDefined()
-    expect(s.listRuntimeModelCaps().map((c) => c.runtimeId)).toEqual(['fresh-rt'])
-    // A single daemon owns every row, so the departed-member window never reaches them.
-    s.gcRuntimeCatalog(500, 5000)
-    expect(s.getRuntimeCatalogMeta('fresh-rt')).toBeDefined()
-    expect(s.listRuntimeModelCaps().map((c) => c.runtimeId)).toEqual(['fresh-rt'])
-    s.close()
-  })
-
-  it('gcRuntimeCatalog keeps a refreshed catalog whole, models discovery found included', () => {
-    // Staleness is per catalog, not per row: a phase-1 refresh re-stamps the meta row and the
-    // seed model only, so sweeping row by row would strip the older model rows while leaving
-    // complete/modelsHash standing — a closed gate over a permanently partial matrix.
-    const s = store()
-    s.recordRuntimeCatalogMeta(meta('claude', 'fp-1', 100))
-    s.upsertRuntimeModelCap(cap('claude', 'opus', 100))
-    s.upsertRuntimeModelCap(cap('claude', 'sonnet', 100))
-    s.markRuntimeCatalogComplete('claude', 'fp-1', 'hash-1', 100)
-    s.recordRuntimeCatalogMeta(meta('claude', 'fp-1', 900))
-    s.upsertRuntimeModelCap(cap('claude', 'opus', 900))
-
-    s.gcRuntimeCatalog(500)
-    expect(s.getRuntimeCatalogMeta('claude')).toMatchObject({ complete: true, modelsHash: 'hash-1' })
-    expect(s.listRuntimeModelCaps('claude').map((c) => c.modelId)).toEqual(['opus', 'sonnet'])
-    s.close()
-  })
-
   it('keeps two members of one shared store on independent catalogs', () => {
     // The rollout case: two image generations, one Postgres schema. Each member reads and
     // writes only its own rows, so neither sees the other's fingerprint as a change.
@@ -1596,39 +1561,6 @@ describe('LocalStore runtime model-catalog cache (runtime-model-catalog.md §4)'
     b.markRuntimeCatalogComplete('claude', 'fp-a', 'hash-a', 300)
     expect(b.getRuntimeCatalogMeta('claude')?.complete).toBe(false)
     a.close()
-  })
-
-  it('gcRuntimeCatalog reclaims a departed member at the shorter cutoff', () => {
-    const [live, gone] = sharedMembers('member-live', 'member-gone')
-    live.recordRuntimeCatalogMeta(meta('claude', 'fp-live', 100))
-    live.upsertRuntimeModelCap(cap('claude', 'opus', 100))
-    gone.recordRuntimeCatalogMeta(meta('claude', 'fp-gone', 100))
-    gone.upsertRuntimeModelCap(cap('claude', 'sonnet', 100))
-
-    live.gcRuntimeCatalog(50, 500)
-    expect(live.getRuntimeCatalogMeta('claude')).toMatchObject({ fingerprint: 'fp-live' })
-    expect(live.listRuntimeModelCaps('claude').map((c) => c.modelId)).toEqual(['opus'])
-    expect(gone.getRuntimeCatalogMeta('claude')).toBeUndefined()
-    expect(gone.listRuntimeModelCaps()).toEqual([])
-    live.close()
-  })
-
-  it('a peer sweep cannot strip a live member catalog down the middle', () => {
-    // The live member last ran a full discovery long ago and has only been refreshing phase-1
-    // since. Its meta row is fresh, its older model rows are not — and its gate stays closed on
-    // an unchanged fingerprint, so anything a peer deletes here is never rediscovered.
-    const [live, peer] = sharedMembers('member-live', 'member-peer')
-    live.recordRuntimeCatalogMeta(meta('claude', 'fp-live', 100))
-    live.upsertRuntimeModelCap(cap('claude', 'opus', 100))
-    live.upsertRuntimeModelCap(cap('claude', 'sonnet', 100))
-    live.markRuntimeCatalogComplete('claude', 'fp-live', 'hash-live', 100)
-    live.recordRuntimeCatalogMeta(meta('claude', 'fp-live', 900))
-    live.upsertRuntimeModelCap(cap('claude', 'opus', 900))
-
-    peer.gcRuntimeCatalog(50, 500)
-    expect(live.getRuntimeCatalogMeta('claude')).toMatchObject({ complete: true, modelsHash: 'hash-live' })
-    expect(live.listRuntimeModelCaps('claude').map((c) => c.modelId)).toEqual(['opus', 'sonnet'])
-    live.close()
   })
 
   it('finds a pending skill proposal behind many skill-bearing dreams', () => {

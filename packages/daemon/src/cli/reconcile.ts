@@ -34,8 +34,8 @@ import { K8S_SANDBOX_NAMESPACE_ENV } from '../k8s/runtime-plane.js'
 import { readClusterIdentityToken } from '../cp/cluster-identity.js'
 import { DATA_PLANE_CONFIG_PATH } from '../store/postgres-config.js'
 import { openMountedPostgresDataPlane } from '../store/postgres-data-plane.js'
-import { StoreOrphanReaper, resolveStoreOrphanReaperSettings } from '../store/orphan-reaper.js'
-import type { LocalStore } from '../store/local-store.js'
+import { StoreRetentionSweeper, resolveStoreRetentionSettings } from '../store/retention.js'
+import type { RetentionCapableStore } from '../store/retention.js'
 import { DAEMON_VERSION } from '../version.js'
 
 const REQUEST_TIMEOUT_MS = 15_000
@@ -48,7 +48,7 @@ export interface ExistenceReader {
 
 /** The shared data-plane store, plus how to give it back. */
 export interface ReapableStore {
-  store: Pick<LocalStore, 'isShared' | 'listStoreOrphanCandidates' | 'deleteStoreOrphan'>
+  store: RetentionCapableStore
   close: () => Promise<void>
 }
 
@@ -81,7 +81,7 @@ export async function runReconcileOnce(opts: ReconcileOnceOpts = {}): Promise<nu
   let mounted: ReapableStore | undefined
   try {
     const settings = resolveOrphanReconcilerSettings(env)
-    const storeSettings = resolveStoreOrphanReaperSettings(env)
+    const storeSettings = resolveStoreRetentionSettings(env)
     // The namespace is resolved BEFORE the in-cluster config: a missing env var must name itself,
     // not surface as "this process is not in a pod".
     const namespace = opts.api ? undefined : sandboxNamespace(env)
@@ -94,8 +94,9 @@ export async function runReconcileOnce(opts: ReconcileOnceOpts = {}): Promise<nu
     const summary = await reconciler.sweep()
     mounted = await (opts.openStore ?? openSharedStore)()
     // No data plane is not a failure: this deployment keeps no shared store to sweep.
+    // No `ownerId`: a one-shot job owns no rows, so every rule keeps its conservative window.
     const storeSummary = mounted
-      ? await new StoreOrphanReaper({ store: mounted.store, liveAgents, settings: storeSettings, log }).sweep()
+      ? await new StoreRetentionSweeper({ store: mounted.store, liveAgents, settings: storeSettings, log }).sweep()
       : { failed: 0 }
     // A delete that failed is counted, not thrown, so the run reports the whole picture — but a run
     // that left an orphan behind is not a successful Job, or the cluster hides a leak that repeats.

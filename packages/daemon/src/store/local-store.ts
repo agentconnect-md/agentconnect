@@ -10,6 +10,7 @@ import {
 } from '@agentconnect.md/protocol'
 import { SESSION_TITLE_TOOL_TITLES } from '../mcp/session-title-tool.js'
 import type { ScheduleRun } from '../scheduler/scheduler.js'
+import type { StoreRetentionCandidate, StoreRetentionRule } from './retention.js'
 
 /** Per-tool-row rawInput budget in the mining prompt — enough for a command
  *  line or path, short enough that N tool rows can't crowd out the store. */
@@ -45,19 +46,6 @@ export type LocalStoreSource =
 /** Transcript org partition of a store no pool shares: it holds exactly one daemon's
  *  threads, so it owns one partition forever, the way `cacheOwnerId` owns one. */
 const LOCAL_TRANSCRIPT_ORG = ''
-
-/** Which per-member outbox table one collectable row came from (`store/orphan-reaper.ts`). */
-export type StoreOrphanKind = 'hook-report' | 'session-metadata' | 'session-purge' | 'webchat-grant'
-
-/** One outbox row the shared store still holds, with the clock the reaper judges it by. */
-export interface StoreOrphanRow {
-  kind: StoreOrphanKind
-  agentId: string
-  /** `inbox.id`, the session id, or the conversation id — whatever pairs with `agentId` as the key. */
-  id: string
-  /** Epoch ms of the last write any member made to the row: the horizon's clock, and the delete's CAS. */
-  touchedAt: number
-}
 
 /** How long a shared-store claim survives without renewal. A pool member renews on
  *  every drain attempt, so a lapsed claim means its owner is gone and a peer may take
@@ -429,7 +417,6 @@ export interface InboxRow {
  *  its expiry before being swept. Long enough that a late retry still reads back its
  *  `childSessionId` instead of opening a second session, short enough that a busy
  *  channel's table stays bounded. */
-const ACTIVATION_RETENTION_MS = 24 * 60 * 60 * 1000
 
 /**
  * One activation rendezvous record (send-message-routing-rework.md §8.6).
@@ -2821,76 +2808,54 @@ export class LocalStore {
     }
   }
 
-  // ── per-member outbox reaping (docs/designs/k8s-daemon-pool.md §4; store/orphan-reaper.ts) ──
+  // ── retention (docs/designs/k8s-daemon-pool.md §4; the rule table in store/retention.ts) ──
 
-  /** True on a pool's shared data-plane store — the only place an outbox row can outlive its owner. */
+  /** True on a pool's shared data-plane store — the only place a row can outlive its writer. */
   get isShared(): boolean {
     return this.shared
   }
 
-  /**
-   * Every per-member outbox row this store still holds, oldest first, with the clock the
-   * reaper judges it by. Reads only: which of these are collectable is policy and lives in
-   * `store/orphan-reaper.ts`, so this table list stays the single description of the shape.
-   *
-   * The clock is the last write ANY member made to the row — the claim when one exists, and
-   * the row's own creation stamp when nobody has claimed it yet. A live owner renews its claim
-   * on every drain attempt, so a clock that has not moved is exactly "nothing is working on it".
-   */
-  listStoreOrphanCandidates(limit = 5_000): StoreOrphanRow[] {
-    const scans: { kind: StoreOrphanKind; sql: string }[] = [
-      {
-        kind: 'hook-report',
-        sql: `SELECT agentId, id, COALESCE(reportClaimedAt, completedAt) AS touchedAt
-              FROM inbox WHERE terminalReport IS NOT NULL
-              ORDER BY COALESCE(reportClaimedAt, completedAt) ASC LIMIT @limit`
-      },
-      {
-        kind: 'session-metadata',
-        sql: `SELECT agentId, sessionId AS id, COALESCE(claimedAt, queuedAt) AS touchedAt
-              FROM session_metadata_outbox
-              ORDER BY COALESCE(claimedAt, queuedAt) ASC LIMIT @limit`
-      },
-      {
-        kind: 'session-purge',
-        sql: `SELECT agentId, sessionId AS id, COALESCE(claimedAt, purgedAt) AS touchedAt
-              FROM session_purges
-              ORDER BY COALESCE(claimedAt, purgedAt) ASC LIMIT @limit`
-      },
-      {
-        kind: 'webchat-grant',
-        sql: `SELECT agentId, conversationId AS id, updatedAt AS touchedAt
-              FROM webchat_mcp_grant_ledger
-              ORDER BY updatedAt ASC LIMIT @limit`
-      }
-    ]
-    const rows: StoreOrphanRow[] = []
-    for (const scan of scans) {
-      const found = this.db.prepare(scan.sql).all({ limit }) as unknown as Omit<StoreOrphanRow, 'kind'>[]
-      for (const row of found) rows.push({ ...row, kind: scan.kind, touchedAt: Number(row.touchedAt) })
-    }
-    return rows
+  /** The partition this process stamps its per-member cache rows with. The retention sweep
+   *  compares against it to tell its own rows from a departed writer's. */
+  get cacheOwner(): string {
+    return this.cacheOwnerId
   }
 
-  /** Collect one row the reaper decided is orphaned. The clock it was judged on rides the
-   *  DELETE, so a row some member claimed between the read and here is left alone. */
-  deleteStoreOrphan(row: StoreOrphanRow): boolean {
-    const statements: Record<StoreOrphanKind, string> = {
-      'hook-report': `DELETE FROM inbox
-                      WHERE id = @id AND agentId = @agentId AND terminalReport IS NOT NULL
-                        AND COALESCE(reportClaimedAt, completedAt) <= @touchedAt`,
-      'session-metadata': `DELETE FROM session_metadata_outbox
-                           WHERE agentId = @agentId AND sessionId = @id
-                             AND COALESCE(claimedAt, queuedAt) <= @touchedAt`,
-      'session-purge': `DELETE FROM session_purges
-                        WHERE agentId = @agentId AND sessionId = @id
-                          AND COALESCE(claimedAt, purgedAt) <= @touchedAt`,
-      'webchat-grant': `DELETE FROM webchat_mcp_grant_ledger
-                        WHERE conversationId = @id AND agentId = @agentId AND updatedAt <= @touchedAt`
-    }
+  /** Every row one retention rule is about, oldest first, with the clock it is judged by.
+   *  Reads only: which of these are collectable is policy and lives in the rule table. */
+  listRetentionCandidates(rule: StoreRetentionRule, limit = 5_000): StoreRetentionCandidate[] {
+    const columns = [
+      ...new Set([
+        ...rule.key,
+        ...(rule.agentColumn ? [rule.agentColumn] : []),
+        ...(rule.ownerColumn ? [rule.ownerColumn] : [])
+      ])
+    ]
+    const rows = this.db
+      .prepare(
+        `SELECT ${columns.join(', ')}, ${rule.clock} AS touchedAt FROM ${rule.table}
+         WHERE ${rule.where ?? '1 = 1'} ORDER BY ${rule.clock} ASC LIMIT @limit`
+      )
+      .all({ limit }) as unknown as Record<string, string | number | null>[]
+    return rows.map((row) => ({
+      key: Object.fromEntries(rule.key.map((column) => [column, row[column] as string | number])),
+      ...(rule.agentColumn && row[rule.agentColumn] != null ? { agentId: String(row[rule.agentColumn]) } : {}),
+      ...(rule.ownerColumn && row[rule.ownerColumn] != null ? { ownerId: String(row[rule.ownerColumn]) } : {}),
+      touchedAt: Number(row.touchedAt)
+    }))
+  }
+
+  /** Collect one row the sweeper decided is collectable. The clock it was judged on rides the
+   *  DELETE, so a row anything wrote between the read and here is left alone. */
+  deleteRetentionRow(rule: StoreRetentionRule, candidate: StoreRetentionCandidate): boolean {
+    const key = rule.key.map((column) => `${column} = @key_${column}`).join(' AND ')
+    const params = Object.fromEntries(rule.key.map((column) => [`key_${column}`, candidate.key[column]!]))
     const result = this.db
-      .prepare(statements[row.kind])
-      .run({ id: row.id, agentId: row.agentId, touchedAt: row.touchedAt })
+      .prepare(
+        `DELETE FROM ${rule.table}
+         WHERE ${key} AND ${rule.clock} <= @touchedAt${rule.where ? ` AND ${rule.where}` : ''}`
+      )
+      .run({ ...params, touchedAt: candidate.touchedAt } as SqlParams)
     return Number(result.changes) === 1
   }
 
@@ -4243,29 +4208,22 @@ export class LocalStore {
 
   /** Next age/retention deadline even when there is no due send. This keeps a
    * quiet daemon from retaining terminal dedup receipts indefinitely. */
-  nextMemoryCaptureMaintenanceAt(
-    activeAgeMs: number,
-    terminalRetentionMs: number,
-    connectionIds?: readonly string[]
-  ): number | undefined {
+  nextMemoryCaptureMaintenanceAt(activeAgeMs: number, connectionIds?: readonly string[]): number | undefined {
     const scope = idScope('connectionId', connectionIds)
     const row = this.db
       .prepare(
         `SELECT
            MIN(CASE WHEN state IN ('pending', 'accepted') THEN createdAt + @activeAgeMs END) AS activeAt,
-           MIN(CASE WHEN state IN ('completed', 'failed', 'ambiguous')
-                    THEN updatedAt + @terminalRetentionMs END) AS terminalAt,
            MIN(CASE WHEN state = 'sending' THEN updatedAt + @recoveryLeaseMs END) AS recoveryAt
          FROM memory_capture_outbox
          WHERE 1 = 1${scope.sql}`
       )
       .get({
         activeAgeMs,
-        terminalRetentionMs,
         recoveryLeaseMs: this.shared ? SHARED_OUTBOX_LEASE_MS : 0,
         ...scope.params
-      }) as { activeAt: number | null; terminalAt: number | null; recoveryAt: number | null } | undefined
-    const deadlines = [row?.activeAt, row?.terminalAt, row?.recoveryAt].filter(
+      }) as { activeAt: number | null; recoveryAt: number | null } | undefined
+    const deadlines = [row?.activeAt, row?.recoveryAt].filter(
       (value): value is number => value !== null && value !== undefined
     )
     return deadlines.length ? Math.min(...deadlines) : undefined
@@ -4385,29 +4343,21 @@ export class LocalStore {
     return { retried: Number(retried), ambiguous: Number(ambiguous) }
   }
 
-  expireMemoryCaptures(
-    activeBefore: number,
-    terminalBefore: number,
-    now: number,
-    connectionIds?: readonly string[]
-  ): { expired: number; purged: number } {
+  /** Age out a capture that never settled: a state change with a redaction and a metric, so it
+   *  stays here. Dropping the terminal row afterwards is retention and belongs to the rule table. */
+  expireMemoryCaptures(activeBefore: number, now: number, connectionIds?: readonly string[]): number {
     const scope = idScope('connectionId', connectionIds)
-    const expired = this.db
-      .prepare(
-        `UPDATE memory_capture_outbox
-         SET state = 'failed', nextAttemptAt = @now, updatedAt = @now,
-             reasonCode = 'retention_expired', config = '{}', input = '', output = '',
-             sessionId = NULL, payloadBytes = 0
-         WHERE state IN ('pending', 'accepted') AND createdAt <= @activeBefore${scope.sql}`
-      )
-      .run({ now, activeBefore, ...scope.params }).changes
-    const purged = this.db
-      .prepare(
-        `DELETE FROM memory_capture_outbox
-         WHERE state IN ('completed', 'failed', 'ambiguous') AND updatedAt <= @terminalBefore${scope.sql}`
-      )
-      .run({ terminalBefore, ...scope.params }).changes
-    return { expired: Number(expired), purged: Number(purged) }
+    return Number(
+      this.db
+        .prepare(
+          `UPDATE memory_capture_outbox
+           SET state = 'failed', nextAttemptAt = @now, updatedAt = @now,
+               reasonCode = 'retention_expired', config = '{}', input = '', output = '',
+               sessionId = NULL, payloadBytes = 0
+           WHERE state IN ('pending', 'accepted') AND createdAt <= @activeBefore${scope.sql}`
+        )
+        .run({ now, activeBefore, ...scope.params }).changes
+    )
   }
 
   memoryCaptureStats(connectionIds?: readonly string[]): MemoryCaptureOutboxStats {
@@ -4883,11 +4833,6 @@ export class LocalStore {
            WHERE state = 'pending' AND callEnvelope IS NOT NULL AND expiresAt <= ?`
         )
         .run(now).changes
-      // Terminal records are pure history once they are well past expiry; drop them so
-      // the table stays bounded in a busy channel.
-      this.db
-        .prepare(`DELETE FROM activation_rendezvous WHERE state != 'pending' AND expiresAt <= ?`)
-        .run(now - ACTIVATION_RETENTION_MS)
       this.db.exec('COMMIT')
       return { transcriptOnly, released: Number(released) }
     } catch (err) {
@@ -5157,37 +5102,6 @@ export class LocalStore {
       caps: parseJsonColumn<RuntimeModelCapRecord['caps']>(row.capsJson) ?? {},
       observedAt: row.observedAt
     }))
-  }
-
-  /** Startup GC (§4 rule 6): drop catalogs unseen for the caller-computed retention window (30
-   *  days), and another member's at the shorter `departedOwnerCutoffEpochMs` — an ownerId dies with
-   *  the process that minted it, so a rollout leaves caches nobody can read again. That window stays
-   *  conservative: a live member that has not re-probed inside it pays one re-discovery. A
-   *  single-daemon store owns every row, so only the first window ever reaches it.
-   *
-   *  Staleness is a property of a whole `(ownerId, runtimeId)` catalog, never of one row. A phase-1
-   *  refresh re-stamps the meta row and the seed model only, so a row-by-row sweep would delete the
-   *  models discovery found while leaving `complete`/`modelsHash` standing — a gate that never
-   *  reopens over a matrix permanently missing those models. */
-  gcRuntimeCatalog(cutoffEpochMs: number, departedOwnerCutoffEpochMs = cutoffEpochMs): void {
-    for (const table of ['runtime_catalog_meta', 'runtime_model_catalog']) {
-      const unseen = (source: string): string =>
-        `NOT EXISTS (SELECT 1 FROM ${source} fresh
-                      WHERE fresh.ownerId = ${table}.ownerId AND fresh.runtimeId = ${table}.runtimeId
-                        AND fresh.observedAt >= @cutoff)`
-      const sweep = (ownerTest: string, cutoff: number): void => {
-        this.db
-          .prepare(
-            `DELETE FROM ${table}
-             WHERE ownerId ${ownerTest} @ownerId
-               AND ${unseen('runtime_catalog_meta')}
-               AND ${unseen('runtime_model_catalog')}`
-          )
-          .run({ ownerId: this.cacheOwnerId, cutoff })
-      }
-      sweep('=', cutoffEpochMs)
-      sweep('<>', departedOwnerCutoffEpochMs)
-    }
   }
 
   /** Next shim-binding generation for an agent's sandbox: one atomic upsert, so two members cannot tie. */

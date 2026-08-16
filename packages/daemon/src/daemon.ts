@@ -63,6 +63,7 @@ import { defaultTurnOutputMetrics } from './session/turn-output-metrics.js'
 import { recallQueryFromBlocks } from './agents/memory-recall.js'
 import { maskableSecrets, maskSecretsDeep } from './session/secret-mask.js'
 import { monotonicTs } from './store/monotonic-ts.js'
+import { StoreRetentionSweeper, resolveStoreRetentionSettings } from './store/retention.js'
 import { TranscriptRecorder, type TranscriptEvent } from './session/transcript-recorder.js'
 import { attachmentMention, transcriptImageAttachments } from './session/attachment-block.js'
 import { McpControlServer } from './mcp/control-server.js'
@@ -2453,6 +2454,7 @@ export class Daemon {
   private hostStopping = new Map<string, Promise<void>>()
   // Recurring idle sweep (reap idle hosts + TTL-close idle sessions).
   private idleSweepTimer?: TimerHandle
+  private storeRetentionTimer?: TimerHandle
   // Last probe-temp-root reclaim, so it rides the idle sweep at its own slower
   // cadence — the OS temp dir can hold thousands of entries to scan.
   private lastProbeRootSweepAt = 0
@@ -2484,6 +2486,8 @@ export class Daemon {
   private hookReportRetryTimer?: TimerHandle
   private transcriptActivityTimers = new Map<string, { timer: TimerHandle; activity: SessionActivity }>()
   private readonly hookReportInflight = new Set<string>()
+  /** The one home for row retention across every store table (store/retention.ts). */
+  private storeRetention!: StoreRetentionSweeper
   // Outbox rows this member proved it may not report — a peer owns the dispatch,
   // or the receipt is unreleasable here. Kept out of the drain for this process.
   private readonly hookReportForeign = new Set<string>()
@@ -3193,6 +3197,15 @@ export class Daemon {
 
     this.store = this.dataPlane?.store ?? new LocalStore(statePath(root))
     this.store.setTranscriptMutationListener((mutation) => this.scheduleSessionActivity(mutation))
+    // Every table's row retention, from one rule table. This member owns the cache rows it
+    // stamped, so a peer's are reclaimed on the shorter window; no control-plane read here.
+    this.storeRetention = new StoreRetentionSweeper({
+      store: this.store,
+      settings: resolveStoreRetentionSettings(),
+      ownerId: this.store.cacheOwner,
+      clock: this.clock,
+      log: { info: (m) => this.log.info(m), warn: (m) => this.log.warn(m) }
+    })
     // The pump also drains a cluster agent's managed distillation once its sandbox is bound again —
     // a turn captured after the pod was suspended waits here rather than being lost.
     this.memoryOutbox = new MemoryCaptureOutbox(
@@ -3226,6 +3239,10 @@ export class Daemon {
       { log: { warn: (message) => this.log.warn(message) } }
     )
     this.memoryOutbox.start()
+    // Retention runs BEFORE the hydrate below, and synchronously, because the hydrate reads the
+    // model-catalog cache: a catalog past its window must already be gone, or this member boots
+    // advertising models it has not seen in a month.
+    this.storeRetention.sweepAgeOnly()
     // Model-catalog cache: synchronous last-good hydrate BEFORE the CP client
     // starts, so the register-time facts snapshot already carries models + the
     // capability matrix instead of blanking the CP until the sweep completes.
@@ -3809,6 +3826,7 @@ export class Daemon {
     void this.probeRuntimesAndEmit(false).finally(() => this.armRuntimeProbeRefresh())
     if (!this.k8s) startControlPlane(root)
     this.armIdleSweep()
+    this.armStoreRetentionSweep()
     this.startupComplete = true
     this.readiness?.refresh()
     this.log.info('daemon ready')
@@ -19372,6 +19390,20 @@ export class Daemon {
     }
   }
 
+  /**
+   * Recurring store retention (store/retention.ts). Its OWN timer, not the idle sweep's: idle
+   * reclamation is a tuning knob an install may switch off (`idleSweepMs <= 0`), and every
+   * table would then grow without bound. Age only — the agent-existence proof needs a
+   * control-plane read that only `reconcile --once` has.
+   */
+  private armStoreRetentionSweep(): void {
+    this.storeRetentionTimer = this.clock.setTimeout(() => {
+      this.storeRetentionTimer = undefined
+      this.storeRetention.sweepAgeOnly()
+      if (!this.draining) this.armStoreRetentionSweep()
+    }, SESSION_RETENTION_SWEEP_INTERVAL_MS)
+  }
+
   /** Recurring idle sweep (§7.2/§7.3): reap idle adapter children and TTL-close
    *  idle sessions. Driven by the injected Clock so a FakeClock advances it in tests. */
   private armIdleSweep(): void {
@@ -22808,9 +22840,6 @@ export class Daemon {
    *  never boot advertising models a peer's image runs and its own does not. */
   private hydrateRuntimeCatalogCache(): void {
     try {
-      // A member's own last-good catalogs keep the 30-day window; a departed member's are
-      // reclaimed after 7 days, long enough that a quiet live peer keeps its cache.
-      this.store.gcRuntimeCatalog(this.clock.now() - 30 * 24 * 3600_000, this.clock.now() - 7 * 24 * 3600_000)
       for (const meta of this.store.listRuntimeCatalogMetas()) {
         if (!this.runtimeCatalog.entries[meta.runtimeId]) continue
         this.rebuildRuntimeCatalog(meta.runtimeId)
@@ -23203,6 +23232,10 @@ export class Daemon {
     if (this.idleSweepTimer !== undefined) {
       this.clock.clearTimeout(this.idleSweepTimer)
       this.idleSweepTimer = undefined
+    }
+    if (this.storeRetentionTimer !== undefined) {
+      this.clock.clearTimeout(this.storeRetentionTimer)
+      this.storeRetentionTimer = undefined
     }
     if (this.runtimeProbeTimer !== undefined) {
       this.clock.clearTimeout(this.runtimeProbeTimer)

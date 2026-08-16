@@ -256,41 +256,73 @@ probe-claim GC, and agent removal's sandbox teardown is best-effort because of
 it: `discardAgent` deletes the claim once and logs a failure, and the
 reconciler collects the leftovers.
 
-**The store half.** The same job then sweeps the pool's SHARED data-plane store
-(`packages/daemon/src/store/orphan-reaper.ts`), because the leak has the same
-shape one layer down: a member writes a per-member outbox row, dies, and no
-peer can drain it. One sweep covers `inbox` hook-completion reports,
-`session_metadata_outbox`, `session_purges` and the
-`webchat_mcp_grant_ledger` — every table carrying an `ownerId`/`claimedAt`
-lease — on the same batched `agent/exists` answer the cluster half already
-asked for. A row is collected on one of two proofs:
+**The store half: one rule table.** Row retention across the daemon store used
+to be scattered — a private constant and a `DELETE … WHERE … < x` wherever each
+table's writer happened to live, so "how long do we keep X" had as many answers
+as there were writers, and a table nobody remembered simply grew. All of it is
+now declarative data in `packages/daemon/src/store/retention.ts`: one rule per
+table (`{ table, key, clock, where?, agentColumn?, ownerColumn?, horizonMs,
+foreignHorizonMs? }`), one sweep loop, one summary line. A rule's `clock` ages
+the WORK, not the attempt — the stamp a new obligation writes (`purgedAt`,
+`queuedAt`, `completedAt`, a cache's `observedAt`), never a lease a retry
+refreshes, because a receipt no control plane will ever accept is re-claimed on
+every drain and ageing it on `claimedAt` would make exactly the rows retention
+exists for immortal. The sweep composes both the SELECT and a re-fenced DELETE
+from the rule, and the clock rides the DELETE, so a rule whose clock moves on new
+work never collects an obligation renewed in between.
 
+Two proofs collect a row:
+
+- **horizon** — the row has been owed for the rule's window. This is plain
+  retention, it is what the routines the table replaced already did, and it is
+  always on. Windows differ per rule because they always did: 7 days for a
+  per-member outbox, 30 for a session-purge receipt (the only record that a
+  transcript was deleted) and for the model-catalog cache, 1 day for terminal
+  memory captures and settled activation records. `AC_STORE_RETENTION_SCALE`
+  moves all of them together.
 - **agent gone** — the control plane no longer knows the row's agent, so no
-  member can ever report it: the frame is refused forever;
-- **horizon** — nothing has written the row for 7 days
-  (`DEFAULT_STORE_ORPHAN_HORIZON_MS`, the single retention constant;
-  `AC_STORE_ORPHAN_HORIZON_MS` tunes it). A live owner renews its claim on
-  every drain attempt, so an untouched claim means its owner is gone and no
-  peer that could take over ever did.
+  member can ever drain it. This needs the batched `agent/exists` answer the
+  cluster half already asked for, so only `reconcile --once` can apply it, and
+  it ships dry-run behind `AC_STORE_ORPHAN_DELETE=true`.
 
-Every delete carries the clock the row was judged on as its CAS, so a row a
-member claimed between the read and the delete is left alone. Deletion is
-opt-in with `AC_STORE_ORPHAN_DELETE=true`, separately from the cluster half so
-the two get their own observation windows, and the run logs its own summary
-line (candidates, orphaned, deleted, skipped-live, failed, agent-gone,
-horizon, per table). A local single-daemon store is skipped outright: it has
-one owner forever, so its rows are its own to drain.
+`ownerColumn` carries the third case: a row written by a process that is not the
+sweeper. An `ownerId` dies with the process that minted it, so the catalog rules
+reclaim a departed member's cache on the shorter `foreignHorizonMs` while a live
+member keeps its own on the long one — which is what the hand-written catalog GC
+used to express with two cutoff arguments.
 
-This replaced the per-table retention it subsumes: the ad-hoc 30-day
-`pruneSessionPurges` the session-purge drain used to run is gone, and the hook
-outbox's "keep a permanently unreportable row forever" rule is now bounded by
-the horizon instead. Retention has one home. Two things deliberately stay: the
-in-process set that keeps a peer's rejected report out of THIS daemon's drain,
-which is live-loop protection rather than retention (without it a member serving
-the agent re-attempts a report the control plane can only refuse, once per
-outbox lease, until the horizon); and `expireMemoryCaptures`, whose terminal
-rows expire on a connection's own retention policy rather than on member
-ownership, so it answers a different question.
+**Two callers, one table.** The daemon runs the rules age-only against its own
+store, so a local single-daemon install keeps exactly the retention it had —
+retention was never about ownership there. That pass is synchronous and has its
+OWN hourly timer, not the idle sweep's: idle reclamation is a knob an install may
+switch off, and every table would then grow without bound. It also runs once at
+startup BEFORE the model-catalog cache is hydrated, so a catalog past its window
+is gone before anything reads it rather than being advertised for another month.
+The pool's `reconcile --once` CronJob runs the same rules with the control-plane
+read as well, which is the half only a shared store needs, and owns no rows
+itself, so every rule falls back to its conservative window.
+
+**What it replaced.** `pruneSessionPurges` and its 30-day constant;
+`gcRuntimeCatalog` and its two cutoffs; the terminal-row purge inside
+`expireMemoryCaptures` (and the `terminalRetentionMs` option and maintenance
+deadline behind it); the settled-record delete inside `expireActivations` and
+`ACTIVATION_RETENTION_MS`; and the hook outbox's "keep a permanently
+unreportable row forever" rule, now bounded by a horizon. Adding retention to a
+table is a rule, not a function.
+
+**What deliberately stayed, and why.** A routine is not retention when it is a
+state transition, a lease recovery, or a real-time cap:
+`expireMemoryCaptures`'s remaining half redacts a live capture and emits a
+metric; `pruneRuntimeModelCaps` is the set-difference of one successful
+discovery; `recoverMemoryCaptures` / `recoverPermissionRequests` are ownership
+takeovers; the session TTL close and retention GC delete worktrees and emit CP
+receipts; `loop_guard`'s cleanup rides the charge statement and its cutoff is
+the caller's window parameter, not a horizon; and the per-agent caps on
+permission-request history, acknowledged hook receipts, and memory `.history`
+entries bound a UI surface on every write, with no age and no owner. The
+in-process set that keeps a peer's rejected hook report out of THIS daemon's
+drain also stays: it is live-loop protection, not retention — the rule bounds
+how long the row survives, that set bounds how often it is retried meanwhile.
 
 **The control-plane counterpart.** Retiring a pool member also leaves rows the
 delete no longer cascades away. `WebchatMcpDelegation` is keyed on the agent
@@ -1075,21 +1107,21 @@ shrinking every actor's permissions.
 
 ## 17. Implementation map
 
-| Piece                                                                  | Where                                                                                                                                              |
-| ---------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Frames + member cap                                                    | `packages/protocol/src/frames/duty.ts`, `relay-daemon.ts` (`RD_ACK_NOT_HOLDER`)                                                                    |
-| Schema + repo (CAS claim, renew, release, reconcile, agent-home claim) | `packages/control-plane/prisma/schema.prisma`, `src/persistence/repositories/duty-group.repo.ts`                                                   |
-| Pure group math + reconcile planner                                    | `packages/control-plane/src/orchestrator/dutyGroup.ts`                                                                                             |
-| Lease exchange (digest diff, chunking, lanes, grace)                   | `packages/control-plane/src/orchestrator/dutyLease.ts`                                                                                             |
-| Recompute sweep + mutation kicks + placement fence                     | `packages/control-plane/src/orchestrator/dutyRecompute.ts`                                                                                         |
-| WS handlers                                                            | `packages/control-plane/src/ws/handlers/{heartbeat,duty-release,duty-claim,duty-fetch}.ts`                                                         |
-| Member sets + placement/eligibility resolver                           | `packages/control-plane/src/domain/placement.ts`, `src/persistence/repositories/member-set.repo.ts`                                                |
-| Frame-org fence on the daemon WS surface                               | `packages/control-plane/src/ws/handlers/frame-org.ts` (`frameOrgId`), the `*Unscoped` lint fence over `src/ws/**`                                  |
-| Daemon registry + gate + rendezvous claim                              | `packages/daemon/src/cp/duty-registry.ts`, `src/daemon.ts` (`transportAgents`, `claimDutyForTrigger`)                                              |
-| Relay re-route                                                         | `packages/relay/src/relay-ingress-manager.ts` (`sendWithRendezvous`), `relay-browser-connection.ts`                                                |
-| Shim dial-in                                                           | `packages/daemon/src/shim/{dialer,server}.ts`                                                                                                      |
-| Pod-bound member identity                                              | `packages/control-plane/src/cluster/daemon-identity.ts`                                                                                            |
-| Member readiness (probe sinks)                                         | `packages/daemon/src/readiness.ts`, `src/daemon.ts` (`readinessState`)                                                                             |
-| Rollout generation barrier                                             | `packages/protocol/src/frames/register.ts` (`generation`), `control-plane/src/persistence/repositories/duty-group.repo.ts` (`newerGenerationLive`) |
-| Shared-store ownership (owner ids, outbox claims, holder gates)        | `packages/daemon/src/store/local-store.ts`, `src/store/postgres-sync-database.ts`, `src/daemon.ts` (`servesAgent`, `settleDutyChange`)             |
+| Piece                                                                  | Where                                                                                                                                                                                      |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Frames + member cap                                                    | `packages/protocol/src/frames/duty.ts`, `relay-daemon.ts` (`RD_ACK_NOT_HOLDER`)                                                                                                            |
+| Schema + repo (CAS claim, renew, release, reconcile, agent-home claim) | `packages/control-plane/prisma/schema.prisma`, `src/persistence/repositories/duty-group.repo.ts`                                                                                           |
+| Pure group math + reconcile planner                                    | `packages/control-plane/src/orchestrator/dutyGroup.ts`                                                                                                                                     |
+| Lease exchange (digest diff, chunking, lanes, grace)                   | `packages/control-plane/src/orchestrator/dutyLease.ts`                                                                                                                                     |
+| Recompute sweep + mutation kicks + placement fence                     | `packages/control-plane/src/orchestrator/dutyRecompute.ts`                                                                                                                                 |
+| WS handlers                                                            | `packages/control-plane/src/ws/handlers/{heartbeat,duty-release,duty-claim,duty-fetch}.ts`                                                                                                 |
+| Member sets + placement/eligibility resolver                           | `packages/control-plane/src/domain/placement.ts`, `src/persistence/repositories/member-set.repo.ts`                                                                                        |
+| Frame-org fence on the daemon WS surface                               | `packages/control-plane/src/ws/handlers/frame-org.ts` (`frameOrgId`), the `*Unscoped` lint fence over `src/ws/**`                                                                          |
+| Daemon registry + gate + rendezvous claim                              | `packages/daemon/src/cp/duty-registry.ts`, `src/daemon.ts` (`transportAgents`, `claimDutyForTrigger`)                                                                                      |
+| Relay re-route                                                         | `packages/relay/src/relay-ingress-manager.ts` (`sendWithRendezvous`), `relay-browser-connection.ts`                                                                                        |
+| Shim dial-in                                                           | `packages/daemon/src/shim/{dialer,server}.ts`                                                                                                                                              |
+| Pod-bound member identity                                              | `packages/control-plane/src/cluster/daemon-identity.ts`                                                                                                                                    |
+| Member readiness (probe sinks)                                         | `packages/daemon/src/readiness.ts`, `src/daemon.ts` (`readinessState`)                                                                                                                     |
+| Rollout generation barrier                                             | `packages/protocol/src/frames/register.ts` (`generation`), `control-plane/src/persistence/repositories/duty-group.repo.ts` (`newerGenerationLive`)                                         |
+| Shared-store ownership (owner ids, outbox claims, holder gates)        | `packages/daemon/src/store/local-store.ts`, `src/store/postgres-sync-database.ts`, `src/daemon.ts` (`servesAgent`, `settleDutyChange`)                                                     |
 | Orphan reconciler + store retention rules + `reconcile --once` job     | `packages/daemon/src/k8s/orphan-reconciler.ts`, `packages/daemon/src/store/retention.ts`, `packages/daemon/src/cli/reconcile.ts`, `packages/control-plane/src/ws/handlers/agent-exists.ts` |

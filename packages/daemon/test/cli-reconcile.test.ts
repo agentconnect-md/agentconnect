@@ -9,8 +9,8 @@ import { buildEnvelope, decodeEnvelope, encode, type AnyFrame } from '@agentconn
 import { AC_LABEL_AGENT, AC_LABEL_ORG } from '../src/k8s/driver.js'
 import { SandboxApi, type SandboxClaim } from '../src/k8s/sandbox-api.js'
 import { ORPHAN_DELETE_ENV } from '../src/k8s/orphan-reconciler.js'
-import { STORE_ORPHAN_DELETE_ENV } from '../src/store/orphan-reaper.js'
-import type { StoreOrphanRow } from '../src/store/local-store.js'
+import { STORE_ORPHAN_DELETE_ENV } from '../src/store/retention.js'
+import type { StoreRetentionCandidate, StoreRetentionRule } from '../src/store/retention.js'
 import { K8S_SANDBOX_NAMESPACE_ENV } from '../src/k8s/runtime-plane.js'
 import { connectObserver, runReconcileOnce, type ExistenceReader } from '../src/cli/reconcile.js'
 import { FakeTransport } from './cp/fake-transport.js'
@@ -92,10 +92,6 @@ describe('reconcile --once', () => {
     const { api } = await cluster()
     const cp = fakeCp()
     const infos: string[] = []
-    const rows: StoreOrphanRow[] = [
-      { kind: 'session-purge', agentId: GONE, id: 'acp-1', touchedAt: Date.now() },
-      { kind: 'hook-report', agentId: LIVE, id: 'hook-1', touchedAt: Date.now() }
-    ]
     const deleted: string[] = []
     let closed = false
     const code = await runReconcileOnce({
@@ -104,14 +100,7 @@ describe('reconcile --once', () => {
       apiUrl: 'wss://cp.example.test/daemon/ws',
       env: { [ORPHAN_DELETE_ENV]: 'true', [STORE_ORPHAN_DELETE_ENV]: 'true' },
       openStore: async () => ({
-        store: {
-          isShared: true,
-          listStoreOrphanCandidates: () => rows,
-          deleteStoreOrphan: (row: StoreOrphanRow) => {
-            deleted.push(row.id)
-            return true
-          }
-        },
+        store: storeOf({ 'session-purge': GONE, 'hook-report': LIVE }, deleted),
         close: async () => {
           closed = true
         }
@@ -121,11 +110,12 @@ describe('reconcile --once', () => {
     expect(code).toBe(0)
     expect(cp.asked).toEqual([
       [LIVE, GONE],
-      [GONE, LIVE]
+      [LIVE, GONE]
     ])
-    expect(deleted).toEqual(['acp-1'])
-    expect(infos.at(-1)).toContain('store orphans: swept 2 candidates — orphaned=1 deleted=1 skipped-live=1')
-    expect(infos.at(-1)).toContain('agent-gone=1 horizon=0 hook-report=0 session-metadata=0 session-purge=1')
+    expect(deleted).toEqual(['row-session-purge'])
+    expect(infos.at(-1)).toContain('store retention: swept 2 candidates — collected=1 deleted=1 kept=1 failed=0')
+    expect(infos.at(-1)).toContain('agent-gone=1 horizon=0')
+    expect(infos.at(-1)).toContain('session-purge=1')
     expect(closed).toBe(true)
   })
 
@@ -138,11 +128,9 @@ describe('reconcile --once', () => {
       env: { [ORPHAN_DELETE_ENV]: 'true', [STORE_ORPHAN_DELETE_ENV]: 'true' },
       openStore: async () => ({
         store: {
-          isShared: true,
-          listStoreOrphanCandidates: () => [
-            { kind: 'session-purge' as const, agentId: GONE, id: 'acp-1', touchedAt: Date.now() }
-          ],
-          deleteStoreOrphan: () => {
+          listRetentionCandidates: (rule: StoreRetentionRule) =>
+            rule.id === 'session-purge' ? [candidate(rule, GONE)] : [],
+          deleteRetentionRow: () => {
             throw new Error('deadlock detected')
           }
         },
@@ -280,3 +268,21 @@ describe('observer connection', () => {
     ).rejects.toThrow('identity token')
   })
 })
+
+/** One fresh candidate per rule, so only the control-plane answer decides what is collected. */
+const candidate = (rule: StoreRetentionRule, agentId: string): StoreRetentionCandidate => ({
+  key: Object.fromEntries(rule.key.map((column) => [column, `row-${rule.id}`])),
+  agentId,
+  touchedAt: Date.now()
+})
+
+/** A store holding exactly the named rules' rows, recording what the sweep deleted. */
+function storeOf(rows: Record<string, string>, deleted: string[]) {
+  return {
+    listRetentionCandidates: (rule: StoreRetentionRule) => (rows[rule.id] ? [candidate(rule, rows[rule.id]!)] : []),
+    deleteRetentionRow: (rule: StoreRetentionRule) => {
+      deleted.push(`row-${rule.id}`)
+      return true
+    }
+  }
+}

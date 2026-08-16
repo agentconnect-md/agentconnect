@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
 import { PostgresDataPlane } from '../src/store/postgres-data-plane.js'
+import type { LocalStore } from '../src/store/local-store.js'
+import { STORE_RETENTION_RULES, StoreRetentionSweeper } from '../src/store/retention.js'
 
 const databaseUrl = process.env.DATA_PLANE_TEST_DATABASE_URL
 
@@ -332,14 +334,27 @@ describe.skipIf(!databaseUrl)('PostgreSQL pool member store', () => {
       expect(first.store.listRuntimeModelCaps(runtimeId).map((row) => row.modelId)).toEqual(['a'])
       expect(second.store.listRuntimeModelCaps(runtimeId).map((row) => row.modelId)).toEqual(['b'])
 
-      // A departed member's cache is unreadable by anyone, so the shorter window takes it.
-      second.store.gcRuntimeCatalog(1, 150)
+      // A departed member's cache is unreadable by anyone, so the retention rule's shorter
+      // window takes it while the sweeping member's own rows keep the long one.
+      await sweepCatalogs(second.store, 200 + 8 * 24 * 3_600_000)
       expect(first.store.getRuntimeCatalogMeta(runtimeId)).toBeUndefined()
       expect(second.store.getRuntimeCatalogMeta(runtimeId)).toMatchObject({ fingerprint: 'fp-2' })
     } finally {
-      second.store.gcRuntimeCatalog(Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER)
+      await sweepCatalogs(second.store, Number.MAX_SAFE_INTEGER / 2)
       await second.close()
       await first.close()
     }
   })
 })
+
+/** Run only the catalog rules, as the sweeping member would. */
+async function sweepCatalogs(store: LocalStore, now: number): Promise<void> {
+  await new StoreRetentionSweeper({
+    store,
+    rules: STORE_RETENTION_RULES.filter((rule) => rule.id.startsWith('catalog-')),
+    ownerId: store.cacheOwner,
+    settings: { scale: 1, deleteOrphans: false },
+    clock: { now: () => now } as never,
+    log: { info: () => undefined, warn: () => undefined }
+  }).sweep()
+}

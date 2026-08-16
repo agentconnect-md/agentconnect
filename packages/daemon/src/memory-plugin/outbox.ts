@@ -16,7 +16,6 @@ export const MEMORY_CAPTURE_OUTPUT_MAX_BYTES = 32 * 1024
 export const MEMORY_CAPTURE_MAX_ACTIVE_ITEMS = 10_000
 export const MEMORY_CAPTURE_MAX_ACTIVE_BYTES = 64 * 1024 * 1024
 export const MEMORY_CAPTURE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1_000
-export const MEMORY_CAPTURE_TERMINAL_RETENTION_MS = 24 * 60 * 60 * 1_000
 
 const RETRY_BASE_MS = 1_000
 const RETRY_MAX_MS = 60_000
@@ -86,7 +85,6 @@ export interface MemoryCaptureOutboxOptions {
   acceptedPollMs?: number
   maxCaptureAttempts?: number
   maxAgeMs?: number
-  terminalRetentionMs?: number
 }
 
 function boundedIdentity(prefix: string, value: string): string {
@@ -314,7 +312,6 @@ export class MemoryCaptureOutbox {
     const dueAt = this.store.nextMemoryCaptureDueAt(connectionIds)
     const maintenanceAt = this.store.nextMemoryCaptureMaintenanceAt(
       this.options.maxAgeMs ?? MEMORY_CAPTURE_MAX_AGE_MS,
-      this.options.terminalRetentionMs ?? MEMORY_CAPTURE_TERMINAL_RETENTION_MS,
       connectionIds
     )
     const nextAt =
@@ -531,15 +528,14 @@ export class MemoryCaptureOutbox {
   private expire(now: number): void {
     const connectionIds = this.registry.connectionIds()
     this.observeRecovery(this.store.recoverMemoryCaptures(now, true, connectionIds))
+    // Only the state change is this loop's; the terminal row it leaves is the retention
+    // rule table's to collect (store/retention.ts).
     const expired = this.store.expireMemoryCaptures(
       now - (this.options.maxAgeMs ?? MEMORY_CAPTURE_MAX_AGE_MS),
-      now - (this.options.terminalRetentionMs ?? MEMORY_CAPTURE_TERMINAL_RETENTION_MS),
       now,
       connectionIds
     )
-    if (expired.expired > 0) {
-      this.metrics.captureState('failed', { count: expired.expired, reason: 'retention_expired' })
-    }
+    if (expired > 0) this.metrics.captureState('failed', { count: expired, reason: 'retention_expired' })
   }
 
   private observeRecovery(recovered: { retried: number; ambiguous: number }): void {
