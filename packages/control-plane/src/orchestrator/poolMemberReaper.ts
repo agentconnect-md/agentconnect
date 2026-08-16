@@ -1,7 +1,7 @@
 /**
- * `PoolMemberReaper` (agentconnect-org-operator.md §"The cloud daemon, which serves every
- * org") — retires the daemon rows replaced pool member Pods leave behind, and collects the rows
- * a retirement leaves inert instead of cascading away.
+ * `PoolMemberReaper` (k8s-daemon-pool.md §3 "Identity is per Pod, not per org") — retires the
+ * daemon rows replaced pool member Pods leave behind, and collects the rows a retirement leaves
+ * inert instead of cascading away.
  *
  * A pool member is bound to its reviewed Pod UID, so a replacement Pod gets a NEW daemon
  * record and the old one lingers: org-less, never reachable again, and visible in every

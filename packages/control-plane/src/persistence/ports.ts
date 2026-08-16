@@ -270,8 +270,8 @@ export interface DaemonRepo {
   /**
    * Install-wide pool members nothing has been heard from since `cutoff` — the rows left
    * behind by replaced Pods, which no org's DELETE can reach because no org owns them
-   * (agentconnect-org-operator.md §"The cloud daemon, which serves every org": a replacement
-   * Pod gets a new daemon ID). System-tier and deliberately fleet-wide, like
+   * (k8s-daemon-pool.md §3 "Identity is per Pod, not per org": a replacement Pod gets a new
+   * daemon ID). System-tier and deliberately fleet-wide, like
    * {@link DaemonRepo.findReassignable}. Never-connected rows are judged by `createdAt`.
    */
   findRetiredPoolMembers(cutoff: Date): Promise<DaemonRecord[]>
