@@ -108,13 +108,13 @@ document is the review reference.
 Mirrors [`authorization-policy.md`](authorization-policy.md) §2 — the fence a
 method carries depends on who is allowed to call it:
 
-| Caller domain                                                      | Org source                           | Data-layer surface                                                                                                      |
-| ------------------------------------------------------------------ | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
-| Console REST / SSE (human)                                         | `req.orgCtx` from path + membership  | scoped methods only                                                                                                     |
-| MCP surface                                                        | the credential's org binding         | scoped methods only                                                                                                     |
-| Daemon WS handlers                                                 | the connection's ApiKey row          | daemon-fenced methods (`listForDaemon`, `agent.daemonId === conn.daemonId` guards) — already stronger than an org check |
-| Orchestrator / reconciliation / platform machinery                 | derived from the row being processed | `*Unscoped` reads, system-tier mutations                                                                                |
-| Public-by-design endpoints (e.g. agent icon PNG, fetched by Slack) | none — intentionally unauthenticated | `*Unscoped` with an inline lint exemption and a justification comment                                                   |
+| Caller domain                                                      | Org source                           | Data-layer surface                                                                    |
+| ------------------------------------------------------------------ | ------------------------------------ | ------------------------------------------------------------------------------------- |
+| Console REST / SSE (human)                                         | `req.orgCtx` from path + membership  | scoped methods only                                                                   |
+| MCP surface                                                        | the credential's org binding         | scoped methods only                                                                   |
+| Daemon WS handlers                                                 | `frame.orgId`, else `conn.orgId`     | scoped methods, plus the daemon-fenced ones (`listForDaemon`, the placement resolver) |
+| Orchestrator / reconciliation / platform machinery                 | derived from the row being processed | `*Unscoped` reads, system-tier mutations                                              |
+| Public-by-design endpoints (e.g. agent icon PNG, fetched by Slack) | none — intentionally unauthenticated | `*Unscoped` with an inline lint exemption and a justification comment                 |
 
 ## 5. Exemplar migration: Agent (M1, this change)
 
@@ -149,10 +149,12 @@ to `getUnscoped` with the lint exemption and a comment saying exactly that.
 Two structural guards, so the convention cannot silently erode:
 
 1. **ESLint fence.** `no-restricted-syntax` forbids any `*Unscoped` member
-   call in `packages/control-plane/src/http/routes/**` and
-   `packages/control-plane/src/http/mcp/**`. Public-by-design endpoints carry
-   an inline `eslint-disable-next-line` with a justification — the exemption
-   is the documentation.
+   call in `packages/control-plane/src/http/routes/**`,
+   `packages/control-plane/src/http/mcp/**` and
+   `packages/control-plane/src/ws/**`. Public-by-design endpoints and the
+   handful of genuinely install-wide WS reads carry an inline
+   `eslint-disable-next-line` with a justification — the exemption is the
+   documentation.
 2. **Tenant-isolation contract tests.**
    `test/integration/tenant-isolation.route.test.ts` boots the real app
    against Postgres with a two-organization fixture and asserts, per migrated
@@ -209,6 +211,9 @@ Two structural guards, so the convention cannot silently erode:
 - **Postgres RLS** — deliberately separate (M3): it wants the port convention
   in place first, and carries its own Prisma/transaction ergonomics
   trade-offs.
-- **The daemon WS trust domain** — its fences (connection identity, roster
-  scoping, mutation leases) are already stronger than an org parameter and are
-  not reshaped here.
+- **The daemon WS trust domain** — its own fences (connection identity, roster
+  scoping, mutation leases) are not reshaped here. They stopped being stronger
+  than an org parameter once one install-wide member carried many orgs on one
+  socket, so the fence was extended to `src/ws/**` in
+  [`k8s-daemon-pool.md`](k8s-daemon-pool.md) M4: a handler resolves resources
+  with the frame's org, or the connection's when it has one.

@@ -54,7 +54,7 @@ async function reportSession(payload: Record<string, unknown>, daemonId = DAEMON
     webchatConversation: new PgWebchatConversationRepo(prisma),
     events: new InMemorySessionEventSink()
   } as unknown as DaemonWsDeps
-  await handleEventSession(frame, { daemonId } as DaemonConnection, deps)
+  await handleEventSession(frame, { daemonId, orgId: DEFAULT_ORG_ID } as DaemonConnection, deps)
 }
 
 describe('event/session sync → SessionMeta → GET /sessions/:id', () => {

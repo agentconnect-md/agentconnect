@@ -13,7 +13,9 @@ async function featureDaemon(
   conn: Parameters<Handler>[1],
   deps: Parameters<Handler>[2]
 ): Promise<DaemonView | null> {
-  // Daemon trust domain: the connection's own daemon (org-scoped-data-layer.md §4).
+  // Install-wide read: the connection's OWN daemon row, whose org is null on a pool member,
+  // so no org fence exists to apply (org-scoped-data-layer.md §4).
+  // eslint-disable-next-line no-restricted-syntax -- the authenticated connection's own daemon row
   const daemon = await deps.registry.getUnscoped(DaemonId(conn.daemonId))
   if (!daemon || !daemon.capabilities.features.includes(ORGANIZATION_KNOWLEDGE_FEATURE)) {
     conn.sendError(frameId, 'SCOPE_DENIED', 'daemon did not advertise organization knowledge support', false)
@@ -42,9 +44,10 @@ async function servingRequester(
   conn: Parameters<Handler>[1],
   deps: Parameters<Handler>[2]
 ) {
-  const requester = await deps.agent.getUnscoped(AgentId(requesterAgentId))
   const orgId = frameOrgId ? OrgId(frameOrgId) : daemon.orgId
-  if (!requester || !orgId || requester.orgId !== orgId) return null
+  if (!orgId) return null
+  const requester = await deps.agent.get(orgId, AgentId(requesterAgentId))
+  if (!requester) return null
   const resolver = deps.placementResolver ?? PLACEMENT_ONLY
   return (await resolver.mayAct(requester, conn.daemonId)) ? requester : null
 }

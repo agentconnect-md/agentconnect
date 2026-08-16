@@ -25,6 +25,7 @@
 import { isFrame } from '@agentconnect.md/protocol'
 import type { ChildSessionStatus } from '@agentconnect.md/protocol'
 import { AgentId, DaemonId, SessionId } from '../../domain/ids.js'
+import { frameOrgId } from './frame-org.js'
 import type { Handler } from './index.js'
 
 const NOT_FOUND: ChildSessionStatus = { found: false }
@@ -33,24 +34,31 @@ export const handleChildSessionStatus: Handler = async (frame, conn, deps) => {
   if (!isFrame('session/child-status')(frame)) return
   const { parentSessionId, childSessionId, childAgentId } = frame.payload
 
-  // Daemon trust domain: the connection's own daemon (org-scoped-data-layer.md §4).
+  const orgId = frameOrgId(frame, conn)
+  if (!orgId) {
+    conn.replyTo(frame, 'session/child-status/ok', NOT_FOUND)
+    return
+  }
+
+  // Install-wide read: the connection's OWN daemon row, whose org is null on a pool member,
+  // so no org fence exists to apply (org-scoped-data-layer.md §4).
+  // eslint-disable-next-line no-restricted-syntax -- the authenticated connection's own daemon row
   const daemon = await deps.registry.getUnscoped(DaemonId(conn.daemonId))
   if (!daemon) return // unknown daemon (should not happen post-auth) — drop silently
 
   // (a) Prove the asking daemon owns the parent session it is asking AS. `daemonId` on the session
   // row is stamped by the CP from the authenticated socket and is never daemon-echoed, so it is
-  // trustworthy here. Fail closed when the session is unknown to the CP.
-  // Daemon trust domain: the parent session the asking daemon claims to own —
-  // the ownership check below is what admits it (org-scoped-data-layer.md §4).
-  const parent = await deps.session.getUnscoped(SessionId(parentSessionId))
-  if (!parent || parent.daemonId !== conn.daemonId || (frame.orgId && frame.orgId !== parent.orgId)) {
+  // trustworthy here. Fail closed when the session is unknown to the CP. The read is fenced on the
+  // frame's org, so a session outside it is indistinguishable from a missing one.
+  const parent = await deps.session.get(orgId, SessionId(parentSessionId))
+  if (!parent || parent.daemonId !== conn.daemonId) {
     conn.replyTo(frame, 'session/child-status/ok', NOT_FOUND)
     return
   }
 
   // (b) Resolve the child agent's placement. Cross-org is refused outright: a status read must
   // never cross an org boundary even when both daemons are reachable.
-  const childAgent = await deps.agent.getUnscoped(AgentId(childAgentId))
+  const childAgent = await deps.agent.get(orgId, AgentId(childAgentId))
   if (!childAgent || childAgent.orgId !== parent.orgId || !childAgent.daemonId) {
     conn.replyTo(frame, 'session/child-status/ok', NOT_FOUND)
     return

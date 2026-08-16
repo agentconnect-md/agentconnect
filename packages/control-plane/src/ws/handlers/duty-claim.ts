@@ -15,6 +15,9 @@ export const handleDutyClaim: Handler = async (frame, conn, deps) => {
   }
   const agentId = AgentId(frame.payload.agentId)
   // The CP resolves the org from the agent itself — a claimant never asserts it.
+  // Install-wide read (INSTALL_WIDE_FRAME_TYPES): `duty/claim` carries no org by design,
+  // because the member is asking about an agent it does not yet serve.
+  // eslint-disable-next-line no-restricted-syntax -- install-wide rendezvous frame, no frame org exists
   const agent = await deps.agent.getUnscoped(agentId)
   if (!agent) {
     conn.replyTo(frame, 'duty/claim/ok', { granted: false })

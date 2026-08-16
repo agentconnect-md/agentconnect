@@ -25,7 +25,7 @@ function fakeDeps(platform = 'slack', known = true) {
     integration: { activeForDaemon: vi.fn(async () => integration) },
     slackSessionAccess: { dropPublicAudiences },
     agentMutations: { tryBeginMutation: vi.fn(() => vi.fn()) },
-    agent: { getUnscoped: vi.fn(async () => null) },
+    agent: { get: vi.fn(async () => null) },
     integrationChannel: { replaceSnapshot: vi.fn(async () => {}) },
     collabRoutes: { broadcast: vi.fn(async () => {}) }
   } as unknown as DaemonWsDeps
