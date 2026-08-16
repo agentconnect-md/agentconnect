@@ -8,8 +8,10 @@ import { ShimGitRunner } from '../shim/git-exec.js'
 import { TunnelProxy } from '../shim/tunnel-proxy.js'
 import { ShimFileSink } from '../shim/channels.js'
 import { ShimWorkspaceFiles } from '../shim/workspace-files-channel.js'
+import { ShimMemoryFs } from '../shim/memory-fs-channel.js'
 import type { WorkspaceFiles } from '../workspace/workspace-files.js'
-import { DEFAULT_SHIM_LISTEN_PORT } from '../shim/protocol.js'
+import type { MemoryFs } from '../agents/memory-fs.js'
+import { DEFAULT_SHIM_LISTEN_PORT, DEFAULT_SHIM_WORKSPACE_ROOT } from '../shim/protocol.js'
 import type { TunnelName } from '../shim/tunnel.js'
 import type { ShimSession } from '../shim/session.js'
 import { K8sRuntimeTableSchema, type K8sRuntimeTable } from '../runtimes/k8s-runtimes.js'
@@ -79,6 +81,8 @@ export interface K8sRuntimePlaneOptions {
   /** How long a pod that is up may go without a shim channel before the launch counts as lost.
    *  Injected so a test can cross the window in milliseconds rather than waiting out the default. */
   rebindGraceMs?: number
+  /** Fired when an agent's shim channel binds — the moment its volume (and memory tree) becomes reachable. */
+  onSandboxBound?: (agentId: string) => void
   log?: { info: (m: string) => void; warn: (m: string) => void; debug?: (m: string) => void }
 }
 
@@ -139,6 +143,10 @@ export interface K8sRuntimePlane {
    *  git runner because they are separate capabilities (`read` vs `exec`) and a channel is not a
    *  blanket permission — not because the two ever disagree about which filesystem to use. */
   workspaceFilesFor: (agentId: string) => WorkspaceFiles | undefined
+  /** The agent's managed memory tree on that same volume, on the same condition: one root beside
+   *  the checkout (`<mount>/.agentconnect/memory`), so it follows the agent across members and
+   *  survives a rollout, and is reachable exactly when the sandbox is. */
+  memoryFsFor: (agentId: string) => MemoryFs | undefined
   /** Whether this agent's work runs in a pod right now — the SAME condition `gitRunnerFor`
    *  answers on. Callers that build paths for that work read it here rather than re-deriving it,
    *  so an environment can never describe one filesystem while the execution happens in another. */
@@ -191,6 +199,7 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
       // A rebind cancels any pending loss check: this IS the replacement it was waiting for.
       cancelLossCheck(connection.binding.agentId)
       driver.onChannelBound(connection)
+      options.onSandboxBound?.(connection.binding.agentId)
     },
     // A closed socket is not a lost launch; renewals reconnect underneath the logical session.
     // `ShimSession.lose()` is terminal — reporting loss here killed the runtime on every
@@ -406,6 +415,10 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
       if (!runsInSandbox(agentId)) return undefined
       return new ShimWorkspaceFiles(driver.sessionFor(agentId)!)
     },
+    memoryFsFor: (agentId) => {
+      if (!runsInSandbox(agentId)) return undefined
+      return new ShimMemoryFs(driver.sessionFor(agentId)!, sandboxMemoryRoot(driver.workspaceRootFor(agentId)))
+    },
     runsInSandbox,
     clearPath: async (agentId, root) => {
       const session = driver.sessionFor(agentId)
@@ -430,6 +443,11 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
       dialer.stop()
     }
   }
+}
+
+/** The managed memory root on a sandbox volume: outside the user's checkout, on the same PVC. */
+export function sandboxMemoryRoot(workspaceRoot: string | undefined): string {
+  return `${(workspaceRoot ?? DEFAULT_SHIM_WORKSPACE_ROOT).replace(/\/+$/, '')}/.agentconnect/memory`
 }
 
 /** WebSocket URL for a Pod IP, including the brackets an IPv6 literal requires. */

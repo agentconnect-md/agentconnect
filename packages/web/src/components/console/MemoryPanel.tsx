@@ -5,7 +5,8 @@
 // across sessions. Content is proxied through the CP straight from the owning
 // daemon (never stored on the CP, body-locality), so a 503 here just means that
 // daemon is offline / the agent is unplaced — an expected state, rendered as a
-// friendly notice.
+// friendly notice. A cluster agent's managed memory lives on its sandbox volume
+// (#1078), so the same 503 carrying the asleep code is answered by waking the pod.
 //
 // Left: the file list (index + topics). Right: the selected file, viewed as
 // markdown or edited through the same inline file-browser surface as Workspace.
@@ -57,6 +58,13 @@ import {
   formatFileSize,
   type FileBrowserEditorDraft
 } from '@/components/console/FileBrowser'
+import { SANDBOX_ASLEEP_CODE } from '@/components/console/workspace-tree'
+import { useSandboxWake, type SandboxReadState } from '@/components/console/sandbox-wake'
+import {
+  MEMORY_SANDBOX_ASLEEP_NOTICE,
+  SandboxAsleepNotice,
+  SandboxStartingNotice
+} from '@/components/console/SandboxWakeNotice'
 import { RecordMemoryPanel } from '@/components/console/RecordMemoryPanel'
 import { DreamPanel } from '@/components/console/DreamPanel'
 import { DreamScheduleFields } from '@/components/console/DreamScheduleFields'
@@ -172,7 +180,8 @@ export function MemoryPanel({
   memoryConnectionId,
   memoryRecall,
   memoryCaptureMode,
-  sessionBasePath
+  sessionBasePath,
+  sandboxed = false
 }: {
   agentId: string
   canEdit: boolean
@@ -184,18 +193,23 @@ export function MemoryPanel({
   memoryRecall?: ExternalMemoryBindingDraft['recall']
   memoryCaptureMode?: ExternalMemoryBindingDraft['captureMode']
   sessionBasePath?: string
+  /** The agent runs in a cluster sandbox: its managed memory is readable only through a running pod, so opening the tab wakes it rather than waiting for the read to refuse. */
+  sandboxed?: boolean
 }) {
   const { updateAgent } = useConsoleData()
   const isMobile = useIsMobile()
   const [files, setFiles] = useState<MemoryFileEntry[]>([])
   const [listLoading, setListLoading] = useState(true)
   const [listError, setListError] = useState<string | null>(null)
+  // The refusal's machine code, not just its message: a sleeping sandbox and an offline daemon are both 503.
+  const [listErrorCode, setListErrorCode] = useState<string | null>(null)
   const [selected, setSelected] = useState(INDEX)
   const [content, setContent] = useState('')
   const [loadedMtime, setLoadedMtime] = useState<string | null>(null)
   const [fileExists, setFileExists] = useState<boolean | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [errorCode, setErrorCode] = useState<string | null>(null)
   const [historyOpen, setHistoryOpen] = useState(false)
   // Channel memory viewer (#653): the channels with their own folder, and which one
   // is being viewed. `undefined` = the shared agent-level base. Only meaningful when
@@ -378,12 +392,14 @@ export function MemoryPanel({
     const request = ++listRequest.current
     setListLoading(true)
     setListError(null)
+    setListErrorCode(null)
     try {
       const { files } = await listAgentMemory(agentId, selectedChannel)
       if (request !== listRequest.current) return
       setFiles(files)
     } catch (e) {
       if (request !== listRequest.current) return
+      setListErrorCode(e instanceof ApiError ? (e.code ?? null) : null)
       setListError(
         e instanceof ApiError && e.status === 503
           ? "Couldn't list memory — the owning daemon may be offline."
@@ -404,6 +420,7 @@ export function MemoryPanel({
       const request = ++loadRequest.current
       setLoading(true)
       setError(null)
+      setErrorCode(null)
       setEditor(null)
       setHistoryOpen(false)
       setContent('')
@@ -417,6 +434,7 @@ export function MemoryPanel({
         setFileExists(mem.exists)
       } catch (e) {
         if (request !== loadRequest.current) return
+        setErrorCode(e instanceof ApiError ? (e.code ?? null) : null)
         setError(
           e instanceof ApiError && e.status === 503
             ? "Couldn't read the file — the owning daemon may be offline."
@@ -431,6 +449,32 @@ export function MemoryPanel({
     [agentId, selectedChannel]
   )
 
+  // Only the managed directory lives on the sandbox volume: a runtime-native, external or off backend reads nothing
+  // from a pod, so it reports `ready` and can never press a wake.
+  const managedMemory = persistedProvider === 'managed'
+  const readState: SandboxReadState = !managedMemory
+    ? 'ready'
+    : listErrorCode === SANDBOX_ASLEEP_CODE || errorCode === SANDBOX_ASLEEP_CODE
+      ? 'asleep'
+      : listLoading || loading
+        ? 'pending'
+        : listError
+          ? 'failed'
+          : 'ready'
+  // The poll re-issues both reads the panel is showing. Read through a ref so the callback stays stable across selections.
+  const selectedRef = useRef(selected)
+  useEffect(() => {
+    selectedRef.current = selected
+  }, [selected])
+  const retryRead = useCallback(() => {
+    void loadList()
+    void loadFile(selectedRef.current)
+  }, [loadFile, loadList])
+  const wake = useSandboxWake(agentId, readState, retryRead, { sandboxed })
+  // The asleep story outranks the offline one on either pane: the memory is fine, just behind a pod that is not running.
+  const asleepRead = readState === 'asleep'
+  const startable = sandboxed || asleepRead
+
   useEffect(() => {
     loadRequest.current += 1
     listRequest.current += 1
@@ -440,6 +484,7 @@ export function MemoryPanel({
     setEditor(null)
     setHistoryOpen(false)
     setError(null)
+    setErrorCode(null)
     if (persistedProvider === 'none' || persistedProvider === 'external') {
       setListLoading(false)
       setLoading(false)
@@ -574,14 +619,31 @@ export function MemoryPanel({
           <Spinner size={18} />
         </div>
       )}
-      {!listLoading && listError && (
-        <div className="flex flex-col items-start gap-2 px-4 py-3 font-sans text-[12px] font-normal leading-normal text-(--red-600)">
-          <span>{listError}</span>
-          <button type="button" className="lnk text-[12px]" onClick={() => void loadList()}>
-            Retry
-          </button>
-        </div>
-      )}
+      {!listLoading &&
+        listError &&
+        (wake.phase === 'starting' ? (
+          <SandboxStartingNotice compact />
+        ) : (
+          <SandboxAsleepNotice
+            wake={wake}
+            startable={startable}
+            compact
+            notice={
+              asleepRead ? (
+                <div className="px-3 py-[10px] font-sans text-[12px] font-normal leading-[1.55] text-(--text-secondary)">
+                  {MEMORY_SANDBOX_ASLEEP_NOTICE}
+                </div>
+              ) : (
+                <div className="flex flex-col items-start gap-2 px-4 py-3 font-sans text-[12px] font-normal leading-normal text-(--red-600)">
+                  <span>{listError}</span>
+                  <button type="button" className="lnk text-[12px]" onClick={() => void loadList()}>
+                    Retry
+                  </button>
+                </div>
+              )
+            }
+          />
+        ))}
       {!listLoading && !listError && files.length === 0 && (
         <div className="px-4 py-3 font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
           No memory yet.
@@ -646,12 +708,28 @@ export function MemoryPanel({
           <Spinner />
         </div>
       ) : error ? (
-        <div className="flex flex-col items-start gap-3 px-4 py-6 font-sans text-[13px] font-normal leading-normal text-(--red-600)">
-          <span>{error}</span>
-          <Button variant="secondary" size="xs" onClick={() => void loadFile(selected)}>
-            Retry
-          </Button>
-        </div>
+        wake.phase === 'starting' ? (
+          <SandboxStartingNotice />
+        ) : (
+          <SandboxAsleepNotice
+            wake={wake}
+            startable={startable}
+            notice={
+              asleepRead ? (
+                <div className="px-[18px] py-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary)">
+                  {MEMORY_SANDBOX_ASLEEP_NOTICE}
+                </div>
+              ) : (
+                <div className="flex flex-col items-start gap-3 px-4 py-6 font-sans text-[13px] font-normal leading-normal text-(--red-600)">
+                  <span>{error}</span>
+                  <Button variant="secondary" size="xs" onClick={() => void loadFile(selected)}>
+                    Retry
+                  </Button>
+                </div>
+              )
+            }
+          />
+        )
       ) : content.trim() ? (
         <div className="max-h-[520px] overflow-auto px-[18px] py-4">
           <MarkdownView content={content} resolveLink={resolveMemoryLink} />

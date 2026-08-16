@@ -186,6 +186,34 @@ infrastructure and no violation of body locality**. It is runtime-independent.
 Claude still receives `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` to avoid duplicate
 native and managed memory. This is the default provider.
 
+#### 3.2.1 Where the managed tree lives (per placement)
+
+The managed store is a directory abstraction over a small file-system port
+(`agents/memory-fs.ts`, `MemoryFs`) with exactly two implementations,
+`LocalMemoryFs(rootDir)` and `ShimMemoryFs(channel, rootPath)`: `memory.ts`, the
+managed provider, the distiller, the dream runner, and the CP memory reader take
+the port and never touch `node:fs`, and one daemon factory (`resolveMemoryFs`)
+picks the implementation from the agent's placement, so the tree's home is a
+single decision:
+
+| Placement                            | Memory root                                                                                                                            | Reachable                                                                                                                                                                                              |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Local daemon (default)               | `<agent-root>` on the daemon's disk (`memory/`, `channels/`, `memory-dreams/`, `memory-backups/` beneath it)                           | Always                                                                                                                                                                                                 |
+| Cluster agent (`--k8s`, daemon pool) | `<workspace mount>/.agentconnect/memory` on the agent's sandbox volume — outside the checkout, on the same PVC, same layout beneath it | Only while the sandbox is bound; otherwise every read and write refuses with `sandbox-unavailable` (one resolution, no fallback to the member's disk), and the console wakes the sandbox first (#1077) |
+
+On the pool the member's state root is an `emptyDir` and duty moves between
+members, so a member-local memory dir would be lost with every rollout (#1078).
+The sandbox root follows the agent the way the workspace does and is read and
+written through the shim's `read` capability (`shim/memory-fs-channel.ts`): the
+memory logic stays in the daemon process (locks, history, the write ledger, the
+dream fence) and only the port's primitives cross the wire, sliced and chunked to
+the 256 KiB frame; the pod side works from open descriptors like the workspace
+channel. Post-turn distillation that arrives after the pod was suspended is kept
+in the memory capture outbox and drained once the sandbox is bound again. Native
+(runtime) memory follows the runtime's HOME on the pod and is unaffected; a later
+home (for example the shared data-plane store, option B in #1078) is another
+`MemoryFs` implementation plus a one-directory-per-agent copy.
+
 ### 3.3 external — General Memory Plugin
 
 External memory is not a set of `service:'mem0'` branches. It is this stable

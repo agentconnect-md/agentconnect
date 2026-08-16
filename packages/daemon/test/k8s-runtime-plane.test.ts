@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Backoff, FakeClock } from '@agentconnect.md/connection'
-import { k8sPlaneSettings, startK8sRuntimePlane, type K8sRuntimePlane } from '../src/k8s/runtime-plane.js'
+import {
+  k8sPlaneSettings,
+  startK8sRuntimePlane,
+  type K8sRuntimePlane,
+  sandboxMemoryRoot
+} from '../src/k8s/runtime-plane.js'
 import { PROBE_CLAIM_EXPIRES_ANNOTATION, PROBE_CLAIM_LABEL, probeAgentId } from '../src/k8s/probe-claim.js'
 import { ShimClient, type ShimTransport } from '../src/shim/client.js'
 import { ShimServer } from '../src/shim/server.js'
@@ -275,6 +280,12 @@ describe('k8s runtime plane assembly', () => {
     expect(plane.gitRunnerFor('agent-b', '/agent')).toBeUndefined()
     // The pod's reported mount arrived with the bind — the fact every pod path is built on.
     expect(plane.workspaceRootFor('agent-a')).toBe('/agent')
+    // The managed memory tree rides the same bind: one root beside the checkout on the volume, and
+    // no port at all for an agent without a channel — its resolver refuses rather than falling back.
+    expect(plane.memoryFsFor('agent-a')?.root).toBe('/agent/.agentconnect/memory')
+    expect(plane.memoryFsFor('agent-b')).toBeUndefined()
+    expect(sandboxMemoryRoot(undefined)).toBe('/agent/.agentconnect/memory')
+    expect(sandboxMemoryRoot('/mnt/vol/')).toBe('/mnt/vol/.agentconnect/memory')
   })
 
   it('resolves a dialing pod back to its launch, through the ADOPTED pod name', async () => {

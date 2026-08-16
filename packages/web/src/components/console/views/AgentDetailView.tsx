@@ -1706,6 +1706,7 @@ export default function AgentDetailView() {
           memoryRecall={da.memoryRecall}
           memoryCaptureMode={da.memoryCaptureMode}
           sessionBasePath={orgPath('/sessions')}
+          sandboxed={isPoolPlacementKind(da.placementKind)}
         />
       )}
 

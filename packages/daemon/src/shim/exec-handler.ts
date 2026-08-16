@@ -6,6 +6,7 @@ import { applyFileSinkPayload } from './file-sink.js'
 import { GitExecPayloadSchema, type GitExecResult } from './git-exec.js'
 import type { ShimCapability } from './protocol.js'
 import { applyWorkspaceFilesPayload } from './workspace-files-channel.js'
+import { applyMemoryFsPayload, isMemoryFsPayload } from './memory-fs-channel.js'
 
 /**
  * The git subcommands a sandbox will run, enforced HERE.
@@ -177,6 +178,9 @@ export function createExecHandler(
     // open descriptor, so "is this inside the mount" and "which directory is it" are one question
     // with one answer instead of two that a rename can separate.
     if (capability === 'read') {
+      // The managed memory tree rides the same capability: its root is on the same mount, and the
+      // primitives are walked from the same anchor by the same descent.
+      if (isMemoryFsPayload(payload)) return applyMemoryFsPayload(payload, deps.workspaceRoot)
       return applyWorkspaceFilesPayload(payload, deps.workspaceRoot)
     }
     throw new ExecRefusedError(`capability ${capability} is not served by this handler`)

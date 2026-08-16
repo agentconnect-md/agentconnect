@@ -4,7 +4,7 @@
  * canonical records; `none` exposes neither. Bodies live only on the daemon and
  * transit the CP as correlated replies (§1/§12).
  *
- * Path containment stays inside each file provider (`resolveInMemoryDir` for
+ * Path containment stays inside each file provider (`memoryTopicName` for
  * managed, nested containment for native): an escape throws `MemoryPathError` →
  * `BAD_PAYLOAD`. An unknown agent is also `BAD_PAYLOAD`; a not-yet-created
  * file/dir is data (`exists:false`), not an error. Frame-size safety mirrors the
@@ -51,7 +51,9 @@ import {
   readChannelMemoryMeta,
   MemoryPathError,
   MemoryTooLargeError,
-  MemoryConflictError
+  MemoryConflictError,
+  MemorySandboxUnavailableError,
+  type MemoryFs
 } from '../agents/memory.js'
 import type { MemoryAdminSurface, MemoryScope } from '../agents/memory-provider.js'
 
@@ -64,7 +66,7 @@ export class MemoryViolationError extends Error {
   }
 }
 
-export { MemoryPathError, MemoryTooLargeError, MemoryConflictError }
+export { MemoryPathError, MemoryTooLargeError, MemoryConflictError, MemorySandboxUnavailableError }
 
 export interface MemoryReader {
   channels(req: MemoryChannelsReq): Promise<MemoryChannelsPage>
@@ -90,22 +92,32 @@ function isErrno(err: unknown, code: string): boolean {
   return (err as NodeJS.ErrnoException | null)?.code === code
 }
 
-/** `agentDirByAgent` resolves an agent id → its root dir (which holds `memory/`),
- *  or undefined for an unknown agent. */
+/** `memoryFsFor` resolves an agent id → the port over its managed memory tree
+ *  (undefined for an unknown agent); it throws `MemorySandboxUnavailableError` for a
+ *  cluster agent whose sandbox is not running. */
 export function createMemoryReader(
-  agentDirByAgent: (agentId: string) => string | undefined,
+  memoryFsFor: (agentId: string) => MemoryFs | undefined,
   provider?: AgentMemoryAdminResolver
 ): MemoryReader {
-  function dirFor(agentId: string): string {
-    const dir = agentDirByAgent(agentId)
-    if (!dir) throw new MemoryViolationError(`unknown agent "${agentId}"`)
-    return dir
+  function dirFor(agentId: string): MemoryFs {
+    const fs = memoryFsFor(agentId)
+    if (!fs) throw new MemoryViolationError(`unknown agent "${agentId}"`)
+    return fs
+  }
+
+  /** Identity only: a known agent whose sandbox is asleep is still a known agent. */
+  function assertKnown(agentId: string): void {
+    try {
+      dirFor(agentId)
+    } catch (err) {
+      if (!(err instanceof MemorySandboxUnavailableError)) throw err
+    }
   }
 
   function adminSurface(agentId: string): MemoryAdminSurface {
     // Validate agent identity independently of provider selection. A resolver's
     // default provider fallback must not turn an unknown id into an admin surface.
-    dirFor(agentId)
+    assertKnown(agentId)
     return (
       provider?.adminSurfaceForAgent(agentId) ?? {
         shape: 'files',

@@ -106,7 +106,7 @@ export async function nativeMemoryRead(
   if (!spec) return { path, content: '' }
   const root = spec.readRoot(agentDir)
   const abs = resolveContained(root, path)
-  return { path, content: await readContainedMemoryFile(agentDir, root, abs) }
+  return { path, content: await readContainedMemoryFile(agentDir, abs) }
 }
 
 /** Overwrite one native memory file (console edit). Atomic tmp+rename; size-capped. */
@@ -124,6 +124,6 @@ export async function nativeMemoryWrite(
   }
   const root = spec.readRoot(agentDir)
   const abs = resolveContained(root, path)
-  const { stat: st } = await atomicWriteContainedMemoryFile(agentDir, root, abs, content, ifMatch)
-  return { ok: true, path, size: st.size, mtime: st.mtime.toISOString() }
+  const st = await atomicWriteContainedMemoryFile(agentDir, abs, content, ifMatch)
+  return { ok: true, path, size: st.size, mtime: st.mtime }
 }

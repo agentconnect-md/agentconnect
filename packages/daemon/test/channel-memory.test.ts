@@ -17,10 +17,13 @@ import {
   readChannelMemoryMeta,
   MemoryPathError
 } from '../src/agents/memory.js'
+import { LocalMemoryFs } from '../src/agents/memory-fs.js'
+
+const local = (dir: string) => new LocalMemoryFs(dir)
 
 function provider() {
   const dir = mkdtempSync(join(tmpdir(), 'ac-chan-mem-'))
-  return { dir, mem: createManagedMemoryProvider(() => dir) }
+  return { dir, mem: createManagedMemoryProvider(() => local(dir)) }
 }
 
 const chan = (channel: string, transportScope?: string) => ({
@@ -38,9 +41,9 @@ describe('memoryChannelKey / channelMemoryRoot', () => {
   })
 
   it('rejects an unsafe channel key so a crafted key cannot escape the agent tree', () => {
-    expect(() => channelMemoryRoot('/agent', '..')).toThrow(MemoryPathError)
-    expect(() => channelMemoryRoot('/agent', 'a/b')).toThrow(MemoryPathError)
-    expect(channelMemoryRoot('/agent', 'ok-key_1')).toBe('/agent/channels/ok-key_1')
+    expect(() => channelMemoryRoot(local('/agent'), '..')).toThrow(MemoryPathError)
+    expect(() => channelMemoryRoot(local('/agent'), 'a/b')).toThrow(MemoryPathError)
+    expect(channelMemoryRoot(local('/agent'), 'ok-key_1').root).toBe('/agent/channels/ok-key_1')
   })
 })
 
@@ -49,8 +52,8 @@ describe('channel-scoped memory overlay', () => {
     const { mem } = provider()
     const a = chan('C1')
     const b = chan('C2')
-    mem.ensure(a, 'bot')
-    mem.ensure(b, 'bot')
+    await mem.ensure(a, 'bot')
+    await mem.ensure(b, 'bot')
 
     await mem.write(a, 'notes.md', '- channel A note', undefined, 'tool')
     expect((await mem.read(a, 'notes.md')).content).toBe('- channel A note')
@@ -63,11 +66,11 @@ describe('channel-scoped memory overlay', () => {
     const { mem } = provider()
     const base = { agentId: 'bot-a' }
     const a = chan('C1')
-    mem.ensure(base, 'bot')
+    await mem.ensure(base, 'bot')
     await mem.write(base, 'shared.md', '- shared base fact', undefined, 'tool')
     await mem.write(base, 'topic.md', '- base version', undefined, 'tool')
 
-    mem.ensure(a, 'bot')
+    await mem.ensure(a, 'bot')
     await mem.write(a, 'topic.md', '- channel version', undefined, 'tool')
 
     // Base-only file is visible from the channel (fallback); shadowed file returns
@@ -86,9 +89,9 @@ describe('channel-scoped memory overlay', () => {
     const { mem } = provider()
     const base = { agentId: 'bot-a' }
     const a = chan('C1')
-    mem.ensure(base, 'bot')
+    await mem.ensure(base, 'bot')
     await mem.write(base, 'topic.md', '- base version', undefined, 'tool')
-    mem.ensure(a, 'bot')
+    await mem.ensure(a, 'bot')
     // Intentionally clear the topic in this channel by writing empty content.
     await mem.write(a, 'topic.md', '', undefined, 'tool')
 
@@ -102,9 +105,9 @@ describe('channel-scoped memory overlay', () => {
     const { mem } = provider()
     const base = { agentId: 'bot-a' }
     const a = chan('C1')
-    mem.ensure(base, 'bot')
+    await mem.ensure(base, 'bot')
     await mem.write(base, 'MEMORY.md', '# base index', undefined, 'tool')
-    mem.ensure(a, 'bot')
+    await mem.ensure(a, 'bot')
     await mem.write(a, 'MEMORY.md', '# channel index', undefined, 'tool')
 
     const injected = await mem.standingContextAtSessionStart(a)
@@ -114,10 +117,10 @@ describe('channel-scoped memory overlay', () => {
 
   it('the CP memory reader lists channel folders and routes reads to the selected channel', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'ac-chan-reader-'))
-    const mem = createManagedMemoryProvider(() => dir)
-    const reader = createMemoryReader(() => dir, { adminSurfaceForAgent: () => mem.adminSurface() })
+    const mem = createManagedMemoryProvider(() => local(dir))
+    const reader = createMemoryReader(() => local(dir), { adminSurfaceForAgent: () => mem.adminSurface() })
     const a = chan('C1')
-    mem.ensure(a, 'bot')
+    await mem.ensure(a, 'bot')
     await mem.write(a, 'notes.md', '- channel A note', undefined, 'tool')
 
     // channels() surfaces the folder with its source identity.
@@ -139,11 +142,11 @@ describe('channel-scoped memory overlay', () => {
   it('records channel source metadata so the console can name folders', async () => {
     const { dir, mem } = provider()
     const a = chan('C1', 'scope-1')
-    mem.ensure(a, 'bot')
+    await mem.ensure(a, 'bot')
     await mem.write(a, 'x.md', '- x', undefined, 'tool')
 
-    const keys = await listChannelMemoryKeys(dir)
+    const keys = await listChannelMemoryKeys(local(dir))
     expect(keys).toContain(a.channelKey)
-    expect(await readChannelMemoryMeta(dir, a.channelKey)).toEqual({ channel: 'C1', transportScope: 'scope-1' })
+    expect(await readChannelMemoryMeta(local(dir), a.channelKey)).toEqual({ channel: 'C1', transportScope: 'scope-1' })
   })
 })

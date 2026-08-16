@@ -1,5 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto'
-import type { MemoryConnectionSpec, MemoryPluginManifest } from '@agentconnect.md/protocol'
+import type {
+  CaptureReceipt,
+  MemoryConnectionSpec,
+  MemoryPluginCaptureInput,
+  MemoryPluginManifest,
+  MemoryPluginOperationStatusInput
+} from '@agentconnect.md/protocol'
 import { canonicalAgentMemoryKey } from '../agents/memory-recall.js'
 import type { LocalStore, MemoryCaptureOutboxRow } from '../store/local-store.js'
 import type { MemoryPluginClient } from './client.js'
@@ -23,6 +29,28 @@ export interface MemoryCaptureConnectionRegistry {
   connectionIds(): readonly string[]
   clientFor(connectionId: string): MemoryPluginClient | undefined
   specFor(connectionId: string): MemoryConnectionSpec | undefined
+  markDegraded(connectionId: string, reasonCode?: string): void
+  markRecovered(connectionId: string, reasonCodes: readonly string[]): void
+}
+
+/** What the pump needs from a capture target: the plugin client's shape, so a daemon-owned target
+ *  (the managed distillation of a cluster agent) can stand in for a plugin connection. */
+export interface MemoryCaptureClient {
+  manifest: {
+    plugin: { id: string }
+    capabilities: { idempotency: MemoryPluginManifest['capabilities']['idempotency'] }
+  }
+  manifestDigest?: string
+  capture(input: MemoryPluginCaptureInput): Promise<CaptureReceipt>
+  operationStatus(input: MemoryPluginOperationStatusInput): Promise<CaptureReceipt>
+}
+
+/** The registry as the PUMP sees it — every plugin registry satisfies it, and so does a composite
+ *  that adds daemon-owned targets beside the plugin connections. */
+export interface MemoryCapturePumpRegistry {
+  connectionIds(): readonly string[]
+  clientFor(connectionId: string): MemoryCaptureClient | undefined
+  specFor(connectionId: string): Pick<MemoryConnectionSpec, 'revision'> | undefined
   markDegraded(connectionId: string, reasonCode?: string): void
   markRecovered(connectionId: string, reasonCodes: readonly string[]): void
 }
@@ -124,8 +152,8 @@ function retryDelay(attempts: number, baseMs: number, maxMs: number): number {
 
 function definitionMismatch(
   row: MemoryCaptureOutboxRow,
-  spec: MemoryConnectionSpec,
-  client: MemoryPluginClient
+  spec: Pick<MemoryConnectionSpec, 'revision'>,
+  client: MemoryCaptureClient
 ): 'connection_revision_changed' | 'plugin_id_changed' | 'manifest_mismatch' | 'idempotency_changed' | undefined {
   if (spec.revision !== row.connectionRevision) return 'connection_revision_changed'
   if (client.manifest.plugin.id !== row.pluginId) return 'plugin_id_changed'
@@ -150,7 +178,7 @@ export class MemoryCaptureOutbox {
 
   constructor(
     private readonly store: LocalStore,
-    private readonly registry: MemoryCaptureConnectionRegistry,
+    private readonly registry: MemoryCapturePumpRegistry,
     private readonly options: MemoryCaptureOutboxOptions = {}
   ) {
     this.now = options.now ?? Date.now
@@ -300,7 +328,7 @@ export class MemoryCaptureOutbox {
     this.timer.unref?.()
   }
 
-  private currentClient(row: MemoryCaptureOutboxRow): MemoryPluginClient | undefined {
+  private currentClient(row: MemoryCaptureOutboxRow): MemoryCaptureClient | undefined {
     const spec = this.registry.specFor(row.connectionId)
     const client = this.registry.clientFor(row.connectionId)
     if (!spec || !client) return undefined

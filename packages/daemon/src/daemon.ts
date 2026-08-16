@@ -356,7 +356,8 @@ import {
   type MemoryScope,
   type PreparedExternalMemoryCapture
 } from './agents/memory-provider.js'
-import { memoryChannelKey } from './agents/memory.js'
+import { memoryChannelKey, MemorySandboxUnavailableError, type MemoryFs } from './agents/memory.js'
+import { resolveMemoryFs } from './agents/memory-fs.js'
 import { createWorkspaceGit } from './cp/workspace-git.js'
 import { DAEMON_VERSION } from './version.js'
 import { CpCronRegistry } from './cp/cp-cron.js'
@@ -377,6 +378,7 @@ import { CpIntegrationRegistry } from './cp/cp-integration-registry.js'
 import { CpMcpDefs } from './mcp/cp-mcp-defs.js'
 import { CpMemoryConnectionRegistry, type MemoryPluginConnector } from './cp/memory-connection-registry.js'
 import { MemoryCaptureOutbox } from './memory-plugin/outbox.js'
+import { managedDistillCapture, withManagedDistill } from './agents/managed-distill-outbox.js'
 import { defaultMemoryPluginMetrics } from './memory-plugin/metrics.js'
 import { openMountedPostgresDataPlane, type PostgresDataPlane } from './store/postgres-data-plane.js'
 import {
@@ -1937,30 +1939,31 @@ export class Daemon {
   // runtime's own memory redirected under the private runtime HOME only while the
   // agent runs in the sandbox). Backs the memory MCP tools, the session-start index
   // injection, and the CP console's memory reads.
-  private memory: DispatchingMemoryProvider = createMemoryProvider(
-    (id) => {
+  private memory: DispatchingMemoryProvider = createMemoryProvider({
+    memoryFsFor: (id) => this.memoryFsFor(id),
+    agentDirByAgent: (id) => {
       const agent = this.agents.get(id)
       if (!agent) return undefined
       return memoryKindOf(agent) === 'native' && this.agentRunsInSandbox(agent) ? runtimeHomePath(agent.dir) : agent.dir
     },
-    (id) => {
+    runtimeFor: (id) => {
       const a = this.agents.get(id)
       return a ? this.runtimes[a.runtime] : undefined
     },
-    (id) => {
+    providerKindFor: (id) => {
       const a = this.agents.get(id)
       return a ? memoryKindOf(a) : 'managed'
     },
-    (id) => {
+    autoDistillFor: (id) => {
       const memory = this.agents.get(id)?.memory
       return memory?.provider !== 'external' && memory?.autoDistill === true
     },
-    (id, prompt) => this.runMemoryExtraction(id, prompt),
-    (id) => {
+    extract: (id, prompt) => this.runMemoryExtraction(id, prompt),
+    externalBindingFor: (id) => {
       const binding = this.agents.get(id)?.memory
       return binding?.provider === 'external' ? binding : undefined
     },
-    {
+    externalDeps: {
       registry: {
         connectionIds: () => this.memoryConnections?.connectionIds() ?? [],
         clientFor: (connectionId) => this.memoryConnections?.clientFor(connectionId),
@@ -1975,7 +1978,7 @@ export class Daemon {
         }
       }
     }
-  )
+  })
   /** Provider-neutral serialized post-turn work. Managed distills; external enqueues capture. */
   private memoryPostTurnChains = new Map<string, Promise<void>>()
   private memoryExtractionCollectors = new Map<string, MemoryExtractionCollector>()
@@ -2973,6 +2976,8 @@ export class Daemon {
           tunnelsFor: (agentId) =>
             this.agents.get(agentId)?.workspace.gitCredential === 'github-app' ? ['gitcred'] : [],
           tunnelSocketPath: (tunnel) => (tunnel === 'gitcred' ? gitcredSocketPath(root) : undefined),
+          // A bound sandbox is a reachable memory tree: drain any managed capture that waited for it.
+          onSandboxBound: () => this.memoryOutbox?.wake(),
           log: {
             info: (message) => this.log.info(message),
             warn: (message) => this.log.warn(message),
@@ -3193,9 +3198,38 @@ export class Daemon {
 
     this.store = this.dataPlane?.store ?? new LocalStore(statePath(root))
     this.store.setTranscriptMutationListener((mutation) => this.scheduleSessionActivity(mutation))
-    this.memoryOutbox = new MemoryCaptureOutbox(this.store, this.memoryConnections, {
-      log: { warn: (message) => this.log.warn(message) }
-    })
+    // The pump also drains a cluster agent's managed distillation once its sandbox is bound again —
+    // a turn captured after the pod was suspended waits here rather than being lost.
+    this.memoryOutbox = new MemoryCaptureOutbox(
+      this.store,
+      withManagedDistill(this.memoryConnections, {
+        agentIds: () =>
+          [...this.agents.values()]
+            .filter(
+              (agent) => memoryKindOf(agent) === 'managed' && (!this.dutyEnforced() || this.duties.holdsAgent(agent.id))
+            )
+            .map((agent) => agent.id),
+        reachable: (agentId) => !this.k8sPlane || this.k8sPlane.runsInSandbox(agentId),
+        distill: async (agentId, turn) => {
+          const agent = this.agents.get(agentId)
+          if (!agent) throw new Error(`unknown agent ${agentId}`)
+          await this.memory.recordTurnForBinding(
+            {
+              ...this.memoryScopeForSession(agentId, turn.sessionId ?? ''),
+              ...(turn.sessionId ? { sessionId: turn.sessionId } : {})
+            },
+            {
+              turnId: turn.turnId,
+              ...(turn.sessionId ? { sessionId: turn.sessionId } : {}),
+              input: turn.input,
+              output: turn.output
+            },
+            agent.memory
+          )
+        }
+      }),
+      { log: { warn: (message) => this.log.warn(message) } }
+    )
     this.memoryOutbox.start()
     // Model-catalog cache: synchronous last-good hydrate BEFORE the CP client
     // starts, so the register-time facts snapshot already carries models + the
@@ -5183,6 +5217,14 @@ export class Daemon {
     })
   }
 
+  /** The one factory every memory consumer is built on: the port over the agent's managed memory
+   *  tree, decided by placement (`resolveMemoryFs`); undefined for an unknown agent, and it throws
+   *  `MemorySandboxUnavailableError` for a cluster agent whose sandbox is not bound. */
+  private memoryFsFor(agentId: string): MemoryFs | undefined {
+    const agent = this.agents.get(agentId)
+    return agent ? resolveMemoryFs(agent, this.k8sPlane) : undefined
+  }
+
   /** The one daemon-owned workspace preparation contract used by ordinary
    * sessions and by the cold-host lifecycle gate below. Keeping the managed
    * cache, trusted installer state, and runtime CLI identity together prevents
@@ -5804,7 +5846,8 @@ export class Daemon {
           })
         }
       } catch (error) {
-        if (observableCapture) {
+        // A deferred managed capture (sandbox asleep) is not a failure: it completes from the outbox.
+        if (observableCapture && !(error instanceof MemorySandboxUnavailableError)) {
           this.emitEvaluation({
             type: 'memory.capture.failed',
             agentId,
@@ -5835,8 +5878,16 @@ export class Daemon {
       .then(async () => {
         await record()
       })
-      // Never log plugin/upstream response text: it may contain memory bodies or credentials.
-      .catch(logFailure)
+      .catch((err: unknown) => {
+        // The tree is on a sandbox that has gone to sleep since the turn: keep the capture durably and
+        // distill it once the pod is bound again, instead of dropping the turn with a warning.
+        if (err instanceof MemorySandboxUnavailableError && this.memoryOutbox) {
+          const result = this.memoryOutbox.enqueue(managedDistillCapture({ agentId, turnId, sessionId, input, output }))
+          if (result.status === 'inserted' || result.status === 'duplicate') return
+        }
+        // Never log plugin/upstream response text: it may contain memory bodies or credentials.
+        logFailure(err)
+      })
       .finally(() => {
         if (this.memoryPostTurnChains.get(agentId) === next) this.memoryPostTurnChains.delete(agentId)
       })
@@ -6572,6 +6623,7 @@ export class Daemon {
   private dreamRunner(): DreamRunner {
     this.dreamRunnerInstance ??= new DreamRunner({
       agentDirByAgent: (id) => this.agents.get(id)?.dir,
+      memoryFsFor: (id) => this.memoryFsFor(id),
       dreamingPolicyFor: (id) => dreamingPolicyOf(this.agents.get(id)),
       operationPolicy: this.dreamOperationsAllowed() ? (this.opts.hostFactory ? 'test-only' : 'enabled') : 'blocked',
       store: this.store,
@@ -6583,6 +6635,17 @@ export class Daemon {
         ),
       withSkillAcceptance: async (agentId, publish) => {
         return this.withWorkspaceFileWrite(agentId, publish)
+      },
+      // A dream is authorized background work like a turn: under --k8s wake and bind the sandbox
+      // (the memory tree and the dream host both live there) and hold it against the idle sweep
+      // for the job's duration; a local agent's home is always up.
+      withMemoryHome: async (agentId, work) => {
+        const plane = this.k8sPlane
+        if (!plane) return work()
+        return plane.withSandbox(agentId, async () => {
+          await plane.ensureChannel(agentId)
+          return work()
+        })
       },
       onEvent: (event) => this.recordDreamLifecycle(event),
       log: this.log
@@ -20358,6 +20421,8 @@ export class Daemon {
       if ((this.activeDispatchesByAgent.get(agentId)?.size ?? 0) > 0) return true
       for (const p of this.pending.values()) if (p.agentId === agentId) return true
       for (const entry of this.activeGateEntries.values()) if (entry.agentId === agentId) return true
+      // A dream in flight is an in-flight job: its host and staging are on the sandbox this member holds.
+      if (this.dreamRunnerInstance?.inFlight(agentId)) return true
     }
     return false
   }
@@ -22490,7 +22555,7 @@ export class Daemon {
         claimDuty: async (id) => this.dutyEnforced() && (await this.claimDutyForTrigger(id)).granted,
         log: this.log
       }),
-      memoryReader: createMemoryReader((id) => this.agents.get(id)?.dir, this.memory),
+      memoryReader: createMemoryReader((id) => this.memoryFsFor(id), this.memory),
       dreamReader: createDreamReader(this.dreamRunner()),
       localSkillsReader: createLocalSkillsReader(
         this.workspaces,
