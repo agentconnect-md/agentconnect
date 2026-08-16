@@ -1,5 +1,6 @@
 import { defineConfig } from 'vitest/config'
 import { integrationTestWorkerCount } from './test/integration-workers.js'
+import { CostBalancedSequencer } from './test/shard-sequencer.js'
 import { githubActionsReporters } from '../../scripts/vitest-github-reporters.js'
 
 const integrationWorkers = integrationTestWorkerCount()
@@ -21,6 +22,11 @@ export default defineConfig({
   test: {
     pool: 'threads',
     reporters: githubActionsReporters('control-plane.md'),
+    // `--shard` otherwise splits by file COUNT, which is blind to cost and leaves the shard holding
+    // the expensive files to absorb every bad-runner minute. Weight and pack them instead — see
+    // `test/shard-sequencer.ts`. Vitest resolves ONE sequencer per run and only calls `shard()` when
+    // `--shard` is passed, so the unit project (never sharded) keeps the stock behavior.
+    sequence: { sequencer: CostBalancedSequencer },
     projects: [
       {
         extends: true,
