@@ -137,9 +137,8 @@ and Sandboxes. Each member also receives its Pod UID through the Downward API as
 `AC_K8S_MEMBER_ID`; the runtime probe hashes it into
 `agent-ac-runtime-probe-<member-hash>`, so simultaneous member startup never races
 on one probe claim. Probe claims carry a dedicated label and a 15-minute expiry;
-members periodically delete expired claims, so a missed teardown cannot retain a
-Sandbox and volume forever. Each GC delete carries the UID and resourceVersion from
-its LIST snapshot, so a same-name replacement cannot be deleted by a stale sweep.
+the orphan reconciler (§4) collects an expired one, so a missed teardown cannot
+retain a Sandbox and volume forever.
 
 **Org-threading is the end state; instantiation is scaffolding.** The wire
 carries the org, the data plane carries the org, and the process interior
@@ -226,9 +225,9 @@ after the list is never the object deleted. Each sweep logs one summary line
 enabled per deployment with `AC_K8S_ORPHAN_DELETE=true` after an observation
 window in which the summary lines show it collecting exactly what an operator
 would (`AC_K8S_ORPHAN_SWEEP_INTERVAL_MS` and `AC_K8S_ORPHAN_GRACE_MS` tune the
-cadence and grace). It subsumes the dedicated probe-claim GC and makes agent
-removal's sandbox teardown best-effort: `discardAgent` deletes the claim once
-and logs a failure, and the reconciler collects the leftovers.
+cadence and grace). It replaced the dedicated probe-claim GC, and agent
+removal's sandbox teardown is best-effort because of it: `discardAgent` deletes
+the claim once and logs a failure, and the reconciler collects the leftovers.
 
 ## 5. The duty ledger and lease service (D6, D7)
 

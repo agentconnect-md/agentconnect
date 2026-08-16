@@ -20118,7 +20118,7 @@ export class Daemon {
    *
    * Best effort by construction: the durable local removal has already succeeded, and failing the
    * lifecycle ACK over a leaked claim would leave the CP and this daemon disagreeing about whether
-   * the agent exists. A failure is therefore reported with the command that finishes the job.
+   * the agent exists. One delete, logged on failure; the orphan reconciler collects what is left.
    */
   private async discardClusterSandbox(agentId: string): Promise<void> {
     const plane = this.k8sPlane
@@ -20127,8 +20127,8 @@ export class Daemon {
       await plane.discardAgent(agentId)
     } catch (err) {
       this.log.warn(
-        `cluster: could not delete the sandbox for removed agent "${agentId}" — its pod and workspace volume ` +
-          `are still allocated (${formatErr(err)}); delete sandboxclaim "${plane.driver.claimName(agentId)}" to reclaim them`
+        `cluster: could not delete the sandbox for removed agent "${agentId}" (${formatErr(err)}) — ` +
+          `sandboxclaim "${plane.driver.claimName(agentId)}" is left for the orphan reconciler`
       )
     }
   }
