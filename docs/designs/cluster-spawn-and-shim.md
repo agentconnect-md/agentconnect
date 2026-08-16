@@ -279,10 +279,12 @@ a launch outlives the host it was made for (a bind for workspace preparation mak
 any runtime exists), and a rule evaluated from state each tick cannot be stranded by a teardown
 that failed. The cost is at most one sweep interval of delay after the host goes.
 
-There is no separate wake path: `bindChannel` already patches `Running` before it waits for
+A turn needs no separate wake path: `bindChannel` already patches `Running` before it waits for
 readiness, so the next turn resumes the instance as a side effect of needing it. That is also
 what makes the resume measurable — `ensureSandbox` reports `resume` rather than `warm` when it
-finds the Sandbox Suspended.
+finds the Sandbox Suspended. The one caller that is not a turn is the console's explicit wake
+(below): it needs the pod for a workspace read rather than for a runtime, so it drives the same
+resume and stops at the shim bind, creating no host and no ACP session.
 
 One gap this leaves, deliberately: a pod still Running from _before_ a daemon restart has no
 launch in the new process, so nothing considers it until the agent is used again — at which

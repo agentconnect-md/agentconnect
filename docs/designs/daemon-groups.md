@@ -7,11 +7,12 @@ PR 2, the org-scoped sets this document exists for, is designed and not built
 degenerate case of what this document generalizes.)
 
 A _daemon group_ is a named set of daemons within which an agent's duty may be claimed.
-The k8s pool is one such group — implicit, install-wide, its members every frame-mode Pod
-of the install. This document makes the concept explicit and org-scoped so that
-self-hosted installs can form groups out of ordinary local daemons: point an agent at a
-group instead of a machine, and the same ledger, lease exchange, install-on-grant,
-self-fence, and holder-following delivery distribute it within the group. For local
+The k8s pool is one such group, and since #1003 it is an explicit one: a `member_set` row,
+install-wide and org-less, its members every frame-mode Pod of the install. What remains
+for this document is the org-scoped half, so that self-hosted installs can form groups out
+of ordinary local daemons: point an agent at a group instead of a machine, and the same
+ledger, lease exchange, install-on-grant, self-fence, and holder-following delivery
+distribute it within the group. For local
 daemons this is the cross-machine generalization of the singleton pid lock — today two
 local daemons configured with the same bot token fight over the platform API; a group
 makes multi-machine failover safe for the first time.
@@ -39,10 +40,10 @@ member-shaped — none of it knows or cares whether the holder is a Pod or a lap
 `domain/placement.ts` was written with this document in mind. Its contract: _nothing
 outside this module may branch on the placement kind; a later kind adds one arm here
 and one join in the ledger's predicate, and the callers do not learn about it._ This
-design holds it to that — and goes one step further than the module anticipated: the
-`pool` arm it has today is not joined by a `group` arm but **replaced** by a single
-`set` arm that is a membership lookup (§3), so the module ends with fewer branches
-than it started with, not more.
+design held it to that — and went one step further than the module anticipated: the
+`pool` arm was not joined by a `group` arm but **replaced** by a single `set` arm that is
+a membership lookup (§3), so the module ended with fewer branches than it started with,
+not more. Adding org sets adds none: they are more rows, not another arm.
 
 ## 2. Model
 
@@ -113,15 +114,15 @@ tenancy gate widens, never disappears._ Concretely:
   pool agent (it can never be enrolled in the org-less set). The pool does not absorb
   groups; groups do not reach the pool.
 
-So `claimScopeOf(daemon)` stops being a two-valued predicate. It becomes "which set is
-this daemon a member of, if any":
+So `claimScopeOf(daemon)` is no longer a two-valued predicate — PR 1 already made it
+"which set is this daemon a member of, if any":
 
 ```
 member(setId)   — the daemon is in member_set_member for setId
 none            — in no set (today's single-org daemon)
 ```
 
-and `mayHold(agent, claimant)` collapses to **one rule** for every set agent:
+and `mayHold(agent, claimant)` is **one rule** for every set agent:
 
 ```
 agent.placementKind = 'set'  ⇒  claimant.setId = agent.setId

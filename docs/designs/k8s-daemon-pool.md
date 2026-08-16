@@ -67,12 +67,16 @@ connects to the data plane; members bridge the two. This is the pool-scale
 restatement of the existing invariant that the CP stores only control-plane
 metadata, never message bodies.
 
-**P4 — Fencing by term.** Every claim carries a CP-minted monotonic **term**.
-Data-plane writes are conditional on the writer's term; the shim accepts the
-highest-term dialer and drops older connections. A stale ex-holder is fenced
-everywhere it could do harm — at the sandbox, at the database, at the ledger.
-This generalizes the existing `sessionEpoch`/`launchId` fencing discipline to
-pool membership.
+**P4 — Fencing by term at the edges, by ownership at the store.** Every claim
+carries a CP-minted monotonic **term**: the shim accepts the highest-term dialer
+and drops older connections, and the ledger arbitrates every claim on
+`(holder, term)`. The database arm is spelled differently — a data-plane write
+carries no term (§11). A stale ex-holder is stopped there by the duty gate before
+it reaches the statement, by row ownership wherever it holds a claim, and by a
+race-safe statement wherever two members may both legitimately write. So it is
+still fenced everywhere it could do harm — at the sandbox, at the database, at
+the ledger — with the term generalizing the existing `sessionEpoch`/`launchId`
+discipline to pool membership.
 
 ### Decision summary
 
@@ -791,7 +795,7 @@ dials, and sandboxes never dial anyone.
 | **Member ↔ CP partition**            | The member self-fences its duties at T_fence, including tearing down platform connections.                                                                                                                                                                                                                                      | Accepted false-positive teardown when the CP is up but unreachable from this member                                                  |
 | **Member ↔ data-plane PG partition** | The member cannot serve state: fail turns after a bounded retry window, release duties, stop accepting work.                                                                                                                                                                                                                    | Data-plane PG availability is pool availability                                                                                      |
 | **Member ↔ sandbox path break**      | Dial-retry with backoff; after N failures, release the agent's duty so another member claims and dials from its own network position.                                                                                                                                                                                           | N × backoff before relocation                                                                                                        |
-| **Shim side**                        | On connection drop the shim just listens — it never dials. A half-dead old holder is fenced by term at the shim and at every data-plane write.                                                                                                                                                                                  | Fencing is absolute, not probabilistic                                                                                               |
+| **Shim side**                        | On connection drop the shim just listens — it never dials. A half-dead old holder is fenced by term at the shim, and stopped at the store by the duty gate and row ownership (§11).                                                                                                                                             | Fencing is absolute, not probabilistic                                                                                               |
 | **CP outage**                        | Existing holders keep serving until T_fence. No new claims, no wakes of new duties, no failovers until the CP returns — "CP down = activation pauses, established sessions continue."                                                                                                                                           | Outage > T_fence tears down daemon-held ingress pool-wide (accepted trade, §5)                                                       |
 
 ## 14. Local/pool parity (D15) and rollout
@@ -983,24 +987,24 @@ shrinking every actor's permissions.
 
 ## 16. Glossary
 
-| Term                       | Meaning                                                                                                             |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| **Pool**                   | The shared daemon fleet: a fixed-size Deployment of multi-tenant members                                            |
-| **Member**                 | One pool process; fungible; holds duties it has claimed                                                             |
-| **Room**                   | Per-agent runtime state inside a member: sandbox connection, ACP sessions, turn queues, streaming state             |
-| **Org context**            | Thin refcounted per-org context: config snapshot, org-scoped store handle                                           |
-| **Duty**                   | An exactly-one responsibility recorded as a claimable ledger row: a daemon-held bot connection or an agent home     |
-| **Duty group**             | The claim unit: a connected component of the agent↔daemon-held-bot graph (enabled crons are edges)                  |
-| **Ledger**                 | The CP-hosted `duty_group` table; the single source of who-holds-what                                               |
-| **Term**                   | CP-minted monotonic fencing token per grant; carried on data-plane writes and the shim handshake; highest term wins |
-| **T_fence**                | Renewal-failure window after which a holder self-fences, anchored on a CP-confirmed renewal (#976)                  |
-| **Member set**             | The set of daemons within which an agent's duty may be claimed; the pool is the org-less one, one per install       |
-| **T_reassign** (> T_fence) | Silence window after which the CP treats a duty as vacant and grantable                                             |
-| **Recovery grace**         | The CP's startup wait of one full T_reassign before granting vacancies, making CP restarts non-events               |
-| **Vacancy grant**          | The single claim call, carried on the heartbeat: "grant me up to K vacant duties"                                   |
-| **Rendezvous**             | Activation of an unheld group: any member receives the trigger, claims on receipt, and a loser NAKs with the winner |
-| **Sleep-as-migration**     | Drain strategy: a sleeping agent moves by not moving — it wakes wherever its duty is next claimed                   |
-| **Dial-in binding**        | The duty holder dials the sandbox's shim listener, TokenReviews its projected SA token, and binds at its term       |
+| Term                       | Meaning                                                                                                                                            |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Pool**                   | The shared daemon fleet: a fixed-size Deployment of multi-tenant members                                                                           |
+| **Member**                 | One pool process; fungible; holds duties it has claimed                                                                                            |
+| **Room**                   | Per-agent runtime state inside a member: sandbox connection, ACP sessions, turn queues, streaming state                                            |
+| **Org context**            | Thin refcounted per-org context: config snapshot, org-scoped store handle                                                                          |
+| **Duty**                   | An exactly-one responsibility recorded as a claimable ledger row: a daemon-held bot connection or an agent home                                    |
+| **Duty group**             | The claim unit: a connected component of the agent↔daemon-held-bot graph (enabled crons are edges)                                                 |
+| **Ledger**                 | The CP-hosted `duty_group` table; the single source of who-holds-what                                                                              |
+| **Term**                   | CP-minted monotonic fencing token per grant; carried on the shim handshake and the ledger's claims, never on a data-plane write; highest term wins |
+| **T_fence**                | Renewal-failure window after which a holder self-fences, anchored on a CP-confirmed renewal (#976)                                                 |
+| **Member set**             | The set of daemons within which an agent's duty may be claimed; the pool is the org-less one, one per install                                      |
+| **T_reassign** (> T_fence) | Silence window after which the CP treats a duty as vacant and grantable                                                                            |
+| **Recovery grace**         | The CP's startup wait of one full T_reassign before granting vacancies, making CP restarts non-events                                              |
+| **Vacancy grant**          | The single claim call, carried on the heartbeat: "grant me up to K vacant duties"                                                                  |
+| **Rendezvous**             | Activation of an unheld group: any member receives the trigger, claims on receipt, and a loser NAKs with the winner                                |
+| **Sleep-as-migration**     | Drain strategy: a sleeping agent moves by not moving — it wakes wherever its duty is next claimed                                                  |
+| **Dial-in binding**        | The duty holder dials the sandbox's shim listener, TokenReviews its projected SA token, and binds at its term                                      |
 
 ## 17. Implementation map
 
