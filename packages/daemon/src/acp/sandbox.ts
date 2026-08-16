@@ -69,22 +69,34 @@ function sandboxProviderLauncher(): { cmd: string; args: string[] } {
   return { cmd: process.execPath, args: [entry] }
 }
 
-let cachedHostSandbox: { value: SandboxMechanism | undefined } | undefined
+/** A host probe result: the live mechanism, or why this host cannot confine. */
+export interface SandboxProbe {
+  mechanism: SandboxMechanism | undefined
+  /** The provider's own failure text — the missing dependency names live here. */
+  reason?: string
+}
+
+let cachedHostSandbox: SandboxProbe | undefined
 
 /** Live Linux SRT/bwrap support on this host, or undefined (⇒ fail-open). */
 export function detectSandbox(env: NodeJS.ProcessEnv = process.env): SandboxMechanism | undefined {
-  if (env === process.env && cachedHostSandbox) return cachedHostSandbox.value
-  const value = probeSandbox(env)
-  if (env === process.env) cachedHostSandbox = { value }
-  return value
+  return probeSandboxHost(env).mechanism
+}
+
+/** The same one-shot probe, keeping the failure reason for the startup preflight log. */
+export function probeSandboxHost(env: NodeJS.ProcessEnv = process.env): SandboxProbe {
+  if (env === process.env && cachedHostSandbox) return cachedHostSandbox
+  const probe = probeSandbox(env)
+  if (env === process.env) cachedHostSandbox = probe
+  return probe
 }
 
 /** Keep the live SRT launch out of every Daemon constructor after the first one.
  * Production has one daemon, while a Linux test process may construct hundreds. */
-function probeSandbox(env: NodeJS.ProcessEnv): SandboxMechanism | undefined {
+function probeSandbox(env: NodeJS.ProcessEnv): SandboxProbe {
   // This rollout is intentionally Linux-only. macOS needs a runtime-neutral
   // credential strategy before private HOME + Seatbelt can be enabled safely.
-  if (process.platform !== 'linux') return undefined
+  if (process.platform !== 'linux') return { mechanism: undefined, reason: `unsupported platform ${process.platform}` }
 
   const root = mkdtempSync(join(tmpdir(), 'agentconnect-srt-probe-'))
   try {
@@ -107,16 +119,33 @@ function probeSandbox(env: NodeJS.ProcessEnv): SandboxMechanism | undefined {
     })
     const probe = spawnSync(launch.cmd, launch.args, {
       env: { ...env, HOME: privateHome },
-      stdio: 'ignore',
+      stdio: ['ignore', 'ignore', 'pipe'],
+      encoding: 'utf8',
       timeout: 10_000,
       windowsHide: true
     })
-    return probe.status === 0 ? 'bwrap' : undefined
-  } catch {
-    return undefined
+    if (probe.status === 0) return { mechanism: 'bwrap' }
+    return { mechanism: undefined, reason: probeFailureReason(probe) }
+  } catch (error) {
+    return { mechanism: undefined, reason: boundedReason(error instanceof Error ? error.message : String(error)) }
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
+}
+
+/** SRT reports missing host dependencies on the provider's stderr; prefer that over a bare exit code. */
+function probeFailureReason(probe: { stderr?: string; status: number | null; signal: string | null; error?: Error }) {
+  const stderr = boundedReason(probe.stderr ?? '')
+  if (stderr) return stderr
+  if (probe.error) return boundedReason(probe.error.message)
+  if (probe.signal) return `the SRT probe was killed by ${probe.signal}`
+  return `the SRT probe exited with status ${probe.status ?? 'unknown'}`
+}
+
+/** One bounded log line: SRT's message is multi-line and the daemon logger is line-oriented. */
+function boundedReason(text: string): string {
+  const collapsed = text.replace(/\s+/g, ' ').trim()
+  return collapsed.length > 300 ? `${collapsed.slice(0, 297)}...` : collapsed
 }
 
 /** True when `p` resolves to a strict descendant of `root` (never `root` itself). */
