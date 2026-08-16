@@ -398,6 +398,18 @@ function servedBy(
   return agentId !== null && agentId === authority.agentId && !!daemonId && authority.serving.includes(daemonId)
 }
 
+/** May `reportingDaemonId` close a run of `agentId` that was dispatched to `dispatchDaemonId`?
+ *  The accepted dispatch target is a provenance snapshot, not the fence: a pool member can be
+ *  retired mid-run, and the member that serves the agent afterwards reclaims the completion. */
+function mayReport(
+  authority: HookDispatchAuthority,
+  agentId: string | null,
+  reportingDaemonId: string,
+  dispatchDaemonId: string | null | undefined
+): boolean {
+  return dispatchDaemonId === reportingDaemonId || servedBy(authority, agentId, reportingDaemonId)
+}
+
 export class PgHookRepo implements HookRepo {
   constructor(
     private readonly db: PrismaLike,
@@ -1556,7 +1568,6 @@ export class PgHookRepo implements HookRepo {
           (r.agentId !== undefined && hook.agentId !== r.agentId) ||
           (r.configRevision !== undefined && hook.configRevision !== r.configRevision) ||
           (r.dispatchRevision !== undefined && hook.dispatchRevision !== r.dispatchRevision) ||
-          (r.dispatchDaemonId !== undefined && r.dispatchDaemonId !== reportingDaemonId) ||
           (r.reviewPolicySnapshot !== undefined && hook.reviewPolicy !== r.reviewPolicySnapshot) ||
           (r.reportingModeSnapshot !== undefined && hook.reportingMode !== r.reportingModeSnapshot) ||
           (r.gateModeSnapshot !== undefined && hook.gateMode !== r.gateModeSnapshot)
@@ -1634,7 +1645,7 @@ export class PgHookRepo implements HookRepo {
             r.reviewPolicySnapshot === undefined ||
             r.reportingModeSnapshot === undefined ||
             r.gateModeSnapshot === undefined ||
-            r.dispatchDaemonId !== reportingDaemonId ||
+            !mayReport(authority, run.agentId, reportingDaemonId, r.dispatchDaemonId) ||
             run.agentId !== r.agentId ||
             run.configRevision !== r.configRevision ||
             (run.event !== null && r.event !== undefined && run.event !== r.event) ||
@@ -1781,12 +1792,13 @@ export class PgHookRepo implements HookRepo {
             run.agentId !== r.agentId ||
             run.configRevision !== r.configRevision ||
             run.dispatchRevision !== r.dispatchRevision ||
-            run.dispatchDaemonId !== r.dispatchDaemonId ||
-            r.dispatchDaemonId !== reportingDaemonId)
+            run.dispatchDaemonId !== r.dispatchDaemonId)
         )
           return false
+        // The accepted dispatch target stays a provenance snapshot; who may close the row is the
+        // daemon that dispatched it or the one that serves its agent now.
         const acceptedDaemon = run.dispatchDaemonId
-        if (acceptedDaemon ? acceptedDaemon !== reportingDaemonId : false) return false
+        if (acceptedDaemon && !mayReport(authority, run.agentId, reportingDaemonId, acceptedDaemon)) return false
         if (!acceptedDaemon) {
           const current = await tx.hookDef.findUnique({ where: { id: hookId }, select: { agentId: true } })
           // Legacy HookRun rows predate the accepted dispatch tuple, but their

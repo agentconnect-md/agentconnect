@@ -5,6 +5,9 @@
  * `agent.daemonId`, which a `set` placement leaves null — so the holder's own report was refused,
  * `hook/start` came back non-retryable, and the review broker denied every action. Authority is the
  * same seam as the reads (#1004): placement ∪ live duty holders, read through `PlacementResolver`.
+ *
+ * The completion fence follows the same seam (#1051): the member that dispatched a run can retire
+ * mid-run, so the member that serves the agent afterwards may close it too.
  */
 import { describe, expect, it, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
@@ -27,6 +30,7 @@ import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 const HOLDER = 'e1e1e1e1-eeee-4eee-8eee-eeeeeeeeeee1'
 const PEER = 'e2e2e2e2-eeee-4eee-8eee-eeeeeeeeeee2'
 const MACHINE = 'e3e3e3e3-eeee-4eee-8eee-eeeeeeeeeee3'
+const BYSTANDER = 'e4e4e4e4-eeee-4eee-8eee-eeeeeeeeeee4'
 const HEAD_SHA = 'a'.repeat(40)
 const BASE_SHA = 'b'.repeat(40)
 
@@ -55,6 +59,15 @@ async function grantDuty(holder: string, agentId: string): Promise<void> {
     }
   })
   await prisma.dutyGroupMember.create({ data: { kind: 'agent', refId: agentId, groupId, orgId: DEFAULT_ORG_ID } })
+}
+
+/** Retire the current holder mid-run: the agent's lease is re-taken by another member. */
+async function moveDuty(agentId: string, holder: string): Promise<void> {
+  const member = await prisma.dutyGroupMember.findFirstOrThrow({ where: { kind: 'agent', refId: agentId } })
+  await prisma.dutyGroup.update({
+    where: { id: member.groupId },
+    data: { holder, term: 2n, confirmedTerm: 2n, confirmedHolder: holder, expiresAt: new Date(Date.now() + 600_000) }
+  })
 }
 
 async function seedGithubHook(agentId: string): Promise<string> {
@@ -262,6 +275,56 @@ describe('hook dispatch authority follows the placement resolver', () => {
     expect((await repo().listRuns(OrgId(DEFAULT_ORG_ID), HookId(hookId)))[0]).toMatchObject({ status: 'running' })
   })
 
+  it('accepts a completion from the member serving the pool agent after the duty moved (#1051)', async () => {
+    const { agentId, hookId } = await pooledGithubHook()
+    await poolMember(PEER)
+    expect(await acceptDelivery(hookId, agentId, 'pool-move-1', HOLDER)).toBe(true)
+    await moveDuty(agentId, PEER)
+
+    const completion = await report(PEER, hookId, agentId, 'pool-move-1', {
+      status: 'success',
+      durationMs: 900,
+      sessionId: 'ses_moved'
+    })
+    expect(completion.conn.sendError).not.toHaveBeenCalled()
+    expect(completion.conn.replyTo).toHaveBeenCalledWith(completion.frame, 'ack', { ok: true })
+    // The accepted dispatch target stays the provenance snapshot of who the run was addressed at.
+    expect((await repo().listRuns(OrgId(DEFAULT_ORG_ID), HookId(hookId)))[0]).toMatchObject({
+      status: 'success',
+      durationMs: 900,
+      sessionId: 'ses_moved',
+      dispatchDaemonId: HOLDER
+    })
+  })
+
+  it('lets the retired dispatch target close its own run after the duty moved', async () => {
+    const { agentId, hookId } = await pooledGithubHook()
+    await poolMember(PEER)
+    expect(await acceptDelivery(hookId, agentId, 'pool-move-2', HOLDER)).toBe(true)
+    await moveDuty(agentId, PEER)
+
+    const completion = await report(HOLDER, hookId, agentId, 'pool-move-2', { status: 'success', durationMs: 12 })
+    expect(completion.conn.sendError).not.toHaveBeenCalled()
+    expect((await repo().listRuns(OrgId(DEFAULT_ORG_ID), HookId(hookId)))[0]).toMatchObject({ status: 'success' })
+  })
+
+  it('refuses a completion from a member that serves nothing once the duty moved', async () => {
+    const { agentId, hookId } = await pooledGithubHook()
+    await poolMember(PEER)
+    await poolMember(BYSTANDER)
+    expect(await acceptDelivery(hookId, agentId, 'pool-move-3', HOLDER)).toBe(true)
+    await moveDuty(agentId, PEER)
+
+    const foreign = await report(BYSTANDER, hookId, agentId, 'pool-move-3', { status: 'success', durationMs: 10 })
+    expect(foreign.conn.sendError).toHaveBeenCalledWith(
+      foreign.frame.id,
+      'CONFLICT',
+      'hook completion does not match the accepted dispatch',
+      false
+    )
+    expect((await repo().listRuns(OrgId(DEFAULT_ORG_ID), HookId(hookId)))[0]).toMatchObject({ status: 'running' })
+  })
+
   it('keeps the machine placement working with no duty lease in play', async () => {
     const { agentId, hookId } = await machineGithubHook()
 
@@ -269,6 +332,21 @@ describe('hook dispatch authority follows the placement resolver', () => {
     const completion = await report(MACHINE, hookId, agentId, 'machine-1', { status: 'success', durationMs: 11 })
     expect(completion.conn.replyTo).toHaveBeenCalledWith(completion.frame, 'ack', { ok: true })
     expect((await repo().listRuns(OrgId(DEFAULT_ORG_ID), HookId(hookId)))[0]).toMatchObject({ status: 'success' })
+  })
+
+  it('refuses a machine-placed completion from a daemon the agent is not placed on', async () => {
+    const { agentId, hookId } = await machineGithubHook()
+    await poolMember(PEER)
+    expect(await acceptDelivery(hookId, agentId, 'machine-2', MACHINE)).toBe(true)
+
+    const foreign = await report(PEER, hookId, agentId, 'machine-2', { status: 'success', durationMs: 5 })
+    expect(foreign.conn.sendError).toHaveBeenCalledWith(
+      foreign.frame.id,
+      'CONFLICT',
+      'hook completion does not match the accepted dispatch',
+      false
+    )
+    expect((await repo().listRuns(OrgId(DEFAULT_ORG_ID), HookId(hookId)))[0]).toMatchObject({ status: 'running' })
   })
 
   it('captures the duty holder as the redelivery dispatch target for a pool agent', async () => {
