@@ -18,7 +18,9 @@ import {
   AgentScopeDenied,
   AgentPermissionRequestList,
   AgentPermissionRequestPage,
-  AgentPermissionDecision
+  AgentPermissionDecision,
+  AgentWakeReq,
+  AgentWakeOk
 } from './frames/agent.js'
 import { CronUpsert, CronRemove, CronReport, CronRunNow } from './frames/cron.js'
 import {
@@ -230,6 +232,9 @@ export const FRAME_SCHEMAS = {
   'agent/permission-requests': AgentPermissionRequestList,
   'agent/permission-requests/page': AgentPermissionRequestPage,
   'agent/permission-decision': AgentPermissionDecision,
+  // ── sandbox wake: a console-initiated resume with no turn (agent.ts `AgentWakeReq`).
+  'agent/wake': AgentWakeReq,
+  'agent/wake/ok': AgentWakeOk,
   // ── routing / orchestration ──
   'route/assign': RouteAssign,
   'route/assign/ack': RouteAssignAck,
@@ -491,6 +496,8 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('agent/permission-requests', FRAME_SCHEMAS['agent/permission-requests']),
   frame('agent/permission-requests/page', FRAME_SCHEMAS['agent/permission-requests/page']),
   frame('agent/permission-decision', FRAME_SCHEMAS['agent/permission-decision']),
+  frame('agent/wake', FRAME_SCHEMAS['agent/wake']),
+  frame('agent/wake/ok', FRAME_SCHEMAS['agent/wake/ok']),
   // ── routing and daemon control ──
   frame('route/assign', FRAME_SCHEMAS['route/assign']),
   frame('route/assign/ack', FRAME_SCHEMAS['route/assign/ack']),

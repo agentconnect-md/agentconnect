@@ -81,6 +81,11 @@ export const WORKSPACE_GIT_MESSAGE_FEATURE = 'workspace-git-message-v1'
  * hides the Tasks tab on a daemon without it rather than showing a tab that can never answer. */
 export const TASK_LIST_FEATURE = 'task-list-v1'
 
+/** Daemon serves `agent/wake` — the console's "start this agent's sandbox" for a Files/Memory read.
+ * Advertised only by a daemon that runs agents in cluster sandboxes: on any other daemon there is
+ * nothing to wake, and the CP answers `unsupported` without sending a frame it would ignore. */
+export const AGENT_WAKE_FEATURE = 'agent-wake-v1'
+
 /** How long the CP must let ONE `workspace/gitmessage` REQ run before giving up, and it must send it
  * single-shot (`{ ackTimeoutMs: WORKSPACE_GIT_MESSAGE_BUDGET_MS, maxTries: 1 }`). The default 5s ack
  * timeout would retransmit an in-flight model pass four times: identical frame ids, so the daemon

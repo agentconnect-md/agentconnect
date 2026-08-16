@@ -13,6 +13,7 @@ import {
   effortField,
   enrichSessionWithAgent,
   flattenFiles,
+  isPoolPlacementKind,
   MOCK_MODE,
   MOCK_PREFIX,
   runtimeLabel,
@@ -1627,6 +1628,7 @@ export default function AgentDetailView() {
               {...(selectedWorktreeSessionId ? { sessionId: selectedWorktreeSessionId } : {})}
               workdir={da.workdir}
               canEdit={selectedWorktreeSessionId === null && da.workspace.mode === 'scratch' && da.canEdit}
+              sandboxed={isPoolPlacementKind(da.placementKind)}
               renderWorkspacePicker={(primaryBranch) =>
                 da.workspace.mode === 'github' ? (
                   <WorkspaceScopePicker

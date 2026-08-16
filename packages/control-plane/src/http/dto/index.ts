@@ -3225,6 +3225,11 @@ export const AgentTasksDto = z.object({
   truncated: z.boolean() // true ⇒ the daemon held more tasks than this page carries
 })
 
+/** `POST /agents/:id/wake` — what the serving daemon observed. `running` = the sandbox is reachable
+ *  now; `starting` = the resume is in flight, poll the read; `unsupported` = nothing to wake (a
+ *  machine-placed agent, or a daemon that runs no sandboxes). */
+export const AgentWakeDto = z.object({ state: z.enum(['running', 'starting', 'unsupported']) })
+
 // ── usage dashboard (aggregated from the persisted per-session usage store) ──
 export const UsageRange = z.enum(['d1', 'd7', 'd30', 'd90'])
 export const UsageQueryDto = z.object({
@@ -3349,4 +3354,5 @@ export type WorkspaceGitCommitResultDtoT = z.infer<typeof WorkspaceGitCommitResu
 export type WorkspaceGitPushResultDtoT = z.infer<typeof WorkspaceGitPushResultDto>
 export type WorkspaceGitMessageResultDtoT = z.infer<typeof WorkspaceGitMessageResultDto>
 export type AgentTasksDtoT = z.infer<typeof AgentTasksDto>
+export type AgentWakeDtoT = z.infer<typeof AgentWakeDto>
 export type ErrorDtoT = z.infer<typeof ErrorDto>
