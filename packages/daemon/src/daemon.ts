@@ -3456,7 +3456,7 @@ export class Daemon {
       // like post-turn distillation). Resolved from trusted session coords at call
       // time so a policy change takes effect for an already-running ACP session.
       memoryAccessAllowed: (ctx, mode) =>
-        mode === 'read' || !this.store.isCaptureExcluded(this.acpSessionIdForToolCall(ctx)),
+        mode === 'read' || !this.store.isCaptureExcluded(ctx.agentId, this.acpSessionIdForToolCall(ctx)),
       memoryScope: (ctx) => this.memoryScope(ctx.agentId, ctx.channel, ctx.transportScope),
       recordOutbound: (ctx, channel, thread, text, ts, integrationId) =>
         this.store.appendTranscript({
@@ -5726,7 +5726,7 @@ export class Daemon {
     // launch-correlated one) must never be distilled into it. The gate is checked
     // HERE — before both the managed distillation and the external capture outbox
     // — and fails closed on unknown state.
-    if (this.store.isCaptureExcluded(sessionId)) return
+    if (this.store.isCaptureExcluded(agentId, sessionId)) return
     const provider = binding?.provider ?? 'managed'
     const observableCapture = provider === 'managed' || provider === 'external'
     const record = async () => {
@@ -9302,7 +9302,9 @@ export class Daemon {
       ...(req.needsReply === true && originSessionId !== undefined ? { needsReply: true } : {}),
       // §5.1: seal the child's capture gate when the waking session is private.
       // Tighten-only — see CallMeta.parentPrivate.
-      ...(originSessionId !== undefined && this.store.isCaptureExcluded(originSessionId) ? { parentPrivate: true } : {})
+      ...(originSessionId !== undefined && this.store.isCaptureExcluded(req.callerAgentId, originSessionId)
+        ? { parentPrivate: true }
+        : {})
     }
 
     const normalized: NormalizedMessage = {
@@ -9485,7 +9487,7 @@ export class Daemon {
       ...(externalOrigin ? { externalOrigin } : {}),
       // §5.1: seal the child's capture gate when the waking session is private.
       // Tighten-only — see CallMeta.parentPrivate.
-      ...(replierSessionId !== undefined && this.store.isCaptureExcluded(replierSessionId)
+      ...(replierSessionId !== undefined && this.store.isCaptureExcluded(req.callerAgentId, replierSessionId)
         ? { parentPrivate: true }
         : {})
     }
@@ -10030,7 +10032,7 @@ export class Daemon {
       },
       // §5.1: seal the child's capture gate when the waking session is private.
       // Tighten-only — see CallMeta.parentPrivate.
-      ...(originSessionId && this.store.isCaptureExcluded(originSessionId) ? { parentPrivate: true } : {})
+      ...(originSessionId && this.store.isCaptureExcluded(req.agentId, originSessionId) ? { parentPrivate: true } : {})
     }
     const transportScope = this.transportScopeForIntegrationIds(
       req.integrationId !== undefined ? [req.integrationId] : undefined
@@ -10107,7 +10109,7 @@ export class Daemon {
       const ack = await this.relays.sendAgentMsg({
         claimedFromAgentId: req.callerAgentId,
         // Tighten-only privacy hint for the remote child's capture gate (§5.1).
-        ...(ctx.originSessionId !== undefined && this.store.isCaptureExcluded(ctx.originSessionId)
+        ...(ctx.originSessionId !== undefined && this.store.isCaptureExcluded(req.callerAgentId, ctx.originSessionId)
           ? { parentPrivate: true }
           : {}),
         toAgentId: req.toAgentId,
@@ -18346,7 +18348,7 @@ export class Daemon {
       // Never let classification break a turn — but fail CLOSED: an unclassified
       // session keeps memory capture excluded until the CP confirms otherwise.
       this.log.warn(`session visibility: classification failed for ${acpSessionId} (${formatErr(err)})`)
-      this.store.setLocalCaptureGate(acpSessionId, true)
+      this.store.setLocalCaptureGate(agentId, acpSessionId, true)
     }
   }
 
@@ -18569,7 +18571,7 @@ export class Daemon {
     // stay private.
     const locallyPrivate =
       !isEvaluation && (isA2aChild || msg.isDm || msg.platform === 'webchat' || launchCorrelationId !== undefined)
-    this.store.setLocalCaptureGate(acpSessionId, locallyPrivate)
+    this.store.setLocalCaptureGate(agentId, acpSessionId, locallyPrivate)
   }
 
   /** The ACP session id behind an MCP tool call, from the caller's trusted
@@ -21514,12 +21516,18 @@ export class Daemon {
       // settlements and cascades); the daemon only enforces the resulting
       // capture gate. Ordering is by the CP's durable revision, so retransmits
       // and out-of-order delivery are safe.
-      applySessionVisibility: (p: SessionVisibilityPush): 'applied' | 'superseded' =>
-        this.store.applyCpCaptureGate(
+      applySessionVisibility: (p: SessionVisibilityPush): 'applied' | 'superseded' => {
+        // A CP too old to name the agent leaves only the runtime-local ACP id: use the
+        // sole local holder, and where there is none leave the gate closed (still ACKed).
+        const agentId = p.agentId ?? this.store.soleAgentForAcpSession(p.sessionId)
+        if (!agentId) return 'superseded'
+        return this.store.applyCpCaptureGate(
+          agentId,
           p.sessionId,
           p.sharedMemoryExcluded ?? p.visibility === 'private',
           p.visibilityRev
         )
+      }
     }
   }
 

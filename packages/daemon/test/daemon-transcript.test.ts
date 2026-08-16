@@ -181,7 +181,7 @@ describe('Daemon transcript records the agent reply', () => {
     await daemon.start()
     const conn = makeRoutable(daemon)
     await (daemon as any).dispatch('bot-a', dm('100', 'private question'), 'int-a')
-    expect((daemon as any).store.applyCpCaptureGate('acp-1', false, 1)).toBe('applied')
+    expect((daemon as any).store.applyCpCaptureGate('bot-a', 'acp-1', false, 1)).toBe('applied')
 
     let releaseDelivery!: () => void
     const deliveryBlocked = new Promise<void>((resolve) => (releaseDelivery = resolve))
@@ -228,7 +228,7 @@ describe('Daemon transcript records the agent reply', () => {
 
     await (daemon as any).dispatch('bot-a', channelMsg('100', 'question?'), 'int-a')
 
-    expect((daemon as any).store.isCaptureExcluded('acp-1')).toBe(false)
+    expect((daemon as any).store.isCaptureExcluded('bot-a', 'acp-1')).toBe(false)
     await vi.waitFor(() => expect(recordTurn).toHaveBeenCalledOnce(), WAIT)
     await daemon.stop()
   }, 15_000)
@@ -296,7 +296,7 @@ describe('Daemon transcript records the agent reply', () => {
 
     await (daemon as any).dispatch('bot-a', dm('100', 'question?'), 'int-a')
 
-    expect((daemon as any).store.isCaptureExcluded('acp-1')).toBe(true)
+    expect((daemon as any).store.isCaptureExcluded('bot-a', 'acp-1')).toBe(true)
     expect(recordTurn).not.toHaveBeenCalled()
     await daemon.stop()
   }, 15_000)

@@ -227,7 +227,7 @@ describe('Daemon interrupt safety gates', () => {
       await vi.waitFor(() => expect(hasPending(daemon, 'acp-2')).toBe(true), WAIT)
       // DMs start private. Model the CP publishing this unrelated session so
       // the memory assertion below tests cancellation isolation, not privacy.
-      expect((daemon as any).store.applyCpCaptureGate('acp-2', false, 1)).toBe('applied')
+      expect((daemon as any).store.applyCpCaptureGate(AGENT_ID, 'acp-2', false, 1)).toBe('applied')
       t2Queued = (daemon as any).dispatch(AGENT_ID, t2QueuedMsg)
       const t2Key = sessionKey('slack', 'C2', 'T2', AGENT_ID)
       expect((daemon as any).serialQueue.get(t2Key)).toHaveLength(1)
@@ -342,7 +342,7 @@ describe('Daemon interrupt safety gates', () => {
       lastDeliveredTs: null,
       updatedAt: Date.now()
     })
-    expect((daemon as any).store.applyCpCaptureGate('acp-memory', false, 1)).toBe('applied')
+    expect((daemon as any).store.applyCpCaptureGate(AGENT_ID, 'acp-memory', false, 1)).toBe('applied')
 
     const ack = (daemon as any).dispatchWebchatTurn(AGENT_ID, CONV_1, 'cold memory', 'alice', stream.sink)
     await vi.waitFor(() => expect(standingContext).toHaveBeenCalled(), WAIT)
