@@ -12246,6 +12246,10 @@ export class Daemon {
    *  not yet terminal). Guards startup replay from re-admitting a row whose entry is already
    *  live in the gate (idempotency — a duplicate/in-flight id is not double-processed). */
   private liveInboxIds = new Set<string>()
+  /** Loop scope → the `trippedAt` epoch this member has already enforced against its own live
+   *  work. A peer owns the trip's warning and its own backlog, so each member stops its turns
+   *  once per latch, on the first admission it refuses, not on every subsequent message. */
+  private enforcedLoopScopes = new Map<string, number>()
 
   private isSessionMuted(key: string): boolean {
     return this.store.isSessionMuted(key)
@@ -12478,6 +12482,7 @@ export class Daemon {
       }
       const wasOpen = this.store.isLoopGuardOpen(scope)
       this.store.resetLoopGuard(scope)
+      this.enforcedLoopScopes.delete(scope)
       const wasMuted = this.isSessionMuted(key)
       if (wasMuted) this.setSessionMuted(key, false)
       if (wasOpen || wasMuted) {
@@ -13881,7 +13886,9 @@ export class Daemon {
   /** Inbox rows intentionally keep the complete normalized message instead of a
    *  duplicated conversation column. A loop trip is rare, so scanning this small,
    *  already-bounded backlog keeps the persisted schema compatible while purging every
-   *  agent/session in the affected conversation. */
+   *  agent/session in the affected conversation THIS member serves. On a shared store the
+   *  scan sees the whole install's backlog, and a peer's queued row is its holder's to
+   *  discard — deleting it here would destroy work the peer is still about to run. */
   private purgeLoopScopeInbox(scope: string): number {
     let removed = 0
     try {
@@ -13890,6 +13897,7 @@ export class Daemon {
         // reports are an unacknowledged outbox. The interrupt/replay paths below
         // terminalize the former and the CP ACK releases the latter.
         if (row.hookContext || row.terminalReport) continue
+        if (!this.servesAgent(row.agentId)) continue
         let msg: NormalizedMessage
         try {
           msg = JSON.parse(row.msg) as NormalizedMessage
@@ -13911,15 +13919,10 @@ export class Daemon {
     return (usesLoopGuard(msg) || includeHook) && this.store.isLoopGuardOpen(loopGuardScope(msg))
   }
 
-  /** First-open side effects for a durable conversation circuit: purge restart work,
-   *  drop every matching serial queue, cancel live ACP turns across ALL agents sharing
-   *  the conversation, and emit exactly one operator-facing warning. */
-  private onLoopGuardTripped(
-    scope: string,
-    reason: string,
-    trigger: { agentId: string; msg: NormalizedMessage; integrationId?: string }
-  ): void {
-    const purged = this.purgeLoopScopeInbox(scope)
+  /** Stop this member's own live work in an open loop scope: drop every matching serial
+   *  queue and cancel live ACP turns across all agents it holds in that conversation. A
+   *  peer's turns are unreachable from here and are its own to stop when it next refuses. */
+  private interruptLoopScopeTurns(scope: string): number {
     const targets = new Map<string, { agentId: string; acpSessionId?: string }>()
     for (const [key, entry] of this.activeGateEntries) {
       if (loopGuardScope(entry.msg) !== scope) continue
@@ -13938,9 +13941,33 @@ export class Daemon {
     for (const [key, target] of targets) {
       this.interruptTurn(target.agentId, key, 'loop protection', target.acpSessionId, { dropQueued: true })
     }
+    const trippedAt = this.store.getLoopGuard(scope)?.trippedAt
+    this.enforcedLoopScopes.set(scope, trippedAt ?? this.clock.now())
+    return targets.size
+  }
+
+  /** A circuit a peer latched still has to stop this member's live turns, or the loop simply
+   *  keeps running here. Runs once per latch, on the first admission this member refuses. */
+  private enforceLatchedLoopScope(scope: string): void {
+    const trippedAt = this.store.getLoopGuard(scope)?.trippedAt
+    if (trippedAt === null || trippedAt === undefined) return
+    if (this.enforcedLoopScopes.get(scope) === trippedAt) return
+    const interrupted = this.interruptLoopScopeTurns(scope)
+    if (interrupted > 0) this.log.warn(`loop guard: OPEN ${scope} elsewhere; interrupted=${interrupted} here`)
+  }
+
+  /** First-open side effects for a durable conversation circuit: purge the restart work this
+   *  member owns, stop its live turns, and emit exactly one operator-facing warning. */
+  private onLoopGuardTripped(
+    scope: string,
+    reason: string,
+    trigger: { agentId: string; msg: NormalizedMessage; integrationId?: string }
+  ): void {
+    const purged = this.purgeLoopScopeInbox(scope)
+    const interrupted = this.interruptLoopScopeTurns(scope)
 
     this.log.warn(
-      `loop guard: OPEN ${scope} reason=${reason}; interrupted=${targets.size}, purgedInbox=${purged}; explicit !resume required`
+      `loop guard: OPEN ${scope} reason=${reason}; interrupted=${interrupted}, purgedInbox=${purged}; explicit !resume required`
     )
     if (trigger.msg.headless) return
     const conn = this.replyConnFor(trigger.agentId, trigger.integrationId)
@@ -13975,9 +14002,12 @@ export class Daemon {
       ? this.store.recordLoopGuardTurnForInbox(inboxReplayId, scope, this.clock.now(), !isTrustedHumanTurn(msg), limits)
       : this.store.recordLoopGuardTurn(scope, this.clock.now(), !isTrustedHumanTurn(msg), limits)
     if (verdict.allowed) return true
-    if (verdict.trippedNow)
+    if (verdict.trippedNow) {
       this.onLoopGuardTripped(scope, verdict.reason ?? 'turn_burst', { agentId, msg, integrationId })
-    else this.purgeLoopScopeInbox(scope)
+    } else {
+      this.purgeLoopScopeInbox(scope)
+      this.enforceLatchedLoopScope(scope)
+    }
     return false
   }
 
@@ -14171,6 +14201,9 @@ export class Daemon {
         // predate that purge; fresh spam is not yet in inbox, so avoid an O(inbox) scan
         // on every message while the durable latch is open.
         if (opts?.fromInboxReplay) this.purgeLoopScopeInbox(loopScope)
+        // The trip may have been owned by a peer, whose interrupts could not reach this
+        // member's turns. Stop them here once, or the loop keeps running on this member.
+        this.enforceLatchedLoopScope(loopScope)
         this.log.warn(`dispatch: skipped ${msg.msgId}; loop guard is open for ${loopScope}`)
         settleAdmission({ accepted: false, reason: 'loop_protection' })
         resolve(null)
@@ -14185,13 +14218,18 @@ export class Daemon {
           // lost its thread. Non-DM wrappers may each have a synthetic outer ts, so
           // drop them without creating an unbounded set of permanent latches.
           const verdict = this.store.tripLoopGuard(loopScope, this.clock.now(), 'malformed_platform_event')
-          if (verdict.trippedNow)
+          if (verdict.trippedNow) {
             this.onLoopGuardTripped(loopScope, verdict.reason ?? 'malformed_platform_event', {
               agentId,
               msg,
               integrationId
             })
-          else this.purgeLoopScopeInbox(loopScope)
+          } else {
+            // The CAS elected a peer (or the circuit was already open): this member still
+            // owns stopping its own turns, exactly like the counter-latch path below.
+            this.purgeLoopScopeInbox(loopScope)
+            this.enforceLatchedLoopScope(loopScope)
+          }
         } else {
           this.log.warn(`dispatch: dropped malformed Slack platform event ${msg.msgId}`)
         }
