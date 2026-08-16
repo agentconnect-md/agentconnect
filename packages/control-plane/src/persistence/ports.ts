@@ -189,28 +189,6 @@ export interface DaemonRepo {
    * `createdByUserId` stamps the WebUI principal who provisioned it (console "Created" row).
    */
   provision(daemonId: DaemonId, orgId: OrgId, createdByUserId?: string): Promise<DaemonRecord>
-  /**
-   * The daemon record bound to a verified Kubernetes identity, JIT-provisioning one on
-   * first sight — the same shape as `UserRepo`'s OIDC-subject provisioning. The store's
-   * envelope-only unique index makes the binding one-to-one, so an envelope never ends up
-   * with two records competing for its placements; the identity is namespace-derived, so
-   * a rebuilt envelope resolves back to the same row and keeps its history.
-   *
-   * `adoptDaemonId` names the record the retired API-key path already pinned for this
-   * envelope. On the first token connect it is bound to the identity rather than left
-   * beside a fresh one, so an org provisioned before this path keeps its placements and
-   * history. Ignored once the identity is bound, or if that record is another org's or
-   * already carries an identity.
-   *
-   * Null when the identity is already bound to a daemon in ANOTHER org: an envelope identity may
-   * not move tenants, and refusing is the only answer that cannot leak one org's
-   * placements to another.
-   */
-  resolveClusterIdentity(
-    orgId: OrgId,
-    clusterIdentity: string,
-    opts?: { adoptDaemonId?: string }
-  ): Promise<DaemonRecord | null>
   /** Resolve one install-wide pool member by its reviewed ServiceAccount subject and Pod UID. */
   resolvePoolClusterIdentity(clusterIdentity: string, clusterPodUid: string): Promise<DaemonRecord>
   /** The Kubernetes identity a daemon record is bound to, or null for an unknown/key daemon. */

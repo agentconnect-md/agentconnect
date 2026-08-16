@@ -65,8 +65,7 @@ function toRecord(d: DaemonWithUsers): DaemonRecord {
   }
 }
 
-// What an install-wide pool member is, as a where-clause: org-less, cluster-reviewed, and
-// bound to one Pod UID. An envelope daemon carries an identity but no Pod, so it never matches.
+// What an install-wide pool member is, as a where-clause: org-less, cluster-reviewed, Pod-bound.
 const POOL_MEMBER_WHERE = { orgId: null, clusterIdentity: { not: null }, clusterPodUid: { not: null } } as const
 
 /** ONE definition of "retired", shared by the worklist read and the delete that acts on it: a
@@ -105,39 +104,6 @@ export class PgDaemonRepo implements DaemonRepo {
     })
   }
 
-  async resolveClusterIdentity(
-    orgId: OrgId,
-    clusterIdentity: string,
-    opts: { adoptDaemonId?: string } = {}
-  ): Promise<DaemonRecord | null> {
-    const existing = await this.db.daemon.findFirst({
-      where: { clusterIdentity, clusterPodUid: null },
-      include: withUsers
-    })
-    if (existing) return existing.orgId === orgId ? toRecord(existing) : null
-    const adopted = opts.adoptDaemonId ? await this.adoptForIdentity(orgId, clusterIdentity, opts.adoptDaemonId) : null
-    if (adopted) return adopted
-    try {
-      return await withAmbientTx(this.db, async (tx) => {
-        await lockResourceWriteMemberships(tx, { orgId, visibility: 'org' })
-        const daemon = await tx.daemon.create({
-          data: { id: randomUUID(), orgId, clusterIdentity, status: 'provisioned' },
-          include: withUsers
-        })
-        return toRecord(daemon)
-      })
-    } catch (error) {
-      // A concurrent first connect won the unique index; its row is the binding.
-      if ((error as { code?: string }).code !== 'P2002') throw error
-      const raced = await this.db.daemon.findFirst({
-        where: { clusterIdentity, clusterPodUid: null },
-        include: withUsers
-      })
-      if (!raced) throw error
-      return raced.orgId === orgId ? toRecord(raced) : null
-    }
-  }
-
   async resolvePoolClusterIdentity(clusterIdentity: string, clusterPodUid: string): Promise<DaemonRecord> {
     const where = { clusterIdentity_clusterPodUid: { clusterIdentity, clusterPodUid } }
     const existing = await this.db.daemon.findUnique({ where, include: withUsers })
@@ -171,30 +137,6 @@ export class PgDaemonRepo implements DaemonRepo {
       select: { id: true }
     })
     return rows.map((row) => row.id)
-  }
-
-  /** Bind an envelope's existing daemon record — the one the API-key path pinned — to the
-   *  identity now authenticating for it, so an org provisioned before the token path keeps
-   *  its placements and history instead of gaining a second record beside them. Conditional
-   *  on the row being this org's and still unbound; anything else falls through to a create. */
-  private async adoptForIdentity(
-    orgId: OrgId,
-    clusterIdentity: string,
-    daemonId: string
-  ): Promise<DaemonRecord | null> {
-    try {
-      const claimed = await this.db.daemon.updateMany({
-        where: { id: daemonId, orgId, clusterIdentity: null },
-        data: { clusterIdentity }
-      })
-      if (claimed.count !== 1) return null
-    } catch (error) {
-      // Another identity claimed this record first; it is not this envelope's to adopt.
-      if ((error as { code?: string }).code !== 'P2002') throw error
-      return null
-    }
-    const daemon = await this.db.daemon.findUnique({ where: { id: daemonId }, include: withUsers })
-    return daemon ? toRecord(daemon) : null
   }
 
   async upsertOnAuth(input: AuthReqInput): Promise<{ daemon: DaemonRecord; sessionEpoch: bigint }> {
