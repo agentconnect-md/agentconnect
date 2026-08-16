@@ -171,12 +171,19 @@ export class RelayIngressManager {
     return {
       forward: (botId, message) => this.forward(botId, message),
       forwardAction: async (msg, route) => {
+        // An interaction is as pre-addressed as an `rd/msg` and its recorded member is
+        // as likely to have handed the duty on, so it takes the SAME rendezvous path:
+        // one `not_holder` re-route, and a refusal counted as the drop it is.
+        const context = `relay-ingress(${msg.botId}) interaction`
         const daemon = this.deps.getDaemon(route.daemonId)
         if (!daemon) {
-          this.deps.log.warn(`relay-ingress(${msg.botId}): daemon ${route.daemonId} offline — interaction dropped`)
-          return { msgId: msg.msgId, accepted: false, reason: 'offline' }
+          return this.dropUnrouted(msg.botId, `${context}: daemon ${route.daemonId} is not on this relay`, {
+            msgId: msg.msgId,
+            accepted: false,
+            reason: 'offline'
+          })
         }
-        return daemon.sendMsg(msg)
+        return this.sendWithRendezvous(daemon, msg, msg.botId, context)
       },
       reportChannels: (snapshot) => this.reportChannels(snapshot),
       reportRevoked: (botId, reason, eventAtMs, credentialRevision) => {
@@ -631,6 +638,10 @@ export class RelayIngressManager {
    * against a double delivery, and a second refusal terminates rather than
    * chasing a stale ledger.
    *
+   * Messages AND platform interactions ride it: both are addressed from the same
+   * routing projection, so a button click goes stale exactly the way an
+   * un-mentioned follow-up does.
+   *
    * A refusal this cannot resolve — no holder named, the holder not connected
    * to THIS relay, or the redirect target refusing in turn — is a genuinely
    * dropped trigger, counted like any other drop. There is deliberately no
@@ -644,7 +655,7 @@ export class RelayIngressManager {
     rd: RdMsg,
     botId: string,
     context: string
-  ): Promise<RdAck | undefined> {
+  ): Promise<RdAck> {
     const ack = await daemon.sendMsg(rd)
     if (ack.accepted || ack.reason !== RD_ACK_NOT_HOLDER) return ack
     const holderId = ack.holderDaemonId
