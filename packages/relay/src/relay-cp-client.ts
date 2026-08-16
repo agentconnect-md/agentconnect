@@ -147,6 +147,8 @@ export class RelayCpClient {
   private reconnectTimer?: TimerHandle
   private heartbeatTimer?: TimerHandle
   private heartbeatMs = 0
+  /** Bumped on every registration — identifies WHICH connection a request rode. */
+  private linkGeneration = 0
   /** Callers parked in {@link waitReady} until the link registers again. */
   private readonly readyWaiters = new Set<ReadyWaiter>()
   /** FIFO of `rc/run-report` EVTs the link wasn't up for, replayed on READY. */
@@ -239,18 +241,25 @@ export class RelayCpClient {
    * One authorization RPC, single-shot PER LINK but held across ONE reconnect:
    * the caller is off GitHub's HTTP request already, and failing closed on a
    * link that is merely restarting turns a CP rollout into silently skipped
-   * reviews. A settled `error` REP (an old CP, a refusal) is terminal — only a
-   * retryable wire failure, i.e. the link itself, buys the second attempt.
+   * reviews. The second attempt is bought by a REPLACED CONNECTION, never by a
+   * retryable flag: an ack timeout and the CP's own retryable `error` REPs both
+   * arrive on a link that is still READY, and re-issuing there would duplicate
+   * an expensive upstream permission lookup.
    */
   private async authorizationRequest(build: () => RelayCpFrame, label: string): Promise<RelayCpFrame> {
     for (let attempt = 0; attempt < 2; attempt++) {
       if (!(await this.waitReady(LINK_READY_WAIT_MS)) || !this.transport) {
         throw new WireError('INTERNAL', `relay↔CP link not ready (${this.state})`, true)
       }
+      const generation = this.linkGeneration
       try {
         return await this.sendRequest(build(), { maxTries: 1, ackTimeoutMs: ACK_TIMEOUT_MS })
       } catch (err) {
         if (attempt > 0 || !(err instanceof WireError) || !err.retryable) throw err
+        // Only a connection this request never reached the CP over is retryable
+        // here: wait for the replacement, and give up on the original error if
+        // the link that failed is still the live one.
+        if (!(await this.waitReady(LINK_READY_WAIT_MS)) || this.linkGeneration === generation) throw err
         this.deps.log.warn(`relay: ${label} lost its link (${err.message}) — retrying across the reconnect`)
       }
     }
@@ -504,6 +513,7 @@ export class RelayCpClient {
     this.deps.onRegistered?.(this.relayId)
 
     this.state = 'READY'
+    this.linkGeneration += 1
     this.heartbeatMs = ok.heartbeatSec > 0 ? ok.heartbeatSec * 1000 : this.deps.heartbeatDefaultMs
     this.armHeartbeat()
     this.deps.log.info(`relay: READY (relayId=${this.relayId})`)

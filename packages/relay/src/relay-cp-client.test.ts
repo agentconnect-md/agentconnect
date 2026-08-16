@@ -543,6 +543,38 @@ describe('RelayCpClient', () => {
     expect(next.sent.filter((f) => f.type === 'rc/github-comment-authz')).toHaveLength(1)
   })
 
+  it('authorizeGithubComment() does not re-ask over a link that never died', async () => {
+    // A retryable answer is not proof the connection dropped: the CP replies
+    // retryable for its own GitHub/DB blips, and an ack timeout is retryable
+    // too. Re-issuing on that same link would duplicate the upstream lookup.
+    const { client, transport } = makeClient()
+    await handshakeToReady(client, transport)
+
+    const pending = client.authorizeGithubComment(COMMENT_AUTHZ)
+    await flush()
+    const req = transport.lastReq('rc/github-comment-authz')!
+    transport.inject(
+      buildRelayCpFrame('error', { code: 'INTERNAL', message: 'github blip', retryable: true }, { corr: req.id })
+    )
+
+    await expect(pending).rejects.toMatchObject({ retryable: true })
+    expect(transport.sent.filter((f) => f.type === 'rc/github-comment-authz')).toHaveLength(1)
+    expect(client.state).toBe('READY')
+  })
+
+  it('authorizeGithubComment() gives up when the ack never comes and the link stays up', async () => {
+    const { client, clock, transport } = makeClient()
+    await handshakeToReady(client, transport)
+
+    const settled = expect(client.authorizeGithubComment(COMMENT_AUTHZ)).rejects.toMatchObject({ retryable: true })
+    await flush()
+    clock.advance(5_000) // the single-shot ack budget — retryable, but the link never dropped
+    await flush()
+
+    await settled
+    expect(transport.sent.filter((f) => f.type === 'rc/github-comment-authz')).toHaveLength(1)
+  })
+
   it('authorizeGithubComment() still fails closed when the link stays down', async () => {
     const { client, clock, transports } = makeReconnectingClient()
     client.start()
