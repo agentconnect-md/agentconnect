@@ -1,0 +1,233 @@
+import { describe, it, expect, vi } from 'vitest'
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
+import { Daemon } from '../src/daemon.js'
+import { LocalStore } from '../src/store/local-store.js'
+import { statePath } from '../src/paths.js'
+import { FakeClock } from './cp/fake-clock.js'
+
+/**
+ * #1023 — on a daemon pool the session-metadata outbox is one shared table, but the
+ * `event/session-sync` frame is scoped by the agent's organization, which only a member
+ * serving that agent can resolve. Every member used to drain every row and defer the
+ * ones it could not scope forever. A member now drains only what it owns or serves,
+ * claims before it emits, and parks what it cannot scope for the member that can.
+ */
+
+const AGENT_A = '33333333-3333-4333-8333-333333333333'
+const AGENT_B = '44444444-4444-4444-8444-444444444444'
+const GROUP_A = '11111111-1111-4111-8111-111111111111'
+const GROUP_B = '22222222-2222-4222-8222-222222222222'
+const ORG = 'org-1'
+const PARK_MS = 60_000
+
+function scaffold(): string {
+  const root = mkdtempSync(join(tmpdir(), 'ac-metadata-pool-'))
+  writeFileSync(
+    join(root, 'config.json'),
+    JSON.stringify({
+      version: 1,
+      controlPlane: { enabled: false },
+      runtimes: { claude: { command: 'node', args: ['unused'] } }
+    })
+  )
+  for (const id of [AGENT_A, AGENT_B]) {
+    const adir = join(root, 'agents', id)
+    mkdirSync(adir, { recursive: true })
+    writeFileSync(
+      join(adir, 'agent.json'),
+      JSON.stringify({
+        id,
+        name: id,
+        status: 'active',
+        runtime: 'claude',
+        workspace: { mode: 'from-scratch', path: join(adir, 'workspace') },
+        integrations: [],
+        output: { mode: 'low' }
+      })
+    )
+  }
+  return root
+}
+
+type Member = Awaited<ReturnType<typeof boot>>
+
+/** One member whose CP stub scopes exactly like the real client: the organization comes
+ *  from the agent registry, which on a pool carries only the agents this member serves. */
+async function boot(root: string, daemonId: string, scope: 'frame' | 'install' = 'frame') {
+  const clock = new FakeClock()
+  const daemon = new Daemon({ root, hostFactory: () => ({}) as any, clock })
+  await daemon.start()
+  const inner = daemon as any
+  inner.cfg.daemonId = daemonId
+  const warn = vi.fn()
+  inner.log.warn = warn
+  const scopeBlind = new Set<string>()
+  const synced: { orgId: string; agentId: string; sessionId: string }[] = []
+  const syncEventSession = vi.fn(async (event: { agentId: string; sessionId: string }) => {
+    const known = scope === 'install' || inner.duties.holdsAgent(event.agentId)
+    if (!known || scopeBlind.has(event.agentId)) {
+      throw Object.assign(new Error('cannot resolve organization for event/session-sync'), {
+        name: 'WireError',
+        code: 'SCOPE_DENIED',
+        retryable: false
+      })
+    }
+    synced.push({ orgId: ORG, agentId: event.agentId, sessionId: event.sessionId })
+    return 'acknowledged' as const
+  })
+  inner.cpClient = {
+    organizationScope: () => scope,
+    state: 'READY',
+    supportsServerFeature: (feature: string) => feature === 'session-metadata-ack-v1',
+    syncEventSession,
+    emitSessionPurged: vi.fn(async () => 'acknowledged' as const),
+    stop: async () => {},
+    releaseDuties: vi.fn(async () => {}),
+    reportDutiesNow: vi.fn(() => {}),
+    fetchDutyAgent: vi.fn()
+  }
+  return { daemon, inner, clock, warn, synced, syncEventSession, scopeBlind }
+}
+
+/** Two members over ONE store, each with its own clock and its own duty leases. */
+async function bootPool() {
+  const root = scaffold()
+  const a = await boot(root, 'daemon-a')
+  const b = await boot(root, 'daemon-b')
+  const locals: LocalStore[] = [a.inner.store, b.inner.store]
+  const path = statePath(root)
+  a.inner.store = new LocalStore({ database: new DatabaseSync(path), shared: true, ownerId: 'daemon-a' })
+  b.inner.store = new LocalStore({ database: new DatabaseSync(path), shared: true, ownerId: 'daemon-b' })
+  const shared: LocalStore = a.inner.store
+  return {
+    a,
+    b,
+    shared,
+    stop: async () => {
+      await Promise.all([a.daemon.stop(), b.daemon.stop()])
+      for (const local of locals) local.close()
+    }
+  }
+}
+
+const grant = (groupId: string, agentId: string) => ({
+  groupId,
+  orgId: ORG,
+  term: '1',
+  members: [{ kind: 'agent' as const, refId: agentId }]
+})
+const hold = (inner: any, groupId: string, agentId: string) => inner.duties.applyGrant([grant(groupId, agentId)])
+
+/** One unacknowledged terminal milestone, stamped to the member that produced it. */
+function seedSnapshot(store: LocalStore, agentId: string, sessionId: string, queuedAt: number, ownerId: string): void {
+  const event = {
+    sessionId,
+    agentId,
+    phase: 'end',
+    platform: 'slack',
+    channel: 'C1',
+    ts: new Date(queuedAt).toISOString()
+  }
+  store.saveSessionMetadataSnapshot(agentId, sessionId, JSON.stringify(event), true, queuedAt, ownerId)
+}
+
+const deferred = (member: Member) =>
+  member.warn.mock.calls.filter(([message]: [string]) => String(message).includes('snapshot deferred'))
+
+describe('session-metadata outbox ownership on a daemon pool (#1023)', () => {
+  it("a member drains its own rows and never a peer's", async () => {
+    const { a, b, shared, stop } = await bootPool()
+    hold(a.inner, GROUP_A, AGENT_A)
+    hold(b.inner, GROUP_B, AGENT_B)
+    seedSnapshot(shared, AGENT_A, 'acp-a-1', 1, 'daemon-a')
+    seedSnapshot(shared, AGENT_B, 'acp-b-1', 2, 'daemon-b')
+
+    await b.inner.drainSessionMetadataSnapshots()
+    expect(b.synced).toEqual([{ orgId: ORG, agentId: AGENT_B, sessionId: 'acp-b-1' }])
+    // A's row is untouched: still pending, still unfailed, still A's to report.
+    expect(shared.pendingSessionMetadataSnapshot(AGENT_A, 'acp-a-1')).toMatchObject({ revision: 1, failedAttempts: 0 })
+    expect(deferred(b)).toEqual([])
+
+    await a.inner.drainSessionMetadataSnapshots()
+    expect(a.synced).toEqual([{ orgId: ORG, agentId: AGENT_A, sessionId: 'acp-a-1' }])
+    expect(shared.hasPendingSessionMetadata()).toBe(false)
+    await stop()
+  }, 15_000)
+
+  it('parks a row for an agent no member here serves instead of counting a failure', async () => {
+    const { a, b, shared, stop } = await bootPool()
+    // The duty for AGENT_A moved off this member after it wrote the snapshot.
+    hold(b.inner, GROUP_B, AGENT_B)
+    seedSnapshot(shared, AGENT_A, 'acp-moved', 1, 'daemon-a')
+
+    await a.inner.drainSessionMetadataSnapshots()
+    expect(a.syncEventSession).not.toHaveBeenCalled()
+    // Claim released, body and failure count intact, backoff only keeps it out of this pass.
+    expect(shared.pendingSessionMetadataSnapshot(AGENT_A, 'acp-moved')).toMatchObject({
+      revision: 1,
+      failedAttempts: 0,
+      nextAttemptAt: PARK_MS
+    })
+    expect(deferred(a)).toEqual([])
+    // The peer does not serve AGENT_A either, so it leaves the parked row alone.
+    await b.inner.drainSessionMetadataSnapshots()
+    expect(b.syncEventSession).not.toHaveBeenCalled()
+    expect(shared.pendingSessionMetadataSnapshot(AGENT_A, 'acp-moved')).toBeDefined()
+    await stop()
+  }, 15_000)
+
+  it('gaining the duty replays the parked row exactly once, scoped to the agent org', async () => {
+    const { a, b, shared, stop } = await bootPool()
+    seedSnapshot(shared, AGENT_A, 'acp-moved', 1, 'daemon-a')
+    await a.inner.drainSessionMetadataSnapshots()
+    expect(shared.pendingSessionMetadataSnapshot(AGENT_A, 'acp-moved')?.nextAttemptAt).toBe(PARK_MS)
+
+    // The grant lands on B well before the parked backoff would have expired.
+    b.inner.settleDutyChange(b.inner.duties.applyGrant([grant(GROUP_A, AGENT_A)]))
+    await vi.waitFor(() => expect(b.syncEventSession).toHaveBeenCalledOnce())
+    expect(b.synced).toEqual([{ orgId: ORG, agentId: AGENT_A, sessionId: 'acp-moved' }])
+    expect(shared.hasPendingSessionMetadata()).toBe(false)
+    await b.inner.drainSessionMetadataSnapshots()
+    expect(b.syncEventSession).toHaveBeenCalledOnce()
+    await stop()
+  }, 15_000)
+
+  it('parks a served row whose organization is not resolvable yet, and drains it once it is', async () => {
+    const { a, shared, stop } = await bootPool()
+    hold(a.inner, GROUP_A, AGENT_A)
+    a.scopeBlind.add(AGENT_A)
+    seedSnapshot(shared, AGENT_A, 'acp-cold', 1, 'daemon-a')
+
+    await a.inner.drainSessionMetadataSnapshots()
+    expect(a.syncEventSession).toHaveBeenCalledOnce()
+    // A local SCOPE_DENIED is not a rejection of the snapshot: no failure, no defer warning.
+    expect(shared.pendingSessionMetadataSnapshot(AGENT_A, 'acp-cold')).toMatchObject({
+      failedAttempts: 0,
+      nextAttemptAt: PARK_MS
+    })
+    expect(deferred(a)).toEqual([])
+
+    a.scopeBlind.clear()
+    a.clock.advance(PARK_MS + 1)
+    await a.inner.drainSessionMetadataSnapshots()
+    expect(a.synced).toEqual([{ orgId: ORG, agentId: AGENT_A, sessionId: 'acp-cold' }])
+    expect(shared.hasPendingSessionMetadata()).toBe(false)
+    await stop()
+  }, 15_000)
+
+  it('a single daemon on its own store drains every row unfenced', async () => {
+    const root = scaffold()
+    const solo = await boot(root, 'daemon-solo', 'install')
+    const store: LocalStore = solo.inner.store
+    seedSnapshot(store, AGENT_A, 'acp-1', 1, 'daemon-solo')
+    seedSnapshot(store, AGENT_B, 'acp-2', 2, 'daemon-solo')
+
+    await solo.inner.drainSessionMetadataSnapshots()
+    expect(solo.synced.map((entry) => entry.sessionId)).toEqual(['acp-1', 'acp-2'])
+    expect(store.hasPendingSessionMetadata()).toBe(false)
+    await solo.daemon.stop()
+  }, 15_000)
+})

@@ -836,6 +836,8 @@ function foreignHookDispatch(report: HookReport, daemonId?: string): boolean {
 const SESSION_METADATA_RETRY_MS = 5_000
 const SESSION_METADATA_FAILURES_BEFORE_DEFER = 5
 const SESSION_METADATA_DEFER_MS = 5 * 60_000
+// A snapshot this member cannot scope waits this long before it is offered again.
+const SESSION_METADATA_PARK_MS = 60_000
 
 /** Connectable when there is a URL and a credential: an API key, or — in-cluster — the
  *  projected ServiceAccount token this pod presents instead of one. */
@@ -13017,6 +13019,8 @@ export class Daemon {
     this.catchUpMissedSchedules(result.agentsGained)
     // The purge-receipt drain is holder-scoped, so a receipt a prior holder left is owed by this member now.
     if (result.agentsGained.length) void this.drainSessionPurges()
+    // Same for the session-metadata outbox: a snapshot the previous holder parked is this member's to emit.
+    this.replayGainedSessionMetadata(result.agentsGained)
   }
 
   /**
@@ -16625,7 +16629,8 @@ export class Daemon {
           input.sessionId,
           JSON.stringify(snapshot),
           input.phase !== 'plan',
-          this.clock.now()
+          this.clock.now(),
+          this.cfg.daemonId
         ) !== undefined
     } catch (err) {
       // Preserve the pre-outbox behavior if the local write fails: a live CP may
@@ -16699,24 +16704,51 @@ export class Daemon {
     while (!this.draining && (cp.state === 'READY' || cp.state === 'DRAINING')) {
       let row: SessionMetadataOutboxRow | undefined
       try {
-        row = this.store.nextSessionMetadataSnapshot(this.clock.now())
+        row = this.store.nextSessionMetadataSnapshot(this.clock.now(), this.cfg.daemonId, this.servedAgentIds())
         if (!row) return
+        // Emit only under a live claim: on a pool this outbox is one shared table, so a
+        // row a peer holds is that member's to report, never ours to duplicate or drop.
+        if (
+          !this.store.claimSessionMetadataSnapshot(
+            row.agentId,
+            row.sessionId,
+            row.revision,
+            this.cfg.daemonId,
+            this.clock.now()
+          )
+        ) {
+          continue
+        }
+        // The frame is scoped by the agent's organization, and only a member serving the
+        // agent can resolve it — leave the row for that member instead of failing it here.
+        if (!this.servesAgent(row.agentId) && this.parkSessionMetadataRow(row, 'agent served elsewhere')) continue
         const parsed = EventSessionSchema.safeParse(JSON.parse(row.snapshot))
         if (!parsed.success || parsed.data.agentId !== row.agentId || parsed.data.sessionId !== row.sessionId) {
           this.log.warn(`event/session outbox dropped an invalid snapshot for session ${row.sessionId}`)
-          this.store.acknowledgeSessionMetadataSnapshot(row.agentId, row.sessionId, row.revision)
+          this.store.acknowledgeSessionMetadataSnapshot(row.agentId, row.sessionId, row.revision, this.cfg.daemonId)
           continue
         }
         const result = await cp.syncEventSession(parsed.data)
         if (result === 'unsupported') return
         // Revision fencing: an event produced while this request was in flight
         // remains pending instead of being cleared by the older ACK.
-        this.store.acknowledgeSessionMetadataSnapshot(row.agentId, row.sessionId, row.revision)
+        this.store.acknowledgeSessionMetadataSnapshot(row.agentId, row.sessionId, row.revision, this.cfg.daemonId)
       } catch (err) {
         if (!row) {
           this.log.warn(`event/session outbox read failed (${formatErr(err)})`)
           this.scheduleSessionMetadataRetry()
           return
+        }
+        // SCOPE_DENIED says this member cannot name the agent's organization, not that the
+        // snapshot is bad. Park it for the member that can rather than burning a failure.
+        if (
+          typeof err === 'object' &&
+          err !== null &&
+          'code' in err &&
+          err.code === 'SCOPE_DENIED' &&
+          this.parkSessionMetadataRow(row, 'organization unresolvable here')
+        ) {
+          continue
         }
         const nextFailure = row.failedAttempts + 1
         const explicitlyPermanent =
@@ -16728,7 +16760,8 @@ export class Daemon {
             row.agentId,
             row.sessionId,
             row.revision,
-            defer ? this.clock.now() + SESSION_METADATA_DEFER_MS : null
+            defer ? this.clock.now() + SESSION_METADATA_DEFER_MS : null,
+            this.cfg.daemonId
           )
         } catch (storeErr) {
           this.log.warn(`event/session outbox failure record failed (${formatErr(storeErr)})`)
@@ -16752,15 +16785,48 @@ export class Daemon {
     }
   }
 
-  private schedulePendingSessionMetadataDrain(): void {
-    if (
-      this.draining ||
-      !this.cpClient?.supportsServerFeature?.(SESSION_METADATA_ACK_FEATURE) ||
-      !this.store.hasPendingSessionMetadata()
-    ) {
-      return
+  /** Agents whose shared-outbox rows this member may work on: the ones it serves. */
+  private servedAgentIds(): string[] {
+    return [...this.agents.keys()].filter((agentId) => this.servesAgent(agentId))
+  }
+
+  /** Release a snapshot this member cannot scope, so the member serving the agent drains
+   *  it. The body and the failure count survive; the backoff only keeps it out of this
+   *  member's next pass. False on a local store, where there is no other member. */
+  private parkSessionMetadataRow(row: SessionMetadataOutboxRow, why: string): boolean {
+    let parked = false
+    try {
+      parked = this.store.parkSessionMetadataSnapshot(
+        row.agentId,
+        row.sessionId,
+        row.revision,
+        this.clock.now() + SESSION_METADATA_PARK_MS
+      )
+    } catch (err) {
+      this.log.warn(`event/session outbox park failed (${formatErr(err)})`)
+      return false
     }
-    const attemptAt = this.store.nextSessionMetadataAttemptAt()
+    if (parked) this.log.debug(`event/session snapshot parked for session ${row.sessionId} (${why})`)
+    return parked
+  }
+
+  /** A duty newly held here owns that agent's parked snapshots: re-arm them so the
+   *  takeover replays them now instead of waiting out a departed holder's backoff. */
+  private replayGainedSessionMetadata(agentIds: readonly string[]): void {
+    if (!agentIds.length) return
+    try {
+      this.store.resumeSessionMetadataSnapshots(agentIds)
+    } catch (err) {
+      this.log.warn(`event/session outbox resume failed (${formatErr(err)})`)
+    }
+    void this.drainSessionMetadataSnapshots()
+  }
+
+  private schedulePendingSessionMetadataDrain(): void {
+    if (this.draining || !this.cpClient?.supportsServerFeature?.(SESSION_METADATA_ACK_FEATURE)) return
+    const served = this.servedAgentIds()
+    if (!this.store.hasPendingSessionMetadata(this.clock.now(), this.cfg.daemonId, served)) return
+    const attemptAt = this.store.nextSessionMetadataAttemptAt(this.clock.now(), this.cfg.daemonId, served)
     if (attemptAt !== undefined) this.scheduleSessionMetadataRetry(Math.max(0, attemptAt - this.clock.now()))
   }
 
