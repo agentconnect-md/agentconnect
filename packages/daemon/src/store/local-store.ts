@@ -636,7 +636,7 @@ function restrictPath(path: string, mode: number): void {
  * change that edits a `CREATE TABLE` below, and append the matching step to
  * {@link SCHEMA_MIGRATIONS}.
  */
-const SCHEMA_VERSION = 9
+const SCHEMA_VERSION = 10
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -717,6 +717,11 @@ const SCHEMA_MIGRATIONS: ((db: StoreDatabase) => void)[] = [
     db.exec(`
       ALTER TABLE session_purges ADD COLUMN ownerId TEXT;
       ALTER TABLE session_purges ADD COLUMN claimedAt INTEGER;
+    `),
+  (db) =>
+    db.exec(`
+      ALTER TABLE session_metadata_outbox ADD COLUMN ownerId TEXT;
+      ALTER TABLE session_metadata_outbox ADD COLUMN claimedAt INTEGER;
     `)
 ]
 
@@ -807,6 +812,8 @@ export class LocalStore {
       -- Latest-wins session metadata awaiting a correlated CP persistence ACK.
       -- This is deliberately separate from sessions: an upgrade starts with an
       -- empty outbox and never treats historical session rows as pending work.
+      -- On a shared pool store ownerId / claimedAt lease each snapshot to one
+      -- member the way inbox.reportOwnerId and session_purges.ownerId do.
       CREATE TABLE IF NOT EXISTS session_metadata_outbox (
         agentId TEXT NOT NULL,
         sessionId TEXT NOT NULL,
@@ -815,6 +822,8 @@ export class LocalStore {
         queuedAt INTEGER NOT NULL,
         failedAttempts INTEGER NOT NULL DEFAULT 0,
         nextAttemptAt INTEGER,
+        ownerId TEXT,
+        claimedAt INTEGER,
         PRIMARY KEY (agentId, sessionId)
       );
       CREATE INDEX IF NOT EXISTS session_metadata_outbox_fifo
@@ -2395,31 +2404,38 @@ export class LocalStore {
     sessionId: string,
     snapshot: string,
     enqueue: boolean,
-    queuedAt: number
+    queuedAt: number,
+    ownerId?: string
   ): number | undefined {
+    // Stamped to the writing member: the daemon that produced the snapshot serves the
+    // agent, so it is the one that can scope the frame's organization right now.
+    const owner = ownerId ?? null
     const row = enqueue
       ? (this.db
           .prepare(
             `INSERT INTO session_metadata_outbox
-               (agentId, sessionId, revision, snapshot, queuedAt, failedAttempts, nextAttemptAt)
-             VALUES (?, ?, 1, ?, ?, 0, NULL)
+               (agentId, sessionId, revision, snapshot, queuedAt, failedAttempts, nextAttemptAt, ownerId, claimedAt)
+             VALUES (?, ?, 1, ?, ?, 0, NULL, ?, ?)
              ON CONFLICT (agentId, sessionId) DO UPDATE SET
                revision = session_metadata_outbox.revision + 1,
                snapshot = excluded.snapshot,
                queuedAt = excluded.queuedAt,
                failedAttempts = 0,
-               nextAttemptAt = NULL
+               nextAttemptAt = NULL,
+               ownerId = excluded.ownerId,
+               claimedAt = excluded.claimedAt
              RETURNING revision`
           )
-          .get(agentId, sessionId, snapshot, queuedAt) as { revision: number } | undefined)
+          .get(agentId, sessionId, snapshot, queuedAt, owner, queuedAt) as { revision: number } | undefined)
       : (this.db
           .prepare(
             `UPDATE session_metadata_outbox
-             SET revision = revision + 1, snapshot = ?, queuedAt = ?, failedAttempts = 0, nextAttemptAt = NULL
+             SET revision = revision + 1, snapshot = ?, queuedAt = ?, failedAttempts = 0, nextAttemptAt = NULL,
+                 ownerId = ?, claimedAt = ?
              WHERE agentId = ? AND sessionId = ?
              RETURNING revision`
           )
-          .get(snapshot, queuedAt, agentId, sessionId) as { revision: number } | undefined)
+          .get(snapshot, queuedAt, owner, queuedAt, agentId, sessionId) as { revision: number } | undefined)
     return row?.revision
   }
 
@@ -2432,21 +2448,149 @@ export class LocalStore {
       .get(agentId, sessionId) as unknown as SessionMetadataOutboxRow | undefined
   }
 
-  nextSessionMetadataSnapshot(now = Date.now()): SessionMetadataOutboxRow | undefined {
+  /** The scope of the outbox this member may work on. A local store owns every row
+   *  outright. On a shared pool store a row is offered when this member owns it, or
+   *  when it is unowned / its owner's claim lapsed AND this member serves the agent.
+   *  Unlike the hook outbox, an unowned row is NOT offered install-wide: the frame
+   *  carries the agent's organization, which only a serving member can resolve, so a
+   *  parked snapshot must wait for that member instead of circling the pool (#1023). */
+  private sessionMetadataScope(
+    now: number,
+    ownerId?: string,
+    agentIds?: readonly string[]
+  ): { sql: string; params: SqlParams } {
+    if (!this.shared) return { sql: '', params: {} }
+    const scope = idScope('agentId', agentIds)
+    return {
+      sql: ` AND (ownerId = @ownerId OR ((ownerId IS NULL OR COALESCE(claimedAt, 0) <= @staleBefore)${scope.sql}))`,
+      params: { ownerId: ownerId ?? null, staleBefore: now - SHARED_OUTBOX_LEASE_MS, ...scope.params }
+    }
+  }
+
+  /** Everything this member is eventually answerable for: its own rows plus every row of
+   *  an agent it serves, whoever holds the claim right now. Wider than the claimable-now
+   *  scope on purpose — a peer's live claim on a served agent's row still has to arm this
+   *  member's wake, or nothing would run when that claim lapses. */
+  private sessionMetadataWorkScope(ownerId?: string, agentIds?: readonly string[]): { sql: string; params: SqlParams } {
+    if (!this.shared) return { sql: '', params: {} }
+    const scope = idScope('agentId', agentIds)
+    return {
+      sql: ` AND (ownerId = @ownerId OR 1 = 1${scope.sql})`,
+      params: { ownerId: ownerId ?? null, ...scope.params }
+    }
+  }
+
+  nextSessionMetadataSnapshot(
+    now = Date.now(),
+    ownerId?: string,
+    agentIds?: readonly string[]
+  ): SessionMetadataOutboxRow | undefined {
+    const scope = this.sessionMetadataScope(now, ownerId, agentIds)
     return this.db
       .prepare(
         `SELECT agentId, sessionId, revision, snapshot, queuedAt, failedAttempts, nextAttemptAt
          FROM session_metadata_outbox
-         WHERE nextAttemptAt IS NULL OR nextAttemptAt <= ?
+         WHERE (nextAttemptAt IS NULL OR nextAttemptAt <= @now)${scope.sql}
          ORDER BY queuedAt ASC LIMIT 1`
       )
-      .get(now) as unknown as SessionMetadataOutboxRow | undefined
+      .get({ now, ...scope.params }) as unknown as SessionMetadataOutboxRow | undefined
   }
 
-  nextSessionMetadataAttemptAt(): number | undefined {
+  /** Take or renew this member's claim on one snapshot before emitting it. Local
+   *  stores never lease: the single owner claims everything. */
+  claimSessionMetadataSnapshot(
+    agentId: string,
+    sessionId: string,
+    revision: number,
+    ownerId: string | undefined,
+    now: number
+  ): boolean {
+    if (!this.shared) return true
+    return (
+      this.db
+        .prepare(
+          `UPDATE session_metadata_outbox
+           SET ownerId = @ownerId, claimedAt = @now
+           WHERE agentId = @agentId AND sessionId = @sessionId AND revision = @revision
+             AND (ownerId IS NULL OR ownerId = @ownerId OR COALESCE(claimedAt, 0) <= @staleBefore)`
+        )
+        .run({
+          agentId,
+          sessionId,
+          revision,
+          ownerId: ownerId ?? null,
+          now,
+          staleBefore: now - SHARED_OUTBOX_LEASE_MS
+        }).changes === 1
+    )
+  }
+
+  /** Hand a snapshot this member cannot scope back to the pool: the claim is released
+   *  so the member serving the agent picks it up, the body and the failure count are
+   *  untouched, and the backoff keeps it out of this member's next pass. Returns false
+   *  on a local store, where there is no other member to park it for. */
+  parkSessionMetadataSnapshot(agentId: string, sessionId: string, revision: number, retryAt: number): boolean {
+    if (!this.shared) return false
+    return (
+      this.db
+        .prepare(
+          `UPDATE session_metadata_outbox
+           SET ownerId = NULL, claimedAt = NULL, nextAttemptAt = @retryAt
+           WHERE agentId = @agentId AND sessionId = @sessionId AND revision = @revision`
+        )
+        .run({ agentId, sessionId, revision, retryAt }).changes === 1
+    )
+  }
+
+  /** Hand the snapshots of agents a member has just gained back to the pool: the parked
+   *  ones lose their backoff and a previous holder's claim — live or not — is released,
+   *  because the duty ledger has already proved that member no longer serves the agent.
+   *  This member's own claims are left alone; only it knows whether they are in flight. */
+  reclaimSessionMetadataSnapshots(agentIds: readonly string[], ownerId?: string): number {
+    if (!this.shared || agentIds.length === 0) return 0
+    const scope = idScope('agentId', agentIds)
+    return Number(
+      this.db
+        .prepare(
+          `UPDATE session_metadata_outbox
+           SET ownerId = NULL, claimedAt = NULL, nextAttemptAt = NULL
+           WHERE (ownerId IS NULL OR ownerId <> @ownerId)${scope.sql}`
+        )
+        .run({ ownerId: ownerId ?? null, ...scope.params }).changes
+    )
+  }
+
+  /** Release every claim this member still holds, at shutdown: it will not emit again, so
+   *  a successor must not wait out the lease. Bodies, revisions and backoffs survive. */
+  releaseOwnedSessionMetadataSnapshots(ownerId?: string): number {
+    if (!this.shared) return 0
+    return Number(
+      this.db
+        .prepare(
+          `UPDATE session_metadata_outbox
+           SET ownerId = NULL, claimedAt = NULL, nextAttemptAt = NULL
+           WHERE ownerId = @ownerId`
+        )
+        .run({ ownerId: ownerId ?? null }).changes
+    )
+  }
+
+  /** When the earliest row this member is answerable for becomes workable: its own backoff,
+   *  or — for a row a peer still holds — the later of that backoff and the moment the claim
+   *  lapses. Without the second half a graceful handoff leaves a live foreign claim with
+   *  nothing armed to outlast it. Written as one CASE rather than a two-argument `max()`: the
+   *  same statement text runs on the pool's PostgreSQL, where `MAX` is only an aggregate. */
+  nextSessionMetadataAttemptAt(ownerId?: string, agentIds?: readonly string[]): number | undefined {
+    const scope = this.sessionMetadataWorkScope(ownerId, agentIds)
+    const workableAt = this.shared
+      ? `CASE WHEN ownerId IS NOT NULL AND ownerId <> @ownerId
+                AND COALESCE(claimedAt, 0) + @lease > COALESCE(nextAttemptAt, 0)
+           THEN COALESCE(claimedAt, 0) + @lease ELSE COALESCE(nextAttemptAt, 0) END`
+      : 'COALESCE(nextAttemptAt, 0)'
     const row = this.db
-      .prepare('SELECT MIN(COALESCE(nextAttemptAt, 0)) AS attemptAt FROM session_metadata_outbox')
-      .get() as { attemptAt: number | null } | undefined
+      .prepare(`SELECT MIN(${workableAt}) AS attemptAt FROM session_metadata_outbox WHERE 1 = 1${scope.sql}`)
+      .get({ ...scope.params, ...(this.shared ? { lease: SHARED_OUTBOX_LEASE_MS } : {}) }) as
+      { attemptAt: number | null } | undefined
     return row?.attemptAt === null || row?.attemptAt === undefined ? undefined : Number(row.attemptAt)
   }
 
@@ -2454,28 +2598,41 @@ export class LocalStore {
     agentId: string,
     sessionId: string,
     revision: number,
-    nextAttemptAt: number | null
+    nextAttemptAt: number | null,
+    ownerId?: string
   ): Pick<SessionMetadataOutboxRow, 'failedAttempts' | 'nextAttemptAt'> | undefined {
+    const fence = this.shared ? ' AND (ownerId IS NULL OR ownerId = @ownerId)' : ''
     return this.db
       .prepare(
         `UPDATE session_metadata_outbox
-         SET failedAttempts = failedAttempts + 1, nextAttemptAt = ?
-         WHERE agentId = ? AND sessionId = ? AND revision = ?
+         SET failedAttempts = failedAttempts + 1, nextAttemptAt = @nextAttemptAt
+         WHERE agentId = @agentId AND sessionId = @sessionId AND revision = @revision${fence}
          RETURNING failedAttempts, nextAttemptAt`
       )
-      .get(nextAttemptAt, agentId, sessionId, revision) as
+      .get({ agentId, sessionId, revision, nextAttemptAt, ...(fence ? { ownerId: ownerId ?? null } : {}) }) as
       Pick<SessionMetadataOutboxRow, 'failedAttempts' | 'nextAttemptAt'> | undefined
   }
 
-  hasPendingSessionMetadata(): boolean {
-    return this.db.prepare('SELECT 1 AS pending FROM session_metadata_outbox LIMIT 1').get() !== undefined
+  /** Any row this member is answerable for, workable now or once a peer's claim lapses. */
+  hasPendingSessionMetadata(ownerId?: string, agentIds?: readonly string[]): boolean {
+    const scope = this.sessionMetadataWorkScope(ownerId, agentIds)
+    return (
+      this.db
+        .prepare(`SELECT 1 AS pending FROM session_metadata_outbox WHERE 1 = 1${scope.sql} LIMIT 1`)
+        .get(scope.params) !== undefined
+    )
   }
 
-  /** Clear exactly the revision the CP ACKed. A newer coalesced snapshot wins. */
-  acknowledgeSessionMetadataSnapshot(agentId: string, sessionId: string, revision: number): boolean {
+  /** Clear exactly the revision the CP ACKed. A newer coalesced snapshot wins. On a
+   *  shared store only the claim holder may drop a row — never a peer's. */
+  acknowledgeSessionMetadataSnapshot(agentId: string, sessionId: string, revision: number, ownerId?: string): boolean {
+    const fence = this.shared ? ' AND (ownerId IS NULL OR ownerId = @ownerId)' : ''
     const result = this.db
-      .prepare('DELETE FROM session_metadata_outbox WHERE agentId = ? AND sessionId = ? AND revision = ?')
-      .run(agentId, sessionId, revision)
+      .prepare(
+        `DELETE FROM session_metadata_outbox
+         WHERE agentId = @agentId AND sessionId = @sessionId AND revision = @revision${fence}`
+      )
+      .run({ agentId, sessionId, revision, ...(fence ? { ownerId: ownerId ?? null } : {}) })
     return result.changes === 1
   }
 

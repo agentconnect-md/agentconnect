@@ -62,6 +62,8 @@ describe('LocalStore schema versioning', () => {
     old.exec('ALTER TABLE cron_runs DROP COLUMN definition')
     old.exec('ALTER TABLE session_purges DROP COLUMN ownerId')
     old.exec('ALTER TABLE session_purges DROP COLUMN claimedAt')
+    old.exec('ALTER TABLE session_metadata_outbox DROP COLUMN ownerId')
+    old.exec('ALTER TABLE session_metadata_outbox DROP COLUMN claimedAt')
     old.exec('PRAGMA user_version = 1')
     old.close()
 
@@ -79,7 +81,8 @@ describe('LocalStore schema versioning', () => {
     const purgeColumns = columnsOf('session_purges')
     upgraded.close()
     expect(columns).toContain('ownerId')
-    expect(outboxColumns).toEqual(expect.arrayContaining(['failedAttempts', 'nextAttemptAt']))
+    // Session-metadata snapshots are leased per pool member too (#1023).
+    expect(outboxColumns).toEqual(expect.arrayContaining(['failedAttempts', 'nextAttemptAt', 'ownerId', 'claimedAt']))
     // Recovery ownership: a pool member must be able to tell its own rows from a peer's.
     expect(dreamColumns).toContain('ownerId')
     expect(grantColumns).toContain('ownerId')
@@ -88,7 +91,7 @@ describe('LocalStore schema versioning', () => {
     expect(cronColumns).toContain('definition')
     // Purge receipts are leased per pool member (#1032).
     expect(purgeColumns).toEqual(expect.arrayContaining(['ownerId', 'claimedAt']))
-    expect(userVersion(path)).toBe(9)
+    expect(userVersion(path)).toBe(10)
   })
 
   it('never persists the CP routing map on a shared store, and still does on an owned one', () => {
@@ -131,6 +134,8 @@ describe('LocalStore schema versioning', () => {
     old.exec('ALTER TABLE cron_runs DROP COLUMN definition')
     old.exec('ALTER TABLE session_purges DROP COLUMN ownerId')
     old.exec('ALTER TABLE session_purges DROP COLUMN claimedAt')
+    old.exec('ALTER TABLE session_metadata_outbox DROP COLUMN ownerId')
+    old.exec('ALTER TABLE session_metadata_outbox DROP COLUMN claimedAt')
     old.exec('PRAGMA user_version = 5')
     old.close()
 
@@ -146,7 +151,7 @@ describe('LocalStore schema versioning', () => {
     expect(upgraded.isCaptureExcluded('bot-c', 'acp-2')).toBe(true)
     upgraded.close()
 
-    expect(userVersion(path)).toBe(9)
+    expect(userVersion(path)).toBe(10)
   })
 
   it('re-keys the runtime catalog cache on its owning member when upgrading a v7 store', () => {
@@ -172,6 +177,8 @@ describe('LocalStore schema versioning', () => {
     `)
     old.exec('ALTER TABLE session_purges DROP COLUMN ownerId')
     old.exec('ALTER TABLE session_purges DROP COLUMN claimedAt')
+    old.exec('ALTER TABLE session_metadata_outbox DROP COLUMN ownerId')
+    old.exec('ALTER TABLE session_metadata_outbox DROP COLUMN claimedAt')
     old.exec('PRAGMA user_version = 7')
     old.close()
 
@@ -193,7 +200,7 @@ describe('LocalStore schema versioning', () => {
         .map((column) => column.name)
     expect(primaryKey(metaColumns)).toEqual(['ownerId', 'runtimeId'])
     expect(primaryKey(capColumns)).toEqual(['ownerId', 'runtimeId', 'modelId'])
-    expect(userVersion(path)).toBe(9)
+    expect(userVersion(path)).toBe(10)
   })
 
   it('refuses a store written by a newer daemon WITHOUT touching it first', () => {
