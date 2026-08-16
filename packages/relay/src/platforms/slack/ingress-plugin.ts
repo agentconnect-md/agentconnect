@@ -12,11 +12,11 @@
  *    table);
  *  - the verify/handle pair, delegating to the SAME primitives the manager's
  *    `resolveVerified` ladder uses today (`verifySlackSignature`, the ingest's
- *    `handleEvent`/`handleInteraction`), so the staged route adoption (the
- *    file-move PR) cannot diverge from the live path.
+ *    `handleEvent`/`handleInteraction`), so the staged route adoption cannot
+ *    diverge from the live path.
  *
- * The ingest CLASS stays in `slack-http-ingest.ts` for this PR — contract
- * adoption and file moves are separate steps, per the S2/S3 sequencing.
+ * The module's other halves sit beside this file: the ingest class in
+ * `http-ingest.ts`, the shared HTTP Events API routes in `http-ingress.ts`.
  */
 import { createHash } from 'node:crypto'
 import type { RdMsgPlatformAction } from '@agentconnect.md/protocol'
