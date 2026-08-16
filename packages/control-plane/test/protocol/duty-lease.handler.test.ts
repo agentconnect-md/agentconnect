@@ -72,6 +72,9 @@ async function ready(h: ReturnType<typeof buildWsHarness>, opts: { orgScoped?: b
   return { conn, stub }
 }
 
+/** A bounded deadline, not a fixed pause: a loaded runner costs latency here, never a red test (#1024). */
+const SETTLE = { timeout: 10_000, interval: 5 }
+
 /** Inject one beat and wait for ITS renewal confirmation. `expectFrame` resolves from a frame
  *  already sent, so a multi-beat test has to count instead — otherwise the next inject races the
  *  running exchange and the lane drops it. */
@@ -81,7 +84,14 @@ async function beat(
 ): Promise<void> {
   const before = stub.sent.filter((f) => f.type === 'duty/renewed').length
   stub.inject('heartbeat', heartbeat(duties))
-  await vi.waitFor(() => expect(stub.sent.filter((f) => f.type === 'duty/renewed').length).toBe(before + 1))
+  // The confirmation closes the exchange, so on arrival every grant and revocation is already sent.
+  await vi.waitFor(() => expect(stub.sent.filter((f) => f.type === 'duty/renewed').length).toBe(before + 1), SETTLE)
+}
+
+/** Drain the member's duty lane — the barrier for a beat whose correct answer is no frame at all. */
+async function settleDuty(h: ReturnType<typeof buildWsHarness>): Promise<void> {
+  // Releasing nothing touches no row but chains on the lane, so a wrongly started exchange ends first.
+  await h.deps.dutyLease.release(DaemonId(DAEMON), [])
 }
 
 function heartbeat(duties?: { held: { groupId: string; term: string }[]; headroom: number; draining?: boolean }) {
@@ -100,8 +110,8 @@ describe('duty lease exchange (protocol level, real Postgres)', () => {
     const { stub } = await ready(h)
 
     stub.inject('heartbeat', heartbeat())
-    stub.inject('heartbeat', heartbeat()) // second beat: the first has fully dispatched by now
-    await new Promise((r) => setTimeout(r, 25))
+    stub.inject('heartbeat', heartbeat())
+    await settleDuty(h)
     expect(stub.sent.filter((f) => f.type.startsWith('duty/'))).toEqual([])
   })
 
@@ -151,8 +161,7 @@ describe('duty lease exchange (protocol level, real Postgres)', () => {
     const h = buildWsHarness(prisma)
     const { stub } = await ready(h)
 
-    stub.inject('heartbeat', heartbeat({ held: [], headroom: 0 }))
-    await new Promise((r) => setTimeout(r, 25))
+    await beat(stub, { held: [], headroom: 0 })
     expect(stub.sent.filter((f) => f.type === 'duty/grant')).toEqual([])
   })
 
@@ -178,7 +187,7 @@ describe('duty lease exchange (protocol level, real Postgres)', () => {
       },
       { id: REL_ID }
     )
-    await vi.waitFor(() => expect(stub.sent.filter((f) => f.type === 'register/ok').length).toBe(2))
+    await vi.waitFor(() => expect(stub.sent.filter((f) => f.type === 'register/ok').length).toBe(2), SETTLE)
     stub.inject('heartbeat', heartbeat({ held: [], headroom: 4 }))
     await stub.expectFrame('duty/grant')
     expect((await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })).holder).toBe(DAEMON)
@@ -220,8 +229,7 @@ describe('duty lease exchange (protocol level, real Postgres)', () => {
     const h = buildWsHarness(prisma, { dutyLease: { recoveryGraceMs: 60_000 } })
     const { stub } = await ready(h)
 
-    stub.inject('heartbeat', heartbeat({ held: [], headroom: 4 }))
-    await new Promise((r) => setTimeout(r, 25))
+    await beat(stub, { held: [], headroom: 4 })
     expect(stub.sent.filter((f) => f.type === 'duty/grant')).toEqual([])
 
     h.clock.advance(60_001)
@@ -593,7 +601,7 @@ describe('a dependent removal to a holder that never registered the resource', (
 
     // REQ→ack: the stub never answers, so assert on what was SENT, not the reply.
     void sender.cronRemove(DAEMON, { cronId: CRON }, DEFAULT_ORG_ID)
-    await vi.waitFor(() => expect(stub.sent.some((f) => f.type === 'cron/remove')).toBe(true))
+    await vi.waitFor(() => expect(stub.sent.some((f) => f.type === 'cron/remove')).toBe(true), SETTLE)
     expect(stub.sent.find((f) => f.type === 'cron/remove')?.orgId).toBe(DEFAULT_ORG_ID)
 
     await expect(sender.cronRemove(DAEMON, { cronId: CRON })).rejects.toThrow(/organization/i)
@@ -608,7 +616,7 @@ describe('duty lease exchange — scope gate and allocation coherence', () => {
     const { stub } = await ready(h, { orgScoped: true })
 
     stub.inject('heartbeat', heartbeat({ held: [], headroom: 4 }))
-    await new Promise((r) => setTimeout(r, 25))
+    await settleDuty(h)
     expect(stub.sent.filter((f) => f.type.startsWith('duty/'))).toEqual([])
     const row = await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })
     expect(row.holder).toBeNull()
@@ -658,13 +666,13 @@ describe('duty lease exchange — scope gate and allocation coherence', () => {
     await prisma.dutyGroup.update({ where: { id: GROUP }, data: { holder: null, expiresAt: null } })
     const { stub } = await ready(h)
 
-    stub.inject('heartbeat', heartbeat({ held: [{ groupId: GROUP, term: '1' }], headroom: 1 }))
+    // Awaited to the exchange's own confirmation, so a revocation would already be on the wire.
+    await beat(stub, { held: [{ groupId: GROUP, term: '1' }], headroom: 1 })
     const grant = await stub.expectFrame('duty/grant')
     if (!isFrame('duty/grant')(grant)) throw new Error('expected duty/grant')
     expect(grant.payload.grants).toEqual([
       { groupId: GROUP, orgId: DEFAULT_ORG_ID, term: '2', members: [{ kind: 'agent', refId: AGENT }] }
     ])
-    await new Promise((r) => setTimeout(r, 25))
     expect(stub.sent.filter((f) => f.type === 'duty/revoke')).toEqual([])
   })
 })
@@ -691,7 +699,7 @@ describe('duty lease exchange — wire safety', () => {
     await vi.waitFor(() => {
       const frames = stub.sent.filter((f) => f.type === 'duty/grant')
       expect(frames).toHaveLength(2)
-    })
+    }, SETTLE)
     const sizes = stub.sent
       .filter((f) => f.type === 'duty/grant')
       .map((f) => (f.payload as { grants: unknown[] }).grants.length)
@@ -751,8 +759,7 @@ describe('duty lease exchange — wire safety', () => {
     })
     const { stub } = await ready(h)
 
-    stub.inject('heartbeat', heartbeat({ held: [], headroom: 0 }))
-    await new Promise((r) => setTimeout(r, 100))
+    await beat(stub, { held: [], headroom: 0 })
     expect(stub.sent.filter((f) => f.type === 'duty/grant')).toEqual([])
     const row = await prisma.dutyGroup.findUniqueOrThrow({ where: { id: GROUP } })
     expect(row.holder).toBeNull()
@@ -807,7 +814,8 @@ describe('duty lease exchange — wire safety', () => {
     stub.inject('heartbeat', heartbeat({ held: [], headroom: 1 }))
     stub.inject('heartbeat', heartbeat({ held: [], headroom: 1 }))
     await stub.expectFrame('duty/grant')
-    await new Promise((r) => setTimeout(r, 50))
+    // The dropped beat is refused synchronously at dispatch, so a drained lane is the whole story.
+    await settleDuty(h)
 
     const grantedTotal = stub.sent
       .filter((f) => f.type === 'duty/grant')
@@ -1134,7 +1142,7 @@ describe('routing follows the holder (protocol level, real Postgres)', () => {
     await beat(stub, { held: [{ groupId: GROUP, term: '5' }], headroom: 4 })
     // The converger is debounced on the same clock the exchange runs on.
     h.clock.advance(1)
-    await vi.waitFor(() => expect(h.hookAssigns.length).toBeGreaterThan(0))
+    await vi.waitFor(() => expect(h.hookAssigns.length).toBeGreaterThan(0), SETTLE)
 
     const latest = h.hookAssigns.at(-1)!
     expect(latest).toMatchObject({ hookId: HOOK, agentId: AGENT, daemonId: DAEMON })
@@ -1153,7 +1161,7 @@ describe('routing follows the holder (protocol level, real Postgres)', () => {
     // One absence is the threshold here, so this beat hands the lease back.
     await beat(stub, { held: [], headroom: 0 })
     h.clock.advance(1)
-    await vi.waitFor(() => expect(h.hookRemovals).toContain(HOOK))
+    await vi.waitFor(() => expect(h.hookRemovals).toContain(HOOK), SETTLE)
   })
 })
 
@@ -1240,12 +1248,13 @@ describe('a grant is not a route until the digest confirms it (protocol level, r
     await beat(stub, { held: [], headroom: 4 })
     expect(stub.sent.some((f) => f.type === 'duty/grant')).toBe(true)
     h.clock.advance(1)
+    // The converger is fire-and-forget, so this stays a quiet window: it can mask, never fail, a run.
     await new Promise((r) => setTimeout(r, 30))
     expect(h.hookAssigns.filter((rule) => rule.daemonId === DAEMON)).toEqual([])
 
     await beat(stub, { held: [{ groupId: GROUP, term: '5' }], headroom: 4 })
     h.clock.advance(1)
-    await vi.waitFor(() => expect(h.hookAssigns.some((rule) => rule.daemonId === DAEMON)).toBe(true))
+    await vi.waitFor(() => expect(h.hookAssigns.some((rule) => rule.daemonId === DAEMON)).toBe(true), SETTLE)
   })
 
   it('confirms one grant once — a repeat beat re-converges nothing', async () => {
