@@ -434,6 +434,54 @@ describe('daemon --k8s mode', () => {
     }
   })
 
+  it('clears a readiness marker left on a mounted path before it waits on the control plane (#1043)', async () => {
+    const rootDir = root()
+    const marker = join(rootDir, 'ready')
+    writeFileSync(marker, 'ready\n')
+    vi.stubEnv('AC_READINESS_FILE', marker)
+    let release!: () => void
+    const startControlPlane = vi.fn(() => new Promise<void>((resolve) => (release = resolve)))
+    const instance = daemon({ root: rootDir, k8s: true, startControlPlane })
+    const starting = instance.start()
+    try {
+      // The marker outlives the container that wrote it, and startup blocks here for as long as the
+      // CP is down — so it has to be gone before the wait, not after it.
+      await vi.waitFor(() => expect(startControlPlane).toHaveBeenCalledOnce())
+      expect(existsSync(marker)).toBe(false)
+      expect(instance.readinessState()).toEqual({ ready: false, reason: 'starting' })
+      release()
+      await starting
+      // Startup is done; what is left is the member's own registration.
+      expect(instance.readinessState()).toEqual({ ready: false, reason: 'control-plane-unregistered' })
+      expect(existsSync(marker)).toBe(false)
+    } finally {
+      await starting.catch(() => undefined)
+      await instance.stop()
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it('is not ready until the install-wide sandbox runtime probe returns (#1043)', async () => {
+    let settle!: (table: unknown) => void
+    const k8sDaemon = daemon({
+      root: root(),
+      k8s: true,
+      plane: { probeRuntimes: () => new Promise((resolve) => (settle = resolve)) }
+    })
+    try {
+      await k8sDaemon.start()
+      // Registered, but the member still advertises nothing: the CP would assign it no agent, so
+      // process health is not servability and the probe is the half only this member can settle.
+      ;(k8sDaemon as any).cpClient = { state: 'READY' }
+      expect(k8sDaemon.readinessState()).toEqual({ ready: false, reason: 'runtime-probe-pending' })
+      settle({ runtimes: [{ id: 'claude', version: '1.2.3' }] })
+      await vi.waitFor(() => expect(k8sDaemon.readinessState()).toEqual({ ready: true, reason: 'ready' }))
+    } finally {
+      ;(k8sDaemon as any).cpClient = undefined
+      await k8sDaemon.stop()
+    }
+  })
+
   it('deletes a removed agent’s sandbox, which is what takes its workspace volume with it', async () => {
     const discarded: string[] = []
     const k8sDaemon = daemon({
