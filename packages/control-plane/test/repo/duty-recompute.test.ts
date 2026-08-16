@@ -496,6 +496,8 @@ describe('duty recompute kick (real Postgres)', () => {
       const groups = await repo.listForOrg(ORG)
       expect(groups).toHaveLength(1)
     })
+    // The recompute's tail outlives the assertion; settle it here, not into the next test's database.
+    await s.settle()
   })
 
   it('a burst against one org collapses into a single recompute', async () => {
@@ -526,6 +528,8 @@ describe('duty recompute kick (real Postgres)', () => {
     s.kick(DEFAULT_ORG_ID)
     clock.advance(10)
     await vi.waitFor(() => expect(recomputes).toEqual([DEFAULT_ORG_ID]))
+    // `recomputes` is pushed on ENTRY: settle the still-pending writes here, not into the next test.
+    await s.settle()
   })
 
   it('stop() cancels a pending kick', async () => {
@@ -537,8 +541,11 @@ describe('duty recompute kick (real Postgres)', () => {
 
     s.kick(DEFAULT_ORG_ID)
     s.stop()
+    // The cancellation itself, asserted directly: the pending kick is the only timer this sweep armed.
+    expect(clock.pendingTimers()).toBe(0)
     clock.advance(1_000)
-    await new Promise((r) => setTimeout(r, 20))
+    // Settles nothing when stop() held — and awaits the recompute it missed when it did not.
+    await s.settle()
     expect(await repo.listForOrg(ORG)).toEqual([])
   })
 })
