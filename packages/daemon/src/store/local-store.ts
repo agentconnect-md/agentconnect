@@ -622,7 +622,7 @@ function restrictPath(path: string, mode: number): void {
  * change that edits a `CREATE TABLE` below, and append the matching step to
  * {@link SCHEMA_MIGRATIONS}.
  */
-const SCHEMA_VERSION = 7
+const SCHEMA_VERSION = 8
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -691,13 +691,22 @@ const SCHEMA_MIGRATIONS: ((db: StoreDatabase) => void)[] = [
       DROP TABLE session_gates;
       ALTER TABLE session_gates_keyed RENAME TO session_gates;
     `),
-  (db) => db.exec('ALTER TABLE cron_runs ADD COLUMN definition TEXT')
+  (db) => db.exec('ALTER TABLE cron_runs ADD COLUMN definition TEXT'),
+  // The catalog cache is re-keyed on its owning member (#1039): pre-owner rows name none, so
+  // they are dropped rather than misattributed and the CREATE block rebuilds both tables.
+  (db) =>
+    db.exec(`
+      DROP TABLE IF EXISTS runtime_catalog_meta;
+      DROP TABLE IF EXISTS runtime_model_catalog;
+    `)
 ]
 
 export class LocalStore {
   private db: StoreDatabase
   private readonly shared: boolean
   private readonly ownerId?: string
+  /** Partition key for per-member cache rows; a single-daemon store owns one partition forever. */
+  private readonly cacheOwnerId: string
   private transcriptRevision = 0
   private transcriptMutationListener?: (mutation: TranscriptMutation) => void
 
@@ -728,6 +737,7 @@ export class LocalStore {
       this.ownerId = source.ownerId
       if (this.shared && !this.ownerId) throw new Error('shared LocalStore requires an ownerId')
     }
+    this.cacheOwnerId = this.ownerId ?? ''
     // Decided BEFORE the CREATE block, which is what makes an empty file
     // indistinguishable from an old one a moment later.
     const freshDatabase =
@@ -1080,8 +1090,11 @@ export class LocalStore {
       -- Failures never clear rows; models are pruned only after a COMPLETE successful
       -- discovery. complete stays 0 on phase-1 probe writes so the discovery gate
       -- can tell "never fully discovered" from "last-good on file".
+      -- ownerId leads both keys (#1039): the cache describes an image, so on a store every
+      -- pool member shares, two rollout generations would re-probe and prune each other.
       CREATE TABLE IF NOT EXISTS runtime_catalog_meta (
-        runtimeId TEXT PRIMARY KEY,
+        ownerId TEXT NOT NULL DEFAULT '', -- the owning member; '' is the single-daemon store
+        runtimeId TEXT NOT NULL,
         fingerprint TEXT NOT NULL,
         source TEXT NOT NULL,             -- 'native' | 'acp'
         defaultModel TEXT,
@@ -1089,15 +1102,17 @@ export class LocalStore {
         defaultPermissionMode TEXT,       -- mode select currentValue on a fresh probe session
         complete INTEGER NOT NULL DEFAULT 0,
         modelsHash TEXT,                  -- hash of probed models[] at last complete discovery
-        observedAt INTEGER NOT NULL
+        observedAt INTEGER NOT NULL,
+        PRIMARY KEY (ownerId, runtimeId)
       );
       CREATE TABLE IF NOT EXISTS runtime_model_catalog (
+        ownerId TEXT NOT NULL DEFAULT '',
         runtimeId TEXT NOT NULL,
         modelId TEXT NOT NULL,
         fingerprint TEXT NOT NULL,
         capsJson TEXT NOT NULL,           -- JSON {name?, efforts?: [{value,name?,description?}], defaultEffort?, fastMode?}
         observedAt INTEGER NOT NULL,
-        PRIMARY KEY (runtimeId, modelId)
+        PRIMARY KEY (ownerId, runtimeId, modelId)
       );
       -- Memory dream jobs (docs/designs/memory-dreaming.md §4). METADATA ONLY —
       -- staged store bodies live on disk under <agent-root>/memory-dreams/ and
@@ -4520,21 +4535,25 @@ export class LocalStore {
     this.db.exec('BEGIN')
     try {
       const existing = this.db
-        .prepare('SELECT fingerprint, complete, modelsHash FROM runtime_catalog_meta WHERE runtimeId = ?')
-        .get(meta.runtimeId) as { fingerprint: string; complete: number; modelsHash: string | null } | undefined
+        .prepare(
+          'SELECT fingerprint, complete, modelsHash FROM runtime_catalog_meta WHERE ownerId = ? AND runtimeId = ?'
+        )
+        .get(this.cacheOwnerId, meta.runtimeId) as
+        { fingerprint: string; complete: number; modelsHash: string | null } | undefined
       const sameGeneration = existing && existing.fingerprint === meta.fingerprint ? existing : undefined
       this.db
         .prepare(
           `INSERT INTO runtime_catalog_meta
-             (runtimeId, fingerprint, source, defaultModel, permissionModes, defaultPermissionMode, complete, modelsHash, observedAt)
-           VALUES (@runtimeId, @fingerprint, @source, @defaultModel, @permissionModes, @defaultPermissionMode, @complete, @modelsHash, @observedAt)
-           ON CONFLICT(runtimeId) DO UPDATE SET
+             (ownerId, runtimeId, fingerprint, source, defaultModel, permissionModes, defaultPermissionMode, complete, modelsHash, observedAt)
+           VALUES (@ownerId, @runtimeId, @fingerprint, @source, @defaultModel, @permissionModes, @defaultPermissionMode, @complete, @modelsHash, @observedAt)
+           ON CONFLICT(ownerId, runtimeId) DO UPDATE SET
              fingerprint=excluded.fingerprint, source=excluded.source, defaultModel=excluded.defaultModel,
              permissionModes=excluded.permissionModes, defaultPermissionMode=excluded.defaultPermissionMode,
              complete=excluded.complete,
              modelsHash=excluded.modelsHash, observedAt=excluded.observedAt`
         )
         .run({
+          ownerId: this.cacheOwnerId,
           runtimeId: meta.runtimeId,
           fingerprint: meta.fingerprint,
           source: meta.source,
@@ -4560,9 +4579,9 @@ export class LocalStore {
       .prepare(
         `UPDATE runtime_catalog_meta
          SET complete = 1, modelsHash = @modelsHash, observedAt = @observedAt
-         WHERE runtimeId = @runtimeId AND fingerprint = @fingerprint`
+         WHERE ownerId = @ownerId AND runtimeId = @runtimeId AND fingerprint = @fingerprint`
       )
-      .run({ runtimeId, fingerprint, modelsHash, observedAt })
+      .run({ ownerId: this.cacheOwnerId, runtimeId, fingerprint, modelsHash, observedAt })
   }
 
   /** Upsert one model's capability row (latest-wins). Written incrementally as each
@@ -4570,12 +4589,13 @@ export class LocalStore {
   upsertRuntimeModelCap(rec: RuntimeModelCapRecord): void {
     this.db
       .prepare(
-        `INSERT INTO runtime_model_catalog (runtimeId, modelId, fingerprint, capsJson, observedAt)
-         VALUES (@runtimeId, @modelId, @fingerprint, @capsJson, @observedAt)
-         ON CONFLICT(runtimeId, modelId) DO UPDATE SET
+        `INSERT INTO runtime_model_catalog (ownerId, runtimeId, modelId, fingerprint, capsJson, observedAt)
+         VALUES (@ownerId, @runtimeId, @modelId, @fingerprint, @capsJson, @observedAt)
+         ON CONFLICT(ownerId, runtimeId, modelId) DO UPDATE SET
            fingerprint=excluded.fingerprint, capsJson=excluded.capsJson, observedAt=excluded.observedAt`
       )
       .run({
+        ownerId: this.cacheOwnerId,
         runtimeId: rec.runtimeId,
         modelId: rec.modelId,
         fingerprint: rec.fingerprint,
@@ -4591,29 +4611,35 @@ export class LocalStore {
     // the runtime's rows — correct for a runtime whose catalog came back empty.
     const placeholders = keepModelIds.map(() => '?').join(', ')
     this.db
-      .prepare(`DELETE FROM runtime_model_catalog WHERE runtimeId = ? AND modelId NOT IN (${placeholders})`)
-      .run(runtimeId, ...keepModelIds)
+      .prepare(
+        `DELETE FROM runtime_model_catalog
+         WHERE ownerId = ? AND runtimeId = ? AND modelId NOT IN (${placeholders})`
+      )
+      .run(this.cacheOwnerId, runtimeId, ...keepModelIds)
   }
 
   getRuntimeCatalogMeta(runtimeId: string): RuntimeCatalogMetaRecord | undefined {
-    const row = this.db.prepare('SELECT * FROM runtime_catalog_meta WHERE runtimeId = ?').get(runtimeId) as
-      RuntimeCatalogMetaRow | undefined
+    const row = this.db
+      .prepare('SELECT * FROM runtime_catalog_meta WHERE ownerId = ? AND runtimeId = ?')
+      .get(this.cacheOwnerId, runtimeId) as RuntimeCatalogMetaRow | undefined
     return row ? runtimeCatalogMetaFromRow(row) : undefined
   }
 
   listRuntimeCatalogMetas(): RuntimeCatalogMetaRecord[] {
     const rows = this.db
-      .prepare('SELECT * FROM runtime_catalog_meta ORDER BY runtimeId ASC')
-      .all() as unknown as RuntimeCatalogMetaRow[]
+      .prepare('SELECT * FROM runtime_catalog_meta WHERE ownerId = ? ORDER BY runtimeId ASC')
+      .all(this.cacheOwnerId) as unknown as RuntimeCatalogMetaRow[]
     return rows.map(runtimeCatalogMetaFromRow)
   }
 
   listRuntimeModelCaps(runtimeId?: string): RuntimeModelCapRecord[] {
     const rows = (runtimeId !== undefined
-      ? this.db.prepare('SELECT * FROM runtime_model_catalog WHERE runtimeId = ? ORDER BY modelId ASC').all(runtimeId)
+      ? this.db
+          .prepare('SELECT * FROM runtime_model_catalog WHERE ownerId = ? AND runtimeId = ? ORDER BY modelId ASC')
+          .all(this.cacheOwnerId, runtimeId)
       : this.db
-          .prepare('SELECT * FROM runtime_model_catalog ORDER BY runtimeId ASC, modelId ASC')
-          .all()) as unknown as RuntimeModelCapRow[]
+          .prepare('SELECT * FROM runtime_model_catalog WHERE ownerId = ? ORDER BY runtimeId ASC, modelId ASC')
+          .all(this.cacheOwnerId)) as unknown as RuntimeModelCapRow[]
     return rows.map((row) => ({
       runtimeId: row.runtimeId,
       modelId: row.modelId,
@@ -4623,11 +4649,22 @@ export class LocalStore {
     }))
   }
 
-  /** Startup GC (§4 rule 6): drop rows unseen for the caller-computed retention window
-   *  (30 days) from both tables, so uninstalled runtimes cannot accumulate forever. */
-  gcRuntimeCatalog(cutoffEpochMs: number): void {
-    this.db.prepare('DELETE FROM runtime_catalog_meta WHERE observedAt < ?').run(cutoffEpochMs)
-    this.db.prepare('DELETE FROM runtime_model_catalog WHERE observedAt < ?').run(cutoffEpochMs)
+  /** Startup GC (§4 rule 6): drop rows unseen for the caller-computed retention window (30 days),
+   *  and another member's at the shorter `departedOwnerCutoffEpochMs` — an ownerId dies with the
+   *  process that minted it, so a rollout leaves caches nobody can read again. That window stays
+   *  conservative: a live member that has not re-probed inside it pays one re-discovery. A
+   *  single-daemon store owns every row, so only the first window ever reaches it. */
+  gcRuntimeCatalog(cutoffEpochMs: number, departedOwnerCutoffEpochMs = cutoffEpochMs): void {
+    const params = { ownerId: this.cacheOwnerId, cutoff: cutoffEpochMs, departed: departedOwnerCutoffEpochMs }
+    for (const table of ['runtime_catalog_meta', 'runtime_model_catalog']) {
+      this.db
+        .prepare(
+          `DELETE FROM ${table}
+           WHERE (ownerId = @ownerId AND observedAt < @cutoff)
+              OR (ownerId <> @ownerId AND observedAt < @departed)`
+        )
+        .run(params)
+    }
   }
 
   /** Next shim-binding generation for an agent's sandbox: one atomic upsert, so two members cannot tie. */

@@ -328,25 +328,39 @@ accessors, and tests:
 ```sql
 -- Runtime-level metadata: fingerprint, source, and model-independent capabilities
 CREATE TABLE IF NOT EXISTS runtime_catalog_meta (
-  runtimeId       TEXT PRIMARY KEY,
+  ownerId         TEXT NOT NULL DEFAULT '',   -- Owning member; '' is the single-daemon store
+  runtimeId       TEXT NOT NULL,
   fingerprint     TEXT NOT NULL,
   source          TEXT NOT NULL,              -- 'native' (driver) | 'acp' (enumeration/phase 1)
   defaultModel    TEXT,                       -- Resolved concrete model ID, or NULL
   permissionModes TEXT,                       -- JSON [{value, name?, description?}]
   complete        INTEGER NOT NULL DEFAULT 0, -- 1 only after full discovery succeeds
-  observedAt      INTEGER NOT NULL
+  observedAt      INTEGER NOT NULL,
+  PRIMARY KEY (ownerId, runtimeId)
 );
 
 -- Model-level capabilities, one row per model
 CREATE TABLE IF NOT EXISTS runtime_model_catalog (
+  ownerId     TEXT NOT NULL DEFAULT '',
   runtimeId   TEXT NOT NULL,
   modelId     TEXT NOT NULL,
   fingerprint TEXT NOT NULL,
   capsJson    TEXT NOT NULL,               -- {name?, efforts?, defaultEffort?, fastMode?}
   observedAt  INTEGER NOT NULL,
-  PRIMARY KEY (runtimeId, modelId)
+  PRIMARY KEY (ownerId, runtimeId, modelId)
 );
 ```
+
+**`ownerId` leads both keys because this cache describes an image, not an
+install.** A pool member's store is one Postgres schema shared by every member,
+and a rolling update runs two image generations at once with two different
+fingerprints. Unkeyed, each member reads the other's row as "the fingerprint
+changed", re-runs discovery, resets `complete`, and prunes the other
+generation's model rows — probe sessions ping-ponging for the length of the
+rollout, a console model list that flaps, and a member that boots (§4 rule 1)
+advertising models its own image cannot run. Every read and write is scoped to
+the store's own member, so the single-daemon SQLite store — which owns the one
+`''` partition forever — behaves exactly as before.
 
 Lifecycle rules:
 
@@ -399,7 +413,11 @@ Lifecycle rules:
    current catalog resolved from registry/user/curated sources. Do not advertise
    or report them, but retain the rows because resolution may have failed
    temporarily. At startup, delete rows with `observedAt` older than 30 days to
-   prevent unbounded growth.
+   prevent unbounded growth. On a shared store, another member's rows go at a
+   shorter window (7 days): an `ownerId` dies with the process that minted it, so
+   a rollout leaves caches nobody can read again. The window stays conservative
+   because a live member that has not re-probed inside it pays one re-discovery
+   for the reclaim.
 
 ## 5. Protocol and CP Persistence
 
