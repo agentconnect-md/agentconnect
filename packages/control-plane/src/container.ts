@@ -760,6 +760,7 @@ export function buildContainer(
     sessionOwners: connReg,
     placement: placementResolver,
     memberSets: repos.memberSet,
+    liveness: connReg,
     recomputeDuties: (orgId: string) => dutyRecompute.kick(orgId),
     log: { warn: (o, m) => http.log.warn(o, m) }
   })

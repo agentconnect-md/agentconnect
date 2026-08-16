@@ -21658,14 +21658,18 @@ export class Daemon {
       },
       applyAgentActivate: (activate: AgentActivate): Promise<Ack> => {
         const { agentId } = activate
-        return this.queueAgentMove('activate', agentId, activate.moveId, async () => {
+        return this.queueAgentMove('activate', agentId, activate.moveId ?? 'unstage', async () => {
           if (this.opts.agentName) {
             return { ok: false, reason: 'agent move is unavailable in --agent single-agent mode' }
           }
           const stage = this.moveStageMetadata.get(agentId)
-          if (stage?.moveId === activate.moveId && stage.state === 'committed') return { ok: true }
+          // A token-less activate releases whatever stale staging fence remains (#1093); none ⇒ no-op.
+          if (activate.moveId === undefined && stage?.state !== 'staging') return { ok: true }
+          // Token-less ⇒ adopt the stored fence's token, so commit supersedes the stale move exactly.
+          const moveId = activate.moveId ?? stage!.moveId
+          if (stage?.moveId === moveId && stage.state === 'committed') return { ok: true }
           if (
-            stage?.moveId !== activate.moveId ||
+            stage?.moveId !== moveId ||
             stage.state !== 'staging' ||
             !this.moveStagedAgents.has(agentId) ||
             !this.drainingAgents.has(agentId)
@@ -21721,10 +21725,12 @@ export class Daemon {
             if (this.agentRemovalPending(agentId)) {
               return { ok: false, reason: 'agent/activate: superseded by a newer agent removal' }
             }
-            // The staged-move gate remains closed, so an authoritative activate
-            // can safely clear a failed-removal crash tombstone before its
-            // reconcile/host proof. Any later failure restores the move gate.
+            // The staged gate stays closed, so a tokened activate may clear a crash tombstone here.
             if (this.removedAgentTombstones.has(agentId) || this.cpDroppedAgents.has(agentId)) {
+              // A token-less unstage is not an authoritative re-add: never resurrect a removed agent.
+              if (activate.moveId === undefined) {
+                return { ok: false, reason: 'agent/activate: a removal tombstone owns this agent' }
+              }
               this.clearRemovalForReadd(agentId)
             }
             // Dependents were pruned while the agent was still invisible. Publish the
@@ -21780,23 +21786,27 @@ export class Daemon {
                 return { ok: false, reason: `agent/activate: workspace preparation failed: ${(err as Error).message}` }
               }
             }
-            // Prove the target can actually initialize ACP while the staging gate is
-            // still closed. Workspace reconciliation happens first so the spawned
-            // runtime and its sandbox bind the new directory, never an unlinked old one.
-            try {
-              await this.ensureHostAsync(agentId, { allowAgentDrain: true })
-            } catch (err) {
-              this.moveStagedAgents.add(agentId)
-              await this.stopHost(agentId).catch(() => {})
+            // Prove ACP can initialize under the still-closed gate; the workspace reconciled first, so the
+            // spawned runtime and its sandbox bind the new directory rather than an unlinked old one.
+            // An unstage restores the replica, not serving authority: a non-holder must not bind the sandbox (#1093).
+            // Read HERE, never captured: a revoke landing during the awaits above already stopped this host.
+            // Tokened stays host-proving: its target is the placement, or a source whose duty the move never released.
+            if (activate.moveId !== undefined || this.servesAgent(agentId)) {
               try {
-                await rollbackPreparedWorkspace?.()
-              } catch (rollbackErr) {
-                this.log.error(
-                  `agent/activate: failed to roll workspace back for "${agentId}": ${formatErr(rollbackErr)}`
-                )
+                await this.ensureHostAsync(agentId, { allowAgentDrain: true })
+              } catch (err) {
+                this.moveStagedAgents.add(agentId)
+                await this.stopHost(agentId).catch(() => {})
+                try {
+                  await rollbackPreparedWorkspace?.()
+                } catch (rollbackErr) {
+                  this.log.error(
+                    `agent/activate: failed to roll workspace back for "${agentId}": ${formatErr(rollbackErr)}`
+                  )
+                }
+                await this.flushReconcile().catch(() => {})
+                return { ok: false, reason: `agent/activate: ${(err as Error).message}` }
               }
-              await this.flushReconcile().catch(() => {})
-              return { ok: false, reason: `agent/activate: ${(err as Error).message}` }
             }
             if (this.agentDestructivePending(agentId)) {
               this.moveStagedAgents.add(agentId)
@@ -21817,7 +21827,7 @@ export class Daemon {
               }
             }
             try {
-              commitAgentMove(this.agentsDir, agentId, activate.moveId)
+              commitAgentMove(this.agentsDir, agentId, moveId)
             } catch (err) {
               await this.stopHost(agentId).catch(() => {})
               try {
@@ -21831,7 +21841,7 @@ export class Daemon {
               await this.flushReconcile().catch(() => {})
               return { ok: false, reason: `agent/activate: failed to commit staging fence: ${(err as Error).message}` }
             }
-            this.moveStageMetadata.set(agentId, { moveId: activate.moveId, state: 'committed' })
+            this.moveStageMetadata.set(agentId, { moveId, state: 'committed' })
             if (!this.agentDestructivePending(agentId)) this.drainingAgents.delete(agentId)
             return { ok: true }
           } finally {

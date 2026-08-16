@@ -12,7 +12,7 @@ import {
   stageAgentMove,
   stagedAgentDir
 } from '../../src/agents/write-agent.js'
-import { RegisterReq, type AgentSpec } from '@agentconnect.md/protocol'
+import { RegisterReq, type AgentSpec, type DutyGrantEntry } from '@agentconnect.md/protocol'
 import { agentRemovalObligationsDir } from '../../src/paths.js'
 import { fakeSlackAppFactory } from '../fakes/slack-app.js'
 
@@ -20,6 +20,7 @@ const MOVE_ID = '77777777-7777-4777-8777-777777777777'
 const MOVE_ID_2 = '88888888-8888-4888-8888-888888888888'
 const MOVE_ID_3 = '99999999-9999-4999-8999-999999999999'
 const MOVE_ID_4 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+const GROUP_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
 
 function root1(): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-cpagent-'))
@@ -74,6 +75,33 @@ function makeDaemon(root: string) {
 }
 
 const seam = (d: Daemon) => (d as any).cpConfigApply()
+
+/** Make the daemon a duty-governed pool member — `frame` scope is what `dutyEnforced()` reads. */
+function poolMember(daemon: Daemon, client: Record<string, unknown> = {}) {
+  ;(daemon as any).cpClient = {
+    organizationScope: () => 'frame',
+    stop: async () => {},
+    releaseDuties: vi.fn(async () => {}),
+    reportDutiesNow: vi.fn(() => {}),
+    emitMemoryConnectionFacts: vi.fn(() => {}),
+    ...client
+  }
+}
+
+/** A grant for one agent, unstamped so `dutyBundleIsStale` falls back to presence. */
+const dutyGrant = (agentId: string): DutyGrantEntry => ({
+  groupId: GROUP_ID,
+  orgId: 'org-1',
+  term: '1',
+  members: [{ kind: 'agent', refId: agentId }]
+})
+
+const DUTY_BUNDLE = {
+  agentId: 'bot-a',
+  spec: { orgId: 'org-1', name: 'bot-a', runtime: 'claude' },
+  integrations: [],
+  crons: []
+}
 
 describe('Daemon CP agent → memory + reconcile', () => {
   it('keeps a corrupt move tombstone fail-closed without poisoning reconnect registration', async () => {
@@ -444,6 +472,189 @@ describe('Daemon CP agent → memory + reconcile', () => {
     expect(duplicateActivation).toBe(firstActivation)
     await expect(firstActivation).resolves.toEqual({ ok: true })
     expect((daemon as any).drainingAgents.has('ghost')).toBe(false)
+    await daemon.stop()
+  })
+
+  it('a token-less activate releases a stale staging fence by committing the stored token (#1093)', async () => {
+    const root = root1()
+    writeAgent(root, 'bot-a')
+    const { daemon, hosts } = makeDaemon(root)
+    await daemon.start()
+    // The fence a pool member keeps after sourcing a move onto a machine (pool → machine …).
+    await expect(seam(daemon).applyAgentDetach({ agentId: 'bot-a', moveId: MOVE_ID })).resolves.toEqual({ ok: true })
+    expect((daemon as any).cpLocalState().stagedAgents).toEqual([{ agentId: 'bot-a', moveId: MOVE_ID }])
+
+    // … → pool: the CP commits the set placement and broadcasts an activate with NO move token.
+    await expect(
+      seam(daemon).applyAgentActivate({
+        agentId: 'bot-a',
+        spec: { name: 'bot-a', runtime: 'claude' },
+        integrations: [],
+        crons: []
+      })
+    ).resolves.toEqual({ ok: true })
+    expect((daemon as any).agents.has('bot-a')).toBe(true)
+    expect((daemon as any).moveStagedAgents.has('bot-a')).toBe(false)
+    expect((daemon as any).drainingAgents.has('bot-a')).toBe(false)
+    expect(readAgentMoveStage(join(root, 'agents'), 'bot-a')).toEqual({ moveId: MOVE_ID, state: 'committed' })
+    expect((daemon as any).cpLocalState().stagedAgents).toEqual([])
+    expect(hosts.length).toBeGreaterThan(0) // activation proved ACP can start before the ACK
+    await daemon.stop()
+  })
+
+  it('a token-less activate on a member that holds no duty releases the fence without a host (#1093)', async () => {
+    const root = root1()
+    writeAgent(root, 'bot-a')
+    const { daemon, hosts } = makeDaemon(root)
+    await daemon.start()
+    const fetchDutyAgent = vi.fn(async () => ({ bundle: DUTY_BUNDLE }))
+    poolMember(daemon, { fetchDutyAgent })
+    expect((daemon as any).servesAgent('bot-a')).toBe(false)
+
+    await expect(seam(daemon).applyAgentDetach({ agentId: 'bot-a', moveId: MOVE_ID })).resolves.toEqual({ ok: true })
+    await expect(
+      seam(daemon).applyAgentActivate({
+        agentId: 'bot-a',
+        spec: { name: 'bot-a', runtime: 'claude' },
+        integrations: [],
+        crons: []
+      })
+    ).resolves.toEqual({ ok: true })
+
+    // The fence is cleared and the replica is current …
+    expect((daemon as any).moveStagedAgents.has('bot-a')).toBe(false)
+    expect((daemon as any).drainingAgents.has('bot-a')).toBe(false)
+    expect(readAgentMoveStage(join(root, 'agents'), 'bot-a')).toEqual({ moveId: MOVE_ID, state: 'committed' })
+    expect((daemon as any).agents.has('bot-a')).toBe(true)
+    // … and NOTHING runs here: a non-holder host would bind the agent's exclusive sandbox channel,
+    // leaving whichever member the ledger picks authorized for ingress but unable to bind.
+    await (daemon as any).flushReconcile()
+    expect(hosts).toEqual([])
+    expect((daemon as any).hosts.has('bot-a')).toBe(false)
+
+    // The duty grant is what starts it, and the current replica makes that install a no-fetch.
+    await (daemon as any).admitDutyGrants([dutyGrant('bot-a')])
+    expect(fetchDutyAgent).not.toHaveBeenCalled()
+    expect((daemon as any).servesAgent('bot-a')).toBe(true)
+    await (daemon as any).ensureHostAsync('bot-a')
+    expect(hosts.map((h) => h.id)).toEqual(['bot-a'])
+    await daemon.stop()
+  })
+
+  it('a token-less activate still proves its host on the member that holds the duty', async () => {
+    const root = root1()
+    writeAgent(root, 'bot-a')
+    const { daemon, hosts } = makeDaemon(root)
+    await daemon.start()
+    poolMember(daemon)
+    ;(daemon as any).duties.applyGrant([dutyGrant('bot-a')]) // this member holds the agent's duty
+    expect((daemon as any).servesAgent('bot-a')).toBe(true)
+
+    await expect(seam(daemon).applyAgentDetach({ agentId: 'bot-a', moveId: MOVE_ID })).resolves.toEqual({ ok: true })
+    await expect(
+      seam(daemon).applyAgentActivate({
+        agentId: 'bot-a',
+        spec: { name: 'bot-a', runtime: 'claude' },
+        integrations: [],
+        crons: []
+      })
+    ).resolves.toEqual({ ok: true })
+
+    expect((daemon as any).moveStagedAgents.has('bot-a')).toBe(false)
+    expect(hosts.map((h) => h.id)).toEqual(['bot-a']) // the holder proves ACP before the ACK
+    await daemon.stop()
+  })
+
+  it('a revoke landing mid-activation keeps the unstaged host down (#1093)', async () => {
+    const root = root1()
+    writeAgent(root, 'bot-a')
+    const { daemon, hosts } = makeDaemon(root)
+    await daemon.start()
+    poolMember(daemon)
+    ;(daemon as any).duties.applyGrant([dutyGrant('bot-a')]) // holds the duty when the frame arrives
+    await expect(seam(daemon).applyAgentDetach({ agentId: 'bot-a', moveId: MOVE_ID })).resolves.toEqual({ ok: true })
+    expect((daemon as any).servesAgent('bot-a')).toBe(true)
+
+    // Land the revoke inside the activation's OWN reconcile — after the bundle apply (the agent is
+    // already unstaged there), before the host start. Awaited interleave, no timers, no sleeps.
+    const reconcile = (daemon as any).flushReconcile.bind(daemon)
+    let landed = false
+    ;(daemon as any).flushReconcile = async () => {
+      await reconcile()
+      if (landed || (daemon as any).moveStagedAgents.has('bot-a')) return
+      landed = true
+      ;(daemon as any).applyDutyRevoke([{ groupId: GROUP_ID, reason: 'superseded' }])
+    }
+
+    await expect(
+      seam(daemon).applyAgentActivate({
+        agentId: 'bot-a',
+        spec: { name: 'bot-a', runtime: 'claude' },
+        integrations: [],
+        crons: []
+      })
+    ).resolves.toEqual({ ok: true })
+
+    // The fence is still released — losing the duty is not a reason to keep a stale fence armed …
+    expect(landed).toBe(true) // the interleave really happened
+    expect((daemon as any).moveStagedAgents.has('bot-a')).toBe(false)
+    expect(readAgentMoveStage(join(root, 'agents'), 'bot-a')).toEqual({ moveId: MOVE_ID, state: 'committed' })
+    // … and the host stays down: holdership is re-read at the start boundary, not captured before it.
+    expect((daemon as any).servesAgent('bot-a')).toBe(false)
+    expect(hosts).toEqual([])
+    expect((daemon as any).hosts.has('bot-a')).toBe(false)
+    await daemon.stop()
+  })
+
+  it('a token-less activate with no staging fence acknowledges without applying anything', async () => {
+    const root = root1()
+    writeAgent(root, 'bot-a')
+    const { daemon, hosts } = makeDaemon(root)
+    await daemon.start()
+
+    await expect(
+      seam(daemon).applyAgentActivate({
+        agentId: 'bot-a',
+        spec: { name: 'renamed', runtime: 'claude' },
+        integrations: [],
+        crons: []
+      })
+    ).resolves.toEqual({ ok: true })
+    expect((daemon as any).agents.get('bot-a').name).toBe('bot-a') // the bundle was NOT applied
+    expect(existsSync(stagedAgentDir(join(root, 'agents'), 'bot-a'))).toBe(false)
+
+    await expect(
+      seam(daemon).applyAgentActivate({
+        agentId: 'ghost',
+        spec: { name: 'ghost', runtime: 'claude' },
+        integrations: [],
+        crons: []
+      })
+    ).resolves.toEqual({ ok: true })
+    expect((daemon as any).agents.has('ghost')).toBe(false)
+    expect(hosts).toEqual([])
+    await daemon.stop()
+  })
+
+  it('a token-less activate never resurrects a removal-tombstoned agent', async () => {
+    const root = root1()
+    writeAgent(root, 'bot-a')
+    stageAgentMove(join(root, 'agents'), 'bot-a', MOVE_ID)
+    markAgentRemoval(join(root, 'agents'), 'bot-a', agentRemovalObligationsDir(root))
+    const { daemon } = makeDaemon(root)
+    await daemon.start()
+
+    await expect(
+      seam(daemon).applyAgentActivate({
+        agentId: 'bot-a',
+        spec: { name: 'bot-a', runtime: 'claude' },
+        integrations: [],
+        crons: []
+      })
+    ).resolves.toEqual({ ok: false, reason: 'agent/activate: a removal tombstone owns this agent' })
+    expect((daemon as any).agents.has('bot-a')).toBe(false)
+    expect((daemon as any).moveStagedAgents.has('bot-a')).toBe(true)
+    expect(agentRemovalTombstones(join(root, 'agents'), agentRemovalObligationsDir(root)).has('bot-a')).toBe(true)
     await daemon.stop()
   })
 

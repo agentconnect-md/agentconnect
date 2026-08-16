@@ -68,6 +68,7 @@ import type { HttpBotOrchestrator } from './httpBot.js'
 import type { CollabRoutesService } from './collabRoutes.service.js'
 import type { AgentMutationGate } from './agentMutationGate.js'
 import type { SessionKey } from '../domain/sessionKey.js'
+import type { DaemonLiveness } from '../ports.js'
 
 export class AgentMoveConflict extends Error {
   constructor(message: string) {
@@ -119,7 +120,9 @@ export interface AgentMoveDeps {
   sessionOwners: { releaseSession(key: SessionKey): void }
   /** Set membership, for deciding whether a detached source is still an eligible holder of the
    *  new placement. Absent ⇒ no source is ever unstaged, the pre-pool behavior. */
-  memberSets?: Pick<MemberSetRepo, 'setIdOf'>
+  memberSets?: Pick<MemberSetRepo, 'setIdOf' | 'memberIdsOf'>
+  /** Live-connection reads for the set-commit unstage broadcast. Absent ⇒ no member is broadcast to. */
+  liveness?: DaemonLiveness
   /** Resolves the members currently serving an agent — the sources a move must quiesce when
    *  placement names no machine of its own. Absent ⇒ placement alone (the pre-duty behavior). */
   placement?: PlacementResolver
@@ -268,7 +271,12 @@ export class AgentMoveService {
     const release = await this.deps.mutations.beginMoveWhenIdle(agentId)
     try {
       const current = await this.deps.agents.getUnscoped(agentId)
-      if (!current || !(await (this.deps.placement ?? PLACEMENT_ONLY).mayAct(current, daemonId))) return
+      if (!current) return
+      if (!(await (this.deps.placement ?? PLACEMENT_ONLY).mayAct(current, daemonId))) {
+        // A member that missed a set-commit unstage while offline reports its stale fence here (#1093).
+        await this.unstageReportedFence(current, daemonId)
+        return
+      }
 
       const candidate = await this.snapshotOwned(agentId, daemonId, current.orgId)
       const resumed = await this.deps.control.agentActivate(
@@ -312,11 +320,11 @@ export class AgentMoveService {
   private async ensureActiveLocked(agent: AgentRecord): Promise<AgentRecord> {
     const placement = placementTargetOf(agent)
     if (placement.kind === 'unplaced') throw new AgentMoveConflict('agent is not placed')
-    // Repairing a pool placement is the ledger's job, not a synchronous activation: the CP does
-    // not choose which member serves it, so the honest repair is to re-derive its duty group and
-    // let the next lease exchange grant and install it.
+    // Repairing a pool placement is the ledger's job: re-derive the duty group, clear any stale
+    // member fence that would make the next grant a dark hold, and let the lease exchange install.
     if (placement.kind !== 'daemon') {
       this.deps.recomputeDuties?.(agent.orgId)
+      await this.unstageEligibleSources(agent, new Map(), placement)
       await this.convergeDerived(agent, (await this.snapshot(agent)).httpBotIds)
       return agent
     }
@@ -575,52 +583,73 @@ export class AgentMoveService {
     return stable.agent
   }
 
-  /**
-   * Clear the staging fence on a source that is STILL an eligible holder of the new placement.
-   *
-   * A detached source is normally meant to stay fenced — that is the whole point of a hard
-   * cutover, and it is right for every move onto a machine and for a LOCAL daemon losing an agent
-   * to a set: neither may serve it again. `daemon(member) → its own set` is the one transition
-   * where it is wrong. The member is still in that set, so the ledger may hand it the very group
-   * it was just fenced out of — and `installGrantedAgents` skips a move-staged agent, so it would
-   * take the lease, install nothing, and serve nothing, with no other member able to claim it. The
-   * agent would be servable by nobody, which is worse than where it started.
-   *
-   * So the fence is released with the same move token that armed it, which is also what leaves
-   * the member's replica current: if the ledger grants it back, install-on-grant sees the agent
-   * present at the granted revision and skips the fetch entirely. Eligibility is the resolver's
-   * answer, not a kind test — a daemon in no set is never eligible for a set placement and stays
-   * fenced. Best-effort: the fence is the member's own state and a member that cannot be reached
-   * re-registers into a reconcile that has the authoritative placement.
-   */
+  /** Clear staging fences wherever the new placement makes a daemon an eligible holder again (#1093). */
   private async unstageEligibleSources(
     agent: AgentRecord,
     stagedSources: ReadonlyMap<DaemonId, string>,
     target: PlacementTarget
   ): Promise<void> {
-    if (stagedSources.size === 0 || !this.deps.memberSets) return
     const memberSets = this.deps.memberSets
+    if (!memberSets) return
+    // A set commit also clears fences from EARLIER moves off that set (pool→machine→pool), token-less.
+    const staleMembers =
+      target.kind === 'set'
+        ? (await this.liveSetMembers(target.setId)).filter((daemonId) => !stagedSources.has(daemonId))
+        : []
+    if (stagedSources.size === 0 && staleMembers.length === 0) return
     const columns = placementColumns(target)
     const bundle = await this.snapshot(agent)
+    // The arming token releases the fence and leaves the replica current; non-members stay fenced.
     for (const [daemonId, moveId] of stagedSources) {
       const setId = await memberSets.setIdOf(daemonId)
       if (!mayHold(columns, { daemonId, scope: claimScopeOf({ setId }) })) continue
-      try {
-        requireAck(
-          'source unstage',
-          await this.deps.control.agentActivate(
-            daemonId,
-            { ...this.activationDefinition(agent, bundle), moveId },
-            agent.orgId
-          )
-        )
-      } catch (err) {
-        this.deps.log?.warn(
-          { err, agentId: agent.id, daemonId },
-          'agent move: could not clear the source staging fence; its reconnect reconcile is the backstop'
-        )
-      }
+      await this.bestEffortUnstage(agent, bundle, daemonId, moveId)
     }
+    for (const daemonId of staleMembers) await this.bestEffortUnstage(agent, bundle, daemonId)
+  }
+
+  private async bestEffortUnstage(
+    agent: AgentRecord,
+    bundle: MoveBundle,
+    daemonId: DaemonId,
+    moveId?: string
+  ): Promise<void> {
+    try {
+      requireAck(
+        'source unstage',
+        await this.deps.control.agentActivate(
+          daemonId,
+          { ...this.activationDefinition(agent, bundle), ...(moveId === undefined ? {} : { moveId }) },
+          agent.orgId
+        )
+      )
+    } catch (err) {
+      this.deps.log?.warn(
+        { err, agentId: agent.id, daemonId },
+        'agent move: could not clear the source staging fence; its reconnect reconcile is the backstop'
+      )
+    }
+  }
+
+  /** Reconnect backstop: release a reported fence when the reporter is an eligible set member. */
+  private async unstageReportedFence(agent: AgentRecord, daemonId: DaemonId): Promise<void> {
+    const memberSets = this.deps.memberSets
+    const target = placementTargetOf(agent)
+    if (!memberSets || target.kind !== 'set') return
+    const setId = await memberSets.setIdOf(daemonId)
+    if (!mayHold(placementColumns(target), { daemonId, scope: claimScopeOf({ setId }) })) return
+    // Token-less like the commit broadcast: `mayAct` said no, so this member must release without running.
+    await this.bestEffortUnstage(agent, await this.snapshot(agent), daemonId)
+  }
+
+  /** The target set's READY members — who a set commit may need to unstage. */
+  private async liveSetMembers(setId: string): Promise<DaemonId[]> {
+    const { memberSets, liveness } = this.deps
+    if (!memberSets || !liveness) return []
+    return (await memberSets.memberIdsOf(setId)).filter((daemonId) => {
+      const live = liveness.get(daemonId)
+      return live?.reachable === true && live.state === 'READY'
+    }) as DaemonId[]
   }
 
   private async restoreDetachedWorkspace(
