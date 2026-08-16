@@ -47,7 +47,7 @@ describe('LocalStore schema versioning', () => {
     expect(userVersion(path)).toBe(stamped)
   })
 
-  it('adds permission ownership when upgrading a v1 store', () => {
+  it('adds permission ownership, recovery ownership and per-owner routing when upgrading a v1 store', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v1-')), 'local.sqlite')
     new LocalStore(path).close()
     const old = new DatabaseSync(path)
@@ -84,6 +84,30 @@ describe('LocalStore schema versioning', () => {
     // A stamp is only comparable to a fire of the same schedule definition (#1031).
     expect(cronColumns).toContain('definition')
     expect(userVersion(path)).toBe(8)
+  })
+
+  it('never persists the CP routing map on a shared store, and still does on an owned one', () => {
+    // One row and many members: each member's save used to erase every other member's, and each
+    // boot hydrated whichever map was written last — a foreign `routingEpoch` with it. A shared
+    // member now writes nothing and reads nothing, so it starts from an empty map at epoch 0.
+    const database = new DatabaseSync(join(mkdtempSync(join(tmpdir(), 'ac-schema-shared-')), 'local.sqlite'))
+    const first = new LocalStore({ database, shared: true, ownerId: 'member-1' })
+    const second = new LocalStore({ database, shared: true, ownerId: 'member-2' })
+
+    first.setCpRouting(1, '{"a":[]}', '[]')
+    second.setCpRouting(9, '{"b":[]}', '[{"kind":"global"}]')
+    expect(first.getCpRouting()).toBeUndefined()
+    expect(second.getCpRouting()).toBeUndefined()
+    // Not even a row to leak: `ownerId` is a process incarnation, so any partition key a member
+    // could write here would be abandoned on its next restart.
+    expect(database.prepare('SELECT COUNT(*) AS n FROM cp_routing').get()).toMatchObject({ n: 0 })
+    database.close()
+
+    // An exclusively owned store is untouched: it is the one store where the row survives a restart.
+    const solo = store()
+    solo.setCpRouting(4, '{"solo":[]}', '[{"kind":"global"}]')
+    expect(solo.getCpRouting()).toMatchObject({ routingEpoch: 4, assignments: '{"solo":[]}' })
+    solo.close()
   })
 
   it('re-keys the capture gate by agent when upgrading a v5 store', () => {
@@ -528,6 +552,57 @@ describe('LocalStore', () => {
     s.setUsageSnapshot(key, { costAmount: 0.25, costCurrency: 'USD' })
     expect(s.getUsage(key)).toMatchObject({ costAmount: 0.25, costCurrency: 'USD' })
     s.close()
+  })
+
+  it('keeps an increment a concurrent writer would otherwise have erased', () => {
+    // The pool shape: two members touch one session across a handover. `usage` is one JSON blob, so
+    // a plain read-merge-write silently drops whichever writer commits first. The compare-and-set
+    // notices and re-merges instead.
+    const database = new DatabaseSync(join(mkdtempSync(join(tmpdir(), 'ac-usage-race-')), 'local.sqlite'))
+    const peer = new LocalStore({ database, shared: true, ownerId: 'member-2' })
+    const key = sessionKey('slack', 'C1', 'T1', 'bot-a')
+
+    // Slip the peer's whole write in between our read and our compare-and-set, exactly once.
+    let raced = false
+    const racing: StoreDatabase = {
+      exec: (sql) => database.exec(sql),
+      close: () => database.close(),
+      prepare: (sql) => {
+        const statement = database.prepare(sql)
+        if (!sql.startsWith('SELECT usage FROM sessions')) return statement
+        return {
+          run: (...params) => statement.run(...params),
+          all: (...params) => statement.all(...params),
+          get: (...params) => {
+            const row = statement.get(...params)
+            if (!raced) {
+              raced = true
+              peer.addTokenUsage(key, { totalTokens: 5 })
+            }
+            return row
+          }
+        }
+      }
+    }
+    const member = new LocalStore({ database: racing, shared: true, ownerId: 'member-1' })
+    member.upsertSession({
+      key,
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: 'T1',
+      acpSessionId: 'acp-1',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 1
+    })
+
+    member.addTokenUsage(key, { totalTokens: 10 })
+
+    expect(raced).toBe(true)
+    // 15, not 10: the peer's 5 survived our write instead of being overwritten by it.
+    expect(peer.getUsage(key)).toMatchObject({ totalTokens: 15 })
+    database.close()
   })
 })
 
