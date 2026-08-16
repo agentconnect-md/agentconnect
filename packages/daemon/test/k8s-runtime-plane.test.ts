@@ -1,14 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Backoff, FakeClock } from '@agentconnect.md/connection'
 import {
-  PROBE_CLAIM_EXPIRES_ANNOTATION,
-  PROBE_CLAIM_LABEL,
   k8sPlaneSettings,
-  probeAgentId,
   reapExpiredProbeClaims,
   startK8sRuntimePlane,
   type K8sRuntimePlane
 } from '../src/k8s/runtime-plane.js'
+import { PROBE_CLAIM_EXPIRES_ANNOTATION, PROBE_CLAIM_LABEL, probeAgentId } from '../src/k8s/probe-claim.js'
 import { ShimClient, type ShimTransport } from '../src/shim/client.js'
 import { ShimServer } from '../src/shim/server.js'
 import { K8sApiError } from '@agentconnect.md/k8s-client'

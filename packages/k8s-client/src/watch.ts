@@ -7,7 +7,13 @@ export interface WatchMetrics {
 }
 
 export interface K8sObject {
-  metadata?: { name?: string; uid?: string; resourceVersion?: string; annotations?: Record<string, string> }
+  metadata?: {
+    name?: string
+    uid?: string
+    resourceVersion?: string
+    creationTimestamp?: string
+    annotations?: Record<string, string>
+  }
 }
 
 export interface K8sList<T> {

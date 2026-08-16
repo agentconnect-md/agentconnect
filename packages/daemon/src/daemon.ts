@@ -281,6 +281,7 @@ import {
 import { resolveRuntimeCatalog, type ResolvedRuntimeCatalog } from './runtimes/registry.js'
 import { installedRuntimeCatalog, installedRuntimes, resolveCommandPath } from './runtimes/probe.js'
 import { K8S_ORG_ID_ENV, startK8sRuntimePlane, type K8sRuntimePlane } from './k8s/runtime-plane.js'
+import { ORPHAN_SWEEP_LEASE } from './k8s/orphan-reconciler.js'
 import {
   setSandboxWorkspaceMode,
   setWorkspaceGitRunnerResolver,
@@ -356,6 +357,8 @@ import {
   originKindOf,
   SessionPurgeReason,
   RD_ACK_NOT_HOLDER,
+  AGENT_EXISTS_FEATURE,
+  AGENT_EXISTS_MAX,
   EventSession as EventSessionSchema
 } from '@agentconnect.md/protocol'
 import { isNoResponseBody, isNoResponsePrefix } from './session/no-response.js'
@@ -2976,6 +2979,12 @@ export class Daemon {
           tunnelsFor: (agentId) =>
             this.agents.get(agentId)?.workspace.gitCredential === 'github-app' ? ['gitcred'] : [],
           tunnelSocketPath: (tunnel) => (tunnel === 'gitcred' ? gitcredSocketPath(root) : undefined),
+          // The orphan reconciler's two install-wide seams: the sweep lease lives in the store every
+          // member shares, and existence is the control plane's to answer — one batched read per sweep.
+          orphans: {
+            acquireLease: (ttlMs, now) => this.dataPlane!.store.acquireSweepLease(ORPHAN_SWEEP_LEASE, ttlMs, now),
+            liveAgents: (agentIds) => this.liveAgentsFor(agentIds)
+          },
           log: {
             info: (message) => this.log.info(message),
             warn: (message) => this.log.warn(message),
@@ -20078,6 +20087,22 @@ export class Daemon {
       .catch((err) =>
         this.log.warn(`cluster: taking over the sandbox for agent "${agentId}" failed: ${formatErr(err)}`)
       )
+  }
+
+  /** Cluster only: which of these agents the control plane still knows — the orphan reconciler's one read. */
+  // Throws rather than guesses when the CP cannot be asked, so the sweep skips instead of collecting.
+  private async liveAgentsFor(agentIds: string[]): Promise<Set<string>> {
+    const client = this.cpClient
+    if (!client) throw new Error('control plane is not connected')
+    if (!client.supportsServerFeature(AGENT_EXISTS_FEATURE)) {
+      throw new Error('control plane does not answer agent existence queries yet')
+    }
+    const live = new Set<string>()
+    for (let at = 0; at < agentIds.length; at += AGENT_EXISTS_MAX) {
+      const reply = await client.agentsExist(agentIds.slice(at, at + AGENT_EXISTS_MAX))
+      for (const id of reply.existing) live.add(id)
+    }
+    return live
   }
 
   /** Cluster only: the sandbox half of "no longer served here"; the claim and volume stay. */

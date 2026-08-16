@@ -14,6 +14,7 @@ import type {
   DutyRevoke,
   DutyClaimOk,
   DutyFetchOk,
+  AgentExistsOk,
   FactsRuntimeProfile,
   FactsMcpServer,
   UsageReport,
@@ -156,7 +157,9 @@ const INSTALL_WIDE_FRAME_TYPES = new Set([
   'duty/revoke',
   'duty/release',
   'duty/claim',
-  'duty/claim/ok'
+  'duty/claim/ok',
+  'agent/exists',
+  'agent/exists/ok'
 ])
 
 const ACK_TIMEOUT_MS = 5000
@@ -931,6 +934,23 @@ export class CpClient {
       throw new WireError('INTERNAL', `expected duty/fetch/ok, got ${rep.type}`, false)
     }
     return rep.payload as DutyFetchOk
+  }
+
+  /**
+   * `agent/exists` (D→C REQ → `agent/exists/ok`) — which of these agents the CP still knows.
+   * Asked by the cluster orphan reconciler for the ids it read off sandbox objects, in one
+   * round trip; install-wide, since the objects span every org the member serves. Callers
+   * gate on {@link supportsServerFeature}(`AGENT_EXISTS_FEATURE`) — an older CP rejects it.
+   */
+  async agentsExist(agentIds: string[]): Promise<AgentExistsOk> {
+    if ((this.state !== 'READY' && this.state !== 'DRAINING') || !this.transport) {
+      throw new WireError('INTERNAL', `control plane unreachable (client ${this.state})`, true)
+    }
+    const rep = await this.request('agent/exists', { agentIds })
+    if (rep.type !== 'agent/exists/ok') {
+      throw new WireError('INTERNAL', `expected agent/exists/ok, got ${rep.type}`, false)
+    }
+    return rep.payload as AgentExistsOk
   }
 
   /** How this connection is tenanted: `connection` = one org (an API-key daemon),

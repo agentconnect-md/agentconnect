@@ -425,6 +425,26 @@ export const AgentRemove = z.object({
 })
 export type AgentRemove = z.infer<typeof AgentRemove>
 
+/** Hard cap on one existence query; a sweep with more candidates chunks. */
+export const AGENT_EXISTS_MAX = 1000
+
+/**
+ * D→C REQ (reply: `agent/exists/ok`) — which of these agents the control plane still knows.
+ * Install-wide: a pool member's orphan reconciler reads agent ids off cluster objects that
+ * span every org it serves and asks in one round trip. Existence only, no spec: the answer
+ * decides whether a leaked sandbox object may be collected, nothing more.
+ */
+export const AgentExists = z.object({
+  agentIds: z.array(z.string().uuid()).min(1).max(AGENT_EXISTS_MAX)
+})
+export type AgentExists = z.infer<typeof AgentExists>
+
+/** C→D REP to `agent/exists`: the subset of the asked ids that exist. An id absent here is gone. */
+export const AgentExistsOk = z.object({
+  existing: z.array(z.string().uuid()).max(AGENT_EXISTS_MAX)
+})
+export type AgentExistsOk = z.infer<typeof AgentExistsOk>
+
 /**
  * Safe move lifecycle (C→D REQ → generic `ack`). `agent/detach` fences the
  * source or stages the target and archives any daemon-local root;

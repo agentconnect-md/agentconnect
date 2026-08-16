@@ -1,7 +1,8 @@
-import { createHash } from 'node:crypto'
 import { K8sHttp, loadInClusterConfig } from '@agentconnect.md/k8s-client'
 import { K8sDriver, PROBE_GRANTS, type LaunchGenerations } from './driver.js'
 import { SandboxApi } from './sandbox-api.js'
+import { OrphanReconciler, resolveOrphanReconcilerSettings, type OrphanReconcilerDeps } from './orphan-reconciler.js'
+import { PROBE_CLAIM_EXPIRES_ANNOTATION, PROBE_CLAIM_LABEL, PROBE_CLAIM_TTL_MS, probeAgentId } from './probe-claim.js'
 import { clusterMetrics } from './cluster-metrics.js'
 import { ShimDialer } from '../shim/dialer.js'
 import { ShimGitRunner } from '../shim/git-exec.js'
@@ -17,21 +18,9 @@ import type { GitRunner } from '../workspace/git-runner.js'
 
 const SILENT = { info: () => {}, warn: () => {} }
 
-/** Reserved prefix for member-scoped runtime probes; the Control Plane never assigns it. */
-export const PROBE_AGENT_ID_PREFIX = 'ac-runtime-probe'
-export const PROBE_CLAIM_LABEL = 'agentconnect.md/runtime-probe'
-export const PROBE_CLAIM_EXPIRES_ANNOTATION = 'agentconnect.md/runtime-probe-expires-at'
 /** A probe drives every runtime through `initialize` plus a session, on a possibly cold pod. */
 const PROBE_TIMEOUT_MS = 180_000
-/** Bounds an abandoned probe claim while leaving ample room for cold scheduling and the probe. */
-export const PROBE_CLAIM_TTL_MS = 15 * 60_000
 const PROBE_CLAIM_GC_INTERVAL_MS = 5 * 60_000
-
-/** A deterministic, DNS-safe probe identity unique to one daemon member. */
-export function probeAgentId(memberId: string): string {
-  const memberHash = createHash('sha256').update(memberId).digest('hex').slice(0, 16)
-  return `${PROBE_AGENT_ID_PREFIX}-${memberHash}`
-}
 
 /** Delete only expired probe claims; ordinary agent claims never match. */
 export async function reapExpiredProbeClaims(
@@ -120,6 +109,8 @@ export interface K8sRuntimePlaneOptions {
   /** How long a pod that is up may go without a shim channel before the launch counts as lost.
    *  Injected so a test can cross the window in milliseconds rather than waiting out the default. */
   rebindGraceMs?: number
+  /** The orphan reconciler's install-wide seams (sweep lease, control-plane existence read); absent ⇒ no sweep. */
+  orphans?: Pick<OrphanReconcilerDeps, 'acquireLease' | 'liveAgents'>
   log?: { info: (m: string) => void; warn: (m: string) => void; debug?: (m: string) => void }
 }
 
@@ -326,6 +317,18 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
 
   void runProbeClaimGc()
 
+  // Collects what a member that died mid-teardown left behind (k8s-daemon-pool.md §4); the seams
+  // it needs are the daemon's, so a plane assembled without them (a test) simply never sweeps.
+  const reconciler = options.orphans
+    ? new OrphanReconciler({
+        api,
+        ...options.orphans,
+        settings: resolveOrphanReconcilerSettings(options.env ?? process.env),
+        log: options.log ?? SILENT
+      })
+    : undefined
+  reconciler?.start()
+
   /**
    * Start the grace window for a channel that dropped, measured from the right event.
    *
@@ -478,6 +481,7 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     },
     stop: async () => {
       stopped = true
+      reconciler?.stop()
       if (probeGcTimer) clearTimeout(probeGcTimer)
       probeGcTimer = undefined
       for (const agentId of [...lossWatches.keys()]) cancelLossCheck(agentId)

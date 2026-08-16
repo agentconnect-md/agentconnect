@@ -245,3 +245,8 @@ export const CP_IDENTITY_TOKEN_PATH = '/var/run/ac-cp-identity/token'
 export const CP_URL_ENV = 'AC_CP_URL'
 /** A pool member's rollout generation (its pod-template hash), reported on register (frames/register.ts). */
 export const POD_TEMPLATE_HASH_ENV = 'AC_POD_TEMPLATE_HASH'
+
+/** CP answers the `agent/exists` batch existence query the pool's orphan reconciler
+ *  asks before collecting a leaked sandbox object; a daemon that does not see it
+ *  skips the sweep rather than emit a frame an older CP rejects as `UNKNOWN_FRAME`. */
+export const AGENT_EXISTS_FEATURE = 'agent-exists-v1'
