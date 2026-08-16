@@ -447,6 +447,35 @@ the holder is already the agent's home, so the wake is §8 with no routing step
 at all. `CronDef.lastRunAt` keeps its advisory, daemon-authoritative
 semantics; the dream scheduler is scoped identically.
 
+**The handover window is compensated, not ignored.** A schedule is armed only
+while its holder holds the duty, and a freshly constructed `croner` job knows
+nothing of a moment that has already passed — so a fire landing between the old
+holder unregistering and the new one arming used to run nowhere, silently, on
+every rollout. On GAINING an agent, a member now replays the one occurrence its
+stamp says ran nowhere: the newest missed moment only (never a backlog), inside
+a grace window of one interval capped at an hour, and taken by a CAS on the
+stamp row so two members racing the same handoff fire it once. `cron_runs` is
+what that stamp was declared for; `dream_runs` is its dream twin.
+
+A stamp is only evidence about the definition it was written under, so both rows
+carry a `definition` fingerprint (expression + timezone + enabled) alongside the
+timestamp. Schedules are edited in place: "daily, last fired 03:00" then
+"switched to hourly at 12:30" would otherwise owe a 12:00 fire the hourly
+definition never covered, and a disable/re-enable would owe every moment inside
+the disabled window. A catch-up is eligible only when the stored fingerprint
+equals the active one, and the reconcile that arms the schedules retires a stamp
+whose definition has moved — re-stamping NOW, so the new definition starts clean.
+A schedule that is GONE has its row dropped instead: ids are re-mintable, so a
+recreated one must start from no evidence rather than inherit the deleted
+schedule's last run. A row written before the fingerprint existed carries NULL
+and is simply ineligible until its next real fire.
+
+Only the holder writes those rows. They are shared by the whole pool, so a
+member that arms nothing for an agent reconciles nothing for it either — a stale
+non-holder re-stamping under its own view of the definitions would erase the very
+gap the holder is there to compensate. The check is at the write, not only at its
+caller.
+
 **The lease is what fixes the offline-cron hole, not a new trigger path.** A
 cron whose owning daemon is offline simply does not fire today, and nothing
 notices; under the ledger, a dead holder's group goes vacant at T_reassign, a

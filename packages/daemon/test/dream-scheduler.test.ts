@@ -125,11 +125,14 @@ describe('scheduled dream lifecycle gates (daemon)', () => {
     let started = false
     const inner = daemon as unknown as {
       onDreamScheduleFire(id: string): void
+      store?: { setDreamLastRun(id: string, at: number): void }
       dreamRunner(): {
         start(id: string, opts: unknown): Promise<unknown>
         hasNewSessionsSinceLastDream(id: string): boolean
       }
     }
+    // The tick stamps its occurrence (#1031) ahead of the gates, and these daemons never start.
+    inner.store ??= { setDreamLastRun: () => {} }
     inner.dreamRunner = () => ({
       start: async () => {
         started = true

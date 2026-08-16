@@ -29,6 +29,68 @@ export function buildSyntheticMessage(
   return { agentId, msg }
 }
 
+/** Staleness cap on a catch-up: past this, a swallowed moment is history rather than a late fire. */
+const CATCH_UP_GRACE_CAP_MS = 60 * 60 * 1_000
+
+/** The fields that DEFINE when a schedule fires — a cron entry or an agent's dreaming policy. */
+export interface ScheduleDefinition {
+  schedule: string
+  timezone?: string
+  enabled: boolean
+}
+
+/** Durable record of the last fire: when it happened, and under which definition. */
+export interface ScheduleRun {
+  lastRunAt: number
+  definition: string | null
+}
+
+/**
+ * Identity of a schedule DEFINITION, stored next to its stamp.
+ *
+ * A stamp on its own proves nothing about the CURRENT schedule: cron ids are edited in place and
+ * dreaming policies are mutable, so "daily, last fired 03:00" then "switched to hourly at 12:30"
+ * would otherwise look like an hourly fire owed at 12:00 that the hourly definition never covered.
+ * Comparing this fingerprint answers "is that stamp a fire of THIS definition".
+ */
+export function scheduleFingerprint(definition: ScheduleDefinition): string {
+  return JSON.stringify([definition.enabled, definition.schedule, definition.timezone ?? null])
+}
+
+/**
+ * The one occurrence a duty handover swallowed, or undefined when nothing is owed (#1031).
+ *
+ * A freshly constructed `Cron` knows nothing of a moment that has already passed, so a schedule
+ * whose moment lands between the old holder unregistering and the new one arming runs nowhere.
+ * This answers "was a fire of THIS definition due since its stamp": the previous occurrence, when
+ * it is newer than the stamp and still within one interval (capped). Only the NEWEST missed moment
+ * is returned — a catch-up compensates a gap, it never replays a backlog. Nothing is owed without a
+ * stamp (nothing durable says this schedule has ever been due) or when the stamp was written under
+ * a different definition (the moment it recorded belongs to a schedule that no longer exists).
+ */
+export function missedOccurrence(
+  definition: ScheduleDefinition,
+  run: ScheduleRun | undefined,
+  now: number
+): number | undefined {
+  if (!definition.enabled || !run || run.definition !== scheduleFingerprint(definition)) return undefined
+  let runs: Date[]
+  try {
+    // Pattern-only: croner schedules nothing without a handler, so this is a pure query.
+    runs = new Cron(definition.schedule, definition.timezone ? { timezone: definition.timezone } : {}).previousRuns(
+      2,
+      new Date(now)
+    )
+  } catch {
+    return undefined // malformed patterns are warned about where they are armed
+  }
+  const [previous, before] = runs
+  if (!previous || previous.getTime() <= run.lastRunAt) return undefined
+  const interval = before ? previous.getTime() - before.getTime() : CATCH_UP_GRACE_CAP_MS
+  const grace = Math.min(interval, CATCH_UP_GRACE_CAP_MS)
+  return now - previous.getTime() <= grace ? previous.getTime() : undefined
+}
+
 /**
  * Local scheduler for `agent.json.crons[]` (D5). Jobs are keyed per agent so the
  * reconciler can converge them on any agent change (design §5.2: crons change →

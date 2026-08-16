@@ -254,7 +254,13 @@ import {
   type DiscordComponents
 } from './discord/render.js'
 import { FeishuConverger, type FeishuAction } from './feishu/render.js'
-import { Scheduler, buildSyntheticMessage } from './scheduler/scheduler.js'
+import {
+  Scheduler,
+  buildSyntheticMessage,
+  missedOccurrence,
+  scheduleFingerprint,
+  type ScheduleDefinition
+} from './scheduler/scheduler.js'
 import { DreamScheduler } from './scheduler/dream-scheduler.js'
 import { planChannelIntros, buildIntroMessage } from './agents/channel-intro.js'
 import { buildHookMessage, githubOpensReviewGeneration, hookAnchorText } from './messages/hook-message.js'
@@ -12972,6 +12978,8 @@ export class Daemon {
     // heartbeat. Outside the duty gate below on purpose: the CP acts on the digest either way.
     this.cpClient?.reportDutiesNow()
     this.onDutyChanged()
+    // After the arm, so a catch-up runs against the schedules this member now actually holds.
+    this.catchUpMissedSchedules(result.agentsGained)
   }
 
   /**
@@ -13296,6 +13304,87 @@ export class Daemon {
     const serve = this.servesAgent(a.id)
     this.scheduler.sync(a.id, serve ? a.crons : [])
     this.dreamScheduler.sync(a.id, serve ? this.dreamSchedulePolicyFor(a) : undefined)
+    // An unserved replica only disarms its own jobs — the stamps are the holder's to write.
+    if (serve) this.reconcileScheduleStamps(a)
+  }
+
+  /** The definition a cron entry fires under — an entry with no explicit `enabled` is enabled. */
+  private cronDefinition(cron: CronDef): ScheduleDefinition {
+    return { schedule: cron.schedule, timezone: cron.timezone, enabled: cron.enabled !== false }
+  }
+
+  /** The definition an agent's dream schedule fires under; an absent or scheduleless policy is
+   *  "unscheduled", which is itself a definition a later re-enable must differ from. */
+  private dreamDefinition(a: { memory?: Agent['memory'] }): ScheduleDefinition {
+    const policy = this.dreamSchedulePolicyFor(a)
+    const schedule = policy?.schedule ?? ''
+    return { schedule, timezone: policy?.timezone, enabled: policy?.enabled === true && schedule !== '' }
+  }
+
+  /**
+   * Retire a stamp whose definition has moved on (#1031). A stamp proves a fire of the definition it
+   * was written under, so an edited expression, a changed timezone, or a disable/re-enable makes the
+   * recorded moment meaningless — re-stamp NOW under the new definition, and the new definition
+   * starts clean instead of inheriting a catch-up for a moment it never covered. A cron that is GONE
+   * gets its row dropped rather than re-stamped: ids are re-mintable, and a recreated one must start
+   * from no evidence at all. Only an existing row is ever rewritten — writing one would fabricate a
+   * fire that never happened.
+   *
+   * Ownership is re-checked here rather than trusted from the caller: these rows are shared by the
+   * whole pool, so a member that does not serve the agent must never overwrite the holder's evidence
+   * with its own, possibly stale, view of the definitions.
+   */
+  private reconcileScheduleStamps(a: { id: string; crons: CronDef[]; memory?: Agent['memory'] }): void {
+    if (!this.servesAgent(a.id)) return
+    const now = this.clock.now()
+    const active = new Set(a.crons.map((cron) => `${a.id}:${cron.id}`))
+    for (const key of this.store.cronRunKeys(a.id)) if (!active.has(key)) this.store.deleteCronRun(key)
+    for (const cron of a.crons) {
+      const key = `${a.id}:${cron.id}`
+      const fingerprint = scheduleFingerprint(this.cronDefinition(cron))
+      const run = this.store.cronRun(key)
+      if (run && run.definition !== fingerprint) this.store.setCronLastRun(key, now, fingerprint)
+    }
+    // A removed dreaming policy is "unscheduled", a fingerprint no live policy ever matches.
+    const dream = scheduleFingerprint(this.dreamDefinition(a))
+    const dreamRun = this.store.dreamRun(a.id)
+    if (dreamRun && dreamRun.definition !== dream) this.store.setDreamLastRun(a.id, now, dream)
+  }
+
+  /**
+   * Compensate the fires a duty handover swallowed (#1031). The old holder unregisters an agent's
+   * schedules before the moment and the new holder arms a `Cron` that knows nothing of a moment
+   * already passed, so a cron or dream inside the window runs NOWHERE — no error, no late run, no
+   * log line. On gaining an agent this replays at most ONE occurrence per schedule (the newest
+   * missed moment, inside its grace window — never a backlog), and every fire is a CAS claim on the
+   * shared stamp, so two members racing the same handoff compensate it exactly once.
+   */
+  private catchUpMissedSchedules(agentIds: string[]): void {
+    const now = this.clock.now()
+    for (const agentId of agentIds) {
+      // Gained, then withdrawn again inside the same settle: the fire belongs to whoever holds it.
+      if (!this.servesAgent(agentId)) continue
+      const agent = this.agents.get(agentId)
+      if (!agent) continue
+      for (const cron of agent.crons) {
+        const key = `${agentId}:${cron.id}`
+        const definition = this.cronDefinition(cron)
+        const fingerprint = scheduleFingerprint(definition)
+        const due = missedOccurrence(definition, this.store.cronRun(key), now)
+        if (due === undefined || !this.store.claimCronCatchUp(key, due, now, fingerprint)) continue
+        this.log.info(`cron "${cron.id}" of agent "${agentId}": firing the occurrence a duty handover missed`)
+        const { msg } = buildSyntheticMessage(agentId, cron, randomUUID())
+        void this.onCronFire(agentId, msg, cron).catch((err) =>
+          this.log.error(`cron catch-up dispatch failed for agent "${agentId}": ${formatErr(err)}`)
+        )
+      }
+      const dream = this.dreamDefinition(agent)
+      const dueDream = missedOccurrence(dream, this.store.dreamRun(agentId), now)
+      if (dueDream === undefined || !this.store.claimDreamCatchUp(agentId, dueDream, now, scheduleFingerprint(dream)))
+        continue
+      this.log.info(`dream schedule of agent "${agentId}": firing the occurrence a duty handover missed`)
+      this.onDreamScheduleFire(agentId)
+    }
   }
 
   /** Stop serving one agent because its duty moved — the light teardown: no
@@ -21746,6 +21835,12 @@ export class Daemon {
    * between the reconcile and the tick simply does nothing.
    */
   private onDreamScheduleFire(agentId: string): void {
+    // Stamped before the gates, as a cron fire stamps cron_runs: this moment was SERVICED here (#1031).
+    this.store.setDreamLastRun(
+      agentId,
+      this.clock.now(),
+      scheduleFingerprint(this.dreamDefinition(this.agents.get(agentId) ?? {}))
+    )
     // Lifecycle gates first — a scheduled dream is background work that spawns a
     // runtime host and burns model tokens, so it obeys the same operator stops as
     // any other scheduled trigger. The cron stays REGISTERED throughout: these are
@@ -21801,7 +21896,7 @@ export class Daemon {
       if (cron.origin === 'cp')
         this.cpClient?.emitCronReport({ cronId: cron.id, agentId, firedAt: firedAtIso, ...update })
     }
-    this.store.setCronLastRun(`${agentId}:${cron.id}`, firedAt)
+    this.store.setCronLastRun(`${agentId}:${cron.id}`, firedAt, scheduleFingerprint(this.cronDefinition(cron)))
     // CP-owned crons report the fire, attach the session as soon as it exists,
     // then close the run when the turn ends. Hand-authored crons stay local.
     report()
@@ -22097,7 +22192,7 @@ export class Daemon {
         for (const a of this.effectiveAgents())
           for (const c of a.crons) {
             if (c.origin !== 'cp') continue
-            const at = this.store.getCronLastRun(`${a.id}:${c.id}`)
+            const at = this.store.cronRun(`${a.id}:${c.id}`)?.lastRunAt
             if (at !== undefined)
               this.cpClient?.emitCronReport({ cronId: c.id, agentId: a.id, firedAt: new Date(at).toISOString() })
           }
