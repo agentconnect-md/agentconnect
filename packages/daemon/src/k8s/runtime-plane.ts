@@ -191,9 +191,13 @@ export interface K8sRuntimePlane {
   /** Where the agent's bound pod mounts its workspace, as its shim reported; undefined before a
    *  bind or from a legacy shim (callers fall back to DEFAULT_SHIM_WORKSPACE_ROOT). */
   workspaceRootFor: (agentId: string) => string | undefined
-  /** Agents this daemon holds a Sandbox for — the candidate set for an idle sweep. Read from the
-   *  driver rather than inferred from live hosts: a launch outlives the host it was made for. */
-  launchedAgents: () => string[]
+  /** Agents this daemon holds a Sandbox for, and since when — the idle sweep's candidates. Read from
+   *  the driver, not inferred from live hosts: a launch outlives the host it was made for. */
+  launchedAgents: () => Array<{ agentId: string; since: number }>
+  /** Take over an agent's sandbox from the cluster (claim → Sandbox → mode) so this member can suspend it. */
+  adoptAgent: (agentId: string) => Promise<void>
+  /** No longer served here: launch, channel, tunnel and loss watch go; claim and volume stay. */
+  releaseAgent: (agentId: string) => void
   /** Suspend a quiet agent's pod, keeping its Sandbox and workspace volume. `busy` means work
    *  still holds it and the caller should try again later; `absent` means there is nothing to
    *  suspend. Waking is not a separate call — the next launch's bind does it. */
@@ -426,6 +430,16 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     return probeInFlight
   }
 
+  function releaseAgent(agentId: string, reason = 'agent no longer served here'): void {
+    // Close the pod's channel first: it may otherwise keep using a binding this member no longer honours.
+    dialer.revokeAgent(agentId)
+    // After the revoke, whose close schedules one: nobody here waits on a loss for an agent not served here.
+    cancelLossCheck(agentId)
+    proxies.get(agentId)?.proxy.stop(reason)
+    proxies.delete(agentId)
+    driver.releaseAgent(agentId)
+  }
+
   return {
     driver,
     dialer,
@@ -454,15 +468,12 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     workspaceRootFor: (agentId) => driver.workspaceRootFor(agentId),
     launchedAgents: () => driver.launchedAgents(),
     suspendIdle: (agentId) => driver.suspendIfIdle(agentId),
+    adoptAgent: async (agentId) => {
+      await driver.adoptAgent(agentId)
+    },
+    releaseAgent,
     discardAgent: async (agentId) => {
-      // Close and forget the pod's channel before the claim goes: the pod has its whole
-      // termination grace to keep using a binding this daemon no longer means to honour.
-      dialer.revokeAgent(agentId)
-      // Ordered after the revoke, whose close schedules one: a loss check for an agent that no
-      // longer exists would report a lost launch nobody is waiting for.
-      cancelLossCheck(agentId)
-      proxies.get(agentId)?.proxy.stop('agent removed')
-      proxies.delete(agentId)
+      releaseAgent(agentId, 'agent removed')
       await driver.removeAgent(agentId)
     },
     stop: async () => {
