@@ -24,6 +24,12 @@ name: Build & Push Images
 # effective image (same manifest digest), so `<comp>:<version>` exists for every
 # component at every release regardless.
 #
+# The daemon and the runtime sandbox are confinement boundaries whose failure modes are silent —
+# agent code running somewhere it should not, with every health check still green. Those two are
+# built here, verified against the loaded image, and pushed only once their checks pass. The image
+# a release publishes is therefore the image that was verified. A component skipped as unchanged
+# is not re-verified: it was verified at the release that built it.
+#
 # After pushing, mints a short-lived GitHub App token for the configured
 # workflow repository and fires an `images-pushed` repository_dispatch
 # (payload `{version, sha, components: {controlPlane, web, relay, mem0, runtimeSandbox,
@@ -226,14 +232,17 @@ jobs:
                   cache_ref: (
                     $config.tags[0]
                     | sub(":[^/]+$"; ":buildcache")
-                  )
+                  ),
+                  # The two confinement boundaries carry an image-verification suite; the service
+                  # images have none and push straight from the build.
+                  verify: ({"daemon": "daemon", "runtime-sandbox": "runtime-sandbox"}[$name] // "")
                 }
             ]
           ' "$bake_config")"
 
           if [ "$matrix" = '[]' ]; then
             echo "has_builds=false" >> "$GITHUB_OUTPUT"
-            matrix='[{"target":"none","context":".","dockerfile":"docker/Dockerfile","build_target":"","platforms":"linux/amd64","tags":"","build_args":"","build_contexts":"","labels":"","cache_ref":""}]'
+            matrix='[{"target":"none","context":".","dockerfile":"docker/Dockerfile","build_target":"","platforms":"linux/amd64","tags":"","build_args":"","build_contexts":"","labels":"","cache_ref":"","verify":""}]'
           else
             echo "has_builds=true" >> "$GITHUB_OUTPUT"
           fi
@@ -281,7 +290,86 @@ jobs:
 
       # A target-specific registry cache keeps all intermediate builder layers
       # (`mode=max`) without consuming the GitHub Actions cache quota.
-      - name: Build and push
+      #
+      # A target with a verification suite loads into the local daemon instead of pushing, so the
+      # checks below run against the exact image this release publishes and a failure never
+      # reaches the registry. The Push step at the end then publishes it from cache.
+      - name: Build
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          target: ${{ matrix.build_target }}
+          platforms: ${{ matrix.platforms }}
+          push: ${{ matrix.verify == '' }}
+          load: ${{ matrix.verify != '' }}
+          tags: ${{ matrix.tags }}
+          build-args: ${{ matrix.build_args }}
+          build-contexts: ${{ matrix.build_contexts }}
+          labels: ${{ matrix.labels }}
+          cache-from: type=registry,ref=${{ matrix.cache_ref }}
+          cache-to: type=registry,ref=${{ matrix.cache_ref }},mode=max
+
+      - name: Resolve the built image reference
+        if: matrix.verify != ''
+        id: image
+        env:
+          TAGS: ${{ matrix.tags }}
+        run: printf 'ref=%s\n' "$(printf '%s\n' "$TAGS" | head -1)" >> "$GITHUB_OUTPUT"
+
+      # Against the BUILT image: non-root, tini as PID 1, git and CA certs present, no ACP runtime
+      # smuggled in, and — the one that matters — `--k8s` refusing to start outside a pod instead
+      # of quietly running agent code on the daemon's own host.
+      - name: Verify the daemon image
+        if: matrix.verify == 'daemon'
+        env:
+          IMAGE: ${{ steps.image.outputs.ref }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: node scripts/verify-daemon-image.mjs "$IMAGE" "$VERSION"
+
+      # Only the runtime sandbox needs a toolchain here: its smoke test's daemon side runs from
+      # source. The other targets skip these steps.
+      - uses: pnpm/action-setup@v6
+        if: matrix.verify == 'runtime-sandbox'
+        with:
+          cache: true
+      - uses: actions/setup-node@v6
+        if: matrix.verify == 'runtime-sandbox'
+        with:
+          node-version-file: .nvmrc
+      - name: Install
+        if: matrix.verify == 'runtime-sandbox'
+        run: pnpm install --frozen-lockfile
+
+      # Against the BUILT image, not the Dockerfile: non-root, tini as PID 1, a root-owned shim the
+      # runtime cannot rewrite, a self-contained shim bundle, no smuggled service-account token,
+      # and the published runtime table agreeing with what the runtimes report.
+      - name: Verify the runtime sandbox image and its runtime table
+        if: matrix.verify == 'runtime-sandbox'
+        env:
+          IMAGE: ${{ steps.image.outputs.ref }}
+        run: node scripts/verify-runtime-image.mjs "$IMAGE"
+
+      # The smoke test's DAEMON side imports the listener from source, which imports the workspace
+      # packages by their built entry points.
+      - name: Build the workspace packages the daemon side imports
+        if: matrix.verify == 'runtime-sandbox'
+        run: pnpm --filter "@agentconnect.md/daemon^..." build
+
+      # The acceptance criterion: a real container, the real shim dialling back, the real ACP
+      # runtime starting inside it, initialize and one session/new.
+      - name: Smoke test through the shim
+        if: matrix.verify == 'runtime-sandbox'
+        env:
+          IMAGE: ${{ steps.image.outputs.ref }}
+        run: pnpm --filter @agentconnect.md/daemon exec tsx scripts/smoke-runtime-image.mts "$IMAGE"
+
+      # Publish a verified target once its checks have passed. Same inputs against the same builder,
+      # so this re-exports from cache rather than rebuilding. It goes out through the action's own
+      # push path deliberately: a plain `docker push` of the loaded image would publish these two
+      # without the provenance attestation every directly-pushed target carries.
+      - name: Push
+        if: matrix.verify != ''
         uses: docker/build-push-action@v7
         with:
           context: ${{ matrix.context }}
@@ -294,7 +382,6 @@ jobs:
           build-contexts: ${{ matrix.build_contexts }}
           labels: ${{ matrix.labels }}
           cache-from: type=registry,ref=${{ matrix.cache_ref }}
-          cache-to: type=registry,ref=${{ matrix.cache_ref }},mode=max
 
   finalize:
     name: Finalize image tags
