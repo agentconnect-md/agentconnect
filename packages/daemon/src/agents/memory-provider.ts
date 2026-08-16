@@ -52,6 +52,7 @@ import {
   MemoryConflictError,
   MemoryTooLargeError,
   type MemoryFile,
+  type MemoryRoot,
   type MemoryWriteSource,
   type ManagedMemoryHistoryPage
 } from './memory.js'
@@ -201,7 +202,7 @@ export interface MemoryProvider {
 
   /** Seed a brand-new agent's memory so injection and the tools always have a
    *  target (idempotent). Called once per session handle before prompt building. */
-  ensure(scope: MemoryScope, agentName: string): void
+  ensure(scope: MemoryScope, agentName: string): Promise<void>
 
   /** The text to inject at the start of a FRESH session (the memory index, capped).
    *  '' when there is nothing to inject. The caller owns the surrounding prompt prose. */
@@ -277,43 +278,45 @@ function disabledRuntimeMemoryEnv(
 }
 
 /**
- * `managed` memory: our `<agent-root>/memory/` directory. A thin facade over
+ * `managed` memory: our `<root>/memory/` directory. A thin facade over
  * `agents/memory.ts` — every method delegates to the existing primitive and lets
  * its error classes (`MemoryPathError` / `MemoryTooLargeError` /
  * `MemoryConflictError`) propagate raw, so the MCP + CP error mappings are unchanged.
+ * Where the root IS (this disk, a sandbox volume) is the resolver's answer: it hands
+ * back a `MemoryRoot` and may refuse with `MemorySandboxUnavailableError`.
  */
 export class ManagedMemoryProvider implements MemoryProvider {
   readonly kind = 'managed' as const
 
-  /** `agentDirByAgent` resolves an agent id → its root dir (which holds `memory/`),
-   *  or undefined for an unknown agent. */
+  /** `memoryRootByAgent` resolves an agent id → its memory root (a local dir or a
+   *  port; holds `memory/`), or undefined for an unknown agent. */
   constructor(
-    private readonly agentDirByAgent: (agentId: string) => string | undefined,
+    private readonly memoryRootByAgent: (agentId: string) => MemoryRoot | undefined,
     private readonly autoDistillFor: (agentId: string) => boolean = () => false,
     private readonly extract?: MemoryExtractor
   ) {}
 
-  private dirFor(agentId: string): string {
-    const dir = this.agentDirByAgent(agentId)
+  private rootFor(agentId: string): MemoryRoot {
+    const root = this.memoryRootByAgent(agentId)
     // Match the pre-provider MCP path's message verbatim (mcp/ops.ts) so the tool
     // error surface is byte-identical.
-    if (!dir) throw new Error(`unknown agent ${agentId}`)
-    return dir
+    if (!root) throw new Error(`unknown agent ${agentId}`)
+    return root
   }
 
   /** The write/active memory root: the channel folder when channel-scoped, else the
    *  agent base. All WRITES (tools + distillation) target this so a channel's
    *  content never lands in another channel or the shared base (#653). */
-  private activeRoot(scope: MemoryScope): string {
-    const base = this.dirFor(scope.agentId)
+  private activeRoot(scope: MemoryScope): MemoryRoot {
+    const base = this.rootFor(scope.agentId)
     return scope.channelKey ? channelMemoryRoot(base, scope.channelKey) : base
   }
 
   /** The read overlay roots, most-specific first — `[channel, base]` when channel-
    *  scoped so the channel layer shadows the shared base per file; `[base]`
    *  otherwise. */
-  private readRoots(scope: MemoryScope): string[] {
-    const base = this.dirFor(scope.agentId)
+  private readRoots(scope: MemoryScope): MemoryRoot[] {
+    const base = this.rootFor(scope.agentId)
     return scope.channelKey ? [channelMemoryRoot(base, scope.channelKey), base] : [base]
   }
 
@@ -324,12 +327,12 @@ export class ManagedMemoryProvider implements MemoryProvider {
     return disabledRuntimeMemoryEnv(runtime, effectiveEnv, runtimeId)
   }
 
-  ensure(scope: MemoryScope, agentName: string): void {
-    ensureMemory(this.activeRoot(scope), agentName)
+  async ensure(scope: MemoryScope, agentName: string): Promise<void> {
+    await ensureMemory(this.activeRoot(scope), agentName)
     // Record the source identity of a channel folder once, so the console can name
     // it. Best-effort and off the critical path — a failure never blocks memory.
     if (scope.channelKey && scope.channel) {
-      void writeChannelMemoryMeta(this.dirFor(scope.agentId), scope.channelKey, {
+      void writeChannelMemoryMeta(this.rootFor(scope.agentId), scope.channelKey, {
         channel: scope.channel,
         ...(scope.transportScope ? { transportScope: scope.transportScope } : {})
       }).catch(() => {})
@@ -431,7 +434,7 @@ export class NoMemoryProvider implements MemoryProvider {
     return disabledRuntimeMemoryEnv(runtime, effectiveEnv, runtimeId, 'none')
   }
 
-  ensure(): void {}
+  async ensure(): Promise<void> {}
 
   async standingContextAtSessionStart(): Promise<string> {
     return ''
@@ -505,7 +508,7 @@ export class NativeMemoryProvider implements MemoryProvider {
     throw new Error('NativeMemoryProvider.runtimeEnv must not be called — use memoryProviderFor at spawn')
   }
 
-  ensure(): void {
+  async ensure(): Promise<void> {
     // The runtime manages its own memory — nothing to seed.
   }
 
@@ -610,7 +613,7 @@ export class ExternalMemoryProvider implements MemoryProvider {
     throw new Error('ExternalMemoryProvider.runtimeEnv must not be called — use memoryProviderFor at spawn')
   }
 
-  ensure(): void {}
+  async ensure(): Promise<void> {}
 
   async standingContextAtSessionStart(): Promise<string> {
     // External recall is query-dependent and runs on every activation. It must
@@ -877,6 +880,9 @@ export class DispatchingMemoryProvider implements MemoryProvider {
   private native: NativeMemoryProvider
   private none: NoMemoryProvider
 
+  /** `agentDirByAgent` is the local agent root (native memory lives under it);
+   *  `managedRootFor` is where the MANAGED tree is — the same dir by default, a
+   *  sandbox-volume port for a cluster agent. */
   constructor(
     private readonly agentDirByAgent: (agentId: string) => string | undefined,
     private readonly runtimeFor: (agentId: string) => RuntimeDef | undefined,
@@ -884,9 +890,10 @@ export class DispatchingMemoryProvider implements MemoryProvider {
     autoDistillFor: (agentId: string) => boolean = () => false,
     extract?: MemoryExtractor,
     private readonly externalBindingFor: (agentId: string) => ExternalMemoryBinding | undefined = () => undefined,
-    private readonly externalDeps?: ExternalMemoryRuntimeDeps
+    private readonly externalDeps?: ExternalMemoryRuntimeDeps,
+    managedRootFor: (agentId: string) => MemoryRoot | undefined = agentDirByAgent
   ) {
-    this.managed = new ManagedMemoryProvider(agentDirByAgent, autoDistillFor, extract)
+    this.managed = new ManagedMemoryProvider(managedRootFor, autoDistillFor, extract)
     this.native = new NativeMemoryProvider(agentDirByAgent, runtimeFor)
     this.none = new NoMemoryProvider()
   }
@@ -916,8 +923,8 @@ export class DispatchingMemoryProvider implements MemoryProvider {
     throw new Error('DispatchingMemoryProvider.runtimeEnv must not be called — use memoryProviderFor at spawn')
   }
 
-  ensure(scope: MemoryScope, agentName: string): void {
-    this.forAgent(scope.agentId).ensure(scope, agentName)
+  ensure(scope: MemoryScope, agentName: string): Promise<void> {
+    return this.forAgent(scope.agentId).ensure(scope, agentName)
   }
   standingContextAtSessionStart(scope: MemoryScope): Promise<string> {
     return this.forAgent(scope.agentId).standingContextAtSessionStart(scope)
@@ -1052,7 +1059,8 @@ export function createMemoryProvider(
   autoDistillFor: (agentId: string) => boolean = () => false,
   extract?: MemoryExtractor,
   externalBindingFor?: (agentId: string) => ExternalMemoryBinding | undefined,
-  externalDeps?: ExternalMemoryRuntimeDeps
+  externalDeps?: ExternalMemoryRuntimeDeps,
+  managedRootFor?: (agentId: string) => MemoryRoot | undefined
 ): DispatchingMemoryProvider {
   return new DispatchingMemoryProvider(
     agentDirByAgent,
@@ -1061,12 +1069,15 @@ export function createMemoryProvider(
     autoDistillFor,
     extract,
     externalBindingFor,
-    externalDeps
+    externalDeps,
+    managedRootFor
   )
 }
 
 /** Back-compat: a managed-only provider (used where per-agent dispatch isn't needed,
  *  e.g. tests). */
-export function createManagedMemoryProvider(agentDirByAgent: (agentId: string) => string | undefined): MemoryProvider {
-  return new ManagedMemoryProvider(agentDirByAgent)
+export function createManagedMemoryProvider(
+  memoryRootByAgent: (agentId: string) => MemoryRoot | undefined
+): MemoryProvider {
+  return new ManagedMemoryProvider(memoryRootByAgent)
 }

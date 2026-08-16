@@ -39,12 +39,12 @@ const indexPath = (dir: string) => join(memoryDir(dir), MEMORY_INDEX)
 describe('agents/memory (directory model)', () => {
   it('ensureMemory seeds memory/MEMORY.md only when absent (idempotent)', async () => {
     const dir = newDir()
-    ensureMemory(dir, 'bot-a')
+    await ensureMemory(dir, 'bot-a')
     expect(existsSync(indexPath(dir))).toBe(true)
     expect(readFileSync(indexPath(dir), 'utf8')).toContain('# bot-a memory')
     // second call must not overwrite existing content
     await writeMemoryFile(dir, MEMORY_INDEX, 'kept')
-    ensureMemory(dir, 'bot-a')
+    await ensureMemory(dir, 'bot-a')
     expect(readFileSync(indexPath(dir), 'utf8')).toBe('kept')
   })
 
@@ -750,10 +750,10 @@ describe('agents/memory-provider (ManagedMemoryProvider)', () => {
   it('ensure seeds MEMORY.md and is idempotent', async () => {
     const dir = newDir()
     const p = provider(dir)
-    p.ensure(scope, 'bot-a')
+    await p.ensure(scope, 'bot-a')
     expect(readFileSync(indexPath(dir), 'utf8')).toContain('# bot-a memory')
     await p.write(scope, MEMORY_INDEX, 'kept')
-    p.ensure(scope, 'bot-a') // must not overwrite
+    await p.ensure(scope, 'bot-a') // must not overwrite
     expect(readFileSync(indexPath(dir), 'utf8')).toBe('kept')
   })
 

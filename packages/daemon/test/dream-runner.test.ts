@@ -29,6 +29,8 @@ import {
 import { acceptedDreamSkillSources } from '../src/skills/dream-skills.js'
 import { storeDigest } from '../src/agents/memory-dreamer.js'
 import { inspectLocalSkillSource } from '../src/skills/skill-source-snapshot.js'
+import type { MemoryFs } from '../src/agents/memory-fs.js'
+import { pod } from './fixtures/memory-fs-pod.js'
 
 const silent = { info() {}, warn() {} }
 
@@ -119,14 +121,19 @@ async function setup(opts: {
   withSkillAcceptance?: (agentId: string, publish: () => Promise<void>) => Promise<void>
   operationPolicy?: NonNullable<ConstructorParameters<typeof DreamRunner>[0]['operationPolicy']>
   now?: () => Date
+  /** Put the agent's memory tree on a sandbox volume reached through the shim channel. */
+  sandbox?: boolean
 }) {
   const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
-  ensureMemory(dir, 'bot')
-  await writeMemoryFile(dir, 'prefs.md', '- uses tabs\n- uses tabs again\n', undefined, 'tool')
+  const sandbox = opts.sandbox ? pod() : undefined
+  const root: MemoryFs | string = sandbox?.fs ?? dir
+  await ensureMemory(root, 'bot')
+  await writeMemoryFile(root, 'prefs.md', '- uses tabs\n- uses tabs again\n', undefined, 'tool')
   const store = new FakeStore()
   const prompts: { systemPrompt: string; prompt: string; inputDir: string }[] = []
   const runner = new DreamRunner({
     agentDirByAgent: (id) => (id === 'a1' ? dir : undefined),
+    ...(sandbox ? { memoryRootByAgent: (id: string) => (id === 'a1' ? sandbox.fs : undefined) } : {}),
     dreamingPolicyFor: () => opts.policy ?? { enabled: true },
     operationPolicy: opts.operationPolicy ?? 'test-only',
     store,
@@ -143,7 +150,7 @@ async function setup(opts: {
     ...(opts.now ? { now: opts.now } : {}),
     log: silent
   })
-  return { dir, store, runner, prompts }
+  return { dir, store, runner, prompts, sandbox }
 }
 
 async function acceptedSkillBody(dir: string, name: string): Promise<string> {
@@ -379,7 +386,7 @@ describe('DreamRunner pipeline', () => {
     // agentDir points at a path we make un-writable by pointing memory-dreams at
     // a file: the input/ mkdir fails before the pending→running transition.
     const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
-    ensureMemory(dir, 'bot')
+    await ensureMemory(dir, 'bot')
     const { writeFile } = await import('node:fs/promises')
     await writeFile(join(dir, 'memory-dreams'), 'not a directory', 'utf8')
     const store = new FakeStore()
@@ -410,7 +417,7 @@ describe('DreamRunner pipeline', () => {
     // reads `runner` only when invoked (after the const is initialized), so the
     // forward self-reference is safe.
     const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
-    ensureMemory(dir, 'bot')
+    await ensureMemory(dir, 'bot')
     await writeMemoryFile(dir, 'prefs.md', '- seed\n', undefined, 'tool')
     const store = new FakeStore()
     const runner = new DreamRunner({
@@ -556,6 +563,32 @@ describe('DreamRunner adoption', () => {
     const history = await readFile(join(memoryDir(dir), MEMORY_HISTORY_FILENAME), 'utf8')
     expect(history).toContain('"source":"dream"')
     expect(history).toContain('"source":"tool"') // pre-adoption rows preserved
+  })
+
+  it('stages and adopts on a sandbox volume through the port, never on this disk', async () => {
+    const { dir, store, runner, prompts, sandbox } = await setup({ sandbox: true })
+    const { root, fs, requester } = sandbox!
+    const started = await runner.start('a1', { trigger: 'manual' })
+    await settle(store, started.dreamId)
+    // The extraction's cwd is the input dir in the POD's coordinates — where the dream host runs.
+    expect(prompts[0]!.inputDir).toBe(join(root, 'memory-dreams', started.dreamId, 'input'))
+    expect(await readFile(join(root, 'memory-dreams', started.dreamId, 'input', 'prefs.md'), 'utf8')).toContain(
+      'uses tabs'
+    )
+    expect(await runner.stagedFiles('a1', started.dreamId)).toEqual([
+      expect.objectContaining({ name: MEMORY_INDEX }),
+      expect.objectContaining({ name: 'prefs.md' })
+    ])
+    expect((await runner.stagedRead('a1', started.dreamId, 'prefs.md'))?.content).toContain('Uses tabs, not spaces')
+
+    const adopted = await runner.adopt('a1', started.dreamId, false)
+    expect(adopted.status).toBe('adopted')
+    expect(await readMemoryFile(fs, 'prefs.md')).toBe('- Uses tabs, not spaces (2026-07-24).\n')
+    expect(await readFile(join(root, 'memory', MEMORY_HISTORY_FILENAME), 'utf8')).toContain('"source":"dream"')
+    expect(await readdir(join(root, 'memory-backups'))).toHaveLength(1)
+    // Every touch crossed the shim channel; the member's own agent dir holds no memory at all.
+    expect(requester.frames.length).toBeGreaterThan(0)
+    expect(await readdir(dir)).toEqual([])
   })
 
   it('preserves the mtime of files the dream left unchanged, refreshing only changed ones', async () => {
@@ -1062,7 +1095,7 @@ describe('DreamRunner crash recovery', () => {
 describe('DreamRunner production security hold', () => {
   it('blocks every staged-content operation without changing files or metadata', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'ac-dream-held-'))
-    ensureMemory(dir, 'bot')
+    await ensureMemory(dir, 'bot')
     await writeMemoryFile(dir, 'prefs.md', '- live value\n', undefined, 'tool')
 
     const dreamId = 'drm-held'
@@ -1266,7 +1299,7 @@ describe('DreamRunner store persistence', () => {
 
   it('the real runner persists snapshotWrites end to end', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
-    ensureMemory(dir, 'bot')
+    await ensureMemory(dir, 'bot')
     await writeMemoryFile(dir, 'prefs.md', '- uses tabs\n', undefined, 'tool')
     const store = new LocalStore(join(await mkdtemp(join(tmpdir(), 'ac-dream-store-')), 'local.sqlite'))
     const runner = new DreamRunner({
@@ -1585,7 +1618,7 @@ describe('DreamRunner skill mining (D-3)', () => {
     withSkillAcceptance?: (agentId: string, publish: () => Promise<void>) => Promise<void>
   ) {
     const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
-    ensureMemory(dir, 'bot')
+    await ensureMemory(dir, 'bot')
     const runner = new DreamRunner({
       agentDirByAgent: (id) => (id === 'a1' ? dir : undefined),
       dreamingPolicyFor: () => ({ enabled: true, mineSkills: true }),
@@ -1618,7 +1651,7 @@ describe('DreamRunner skill mining (D-3)', () => {
   it('does not mine when the agent did not ask for it', async () => {
     const store = new TwoSessionStore()
     const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
-    ensureMemory(dir, 'bot')
+    await ensureMemory(dir, 'bot')
     const prompts: string[] = []
     const runner = new DreamRunner({
       agentDirByAgent: () => dir,
@@ -1750,7 +1783,7 @@ describe('DreamRunner skill mining — review findings', () => {
   async function mine(opts: { store?: FakeStore; proposal?: string } = {}) {
     const store = opts.store ?? new TwoSession()
     const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
-    ensureMemory(dir, 'bot')
+    await ensureMemory(dir, 'bot')
     const prompts: string[] = []
     let inputDir = ''
     const runner = new DreamRunner({
@@ -1787,7 +1820,7 @@ describe('DreamRunner skill mining — review findings', () => {
     const store = new TwoSession()
     store.toolRows = [{ sender: 'agent', text: 'Bash(secret-y thing)', kind: 'tool' }]
     const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
-    ensureMemory(dir, 'bot')
+    await ensureMemory(dir, 'bot')
     const prompts: string[] = []
     const runner = new DreamRunner({
       agentDirByAgent: () => dir,

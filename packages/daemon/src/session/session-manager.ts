@@ -447,9 +447,6 @@ export class SessionManager {
     // agent, else the agent-level store (#653). Reused for seeding, injection, and
     // recall so all three hit the same store.
     const memScope = this.deps.memoryScopeFor?.(agentId, msg, integrationId) ?? { agentId }
-    // Seed the agent's memory file at its ROOT dir (outside the workspace) if absent,
-    // so the prompt injection below and the `updateMemory` tool always have a file.
-    if (memoryEnabled) this.deps.memory.ensure(memScope, agent.name)
     const { thread, ts: coordTs } = transcriptCoords(msg)
     // webchat's msgId is stable per-conversation, so transcriptCoords yields the SAME ts
     // for every turn — the transcript's (channel,thread,ts) unique index would then dedup
@@ -717,6 +714,10 @@ export class SessionManager {
     // Every session may READ shared memory (#653): the index is injected whenever
     // memory is enabled, regardless of session isolation. Only WRITES (the memory
     // write tools + post-turn distillation) stay gated for private sessions.
+    // Seeded HERE, after the host is up: a cluster agent's memory home is its sandbox
+    // volume, reachable only once the pod is bound. Idempotent, so a resumed session pays
+    // one cheap check.
+    if (memoryEnabled) await abortable(() => this.deps.memory.ensure(memScope, agent.name), signal)
     const memoryIndex = memoryEnabled
       ? (await abortable(() => this.deps.memory.standingContextAtSessionStart(memScope), signal)).trim()
       : ''

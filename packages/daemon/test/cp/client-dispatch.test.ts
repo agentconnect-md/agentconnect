@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { buildEnvelope, decodeEnvelope, MAX_FRAME_BYTES, SESSION_LIVE_TAIL_FEATURE } from '@agentconnect.md/protocol'
 import { CpClient, type CpClientDeps } from '../../src/cp/client.js'
 import { WorkspaceConflictError, WorkspaceViolationError } from '../../src/cp/workspace-reader.js'
+import { MemorySandboxUnavailableError } from '../../src/cp/memory-reader.js'
 import { TaskViolationError } from '../../src/cp/task-reader.js'
 import { AgentWakeViolationError } from '../../src/cp/agent-wake.js'
 import { FakeTransport } from './fake-transport.js'
@@ -853,6 +854,26 @@ describe('CpClient dispatch', () => {
     expect(err.type).toBe('error')
     expect(err.payload.code).toBe('BAD_PAYLOAD')
     expect(err.payload.details).toEqual({ reason: 'path-escape' })
+  })
+
+  it('refuses a memory read of a sleeping sandbox with the same reason the workspace reader carries', async () => {
+    // The memory tree of a cluster agent is on its sandbox volume: the CP maps this reason to the
+    // transient 503 + code the console answers by waking the sandbox, not to a bad request.
+    const { t } = await readyClient({
+      memoryReader: {
+        list: async () => {
+          throw new MemorySandboxUnavailableError('agent "a1" has no running sandbox, so its memory cannot be reached')
+        }
+      } as any
+    })
+    const f = JSON.parse(frame('memory/list', { agentId: 'a1' }, { epoch: 5 }))
+    t.pushInbound(JSON.stringify(f))
+    await tick()
+    const err = JSON.parse(t.sent[0]!)
+    expect(err.type).toBe('error')
+    expect(err.corr).toBe(f.id)
+    expect(err.payload.code).toBe('BAD_PAYLOAD')
+    expect(err.payload.details).toEqual({ reason: 'sandbox-unavailable' })
   })
 
   it('maps an unknown-agent workspace git violation to BAD_PAYLOAD', async () => {

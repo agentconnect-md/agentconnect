@@ -1,5 +1,12 @@
 import { createHash } from 'node:crypto'
-import { MEMORY_INDEX, listMemory, readMemoryFile, withMemoryDirLock, writeMemoryFileHoldingLock } from './memory.js'
+import {
+  MEMORY_INDEX,
+  listMemory,
+  readMemoryFile,
+  withMemoryDirLock,
+  writeMemoryFileHoldingLock,
+  type MemoryRoot
+} from './memory.js'
 
 export interface DistilledMemory {
   topic: string
@@ -77,7 +84,7 @@ export function parseDistilledMemories(text: string): DistilledMemory[] {
     .slice(0, 12)
 }
 
-export async function buildDistillationPrompt(agentDir: string, turn: DistillationTurn): Promise<string> {
+export async function buildDistillationPrompt(agentDir: MemoryRoot, turn: DistillationTurn): Promise<string> {
   const files = await listMemory(agentDir)
   const existing: string[] = []
   for (const file of files.slice(0, 9)) {
@@ -101,7 +108,7 @@ function digest(text: string): string {
   return createHash('md5').update(text.trim().toLowerCase()).digest('hex')
 }
 
-export async function appendDistilledMemories(agentDir: string, memories: DistilledMemory[]): Promise<number> {
+export async function appendDistilledMemories(agentDir: MemoryRoot, memories: DistilledMemory[]): Promise<number> {
   // ONE critical section for the whole batch. Each write used to take the lock
   // separately while `index` was read once up front, so a dream adoption could
   // land between a topic write and the index write — and then this stale index

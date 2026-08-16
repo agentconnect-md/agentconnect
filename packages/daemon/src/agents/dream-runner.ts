@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { promises as fsp } from 'node:fs'
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { stringify as stringifyYaml } from 'yaml'
 import type {
@@ -24,16 +25,21 @@ import {
   MEMORY_HISTORY_FILENAME,
   MAX_INDEX_INJECT_BYTES,
   MAX_MEMORY_FILE_BYTES,
+  MEMORY_DIRNAME,
+  MemorySandboxUnavailableError,
   clampMemoryHistoryValue,
   enforceMemoryHistoryRetentionHoldingLock,
   listMemory,
-  memoryDir,
+  memoryFsOf,
   memoryWriteMarks,
   recordExternalMemoryMutation,
   readMemoryFile,
   snapshotMemoryHistoryHoldingLock,
+  type MemoryFs,
   type MemoryHistoryRecord,
-  withMemoryDirLock
+  type MemoryRoot,
+  withMemoryDirLock,
+  LocalMemoryFs
 } from './memory.js'
 import {
   buildDreamExplorationPrompt,
@@ -54,13 +60,15 @@ import { inspectLocalSkillSource } from '../skills/skill-source-snapshot.js'
  * docs/designs/memory-dreaming.md §4/§6). One dream at a time per agent:
  * snapshot the managed store, mine recent transcripts, run the isolated
  * extraction session, validate, and stage the proposed store under
- * `<agent-root>/memory-dreams/<dreamId>/`. The live store changes only in
+ * `<memory-root>/memory-dreams/<dreamId>/`. The live store changes only in
  * {@link DreamRunner.adopt} — an explicit, fenced, reversible swap.
  *
- * The runner owns dream policy and filesystem staging; it does NOT know how
- * the extraction session is created (trusted-channel mechanics live in
- * daemon.ts and arrive as the injected `extract`), and it never logs memory
- * or transcript bodies.
+ * The runner owns dream policy and staging; every file it touches goes through
+ * the agent's `MemoryFs` port (the memory root on this disk, or on a cluster
+ * agent's sandbox volume), so staging follows the agent the way the live store
+ * does. It does NOT know how the extraction session is created (trusted-channel
+ * mechanics live in daemon.ts and arrive as the injected `extract`), and it
+ * never logs memory or transcript bodies.
  */
 
 /** Unknown agent / dream / staged path → `BAD_PAYLOAD` on the wire. */
@@ -162,7 +170,11 @@ export interface DreamLifecycleEvent {
 }
 
 export interface DreamRunnerDeps {
+  /** The agent's LOCAL root (accepted skills publish under it); undefined for an unknown agent. */
   agentDirByAgent(agentId: string): string | undefined
+  /** Where the agent's managed memory tree is; defaults to the local root. May refuse with
+   *  `MemorySandboxUnavailableError` for a cluster agent whose sandbox is not running. */
+  memoryRootByAgent?(agentId: string): MemoryRoot | undefined
   /** The agent's dreaming policy, or undefined when dreaming is not enabled
    *  (missing binding, non-managed provider, or enabled:false). */
   dreamingPolicyFor(agentId: string): MemoryDreamingPolicy | undefined
@@ -278,6 +290,9 @@ export class DreamRunner {
       for (const dream of this.deps.store.supersededDreams()) {
         if (!this.deps.agentDirByAgent(dream.agentId)) continue
         void this.removeStoreStaging(dream.agentId, dream).catch((err) => {
+          // A cluster agent's tree is unreachable while its sandbox sleeps; the staging is a few
+          // files on its own volume, so leaving it is not worth a warning per boot.
+          if (err instanceof MemorySandboxUnavailableError) return
           this.deps.log.warn(
             `dream ${dream.dreamId}: could not remove superseded store staging (${err instanceof Error ? err.message : 'unknown'})`
           )
@@ -335,8 +350,16 @@ export class DreamRunner {
     return dir
   }
 
+  /** The agent's memory tree, as the port every staging and store touch goes through. */
+  private fsFor(agentId: string): MemoryFs {
+    const dir = this.dirFor(agentId)
+    return memoryFsOf(this.deps.memoryRootByAgent?.(agentId) ?? dir)
+  }
+
+  /** One dream's staging area, relative to the memory root. */
   private dreamDir(agentId: string, dreamId: string): string {
-    return join(this.dirFor(agentId), DREAMS_DIRNAME, dreamId)
+    this.dirFor(agentId)
+    return join(DREAMS_DIRNAME, dreamId)
   }
 
   private getDream(agentId: string, dreamId: string): DreamInfo {
@@ -423,7 +446,7 @@ export class DreamRunner {
     // selection, reservation, and persistence. A blocked production request is
     // observationally equivalent to never having started a Dream.
     this.assertExecutionAllowed()
-    const dir = this.dirFor(agentId)
+    const fs = this.fsFor(agentId)
     const policy = this.deps.dreamingPolicyFor(agentId)
     if (!policy?.enabled) {
       throw new DreamStateError('dreaming is not enabled for this agent (managed provider + dreaming.enabled required)')
@@ -470,9 +493,9 @@ export class DreamRunner {
       // the shared memory-dir lock so it cannot tear against a concurrent
       // writeMemoryFile, and so the `.history` line count captured with it
       // delimits the post-snapshot write window exactly (see `adopt`).
-      const { files, writes } = await withMemoryDirLock(dir, async () => ({
-        files: await this.readLiveStore(dir),
-        writes: memoryWriteMarks(dir)
+      const { files, writes } = await withMemoryDirLock(fs, async () => ({
+        files: await this.readLiveStore(fs),
+        writes: memoryWriteMarks(fs)
       }))
       const dream: DreamInfo = {
         dreamId: `drm-${randomUUID()}`,
@@ -504,10 +527,10 @@ export class DreamRunner {
     })
   }
 
-  private async readLiveStore(dir: string): Promise<{ name: string; content: string }[]> {
+  private async readLiveStore(root: MemoryRoot): Promise<{ name: string; content: string }[]> {
     const files: { name: string; content: string }[] = []
-    for (const entry of await listMemory(dir)) {
-      files.push({ name: entry.name, content: await readMemoryFile(dir, entry.name) })
+    for (const entry of await listMemory(root)) {
+      files.push({ name: entry.name, content: await readMemoryFile(root, entry.name) })
     }
     return files
   }
@@ -541,18 +564,19 @@ export class DreamRunner {
       // transcript at input/sessions/<id>.md (already secret-hygiene filtered by
       // dreamTranscriptText). input/ IS the dream's working directory now — it is
       // read back, by the model, not the pipeline.
+      const fs = this.fsFor(agentId)
       const base = this.dreamDir(agentId, dreamId)
       const inputDir = join(base, 'input')
       const sessionsDir = join(inputDir, 'sessions')
-      await fsp.mkdir(sessionsDir, { recursive: true })
+      await fs.mkdir(sessionsDir)
       for (const file of files) {
-        await fsp.writeFile(join(inputDir, file.name), file.content, 'utf8')
+        await fs.writeFile(join(inputDir, file.name), file.content)
       }
       const materializedSessionIds: string[] = []
       for (const transcript of transcripts) {
         const body = renderDreamSessionFile(transcript)
         if (!body.trim()) continue
-        await fsp.writeFile(join(sessionsDir, `${dreamSessionFileName(transcript.sessionId)}.md`), body, 'utf8')
+        await fs.writeFile(join(sessionsDir, `${dreamSessionFileName(transcript.sessionId)}.md`), body)
         materializedSessionIds.push(transcript.sessionId)
       }
 
@@ -573,7 +597,9 @@ export class DreamRunner {
       // A cancel that landed before extraction wins: skip the expensive call.
       if (this.deps.store.getDream(agentId, dreamId)?.status !== 'running') return
 
-      const extracted = await this.extractWithBackstop(dream, prompt, signal, inputDir, mineSkills)
+      // The dream's cwd is its input dir in the coordinates of the filesystem that holds it: this
+      // disk for a local agent, the pod's volume for a cluster agent — where its host runs.
+      const extracted = await this.extractWithBackstop(dream, prompt, signal, join(fs.root, inputDir), mineSkills)
 
       // A cancel that landed mid-extraction wins: drop the output unstaged. This
       // also covers the backstop firing (extraction ignored the cancel and never
@@ -611,13 +637,13 @@ export class DreamRunner {
         proposal.skills = []
         proposal.organizationSkills = []
       }
-      const organizationSuggestions = await this.stage(base, proposal)
+      const organizationSuggestions = await this.stage(fs, base, proposal)
       await this.deps.onStaged?.(agentId, dreamId)
 
       // stage() is several awaited writes; a cancel can land while it runs.
       // Cancel-wins: honor it, drop the partial output, don't flip to completed.
       if (this.deps.store.getDream(agentId, dreamId)?.status !== 'running') {
-        await fsp.rm(join(base, 'output'), { recursive: true, force: true }).catch(() => {})
+        await fs.rm(join(base, 'output')).catch(() => {})
         return
       }
       this.finish(agentId, dreamId, {
@@ -699,33 +725,34 @@ export class DreamRunner {
     }
   }
 
-  private async stage(base: string, proposal: DreamProposal): Promise<DreamOrganizationSuggestionInfo[]> {
+  private async stage(fs: MemoryFs, base: string, proposal: DreamProposal): Promise<DreamOrganizationSuggestionInfo[]> {
     const out = join(base, 'output')
-    await fsp.rm(out, { recursive: true, force: true })
-    await fsp.mkdir(out, { recursive: true })
-    await fsp.writeFile(join(out, MEMORY_INDEX), proposal.index, 'utf8')
+    await fs.rm(out)
+    await fs.mkdir(out)
+    await fs.writeFile(join(out, MEMORY_INDEX), proposal.index)
     for (const file of proposal.files) {
       // parseDreamProposal already enforced TOPIC_RE — belt and suspenders here
       // because these names become filesystem paths.
       if (!stagedPathOk(file.path)) continue
-      await fsp.writeFile(join(out, file.path), file.content, 'utf8')
+      await fs.writeFile(join(out, file.path), file.content)
     }
-    await this.stageSkills(base, proposal)
-    return this.stageOrganizationSuggestions(base, proposal)
+    await this.stageSkills(fs, base, proposal)
+    return this.stageOrganizationSuggestions(fs, base, proposal)
   }
 
   private async stageOrganizationSuggestions(
+    fs: MemoryFs,
     base: string,
     proposal: DreamProposal
   ): Promise<DreamOrganizationSuggestionInfo[]> {
     const root = join(base, 'organization')
-    await fsp.rm(root, { recursive: true, force: true })
+    await fs.rm(root)
     const candidates = [
       ...proposal.organizationKnowledge.map((candidate) => ({ kind: 'knowledge' as const, candidate })),
       ...proposal.organizationSkills.map((candidate) => ({ kind: 'skill' as const, candidate }))
     ]
     if (candidates.length === 0) return []
-    await fsp.mkdir(root, { recursive: true })
+    await fs.mkdir(root)
     const createdAt = this.nowIso()
     const metadata: DreamOrganizationSuggestionInfo[] = []
     for (const entry of candidates.slice(0, 32)) {
@@ -749,7 +776,7 @@ export class DreamRunner {
         continue
       }
       const digest = `sha256:${createHash('sha256').update(canonical).digest('hex')}`
-      await fsp.writeFile(join(root, `${candidateId}.json`), serialized, { encoding: 'utf8', mode: 0o600 })
+      await fs.writeFile(join(root, `${candidateId}.json`), serialized, { mode: 0o600 })
       metadata.push({
         candidateId,
         kind: entry.kind,
@@ -777,25 +804,21 @@ export class DreamRunner {
    * have a separate review lifecycle: adopting the store neither accepts nor
    * discards these, and they are NEVER auto-installed (design §7).
    */
-  private async stageSkills(base: string, proposal: DreamProposal): Promise<void> {
+  private async stageSkills(fs: MemoryFs, base: string, proposal: DreamProposal): Promise<void> {
     const root = join(base, 'skills')
-    await fsp.rm(root, { recursive: true, force: true })
+    await fs.rm(root)
     if (proposal.skills.length === 0) return
-    await fsp.mkdir(root, { recursive: true })
+    await fs.mkdir(root)
     for (const skill of proposal.skills) {
       // The parser enforced the name shape; re-check because it becomes a path.
       if (!SKILL_DIR_RE.test(skill.name)) continue
       const dir = join(root, skill.name)
-      await fsp.mkdir(dir, { recursive: true })
+      await fs.mkdir(dir)
       if (skill.files?.length) {
         for (const file of skill.files) {
           const target = join(dir, ...file.path.split('/'))
-          await fsp.mkdir(dirname(target), { recursive: true })
-          await fsp.writeFile(
-            target,
-            file.encoding === 'base64' ? Buffer.from(file.content, 'base64') : file.content,
-            file.encoding === 'base64' ? undefined : 'utf8'
-          )
+          await fs.mkdir(dirname(target))
+          await fs.writeFile(target, file.encoding === 'base64' ? Buffer.from(file.content, 'base64') : file.content)
         }
         continue
       }
@@ -815,13 +838,13 @@ export class DreamRunner {
       let bodyEnd = Math.min(bodySource.byteLength, bodyBudget)
       while (bodyEnd > 0 && (bodySource[bodyEnd]! & 0xc0) === 0x80) bodyEnd -= 1
       const body = bodySource.subarray(0, bodyEnd).toString('utf8')
-      await fsp.writeFile(join(dir, 'SKILL.md'), frontmatter + body + '\n', 'utf8')
+      await fs.writeFile(join(dir, 'SKILL.md'), frontmatter + body + '\n')
       if (skill.scripts.length === 0) continue
       const scriptsDir = join(dir, 'scripts')
-      await fsp.mkdir(scriptsDir, { recursive: true })
+      await fs.mkdir(scriptsDir)
       for (const script of skill.scripts) {
         if (!SKILL_SCRIPT_FILE_RE.test(script.path)) continue
-        await fsp.writeFile(join(scriptsDir, script.path), script.content, 'utf8')
+        await fs.writeFile(join(scriptsDir, script.path), script.content)
       }
     }
   }
@@ -896,21 +919,21 @@ export class DreamRunner {
    */
   async adopt(agentId: string, dreamId: string, force: boolean, reviewToken?: string): Promise<DreamInfo> {
     this.assertStagedContentAllowed()
-    const dir = this.dirFor(agentId)
+    const fs = this.fsFor(agentId)
     return this.withLock(agentId, async () => {
       const dream = this.getDream(agentId, dreamId)
       if (dream.status !== 'completed') throw new DreamStateError(`cannot adopt a ${dream.status} dream`)
       if (this.active.has(agentId)) throw new DreamStateError('a dream is in flight for this agent; wait or cancel it')
 
       const out = join(this.dreamDir(agentId, dreamId), 'output')
-      const stagedNames = (await fsp.readdir(out, { withFileTypes: true }))
-        .filter((entry) => entry.isFile() && stagedPathOk(entry.name))
+      const stagedNames = (await fs.readdir(out))
+        .filter((entry) => entry.kind === 'file' && stagedPathOk(entry.name))
         .map((entry) => entry.name)
       if (!stagedNames.includes(MEMORY_INDEX)) throw new DreamStateError('this dream has no staged index to adopt')
       // Read the staged bytes once; they define both the replacement and the
       // same-bytes review fence below.
       const stagedFiles = await Promise.all(
-        stagedNames.map(async (name) => ({ name, content: await fsp.readFile(join(out, name), 'utf8') }))
+        stagedNames.map(async (name) => ({ name, content: (await fs.readFile(join(out, name)))?.content ?? '' }))
       )
       // Same-bytes review fence (task #36 Phase B): when the caller adopts a
       // proposal it reviewed, bind adoption to those exact staged bytes. Any
@@ -924,24 +947,24 @@ export class DreamRunner {
         )
       }
 
-      const live = memoryDir(dir)
+      const live = MEMORY_DIRNAME
       const at = this.nowIso()
 
       // 1) Build the proposed files in a temp sibling dir. `memory/` is
       //    untouched. History is added later under the shared lock so every
       //    `before` snapshot describes the exact store the swap replaces.
-      const replacement = join(dir, `.memory.adopting-${dreamId}`)
-      await fsp.rm(replacement, { recursive: true, force: true })
-      await fsp.mkdir(replacement, { recursive: true })
+      const replacement = `.memory.adopting-${dreamId}`
+      await fs.rm(replacement)
+      await fs.mkdir(replacement)
       for (const file of stagedFiles) {
-        await fsp.writeFile(join(replacement, file.name), file.content, 'utf8')
+        await fs.writeFile(join(replacement, file.name), file.content)
       }
 
       // 2) Fence + swap under the shared memory-dir lock, so no writeMemoryFile
       //    caller can interleave between the digest re-check and the rename.
       try {
-        return await withMemoryDirLock(dir, async () => {
-          const liveFiles = await this.readLiveStore(dir)
+        return await withMemoryDirLock(fs, async () => {
+          const liveFiles = await this.readLiveStore(fs)
           if (!force) {
             const liveDigest = storeDigest(liveFiles)
             if (liveDigest !== dream.snapshotDigest) {
@@ -949,7 +972,7 @@ export class DreamRunner {
               // while the dream ran. When EVERY post-snapshot write was
               // distill-sourced, replay those additions onto the replacement and
               // adopt; any tool/console write still hard-fences to review.
-              const rebased = await this.rebaseDistillWrites(dir, dream, replacement)
+              const rebased = await this.rebaseDistillWrites(fs, dream, replacement)
               // `0` is a SUCCESSFUL rebase (every addition was already folded in
               // by the dream) — only `null` means the drift wasn't distill-only.
               if (rebased === null) {
@@ -965,14 +988,14 @@ export class DreamRunner {
           // legacy final row without a newline (or a torn tail) must not absorb
           // the first dream row. Build a full add/update/delete change set from
           // the store that is about to be replaced, skipping unchanged files.
-          let history = await snapshotMemoryHistoryHoldingLock(dir)
+          let history = await snapshotMemoryHistoryHoldingLock(fs)
           const beforeByPath = new Map(liveFiles.map((file) => [file.name, file.content]))
-          const afterFiles = (await fsp.readdir(replacement, { withFileTypes: true }))
-            .filter((entry) => entry.isFile() && stagedPathOk(entry.name))
+          const afterFiles = (await fs.readdir(replacement))
+            .filter((entry) => entry.kind === 'file' && stagedPathOk(entry.name))
             .map((entry) => entry.name)
           const afterByPath = new Map<string, string>()
           for (const name of afterFiles) {
-            afterByPath.set(name, await fsp.readFile(join(replacement, name), 'utf8'))
+            afterByPath.set(name, (await fs.readFile(join(replacement, name)))?.content ?? '')
           }
           const changedPaths = new Set([...beforeByPath.keys(), ...afterByPath.keys()])
           for (const path of [...changedPaths].sort((a, b) => a.localeCompare(b))) {
@@ -995,40 +1018,33 @@ export class DreamRunner {
             }
             history += JSON.stringify(record) + '\n'
           }
-          await fsp.writeFile(join(replacement, MEMORY_HISTORY_FILENAME), history, { encoding: 'utf8', mode: 0o600 })
+          await fs.writeFile(join(replacement, MEMORY_HISTORY_FILENAME), history, { mode: 0o600 })
 
           // Preserve the "last meaningfully changed" time of files the dream left
           // byte-for-byte unchanged. The whole store is rebuilt into `replacement`
           // and swapped in, so without this EVERY topic would show the adoption
           // time as its updated time even when the dream didn't touch it. Files
           // whose content actually changed (or are new) keep the fresh mtime.
+          const liveMtimes = new Map((await listMemory(fs)).map((file) => [file.name, file.mtime]))
           for (const [path, after] of afterByPath) {
             if (beforeByPath.get(path) !== after) continue
-            try {
-              const liveStat = await fsp.stat(join(live, path))
-              await fsp.utimes(join(replacement, path), liveStat.atime, liveStat.mtime)
-            } catch {
-              // Live file gone or unstattable — leave the fresh adoption mtime.
-            }
+            const liveMtime = liveMtimes.get(path)
+            // Live file gone — leave the fresh adoption mtime.
+            if (liveMtime) await fs.utimes(join(replacement, path), liveMtime).catch(() => {})
           }
 
-          const backupsRoot = join(dir, BACKUPS_DIRNAME)
-          await fsp.mkdir(backupsRoot, { recursive: true })
+          const backupsRoot = BACKUPS_DIRNAME
+          await fs.mkdir(backupsRoot)
           const backup = join(backupsRoot, `${at.replace(/[:.]/g, '-')}-pre-${dreamId}`)
-          let hadLiveStore = true
+          // false ⇒ brand-new store: nothing to back up
+          const hadLiveStore = await fs.rename(live, backup)
           try {
-            await fsp.rename(live, backup)
-          } catch (err) {
-            if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
-            hadLiveStore = false // brand-new store: nothing to back up
-          }
-          try {
-            await fsp.rename(replacement, live)
+            await fs.rename(replacement, live)
           } catch (err) {
             // Roll back to the previous store and drop the temp; the dream stays
             // `completed` and reviewable.
-            if (hadLiveStore) await fsp.rename(backup, live).catch(() => {})
-            await fsp.rm(replacement, { recursive: true, force: true }).catch(() => {})
+            if (hadLiveStore) await fs.rename(backup, live).catch(() => {})
+            await fs.rm(replacement).catch(() => {})
             throw err
           }
           // This swap rewrote the store without going through `writeMemoryFile`,
@@ -1036,17 +1052,15 @@ export class DreamRunner {
           // mutation (still inside the lock): a second dream staged from the same
           // snapshot must fence on this adoption rather than classify it as
           // distill-only drift and roll over it.
-          recordExternalMemoryMutation(dir, 'dream')
+          recordExternalMemoryMutation(fs, 'dream')
           // Dream adoption copies history as part of the atomic store swap, so
           // tighten that copied/appended sidecar before releasing the same lock.
-          await enforceMemoryHistoryRetentionHoldingLock(dir).catch(() => {})
+          await enforceMemoryHistoryRetentionHoldingLock(fs).catch(() => {})
 
           // The backup is the undo path for THIS adoption; older ones superseded.
           if (hadLiveStore) {
-            for (const entry of await fsp.readdir(backupsRoot)) {
-              if (join(backupsRoot, entry) !== backup) {
-                await fsp.rm(join(backupsRoot, entry), { recursive: true, force: true })
-              }
+            for (const entry of await fs.readdir(backupsRoot)) {
+              if (join(backupsRoot, entry.name) !== backup) await fs.rm(join(backupsRoot, entry.name))
             }
           }
 
@@ -1063,7 +1077,7 @@ export class DreamRunner {
       } finally {
         // If the fence refused (or a failure escaped the swap), never leave the
         // temp replacement lying around.
-        await fsp.rm(replacement, { recursive: true, force: true }).catch(() => {})
+        await fs.rm(replacement).catch(() => {})
       }
     })
   }
@@ -1115,11 +1129,11 @@ export class DreamRunner {
    * The result is re-checked against the store's byte caps: a rebase must never
    * produce a file the ordinary write path would reject.
    */
-  private async rebaseDistillWrites(dir: string, dream: DreamInfo, replacement: string): Promise<number | null> {
+  private async rebaseDistillWrites(fs: MemoryFs, dream: DreamInfo, replacement: string): Promise<number | null> {
     const snapshot = dream.snapshotWrites
     // A dream recorded before this field existed can't be reasoned about.
     if (!snapshot) return null
-    const now = memoryWriteMarks(dir)
+    const now = memoryWriteMarks(fs)
     // A different generation means these counts were recorded by another daemon
     // process; they are not comparable at all. Numeric comparison cannot stand in
     // for this — a {0,0} snapshot never moves backwards, and any older snapshot
@@ -1135,20 +1149,14 @@ export class DreamRunner {
     if (now.total === snapshot.total) return null
 
     const input = join(this.dreamDir(dream.agentId, dream.dreamId), 'input')
-    const readOr = async (base: string, name: string): Promise<string> => {
-      try {
-        return await fsp.readFile(join(base, name), 'utf8')
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code === 'ENOENT') return ''
-        throw err
-      }
-    }
+    const readOr = async (base: string, name: string): Promise<string> =>
+      (await fs.readFile(join(base, name)))?.content ?? ''
 
     // Dedup against everything already staged — the dream has very likely folded
     // the same fact in already (it mined the same transcripts).
     const known = new Set<string>()
-    for (const entry of await fsp.readdir(replacement, { withFileTypes: true })) {
-      if (!entry.isFile() || !stagedPathOk(entry.name)) continue
+    for (const entry of await fs.readdir(replacement)) {
+      if (entry.kind !== 'file' || !stagedPathOk(entry.name)) continue
       for (const line of (await readOr(replacement, entry.name)).split('\n')) {
         const value = normalizeMemoryLine(line)
         if (value) known.add(value)
@@ -1156,7 +1164,7 @@ export class DreamRunner {
     }
 
     let replayed = 0
-    for (const file of await listMemory(dir)) {
+    for (const file of await listMemory(fs)) {
       const name = file.name
       if (!stagedPathOk(name)) return null // an unexpected name ⇒ refuse
       const before = new Set(
@@ -1166,7 +1174,7 @@ export class DreamRunner {
           .filter((v): v is string => !!v)
       )
       const additions: string[] = []
-      for (const line of (await readMemoryFile(dir, name)).split('\n')) {
+      for (const line of (await readMemoryFile(fs, name)).split('\n')) {
         const value = normalizeMemoryLine(line)
         if (!value || before.has(value) || known.has(value)) continue
         additions.push(line.trimEnd())
@@ -1181,7 +1189,7 @@ export class DreamRunner {
       // that later managed writes would be unable to update.
       const cap = name === MEMORY_INDEX ? MAX_INDEX_INJECT_BYTES : MAX_MEMORY_FILE_BYTES
       if (Buffer.byteLength(next) > cap) return null
-      await fsp.writeFile(join(replacement, name), next, 'utf8')
+      await fs.writeFile(join(replacement, name), next)
       replayed += additions.length
     }
     // Zero replayed lines is still a successful rebase — the drift was
@@ -1230,16 +1238,15 @@ export class DreamRunner {
    *  proposal must not destroy a candidate the user has not ruled on. */
   private async removeStoreStaging(agentId: string, dream: DreamInfo): Promise<void> {
     this.assertStagedContentAllowed()
+    const fs = this.fsFor(agentId)
     const base = this.dreamDir(agentId, dream.dreamId)
     const pending =
       (dream.skills ?? []).some((skill) => skill.state === 'proposed') ||
       (dream.organizationSuggestions ?? []).some((suggestion) => suggestion.state === 'proposed')
     if (pending) {
-      for (const part of ['input', 'output']) {
-        await fsp.rm(join(base, part), { recursive: true, force: true })
-      }
+      for (const part of ['input', 'output']) await fs.rm(join(base, part))
     } else {
-      await fsp.rm(base, { recursive: true, force: true })
+      await fs.rm(base)
     }
   }
 
@@ -1254,7 +1261,6 @@ export class DreamRunner {
       if (skill.state === 'accepted') return dream // idempotent
       if (skill.state === 'dismissed') throw new DreamStateError('this skill candidate was already dismissed')
 
-      const staged = join(this.dreamDir(agentId, dreamId), 'skills', name)
       // Same-bytes review fence (task #36 Phase B): bind acceptance to the exact
       // staged skill bytes the caller reviewed. The check runs INSIDE
       // publishAcceptedDreamSkill against its own capture snapshot (not a separate
@@ -1262,7 +1268,12 @@ export class DreamRunner {
       // between inspection and capture — the digest verified is the digest that is
       // actually pinned and published.
       const publish = async (): Promise<void> => {
-        await publishAcceptedDreamSkill({ agentDir: dir, sourceDir: staged, name, expectedDigest: reviewToken })
+        const staged = await this.localStagedSkill(agentId, dreamId, name)
+        try {
+          await publishAcceptedDreamSkill({ agentDir: dir, sourceDir: staged.path, name, expectedDigest: reviewToken })
+        } finally {
+          await staged.dispose()
+        }
       }
       if (this.deps.withSkillAcceptance) await this.deps.withSkillAcceptance(agentId, publish)
       else await publish()
@@ -1284,7 +1295,7 @@ export class DreamRunner {
       const { dream, skill } = this.skillCandidate(agentId, dreamId, name)
       if (skill.state === 'dismissed') return dream // idempotent
       if (skill.state === 'accepted') throw new DreamStateError('this skill candidate was already accepted')
-      await fsp.rm(join(this.dreamDir(agentId, dreamId), 'skills', name), { recursive: true, force: true })
+      await this.fsFor(agentId).rm(join(this.dreamDir(agentId, dreamId), 'skills', name))
       const next = this.setSkillState(agentId, dreamId, name, 'dismissed')
       this.emitLifecycle({ type: 'memory.dream.skill_dismissed', dream: next, skillName: name })
       await this.sweepReviewedStaging(agentId, next)
@@ -1312,7 +1323,9 @@ export class DreamRunner {
     if (dream.status !== 'discarded' && dream.status !== 'superseded') return
     if ((dream.skills ?? []).some((skill) => skill.state === 'proposed')) return
     if ((dream.organizationSuggestions ?? []).some((suggestion) => suggestion.state === 'proposed')) return
-    await fsp.rm(this.dreamDir(agentId, dream.dreamId), { recursive: true, force: true }).catch(() => {})
+    await this.fsFor(agentId)
+      .rm(this.dreamDir(agentId, dream.dreamId))
+      .catch(() => {})
   }
 
   private skillCandidate(
@@ -1347,22 +1360,15 @@ export class DreamRunner {
   } | null> {
     this.assertStagedContentAllowed()
     this.skillCandidate(agentId, dreamId, name)
+    const fs = this.fsFor(agentId)
     const dir = join(this.dreamDir(agentId, dreamId), 'skills', name)
-    let skill: string
-    try {
-      skill = await fsp.readFile(join(dir, 'SKILL.md'), 'utf8')
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null
-      throw err
-    }
+    const skill = (await fs.readFile(join(dir, 'SKILL.md')))?.content
+    if (skill === undefined) return null
     const scripts: { path: string; content: string }[] = []
-    try {
-      for (const entry of await fsp.readdir(join(dir, 'scripts'), { withFileTypes: true })) {
-        if (!entry.isFile() || !SKILL_SCRIPT_FILE_RE.test(entry.name)) continue
-        scripts.push({ path: entry.name, content: await fsp.readFile(join(dir, 'scripts', entry.name), 'utf8') })
-      }
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+    for (const entry of await fs.readdir(join(dir, 'scripts'))) {
+      if (entry.kind !== 'file' || !SKILL_SCRIPT_FILE_RE.test(entry.name)) continue
+      const script = await fs.readFile(join(dir, 'scripts', entry.name))
+      if (script) scripts.push({ path: entry.name, content: script.content })
     }
     scripts.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
     return { skill, scripts }
@@ -1404,9 +1410,11 @@ export class DreamRunner {
     }
     if (!suggestion || suggestion.kind !== req.kind || suggestion.state !== 'proposed') return absent
     try {
-      const raw = await fsp.readFile(
+      const staged = await this.fsFor(req.sourceAgentId).readFile(
         join(this.dreamDir(req.sourceAgentId, req.dreamId), 'organization', `${req.candidateId}.json`)
       )
+      if (!staged) return absent
+      const raw = Buffer.from(staged.content, 'utf8')
       if (raw.byteLength > MAX_ORGANIZATION_SUGGESTION_BODY_BYTES) return absent
       const parsed = OrganizationSuggestionContentBody.safeParse(JSON.parse(raw.toString('utf8')))
       if (!parsed.success || parsed.data.kind !== suggestion.kind) return absent
@@ -1425,7 +1433,7 @@ export class DreamRunner {
         truncated: end < raw.byteLength
       }
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT' || err instanceof SyntaxError) return absent
+      if (err instanceof SyntaxError) return absent
       throw err
     }
   }
@@ -1450,9 +1458,9 @@ export class DreamRunner {
     }
     // Terminal metadata is retained for reconnect/history, but the unapproved
     // daemon-local body is no longer needed once the central decision commits.
-    await fsp.rm(join(this.dreamDir(req.sourceAgentId, req.dreamId), 'organization', `${req.candidateId}.json`), {
-      force: true
-    })
+    await this.fsFor(req.sourceAgentId).rm(
+      join(this.dreamDir(req.sourceAgentId, req.dreamId), 'organization', `${req.candidateId}.json`)
+    )
     await this.sweepReviewedStaging(req.sourceAgentId, reviewed)
     await Promise.resolve(this.deps.onOrganizationSuggestions?.()).catch(() => undefined)
     return { ok: true }
@@ -1463,27 +1471,18 @@ export class DreamRunner {
     this.assertStagedContentAllowed()
     this.getDream(agentId, dreamId)
     const out = join(this.dreamDir(agentId, dreamId), 'output')
-    let names: string[]
-    try {
-      names = (await fsp.readdir(out, { withFileTypes: true }))
-        .filter((entry) => entry.isFile() && stagedPathOk(entry.name))
-        .map((entry) => entry.name)
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null
-      throw err
-    }
-    names.sort((a, b) => (a === MEMORY_INDEX ? -1 : b === MEMORY_INDEX ? 1 : a.localeCompare(b)))
+    // A staged store always carries its index, so no entries means no staging (absent is data).
+    const staged = (await this.fsFor(agentId).readdir(out)).filter(
+      (entry) => entry.kind === 'file' && stagedPathOk(entry.name)
+    )
+    if (staged.length === 0) return null
+    staged.sort((a, b) => (a.name === MEMORY_INDEX ? -1 : b.name === MEMORY_INDEX ? 1 : a.name.localeCompare(b.name)))
     const entries = []
-    for (const name of names) {
+    for (const entry of staged) {
       // A file can vanish between readdir and stat if a cancel/discard is
       // removing the staging concurrently — skip it rather than throw.
-      try {
-        const st = await fsp.stat(join(out, name))
-        entries.push({ name, size: st.size, mtime: st.mtime.toISOString() })
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code === 'ENOENT') continue
-        throw err
-      }
+      if (entry.size === undefined || entry.mtime === undefined) continue
+      entries.push({ name: entry.name, size: entry.size, mtime: entry.mtime })
     }
     return entries
   }
@@ -1494,14 +1493,8 @@ export class DreamRunner {
     this.assertStagedContentAllowed()
     this.getDream(agentId, dreamId)
     if (!stagedPathOk(path)) throw new DreamViolationError('staged memory paths are plain kebab-case .md names')
-    const abs = join(this.dreamDir(agentId, dreamId), 'output', path)
-    try {
-      const [content, st] = await Promise.all([fsp.readFile(abs, 'utf8'), fsp.stat(abs)])
-      return { content, mtime: st.mtime.toISOString() }
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null
-      throw err
-    }
+    const file = await this.fsFor(agentId).readFile(join(this.dreamDir(agentId, dreamId), 'output', path))
+    return file ? { content: file.content, mtime: file.mtime } : null
   }
 
   /** Review token for the staged memory-store proposal: the digest the console
@@ -1511,19 +1504,14 @@ export class DreamRunner {
   async stagedStoreReviewToken(agentId: string, dreamId: string): Promise<string | null> {
     this.assertStagedContentAllowed()
     this.getDream(agentId, dreamId)
+    const fs = this.fsFor(agentId)
     const out = join(this.dreamDir(agentId, dreamId), 'output')
-    let names: string[]
-    try {
-      names = (await fsp.readdir(out, { withFileTypes: true }))
-        .filter((entry) => entry.isFile() && stagedPathOk(entry.name))
-        .map((entry) => entry.name)
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null
-      throw err
-    }
+    const names = (await fs.readdir(out))
+      .filter((entry) => entry.kind === 'file' && stagedPathOk(entry.name))
+      .map((entry) => entry.name)
     if (names.length === 0) return null
     const files = await Promise.all(
-      names.map(async (name) => ({ name, content: await fsp.readFile(join(out, name), 'utf8') }))
+      names.map(async (name) => ({ name, content: (await fs.readFile(join(out, name)))?.content ?? '' }))
     )
     return storeDigest(files)
   }
@@ -1536,11 +1524,51 @@ export class DreamRunner {
   async stagedSkillReviewToken(agentId: string, dreamId: string, name: string): Promise<string | null> {
     this.assertStagedContentAllowed()
     this.skillCandidate(agentId, dreamId, name)
-    const dir = join(this.dreamDir(agentId, dreamId), 'skills', name)
+    const staged = await this.localStagedSkill(agentId, dreamId, name)
     try {
-      return (await inspectLocalSkillSource(dir)).sha256
+      return (await inspectLocalSkillSource(staged.path)).sha256
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null
+      throw err
+    } finally {
+      await staged.dispose()
+    }
+  }
+
+  /**
+   * A staged skill candidate as a LOCAL directory for the skill snapshot walker: the tree itself
+   * when the memory root is on this disk, else a temp copy pulled through the port (a mined skill
+   * is bounded — a SKILL.md and a few scripts). Callers dispose it.
+   */
+  private async localStagedSkill(
+    agentId: string,
+    dreamId: string,
+    name: string
+  ): Promise<{ path: string; dispose: () => Promise<void> }> {
+    const fs = this.fsFor(agentId)
+    const rel = join(this.dreamDir(agentId, dreamId), 'skills', name)
+    if (fs instanceof LocalMemoryFs) return { path: join(fs.root, rel), dispose: async () => {} }
+    const temp = await mkdtemp(join(tmpdir(), 'agentconnect-dream-skill-'))
+    const dispose = () => rm(temp, { recursive: true, force: true }).catch(() => {})
+    try {
+      const copy = async (from: string, to: string): Promise<boolean> => {
+        const entries = await fs.readdir(from)
+        if (entries.length === 0) return false
+        await mkdir(to, { recursive: true })
+        for (const entry of entries) {
+          if (entry.kind === 'dir') await copy(join(from, entry.name), join(to, entry.name))
+          else if (entry.kind === 'file') {
+            const file = await fs.readFile(join(from, entry.name), 'base64')
+            if (file) await writeFile(join(to, entry.name), Buffer.from(file.content, 'base64'))
+          }
+        }
+        return true
+      }
+      // Absent staging is reported the way a missing local dir is: ENOENT from the walker.
+      if (!(await copy(rel, join(temp, name)))) await rm(join(temp, name), { recursive: true, force: true })
+      return { path: join(temp, name), dispose }
+    } catch (err) {
+      await dispose()
       throw err
     }
   }

@@ -123,6 +123,7 @@ import { WorkspaceConflictError, WorkspaceViolationError, type WorkspaceReader }
 import {
   MemoryViolationError,
   MemoryPathError,
+  MemorySandboxUnavailableError,
   MemoryTooLargeError,
   MemoryConflictError,
   type MemoryReader
@@ -2042,6 +2043,11 @@ export class CpClient {
       this.sendError(corr, 'BAD_PAYLOAD', `${op} failed: ${err.message}`, false)
       return
     }
+    // A cluster agent's staging is on its sandbox volume: asleep is transient, and carries the reason.
+    if (err instanceof MemorySandboxUnavailableError) {
+      this.sendError(corr, 'BAD_PAYLOAD', `${op} failed: ${err.message}`, false, { reason: err.reason })
+      return
+    }
     if (err instanceof DreamStateError) {
       this.sendError(corr, 'CONFLICT', `${op} failed: ${err.message}`, false)
       return
@@ -2053,6 +2059,12 @@ export class CpClient {
   private memoryError(corr: string, op: string, err: unknown): void {
     if (err instanceof MemoryConflictError) {
       this.sendError(corr, 'CONFLICT', `${op} failed: ${err.message}`, false)
+      return
+    }
+    // The memory tree is on a sandbox that is not running: refused with the workspace reader's
+    // reason, so the CP answers 503 with the code the console wakes on (#1077) — not a 400.
+    if (err instanceof MemorySandboxUnavailableError) {
+      this.sendError(corr, 'BAD_PAYLOAD', `${op} failed: ${err.message}`, false, { reason: err.reason })
       return
     }
     if (err instanceof MemoryViolationError || err instanceof MemoryPathError || err instanceof MemoryTooLargeError) {

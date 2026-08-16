@@ -139,7 +139,7 @@ describe('DispatchingMemoryProvider (per-agent routing)', () => {
     roots['bot-m'] = newDir()
     const p = provider()
     expect(p.toolsForAgent('bot-m').map((t) => t.name)).toContain('writeMemory')
-    p.ensure({ agentId: 'bot-m' }, 'bot-m')
+    await p.ensure({ agentId: 'bot-m' }, 'bot-m')
     await p.write({ agentId: 'bot-m' }, MEMORY_INDEX, '# idx')
     expect((await p.list({ agentId: 'bot-m' })).map((f) => f.name)).toContain(MEMORY_INDEX)
     expect(await p.standingContextAtSessionStart({ agentId: 'bot-m' })).toContain('# idx')
@@ -154,7 +154,7 @@ describe('DispatchingMemoryProvider (per-agent routing)', () => {
     roots['bot-n'] = root
     const p = provider()
     expect(p.toolsForAgent('bot-n')).toEqual([]) // runtime owns its memory
-    p.ensure({ agentId: 'bot-n' }, 'bot-n') // no-op, must not throw
+    await p.ensure({ agentId: 'bot-n' }, 'bot-n') // no-op, must not throw
     expect(await p.standingContextAtSessionStart({ agentId: 'bot-n' })).toBe('') // don't double-inject
     expect(p.adminSurfaceForAgent('bot-n')?.shape).toBe('files')
     // Seed a claude-style native memory file and confirm list/read surface it.
@@ -206,7 +206,7 @@ describe('DispatchingMemoryProvider (per-agent routing)', () => {
     const p = provider()
     const scope = { agentId: 'bot-0' }
     expect(p.toolsForAgent('bot-0')).toEqual([])
-    p.ensure(scope, 'bot-0')
+    await p.ensure(scope, 'bot-0')
     expect(await p.standingContextAtSessionStart(scope)).toBe('')
     expect(p.adminSurfaceForAgent('bot-0')).toBeNull()
     expect(await p.list(scope)).toEqual([])
