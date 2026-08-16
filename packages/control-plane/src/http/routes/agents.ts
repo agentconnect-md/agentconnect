@@ -1360,6 +1360,7 @@ export function agentRoutes(deps: HttpDeps) {
       sessionOwners: deps.sessionOwners,
       placement: deps.placementResolver,
       memberSets: deps.repos.memberSet,
+      liveness: deps.liveness,
       ...(deps.recomputeDuties ? { recomputeDuties: deps.recomputeDuties } : {}),
       log: app.log
     })

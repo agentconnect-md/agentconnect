@@ -1,4 +1,4 @@
-import { onDaemon, placementTargetOf, samePlacement, type PlacementTarget } from '../domain/placement.js'
+import { onDaemon, onSet, placementTargetOf, samePlacement, type PlacementTarget } from '../domain/placement.js'
 import { describe, expect, it } from 'vitest'
 import type { Ack, AgentActivate, AgentDetach } from '@agentconnect.md/protocol'
 import { AgentId, BotId, CronId, DaemonId, IntegrationId, OrgId } from '../domain/ids.js'
@@ -40,6 +40,9 @@ const TARGET = DaemonId('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb')
 const INTEGRATION = IntegrationId('22222222-2222-4222-8222-222222222222')
 const BOT = BotId('33333333-3333-4333-8333-333333333333')
 const CRON = CronId('44444444-4444-4444-8444-444444444444')
+const MEMBER = DaemonId('cccccccc-cccc-4ccc-8ccc-cccccccccccc')
+const OFFLINE_MEMBER = DaemonId('dddddddd-dddd-4ddd-8ddd-dddddddddddd')
+const SET = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
 const MODIFIED_AT = new Date('2026-07-11T00:00:00.000Z')
 const SESSION_KEY = { platform: 'slack' as const, channel: 'C-move', thread: 'T-move' }
 const WORKSPACE_REPO_ID = 4242n
@@ -155,11 +158,20 @@ function make(
     workspaceRepoId?: bigint
     sourceDetachStarted?: () => void
     waitSourceDetach?: Promise<void>
+    /** Which set each daemon belongs to (absent daemon ⇒ no set) + each set's members. */
+    sets?: { setIdOf: Record<string, string>; members: Record<string, string[]> }
+    /** Daemon ids the liveness fake reports READY; others read as disconnected. */
+    readyDaemons?: string[]
+    /** Placement columns merged over the initial record (e.g. a `set` placement). */
+    placement?: Partial<AgentRecord>
   } = {}
 ) {
   let current: AgentRecord = {
     ...agent(opts.unplaced ? null : SOURCE),
-    ...(opts.workspace ? { workspace: opts.workspace, workspaceRepoId: opts.workspaceRepoId ?? WORKSPACE_REPO_ID } : {})
+    ...(opts.workspace
+      ? { workspace: opts.workspace, workspaceRepoId: opts.workspaceRepoId ?? WORKSPACE_REPO_ID }
+      : {}),
+    ...(opts.placement ?? {})
   }
   let cronRows = [cron]
   const calls: string[] = []
@@ -296,7 +308,23 @@ function make(
     httpBot: { syncBot: async () => void calls.push('http') } as unknown as HttpBotOrchestrator,
     collabRoutes: { broadcast: async () => void calls.push('collab') } as unknown as CollabRoutesService,
     mutations,
-    sessionOwners: { releaseSession: (key) => void releasedLive.push(key as typeof SESSION_KEY) }
+    sessionOwners: { releaseSession: (key) => void releasedLive.push(key as typeof SESSION_KEY) },
+    ...(opts.sets
+      ? {
+          memberSets: {
+            setIdOf: async (daemonId: string) => opts.sets!.setIdOf[daemonId] ?? null,
+            memberIdsOf: async (setId: string) => opts.sets!.members[setId] ?? []
+          }
+        }
+      : {}),
+    ...(opts.readyDaemons
+      ? {
+          liveness: {
+            get: (daemonId: string) =>
+              opts.readyDaemons!.includes(daemonId) ? { state: 'READY', reachable: true, sessionEpoch: 1 } : undefined
+          }
+        }
+      : {})
   })
   return { service, calls, activations, detaches, frameOrgs, mutations, releasedLive, current: () => current }
 }
@@ -559,6 +587,65 @@ describe('AgentMoveService', () => {
     await expect(t.service.move(t.current(), onDaemon(TARGET))).rejects.toThrow('placement changed during move')
     expect(t.calls.at(-1)).toBe(`detach:${TARGET}`)
     expect(t.calls).not.toContain(`activate:${SOURCE}`)
+  })
+
+  it('a set commit broadcasts a token-less unstage to live members the move never staged (#1093)', async () => {
+    const t = make({
+      sets: { setIdOf: { [MEMBER]: SET }, members: { [SET]: [MEMBER, OFFLINE_MEMBER] } },
+      readyDaemons: [MEMBER]
+    })
+    await expect(t.service.move(t.current(), onSet(SET))).resolves.toBeDefined()
+
+    // The machine source stays fenced; the live member's possible stale fence is released token-less.
+    expect(t.calls).not.toContain(`activate:${SOURCE}`)
+    expect(t.calls).not.toContain(`activate:${OFFLINE_MEMBER}`)
+    expect(t.calls).toContain(`activate:${MEMBER}`)
+    expect(t.activations).toHaveLength(1)
+    expect(t.activations[0]?.agentId).toBe(AGENT)
+    expect(t.activations[0]?.moveId).toBeUndefined()
+  })
+
+  it('a staged source that is itself a member keeps its exact token and is not broadcast to twice', async () => {
+    const t = make({
+      sets: { setIdOf: { [SOURCE]: SET }, members: { [SET]: [SOURCE] } },
+      readyDaemons: [SOURCE]
+    })
+    await expect(t.service.move(t.current(), onSet(SET))).resolves.toBeDefined()
+
+    expect(t.activations).toHaveLength(1)
+    expect(t.activations[0]?.moveId).toBe(t.detaches[0]?.moveId)
+  })
+
+  it('reconnect recovery releases a reported stale fence for an eligible member that serves nothing', async () => {
+    const t = make({
+      placement: { placementKind: 'set', setId: SET, daemonId: null },
+      sets: { setIdOf: { [MEMBER]: SET }, members: { [SET]: [MEMBER] } },
+      readyDaemons: [MEMBER]
+    })
+    await t.service.recoverStaged(AGENT, MEMBER, STAGED_MOVE)
+
+    expect(t.detaches).toEqual([])
+    expect(t.activations).toHaveLength(1)
+    expect(t.activations[0]).toMatchObject({ agentId: AGENT, moveId: STAGED_MOVE })
+  })
+
+  it('reconnect recovery leaves a fence armed when the reporter is not an eligible holder', async () => {
+    // A daemon in no set reporting a fence for a set-placed agent stays fenced.
+    const nonMember = make({
+      placement: { placementKind: 'set', setId: SET, daemonId: null },
+      sets: { setIdOf: {}, members: { [SET]: [] } },
+      readyDaemons: []
+    })
+    await nonMember.service.recoverStaged(AGENT, SOURCE, STAGED_MOVE)
+    expect(nonMember.activations).toEqual([])
+
+    // A member reporting a fence for a MACHINE-placed agent stays fenced too.
+    const pinned = make({
+      sets: { setIdOf: { [MEMBER]: SET }, members: { [SET]: [MEMBER] } },
+      readyDaemons: [MEMBER]
+    })
+    await pinned.service.recoverStaged(AGENT, MEMBER, STAGED_MOVE)
+    expect(pinned.activations).toEqual([])
   })
 })
 

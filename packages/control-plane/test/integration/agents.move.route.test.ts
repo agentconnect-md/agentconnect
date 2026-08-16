@@ -633,11 +633,10 @@ describe('PUT /agents/:id/daemon — the pool as a placement target', () => {
       daemonId: null,
       status: 'active'
     })
-    // The source is quiesced; the pool member is NOT activated — install-on-grant does that when
-    // the ledger picks a member, and naming one here would only pre-empt a choice that is not the
-    // control plane's to make.
+    // The source is quiesced and no member is chosen — install-on-grant does that when the ledger
+    // picks one. The only member traffic is the token-less stale-fence release (#1093).
     expect(control.calls.filter((c) => c.startsWith('detach:'))).toContain(`detach:${SOURCE}`)
-    expect(control.calls.some((c) => c.startsWith('activate:'))).toBe(false)
+    expect(control.activateCalls.map((a) => [a.daemonId, a.value.moveId])).toEqual([[MEMBER, undefined]])
   })
 
   it('moves back off the pool onto a machine, quiescing the member that holds it', async () => {
@@ -809,5 +808,70 @@ describe('PUT /agents/:id/daemon — converting a member-pinned agent to the poo
     expect(res.statusCode).toBe(200)
     expect(control.calls).toContain(`detach:${SOURCE}`)
     expect(control.calls).not.toContain(`activate:${SOURCE}`)
+  })
+})
+
+describe('PUT /agents/:id/daemon — a two-hop move back onto the pool (#1093)', () => {
+  // pool → machine leaves the sourcing member fenced by design; moving back used to unstage only
+  // the SECOND hop's sources, so the first-hop fence survived on the still-alive member — the
+  // ledger could then grant it the group and `installGrantedAgents` would skip the fenced agent,
+  // a lease held while serving nothing. The set commit now also broadcasts a token-less activate.
+  it('releases the member’s first-hop fence when the agent moves back onto the pool', async () => {
+    await seedMoveDaemons()
+    await seedPoolMember()
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId)
+    await prisma.agent.update({
+      where: { id: agentId },
+      data: { placementKind: 'set', setId: await poolSetId(prisma), daemonId: null }
+    })
+    // MEMBER holds the agent's duty, so hop 1 quiesces (and fences) it as a source.
+    const groupId = randomUUID()
+    await prisma.dutyGroup.create({
+      data: {
+        id: groupId,
+        orgId: DEFAULT_ORG_ID,
+        holder: MEMBER,
+        term: 1n,
+        expiresAt: new Date(Date.now() + 120_000)
+      }
+    })
+    await prisma.dutyGroupMember.create({
+      data: { kind: 'agent', refId: agentId, groupId, orgId: DEFAULT_ORG_ID }
+    })
+    const control = new MoveControlSpy()
+    running = buildHttpApp(prisma, undefined, poolLive, control as unknown as ControlSender)
+
+    const hop1 = await running.app.inject({
+      method: 'PUT',
+      url: `${ORG}/agents/${agentId}/daemon`,
+      payload: { daemonId: TARGET }
+    })
+    expect(hop1.statusCode, hop1.body).toBe(200)
+    // The member is fenced and correctly left fenced while the agent is machine-placed.
+    expect(control.detaches.some((d) => d.daemonId === MEMBER)).toBe(true)
+    expect(control.activateCalls.filter((a) => a.daemonId === MEMBER)).toEqual([])
+
+    // Model the ledger sweep dropping the group once the agent left the pool.
+    await prisma.dutyGroupMember.deleteMany({ where: { groupId } })
+    await prisma.dutyGroup.delete({ where: { id: groupId } })
+    const hop1Activates = control.activateCalls.length
+
+    const hop2 = await running.app.inject({
+      method: 'PUT',
+      url: `${ORG}/agents/${agentId}/daemon`,
+      payload: { placementKind: 'pool' }
+    })
+    expect(hop2.statusCode, hop2.body).toBe(200)
+    expect(hop2.json()).toMatchObject({ placementKind: 'set', daemonId: null })
+
+    // The commit broadcasts a token-less activate to the member the second hop never staged.
+    const memberUnstage = control.activateCalls.slice(hop1Activates).filter((a) => a.daemonId === MEMBER)
+    expect(memberUnstage).toHaveLength(1)
+    expect(memberUnstage[0]!.value.agentId).toBe(agentId)
+    expect(memberUnstage[0]!.value.moveId).toBeUndefined()
+    // The second hop's machine source is not an eligible holder: fenced and left fenced.
+    expect(control.detaches.some((d) => d.daemonId === TARGET)).toBe(true)
+    expect(control.activateCalls.slice(hop1Activates).filter((a) => a.daemonId === TARGET)).toEqual([])
   })
 })
