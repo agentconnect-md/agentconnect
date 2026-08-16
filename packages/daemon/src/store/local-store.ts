@@ -46,6 +46,19 @@ export type LocalStoreSource =
  *  threads, so it owns one partition forever, the way `cacheOwnerId` owns one. */
 const LOCAL_TRANSCRIPT_ORG = ''
 
+/** Which per-member outbox table one collectable row came from (`store/orphan-reaper.ts`). */
+export type StoreOrphanKind = 'hook-report' | 'session-metadata' | 'session-purge' | 'webchat-grant'
+
+/** One outbox row the shared store still holds, with the clock the reaper judges it by. */
+export interface StoreOrphanRow {
+  kind: StoreOrphanKind
+  agentId: string
+  /** `inbox.id`, the session id, or the conversation id — whatever pairs with `agentId` as the key. */
+  id: string
+  /** Epoch ms of the last write any member made to the row: the horizon's clock, and the delete's CAS. */
+  touchedAt: number
+}
+
 /** How long a shared-store claim survives without renewal. A pool member renews on
  *  every drain attempt, so a lapsed claim means its owner is gone and a peer may take
  *  the row over. Local (single-owner) stores never lease. */
@@ -2816,6 +2829,79 @@ export class LocalStore {
   pruneSessionPurges(cutoff: number): number {
     const result = this.db.prepare('DELETE FROM session_purges WHERE purgedAt < ?').run(cutoff)
     return Number(result.changes)
+  }
+
+  // ── per-member outbox reaping (docs/designs/k8s-daemon-pool.md §4; store/orphan-reaper.ts) ──
+
+  /** True on a pool's shared data-plane store — the only place an outbox row can outlive its owner. */
+  get isShared(): boolean {
+    return this.shared
+  }
+
+  /**
+   * Every per-member outbox row this store still holds, oldest first, with the clock the
+   * reaper judges it by. Reads only: which of these are collectable is policy and lives in
+   * `store/orphan-reaper.ts`, so this table list stays the single description of the shape.
+   *
+   * The clock is the last write ANY member made to the row — the claim when one exists, and
+   * the row's own creation stamp when nobody has claimed it yet. A live owner renews its claim
+   * on every drain attempt, so a clock that has not moved is exactly "nothing is working on it".
+   */
+  listStoreOrphanCandidates(limit = 5_000): StoreOrphanRow[] {
+    const scans: { kind: StoreOrphanKind; sql: string }[] = [
+      {
+        kind: 'hook-report',
+        sql: `SELECT agentId, id, COALESCE(reportClaimedAt, completedAt) AS touchedAt
+              FROM inbox WHERE terminalReport IS NOT NULL
+              ORDER BY COALESCE(reportClaimedAt, completedAt) ASC LIMIT @limit`
+      },
+      {
+        kind: 'session-metadata',
+        sql: `SELECT agentId, sessionId AS id, COALESCE(claimedAt, queuedAt) AS touchedAt
+              FROM session_metadata_outbox
+              ORDER BY COALESCE(claimedAt, queuedAt) ASC LIMIT @limit`
+      },
+      {
+        kind: 'session-purge',
+        sql: `SELECT agentId, sessionId AS id, COALESCE(claimedAt, purgedAt) AS touchedAt
+              FROM session_purges
+              ORDER BY COALESCE(claimedAt, purgedAt) ASC LIMIT @limit`
+      },
+      {
+        kind: 'webchat-grant',
+        sql: `SELECT agentId, conversationId AS id, updatedAt AS touchedAt
+              FROM webchat_mcp_grant_ledger
+              ORDER BY updatedAt ASC LIMIT @limit`
+      }
+    ]
+    const rows: StoreOrphanRow[] = []
+    for (const scan of scans) {
+      const found = this.db.prepare(scan.sql).all({ limit }) as unknown as Omit<StoreOrphanRow, 'kind'>[]
+      for (const row of found) rows.push({ ...row, kind: scan.kind, touchedAt: Number(row.touchedAt) })
+    }
+    return rows
+  }
+
+  /** Collect one row the reaper decided is orphaned. The clock it was judged on rides the
+   *  DELETE, so a row some member claimed between the read and here is left alone. */
+  deleteStoreOrphan(row: StoreOrphanRow): boolean {
+    const statements: Record<StoreOrphanKind, string> = {
+      'hook-report': `DELETE FROM inbox
+                      WHERE id = @id AND agentId = @agentId AND terminalReport IS NOT NULL
+                        AND COALESCE(reportClaimedAt, completedAt) <= @touchedAt`,
+      'session-metadata': `DELETE FROM session_metadata_outbox
+                           WHERE agentId = @agentId AND sessionId = @id
+                             AND COALESCE(claimedAt, queuedAt) <= @touchedAt`,
+      'session-purge': `DELETE FROM session_purges
+                        WHERE agentId = @agentId AND sessionId = @id
+                          AND COALESCE(claimedAt, purgedAt) <= @touchedAt`,
+      'webchat-grant': `DELETE FROM webchat_mcp_grant_ledger
+                        WHERE conversationId = @id AND agentId = @agentId AND updatedAt <= @touchedAt`
+    }
+    const result = this.db
+      .prepare(statements[row.kind])
+      .run({ id: row.id, agentId: row.agentId, touchedAt: row.touchedAt })
+    return Number(result.changes) === 1
   }
 
   // ── memory dream jobs (docs/designs/memory-dreaming.md §4; DreamStorePort) ──

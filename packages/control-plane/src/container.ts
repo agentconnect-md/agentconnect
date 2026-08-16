@@ -1156,6 +1156,7 @@ export function buildContainer(
   const poolMemberReaper = clusterIdentity
     ? new PoolMemberReaper(
         repos.daemon,
+        repos.webchatMcpDelegation,
         (member, retiredBefore) => retirePoolMember(httpDeps, member, retiredBefore, http.log),
         connReg,
         clock,

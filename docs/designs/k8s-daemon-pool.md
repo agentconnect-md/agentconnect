@@ -256,6 +256,50 @@ probe-claim GC, and agent removal's sandbox teardown is best-effort because of
 it: `discardAgent` deletes the claim once and logs a failure, and the
 reconciler collects the leftovers.
 
+**The store half.** The same job then sweeps the pool's SHARED data-plane store
+(`packages/daemon/src/store/orphan-reaper.ts`), because the leak has the same
+shape one layer down: a member writes a per-member outbox row, dies, and no
+peer can drain it. One sweep covers `inbox` hook-completion reports,
+`session_metadata_outbox`, `session_purges` and the
+`webchat_mcp_grant_ledger` — every table carrying an `ownerId`/`claimedAt`
+lease — on the same batched `agent/exists` answer the cluster half already
+asked for. A row is collected on one of two proofs:
+
+- **agent gone** — the control plane no longer knows the row's agent, so no
+  member can ever report it: the frame is refused forever;
+- **horizon** — nothing has written the row for 7 days
+  (`DEFAULT_STORE_ORPHAN_HORIZON_MS`, the single retention constant;
+  `AC_STORE_ORPHAN_HORIZON_MS` tunes it). A live owner renews its claim on
+  every drain attempt, so an untouched claim means its owner is gone and no
+  peer that could take over ever did.
+
+Every delete carries the clock the row was judged on as its CAS, so a row a
+member claimed between the read and the delete is left alone. Deletion is
+opt-in with `AC_STORE_ORPHAN_DELETE=true`, separately from the cluster half so
+the two get their own observation windows, and the run logs its own summary
+line (candidates, orphaned, deleted, skipped-live, failed, agent-gone,
+horizon, per table). A local single-daemon store is skipped outright: it has
+one owner forever, so its rows are its own to drain.
+
+This replaced the per-table retention it subsumes — the ad-hoc 30-day
+`pruneSessionPurges` the session-purge drain used to run, and the process-local
+set that kept a permanently-unreportable hook report out of one daemon's drain
+for the life of that process. Retention now has one home. The memory-capture
+outbox keeps `expireMemoryCaptures`: its terminal rows expire on a connection's
+own retention policy, not on member ownership, so it is a different question
+and is deliberately not folded in.
+
+**The control-plane counterpart.** Retiring a pool member also leaves rows the
+delete no longer cascades away. `WebchatMcpDelegation` is keyed on the agent
+since the placement-resolver change, so a retirement leaves live-looking
+delegations for agents nothing serves. `PoolMemberReaper` revokes them at the
+end of each sweep (`revokeUnplaced`), with the predicate spelled as exactly
+`PlacementResolver.servingDaemons(agent) === []`: neither placement column
+names a target and no unexpired duty lease holds the agent. No dry run there —
+the rows are already inert, since the live authority check answers
+`placement_mismatch` on every use, so the write only records what is true and
+lets the existing expiry reaper count them correctly.
+
 ## 5. The duty ledger and lease service (D6, D7)
 
 **The CP is the ledger.** Members claim, renew, and release duties over the
@@ -1045,4 +1089,4 @@ shrinking every actor's permissions.
 | Member readiness (probe sinks)                                         | `packages/daemon/src/readiness.ts`, `src/daemon.ts` (`readinessState`)                                                                             |
 | Rollout generation barrier                                             | `packages/protocol/src/frames/register.ts` (`generation`), `control-plane/src/persistence/repositories/duty-group.repo.ts` (`newerGenerationLive`) |
 | Shared-store ownership (owner ids, outbox claims, holder gates)        | `packages/daemon/src/store/local-store.ts`, `src/store/postgres-sync-database.ts`, `src/daemon.ts` (`servesAgent`, `settleDutyChange`)             |
-| Orphan reconciler + `reconcile --once` job + existence read            | `packages/daemon/src/k8s/orphan-reconciler.ts`, `packages/daemon/src/cli/reconcile.ts`, `packages/control-plane/src/ws/handlers/agent-exists.ts`   |
+| Orphan reconciler + store retention rules + `reconcile --once` job     | `packages/daemon/src/k8s/orphan-reconciler.ts`, `packages/daemon/src/store/retention.ts`, `packages/daemon/src/cli/reconcile.ts`, `packages/control-plane/src/ws/handlers/agent-exists.ts` |

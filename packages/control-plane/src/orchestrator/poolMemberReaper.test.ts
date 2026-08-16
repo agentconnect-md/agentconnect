@@ -11,6 +11,9 @@ const INTERVAL_MS = 5 * 60_000
 const member = (id: string, sessionEpoch = 7n): DaemonRecord =>
   ({ id: DaemonId(id), orgId: null, sessionEpoch }) as DaemonRecord
 
+/** No inert delegation to collect unless a case says otherwise. */
+const noDelegations = () => ({ revokeUnplaced: vi.fn(async () => 0) })
+
 /** Only `get` is read; an entry means "connected to THIS control plane right now". */
 const liveness = (...connected: string[]): DaemonLiveness =>
   ({ get: (id: string) => (connected.includes(id) ? { reachable: true } : undefined) }) as unknown as DaemonLiveness
@@ -20,7 +23,7 @@ describe('PoolMemberReaper', () => {
     const clock = new FakeClock(1_700_000_000_000)
     const findRetiredPoolMembers = vi.fn(async () => [member('a'), member('b')])
     const retire = vi.fn(async () => true)
-    const reaper = new PoolMemberReaper({ findRetiredPoolMembers }, retire, liveness(), clock, {
+    const reaper = new PoolMemberReaper({ findRetiredPoolMembers }, noDelegations(), retire, liveness(), clock, {
       retireAfterMs: RETIRE_AFTER_MS,
       intervalMs: INTERVAL_MS
     })
@@ -39,6 +42,7 @@ describe('PoolMemberReaper', () => {
     const retire = vi.fn(async () => true)
     const reaper = new PoolMemberReaper(
       { findRetiredPoolMembers: async () => [member('a', 12n)] },
+      noDelegations(),
       retire,
       liveness(),
       clock,
@@ -56,6 +60,7 @@ describe('PoolMemberReaper', () => {
     const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
     const reaper = new PoolMemberReaper(
       { findRetiredPoolMembers: async () => [member('back')] },
+      noDelegations(),
       async () => false,
       liveness(),
       clock,
@@ -74,6 +79,7 @@ describe('PoolMemberReaper', () => {
     const retire = vi.fn(async () => true)
     const reaper = new PoolMemberReaper(
       { findRetiredPoolMembers: async () => [member('live'), member('gone')] },
+      noDelegations(),
       retire,
       liveness('live'),
       clock,
@@ -94,6 +100,7 @@ describe('PoolMemberReaper', () => {
     })
     const reaper = new PoolMemberReaper(
       { findRetiredPoolMembers: async () => [member('boom'), member('next')] },
+      noDelegations(),
       retire,
       liveness(),
       clock,
@@ -113,6 +120,7 @@ describe('PoolMemberReaper', () => {
           throw new Error('db down')
         }
       },
+      noDelegations(),
       async () => true,
       liveness(),
       clock,
@@ -123,13 +131,62 @@ describe('PoolMemberReaper', () => {
     reaper.stop() // cancel the re-armed timer
   })
 
+  it('revokes the delegations a retirement leaves inert, every sweep', async () => {
+    // Agent-keyed since #1057, so deleting a member no longer cascades them away; the rows go
+    // inert (nothing serves the agent) rather than disappearing, and this is what collects them.
+    const clock = new FakeClock()
+    const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+    const delegations = { revokeUnplaced: vi.fn(async () => 3) }
+    const reaper = new PoolMemberReaper(
+      { findRetiredPoolMembers: async () => [] },
+      delegations,
+      async () => true,
+      liveness(),
+      clock,
+      { retireAfterMs: RETIRE_AFTER_MS, intervalMs: INTERVAL_MS },
+      log
+    )
+
+    await reaper.tick()
+
+    expect(delegations.revokeUnplaced).toHaveBeenCalledWith(new Date(clock.now()))
+    expect(log.info).toHaveBeenCalledWith({ revoked: 3 }, expect.stringContaining('unplaced'))
+    reaper.stop()
+  })
+
+  it('swallows a failed delegation sweep and keeps the loop alive', async () => {
+    const clock = new FakeClock()
+    const reaper = new PoolMemberReaper(
+      { findRetiredPoolMembers: async () => [] },
+      {
+        revokeUnplaced: async () => {
+          throw new Error('db down')
+        }
+      },
+      async () => true,
+      liveness(),
+      clock,
+      { retireAfterMs: RETIRE_AFTER_MS, intervalMs: INTERVAL_MS }
+    )
+
+    await expect(reaper.tick()).resolves.toBeUndefined()
+    reaper.stop()
+  })
+
   it('start() arms a periodic sweep driven by the clock', async () => {
     const clock = new FakeClock()
     const findRetiredPoolMembers = vi.fn(async () => [])
-    const reaper = new PoolMemberReaper({ findRetiredPoolMembers }, async () => true, liveness(), clock, {
-      retireAfterMs: RETIRE_AFTER_MS,
-      intervalMs: INTERVAL_MS
-    })
+    const reaper = new PoolMemberReaper(
+      { findRetiredPoolMembers },
+      noDelegations(),
+      async () => true,
+      liveness(),
+      clock,
+      {
+        retireAfterMs: RETIRE_AFTER_MS,
+        intervalMs: INTERVAL_MS
+      }
+    )
 
     reaper.start()
     expect(findRetiredPoolMembers).not.toHaveBeenCalled()

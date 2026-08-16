@@ -1,6 +1,7 @@
 /**
  * `PoolMemberReaper` (agentconnect-org-operator.md §"The cloud daemon, which serves every
- * org") — retires the daemon rows replaced pool member Pods leave behind.
+ * org") — retires the daemon rows replaced pool member Pods leave behind, and collects the rows
+ * a retirement leaves inert instead of cascading away.
  *
  * A pool member is bound to its reviewed Pod UID, so a replacement Pod gets a NEW daemon
  * record and the old one lingers: org-less, never reachable again, and visible in every
@@ -24,7 +25,7 @@
 import type { Clock, TimerHandle } from '../domain/clock.js'
 import type { DaemonId } from '../domain/ids.js'
 import type { DaemonLiveness } from '../ports.js'
-import type { DaemonRepo } from '../persistence/ports.js'
+import type { DaemonRepo, WebchatMcpDelegationRepo } from '../persistence/ports.js'
 
 /** How often the sweep runs. */
 export const POOL_MEMBER_REAP_INTERVAL_MS = 5 * 60_000
@@ -57,6 +58,8 @@ export class PoolMemberReaper {
 
   constructor(
     private readonly daemons: Pick<DaemonRepo, 'findRetiredPoolMembers'>,
+    /** Rows a retirement leaves inert rather than cascading away — see {@link PoolMemberReaper.tick}. */
+    private readonly delegations: Pick<WebchatMcpDelegationRepo, 'revokeUnplaced'>,
     /** The full detach sequence for one member (`http/daemon-removal.ts`), re-fenced on the
      *  cutoff and epoch this sweep read; false ⇒ not retired after all (a reconnect, or a
      *  peer replica got there first) and nothing was written. */
@@ -92,10 +95,11 @@ export class PoolMemberReaper {
   }
 
   /**
-   * One sweep. Members are retired one at a time: each carries a cascade plus a
-   * collaboration push, and a failure on one must not cost the rest of the batch. Errors
-   * are logged and swallowed — a transient DB failure waits for the next tick rather than
-   * killing the loop. Exposed for tests (call directly).
+   * One sweep: retire the members whose Pods are gone, then collect what a retirement leaves
+   * inert. Members are retired one at a time: each carries a cascade plus a collaboration push,
+   * and a failure on one must not cost the rest of the batch. Errors are logged and swallowed —
+   * a transient DB failure waits for the next tick rather than killing the loop. Exposed for
+   * tests (call directly).
    */
   async tick(): Promise<void> {
     this.timer = undefined
@@ -121,6 +125,14 @@ export class PoolMemberReaper {
           'pool-member-reaper: retired pool members whose Pods are gone'
         )
       }
+      // What a retirement leaves behind rather than cascading away: `WebchatMcpDelegation` is keyed
+      // on the agent since #1057, so deleting a member no longer takes its agents' delegations with
+      // it. Swept here rather than at each removal path because a row can also be orphaned by an
+      // unplacement this reaper never saw. No dry run: the rows are already inert — nothing serves
+      // the agent, so the live check answers `placement_mismatch` on every use — and the write only
+      // records that.
+      const revoked = await this.delegations.revokeUnplaced(new Date(this.clock.now()))
+      if (revoked > 0) this.log?.info({ revoked }, 'pool-member-reaper: revoked delegations of unplaced agents')
     } catch (err) {
       this.log?.error({ err }, 'pool-member-reaper: sweep failed')
     } finally {

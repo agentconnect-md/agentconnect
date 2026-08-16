@@ -9,6 +9,8 @@ import { buildEnvelope, decodeEnvelope, encode, type AnyFrame } from '@agentconn
 import { AC_LABEL_AGENT, AC_LABEL_ORG } from '../src/k8s/driver.js'
 import { SandboxApi, type SandboxClaim } from '../src/k8s/sandbox-api.js'
 import { ORPHAN_DELETE_ENV } from '../src/k8s/orphan-reconciler.js'
+import { STORE_ORPHAN_DELETE_ENV } from '../src/store/orphan-reaper.js'
+import type { StoreOrphanRow } from '../src/store/local-store.js'
 import { K8S_SANDBOX_NAMESPACE_ENV } from '../src/k8s/runtime-plane.js'
 import { connectObserver, runReconcileOnce, type ExistenceReader } from '../src/cli/reconcile.js'
 import { FakeTransport } from './cp/fake-transport.js'
@@ -82,6 +84,73 @@ describe('reconcile --once', () => {
     expect(infos.at(-1)).toContain('swept 2 candidates — orphaned=1 deleted=1 skipped-live=1')
     // The connection is one-shot: closed whatever the sweep decided.
     expect(cp.wasClosed()).toBe(true)
+  })
+
+  it('sweeps the shared store in the same run, on the same control-plane answer', async () => {
+    // One CronJob covers both halves because they ask the same question: `agent/exists` decides
+    // whether a SandboxClaim and an outbox row alike are leaked.
+    const { api } = await cluster()
+    const cp = fakeCp()
+    const infos: string[] = []
+    const rows: StoreOrphanRow[] = [
+      { kind: 'session-purge', agentId: GONE, id: 'acp-1', touchedAt: Date.now() },
+      { kind: 'hook-report', agentId: LIVE, id: 'hook-1', touchedAt: Date.now() }
+    ]
+    const deleted: string[] = []
+    let closed = false
+    const code = await runReconcileOnce({
+      api,
+      connectCp: cp.connectCp,
+      apiUrl: 'wss://cp.example.test/daemon/ws',
+      env: { [ORPHAN_DELETE_ENV]: 'true', [STORE_ORPHAN_DELETE_ENV]: 'true' },
+      openStore: async () => ({
+        store: {
+          isShared: true,
+          listStoreOrphanCandidates: () => rows,
+          deleteStoreOrphan: (row: StoreOrphanRow) => {
+            deleted.push(row.id)
+            return true
+          }
+        },
+        close: async () => {
+          closed = true
+        }
+      }),
+      log: { info: (m) => infos.push(m), warn: (m) => infos.push(m) }
+    })
+    expect(code).toBe(0)
+    expect(cp.asked).toEqual([
+      [LIVE, GONE],
+      [GONE, LIVE]
+    ])
+    expect(deleted).toEqual(['acp-1'])
+    expect(infos.at(-1)).toContain('store orphans: swept 2 candidates — orphaned=1 deleted=1 skipped-live=1')
+    expect(infos.at(-1)).toContain('agent-gone=1 horizon=0 hook-report=0 session-metadata=0 session-purge=1')
+    expect(closed).toBe(true)
+  })
+
+  it('exits 1 when the store sweep left an orphan behind, however clean the cluster was', async () => {
+    const { api } = await cluster()
+    const code = await runReconcileOnce({
+      api,
+      connectCp: fakeCp().connectCp,
+      apiUrl: 'wss://cp.example.test/daemon/ws',
+      env: { [ORPHAN_DELETE_ENV]: 'true', [STORE_ORPHAN_DELETE_ENV]: 'true' },
+      openStore: async () => ({
+        store: {
+          isShared: true,
+          listStoreOrphanCandidates: () => [
+            { kind: 'session-purge' as const, agentId: GONE, id: 'acp-1', touchedAt: Date.now() }
+          ],
+          deleteStoreOrphan: () => {
+            throw new Error('deadlock detected')
+          }
+        },
+        close: async () => undefined
+      }),
+      log: { info: () => {}, warn: () => {} }
+    })
+    expect(code).toBe(1)
   })
 
   it('exits 1 when a delete failed, after reporting the whole sweep', async () => {

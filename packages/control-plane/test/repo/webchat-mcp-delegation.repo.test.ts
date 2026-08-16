@@ -14,6 +14,7 @@ const AGENT = 'a1111111-1111-4111-8111-111111111111'
 const OTHER_AGENT = 'a2222222-2222-4222-8222-222222222222'
 const DAEMON = 'd1111111-1111-4111-8111-111111111111'
 const OTHER_DAEMON = 'd2222222-2222-4222-8222-222222222222'
+const DUTY_GROUP = 'e1111111-1111-4111-8111-111111111111'
 const NOW = new Date('2026-07-30T00:00:00.000Z')
 
 const at = (milliseconds: number): Date => new Date(NOW.getTime() + milliseconds)
@@ -349,6 +350,45 @@ describe('PgWebchatMcpDelegationRepo (real Postgres)', () => {
         select: { delegationGeneration: true }
       })
     ).toEqual({ delegationGeneration: 1 })
+  })
+
+  it('revokes the delegation of an agent nothing serves, and leaves every still-served one alone', async () => {
+    // The rows a retired pool member leaves behind: agent-keyed since #1057, so the daemon delete
+    // no longer cascades them. `revokeUnplaced` mirrors `servingDaemons(agent) === []` exactly.
+    await fixtures()
+    const repo = new PgWebchatMcpDelegationRepo(prisma)
+    const unplaced = (await repo.establish(establishInput()))!
+    await prisma.agent.update({ where: { id: AGENT }, data: { daemonId: null } })
+
+    expect(await repo.revokeUnplaced(at(10_000))).toBe(1)
+    expect(await repo.get(unplaced.id)).toMatchObject({
+      revokedAt: at(10_000),
+      revokedReason: 'agent_unplaced'
+    })
+    // Idempotent: a second sweep finds nothing left to say.
+    expect(await repo.revokeUnplaced(at(20_000))).toBe(0)
+  })
+
+  it('never revokes a set-placed agent whose duty a live member still holds', async () => {
+    await fixtures()
+    const repo = new PgWebchatMcpDelegationRepo(prisma)
+    const held = (await repo.establish(establishInput()))!
+    // Placed on a member set: the placement columns name no machine, so only the live lease says
+    // it is served — exactly the case a `daemonId IS NULL` test alone would wrongly collect.
+    await prisma.agent.update({ where: { id: AGENT }, data: { daemonId: null, placementKind: 'set', setId: null } })
+    await prisma.dutyGroup.create({
+      data: { id: DUTY_GROUP, orgId: DEFAULT_ORG_ID, holder: DAEMON, term: 1n, expiresAt: at(600_000) }
+    })
+    await prisma.dutyGroupMember.create({
+      data: { kind: 'agent', refId: AGENT, groupId: DUTY_GROUP, orgId: DEFAULT_ORG_ID }
+    })
+
+    expect(await repo.revokeUnplaced(at(10_000))).toBe(0)
+    expect(await repo.get(held.id)).toMatchObject({ revokedAt: null })
+
+    // The lease lapses and nothing takes over: now nothing serves the agent.
+    expect(await repo.revokeUnplaced(at(900_000))).toBe(1)
+    expect(await repo.get(held.id)).toMatchObject({ revokedReason: 'agent_unplaced' })
   })
 
   it('rotates an expired active row even when placement is unchanged', async () => {

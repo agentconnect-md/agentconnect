@@ -18,6 +18,7 @@ export default defineConfig({
     include: [
       'test/local-store.test.ts',
       'test/memory-capture-outbox.test.ts',
+      'test/store-orphan-reaper.test.ts',
       'test/postgres-pool-store.int.test.ts',
       'test/postgres-transcript-org.int.test.ts'
     ],

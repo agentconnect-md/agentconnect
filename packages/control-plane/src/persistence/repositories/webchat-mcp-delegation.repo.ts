@@ -171,6 +171,38 @@ export class PgWebchatMcpDelegationRepo implements WebchatMcpDelegationRepo {
     return row ? toRecord(row) : null
   }
 
+  /**
+   * Revoke the delegations of agents nothing serves any more — the rows a retired pool member
+   * leaves behind now that `WebchatMcpDelegation` is agent-keyed rather than daemon-keyed (#1057).
+   *
+   * The predicate is exactly `PlacementResolver.servingDaemons(agent) === []`, spelled in SQL:
+   * neither placement column names a target, and no unexpired duty lease holds the agent. Such a
+   * row is already inert — `resolveLiveWebchatMcpAuthority` answers `placement_mismatch` on every
+   * use — so this changes no reachable behaviour; it makes the ledger say what is true, and lets
+   * `reapExpired` count the row as revoked rather than as a live authority that quietly expired.
+   * A `set` agent between grants is deliberately excluded: `setId` still names its target.
+   */
+  async revokeUnplaced(now: Date): Promise<number> {
+    const result = await this.db.$executeRaw(Prisma.sql`
+      UPDATE "webchat_mcp_delegation" AS delegation
+      SET "revokedAt" = ${now}, "revokedReason" = 'agent_unplaced'
+      WHERE delegation."revokedAt" IS NULL
+        AND EXISTS (
+          SELECT 1 FROM "agent"
+          WHERE "agent"."id" = delegation."agentId"
+            AND "agent"."daemonId" IS NULL
+            AND "agent"."setId" IS NULL
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM "duty_group_member" member
+          JOIN "duty_group" duty ON duty."id" = member."groupId"
+          WHERE member."kind" = 'agent' AND member."refId" = delegation."agentId"
+            AND duty."holder" IS NOT NULL AND duty."expiresAt" IS NOT NULL AND duty."expiresAt" > ${now}
+        )
+    `)
+    return Number(result)
+  }
+
   async reapExpired(expiredBefore: Date): Promise<ReapWebchatMcpDelegationsResult> {
     return this.inTransaction(async (tx) => {
       // Delegation → operation is the shared create/reap lock order. Locking
