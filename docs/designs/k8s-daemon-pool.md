@@ -612,6 +612,20 @@ cursors, durable inbox, loop guards, outboxes, cron runs) is the async-store
 workstream in the tracking issue — and until it lands, duties are pinned to
 the member that already holds each agent's state (§14).
 
+**Managed agent memory is not store content and not member state either.** A
+member's state root is an `emptyDir`, so anything the daemon wrote there for an
+agent — `memory/`, `channels/`, dream staging — was lost with the next rollout
+and invisible to the member that claimed the agent next (#1078). A pool agent's
+managed memory therefore lives on its **sandbox volume**, at
+`<workspace mount>/.agentconnect/memory`, beside the checkout on the same PVC:
+it follows the agent across members exactly as the workspace does, is read and
+written through the shim's file channel by whichever member holds the duty, and
+is reachable only while the sandbox is bound — the console wakes the sandbox
+before it reads (§8, #1077), and a post-turn distillation that arrives after
+the pod was suspended waits in the shared-store capture outbox until the next
+bind. Local daemons keep the tree under the agent dir; the two are one code path
+over a file-system port ([memory-evolution.md](memory-evolution.md) §3.2.1).
+
 ## 12. Capacity (D14) and upgrades (D12)
 
 Each member enforces its own duty budget **at claim time** — the "grant me up
