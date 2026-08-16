@@ -48,7 +48,7 @@ const Envelope = z.object({
 })
 ```
 
-An API-key or envelope-daemon connection is bound to one organization at auth time, so `orgId` may be omitted for rolling compatibility. Each cloud-daemon Pod has an install-wide connection and must carry `orgId` on every organization-scoped request, event, control frame, and correlated reply. Member-scoped frames such as auth, register, heartbeat, runtime facts, relay roster, collaboration routes, and daemon lifecycle control omit it.
+An API-key or envelope-daemon connection is bound to one organization at auth time, so `orgId` may be omitted for rolling compatibility. Each cloud-daemon Pod has an install-wide connection and must carry `orgId` on every organization-scoped request, event, control frame, and correlated reply. Member-scoped frames such as auth, register, heartbeat, runtime facts, relay roster, collaboration routes, duty lease frames, and daemon lifecycle control omit it — and on the install-wide connection must not carry it. The classification and the checks both peers run live in `packages/protocol/src/frame-scope.ts` (`INSTALL_WIDE_FRAME_TYPES`, `checkInboundFrameOrg`, `checkReplyFrameOrg`); [`org-scoped-data-layer.md`](org-scoped-data-layer.md) §4.1 spells out the contract.
 
 **Reply correlation.** A request-shaped frame (anything expecting an `ack`/result) is answered by a frame whose `corr` == the request's `id`. Fire-and-forget frames (most telemetry) carry no reply. Each frame type below is tagged **REQ** (expects a correlated reply), **REP** (is a reply), or **EVT** (fire-and-forget).
 

@@ -31,6 +31,10 @@ export class CpCronRegistry {
     this.onChange()
   }
 
+  agentForCron(cronId: string): string | undefined {
+    return this.entries.get(cronId)?.agentId
+  }
+
   forAgent(agentId: string): CronDef[] {
     return [...this.entries.values()].filter((entry) => entry.agentId === agentId).map((entry) => entry.cron)
   }

@@ -201,7 +201,8 @@ describe('daemon duty lease exchange', () => {
     // there is nothing local to resolve it from.
     expect(req?.orgId).toBe('org-1')
 
-    t.pushInbound(JSON.stringify(buildEnvelope('duty/fetch/ok', {}, { corr: req!.id as string })))
+    // The reply echoes the request org — a frame-mode member fences it on that.
+    t.pushInbound(JSON.stringify(buildEnvelope('duty/fetch/ok', {}, { corr: req!.id as string, orgId: 'org-1' })))
     await expect(done).resolves.toEqual({})
   })
 

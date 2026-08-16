@@ -105,7 +105,9 @@ import type {
   ManagedSkillChunk,
   OrganizationSuggestionReadReq,
   OrganizationSuggestionReviewReq,
-  BootstrapLifecycle
+  BootstrapLifecycle,
+  FrameOrgPeer,
+  OrganizationMode
 } from '@agentconnect.md/protocol'
 import {
   buildEnvelope,
@@ -116,7 +118,10 @@ import {
   SESSION_METADATA_ACK_FEATURE,
   SESSION_PURGE_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
-  DAEMON_BOOTSTRAP_PROTOCOL_VERSION
+  DAEMON_BOOTSTRAP_PROTOCOL_VERSION,
+  checkInboundFrameOrg,
+  checkReplyFrameOrg,
+  isInstallWideFrameType
 } from '@agentconnect.md/protocol'
 import type { SessionReader } from './session-reader.js'
 import { WorkspaceConflictError, WorkspaceViolationError, type WorkspaceReader } from './workspace-reader.js'
@@ -144,24 +149,6 @@ import type { Logger } from '../log.js'
  *  protocol package (single source of truth) so the daemon's existing import
  *  sites (`./cp/client.js`) keep working unchanged. */
 export { CP_SUBPROTOCOL, CP_WS_PATH } from '@agentconnect.md/protocol'
-
-// Frames that carry no org because they are daemon-level: the CP applies the
-// same list at its edge (ws/connection.ts INSTALL_WIDE_FRAME_TYPES). Duty groups
-// span orgs on one member, so grants carry a per-entry orgId instead.
-const INSTALL_WIDE_FRAME_TYPES = new Set([
-  'relay/roster',
-  'collaboration/routes',
-  'daemon/drain',
-  'daemon/restart',
-  'daemon/upgrade',
-  'config/push',
-  'duty/grant',
-  'duty/renewed',
-  'duty/revoke',
-  'duty/release',
-  'duty/claim',
-  'duty/claim/ok'
-])
 
 const ACK_TIMEOUT_MS = 5000
 const BACKOFF_BASE_MS = 1000
@@ -223,6 +210,8 @@ export interface CpClientDeps {
   orgForAgent?: (agentId: string) => string | undefined
   /** Tenant lookup for integration reports whose payload has no agent id. */
   orgForIntegration?: (integrationId: string) => string | undefined
+  /** Tenant lookup for cron control frames, which name only the cron. */
+  orgForCron?: (cronId: string) => string | undefined
   /** Unservable CP-rule agentIds, surfaced in heartbeat.degradedScopes. Defaults to []. */
   degradedScopes?: () => string[]
   /** Duty-lease digest + headroom for the heartbeat (frames/duty.ts). Only read on
@@ -293,7 +282,7 @@ export class CpClient {
   private stopped = false
   private fatal = false // 4401 — never auto-retry
   private serverFeatures = new Set<string>()
-  private organizationMode: 'connection' | 'frame' = 'connection'
+  private organizationMode: OrganizationMode = 'connection'
   private attempt = 0
   private reconnectTimer?: TimerHandle
   private lastAuthedEpoch = 0 // for resume on reconnect (per-agent seq tail is out of scope)
@@ -469,7 +458,7 @@ export class CpClient {
       dutyLeaseMs?: number
       webAppUrl?: string
       orgSlug?: string
-      organizationMode?: 'connection' | 'frame'
+      organizationMode?: OrganizationMode
       lifecycle?: BootstrapLifecycle
     }
     this.sessionEpoch = ok.sessionEpoch
@@ -881,7 +870,7 @@ export class CpClient {
   /**
    * `duty/release` (D→C REQ → `ack`) — surrender duty groups on drain instead of
    * waiting out the CP's reassignment window. Install-wide: duty groups span
-   * orgs, so the frame carries no org (see {@link INSTALL_WIDE_FRAME_TYPES}).
+   * orgs, so the frame carries no org (protocol `INSTALL_WIDE_FRAME_TYPES`).
    * Best-effort by contract — a failed release just falls back to lease expiry,
    * so callers log rather than fail the drain.
    */
@@ -1087,8 +1076,20 @@ export class CpClient {
       // the handshake continuation gets a chance to run.
       barrier.snapshotApplying = true
     }
-    // A correlated REP/error settles a pending daemon-issued REQ.
-    if (frame.corr && this.correlator.settle(frame)) return
+    // A correlated REP/error settles a pending daemon-issued REQ — after the org fence: a reply that
+    // does not carry the org of the REQ it answers fails that REQ locally and is never applied.
+    if (frame.corr) {
+      const request = this.correlator.requested(frame.corr)
+      if (request) {
+        const verdict = checkReplyFrameOrg(request, frame, this.orgPeer())
+        if (!verdict.ok) {
+          this.deps.log.warn(`cp: dropped ${frame.type} reply to ${request.type}: ${verdict.message}`)
+          this.correlator.reject(frame.corr, new WireError('SCOPE_DENIED', verdict.message, false))
+          return
+        }
+      }
+      if (this.correlator.settle(frame)) return
+    }
     if (barrier?.transport === source && barrier.snapshotApplying) {
       if (barrier.controls.length >= REGISTERING_CONTROL_QUEUE_LIMIT) {
         this.sendError(frame.id, 'PROTOCOL_STATE', 'post-register control queue full', true)
@@ -1122,16 +1123,26 @@ export class CpClient {
       this.sendError(frame.id, 'STALE_EPOCH', 'epoch < current', true)
       return
     }
-    if (this.organizationMode === 'frame' && !frame.orgId && !this.installWideControl(frame.type)) {
-      this.sendError(frame.id, 'SCOPE_DENIED', 'organization is required on an install-wide connection', false)
+    // Org fence (M4): the shared frame-scope gate, then the org named against the resource this
+    // daemon knows the frame targets. A frame that fails is refused with an error and never applied.
+    const verdict = checkInboundFrameOrg(frame, this.orgPeer())
+    if (!verdict.ok) {
+      this.deps.log.warn(`cp: refused ${frame.type}: ${verdict.message}`)
+      this.sendError(frame.id, 'SCOPE_DENIED', verdict.message, false)
       return
     }
     const expectedOrgId = this.organizationForControl(frame)
     if (frame.orgId && expectedOrgId && frame.orgId !== expectedOrgId) {
+      this.deps.log.warn(`cp: refused ${frame.type}: organization does not match the targeted resource`)
       this.sendError(frame.id, 'SCOPE_DENIED', 'organization does not match the targeted resource', false)
       return
     }
     this.dispatchControl(frame)
+  }
+
+  /** How this end reads the wire: frame mode knows no connection org; connection mode learns none either (the CP owns it). */
+  private orgPeer(): FrameOrgPeer {
+    return { mode: this.organizationMode, orgId: null }
   }
 
   private organizationForControl(frame: AnyFrame): string | undefined {
@@ -1150,14 +1161,13 @@ export class CpClient {
     ].find((value): value is string => typeof value === 'string')
     if (agentId) return this.deps.orgForAgent?.(agentId)
     if (typeof payload.integrationId === 'string') return this.deps.orgForIntegration?.(payload.integrationId)
+    if (typeof payload.cronId === 'string') return this.deps.orgForCron?.(payload.cronId)
     return undefined
   }
 
-  private installWideControl(type: string): boolean {
-    return INSTALL_WIDE_FRAME_TYPES.has(type)
-  }
-
+  /** Every D→C send resolves its org here: install-wide frames carry none, org-scoped ones must resolve one in frame mode. */
   private scopedFrame(type: string, payload: unknown, explicitOrgId?: string): AnyFrame {
+    if (isInstallWideFrameType(type)) return buildEnvelope(type as Parameters<typeof buildEnvelope>[0], payload)
     let orgId = explicitOrgId
     if (!orgId && payload && typeof payload === 'object') {
       const p = payload as Record<string, unknown>
@@ -1166,7 +1176,7 @@ export class CpClient {
       )
       if (agentId) orgId = this.deps.orgForAgent?.(agentId)
     }
-    if (this.organizationMode === 'frame' && !orgId && !INSTALL_WIDE_FRAME_TYPES.has(type)) {
+    if (this.organizationMode === 'frame' && !orgId) {
       throw new WireError('SCOPE_DENIED', `cannot resolve organization for ${type}`, false)
     }
     return buildEnvelope(type as Parameters<typeof buildEnvelope>[0], payload, orgId ? { orgId } : {})

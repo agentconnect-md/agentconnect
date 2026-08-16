@@ -116,6 +116,47 @@ method carries depends on who is allowed to call it:
 | Orchestrator / reconciliation / platform machinery                 | derived from the row being processed | `*Unscoped` reads, system-tier mutations                                              |
 | Public-by-design endpoints (e.g. agent icon PNG, fetched by Slack) | none — intentionally unauthenticated | `*Unscoped` with an inline lint exemption and a justification comment                 |
 
+### 4.1 The daemon WS frame contract
+
+How a WS handler comes by `frame.orgId` is a wire contract, not a convention
+(`packages/protocol/src/frame-scope.ts`; the exchange itself is
+[`k8s-daemon-pool.md`](k8s-daemon-pool.md) M4). Every frame type on the
+daemon↔CP wire is one of three things:
+
+- **install-wide** — about the member or the whole install (`auth`,
+  `register`, `heartbeat`, `capabilities/update`, the `facts/*` snapshots, the
+  relay roster and collaboration routes, `daemon/drain` and its progress and
+  done, `daemon/restart` / `daemon/upgrade` and their `daemon/control/ack`,
+  `config/push`, every `duty/*` frame except `duty/fetch`, and `agent/exists`).
+  On an install-wide (frame-mode) connection such a frame **must not** carry
+  `orgId`; on an org-scoped (API-key) connection it may carry the connection's.
+- **org-scoped** — everything else: agent, cron, integration, MCP-server and
+  memory-connection lifecycle, hooks and GitHub review frames, session
+  events, usage, gitcred, secrets, webchat MCP grants, the session / workspace
+  / memory / dream / task read surfaces, organization knowledge, and
+  `duty/fetch` (about one agent in one org). On a frame-mode connection such a
+  frame **must** carry `orgId`, and the receiver checks the org named against
+  the resource the frame targets — the CP through the connection's
+  `id → org` maps and the handler's scoped repository read, the daemon
+  through its own agent / integration / cron registries. A frame that fails
+  either check is refused with `SCOPE_DENIED` and applies nothing.
+- **generic replies** (`ack`, `error`) — their scope is the request's.
+
+A **correlated reply** carries the org of the request it answers. In frame
+mode a typed reply must carry exactly that org (none for an install-wide
+request); the receiver fails the pending request with `SCOPE_DENIED` when it
+does not, so a mis-scoped reply is never applied. An `error` reply names no
+resource and may omit the org, but one it carries must be the request's. In
+connection mode an org present on a reply must match the request's and the
+connection's; a reply that omits it still settles. A generic reply that
+correlates to no pending request is dropped, never answered — otherwise two
+peers could trade `SCOPE_DENIED` errors indefinitely.
+
+Both peers enforce the same rules with the same functions
+(`checkInboundFrameOrg`, `checkReplyFrameOrg`); the sending side refuses to
+build an org-scoped frame it cannot scope and never stamps an org on an
+install-wide one.
+
 ## 5. Exemplar migration: Agent (M1, this change)
 
 `AgentRepo` is the largest and most-referenced port; it sets the pattern.
@@ -216,4 +257,5 @@ Two structural guards, so the convention cannot silently erode:
   than an org parameter once one install-wide member carried many orgs on one
   socket, so the fence was extended to `src/ws/**` in
   [`k8s-daemon-pool.md`](k8s-daemon-pool.md) M4: a handler resolves resources
-  with the frame's org, or the connection's when it has one.
+  with the frame's org, or the connection's when it has one, and the frame
+  contract that guarantees the org is there is §4.1.
