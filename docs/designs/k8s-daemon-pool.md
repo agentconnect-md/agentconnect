@@ -281,13 +281,16 @@ line (candidates, orphaned, deleted, skipped-live, failed, agent-gone,
 horizon, per table). A local single-daemon store is skipped outright: it has
 one owner forever, so its rows are its own to drain.
 
-This replaced the per-table retention it subsumes — the ad-hoc 30-day
-`pruneSessionPurges` the session-purge drain used to run, and the process-local
-set that kept a permanently-unreportable hook report out of one daemon's drain
-for the life of that process. Retention now has one home. The memory-capture
-outbox keeps `expireMemoryCaptures`: its terminal rows expire on a connection's
-own retention policy, not on member ownership, so it is a different question
-and is deliberately not folded in.
+This replaced the per-table retention it subsumes: the ad-hoc 30-day
+`pruneSessionPurges` the session-purge drain used to run is gone, and the hook
+outbox's "keep a permanently unreportable row forever" rule is now bounded by
+the horizon instead. Retention has one home. Two things deliberately stay: the
+in-process set that keeps a peer's rejected report out of THIS daemon's drain,
+which is live-loop protection rather than retention (without it a member serving
+the agent re-attempts a report the control plane can only refuse, once per
+outbox lease, until the horizon); and `expireMemoryCaptures`, whose terminal
+rows expire on a connection's own retention policy rather than on member
+ownership, so it answers a different question.
 
 **The control-plane counterpart.** Retiring a pool member also leaves rows the
 delete no longer cascades away. `WebchatMcpDelegation` is keyed on the agent

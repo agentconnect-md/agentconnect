@@ -2821,16 +2821,6 @@ export class LocalStore {
     }
   }
 
-  /** Abandon receipts older than `cutoff`, returning how many were dropped so the
-   *  caller can report it. Bounds the outbox for a daemon that never reaches a CP
-   *  new enough to accept the report: after this long the CP row (if it exists at
-   *  all) is stale metadata no one is waiting on, and an unbounded table would be
-   *  the worse outcome. */
-  pruneSessionPurges(cutoff: number): number {
-    const result = this.db.prepare('DELETE FROM session_purges WHERE purgedAt < ?').run(cutoff)
-    return Number(result.changes)
-  }
-
   // ── per-member outbox reaping (docs/designs/k8s-daemon-pool.md §4; store/orphan-reaper.ts) ──
 
   /** True on a pool's shared data-plane store — the only place an outbox row can outlive its owner. */

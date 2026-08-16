@@ -788,11 +788,6 @@ const SESSION_RETENTION_SWEEP_INTERVAL_MS = 60 * 60_000
  *  which sits far under the frame budget (a batch of ACP ids is tiny). */
 const MAX_SESSION_PURGE_BATCH = 200
 
-/** How long an unacknowledged retention-GC receipt is retained. Bounds the outbox
- *  for a daemon that never reaches a CP new enough to accept the report; well past
- *  any realistic outage or upgrade lag, and the drop is logged, never silent. */
-const SESSION_PURGE_RECEIPT_TTL_MS = 30 * 24 * 3_600_000
-
 // Last-resort feedback-loop protection. The lower automatic threshold catches
 // agent/system/platform-echo chains; the higher all-turn threshold still stops a
 // platform bug that accidentally labels its own events as ordinary human messages.
@@ -13882,9 +13877,10 @@ export class Daemon {
         const permanentlyRejected =
           typeof err === 'object' && err !== null && 'retryable' in err && err.retryable === false
         if (permanentlyRejected && inboxId) {
-          // A CONFLICT raised against a PEER's dispatch says nothing about this row:
-          // the CP is refusing us as the reporter, not the completion. Hand the claim
-          // back to its owner with the body intact instead of dead-lettering it.
+          // A CONFLICT raised against a PEER's dispatch says nothing about this row: the CP is
+          // refusing us as the reporter, not the completion. Hand the claim back to its owner with
+          // the body intact instead of dead-lettering it; the reaper is what finally collects the
+          // row if that owner never comes back (store/orphan-reaper.ts).
           if (foreignHookDispatch(report, this.cfg.daemonId)) {
             this.hookReportForeign.add(inboxId)
             const owner = report.dispatchDaemonId
@@ -19937,7 +19933,8 @@ export class Daemon {
    * CP authorizes each report against that agent's placement, and every session in
    * a frame must genuinely share the reason and timestamp the frame carries. A
    * receipt is released only on the ACK; a CP that is offline, older than the
-   * feature, or failing keeps them all for the next sweep or reconnect. Never
+   * feature, or failing keeps them all for the next sweep or reconnect. Bounding the
+   * table is the reconciler's job, not this drain's (store/orphan-reaper.ts). Never
    * throws: this rides the idle sweep.
    */
   private async drainSessionPurges(): Promise<void> {
@@ -19954,13 +19951,6 @@ export class Daemon {
     this.sessionPurgeDrainInFlight = true
     this.sessionPurgeDrainRerun = false
     try {
-      const stale = this.store.pruneSessionPurges(this.clock.now() - SESSION_PURGE_RECEIPT_TTL_MS)
-      if (stale)
-        this.log.warn(
-          `retention: dropped ${stale} unreported session-purge receipt(s) older than ${
-            SESSION_PURGE_RECEIPT_TTL_MS / (24 * 3_600_000)
-          }d — those sessions stay unmarked in the control plane`
-        )
       // Bounded per pass: whatever is left is picked up by the next sweep or
       // reconnect, so a large backlog drains steadily instead of in one burst.
       // Shared on a pool: offered its own rows, unowned ones, and a lapsed peer's for agents it serves.

@@ -1406,19 +1406,6 @@ describe('LocalStore session retention GC (#485)', () => {
     ])
     s.close()
   })
-
-  it('pruneSessionPurges drops only receipts older than the cutoff and reports the count', () => {
-    const s = store()
-    seed(s, 'old', 'closed', 100)
-    seed(s, 'recent', 'closed', 100)
-    s.deleteSession('old', { reason: 'retention', at: 100 })
-    s.deleteSession('recent', { reason: 'retention', at: 900 })
-
-    expect(s.pruneSessionPurges(500)).toBe(1)
-    expect(s.listSessionPurges(10, 0).map((row) => row.sessionId)).toEqual(['acp-recent'])
-    expect(s.pruneSessionPurges(500)).toBe(0)
-    s.close()
-  })
 })
 
 describe('LocalStore runtime model-catalog cache (runtime-model-catalog.md §4)', () => {
