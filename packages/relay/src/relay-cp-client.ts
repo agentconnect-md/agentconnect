@@ -65,8 +65,23 @@ import type { RelayAuthCredential } from './config.js'
 
 const ACK_TIMEOUT_MS = 5000
 
+/** How long an out-of-band GitHub authorization waits for a reconnecting link before
+ *  failing closed. A CP restart drops the link for seconds; the delivery is already
+ *  answered 202, so waiting costs nothing and is the difference between a review and
+ *  a silently skipped one. */
+const LINK_READY_WAIT_MS = 30_000
+
+/** Run reports held while the link is down. Bounded — the OLDEST is dropped first
+ *  (a stale delivery-stage row is the least useful one to replay). */
+const MAX_PENDING_RUN_REPORTS = 200
+
 /** CP close code for a rejected credential — fatal, never auto-retry (mirrors the daemon's 4401). */
 const AUTH_FAILED_CLOSE = 4401
+
+interface ReadyWaiter {
+  resolve: (ready: boolean) => void
+  timer?: TimerHandle
+}
 
 export type RelayCpState = 'CONNECTING' | 'AUTHENTICATING' | 'REGISTERING' | 'READY' | 'CLOSED' | 'DEGRADED'
 
@@ -132,6 +147,12 @@ export class RelayCpClient {
   private reconnectTimer?: TimerHandle
   private heartbeatTimer?: TimerHandle
   private heartbeatMs = 0
+  /** Bumped on every registration — identifies WHICH connection a request rode. */
+  private linkGeneration = 0
+  /** Callers parked in {@link waitReady} until the link registers again. */
+  private readonly readyWaiters = new Set<ReadyWaiter>()
+  /** FIFO of `rc/run-report` EVTs the link wasn't up for, replayed on READY. */
+  private readonly pendingRunReports: RcRunReport[] = []
 
   constructor(private readonly deps: RelayCpClientDeps) {
     this.correlator = new ReqRep<RelayCpFrame>(deps.clock, ACK_TIMEOUT_MS)
@@ -153,6 +174,7 @@ export class RelayCpClient {
     }
     this.stopHeartbeat()
     this.correlator.rejectAll(new Error('stopping'))
+    this.releaseReadyWaiters(false)
     this.transport?.close(1000, 'shutdown')
     this.state = 'CLOSED'
   }
@@ -160,6 +182,34 @@ export class RelayCpClient {
   /** True once the relay↔CP link has completed registration and is heartbeating. */
   isReady(): boolean {
     return this.state === 'READY'
+  }
+
+  /**
+   * Resolve as soon as the link is READY, or `false` when `timeoutMs` elapses
+   * first (or this client is stopped / fatally closed). The GitHub
+   * authorization path rides a reconnect on this instead of failing closed on a
+   * seconds-long CP restart, which would silently skip the review the delivery
+   * was going to trigger.
+   */
+  waitReady(timeoutMs: number): Promise<boolean> {
+    if (this.state === 'READY' && this.transport) return Promise.resolve(true)
+    if (this.stopped || this.fatal || timeoutMs <= 0) return Promise.resolve(false)
+    return new Promise<boolean>((resolve) => {
+      const waiter: ReadyWaiter = { resolve }
+      waiter.timer = this.deps.clock.setTimeout(() => {
+        this.readyWaiters.delete(waiter)
+        resolve(false)
+      }, timeoutMs)
+      this.readyWaiters.add(waiter)
+    })
+  }
+
+  private releaseReadyWaiters(ready: boolean): void {
+    for (const waiter of [...this.readyWaiters]) {
+      this.readyWaiters.delete(waiter)
+      if (waiter.timer !== undefined) this.deps.clock.clearTimeout(waiter.timer)
+      waiter.resolve(ready)
+    }
   }
 
   /**
@@ -188,19 +238,45 @@ export class RelayCpClient {
   }
 
   /**
+   * One authorization RPC, single-shot PER LINK but held across ONE reconnect:
+   * the caller is off GitHub's HTTP request already, and failing closed on a
+   * link that is merely restarting turns a CP rollout into silently skipped
+   * reviews. The second attempt is bought by a REPLACED CONNECTION, never by a
+   * retryable flag: an ack timeout and the CP's own retryable `error` REPs both
+   * arrive on a link that is still READY, and re-issuing there would duplicate
+   * an expensive upstream permission lookup.
+   */
+  private async authorizationRequest(build: () => RelayCpFrame, label: string): Promise<RelayCpFrame> {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (!(await this.waitReady(LINK_READY_WAIT_MS)) || !this.transport) {
+        throw new WireError('INTERNAL', `relay↔CP link not ready (${this.state})`, true)
+      }
+      const generation = this.linkGeneration
+      try {
+        return await this.sendRequest(build(), { maxTries: 1, ackTimeoutMs: ACK_TIMEOUT_MS })
+      } catch (err) {
+        if (attempt > 0 || !(err instanceof WireError) || !err.retryable) throw err
+        // Only a connection this request never reached the CP over is retryable
+        // here: wait for the replacement, and give up on the original error if
+        // the link that failed is still the live one.
+        if (!(await this.waitReady(LINK_READY_WAIT_MS)) || this.linkGeneration === generation) throw err
+        this.deps.log.warn(`relay: ${label} lost its link (${err.message}) — retrying across the reconnect`)
+      }
+    }
+    throw new WireError('INTERNAL', `relay↔CP link not ready (${this.state})`, true)
+  }
+
+  /**
    * Resolve an untrusted/stale GitHub comment association against the App's
-   * current repository permission. This request is deliberately single-shot:
-   * GitHub deliveries are already deduplicated by delivery id, and retrying the
-   * control RPC could duplicate an expensive upstream permission lookup.
+   * current repository permission. One upstream permission lookup per link: the
+   * request is never retransmitted on the same connection (GitHub deliveries are
+   * already deduplicated by delivery id), only re-issued once after a reconnect.
    */
   async authorizeGithubComment(request: RcGithubCommentAuthz): Promise<boolean> {
-    if (this.state !== 'READY' || !this.transport) {
-      throw new WireError('INTERNAL', `relay↔CP link not ready (${this.state})`, true)
-    }
-    const rep = await this.sendRequest(buildRelayCpFrame('rc/github-comment-authz', request), {
-      maxTries: 1,
-      ackTimeoutMs: ACK_TIMEOUT_MS
-    })
+    const rep = await this.authorizationRequest(
+      () => buildRelayCpFrame('rc/github-comment-authz', request),
+      'rc/github-comment-authz'
+    )
     if (rep.type !== 'rc/github-comment-authz/ok') {
       throw new WireError('INTERNAL', `expected rc/github-comment-authz/ok, got ${rep.type}`, false)
     }
@@ -208,16 +284,14 @@ export class RelayCpClient {
   }
 
   /** Resolve a signature-verified Check run or suite rerequest to current
-   * informational projection targets. Single-shot: GitHub redelivery keeps the
-   * same delivery key and the daemon/hook stores provide the retry fence. */
+   * informational projection targets. Same one-attempt-per-link rule: GitHub
+   * redelivery keeps the same delivery key and the daemon/hook stores provide
+   * the retry fence. */
   async authorizeGithubRerequest(request: RcGithubRerequest): Promise<RcGithubRerequestResult> {
-    if (this.state !== 'READY' || !this.transport) {
-      throw new WireError('INTERNAL', `relay↔CP link not ready (${this.state})`, true)
-    }
-    const rep = await this.sendRequest(buildRelayCpFrame('rc/github-rerequest', request), {
-      maxTries: 1,
-      ackTimeoutMs: ACK_TIMEOUT_MS
-    })
+    const rep = await this.authorizationRequest(
+      () => buildRelayCpFrame('rc/github-rerequest', request),
+      'rc/github-rerequest'
+    )
     if (rep.type !== 'rc/github-rerequest/ok') {
       throw new WireError('INTERNAL', `expected rc/github-rerequest/ok, got ${rep.type}`, false)
     }
@@ -226,16 +300,32 @@ export class RelayCpClient {
 
   /**
    * Emit one delivery-stage bookkeeping EVT (`rc/run-report`, fire-and-forget).
-   * A CP outage drops the report — by design the TRIGGER survives (the daemon
-   * already has the fire) and only the console record suffers; the reaper and a
-   * late `hook/report` converge the row when the CP returns.
+   * A report the link wasn't up for is QUEUED and replayed on READY, in order:
+   * the row it opens is the only trace some deliveries ever get (a delivery
+   * refused pre-dispatch never reaches a daemon, so no late `hook/report`
+   * converges it), and dropping it leaves the console showing nothing at all.
+   * `firedAt` travels with the report, so a replayed row keeps its real time.
    */
   emitRunReport(report: RcRunReport): void {
     if (this.state !== 'READY' || !this.transport) {
-      this.deps.log.warn(`relay: dropping rc/run-report ${report.hookId}:${report.deliveryKey} (link ${this.state})`)
+      if (this.pendingRunReports.length >= MAX_PENDING_RUN_REPORTS) {
+        const dropped = this.pendingRunReports.shift()!
+        this.deps.log.warn(`relay: dropping rc/run-report ${dropped.hookId}:${dropped.deliveryKey} (queue full)`)
+      }
+      this.pendingRunReports.push(report)
+      this.deps.log.warn(`relay: deferring rc/run-report ${report.hookId}:${report.deliveryKey} (link ${this.state})`)
       return
     }
     this.transport.send(JSON.stringify(buildRelayCpFrame('rc/run-report', report)))
+  }
+
+  /** Replay the reports queued while the link was down (oldest first), stopping
+   *  at the first one the link still can't take. */
+  private flushPendingRunReports(): void {
+    while (this.pendingRunReports.length > 0) {
+      if (this.state !== 'READY' || !this.transport) return
+      this.transport.send(JSON.stringify(buildRelayCpFrame('rc/run-report', this.pendingRunReports.shift()!)))
+    }
   }
 
   /**
@@ -423,9 +513,12 @@ export class RelayCpClient {
     this.deps.onRegistered?.(this.relayId)
 
     this.state = 'READY'
+    this.linkGeneration += 1
     this.heartbeatMs = ok.heartbeatSec > 0 ? ok.heartbeatSec * 1000 : this.deps.heartbeatDefaultMs
     this.armHeartbeat()
     this.deps.log.info(`relay: READY (relayId=${this.relayId})`)
+    this.flushPendingRunReports()
+    this.releaseReadyWaiters(true)
     this.deps.onReady?.()
   }
 
@@ -536,11 +629,13 @@ export class RelayCpClient {
     if (code === AUTH_FAILED_CLOSE) {
       this.fatal = true
       this.state = 'CLOSED'
+      this.releaseReadyWaiters(false) // nothing to wait for — this link never comes back
       this.deps.log.error('relay: AUTH_FAILED (4401) — not reconnecting; check RELAY_TOKEN / RELAY_API_KEY')
       return
     }
     if (this.stopped) {
       this.state = 'CLOSED'
+      this.releaseReadyWaiters(false)
       return
     }
     this.state = 'DEGRADED'

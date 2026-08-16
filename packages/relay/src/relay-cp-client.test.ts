@@ -21,6 +21,14 @@ const COMMENT_AUTHZ = {
   configRevision: '3',
   dispatchRevision: '5'
 } as const
+const RUN_REPORT = {
+  hookId: COMMENT_AUTHZ.hookId,
+  deliveryKey: 'delivery-1',
+  firedAt: '2026-07-07T00:00:00.000Z',
+  agentId: '33333333-3333-4333-8333-333333333333',
+  status: 'failed',
+  reason: 'review_request_required'
+} as const
 const REREQUEST = {
   checkRunId: '86617583005',
   repoId: '987654321',
@@ -67,15 +75,12 @@ class FakeTransport implements Transport {
   }
 }
 
-/** Drive a client from start() through to READY against `transport`. */
-async function handshakeToReady(
-  client: RelayCpClient,
+/** Answer the auth + register REQs already sitting on `transport`. */
+async function completeHandshake(
   transport: FakeTransport,
   heartbeatSec = 15,
   deploymentConfig?: { revision: number; githubWebhookSecret?: string }
 ): Promise<void> {
-  client.start()
-  await flush()
   const auth = transport.lastReq('rc/auth')!
   transport.inject(
     buildRelayCpFrame(
@@ -92,6 +97,49 @@ async function handshakeToReady(
   const reg = transport.lastReq('rc/register')!
   transport.inject(buildRelayCpFrame('rc/registered', { relayId: RELAY_ID }, { corr: reg.id }))
   await flush()
+}
+
+/** Drive a client from start() through to READY against `transport`. */
+async function handshakeToReady(
+  client: RelayCpClient,
+  transport: FakeTransport,
+  heartbeatSec = 15,
+  deploymentConfig?: { revision: number; githubWebhookSecret?: string }
+): Promise<void> {
+  client.start()
+  await flush()
+  await completeHandshake(transport, heartbeatSec, deploymentConfig)
+}
+
+/** A client whose every dial hands out a FRESH transport, so a close can be
+ *  followed through the reconnect the way a CP restart is. */
+function makeReconnectingClient(over: Partial<RelayCpClientDeps> = {}) {
+  const clock = new FakeClock()
+  const transports: FakeTransport[] = []
+  const client = new RelayCpClient({
+    auth: { method: 'token', credential: TOKEN },
+    name: 'relay-0',
+    daemonUrl: 'wss://relay-0.example',
+    heartbeatDefaultMs: 15_000,
+    clock,
+    connect: async () => {
+      const transport = new FakeTransport()
+      transports.push(transport)
+      return transport
+    },
+    log: silentLog,
+    jitter: () => 0,
+    ...over
+  })
+  /** Close the live transport and complete the handshake on the replacement. */
+  const reconnect = async (): Promise<FakeTransport> => {
+    clock.advance(1_000)
+    await flush()
+    const next = transports.at(-1)!
+    await completeHandshake(next)
+    return next
+  }
+  return { client, clock, transports, reconnect }
 }
 
 function makeClient(over: Partial<RelayCpClientDeps> = {}) {
@@ -452,5 +500,131 @@ describe('RelayCpClient', () => {
 
     await expect(pending).resolves.toEqual(result)
     expect(client.state).toBe('READY')
+  })
+
+  it('authorizeGithubComment() rides out a CP restart instead of failing closed', async () => {
+    const { client, transports, reconnect } = makeReconnectingClient()
+    client.start()
+    await flush()
+    await completeHandshake(transports[0]!)
+    transports[0]!.simulateClose(1012)
+
+    // The delivery is already answered 202: waiting for the link is the difference
+    // between a review and a silently skipped one.
+    const pending = client.authorizeGithubComment(COMMENT_AUTHZ)
+    await flush()
+    expect(transports[0]!.sent.filter((f) => f.type === 'rc/github-comment-authz')).toHaveLength(0)
+
+    const next = await reconnect()
+    await flush()
+    const req = next.lastReq('rc/github-comment-authz')!
+    expect(req.payload).toEqual(COMMENT_AUTHZ)
+    next.inject(buildRelayCpFrame('rc/github-comment-authz/ok', { allowed: true }, { corr: req.id }))
+    await expect(pending).resolves.toBe(true)
+  })
+
+  it('authorizeGithubComment() re-issues a request the dying link swallowed, exactly once', async () => {
+    const { client, transports, reconnect } = makeReconnectingClient()
+    client.start()
+    await flush()
+    await completeHandshake(transports[0]!)
+
+    const pending = client.authorizeGithubComment(COMMENT_AUTHZ)
+    await flush()
+    expect(transports[0]!.lastReq('rc/github-comment-authz')).toBeDefined()
+    transports[0]!.simulateClose(1012) // in-flight REQ rejects as retryable
+
+    const next = await reconnect()
+    await flush()
+    const req = next.lastReq('rc/github-comment-authz')!
+    next.inject(buildRelayCpFrame('rc/github-comment-authz/ok', { allowed: false }, { corr: req.id }))
+
+    await expect(pending).resolves.toBe(false)
+    expect(next.sent.filter((f) => f.type === 'rc/github-comment-authz')).toHaveLength(1)
+  })
+
+  it('authorizeGithubComment() does not re-ask over a link that never died', async () => {
+    // A retryable answer is not proof the connection dropped: the CP replies
+    // retryable for its own GitHub/DB blips, and an ack timeout is retryable
+    // too. Re-issuing on that same link would duplicate the upstream lookup.
+    const { client, transport } = makeClient()
+    await handshakeToReady(client, transport)
+
+    const pending = client.authorizeGithubComment(COMMENT_AUTHZ)
+    await flush()
+    const req = transport.lastReq('rc/github-comment-authz')!
+    transport.inject(
+      buildRelayCpFrame('error', { code: 'INTERNAL', message: 'github blip', retryable: true }, { corr: req.id })
+    )
+
+    await expect(pending).rejects.toMatchObject({ retryable: true })
+    expect(transport.sent.filter((f) => f.type === 'rc/github-comment-authz')).toHaveLength(1)
+    expect(client.state).toBe('READY')
+  })
+
+  it('authorizeGithubComment() gives up when the ack never comes and the link stays up', async () => {
+    const { client, clock, transport } = makeClient()
+    await handshakeToReady(client, transport)
+
+    const settled = expect(client.authorizeGithubComment(COMMENT_AUTHZ)).rejects.toMatchObject({ retryable: true })
+    await flush()
+    clock.advance(5_000) // the single-shot ack budget — retryable, but the link never dropped
+    await flush()
+
+    await settled
+    expect(transport.sent.filter((f) => f.type === 'rc/github-comment-authz')).toHaveLength(1)
+  })
+
+  it('authorizeGithubComment() still fails closed when the link stays down', async () => {
+    const { client, clock, transports } = makeReconnectingClient()
+    client.start()
+    await flush()
+    await completeHandshake(transports[0]!)
+    transports[0]!.simulateClose(1012)
+
+    const settled = expect(client.authorizeGithubComment(COMMENT_AUTHZ)).rejects.toMatchObject({ retryable: true })
+    clock.advance(30_000) // the wait window, with no CP answering the reconnect
+    await flush()
+
+    await settled
+    for (const transport of transports) {
+      expect(transport.sent.filter((f) => f.type === 'rc/github-comment-authz')).toHaveLength(0)
+    }
+  })
+
+  it('replays run reports queued while the link was down, oldest first', async () => {
+    const { client, transports, reconnect } = makeReconnectingClient()
+    client.start()
+    await flush()
+    await completeHandshake(transports[0]!)
+    transports[0]!.simulateClose(1012)
+
+    // A delivery refused pre-dispatch never reaches a daemon, so this row is the
+    // only trace it ever gets — dropping it shows the console nothing at all.
+    client.emitRunReport({ ...RUN_REPORT, deliveryKey: 'delivery-1' })
+    client.emitRunReport({ ...RUN_REPORT, deliveryKey: 'delivery-2' })
+
+    const next = await reconnect()
+    const replayed = next.sent.filter((f) => f.type === 'rc/run-report')
+    expect(replayed.map((f) => (f.payload as { deliveryKey: string }).deliveryKey)).toEqual([
+      'delivery-1',
+      'delivery-2'
+    ])
+    expect((replayed[0]!.payload as { firedAt: string }).firedAt).toBe(RUN_REPORT.firedAt)
+  })
+
+  it('bounds the queued run reports, dropping the oldest', async () => {
+    const { client, transports, reconnect } = makeReconnectingClient()
+    client.start()
+    await flush()
+    await completeHandshake(transports[0]!)
+    transports[0]!.simulateClose(1012)
+
+    for (let i = 0; i < 205; i++) client.emitRunReport({ ...RUN_REPORT, deliveryKey: `delivery-${i}` })
+
+    const next = await reconnect()
+    const replayed = next.sent.filter((f) => f.type === 'rc/run-report')
+    expect(replayed).toHaveLength(200)
+    expect((replayed[0]!.payload as { deliveryKey: string }).deliveryKey).toBe('delivery-5')
   })
 })
