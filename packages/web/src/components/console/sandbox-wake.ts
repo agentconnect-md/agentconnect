@@ -25,16 +25,22 @@ export interface SandboxWake {
   start: () => void
 }
 
+export interface SandboxWakeOptions {
+  /** The agent is known to run in a cluster sandbox, so the wake is pressed on open rather than only after a refusal — the pool's "no holder" window is covered by the same press. */
+  sandboxed?: boolean
+  /** Whether the surface is actually on screen. A mounted-but-hidden panel (a dock tab that is not selected) neither presses the wake nor polls: a pod start is never a side effect of a page whose reader has not asked for the files. Defaults to true. */
+  active?: boolean
+}
+
 /**
  * @param read what the panel's root read currently is
  * @param retry re-issue that read (a stable callback — it is what the poll presses)
- * @param sandboxed the agent is known to run in a cluster sandbox, so the wake is pressed on open rather than only after a refusal — the pool's "no holder" window is covered by the same press
  */
 export function useSandboxWake(
   agentId: string,
   read: SandboxReadState,
   retry: () => void,
-  sandboxed = false
+  { sandboxed = false, active = true }: SandboxWakeOptions = {}
 ): SandboxWake {
   const [phase, setPhase] = useState<SandboxWakePhase>('idle')
   // Which agent the automatic press already ran for: once per agent, so a refusal after a give-up does not re-press.
@@ -90,14 +96,14 @@ export function useSandboxWake(
     settle('idle')
   }, [agentId, settle])
 
-  // The automatic press: on a refusal, or on open for an agent known to be sandboxed.
+  // The automatic press: on a refusal, or on open for an agent known to be sandboxed — and only while on screen.
   useEffect(() => {
-    if (autoPressed.current === agentId) return
+    if (!active || autoPressed.current === agentId) return
     if (read === 'asleep' || (sandboxed && read !== 'ready')) {
       autoPressed.current = agentId
       start()
     }
-  }, [agentId, read, sandboxed, start])
+  }, [active, agentId, read, sandboxed, start])
 
   // The poll: after the wake answered, re-issue the read with backoff until it is ready or the bound passes.
   useEffect(() => {
@@ -106,7 +112,8 @@ export function useSandboxWake(
       settle('idle')
       return
     }
-    if (read === 'pending' || !wakeSettled.current) return
+    // Hidden mid-poll: the timer simply does not run; the next activation resumes it where it stopped.
+    if (!active || read === 'pending' || !wakeSettled.current) return
     if (Date.now() - startedAt.current >= SANDBOX_WAKE_BOUND_MS) {
       settle('gave-up')
       return
@@ -118,7 +125,7 @@ export function useSandboxWake(
       setTick((t) => t + 1)
     }, delay)
     return () => clearTimeout(timer)
-  }, [phase, read, retry, settle, tick])
+  }, [active, phase, read, retry, settle, tick])
 
   return { phase, start }
 }

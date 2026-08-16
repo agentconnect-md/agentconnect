@@ -150,7 +150,7 @@ export function WorkspaceFiles({
   const { git, primaryBranch } = useWorkspaceGitStatus(agentId, sessionId, refreshTick)
   // The sandbox wake: pressed once when the root read refuses with the asleep code (or on open for a sandboxed agent), then the read is polled through this same refresh until it answers.
   const retryRoot = useCallback(() => setRefreshTick((tick) => tick + 1), [])
-  const wake = useSandboxWake(agentId, workspaceRootReadState(dirs['']), retryRoot, sandboxed)
+  const wake = useSandboxWake(agentId, workspaceRootReadState(dirs['']), retryRoot, { sandboxed })
   // One-shot: on first entry, auto-preview the project guide (CLAUDE.md / README.md).
   const autoOpenedRef = useRef(false)
   // A path check alone cannot distinguish A → B → A requests. Sequence every file

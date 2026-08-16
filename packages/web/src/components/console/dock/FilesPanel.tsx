@@ -51,11 +51,14 @@ export function FilesPanel({
   sessionId,
   workdir,
   refreshTick = 0,
+  active = true,
   openFilePath,
   onOpenFile,
   onRootSettledChange
 }: {
   agentId: string
+  /** Whether the Files tab is the one selected. The dock keeps every panel mounted, and a hidden panel must not start a pod: the sandbox wake and its polling run only while this is true. */
+  active?: boolean
   /** ACP session id selecting that session's isolated worktree; omit for the agent's primary checkout. Pass it only when the session's `workspaceIsolation` is `'session'` — the daemon answers a shared-workspace sessionId with BAD_PAYLOAD, which the CP maps to a 503 that reads as "the daemon may be offline". */
   sessionId?: string
   /** The agent's working directory, shown beside the branch. */
@@ -74,7 +77,7 @@ export function FilesPanel({
   const { dirs, root, expanded, toggleDir, loadMoreDir } = useWorkspaceTree(agentId, sessionId, refreshTick + wakeTick)
   const { git, outcome, primaryBranch } = useWorkspaceGitStatus(agentId, sessionId, refreshTick + wakeTick)
   const retryRoot = useCallback(() => setWakeTick((tick) => tick + 1), [])
-  const wake = useSandboxWake(agentId, workspaceRootReadState(root), retryRoot)
+  const wake = useSandboxWake(agentId, workspaceRootReadState(root), retryRoot, { active })
   const [query, setQuery] = useState('')
   const scope = `${agentId}:${sessionId ?? 'primary'}`
   // Latched per scope, so the tab reports `ready` once and a refresh keeps the panel — and the reader's filter text — on screen behind an in-tree spinner.

@@ -42,20 +42,37 @@ const retry = () => {
   retries += 1
 }
 
-function Harness({ agentId, read, sandboxed }: { agentId: string; read: SandboxReadState; sandboxed?: boolean }) {
-  const wake = useSandboxWake(agentId, read, retry, sandboxed)
+function Harness({
+  agentId,
+  read,
+  sandboxed,
+  active
+}: {
+  agentId: string
+  read: SandboxReadState
+  sandboxed?: boolean
+  active?: boolean
+}) {
+  const wake = useSandboxWake(agentId, read, retry, { sandboxed, active })
   lastStart = wake.start
   return <span data-phase={wake.phase}>{wake.phase}</span>
 }
 
-async function render(props: { agentId?: string; read: SandboxReadState; sandboxed?: boolean }) {
+async function render(props: { agentId?: string; read: SandboxReadState; sandboxed?: boolean; active?: boolean }) {
   if (!container) {
     container = document.createElement('div')
     document.body.append(container)
     root = createRoot(container)
   }
   await act(async () => {
-    root?.render(<Harness agentId={props.agentId ?? 'agent-a'} read={props.read} sandboxed={props.sandboxed} />)
+    root?.render(
+      <Harness
+        agentId={props.agentId ?? 'agent-a'}
+        read={props.read}
+        sandboxed={props.sandboxed}
+        active={props.active}
+      />
+    )
     await Promise.resolve()
   })
 }
@@ -176,5 +193,27 @@ describe('useSandboxWake', () => {
     expect(phase()).toBe('idle')
     await elapse(30_000)
     expect(retries).toBe(0)
+  })
+
+  it('a hidden surface neither presses nor polls; becoming visible presses once and polls', async () => {
+    await render({ read: 'asleep', active: false })
+    await elapse(30_000)
+    expect(vi.mocked(wakeAgent)).not.toHaveBeenCalled()
+    expect(phase()).toBe('idle')
+
+    await render({ read: 'asleep', active: true })
+    expect(vi.mocked(wakeAgent)).toHaveBeenCalledTimes(1)
+    expect(phase()).toBe('starting')
+    await elapse(SANDBOX_WAKE_POLL_MS[0])
+    expect(retries).toBe(1)
+
+    // Hidden mid-poll: the timer stops; shown again, it resumes.
+    await render({ read: 'asleep', active: false })
+    await elapse(60_000)
+    expect(retries).toBe(1)
+    await render({ read: 'asleep', active: true })
+    await elapse(SANDBOX_WAKE_POLL_MS[1])
+    expect(retries).toBe(2)
+    expect(vi.mocked(wakeAgent)).toHaveBeenCalledTimes(1)
   })
 })

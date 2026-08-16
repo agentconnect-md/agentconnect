@@ -4758,6 +4758,7 @@ export default function SessionDetailView() {
           ) : null}
           {filesAgentId && filesScopeReady ? (
             <FilesPanel
+              active={dockTabKey === 'files'}
               agentId={filesAgentId}
               {...(filesSessionId ? { sessionId: filesSessionId } : {})}
               {...(filesWorkdir ? { workdir: filesWorkdir } : {})}

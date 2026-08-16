@@ -673,6 +673,22 @@ describe('FilesPanel degraded states', () => {
     expect(settledReports.at(-1)).toBe(true)
   })
 
+  it('a hidden Files tab never presses the wake; selecting it presses once', async () => {
+    // The dock keeps every panel mounted, so opening a session page must not start a pod on its own.
+    wire.failures = { '': { status: 503, code: 'WORKSPACE_SANDBOX_UNAVAILABLE' } }
+    wire.gitFails = true
+    await render({ active: false })
+    expect(vi.mocked(wakeAgent)).not.toHaveBeenCalled()
+    expect(text()).toContain('its pod is not running')
+
+    await rerender({ active: true })
+    expect(vi.mocked(wakeAgent)).toHaveBeenCalledTimes(1)
+    expect(text()).toContain('Starting the agent’s sandbox')
+    await rerender({ active: false })
+    await rerender({ active: true })
+    expect(vi.mocked(wakeAgent)).toHaveBeenCalledTimes(1)
+  })
+
   it('does not press the wake for an offline daemon — only the sleeping-sandbox code earns one', async () => {
     wire.failures = { '': 503 }
     await render()
