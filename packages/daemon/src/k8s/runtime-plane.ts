@@ -1,7 +1,6 @@
 import { K8sHttp, loadInClusterConfig } from '@agentconnect.md/k8s-client'
 import { K8sDriver, PROBE_GRANTS, type LaunchGenerations } from './driver.js'
 import { SandboxApi } from './sandbox-api.js'
-import { OrphanReconciler, resolveOrphanReconcilerSettings, type OrphanReconcilerDeps } from './orphan-reconciler.js'
 import { PROBE_CLAIM_EXPIRES_ANNOTATION, PROBE_CLAIM_LABEL, PROBE_CLAIM_TTL_MS, probeAgentId } from './probe-claim.js'
 import { clusterMetrics } from './cluster-metrics.js'
 import { ShimDialer } from '../shim/dialer.js'
@@ -80,8 +79,6 @@ export interface K8sRuntimePlaneOptions {
   /** How long a pod that is up may go without a shim channel before the launch counts as lost.
    *  Injected so a test can cross the window in milliseconds rather than waiting out the default. */
   rebindGraceMs?: number
-  /** The orphan reconciler's install-wide seams (sweep lease, control-plane existence read); absent ⇒ no sweep. */
-  orphans?: Pick<OrphanReconcilerDeps, 'acquireLease' | 'liveAgents'>
   log?: { info: (m: string) => void; warn: (m: string) => void; debug?: (m: string) => void }
 }
 
@@ -275,19 +272,6 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
   const lossWatches = new Map<string, LossWatch>()
   let probeInFlight: Promise<K8sRuntimeTable> | undefined
 
-  // Collects what a member that died mid-teardown left behind — an expired probe claim included
-  // (k8s-daemon-pool.md §4); the seams it needs are the daemon's, so a plane assembled without
-  // them (a test) simply never sweeps.
-  const reconciler = options.orphans
-    ? new OrphanReconciler({
-        api,
-        ...options.orphans,
-        settings: resolveOrphanReconcilerSettings(options.env ?? process.env),
-        log: options.log ?? SILENT
-      })
-    : undefined
-  reconciler?.start()
-
   /**
    * Start the grace window for a channel that dropped, measured from the right event.
    *
@@ -440,7 +424,6 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
       await driver.removeAgent(agentId)
     },
     stop: async () => {
-      reconciler?.stop()
       for (const agentId of [...lossWatches.keys()]) cancelLossCheck(agentId)
       for (const { proxy } of proxies.values()) proxy.stop('daemon is shutting down')
       proxies.clear()

@@ -2162,25 +2162,6 @@ describe('sandbox generations', () => {
   })
 })
 
-describe('sweep leases', () => {
-  it('lets one member hold and renew, hands over only once the lease lapses, and always holds locally', () => {
-    const [first, second] = sharedMembers('member-1', 'member-2')
-    expect(first.acquireSweepLease('orphans', 1_000, 10_000)).toBe(true)
-    expect(second.acquireSweepLease('orphans', 1_000, 10_500)).toBe(false)
-    // The holder renews past what the contender saw, so the contender keeps losing.
-    expect(first.acquireSweepLease('orphans', 1_000, 10_900)).toBe(true)
-    expect(second.acquireSweepLease('orphans', 1_000, 11_500)).toBe(false)
-    expect(second.acquireSweepLease('orphans', 1_000, 11_900)).toBe(true)
-    expect(first.acquireSweepLease('orphans', 1_000, 12_000)).toBe(false)
-    // Leases are named: another sweep is unrelated.
-    expect(first.acquireSweepLease('other', 1_000, 12_000)).toBe(true)
-    const local = store()
-    expect(local.acquireSweepLease('orphans', 1_000, 0)).toBe(true)
-    expect(local.acquireSweepLease('orphans', 1_000, 0)).toBe(true)
-    local.close()
-  })
-})
-
 describe('transcript org fence on a shared store', () => {
   const orgs: Record<string, string> = { 'agent-a': 'org-a', 'agent-b': 'org-b' }
   const twoOrgMembers = (): [LocalStore, LocalStore] => {

@@ -108,6 +108,13 @@ export class DaemonRegistryService implements DaemonRegistry {
     )
   }
 
+  /** Observer registration (k8s-daemon-pool.md §4): drop the membership `upsertOnAuth` minted for
+   *  this identity and backdate its liveness, so the ledger cannot grant it and the pool-member
+   *  reaper retires the row on its next sweep instead of at the ordinary silence window. */
+  async withdrawObserver(daemonId: DaemonId): Promise<void> {
+    await this.daemons.withdrawObserver(daemonId)
+  }
+
   async updateCapabilities(daemonId: DaemonId, capabilities: RegisterReq['capabilities']): Promise<void> {
     await this.daemons.setCapabilities(daemonId, capabilities)
   }
