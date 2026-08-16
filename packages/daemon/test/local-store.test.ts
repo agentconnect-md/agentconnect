@@ -46,20 +46,27 @@ describe('LocalStore schema versioning', () => {
     old.exec('DROP INDEX session_metadata_outbox_attempt')
     old.exec('ALTER TABLE session_metadata_outbox DROP COLUMN failedAttempts')
     old.exec('ALTER TABLE session_metadata_outbox DROP COLUMN nextAttemptAt')
+    old.exec('ALTER TABLE dreams DROP COLUMN ownerId')
+    old.exec('ALTER TABLE webchat_mcp_grant_ledger DROP COLUMN ownerId')
     old.exec('PRAGMA user_version = 1')
     old.close()
 
     new LocalStore(path).close()
 
     const upgraded = new DatabaseSync(path)
-    const columns = upgraded.prepare('PRAGMA table_info(permission_requests)').all() as { name: string }[]
-    const outboxColumns = upgraded.prepare('PRAGMA table_info(session_metadata_outbox)').all() as { name: string }[]
+    const columnsOf = (table: string): string[] =>
+      (upgraded.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((column) => column.name)
+    const columns = columnsOf('permission_requests')
+    const outboxColumns = columnsOf('session_metadata_outbox')
+    const dreamColumns = columnsOf('dreams')
+    const grantColumns = columnsOf('webchat_mcp_grant_ledger')
     upgraded.close()
-    expect(columns.map((column) => column.name)).toContain('ownerId')
-    expect(outboxColumns.map((column) => column.name)).toEqual(
-      expect.arrayContaining(['failedAttempts', 'nextAttemptAt'])
-    )
-    expect(userVersion(path)).toBe(3)
+    expect(columns).toContain('ownerId')
+    expect(outboxColumns).toEqual(expect.arrayContaining(['failedAttempts', 'nextAttemptAt']))
+    // Recovery ownership: a pool member must be able to tell its own rows from a peer's.
+    expect(dreamColumns).toContain('ownerId')
+    expect(grantColumns).toContain('ownerId')
+    expect(userVersion(path)).toBe(4)
   })
 
   it('refuses a store written by a newer daemon WITHOUT touching it first', () => {
@@ -1364,11 +1371,11 @@ describe('LocalStore webchat MCP grant ledger', () => {
     s.close()
   })
 
-  it('marks all leftover active grants revoking on the startup orphan sweep', () => {
+  it('marks the leftover active grants of an exclusively owned store revoking on the startup sweep', () => {
     const s = store()
     s.recordWebchatMcpGrant({ ...tuple, now: 10 })
     s.recordWebchatMcpGrant({ ...tuple, conversationId: 'conv-2', now: 10 })
-    expect(s.markAllWebchatMcpGrantsRevoking('session_closed', 50)).toBe(2)
+    expect(s.markOwnedWebchatMcpGrantsRevoking('session_closed', 50)).toBe(2)
     const due = s.listDueWebchatMcpRevocations(50)
     expect(due.map((r) => r.conversationId).sort()).toEqual(['conv-1', 'conv-2'])
     expect(due.every((r) => r.reason === 'session_closed')).toBe(true)
@@ -1418,6 +1425,104 @@ describe('LocalStore webchat MCP grant ledger', () => {
     expect(JSON.parse(row.attachmentsJson ?? 'null')).toEqual([
       { name: 'shot.png', mimeType: 'image/png', data: 'aW1n' }
     ])
+    s.close()
+  })
+})
+
+describe('LocalStore recovery scope on a shared store (daemon pool)', () => {
+  // One store, many members. A member's own id is its PROCESS incarnation, so a starting
+  // member owns nothing yet — which is exactly why boot must recover nothing here.
+  const tuple = {
+    conversationId: 'conv-1',
+    agentId: 'agent-1',
+    authorityId: 'auth-1',
+    authorityGeneration: 3
+  }
+  const openDream = (dreamId: string, agentId = 'agent-1') => ({
+    dreamId,
+    agentId,
+    status: 'running' as const,
+    trigger: 'manual' as const,
+    sessionIds: [],
+    snapshotDigest: 'sha256:x',
+    createdAt: '2026-01-01T00:00:00.000Z'
+  })
+
+  const sharedPath = (): string => join(mkdtempSync(join(tmpdir(), 'ac-pool-')), 'shared.sqlite')
+  const member = (path: string, ownerId: string): LocalStore =>
+    new LocalStore({ database: new DatabaseSync(path), shared: true, ownerId })
+
+  it("a starting member leaves a peer's live grant and running dream untouched", () => {
+    const path = sharedPath()
+    const a = member(path, 'member-a')
+    a.recordWebchatMcpGrant({ ...tuple, now: 10 })
+    a.insertDream(openDream('drm-a'))
+
+    // A rolling update starts a new Pod: a new owner, while A keeps serving.
+    const b = member(path, 'member-b')
+    expect(b.markOwnedWebchatMcpGrantsRevoking('session_closed', 50)).toBe(0)
+    expect(b.openDreams()).toEqual([])
+    expect(b.listDueWebchatMcpRevocations(10_000)).toEqual([])
+    expect(a.listDueWebchatMcpRevocations(10_000)).toEqual([])
+    expect(a.getDream('agent-1', 'drm-a')?.status).toBe('running')
+    a.close()
+    b.close()
+  })
+
+  it("reclaims a former owner's rows only for the agents this member was handed", () => {
+    const path = sharedPath()
+    const a = member(path, 'member-a')
+    a.recordWebchatMcpGrant({ ...tuple, now: 10 })
+    a.insertDream(openDream('drm-a'))
+    const b = member(path, 'member-b')
+
+    expect(b.reclaimWebchatMcpGrants(['other-agent'], 'session_closed', 60)).toBe(0)
+    expect(b.strandedDreams(['other-agent'])).toEqual([])
+
+    expect(b.reclaimWebchatMcpGrants(['agent-1'], 'session_closed', 60)).toBe(1)
+    expect(b.listDueWebchatMcpRevocations(60)[0]).toMatchObject({
+      conversationId: 'conv-1',
+      state: 'revoking',
+      ownerId: 'member-b'
+    })
+    // The queue moved with the duty: its former owner no longer drains it.
+    expect(a.listDueWebchatMcpRevocations(10_000)).toEqual([])
+
+    const stranded = b.strandedDreams(['agent-1'])
+    expect(stranded.map((dream) => dream.dreamId)).toEqual(['drm-a'])
+    const failed = { ...stranded[0]!, status: 'failed' as const, endedAt: '2026-01-01T00:01:00.000Z' }
+    expect(b.failOpenDream(failed)).toBe(true)
+    // Idempotent: the row is terminal now, so a replayed recovery writes nothing.
+    expect(b.failOpenDream(failed)).toBe(false)
+    expect(b.strandedDreams(['agent-1'])).toEqual([])
+    a.close()
+    b.close()
+  })
+
+  it("the recovery CAS keeps the outcome the dream's own runner recorded", () => {
+    const path = sharedPath()
+    const a = member(path, 'member-a')
+    a.insertDream(openDream('drm-a'))
+    const b = member(path, 'member-b')
+    const stranded = b.strandedDreams(['agent-1'])[0]!
+
+    // A finishes between B's read and B's write — the completion must survive.
+    a.updateDream({ ...openDream('drm-a'), status: 'completed', endedAt: '2026-01-01T00:00:30.000Z' })
+    expect(b.failOpenDream({ ...stranded, status: 'failed', endedAt: '2026-01-01T00:01:00.000Z' })).toBe(false)
+    expect(a.getDream('agent-1', 'drm-a')?.status).toBe('completed')
+    a.close()
+    b.close()
+  })
+
+  it('an exclusively owned store still recovers everything it left behind at boot', () => {
+    const s = store()
+    s.recordWebchatMcpGrant({ ...tuple, now: 10 })
+    s.insertDream(openDream('drm-a'))
+    expect(s.markOwnedWebchatMcpGrantsRevoking('session_closed', 50)).toBe(1)
+    expect(s.openDreams().map((dream) => dream.dreamId)).toEqual(['drm-a'])
+    // There is no duty axis on a single-daemon store — boot already covered it.
+    expect(s.strandedDreams(['agent-1'])).toEqual([])
+    expect(s.reclaimWebchatMcpGrants(['agent-1'], 'session_closed', 60)).toBe(0)
     s.close()
   })
 })
