@@ -2466,8 +2466,8 @@ export interface HookRepo {
     input: HookReviewAttemptInput
   ): Promise<HookReviewAttemptResult>
   recordReviewResult(hookId: HookId, reportingDaemonId: DaemonId, input: HookReviewResultInput): Promise<boolean>
-  /** Apply a daemon `hook/report` completion. Scoped: the hook's owning agent
-   *  must be placed on the REPORTING daemon. Last-writer-wins; a completion with
+  /** Apply a daemon `hook/report` completion. Scoped: the REPORTING daemon must be the run's
+   *  accepted dispatch target or serve its agent now. Last-writer-wins; a completion with
    *  no prior delivery row (rc/run-report lost) still creates one, with
    *  `startedAt` estimated as `at − durationMs`. Returns acceptance. */
   recordReport(hookId: HookId, reportingDaemonId: DaemonId, input: HookReportInput, at: Date): Promise<boolean>

@@ -4,8 +4,8 @@
  * A correlated REQ: the daemon's completion report for a hook
  * fire it received over the relay's rd/* wire — closes the `HookRun` row the
  * relay's `rc/run-report` opened. Same discipline as `cron/report`: the repo
- * write is scoped (the hook's owning agent must be placed on the REPORTING
- * daemon) and last-writer-wins (a late completion overwrites a reaped
+ * write is scoped (the REPORTING daemon must be the run's dispatch target or
+ * serve its agent now) and last-writer-wins (a late completion overwrites a reaped
  * `orphaned`). Unknown or foreign reports receive a permanent CONFLICT so the
  * daemon can dead-letter its durable outbox entry; exact duplicates ACK.
  * A completion whose delivery report was lost (CP down at fire time) still
