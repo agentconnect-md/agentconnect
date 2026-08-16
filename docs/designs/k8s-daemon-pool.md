@@ -76,26 +76,26 @@ pool membership.
 
 ### Decision summary
 
-| #   | Decision                | One line                                                                                                                                                                                              |
-| --- | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| D1  | Pool shape              | Fixed-size plain Deployment of multi-tenant members; manual scaling; members never sleep                                                                                                              |
-| D2  | Sleep                   | Agents sleep (existing sandbox suspension); wake = existing `SandboxClaim` flow; no new machinery                                                                                                     |
-| D3  | Connection direction    | The duty holder dials the sandbox; the shim is a hardened listener; one NetworkPolicy ingress-rule amendment                                                                                          |
-| D4  | Member anatomy          | Singleton machinery + per-agent rooms + thin refcounted org contexts; the session stays the atomic unit                                                                                               |
-| D5  | Duty group              | The claim unit is the connected component of the agent↔daemon-held-bot graph — every agent is a node, so an edgeless one is its own singleton — claimed atomically under one term                     |
-| D6  | Lease service           | CP-hosted `duty_group` ledger over the fleet WS, with a derived membership projection; vacancy grant = the claim call                                                                                 |
-| D7  | Lease timing            | Batched renewals; T_fence self-fence < T_reassign; startup recovery grace                                                                                                                             |
-| D8  | Cross-member paths      | `rd/agentmsg` stays A2A-only; the rendezvous adds a `not_holder` NAK on the inbound `rd/msg` path; no redirects, no presence streams; the ledger is the directory                                     |
-| D9  | Org context on the wire | Install-wide connection with per-frame `orgId`; reconnect state is a combined multi-org snapshot / revision-fenced stream — no per-org subscription, room, or socket                                  |
-| D10 | Crons                   | A time-based trigger against a group that is already proactively claimable (D5), so a schedule always has a home; the holder fires it locally with today's daemon machinery                           |
-| D11 | State                   | Separate data-plane PG, shared tables with an `org` column (org injected by the store handle, never by call sites); daemon-owned async store interfaces, SQLite + PG drivers                          |
-| D12 | Upgrades                | maxSurge 100%, maxUnavailable = 0; drain = draining bit + acknowledged per-group duty release + sleep-as-migration                                                                                    |
-| D13 | Failure model           | Explicit matrix; two accepted loss windows                                                                                                                                                            |
-| D14 | Capacity                | Member self-gating at claim time; CP alarms on vacant-duty age; no scheduler                                                                                                                          |
-| D15 | One binary              | Composition-root profiles differ by capability knobs, never a mode flag                                                                                                                               |
-| D16 | Isolation               | The shared pool is the default; an oversized or noisy workload moves to a dedicated daemon                                                                                                            |
-| D17 | Kubernetes footprint    | No per-org Kubernetes objects for pooled orgs: one shared sandbox namespace, tier-shared warm pools, label-scoped policies — so the operator, the org CR, and the CP's cluster credentials all retire |
-| D18 | Migration               | Orgs move one at a time with rehearsed rollback (tracking issue, M5)                                                                                                                                  |
+| #   | Decision                | One line                                                                                                                                                                                                      |
+| --- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D1  | Pool shape              | Fixed-size plain Deployment of multi-tenant members; manual scaling; members never sleep                                                                                                                      |
+| D2  | Sleep                   | Agents sleep (existing sandbox suspension); wake = existing `SandboxClaim` flow; no new machinery                                                                                                             |
+| D3  | Connection direction    | The duty holder dials the sandbox; the shim is a hardened listener; one NetworkPolicy ingress-rule amendment                                                                                                  |
+| D4  | Member anatomy          | Singleton machinery + per-agent rooms + thin refcounted org contexts; the session stays the atomic unit                                                                                                       |
+| D5  | Duty group              | The claim unit is the connected component of the agent↔daemon-held-bot graph — every agent is a node, so an edgeless one is its own singleton — claimed atomically under one term                             |
+| D6  | Lease service           | CP-hosted `duty_group` ledger over the fleet WS, with a derived membership projection; vacancy grant = the claim call                                                                                         |
+| D7  | Lease timing            | Batched renewals; T_fence self-fence < T_reassign; startup recovery grace                                                                                                                                     |
+| D8  | Cross-member paths      | `rd/agentmsg` stays A2A-only; the rendezvous adds a `not_holder` NAK on the inbound `rd/msg` path; no redirects, no presence streams; the ledger is the directory                                             |
+| D9  | Org context on the wire | Install-wide connection with per-frame `orgId`; reconnect state is a combined multi-org snapshot / revision-fenced stream — no per-org subscription, room, or socket                                          |
+| D10 | Crons                   | A time-based trigger against a group that is already proactively claimable (D5), so a schedule always has a home; the holder fires it locally with today's daemon machinery                                   |
+| D11 | State                   | Separate data-plane PG, shared tables with an `org` column (org injected by the store handle, never by call sites); one daemon-owned store surface over SQLite and PG drivers — synchronous, not async (#958) |
+| D12 | Upgrades                | maxSurge 100%, maxUnavailable = 0; drain = draining bit + acknowledged per-group duty release + sleep-as-migration                                                                                            |
+| D13 | Failure model           | Explicit matrix; two accepted loss windows                                                                                                                                                                    |
+| D14 | Capacity                | Member self-gating at claim time; CP alarms on vacant-duty age; no scheduler                                                                                                                                  |
+| D15 | One binary              | Composition-root profiles differ by capability knobs, never a mode flag                                                                                                                                       |
+| D16 | Isolation               | The shared pool is the default; an oversized or noisy workload moves to a dedicated daemon                                                                                                                    |
+| D17 | Kubernetes footprint    | No per-org Kubernetes objects for pooled orgs: one shared sandbox namespace, tier-shared warm pools, label-scoped policies — so the operator, the org CR, and the CP's cluster credentials all retire         |
+| D18 | Migration               | Orgs move one at a time with rehearsed rollback (tracking issue, M5)                                                                                                                                          |
 
 ## 3. Pool anatomy (D1, D4)
 
@@ -139,6 +139,18 @@ and Sandboxes. Each member also receives its Pod UID through the Downward API as
 on one probe claim. Probe claims carry a dedicated label and a 15-minute expiry;
 the orphan reconciler (§4) collects an expired one, so a missed teardown cannot
 retain a Sandbox and volume forever.
+
+**The control plane carries one bit, not a namespace.** `DAEMON_POOL_ENABLED=true`
+says "this deployment runs a daemon pool": the control plane loads its in-cluster
+config from its own pod's ServiceAccount (fail-loud outside a pod) and accepts pool
+member identities — TokenReview of the projected token, ServiceAccount name plus
+namespace — from **its own namespace**, read off the credential that proves it.
+Unset means no cluster module and API-key daemon auth only. Naming the namespace
+separately was a false degree of freedom: a member is a pod this install places
+beside itself, so the key invited an answer that was either the only correct one or a
+misconfiguration that failed late, as "identity refused" at registration rather than
+at boot. Two earlier spellings — a separate execution-enabled flag, then a namespace
+key — were deleted outright rather than aliased, on the same reasoning.
 
 **Org-threading is the end state; instantiation is scaffolding.** The wire
 carries the org, the data plane carries the org, and the process interior
@@ -400,6 +412,16 @@ between an agent's creation and its first sweep.
   ledger's job (vacancy plus the recompute), not the router's.
 - The NAK verdict is not cached in the daemon's ack-dedup map, so a later
   grant never replays a stale refusal.
+- **A platform interaction takes the same road as a message.** A status-modal
+  button or a card action carries the member the routing projection last
+  recorded, which after a rollout or a rebalance is either gone or no longer the
+  holder — and nothing retries, because HTTP ingress acknowledged the provider
+  callback long before the ack came back. So the relay forwards interactions
+  through the rendezvous too, and the ack it answers the platform with is the
+  true holder's, `response` body included, which is what a Slack modal and a
+  Feishu toast need. A refusal it cannot place is a counted drop like any other.
+  Webhook hook dispatch deliberately stays off this path: it has its own
+  connection-retry loop and reports a rejection upstream as a delivery status.
 
 When the ledger still names a holder that has died but not yet gone vacant,
 a re-route lands on a dead connection and fails the same way — a counted drop,
@@ -597,20 +619,75 @@ the properties that matter to the pool:
   classic leak (one forgotten `WHERE`) is confined to the repository layer,
   covered by a contract suite that runs against both drivers, with row-level
   security available as belt-and-braces.
-- **Term-fenced writes (P4)**: every data-plane write carries the writer's
-  term; a write below the recorded high-water term for that duty is refused —
-  the database-side half of the fencing the shim does on the connection side.
+- **Writes are fenced by ownership, not by a duty term.** P4's term fences the
+  connection at the shim and the claim at the ledger; the shared store fences by
+  _who owns the row_ (below). No data-plane write carries a duty term, and none
+  needs one: a member that lost the duty is stopped by the gate before it reaches
+  the statement, and the statements two members can still reach concurrently are
+  written to be race-safe.
 - Streaming transcript writes are batched/coalesced; the per-token pattern
   that is cheap against local SQLite would be pathological against networked
   PG.
 
-Shipped so far: the transcript fence itself — rows in the pool store carry
-`orgId` like every other org-scoped row (#1041), and the data plane's separate
-transcript table, which was declared but never read or written, is gone so
-that one store carries the fence. The remaining store inventory (sessions,
-cursors, durable inbox, loop guards, outboxes, cron runs) is the async-store
-workstream in the tracking issue — and until it lands, duties are pinned to
-the member that already holds each agent's state (§14).
+Shipped: all of it, by a cheaper route than the plan named. #958 put the
+**complete durable `LocalStore` surface** on Postgres behind a synchronous facade
+over a worker thread, so the async-store refactor D11 anticipated never happened
+and no call site became async; a `--k8s` daemon never opens SQLite. The
+transcript fence landed last (#1075): the pool store's `transcript` /
+`transcript_recipient` rows carry `orgId`, and the data plane's separate
+transcript pair — declared but never read or written — is deleted, so exactly one
+store carries the fence. The cross-driver contract suite is real rather than
+aspirational (#1080): the store suites re-run against a real `postgres:16` on their
+own CI job — which immediately found the activation rendezvous joining its keys with
+NUL, a byte Postgres `TEXT` rejects outright, so paired activation could not settle on
+the pool at all — beside a text check that fails on SQLite-only SQL the pool's rewrite
+layer does not translate, for the statements no suite reaches.
+
+### Shared state is per member, not per install
+
+One shared store turns any table that _was_ per process under SQLite into an
+install-wide one, silently: the code still reads and writes it as if it were the
+only writer. The member-replacement audit worked that class out of the store; what
+it converged on is four rules, and they are the shape any new table has to take.
+
+- **A claimable row names its owner.** Outbox and receipt rows carry an
+  `ownerId` and a claim lease: the hook-completion outbox (#1044), session purge
+  receipts (#1065) and the session-metadata outbox (#1068) each offer a member
+  its own rows, unowned rows, and a lapsed peer's rows for agents it currently
+  serves, take a CAS claim before every emit, and fence the ACK to the claim
+  holder — so a peer can never destroy a completion it merely happened to read.
+  A row the reader cannot scope is **parked** for the member that can, never
+  failure-counted (#1068). Per-member caches are keyed the same way
+  (`runtime_catalog_meta` / `runtime_model_catalog`, #1058).
+- **Background work is duty-gated.** `servesAgent(agentId)` — the predicate that
+  already scoped `transportAgents()` — now also gates the sandbox idle sweep
+  (#1045), orchestration deadlines (#1042), the session TTL and retention sweeps
+  (#1065), the loop-guard trip's inbox purge (#1069) and cron/dream arming. A
+  sweep on a non-holder is not merely wasted work: it suspends a pod, closes a
+  session or deletes a queued row another member is serving.
+- **Boot recovers only what this incarnation owned.** `ownerId` is a process
+  incarnation, so a starting member owns nothing and rewrites nothing a peer is
+  working on; a genuinely stranded row is reclaimed on `agentsGained` — the CP
+  saying "you serve this agent now" — not on process start (#1046). The same
+  hook replays the shared inbox backlog (#1049), re-derives the sandbox launch
+  (#1045), compensates a swallowed schedule (#1053) and re-arms parked snapshots
+  (#1068). A duty handoff is not a removal, so it keeps the agent's unrun inbox
+  instead of purging it (#1064).
+- **Two members that can reach one row use a CAS or a relative write.** Never a
+  read-modify-write: the loop guard's counters and its trip latch are single
+  statements with `RETURNING` (#1069), session usage accumulates through a
+  compare-and-set (#1063), the memory-capture gate's revision test moved into the
+  upsert's `ON CONFLICT … WHERE` (#1054), and the deadline fire is a CAS so two
+  holders during a handoff wake the main once (#1042). The Postgres facade
+  rewrites `BEGIN IMMEDIATE` to a plain `BEGIN`, so the writer lock a SQLite
+  caller assumes does not exist here.
+
+One further correction belongs to the same class rather than to concurrency: a
+key that was runtime-local under SQLite becomes an install-wide collision domain
+on the pool. `session_gates` was keyed by the ACP session id alone, which every
+runtime mints from 1, so it is now keyed `(agentId, acpSessionId)` (#1054); the
+CP routing map, one install-wide row rewritten from each member's memory, is
+simply not persisted on a shared store (#1063).
 
 ## 12. Capacity (D14) and upgrades (D12)
 
@@ -630,8 +707,8 @@ is a dedicated daemon (D16).
 
 The pool Deployment rolls by **surging the whole pool, then draining the old
 members slowly** — `maxSurge: 100%`, `maxUnavailable: 0`, a long
-`terminationGracePeriodSeconds`. Kubernetes brings up a full second set,
-waits `minReadySeconds`, then SIGTERMs every old member together. Two
+`terminationGracePeriodSeconds`. Kubernetes brings up a full second set, waits
+for each replacement to report ready, then SIGTERMs the old members. Four
 application-side properties make that a rollout with no capacity dip and at
 most one move per agent (#1016):
 
@@ -759,14 +836,18 @@ and it could not survive its own premise: after a rollout the incumbent names a
 Pod that no longer exists, so a vacated group was claimable in principle and
 claimed by nobody in practice. What replaced it is not a wider policy but a
 different question. Placement is a **target**: `daemon` names one machine
-through `Agent.daemonId`, `pool` names the install-wide member set and carries
-no ref at all. A member may claim a group iff it may hold **every** agent in it —
-that machine for a `daemon` placement, any install-wide member for a `pool`
-one. One predicate, applied identically by the heartbeat claim, the activation
-rendezvous, and the sweep's placement fence, which now vacates a lease whose
-holder is no longer eligible rather than one that lost its last incumbency.
+through `Agent.daemonId`, `set` names a **member set** through `Agent.setId` —
+and the pool is one such set, the org-less row every frame-mode Pod is enrolled
+in on auth (#1003; [daemon-groups.md](daemon-groups.md) §2). A member may claim a
+group iff it may hold **every** agent in it — that machine for a `daemon`
+placement, any member of the named set for a `set` one, which the ledger asks as
+one join to `member_set_member`. One predicate, applied identically by the
+heartbeat claim, the activation rendezvous, and the sweep's placement fence,
+which now vacates a lease whose holder is no longer eligible rather than one that
+lost its last incumbency. `{ kind: 'pool' }` survives as API sugar the route
+resolves to the org-less set at the edge; nothing stores it.
 
-Two consequences worth stating. A group mixing a `pool` agent with a
+Two consequences worth stating. A group mixing a `set` agent with a
 machine-placed one is claimable by **neither** — serving it as a unit would mean
 one side running what the other already runs — so the gate is FORALL, not
 EXISTS. And an agent placed on a machine has exactly one eligible holder, which
@@ -774,13 +855,44 @@ an install-wide member never is: dropping the incumbent gate cannot reach the
 agents a local daemon is already serving. A single-org daemon sends
 byte-identical heartbeats to before and never observes any of this.
 
-### Future direction: daemon groups
+### Authority follows the holder, never a column
+
+Once placement stopped naming a member, `Agent.daemonId` became NULL for every
+pool agent — and every control-plane site still spelling authorization as
+`agent.daemonId === conn.daemonId` silently answered "no". Not degraded across a
+rollout: **permanently** false, for the whole class. The corrected seam is one
+resolver, `PlacementResolver` (`domain/placement.ts` plus the duty ledger):
+authority is **placement ∪ the duty leases this member currently holds**, asked
+as `mayAct` / `servingDaemon` / `dispatchDaemon` / `routableDaemon` depending on
+whether the caller is authorizing, addressing, or seeding ingress affinity. No
+caller branches on the placement kind; the kind stays inside the resolver.
+
+That converted the organization-knowledge reads (#1004), hook dispatch and PR
+review (#1047) with the completion accepted from the member that now serves the
+agent rather than the one it was dispatched to (#1061), multi-agent webchat and
+the delegated webchat MCP entitlement (#1057, whose delegation row is keyed on the
+agent so retiring a member no longer cascades it away), and the dozen write
+routes, daemon reports and the visibility replay in #1055 — the last of which also
+made the replay fire on duty admission and page the currently-private gates, so a
+session marked private converges onto whichever member takes it next. A machine
+placement is unchanged throughout, because there the placement _is_ the serving
+daemon.
+
+Two shapes of the same mistake are worth naming because they read as opposites: a
+`null` column that fails **closed** refuses work that is legitimately placed, and
+a `null` column read as "unplaced, therefore fine" fails **open** — which is how
+the organization-environment gate skipped its precondition for pool agents until
+#1063 pointed it at the resolver.
+
+### Daemon groups: the pool is one member set
 
 The k8s pool is the **degenerate case of a more general concept**: a _daemon
 group_ — a named set of members within which an agent's duty may be claimed.
-Today the member set is implicit (every frame-mode Pod of the install); the
-generalization makes it explicit and org-scoped, so that self-hosted installs
-can form groups out of ordinary local daemons. For local daemons this is the
+The first half has landed (#1003): the member set is no longer implicit, it is a
+`member_set` row, and the pool is the org-less one — one per install, every
+frame-mode Pod enrolled in it by `upsertOnAuth`. What remains is the org-scoped
+half, so that self-hosted installs can form groups out of ordinary local daemons.
+For local daemons this is the
 cross-machine generalization of the singleton pid lock — two local daemons
 configured with the same bot token fight over the platform API (R13); a group
 makes multi-machine failover safe for the first time.
@@ -881,7 +993,8 @@ shrinking every actor's permissions.
 | **Duty group**             | The claim unit: a connected component of the agent↔daemon-held-bot graph (enabled crons are edges)                  |
 | **Ledger**                 | The CP-hosted `duty_group` table; the single source of who-holds-what                                               |
 | **Term**                   | CP-minted monotonic fencing token per grant; carried on data-plane writes and the shim handshake; highest term wins |
-| **T_fence**                | Renewal-failure window after which a holder self-fences (not yet implemented daemon-side)                           |
+| **T_fence**                | Renewal-failure window after which a holder self-fences, anchored on a CP-confirmed renewal (#976)                  |
+| **Member set**             | The set of daemons within which an agent's duty may be claimed; the pool is the org-less one, one per install       |
 | **T_reassign** (> T_fence) | Silence window after which the CP treats a duty as vacant and grantable                                             |
 | **Recovery grace**         | The CP's startup wait of one full T_reassign before granting vacancies, making CP restarts non-events               |
 | **Vacancy grant**          | The single claim call, carried on the heartbeat: "grant me up to K vacant duties"                                   |
@@ -891,17 +1004,21 @@ shrinking every actor's permissions.
 
 ## 17. Implementation map
 
-| Piece                                                                  | Where                                                                                                                                            |
-| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Frames + member cap                                                    | `packages/protocol/src/frames/duty.ts`, `relay-daemon.ts` (`RD_ACK_NOT_HOLDER`)                                                                  |
-| Schema + repo (CAS claim, renew, release, reconcile, agent-home claim) | `packages/control-plane/prisma/schema.prisma`, `src/persistence/repositories/duty-group.repo.ts`                                                 |
-| Pure group math + reconcile planner                                    | `packages/control-plane/src/orchestrator/dutyGroup.ts`                                                                                           |
-| Lease exchange (digest diff, chunking, lanes, grace)                   | `packages/control-plane/src/orchestrator/dutyLease.ts`                                                                                           |
-| Recompute sweep + mutation kicks + placement fence                     | `packages/control-plane/src/orchestrator/dutyRecompute.ts`                                                                                       |
-| WS handlers                                                            | `packages/control-plane/src/ws/handlers/{heartbeat,duty-release,duty-claim}.ts`                                                                  |
-| Daemon registry + gate + rendezvous claim                              | `packages/daemon/src/cp/duty-registry.ts`, `src/daemon.ts` (`transportAgents`, `claimDutyForTrigger`)                                            |
-| Relay re-route                                                         | `packages/relay/src/relay-ingress-manager.ts` (`sendWithRendezvous`), `relay-browser-connection.ts`                                              |
-| Shim dial-in                                                           | `packages/daemon/src/shim/{dialer,server}.ts`                                                                                                    |
-| Pod-bound member identity                                              | `packages/control-plane/src/cluster/daemon-identity.ts`                                                                                          |
-| Member readiness (probe sinks)                                         | `packages/daemon/src/readiness.ts`, `src/daemon.ts` (`readinessState`)                                                                           |
-| Orphan reconciler + `reconcile --once` job + existence read            | `packages/daemon/src/k8s/orphan-reconciler.ts`, `packages/daemon/src/cli/reconcile.ts`, `packages/control-plane/src/ws/handlers/agent-exists.ts` |
+| Piece                                                                  | Where                                                                                                                                              |
+| ---------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Frames + member cap                                                    | `packages/protocol/src/frames/duty.ts`, `relay-daemon.ts` (`RD_ACK_NOT_HOLDER`)                                                                    |
+| Schema + repo (CAS claim, renew, release, reconcile, agent-home claim) | `packages/control-plane/prisma/schema.prisma`, `src/persistence/repositories/duty-group.repo.ts`                                                   |
+| Pure group math + reconcile planner                                    | `packages/control-plane/src/orchestrator/dutyGroup.ts`                                                                                             |
+| Lease exchange (digest diff, chunking, lanes, grace)                   | `packages/control-plane/src/orchestrator/dutyLease.ts`                                                                                             |
+| Recompute sweep + mutation kicks + placement fence                     | `packages/control-plane/src/orchestrator/dutyRecompute.ts`                                                                                         |
+| WS handlers                                                            | `packages/control-plane/src/ws/handlers/{heartbeat,duty-release,duty-claim,duty-fetch}.ts`                                                         |
+| Member sets + placement/eligibility resolver                           | `packages/control-plane/src/domain/placement.ts`, `src/persistence/repositories/member-set.repo.ts`                                                |
+| Frame-org fence on the daemon WS surface                               | `packages/control-plane/src/ws/handlers/frame-org.ts` (`frameOrgId`), the `*Unscoped` lint fence over `src/ws/**`                                  |
+| Daemon registry + gate + rendezvous claim                              | `packages/daemon/src/cp/duty-registry.ts`, `src/daemon.ts` (`transportAgents`, `claimDutyForTrigger`)                                              |
+| Relay re-route                                                         | `packages/relay/src/relay-ingress-manager.ts` (`sendWithRendezvous`), `relay-browser-connection.ts`                                                |
+| Shim dial-in                                                           | `packages/daemon/src/shim/{dialer,server}.ts`                                                                                                      |
+| Pod-bound member identity                                              | `packages/control-plane/src/cluster/daemon-identity.ts`                                                                                            |
+| Member readiness (probe sinks)                                         | `packages/daemon/src/readiness.ts`, `src/daemon.ts` (`readinessState`)                                                                             |
+| Rollout generation barrier                                             | `packages/protocol/src/frames/register.ts` (`generation`), `control-plane/src/persistence/repositories/duty-group.repo.ts` (`newerGenerationLive`) |
+| Shared-store ownership (owner ids, outbox claims, holder gates)        | `packages/daemon/src/store/local-store.ts`, `src/store/postgres-sync-database.ts`, `src/daemon.ts` (`servesAgent`, `settleDutyChange`)             |
+| Orphan reconciler + `reconcile --once` job + existence read            | `packages/daemon/src/k8s/orphan-reconciler.ts`, `packages/daemon/src/cli/reconcile.ts`, `packages/control-plane/src/ws/handlers/agent-exists.ts`   |

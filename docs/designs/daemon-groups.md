@@ -1,8 +1,10 @@
 # Daemon groups
 
-**Status:** design. Not built. Sequenced after the k8s pool runs enforced end to end,
-which it now does ([k8s-daemon-pool.md](k8s-daemon-pool.md) §14 records the pool as the
-degenerate case of what this document generalizes).
+**Status:** PR 1 (§6, §8) is **built and deployed** — #1003 folded the pool into the
+`member_set` model with zero behavior change, and every #991 test passed unchanged.
+PR 2, the org-scoped sets this document exists for, is designed and not built
+(#1000). ([k8s-daemon-pool.md](k8s-daemon-pool.md) §14 records the pool as the
+degenerate case of what this document generalizes.)
 
 A _daemon group_ is a named set of daemons within which an agent's duty may be claimed.
 The k8s pool is one such group — implicit, install-wide, its members every frame-mode Pod
@@ -22,16 +24,17 @@ Almost everything here is "reuse X". The one genuinely new thing is the **tenanc
 Every mechanism a group needs landed for the pool and is holder-shaped, not
 member-shaped — none of it knows or cares whether the holder is a Pod or a laptop.
 
-| Need                                                                               | Landed as                                                                                                                                                            |
-| ---------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A duty moving between machines needs the agent's durable state reachable on both   | Shared Postgres data plane (#958). For local groups this is the one operational prerequisite: the members must share a Postgres, and workspaces must be re-cloneable |
-| No two members serve one agent across a partition                                  | Daemon self-fence with per-group deadlines anchored on CP-confirmed renewal, plus the general withdrawal guard (#976)                                                |
-| A member that wins a duty for an agent it never had can serve it                   | Install-on-grant: `duty/fetch` pulls the bundle, authorized by holding the duty; the grant is applied only after the install (#972, #989)                            |
-| Every later update reaches whoever holds the agent, not whoever it was placed on   | `AgentDelivery` + `servedAgents` (#978); MCP/memory definitions ride the bundle and the roster (#989)                                                                |
-| Every agent has a group to be claimed under                                        | Components derived per agent, crons subsumed (#983)                                                                                                                  |
-| Placement is a target, not a member; eligibility is one predicate                  | `placementKind ∈ {daemon, pool}` and `domain/placement.ts#dutyEligibility` / `mayHold`, mirrored row-wise in the ledger's SQL (#991)                                 |
-| Ingress routes to a member only once it has admitted the grant                     | Routing-projection confirmation on `(holder, term)` (#991, #992)                                                                                                     |
-| Healing is proactive: the sweep re-grants a lapsed holder's groups with no trigger | `incumbent` deleted (#991); verified on a real rollout                                                                                                               |
+| Need                                                                               | Landed as                                                                                                                                                                              |
+| ---------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A duty moving between machines needs the agent's durable state reachable on both   | Shared Postgres data plane (#958). For local groups this is the one operational prerequisite: the members must share a Postgres, and workspaces must be re-cloneable                   |
+| No two members serve one agent across a partition                                  | Daemon self-fence with per-group deadlines anchored on CP-confirmed renewal, plus the general withdrawal guard (#976)                                                                  |
+| A member that wins a duty for an agent it never had can serve it                   | Install-on-grant: `duty/fetch` pulls the bundle, authorized by holding the duty; the grant is applied only after the install (#972, #989)                                              |
+| Every later update reaches whoever holds the agent, not whoever it was placed on   | `AgentDelivery` + `servedAgents` (#978); MCP/memory definitions ride the bundle and the roster (#989)                                                                                  |
+| Every agent has a group to be claimed under                                        | Components derived per agent, crons subsumed (#983)                                                                                                                                    |
+| Placement is a target, not a member; eligibility is one predicate                  | `domain/placement.ts#dutyEligibility` / `mayHold`, mirrored row-wise in the ledger's SQL (#991; `placementKind` contracted from `{daemon, pool}` to `{daemon, set}` by PR 1, #1003)    |
+| Authorization asks the holder, not `agent.daemonId`                                | `PlacementResolver` (`mayAct` / `servingDaemon` / `dispatchDaemon` / `routableDaemon`) across the CP's read, write, report and replay paths (#1004, #1047, #1055, #1057, #1061, #1063) |
+| Ingress routes to a member only once it has admitted the grant                     | Routing-projection confirmation on `(holder, term)` (#991, #992)                                                                                                                       |
+| Healing is proactive: the sweep re-grants a lapsed holder's groups with no trigger | `incumbent` deleted (#991); verified on a real rollout                                                                                                                                 |
 
 `domain/placement.ts` was written with this document in mind. Its contract: _nothing
 outside this module may branch on the placement kind; a later kind adds one arm here
@@ -60,11 +63,16 @@ tenancy, not by kind:
   daemons. Membership is control-plane metadata: an operator records it for org sets
   (console or CLI), and the control plane enrolls an org-less daemon in the org-less
   set itself when it authenticates (§6). It is never negotiated on the wire — the
-  daemon is told which set it is in, it does not tell.
+  daemon is told which set it is in, it does not tell. The one process that opts
+  out is an **observer** (#1079): a job registering with `observer: true` on a pool
+  identity is admitted on the same TokenReview path and then has that automatic
+  membership withdrawn, because eligibility is a `member_set_member` lookup and a
+  process whose only job is to sweep must never be granted work. The flag is
+  refused on an org-scoped connection.
 - **`Agent.placementKind ∈ {daemon, set}`** with `setId` as the ref for `set`. `daemon`
   is unchanged — pinned to one machine, outside the ledger. The `pool` kind #991
-  introduced **goes away** as a stored value (§8): a pool agent is a `set` agent whose
-  set is the org-less one. **Third write-time invariant, on the agent:** a `set`-placed
+  introduced **is gone** as a stored value (§8, landed in #1003): a pool agent is a
+  `set` agent whose set is the org-less one. **Third write-time invariant, on the agent:** a `set`-placed
   agent may reference only the org-less set or a set whose `orgId` equals the agent's
   own. Enforced in the same transaction that writes the placement (create, move) — the
   read path never re-checks it. Without this, `mayHold`'s single rule would let org X's
@@ -238,11 +246,12 @@ These are the operator's, not the code's:
 
 ## 6. Sequencing and size
 
-Two PRs, after #982 lands (it and this both edit `dutyEnforced()`). The first is a
-refactor with no behavior change; the second is the feature. Splitting them keeps the
-pool's just-verified behavior separable from the new one if anything regresses.
+Two PRs, after #982 lands (it did, as #995 — it and this both edit `dutyEnforced()`).
+The first is a refactor with no behavior change; the second is the feature. Splitting
+them keeps the pool's just-verified behavior separable from the new one if anything
+regresses.
 
-**PR 1 — fold the pool into a member set (§8).** Schema: `member_set`,
+**PR 1 — fold the pool into a member set (§8). Landed as #1003.** Schema: `member_set`,
 `member_set_member`, `placementKind` gains `set` and loses `pool`; a migration creates
 the one org-less row, rewrites every `pool` agent to `set` + that row's id, and enrolls
 every org-less daemon row as its member. `domain/placement.ts` and the SQL mirror
@@ -252,7 +261,7 @@ was a set all along. Also: a new org-less daemon row (a Pod that just authentica
 must be enrolled in the org-less set as part of `upsertOnAuth`, so pool membership stays
 automatic; a `daemon`-kind daemon row is never enrolled anywhere by itself.
 
-**PR 2 — org sets.** Console: set CRUD in org settings, membership on the daemon detail,
+**PR 2 — org sets (#1000, open).** Console: set CRUD in org settings, membership on the daemon detail,
 one more placement entry per set. The three duty handlers and the heartbeat handler:
 `SCOPE_DENIED` becomes "in no set". `auth/ok` announces the daemon's set; the daemon's
 enforcement predicate reads it. Nothing in the ledger changes — PR 1 already made it
@@ -287,10 +296,10 @@ sent.
   it does not tell. The one exception is automatic pool enrollment on auth (§6 PR 1),
   which is the CP deciding, not the daemon.
 
-## 8. Folding the pool: the migration
+## 8. Folding the pool: the migration (applied)
 
-The pool exists today as `placementKind = 'pool'` on agents and as "org-less daemon
-row" on daemons, with no set row anywhere. PR 1 makes it a set:
+The pool used to exist as `placementKind = 'pool'` on agents and as "org-less daemon
+row" on daemons, with no set row anywhere. PR 1 (#1003) made it a set:
 
 1. Create `member_set` and `member_set_member`; insert one org-less row (the pool).
 2. `UPDATE agent SET placementKind = 'set', setId = <pool> WHERE placementKind = 'pool'`.
@@ -310,9 +319,11 @@ The daemon needs nothing for PR 1: it still learns "you are install-wide" from
 **Rollout ordering.** Old control-plane code does not understand a stored `set`
 placement, and new code cannot resolve eligibility before `member_set` exists, so the
 migration and the code that reads it must not straddle a rolling deploy of the control
-plane. Two acceptable answers: run the migration as a coordinated cutover with the
-control plane briefly down (this is a pre-release project with a single control-plane
-replica per environment, so that is the honest, cheap one), or ship the schema first
-with dual-read code that treats `pool` and `set`-of-the-org-less-row as the same
-eligibility, migrate, then drop the `pool` arm in a following release. The design does
-not require the second; the deployment picks.
+plane. Two answers were acceptable: a coordinated cutover with the control plane
+briefly down, or shipping the schema first with dual-read code that treats `pool` and
+`set`-of-the-org-less-row as the same eligibility, migrating, then dropping the `pool`
+arm in a following release. **The cutover is what shipped** — this is a pre-release
+project with a single control-plane replica per environment, so the compatibility
+window would have been machinery for a problem that does not exist. The migration
+itself is safe under load either way: eligibility is re-read from current placement on
+every claim, and a claim in flight across it gets the same answer both ways.

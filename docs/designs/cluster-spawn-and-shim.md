@@ -59,11 +59,11 @@ with the credential helper: a second name would be a second in-pod path onto one
 image, so a listener for it would be a socket nothing can use.
 
 **The shim listens; the daemon dials the ready pod's IP.** The Sandbox status already reports
-the backing pod's addresses, so no per-sandbox Service is required. During migration, the
-sandbox NetworkPolicy admits daemon-labelled pods from either its dedicated namespace or the
-install's pool namespace on the fixed shim port; the pooled tier can narrow this to the pool
-namespace once tiered envelopes land. The daemon no longer exposes a shim listener. This
-direction also makes a future daemon pool possible: the duty holder can dial the
+the backing pod's addresses, so no per-sandbox Service is required. The sandbox
+NetworkPolicy is now a single coarse ingress rule — the pool namespace to the fixed shim
+port — which replaced the per-envelope sandbox→member egress allowances when the per-org
+envelope was deleted. The daemon no longer exposes a shim listener. This
+direction is what makes the daemon pool possible: the duty holder dials the
 sandbox it owns without publishing a callback endpoint for every daemon. What
 "duty holder" means — the pool, the lease ledger, the heartbeat exchange, and
 the activation rendezvous — is [k8s-daemon-pool.md](k8s-daemon-pool.md).
@@ -73,7 +73,8 @@ The daemon pool and agent sandboxes are separate namespaces. The runtime plane r
 defaults to the namespace mounted into the daemon Pod's ServiceAccount.
 
 Runtime probes use a member-hashed claim name plus an expiry annotation. The pool's orphan
-reconciler (k8s-daemon-pool.md §4) collects expired probe claims by that window, bounding resources
+reconciler — `agentconnect-daemon reconcile --once`, run as a CronJob rather than in any member
+(k8s-daemon-pool.md §4) — collects expired probe claims by that window, bounding resources
 left by a crash or failed teardown without reading daemon-local storage or touching ordinary agent
 claims. UID/resourceVersion delete preconditions prevent a stale sweep from deleting a same-name
 claim recreated by a container restart.
@@ -255,6 +256,16 @@ any agent it holds a launch for that no longer has a host. Suspension deletes th
 nothing else: the Sandbox object and the workspace volume survive, so the next message resumes
 onto the same checkout and the same runtime history rather than paying a clone.
 
+**On a pool the sweep is duty-gated, because a launch is not evidence of ownership.** The
+`busy` counter a member reads is its own, so an ex-holder that kept its launch record would
+see zero holders and suspend a pod its successor is binding. So the sweep skips any agent
+this member does not serve, losing a duty releases the launch with its shim session, tunnel
+proxy and loss watch (the claim, Sandbox and volume are untouched), and gaining one
+re-derives the launch from the cluster — two GETs, recording it only when the pod is
+Running. Idleness is then `max(agentLastActivityTs, launch.since)`, so an agent whose
+activity the shared store does not record gets a full window from the takeover instead of an
+instant epoch-idle suspend.
+
 Suspension and acquisition exclude each other, and the lease counter is not what does it: `busy`
 counts holders, it does not keep new ones out, so a dispatch arriving during the Kubernetes write
 would lose its pod and then find its launch forgotten by the suspend's own success path. The
@@ -275,7 +286,9 @@ finds the Sandbox Suspended.
 
 One gap this leaves, deliberately: a pod still Running from _before_ a daemon restart has no
 launch in the new process, so nothing considers it until the agent is used again — at which
-point it acquires a launch and the rule applies from then on. The drain path solves the same
+point it acquires a launch and the rule applies from then on. On a pool member the duty grant
+closes it, since re-deriving the launch is exactly what the grant does; a single daemon
+restarting still pays one pod until its agent's next message. The drain path solves the same
 problem by keying on Sandbox name, which works because a rollout needs no agent identity;
 suspension does need it, to ask whether that agent has been quiet, and the Sandbox object
 carries no agent label to recover it from (the labels go to the pod). Inventing a mapping is
@@ -294,6 +307,32 @@ called by nothing.
 After loss is reported, the driver revokes the outbound dial and forgets the launch. A late
 socket therefore cannot reattach to the terminal session; the next turn creates a fresh
 generation and dials the pod through the ordinary wake path.
+
+**The loss window is measured from the pod being up, not from the socket that dropped.** A
+shim cannot dial back while its pod is still binding a PVC and pulling an image, so a fixed
+grace window counted a genuine cold start as a lost launch: the binding was revoked, the ACP
+host stayed memoized dead, and every later turn failed with a closed connection until the
+member was replaced. The loss check now reads the Sandbox the driver already watches —
+`ready | starting | absent` — re-reads while the pod is coming up, restarts the whole grace
+window when it arrives, and is bounded by the same pod-up timeout the launch path waits on,
+so a pod that never arrives is still reported lost. Each readiness read carries what is left
+of that ceiling as an abort signal, because the Kubernetes client has no request deadline and
+an accepted-but-unanswered GET would otherwise hold the check open forever. A terminal
+runtime is paired with the ordinary rebuild: the host is reclaimed on `onTerminal`, returning
+the agent to provisioned so the next message starts a fresh one.
+
+**Waking is an explicit press, never a read.** A cluster agent's files live on its pod's
+volume and are readable only through a running sandbox, so the console has `POST
+/agents/:id/wake` — authorized like the other agent writes, resolved through the placement
+resolver's dispatch answer (so a set agent nobody currently serves reaches a live member,
+which claims it the way a turn would), debounced per agent, and sent only to a daemon
+advertising the wake capability. The daemon claims the duty if it does not hold it, answers
+`running` when the channel is already bound, and otherwise brings the sandbox to Running and
+binds the shim — **no host and no ACP session** — answering `starting`. That bind is what the
+workspace `read` channel serves on, so a woken sandbox is exactly a readable one, and the
+launch it records gets a full idle window before the sweep may suspend it again. A GET still
+wakes nothing: the refusal is transient by design and the console re-issues the read behind
+the press.
 
 **The generation belongs to the agent, not to the daemon process.** A sandbox pod's shim
 records the highest generation it has ever bound and refuses anything below it for the rest of
