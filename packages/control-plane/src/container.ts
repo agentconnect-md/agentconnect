@@ -652,7 +652,8 @@ export function buildContainer(
     relayControl,
     sender,
     placementResolver,
-    repos.dutyGroup
+    repos.dutyGroup,
+    clock
   )
 
   // The fan-out that rides the resolver (orchestrator/agentDelivery.ts).

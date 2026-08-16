@@ -308,6 +308,7 @@ import { nodeExecArgvModuleEntries } from './runtimes/node-exec-argv.js'
 import { makeLogger, type Logger } from './log.js'
 import { CpClient, CP_SUBPROTOCOL, CP_WS_PATH, type BootstrapUpgradeOutcome } from './cp/client.js'
 import { RelayManager } from './cp/relay-manager.js'
+import { sendAgentMsgUntilReady } from './cp/agentmsg-retry.js'
 import { CP_IDENTITY_TOKEN_PATH, readClusterIdentityToken } from './cp/cluster-identity.js'
 import { CpCollabRoutes, isSyntheticA2aChannel } from './cp/cp-collab-routes.js'
 import { ClientTransport, systemClock, type Clock, type TimerHandle } from '@agentconnect.md/connection'
@@ -347,6 +348,7 @@ import {
   WireFeishuCardActionEvent,
   gitRepoLabel,
   hasReachedAgentCallHopLimit,
+  RD_AGENTMSG_NOT_READY,
   normalizeGitCloneUrl,
   normalizeGithubRepoUrl,
   MAX_AGENT_CALL_HOPS,
@@ -1132,6 +1134,11 @@ interface CallMeta {
 
 type TurnInterruptReason = 'pause' | 'loop protection' | 'stop' | 'cancel' | 'shutdown' | 'superseded'
 
+/** What an interrupt means for the agent's admitted-but-unrun durable rows. `reason` cannot say
+ *  it: removal and a duty handoff are both `stop`. `terminal` ends that work here (pause, removal,
+ *  host respawn); `handoff` leaves the rows for the successor holder to replay (#1050). */
+type TurnInterruptDisposition = 'terminal' | 'handoff'
+
 /** One durable loop-guard scope shared by every agent on one physical bot.
  *  DMs are keyed at channel level because malformed platform wrappers may lose
  *  thread coordinates; threaded channel conversations retain their canonical
@@ -1536,6 +1543,9 @@ interface QueueEntry {
   /** The live inbox row was redacted into a durable terminal HookReport
    * receipt; removeInbox must retain it for restart-safe redelivery dedup. */
   hookTerminalReceipt?: boolean
+  /** A duty handoff released this row to the successor holder instead of ending it, so the
+   *  entry's later terminal settle must not delete it either (#1050). */
+  inboxHandedOff?: boolean
 }
 
 interface GithubQueueCandidate {
@@ -8723,9 +8733,10 @@ export class Daemon {
 
     const { platform, channel, thread } = msg.coords
 
-    // The target must actually be a local agent (the relay resolved it to us, but we
-    // don't trust that blindly — this is the placement authority for OUR agents).
-    if (!this.agents.get(msg.toAgentId)) return record(nak('not_found'))
+    // Local placement authority: an agent the directory knows but we do not run is a stale route → retryable, uncached; unknown everywhere → terminal.
+    if (!this.agents.get(msg.toAgentId)) {
+      return this.cpCollab.agent(msg.toAgentId) ? nak(RD_AGENTMSG_NOT_READY) : record(nak('not_found'))
+    }
 
     // TERMINAL-VERIFY against the local collaboration snapshot (§2.5 #4), now ORG-scoped
     // rather than (org, channel)-scoped: the relay's asserted org must be the org this
@@ -8733,8 +8744,14 @@ export class Daemon {
     // caller→target. Channel is only the session coordinate here (A2A is postless, #854), so
     // a caller and target that share no channel — or a target with no IM integration at all —
     // is legitimate. Missing snapshot / unknown agent ⇒ fail closed, as before.
-    if (this.cpCollab.orgForAgent(msg.toAgentId) !== msg.orgId) {
-      this.log.warn(`relay: rd/agentmsg/fwd terminal-verify failed (no placement) for ${msg.toAgentId} — fail closed`)
+    const targetOrg = this.cpCollab.orgForAgent(msg.toAgentId)
+    // Our directory copy may still be catching up with the grant: refuse retryably, uncached.
+    if (targetOrg === undefined) {
+      this.log.info(`relay: rd/agentmsg/fwd not_ready — ${msg.toAgentId} is not in this daemon's directory yet`)
+      return nak(RD_AGENTMSG_NOT_READY)
+    }
+    if (targetOrg !== msg.orgId) {
+      this.log.warn(`relay: rd/agentmsg/fwd terminal-verify failed (org mismatch) for ${msg.toAgentId} — fail closed`)
       return record(nak('not_allowed'))
     }
     if (!this.cpCollab.admits(msg.trustedFromAgentId, msg.toAgentId)) {
@@ -10123,37 +10140,49 @@ export class Daemon {
     if (!this.relays) {
       return { delivered: false, targetSession: ctx.targetSession, reason: 'not_local' }
     }
+    const relays = this.relays
     try {
-      const ack = await this.relays.sendAgentMsg({
-        claimedFromAgentId: req.callerAgentId,
-        // Tighten-only privacy hint for the remote child's capture gate (§5.1).
-        ...(ctx.originSessionId !== undefined && this.store.isCaptureExcluded(req.callerAgentId, ctx.originSessionId)
-          ? { parentPrivate: true }
-          : {}),
-        toAgentId: req.toAgentId,
-        text: req.text,
-        coords: {
-          platform: ctx.platform,
-          channel: ctx.channel,
-          ...(ctx.thread !== undefined ? { thread: ctx.thread } : {})
+      // #987: `not_ready` re-sends the SAME deliveryId for a bounded window; only a terminal verdict is recorded below.
+      const ack = await sendAgentMsgUntilReady(
+        {
+          claimedFromAgentId: req.callerAgentId,
+          // Tighten-only privacy hint for the remote child's capture gate (§5.1).
+          ...(ctx.originSessionId !== undefined && this.store.isCaptureExcluded(req.callerAgentId, ctx.originSessionId)
+            ? { parentPrivate: true }
+            : {}),
+          toAgentId: req.toAgentId,
+          text: req.text,
+          coords: {
+            platform: ctx.platform,
+            channel: ctx.channel,
+            ...(ctx.thread !== undefined ? { thread: ctx.thread } : {})
+          },
+          ...(ctx.correlationId !== undefined ? { correlationId: ctx.correlationId } : {}),
+          hopCount: ctx.sourceHopCount,
+          deliveryId: ctx.deliveryId,
+          // Visible-post ts (if this wake was a `toAgent`+`channel` send) so the remote target
+          // dedups the wake against the post it fetches from the shared thread and keeps a
+          // canonical read cursor — same guarantee as the same-daemon path.
+          ...(req.transcriptTs !== undefined ? { transcriptTs: req.transcriptTs } : {}),
+          ...(ctx.originSessionId !== undefined ? { originSessionId: ctx.originSessionId } : {}),
+          ...(ctx.originCoords !== undefined ? { originCoords: ctx.originCoords } : {}),
+          ...(ctx.externalOrigin !== undefined ? { externalOrigin: ctx.externalOrigin } : {}),
+          ...(ctx.lineageReplyTo !== undefined ? { lineageReplyTo: ctx.lineageReplyTo } : {}),
+          // §5.4: ask the remote child to report its outcome back into our origin session. Gated on
+          // having an origin for exactly the reason the local path is — there is nothing to report to
+          // without one, and the target ignores it in that case anyway.
+          ...(req.needsReply === true && ctx.originSessionId !== undefined ? { needsReply: true } : {}),
+          ...(ctx.deliveryKind !== undefined ? { deliveryKind: ctx.deliveryKind } : {})
         },
-        ...(ctx.correlationId !== undefined ? { correlationId: ctx.correlationId } : {}),
-        hopCount: ctx.sourceHopCount,
-        deliveryId: ctx.deliveryId,
-        // Visible-post ts (if this wake was a `toAgent`+`channel` send) so the remote target
-        // dedups the wake against the post it fetches from the shared thread and keeps a
-        // canonical read cursor — same guarantee as the same-daemon path.
-        ...(req.transcriptTs !== undefined ? { transcriptTs: req.transcriptTs } : {}),
-        ...(ctx.originSessionId !== undefined ? { originSessionId: ctx.originSessionId } : {}),
-        ...(ctx.originCoords !== undefined ? { originCoords: ctx.originCoords } : {}),
-        ...(ctx.externalOrigin !== undefined ? { externalOrigin: ctx.externalOrigin } : {}),
-        ...(ctx.lineageReplyTo !== undefined ? { lineageReplyTo: ctx.lineageReplyTo } : {}),
-        // §5.4: ask the remote child to report its outcome back into our origin session. Gated on
-        // having an origin for exactly the reason the local path is — there is nothing to report to
-        // without one, and the target ignores it in that case anyway.
-        ...(req.needsReply === true && ctx.originSessionId !== undefined ? { needsReply: true } : {}),
-        ...(ctx.deliveryKind !== undefined ? { deliveryKind: ctx.deliveryKind } : {})
-      })
+        {
+          send: (payload) => relays.sendAgentMsg(payload),
+          clock: this.clock,
+          onRetry: (attempt, delayMs) =>
+            this.log.info(
+              `messageAgent: ${req.toAgentId} not routable yet (attempt ${attempt}) — retrying delivery ${ctx.deliveryId} in ${delayMs}ms`
+            )
+        }
+      )
       // §5.4: prefer the CANONICAL key the target computed — its transport scope depends on the
       // reply integration the relay chose, which we cannot derive. Fall back to our own guess only
       // for an older target daemon that returns none (it then simply won't be followable).
@@ -13407,7 +13436,10 @@ export class Daemon {
    *  longer served here" cannot be claimed. Immediate when no host exists. */
   private stopServingAgentSettled(agentId: string): Promise<void> {
     if (!this.dutyEnforced()) return Promise.resolve()
-    this.interruptAgentTurns(agentId, 'stop')
+    // A handoff, never a removal (#948): the turns stop here, but their admitted-but-unrun rows
+    // stay for whoever holds the duty next. Only a duty-governed member reaches this line, so a
+    // single daemon's terminal-purge semantics are untouched.
+    this.interruptAgentTurns(agentId, 'stop', 'handoff')
     this.scheduler.unregister(agentId)
     this.dreamScheduler.unregister(agentId)
     const prior = this.dutyHostStops.get(agentId) ?? Promise.resolve()
@@ -13806,10 +13838,16 @@ export class Daemon {
   /** Remove an entry's durable inbox row once its turn reaches ANY terminal state (success,
    *  reject/fail-stop, cancel, gate-drop) so it is not replayed on the next startup. No-op
    *  for a non-persisted entry (webchat / never-admitted). NOT called on graceful-shutdown
-   *  settle: those admitted-but-unrun rows are intentionally LEFT for startup replay. */
-  private removeInbox(entry: QueueEntry): void {
+   *  settle: those admitted-but-unrun rows are intentionally LEFT for startup replay.
+   *  `handoff` is the same retention for one agent: drop only this process's live claim so a
+   *  successor holder — or a later re-grant here — replays the row (#1050). */
+  private removeInbox(entry: QueueEntry, handoff = false): void {
     if (!entry.inboxId) return
     this.liveInboxIds.delete(entry.inboxId)
+    // Latched on the entry: the interrupted turn settles through dispatch's own terminal
+    // paths afterwards, and those must not delete the row the handoff just kept.
+    if (handoff) entry.inboxHandedOff = true
+    if (entry.inboxHandedOff) return
     // Hook rows become redacted terminal receipts in emitHookCompletion. If
     // that conversion failed (or shutdown deliberately skipped completion),
     // retaining the live row is the only restart-safe choice.
@@ -15967,6 +16005,8 @@ export class Daemon {
       preserveQueued?: boolean
       allowSameKeyAdmissions?: boolean
       allowGithubLane?: string
+      /** Duty handoff: stop running the work here, but leave its durable rows for the successor. */
+      handoffInbox?: boolean
     } = {}
   ): void {
     // The force-cancel fallback is host-wide. Hold NEW admissions until this exact
@@ -15987,7 +16027,7 @@ export class Daemon {
       if (reason === 'superseded' && activeEntry.hookContext) {
         this.emitHookCompletion(activeEntry.hookContext, 'failed', { reason }, activeEntry)
       } else {
-        this.removeInbox(activeEntry)
+        this.removeInbox(activeEntry, opts.handoffInbox)
       }
     }
     // Drop everything buffered behind this turn first (one unified queue) and settle each
@@ -16001,7 +16041,7 @@ export class Daemon {
         if (e.hookContext) {
           this.emitHookCompletion(e.hookContext, 'failed', { reason: opts.dropQueued ? 'dropped' : 'cancelled' }, e)
         }
-        this.removeInbox(e)
+        this.removeInbox(e, opts.handoffInbox)
         if (opts.dropQueued) e.resolve(null)
         else e.reject(new FailStopError(key))
       }
@@ -16067,11 +16107,17 @@ export class Daemon {
   /** Interrupt every logical session owned by an agent for a lifecycle gate (pause,
    *  removal, or host respawn). Active ACP turns are cancelled; queued turns are
    *  cleanly gate-dropped. A cold head is latched so it cannot resume after teardown. */
-  private interruptAgentTurns(agentId: string, reason: TurnInterruptReason): void {
+  private interruptAgentTurns(
+    agentId: string,
+    reason: TurnInterruptReason,
+    disposition: TurnInterruptDisposition = 'terminal'
+  ): void {
+    const handoffInbox = disposition === 'handoff'
     this.beginSafetyDrain(agentId, reason)
-    // The interruption is terminal for every already-admitted turn. Delete durable
-    // rows first so an immediate daemon stop cannot preserve and replay old work.
-    this.purgeAgentInbox(agentId, reason)
+    // A terminal interrupt ends every already-admitted turn: delete the durable rows first so an
+    // immediate daemon stop cannot preserve and replay old work. A handoff keeps them instead —
+    // on a pool's shared store those rows ARE the unrun work the successor holder must replay.
+    if (!handoffInbox) this.purgeAgentInbox(agentId, reason)
     const targets = new Map<string, string | undefined>()
     for (const [key, entry] of this.activeGateEntries) {
       if (entry.agentId !== agentId) continue
@@ -16089,7 +16135,7 @@ export class Daemon {
     if (targets.size > 0)
       this.log.info(`${reason}: interrupting ${targets.size} active session(s) for agent "${agentId}"`)
     for (const [key, acpSessionId] of targets) {
-      this.interruptTurn(agentId, key, reason, acpSessionId, { dropQueued: true })
+      this.interruptTurn(agentId, key, reason, acpSessionId, { dropQueued: true, handoffInbox })
     }
   }
 

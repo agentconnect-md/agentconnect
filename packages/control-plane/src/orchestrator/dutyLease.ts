@@ -340,8 +340,9 @@ export class DutyLeaseService {
     // applied daemon-side only after its install succeeds (#972), so a group appearing in the
     // digest is the proof that the member is actually serving it. Publishing at grant time is the
     // same error #976 fixed for the fence — the gate opening before the fact — and on a pushed
-    // projection it costs a message: relay ingress recovers through the rendezvous, but a
-    // cross-daemon peer wake forwards ONCE and takes a terminal miss.
+    // projection it costs a message: relay ingress recovers through the rendezvous, and a
+    // cross-daemon peer wake rides the directory's PENDING entry (retryable `not_ready`) until
+    // this confirmation names the member.
     //
     // The digest's TERMS ride along, not just its ids: a member mid-admission of a re-grant still
     // reports the previous term, and that confirms the previous grant, never the current one. Same
@@ -418,6 +419,10 @@ export class DutyLeaseService {
         { maxMembers: DUTY_GRANT_MEMBERS_MAX, excludeGroupIds: this.backedOff(daemonId) }
       )
       this.noteGranted(granted, daemonId)
+      // Not a route yet (routable reads confirmations), but a state change: the directory must stop
+      // naming the expired holder and carry the agents as PENDING now, or a peer wake in the
+      // grant→digest window sees a terminal `offline` instead of the retryable `not_ready` (#987).
+      if (granted.length > 0) this.routing?.kick(agentIdsOf(granted))
     }
 
     // Classified AFTER the claim so the grant and revoke sets are disjoint by
@@ -508,9 +513,9 @@ export class DutyLeaseService {
       if (claim.granted && claim.term !== undefined)
         this.noteGranted([{ groupId: claim.groupId, term: claim.term }], holder)
       const [grant] = await this.stamp([toGrantEntry(group)])
-      // No routing kick here: like every other grant this is not yet a fact — the claimant
-      // installs before it answers, but the ledger has not seen the group in a digest. The
-      // member's next beat confirms it and converges then.
+      // Kicked for the same reason as the vacancy grant: the routable member still waits for the
+      // digest, but the directory turns the agents PENDING right away.
+      this.routing?.kick(agentIdsOf([group]))
       return { granted: true, grant }
     })
   }

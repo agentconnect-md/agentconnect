@@ -3,8 +3,10 @@
  * (agent-collaboration §2.3/§6.2) from an org's channel placements. Groups the flat
  * placement records into per-channel `CollabChannelRoute`s, dropping unplaced agents
  * (no daemonId ⇒ not routable), plus the FLAT org-scoped `agents[]` directory built
- * from `orgAgents` — the only carrier for an agent that has no IM integration and so
- * appears in no channel at all. Bodiless routing/policy metadata only.
+ * from the RESOLVED `orgAgents` (`PlacementResolver.resolveDirectory`) — the only
+ * carrier for an agent that has no IM integration and so appears in no channel at all,
+ * and the only list that may carry a PENDING (daemon-less) entry. Bodiless
+ * routing/policy metadata only.
  *
  * The SAME snapshot is shipped to the relay (`rc/collab-routes`, full org) and to a
  * daemon (`register/ok.collabRoutes` / `collaboration/routes` EVT). The daemon copy is
@@ -78,23 +80,23 @@ export function buildCollabSnapshot(
   // The FLAT org directory, alongside the channel-keyed routes. An agent with no IM
   // integration appears in NO `channels[]` entry, so this list is the only place a
   // holder of the snapshot can learn it exists — and channel-free A2A authorization
-  // needs exactly that. Unplaced agents (daemonId null) are dropped for the same
-  // reason as in `channels[]`: with no owning daemon there is nothing to route to.
-  // No `integrationId`/`botAppId`: both are per-channel reply coordinates, not
-  // identity, and this entry is deliberately channel-free.
-  const agents: CollabOrgAgent[] = orgAgents
-    .filter((a): a is OrgAgentRecord & { daemonId: string } => a.daemonId !== null)
-    .map((a) => ({
-      orgId,
-      agentId: a.agentId,
-      daemonId: a.daemonId,
-      callPolicy: a.callPolicy,
-      allowedCallerAgentIds: a.allowedCallerAgentIds,
-      outboundPolicy: a.outboundPolicy,
-      allowedTargetAgentIds: a.allowedTargetAgentIds,
-      name: a.name,
-      ...(a.displayName !== null ? { displayName: a.displayName } : {})
-    }))
+  // needs exactly that. `orgAgents` is the RESOLVED directory (`PlacementResolver.
+  // resolveDirectory`): rows nothing serves are already gone, and a `daemonId: null`
+  // row is PENDING — carried without a daemon so a wake gets the retryable `not_ready`
+  // rather than failing closed as unknown. No `integrationId`/`botAppId`: both are
+  // per-channel reply coordinates, not identity, and this entry is deliberately
+  // channel-free.
+  const agents: CollabOrgAgent[] = orgAgents.map((a) => ({
+    orgId,
+    agentId: a.agentId,
+    ...(a.daemonId !== null ? { daemonId: a.daemonId } : {}),
+    callPolicy: a.callPolicy,
+    allowedCallerAgentIds: a.allowedCallerAgentIds,
+    outboundPolicy: a.outboundPolicy,
+    allowedTargetAgentIds: a.allowedTargetAgentIds,
+    name: a.name,
+    ...(a.displayName !== null ? { displayName: a.displayName } : {})
+  }))
 
   return { generation, channels: [...byChannel.values()], agents, platformKinds: PLATFORM_KINDS }
 }

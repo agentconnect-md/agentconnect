@@ -72,7 +72,7 @@ import type { AgentSpecAssembler } from './agentSpecAssembler.js'
 import { buildCollabSnapshot } from './collabSnapshot.js'
 import type { ConnectionRegistry, DaemonConnState } from '../ws/registry.js'
 import type { ControlSender } from './outbound.js'
-import type { PlacementResolver } from './placementResolver.js'
+import { PLACEMENT_ONLY, type PlacementResolver } from './placementResolver.js'
 import type { EpochService } from './epoch.js'
 import type { Clock } from '../domain/clock.js'
 
@@ -498,9 +498,9 @@ export class Placement implements ReconcileService {
         placements,
         Number(daemon.routingEpoch),
         // Placement names the target for a machine-placed peer; the ledger names it for a pool
-        // one. `buildCollabSnapshot` drops rows with no daemon, so resolving here is what keeps a
-        // pool agent discoverable AND callable.
-        this.orch?.placement ? await this.orch.placement.resolveDirectory(orgDirectory) : orgDirectory
+        // one, and marks a pool agent nobody may be addressed at yet as pending. The resolver is
+        // the only producer of that shape, so a graph without one still goes through it.
+        await (this.orch?.placement ?? PLACEMENT_ONLY).resolveDirectory(orgDirectory)
       )
       collabRoutes.channels.push(...snapshot.channels)
       collabRoutes.agents.push(...snapshot.agents)

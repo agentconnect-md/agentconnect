@@ -27,14 +27,20 @@
  *     channel assertion) to the owning daemon and relay its admission verdict back.
  *
  * Per-hop dedup on the stable `deliveryId` (§6.4): a retransmit of the same deliveryId
- * replays the prior verdict without a second forward (no double-wake).
+ * replays the prior verdict without a second forward (no double-wake). The one verdict
+ * NEVER cached is the retryable `not_ready` — a PENDING directory entry (a pool member
+ * holding an unconfirmed grant, or a lapsed lease a live member is about to claim), or
+ * the target daemon answering it — so the SOURCE daemon's bounded retry of the same
+ * deliveryId is re-evaluated against the current directory instead of replaying a miss.
  *
- * FOLLOW-UP (P2 scope-down): retransmit/retry is NOT implemented — this is ACK/NAK +
- * per-hop dedup + the 5s correlator timeout (the forward's `rd/agentmsg/fwd` inherits
- * the connection's ACK_TIMEOUT_MS). Documented in the PR description.
+ * Retransmit for the other verdicts is NOT implemented — this is ACK/NAK + per-hop dedup
+ * + the 5s correlator timeout (the forward's `rd/agentmsg/fwd` inherits the connection's
+ * ACK_TIMEOUT_MS).
  */
 import {
   hasReachedAgentCallHopLimit,
+  isRetryableAgentMsgAck,
+  RD_AGENTMSG_NOT_READY,
   RD_HEADLESS_AGENT_DELIVERY_V1,
   type RdAgentMsg,
   type RdAgentMsgAck,
@@ -72,6 +78,7 @@ export function createAgentMsgRouter(deps: AgentMsgRouterDeps) {
     }
 
     const verdict = await route(fromDaemonId, msg)
+    if (isRetryableAgentMsgAck(verdict)) return verdict // not yet, not never — the retry must re-route
     if (seen.size >= 4000) seen.clear() // bound the dedup window
     seen.set(dedupKey, verdict)
     return verdict
@@ -84,6 +91,11 @@ export function createAgentMsgRouter(deps: AgentMsgRouterDeps) {
     // daemon — that daemon-ownership check, not channel membership, is what makes the claim
     // unforgeable. Org is bound from the caller's own entry (the frame carries no org).
     const caller = router.agent(msg.claimedFromAgentId)
+    // A PENDING caller (no confirmed member yet) binds to no socket: refuse retryably, not as forged.
+    if (caller && caller.daemonId === undefined) {
+      deps.log.info(`relay: rd/agentmsg not_ready — caller ${msg.claimedFromAgentId} has no confirmed member yet`)
+      return nak(msg.deliveryId, RD_AGENTMSG_NOT_READY)
+    }
     if (!caller || caller.daemonId !== fromDaemonId) {
       deps.log.warn(
         `relay: rd/agentmsg rejected — forged/unknown caller ${msg.claimedFromAgentId} on daemon ${fromDaemonId}`
@@ -148,6 +160,11 @@ export function createAgentMsgRouter(deps: AgentMsgRouterDeps) {
     if (hasReachedAgentCallHopLimit(hopCount)) return nak(msg.deliveryId, 'hop_limit')
 
     // (f) Resolve the owning daemon connection and forward with a TRUSTED caller claim.
+    // A PENDING target (authorized, no member confirmed yet) is the retryable miss the source re-sends.
+    if (target.daemonId === undefined) {
+      deps.log.info(`relay: rd/agentmsg not_ready — target ${msg.toAgentId} has no confirmed member yet`)
+      return nak(msg.deliveryId, RD_AGENTMSG_NOT_READY)
+    }
     const conn = deps.daemons()?.get(target.daemonId)
     if (!conn) return nak(msg.deliveryId, 'offline')
 
