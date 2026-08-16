@@ -146,11 +146,11 @@ type ComposerMenuKey = 'permission' | 'model' | 'effort' | 'addAgent'
 // strength fails contrast on the light surface.
 // SELF_BUBBLE is the reader's own, deliberately neutral, tail corner mirrored.
 // Full literal strings so Tailwind's scanner sees them (STYLE.md §8).
-// The 35px right inset is the user side's mark column (26px avatar + 9px gap): it
-// stops a long agent bubble short of where the reader's own avatar sits, so the two
-// columns of bubbles share one right edge instead of the bot side running under it.
+// Desktop reserves the user-side mark column (26px avatar + 9px gap) so both bubble
+// columns share one right edge. Mobile removes that redundant reserve and trims the
+// bubble padding while preserving the same multi-agent avatar and colour language.
 const AGENT_BUBBLE =
-  'w-fit max-w-[calc(100%-35px)] rounded-[12px_12px_12px_4px] border px-3 py-[9px] font-sans text-[13.5px] font-normal leading-[1.55] text-(--text-primary) border-[color:color-mix(in_oklab,var(--agent-accent,var(--indigo-500))_var(--bubble-edge),var(--surface-card))] bg-[color:color-mix(in_oklab,var(--agent-accent,var(--indigo-500))_var(--bubble-tint),var(--surface-card))]'
+  'w-fit max-w-full rounded-[12px_12px_12px_4px] border px-2.5 py-2 font-sans text-[13.5px] font-normal leading-[1.55] text-(--text-primary) desktop:max-w-[calc(100%-35px)] desktop:px-3 desktop:py-[9px] border-[color:color-mix(in_oklab,var(--agent-accent,var(--indigo-500))_var(--bubble-edge),var(--surface-card))] bg-[color:color-mix(in_oklab,var(--agent-accent,var(--indigo-500))_var(--bubble-tint),var(--surface-card))]'
 const AGENT_NAME =
   'font-sans text-[13px] font-semibold leading-normal text-[color:color-mix(in_oklab,var(--agent-accent,var(--indigo-500))_62%,var(--text-primary))]'
 const SELF_BUBBLE =
@@ -4010,9 +4010,9 @@ export default function SessionDetailView() {
           last child is the sticky composer, and a bottom gutter under it is a strip
           the composer stops short of. (Longhand `pb-*` always sorts after shorthand
           `p-*`, so the cancel wins — STYLE.md §8.) */}
-          <div className="flex flex-1 flex-col gap-4 p-4 max-desktop:pb-0 desktop:gap-0 desktop:p-0">
+          <div className="flex flex-1 flex-col gap-4 p-3 max-desktop:pb-0 desktop:gap-0 desktop:p-0">
             {turns.length > 0 && (
-              <div className="flex flex-col gap-4 desktop:gap-[15px]">
+              <div className="flex flex-col gap-4 max-desktop:pb-3 desktop:gap-[15px]">
                 {turns.map((turn, ti) => (
                   // The turn's clock time is its own centred line above the message —
                   // a shared separator for both sides, instead of a label-row tail
@@ -4146,7 +4146,10 @@ export default function SessionDetailView() {
                           .filter(Boolean)
                           .join('\n\n')
                         return (
-                          <div key={`${session.id}:${ti}`} className="group/turn flex items-start gap-[10px]">
+                          <div
+                            key={`${session.id}:${ti}`}
+                            className="group/turn flex items-start gap-2 desktop:gap-[10px]"
+                          >
                             <span className="av h-[26px] w-[26px] flex-none rounded-md">
                               <AgentIconView
                                 icon={((turn.agentId ? agentById.get(turn.agentId) : owner) ?? owner)?.icon}
@@ -4161,11 +4164,9 @@ export default function SessionDetailView() {
                               <div className="mb-[5px] flex items-center gap-[7px]">
                                 <span className={AGENT_NAME}>{turn.agentName}</span>
                               </div>
-                              {/* One bubble PER text step, not one around the set: each step is
-                            its own delivered message (a turn that answers in two chunks
-                            arrives as two), so bubbling them together would merge messages
-                            the platform kept apart. `w-fit` keeps a short reply from
-                            drawing a full-width card. */}
+                              {/* One bubble per text step: a turn that answers in two chunks
+                            arrives as two delivered messages, so one wrapper around the set
+                            would merge messages the platform kept apart. */}
                               {textSteps.map((st, si) => (
                                 <div key={si} className={`${AGENT_BUBBLE} ${si > 0 ? 'mt-2' : ''}`}>
                                   {st.image && (
