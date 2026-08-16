@@ -21,7 +21,9 @@ function deferred() {
 }
 
 async function waitForBlockedAdvisoryLock(): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt++) {
+  // A generous ceiling on purpose: the poll ends the moment the waiter appears, so the only
+  // thing a bigger bound buys is not failing a correct run on a runner that scheduled slowly.
+  for (let attempt = 0; attempt < 1_000; attempt++) {
     const [row] = await prisma.$queryRaw<Array<{ count: number }>>(Prisma.sql`
       SELECT COUNT(*)::int AS "count"
       FROM pg_locks
