@@ -5092,7 +5092,11 @@ export interface PoolTelemetryRow {
   installWide: boolean
   /** Members seen within the lease horizon. */
   liveMembers: number
-  /** Σ `maxAgents` over those members — the duty budget the pool can currently spend. */
+  /** Of those, the ones running UNBOUNDED (`maxAgents <= 0`, the daemon's sentinel for no ceiling).
+   *  Non-zero means this set has no finite budget, so capacity and headroom are not defined for it. */
+  unboundedMembers: number
+  /** Σ `maxAgents` over the BOUNDED members — the duty budget the pool can currently spend.
+   *  Meaningless while {@link PoolTelemetryRow.unboundedMembers} is non-zero. */
   capacityAgents: number
   /** Distinct agents covered by unexpired leases those members hold — the budget spent. */
   dutyAgents: number

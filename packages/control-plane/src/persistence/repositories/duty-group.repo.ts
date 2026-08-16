@@ -414,8 +414,17 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
         FROM "daemon" d JOIN "member_set_member" msm ON msm."daemonId" = d.id
         WHERE d."lastSeenAt" >= ${liveSince}
       ),
+      -- maxAgents <= 0 is the daemon's UNBOUNDED sentinel, not a ceiling of zero
+      -- (Daemon.dutyHeadroomForPendingClaim returns +Infinity for it; the heartbeat's finite
+      -- number is only a batching hint). Summing it raw would report a member that accepts
+      -- everything as contributing nothing, so a pool with no ceiling would read as permanently
+      -- full. Counted separately instead, and the capacity sum covers the bounded members only —
+      -- which also keeps a negative value, allowed by the wire schema, out of the arithmetic.
       cap AS (
-        SELECT "setId", count(*)::int AS members, COALESCE(sum("maxAgents"), 0)::int AS capacity
+        SELECT "setId",
+               count(*)::int AS members,
+               count(*) FILTER (WHERE "maxAgents" <= 0)::int AS unbounded,
+               COALESCE(sum("maxAgents") FILTER (WHERE "maxAgents" > 0), 0)::int AS capacity
         FROM live GROUP BY "setId"
       ),
       -- Used capacity read the way the member gates itself (§12): duty-covered agents, deduped,
@@ -459,6 +468,7 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
       )
       SELECT s.id AS "setId", s.name AS "setName", (s."orgId" IS NULL) AS "installWide",
              COALESCE(cap.members, 0)::int AS "liveMembers",
+             COALESCE(cap.unbounded, 0)::int AS "unboundedMembers",
              COALESCE(cap.capacity, 0)::int AS "capacityAgents",
              COALESCE(used.agents, 0)::int AS "dutyAgents",
              COALESCE(vac.groups, 0)::int AS "vacantGroups",

@@ -35,7 +35,7 @@ export interface PoolMetricsDeps {
 }
 
 export type PoolMetricName =
-  'members' | 'capacity' | 'used' | 'headroom' | 'vacantGroups' | 'vacantAge' | 'undeliverable'
+  'members' | 'unbounded' | 'capacity' | 'used' | 'headroom' | 'vacantGroups' | 'vacantAge' | 'undeliverable'
 
 export interface PoolObservation {
   metric: PoolMetricName
@@ -48,11 +48,19 @@ export function poolObservations(rows: readonly PoolTelemetryRow[]): PoolObserva
   return rows.flatMap((row) => {
     const attrs = { set: row.setName, scope: row.installWide ? ('install' as const) : ('org' as const) }
     const at = (metric: PoolMetricName, value: number): PoolObservation => ({ metric, value, attrs })
+    // `maxAgents <= 0` is the daemon's UNBOUNDED sentinel, not a ceiling of zero, so a set holding
+    // such a member HAS no finite budget. Capacity and headroom are therefore not reported at all
+    // rather than reported as a number: folding the sentinel into the sum would advertise a member
+    // that accepts everything as contributing nothing, and the "pool is full" alarm would fire
+    // permanently on a pool that can never be full — the signal inverted. Omitting the series
+    // leaves that alert with no data, which it already treats as OK. `unbounded` is what makes the
+    // gap legible on the dashboard instead of looking like a broken exporter.
+    const bounded = row.unboundedMembers === 0
     return [
       at('members', row.liveMembers),
-      at('capacity', row.capacityAgents),
+      at('unbounded', row.unboundedMembers),
+      ...(bounded ? [at('capacity', row.capacityAgents), at('headroom', row.capacityAgents - row.dutyAgents)] : []),
       at('used', row.dutyAgents),
-      at('headroom', row.capacityAgents - row.dutyAgents),
       at('vacantGroups', row.vacantGroups),
       at('vacantAge', row.oldestVacancySec),
       at('undeliverable', row.oversizedVacantGroups)
@@ -89,9 +97,15 @@ function createGauges(): Record<PoolMetricName, ObservableGauge> {
       unit: '{member}',
       description: 'Pool members seen within the duty lease horizon'
     }),
+    unbounded: meter.createObservableGauge('agentconnect.pool.unbounded_members', {
+      unit: '{member}',
+      description:
+        'Live members configured with no ceiling (maxAgents <= 0). Non-zero ⇒ capacity and headroom are not reported for this set, because it has no finite budget'
+    }),
     capacity: meter.createObservableGauge('agentconnect.pool.capacity.agents', {
       unit: '{agent}',
-      description: 'Duty budget the live members of a set can spend (sum of maxAgents)'
+      description:
+        'Duty budget the live BOUNDED members of a set can spend (sum of maxAgents). Not reported at all while any member is unbounded'
     }),
     used: meter.createObservableGauge('agentconnect.pool.duty.agents', {
       unit: '{agent}',
@@ -117,8 +131,8 @@ function createGauges(): Record<PoolMetricName, ObservableGauge> {
 }
 
 /**
- * Register the batch callback. One ledger read per collection interval feeds every gauge, so the
- * seven series of a set are one consistent snapshot rather than seven independently-timed reads.
+ * Register the batch callback. One ledger read per collection interval feeds every gauge, so a
+ * set’s series are one consistent snapshot rather than several independently-timed reads.
  */
 export function registerPoolMetrics(deps: PoolMetricsDeps): PoolMetricsHandle {
   const gauges = createGauges()

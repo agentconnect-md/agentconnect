@@ -9,6 +9,7 @@ const row = (over: Partial<PoolTelemetryRow> = {}): PoolTelemetryRow => ({
   setName: 'pool',
   installWide: true,
   liveMembers: 3,
+  unboundedMembers: 0,
   capacityAgents: 24,
   dutyAgents: 20,
   vacantGroups: 0,
@@ -41,6 +42,27 @@ describe('poolObservations', () => {
     expect(install!.attrs).toEqual({ set: 'pool', scope: 'install' })
     const [org] = poolObservations([row({ installWide: false, setName: 'acme' })])
     expect(org!.attrs).toEqual({ set: 'acme', scope: 'org' })
+  })
+
+  // `maxAgents <= 0` is the daemon's sentinel for "no ceiling" (Daemon.dutyHeadroomForPendingClaim
+  // returns +Infinity for it), so a set holding one has no finite budget at all. Reporting the
+  // summed sentinel would say the opposite of what the member does — a pool that accepts
+  // everything would advertise zero capacity and fire the "full" alarm forever.
+  it('reports no capacity or headroom for a set with an unbounded member, rather than zero', () => {
+    const obs = poolObservations([row({ unboundedMembers: 1, capacityAgents: 16, dutyAgents: 20 })])
+    expect(obs.map((o) => o.metric)).not.toContain('capacity')
+    expect(obs.map((o) => o.metric)).not.toContain('headroom')
+    // Everything that is still well defined keeps flowing, and the omission is explainable.
+    expect(valueOf(obs, 'unbounded')).toBe(1)
+    expect(valueOf(obs, 'used')).toBe(20)
+    expect(valueOf(obs, 'members')).toBe(3)
+  })
+
+  it('a fully bounded set still reports both, and unbounded reads zero', () => {
+    const obs = poolObservations([row()])
+    expect(valueOf(obs, 'capacity')).toBe(24)
+    expect(valueOf(obs, 'headroom')).toBe(4)
+    expect(valueOf(obs, 'unbounded')).toBe(0)
   })
 
   it('reports every set, so one full pool cannot be averaged away by an idle one', () => {

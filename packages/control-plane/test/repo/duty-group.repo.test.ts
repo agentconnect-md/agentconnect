@@ -519,6 +519,37 @@ describe('DutyGroupRepo — pool telemetry (real Postgres)', () => {
     expect(await poolRow(repo, lapsed)).toMatchObject({ vacantGroups: 1, dutyAgents: 0, oldestVacancySec: 60 })
   })
 
+  // maxAgents <= 0 is the daemon's UNBOUNDED sentinel, not a ceiling of zero, and the wire schema
+  // (z.number().int()) admits negatives too. Folding either into the sum would report a member
+  // that accepts everything as contributing nothing.
+  it('counts an unbounded member apart and keeps its sentinel out of the capacity sum', async () => {
+    await liveMember(M1, 8)
+    await liveMember(M2, 0)
+    await joinPool(prisma, M1, M2)
+    const repo = new PgDutyGroupRepo(prisma, minter())
+
+    const row = await poolRow(repo)
+    expect(row).toMatchObject({ liveMembers: 2, unboundedMembers: 1, capacityAgents: 8 })
+
+    // A negative ceiling is the same sentinel, and must not subtract from the budget either.
+    await prisma.daemon.update({ where: { id: M2 }, data: { maxAgents: -4 } })
+    expect(await poolRow(repo)).toMatchObject({ unboundedMembers: 1, capacityAgents: 8 })
+
+    // Give it a real ceiling and the set becomes bounded again, budget included.
+    await prisma.daemon.update({ where: { id: M2 }, data: { maxAgents: 4 } })
+    expect(await poolRow(repo)).toMatchObject({ unboundedMembers: 0, capacityAgents: 12 })
+  })
+
+  it('an unbounded member that has gone quiet stops making the set unbounded', async () => {
+    await liveMember(M1, 8)
+    await liveMember(M2, 0, after(-LEASE_MS - 1))
+    await joinPool(prisma, M1, M2)
+    const repo = new PgDutyGroupRepo(prisma, minter())
+
+    // Liveness gates this exactly as it gates capacity: a dead member constrains nothing.
+    expect(await poolRow(repo)).toMatchObject({ liveMembers: 1, unboundedMembers: 0, capacityAgents: 8 })
+  })
+
   // An oversized group is undeliverable on the wire at ANY pool size (§5) — scaling the Deployment
   // would never clear it, so it must not be able to hold the capacity alert up.
   it('an oversized vacancy is reported apart from the claimable demand', async () => {
