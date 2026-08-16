@@ -15,9 +15,11 @@ ReadWriteOncePod PVC per org**: an operator reconciled an `AgentConnectOrg` CR
 into a roughly fifteen-object envelope per org — namespace, service accounts,
 RBAC, NetworkPolicies, quota, warm pools, the state PVC, the `replicas: 1,
 strategy: Recreate` Deployment, and the shim Service — and per-tier warm pools
-added more. That machinery has since been removed
-([agentconnect-org-operator.md](agentconnect-org-operator.md)); the costs below
-are why.
+added more. The CR, the operator that reconciled it, and the control plane's
+envelope provisioner were deleted outright rather than migrated (#964): the only
+envelopes that ever ran belonged to disposable test organizations, so a
+migration path would have been machinery written for an empty set. The costs
+below are why the model went.
 
 Four costs grow with org count:
 
@@ -99,7 +101,7 @@ discipline to pool membership.
 | D15 | One binary              | Composition-root profiles differ by capability knobs, never a mode flag                                                                                                                                       |
 | D16 | Isolation               | The shared pool is the default; an oversized or noisy workload moves to a dedicated daemon                                                                                                                    |
 | D17 | Kubernetes footprint    | No per-org Kubernetes objects for pooled orgs: one shared sandbox namespace, tier-shared warm pools, label-scoped policies — so the operator, the org CR, and the CP's cluster credentials all retire         |
-| D18 | Migration               | Orgs move one at a time with rehearsed rollback (tracking issue, M5)                                                                                                                                          |
+| D18 | Migration               | There was none: the envelope model was deleted outright, since the only envelopes that ever ran belonged to disposable test organizations                                                                     |
 
 ## 3. Pool anatomy (D1, D4)
 
@@ -133,6 +135,27 @@ row and a stable `daemonId` for that Pod lifetime
 WebSocket is install-wide with `orgId` carried per frame (`organizationMode:
 'frame'`); there is no org room, org-specific connection, or per-org
 subscription (D9).
+
+**Both halves of the reviewed subject are load-bearing.** The ServiceAccount
+name plus namespace establish install authority — an identity presented from any
+other namespace is refused, so "may serve every org" never follows from a pod
+merely holding the ServiceAccount name — and the attested
+`authentication.kubernetes.io/pod-uid` establishes which member; a token without
+that Pod binding is refused outright. The pair is the member row's unique key,
+so a container restart inside the same Pod keeps the record while a
+**replacement Pod gets a new `daemonId`** and the predecessor's row lingers:
+org-less, never reachable again, and nameable by no organization's `DELETE
+/daemons/:id`, which is why retiring it is `PoolMemberReaper`'s job (§4). The
+relay hop asks the same question from the other end — `rd/hello` carries the
+projected token, the relay delegates it on `rc/verify(daemon-token)`, and the
+control plane requires the member row bound to the reviewed Pod UID.
+
+**API keys are not retired; they are simply not what a member can use.** A
+daemon key is bound to one organization and one daemon, which is exactly what an
+install-wide member is not, so a member authenticates with the projected token
+and nothing else. A daemon with no Kubernetes identity — every daemon outside a
+cluster — keeps the key path unchanged, and a token beats a key whenever both
+are presented.
 
 **The pool and sandboxes occupy two explicit namespaces.** The daemon Pod's
 ServiceAccount namespace identifies the member pool only; `AC_K8S_SANDBOX_NAMESPACE`
