@@ -12929,6 +12929,7 @@ export class Daemon {
   private settleDutyChange(result: DutyApplyResult): void {
     for (const agentId of result.agentsLost) this.stopServingAgent(agentId)
     for (const agentId of result.agentsGained) this.adoptClusterSandbox(agentId)
+    this.reclaimInterruptedWork(result.agentsGained)
     const changed = result.added.length + result.updated.length + result.agentsGained.length + result.agentsLost.length
     if (changed === 0) return
     // Report the new digest immediately. The CP publishes the projections that address this member
@@ -20223,6 +20224,19 @@ export class Daemon {
     }
   }
 
+  /** Take over the durable work of agents this member has just been made responsible for. On a
+   *  shared store starting proves nothing — peers keep serving through a rollout — so the duty
+   *  grant, not process start, is what makes a stranded row this member's to recover. */
+  private reclaimInterruptedWork(agentIds: readonly string[]): void {
+    if (agentIds.length === 0) return
+    const grants = this.store.reclaimWebchatMcpGrants(agentIds, 'session_closed', this.clock.now())
+    if (grants) {
+      this.log.info(`remote MCP: reclaimed ${grants} grant(s) from a former owner`)
+      void this.drainWebchatMcpRevocations()
+    }
+    this.dreamRunner().reclaimDreams(agentIds)
+  }
+
   /** Await the single-flight reconcile and any coalesced trailing pass. Registry
    *  callbacks fire a background reconcile before lifecycle handlers explicitly
    *  await it, so one plain `await reconcile()` can otherwise observe only the
@@ -22098,9 +22112,8 @@ export class Daemon {
       },
       (agentId) => this.cpAgents?.orgForAgent(agentId)
     )
-    // Grants recorded by a previous process have no surviving descriptor or
-    // plaintext — queue them for remote revocation before the first connect.
-    const orphaned = this.store.markAllWebchatMcpGrantsRevoking('session_closed', this.clock.now())
+    // Grants this process recorded lose their descriptor and plaintext with it; a peer's are not ours to sweep.
+    const orphaned = this.store.markOwnedWebchatMcpGrantsRevoking('session_closed', this.clock.now())
     if (orphaned) this.log.info(`remote MCP: queued ${orphaned} orphaned grant revocation(s) from previous run`)
     this.cpClient.start()
     this.log.info(`cp: connecting to ${url}…`)

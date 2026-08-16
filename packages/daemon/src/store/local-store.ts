@@ -39,6 +39,15 @@ export type LocalStoreSource = string | { database: StoreDatabase; shared?: bool
 
 const SHARED_MEMORY_CAPTURE_LEASE_MS = 2 * 60 * 1_000
 
+/** Every column dreamToRow produces must appear here: node:sqlite rejects a bound parameter the
+ *  statement never references. triggerKind/createdAt are immutable in practice but are still
+ *  assigned, so the row shape and the SQL can't drift apart. */
+const DREAM_UPDATE_SET = `status = @status, triggerKind = @triggerKind, sessionIds = @sessionIds,
+  snapshotDigest = @snapshotDigest, executionSessionId = @executionSessionId, runtime = @runtime,
+  model = @model, stopReason = @stopReason, snapshotWrites = @snapshotWrites, instructions = @instructions,
+  skills = @skills, organizationSuggestions = @organizationSuggestions, usage = @usage, error = @error,
+  createdAt = @createdAt, endedAt = @endedAt, ownerId = @ownerId`
+
 function idScope(column: string, values: readonly string[] | undefined): { sql: string; params: SqlParams } {
   if (values === undefined) return { sql: '', params: {} }
   if (values.length === 0) return { sql: ' AND 0 = 1', params: {} }
@@ -512,6 +521,8 @@ export interface WebchatMcpGrantLedgerRow {
   attempts: number
   nextAttemptAt: number | null
   updatedAt: number
+  /** The daemon incarnation answerable for this row; NULL on an exclusively owned store. */
+  ownerId: string | null
 }
 
 /** §3.4/§6.8 main-agent orchestration record (daemon-local). `status` is the
@@ -602,7 +613,7 @@ function restrictPath(path: string, mode: number): void {
  * change that edits a `CREATE TABLE` below, and append the matching step to
  * {@link SCHEMA_MIGRATIONS}.
  */
-const SCHEMA_VERSION = 3
+const SCHEMA_VERSION = 4
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -631,6 +642,11 @@ const SCHEMA_MIGRATIONS: ((db: StoreDatabase) => void)[] = [
     db.exec(`
       ALTER TABLE session_metadata_outbox ADD COLUMN failedAttempts INTEGER NOT NULL DEFAULT 0;
       ALTER TABLE session_metadata_outbox ADD COLUMN nextAttemptAt INTEGER;
+    `),
+  (db) =>
+    db.exec(`
+      ALTER TABLE dreams ADD COLUMN ownerId TEXT;
+      ALTER TABLE webchat_mcp_grant_ledger ADD COLUMN ownerId TEXT;
     `)
 ]
 
@@ -905,7 +921,8 @@ export class LocalStore {
         reason TEXT,
         attempts INTEGER NOT NULL DEFAULT 0,
         nextAttemptAt INTEGER,
-        updatedAt INTEGER NOT NULL
+        updatedAt INTEGER NOT NULL,
+        ownerId TEXT                      -- daemon incarnation holding the grant; NULL on an exclusively owned store
       );
       CREATE INDEX IF NOT EXISTS webchat_mcp_grant_ledger_due
         ON webchat_mcp_grant_ledger (state, nextAttemptAt);
@@ -1046,7 +1063,8 @@ export class LocalStore {
         usage TEXT,                       -- JSON DreamUsage (tokens/cost + bounded byte counts)
         error TEXT,                       -- JSON {type, message}
         createdAt TEXT NOT NULL,
-        endedAt TEXT
+        endedAt TEXT,
+        ownerId TEXT                      -- daemon incarnation running it; NULL on an exclusively owned store
       );
       CREATE INDEX IF NOT EXISTS dreams_agent_created ON dreams (agentId, createdAt DESC);
       -- Monotonic shim-binding generation per agent. Durable and install-shared because a sandbox
@@ -2370,7 +2388,8 @@ export class LocalStore {
       usage: dream.usage ? JSON.stringify(dream.usage) : null,
       error: dream.error ? JSON.stringify(dream.error) : null,
       createdAt: dream.createdAt,
-      endedAt: dream.endedAt ?? null
+      endedAt: dream.endedAt ?? null,
+      ownerId: this.ownerId ?? null
     }
   }
 
@@ -2410,29 +2429,35 @@ export class LocalStore {
       .prepare(
         `INSERT INTO dreams (dreamId, agentId, status, triggerKind, sessionIds, snapshotDigest,
            executionSessionId, runtime, model, stopReason, snapshotWrites, instructions, skills, organizationSuggestions,
-           usage, error, createdAt, endedAt)
+           usage, error, createdAt, endedAt, ownerId)
          VALUES (@dreamId, @agentId, @status, @triggerKind, @sessionIds, @snapshotDigest,
            @executionSessionId, @runtime, @model, @stopReason, @snapshotWrites, @instructions, @skills,
-           @organizationSuggestions, @usage, @error, @createdAt, @endedAt)`
+           @organizationSuggestions, @usage, @error, @createdAt, @endedAt, @ownerId)`
       )
       .run(this.dreamToRow(dream))
   }
 
+  /** Whoever writes a dream row is the process running it, so every write re-stamps
+   *  ownership — a reclaimed dream never reads as its former owner's. */
   updateDream(dream: DreamInfo): void {
     this.db
-      .prepare(
-        // Every column dreamToRow produces must appear here: better-sqlite3
-        // rejects a bound parameter the statement never references ("Unknown
-        // named parameter"). triggerKind/createdAt are immutable in practice but
-        // are still assigned, so the row shape and the SQL can't drift apart.
-        `UPDATE dreams SET status = @status, triggerKind = @triggerKind, sessionIds = @sessionIds,
-           snapshotDigest = @snapshotDigest, executionSessionId = @executionSessionId, runtime = @runtime,
-           model = @model, stopReason = @stopReason, snapshotWrites = @snapshotWrites, instructions = @instructions,
-           skills = @skills, organizationSuggestions = @organizationSuggestions, usage = @usage, error = @error,
-           createdAt = @createdAt, endedAt = @endedAt
-         WHERE dreamId = @dreamId AND agentId = @agentId`
-      )
+      .prepare(`UPDATE dreams SET ${DREAM_UPDATE_SET} WHERE dreamId = @dreamId AND agentId = @agentId`)
       .run(this.dreamToRow(dream))
+  }
+
+  /** Crash-recovery write, CAS'd on the open statuses so a losing race can never overwrite
+   *  the terminal outcome the dream's own runner recorded. */
+  failOpenDream(dream: DreamInfo): boolean {
+    return (
+      Number(
+        this.db
+          .prepare(
+            `UPDATE dreams SET ${DREAM_UPDATE_SET}
+             WHERE dreamId = @dreamId AND agentId = @agentId AND status IN ('pending', 'running')`
+          )
+          .run(this.dreamToRow(dream)).changes
+      ) === 1
+    )
   }
 
   getDream(agentId: string, dreamId: string): DreamInfo | undefined {
@@ -2488,10 +2513,29 @@ export class LocalStore {
     )
   }
 
-  /** Non-terminal dreams — the boot-time crash-recovery sweep. */
+  /** Non-terminal dreams this process is answerable for — the boot-time crash-recovery sweep. On a
+   *  shared store that is only what this incarnation started: a peer's in-flight dream is live work. */
   openDreams(): DreamInfo[] {
+    const owned = this.shared ? ' AND ownerId = @ownerId' : ''
     return (
-      this.db.prepare("SELECT * FROM dreams WHERE status IN ('pending', 'running')").all() as Record<string, unknown>[]
+      this.db
+        .prepare(`SELECT * FROM dreams WHERE status IN ('pending', 'running')${owned}`)
+        .all(...(this.shared ? [{ ownerId: this.ownerId! }] : [])) as Record<string, unknown>[]
+    ).map((row) => this.dreamFromRow(row))
+  }
+
+  /** Non-terminal dreams left behind by a FORMER owner of these agents. Only the CP handing
+   *  this process the duty makes them recoverable — mirrors recoverPermissionRequests. */
+  strandedDreams(agentIds: readonly string[]): DreamInfo[] {
+    if (!this.shared || agentIds.length === 0) return []
+    const scope = idScope('agentId', agentIds)
+    return (
+      this.db
+        .prepare(
+          `SELECT * FROM dreams
+           WHERE status IN ('pending', 'running') AND (ownerId IS NULL OR ownerId != @ownerId)${scope.sql}`
+        )
+        .all({ ownerId: this.ownerId!, ...scope.params }) as Record<string, unknown>[]
     ).map((row) => this.dreamFromRow(row))
   }
 
@@ -3675,16 +3719,17 @@ export class LocalStore {
     this.db
       .prepare(
         `INSERT INTO webchat_mcp_grant_ledger
-           (conversationId, agentId, authorityId, authorityGeneration, state, reason, attempts, nextAttemptAt, updatedAt)
-         VALUES (@conversationId, @agentId, @authorityId, @authorityGeneration, 'active', NULL, 0, NULL, @now)
+           (conversationId, agentId, authorityId, authorityGeneration, state, reason, attempts, nextAttemptAt,
+            updatedAt, ownerId)
+         VALUES (@conversationId, @agentId, @authorityId, @authorityGeneration, 'active', NULL, 0, NULL, @now, @ownerId)
          ON CONFLICT (conversationId) DO UPDATE SET
            agentId = excluded.agentId,
            authorityId = excluded.authorityId,
            authorityGeneration = excluded.authorityGeneration,
            state = 'active', reason = NULL, attempts = 0, nextAttemptAt = NULL,
-           updatedAt = excluded.updatedAt`
+           updatedAt = excluded.updatedAt, ownerId = excluded.ownerId`
       )
-      .run(input)
+      .run({ ...input, ownerId: this.ownerId ?? null })
   }
 
   /** Queue a durable revocation for a grant authority whose remote revoke failed
@@ -3701,15 +3746,17 @@ export class LocalStore {
     this.db
       .prepare(
         `INSERT INTO webchat_mcp_grant_ledger
-           (conversationId, agentId, authorityId, authorityGeneration, state, reason, attempts, nextAttemptAt, updatedAt)
-         VALUES (@conversationId, @agentId, @authorityId, @authorityGeneration, 'revoking', @reason, 0, @now, @now)
+           (conversationId, agentId, authorityId, authorityGeneration, state, reason, attempts, nextAttemptAt,
+            updatedAt, ownerId)
+         VALUES (@conversationId, @agentId, @authorityId, @authorityGeneration, 'revoking', @reason, 0, @now, @now,
+            @ownerId)
          ON CONFLICT (conversationId) DO UPDATE SET
            state = 'revoking', reason = excluded.reason, nextAttemptAt = excluded.nextAttemptAt,
-           updatedAt = excluded.updatedAt
+           updatedAt = excluded.updatedAt, ownerId = excluded.ownerId
          WHERE webchat_mcp_grant_ledger.authorityId = excluded.authorityId
            AND webchat_mcp_grant_ledger.authorityGeneration <= excluded.authorityGeneration`
       )
-      .run(input)
+      .run({ ...input, ownerId: this.ownerId ?? null })
   }
 
   /** Drop the ledger row after the CP confirmed revocation — only for the exact
@@ -3723,29 +3770,51 @@ export class LocalStore {
       .run(conversationId, authorityId, authorityGeneration)
   }
 
-  /** Startup orphan sweep: descriptors from a previous process no longer exist,
-   *  so any still-'active' ledger row must be revoked at the CP. */
-  markAllWebchatMcpGrantsRevoking(reason: string, now: number): number {
+  /** Startup orphan sweep over the grants THIS incarnation recorded: its descriptors and
+   *  plaintext died with it. On a shared store an 'active' row may be a peer's live authority
+   *  for a conversation in progress, so ownership — not process start — decides. */
+  markOwnedWebchatMcpGrantsRevoking(reason: string, now: number): number {
+    const owned = this.shared ? ' AND ownerId = @ownerId' : ''
     return Number(
       this.db
         .prepare(
           `UPDATE webchat_mcp_grant_ledger
-           SET state = 'revoking', reason = ?, nextAttemptAt = ?, updatedAt = ?
-           WHERE state = 'active'`
+           SET state = 'revoking', reason = @reason, nextAttemptAt = @now, updatedAt = @now
+           WHERE state = 'active'${owned}`
         )
-        .run(reason, now, now).changes
+        .run({ reason, now, ...(this.shared ? { ownerId: this.ownerId! } : {}) }).changes
     )
   }
 
+  /** Take over the grant rows of a former owner of these agents once the CP makes this process
+   *  responsible for them: the plaintext went with the owner, so the authority must be revoked. */
+  reclaimWebchatMcpGrants(agentIds: readonly string[], reason: string, now: number): number {
+    if (!this.shared || agentIds.length === 0) return 0
+    const scope = idScope('agentId', agentIds)
+    return Number(
+      this.db
+        .prepare(
+          `UPDATE webchat_mcp_grant_ledger
+           SET state = 'revoking', reason = @reason, attempts = 0, nextAttemptAt = @now,
+               updatedAt = @now, ownerId = @ownerId
+           WHERE (ownerId IS NULL OR ownerId != @ownerId)${scope.sql}`
+        )
+        .run({ reason, now, ownerId: this.ownerId!, ...scope.params }).changes
+    )
+  }
+
+  /** The revocations this process must deliver: its own queue, plus rows written before ownership was
+   *  recorded. A peer's queued revoke is the peer's to land — here it would duplicate the CP call. */
   listDueWebchatMcpRevocations(now: number, limit = 50): WebchatMcpGrantLedgerRow[] {
+    const owned = this.shared ? ' AND (ownerId IS NULL OR ownerId = @ownerId)' : ''
     return this.db
       .prepare(
         `SELECT * FROM webchat_mcp_grant_ledger
-         WHERE state = 'revoking' AND (nextAttemptAt IS NULL OR nextAttemptAt <= ?)
+         WHERE state = 'revoking' AND (nextAttemptAt IS NULL OR nextAttemptAt <= @now)${owned}
          ORDER BY nextAttemptAt ASC, conversationId ASC
-         LIMIT ?`
+         LIMIT @limit`
       )
-      .all(now, limit) as unknown as WebchatMcpGrantLedgerRow[]
+      .all({ now, limit, ...(this.shared ? { ownerId: this.ownerId! } : {}) }) as unknown as WebchatMcpGrantLedgerRow[]
   }
 
   /** Reschedule one failed revocation attempt (exact-tuple fenced). */

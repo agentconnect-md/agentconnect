@@ -48,6 +48,12 @@ class FakeStore implements DreamStorePort {
   updateDream(dream: DreamInfo): void {
     this.dreams.set(dream.dreamId, dream)
   }
+  failOpenDream(dream: DreamInfo): boolean {
+    const current = this.dreams.get(dream.dreamId)
+    if (current?.status !== 'pending' && current?.status !== 'running') return false
+    this.dreams.set(dream.dreamId, dream)
+    return true
+  }
   getDream(_agentId: string, dreamId: string): DreamInfo | undefined {
     return this.dreams.get(dreamId)
   }
@@ -64,8 +70,17 @@ class FakeStore implements DreamStorePort {
       .filter((dream) => dream.organizationSuggestions?.some((suggestion) => suggestion.state === 'proposed'))
       .slice(0, limit)
   }
+  /** dreamIds this incarnation started. A shared store hands back nothing else at boot. */
+  owned?: Set<string>
   openDreams(): DreamInfo[] {
-    return [...this.dreams.values()].filter((d) => d.status === 'pending' || d.status === 'running')
+    return [...this.dreams.values()].filter(
+      (d) => (d.status === 'pending' || d.status === 'running') && (!this.owned || this.owned.has(d.dreamId))
+    )
+  }
+  strandedDreams(agentIds: readonly string[]): DreamInfo[] {
+    return [...this.dreams.values()].filter(
+      (d) => agentIds.includes(d.agentId) && (d.status === 'pending' || d.status === 'running')
+    )
   }
   completedDreams(agentId: string): DreamInfo[] {
     return [...this.dreams.values()].filter((d) => d.agentId === agentId && d.status === 'completed')
@@ -961,6 +976,48 @@ describe('DreamRunner crash recovery', () => {
       status: 'failed',
       error: { type: 'daemon_restart' }
     })
+  })
+
+  it("fails a peer's dream on the duty grant, never because this member started", () => {
+    // On a pool the store is shared: boot sees only this incarnation's rows, and a peer's
+    // running dream becomes recoverable only once the CP hands over the agent.
+    const store = new FakeStore()
+    store.owned = new Set()
+    store.insertDream({
+      dreamId: 'drm-peer',
+      agentId: 'a1',
+      status: 'running',
+      trigger: 'manual',
+      sessionIds: [],
+      snapshotDigest: 'sha256:x',
+      createdAt: new Date().toISOString()
+    })
+    const failures: string[] = []
+    const runner = new DreamRunner({
+      agentDirByAgent: () => undefined,
+      dreamingPolicyFor: () => undefined,
+      operationPolicy: 'test-only',
+      store,
+      extract: async () => '',
+      onEvent: (event) => {
+        if (event.type === 'memory.dream.failed') failures.push(event.dream.dreamId)
+      },
+      log: silent
+    })
+    expect(store.dreams.get('drm-peer')?.status).toBe('running')
+
+    runner.reclaimDreams(['a2'])
+    expect(store.dreams.get('drm-peer')?.status).toBe('running')
+
+    runner.reclaimDreams(['a1'])
+    expect(store.dreams.get('drm-peer')).toMatchObject({ status: 'failed', error: { type: 'daemon_restart' } })
+    expect(failures).toEqual(['drm-peer'])
+
+    // The CAS lost: a terminal row is neither rewritten nor re-announced.
+    store.dreams.set('drm-peer', { ...store.dreams.get('drm-peer')!, status: 'completed' })
+    runner.reclaimDreams(['a1'])
+    expect(store.dreams.get('drm-peer')?.status).toBe('completed')
+    expect(failures).toEqual(['drm-peer'])
   })
 
   it('sweeps reconciled superseded staging while preserving proposed skills', async () => {
