@@ -37,7 +37,10 @@ export interface StoreDatabase {
 
 export type LocalStoreSource = string | { database: StoreDatabase; shared?: boolean; ownerId?: string }
 
-const SHARED_MEMORY_CAPTURE_LEASE_MS = 2 * 60 * 1_000
+/** How long a shared-store claim survives without renewal. A pool member renews on
+ *  every drain attempt, so a lapsed claim means its owner is gone and a peer may take
+ *  the row over. Local (single-owner) stores never lease. */
+const SHARED_OUTBOX_LEASE_MS = 2 * 60 * 1_000
 
 /** Every column dreamToRow produces must appear here: node:sqlite rejects a bound parameter the
  *  statement never references. triggerKind/createdAt are immutable in practice but are still
@@ -368,6 +371,11 @@ export interface InboxRow {
   /** A redacted, metadata-only HookReport retained as the durable dedup receipt
    * after the model turn finishes. Completed hook rows are never replayed. */
   terminalReport?: string | null
+  /** Daemon entitled to emit the retained report — the dispatch the CP will accept
+   *  it from. NULL on a local store and on rows written before pool ownership. */
+  reportOwnerId?: string | null
+  /** Epoch (ms) the owner last renewed its claim; a lapsed claim is takeable. */
+  reportClaimedAt?: number | null
   completedAt?: number | null
   isQueueCmd?: number | null
   /** 1 once this delivery no longer needs replay accounting (charged when applicable).
@@ -613,7 +621,7 @@ function restrictPath(path: string, mode: number): void {
  * change that edits a `CREATE TABLE` below, and append the matching step to
  * {@link SCHEMA_MIGRATIONS}.
  */
-const SCHEMA_VERSION = 4
+const SCHEMA_VERSION = 5
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -647,6 +655,11 @@ const SCHEMA_MIGRATIONS: ((db: StoreDatabase) => void)[] = [
     db.exec(`
       ALTER TABLE dreams ADD COLUMN ownerId TEXT;
       ALTER TABLE webchat_mcp_grant_ledger ADD COLUMN ownerId TEXT;
+    `),
+  (db) =>
+    db.exec(`
+      ALTER TABLE inbox ADD COLUMN reportOwnerId TEXT;
+      ALTER TABLE inbox ADD COLUMN reportClaimedAt INTEGER;
     `)
 ]
 
@@ -872,6 +885,8 @@ export class LocalStore {
         hookContext TEXT,
         posterPublishState TEXT,
         terminalReport TEXT,
+        reportOwnerId TEXT,
+        reportClaimedAt INTEGER,
         completedAt INTEGER,
         isQueueCmd INTEGER,
         loopGuardCounted INTEGER NOT NULL DEFAULT 0,
@@ -3300,6 +3315,7 @@ export class LocalStore {
     leaderHookContext: string
     followerId: string
     followerTerminalReport: string
+    followerOwnerId?: string
     completedAt: number
   }): boolean {
     if (input.leaderId === input.followerId) return false
@@ -3321,12 +3337,14 @@ export class LocalStore {
           `UPDATE inbox
            SET msg = '{}', integrationId = NULL, callMeta = NULL, hookContext = NULL,
                posterPublishState = 'settled', terminalReport = @followerTerminalReport,
+               reportOwnerId = @followerOwnerId, reportClaimedAt = @completedAt,
                completedAt = @completedAt, isQueueCmd = NULL
            WHERE id = @followerId AND hookContext IS NOT NULL AND completedAt IS NULL`
         )
         .run({
           followerId: input.followerId,
           followerTerminalReport: input.followerTerminalReport,
+          followerOwnerId: input.followerOwnerId ?? null,
           completedAt: input.completedAt
         })
       if (leader.changes !== 1 || follower.changes !== 1) {
@@ -3349,17 +3367,19 @@ export class LocalStore {
   completeHookInbox(
     id: string,
     terminalReport: string,
-    completedAt: number
+    completedAt: number,
+    ownerId?: string
   ): 'completed' | 'already-terminal' | 'missing' {
     const result = this.db
       .prepare(
         `UPDATE inbox
          SET msg = '{}', integrationId = NULL, callMeta = NULL, hookContext = NULL,
              posterPublishState = 'settled', terminalReport = @terminalReport,
+             reportOwnerId = @ownerId, reportClaimedAt = @completedAt,
              completedAt = @completedAt, isQueueCmd = NULL
          WHERE id = @id AND hookContext IS NOT NULL AND completedAt IS NULL`
       )
-      .run({ id, terminalReport, completedAt })
+      .run({ id, terminalReport, completedAt, ownerId: ownerId ?? null })
     if (result.changes === 1) return 'completed'
 
     const row = this.db.prepare('SELECT completedAt FROM inbox WHERE id = ?').get(id) as
@@ -3369,15 +3389,19 @@ export class LocalStore {
 
   /** A CP-correlated ACK releases only the report payload. Keep a bounded
    * metadata-only stable-id receipt so relay redelivery still cannot rerun the
-   * model; unacknowledged reports are never capacity-evicted. */
-  acknowledgeHookInbox(id: string, maxAcknowledgedReceipts = 10_000): boolean {
+   * model; unacknowledged reports are never capacity-evicted. On a shared pool
+   * store only the claim holder may release a body — a peer's verdict about its
+   * own dispatch says nothing about this row. */
+  acknowledgeHookInbox(id: string, options: { ownerId?: string; maxAcknowledgedReceipts?: number } = {}): boolean {
+    const maxAcknowledgedReceipts = options.maxAcknowledgedReceipts ?? 10_000
+    const fence = this.shared ? ' AND (reportOwnerId IS NULL OR reportOwnerId = @ownerId)' : ''
     const result = this.db
       .prepare(
         `UPDATE inbox
-         SET terminalReport = NULL
-         WHERE id = @id AND completedAt IS NOT NULL AND terminalReport IS NOT NULL`
+         SET terminalReport = NULL, reportOwnerId = NULL, reportClaimedAt = NULL
+         WHERE id = @id AND completedAt IS NOT NULL AND terminalReport IS NOT NULL${fence}`
       )
-      .run({ id })
+      .run({ id, ...(fence ? { ownerId: options.ownerId ?? null } : {}) })
     if (result.changes === 1) {
       this.db
         .prepare(
@@ -3392,6 +3416,68 @@ export class LocalStore {
         .run({ maxAcknowledgedReceipts })
     }
     return result.changes === 1
+  }
+
+  /** Unacknowledged hook terminal reports this member may emit right now.
+   *
+   * A local store owns every row outright, so it drains the whole outbox as
+   * before. On a shared pool store the outbox is one table for every member, so
+   * a row is offered only when this member owns it, when it is unowned (legacy
+   * or pre-pool), or when its owner's claim lapsed AND this member currently
+   * serves the agent — draining a live peer's row would only earn a CONFLICT
+   * for a dispatch that is not ours. */
+  listHookTerminalReports(now: number, ownerId?: string, agentIds?: readonly string[]): InboxRow[] {
+    const order = ' ORDER BY sessionKey ASC, enqueuedAt ASC'
+    if (!this.shared) {
+      return this.db
+        .prepare(`SELECT * FROM inbox WHERE terminalReport IS NOT NULL${order}`)
+        .all() as unknown as InboxRow[]
+    }
+    const scope = idScope('agentId', agentIds)
+    return this.db
+      .prepare(
+        `SELECT * FROM inbox
+         WHERE terminalReport IS NOT NULL
+           AND (reportOwnerId IS NULL OR reportOwnerId = @ownerId
+                OR (COALESCE(reportClaimedAt, 0) <= @staleBefore${scope.sql}))${order}`
+      )
+      .all({
+        ownerId: ownerId ?? null,
+        staleBefore: now - SHARED_OUTBOX_LEASE_MS,
+        ...scope.params
+      }) as unknown as InboxRow[]
+  }
+
+  /** Take or renew this member's claim on one report before emitting it. */
+  claimHookTerminalReport(id: string, ownerId: string | undefined, now: number): boolean {
+    if (!this.shared) return true
+    return (
+      this.db
+        .prepare(
+          `UPDATE inbox
+           SET reportOwnerId = @ownerId, reportClaimedAt = @now
+           WHERE id = @id AND terminalReport IS NOT NULL
+             AND (reportOwnerId IS NULL OR reportOwnerId = @ownerId
+                  OR COALESCE(reportClaimedAt, 0) <= @staleBefore)`
+        )
+        .run({ id, ownerId: ownerId ?? null, now, staleBefore: now - SHARED_OUTBOX_LEASE_MS }).changes === 1
+    )
+  }
+
+  /** Hand a claimed report back to the daemon whose dispatch the CP accepts it
+   * from. The body is never released here: a CONFLICT raised against a peer's
+   * dispatch means "not mine to report", not "this can never be valid". */
+  releaseHookTerminalReport(id: string, ownerId: string, now: number): boolean {
+    if (!this.shared) return false
+    return (
+      this.db
+        .prepare(
+          `UPDATE inbox
+           SET reportOwnerId = @ownerId, reportClaimedAt = @now
+           WHERE id = @id AND terminalReport IS NOT NULL`
+        )
+        .run({ id, ownerId, now }).changes === 1
+    )
   }
 
   /** Remove an ordinary inbox row once its turn reaches a terminal state. Hook
@@ -3540,7 +3626,7 @@ export class LocalStore {
       .get({
         activeAgeMs,
         terminalRetentionMs,
-        recoveryLeaseMs: this.shared ? SHARED_MEMORY_CAPTURE_LEASE_MS : 0,
+        recoveryLeaseMs: this.shared ? SHARED_OUTBOX_LEASE_MS : 0,
         ...scope.params
       }) as { activeAt: number | null; terminalAt: number | null; recoveryAt: number | null } | undefined
     const deadlines = [row?.activeAt, row?.terminalAt, row?.recoveryAt].filter(
@@ -3641,7 +3727,7 @@ export class LocalStore {
     const scope = idScope('connectionId', !this.shared && !staleOnly ? undefined : connectionIds)
     const staleClause = this.shared ? ' AND updatedAt <= @staleBefore' : ''
     const params = this.shared
-      ? { now, staleBefore: now - SHARED_MEMORY_CAPTURE_LEASE_MS, ...scope.params }
+      ? { now, staleBefore: now - SHARED_OUTBOX_LEASE_MS, ...scope.params }
       : { now, ...scope.params }
     const retried = this.db
       .prepare(

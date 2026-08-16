@@ -48,6 +48,8 @@ describe('LocalStore schema versioning', () => {
     old.exec('ALTER TABLE session_metadata_outbox DROP COLUMN nextAttemptAt')
     old.exec('ALTER TABLE dreams DROP COLUMN ownerId')
     old.exec('ALTER TABLE webchat_mcp_grant_ledger DROP COLUMN ownerId')
+    old.exec('ALTER TABLE inbox DROP COLUMN reportOwnerId')
+    old.exec('ALTER TABLE inbox DROP COLUMN reportClaimedAt')
     old.exec('PRAGMA user_version = 1')
     old.close()
 
@@ -60,13 +62,15 @@ describe('LocalStore schema versioning', () => {
     const outboxColumns = columnsOf('session_metadata_outbox')
     const dreamColumns = columnsOf('dreams')
     const grantColumns = columnsOf('webchat_mcp_grant_ledger')
+    const inboxColumns = columnsOf('inbox')
     upgraded.close()
     expect(columns).toContain('ownerId')
     expect(outboxColumns).toEqual(expect.arrayContaining(['failedAttempts', 'nextAttemptAt']))
     // Recovery ownership: a pool member must be able to tell its own rows from a peer's.
     expect(dreamColumns).toContain('ownerId')
     expect(grantColumns).toContain('ownerId')
-    expect(userVersion(path)).toBe(4)
+    expect(inboxColumns).toEqual(expect.arrayContaining(['reportOwnerId', 'reportClaimedAt']))
+    expect(userVersion(path)).toBe(5)
   })
 
   it('refuses a store written by a newer daemon WITHOUT touching it first', () => {

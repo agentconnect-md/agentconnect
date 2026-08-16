@@ -187,6 +187,37 @@ describe.skipIf(!databaseUrl)('PostgreSQL pool member store', () => {
       expect(second.store.recoverPermissionRequests([agentId], 201)).toBe(1)
       expect(second.store.listPermissionRequests(agentId)[0]).toMatchObject({ status: 'expired', resolvedAt: 201 })
       expect(second.store.recoverMemoryCaptures(101)).toEqual({ retried: 0, ambiguous: 0 })
+      // #1035: the hook terminal-report outbox is install-wide here, so a member
+      // may drain only its own rows and may never release a peer's body.
+      const hookId = `hook-${suffix}`
+      expect(
+        first.store.appendInbox({
+          id: hookId,
+          sessionKey: `hook:${suffix}:d-1:${agentId}`,
+          agentId,
+          msg: '{}',
+          hookContext: '{}',
+          enqueuedAt: '00000000000000000002'
+        })
+      ).toBe(true)
+      expect(first.store.completeHookInbox(hookId, '{"status":"success"}', 1_000, `daemon-a-${suffix}`)).toBe(
+        'completed'
+      )
+      const drained = (ownerId: string, now: number) =>
+        second.store
+          .listHookTerminalReports(now, ownerId, [agentId])
+          .filter((row) => row.id === hookId)
+          .map((row) => row.terminalReport)
+      expect(drained(`daemon-b-${suffix}`, 1_500)).toEqual([])
+      expect(second.store.claimHookTerminalReport(hookId, `daemon-b-${suffix}`, 1_500)).toBe(false)
+      expect(second.store.acknowledgeHookInbox(hookId, { ownerId: `daemon-b-${suffix}` })).toBe(false)
+      const lapsed = 1_000 + 2 * 60 * 1_000 + 1
+      expect(drained(`daemon-b-${suffix}`, lapsed)).toEqual(['{"status":"success"}'])
+      expect(second.store.claimHookTerminalReport(hookId, `daemon-b-${suffix}`, lapsed)).toBe(true)
+      expect(second.store.releaseHookTerminalReport(hookId, `daemon-a-${suffix}`, lapsed)).toBe(true)
+      expect(drained(`daemon-a-${suffix}`, lapsed)).toEqual(['{"status":"success"}'])
+      expect(first.store.acknowledgeHookInbox(hookId, { ownerId: `daemon-a-${suffix}` })).toBe(true)
+      second.store.removeInbox(hookId)
       expect(first.store.attachActivationEnvelope(`activation-${suffix}`, '{}', 10_000).dispatch).toBe(true)
       expect(second.store.attachActivationEnvelope(`activation-${suffix}`, '{}', 10_000).dispatch).toBe(false)
       expect(second.store.recoverMemoryCaptures(120_101, true, [`other-connection-${suffix}`])).toEqual({

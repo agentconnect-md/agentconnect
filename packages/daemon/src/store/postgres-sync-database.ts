@@ -103,6 +103,8 @@ const canonicalColumns = [
   'quoteJson',
   'reasonCode',
   'replyTarget',
+  'reportClaimedAt',
+  'reportOwnerId',
   'requesterId',
   'requesterName',
   'recoveryAt',

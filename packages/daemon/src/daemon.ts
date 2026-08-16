@@ -811,6 +811,18 @@ const MAX_TOTAL_TURNS_PER_WINDOW = 60
 // would turn a long outage into a memory/socket fan-out spike.
 const MAX_HOOK_REPORT_INFLIGHT = 100
 
+/** The daemon whose dispatch the CP accepts this report from — the outbox row's owner.
+ *  On a pool's shared store that is the only member allowed to release its body. */
+function hookReportOwner(report: HookReport, daemonId?: string): string | undefined {
+  return report.dispatchDaemonId ?? daemonId
+}
+
+/** True when the CP can only be answering about a peer's dispatch. Unproven ownership
+ *  counts as foreign: keeping a report body is always recoverable, nulling it is not. */
+function foreignHookDispatch(report: HookReport, daemonId?: string): boolean {
+  return report.dispatchDaemonId !== undefined && report.dispatchDaemonId !== daemonId
+}
+
 /** Backoff after a session-metadata persistence failure while the socket remains READY. */
 const SESSION_METADATA_RETRY_MS = 5_000
 const SESSION_METADATA_FAILURES_BEFORE_DEFER = 5
@@ -2457,6 +2469,9 @@ export class Daemon {
   private hookReportRetryTimer?: TimerHandle
   private transcriptActivityTimers = new Map<string, { timer: TimerHandle; activity: SessionActivity }>()
   private readonly hookReportInflight = new Set<string>()
+  // Outbox rows this member proved it may not report — a peer owns the dispatch,
+  // or the receipt is unreleasable here. Kept out of the drain for this process.
+  private readonly hookReportForeign = new Set<string>()
   // A timer callback may already be inside conn.start() when an agent detaches.
   // Track those runs so detach can await them and prevent a stale socket from
   // appearing after its strict close pass has ACKed.
@@ -12098,6 +12113,7 @@ export class Daemon {
         leaderHookContext: JSON.stringify(nextHook),
         followerId: follower.inboxId,
         followerTerminalReport: JSON.stringify(report),
+        followerOwnerId: hookReportOwner(report, this.cfg.daemonId),
         completedAt: this.clock.now()
       })
       if (!committed) return false
@@ -13562,7 +13578,12 @@ export class Daemon {
     let reportInboxId: string | undefined
     if (owner?.inboxId) {
       try {
-        const completed = this.store.completeHookInbox(owner.inboxId, JSON.stringify(report), this.clock.now())
+        const completed = this.store.completeHookInbox(
+          owner.inboxId,
+          JSON.stringify(report),
+          this.clock.now(),
+          hookReportOwner(report, this.cfg.daemonId)
+        )
         if (completed === 'already-terminal') {
           owner.hookTerminalReceipt = true
           this.liveInboxIds.delete(owner.inboxId)
@@ -13600,6 +13621,9 @@ export class Daemon {
       this.scheduleHookReportRetry()
       return
     }
+    // On a pool's shared store the outbox is one table for every member. Emit only
+    // under a live claim, so a peer's unacknowledged row stays with its owner.
+    if (inboxId && !this.claimHookReport(inboxId)) return
     if (inboxId) this.hookReportInflight.add(inboxId)
     let refillDrainSlot = false
     void Promise.resolve(this.cpClient.emitHookReport(report))
@@ -13607,7 +13631,7 @@ export class Daemon {
         if (!inboxId) return
         refillDrainSlot = true
         try {
-          this.store.acknowledgeHookInbox(inboxId)
+          this.store.acknowledgeHookInbox(inboxId, { ownerId: this.cfg.daemonId })
         } catch (err) {
           // An ACKed report may be re-sent if the local GC write fails. CP
           // persistence is idempotent, so retaining it is the safe direction.
@@ -13618,11 +13642,25 @@ export class Daemon {
         const permanentlyRejected =
           typeof err === 'object' && err !== null && 'retryable' in err && err.retryable === false
         if (permanentlyRejected && inboxId) {
-          // A dispatch-fence CONFLICT can never become valid. Keep the bounded
+          // A CONFLICT raised against a PEER's dispatch says nothing about this row:
+          // the CP is refusing us as the reporter, not the completion. Hand the claim
+          // back to its owner with the body intact instead of dead-lettering it.
+          if (foreignHookDispatch(report, this.cfg.daemonId)) {
+            this.hookReportForeign.add(inboxId)
+            const owner = report.dispatchDaemonId
+            try {
+              if (owner) this.store.releaseHookTerminalReport(inboxId, owner, this.clock.now())
+            } catch (releaseError) {
+              this.log.warn(`durable inbox: hook report release failed for ${inboxId}: ${formatErr(releaseError)}`)
+            }
+            this.log.warn(`hook report left for its dispatching daemon: ${inboxId}`)
+            return
+          }
+          // Our own dispatch-fence CONFLICT can never become valid. Keep the bounded
           // stable-id receipt for relay dedup, but dead-letter its report body.
           refillDrainSlot = true
           try {
-            this.store.acknowledgeHookInbox(inboxId)
+            this.store.acknowledgeHookInbox(inboxId, { ownerId: this.cfg.daemonId })
           } catch (cleanupError) {
             this.log.warn(`durable inbox: hook report dead-letter failed for ${inboxId}: ${formatErr(cleanupError)}`)
           }
@@ -13638,6 +13676,16 @@ export class Daemon {
         // Transient failures use the 5s backoff instead.
         if (refillDrainSlot) this.scheduleHookReportRetry(250)
       })
+  }
+
+  /** Renew (or take over) this member's claim on one durable report row. */
+  private claimHookReport(inboxId: string): boolean {
+    try {
+      return this.store.claimHookTerminalReport(inboxId, this.cfg.daemonId, this.clock.now())
+    } catch (err) {
+      this.log.warn(`durable inbox: hook report claim failed for ${inboxId}: ${formatErr(err)}`)
+      return false
+    }
   }
 
   private scheduleHookReportRetry(delayMs = 5_000): void {
@@ -20705,13 +20753,15 @@ export class Daemon {
   private replayHookTerminalReports(): void {
     let rows: InboxRow[]
     try {
-      rows = this.store.listInboxBySessionKeyFifo()
+      rows = this.store.listHookTerminalReports(this.clock.now(), this.cfg.daemonId, [...this.agents.keys()])
     } catch (err) {
       this.log.warn(`durable inbox: terminal report read failed: ${formatErr(err)}`)
       this.scheduleHookReportRetry()
       return
     }
-    const pending = rows.filter((row) => row.terminalReport && !this.hookReportInflight.has(row.id))
+    const pending = rows.filter(
+      (row) => row.terminalReport && !this.hookReportInflight.has(row.id) && !this.hookReportForeign.has(row.id)
+    )
     const available = Math.max(0, MAX_HOOK_REPORT_INFLIGHT - this.hookReportInflight.size)
     const batch = pending.slice(0, available)
     let emitted = 0
@@ -20723,7 +20773,10 @@ export class Daemon {
       } catch (err) {
         this.log.warn(`durable inbox: corrupt terminal hook receipt ${row.id}: ${formatErr(err)}`)
         try {
-          this.store.acknowledgeHookInbox(row.id)
+          // Undecodable, so ownership cannot be proven from the body — claim first
+          // and leave a peer's row alone rather than destroying it on their behalf.
+          if (this.claimHookReport(row.id)) this.store.acknowledgeHookInbox(row.id, { ownerId: this.cfg.daemonId })
+          else this.hookReportForeign.add(row.id)
         } catch (cleanupError) {
           this.log.warn(`durable inbox: corrupt receipt cleanup failed for ${row.id}: ${formatErr(cleanupError)}`)
         }
