@@ -67,12 +67,14 @@ export async function seedAgent(
     runtimeOverrides?: Record<string, unknown>
     /** A `set` placement: placed, but naming no machine — which member serves it is the ledger's. */
     setId?: string
+    /** Owning organization; defaults to the seeded one (multi-org tests pass their own). */
+    orgId?: string
   } = {}
 ): Promise<AgentId> {
   await prisma.agent.create({
     data: {
       id,
-      orgId: DEFAULT_ORG_ID,
+      orgId: opts.orgId ?? DEFAULT_ORG_ID,
       name: opts.name ?? `agent-${id.slice(0, 4)}`,
       runtime: opts.runtime ?? 'claude',
       daemonId: opts.daemonId,
@@ -96,19 +98,20 @@ export async function seedDutyGroup(
   groupId: string,
   holder: string,
   agentIds: string[],
-  opts: { expiresAt?: Date; term?: bigint } = {}
+  opts: { expiresAt?: Date; term?: bigint; orgId?: string } = {}
 ): Promise<void> {
+  const orgId = opts.orgId ?? DEFAULT_ORG_ID
   await prisma.dutyGroup.create({
     data: {
       id: groupId,
-      orgId: DEFAULT_ORG_ID,
+      orgId,
       holder,
       term: opts.term ?? 1n,
       expiresAt: opts.expiresAt ?? new Date(Date.now() + 120_000)
     }
   })
   await prisma.dutyGroupMember.createMany({
-    data: agentIds.map((refId) => ({ kind: 'agent' as const, refId, groupId, orgId: DEFAULT_ORG_ID }))
+    data: agentIds.map((refId) => ({ kind: 'agent' as const, refId, groupId, orgId }))
   })
 }
 
@@ -127,13 +130,15 @@ export async function seedSessionMeta(
     parentSessionId?: string
     lastActivityAt?: Date
     model?: string
+    /** Owning organization; defaults to the seeded one (multi-org tests pass their own). */
+    orgId?: string
   } = {}
 ): Promise<string> {
   await prisma.sessionMeta.create({
     data: {
       id,
       agentId,
-      orgId: DEFAULT_ORG_ID,
+      orgId: opts.orgId ?? DEFAULT_ORG_ID,
       platform: opts.platform ?? 'slack',
       channel: opts.channel ?? '#general',
       phase: 'start',

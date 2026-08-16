@@ -47,8 +47,11 @@ export class InMemoryDaemonStub implements Transport {
   private inflight: Promise<void>[] = []
   /** Resolvers waiting on `expectFrame(type)`. */
   private waiters: Array<{ type: FrameType; resolve: (f: CapturedFrame) => void }> = []
-  /** Auto-responders: REQ type → (reqFrame) → REP {type,payload}. */
-  private responders = new Map<FrameType, (req: CapturedFrame) => { type: FrameType; payload: unknown }>()
+  /** Auto-responders: REQ type → (reqFrame) → REP {type,payload,orgId?} (frame mode: an org-scoped REQ's reply must carry its org). */
+  private responders = new Map<
+    FrameType,
+    (req: CapturedFrame) => { type: FrameType; payload: unknown; orgId?: string }
+  >()
 
   constructor(opts: StubOpts = {}) {
     this.subprotocol = opts.subprotocol ?? 'agentconnect.v1'
@@ -60,7 +63,10 @@ export class InMemoryDaemonStub implements Transport {
    * would. The responder maps the request frame to the reply payload. Lets a test
    * drive flows (e.g. rebalance) that block on an ack without hand-injecting each.
    */
-  respondTo(type: FrameType, responder: (req: CapturedFrame) => { type: FrameType; payload: unknown }): void {
+  respondTo(
+    type: FrameType,
+    responder: (req: CapturedFrame) => { type: FrameType; payload: unknown; orgId?: string }
+  ): void {
     this.responders.set(type, responder)
   }
 
@@ -85,8 +91,8 @@ export class InMemoryDaemonStub implements Transport {
     // the issuing `request(...)` has returned its promise first).
     const responder = this.responders.get(frame.type)
     if (responder) {
-      const { type, payload } = responder(frame)
-      queueMicrotask(() => this.reply(frame.id, type, payload))
+      const { type, payload, orgId } = responder(frame)
+      queueMicrotask(() => this.inject(type, payload, { corr: frame.id, ...(orgId ? { orgId } : {}) }))
     }
   }
 
