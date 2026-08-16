@@ -1,53 +1,48 @@
-import { systemClock, type Clock, type TimerHandle } from '@agentconnect.md/connection'
+import { systemClock, type Clock } from '@agentconnect.md/connection'
 import { K8sApiError } from '@agentconnect.md/k8s-client'
 import { AC_LABEL_AGENT } from './driver.js'
 import { probeClaimExpiry } from './probe-claim.js'
 import type { Sandbox, SandboxApi, SandboxClaim } from './sandbox-api.js'
 
 /**
- * The pool's orphan reconciler: a periodic sweep that finds sandbox objects nobody will ever
- * clean up and removes them, instead of every teardown path carrying its own durable obligation
- * to survive a member dying mid-way (k8s-daemon-pool.md §4).
+ * The pool's orphan reconciler: ONE sweep that finds sandbox objects nobody will ever clean up and
+ * removes them, instead of every teardown path carrying its own durable obligation to survive a
+ * member dying mid-way (k8s-daemon-pool.md §4).
+ *
+ * It runs as a Kubernetes CronJob (`agentconnect-daemon reconcile --once`), not as a timer inside
+ * every member: the schedule, the mutual exclusion (`concurrencyPolicy: Forbid`) and the failure
+ * reporting are the cluster's, so the daemon keeps no scheduler, no jitter, and no lease.
  *
  * Safety over completeness. Deleting a claim deletes the workspace volume, so a candidate is
- * collected only when it is PROVABLY orphaned: the control plane no longer knows its agent, and
- * has not for at least the grace period as observed by this member across sweeps; a probe claim
- * is past its own window; a Sandbox has no claim and no live agent. An object of a live agent
- * is never touched — not even a claimless Sandbox — and an unreadable answer skips the sweep.
- * Ships dry-run: it logs and counts until the deployment enables deletion.
+ * collected only when it is PROVABLY orphaned: the control plane no longer knows its agent and the
+ * object is older than the grace period; a probe claim is past its own window; a Sandbox has no
+ * claim and no live agent. An object of a live agent is never touched — not even a claimless
+ * Sandbox — and an unreadable answer fails the sweep. Ships dry-run: it logs and counts until the
+ * deployment enables deletion.
  */
 
-/** Deployment-owned settings, env like the rest of the plane's; absent ⇒ the defaults below. */
-export const ORPHAN_SWEEP_INTERVAL_ENV = 'AC_K8S_ORPHAN_SWEEP_INTERVAL_MS'
+/** Deployment-owned settings, env like the rest of the plane's; absent ⇒ the default below. */
 export const ORPHAN_GRACE_ENV = 'AC_K8S_ORPHAN_GRACE_MS'
 /** Deletion is opt-in: `1`/`true` collects, anything else only reports. */
 export const ORPHAN_DELETE_ENV = 'AC_K8S_ORPHAN_DELETE'
-export const DEFAULT_ORPHAN_SWEEP_INTERVAL_MS = 10 * 60_000
 export const DEFAULT_ORPHAN_GRACE_MS = 10 * 60_000
-/** Name of the single-holder lease in the shared store; one member sweeps at a time. */
-export const ORPHAN_SWEEP_LEASE = 'k8s-orphan-sweep'
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 export interface OrphanReconcilerSettings {
-  intervalMs: number
   graceMs: number
   deleteEnabled: boolean
 }
 
 export function resolveOrphanReconcilerSettings(env: NodeJS.ProcessEnv = process.env): OrphanReconcilerSettings {
-  const positive = (name: string, fallback: number): number => {
-    const raw = env[name]?.trim()
-    if (!raw) return fallback
+  const raw = env[ORPHAN_GRACE_ENV]?.trim()
+  let graceMs = DEFAULT_ORPHAN_GRACE_MS
+  if (raw) {
     const value = Number(raw)
-    if (!Number.isInteger(value) || value <= 0) throw new Error(`${name} is not a positive integer: ${raw}`)
-    return value
+    if (!Number.isInteger(value) || value <= 0) throw new Error(`${ORPHAN_GRACE_ENV} is not a positive integer: ${raw}`)
+    graceMs = value
   }
   const flag = env[ORPHAN_DELETE_ENV]?.trim().toLowerCase()
-  return {
-    intervalMs: positive(ORPHAN_SWEEP_INTERVAL_ENV, DEFAULT_ORPHAN_SWEEP_INTERVAL_MS),
-    graceMs: positive(ORPHAN_GRACE_ENV, DEFAULT_ORPHAN_GRACE_MS),
-    deleteEnabled: flag === '1' || flag === 'true'
-  }
+  return { graceMs, deleteEnabled: flag === '1' || flag === 'true' }
 }
 
 /** One sweep's counters, also the shape of its summary log line. */
@@ -62,14 +57,10 @@ export interface OrphanSweepSummary {
 
 export interface OrphanReconcilerDeps {
   api: Pick<SandboxApi, 'listClaims' | 'deleteClaimIfCurrent' | 'listSandboxes' | 'deleteSandboxIfCurrent'>
-  /** Take or renew the install-wide sweep lease for `ttlMs`; false ⇒ another member is sweeping. */
-  acquireLease: (ttlMs: number, now: number) => boolean
-  /** Which of these agents the control plane still knows; a throw skips the sweep. */
+  /** Which of these agents the control plane still knows; a throw fails the sweep. */
   liveAgents: (agentIds: string[]) => Promise<Set<string>>
   settings: OrphanReconcilerSettings
   clock?: Clock
-  /** Uniform in [0, 1); spreads the members' timers so a rollout does not line them up. */
-  jitter?: () => number
   log: { info: (m: string) => void; warn: (m: string) => void; debug?: (m: string) => void }
 }
 
@@ -88,65 +79,25 @@ interface Candidate {
 
 export class OrphanReconciler {
   private readonly clock: Clock
-  private readonly jitter: () => number
-  private timer?: TimerHandle
-  private stopped = false
-  private inFlight?: Promise<OrphanSweepSummary | undefined>
-  /** When this member first saw each object's agent missing, by uid; forgotten once seen live. */
-  private readonly missingSince = new Map<string, number>()
   private sandboxListDenied = false
 
   constructor(private readonly deps: OrphanReconcilerDeps) {
     this.clock = deps.clock ?? systemClock
-    this.jitter = deps.jitter ?? Math.random
   }
 
-  /** Arm the periodic sweep; the first one is a jittered interval away, like every later one. */
-  start(): void {
-    this.stopped = false
-    this.arm()
-  }
-
-  stop(): void {
-    this.stopped = true
-    if (this.timer !== undefined) this.clock.clearTimeout(this.timer)
-    this.timer = undefined
-  }
-
-  private arm(): void {
-    if (this.stopped) return
-    // ±25% around the interval: members drift apart, and the lease holder still renews well
-    // inside a lease that lasts three intervals.
-    const delay = Math.round(this.deps.settings.intervalMs * (0.75 + 0.5 * this.jitter()))
-    this.timer = this.clock.setTimeout(() => {
-      this.timer = undefined
-      void this.sweep().finally(() => this.arm())
-    }, delay)
-    // A sweep is housekeeping: it must never be what keeps a stopping process alive.
-    ;(this.timer as { unref?: () => void }).unref?.()
-  }
-
-  /** One sweep. Resolves undefined when this member does not hold the lease or the sweep was skipped. */
-  sweep(): Promise<OrphanSweepSummary | undefined> {
-    if (this.inFlight) return this.inFlight
-    this.inFlight = this.runSweep()
-      .catch((err: unknown) => {
-        this.deps.log.warn(`k8s orphans: sweep failed — ${(err as Error).message}`)
-        return undefined
-      })
-      .finally(() => {
-        this.inFlight = undefined
-      })
-    return this.inFlight
-  }
-
-  private async runSweep(): Promise<OrphanSweepSummary | undefined> {
-    const { settings, log } = this.deps
-    const now = this.clock.now()
-    if (!this.deps.acquireLease(settings.intervalMs * 3, now)) {
-      log.debug?.('k8s orphans: another member holds the sweep lease')
+  /** One sweep. Resolves undefined when it failed — the CronJob turns that into a non-zero exit. */
+  async sweep(): Promise<OrphanSweepSummary | undefined> {
+    try {
+      return await this.runSweep()
+    } catch (err) {
+      this.deps.log.warn(`k8s orphans: sweep failed — ${(err as Error).message}`)
       return undefined
     }
+  }
+
+  private async runSweep(): Promise<OrphanSweepSummary> {
+    const { settings, log } = this.deps
+    const now = this.clock.now()
     const claims = await this.deps.api.listClaims()
     const sandboxes = await this.listSandboxes()
     const bound = new Set(claims.map((claim) => claim.status?.sandbox?.name).filter((name) => name !== undefined))
@@ -174,7 +125,6 @@ export class OrphanReconciler {
       ...new Set(candidates.filter((c) => c.kind !== 'probe-claim' && UUID.test(c.agentId)).map((c) => c.agentId))
     ]
     const live = askable.length > 0 ? await this.deps.liveAgents(askable) : new Set<string>()
-    const seen = new Set<string>()
     const orphans: Candidate[] = []
     for (const candidate of candidates) {
       if (candidate.kind === 'probe-claim') {
@@ -189,19 +139,14 @@ export class OrphanReconciler {
         summary.skippedLive += 1
         continue
       }
-      seen.add(candidate.uid)
-      const firstMissing = this.missingSince.get(candidate.uid) ?? now
-      this.missingSince.set(candidate.uid, firstMissing)
-      // Both clocks must agree: missing across this member's sweeps for the grace, AND old enough
-      // that no in-flight creation could still be racing the control plane's own write.
-      const aged = Number.isFinite(candidate.createdAt) && now - candidate.createdAt >= settings.graceMs
-      if (now - firstMissing < settings.graceMs || !aged) {
+      // The object's own age IS the grace: a one-shot run has no memory of an earlier sweep, and this
+      // is the clock that matters anyway — no in-flight creation can still be racing the CP's write.
+      if (!(Number.isFinite(candidate.createdAt) && now - candidate.createdAt >= settings.graceMs)) {
         summary.skippedGrace += 1
         continue
       }
       orphans.push(candidate)
     }
-    for (const uid of [...this.missingSince.keys()]) if (!seen.has(uid)) this.missingSince.delete(uid)
     summary.orphaned = orphans.length
     for (const orphan of orphans) {
       if (!settings.deleteEnabled) {

@@ -224,6 +224,12 @@ export interface DaemonRepo {
    * increasing epoch. First call for a daemon creates the row.
    */
   upsertOnAuth(input: AuthReqInput): Promise<{ daemon: DaemonRecord; sessionEpoch: bigint }>
+  /**
+   * Undo the automatic pool enrollment for a connection that registered as an OBSERVER, and
+   * backdate its liveness so the pool-member reaper retires the row on its next sweep. An
+   * observer holds no membership, so `claimVacant`'s eligibility gate can never reach it.
+   */
+  withdrawObserver(daemonId: DaemonId): Promise<void>
   /** Also records `generation`, stamping `generationSince` only when the value changes. */
   applyRegister(daemonId: DaemonId, reg: RegisterReqInput, now: Date): Promise<DaemonRecord>
   /** Full-replace the stored capabilities from a mid-connection `capabilities/update`. */

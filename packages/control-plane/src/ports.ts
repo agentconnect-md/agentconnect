@@ -263,6 +263,8 @@ export interface DaemonLiveness {
  */
 export interface DaemonRegistry {
   upsertOnRegister(daemonId: DaemonId, req: RegisterReq): Promise<void>
+  /** Admit an observer connection without making it a pool member (k8s-daemon-pool.md §4). */
+  withdrawObserver(daemonId: DaemonId): Promise<void>
   /** Persist a mid-connection `capabilities/update` full-replace (the durable
    *  sibling of the ConnectionRegistry's live copy). */
   updateCapabilities(daemonId: DaemonId, capabilities: RegisterReq['capabilities']): Promise<void>

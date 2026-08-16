@@ -230,6 +230,15 @@ export class PgDaemonRepo implements DaemonRepo {
     })
   }
 
+  /** The observer's whole cost at the CP: no membership, and a row the reaper takes on its next
+   *  sweep. `new Date(0)` is older than any cutoff, and an observer sends no heartbeat to move it. */
+  async withdrawObserver(daemonId: DaemonId): Promise<void> {
+    await withAmbientTx(this.db, async (tx) => {
+      await tx.memberSetMember.deleteMany({ where: { daemonId } })
+      await tx.daemon.update({ where: { id: daemonId }, data: { lastSeenAt: new Date(0) } })
+    })
+  }
+
   async applyRegister(daemonId: DaemonId, reg: RegisterReqInput, now: Date): Promise<DaemonRecord> {
     // The generation's first-seen stamp moves only when the value does — it orders generations
     // within a member set (duty-group.repo.ts `newerGenerationLive`), so a re-register must not
