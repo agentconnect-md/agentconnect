@@ -12,6 +12,7 @@
  */
 import {
   isFrame,
+  AGENT_EXISTS_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
   SESSION_LIVE_TAIL_FEATURE,
   SESSION_METADATA_ACK_FEATURE,
@@ -75,7 +76,8 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
       SESSION_METADATA_ACK_FEATURE,
       SESSION_PURGE_FEATURE,
       SESSION_VISIBILITY_FEATURE,
-      ORGANIZATION_KNOWLEDGE_FEATURE
+      ORGANIZATION_KNOWLEDGE_FEATURE,
+      AGENT_EXISTS_FEATURE
     ]
   })
   deps.connReg.markReady(conn.daemonId, conn)

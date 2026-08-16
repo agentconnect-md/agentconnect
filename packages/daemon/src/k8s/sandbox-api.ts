@@ -12,6 +12,7 @@ interface SandboxContainer {
 }
 
 interface SandboxPodTemplate {
+  metadata?: { labels?: Record<string, string> }
   spec?: { containers?: SandboxContainer[] }
 }
 
@@ -164,10 +165,17 @@ export class SandboxApi {
 
   /** Delete only the listed claim incarnation; false means the name now belongs to a replacement. */
   async deleteClaimIfCurrent(name: string, preconditions: { uid: string; resourceVersion?: string }): Promise<boolean> {
+    return this.deleteIfCurrent(`${this.claims()}/${name}`, preconditions)
+  }
+
+  private async deleteIfCurrent(
+    path: string,
+    preconditions: { uid: string; resourceVersion?: string }
+  ): Promise<boolean> {
     try {
       await this.http.json({
         method: 'DELETE',
-        path: `${this.claims()}/${name}`,
+        path,
         body: {
           apiVersion: 'v1',
           kind: 'DeleteOptions',
@@ -183,6 +191,23 @@ export class SandboxApi {
       if (err instanceof K8sApiError && err.isConflict) return false
       throw err
     }
+  }
+
+  async listSandboxes(labelSelector?: string): Promise<Sandbox[]> {
+    const list = await this.http.json<K8sList<Sandbox>>({
+      method: 'GET',
+      path: this.sandboxes(),
+      query: { ...(labelSelector ? { labelSelector } : {}) }
+    })
+    return list.items ?? []
+  }
+
+  /** Delete only the listed Sandbox incarnation; false means the name now belongs to a replacement. */
+  async deleteSandboxIfCurrent(
+    name: string,
+    preconditions: { uid: string; resourceVersion?: string }
+  ): Promise<boolean> {
+    return this.deleteIfCurrent(`${this.sandboxes()}/${name}`, preconditions)
   }
 
   /** `signal` bounds the read: a caller on a deadline must not be pinned by an API server that

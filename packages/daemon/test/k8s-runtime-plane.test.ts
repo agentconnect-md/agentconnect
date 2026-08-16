@@ -1,14 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Backoff, FakeClock } from '@agentconnect.md/connection'
-import {
-  PROBE_CLAIM_EXPIRES_ANNOTATION,
-  PROBE_CLAIM_LABEL,
-  k8sPlaneSettings,
-  probeAgentId,
-  reapExpiredProbeClaims,
-  startK8sRuntimePlane,
-  type K8sRuntimePlane
-} from '../src/k8s/runtime-plane.js'
+import { k8sPlaneSettings, startK8sRuntimePlane, type K8sRuntimePlane } from '../src/k8s/runtime-plane.js'
+import { PROBE_CLAIM_EXPIRES_ANNOTATION, PROBE_CLAIM_LABEL, probeAgentId } from '../src/k8s/probe-claim.js'
 import { ShimClient, type ShimTransport } from '../src/shim/client.js'
 import { ShimServer } from '../src/shim/server.js'
 import { K8sApiError } from '@agentconnect.md/k8s-client'
@@ -183,43 +176,6 @@ describe('k8s plane settings', () => {
   it('derives a distinct DNS-safe probe identity for each member', () => {
     expect(probeAgentId('member-a')).toMatch(/^ac-runtime-probe-[a-f0-9]{16}$/)
     expect(probeAgentId('member-a')).not.toBe(probeAgentId('member-b'))
-  })
-
-  it('reaps only expired probe claims from previous members', async () => {
-    const deleted: string[] = []
-    const current = `agent-${probeAgentId('member-a')}`
-    const expired = `agent-${probeAgentId('member-old')}`
-    const live = `agent-${probeAgentId('member-b')}`
-    const ordinary = 'agent-customer'
-    const expiry = (name: string, at: string, probe = true): SandboxClaim => ({
-      metadata: {
-        name,
-        uid: `uid-${name}`,
-        resourceVersion: `rv-${name}`,
-        labels: probe ? { [PROBE_CLAIM_LABEL]: 'true' } : {},
-        annotations: { [PROBE_CLAIM_EXPIRES_ANNOTATION]: at }
-      }
-    })
-    await reapExpiredProbeClaims(
-      {
-        listClaims: async (selector?: string) => {
-          expect(selector).toBe(`${PROBE_CLAIM_LABEL}=true`)
-          return [
-            expiry(current, '2026-08-14T11:00:00.000Z'),
-            expiry(expired, '2026-08-14T09:00:00.000Z'),
-            expiry(live, '2026-08-14T11:00:00.000Z'),
-            expiry(ordinary, '2026-08-14T09:00:00.000Z', false)
-          ]
-        },
-        deleteClaimIfCurrent: async (name: string, preconditions) => {
-          expect(preconditions).toEqual({ uid: `uid-${name}`, resourceVersion: `rv-${name}` })
-          deleted.push(name)
-          return true
-        }
-      },
-      Date.parse('2026-08-14T10:00:00.000Z')
-    )
-    expect(deleted).toEqual([expired])
   })
 })
 

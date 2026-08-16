@@ -44,7 +44,10 @@ const INSTALL_WIDE_FRAME_TYPES = new Set([
   'duty/revoke',
   'duty/release',
   'duty/claim',
-  'duty/claim/ok'
+  'duty/claim/ok',
+  // Existence query from the pool's orphan reconciler: the ids it asks about span every org.
+  'agent/exists',
+  'agent/exists/ok'
 ])
 
 export class DaemonConnection implements ConnChannel {

@@ -137,9 +137,8 @@ and Sandboxes. Each member also receives its Pod UID through the Downward API as
 `AC_K8S_MEMBER_ID`; the runtime probe hashes it into
 `agent-ac-runtime-probe-<member-hash>`, so simultaneous member startup never races
 on one probe claim. Probe claims carry a dedicated label and a 15-minute expiry;
-members periodically delete expired claims, so a missed teardown cannot retain a
-Sandbox and volume forever. Each GC delete carries the UID and resourceVersion from
-its LIST snapshot, so a same-name replacement cannot be deleted by a stale sweep.
+the orphan reconciler (§4) collects an expired one, so a missed teardown cannot
+retain a Sandbox and volume forever.
 
 **Org-threading is the end state; instantiation is scaffolding.** The wire
 carries the org, the data plane carries the org, and the process interior
@@ -186,6 +185,49 @@ pod, adopting from the runtime tier's shared warm pool when one is available;
 record at pod-name time — and the holder then dials the shim and binds at its
 term (§7). Cold, warm, and resume paths are already distinguished and metered
 (`LaunchTimer.observedPath`). **No new wake machinery exists here.**
+
+### Orphan reconciliation
+
+Teardown is best-effort and a member can die mid-way — a rollout, an OOM, a
+node loss — leaving a `SandboxClaim`, a `Sandbox`, or a probe claim that no
+process still intends to remove. Rather than one durable obligation per
+failure mode, a single **orphan reconciler**
+(`packages/daemon/src/k8s/orphan-reconciler.ts`) sweeps the sandbox namespace
+on every `--k8s` daemon, by default every 10 minutes with ±25% jitter, and one
+member at a time: a named single-holder lease in the shared store
+(`LocalStore.acquireSweepLease`, table `sweep_leases`) is taken or renewed at
+each sweep and lasts three intervals, so a holder that disappears is replaced
+after at most that.
+
+**What it collects.** It lists the claims and Sandboxes that carry the
+install's agent label (`agentconnect.md/agent` on the pod metadata), asks the
+control plane in **one batched read per sweep** which of those agent ids still
+exist (`agent/exists` → `agent/exists/ok`, install-wide, advertised as the
+`agent-exists-v1` server feature), and deletes only what is provably orphaned:
+
+- a claim whose agent the control plane no longer knows — and has not known for
+  at least the grace period (default 10 minutes) as observed by the sweeping
+  member across its own sweeps, on an object at least that old;
+- a probe claim past the window the probe stamped on it;
+- a Sandbox no claim binds, whose agent the control plane no longer knows,
+  under the same grace.
+
+**Safety rules.** An object of a live agent is never touched, a claimless
+Sandbox included — deleting a claim deletes the workspace volume and is
+irreversible, so a stray of a live agent is reported, not collected. An id the
+control plane cannot be asked about, an object without a readable age, and a
+sweep whose control-plane read fails all skip. Every delete carries the UID and
+resourceVersion from the LIST snapshot, so a same-name replacement created
+after the list is never the object deleted. Each sweep logs one summary line
+(candidates, orphaned, deleted, skipped-live, skipped-grace, failed).
+
+**Dry run by default.** The reconciler ships reporting only; deletion is
+enabled per deployment with `AC_K8S_ORPHAN_DELETE=true` after an observation
+window in which the summary lines show it collecting exactly what an operator
+would (`AC_K8S_ORPHAN_SWEEP_INTERVAL_MS` and `AC_K8S_ORPHAN_GRACE_MS` tune the
+cadence and grace). It replaced the dedicated probe-claim GC, and agent
+removal's sandbox teardown is best-effort because of it: `discardAgent` deletes
+the claim once and logs a failure, and the reconciler collects the leftovers.
 
 ## 5. The duty ledger and lease service (D6, D7)
 
@@ -837,16 +879,17 @@ shrinking every actor's permissions.
 
 ## 17. Implementation map
 
-| Piece                                                                  | Where                                                                                                 |
-| ---------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| Frames + member cap                                                    | `packages/protocol/src/frames/duty.ts`, `relay-daemon.ts` (`RD_ACK_NOT_HOLDER`)                       |
-| Schema + repo (CAS claim, renew, release, reconcile, agent-home claim) | `packages/control-plane/prisma/schema.prisma`, `src/persistence/repositories/duty-group.repo.ts`      |
-| Pure group math + reconcile planner                                    | `packages/control-plane/src/orchestrator/dutyGroup.ts`                                                |
-| Lease exchange (digest diff, chunking, lanes, grace)                   | `packages/control-plane/src/orchestrator/dutyLease.ts`                                                |
-| Recompute sweep + mutation kicks + placement fence                     | `packages/control-plane/src/orchestrator/dutyRecompute.ts`                                            |
-| WS handlers                                                            | `packages/control-plane/src/ws/handlers/{heartbeat,duty-release,duty-claim}.ts`                       |
-| Daemon registry + gate + rendezvous claim                              | `packages/daemon/src/cp/duty-registry.ts`, `src/daemon.ts` (`transportAgents`, `claimDutyForTrigger`) |
-| Relay re-route                                                         | `packages/relay/src/relay-ingress-manager.ts` (`sendWithRendezvous`), `relay-browser-connection.ts`   |
-| Shim dial-in                                                           | `packages/daemon/src/shim/{dialer,server}.ts`                                                         |
-| Pod-bound member identity                                              | `packages/control-plane/src/cluster/daemon-identity.ts`                                               |
-| Member readiness (probe sinks)                                         | `packages/daemon/src/readiness.ts`, `src/daemon.ts` (`readinessState`)                                |
+| Piece                                                                  | Where                                                                                                    |
+| ---------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| Frames + member cap                                                    | `packages/protocol/src/frames/duty.ts`, `relay-daemon.ts` (`RD_ACK_NOT_HOLDER`)                          |
+| Schema + repo (CAS claim, renew, release, reconcile, agent-home claim) | `packages/control-plane/prisma/schema.prisma`, `src/persistence/repositories/duty-group.repo.ts`         |
+| Pure group math + reconcile planner                                    | `packages/control-plane/src/orchestrator/dutyGroup.ts`                                                   |
+| Lease exchange (digest diff, chunking, lanes, grace)                   | `packages/control-plane/src/orchestrator/dutyLease.ts`                                                   |
+| Recompute sweep + mutation kicks + placement fence                     | `packages/control-plane/src/orchestrator/dutyRecompute.ts`                                               |
+| WS handlers                                                            | `packages/control-plane/src/ws/handlers/{heartbeat,duty-release,duty-claim}.ts`                          |
+| Daemon registry + gate + rendezvous claim                              | `packages/daemon/src/cp/duty-registry.ts`, `src/daemon.ts` (`transportAgents`, `claimDutyForTrigger`)    |
+| Relay re-route                                                         | `packages/relay/src/relay-ingress-manager.ts` (`sendWithRendezvous`), `relay-browser-connection.ts`      |
+| Shim dial-in                                                           | `packages/daemon/src/shim/{dialer,server}.ts`                                                            |
+| Pod-bound member identity                                              | `packages/control-plane/src/cluster/daemon-identity.ts`                                                  |
+| Member readiness (probe sinks)                                         | `packages/daemon/src/readiness.ts`, `src/daemon.ts` (`readinessState`)                                   |
+| Orphan reconciler + existence read                                     | `packages/daemon/src/k8s/orphan-reconciler.ts`, `packages/control-plane/src/ws/handlers/agent-exists.ts` |

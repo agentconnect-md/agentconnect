@@ -1172,6 +1172,13 @@ export class LocalStore {
         agentId TEXT PRIMARY KEY,
         generation INTEGER NOT NULL
       );
+      -- Single-holder leases for install-wide periodic sweeps (the cluster orphan reconciler): the
+      -- holder renews by re-acquiring, and a lapsed row is any member's to take.
+      CREATE TABLE IF NOT EXISTS sweep_leases (
+        name TEXT PRIMARY KEY,
+        ownerId TEXT NOT NULL,
+        expiresAt INTEGER NOT NULL
+      );
     `)
     // Stamped only once the CREATE block above has actually emitted that schema, so
     // a store that failed halfway through creation is not left claiming to be current.
@@ -4814,6 +4821,20 @@ export class LocalStore {
       .get(agentId) as { generation: number } | undefined
     if (row === undefined) throw new Error(`could not allocate a sandbox generation for agent ${agentId}`)
     return Number(row.generation)
+  }
+
+  /** Take or renew the named single-holder lease; false means another member holds it unexpired. */
+  // One atomic upsert, so two members cannot both win; a store nobody shares always holds.
+  acquireSweepLease(name: string, ttlMs: number, now: number): boolean {
+    if (!this.shared) return true
+    const result = this.db
+      .prepare(
+        `INSERT INTO sweep_leases (name, ownerId, expiresAt) VALUES (@name, @ownerId, @expiresAt)
+         ON CONFLICT(name) DO UPDATE SET ownerId = excluded.ownerId, expiresAt = excluded.expiresAt
+         WHERE sweep_leases.ownerId = excluded.ownerId OR sweep_leases.expiresAt <= @now`
+      )
+      .run({ name, ownerId: this.ownerId ?? '', expiresAt: now + ttlMs, now })
+    return Number(result.changes) === 1
   }
 
   close(): void {

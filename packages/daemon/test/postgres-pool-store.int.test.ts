@@ -286,6 +286,14 @@ describe.skipIf(!databaseUrl)('PostgreSQL pool member store', () => {
       second.store.gcRuntimeCatalog(1, 150)
       expect(first.store.getRuntimeCatalogMeta(runtimeId)).toBeUndefined()
       expect(second.store.getRuntimeCatalogMeta(runtimeId)).toMatchObject({ fingerprint: 'fp-2' })
+
+      // The single-holder sweep lease decides through the same upsert on PostgreSQL as on SQLite.
+      const lease = `sweep-${suffix}`
+      expect(first.store.acquireSweepLease(lease, 1_000, 10_000)).toBe(true)
+      expect(second.store.acquireSweepLease(lease, 1_000, 10_500)).toBe(false)
+      expect(first.store.acquireSweepLease(lease, 1_000, 10_900)).toBe(true)
+      expect(second.store.acquireSweepLease(lease, 1_000, 11_950)).toBe(true)
+      expect(first.store.acquireSweepLease(lease, 1_000, 12_000)).toBe(false)
     } finally {
       second.store.gcRuntimeCatalog(Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER)
       await second.close()

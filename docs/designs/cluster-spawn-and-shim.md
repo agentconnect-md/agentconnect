@@ -72,10 +72,11 @@ The daemon pool and agent sandboxes are separate namespaces. The runtime plane r
 `AC_K8S_SANDBOX_NAMESPACE` and uses it for every `SandboxClaim` and `Sandbox` request; it never
 defaults to the namespace mounted into the daemon Pod's ServiceAccount.
 
-Runtime probes use a member-hashed claim name plus an expiry annotation. A label-filtered daemon
-sweep deletes expired claims, bounding resources left by a crash or failed teardown without reading
-daemon-local storage or touching ordinary agent claims. UID/resourceVersion delete preconditions
-prevent a stale sweep from deleting a same-name claim recreated by a container restart.
+Runtime probes use a member-hashed claim name plus an expiry annotation. The pool's orphan
+reconciler (k8s-daemon-pool.md §4) collects expired probe claims by that window, bounding resources
+left by a crash or failed teardown without reading daemon-local storage or touching ordinary agent
+claims. UID/resourceVersion delete preconditions prevent a stale sweep from deleting a same-name
+claim recreated by a container restart.
 
 ## 3. Binding: proving which pod accepted the connection
 

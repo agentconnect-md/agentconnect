@@ -1,7 +1,8 @@
-import { createHash } from 'node:crypto'
 import { K8sHttp, loadInClusterConfig } from '@agentconnect.md/k8s-client'
 import { K8sDriver, PROBE_GRANTS, type LaunchGenerations } from './driver.js'
 import { SandboxApi } from './sandbox-api.js'
+import { OrphanReconciler, resolveOrphanReconcilerSettings, type OrphanReconcilerDeps } from './orphan-reconciler.js'
+import { PROBE_CLAIM_EXPIRES_ANNOTATION, PROBE_CLAIM_LABEL, PROBE_CLAIM_TTL_MS, probeAgentId } from './probe-claim.js'
 import { clusterMetrics } from './cluster-metrics.js'
 import { ShimDialer } from '../shim/dialer.js'
 import { ShimGitRunner } from '../shim/git-exec.js'
@@ -17,49 +18,8 @@ import type { GitRunner } from '../workspace/git-runner.js'
 
 const SILENT = { info: () => {}, warn: () => {} }
 
-/** Reserved prefix for member-scoped runtime probes; the Control Plane never assigns it. */
-export const PROBE_AGENT_ID_PREFIX = 'ac-runtime-probe'
-export const PROBE_CLAIM_LABEL = 'agentconnect.md/runtime-probe'
-export const PROBE_CLAIM_EXPIRES_ANNOTATION = 'agentconnect.md/runtime-probe-expires-at'
 /** A probe drives every runtime through `initialize` plus a session, on a possibly cold pod. */
 const PROBE_TIMEOUT_MS = 180_000
-/** Bounds an abandoned probe claim while leaving ample room for cold scheduling and the probe. */
-export const PROBE_CLAIM_TTL_MS = 15 * 60_000
-const PROBE_CLAIM_GC_INTERVAL_MS = 5 * 60_000
-
-/** A deterministic, DNS-safe probe identity unique to one daemon member. */
-export function probeAgentId(memberId: string): string {
-  const memberHash = createHash('sha256').update(memberId).digest('hex').slice(0, 16)
-  return `${PROBE_AGENT_ID_PREFIX}-${memberHash}`
-}
-
-/** Delete only expired probe claims; ordinary agent claims never match. */
-export async function reapExpiredProbeClaims(
-  api: Pick<SandboxApi, 'deleteClaimIfCurrent' | 'listClaims'>,
-  now: number,
-  log: { warn: (message: string) => void } = SILENT
-): Promise<void> {
-  const claims = await api.listClaims(`${PROBE_CLAIM_LABEL}=true`)
-  await Promise.all(
-    claims.map(async (claim) => {
-      const name = claim.metadata?.name
-      if (!name || claim.metadata?.labels?.[PROBE_CLAIM_LABEL] !== 'true') return
-      const uid = claim.metadata.uid
-      if (!uid) return
-      const rawExpiry = claim.metadata?.annotations?.[PROBE_CLAIM_EXPIRES_ANNOTATION]
-      const expiresAt = rawExpiry ? Date.parse(rawExpiry) : Number.NaN
-      if (!Number.isFinite(expiresAt) || expiresAt > now) return
-      await api
-        .deleteClaimIfCurrent(name, {
-          uid,
-          ...(claim.metadata.resourceVersion ? { resourceVersion: claim.metadata.resourceVersion } : {})
-        })
-        .catch((err: unknown) => {
-          log.warn(`k8s: expired probe claim ${name} teardown failed: ${(err as Error).message}`)
-        })
-    })
-  )
-}
 
 /** How long a pod that is UP may go without a shim channel before the launch counts as lost. */
 const DEFAULT_REBIND_GRACE_MS = 20_000
@@ -120,6 +80,8 @@ export interface K8sRuntimePlaneOptions {
   /** How long a pod that is up may go without a shim channel before the launch counts as lost.
    *  Injected so a test can cross the window in milliseconds rather than waiting out the default. */
   rebindGraceMs?: number
+  /** The orphan reconciler's install-wide seams (sweep lease, control-plane existence read); absent ⇒ no sweep. */
+  orphans?: Pick<OrphanReconcilerDeps, 'acquireLease' | 'liveAgents'>
   log?: { info: (m: string) => void; warn: (m: string) => void; debug?: (m: string) => void }
 }
 
@@ -311,20 +273,20 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
   // is a wait for an event, not a window being spent, and the pod's arrival restarts the window.
   const POD_UP_POLL_MS = Math.max(1, Math.min(2_000, Math.floor(REBIND_GRACE_MS / 4)))
   const lossWatches = new Map<string, LossWatch>()
-  let stopped = false
-  let probeGcTimer: NodeJS.Timeout | undefined
   let probeInFlight: Promise<K8sRuntimeTable> | undefined
 
-  async function runProbeClaimGc(): Promise<void> {
-    await reapExpiredProbeClaims(api, Date.now(), options.log ?? SILENT).catch((err: unknown) =>
-      options.log?.warn(`k8s: probe claim sweep failed: ${(err as Error).message}`)
-    )
-    if (stopped) return
-    probeGcTimer = setTimeout(() => void runProbeClaimGc(), PROBE_CLAIM_GC_INTERVAL_MS)
-    probeGcTimer.unref?.()
-  }
-
-  void runProbeClaimGc()
+  // Collects what a member that died mid-teardown left behind — an expired probe claim included
+  // (k8s-daemon-pool.md §4); the seams it needs are the daemon's, so a plane assembled without
+  // them (a test) simply never sweeps.
+  const reconciler = options.orphans
+    ? new OrphanReconciler({
+        api,
+        ...options.orphans,
+        settings: resolveOrphanReconcilerSettings(options.env ?? process.env),
+        log: options.log ?? SILENT
+      })
+    : undefined
+  reconciler?.start()
 
   /**
    * Start the grace window for a channel that dropped, measured from the right event.
@@ -420,6 +382,7 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
           return K8sRuntimeTableSchema.parse(raw)
         })
       } finally {
+        // Best-effort: a claim left behind here expires and the orphan reconciler collects it.
         await driver.removeAgent(runtimeProbeAgentId).catch((err: unknown) => {
           options.log?.warn(`k8s: probe sandbox teardown failed: ${(err as Error).message}`)
         })
@@ -477,9 +440,7 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
       await driver.removeAgent(agentId)
     },
     stop: async () => {
-      stopped = true
-      if (probeGcTimer) clearTimeout(probeGcTimer)
-      probeGcTimer = undefined
+      reconciler?.stop()
       for (const agentId of [...lossWatches.keys()]) cancelLossCheck(agentId)
       for (const { proxy } of proxies.values()) proxy.stop('daemon is shutting down')
       proxies.clear()
