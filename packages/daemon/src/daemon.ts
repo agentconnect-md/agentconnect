@@ -7134,6 +7134,87 @@ export class Daemon {
    * `originSessionId`. A root/human turn (no active call metadata) or any other sessionId is
    * refused — an agent can never inject into an arbitrary session.
    */
+  /**
+   * The #800 inferred reply — the mechanism half the parked directive fix (#905) could not
+   * substitute for, measured on the webchat night-collection cell: a COLD needsReply child
+   * mostly answers its delegation as its ordinary assistant response (a correct answer,
+   * delivered to nobody) and never reaches for any messaging tool. The pi-intercom pattern:
+   * when a delegation turn ends cleanly without the child having sent its
+   * `sendMessage {sessionId}` report, deliver the child's final ordinary output TO the parent
+   * as the report, explicitly marked inferred — a headless child's answer is never silently
+   * dropped.
+   *
+   * Exactly-one-obligation scoping (the niche boundary):
+   *  - only turns whose OWN trusted CallMeta carries `needsReply` + an origin — i.e. the
+   *    delegation wake itself (and a re-delegation into the same child). Human follow-ups,
+   *    plain calls, continuations, and unrelated turns of the child session never infer;
+   *  - only when the obligation is still open (`replyState === 'awaiting'`) — a report the
+   *    child actually sent this turn, or one that terminally failed, is respected;
+   *  - only clean completions: failed/suppressed turns keep their own semantics
+   *    (`viewSessionStatus` reports those);
+   *  - deferred when the session still has live background tasks — the bg-task wake exists
+   *    precisely to let the child report AFTER its task settles, and that wake turn (which
+   *    carries no CallMeta) will not re-infer; the obligation then resolves through the
+   *    child's own report or stays visibly `awaiting`.
+   *
+   * A child whose final output is empty or the no-response sentinel produced NOTHING to
+   * infer — the parent gets an explicit "finished without reporting" wake instead of
+   * silence. Delivery reuses `replyToSession` verbatim (origin authorization, hop charge,
+   * queue/coalesce semantics, `markChildParentReply`), so an inferred report is
+   * indistinguishable from a real one on every axis EXCEPT the marker the parent (and the
+   * artifacts) see. Runs while the turn's activeTurnCallMeta is still installed.
+   */
+  private maybeInferParentReply(
+    childKey: string,
+    agentId: string,
+    msg: NormalizedMessage,
+    callMeta: CallMeta | undefined,
+    p: { replyText: string; outputSuppressed?: string | undefined }
+  ): void {
+    if (this.draining) return
+    if (!callMeta?.needsReply || callMeta.originSessionId === undefined) return
+    if (p.outputSuppressed) return
+    const link = this.childSessionLinks.get(childKey)
+    if (link && (link.parentSessionId !== callMeta.originSessionId || link.replyState !== 'awaiting')) return
+    // Live background tasks: the child may legitimately be waiting to report until its
+    // task settles (see wakeOnBackgroundTaskDone). Do not preempt that with a premature
+    // inference of "I started the task…" narration. `armedWakes` closes the settle race
+    // (review): a task that just SETTLED leaves `tasks` before its wake timer fires —
+    // and that wake is deferred while this very dispatch finalizes — so a tasks-only
+    // check would see zero and infer the narration while the bg wake is still owed.
+    const sessionId = this.store.getSession(childKey)?.acpSessionId ?? undefined
+    const lease = sessionId !== undefined ? this.sdkLease.get(sdkLeaseKey(agentId, sessionId)) : undefined
+    if (lease !== undefined && (lease.tasks.size > 0 || lease.armedWakes > 0)) return
+    const finalOutput = p.replyText.trim()
+    const text =
+      finalOutput && !isNoResponseBody(finalOutput)
+        ? `[inferred reply] The delegated session finished its turn without sending its report ` +
+          `(no sendMessage {"sessionId"} call). This is its final output, delivered on its behalf:\n\n${finalOutput}`
+        : `[inferred reply] The delegated session finished its turn without sending its report and ` +
+          `produced no final output. Treat the delegation as ended without a result.`
+    this.log.info(
+      `inferred parent reply: ${agentId} (${childKey}) → session ${callMeta.originSessionId} ` +
+        `(turn ended with obligation open; output ${finalOutput ? `${finalOutput.length} chars` : 'empty'})`
+    )
+    void this.replyToSession({
+      callerAgentId: agentId,
+      platform: msg.platform,
+      ...(msg.transportScope !== undefined ? { callerTransportScope: msg.transportScope } : {}),
+      callerChannel: msg.channel,
+      callerThread: msg.thread ?? msg.msgId,
+      sessionId: callMeta.originSessionId,
+      text
+    })
+      .then((result) => {
+        if (!result.delivered) {
+          this.log.warn(
+            `inferred parent reply not delivered for ${childKey}: ${result.reason ?? 'unknown'} — obligation stays visible via viewSessionStatus`
+          )
+        }
+      })
+      .catch((err) => this.log.error(`inferred parent reply dispatch failed for ${childKey}: ${formatErr(err)}`))
+  }
+
   private markChildParentReply(
     childSessionKey: string,
     parentSessionId: string,
@@ -13247,6 +13328,18 @@ export class Daemon {
             }
           : {})
       })
+      // #800 mechanism fix, the inferred reply: a needsReply delegation turn that
+      // ends WITHOUT a `sendMessage {sessionId}` report no longer drops the
+      // child's answer on the floor — the child's final ordinary output is
+      // delivered to the parent as the report, explicitly marked inferred.
+      // Must run while this turn's activeTurnCallMeta is still installed (the
+      // reply authorizes and hop-charges off it); contained so it can never
+      // fail the completed turn.
+      try {
+        this.maybeInferParentReply(key, agentId, msg, callMeta, p)
+      } catch (err) {
+        this.log.error(`inferred parent reply failed for ${key}: ${formatErr(err)}`)
+      }
     } catch (err) {
       // The turn failed before yielding a clean stop — the agent couldn't start (spawn
       // failure / ACP handshake), or the prompt itself rejected. Without surfacing
