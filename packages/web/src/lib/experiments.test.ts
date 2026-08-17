@@ -16,8 +16,20 @@ describe('experimentEnabled', () => {
     // get it the moment it merged.
     setEnv()
     expect(experimentEnabled('daemon-groups')).toBe(false)
+    expect(experimentEnabled('daemon-pool')).toBe(false)
     setEnv('')
     expect(experimentEnabled('daemon-groups')).toBe(false)
+    expect(experimentEnabled('daemon-pool')).toBe(false)
+  })
+
+  it('switches each experiment on its own', () => {
+    // One id in the list turns on THAT surface — groups and the pool ship and roll out apart.
+    setEnv('daemon-pool')
+    expect(experimentEnabled('daemon-pool')).toBe(true)
+    expect(experimentEnabled('daemon-groups')).toBe(false)
+    setEnv('daemon-groups,daemon-pool')
+    expect(experimentEnabled('daemon-pool')).toBe(true)
+    expect(experimentEnabled('daemon-groups')).toBe(true)
   })
 
   it('reads a comma-separated list, tolerating spacing and case', () => {

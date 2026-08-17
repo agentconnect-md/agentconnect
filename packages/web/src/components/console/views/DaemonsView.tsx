@@ -35,7 +35,10 @@ export default function DaemonsView() {
   // The pool is ONE entry, not one card per Pod: its members are install-wide
   // infrastructure every org sees, replaced without notice, and nothing here is the
   // org's to rename or detach. Everything else is a machine someone connected.
-  const poolMembers = useMemo(() => daemons.filter((d) => d.pool), [daemons])
+  // Experimental: where the deployment did not ask for the pool, the page shows the
+  // machines only — the CP still serves it, this is whether the console names it.
+  const showPool = experimentEnabled('daemon-pool')
+  const poolMembers = useMemo(() => (showPool ? daemons.filter((d) => d.pool) : []), [daemons, showPool])
   const ownDaemons = useMemo(() => daemons.filter((d) => !d.pool), [daemons])
   const poolAgents = useMemo(() => {
     const memberIds = new Set(poolMembers.map((m) => m.daemonId))
@@ -68,53 +71,59 @@ export default function DaemonsView() {
       </div>
       {daemonsLoading && daemons.length === 0 ? (
         <LoadingState fill />
-      ) : daemons.length === 0 ? (
-        <div className="card flex flex-col items-center gap-3 px-6 py-[44px] text-center">
-          <span className="flex h-[46px] w-[46px] items-center justify-center rounded-[11px] border border-(--border-subtle) bg-(--surface-sunken)">
-            <Icon name="server" size={22} color="var(--text-tertiary)" />
-          </span>
-          <div className="font-sans text-[15px] font-semibold leading-normal">No daemons connected</div>
-          <div className="max-w-[380px] font-sans text-[13px] font-normal leading-[1.55] text-(--text-secondary)">
-            Run the daemon on a machine where agents should execute. It connects to the control plane and shows up here.
-          </div>
-          <Button variant="secondary" size="sm" onClick={() => openModal('daemon')}>
-            <Icon name="plus" size={15} />
-            Add daemon
-          </Button>
-        </div>
       ) : (
         <>
-          {/* Mobile-only fleet summary strip. */}
-          <div className="mb-3 flex items-center gap-2 desktop:hidden">
-            <span className="inline-flex items-center gap-[6px] font-sans text-[12px] font-medium leading-normal text-(--text-secondary)">
-              <span className="h-2 w-2 rounded-full bg-(--status-online)" />
-              {online} online
-            </span>
-            <span className="inline-flex items-center gap-[6px] font-sans text-[12px] font-medium leading-normal text-(--text-secondary)">
-              <span className="h-2 w-2 rounded-full bg-(--status-paused)" />
-              {paused} paused
-            </span>
-          </div>
-          {poolMembers.length > 0 && <PoolFleetCard members={poolMembers} hosted={poolAgents} />}
-          {ownDaemons.length > 0 && (
-            <>
-              {/* The section label earns its place only next to the Cloud entry — without
-                  one there is nothing to tell these cards apart from. */}
-              {poolMembers.length > 0 && (
-                <div className="mt-6 mb-[9px] flex min-h-[26px] items-center gap-[9px]">
-                  <span className="font-sans text-[13px] font-semibold leading-normal">Daemons</span>
-                  <span className="mono text-[11.5px] text-(--text-tertiary)">{ownDaemons.length}</span>
-                </div>
-              )}
-              <div className="grid grid-cols-1 gap-3 desktop:grid-cols-3 desktop:gap-[14px]">
-                {ownDaemons.map((m) => (
-                  <DaemonCard key={m.daemonId} m={m} hosted={hostedByDaemon.get(m.daemonId) ?? 0} />
-                ))}
+          {poolMembers.length === 0 && ownDaemons.length === 0 ? (
+            <div className="card flex flex-col items-center gap-3 px-6 py-[44px] text-center">
+              <span className="flex h-[46px] w-[46px] items-center justify-center rounded-[11px] border border-(--border-subtle) bg-(--surface-sunken)">
+                <Icon name="server" size={22} color="var(--text-tertiary)" />
+              </span>
+              <div className="font-sans text-[15px] font-semibold leading-normal">No daemons connected</div>
+              <div className="max-w-[380px] font-sans text-[13px] font-normal leading-[1.55] text-(--text-secondary)">
+                Run the daemon on a machine where agents should execute. It connects to the control plane and shows up
+                here.
               </div>
+              <Button variant="secondary" size="sm" onClick={() => openModal('daemon')}>
+                <Icon name="plus" size={15} />
+                Add daemon
+              </Button>
+            </div>
+          ) : (
+            <>
+              {/* Mobile-only fleet summary strip. */}
+              <div className="mb-3 flex items-center gap-2 desktop:hidden">
+                <span className="inline-flex items-center gap-[6px] font-sans text-[12px] font-medium leading-normal text-(--text-secondary)">
+                  <span className="h-2 w-2 rounded-full bg-(--status-online)" />
+                  {online} online
+                </span>
+                <span className="inline-flex items-center gap-[6px] font-sans text-[12px] font-medium leading-normal text-(--text-secondary)">
+                  <span className="h-2 w-2 rounded-full bg-(--status-paused)" />
+                  {paused} paused
+                </span>
+              </div>
+              {poolMembers.length > 0 && <PoolFleetCard members={poolMembers} hosted={poolAgents} />}
+              {ownDaemons.length > 0 && (
+                <>
+                  {/* The section label earns its place only next to the Cloud entry — without
+                      one there is nothing to tell these cards apart from. */}
+                  {poolMembers.length > 0 && (
+                    <div className="mt-6 mb-[9px] flex min-h-[26px] items-center gap-[9px]">
+                      <span className="font-sans text-[13px] font-semibold leading-normal">Daemons</span>
+                      <span className="mono text-[11.5px] text-(--text-tertiary)">{ownDaemons.length}</span>
+                    </div>
+                  )}
+                  <div className="grid grid-cols-1 gap-3 desktop:grid-cols-3 desktop:gap-[14px]">
+                    {ownDaemons.map((m) => (
+                      <DaemonCard key={m.daemonId} m={m} hosted={hostedByDaemon.get(m.daemonId) ?? 0} />
+                    ))}
+                  </div>
+                </>
+              )}
             </>
           )}
           {/* Last, as the design orders it: the machines are the inventory, a group is what you
-              point an agent at once they exist. */}
+              point an agent at once they exist. Outside the empty-fleet branch on purpose: an org
+              whose only machines were pool members still manages the groups it already made. */}
           <GroupsSection groups={memberSets} daemons={daemons} />
         </>
       )}

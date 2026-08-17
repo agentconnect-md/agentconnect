@@ -338,7 +338,10 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
   }, [])
 
   // Cloud is one UI choice AND one server-side placement: the pool, named as itself.
-  const daemonChoice = addAgentDaemonChoice(daemons, daemonId, memberSets)
+  // Experimental: with the pool hidden the choice is computed WITHOUT its members, so an
+  // untouched form defaults to the first machine rather than submitting a pool placement.
+  const placementDaemons = experimentEnabled('daemon-pool') ? daemons : daemons.filter((d) => !d.pool)
+  const daemonChoice = addAgentDaemonChoice(placementDaemons, daemonId, memberSets)
   const {
     poolAvailable,
     availableGroups,

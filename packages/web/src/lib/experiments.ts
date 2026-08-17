@@ -16,9 +16,11 @@
 /** Every experiment the console knows. Adding one is this union plus its checks. */
 export type ExperimentId =
   /** Org-scoped daemon groups: the Infra section, the group dialogs, and group entries in the
-   *  placement picker (docs/designs/daemon-groups.md §6 PR 2). The install-wide pool is not an
-   *  experiment and is unaffected. */
-  'daemon-groups'
+   *  placement picker (docs/designs/daemon-groups.md §6 PR 2). */
+  | 'daemon-groups'
+  /** The install-wide daemon pool: its fleet entry and the Cloud placement option. An agent
+   *  ALREADY on the pool still names it — hiding a live placement is not hiding an entry point. */
+  | 'daemon-pool'
 
 function enabledIds(): ReadonlySet<string> {
   // The server must read the SAME value `PublicEnvScript` injects, in the same precedence, or a

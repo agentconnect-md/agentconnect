@@ -1,4 +1,4 @@
-import type { DaemonRow } from '@/lib/data'
+import { POOL_PLACEMENT, type DaemonRow } from '@/lib/data'
 
 type DaemonChoiceRow = Pick<DaemonRow, 'pool' | 'daemonId' | 'status' | 'memberSetId'> & {
   caps: Pick<DaemonRow['caps'], 'features'>
@@ -11,12 +11,17 @@ export interface EditAgentDaemonChoices<T extends DaemonChoiceRow> {
   poolChoice: T | undefined
   currentPoolChoice: T | undefined
   localChoices: T[]
+  /** Does the picker list Cloud at all? Only where the deployment offers the pool — plus, always,
+   *  an agent already ON it, whose current placement stays truthful through a rollback. */
+  offerPool: boolean
 }
 
 export function editAgentDaemonChoices<T extends DaemonChoiceRow>(
   daemons: T[],
   selectedDaemonId: string,
-  initialDaemonId: string
+  initialDaemonId: string,
+  /** Is the `daemon-pool` experiment on for this deployment? */
+  poolOffered: boolean
 ): EditAgentDaemonChoices<T> {
   const selected = daemons.find((daemon) => daemon.daemonId === selectedDaemonId)
   const initial = daemons.find((daemon) => daemon.daemonId === initialDaemonId)
@@ -37,10 +42,14 @@ export function editAgentDaemonChoices<T extends DaemonChoiceRow>(
   // and above — a pool Pod is a replaceable identity to pin to.
   const localChoices = daemons.filter((daemon) => !daemon.pool)
   localChoices.sort((a, b) => Number(moveReady(b)) - Number(moveReady(a)))
+  // The RESOLVED placement, never `placementKind`: a group placement is a `set` too, so classifying
+  // by kind alone hands every group-placed agent the Cloud target the deployment just hid.
+  const alreadyOnPool = initialDaemonId === POOL_PLACEMENT
   return {
     poolChoice,
     currentPoolChoice:
       initial?.pool && poolChoice?.daemonId !== initial.daemonId && recoveryTarget ? initial : undefined,
-    localChoices
+    localChoices,
+    offerPool: (poolOffered && poolChoice !== undefined) || alreadyOnPool
   }
 }
