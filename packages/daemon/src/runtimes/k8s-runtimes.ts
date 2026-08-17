@@ -85,7 +85,7 @@ export interface DeclaredCatalogResult {
   catalog: ResolvedRuntimeCatalog
   /** Declared ids the resolved catalog knows nothing about — a table/image mismatch. */
   unresolved: string[]
-  /** Declared curated-source ids: unlaunchable here, since curated admission needs a live probe. */
+  /** Declared curated ids the image did not probe into an executable: still unlaunchable here. */
   rejectedCurated: string[]
   /** Declared ids that launch through a package manager, so their artifact is not the image's. */
   rejectedPackageLaunchers: string[]
@@ -102,8 +102,12 @@ const PACKAGE_LAUNCHERS = new Set(['npx', 'uvx'])
  * host-executable filter. Two classes of declared runtime are dropped rather than
  * advertised, because either would break at first use:
  *
- * - curated entries, whose admission gate requires a successful probe that
- *   `--k8s` never runs;
+ * - curated entries the image did NOT install as its own executable and probe:
+ *   curated admission is a successful ACP probe, and `--k8s` never runs one. An
+ *   entry the image declares with a command AND its build-time `initialize`
+ *   snapshot already carries that evidence — taken in the very image the runtime
+ *   will run in — so it is admitted, sourced `image` rather than `curated` so the
+ *   host-side admission gate stops asking for a probe it cannot make;
  * - package-launcher entries (`npx` / `uvx`), which fetch their artifact at launch:
  *   that artifact is not the image's, is not what the declared version pin names,
  *   and the fetch fails outright on a restricted egress. An image that ships such a
@@ -124,7 +128,8 @@ export function declaredRuntimeCatalog(catalog: ResolvedRuntimeCatalog, table: K
       unresolved.push(declared.id)
       continue
     }
-    if (entry.source === 'curated') {
+    const imageProbed = Boolean(declared.command && declared.acp)
+    if (entry.source === 'curated' && !imageProbed) {
       rejectedCurated.push(declared.id)
       continue
     }
@@ -139,7 +144,12 @@ export function declaredRuntimeCatalog(catalog: ResolvedRuntimeCatalog, table: K
       rejectedPackageLaunchers.push(declared.id)
       continue
     }
-    entries[declared.id] = { ...entry, runtime, ...(declared.version ? { version: declared.version } : {}) }
+    entries[declared.id] = {
+      ...entry,
+      runtime,
+      ...(entry.source === 'curated' ? { source: 'image' as const } : {}),
+      ...(declared.version ? { version: declared.version } : {})
+    }
     runtimes[declared.id] = runtime
     if (declared.models?.length) models[declared.id] = [...declared.models]
     if (declared.acp) acp[declared.id] = declared.acp

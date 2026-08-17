@@ -35,7 +35,9 @@ export const RegistryDocSchema = z
   }))
 export type RegistryDoc = { agents: Record<string, RegistryEntry> }
 
-export type RuntimeSource = 'curated' | 'registry' | 'managed' | 'user'
+// `image` is only ever stamped by the --k8s declared-table projection: a runtime the sandbox image
+// installed and probed at build time, which is the admission evidence a host probe would gather.
+export type RuntimeSource = 'curated' | 'registry' | 'managed' | 'user' | 'image'
 
 export interface ResolvedRuntimeEntry {
   runtime: RuntimeDef
