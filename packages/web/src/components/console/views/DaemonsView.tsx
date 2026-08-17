@@ -95,7 +95,6 @@ export default function DaemonsView() {
             </span>
           </div>
           {poolMembers.length > 0 && <PoolFleetCard members={poolMembers} hosted={poolAgents} />}
-          <GroupsSection groups={memberSets} daemons={daemons} />
           {ownDaemons.length > 0 && (
             <>
               {/* The section label earns its place only next to the Cloud entry — without
@@ -113,6 +112,9 @@ export default function DaemonsView() {
               </div>
             </>
           )}
+          {/* Last, as the design orders it: the machines are the inventory, a group is what you
+              point an agent at once they exist. */}
+          <GroupsSection groups={memberSets} daemons={daemons} />
         </>
       )}
     </div>
@@ -120,106 +122,103 @@ export default function DaemonsView() {
 }
 
 /**
- * The organization's own groups (docs/designs/daemon-groups.md §2) — a named set of its daemons an
- * agent can be placed on instead of one machine.
+ * Daemon groups — the organization's own member sets (docs/designs/daemon-groups.md §2), as the
+ * console design draws them: a table under the machines, not cards among them. A group is a
+ * placement TARGET whose members are interchangeable, which is exactly what "Any daemon in the
+ * group" says and why the row borrows none of a daemon's telemetry.
  *
- * Sits with Cloud rather than with the machines below, because that is what it IS: a placement
- * target whose members are interchangeable, not a machine with a host and a CPU. Deliberately
- * borrows none of a daemon's telemetry — a group has no version, load or uptime of its own, and
- * the moment it shows one it starts reading like whichever member happened to answer.
- *
- * The section renders even with no groups, but only once the org has a daemon that could join one:
- * before that it is an answer to a question nobody has asked yet.
+ * Renders once the org has a daemon that could join one, or as soon as a group exists — before
+ * that it answers a question nobody has asked.
  */
 function GroupsSection({ groups, daemons }: { groups: MemberSetRow[]; daemons: DaemonRow[] }) {
   const { openModal } = useModal()
-  const joinable = daemons.some((d) => !d.pool)
-  if (!joinable && groups.length === 0) return null
+  if (!daemons.some((d) => !d.pool) && groups.length === 0) return null
 
   return (
     <>
       <div className="mt-6 mb-[9px] flex min-h-[26px] items-center gap-[9px]">
-        <span className="font-sans text-[13px] font-semibold leading-normal">Groups</span>
+        <span className="font-sans text-[13px] font-semibold leading-normal">Daemon groups</span>
         <span className="mono text-[11.5px] text-(--text-tertiary)">{groups.length}</span>
         <div className="flex-1" />
         <button
-          className="inline-flex items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal text-(--text-tertiary) hover:text-(--text-primary)"
+          className="inline-flex cursor-pointer items-center gap-[6px] border-0 bg-transparent p-0 font-sans text-[12.5px] font-medium leading-normal text-(--text-tertiary) hover:text-(--brand)"
           onClick={() => openModal('group')}
         >
-          <Icon name="plus" size={14} />
+          <Icon name="plus" size={13} />
           New group
         </button>
       </div>
-      {groups.length === 0 ? (
-        <div className="card px-4 py-[15px] font-sans text-[12.5px] font-normal leading-[1.6] text-(--text-secondary)">
-          Place an agent on a group instead of one machine and it keeps running when that machine does not — whichever
-          member is serving picks the work up.
+      <div className="card">
+        <div className={`row h ${GROUP_COLS}`}>
+          <span>Group</span>
+          <span>Status</span>
+          <span>Daemons</span>
+          <span className="text-right">Agents</span>
+          <span />
         </div>
-      ) : (
-        <div className="flex flex-col gap-3 desktop:gap-[14px]">
-          {groups.map((group) => (
-            <GroupCard key={group.setId} group={group} daemons={daemons} />
-          ))}
-        </div>
-      )}
+        {groups.length === 0 ? (
+          <div className="px-4 py-[18px] font-sans text-[12.5px] font-normal leading-[1.6] text-(--text-secondary)">
+            Place an agent on a group instead of one machine and it keeps running when that machine does not — whichever
+            member is serving picks the work up.
+          </div>
+        ) : (
+          groups.map((group) => <GroupRow key={group.setId} group={group} daemons={daemons} />)
+        )}
+      </div>
     </>
   )
 }
 
-function GroupCard({ group, daemons }: { group: MemberSetRow; daemons: DaemonRow[] }) {
+/** The design's column track for the group table — header and rows share it verbatim. */
+const GROUP_COLS = 'grid-cols-[2.2fr_.9fr_1.9fr_.55fr_32px] gap-x-[14px]'
+
+function GroupRow({ group, daemons }: { group: MemberSetRow; daemons: DaemonRow[] }) {
   const { openModal } = useModal()
   const [menuOpen, setMenuOpen] = useState(false)
   const s = status(groupFleetStatus(group, daemons))
-  const members = group.memberDaemonIds.length
-  const serving = daemons.filter((d) => group.memberDaemonIds.includes(d.daemonId) && d.status === 'online').length
-  const meta =
-    members === 0
-      ? 'No daemons yet — add one from its own page.'
-      : `${members} daemon${members === 1 ? '' : 's'} · ${serving} serving`
+  const members = daemons.filter((d) => group.memberDaemonIds.includes(d.daemonId))
+  const serving = members.filter((d) => d.status === 'online').length
+  // Names the members, because "which machines is this" is the question a group row answers that a
+  // count cannot — falling back to the count once the list would not fit.
+  const memberText =
+    members.length === 0
+      ? 'No daemons yet'
+      : members.length <= 2
+        ? members.map((d) => d.name).join(', ')
+        : `${members.length} daemons · ${serving} serving`
 
   return (
-    <div className="card flex items-center gap-3 overflow-visible p-[14px] max-desktop:rounded-lg desktop:gap-[14px] desktop:px-4 desktop:py-[15px]">
-      <span className="relative flex h-10 w-10 flex-none items-center justify-center rounded-md bg-(--brand-soft) desktop:h-9 desktop:w-9">
-        <Icon name="boxes" size={20} color={serving > 0 ? 'var(--brand)' : 'var(--text-tertiary)'} />
-        <span
-          className="absolute -right-[3px] -bottom-[3px] h-3 w-3 rounded-full border-2 border-(--surface-card) desktop:hidden"
-          style={{ background: s.dot }}
-        />
-      </span>
-      <div className="flex min-w-0 flex-1 flex-col gap-[2px] desktop:gap-0">
-        <div className="flex min-w-0 items-center gap-[6px] desktop:gap-2">
-          <span className="truncate font-sans text-[14px] font-semibold leading-normal desktop:text-[13.5px]">
-            {group.name}
-          </span>
-          <span className="dot hidden flex-none desktop:inline-block" style={{ background: s.dot }} />
-        </div>
-        <div className="truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary) desktop:text-[11.5px] desktop:leading-[1.5]">
-          {meta}
-          <span className="desktop:hidden">{` · ${group.agentCount} agent${group.agentCount === 1 ? '' : 's'}`}</span>
+    <div className={`row click ${GROUP_COLS}`} onClick={() => openModal('group', group)}>
+      <div className="flex min-w-0 items-center gap-[10px]">
+        <span className="flex h-7 w-7 flex-none items-center justify-center rounded-[7px] border border-(--border-subtle) bg-(--surface-sunken)">
+          <Icon name="layers" size={15} color={serving > 0 ? 'var(--brand)' : 'var(--text-tertiary)'} />
+        </span>
+        <div className="min-w-0">
+          <div className="mono truncate text-[13px] font-semibold text-(--text-primary)">{group.name}</div>
+          <div className="truncate text-[11px] text-(--text-tertiary)">Any daemon in the group</div>
         </div>
       </div>
-      <div className="hidden flex-none text-right desktop:block">
-        <div className="mono text-[14px] leading-normal font-semibold">{group.agentCount}</div>
-        <div className="font-sans text-[10.5px] font-normal leading-normal text-(--text-tertiary)">
-          agents on this group
-        </div>
+      <div className="flex items-center gap-[7px]">
+        <span className="dot" style={{ background: s.dot }} />
+        <span className="font-sans text-[12.5px] font-medium leading-normal" style={{ color: s.text }}>
+          {s.label}
+        </span>
       </div>
-      <span
-        className="badge flex-none max-desktop:px-[10px] max-desktop:py-[3px] max-desktop:text-[12px]"
-        style={{ background: s.bg, color: s.text }}
-      >
-        {s.label}
-      </span>
-      <div className="relative flex-none">
-        <button className="iconbtn" aria-label="Group actions" onClick={() => setMenuOpen((v) => !v)}>
+      <span className="mono truncate text-[12px] text-(--text-secondary)">{memberText}</span>
+      <span className="mono text-right text-[13px] text-(--text-primary)">{group.agentCount}</span>
+      <span className="relative flex justify-end" onClick={(e) => e.stopPropagation()}>
+        <button
+          className="iconbtn h-7 w-7"
+          aria-label="Group actions"
+          title="Group actions"
+          onClick={() => setMenuOpen((v) => !v)}
+        >
           <Icon name="ellipsis" size={16} />
         </button>
         {menuOpen && (
           <>
-            <div className="fixed inset-0 z-[45]" onClick={() => setMenuOpen(false)} />
-            {/* `.dmenu` is the row-overflow menu every card here uses — it anchors inside the card
-                instead of off the page edge, which a raw right-0 popover does not. */}
-            <div className="dmenu">
+            <div className="fixed inset-0 z-[49]" onClick={() => setMenuOpen(false)} />
+            <span className="dmenu top-8">
               <button
                 className="dmi"
                 onClick={() => {
@@ -228,8 +227,9 @@ function GroupCard({ group, daemons }: { group: MemberSetRow; daemons: DaemonRow
                 }}
               >
                 <Icon name="pencil" size={15} />
-                Rename
+                Edit group
               </button>
+              <span className="dmsep" />
               <button
                 className="dmi danger"
                 onClick={() => {
@@ -238,12 +238,12 @@ function GroupCard({ group, daemons }: { group: MemberSetRow; daemons: DaemonRow
                 }}
               >
                 <Icon name="trash-2" size={15} />
-                Delete group
+                Remove group
               </button>
-            </div>
+            </span>
           </>
         )}
-      </div>
+      </span>
     </div>
   )
 }

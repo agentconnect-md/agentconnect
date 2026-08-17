@@ -392,8 +392,10 @@ export default function EditAgentModal({
         value: groupPlacementValue(group.setId),
         label: group.name,
         detail: serving
-          ? `${group.memberDaemonIds.length} daemon${group.memberDaemonIds.length === 1 ? '' : 's'} — any one of them can serve this agent.`
-          : 'No daemon in this group is serving right now.',
+          ? 'Any daemon in the group.'
+          : group.memberDaemonIds.length === 0
+            ? 'No daemons in this group yet.'
+            : 'No daemon in this group is serving right now.',
         kind: 'group' as const,
         disabled: !current && !serving
       }

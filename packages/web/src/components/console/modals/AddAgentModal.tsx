@@ -338,7 +338,15 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
 
   // Cloud is one UI choice AND one server-side placement: the pool, named as itself.
   const daemonChoice = addAgentDaemonChoice(daemons, daemonId, memberSets)
-  const { poolAvailable, availableGroups, daemon, localDaemons, placement, value: effectiveDaemonId } = daemonChoice
+  const {
+    poolAvailable,
+    availableGroups,
+    offeredGroups,
+    daemon,
+    localDaemons,
+    placement,
+    value: effectiveDaemonId
+  } = daemonChoice
   const daemonOptions: DaemonSelectOption[] = [
     ...(poolAvailable
       ? [
@@ -352,11 +360,16 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
       : []),
     // The org's own groups sit with Cloud, not with the machines: they are the same KIND of target
     // — the server picks which member serves, and the agent survives losing any one of them.
-    ...availableGroups.map((group) => ({
+    ...offeredGroups.map((group) => ({
       value: groupPlacementValue(group.setId),
       label: group.name,
-      detail: `${group.memberDaemonIds.length} daemon${group.memberDaemonIds.length === 1 ? '' : 's'} — any one of them can serve this agent.`,
-      kind: 'group' as const
+      detail: availableGroups.includes(group)
+        ? 'Any daemon in the group.'
+        : group.memberDaemonIds.length === 0
+          ? 'No daemons in this group yet.'
+          : 'No daemon in this group is serving right now.',
+      kind: 'group' as const,
+      disabled: !availableGroups.includes(group)
     })),
     ...localDaemons.map((candidate) => ({
       value: candidate.daemonId,

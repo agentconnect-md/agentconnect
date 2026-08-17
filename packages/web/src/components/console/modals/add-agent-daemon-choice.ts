@@ -10,6 +10,8 @@ export interface AddAgentDaemonChoice<T extends DaemonChoiceRow> {
   poolAvailable: boolean
   /** Groups with at least one member serving — the only ones an agent can start on. */
   availableGroups: MemberSetRow[]
+  /** Every group, in listing order: an unservable one is shown disabled, never hidden. */
+  offeredGroups: readonly MemberSetRow[]
   /**
    * The daemon whose reported CAPABILITIES the form reads (runtimes, models, sandbox). For a set
    * target that is one live member standing in for the set, which is exactly what the server will
@@ -37,7 +39,10 @@ export function addAgentDaemonChoice<T extends DaemonChoiceRow>(
   const localDaemons = onlineFirst(daemons.filter((daemon) => !daemon.pool && !daemon.memberSetId))
   const liveMemberOf = (group: MemberSetRow): T | undefined =>
     daemons.find((daemon) => daemon.status === 'online' && group.memberDaemonIds.includes(daemon.daemonId))
+  // Every group is OFFERED; only a serving one is selectable. Hiding an empty group answered the
+  // operator's "where is the group I just made?" with silence.
   const availableGroups = groups.filter((group) => liveMemberOf(group) !== undefined)
+  const offeredGroups = groups
 
   const selectedGroup = availableGroups.find((group) => groupSetIdOf(selectedValue) === group.setId)
   const selectedLocal = localDaemons.find((daemon) => daemon.daemonId === selectedValue)
@@ -66,6 +71,7 @@ export function addAgentDaemonChoice<T extends DaemonChoiceRow>(
   return {
     poolAvailable: poolDaemons.length > 0,
     availableGroups,
+    offeredGroups,
     daemon,
     daemonId: selectedGroup ? null : value || null,
     localDaemons,
