@@ -35,7 +35,7 @@ import { LogtoIdentityService, resolveLogtoMgmtConfig } from './github/logto-ide
 import { GithubUserAuthzService } from './github/user-authz.js'
 import { type Clock, systemClock } from './domain/clock.js'
 import { K8sHttp } from '@agentconnect.md/k8s-client'
-import { ClusterDaemonIdentityService, loadClusterAccess } from './cluster/index.js'
+import { ClusterDaemonIdentityService, ClusterWorkloadIdentityService, loadClusterAccess } from './cluster/index.js'
 
 import {
   PgDaemonRepo,
@@ -408,6 +408,10 @@ export function buildContainer(
     clusterAccess && clusterHttp
       ? new ClusterDaemonIdentityService(clusterHttp, repos.daemon, clusterAccess.namespace)
       : undefined
+  // The same review for workloads that are NOT daemons — today the usage collector.
+  // Undefined ⇒ those callers fall back to their own shared secret, or do not exist.
+  const clusterWorkloadIdentity =
+    clusterAccess && clusterHttp ? new ClusterWorkloadIdentityService(clusterHttp, clusterAccess.namespace) : undefined
   const auth = new DaemonAuthService(
     codec,
     repos.apiKey,
@@ -1110,6 +1114,7 @@ export function buildContainer(
     inviteLinks,
     waitlist,
     usageWriter,
+    ...(clusterWorkloadIdentity ? { clusterWorkloadIdentity } : {}),
     events,
     mcpRateLimit: new McpRateLimiter(clock),
     remoteGrantAuth,
