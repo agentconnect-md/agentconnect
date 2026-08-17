@@ -13,7 +13,7 @@ import {
   type DreamExtractionResult,
   type DreamLifecycleEvent,
   type DreamStorePort
-} from '../src/agents/dream-runner.js'
+} from '../src/dream/runner.js'
 import { LocalStore } from '../src/store/local-store.js'
 import { appendDistilledMemories } from '../src/agents/memory-distiller.js'
 import {
@@ -28,7 +28,7 @@ import {
 } from '../src/agents/memory.js'
 import { LocalMemoryFs, MemorySandboxUnavailableError } from '../src/agents/memory-fs.js'
 import { acceptedDreamSkillSources } from '../src/skills/dream-skills.js'
-import { storeDigest } from '../src/agents/memory-dreamer.js'
+import { storeDigest } from '../src/dream/dreamer.js'
 import { inspectLocalSkillSource } from '../src/skills/skill-source-snapshot.js'
 import type { MemoryFs } from '../src/agents/memory-fs.js'
 import { pod } from './fixtures/memory-fs-pod.js'

@@ -2,12 +2,12 @@ import { createHash } from 'node:crypto'
 import { posix } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import { MAX_ORGANIZATION_SUGGESTION_BODY_BYTES, type SkillBundleTextFile } from '@agentconnect.md/protocol'
-import { MEMORY_INDEX, MAX_INDEX_INJECT_BYTES, MAX_MEMORY_FILE_BYTES } from './memory.js'
+import { MEMORY_INDEX, MAX_INDEX_INJECT_BYTES, MAX_MEMORY_FILE_BYTES } from '../agents/memory.js'
 
 /**
  * Pure dream-pipeline pieces (design: docs/designs/memory-dreaming.md §4–5):
  * the dream policy prompt, the untrusted-input prompt builder, and the
- * proposal parser/validator. All filesystem work lives in dream-runner.ts —
+ * proposal parser/validator. All filesystem work lives in runner.ts —
  * this module never touches disk, so it is testable byte-for-byte.
  *
  * The model returns a full proposed store as JSON; nothing here is applied

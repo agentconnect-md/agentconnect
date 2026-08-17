@@ -37,7 +37,7 @@ import {
   type MemoryFs,
   type MemoryHistoryRecord,
   withMemoryDirLock
-} from './memory.js'
+} from '../agents/memory.js'
 import {
   buildDreamExplorationPrompt,
   dreamSessionFileName,
@@ -48,7 +48,7 @@ import {
   storeDigest,
   type DreamProposal,
   type DreamTranscriptSource
-} from './memory-dreamer.js'
+} from './dreamer.js'
 import { publishAcceptedDreamSkill } from '../skills/dream-skills.js'
 import { inspectLocalSkillSource } from '../skills/skill-source-snapshot.js'
 

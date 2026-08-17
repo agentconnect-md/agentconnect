@@ -112,7 +112,7 @@ import {
   DreamStateError,
   type DreamLifecycleEvent,
   type DreamOperationPolicy
-} from './agents/dream-runner.js'
+} from './dream/runner.js'
 import { createDreamReader } from './cp/dream-reader.js'
 import { createLocalSkillsReader } from './cp/local-skills-reader.js'
 import {

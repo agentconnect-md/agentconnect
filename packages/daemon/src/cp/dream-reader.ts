@@ -27,7 +27,7 @@ import type {
   Ack
 } from '@agentconnect.md/protocol'
 import { fitToBudget, utf8Boundary } from '../wire-slice.js'
-import type { DreamRunner } from '../agents/dream-runner.js'
+import type { DreamRunner } from '../dream/runner.js'
 
 export interface DreamReader {
   start(req: DreamStartReq): Promise<DreamState>

@@ -182,7 +182,7 @@ and auto-adopt sub-controls.
 
 ## 4. The dream job (daemon)
 
-A new `DreamRunner` in `packages/daemon/src/agents/memory-dreamer.ts`, driven
+A new `DreamRunner` in `packages/daemon/src/dream/runner.ts`, driven
 by the daemon the same way distillation is:
 
 **Job record** (persisted in the daemon store so a crash mid-dream is
