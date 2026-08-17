@@ -245,8 +245,7 @@ describe('DaemonAuthService.authenticate — close-code contract', () => {
 describe('DaemonAuthService.authenticate — the in-cluster token path', () => {
   const verified = {
     daemonId: DaemonId('cccccccc-cccc-4ccc-8ccc-cccccccccccc'),
-    scope: 'org' as const,
-    orgId: OrgId('org_cluster')
+    scope: 'install' as const
   }
   const orgs = { slugById: async () => 'cluster-org' }
 
@@ -263,7 +262,7 @@ describe('DaemonAuthService.authenticate — the in-cluster token path', () => {
     )
   }
 
-  it('a verified token authenticates without any API key', async () => {
+  it('a verified token authenticates an install-wide member without any API key', async () => {
     const repo = makeRepo()
     const r = await withIdentity(async () => verified, repo).authenticate(
       { serviceAccountToken: 'projected', agentVersion: '1' },
@@ -273,8 +272,10 @@ describe('DaemonAuthService.authenticate — the in-cluster token path', () => {
     if (!r.ok) throw new Error('expected ok')
     expect(r.daemonId).toBe(verified.daemonId)
     expect(r.okFrame.sessionEpoch).toBe(7)
-    expect(r.okFrame.orgSlug).toBe('cluster-org')
-    expect(r.okFrame.organizationMode).toBe('connection')
+    // A pool identity names no org, so the org rides each frame instead of the connection.
+    expect(r.orgId).toBeNull()
+    expect(r.okFrame.organizationMode).toBe('frame')
+    expect(r.okFrame.orgSlug).toBeUndefined()
     // No key was presented, so nothing may be looked up or touched.
     expect(repo.findByHash).not.toHaveBeenCalled()
     expect(repo.touchLastUsed).not.toHaveBeenCalled()
@@ -331,19 +332,6 @@ describe('DaemonAuthService.authenticate — the in-cluster token path', () => {
     }).authenticate({ serviceAccountToken: 'projected', daemonId: verified.daemonId, agentVersion: '1' }, ctx)
     expect(r).toMatchObject({ ok: true, daemonId: verified.daemonId })
     expect(claims).toEqual([{ daemonId: verified.daemonId }])
-  })
-
-  it('authenticates an install-wide pool member in frame-scoped organization mode', async () => {
-    const poolMember = { daemonId: verified.daemonId, scope: 'install' as const }
-    const r = await withIdentity(async () => poolMember).authenticate(
-      { serviceAccountToken: 'projected', agentVersion: '1' },
-      ctx
-    )
-    expect(r.ok).toBe(true)
-    if (!r.ok) throw new Error('expected ok')
-    expect(r.orgId).toBeNull()
-    expect(r.okFrame.organizationMode).toBe('frame')
-    expect(r.okFrame.orgSlug).toBeUndefined()
   })
 
   it('an echoed daemonId that disagrees with the identity → 4401', async () => {

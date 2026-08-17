@@ -85,10 +85,8 @@ export class RelayAuthService {
       claimedDaemonId ? { daemonId: claimedDaemonId } : undefined
     )
     if (!verified) return null
-    return {
-      daemonId: verified.daemonId,
-      ...(verified.scope === 'org' ? { orgId: verified.orgId } : {})
-    }
+    // No org: a pool identity is install-wide, unlike the key path this shares its shape with.
+    return { daemonId: verified.daemonId }
   }
 
   private authToken(credential: string): RelayAuthResult {

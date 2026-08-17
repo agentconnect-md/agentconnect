@@ -48,9 +48,7 @@ export interface K8sRuntimePlaneOptions {
   /** Durable, install-shared allocator for launch generations — in production the daemon store,
    *  which every pool member shares, so an agent that moves between members keeps counting up. */
   generations: LaunchGenerations
-  /** Connection-scoped org for an envelope daemon; absent for an install-wide pool member. */
-  orgId?: string
-  /** Per-agent tenant lookup used by an install-wide pool member. */
+  /** Per-agent tenant lookup: a pool member serves every org, so the agent names the tenant. */
   orgForAgent?: (agentId: string) => string | undefined
   /** Warm pool the claims reference. v1beta1 requires one; a cold pool is `replicas: 0`. */
   warmPoolName?: string
@@ -87,7 +85,6 @@ export interface K8sRuntimePlaneOptions {
 }
 
 export interface K8sPlaneSettings {
-  orgId?: string
   warmPoolName: string
   sandboxNamespace: string
   memberId: string
@@ -96,7 +93,6 @@ export interface K8sPlaneSettings {
 
 /** Deployment-owned settings. Env rather than the config file: they describe where this pod sits
  *  in the cluster, which is the deployment's to state and not an operator preference. */
-export const K8S_ORG_ID_ENV = 'AC_K8S_ORG_ID'
 export const K8S_WARM_POOL_ENV = 'AC_K8S_WARM_POOL'
 export const K8S_SANDBOX_NAMESPACE_ENV = 'AC_K8S_SANDBOX_NAMESPACE'
 export const K8S_MEMBER_ID_ENV = 'AC_K8S_MEMBER_ID'
@@ -106,7 +102,6 @@ export const DEFAULT_SHIM_PORT = DEFAULT_SHIM_LISTEN_PORT
 /** Explicit options win per FIELD, so a caller may name one and leave the rest to the env. */
 export function resolveK8sPlaneSettings(options: Partial<K8sRuntimePlaneOptions> = {}): K8sPlaneSettings {
   const env = options.env ?? process.env
-  const orgId = options.orgId ?? env[K8S_ORG_ID_ENV]?.trim()
   const warmPoolName = options.warmPoolName ?? env[K8S_WARM_POOL_ENV]?.trim()
   if (!warmPoolName) throw new Error(`--k8s requires ${K8S_WARM_POOL_ENV}`)
   const sandboxNamespace = options.sandboxNamespace ?? env[K8S_SANDBOX_NAMESPACE_ENV]?.trim()
@@ -118,7 +113,7 @@ export function resolveK8sPlaneSettings(options: Partial<K8sRuntimePlaneOptions>
   if (!Number.isInteger(shimPort) || shimPort < 1 || shimPort > 65_535) {
     throw new Error(`${K8S_SHIM_PORT_ENV} is not a valid port: ${rawPort}`)
   }
-  return { ...(orgId ? { orgId } : {}), warmPoolName, sandboxNamespace, memberId, shimPort }
+  return { warmPoolName, sandboxNamespace, memberId, shimPort }
 }
 
 /** The env contract on its own, which is what a deployment has to satisfy. */
@@ -248,10 +243,8 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
   const runtimeProbeAgentId = probeAgentId(settings.memberId)
   const driver = new K8sDriver({
     api,
-    orgForAgent: (agentId) =>
-      agentId === runtimeProbeAgentId
-        ? (settings.orgId ?? 'install')
-        : (options.orgForAgent?.(agentId) ?? settings.orgId),
+    // The runtime probe is the member's own, not any org's, so it claims under `install`.
+    orgForAgent: (agentId) => (agentId === runtimeProbeAgentId ? 'install' : options.orgForAgent?.(agentId)),
     warmPoolName: settings.warmPoolName,
     generations: options.generations,
     claimMetadataForAgent: (agentId) =>

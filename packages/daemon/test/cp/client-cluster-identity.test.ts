@@ -70,7 +70,7 @@ describe('readClusterIdentityToken', () => {
     expect(readClusterIdentityToken(tempTokenFile('  \n'))).toBeUndefined()
   })
 
-  it('defaults to the path the operator projects it at', () => {
+  it('defaults to the path the deployment projects it at', () => {
     expect(CP_IDENTITY_TOKEN_PATH.startsWith('/')).toBe(true)
   })
 })

@@ -132,7 +132,7 @@ async function clusterUnderTest(options: {
     return { status: 404, json: { kind: 'Status', reason: 'NotFound', message: path } }
   })
   const plane = await startK8sRuntimePlane({
-    orgId: 'org-1',
+    orgForAgent: () => 'org-1',
     warmPoolName: 'pool',
     generations: fakeGenerations(),
     sandboxNamespace: 'agent-sandboxes',

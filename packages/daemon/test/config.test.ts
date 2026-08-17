@@ -31,8 +31,8 @@ describe('loadConfig', () => {
     expect(cfg.sessions.retention).toBe('7d') // #485 session retention defaults on
   })
 
-  // An envelope daemon is born with no config file and no key: the operator injects the
-  // control plane's own address, and the pod's projected token is the credential.
+  // An in-cluster daemon is born with no config file and no key: the deployment injects the
+  // control plane's address, and the pod's projected token is the credential.
   describe(`${CP_URL_ENV} (the in-cluster bootstrap)`, () => {
     const withEnv = <T>(value: string | undefined, run: () => T): T => {
       const previous = process.env[CP_URL_ENV]

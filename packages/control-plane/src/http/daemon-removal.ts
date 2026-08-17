@@ -7,9 +7,8 @@
  * that name a dead daemon, and compiled hook rules that fail every delivery with
  * `daemon_offline` until a re-register replays them.
  *
- * Three callers need the whole sequence — `DELETE /daemons/:id`, organization deletion
- * (which retires the cluster envelope's own daemon), and the pool-member reaper — and a
- * partial copy in any of them is a bug that only shows up in the console days later. So it
+ * Both callers need the whole sequence — `DELETE /daemons/:id` and the pool-member reaper —
+ * and a partial copy in either is a bug that only shows up in the console days later. So it
  * lives here rather than in whichever route wrote it first.
  *
  * The two paths differ in ONE thing, deliberately: who decides. An operator's detach has

@@ -3,7 +3,7 @@ import { RelayAuthService } from './relayAuthService.js'
 import { ApiKeyCodec } from './apiKey.js'
 import type { ApiKeyRepo, ApiKeyRecord } from '../persistence/ports.js'
 import type { Clock } from '../domain/clock.js'
-import { DaemonId, OrgId } from '../domain/ids.js'
+import { DaemonId } from '../domain/ids.js'
 
 const PEPPER = 'unit-test-pepper-0123456789abcdefghij'
 const codec = new ApiKeyCodec({ API_KEY_PEPPER: PEPPER })
@@ -120,16 +120,12 @@ function daemonRecord(over: Partial<ApiKeyRecord> = {}): ApiKeyRecord {
 describe('RelayAuthService.verifyDaemonToken (rc/verify daemon-token)', () => {
   const identity = {
     daemonId: DaemonId('cccccccc-cccc-4ccc-8ccc-cccccccccccc'),
-    scope: 'org' as const,
-    orgId: OrgId('org-cluster')
+    scope: 'install' as const
   }
 
-  it('resolves a verified projected token to the same identity shape a key does', async () => {
+  it('resolves a verified projected token to an org-less install-wide identity', async () => {
     const svc = new RelayAuthService(codec, repo(null), clock, { HEARTBEAT_SEC: 15 }, { verify: async () => identity })
-    expect(await svc.verifyDaemonToken('projected')).toEqual({
-      daemonId: identity.daemonId,
-      orgId: identity.orgId
-    })
+    expect(await svc.verifyDaemonToken('projected')).toEqual({ daemonId: identity.daemonId })
   })
 
   it('refuses a token the cluster did not accept', async () => {
@@ -156,10 +152,7 @@ describe('RelayAuthService.verifyDaemonToken (rc/verify daemon-token)', () => {
         }
       }
     )
-    expect(await svc.verifyDaemonToken('projected', identity.daemonId)).toEqual({
-      daemonId: identity.daemonId,
-      orgId: identity.orgId
-    })
+    expect(await svc.verifyDaemonToken('projected', identity.daemonId)).toEqual({ daemonId: identity.daemonId })
     expect(claims).toEqual([{ daemonId: identity.daemonId }])
   })
 })

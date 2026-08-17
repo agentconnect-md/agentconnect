@@ -213,8 +213,8 @@ export const K8S_SUPERVISOR = 'k8s'
  * control plane the same way. The audiences differ, so neither token is accepted at the
  * other end.
  *
- * This and {@link ENVELOPE_DAEMON_SA_NAME} are the two names the operator that stamps them
- * and the control plane that checks them must agree on exactly. They live here rather than
+ * This and {@link CLOUD_DAEMON_SA_NAME} are the two names the deployment that stamps them and
+ * the control plane that checks them must agree on exactly. They live here rather than
  * being configured on each side because a constant kept in two places eventually holds two
  * values: a rename passes every build and every test, since each side stays self-consistent,
  * and fails only at runtime when a real daemon's token is rejected. One definition makes that
@@ -222,31 +222,24 @@ export const K8S_SUPERVISOR = 'k8s'
  */
 export const CP_TOKEN_AUDIENCE = 'ac-control-plane'
 
-/** ServiceAccount the operator gives an envelope's daemon pod — the control plane's second
- *  check on a reviewed token, so a later change cannot authenticate some other pod in the
- *  same namespace. Shared for the same reason as {@link CP_TOKEN_AUDIENCE}. */
-export const ENVELOPE_DAEMON_SA_NAME = 'ac-daemon'
-
 /**
- * ServiceAccount a pool member runs as. A pool member serves EVERY org, so it lives in the
- * install's control namespace rather than in an org namespace, and no namespace⇒org mapping
- * can name its org — the org is a per-connection selector it declares in `auth`, which is
- * safe precisely because this ServiceAccount is an install-level principal. The
- * ServiceAccount name is therefore the discriminator between the two in-cluster identities:
- * an envelope daemon may only ever be its own namespace's org. Same two-sided agreement as
- * {@link ENVELOPE_DAEMON_SA_NAME}, except the party stamping it is the deployment rather
- * than the operator.
+ * ServiceAccount a pool member runs as, and the control plane's second check on a reviewed
+ * token, so a later change cannot authenticate some other pod in the same namespace. A pool
+ * member serves EVERY org, so it lives in the install's control namespace rather than in an
+ * org namespace and no namespace⇒org mapping can name its org — the org is a per-connection
+ * selector it declares in `auth`, which is safe precisely because this ServiceAccount is an
+ * install-level principal. Shared for the same reason as {@link CP_TOKEN_AUDIENCE}.
  */
 export const CLOUD_DAEMON_SA_NAME = 'ac-cloud-daemon'
 
-/** Where the operator projects that token into the daemon pod, and where the daemon reads it
+/** Where the deployment projects that token into the daemon pod, and where the daemon reads it
  *  from. Not part of the verification, but the same two-sided agreement: the mounter and the
  *  reader are both in this repo, so one definition beats a comment asking them to match. */
 export const CP_IDENTITY_TOKEN_PATH = '/var/run/ac-cp-identity/token'
 
-/** Env var carrying the control plane's own WebSocket URL into an envelope daemon, from
- *  `spec.controlPlane.url`. The pod has no config file to read it from, and a URL is not a
- *  secret. Same two-sided agreement as the token path: the operator sets it, the daemon reads it. */
+/** Env var carrying the control plane's own WebSocket URL into an in-cluster daemon. The pod
+ *  has no config file to read it from, and a URL is not a secret. Same two-sided agreement as
+ *  the token path: the deployment sets it, the daemon reads it. */
 export const CP_URL_ENV = 'AC_CP_URL'
 /** A pool member's rollout generation (its pod-template hash), reported on register (frames/register.ts). */
 export const POD_TEMPLATE_HASH_ENV = 'AC_POD_TEMPLATE_HASH'

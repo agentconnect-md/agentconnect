@@ -274,7 +274,7 @@ import {
 } from './github/review.js'
 import { resolveRuntimeCatalog, type ResolvedRuntimeCatalog } from './runtimes/registry.js'
 import { installedRuntimeCatalog, installedRuntimes, resolveCommandPath } from './runtimes/probe.js'
-import { K8S_ORG_ID_ENV, startK8sRuntimePlane, type K8sRuntimePlane } from './k8s/runtime-plane.js'
+import { startK8sRuntimePlane, type K8sRuntimePlane } from './k8s/runtime-plane.js'
 import { initiatorLabel } from './workspace/session-branch.js'
 import { declaredRuntimeCatalog, loadK8sRuntimeTable, type K8sRuntimeAcpSnapshot } from './runtimes/k8s-runtimes.js'
 import { ensureNodeBinOnPath } from './runtimes/exec-path.js'
@@ -22794,7 +22794,7 @@ export class Daemon {
       return undefined
     }
     // A pool member's credential is its Kubernetes identity, full stop.
-    if (this.k8s && !process.env[K8S_ORG_ID_ENV]?.trim() && !this.clusterIdentityToken) {
+    if (this.k8s && !this.clusterIdentityToken) {
       this.log.error(
         `cp: not connecting — a pool member authenticates with its projected identity token, expected at ${CP_IDENTITY_TOKEN_PATH}`
       )
