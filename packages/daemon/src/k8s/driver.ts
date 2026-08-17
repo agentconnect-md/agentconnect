@@ -2,7 +2,7 @@ import { LaunchTimer, noopClusterMetrics, type ClusterMetrics } from '../metrics
 import { Backoff, systemClock, type Clock } from '@agentconnect.md/connection'
 import type { SpawnDriver, SpawnRequest, SpawnedRuntime } from '../acp/spawn-driver.js'
 import type { ShimCapability } from '../shim/protocol.js'
-import type { ShimConnection } from '../shim/listener.js'
+import type { ShimConnection } from '../shim/connection.js'
 import { ShimRequestTimeoutError } from '../shim/channels.js'
 import { ShimSession } from '../shim/session.js'
 import type { SpawnRecord } from '../shim/binding.js'

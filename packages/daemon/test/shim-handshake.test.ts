@@ -4,7 +4,8 @@ import { MAX_FRAME_BYTES } from '@agentconnect.md/protocol'
 import { WebSocket } from 'ws'
 import { ShimBindingRegistry, type SpawnRecord } from '../src/shim/binding.js'
 import { noopClusterMetrics, type ClusterMetrics } from '../src/metrics/cluster-metrics.js'
-import { ShimListener, type PodIdentityVerifier } from '../src/shim/listener.js'
+import type { PodIdentityVerifier } from '../src/shim/connection.js'
+import { ShimListener } from '../src/shim/listener.js'
 import { ShimClient, type ShimTransport } from '../src/shim/client.js'
 import {
   SHIM_SUBPROTOCOL,

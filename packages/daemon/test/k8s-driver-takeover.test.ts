@@ -9,7 +9,7 @@ import { K8sDriver } from '../src/k8s/driver.js'
 import { SandboxApi } from '../src/k8s/sandbox-api.js'
 import { LocalStore } from '../src/store/local-store.js'
 import type { SpawnRecord } from '../src/shim/binding.js'
-import type { ShimConnection } from '../src/shim/listener.js'
+import type { ShimConnection } from '../src/shim/connection.js'
 
 /**
  * Two pool members, one shared store, one cluster: what a member may do to an agent's sandbox is
