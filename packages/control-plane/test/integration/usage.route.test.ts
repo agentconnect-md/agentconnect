@@ -8,22 +8,19 @@
  *    excluding sessions whose last activity falls outside the range.
  */
 import { describe, it, expect, vi } from 'vitest'
-import { canonicalizeDecimalAmount } from '@agentconnect.md/protocol'
+import { sumAmounts } from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
 import { buildWsHarness } from '../fakes/build-ws.js'
 import { buildHttpApp } from '../fakes/build-http.js'
 import { seedAgent, seedSessionMeta } from '../fixtures/seed.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
-import { Prisma } from '../../src/generated/prisma/client.js'
 import { PgSessionUsageRepo } from '../../src/persistence/repositories/session-usage.repo.js'
 import { AgentId } from '../../src/domain/ids.js'
 
-/** Sum the series' decimal-string amounts exactly. Every cost the API returns is a
- *  decimal string, so a test that re-added them as floats would drift where the
- *  aggregate does not — 0.1 + 0.2 + 0.05 is exactly 0.35 here, not 0.35000000000000003. */
-function sum(points: Array<{ costAmount: string }>): string | null {
-  const total = points.reduce((acc, p) => acc.plus(p.costAmount), new Prisma.Decimal(0))
-  return canonicalizeDecimalAmount(total.toFixed())
+/** Sum the series' decimal-string amounts exactly — the same primitive the aggregate
+ *  itself adds with, so the test cannot drift where the implementation does not. */
+function sum(points: Array<{ costAmount: string }>): string {
+  return sumAmounts(points.map((p) => p.costAmount))
 }
 
 // Console routes are org-scoped: /orgs/:orgId/… (devAuth = seeded owner of the default org).
@@ -528,6 +525,44 @@ describe('GET /usage — aggregates the persisted usage store by agent over a ra
       expect(body.totals.costAmount).toBe('2.5')
       expect(body.agents.find((a) => a.agentId === AGENT_A)!.costAmount).toBe('2.5')
       expect(sum(body.series.points)).toBe('2.5')
+    } finally {
+      await close()
+    }
+  })
+
+  it('serves an amount at the column’s full precision without rounding a digit', async () => {
+    await seedAgent(prisma, AGENT_A)
+    const repo = new PgSessionUsageRepo(prisma)
+    const at = new Date(Date.now() - 60_000)
+    await seedVisibleSession(AGENT_A, 'wide', at)
+    // 18 fractional digits on a 3-digit integer part — 21 significant, one past what a
+    // 20-significant-digit decimal library keeps. Diffing this against a zero baseline
+    // is where the aggregate used to round it to …34568.
+    const exact = '123.123456789012345678'
+    await repo.record({
+      agentId: AgentId(AGENT_A),
+      sessionId: 'wide',
+      source: 'gateway',
+      lastActivityAt: at,
+      usage: { costAmount: exact, costCurrency: 'USD' }
+    })
+
+    const { app, close } = buildHttpApp(prisma)
+    try {
+      const res = await app.inject({ method: 'GET', url: `${ORG}/usage?range=d1` })
+      const body = res.json() as {
+        totals: { costAmount: string }
+        agents: { agentId: string; costAmount: string }[]
+        series: { points: { costAmount: string }[] }
+      }
+      expect(body.totals.costAmount).toBe(exact)
+      expect(body.agents.find((a) => a.agentId === AGENT_A)!.costAmount).toBe(exact)
+      expect(sum(body.series.points)).toBe(exact)
+      // And it survived storage at full width, not just the roll-up.
+      const row = await prisma.sessionUsage.findUnique({
+        where: { agentId_sessionId: { agentId: AGENT_A, sessionId: 'wide' } }
+      })
+      expect(row!.costAmount.toFixed()).toBe(exact)
     } finally {
       await close()
     }

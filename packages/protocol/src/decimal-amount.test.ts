@@ -4,7 +4,10 @@ import {
   ReportedCostAmount,
   canonicalizeDecimalAmount,
   decimalAmountFromNumber,
-  normalizeReportedCostAmount
+  normalizeReportedCostAmount,
+  scaleAmount,
+  sumAmounts,
+  unscaleAmount
 } from './decimal-amount.js'
 
 describe('canonicalizeDecimalAmount', () => {
@@ -85,6 +88,49 @@ describe('normalizeReportedCostAmount', () => {
   it('accepts both reported shapes and yields one', () => {
     expect(normalizeReportedCostAmount(12.5)).toBe('12.5')
     expect(normalizeReportedCostAmount('12.50')).toBe('12.5')
+  })
+})
+
+describe('exact arithmetic', () => {
+  it('round-trips the full width of the column through the scaled form', () => {
+    // 20 integer + 18 fractional digits — 38 significant, past what a
+    // 20-significant-digit decimal library would keep through one operation.
+    const widest = '99999999999999999999.999999999999999999'
+    expect(unscaleAmount(scaleAmount(widest))).toBe(widest)
+  })
+
+  it('adds a full-scale amount without dropping a digit', () => {
+    // The regression: a decimal library rounds `123.123456789012345678` to
+    // `123.12345678901234568` the moment it is added to zero.
+    expect(sumAmounts(['123.123456789012345678', '0'])).toBe('123.123456789012345678')
+    expect(sumAmounts(['123.123456789012345678', '0.000000000000000002'])).toBe('123.12345678901234568')
+  })
+
+  it('adds without the drift a float sum would show', () => {
+    expect(sumAmounts(['0.1', '0.2'])).toBe('0.3') // 0.30000000000000004 as numbers
+    expect(sumAmounts(['0.1', '0.2', '0.05'])).toBe('0.35')
+  })
+
+  it('keeps sub-cent precision across many rows', () => {
+    expect(sumAmounts(Array.from({ length: 1000 }, () => '0.000000000000000001'))).toBe('0.000000000000001')
+  })
+
+  it.each([
+    [[], '0'],
+    [['0'], '0'],
+    [['12.50', '0.50'], '13'],
+    [['1', '-0.5'], '0.5'], // a netted downward correction
+    [['99999999999999999999', '1'], '100000000000000000000']
+  ])('sums %j to %j', (amounts, expected) => {
+    expect(sumAmounts(amounts)).toBe(expected)
+  })
+
+  it('signs a negative result, which a subtraction can produce', () => {
+    expect(unscaleAmount(-scaleAmount('0.25'))).toBe('-0.25')
+  })
+
+  it('ignores an unscalable amount instead of poisoning the total', () => {
+    expect(sumAmounts(['1.5', 'oops', ''])).toBe('1.5')
   })
 })
 

@@ -156,5 +156,8 @@ export {
   ReportedCostAmount,
   canonicalizeDecimalAmount,
   decimalAmountFromNumber,
-  normalizeReportedCostAmount
+  normalizeReportedCostAmount,
+  scaleAmount,
+  sumAmounts,
+  unscaleAmount
 } from './decimal-amount.js'

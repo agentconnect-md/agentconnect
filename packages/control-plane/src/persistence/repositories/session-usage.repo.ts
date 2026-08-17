@@ -15,13 +15,16 @@
  * Prisma surfaces these `_sum` values as `number` (safe to 2^53), which is plenty
  * for workspace-wide token totals.
  *
- * COST is the exception to all of that: it is `NUMERIC(38,18)` and every diff and sum
- * below runs on `Decimal`, never on a JS number. Billing reads these aggregates, so a
- * float anywhere in the roll-up would be a rounding error in someone's invoice.
+ * COST is the exception to all of that: it is `NUMERIC(38,18)`, it is read out as TEXT,
+ * and every diff and sum below runs on integers scaled by that column's scale. Billing
+ * reads these aggregates, so no step may round — not through a float, and not through
+ * `Prisma.Decimal` either, whose arithmetic rounds to 20 significant digits and would
+ * turn an exact `123.123456789012345678` into `123.12345678901234568` on the first
+ * subtraction. Scaled `bigint` has no precision setting to get wrong.
  */
 import type { PrismaLike } from '../prisma.js'
 import { Prisma } from '../../generated/prisma/client.js'
-import type { DecimalAmount } from '@agentconnect.md/protocol'
+import { type DecimalAmount, scaleAmount, unscaleAmount } from '@agentconnect.md/protocol'
 import type {
   SessionUsageRepo,
   SessionUsageInput,
@@ -37,28 +40,17 @@ import { visibilityWhere } from '../../authorization/policy.js'
 import type { AgentId, OrgId } from '../../domain/ids.js'
 import { sessionViewerSql } from './session-access-sql.js'
 
-const ZERO = new Prisma.Decimal(0)
-
-/** A bucket mid-accumulation: `Decimal` sums, keyed maps, serialized once at the end. */
-interface DecimalBucket {
+/** A bucket mid-accumulation: scaled-integer sums, serialized once at the end. */
+interface ScaledBucket {
   start: string
-  costAmount: Prisma.Decimal
-  byAgent: Map<string, Prisma.Decimal>
-  byModel: Map<string, Prisma.Decimal>
+  costAmount: bigint
+  byAgent: Map<string, bigint>
+  byModel: Map<string, bigint>
 }
 
-/** `Decimal` → the exact decimal string the aggregate returns. `toFixed()` never
- *  yields exponent notation; the trailing-zero trim is what makes it canonical.
- *  A derived delta may be negative until the checkpoint merge fences it, so this
- *  keeps a sign rather than refusing the value a reader would then never see. */
-function amount(value: Prisma.Decimal): DecimalAmount {
-  const text = value.toFixed()
-  return text.includes('.') ? text.replace(/0+$/, '').replace(/\.$/, '') : text
-}
-
-/** Serialize a keyed `Decimal` map for the response. */
-function amounts(by: Map<string, Prisma.Decimal>): Record<string, DecimalAmount> {
-  return Object.fromEntries([...by].map(([key, value]) => [key, amount(value)]))
+/** Serialize a keyed scaled-integer map for the response. */
+function amounts(by: Map<string, bigint>): Record<string, DecimalAmount> {
+  return Object.fromEntries([...by].map(([key, value]) => [key, unscaleAmount(value)]))
 }
 
 function agentViewerSql(orgId: OrgId, viewer?: ViewCtx): Prisma.Sql {
@@ -323,10 +315,10 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
     // Floor `since` to the start of its local bucket, expressed as a UTC instant.
     const floorSince = Math.floor((since.getTime() - offMs) / stepMs) * stepMs + offMs
     const n = Math.floor((now - floorSince) / stepMs) + 1
-    // Buckets accumulate in `Decimal` and are serialized once, at the end.
-    const points: DecimalBucket[] = Array.from({ length: n }, (_, i) => ({
+    // Buckets accumulate as scaled integers and are serialized once, at the end.
+    const points: ScaledBucket[] = Array.from({ length: n }, (_, i) => ({
       start: new Date(floorSince + i * stepMs).toISOString(),
-      costAmount: ZERO,
+      costAmount: 0n,
       byAgent: new Map(),
       byModel: new Map()
     }))
@@ -346,9 +338,9 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
     const SEP = '\0'
     const [inRange, baselineRows] = await Promise.all([
       this.db.$queryRaw<
-        Array<{ agentId: string; sessionId: string; at: Date; cumulativeCost: Prisma.Decimal; model: string | null }>
+        Array<{ agentId: string; sessionId: string; at: Date; cumulativeCost: string; model: string | null }>
       >(Prisma.sql`
-        SELECT sp."agentId", sp."sessionId", sp."at", sp."cumulativeCost", NULLIF(sp."model", '') AS model
+        SELECT sp."agentId", sp."sessionId", sp."at", sp."cumulativeCost"::text, NULLIF(sp."model", '') AS model
         FROM "session_spend" sp
         JOIN "agent" a ON a."id" = sp."agentId"
         LEFT JOIN "session_meta" s ON s."id" = sp."sessionId" AND s."agentId" = sp."agentId"
@@ -357,9 +349,9 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
           AND ${sessionScope ?? Prisma.sql`TRUE`}
         ORDER BY sp."at" ASC
       `),
-      this.db.$queryRaw<Array<{ agentId: string; sessionId: string; cumulativeCost: Prisma.Decimal }>>(Prisma.sql`
+      this.db.$queryRaw<Array<{ agentId: string; sessionId: string; cumulativeCost: string }>>(Prisma.sql`
         SELECT DISTINCT ON (sp."agentId", sp."sessionId")
-               sp."agentId", sp."sessionId", sp."cumulativeCost"
+               sp."agentId", sp."sessionId", sp."cumulativeCost"::text
         FROM "session_spend" sp
         JOIN "agent" a ON a."id" = sp."agentId"
         LEFT JOIN "session_meta" s ON s."id" = sp."sessionId" AND s."agentId" = sp."agentId"
@@ -371,29 +363,30 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
     ])
     // Per-session running cumulative, seeded from the last pre-window report so the
     // first in-window delta counts only spend incurred inside the window.
-    const prevCost = new Map<string, Prisma.Decimal>(
-      baselineRows.map((r) => [r.agentId + SEP + r.sessionId, r.cumulativeCost])
+    const prevCost = new Map<string, bigint>(
+      baselineRows.map((r) => [r.agentId + SEP + r.sessionId, scaleAmount(r.cumulativeCost)])
     )
-    const perAgentCost = new Map<string, Prisma.Decimal>()
-    const perModelCost = new Map<string, Prisma.Decimal>()
-    let totalCost = ZERO
+    const perAgentCost = new Map<string, bigint>()
+    const perModelCost = new Map<string, bigint>()
+    let totalCost = 0n
     // `inRange` is globally at-ascending, so each session's rows are visited in
     // chronological order — exactly what the running diff needs.
     for (const row of inRange) {
       const skey = row.agentId + SEP + row.sessionId
-      const delta = row.cumulativeCost.minus(prevCost.get(skey) ?? ZERO)
-      prevCost.set(skey, row.cumulativeCost)
-      totalCost = totalCost.plus(delta)
-      perAgentCost.set(row.agentId, (perAgentCost.get(row.agentId) ?? ZERO).plus(delta))
+      const cumulative = scaleAmount(row.cumulativeCost)
+      const delta = cumulative - (prevCost.get(skey) ?? 0n)
+      prevCost.set(skey, cumulative)
+      totalCost += delta
+      perAgentCost.set(row.agentId, (perAgentCost.get(row.agentId) ?? 0n) + delta)
       const modelKey = row.model ?? ''
-      perModelCost.set(modelKey, (perModelCost.get(modelKey) ?? ZERO).plus(delta))
+      perModelCost.set(modelKey, (perModelCost.get(modelKey) ?? 0n) + delta)
       const idx = Math.floor((row.at.getTime() - floorSince) / stepMs)
       if (idx >= 0 && idx < n) {
         const pt = points[idx]!
-        pt.costAmount = pt.costAmount.plus(delta)
-        if (!delta.isZero()) {
-          pt.byAgent.set(row.agentId, (pt.byAgent.get(row.agentId) ?? ZERO).plus(delta))
-          pt.byModel.set(modelKey, (pt.byModel.get(modelKey) ?? ZERO).plus(delta))
+        pt.costAmount += delta
+        if (delta !== 0n) {
+          pt.byAgent.set(row.agentId, (pt.byAgent.get(row.agentId) ?? 0n) + delta)
+          pt.byModel.set(modelKey, (pt.byModel.get(modelKey) ?? 0n) + delta)
         }
       }
     }
@@ -407,7 +400,7 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
       thoughtTokens: Number(g.thoughtTokens),
       cachedReadTokens: Number(g.cachedReadTokens),
       cachedWriteTokens: Number(g.cachedWriteTokens),
-      costAmount: amount(perAgentCost.get(g.agentId) ?? ZERO)
+      costAmount: unscaleAmount(perAgentCost.get(g.agentId) ?? 0n)
     }))
     // Sort by token spend so the console's "top agents" ordering is stable.
     agents.sort((a, b) => b.totalTokens - a.totalTokens)
@@ -421,7 +414,7 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
       thoughtTokens: Number(g.thoughtTokens),
       cachedReadTokens: Number(g.cachedReadTokens),
       cachedWriteTokens: Number(g.cachedWriteTokens),
-      costAmount: amount(perModelCost.get(g.model ?? '') ?? ZERO)
+      costAmount: unscaleAmount(perModelCost.get(g.model ?? '') ?? 0n)
     }))
     models.sort((a, b) => b.totalTokens - a.totalTokens)
 
@@ -456,13 +449,13 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
 
     const series: SpendBucket[] = points.map((pt) => ({
       start: pt.start,
-      costAmount: amount(pt.costAmount),
+      costAmount: unscaleAmount(pt.costAmount),
       byAgent: amounts(pt.byAgent),
       byModel: amounts(pt.byModel)
     }))
 
     return {
-      totals: { ...totals, costAmount: amount(totalCost), costCurrency },
+      totals: { ...totals, costAmount: unscaleAmount(totalCost), costCurrency },
       agents,
       models,
       series: { bucket, points: series }

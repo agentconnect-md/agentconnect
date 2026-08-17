@@ -114,6 +114,40 @@ export function normalizeReportedCostAmount(value: number | string): DecimalAmou
   return typeof value === 'number' ? decimalAmountFromNumber(value) : canonicalizeDecimalAmount(value)
 }
 
+// ── exact arithmetic ────────────────────────────────────────────────────────
+// Amounts are added and subtracted as integers scaled by `MAX_AMOUNT_SCALE`, which
+// is exact for every value the column can hold. A decimal LIBRARY is deliberately
+// not used here: decimal.js (what Prisma's `Decimal` is) rounds arithmetic to 20
+// SIGNIFICANT digits by default, so subtracting zero from an exact
+// `123.123456789012345678` already returns `123.12345678901234568`. Scaled `bigint`
+// has no precision setting to get wrong.
+
+/** `"12.5"` → `12500000000000000000n`. Unusable input scales to `0n`. */
+export function scaleAmount(text: string): bigint {
+  const negative = text.startsWith('-')
+  const [int = '', frac = ''] = (negative ? text.slice(1) : text).split('.')
+  if (int.length === 0 || !/^[0-9]*$/.test(int) || !/^[0-9]*$/.test(frac)) return 0n
+  const scaled = BigInt(`${int}${frac.slice(0, MAX_AMOUNT_SCALE).padEnd(MAX_AMOUNT_SCALE, '0')}`)
+  return negative ? -scaled : scaled
+}
+
+/** `12500000000000000000n` → `"12.5"`, canonical. Keeps a sign: a window delta is a
+ *  subtraction, so it can be negative even though no reported amount ever is. */
+export function unscaleAmount(scaled: bigint): DecimalAmount {
+  const negative = scaled < 0n
+  const digits = (negative ? -scaled : scaled).toString().padStart(MAX_AMOUNT_SCALE + 1, '0')
+  const int = digits.slice(0, digits.length - MAX_AMOUNT_SCALE)
+  const frac = stripTrailingZeros(digits.slice(digits.length - MAX_AMOUNT_SCALE))
+  return `${negative ? '-' : ''}${join(stripLeadingZeros(int), frac)}`
+}
+
+/** Add decimal amounts exactly. */
+export function sumAmounts(amounts: Iterable<string>): DecimalAmount {
+  let total = 0n
+  for (const amount of amounts) total += scaleAmount(amount)
+  return unscaleAmount(total)
+}
+
 /** A fixed-point decimal amount. The only money shape anything downstream of an
  *  ingress adapter handles — storage, aggregation, and every API response. */
 export const DecimalAmount = z.string().refine((text) => canonicalizeDecimalAmount(text) !== null, {
