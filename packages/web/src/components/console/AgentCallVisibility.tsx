@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import type { Agent, AgentCallPolicy, DaemonRow } from '@/lib/data'
+import type { Agent, AgentCallPolicy, DaemonRow, MemberSetRow } from '@/lib/data'
 import { agentDaemonLabel, agentLabel, agentModelDisplay } from '@/lib/data'
 import { AgentIconView } from '@/components/marks'
 import { Icon } from '@/components/ui'
@@ -24,6 +24,8 @@ export interface AgentCallVisibilityProps {
   /** Candidate caller agents — the parent has already excluded the target. */
   peers: Agent[]
   daemons: DaemonRow[]
+  /** The org's groups — a placement may name one, and without them it reads as Cloud. */
+  groups: MemberSetRow[]
   /** What the copy calls the target ("deploy-bot" mono, or "this agent"). */
   target: ReactNode
   onChange: (mode: AgentCallPolicy, selectedIds: string[]) => void
@@ -72,6 +74,7 @@ export function AgentCallVisibility({
   effectivePeerIds,
   peers,
   daemons,
+  groups,
   target,
   onChange,
   editable = true,
@@ -123,12 +126,18 @@ export function AgentCallVisibility({
     const q = query.trim().toLowerCase()
     if (!q) return availablePeers
     return availablePeers.filter((candidate) =>
-      [agentLabel(candidate), candidate.name, candidate.model, candidate.runtime, agentDaemonLabel(candidate, daemons)]
+      [
+        agentLabel(candidate),
+        candidate.name,
+        candidate.model,
+        candidate.runtime,
+        agentDaemonLabel(candidate, daemons, groups)
+      ]
         .join(' ')
         .toLowerCase()
         .includes(q)
     )
-  }, [availablePeers, daemons, query])
+  }, [availablePeers, daemons, groups, query])
 
   useEffect(() => {
     const onPointerDown = (event: PointerEvent) => {
@@ -346,7 +355,7 @@ export function AgentCallVisibility({
                       </span>
                     </span>
                     <span className="max-w-[90px] flex-none truncate font-mono text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                      {agentDaemonLabel(peer, daemons)}
+                      {agentDaemonLabel(peer, daemons, groups)}
                     </span>
                   </button>
                 ))

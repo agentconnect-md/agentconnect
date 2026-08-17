@@ -15,6 +15,7 @@ export const consoleKeys = {
   bots: (orgId: string | null | undefined) => consoleKey(orgId, 'bots'),
   mcpProviders: (orgId: string | null | undefined) => consoleKey(orgId, 'mcp-providers'),
   skillSources: (orgId: string | null | undefined) => consoleKey(orgId, 'skill-sources'),
+  memberSets: (orgId: string | null | undefined) => consoleKey(orgId, 'member-sets'),
   agentLocalSkills: (orgId: string | null | undefined, agentId: string) =>
     consoleKey(orgId, 'agent-local-skills', agentId),
   managedSkills: (orgId: string | null | undefined, includeArchived: boolean) =>

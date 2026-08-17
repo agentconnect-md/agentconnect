@@ -15,7 +15,7 @@ const options: DaemonSelectOption[] = [
     value: 'pool-1',
     label: 'AgentConnect Cloud',
     detail: 'Model usage included — no API key needed.',
-    pool: true
+    kind: 'pool' as const
   },
   { value: 'edge-1', label: 'edge-1', detail: 'Uses the credentials on this machine.' },
   { value: 'edge-2', label: 'edge-2', detail: 'Offline — bring this machine online to use it.', disabled: true }

@@ -67,29 +67,90 @@ export const POOL_PLACEMENT = 'pool'
  *  accepted API sugar on the way IN, so the console keeps submitting it and tolerates both. */
 export type PlacementKindValue = 'daemon' | 'set' | 'pool'
 
-/** Is this placement the pool — a member set rather than one machine? */
-export function isPoolPlacementKind(kind?: PlacementKindValue): boolean {
+/** What the console calls one of an organization's own member sets. The model名 is "member set";
+ *  the reader-facing one is the design's own opening sentence — a named group of daemons. */
+export const GROUP_NOUN = 'group'
+/** The selectable value for an org group: the pool keeps the bare `pool` sentinel, so no existing
+ *  stored value changes meaning and a group can never collide with a daemon id. */
+export const GROUP_PLACEMENT_PREFIX = 'set:'
+export const groupPlacementValue = (setId: string): string => `${GROUP_PLACEMENT_PREFIX}${setId}`
+/** The set id inside a group placement value, or null when the value names something else. */
+export function groupSetIdOf(value: string | null | undefined): string | null {
+  return value?.startsWith(GROUP_PLACEMENT_PREFIX) ? value.slice(GROUP_PLACEMENT_PREFIX.length) : null
+}
+
+/** Is this placement a member set at all — the pool or one of the org's groups? */
+export function isSetPlacementKind(kind?: PlacementKindValue): boolean {
   return kind === 'set' || kind === 'pool'
 }
 
 /**
- * The ONE mapping from a DTO's placement pair to the value the console selects on: the pool
- * sentinel, a member id, or null when the agent is unplaced. Every reader of the raw DTO uses it —
- * the list projection AND the editor's own reload — so a reload cannot disagree with the row it
- * reloaded. Deriving "is this the pool?" from `daemonId` being null is what made a reloaded pool
- * agent read as unplaced; `placementKind` is the only thing that says it.
+ * Is this placement the POOL specifically? A `set` placement naming one of the org's own groups is
+ * not, and telling them apart is what `orgSetIds` is for: the pool is org-less, so it is never in
+ * the list `GET /member-sets` returns. An unknown or still-loading list therefore reads as the
+ * pool — which is what every `set` placement was before groups existed, so the default is the
+ * pre-groups behavior rather than a guess.
  */
-export function placementValueOf(dto: { placementKind?: PlacementKindValue; daemonId: string | null }): string | null {
-  return isPoolPlacementKind(dto.placementKind) ? POOL_PLACEMENT : (dto.daemonId ?? null)
+export function isPoolPlacementKind(kind?: PlacementKindValue, setId?: string | null, orgSetIds?: ReadonlySet<string>) {
+  if (!isSetPlacementKind(kind)) return false
+  return !(setId && orgSetIds?.has(setId))
 }
 
-/** Resolve placement display text without exposing an unresolved daemon id. */
+/**
+ * The ONE mapping from a DTO's placement pair to the value the console selects on: the pool
+ * sentinel, a group value, a member id, or null when the agent is unplaced. Every reader of the raw
+ * DTO uses it — the list projection AND the editor's own reload — so a reload cannot disagree with
+ * the row it reloaded. Deriving "is this the pool?" from `daemonId` being null is what made a
+ * reloaded pool agent read as unplaced; `placementKind` is the only thing that says it.
+ */
+export function placementValueOf(
+  dto: { placementKind?: PlacementKindValue; daemonId: string | null; setId?: string | null },
+  orgSetIds?: ReadonlySet<string>
+): string | null {
+  if (!isSetPlacementKind(dto.placementKind)) return dto.daemonId ?? null
+  return dto.setId && orgSetIds?.has(dto.setId) ? groupPlacementValue(dto.setId) : POOL_PLACEMENT
+}
+
+/** Resolve placement display text without exposing an unresolved daemon id or a raw set id.
+ *  `groups` is REQUIRED, and deliberately so: defaulting it to `[]` made every caller that had not
+ *  been updated silently label a group placement "AgentConnect Cloud" — a wrong answer that looks
+ *  like a right one. An empty array is still the correct argument while the list is loading. */
 export function agentDaemonLabel(
-  agent: Pick<Agent, 'daemon' | 'daemonName' | 'placementKind'>,
-  daemons: readonly Pick<DaemonRow, 'daemonId' | 'name'>[]
+  agent: Pick<Agent, 'daemon' | 'daemonName' | 'placementKind' | 'setId'>,
+  daemons: readonly Pick<DaemonRow, 'daemonId' | 'name'>[],
+  groups: readonly Pick<MemberSetRow, 'setId' | 'name'>[]
 ): string {
-  if (isPoolPlacementKind(agent.placementKind)) return POOL_LABEL
+  if (isSetPlacementKind(agent.placementKind)) {
+    const group = agent.setId ? groups.find((candidate) => candidate.setId === agent.setId) : undefined
+    return group?.name ?? POOL_LABEL
+  }
   return daemons.find((daemon) => daemon.daemonId === agent.daemon)?.name ?? agent.daemonName ?? '—'
+}
+
+/**
+ * One of the organization's own member sets, as the console holds it (daemon-groups.md §2).
+ *
+ * Deliberately NOT a `DaemonRow`: a group is a placement TARGET, not a machine — it has no host,
+ * version, CPU or uptime of its own, and the moment it borrows those it starts reading like the
+ * one member that happens to answer for it.
+ */
+export interface MemberSetRow {
+  setId: string
+  name: string
+  /** Daemon ids enrolled. A daemon is in at most one group. */
+  memberDaemonIds: string[]
+  /** Agents placed on the group — the same count Cloud shows. */
+  agentCount: number
+}
+
+/** One status for a group: online while any of its members is serving — the same rule the pool
+ *  uses, and for the same reason (whichever member holds the duty is the one serving). */
+export function groupFleetStatus(
+  group: Pick<MemberSetRow, 'memberDaemonIds'>,
+  daemons: readonly Pick<DaemonRow, 'daemonId' | 'status'>[]
+): ConnectionStatusKey {
+  const members = new Set(group.memberDaemonIds)
+  return daemons.some((d) => members.has(d.daemonId) && d.status === 'online') ? 'online' : 'offline'
 }
 
 /** One status for the whole pool: online while any member is serving. */
@@ -350,6 +411,9 @@ export interface Agent {
   /** What the placement NAMES. A `set` carries `daemon: POOL_PLACEMENT` and no member id.
    *  Absent (a mock row, an older CP) reads as `daemon`, which is the pre-pool behavior. */
   placementKind?: PlacementKindValue
+  /** Which member set, when the kind is `set`. The pool is the one that is not the org's, so this
+   *  plus the org's own list is what tells Cloud from a group (daemon-groups.md §2). */
+  setId?: string | null
   /** Server-computed: can a session start right now? For a set placement that is "some member is
    *  live", which is the question the console used to answer with a dead member's liveness. */
   placementReady?: boolean
@@ -1909,6 +1973,10 @@ export interface DaemonRow {
    *  pool member Pod. The daemons page collapses the whole pool into one Cloud entry, and
    *  nothing here is the org's to rename, restart, or detach (`canEdit` is false). */
   pool: boolean
+  /** The member set this daemon is in (daemon-groups.md §2), or null when it owns its agents
+   *  outright. A pool member is always in the org-less one; a group member is in one of the org's.
+   *  A daemon in a set is not a placement target — its agents are placed on the set instead. */
+  memberSetId: string | null
   /** Planned lifecycle presentation while the durable operation is pending. */
   lifecycleStatus: LifecycleStatusKey | null
   host: string

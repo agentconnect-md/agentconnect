@@ -1,13 +1,25 @@
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react'
 import { Icon } from '@/components/ui'
 
+/** What a placement option NAMES (daemon-groups.md §2): the install-wide pool, one of the org's
+ *  own groups, or a single machine. The first two are member sets and behave alike — the server
+ *  picks the member — so they share an icon language and differ only in badge. */
+export type PlacementOptionKind = 'pool' | 'group' | 'daemon'
+
 export interface DaemonSelectOption {
   value: string
   label: string
   detail: string
-  pool?: boolean
+  kind?: PlacementOptionKind
   disabled?: boolean
 }
+
+/** A set target is drawn as a target, never as the member that happens to answer for it. */
+const isSet = (option: Pick<DaemonSelectOption, 'kind'>): boolean => option.kind === 'pool' || option.kind === 'group'
+const iconFor = (option: DaemonSelectOption): string =>
+  option.kind === 'pool' ? 'cloud' : option.kind === 'group' ? 'boxes' : option.value ? 'server' : 'server-off'
+const badgeFor = (option: DaemonSelectOption): string | null =>
+  option.kind === 'pool' ? 'Cloud' : option.kind === 'group' ? 'Group' : null
 
 function enabledIndex(options: readonly DaemonSelectOption[], start: number, delta: 1 | -1): number {
   if (!options.length) return -1
@@ -22,7 +34,7 @@ export function DaemonSelect({
   value,
   options,
   onChange,
-  ariaLabel = 'Daemon',
+  ariaLabel = 'Runs on',
   placeholder = 'No daemons connected'
 }: {
   value: string
@@ -127,20 +139,20 @@ export function DaemonSelect({
           {selected && (
             <span
               className={`flex h-6 w-6 flex-none items-center justify-center rounded-md ${
-                selected.pool ? 'bg-(--brand-soft)' : 'bg-(--surface-sunken)'
+                isSet(selected) ? 'bg-(--brand-soft)' : 'bg-(--surface-sunken)'
               }`}
             >
               <Icon
-                name={selected.pool ? 'cloud' : selected.value ? 'server' : 'server-off'}
+                name={iconFor(selected)}
                 size={14}
-                color={selected.pool ? 'var(--brand)' : 'var(--text-tertiary)'}
+                color={isSet(selected) ? 'var(--brand)' : 'var(--text-tertiary)'}
               />
             </span>
           )}
           <span className="truncate">{selected?.label ?? placeholder}</span>
-          {selected?.pool && (
+          {selected && badgeFor(selected) && (
             <span className="flex-none rounded-full bg-(--brand-soft) px-[7px] py-[2px] font-sans text-[10.5px] font-semibold leading-normal text-(--brand-soft-text)">
-              Cloud
+              {badgeFor(selected)}
             </span>
           )}
         </span>
@@ -169,7 +181,7 @@ export function DaemonSelect({
               const isActive = index === activeIndex
               return (
                 <button
-                  key={`${option.pool ? 'cloud' : 'daemon'}:${option.value}`}
+                  key={`${option.kind ?? 'daemon'}:${option.value}`}
                   id={`${listboxId}-option-${index}`}
                   type="button"
                   role="option"
@@ -177,7 +189,8 @@ export function DaemonSelect({
                   aria-selected={isSelected}
                   aria-disabled={option.disabled || undefined}
                   disabled={option.disabled}
-                  data-pool={option.pool || undefined}
+                  data-pool={option.kind === 'pool' || undefined}
+                  data-group={option.kind === 'group' || undefined}
                   className={`fopt min-h-[58px] gap-[10px] rounded-md px-2 py-[7px] text-[13px] ${
                     option.disabled
                       ? 'cursor-not-allowed text-(--text-disabled) opacity-65'
@@ -195,21 +208,21 @@ export function DaemonSelect({
                   </span>
                   <span
                     className={`flex h-8 w-8 flex-none items-center justify-center rounded-md ${
-                      option.pool ? 'bg-(--brand-soft)' : 'bg-(--surface-sunken)'
+                      isSet(option) ? 'bg-(--brand-soft)' : 'bg-(--surface-sunken)'
                     }`}
                   >
                     <Icon
-                      name={option.pool ? 'cloud' : option.value ? 'server' : 'server-off'}
+                      name={iconFor(option)}
                       size={16}
-                      color={option.pool ? 'var(--brand)' : 'var(--text-tertiary)'}
+                      color={isSet(option) ? 'var(--brand)' : 'var(--text-tertiary)'}
                     />
                   </span>
                   <span className="min-w-0 flex-1">
                     <span className="flex items-center gap-2 font-sans text-[13px] font-semibold leading-normal">
                       <span className="truncate">{option.label}</span>
-                      {option.pool && (
+                      {badgeFor(option) && (
                         <span className="flex-none rounded-full bg-(--brand-soft) px-[7px] py-[2px] font-sans text-[10.5px] font-semibold leading-normal text-(--brand-soft-text)">
-                          Cloud
+                          {badgeFor(option)}
                         </span>
                       )}
                     </span>

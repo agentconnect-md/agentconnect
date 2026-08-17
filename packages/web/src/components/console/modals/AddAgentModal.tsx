@@ -9,6 +9,7 @@ import { useOrgs } from '@/lib/org-context'
 import {
   FALLBACK_RUNTIME_IDS,
   POOL_LABEL,
+  groupPlacementValue,
   approvalsReviewerDefault,
   loginRequiredRuntimeIds,
   agentSlugFinalize,
@@ -191,7 +192,7 @@ async function searchPublicGithubRepos(query: string, signal?: AbortSignal): Pro
 }
 
 export default function AddAgentModal({ onClose }: { onClose: () => void }) {
-  const { createAgent, daemons, agents } = useConsoleData()
+  const { createAgent, daemons, agents, memberSets } = useConsoleData()
   const { me } = useProfile()
   const { activeOrg, orgPath } = useOrgs()
   const defaultAgentVisibility = activeOrg?.defaultAgentVisibility ?? 'all'
@@ -336,8 +337,8 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
   }, [])
 
   // Cloud is one UI choice AND one server-side placement: the pool, named as itself.
-  const daemonChoice = addAgentDaemonChoice(daemons, daemonId)
-  const { poolAvailable, daemon, localDaemons, placement, value: effectiveDaemonId } = daemonChoice
+  const daemonChoice = addAgentDaemonChoice(daemons, daemonId, memberSets)
+  const { poolAvailable, availableGroups, daemon, localDaemons, placement, value: effectiveDaemonId } = daemonChoice
   const daemonOptions: DaemonSelectOption[] = [
     ...(poolAvailable
       ? [
@@ -345,10 +346,18 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
             value: '',
             label: POOL_LABEL,
             detail: 'Model usage included — no API key needed.',
-            pool: true
+            kind: 'pool' as const
           }
         ]
       : []),
+    // The org's own groups sit with Cloud, not with the machines: they are the same KIND of target
+    // — the server picks which member serves, and the agent survives losing any one of them.
+    ...availableGroups.map((group) => ({
+      value: groupPlacementValue(group.setId),
+      label: group.name,
+      detail: `${group.memberDaemonIds.length} daemon${group.memberDaemonIds.length === 1 ? '' : 's'} — any one of them can serve this agent.`,
+      kind: 'group' as const
+    })),
     ...localDaemons.map((candidate) => ({
       value: candidate.daemonId,
       label: candidate.name,
@@ -824,9 +833,11 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
         ...(description.trim() ? { description: description.trim() } : {}),
         ...(placement?.kind === 'pool'
           ? { placementKind: 'pool' as const }
-          : placement
-            ? { daemonId: placement.daemonId }
-            : {}),
+          : placement?.kind === 'set'
+            ? { placementKind: 'set' as const, setId: placement.setId }
+            : placement
+              ? { daemonId: placement.daemonId }
+              : {}),
         outputMode,
         showFooter,
         showStatusBar,
@@ -991,7 +1002,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
               {/* Daemon / Runtime / Model share one 3-up row inside the Basics grid. */}
               <div className="desktop:col-span-2 grid grid-cols-1 gap-[14px] desktop:grid-cols-3">
                 <div className="fld">
-                  <span className="fldlbl">Daemon</span>
+                  <span className="fldlbl">Runs on</span>
                   <DaemonSelect value={effectiveDaemonId} options={daemonOptions} onChange={setDaemonId} />
                 </div>
                 <div className="fld">
@@ -1409,6 +1420,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                     selectedIds={allowedCallers}
                     peers={agents}
                     daemons={daemons}
+                    groups={memberSets}
                     target={callVisibilityTarget}
                     onChange={(nextMode, nextSelected) => {
                       setCallPolicy(nextMode)
@@ -1422,6 +1434,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                     selectedIds={allowedTargets}
                     peers={agents}
                     daemons={daemons}
+                    groups={memberSets}
                     target={callVisibilityTarget}
                     onChange={(nextMode, nextSelected) => {
                       setOutboundPolicy(nextMode)

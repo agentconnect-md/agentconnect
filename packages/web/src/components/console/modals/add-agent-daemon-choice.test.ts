@@ -5,12 +5,26 @@ type Row = {
   pool: boolean
   daemonId: string
   status: 'online' | 'offline'
+  memberSetId: string | null
 }
 
-const row = (daemonId: string, pool = false, status: Row['status'] = 'online'): Row => ({
+const row = (
+  daemonId: string,
+  pool = false,
+  status: Row['status'] = 'online',
+  memberSetId: string | null = null
+): Row => ({
   pool,
   daemonId,
-  status
+  status,
+  memberSetId
+})
+
+const group = (setId: string, memberDaemonIds: string[], name = setId) => ({
+  setId,
+  name,
+  memberDaemonIds,
+  agentCount: 0
 })
 
 describe('addAgentDaemonChoice', () => {
@@ -65,5 +79,40 @@ describe('addAgentDaemonChoice', () => {
       placement: null,
       value: ''
     })
+  })
+
+  it('offers a group as its own target and places on the SET, never on the member that answers', () => {
+    const choice = addAgentDaemonChoice(
+      [row('g-offline', false, 'offline', 'set-1'), row('g-online', false, 'online', 'set-1')],
+      'set:set-1',
+      [group('set-1', ['g-offline', 'g-online'], 'lab')]
+    )
+
+    expect(choice.availableGroups.map((g) => g.setId)).toEqual(['set-1'])
+    expect(choice.placement).toEqual({ kind: 'set', setId: 'set-1' })
+    // The capability probe reads a LIVE member — the same one the server would pick.
+    expect(choice.daemon?.daemonId).toBe('g-online')
+    expect(choice.daemonId).toBeNull()
+  })
+
+  it('drops a group with nothing serving, and never offers its members as targets of their own', () => {
+    const choice = addAgentDaemonChoice([row('g-offline', false, 'offline', 'set-1'), row('local-1')], '', [
+      group('set-1', ['g-offline'])
+    ])
+
+    expect(choice.availableGroups).toEqual([])
+    // A daemon in a group is served THROUGH the group: offering it alone would create an agent
+    // that machine may not serve (daemon-groups.md §3).
+    expect(choice.localDaemons.map((d) => d.daemonId)).toEqual(['local-1'])
+    expect(choice.placement).toEqual({ kind: 'daemon', daemonId: 'local-1' })
+  })
+
+  it('keeps Cloud the default when a group exists but was not chosen', () => {
+    const choice = addAgentDaemonChoice([row('pool-1', true), row('g-online', false, 'online', 'set-1')], '', [
+      group('set-1', ['g-online'])
+    ])
+
+    expect(choice.value).toBe('')
+    expect(choice.placement).toEqual({ kind: 'pool' })
   })
 })

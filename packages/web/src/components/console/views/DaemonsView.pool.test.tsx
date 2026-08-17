@@ -26,6 +26,7 @@ vi.mock('@/lib/data-context', () => ({
     daemons: mocks.daemons,
     daemonsLoading: false,
     agents: mocks.agents,
+    memberSets: [],
     refreshDaemons: vi.fn(async () => {}),
     renameDaemon: vi.fn()
   })

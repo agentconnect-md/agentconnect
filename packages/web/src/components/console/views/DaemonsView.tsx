@@ -2,7 +2,15 @@
 
 import { useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { POOL_LABEL, poolFleetStatus, presentedDaemonStatus, status, type DaemonRow } from '@/lib/data'
+import {
+  POOL_LABEL,
+  groupFleetStatus,
+  poolFleetStatus,
+  presentedDaemonStatus,
+  status,
+  type DaemonRow,
+  type MemberSetRow
+} from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { useModal } from '@/components/console/ModalProvider'
 import { RestrictedLock } from '@/components/console/VisibilityField'
@@ -12,7 +20,7 @@ import { Button, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
 
 export default function DaemonsView() {
-  const { daemons, daemonsLoading, agents } = useConsoleData()
+  const { daemons, daemonsLoading, agents, memberSets } = useConsoleData()
   const { openModal } = useModal()
 
   // Hosted-agent count per daemon — agents assigned to it (mirrors the detail
@@ -87,6 +95,7 @@ export default function DaemonsView() {
             </span>
           </div>
           {poolMembers.length > 0 && <PoolFleetCard members={poolMembers} hosted={poolAgents} />}
+          <GroupsSection groups={memberSets} daemons={daemons} />
           {ownDaemons.length > 0 && (
             <>
               {/* The section label earns its place only next to the Cloud entry — without
@@ -106,6 +115,135 @@ export default function DaemonsView() {
           )}
         </>
       )}
+    </div>
+  )
+}
+
+/**
+ * The organization's own groups (docs/designs/daemon-groups.md §2) — a named set of its daemons an
+ * agent can be placed on instead of one machine.
+ *
+ * Sits with Cloud rather than with the machines below, because that is what it IS: a placement
+ * target whose members are interchangeable, not a machine with a host and a CPU. Deliberately
+ * borrows none of a daemon's telemetry — a group has no version, load or uptime of its own, and
+ * the moment it shows one it starts reading like whichever member happened to answer.
+ *
+ * The section renders even with no groups, but only once the org has a daemon that could join one:
+ * before that it is an answer to a question nobody has asked yet.
+ */
+function GroupsSection({ groups, daemons }: { groups: MemberSetRow[]; daemons: DaemonRow[] }) {
+  const { openModal } = useModal()
+  const joinable = daemons.some((d) => !d.pool)
+  if (!joinable && groups.length === 0) return null
+
+  return (
+    <>
+      <div className="mt-6 mb-[9px] flex min-h-[26px] items-center gap-[9px]">
+        <span className="font-sans text-[13px] font-semibold leading-normal">Groups</span>
+        <span className="mono text-[11.5px] text-(--text-tertiary)">{groups.length}</span>
+        <div className="flex-1" />
+        <button
+          className="inline-flex items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal text-(--text-tertiary) hover:text-(--text-primary)"
+          onClick={() => openModal('group')}
+        >
+          <Icon name="plus" size={14} />
+          New group
+        </button>
+      </div>
+      {groups.length === 0 ? (
+        <div className="card px-4 py-[15px] font-sans text-[12.5px] font-normal leading-[1.6] text-(--text-secondary)">
+          Place an agent on a group instead of one machine and it keeps running when that machine does not — whichever
+          member is serving picks the work up.
+        </div>
+      ) : (
+        <div className="flex flex-col gap-3 desktop:gap-[14px]">
+          {groups.map((group) => (
+            <GroupCard key={group.setId} group={group} daemons={daemons} />
+          ))}
+        </div>
+      )}
+    </>
+  )
+}
+
+function GroupCard({ group, daemons }: { group: MemberSetRow; daemons: DaemonRow[] }) {
+  const { openModal } = useModal()
+  const [menuOpen, setMenuOpen] = useState(false)
+  const s = status(groupFleetStatus(group, daemons))
+  const members = group.memberDaemonIds.length
+  const serving = daemons.filter((d) => group.memberDaemonIds.includes(d.daemonId) && d.status === 'online').length
+  const meta =
+    members === 0
+      ? 'No daemons yet — add one from its own page.'
+      : `${members} daemon${members === 1 ? '' : 's'} · ${serving} serving`
+
+  return (
+    <div className="card flex items-center gap-3 overflow-visible p-[14px] max-desktop:rounded-lg desktop:gap-[14px] desktop:px-4 desktop:py-[15px]">
+      <span className="relative flex h-10 w-10 flex-none items-center justify-center rounded-md bg-(--brand-soft) desktop:h-9 desktop:w-9">
+        <Icon name="boxes" size={20} color={serving > 0 ? 'var(--brand)' : 'var(--text-tertiary)'} />
+        <span
+          className="absolute -right-[3px] -bottom-[3px] h-3 w-3 rounded-full border-2 border-(--surface-card) desktop:hidden"
+          style={{ background: s.dot }}
+        />
+      </span>
+      <div className="flex min-w-0 flex-1 flex-col gap-[2px] desktop:gap-0">
+        <div className="flex min-w-0 items-center gap-[6px] desktop:gap-2">
+          <span className="truncate font-sans text-[14px] font-semibold leading-normal desktop:text-[13.5px]">
+            {group.name}
+          </span>
+          <span className="dot hidden flex-none desktop:inline-block" style={{ background: s.dot }} />
+        </div>
+        <div className="truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary) desktop:text-[11.5px] desktop:leading-[1.5]">
+          {meta}
+          <span className="desktop:hidden">{` · ${group.agentCount} agent${group.agentCount === 1 ? '' : 's'}`}</span>
+        </div>
+      </div>
+      <div className="hidden flex-none text-right desktop:block">
+        <div className="mono text-[14px] leading-normal font-semibold">{group.agentCount}</div>
+        <div className="font-sans text-[10.5px] font-normal leading-normal text-(--text-tertiary)">
+          agents on this group
+        </div>
+      </div>
+      <span
+        className="badge flex-none max-desktop:px-[10px] max-desktop:py-[3px] max-desktop:text-[12px]"
+        style={{ background: s.bg, color: s.text }}
+      >
+        {s.label}
+      </span>
+      <div className="relative flex-none">
+        <button className="iconbtn" aria-label="Group actions" onClick={() => setMenuOpen((v) => !v)}>
+          <Icon name="ellipsis" size={16} />
+        </button>
+        {menuOpen && (
+          <>
+            <div className="fixed inset-0 z-[45]" onClick={() => setMenuOpen(false)} />
+            {/* `.dmenu` is the row-overflow menu every card here uses — it anchors inside the card
+                instead of off the page edge, which a raw right-0 popover does not. */}
+            <div className="dmenu">
+              <button
+                className="dmi"
+                onClick={() => {
+                  setMenuOpen(false)
+                  openModal('group', group)
+                }}
+              >
+                <Icon name="pencil" size={15} />
+                Rename
+              </button>
+              <button
+                className="dmi danger"
+                onClick={() => {
+                  setMenuOpen(false)
+                  openModal('deleteGroup', group)
+                }}
+              >
+                <Icon name="trash-2" size={15} />
+                Delete group
+              </button>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   )
 }

@@ -1,15 +1,25 @@
-import type { DaemonRow } from '@/lib/data'
+import { groupSetIdOf, type DaemonRow, type MemberSetRow } from '@/lib/data'
 
-type DaemonChoiceRow = Pick<DaemonRow, 'pool' | 'daemonId' | 'status'>
+type DaemonChoiceRow = Pick<DaemonRow, 'pool' | 'daemonId' | 'status' | 'memberSetId'>
+
+/** What create submits. A set target — Cloud or one of the org's groups — names the SET, never a
+ *  member: pinning a member id is what left an agent stranded on a Pod the next rollout replaced. */
+export type AddAgentPlacement = { kind: 'pool' } | { kind: 'set'; setId: string } | { kind: 'daemon'; daemonId: string }
 
 export interface AddAgentDaemonChoice<T extends DaemonChoiceRow> {
   poolAvailable: boolean
+  /** Groups with at least one member serving — the only ones an agent can start on. */
+  availableGroups: MemberSetRow[]
+  /**
+   * The daemon whose reported CAPABILITIES the form reads (runtimes, models, sandbox). For a set
+   * target that is one live member standing in for the set, which is exactly what the server will
+   * pick anyway; it is never the placement.
+   */
   daemon: T | undefined
   daemonId: string | null
+  /** Machines that are placement targets in their own right — a daemon in a set is not one. */
   localDaemons: T[]
-  /** What create submits. Cloud is the POOL, not one of its members: pinning a member id here is
-   *  what left an agent stranded on a Pod the next rollout replaced. */
-  placement: { kind: 'pool' } | { kind: 'daemon'; daemonId: string } | null
+  placement: AddAgentPlacement | null
   value: string
 }
 
@@ -18,26 +28,48 @@ const onlineFirst = <T extends DaemonChoiceRow>(daemons: T[]): T[] =>
 
 export function addAgentDaemonChoice<T extends DaemonChoiceRow>(
   daemons: T[],
-  selectedDaemonId: string
+  selectedValue: string,
+  groups: readonly MemberSetRow[] = []
 ): AddAgentDaemonChoice<T> {
   const poolDaemons = daemons.filter((daemon) => daemon.pool && daemon.status === 'online')
-  const localDaemons = onlineFirst(daemons.filter((daemon) => !daemon.pool))
-  const selectedLocal = localDaemons.find((daemon) => daemon.daemonId === selectedDaemonId)
-  const value = selectedLocal?.daemonId ?? (poolDaemons.length > 0 ? '' : (localDaemons[0]?.daemonId ?? ''))
-  const daemon = value ? localDaemons.find((candidate) => candidate.daemonId === value) : poolDaemons[0]
+  // A daemon in a group is served THROUGH the group, so offering it as its own target would
+  // create an agent the machine may not serve (daemon-groups.md §3).
+  const localDaemons = onlineFirst(daemons.filter((daemon) => !daemon.pool && !daemon.memberSetId))
+  const liveMemberOf = (group: MemberSetRow): T | undefined =>
+    daemons.find((daemon) => daemon.status === 'online' && group.memberDaemonIds.includes(daemon.daemonId))
+  const availableGroups = groups.filter((group) => liveMemberOf(group) !== undefined)
 
-  return {
-    poolAvailable: poolDaemons.length > 0,
-    daemon,
-    daemonId: value || null,
-    localDaemons,
-    placement: value
+  const selectedGroup = availableGroups.find((group) => groupSetIdOf(selectedValue) === group.setId)
+  const selectedLocal = localDaemons.find((daemon) => daemon.daemonId === selectedValue)
+  // Falls back in the order the form offers: the explicit pick, else Cloud, else the first machine.
+  const value = selectedGroup
+    ? selectedValue
+    : (selectedLocal?.daemonId ?? (poolDaemons.length > 0 ? '' : (localDaemons[0]?.daemonId ?? '')))
+
+  // Re-looked up from `value`, never from `selectedLocal`: when nothing was chosen and there is no
+  // Cloud, `value` falls back to the first machine — which `selectedLocal` knows nothing about.
+  const daemon = selectedGroup
+    ? liveMemberOf(selectedGroup)
+    : value
+      ? localDaemons.find((candidate) => candidate.daemonId === value)
+      : poolDaemons[0]
+  const placement: AddAgentPlacement | null = selectedGroup
+    ? { kind: 'set', setId: selectedGroup.setId }
+    : value
       ? daemon
         ? { kind: 'daemon', daemonId: daemon.daemonId }
         : null
       : poolDaemons.length > 0
         ? { kind: 'pool' }
-        : null,
+        : null
+
+  return {
+    poolAvailable: poolDaemons.length > 0,
+    availableGroups,
+    daemon,
+    daemonId: selectedGroup ? null : value || null,
+    localDaemons,
+    placement,
     value
   }
 }

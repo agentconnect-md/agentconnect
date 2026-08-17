@@ -41,6 +41,7 @@ describe('AgentCallVisibility', () => {
             effectivePeerIds={peers.map((peer) => peer.id)}
             peers={peers}
             daemons={[]}
+            groups={[]}
             target="review-bot"
             onChange={() => undefined}
           />
@@ -52,6 +53,7 @@ describe('AgentCallVisibility', () => {
             effectivePeerIds={peers.slice(0, 2).map((peer) => peer.id)}
             peers={peers}
             daemons={[]}
+            groups={[]}
             target="review-bot"
             onChange={() => undefined}
           />
@@ -85,6 +87,7 @@ describe('AgentCallVisibility', () => {
           effectivePeerIds={[]}
           peers={AGENTS.slice(0, 2)}
           daemons={[]}
+          groups={[]}
           target="this agent"
           onChange={() => undefined}
         />
@@ -120,6 +123,7 @@ describe('AgentCallVisibility', () => {
           effectivePeerIds={[]}
           peers={props.peers}
           daemons={[]}
+          groups={[]}
           target="review-bot"
           editable={false}
           onChange={() => undefined}

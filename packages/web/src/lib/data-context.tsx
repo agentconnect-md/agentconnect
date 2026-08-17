@@ -23,6 +23,7 @@ import {
   getSessions as mockGetSessions,
   type Agent,
   type DaemonRow,
+  type MemberSetRow,
   type IntegrationRow,
   type Session
 } from '@/lib/data'
@@ -55,6 +56,13 @@ import {
   type CreateMcpProviderInput,
   type UpdateMcpProviderInput,
   fetchSkillSources,
+  fetchMemberSets,
+  createMemberSet,
+  renameMemberSet,
+  deleteMemberSet,
+  enrollDaemonInMemberSet,
+  withdrawDaemonFromMemberSet,
+  type MemberSetDto,
   createSkillSource as apiCreateSkillSource,
   updateSkillSource as apiUpdateSkillSource,
   deleteSkillSource as apiDeleteSkillSource,
@@ -155,6 +163,20 @@ interface ConsoleData {
   updateSkillSource: (id: string, patch: UpdateSkillSourceInput) => Promise<void>
   /** Delete a skills source (409 while any agent enables it), then re-pull. */
   deleteSkillSource: (id: string) => Promise<void>
+  /** The org's own member sets — the groups an agent can be placed on (daemon-groups.md §2).
+   *  The install-wide pool is org-less and is never one of these. */
+  memberSets: MemberSetRow[]
+  memberSetsLoading: boolean
+  /** Set ids the org owns — what tells one of these groups from the pool on a `set` placement. */
+  orgSetIds: ReadonlySet<string>
+  createGroup: (name: string) => Promise<MemberSetRow>
+  renameGroup: (setId: string, name: string) => Promise<void>
+  /** Delete an EMPTY group (409 while it has members or placed agents), then re-pull. */
+  deleteGroup: (setId: string) => Promise<void>
+  /** Enroll a daemon (409 while agents are pinned to it, or it is in another group). */
+  enrollInGroup: (setId: string, daemonId: string) => Promise<void>
+  /** Withdraw a daemon (409 while it holds a live duty lease — drain it first). */
+  withdrawFromGroup: (setId: string, daemonId: string) => Promise<void>
   /** Whether the open-connector integration is configured on the CP (gates the
    *  "Add connectors" menu item). */
   connectorsEnabled: boolean
@@ -789,6 +811,13 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     isLoading: skillSourcesIsLoading,
     mutate: mutateSkillSources
   } = useSWR<SkillSourceDto[]>(consoleKeys.skillSources(orgKey), ([, orgId]) => fetchSkillSources(orgId as string))
+  // The org's member sets (daemon-groups.md §2) — the groups an agent can be placed on. The
+  // install-wide pool is org-less and never appears here; the console renders it from the fleet.
+  const {
+    data: memberSets = [],
+    isLoading: memberSetsIsLoading,
+    mutate: mutateMemberSets
+  } = useSWR<MemberSetDto[]>(consoleKeys.memberSets(orgKey), ([, orgId]) => fetchMemberSets(orgId as string))
   // Cheap feature gate for the connectors integration; mock mode reports it on so
   // the demo console shows the "Add connectors" flow.
   const { data: connectorsConfig } = useSWR<{ enabled: boolean }>(
@@ -999,6 +1028,10 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     () => (MOCK_MODE ? [...realSkillSources, ...MOCK_SKILL_SOURCES] : realSkillSources),
     [realSkillSources]
   )
+  // The DTO IS the row here: a group has no derived state of its own, so projecting it would only
+  // create a second shape to keep in step with the first.
+  const groups = useMemo<MemberSetRow[]>(() => memberSets.map((s) => ({ ...s })), [memberSets])
+  const orgSetIds = useMemo(() => new Set(groups.map((g) => g.setId)), [groups])
 
   // integrations: live rows (daemon resolved via the owning agent), plus the demo
   // rows in mock mode — so the view is populated even with no CP running (as with agents).
@@ -1012,10 +1045,13 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
   const createAgent = useCallback(
     async (input: CreateAgentInput): Promise<string> => {
       const created = await apiCreateAgent(input)
-      settleInBackground(mutateAgents(), mutateDaemons())
+      // `memberSets` too: a group's `agentCount` is what the console shows beside Cloud's and
+      // what gates its delete, so every write that can move an agent onto or off a group has to
+      // re-pull it — otherwise the count is stale and the delete stays blocked on a number.
+      settleInBackground(mutateAgents(), mutateDaemons(), mutateMemberSets())
       return created.id // let the caller follow up with a /sharing write if restricted
     },
-    [mutateAgents, mutateDaemons]
+    [mutateAgents, mutateDaemons, mutateMemberSets]
   )
 
   // Set a resource's visibility + share set (PUT .../:id/sharing), then re-pull.
@@ -1053,9 +1089,9 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
   const deleteAgent = useCallback(
     async (agentId: string) => {
       await apiDeleteAgent(agentId)
-      settleInBackground(mutateAgents(), revalidateSessionLists(), mutateIntegrations())
+      settleInBackground(mutateAgents(), revalidateSessionLists(), mutateIntegrations(), mutateMemberSets())
     },
-    [mutateAgents, revalidateSessionLists, mutateIntegrations]
+    [mutateAgents, revalidateSessionLists, mutateIntegrations, mutateMemberSets]
   )
 
   // Edit an agent's spec (PATCH), then re-pull so the change shows.
@@ -1072,9 +1108,9 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
   const moveAgent = useCallback(
     async (agentId: string, target: AgentPlacementTarget, options?: { force?: boolean }) => {
       await apiMoveAgent(agentId, target, options)
-      settleInBackground(mutateAgents(), mutateDaemons(), revalidateSessionLists())
+      settleInBackground(mutateAgents(), mutateDaemons(), revalidateSessionLists(), mutateMemberSets())
     },
-    [mutateAgents, mutateDaemons, revalidateSessionLists]
+    [mutateAgents, mutateDaemons, revalidateSessionLists, mutateMemberSets]
   )
 
   // Install a platform integration (Slack / Telegram / Discord), then re-pull so it shows in the list.
@@ -1192,6 +1228,56 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       settleInBackground(mutateMcpProviders())
     },
     [mutateMcpProviders]
+  )
+
+  // Membership and placement move runtime authority, so a group write re-pulls the AGENTS and the
+  // DAEMONS too, not just the group list: enrolling a daemon changes whether it is a placement
+  // target, and both surfaces read that.
+  const settleGroupWrite = useCallback(() => {
+    settleInBackground(mutateMemberSets())
+    settleInBackground(mutateDaemons())
+    settleInBackground(mutateAgents())
+  }, [mutateMemberSets, mutateDaemons, mutateAgents])
+
+  const createGroup = useCallback(
+    async (name: string): Promise<MemberSetRow> => {
+      const created = await createMemberSet(name)
+      settleGroupWrite()
+      return created
+    },
+    [settleGroupWrite]
+  )
+
+  const renameGroup = useCallback(
+    async (setId: string, name: string) => {
+      await renameMemberSet(setId, name)
+      settleGroupWrite()
+    },
+    [settleGroupWrite]
+  )
+
+  const deleteGroup = useCallback(
+    async (setId: string) => {
+      await deleteMemberSet(setId)
+      settleGroupWrite()
+    },
+    [settleGroupWrite]
+  )
+
+  const enrollInGroup = useCallback(
+    async (setId: string, daemonId: string) => {
+      await enrollDaemonInMemberSet(setId, daemonId)
+      settleGroupWrite()
+    },
+    [settleGroupWrite]
+  )
+
+  const withdrawFromGroup = useCallback(
+    async (setId: string, daemonId: string) => {
+      await withdrawDaemonFromMemberSet(setId, daemonId)
+      settleGroupWrite()
+    },
+    [settleGroupWrite]
   )
 
   const createSkillSource = useCallback(
@@ -1432,6 +1518,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
   // immediately instead of sitting on a spinner while a CP that isn't running fails.
   const mcpProvidersLoading = !MOCK_MODE && (waitingForOrg || mcpProvidersIsLoading)
   const skillSourcesLoading = !MOCK_MODE && (waitingForOrg || skillSourcesIsLoading)
+  const memberSetsLoading = !MOCK_MODE && (waitingForOrg || memberSetsIsLoading)
   const connectorsEnabled = connectorsConfig?.enabled ?? false
   const loading =
     waitingForOrg ||
@@ -1469,6 +1556,14 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       createSkillSource,
       updateSkillSource,
       deleteSkillSource,
+      memberSets: groups,
+      memberSetsLoading,
+      orgSetIds,
+      createGroup,
+      renameGroup,
+      deleteGroup,
+      enrollInGroup,
+      withdrawFromGroup,
       connectorsEnabled,
       createConnectorConnection,
       reconnectConnectorConnection,
@@ -1541,6 +1636,14 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       createSkillSource,
       updateSkillSource,
       deleteSkillSource,
+      groups,
+      memberSetsLoading,
+      orgSetIds,
+      createGroup,
+      renameGroup,
+      deleteGroup,
+      enrollInGroup,
+      withdrawFromGroup,
       connectorsEnabled,
       createConnectorConnection,
       reconnectConnectorConnection,

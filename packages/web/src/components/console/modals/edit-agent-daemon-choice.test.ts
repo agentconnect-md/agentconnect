@@ -6,13 +6,21 @@ type Row = {
   pool: boolean
   daemonId: string
   status: 'online' | 'offline'
+  memberSetId: string | null
 }
 
-const row = (daemonId: string, pool = false, status: Row['status'] = 'online', movable = true): Row => ({
+const row = (
+  daemonId: string,
+  pool = false,
+  status: Row['status'] = 'online',
+  movable = true,
+  memberSetId: string | null = null
+): Row => ({
   caps: { features: movable ? ['agent-move-v1'] : [] },
   pool,
   daemonId,
-  status
+  status,
+  memberSetId
 })
 
 describe('editAgentDaemonChoices', () => {
@@ -70,5 +78,23 @@ describe('editAgentDaemonChoices', () => {
 
     expect(choices.poolChoice).toBeUndefined()
     expect(choices.localChoices.map((choice) => choice.daemonId)).toEqual(['local-ready', 'local-offline', 'local-old'])
+  })
+
+  it('drops a daemon that is in a group — it is served through the group, not on its own', () => {
+    // Submitting one would be a `daemon` placement the control plane refuses (daemon-groups.md §3).
+    const choices = editAgentDaemonChoices([row('grouped', false, 'online', true, 'set-1'), row('free')], '', '')
+
+    expect(choices.localChoices.map((d) => d.daemonId)).toEqual(['free'])
+  })
+
+  it('keeps the agent’s CURRENT machine listed even if it has since joined a group', () => {
+    // An option naming where the agent already is cannot be a placement the server refused.
+    const choices = editAgentDaemonChoices(
+      [row('grouped', false, 'online', true, 'set-1'), row('free')],
+      'grouped',
+      'grouped'
+    )
+
+    expect(choices.localChoices.map((d) => d.daemonId)).toContain('grouped')
   })
 })

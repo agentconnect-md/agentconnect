@@ -136,8 +136,18 @@ export default function AgentDetailView() {
   // is `?tab=<id>`.
   const tab: DetailTab =
     rawTab === 'config' || rawTab === 'workspace' || rawTab === 'memory' || rawTab === 'tools' ? rawTab : 'integrations'
-  const { agents, getAgent, getSessions, daemons, daemonsLoading, integrations, agentsLoading, updateAgent, refresh } =
-    useConsoleData()
+  const {
+    agents,
+    getAgent,
+    getSessions,
+    daemons,
+    daemonsLoading,
+    integrations,
+    agentsLoading,
+    updateAgent,
+    refresh,
+    memberSets
+  } = useConsoleData()
   const { openPlayground } = usePlayground()
   const { openModal } = useModal()
   const {
@@ -466,7 +476,7 @@ export default function AgentDetailView() {
         refresh()
       }
     : undefined
-  const daemonLabel = agentDaemonLabel(da, daemons)
+  const daemonLabel = agentDaemonLabel(da, daemons, memberSets)
   // Append region only when the Agent projection has a real one.
   const daemonLine = da.region && da.region !== '—' ? `${daemonLabel} · ${da.region}` : daemonLabel
   // Only a daemon in the viewer's fleet has a working detail route.
@@ -774,7 +784,7 @@ export default function AgentDetailView() {
                     className="box-border flex w-full cursor-pointer items-center justify-between gap-4 border-0 border-b border-(--border-subtle) bg-(--surface-card) px-4 py-3 text-left desktop:hidden"
                   >
                     <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary)">
-                      Daemon
+                      Runs on
                     </span>
                     <span className="inline-flex min-w-0 items-center gap-[6px]">
                       <span className="truncate font-mono text-[12px] font-medium leading-normal text-(--text-primary)">
@@ -786,7 +796,7 @@ export default function AgentDetailView() {
                 ) : (
                   <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3 desktop:hidden">
                     <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary)">
-                      Daemon
+                      Runs on
                     </span>
                     <span className="font-mono text-[12px] font-medium leading-normal text-(--text-primary)">
                       {daemonLine}
@@ -795,7 +805,7 @@ export default function AgentDetailView() {
                 )}
                 <div className="hidden items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3 desktop:flex">
                   <span className="font-sans text-[13px] font-normal leading-normal text-(--text-tertiary)">
-                    Daemon
+                    Runs on
                   </span>
                   {owningDaemon ? (
                     <Link className="lnk font-mono text-[12.5px] font-medium leading-normal" href={daemonHref}>
@@ -1115,6 +1125,7 @@ export default function AgentDetailView() {
                     effectivePeerIds={inboundEffectiveIds}
                     peers={agentPeers}
                     daemons={daemons}
+                    groups={memberSets}
                     target={<span className="font-mono text-[12.5px]">{agentLabel(da)}</span>}
                     editable={false}
                     onChange={() => {}}
@@ -1127,6 +1138,7 @@ export default function AgentDetailView() {
                     effectivePeerIds={outboundEffectiveIds}
                     peers={agentPeers}
                     daemons={daemons}
+                    groups={memberSets}
                     target={<span className="font-mono text-[12.5px]">{agentLabel(da)}</span>}
                     editable={false}
                     onChange={() => {}}

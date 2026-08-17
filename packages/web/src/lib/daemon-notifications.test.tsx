@@ -29,6 +29,7 @@ function TestNotifierComponent({
 const mockDaemon = (id: string, name: string, op?: DaemonRow['lifecycleOp']): DaemonRow => ({
   daemonId: id,
   name,
+  memberSetId: null,
   version: '1.0.0',
   latestVersion: '1.1.0',
   releaseChannel: 'latest',

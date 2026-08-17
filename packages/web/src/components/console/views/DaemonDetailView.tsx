@@ -16,7 +16,8 @@ import {
   platName,
   presentedDaemonStatus,
   runtimeLabel,
-  status
+  status,
+  type DaemonRow
 } from '@/lib/data'
 import { creatorLabel } from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
@@ -27,7 +28,7 @@ import { DaemonLifecycleBadge, daemonLifecycleLabel } from '@/components/console
 import { DaemonUpgradeBadge } from '@/components/console/DaemonUpgradeBadge'
 import { NotFound } from '@/components/console/NotFound'
 import { AgentIconView, AgentMark, LoadingState } from '@/components/marks'
-import { Icon } from '@/components/ui'
+import { Button, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
 import { useIsMobile } from '@/lib/use-is-mobile'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
@@ -700,6 +701,7 @@ export default function DaemonDetailView() {
               <UtilBar label="Memory" pct={daemon.mem} />
             </div>
           </div>
+          <GroupCard daemon={daemon} pinnedAgents={hosted.length} />
           <div className="card">
             <div className="cardhead">
               <span className="cardtitle">Details</span>
@@ -817,6 +819,99 @@ export default function DaemonDetailView() {
             </div>
           </div>
         </div>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * The group this daemon belongs to (docs/designs/daemon-groups.md §2, §3).
+ *
+ * Membership is here, on the machine whose runtime authority moves, rather than on the group: both
+ * directions are admitted only from a state this page already shows. Joining is refused while
+ * agents are still pinned here — a member serves only what it holds a lease for, so those agents
+ * would be placed and unservable at once — and leaving is refused while it still holds live work,
+ * which is what "drain it first" means. The dialog says so before the button is offered rather
+ * than after the 409 comes back.
+ */
+function GroupCard({ daemon, pinnedAgents }: { daemon: DaemonRow; pinnedAgents: number }) {
+  const { memberSets, enrollInGroup, withdrawFromGroup } = useConsoleData()
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  // The pool is managed infrastructure — its membership is the CP's, never an operator's.
+  if (daemon.pool) return null
+
+  const current = memberSets.find((group) => group.setId === daemon.memberSetId)
+  const blockedReason =
+    !current && pinnedAgents > 0 ? `${pinnedAgents} agent${pinnedAgents === 1 ? '' : 's'} placed here` : null
+
+  const run = async (fn: () => Promise<void>) => {
+    setBusy(true)
+    setErr(null)
+    try {
+      await fn()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="card">
+      <div className="cardhead">
+        <span className="cardtitle">Group</span>
+      </div>
+      <div className="px-4 py-[13px]">
+        <p className="font-sans text-[12.5px] font-normal leading-[1.6] text-(--text-secondary)">
+          {current ? (
+            <>
+              This daemon is in <span className="mono text-(--text-primary)">{current.name}</span>. Agents placed on
+              that group run on whichever member is serving, so it can be any of them — not only this one.
+            </>
+          ) : memberSets.length === 0 ? (
+            'Groups let an agent be placed on a set of daemons instead of one machine. Create one on the Daemons page to use them.'
+          ) : (
+            'Not in a group. Agents are pinned to this machine and stop when it does.'
+          )}
+        </p>
+        <div className="mt-[11px] flex flex-wrap items-center gap-2">
+          {current ? (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => void run(() => withdrawFromGroup(current.setId, daemon.daemonId))}
+              className={busy ? 'cursor-default opacity-50' : undefined}
+            >
+              Leave group
+            </Button>
+          ) : (
+            memberSets.map((group) => (
+              <Button
+                key={group.setId}
+                variant="secondary"
+                size="sm"
+                onClick={() => void run(() => enrollInGroup(group.setId, daemon.daemonId))}
+                className={busy || blockedReason ? 'cursor-default opacity-50' : undefined}
+              >
+                <Icon name="boxes" size={14} />
+                Join {group.name}
+              </Button>
+            ))
+          )}
+        </div>
+        {blockedReason && memberSets.length > 0 && (
+          <p className="mt-[10px] font-sans text-[12px] font-normal leading-[1.55] text-(--text-tertiary)">
+            Move the {blockedReason} onto a group first: a group member serves only the work it is granted, so an agent
+            pinned to this machine would have nowhere to run the moment it joins.
+          </p>
+        )}
+        {err && (
+          <div className="mt-[11px] flex items-start gap-2 rounded-md border border-(--status-error) bg-(--status-error-soft) px-3 py-[10px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--status-error)">
+            <Icon name="triangle-alert" size={15} />
+            {err}
+          </div>
+        )}
       </div>
     </div>
   )

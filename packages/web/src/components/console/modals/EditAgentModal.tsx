@@ -25,6 +25,9 @@ import {
   agentLabel,
   POOL_LABEL,
   POOL_PLACEMENT,
+  groupPlacementValue,
+  groupSetIdOf,
+  type MemberSetRow,
   isPoolPlacementKind,
   placementValueOf,
   type Agent,
@@ -97,7 +100,17 @@ export default function EditAgentModal({
   onClose: () => void
 }) {
   const acpRegistry = useAcpRegistry()
-  const { updateAgent, moveAgent, saveSharing, saveAgentCallPolicy, daemons, agents } = useConsoleData()
+  const {
+    updateAgent,
+    moveAgent,
+    saveSharing,
+    saveAgentCallPolicy,
+    daemons,
+    agents,
+    memberSets,
+    memberSetsLoading,
+    orgSetIds
+  } = useConsoleData()
   // Only owners may change organization entries, so only they get a link into
   // Organization settings from the read-only "From organization" group (§8.2);
   // other members see the group and its explanation alone.
@@ -110,8 +123,19 @@ export default function EditAgentModal({
   const initialDisplayName = useRef(agent.displayName ?? '')
   const [runtime, setRuntime] = useState(agent.runtime)
   const initialRuntime = useRef(agent.runtime)
-  const [daemonId, setDaemonId] = useState(agent.daemon === '—' ? '' : agent.daemon)
-  const initialDaemonId = useRef(agent.daemon === '—' ? '' : agent.daemon)
+  // The row's `daemon` cannot tell Cloud from one of the org's groups — only the set id plus the
+  // org's own list can (daemon-groups.md §2) — so seed through the same mapping the reload uses.
+  const initialPlacementValue =
+    placementValueOf(
+      {
+        placementKind: agent.placementKind,
+        daemonId: agent.daemon === '—' || agent.daemon === POOL_PLACEMENT ? null : agent.daemon,
+        setId: agent.setId
+      },
+      orgSetIds
+    ) ?? ''
+  const [daemonId, setDaemonId] = useState(initialPlacementValue)
+  const initialDaemonId = useRef(initialPlacementValue)
   const [model, setModel] = useState('')
   const initialModel = useRef('')
   const [outputMode, setOutputMode] = useState<OutputMode | ''>('')
@@ -177,8 +201,17 @@ export default function EditAgentModal({
 
   // Prefill from the raw spec (GET /agents/:id) — the UI `Agent` drops the exact
   // runtime configuration and placement fields this modal edits.
+  //
+  // Waits for the group list, because resolving a placement is the one thing this prefill cannot
+  // redo: it happens once and seeds BOTH the picker's value and the ref every later change is
+  // compared against. Telling a group from Cloud needs the org's own set ids, and without them
+  // `placementValueOf` answers Cloud by design — so resolving early would leave a group-placed
+  // agent reading as Cloud forever, and make a real group-to-Cloud move look like no change at
+  // all and submit nothing. The form is behind its spinner until `loaded`, so this costs nothing
+  // visible. `memberSetsLoading` is false in mock mode and after a failed fetch, where an empty
+  // list IS the right answer.
   useEffect(() => {
-    if (fetched.current) return
+    if (fetched.current || memberSetsLoading) return
     fetched.current = true
     fetchAgentDto(agent.id).then(
       (dto) => {
@@ -189,7 +222,7 @@ export default function EditAgentModal({
         initialRuntime.current = dto.runtime ?? ''
         // Through the SAME mapping the list projection uses, so a pool agent reloads as the pool
         // rather than as unplaced — `daemonId` is null for it by design.
-        const placement = placementValueOf(dto) ?? ''
+        const placement = placementValueOf(dto, orgSetIds) ?? ''
         setDaemonId(placement)
         initialDaemonId.current = placement
         setModel(dto.model ?? '')
@@ -228,7 +261,9 @@ export default function EditAgentModal({
         setLoaded(true)
       }
     )
-  }, [agent.id])
+    // Re-runs only to pick up the moment the group list finishes loading; `fetched` latches it to
+    // one fetch, so this cannot double-fetch.
+  }, [agent.id, memberSetsLoading])
 
   // An unplaced agent defaults to Cloud, then the first placement-ready local daemon.
   const autofilledDaemon = useRef(false)
@@ -295,7 +330,18 @@ export default function EditAgentModal({
     return () => el.removeEventListener('scroll', sync)
   }, [loaded])
 
-  const daemon = daemons.find((d) => d.daemonId === daemonId)
+  const moveReady = (d: (typeof daemons)[number] | undefined) =>
+    !!d && d.status === 'online' && d.caps.features.includes('agent-move-v1')
+  // The group the picker currently names, if any — the one thing `daemonId` alone cannot say.
+  const selectedGroupId = groupSetIdOf(daemonId)
+  const selectedGroup = memberSets.find((group) => group.setId === selectedGroupId)
+  const memberOf = (group: MemberSetRow | undefined) =>
+    group && daemons.find((d) => group.memberDaemonIds.includes(d.daemonId) && moveReady(d))
+  const selectedGroupServing = memberOf(selectedGroup) !== undefined
+  // The daemon whose reported CAPABILITIES the form reads (runtimes, models, sandbox). For a group
+  // that is one live member standing in for the set — the same one the server would pick — exactly
+  // as the pool has always been probed. It is never the placement.
+  const daemon = selectedGroup ? memberOf(selectedGroup) : daemons.find((d) => d.daemonId === daemonId)
   const sourceDaemon = daemons.find((d) => d.daemonId === initialDaemonId.current)
   const daemonChanged = daemonId !== initialDaemonId.current
   const initialPlacement = daemonChanged && !initialDaemonId.current
@@ -311,8 +357,6 @@ export default function EditAgentModal({
     ? selectedSandboxRequired || (daemon?.caps.features.includes('sandbox') ?? false)
     : sandboxSupported
   const effectiveRunInSandbox = selectedSandboxRequired || (selectedSandboxSupported && runInSandbox)
-  const moveReady = (d: (typeof daemons)[number] | undefined) =>
-    !!d && d.status === 'online' && d.caps.features.includes('agent-move-v1')
   const daemonChoices = editAgentDaemonChoices(daemons, daemonId, initialDaemonId.current)
   const poolServing = daemons.some((candidate) => candidate.pool && moveReady(candidate))
   const daemonOptions: DaemonSelectOption[] = [
@@ -324,7 +368,7 @@ export default function EditAgentModal({
             value: POOL_PLACEMENT,
             label: POOL_LABEL,
             detail: poolServing ? 'Model usage included — no API key needed.' : 'Cloud is currently unavailable.',
-            pool: true,
+            kind: 'pool' as const,
             disabled: initialDaemonId.current !== POOL_PLACEMENT && !poolServing
           }
         ]
@@ -338,8 +382,24 @@ export default function EditAgentModal({
           }
         ]
       : []),
+    // The org's own groups sit with Cloud: same kind of target, same promise — lose any one member
+    // and the duty re-grants to another (daemon-groups.md §2). A group with nothing serving stays
+    // listed but disabled, unless it is where the agent already is.
+    ...memberSets.map((group) => {
+      const serving = group.memberDaemonIds.some((id) => moveReady(daemons.find((d) => d.daemonId === id)))
+      const current = groupPlacementValue(group.setId) === initialDaemonId.current
+      return {
+        value: groupPlacementValue(group.setId),
+        label: group.name,
+        detail: serving
+          ? `${group.memberDaemonIds.length} daemon${group.memberDaemonIds.length === 1 ? '' : 's'} — any one of them can serve this agent.`
+          : 'No daemon in this group is serving right now.',
+        kind: 'group' as const,
+        disabled: !current && !serving
+      }
+    }),
     ...(!initialDaemonId.current ? [{ value: '', label: 'No daemon', detail: 'Leave this agent inactive.' }] : []),
-    ...(daemonId && !daemon
+    ...(daemonId && !daemon && !selectedGroup && daemonId !== POOL_PLACEMENT
       ? [
           {
             value: daemonId,
@@ -523,13 +583,16 @@ export default function EditAgentModal({
         setErr(`Confirm that ${sourceDaemon?.name ?? 'the source daemon'} is permanently stopped.`)
         return
       }
-      // The pool is a target, not a member: ready when any live member could serve.
-      const targetReady = daemonId === POOL_PLACEMENT ? poolServing : moveReady(daemon)
+      // A set is a target, not a member: ready when any live member could serve it.
+      const targetReady =
+        daemonId === POOL_PLACEMENT ? poolServing : selectedGroup ? selectedGroupServing : moveReady(daemon)
       if (!targetReady) {
         setErr(
           daemonId === POOL_PLACEMENT
             ? 'Cloud has no online member right now; try again shortly.'
-            : 'Choose an online daemon that supports agent moves.'
+            : selectedGroup
+              ? `No daemon in ${selectedGroup.name} is serving right now; try again shortly.`
+              : 'Choose an online daemon that supports agent moves.'
         )
         return
       }
@@ -585,7 +648,12 @@ export default function EditAgentModal({
         await saveAgentCallPolicy(agent.id, body)
       }
       if (placementRequested) {
-        const target = daemonId === POOL_PLACEMENT ? { kind: 'pool' as const } : { kind: 'daemon' as const, daemonId }
+        const target =
+          daemonId === POOL_PLACEMENT
+            ? { kind: 'pool' as const }
+            : selectedGroup
+              ? { kind: 'set' as const, setId: selectedGroup.setId }
+              : { kind: 'daemon' as const, daemonId }
         await moveAgent(agent.id, target, forceMove ? { force: true } : undefined)
       }
       // Sharing uses canManageSharing and may intentionally remove this editor's
@@ -666,7 +734,7 @@ export default function EditAgentModal({
                 </div>
                 <div className="fld desktop:col-span-2">
                   <div className="flex items-center justify-between gap-3">
-                    <span className="fldlbl">Daemon</span>
+                    <span className="fldlbl">Runs on</span>
                     {!!initialDaemonId.current && !daemonChanged && (
                       <button
                         type="button"
@@ -949,6 +1017,7 @@ export default function EditAgentModal({
                       effectivePeerIds={inboundEffectivePeerIds}
                       peers={peers}
                       daemons={daemons}
+                      groups={memberSets}
                       target={target}
                       editable={callVisibilityEditable}
                       busy={saving}
@@ -965,6 +1034,7 @@ export default function EditAgentModal({
                       effectivePeerIds={outboundEffectivePeerIds}
                       peers={peers}
                       daemons={daemons}
+                      groups={memberSets}
                       target={target}
                       editable={callVisibilityEditable}
                       busy={saving}
