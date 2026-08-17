@@ -14,7 +14,7 @@ import {
   MAX_SKILL_SCRIPTS,
   MAX_SKILL_SCRIPT_BYTES,
   MAX_SKILL_TREE_FILE_BYTES
-} from '../src/agents/memory-dreamer.js'
+} from '../src/dream/dreamer.js'
 
 describe('dream exploration prompt + materialized inputs', () => {
   it('keeps the policy in the system prompt and points the model at input files, not inline data', () => {
