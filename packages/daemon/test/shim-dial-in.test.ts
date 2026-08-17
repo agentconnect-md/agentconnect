@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { Backoff, ClientTransport } from '@agentconnect.md/connection'
+import { Backoff, ClientTransport, DEFAULT_BACKOFF_BASE_MS } from '@agentconnect.md/connection'
 import { MAX_FRAME_BYTES } from '@agentconnect.md/protocol'
 import { WebSocket } from 'ws'
 import { ShimClient, type ShimTransport } from '../src/shim/client.js'
-import { ShimDialer, type ShimDialerDeps } from '../src/shim/dialer.js'
+import { ShimDialer, STARTUP_DIAL_BACKOFF, type ShimDialerDeps } from '../src/shim/dialer.js'
 import { ShimServer } from '../src/shim/server.js'
 import { ShimSession } from '../src/shim/session.js'
 import { noopClusterMetrics, type ClusterMetrics } from '../src/metrics/cluster-metrics.js'
@@ -137,9 +137,16 @@ function scriptedDialer(deps: {
   clock: VirtualClock
   metrics?: ClusterMetrics
   warnings?: string[]
+  /** Dials refused before the sandbox answers — a pod whose container started but whose shim is not listening. */
+  refusals?: number
+  /** Injected backoff; `'shipped'` runs the real per-phase policies instead of {@link pausedBackoff}. */
+  backoff?: NonNullable<ShimDialerDeps['backoff']> | 'shipped'
+  onConnection?: (connection: ShimConnection) => void
 }): { dialer: ShimDialer; peers: ScriptedPeer[] } {
   const peers: ScriptedPeer[] = []
+  let refusals = deps.refusals ?? 0
   const dial: NonNullable<ShimDialerDeps['dial']> = async () => {
+    if (refusals-- > 0) throw new Error('connect ECONNREFUSED')
     let onMessage: (text: string) => void = () => {}
     let onClose: (code: number, reason: string) => void = () => {}
     const peer: ScriptedPeer = {
@@ -168,8 +175,9 @@ function scriptedDialer(deps: {
     dial,
     clock: deps.clock,
     now: () => deps.clock.now(),
-    backoff: pausedBackoff,
+    ...(deps.backoff === 'shipped' ? {} : { backoff: deps.backoff ?? pausedBackoff }),
     ...(deps.metrics ? { metrics: deps.metrics } : {}),
+    ...(deps.onConnection ? { onConnection: deps.onConnection } : {}),
     log: { info: () => {}, warn: (message) => deps.warnings?.push(message) }
   })
   dialers.push(dialer)
@@ -426,6 +434,73 @@ describe('dial-in identity handshake', () => {
     expect(dialer.authorize({ credential: second.issuedCredential, generation: 2, capability: 'materialize' }).ok).toBe(
       true
     )
+  })
+})
+
+/** How long a supervised dial waits between attempts, which is not one question but two. */
+describe('dial pacing', () => {
+  const bindsAsPodOne: PodIdentityVerifier = {
+    reviewToken: async () => ({ authenticated: true, podName: 'sandbox-pod-1', podUid: 'pod-uid-1' })
+  }
+
+  it('retries a refused first dial on a startup-sized delay, not a reconnect-sized one', async () => {
+    // A pod reports Ready when its container process starts, so the first dial of a resume is
+    // routinely refused while the shim is still binding its port — a wait measured in hundreds
+    // of milliseconds, which the shared reconnect base turned into a guaranteed 1-2s per wake.
+    const clock = new VirtualClock()
+    const warnings: string[] = []
+    const { dialer, peers } = scriptedDialer({
+      refusals: 1,
+      answer: (_hello, peer) => peer.reply({ type: 'shim/identity', token: 'projected-token' }),
+      verifier: bindsAsPodOne,
+      clock,
+      backoff: 'shipped',
+      warnings
+    })
+
+    const startedAt = clock.now()
+    // Horizon over any first retry this could produce and far under the dial deadline, so a
+    // regression to the coarse default is fired and fails an assertion instead of the test timeout.
+    const connection = await runVirtual(clock, dialer.connect(SCRIPTED_ENDPOINT, record(), 30_000), 2_500)
+
+    expect(connection.binding).toMatchObject({ podName: 'sandbox-pod-1', generation: 1 })
+    // The refused dial never reached a peer, so the bind is the second attempt.
+    expect(peers).toHaveLength(1)
+    const delays = warnings.map((line) => Number(/retrying in (\d+)ms/.exec(line)?.[1]))
+    expect(delays).toHaveLength(1)
+    expect(delays[0]).toBeGreaterThanOrEqual(STARTUP_DIAL_BACKOFF.baseMs ?? DEFAULT_BACKOFF_BASE_MS)
+    // Sub-200ms is the property: base plus its 0-100% jitter must stay far below the shared default.
+    expect(delays[0]).toBeLessThan(200)
+    expect(clock.now() - startedAt).toBeLessThan(200)
+  })
+
+  it('keeps the coarse shared delay for a reconnect once a channel has bound', async () => {
+    // A peer that went away after answering is the case the shared default is right for: the pod
+    // is not starting, something ended an established channel, and redialing it hard helps nobody.
+    const clock = new VirtualClock()
+    const bound: ShimConnection[] = []
+    let resolveRebound: () => void = () => {}
+    const rebound = new Promise<void>((resolve) => (resolveRebound = resolve))
+    const { dialer } = scriptedDialer({
+      answer: (_hello, peer) => peer.reply({ type: 'shim/identity', token: 'projected-token' }),
+      verifier: bindsAsPodOne,
+      clock,
+      backoff: 'shipped',
+      onConnection: (connection) => {
+        bound.push(connection)
+        if (bound.length === 2) resolveRebound()
+      }
+    })
+
+    const first = await runVirtual(clock, dialer.connect(SCRIPTED_ENDPOINT, record(), 30_000), 900)
+    const droppedAt = clock.now()
+    first.close('force reconnect')
+    // Horizon above the coarse delay and under the dial deadline: only the reconnect wait is skipped.
+    await runVirtual(clock, rebound, 5_000)
+
+    expect(bound).toHaveLength(2)
+    expect(bound[1]).not.toBe(first)
+    expect(clock.now() - droppedAt).toBeGreaterThanOrEqual(DEFAULT_BACKOFF_BASE_MS)
   })
 })
 

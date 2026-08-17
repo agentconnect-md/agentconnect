@@ -1,5 +1,5 @@
 import { isAbsolute, normalize } from 'node:path'
-import { Backoff, ClientTransport, systemClock, type Clock } from '@agentconnect.md/connection'
+import { Backoff, ClientTransport, systemClock, type BackoffOpts, type Clock } from '@agentconnect.md/connection'
 import { noopClusterMetrics, type ClusterMetrics } from '../metrics/cluster-metrics.js'
 import { ShimBindingRegistry, type Binding, type SpawnRecord } from './binding.js'
 import type { PodIdentityVerifier, ShimConnection } from './listener.js'
@@ -13,13 +13,19 @@ import {
 } from './protocol.js'
 import type { ShimTransport } from './client.js'
 
+/** What a supervised dial is waiting on: a pod whose listener is still coming up, or a peer that went away. */
+export type ShimDialPhase = 'startup' | 'reconnect'
+
+/** Startup pacing: the pod was created moments ago, so a refusal means "not listening yet" and is met in ~100ms. */
+export const STARTUP_DIAL_BACKOFF: BackoffOpts = { baseMs: 100 }
+
 export interface ShimDialerDeps {
   verifier: PodIdentityVerifier
   now?: () => number
   clock?: Clock
   dial?: (url: string, opts: { subprotocol: string; path: string }) => Promise<ShimTransport>
-  /** Per-dial reconnect backoff factory. Injected so tests reconnect in milliseconds. */
-  backoff?: () => Backoff
+  /** Per-phase backoff factory. Injected so tests dial and reconnect in milliseconds. */
+  backoff?: (phase: ShimDialPhase) => Backoff
   credentialTtlMs?: number
   metrics?: ClusterMetrics
   log: { info: (message: string) => void; warn: (message: string) => void }
@@ -126,8 +132,10 @@ export class ShimDialer {
 
   private async supervise(dial: SupervisedDial, timeoutMs: number): Promise<void> {
     const deadline = this.clock.now() + timeoutMs
-    const backoff = this.deps.backoff?.() ?? new Backoff()
-    let first = true
+    // Two policies, because a refused dial means something different before the first bind than after it.
+    const startup = this.deps.backoff?.('startup') ?? new Backoff(STARTUP_DIAL_BACKOFF)
+    const reconnect = this.deps.backoff?.('reconnect') ?? new Backoff()
+    let everBound = false
     while (!dial.stopped) {
       try {
         const { connection, closed } = await this.dialAndBind(dial, timeoutMs)
@@ -136,8 +144,8 @@ export class ShimDialer {
           return
         }
         dial.current = connection
-        backoff.reset()
-        first = false
+        reconnect.reset()
+        everBound = true
         if (!dial.readySettled) {
           dial.readySettled = true
           dial.resolveReady(connection)
@@ -151,11 +159,11 @@ export class ShimDialer {
         this.registry.revokeIssued(connection.issuedCredential)
         if (dial.stopped) return
         this.deps.onConnectionLost?.(dial.record.agentId, `shim channel closed (${close.code})`)
-        const delay = close.reason === 'rebinding' ? 0 : backoff.next()
+        const delay = close.reason === 'rebinding' ? 0 : reconnect.next()
         if (delay > 0) await this.delay(delay)
       } catch (error) {
         if (dial.stopped) return
-        if (this.clock.now() >= deadline && first) {
+        if (this.clock.now() >= deadline && !everBound) {
           const failure = new Error(`could not connect to sandbox shim: ${(error as Error).message}`)
           if (!dial.readySettled) {
             dial.readySettled = true
@@ -165,7 +173,7 @@ export class ShimDialer {
           if (this.dials.get(dial.record.agentId) === dial) this.dials.delete(dial.record.agentId)
           return
         }
-        const delay = backoff.next()
+        const delay = everBound ? reconnect.next() : startup.next()
         this.deps.log.warn(`shim: sandbox dial failed, retrying in ${delay}ms (${(error as Error).message})`)
         await this.delay(delay)
       }
