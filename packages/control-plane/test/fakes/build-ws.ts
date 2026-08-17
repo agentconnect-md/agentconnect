@@ -61,6 +61,7 @@ import { FrameRouter } from '../../src/ws/handlers/index.js'
 import { DaemonConnection } from '../../src/ws/connection.js'
 import type { DaemonWsDeps } from '../../src/ws/deps.js'
 import { InMemorySessionEventSink } from '../../src/events/sink.js'
+import { SessionUsageWriter } from '../../src/usage/writer.js'
 import { DaemonId, OrgId } from '../../src/domain/ids.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import { FakeClock } from './fake-clock.js'
@@ -311,7 +312,7 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
     placementResolver,
     session: repos.session,
     events: new InMemorySessionEventSink(),
-    sessionUsage: repos.sessionUsage,
+    usageWriter: new SessionUsageWriter(repos.sessionUsage),
     integration: repos.integration,
     integrationChannel: repos.integrationChannel,
     agentMutations: new AgentMutationGate(),

@@ -28,6 +28,7 @@ import {
   MAX_WORKSPACE_STAGE_PATH_BYTES,
   WorkspaceGitWriteReason,
   TaskState,
+  UsageReport,
   MAX_GIT_REPO_LENGTH,
   MAX_ENVIRONMENT_VALUE_LENGTH,
   normalizeGitHubSkillSource,
@@ -3255,6 +3256,16 @@ export const AgentTasksDto = z.object({
  *  now; `starting` = the resume is in flight, poll the read; `unsupported` = nothing to wake (a
  *  machine-placed agent, or a daemon that runs no sandboxes). */
 export const AgentWakeDto = z.object({ state: z.enum(['running', 'starting', 'unsupported']) })
+
+// ── usage report ingress (the non-daemon adapter of the report interface) ──
+/** The batch body of the service-authenticated usage endpoint. Its element IS the
+ *  daemon EVT's payload schema, deliberately: one payload, two authenticated
+ *  adapters, one writer — reusing the wire schema is what keeps them from drifting.
+ *  The report never names its own source; the adapter stamps it. */
+export const UsageReportBatchBody = z.object({
+  reports: z.array(UsageReport).min(1).max(1000)
+})
+export type UsageReportBatchBodyT = z.infer<typeof UsageReportBatchBody>
 
 // ── usage dashboard (aggregated from the persisted per-session usage store) ──
 export const UsageRange = z.enum(['d1', 'd7', 'd30', 'd90'])

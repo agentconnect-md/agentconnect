@@ -86,8 +86,10 @@ describe('usage/report handler — persists per-session token usage', () => {
     expect(row!.inputTokens).toBe(3600)
     expect(row!.cachedReadTokens).toBe(512)
     expect(row!.costAmount).toBeCloseTo(0.41)
+    // The source is stamped from the authenticated adapter, not the payload.
+    expect(row!.source).toBe('daemon')
     expect(await prisma.sessionSpend.findFirst({ where: { agentId: AGENT_A, sessionId: 'acp-sess-1' } })).toMatchObject(
-      { model: 'claude-sonnet-4-5', cumulativeTotalTokens: 4820 }
+      { model: 'claude-sonnet-4-5', cumulativeTotalTokens: 4820, source: 'daemon' }
     )
 
     // A later turn reports the NEW cumulative total → overwrite, never sum.
@@ -229,7 +231,7 @@ describe('usage/report handler — persists per-session token usage', () => {
     const h = buildWsHarness(prisma)
     const { stub } = await connectReady(h)
     await seedAgent(prisma, AGENT_B)
-    const recordUsage = vi.spyOn(h.deps.sessionUsage, 'record')
+    const recordUsage = vi.spyOn(h.deps.usageWriter, 'record')
     const beginMutation = h.deps.agentMutations.tryBeginMutation.bind(h.deps.agentMutations)
     let finish!: () => void
     const finished = new Promise<void>((resolve) => {
@@ -460,6 +462,7 @@ describe('GET /usage — aggregates the persisted usage store by agent over a ra
     const input = {
       agentId: AgentId(AGENT_A),
       sessionId: 'dup',
+      source: 'daemon' as const,
       lastActivityAt: at,
       usage: { totalTokens: 100, costAmount: 1, costCurrency: 'USD' }
     }
@@ -498,6 +501,7 @@ describe('GET /usage — aggregates the persisted usage store by agent over a ra
       await repo.record({
         agentId: AgentId(AGENT_A),
         sessionId: 'corr',
+        source: 'daemon',
         lastActivityAt: min(m),
         usage: { costAmount: cost, costCurrency: 'USD' }
       })
@@ -530,12 +534,14 @@ describe('GET /usage — aggregates the persisted usage store by agent over a ra
     await repo.record({
       agentId: AgentId(AGENT_A),
       sessionId: 'span-win',
+      source: 'daemon',
       lastActivityAt: new Date(now - 40 * DAY_MS),
       usage: { costAmount: 10, costCurrency: 'USD' }
     })
     await repo.record({
       agentId: AgentId(AGENT_A),
       sessionId: 'span-win',
+      source: 'daemon',
       lastActivityAt: new Date(now - 5 * 60_000),
       usage: { costAmount: 11, costCurrency: 'USD' }
     })

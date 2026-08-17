@@ -1700,7 +1700,11 @@ export interface SessionUsageCounts {
   costCurrency?: string
 }
 
-/** One `usage/report`: the session's cumulative usage snapshot (latest-wins upsert). */
+/** Which authenticated ingress metered the session — stamped by the adapter that
+ *  accepted the report, never self-reported by the payload. */
+export type UsageSource = 'daemon' | 'gateway'
+
+/** One usage report: the session's cumulative usage snapshot (latest-wins upsert). */
 export interface SessionUsageInput {
   sessionId: string // ACP session id (agent-assigned; NOT a wire UUID)
   agentId: AgentId
@@ -1708,6 +1712,7 @@ export interface SessionUsageInput {
   channel?: string | null
   /** Model observed for this cumulative report's delta; null/absent ⇒ unknown. */
   model?: string | null
+  source: UsageSource
   lastActivityAt: Date
   usage: SessionUsageCounts
 }
@@ -1763,7 +1768,9 @@ export interface UsageAggregate {
 }
 
 export interface SessionUsageRepo {
-  /** Upsert a session's cumulative usage (idempotent on `(agentId, sessionId)`). */
+  /** Upsert a session's cumulative usage (idempotent on `(agentId, sessionId)`).
+   *  A LATE report still writes its own timeline checkpoint idempotently, but never
+   *  rolls the snapshot back to an older `lastActivityAt`. */
   record(input: SessionUsageInput): Promise<void>
   /** Read one session's latest cumulative usage snapshot. */
   get(agentId: AgentId, sessionId: string): Promise<SessionUsageCounts | null>

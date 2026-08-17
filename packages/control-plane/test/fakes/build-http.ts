@@ -89,6 +89,7 @@ import { AgentMutationGate } from '../../src/orchestrator/agentMutationGate.js'
 import { ConnectionRegistry } from '../../src/ws/registry.js'
 import { RelayRegistry } from '../../src/ws/relay-registry.js'
 import { InMemorySessionEventSink } from '../../src/events/sink.js'
+import { SessionUsageWriter } from '../../src/usage/writer.js'
 import { HookService } from '../../src/hooks/hook.service.js'
 import { buildHttpServer } from '../../src/http/server.js'
 import type { HttpDeps } from '../../src/http/deps.js'
@@ -270,6 +271,7 @@ export function buildHttpApp(
   const webchatMcpAccessGrantRepo = new PgWebchatMcpAccessGrantRepo(prisma)
   const webchatMcpOperationRepo = new PgWebchatMcpOperationRepo(prisma)
   const sessionRepo = new PgSessionRepo(prisma)
+  const sessionUsageRepo = new PgSessionUsageRepo(prisma)
   const skillSourceRepo = new PgSkillSourceRepo(prisma)
   const organizationKnowledgeRepo = new PgOrganizationKnowledgeRepo(prisma)
   // The organization environment registry + its ONE cipher seam, shared by the
@@ -389,7 +391,7 @@ export function buildHttpApp(
       hookSecret: hookSecretStore,
       relay: new PgRelayRepo(prisma),
       session: sessionRepo,
-      sessionUsage: new PgSessionUsageRepo(prisma),
+      sessionUsage: sessionUsageRepo,
       webchatConversation: webchatConversationRepo,
       user: new PgUserRepo(prisma, !waitlistMode),
       org: orgRepo,
@@ -487,6 +489,7 @@ export function buildHttpApp(
     webchatTokens: new WebchatTokenService(TEST_API_KEY_PEPPER),
     inviteLinks,
     waitlist,
+    usageWriter: new SessionUsageWriter(sessionUsageRepo),
     events,
     mcpRateLimit: new McpRateLimiter(clock),
     sharedTx: <T>(fn: () => Promise<T>) => rootPrisma.$transaction((tx) => runWithSharedTx(tx, fn)),

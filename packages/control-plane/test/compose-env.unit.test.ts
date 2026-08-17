@@ -35,4 +35,11 @@ describe('compose.yaml service environment', () => {
   it('passes SOCIAL_PROVIDERS to the console, which owns the decision', () => {
     expect(serviceEnv('web')).toContain('SOCIAL_PROVIDERS')
   })
+
+  it('passes the usage batch-ingress credential through without inventing a default', () => {
+    // Bare passthrough, NOT `=${...:-default}`: a stock default would stand up an
+    // authenticated write endpoint, with a published token, on every local stack.
+    expect(serviceEnv('control-plane')).toContain('USAGE_INGEST_TOKEN')
+    expect(compose).not.toMatch(/USAGE_INGEST_TOKEN\s*=/)
+  })
 })

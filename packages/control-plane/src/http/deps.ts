@@ -74,6 +74,7 @@ import type { HttpBotOrchestrator } from '../orchestrator/httpBot.js'
 import type { CollabRoutesService } from '../orchestrator/collabRoutes.service.js'
 import type { AgentMutationGate } from '../orchestrator/agentMutationGate.js'
 import type { SessionEventSink } from '../events/sink.js'
+import type { UsageWriter } from '../usage/writer.js'
 import type { HumanAuthConfig } from './plugins/auth.js'
 import type { SkillRegistrySearcher } from './skills-registry.js'
 import type { PublicRepoResolver } from '../github/public-repo.js'
@@ -126,6 +127,9 @@ export interface HttpServerConfig extends HumanAuthConfig {
    *  enforces the gate and `POST /orgs` requires an activated user; false ⇒ the OSS
    *  behavior (everyone is `active`). */
   WAITLIST_MODE?: boolean
+  /** Deployment-shared service secret for the batch usage ingress. Unset ⇒ that
+   *  route is not registered and the daemon EVT is the only usage ingress. */
+  USAGE_INGEST_TOKEN?: string
 }
 
 export interface HttpDeps {
@@ -320,6 +324,8 @@ export interface HttpDeps {
   inviteLinks: OrgInviteLinkService
   /** Closed-beta admission: `/me/access` status, self-join, join-link redeem (waitlist-and-login.md). */
   waitlist: WaitlistService
+  /** The shared usage report interface — this plane is its `gateway`-source adapter. */
+  usageWriter: UsageWriter
   events: SessionEventSink
   /** Per-credential sliding-window limits for MCP tool calls (agent-assistant.md
    *  §6.5). ONE instance per composition root — the MCP plugin is mounted twice

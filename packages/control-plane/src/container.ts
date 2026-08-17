@@ -135,6 +135,7 @@ import { DaemonRegistryService } from './registry/registryService.js'
 import { DaemonReleaseResolver } from './registry/daemonRelease.js'
 
 import { InMemorySessionEventSink } from './events/sink.js'
+import { SessionUsageWriter } from './usage/writer.js'
 import { createIconStore } from './icons/icon-store.js'
 import type { IconUrlBases } from './agents/agent-icon.js'
 
@@ -542,6 +543,10 @@ export function buildContainer(
       : undefined
 
   const events = new InMemorySessionEventSink()
+
+  // ONE usage report interface for both authenticated ingresses (the daemon EVT and
+  // the service batch endpoint), so neither can drift into its own storage semantics.
+  const usageWriter = new SessionUsageWriter(repos.sessionUsage)
 
   // C5 lease broker (ref-only, no plaintext).
   const secrets = new SecretsBrokerService(secretsProvider, repos.lease, clock)
@@ -1104,6 +1109,7 @@ export function buildContainer(
     webchatTokens,
     inviteLinks,
     waitlist,
+    usageWriter,
     events,
     mcpRateLimit: new McpRateLimiter(clock),
     remoteGrantAuth,
@@ -1400,7 +1406,7 @@ export function buildContainer(
     launch: repos.launch,
     visibilityPush,
     events,
-    sessionUsage: repos.sessionUsage,
+    usageWriter,
     integration: repos.integration,
     bot: repos.bot,
     githubInstallation: repos.githubInstallation,
@@ -1805,6 +1811,7 @@ export function httpServerConfigFrom(
     ...(config.CORS_ORIGIN !== undefined ? { CORS_ORIGIN: config.CORS_ORIGIN } : {}),
     ...(config.PUBLIC_WEB_URL ? { PUBLIC_WEB_URL: config.PUBLIC_WEB_URL } : {}),
     ...(config.PUBLIC_RELAY_URL ? { PUBLIC_RELAY_URL: config.PUBLIC_RELAY_URL } : {}),
+    ...(config.USAGE_INGEST_TOKEN ? { USAGE_INGEST_TOKEN: config.USAGE_INGEST_TOKEN } : {}),
     ...(config.S3_PUBLIC_BASE_URL ? { S3_PUBLIC_BASE_URL: config.S3_PUBLIC_BASE_URL } : {}),
     RELAY_STALE_MS: relayStaleMs
   }

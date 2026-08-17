@@ -143,7 +143,7 @@ function build(): Built {
     agent: {} as DaemonWsDeps['agent'],
     session: {} as DaemonWsDeps['session'],
     events: {} as DaemonWsDeps['events'],
-    sessionUsage: {} as DaemonWsDeps['sessionUsage'],
+    usageWriter: {} as DaemonWsDeps['usageWriter'],
     integration: {} as DaemonWsDeps['integration'],
     integrationChannel: {} as DaemonWsDeps['integrationChannel'],
     agentMutations: new AgentMutationGate(),
