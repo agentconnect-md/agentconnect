@@ -213,6 +213,16 @@ import { GithubFinalPoster, GithubReplyCollector, type GithubCommentAttribution 
 import { finalizeGithubTurn, isGithubFinalChunk, onGithubUpdate } from './platforms/github/turn-output.js'
 import { GithubReviewClient, type GithubReviewEffect } from './github/review.js'
 import { GithubReviewOrchestrator, type GithubReviewHost } from './github/review-orchestrator.js'
+import {
+  collectGithubQueueCandidates,
+  combineCoordinationWaits,
+  githubReviewBatchSettleStep,
+  planGithubReviewBatchCoalesce,
+  planGithubRevisionAdmission,
+  planGithubRevisionAdmissionEffects,
+  planQueuedGithubRevisionRemovals,
+  selectGithubReviewBatchLeader
+} from './github/queue-admission.js'
 import { resolveRuntimeCatalog, type ResolvedRuntimeCatalog } from './runtimes/registry.js'
 import { installedRuntimeCatalog, installedRuntimes, resolveCommandPath } from './runtimes/probe.js'
 import { startK8sRuntimePlane, type K8sRuntimePlane } from './k8s/runtime-plane.js'
@@ -462,28 +472,20 @@ import {
   MAX_TOTAL_TURNS_PER_WINDOW
 } from './daemon/loop-guard-scope.js'
 import {
-  compareGithubPullRevisionRecency,
   foreignHookDispatch,
   githubDeletedHookEvent,
   githubFallbackAllowed,
   githubHookCoordinates,
   githubPullRequestLane,
-  githubPullRevisionStream,
-  githubReviewBatchStream,
   githubReviewResultForCompletion,
   githubThreadWorktreeCleanup,
   hookReportOwner,
-  renderGithubReviewBatchPrompt,
-  GITHUB_REVIEW_BATCH_MAX_COMMENTS,
-  GITHUB_REVIEW_BATCH_MAX_WAIT_MS,
-  GITHUB_REVIEW_BATCH_QUIET_MS,
   MAX_HOOK_REPORT_INFLIGHT,
   type ActiveGithubReplyBatchMeta,
   type ActiveGithubTurnMeta,
   type GithubQueueCandidate,
   type GithubReplyTarget,
   type GithubRevisionAdmissionPlan,
-  type GithubReviewBatch,
   type GithubThreadWorktreeCleanup,
   type HookCompletionOwner,
   type HookDispatchContext,
@@ -8821,52 +8823,16 @@ export class Daemon {
   }
 
   private githubQueueCandidates(): GithubQueueCandidate[] {
-    const candidates: GithubQueueCandidate[] = []
-    for (const [key, entry] of this.activeGateEntries) candidates.push({ key, entry, state: 'active' })
-    for (const [key, queue] of this.serialQueue) {
-      for (const entry of queue) candidates.push({ key, entry, state: 'queued' })
-    }
-    return candidates
+    return collectGithubQueueCandidates(this.activeGateEntries, this.serialQueue)
   }
 
-  /** Pick the newest relay-fired revision across every session key in one trusted GitHub lane. */
   private githubRevisionAdmissionPlan(key: string, incoming: QueueEntry): GithubRevisionAdmissionPlan | undefined {
-    const stream = githubPullRevisionStream(
-      incoming.hookContext,
-      githubHookCoordinates(incoming.agentId, incoming.msg, incoming.integrationId)
-    )
-    if (!stream) return undefined
-    const revisions = [
-      ...this.githubQueueCandidates().filter(
-        (candidate) =>
-          !candidate.entry.cancelledReason &&
-          githubPullRevisionStream(
-            candidate.entry.hookContext,
-            githubHookCoordinates(candidate.entry.agentId, candidate.entry.msg, candidate.entry.integrationId)
-          ) === stream
-      ),
-      { key, entry: incoming, state: 'incoming' as const }
-    ]
-    const winner = revisions.reduce((latest, candidate) =>
-      compareGithubPullRevisionRecency(candidate.entry.hookContext!, latest.entry.hookContext!) > 0 ? candidate : latest
-    )
-    return {
-      winner,
-      superseded: revisions.filter((candidate) => candidate !== winner)
-    }
+    return planGithubRevisionAdmission(key, incoming, this.githubQueueCandidates())
   }
 
   private removeQueuedGithubRevisions(candidates: readonly GithubQueueCandidate[]): void {
-    const removals = new Map<string, Set<QueueEntry>>()
-    for (const candidate of candidates) {
-      if (candidate.state !== 'queued') continue
-      const entries = removals.get(candidate.key) ?? new Set<QueueEntry>()
-      entries.add(candidate.entry)
-      removals.set(candidate.key, entries)
-    }
-    for (const [key, entries] of removals) {
-      const next = (this.serialQueue.get(key) ?? []).filter((entry) => !entries.has(entry))
-      if (next.length > 0) this.serialQueue.set(key, next)
+    for (const [key, next] of planQueuedGithubRevisionRemovals(candidates, this.serialQueue)) {
+      if (next) this.serialQueue.set(key, next)
       else this.serialQueue.delete(key)
     }
   }
@@ -8892,23 +8858,19 @@ export class Daemon {
   }
 
   private extendGithubCoordinationWait(entry: QueueEntry, waits: readonly Promise<void>[]): void {
-    const pending = [...(entry.coordinationWait ? [entry.coordinationWait] : []), ...waits]
-    if (pending.length > 0) entry.coordinationWait = Promise.all(pending).then(() => undefined)
+    const next = combineCoordinationWaits(entry.coordinationWait, waits)
+    if (next) entry.coordinationWait = next
   }
 
   private applyGithubRevisionAdmissionPlan(plan: GithubRevisionAdmissionPlan, incoming: QueueEntry): boolean {
-    const activeLosers = plan.superseded.filter((candidate) => candidate.state === 'active')
-    const terminalLosers = plan.superseded.filter((candidate) => candidate.state !== 'active')
+    const { terminalLosers, activeLosers, winnerLane, winnerNeedsWait, incomingWins } =
+      planGithubRevisionAdmissionEffects(plan, incoming)
     this.removeQueuedGithubRevisions(terminalLosers)
     this.settleSupersededGithubRevisions(
       terminalLosers.map((candidate) => candidate.entry),
       plan.winner.entry
     )
     const waits: Promise<void>[] = []
-    const winnerLane = githubPullRequestLane(
-      plan.winner.entry.hookContext,
-      githubHookCoordinates(plan.winner.entry.agentId, plan.winner.entry.msg, plan.winner.entry.integrationId)
-    )
     for (const candidate of activeLosers) {
       if (candidate.entry.coordinationWait) waits.push(candidate.entry.coordinationWait)
       const activeDone = this.activeDispatchDoneByKey.get(candidate.key)
@@ -8923,60 +8885,19 @@ export class Daemon {
     if (this.safetyDrainingAgents.has(plan.winner.entry.agentId)) {
       waits.push(this.waitForSafetyDrain(plan.winner.entry.agentId))
     }
-    if (plan.winner.state !== 'active') this.extendGithubCoordinationWait(plan.winner.entry, waits)
-    return plan.winner.entry === incoming
+    if (winnerNeedsWait) this.extendGithubCoordinationWait(plan.winner.entry, waits)
+    return incomingWins
   }
 
   private githubReviewBatchLeader(incoming: QueueEntry): QueueEntry | undefined {
-    const batchStream = githubReviewBatchStream(
-      incoming.hookContext,
-      githubHookCoordinates(incoming.agentId, incoming.msg, incoming.integrationId)
-    )
-    if (!batchStream) return undefined
-    return this.githubQueueCandidates()
-      .map((candidate) => candidate.entry)
-      .filter((candidate) => {
-        const batch = candidate.hookContext?.githubReviewBatch
-        return (
-          !candidate.cancelledReason &&
-          githubReviewBatchStream(
-            candidate.hookContext,
-            githubHookCoordinates(candidate.agentId, candidate.msg, candidate.integrationId)
-          ) === batchStream &&
-          batch !== undefined &&
-          !batch.sealed &&
-          batch.items.length < GITHUB_REVIEW_BATCH_MAX_COMMENTS
-        )
-      })
-      .sort((a, b) => compareGithubPullRevisionRecency(a.hookContext!, b.hookContext!))[0]
+    return selectGithubReviewBatchLeader(incoming, this.githubQueueCandidates())
   }
 
   private coalesceGithubReviewBatch(leader: QueueEntry, follower: QueueEntry): boolean {
-    const leaderHook = leader.hookContext
-    const followerHook = follower.hookContext
-    const leaderBatch = leaderHook?.githubReviewBatch
-    const followerItem = followerHook?.githubReviewBatch?.items[0]
-    if (!leaderHook || !followerHook || !leaderBatch || !followerItem || !leader.inboxId || !follower.inboxId) {
-      return false
-    }
-    if (
-      leaderBatch.sealed ||
-      leaderBatch.items.length >= GITHUB_REVIEW_BATCH_MAX_COMMENTS ||
-      leaderBatch.items.some(
-        (item) => item.reply.reviewThreadRootCommentId === followerItem.reply.reviewThreadRootCommentId
-      )
-    ) {
-      return false
-    }
-    const nextHook: HookDispatchContext = {
-      ...leaderHook,
-      githubReviewBatch: {
-        ...leaderBatch,
-        updatedAt: this.clock.now(),
-        items: [...leaderBatch.items, followerItem]
-      }
-    }
-    const report = this.buildHookReport(followerHook, 'success', { reason: 'coalesced_review_batch' })
+    const plan = planGithubReviewBatchCoalesce(leader, follower, this.clock.now())
+    if (!plan || !leader.inboxId || !follower.inboxId) return false
+    const { nextHook } = plan
+    const report = this.buildHookReport(follower.hookContext!, 'success', { reason: 'coalesced_review_batch' })
     try {
       const committed = this.store.coalesceHookInbox({
         leaderId: leader.inboxId,
@@ -8997,34 +8918,28 @@ export class Daemon {
     this.liveInboxIds.delete(follower.inboxId)
     this.sendHookReport(report, follower.inboxId)
     defaultTurnOutputMetrics.queueCoalesced(follower.msg.platform, 1)
-    this.log.info(
-      `github review batch: coalesced thread ${followerItem.reply.reviewThreadRootCommentId} into review ${leaderBatch.reviewId}`
-    )
+    this.log.info(`github review batch: coalesced thread ${plan.threadRootCommentId} into review ${plan.reviewId}`)
     return true
   }
 
   private async settleGithubReviewBatch(entry: QueueEntry): Promise<void> {
     while (true) {
-      const batch = entry.hookContext?.githubReviewBatch
-      if (!batch) return
-      if (batch.sealed) {
-        if (batch.items.length > 1) entry.githubReply = undefined
+      const step = githubReviewBatchSettleStep(
+        entry.hookContext?.githubReviewBatch,
+        Boolean(entry.cancelledReason),
+        this.clock.now()
+      )
+      if (step.action === 'stop') {
+        if (step.clearReply) entry.githubReply = undefined
         return
       }
-      if (entry.cancelledReason) return
-      const deadline = Math.min(
-        batch.updatedAt + GITHUB_REVIEW_BATCH_QUIET_MS,
-        batch.openedAt + GITHUB_REVIEW_BATCH_MAX_WAIT_MS
-      )
-      const delay = deadline - this.clock.now()
-      if (delay > 0) {
-        await new Promise<void>((resolve) => this.clock.setTimeout(resolve, delay))
+      if (step.action === 'wait') {
+        await new Promise<void>((resolve) => this.clock.setTimeout(resolve, step.delayMs))
         continue
       }
-      const sealed: GithubReviewBatch = { ...batch, sealed: true }
-      entry.hookContext = { ...entry.hookContext!, githubReviewBatch: sealed }
-      if (sealed.items.length > 1) {
-        entry.msg = { ...entry.msg, text: renderGithubReviewBatchPrompt(sealed) }
+      entry.hookContext = { ...entry.hookContext!, githubReviewBatch: step.sealed }
+      if (step.promptText !== undefined) {
+        entry.msg = { ...entry.msg, text: step.promptText }
         entry.githubReply = undefined
       }
       this.persistHookPayload(entry, true)
