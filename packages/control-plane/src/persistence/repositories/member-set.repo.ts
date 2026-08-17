@@ -36,7 +36,8 @@ import {
   MemberSetInUse,
   MemberSetTenancyMismatch,
   DaemonHasPlacedAgents,
-  DaemonHoldsDuty
+  DaemonHoldsDuty,
+  DaemonAlreadyInSet
 } from '../errors.js'
 
 /**
@@ -159,6 +160,16 @@ export class PgMemberSetRepo implements MemberSetRepo {
       // would be placed and unservable the moment this row lands. `assertDaemonNotInSet` takes the
       // same lock, so a placement racing this one either loses the machine or loses the pin.
       await lockDaemonMembership(tx, daemonId)
+      // Re-read membership UNDER the lock. The insert is idempotent, so the losing half of two
+      // concurrent enrolments into different sets would otherwise no-op and still answer success,
+      // naming a set the daemon never joined. Re-entering the set it is already in stays a no-op.
+      const [current] = await tx.$queryRaw<{ setId: string }[]>(
+        Prisma.sql`SELECT "setId" FROM "member_set_member" WHERE "daemonId" = ${daemonId}::uuid`
+      )
+      if (current) {
+        if (current.setId !== setId) throw new DaemonAlreadyInSet(daemonId, current.setId)
+        return
+      }
       const [pinned] = await tx.$queryRaw<{ n: bigint }[]>(
         Prisma.sql`SELECT count(*) AS n FROM "agent" WHERE "daemonId" = ${daemonId}::uuid`
       )

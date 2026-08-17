@@ -74,6 +74,23 @@ export class DaemonHasPlacedAgents extends Error {
 }
 
 /**
+ * Thrown by `enrollOperator` when the daemon is already in a DIFFERENT set. A daemon is in at most
+ * one, and the insert is idempotent, so without this check the losing half of two concurrent
+ * enrolments would silently no-op and still answer 200 — naming a set the daemon never joined.
+ * Moving a daemon between sets is a two-phase transition (§3), never this path.
+ */
+export class DaemonAlreadyInSet extends Error {
+  readonly code = 'DAEMON_ALREADY_IN_SET' as const
+  constructor(
+    readonly daemonId: string,
+    readonly setId: string
+  ) {
+    super(`daemon ${daemonId} is already a member of member set ${setId}`)
+    this.name = 'DaemonAlreadyInSet'
+  }
+}
+
+/**
  * Thrown by `withdraw` when the daemon still holds a live duty lease. Committing the withdrawal
  * then would let a successor claim work the leaver may still be running — the split the ledger
  * exists to prevent (§3). A lapsed lease is not this: it is strictly later than the member's own

@@ -34,6 +34,7 @@ import { Tag } from '../plugins/openapi.js'
 import type { HttpDeps } from '../deps.js'
 import { DaemonId, type OrgId } from '../../domain/ids.js'
 import {
+  DaemonAlreadyInSet,
   DaemonHasPlacedAgents,
   DaemonHoldsDuty,
   MemberSetInUse,
@@ -201,6 +202,9 @@ export function memberSetRoutes(deps: HttpDeps) {
         try {
           await deps.repos.memberSet.enrollOperator(set.id, daemonId)
         } catch (err) {
+          if (err instanceof DaemonAlreadyInSet) {
+            return conflict(reply, 'the daemon is already in another member set')
+          }
           if (err instanceof DaemonHasPlacedAgents) {
             return conflict(reply, `move this daemon's ${err.placed} placed agent(s) onto a member set first`)
           }

@@ -14,6 +14,7 @@ import { PgAgentRepo } from '../../src/persistence/repositories/agent.repo.js'
 import { PgDutyGroupRepo } from '../../src/persistence/repositories/duty-group.repo.js'
 import { PgMemberSetRepo } from '../../src/persistence/repositories/member-set.repo.js'
 import {
+  DaemonAlreadyInSet,
   DaemonHasPlacedAgents,
   DaemonHoldsDuty,
   DaemonPlacementInSet,
@@ -252,6 +253,33 @@ describe('the membership fences (real Postgres)', () => {
     const enrolled = (await sets().setIdOf(DaemonId(MEMBER_G))) !== null
     const pinned = await prisma.agent.count({ where: { daemonId: MEMBER_G } })
     expect(enrolled && pinned > 0).toBe(false)
+  })
+
+  it('never answers success for the loser of two concurrent enrolments into different sets', async () => {
+    // The insert is idempotent, so without a membership re-read under the lock the loser would
+    // no-op and still return 200 naming a set the daemon never joined.
+    await prisma.daemon.create({ data: { id: MEMBER_G, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready' } })
+    const a = (await sets().createForOrg(DEFAULT_ORG_ID, 'group-a')).id
+    const b = (await sets().createForOrg(DEFAULT_ORG_ID, 'group-b')).id
+
+    const outcomes = await Promise.allSettled([
+      sets().enrollOperator(a, DaemonId(MEMBER_G)),
+      sets().enrollOperator(b, DaemonId(MEMBER_G))
+    ])
+    expect(outcomes.filter((o) => o.status === 'fulfilled')).toHaveLength(1)
+    const loser = outcomes.find((o) => o.status === 'rejected')
+    expect((loser as PromiseRejectedResult).reason).toBeInstanceOf(DaemonAlreadyInSet)
+    // And the winner is the one the surviving row actually names.
+    const winner = outcomes[0]!.status === 'fulfilled' ? a : b
+    expect(await sets().setIdOf(DaemonId(MEMBER_G))).toBe(winner)
+  })
+
+  it('is idempotent for the set the daemon is already in', async () => {
+    await prisma.daemon.create({ data: { id: MEMBER_G, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready' } })
+    const setId = (await sets().createForOrg(DEFAULT_ORG_ID, 'group-g')).id
+    await sets().enrollOperator(setId, DaemonId(MEMBER_G))
+    await sets().enrollOperator(setId, DaemonId(MEMBER_G))
+    expect(await sets().memberIdsOf(setId)).toEqual([MEMBER_G])
   })
 
   it('refuses withdrawal for a lease claimed concurrently, never committing over a live holder', async () => {
