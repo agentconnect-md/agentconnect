@@ -57,6 +57,7 @@ import {
   laneKey,
   lanesOf as lanesOfLanes
 } from '@/lib/webchat-lanes'
+import { createWebchatDeltaBuffer, type WebchatDeltaBuffer } from '@/lib/webchat-delta-buffer'
 
 interface PlaygroundData {
   /** Composer buffer for one session id (each live conversation has its own).
@@ -565,6 +566,20 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     [mutateSteps, participantName]
   )
 
+  // WebSocket messages arrive as separate browser tasks, so React cannot batch
+  // their state updates automatically. Accumulate text per participant lane for
+  // one animation frame (with a 50 ms background-tab cap) and commit once.
+  const applyEventRef = useRef(applyEvent)
+  applyEventRef.current = applyEvent
+  const deltaBufferRef = useRef<WebchatDeltaBuffer | null>(null)
+  if (!deltaBufferRef.current) {
+    deltaBufferRef.current = createWebchatDeltaBuffer((batch) => {
+      applyEventRef.current(batch.sessionId, batch.event, laneAgentId(batch.laneKey), batch.turnId)
+    })
+  }
+  const deltaBuffer = deltaBufferRef.current
+  useEffect(() => () => deltaBuffer.discardAll(), [deltaBuffer])
+
   /** Fold a status snapshot (model / context / tokens / cost) into the session's headline
    *  fields + `usage` — this is the live status bar, NOT a transcript step. Only defined
    *  fields overwrite, so a partial snapshot (context-only mid-turn) never clears the
@@ -648,6 +663,9 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   }, [])
   const getBusyLaneAgentIds = useCallback((id: string): string[] => busyLaneAgents[id] ?? [], [busyLaneAgents])
   const dropLanes = (id: string): void => {
+    // Preserve text already received before surfacing a terminal connection
+    // error; otherwise the final sub-frame would disappear from the transcript.
+    deltaBuffer.flushSession(id)
     for (const key of lanesOf(id)) streamCursors.current.delete(key)
     syncBusyLanes(id)
   }
@@ -673,11 +691,21 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
         if (output.status) applyStatus(id, output.status, agentId)
         const event = output.event
         if (event) {
-          if (event.kind === 'session_info') applyTitle(id, event.title, agentId)
-          else applyEvent(id, event, agentId, output.turnId)
+          if (event.kind === 'message' || event.kind === 'thinking') {
+            deltaBuffer.enqueue(cursorKey, id, output.turnId, event)
+          } else {
+            // Tool/supersession events are ordering fences: make preceding text
+            // visible before applying the non-text event.
+            deltaBuffer.flush(cursorKey)
+            if (event.kind === 'session_info') applyTitle(id, event.title, agentId)
+            else applyEvent(id, event, agentId, output.turnId)
+          }
         }
       }
       if (!result.done) return
+      // `done` is a hard fence and must not clear busy state before the last
+      // buffered reply text has committed.
+      deltaBuffer.flush(cursorKey)
       reconnectAttempts.current.delete(id)
       streamCursors.current.delete(cursorKey)
       syncBusyLanes(id)
@@ -699,7 +727,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       // The turn stays busy until every targeted participant's lane finished.
       if (lanesOf(id).length === 0) setBusy(id, false)
     },
-    [applyEvent, applyStatus, applyTitle, failStream, participantName, pushStep, setBusy]
+    [applyEvent, applyStatus, applyTitle, deltaBuffer, failStream, participantName, pushStep, setBusy]
   )
 
   const receiveOutput = useCallback(
@@ -974,6 +1002,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                 // targets of a multi-agent turn keep streaming.
                 const key = cursorKeyFor(id, m.ack.agentId)
                 if (key) {
+                  deltaBuffer.flush(key)
                   streamCursors.current.delete(key)
                   syncBusyLanes(id)
                 }
@@ -1015,7 +1044,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       conns.current.set(id, conn)
       return conn
     },
-    [activeOrg, failStream, receiveDone, receiveOutput, pushStep, setBusy]
+    [activeOrg, deltaBuffer, failStream, receiveDone, receiveOutput, pushStep, setBusy]
   )
 
   const openPlayground = useCallback(
