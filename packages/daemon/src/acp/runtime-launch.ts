@@ -13,7 +13,7 @@ import {
   claudeProviderCredentialFiles,
   isClaudeRuntimeDef,
   type ClaudeProtectedSettings
-} from './claude-runtime.js'
+} from '../runtime-defs/claude-runtime.js'
 import {
   CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV,
   codexConfigWithoutPermissionOverrides,

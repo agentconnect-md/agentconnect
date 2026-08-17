@@ -21,7 +21,7 @@ import {
 } from '../agents/runtime-memory.js'
 import { MemoryProviderUnavailableError, type MemoryProviderKind } from '../agents/memory-provider.js'
 import type { RuntimeDef } from '../config/config-schema.js'
-import { CLAUDE_PROFILE_ENV, isClaudeRuntimeDef } from '../acp/claude-runtime.js'
+import { CLAUDE_PROFILE_ENV, isClaudeRuntimeDef } from '../runtime-defs/claude-runtime.js'
 import { resolveCommandPath } from './probe.js'
 import { resolveTrustedExecutable, trustedRuntimeReadRoots } from './read-roots.js'
 

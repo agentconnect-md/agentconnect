@@ -1,7 +1,7 @@
 import type { KeyProvider } from '@agentconnect.md/protocol'
 import type { RuntimeDef } from '../config/config-schema.js'
 import type { Agent } from '../agents/agent-schema.js'
-import { isClaudeRuntimeDef } from '../acp/claude-runtime.js'
+import { isClaudeRuntimeDef } from '../runtime-defs/claude-runtime.js'
 import { sharedCredentialProfile } from './runtime-credentials.js'
 
 export interface ModelCredential {

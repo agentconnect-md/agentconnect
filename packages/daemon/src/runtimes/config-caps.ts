@@ -1,6 +1,6 @@
 import type { SessionConfigOption } from '@agentclientprotocol/sdk'
 import type { EffortOption, PermissionModeOption } from '@agentconnect.md/protocol'
-import { augmentClaudeEfforts } from '../acp/claude-runtime.js'
+import { augmentClaudeEfforts } from '../runtime-defs/claude-runtime.js'
 
 /**
  * Distill a session's RAW ACP config options into the capability shape the
