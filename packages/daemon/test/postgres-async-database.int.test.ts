@@ -1,16 +1,15 @@
 /**
- * Equivalence between the worker bridge and the main-thread pool.
+ * The dialect contract `PostgresAsyncDatabase` inherited from the retired worker bridge.
  *
- * The same representative statement set — DDL, both binding forms, every rewrite rule, the
+ * A representative statement set — DDL, both binding forms, every rewrite rule, the
  * PRAGMA/`sqlite_master` emulation, `INSERT OR IGNORE`, and revision-bearing transcript writes —
- * runs through `PostgresSyncDatabase` and `PostgresAsyncDatabase` from two clean databases, and
- * the normalized rows and change counts must match statement for statement.
+ * runs from a clean database against expectations captured from the bridge before it was
+ * deleted, so a dialect regression fails here rather than on a cluster.
  */
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { PostgresAsyncDatabase } from '../src/store/postgres-async-database.js'
-import { PostgresSyncDatabase } from '../src/store/postgres-sync-database.js'
 
 const poolDatabaseUrl = process.env.DATA_PLANE_TEST_DATABASE_URL
 
@@ -18,78 +17,125 @@ interface Case {
   name: string
   sql: string
   params?: unknown[]
+  /** Normalized rows + change count, frozen from the worker bridge this database replaced. */
+  expected: string
 }
 
 // SQLite-flavored throughout: this is the SQL `LocalStore` writes for both backends.
 const STATEMENTS: Case[] = [
-  { name: 'journal-mode pragma', sql: 'PRAGMA journal_mode = WAL' },
-  { name: 'fresh-database probe', sql: "SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table'" },
-  { name: 'user_version assignment', sql: 'PRAGMA user_version = 7' },
-  { name: 'user_version read', sql: 'PRAGMA user_version' },
+  { name: 'journal-mode pragma', sql: 'PRAGMA journal_mode = WAL', expected: '{"changes":0,"rows":[]}' },
+  {
+    name: 'fresh-database probe',
+    sql: "SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table'",
+    expected: '{"changes":1,"rows":[{"n":0}]}'
+  },
+  { name: 'user_version assignment', sql: 'PRAGMA user_version = 7', expected: '{"changes":0,"rows":[]}' },
+  { name: 'user_version read', sql: 'PRAGMA user_version', expected: '{"changes":1,"rows":[{"user_version":7}]}' },
   {
     name: 'transcript DDL',
-    sql: 'CREATE TABLE IF NOT EXISTS transcript (id INTEGER PRIMARY KEY AUTOINCREMENT, sessionKey TEXT NOT NULL, revision INTEGER NOT NULL, payload TEXT)'
+    sql: 'CREATE TABLE IF NOT EXISTS transcript (id INTEGER PRIMARY KEY AUTOINCREMENT, sessionKey TEXT NOT NULL, revision INTEGER NOT NULL, payload TEXT)',
+    expected: '{"changes":0,"rows":[]}'
   },
   {
     name: 'notes DDL',
-    sql: 'CREATE TABLE IF NOT EXISTS notes (id TEXT PRIMARY KEY, createdAt INTEGER NOT NULL, body TEXT)'
+    sql: 'CREATE TABLE IF NOT EXISTS notes (id TEXT PRIMARY KEY, createdAt INTEGER NOT NULL, body TEXT)',
+    expected: '{"changes":0,"rows":[]}'
   },
-  { name: 'populated-database probe', sql: "SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table'" },
+  {
+    name: 'populated-database probe',
+    sql: "SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table'",
+    expected: '{"changes":1,"rows":[{"n":2}]}'
+  },
   {
     name: 'insert or ignore',
     sql: 'INSERT OR IGNORE INTO notes (id, createdAt, body) VALUES (?, ?, ?)',
-    params: ['a', 1, 'hello']
+    params: ['a', 1, 'hello'],
+    expected: '{"changes":1,"rows":[]}'
   },
   {
     name: 'insert or ignore on a conflict',
     sql: 'INSERT OR IGNORE INTO notes (id, createdAt, body) VALUES (?, ?, ?)',
-    params: ['a', 9, 'ignored']
+    params: ['a', 9, 'ignored'],
+    expected: '{"changes":0,"rows":[]}'
   },
   {
     name: 'named insert',
     sql: 'INSERT INTO notes (id, createdAt, body) VALUES (@id, @createdAt, @body)',
-    params: [{ id: 'b', createdAt: 2, body: 'second' }]
+    params: [{ id: 'b', createdAt: 2, body: 'second' }],
+    expected: '{"changes":1,"rows":[]}'
   },
   {
     name: 'named insert with a missing parameter',
     sql: 'INSERT INTO notes (id, createdAt, body) VALUES (@id, @createdAt, @body)',
-    params: [{ id: 'c', createdAt: 3 }]
+    params: [{ id: 'c', createdAt: 3 }],
+    expected: '{"changes":1,"rows":[]}'
   },
-  { name: 'is-not against a placeholder', sql: 'SELECT id FROM notes WHERE id IS NOT ? ORDER BY id', params: ['a'] },
+  {
+    name: 'is-not against a placeholder',
+    sql: 'SELECT id FROM notes WHERE id IS NOT ? ORDER BY id',
+    params: ['a'],
+    expected: '{"changes":2,"rows":[{"id":"b"},{"id":"c"}]}'
+  },
   {
     name: 'is-not against a null placeholder',
     sql: 'SELECT id FROM notes WHERE body IS NOT ? ORDER BY id',
-    params: [null]
+    params: [null],
+    expected: '{"changes":2,"rows":[{"id":"a"},{"id":"b"}]}'
   },
-  { name: 'blob length', sql: 'SELECT length(CAST(body AS BLOB)) AS bytes FROM notes WHERE id = ?', params: ['a'] },
+  {
+    name: 'blob length',
+    sql: 'SELECT length(CAST(body AS BLOB)) AS bytes FROM notes WHERE id = ?',
+    params: ['a'],
+    expected: '{"changes":1,"rows":[{"bytes":5}]}'
+  },
   {
     name: 'empty NOT IN with a sentinel LIMIT',
-    sql: 'SELECT id FROM notes WHERE id NOT IN () ORDER BY id LIMIT -1 OFFSET 1'
+    sql: 'SELECT id FROM notes WHERE id NOT IN () ORDER BY id LIMIT -1 OFFSET 1',
+    expected: '{"changes":2,"rows":[{"id":"b"},{"id":"c"}]}'
   },
   {
     name: 'first revision-bearing insert',
     sql: 'INSERT INTO transcript (sessionKey, revision, payload) VALUES (@sessionKey, @revision, @payload)',
-    params: [{ sessionKey: 's', revision: 0, payload: 'one' }]
+    params: [{ sessionKey: 's', revision: 0, payload: 'one' }],
+    expected: '{"changes":1,"rows":[]}'
   },
   {
     name: 'second revision-bearing insert',
     sql: 'INSERT INTO transcript (sessionKey, revision, payload) VALUES (@sessionKey, @revision, @payload)',
-    params: [{ sessionKey: 's', revision: 0, payload: 'two' }]
+    params: [{ sessionKey: 's', revision: 0, payload: 'two' }],
+    expected: '{"changes":1,"rows":[]}'
   },
   {
     name: 'revision-bearing update',
     sql: 'UPDATE transcript SET revision = ?, payload = ? WHERE payload = ?',
-    params: [0, 'one-edited', 'one']
+    params: [0, 'one-edited', 'one'],
+    expected: '{"changes":1,"rows":[]}'
   },
-  { name: 'transcript read', sql: 'SELECT sessionKey, revision, payload FROM transcript ORDER BY revision' },
-  { name: 'plain update', sql: 'UPDATE notes SET body = ? WHERE id = ?', params: ['changed', 'b'] },
+  {
+    name: 'transcript read',
+    sql: 'SELECT sessionKey, revision, payload FROM transcript ORDER BY revision',
+    expected:
+      '{"changes":2,"rows":[{"payload":"two","revision":2,"sessionKey":"s"},{"payload":"one-edited","revision":3,"sessionKey":"s"}]}'
+  },
+  {
+    name: 'plain update',
+    sql: 'UPDATE notes SET body = ? WHERE id = ?',
+    params: ['changed', 'b'],
+    expected: '{"changes":1,"rows":[]}'
+  },
   {
     name: 'insert with RETURNING',
     sql: 'INSERT INTO notes (id, createdAt, body) VALUES (?, ?, ?) RETURNING id, createdAt',
-    params: ['d', 4, 'fourth']
+    params: ['d', 4, 'fourth'],
+    expected: '{"changes":1,"rows":[{"createdAt":4,"id":"d"}]}'
   },
-  { name: 'delete', sql: 'DELETE FROM notes WHERE id = ?', params: ['c'] },
-  { name: 'final read', sql: 'SELECT id, createdAt, body FROM notes ORDER BY id' }
+  { name: 'delete', sql: 'DELETE FROM notes WHERE id = ?', params: ['c'], expected: '{"changes":1,"rows":[]}' },
+  {
+    name: 'final read',
+    sql: 'SELECT id, createdAt, body FROM notes ORDER BY id',
+    expected:
+      '{"changes":3,"rows":[{"body":"hello","createdAt":1,"id":"a"},{"body":"changed","createdAt":2,"id":"b"},{"body":"fourth","createdAt":4,"id":"d"}]}'
+  }
 ]
 
 /** Compare on the shape the store consumes: row objects and a change count, order preserved. */
@@ -116,34 +162,28 @@ async function createDatabase(baseUrl: string, name: string): Promise<string> {
   return url.toString()
 }
 
-describe.skipIf(!poolDatabaseUrl)('PostgresAsyncDatabase equivalence', () => {
+describe.skipIf(!poolDatabaseUrl)('PostgresAsyncDatabase dialect contract', () => {
   const suffix = randomUUID().replaceAll('-', '').slice(0, 12)
-  let sync: PostgresSyncDatabase
   let async: PostgresAsyncDatabase
   let asyncUrl: string
 
   beforeAll(async () => {
-    const syncUrl = await createDatabase(poolDatabaseUrl!, `equiv_sync_${suffix}`)
-    asyncUrl = await createDatabase(poolDatabaseUrl!, `equiv_async_${suffix}`)
-    sync = new PostgresSyncDatabase({ version: 1, databaseUrl: syncUrl, maxConnections: 2 })
+    asyncUrl = await createDatabase(poolDatabaseUrl!, `dialect_${suffix}`)
     async = await PostgresAsyncDatabase.open({ version: 1, databaseUrl: asyncUrl, maxConnections: 4 })
   })
 
   afterAll(async () => {
-    sync?.close()
     await async?.close()
   })
 
-  it('produces identical rows and change counts for the representative statement set', async () => {
+  it('produces the frozen rows and change counts for the representative statement set', async () => {
     for (const statement of STATEMENTS) {
-      const params = statement.params ?? []
-      const expected = normalize(sync.query(statement.sql, params))
-      const actual = normalize(await async.query(statement.sql, params))
-      expect(actual, statement.name).toBe(expected)
+      const actual = normalize(await async.query(statement.sql, statement.params ?? []))
+      expect(actual, statement.name).toBe(statement.expected)
     }
   })
 
-  it('produces identical batch results', async () => {
+  it('produces the frozen batch results', async () => {
     const batch = [
       {
         sql: 'INSERT INTO notes (id, createdAt, body) VALUES (?, ?, ?)',
@@ -153,9 +193,12 @@ describe.skipIf(!poolDatabaseUrl)('PostgresAsyncDatabase equivalence', () => {
       { sql: 'SELECT id, createdAt FROM notes WHERE id = ?', params: ['e'], kind: 'read' as const },
       { sql: 'UPDATE notes SET body = ? WHERE id = ?', params: ['batched', 'e'], kind: 'run' as const }
     ]
-    const expected = sync.batch(batch).map((result) => normalize(result))
     const actual = (await async.batch(batch)).map((result) => normalize(result))
-    expect(actual).toEqual(expected)
+    expect(actual).toEqual([
+      '{"changes":1,"rows":[]}',
+      '{"changes":1,"rows":[{"createdAt":5,"id":"e"}]}',
+      '{"changes":1,"rows":[]}'
+    ])
   })
 
   it('holds the schema advisory lock until finishSchemaInitialization', async () => {

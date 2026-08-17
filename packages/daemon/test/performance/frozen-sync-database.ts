@@ -1,11 +1,18 @@
+/**
+ * Frozen copy of `PostgresSyncDatabase`, the worker bridge the async store replaced.
+ *
+ * It lives under `test/performance/` and is loaded only by the capacity benchmark's
+ * `sync-worker` rung, which exists to measure the blocking bridge against the async pool.
+ * Production code no longer contains an `Atomics.wait`; do not import this from `src/`.
+ */
 import { MessageChannel, receiveMessageOnPort, Worker } from 'node:worker_threads'
-import type { DataPlaneConfig } from './postgres-config.js'
-import { POOL_STORE_SCHEMA } from './postgres-dialect.js'
-import type { StoreBatchResult, StoreBatchStatement } from './store-database.js'
+import type { DataPlaneConfig } from '../../src/store/postgres-config.js'
+import { POOL_STORE_SCHEMA } from '../../src/store/postgres-dialect.js'
+import type { StoreBatchResult, StoreBatchStatement } from '../../src/store/store-database.js'
 
 type WorkerReply = { id: number; ok: true; value?: unknown } | { id: number; ok: false; error: string }
 
-/** The synchronous store seam this bridge was written against, kept here while it lives on. */
+/** The synchronous store seam this bridge was written against; the live seam is async now. */
 interface StoreRunResult {
   changes: number | bigint
 }
@@ -25,7 +32,7 @@ interface StoreDatabase {
 
 class PostgresStatement implements StoreStatement {
   constructor(
-    private readonly database: PostgresSyncDatabase,
+    private readonly database: FrozenSyncDatabase,
     private readonly sql: string
   ) {}
 
@@ -44,7 +51,7 @@ class PostgresStatement implements StoreStatement {
 }
 
 /** Synchronous facade over a dedicated PostgreSQL worker, preserving LocalStore's commit-before-return contract. */
-export class PostgresSyncDatabase implements StoreDatabase {
+export class FrozenSyncDatabase implements StoreDatabase {
   private readonly worker: Worker
   private readonly replies
   private nextId = 1
@@ -57,7 +64,7 @@ export class PostgresSyncDatabase implements StoreDatabase {
     const channel = new MessageChannel()
     const readySignal = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT))
     this.replies = channel.port1
-    this.worker = new Worker(new URL('./postgres-store-worker.js', import.meta.url), {
+    this.worker = new Worker(new URL('./frozen-sync-store-worker.js', import.meta.url), {
       workerData: {
         databaseUrl: config.databaseUrl,
         schema: POOL_STORE_SCHEMA,

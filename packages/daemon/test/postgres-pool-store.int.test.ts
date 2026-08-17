@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
 import { PostgresDataPlane } from '../src/store/postgres-data-plane.js'
-import { PostgresSyncDatabase } from '../src/store/postgres-sync-database.js'
+import { PostgresAsyncDatabase } from '../src/store/postgres-async-database.js'
 import type { LocalStore } from '../src/store/local-store.js'
 import { STORE_RETENTION_RULES, StoreRetentionSweeper } from '../src/store/retention.js'
 
@@ -351,25 +351,25 @@ describe.skipIf(!databaseUrl)('PostgreSQL pool member store', () => {
     }
   })
 
-  it('answers a batch in order and names the statement that failed', () => {
-    const database = new PostgresSyncDatabase({ version: 1, databaseUrl: databaseUrl!, maxConnections: 2 })
-    database.finishSchemaInitialization()
+  it('answers a batch in order and names the statement that failed', async () => {
+    const database = await PostgresAsyncDatabase.open({ version: 1, databaseUrl: databaseUrl!, maxConnections: 2 })
+    await database.finishSchemaInitialization()
     try {
       expect(
-        database.batch([
+        await database.batch([
           { kind: 'read', sql: 'SELECT 1 AS one', params: [] },
           { kind: 'read', sql: 'SELECT 2 AS one', params: [] }
         ])
       ).toMatchObject([{ rows: [{ one: 1 }] }, { rows: [{ one: 2 }] }])
       // A failure is attributed to its statement, never collapsed into "the batch failed".
-      expect(() =>
+      await expect(
         database.batch([
           { kind: 'read', sql: 'SELECT 1 AS one', params: [] },
           { kind: 'read', sql: 'SELECT * FROM a_table_that_does_not_exist', params: [] }
         ])
-      ).toThrow(/batch statement 2 of 2 failed/)
+      ).rejects.toThrow(/batch statement 2 of 2 failed/)
     } finally {
-      database.close()
+      await database.close()
     }
   })
 

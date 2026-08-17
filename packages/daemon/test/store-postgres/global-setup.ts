@@ -3,7 +3,7 @@
  *
  * Boots ONE `postgres:16-alpine` via Testcontainers and hands each Vitest pool its own
  * database, so the store suites run the real `LocalStore` SQL through the real
- * `PostgresSyncDatabase` worker instead of SQLite. Per-test isolation is a schema-wide
+ * `PostgresAsyncDatabase` pool instead of SQLite. Per-test isolation is a schema-wide
  * sweep in `setup.ts`; per-worker isolation is the separate database created here.
  */
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql'

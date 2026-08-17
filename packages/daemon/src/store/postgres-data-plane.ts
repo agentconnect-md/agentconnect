@@ -30,9 +30,11 @@ export class PostgresDataPlane {
     orgForAgent: OrgForAgent,
     onFailure?: (error: Error) => void
   ): Promise<PostgresDataPlane> {
+    // One connection: this pool only runs the schema migrations. `maxConnections` sizes the
+    // store's own pool, and spending it twice would double what a member holds on the cluster.
     const pool = new Pool({
       connectionString: config.databaseUrl,
-      max: config.maxConnections,
+      max: 1,
       application_name: 'agentconnect-daemon',
       connectionTimeoutMillis: 10_000
     })

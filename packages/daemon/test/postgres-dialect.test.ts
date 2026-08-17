@@ -1,7 +1,7 @@
 /**
- * The dialect layer moved out of `postgres-store-worker.js` unchanged, so these cases pin the
- * worker's exact output — every rewrite rule, both binding forms, revision-slot detection, and
- * the PRAGMA / `sqlite_master` emulation `LocalStore` depends on.
+ * The dialect layer came out of the retired worker bridge unchanged, so these cases pin its
+ * exact output — every rewrite rule, both binding forms, revision-slot detection, and the
+ * PRAGMA / `sqlite_master` emulation `LocalStore` depends on.
  */
 import { describe, expect, it } from 'vitest'
 import {

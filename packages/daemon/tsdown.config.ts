@@ -41,7 +41,6 @@ export default defineConfig({
   // accidentally read the daemon manifest instead.
   entry: {
     index: 'src/index.ts',
-    'postgres-store-worker': 'src/store/postgres-store-worker.js',
     'skills/dist/cli': skillsCliEntry,
     'skills/workspace-mutation': 'src/skills/skill-workspace-mutation-cli.ts'
   },

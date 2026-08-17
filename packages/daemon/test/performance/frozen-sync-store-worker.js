@@ -1,7 +1,9 @@
+// Frozen copy of the deleted production worker, kept only so the capacity benchmark can still
+// measure the `sync-worker` rung against the async store. Nothing in `src/` loads it.
 import { parentPort, workerData } from 'node:worker_threads'
 import pg from 'pg'
-// The dialect layer is shared with the main-thread `PostgresAsyncDatabase`; Node strips the
-// types when this worker loads the module directly from source.
+// The dialect layer is still the production one; Node strips the types when this worker loads
+// the module directly from source.
 import {
   bind,
   changesOf,
@@ -11,7 +13,7 @@ import {
   SCHEMA_LOCK_KEY,
   schemaBootstrapStatements,
   TRANSCRIPT_REVISION_LOCK_KEY
-} from './postgres-dialect.ts'
+} from '../../src/store/postgres-dialect.ts'
 
 const replyPort = workerData.replyPort
 const readySignal = workerData.readySignal
