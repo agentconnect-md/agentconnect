@@ -134,7 +134,7 @@ function usageCounts(u: {
   cachedWriteTokens: number
   contextUsed: number | null
   contextSize: number | null
-  costAmount: number
+  costAmount: Prisma.Decimal // NUMERIC(38,18) — the session views only display it
   costCurrency: string | null
 }): SessionUsageCounts {
   return {
@@ -147,7 +147,7 @@ function usageCounts(u: {
     cachedWriteTokens: u.cachedWriteTokens,
     ...(u.contextUsed !== null ? { contextUsed: u.contextUsed } : {}),
     ...(u.contextSize !== null ? { contextSize: u.contextSize } : {}),
-    ...(u.costAmount !== 0 || u.costCurrency ? { costAmount: u.costAmount } : {}),
+    ...(!u.costAmount.isZero() || u.costCurrency ? { costAmount: u.costAmount.toNumber() } : {}),
     ...(u.costCurrency ? { costCurrency: u.costCurrency } : {})
   }
 }

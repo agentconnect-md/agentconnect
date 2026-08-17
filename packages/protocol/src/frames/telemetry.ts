@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { ReportedCostAmount } from '../decimal-amount.js'
 import { SessionUsage } from './session.js'
 import { Platform } from './route.js'
 import { HeartbeatDuties } from './duty.js'
@@ -195,6 +196,13 @@ export const SessionPurged = z.object({
 })
 export type SessionPurged = z.infer<typeof SessionPurged>
 
+/** A report's usage: `SessionUsage`, except that the cost may arrive as the exact
+ *  decimal string OR as a JSON number from a daemon that predates it. Only the
+ *  REPORT accepts the union — the CP's ingress adapter normalizes to the decimal
+ *  string, so storage and every reader downstream see one money shape. */
+export const ReportedSessionUsage = SessionUsage.extend({ costAmount: ReportedCostAmount.optional() })
+export type ReportedSessionUsage = z.infer<typeof ReportedSessionUsage>
+
 /**
  * Per-session token-usage report — D→C EVT. The daemon meters usage from the
  * agent's ACP stream and reports the session's CUMULATIVE snapshot (latest-wins)
@@ -211,7 +219,7 @@ export const UsageReport = z.object({
   // `null` is an explicit runtime-owned default/unknown; absent is an old daemon.
   observedModel: z.string().nullable().optional(),
   lastActivityAt: z.string(), // ISO ts of the session's last activity
-  usage: SessionUsage
+  usage: ReportedSessionUsage
 })
 export type UsageReport = z.infer<typeof UsageReport>
 

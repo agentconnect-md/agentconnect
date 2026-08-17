@@ -24,7 +24,7 @@ const AGENT_A = '11111111-1111-4111-8111-111111111111'
 const GONE = '99999999-9999-4999-8999-999999999999'
 const URL = '/api/v1/internal/usage/reports'
 
-function report(sessionId: string, agentId: string, costAmount: number, at: Date) {
+function report(sessionId: string, agentId: string, costAmount: string, at: Date) {
   return {
     sessionId,
     agentId,
@@ -82,7 +82,7 @@ describe('POST /internal/usage/reports — the gateway-source usage adapter', ()
         method: 'POST',
         url: URL,
         headers: { authorization: `Bearer ${TOKEN}` },
-        payload: { reports: [report('s-unconfigured', AGENT_A, 1, new Date())] }
+        payload: { reports: [report('s-unconfigured', AGENT_A, '1', new Date())] }
       })
       // 404, not 401: an unconfigured deployment exposes no surface to probe.
       expect(res.statusCode).toBe(404)
@@ -92,7 +92,7 @@ describe('POST /internal/usage/reports — the gateway-source usage adapter', ()
   it('refuses a missing, malformed, or wrong bearer without touching the store', async () => {
     await seedAgent(prisma, AGENT_A)
     await withApp(true, async (app) => {
-      const payload = { reports: [report('s-unauthorized', AGENT_A, 1, new Date())] }
+      const payload = { reports: [report('s-unauthorized', AGENT_A, '1', new Date())] }
       for (const headers of [
         {},
         { authorization: TOKEN }, // no scheme
@@ -111,7 +111,7 @@ describe('POST /internal/usage/reports — the gateway-source usage adapter', ()
     await seedAgent(prisma, AGENT_A)
     const at = new Date()
     const payload = {
-      reports: [report('s-one', AGENT_A, 1.25, at), report('s-two', AGENT_A, 2.5, at)]
+      reports: [report('s-one', AGENT_A, '1.25', at), report('s-two', AGENT_A, '2.5', at)]
     }
     await withApp(true, async (app) => {
       for (const _attempt of [1, 2]) {
@@ -129,15 +129,46 @@ describe('POST /internal/usage/reports — the gateway-source usage adapter', ()
       where: { agentId: AGENT_A },
       orderBy: { sessionId: 'asc' }
     })
-    expect(snapshots.map((row) => [row.sessionId, row.source, row.costAmount])).toEqual([
-      ['s-one', 'gateway', 1.25],
-      ['s-two', 'gateway', 2.5]
+    // The reported decimal string is what landed — NUMERIC, not a float that read back
+    // as 1.2500000000000002.
+    expect(snapshots.map((row) => [row.sessionId, row.source, row.costAmount.toFixed(2)])).toEqual([
+      ['s-one', 'gateway', '1.25'],
+      ['s-two', 'gateway', '2.50']
     ])
     // Cumulative upserts: the second delivery converges onto the same checkpoints
     // rather than appending a second one per session.
     const checkpoints = await prisma.sessionSpend.findMany({ where: { agentId: AGENT_A } })
     expect(checkpoints).toHaveLength(2)
     expect(checkpoints.every((row) => row.source === 'gateway')).toBe(true)
+  })
+
+  it('refuses the WHOLE batch when a billable amount is a float, out of range, or absent', async () => {
+    await seedAgent(prisma, AGENT_A)
+    const at = new Date()
+    const good = report('s-good', AGENT_A, '1', at)
+    const bad: Array<[string, unknown]> = [
+      // A JSON number is the shape that would put a float on the money path.
+      ['a JSON number', { ...report('s-float', AGENT_A, '1', at), usage: { totalTokens: 1, costAmount: 1.25 } }],
+      ['exponent notation', report('s-exp', AGENT_A, '1.25e-2', at)],
+      ['a negative amount', report('s-negative', AGENT_A, '-1', at)],
+      ['more than 18 decimals', report('s-scale', AGENT_A, '0.0000000000000000001', at)],
+      // Absent must never be read as zero spend — the caller retries once it knows.
+      ['no amount', { ...report('s-missing', AGENT_A, '1', at), usage: { totalTokens: 1, costCurrency: 'USD' } }],
+      ['no currency', { ...report('s-nocur', AGENT_A, '1', at), usage: { totalTokens: 1, costAmount: '1' } }]
+    ]
+    await withApp(true, async (app) => {
+      for (const [what, offender] of bad) {
+        const res = await app.inject({
+          method: 'POST',
+          url: URL,
+          headers: { authorization: `Bearer ${TOKEN}` },
+          payload: { reports: [good, offender] }
+        })
+        expect(res.statusCode, what).toBe(400)
+      }
+    })
+    // Not one row: the valid sibling of a refused report is not written either.
+    expect(await prisma.sessionUsage.count({ where: { agentId: AGENT_A } })).toBe(0)
   })
 
   it('drops a report for an agent that no longer exists and still accepts the batch', async () => {
@@ -148,7 +179,7 @@ describe('POST /internal/usage/reports — the gateway-source usage adapter', ()
         url: URL,
         headers: { authorization: `Bearer ${TOKEN}` },
         payload: {
-          reports: [report('s-gone', GONE, 9, new Date()), report('s-live', AGENT_A, 3, new Date())]
+          reports: [report('s-gone', GONE, '9', new Date()), report('s-live', AGENT_A, '3', new Date())]
         }
       })
       // 204, not 500: a deleted agent must not wedge the caller in a retry loop.
@@ -166,7 +197,7 @@ describe('POST /internal/usage/reports — the gateway-source usage adapter', ()
         method: 'POST',
         url: URL,
         headers: { authorization: `Bearer ${PROJECTED}` },
-        payload: { reports: [report('s-projected', AGENT_A, 4, new Date())] }
+        payload: { reports: [report('s-projected', AGENT_A, '4', new Date())] }
       })
       expect(res.statusCode).toBe(204)
     })
@@ -185,7 +216,7 @@ describe('POST /internal/usage/reports — the gateway-source usage adapter', ()
         method: 'POST',
         url: URL,
         headers: { authorization: 'Bearer some-other-pods-token' },
-        payload: { reports: [report('s-rejected', AGENT_A, 1, new Date())] }
+        payload: { reports: [report('s-rejected', AGENT_A, '1', new Date())] }
       })
       expect(res.statusCode).toBe(401)
     })
@@ -200,7 +231,7 @@ describe('POST /internal/usage/reports — the gateway-source usage adapter', ()
         method: 'POST',
         url: URL,
         headers: { authorization: `Bearer ${PROJECTED}` },
-        payload: { reports: [report('s-outage', AGENT_A, 1, new Date())] }
+        payload: { reports: [report('s-outage', AGENT_A, '1', new Date())] }
       })
       expect(res.statusCode).toBe(503)
     })
@@ -215,7 +246,7 @@ describe('POST /internal/usage/reports — the gateway-source usage adapter', ()
           method: 'POST',
           url: URL,
           headers: { authorization: `Bearer ${credential}` },
-          payload: { reports: [report('s-both', AGENT_A, 1, new Date())] }
+          payload: { reports: [report('s-both', AGENT_A, '1', new Date())] }
         })
         expect(res.statusCode).toBe(204)
       }
@@ -243,7 +274,7 @@ describe('the shared store semantics both adapters get', () => {
     const repo = new PgSessionUsageRepo(prisma)
     const early = new Date(Date.now() - 60_000)
     const late = new Date()
-    const write = (at: Date, costAmount: number, totalTokens: number) =>
+    const write = (at: Date, costAmount: string, totalTokens: number) =>
       repo.record({
         agentId: AgentId(AGENT_A),
         sessionId: 'late',
@@ -252,13 +283,13 @@ describe('the shared store semantics both adapters get', () => {
         usage: { totalTokens, costAmount, costCurrency: 'USD' }
       })
 
-    await write(late, 5, 500)
-    await write(early, 2, 200) // an out-of-order delivery arriving after a newer one
+    await write(late, '5', 500)
+    await write(early, '2', 200) // an out-of-order delivery arriving after a newer one
 
     const snapshot = await prisma.sessionUsage.findUnique({
       where: { agentId_sessionId: { agentId: AGENT_A, sessionId: 'late' } }
     })
-    expect(snapshot!.costAmount).toBeCloseTo(5)
+    expect(snapshot!.costAmount.toFixed(0)).toBe('5')
     expect(snapshot!.totalTokens).toBe(500)
     expect(snapshot!.lastActivityAt.getTime()).toBe(late.getTime())
     // The timeline still keeps both cumulatives, so a range query can diff them.
@@ -266,7 +297,7 @@ describe('the shared store semantics both adapters get', () => {
       where: { agentId: AGENT_A, sessionId: 'late' },
       orderBy: { at: 'asc' }
     })
-    expect(checkpoints.map((row) => row.cumulativeCost)).toEqual([2, 5])
+    expect(checkpoints.map((row) => row.cumulativeCost.toFixed(0))).toEqual(['2', '5'])
   })
 
   it('re-applies an unchanged snapshot idempotently rather than skipping it', async () => {
@@ -278,7 +309,7 @@ describe('the shared store semantics both adapters get', () => {
       sessionId: 'replay',
       source: 'gateway' as const,
       lastActivityAt: at,
-      usage: { totalTokens: 10, costAmount: 0.5, costCurrency: 'USD' }
+      usage: { totalTokens: 10, costAmount: '0.5', costCurrency: 'USD' }
     }
     await repo.record(input)
     await repo.record({ ...input, usage: { ...input.usage, totalTokens: 20 } })

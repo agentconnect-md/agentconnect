@@ -26,6 +26,12 @@
  * the caller retries the WHOLE batch and no per-item receipt is needed. Reports for
  * an agent that no longer exists are dropped by the store rather than failing the
  * batch, so one stale row can never wedge a retry loop.
+ *
+ * These reports are the ones that get billed, so the body schema is stricter than the
+ * daemon EVT's: the cost must be the exact decimal string and its currency must be
+ * present, and a batch that violates either is refused whole (400) before anything is
+ * written. Silently treating a missing amount as zero spend is the failure this
+ * prevents — the caller retries once its own metering is complete.
  */
 import { timingSafeEqual } from 'node:crypto'
 import { z } from 'zod'
@@ -34,6 +40,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
 import { UsageReportBatchBody } from '../dto/index.js'
+import { normalizeUsageReport } from '../../usage/writer.js'
 
 /** The bearer credential, or null when the header is absent or not a bearer. */
 function bearerOf(req: FastifyRequest): string | null {
@@ -94,7 +101,9 @@ export function internalUsageRoutes(deps: HttpDeps) {
         schema: { hide: true, body: UsageReportBatchBody, response: { 204: z.null() } }
       },
       async (req, reply) => {
-        await deps.usageWriter.recordBatch('gateway', req.body.reports)
+        // The schema already refused anything unnormalizable, so this only canonicalizes
+        // (`"12.50"` → `"12.5"`) — the writer's input is then one exact shape, always.
+        await deps.usageWriter.recordBatch('gateway', req.body.reports.map(normalizeUsageReport))
         return reply.code(204).send(null)
       }
     )

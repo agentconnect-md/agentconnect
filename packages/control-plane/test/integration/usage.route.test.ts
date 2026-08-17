@@ -8,13 +8,23 @@
  *    excluding sessions whose last activity falls outside the range.
  */
 import { describe, it, expect, vi } from 'vitest'
+import { canonicalizeDecimalAmount } from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
 import { buildWsHarness } from '../fakes/build-ws.js'
 import { buildHttpApp } from '../fakes/build-http.js'
 import { seedAgent, seedSessionMeta } from '../fixtures/seed.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
+import { Prisma } from '../../src/generated/prisma/client.js'
 import { PgSessionUsageRepo } from '../../src/persistence/repositories/session-usage.repo.js'
 import { AgentId } from '../../src/domain/ids.js'
+
+/** Sum the series' decimal-string amounts exactly. Every cost the API returns is a
+ *  decimal string, so a test that re-added them as floats would drift where the
+ *  aggregate does not — 0.1 + 0.2 + 0.05 is exactly 0.35 here, not 0.35000000000000003. */
+function sum(points: Array<{ costAmount: string }>): string | null {
+  const total = points.reduce((acc, p) => acc.plus(p.costAmount), new Prisma.Decimal(0))
+  return canonicalizeDecimalAmount(total.toFixed())
+}
 
 // Console routes are org-scoped: /orgs/:orgId/… (devAuth = seeded owner of the default org).
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
@@ -85,7 +95,7 @@ describe('usage/report handler — persists per-session token usage', () => {
     expect(row!.totalTokens).toBe(4820)
     expect(row!.inputTokens).toBe(3600)
     expect(row!.cachedReadTokens).toBe(512)
-    expect(row!.costAmount).toBeCloseTo(0.41)
+    expect(row!.costAmount.toFixed(2)).toBe('0.41')
     // The source is stamped from the authenticated adapter, not the payload.
     expect(row!.source).toBe('daemon')
     expect(await prisma.sessionSpend.findFirst({ where: { agentId: AGENT_A, sessionId: 'acp-sess-1' } })).toMatchObject(
@@ -141,13 +151,13 @@ describe('usage/report handler — persists per-session token usage', () => {
     try {
       const res = await app.inject({ method: 'GET', url: `${ORG}/usage?range=d30` })
       expect(res.statusCode).toBe(200)
-      const body = res.json() as { series: { points: { costAmount: number }[] } }
+      const body = res.json() as { series: { points: { costAmount: string }[] } }
       const points = body.series.points
       // The regression: $1 stays in yesterday's bucket and $1 in today's. The old
       // latest-wins snapshot would show $0 yesterday and the full $2 today.
-      expect(points.at(-2)!.costAmount).toBeCloseTo(1)
-      expect(points.at(-1)!.costAmount).toBeCloseTo(1)
-      expect(points.reduce((s, p) => s + p.costAmount, 0)).toBeCloseTo(2)
+      expect(points.at(-2)!.costAmount).toBe('1')
+      expect(points.at(-1)!.costAmount).toBe('1')
+      expect(sum(points)).toBe('2')
     } finally {
       await close()
     }
@@ -184,7 +194,7 @@ describe('usage/report handler — persists per-session token usage', () => {
       expect(res.statusCode).toBe(200)
       const models = (
         res.json() as {
-          models: Array<{ model: string | null; sessions: number; totalTokens: number; costAmount: number }>
+          models: Array<{ model: string | null; sessions: number; totalTokens: number; costAmount: string }>
         }
       ).models
       expect(models).toEqual([
@@ -197,7 +207,7 @@ describe('usage/report handler — persists per-session token usage', () => {
           thoughtTokens: 0,
           cachedReadTokens: 0,
           cachedWriteTokens: 0,
-          costAmount: 1.5
+          costAmount: '1.5'
         },
         {
           model: 'model-a',
@@ -208,7 +218,7 @@ describe('usage/report handler — persists per-session token usage', () => {
           thoughtTokens: 0,
           cachedReadTokens: 0,
           cachedWriteTokens: 0,
-          costAmount: 1
+          costAmount: '1'
         },
         {
           model: null,
@@ -219,7 +229,7 @@ describe('usage/report handler — persists per-session token usage', () => {
           thoughtTokens: 0,
           cachedReadTokens: 0,
           cachedWriteTokens: 0,
-          costAmount: 0.5
+          costAmount: '0.5'
         }
       ])
     } finally {
@@ -367,10 +377,10 @@ describe('GET /usage — aggregates the persisted usage store by agent over a ra
       expect(res.statusCode).toBe(200)
       const body = res.json() as {
         range: string
-        totals: { sessions: number; totalTokens: number; costAmount: number; costCurrency: string | null }
-        agents: { agentId: string; sessions: number; totalTokens: number; costAmount: number }[]
-        models: { model: string | null; sessions: number; totalTokens: number; costAmount: number }[]
-        series: { bucket: 'hour' | 'day'; points: { start: string; costAmount: number }[] }
+        totals: { sessions: number; totalTokens: number; costAmount: string; costCurrency: string | null }
+        agents: { agentId: string; sessions: number; totalTokens: number; costAmount: string }[]
+        models: { model: string | null; sessions: number; totalTokens: number; costAmount: string }[]
+        series: { bucket: 'hour' | 'day'; points: { start: string; costAmount: string }[] }
       }
 
       expect(body.range).toBe('d30')
@@ -380,21 +390,19 @@ describe('GET /usage — aggregates the persisted usage store by agent over a ra
       // 100-day row is out of window → excluded. So the series sums to 0.35.
       expect(body.series.bucket).toBe('day')
       expect(body.series.points.length).toBeGreaterThanOrEqual(30)
-      const seriesTotal = body.series.points.reduce((s, p) => s + p.costAmount, 0)
-      expect(seriesTotal).toBeCloseTo(0.35)
-      expect(body.series.points.at(-1)!.costAmount).toBeCloseTo(0.35)
+      expect(sum(body.series.points)).toBe('0.35')
+      expect(body.series.points.at(-1)!.costAmount).toBe('0.35')
 
       // A local-tz offset only shifts bucket boundaries — it must never drop or
       // double-count cost. Across extreme offsets the series still sums to 0.35.
       for (const tz of [-720, 780]) {
         const r = await app.inject({ method: 'GET', url: `${ORG}/usage?range=d30&tz=${tz}` })
-        const s = (r.json() as typeof body).series.points.reduce((acc, p) => acc + p.costAmount, 0)
-        expect(s).toBeCloseTo(0.35)
+        expect(sum((r.json() as typeof body).series.points)).toBe('0.35')
       }
       // Stale a-old row excluded: 3 in-range sessions, 3500 tokens.
       expect(body.totals.sessions).toBe(3)
       expect(body.totals.totalTokens).toBe(3500)
-      expect(body.totals.costAmount).toBeCloseTo(0.35)
+      expect(body.totals.costAmount).toBe('0.35')
       // Single distinct non-null currency across the range → surfaced (the stale
       // row has no currency and is out of window anyway).
       expect(body.totals.costCurrency).toBe('USD')
@@ -414,8 +422,8 @@ describe('GET /usage — aggregates the persisted usage store by agent over a ra
         { model: 'claude-sonnet-4-5', sessions: 2, totalTokens: 3000 },
         { model: 'gpt-5.6', sessions: 1, totalTokens: 500 }
       ])
-      expect(body.models[0]!.costAmount).toBeCloseTo(0.3)
-      expect(body.models[1]!.costAmount).toBeCloseTo(0.05)
+      expect(body.models[0]!.costAmount).toBe('0.3')
+      expect(body.models[1]!.costAmount).toBe('0.05')
     } finally {
       await close()
     }
@@ -464,7 +472,7 @@ describe('GET /usage — aggregates the persisted usage store by agent over a ra
       sessionId: 'dup',
       source: 'daemon' as const,
       lastActivityAt: at,
-      usage: { totalTokens: 100, costAmount: 1, costCurrency: 'USD' }
+      usage: { totalTokens: 100, costAmount: '1', costCurrency: 'USD' }
     }
     // Three identical cumulative $1 reports raced together — the old derive-delta
     // write appended one row each ($3); the cumulative upsert on (agent, session,
@@ -476,11 +484,11 @@ describe('GET /usage — aggregates the persisted usage store by agent over a ra
     try {
       const res = await app.inject({ method: 'GET', url: `${ORG}/usage?range=d1` })
       const body = res.json() as {
-        totals: { costAmount: number }
-        series: { points: { costAmount: number }[] }
+        totals: { costAmount: string }
+        series: { points: { costAmount: string }[] }
       }
-      expect(body.totals.costAmount).toBeCloseTo(1) // not 3
-      expect(body.series.points.reduce((s, p) => s + p.costAmount, 0)).toBeCloseTo(1)
+      expect(body.totals.costAmount).toBe('1') // not 3
+      expect(sum(body.series.points)).toBe('1')
     } finally {
       await close()
     }
@@ -493,10 +501,10 @@ describe('GET /usage — aggregates the persisted usage store by agent over a ra
     await seedVisibleSession(AGENT_A, 'corr', min(10))
     // Same session, in report order: $1 → $2 → corrected down to $1.5 → $2.5.
     for (const [m, cost] of [
-      [40, 1],
-      [30, 2],
-      [20, 1.5],
-      [10, 2.5]
+      [40, '1'],
+      [30, '2'],
+      [20, '1.5'],
+      [10, '2.5']
     ] as const) {
       await repo.record({
         agentId: AgentId(AGENT_A),
@@ -511,15 +519,15 @@ describe('GET /usage — aggregates the persisted usage store by agent over a ra
     try {
       const res = await app.inject({ method: 'GET', url: `${ORG}/usage?range=d1` })
       const body = res.json() as {
-        totals: { costAmount: number }
-        agents: { agentId: string; costAmount: number }[]
-        series: { points: { costAmount: number }[] }
+        totals: { costAmount: string }
+        agents: { agentId: string; costAmount: string }[]
+        series: { points: { costAmount: string }[] }
       }
       // Deltas 1, +1, −0.5, +1 net to the final cumulative 2.5 — not 7 (summing
       // reports) and not 5.5 (ignoring the correction).
-      expect(body.totals.costAmount).toBeCloseTo(2.5)
-      expect(body.agents.find((a) => a.agentId === AGENT_A)!.costAmount).toBeCloseTo(2.5)
-      expect(body.series.points.reduce((s, p) => s + p.costAmount, 0)).toBeCloseTo(2.5)
+      expect(body.totals.costAmount).toBe('2.5')
+      expect(body.agents.find((a) => a.agentId === AGENT_A)!.costAmount).toBe('2.5')
+      expect(sum(body.series.points)).toBe('2.5')
     } finally {
       await close()
     }
@@ -536,29 +544,29 @@ describe('GET /usage — aggregates the persisted usage store by agent over a ra
       sessionId: 'span-win',
       source: 'daemon',
       lastActivityAt: new Date(now - 40 * DAY_MS),
-      usage: { costAmount: 10, costCurrency: 'USD' }
+      usage: { costAmount: '10', costCurrency: 'USD' }
     })
     await repo.record({
       agentId: AgentId(AGENT_A),
       sessionId: 'span-win',
       source: 'daemon',
       lastActivityAt: new Date(now - 5 * 60_000),
-      usage: { costAmount: 11, costCurrency: 'USD' }
+      usage: { costAmount: '11', costCurrency: 'USD' }
     })
 
     const { app, close } = buildHttpApp(prisma)
     try {
       const res = await app.inject({ method: 'GET', url: `${ORG}/usage?range=d30` })
       const body = res.json() as {
-        totals: { costAmount: number }
-        agents: { agentId: string; costAmount: number }[]
-        series: { points: { costAmount: number }[] }
+        totals: { costAmount: string }
+        agents: { agentId: string; costAmount: string }[]
+        series: { points: { costAmount: string }[] }
       }
       // Only the $1 incurred inside the window — the $10 baseline is excluded, and
       // the card, the agent row, and the chart all agree (never $11).
-      expect(body.totals.costAmount).toBeCloseTo(1)
-      expect(body.agents.find((a) => a.agentId === AGENT_A)!.costAmount).toBeCloseTo(1)
-      expect(body.series.points.reduce((s, p) => s + p.costAmount, 0)).toBeCloseTo(1)
+      expect(body.totals.costAmount).toBe('1')
+      expect(body.agents.find((a) => a.agentId === AGENT_A)!.costAmount).toBe('1')
+      expect(sum(body.series.points)).toBe('1')
     } finally {
       await close()
     }

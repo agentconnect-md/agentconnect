@@ -24,6 +24,7 @@ import type {
   AgentIcon,
   AgentMemoryBinding,
   ApprovalsReviewer,
+  DecimalAmount,
   GithubPublishedComment,
   OrganizationSuggestionInfo
 } from '@agentconnect.md/protocol'
@@ -1684,7 +1685,8 @@ export interface WebchatMcpOperationRepo {
 // SessionUsageRepo (C6) — per-session token accounting for the usage dashboard
 // ───────────────────────────────────────────────────────────────────────────
 
-/** The token/cost snapshot carried by a `usage/report` EVT (protocol `SessionUsage`). */
+/** The token/cost snapshot carried by a `usage/report` EVT (protocol `SessionUsage`).
+ *  Read shape: `costAmount` is a number because the session views only display it. */
 export interface SessionUsageCounts {
   /** Daemon timestamp of the cumulative snapshot; orders competing list/detail reads. */
   reportedAt?: string
@@ -1700,6 +1702,11 @@ export interface SessionUsageCounts {
   costCurrency?: string
 }
 
+/** What the store ACCEPTS: the same counts, with the cost already normalized to the
+ *  exact decimal string by the ingress adapter. Nothing past an adapter writes money
+ *  as a float, so the write path cannot reintroduce one. */
+export type NormalizedUsageCounts = Omit<SessionUsageCounts, 'costAmount'> & { costAmount?: DecimalAmount }
+
 /** Which authenticated ingress metered the session — stamped by the adapter that
  *  accepted the report, never self-reported by the payload. */
 export type UsageSource = 'daemon' | 'gateway'
@@ -1714,7 +1721,7 @@ export interface SessionUsageInput {
   model?: string | null
   source: UsageSource
   lastActivityAt: Date
-  usage: SessionUsageCounts
+  usage: NormalizedUsageCounts
 }
 
 /** Per-agent rollup over a time window (summed tokens/cost + session count). */
@@ -1727,7 +1734,7 @@ export interface AgentUsageAggregate {
   thoughtTokens: number
   cachedReadTokens: number
   cachedWriteTokens: number
-  costAmount: number
+  costAmount: DecimalAmount
 }
 
 /** Per-model rollup over a time window. `null` is usage whose daemon did not
@@ -1741,7 +1748,7 @@ export interface ModelUsageAggregate {
   thoughtTokens: number
   cachedReadTokens: number
   cachedWriteTokens: number
-  costAmount: number
+  costAmount: DecimalAmount
 }
 
 /** One spend-over-time bucket: total cost of sessions whose last activity fell in
@@ -1750,18 +1757,20 @@ export interface ModelUsageAggregate {
  *  chart (model key ''=unreported); only non-zero deltas get a key. */
 export interface SpendBucket {
   start: string
-  costAmount: number
-  byAgent: Record<string, number>
-  byModel: Record<string, number>
+  costAmount: DecimalAmount
+  byAgent: Record<string, DecimalAmount>
+  byModel: Record<string, DecimalAmount>
 }
 
 /** Org-wide usage aggregate for a range: workspace totals + agent/model breakdowns.
+ *  Every amount is an exact decimal string — the aggregate is what billing reads,
+ *  so no step of the roll-up may go through a float.
  *  `costCurrency` is the single distinct currency across the range, or null when
  *  none/mixed (amounts are summed as-is).
  *  `series` is the spend-over-time chart data: cost bucketed by hour (d1) or day
  *  (longer ranges), with empty buckets filled to 0 across the whole window. */
 export interface UsageAggregate {
-  totals: { sessions: number; totalTokens: number; costAmount: number; costCurrency: string | null }
+  totals: { sessions: number; totalTokens: number; costAmount: DecimalAmount; costCurrency: string | null }
   agents: AgentUsageAggregate[]
   models: ModelUsageAggregate[]
   series: { bucket: 'hour' | 'day'; points: SpendBucket[] }

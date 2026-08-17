@@ -12,6 +12,7 @@ import {
   type Agent
 } from '@/lib/data'
 import { creatorLabel, fmtCost, fmtCountCompact, memberDisplayName } from '@/lib/api'
+import { amountToNumber } from '@/lib/amount'
 import { useConsoleData } from '@/lib/data-context'
 import { IntegrationMarks } from '@/components/console/IntegrationMarks'
 import { useModal } from '@/components/console/ModalProvider'
@@ -90,9 +91,11 @@ export default function AgentsView() {
     const u = usageByAgent.get(a.id)
     return u ? u.totalTokens : parseCompact(a.tokens)
   }
+  // The aggregate reports an exact decimal string; sorting and formatting are the
+  // only things this view does with it, so it becomes a number right here.
   const cost24h = (a: Agent) => {
     const u = usageByAgent.get(a.id)
-    return u ? u.costAmount : parseCompact(a.cost)
+    return u ? amountToNumber(u.costAmount) : parseCompact(a.cost)
   }
   // Creator names remain available to sorting and assistive text; rows show only avatars.
   const memberById = useMemo(() => new Map(members.map((m) => [m.userId, m])), [members])
@@ -309,7 +312,7 @@ export default function AgentsView() {
             },
             {
               label: 'Spend 24h',
-              value: fmtCost(usage24h?.totals.costAmount ?? 0, currency),
+              value: fmtCost(amountToNumber(usage24h?.totals.costAmount ?? '0'), currency),
               dim: ''
             }
           ].map((m, i, arr) => (
@@ -521,7 +524,7 @@ export default function AgentsView() {
         </div>
         <div className="card stat">
           <div className="statlbl">Spend (24h)</div>
-          <div className="statval">{fmtCost(usage24h?.totals.costAmount ?? 0, currency)}</div>
+          <div className="statval">{fmtCost(amountToNumber(usage24h?.totals.costAmount ?? '0'), currency)}</div>
         </div>
       </div>
       <div className="card">
@@ -692,7 +695,9 @@ export default function AgentsView() {
                   return (
                     <>
                       <span className={`mono ${cell}`}>{u ? fmtCountCompact(u.totalTokens) : a.tokens}</span>
-                      <span className={`mono ${cell}`}>{u ? fmtCost(u.costAmount, currency) : a.cost}</span>
+                      <span className={`mono ${cell}`}>
+                        {u ? fmtCost(amountToNumber(u.costAmount), currency) : a.cost}
+                      </span>
                     </>
                   )
                 })()}
