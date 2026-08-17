@@ -158,6 +158,10 @@ services:
       - LOGTO_MGMT_APP_ID
       - LOGTO_MGMT_APP_SECRET
       - LOGTO_MGMT_RESOURCE
+      # Brokers connector browsing and connection provisioning; the origin stays server-side.
+      - OPEN_CONNECTOR_URL=http://open-connector:3000
+      - OPEN_CONNECTOR_PROVIDER_WHITELIST
+      - OPEN_CONNECTOR_PROVIDER_BLOCKLIST
     healthcheck:
       test:
         - CMD
@@ -193,6 +197,11 @@ services:
       - DAEMON_DIAL_URL=${AGENTCONNECT_RELAY_DAEMON_URL:-ws://localhost:${AGENTCONNECT_RELAY_PORT:-8090}}
       - RELAY_TOKEN=${AGENTCONNECT_RELAY_TOKEN:-local-only-relay-token-0000000000000000}
       - GITHUB_APP_WEBHOOK_SECRET
+      # Egress for open_connector bindings — the relay calls its runtime action API.
+      - OPEN_CONNECTOR_URL=http://open-connector:3000
+      # One host variable drives both ends so runtime auth is never half-configured; the
+      # relay sends no bearer when it resolves empty, matching a gateway with auth off.
+      - OPEN_CONNECTOR_RUNTIME_TOKEN=${OOMOL_CONNECT_RUNTIME_TOKEN:-}
     healthcheck:
       test:
         - CMD
@@ -255,8 +264,32 @@ services:
     restart: unless-stopped
     stop_grace_period: 30s
 
+  # Connector gateway backing the console's "Add connectors" catalog. Its admin API and
+  # web console are unauthenticated, so it stays on loopback like Setup Server and Postgres.
+  # Leave OOMOL_CONNECT_ADMIN_TOKEN unset: the Control Plane client sends no bearer token.
+  open-connector:
+    image: ghcr.io/oomol-lab/open-connector:${AGENTCONNECT_OPEN_CONNECTOR_VERSION:-latest}
+    pull_policy: missing
+    environment:
+      - PORT=3000
+      - OOMOL_CONNECT_DATA_DIR=/app/data
+      # Unset => provider credentials and OAuth client secrets are plaintext in this
+      # service's SQLite. That store is outside SECRET_CIPHER; set a key before real use.
+      - OOMOL_CONNECT_ENCRYPTION_KEY
+      # Browser-reachable origin the provider redirects to at <origin>/oauth/callback.
+      - OOMOL_CONNECT_ORIGIN=${AGENTCONNECT_PUBLIC_OPEN_CONNECTOR_URL:-http://localhost:${AGENTCONNECT_OPEN_CONNECTOR_PORT:-3100}}
+      # Bare pass-through so an unset value stays unset here rather than arriving empty.
+      - OOMOL_CONNECT_RUNTIME_TOKEN
+    init: true
+    ports:
+      - 127.0.0.1:${AGENTCONNECT_OPEN_CONNECTOR_PORT:-3100}:3000
+    volumes:
+      - open-connector-data:/app/data
+    restart: unless-stopped
+
 volumes:
   migration-files:
+  open-connector-data:
   postgres-data:
 
 networks:
