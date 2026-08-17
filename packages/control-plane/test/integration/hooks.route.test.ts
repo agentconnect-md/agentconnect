@@ -771,11 +771,15 @@ describe('hooks REST — CRUD, ingress gating, secret echo, runs, audit', () => 
     }
     await a.app.inject({ method: 'DELETE', url: `${ORG}/hooks/${id}` })
 
+    // Both appends are fire-and-forget: order is not guaranteed, and a prior test's row can outlive the sweep.
     await vi.waitFor(async () => {
-      const rows = await prisma.auditEvent.findMany({ where: { kind: 'hook_change' }, orderBy: { id: 'asc' } })
-      expect(rows.length).toBeGreaterThanOrEqual(2)
-      expect((rows[0]!.details as { hookId: string }).hookId).toBe(id)
-      expect(rows[0]!.agentId).toBe(agentId)
+      const rows = await prisma.auditEvent.findMany({
+        where: { kind: 'hook_change', details: { path: ['hookId'], equals: id } }
+      })
+      expect(rows.sort((x, y) => (x.frameType ?? '').localeCompare(y.frameType ?? ''))).toMatchObject([
+        { frameType: 'rc/hook-assign', agentId },
+        { frameType: 'rc/hook-remove', agentId }
+      ])
     })
   })
 })
