@@ -6,6 +6,22 @@ export interface NavItem {
   href: string
   label: string
   icon: string
+  /** Deployment feature this destination needs. Absent ⇒ always shown. Every
+   *  consumer filters through `navVisible`, so the rail, the mobile sheet and the
+   *  search index can never disagree about what this deployment offers. */
+  requires?: NavFeature
+}
+
+// The only feature so far. Billing exists only where a billing service is
+// deployed — self-hosted
+// consoles have nothing to point it at.
+export type NavFeature = 'billing'
+
+/** Is the destination's feature switched on for this deployment? */
+export function navVisible(item: { requires?: NavFeature }): boolean {
+  if (!item.requires) return true
+  const env = typeof window !== 'undefined' ? window.__AC_ENV : undefined
+  return Boolean(env?.BILLING_URL ?? process.env.BILLING_URL)
 }
 
 // The rail's destinations, in groups separated by a rule: what the organization
@@ -23,7 +39,10 @@ export const NAV_GROUPS: NavItem[][] = [
     { href: '/integrations', label: 'Integrations', icon: 'plug' },
     { href: '/usage', label: 'Analytics', icon: 'circle-gauge' }
   ],
-  [{ href: '/daemons', label: 'Infra', icon: 'server' }]
+  [
+    { href: '/daemons', label: 'Infra', icon: 'server' },
+    { href: '/billing', label: 'Billing', icon: 'credit-card', requires: 'billing' }
+  ]
 ]
 
 // Bottom tab bar (mobile only) — exactly the design's 5-slot bar: the 4 primary
@@ -46,6 +65,7 @@ export const MORE_ROWS: NavItem[] = [
   { href: '/knowledge', label: 'Knowledge', icon: 'book-open' },
   { href: '/integrations', label: 'Integrations', icon: 'plug' },
   { href: '/daemons', label: 'Infra', icon: 'server' },
+  { href: '/billing', label: 'Billing', icon: 'credit-card', requires: 'billing' },
   { href: '/settings', label: 'Settings', icon: 'settings' }
 ]
 
@@ -63,6 +83,7 @@ export const SECTIONS: { prefix: string; label: string }[] = [
   { prefix: '/knowledge', label: 'Knowledge' },
   { prefix: '/integrations', label: 'Integrations' },
   { prefix: '/usage', label: 'Analytics' },
+  { prefix: '/billing', label: 'Billing' },
   { prefix: '/settings', label: 'Settings' },
   { prefix: '/profile', label: 'Profile' }
 ]
@@ -85,6 +106,7 @@ export interface ConsolePage extends NavItem {
 // like "bots" land on the page that owns that feature.
 const PAGE_KEYWORDS: Record<string, string[]> = {
   '/crons': ['cron'],
+  '/billing': ['balance', 'credit', 'invoice', 'payment', 'top up'],
   '/tools': ['mcp', 'connectors', 'skills'],
   '/integrations': ['bots', 'github', 'slack', 'telegram', 'discord', 'lark', 'feishu'],
   '/usage': ['usage', 'costs', 'tokens']

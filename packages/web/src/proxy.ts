@@ -10,7 +10,18 @@ import { NextResponse, type NextRequest } from 'next/server'
 // then resolves the signed-in user's server-stored preference and replaces the
 // URL in one step. A browser-wide cookie cannot drive this choice: it would
 // leak one account's last org into another account and drift across devices.
-const CONSOLE_ROOTS = ['home', 'agents', 'sessions', 'daemons', 'crons', 'tools', 'usage', 'settings', 'profile']
+const CONSOLE_ROOTS = [
+  'home',
+  'agents',
+  'sessions',
+  'daemons',
+  'crons',
+  'tools',
+  'usage',
+  'billing',
+  'settings',
+  'profile'
+]
 
 export function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl
