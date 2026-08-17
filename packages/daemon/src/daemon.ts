@@ -19417,9 +19417,24 @@ export class Daemon {
       if (Object.keys(ordinaryRuntimes).length > 0) this.lastProbeAtMs = this.clock.now()
       const okCount = results.filter((r) => r.ok).length
       this.log.info(`probe: sweep complete — ${okCount}/${results.length} runtime(s) reachable`)
+      // Admission freshness is measured from the END of the sweep that observed it,
+      // because armRuntimeProbeRefresh() only starts the next one from here. Stamping
+      // each result when it landed would expire a runtime that answered in seconds one
+      // whole slow-launcher install before its next probe — unlaunchable, and pruned
+      // from the snapshot — so restamp the batch now that every result is in.
+      const reportedBefore = this.reportedRuntimeIds().join(' ')
+      for (const result of results) {
+        if (this.runtimeCatalog.entries[result.runtime]?.source === 'curated') {
+          this.curatedRuntimeAdmission.record(result)
+        }
+      }
+      this.refreshAdmittedRuntimes()
       // Each result already emitted the REPLACE snapshot that prunes vanished ids, so
-      // only a sweep that produced none still owes the CP one.
-      if (applied.size === 0) this.emitDaemonRuntimeFacts()
+      // the CP is owed one only when the sweep produced none, or when restamping
+      // brought a runtime back that had expired mid-sweep.
+      if (applied.size === 0 || this.reportedRuntimeIds().join(' ') !== reportedBefore) {
+        this.emitDaemonRuntimeFacts()
+      }
       // Probe results can change runtime-derived registration capabilities, and
       // register ran before this sweep — re-announce if the set moved.
       this.cpClient?.updateCapabilities?.()

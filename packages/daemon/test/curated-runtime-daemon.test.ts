@@ -257,6 +257,51 @@ describe('daemon curated runtime admission', () => {
     }
   }, 15_000)
 
+  // Admission freshness has to survive a slow co-probe: the next sweep is scheduled from
+  // sweep completion, so a runtime stamped when it landed would go unlaunchable (and get
+  // pruned from the snapshot) for the rest of a long package-launcher install.
+  it('keeps a fast curated result admitted when a slow co-probe outlasts its TTL', async () => {
+    const clock = new FakeClock(100)
+    // 'hermes-agent' answers immediately; the sweep then burns more than the 5-minute
+    // admission TTL before returning, exactly like a cold npx install.
+    const probe = vi.fn(
+      async (
+        runtimes: Record<string, unknown>,
+        options: { onResult?: (r: Record<string, unknown>) => void }
+      ): Promise<Array<Record<string, unknown>>> => {
+        const results = Object.keys(runtimes).map((runtime) => ({ runtime, ok: true, models: [] }))
+        for (const result of results) options.onResult?.(result)
+        clock.advance(6 * 60_000)
+        return results
+      }
+    )
+    const daemon = new Daemon({ clock, probeRuntimes: probe as never, sandboxMechanism: null })
+
+    try {
+      ;(daemon as any).cfg = { security: { isolateAccountApps: true } }
+      ;(daemon as any).root = '/tmp/curated-admission-ttl-test'
+      ;(daemon as any).runtimeCatalog = catalog()
+      ;(daemon as any).refreshAdmittedRuntimes()
+      const emitted: string[][] = []
+      ;(daemon as any).cpClient = {
+        emitDaemonRuntimes: (profiles: Array<{ runtime: string }>) => emitted.push(profiles.map((p) => p.runtime)),
+        stop: vi.fn(async () => {})
+      }
+
+      await (daemon as any).probeRuntimesAndEmit(true)
+
+      expect(probe).toHaveBeenCalled()
+      expect(Object.keys((daemon as any).runtimes).sort()).toEqual(['explicit', 'hermes-agent'])
+      expect(() => (daemon as any).curatedRuntimeAdmission.assertLaunch('hermes-agent', 'curated')).not.toThrow()
+      // The restamp brought it back, so the CP sees it in the final snapshot too.
+      expect(emitted.at(-1)).toContain('hermes-agent')
+    } finally {
+      ;(daemon as any).draining = true
+      const timer = (daemon as any).runtimeProbeTimer
+      if (timer !== undefined) clock.clearTimeout(timer)
+    }
+  }, 15_000)
+
   it('refreshes curated admission after the TTL without requiring a CP reconnect', async () => {
     const clock = new FakeClock(100)
     const probe = vi.fn(async (runtimes: Record<string, unknown>) =>
