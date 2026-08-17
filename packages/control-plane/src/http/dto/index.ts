@@ -1347,7 +1347,7 @@ export const CreateConnectorConnectionBody = z
   .object({
     service: z.string().min(1),
     // The org-unique connection name — also the MCP provider `name`. Restricted so the
-    // composed open-connector profile `<org8>--<user8>--<name>` fits its 64-char limit.
+    // composed open-connector profile `<orgHash>--<userHash>--<name>` fits its 64-char limit.
     connectionName: z
       .string()
       .trim()

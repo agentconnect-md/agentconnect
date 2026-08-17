@@ -10,9 +10,9 @@
  * `open_connector` MCP provider named `connectionName` (org-unique via
  * @@unique([orgId,name]) ⇒ 409 on dup; mints a grant + pushes the relay binding like
  * any provider), and (2) provision the connection PROFILE in open-connector
- * (`<org>--<user>--<name>`). If step 2's api-key save fails, step 1 is rolled back.
- * NOTE: this phase records the provider row; open-connector's /mcp does not yet honor
- * the profile alias (deferred), so runtime tool calls resolve its default connection.
+ * (`<orgHash>--<userHash>--<name>`). If step 2's api-key save fails, step 1 is rolled back.
+ * The profile is composed HERE and only here — it is persisted as the connection's alias
+ * binding marker, and reconnect/relay replay read it back rather than recomposing it.
  */
 import type { FastifyInstance } from 'fastify'
 import type { ZodTypeProvider } from '../plugins/zod.js'
