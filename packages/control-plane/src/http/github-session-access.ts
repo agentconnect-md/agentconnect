@@ -28,6 +28,13 @@ const DEFAULT_PUBLIC_TTL_MS = 3_600_000
 // identity serving lease must not stretch unlink residue.
 const UNLINK_RESIDUE_CAP_MS = PROVIDER_IDENTITY_TTL_MS
 
+/** A CAUSE, never a TARGET (the slack-session-access.ts discipline): the error's code or class name, never its message. */
+function degradedCause(err: unknown): string {
+  if (!(err instanceof Error)) return typeof err
+  const code = (err as { code?: unknown }).code
+  return typeof code === 'string' || typeof code === 'number' ? String(code) : err.name
+}
+
 type Decision = 'allow' | 'deny' | 'unknown'
 /** Narrowed `repoRefById` result; null = outside the installation's grant. */
 type RepoShape = { fullName: string; private: boolean } | null
@@ -71,6 +78,9 @@ export class GithubSessionAccessService implements SessionAccessPlugin {
   readonly provider = 'github'
   /** Per-viewer verdicts. Every entry carries its own TTL — see `putCache`. */
   private readonly cache: LRUCache<string, Decision>
+  /** Keys this viewer was really ALLOWED on, armed for one lease past the verdict's own.
+   *  Presence is what lets an unverifiable check re-serve a grant instead of hiding the session. */
+  private readonly gracedAllows: LRUCache<string, true>
   /** (installation, repo) → shape. Shared across viewers, unlike `cache`.
    *  `fetch` hands concurrent callers of one key the same promise, and drops
    *  the entry when the lookup rejects, so a failed lookup stays a
@@ -101,13 +111,16 @@ export class GithubSessionAccessService implements SessionAccessPlugin {
       publicTtlMs?: number
       /** `SESSION_ACCESS_IDENTITY_TTL_SEC` in ms; defaults so tests can omit it. */
       identityTtlMs?: number
-      log?: { debug: (obj: object, msg: string) => void }
+      /** `warn` is optional so tests can omit it, but without one a degraded check leaves no trace at all —
+       *  which is what made an intermittent GitHub blip indistinguishable, after the fact, from a real denial. */
+      log?: { debug: (obj: object, msg: string) => void; warn?: (obj: object, msg: string) => void }
     }
   ) {
     this.recheckMs = deps.recheckMs ?? DEFAULT_RECHECK_MS
     this.publicTtlMs = deps.publicTtlMs ?? DEFAULT_PUBLIC_TTL_MS
     this.identityTtlMs = deps.identityTtlMs ?? PROVIDER_IDENTITY_TTL_MS
     this.cache = new LRUCache(cacheOptions(deps.clock, MAX_CACHE_ENTRIES))
+    this.gracedAllows = new LRUCache(cacheOptions(deps.clock, MAX_CACHE_ENTRIES))
     this.shapes = new LRUCache({
       ...cacheOptions(deps.clock, MAX_CACHE_ENTRIES),
       ttl: this.recheckMs,
@@ -175,23 +188,28 @@ export class GithubSessionAccessService implements SessionAccessPlugin {
 
     let decision: Decision
     let identityBacked = false
+    let cause: string | undefined
     try {
       const observed = await this.shapeOf(`${installation.installationId}:${scope.resourceKey}`, {
         github,
         ins: installation,
         repoId: BigInt(scope.resourceKey)
       })
-      // Only reachable if the entry is dropped mid-flight. Fail closed rather
-      // than reading it as "no such repository", which is a deny we cannot back.
-      if (!observed) return 'unknown'
-      const repo = observed.shape
-      if (!repo) decision = 'deny'
+      // `undefined` (entry dropped mid-flight) is NOT `null` (out of the installation's grant):
+      // fail closed rather than reading it as "no such repository", which is a deny we cannot back.
+      const repo = observed?.shape
+      if (repo === undefined) {
+        decision = 'unknown'
+        cause = 'shape_evicted'
+      } else if (!repo) decision = 'deny'
       else if (!repo.private) decision = 'allow'
       else if (!this.deps.userAuthz) decision = 'deny'
       else {
         const [owner, name] = repo.fullName.split('/')
-        if (!owner || !name) decision = 'unknown'
-        else {
+        if (!owner || !name) {
+          decision = 'unknown'
+          cause = 'repo_name_unparsed'
+        } else {
           identityBacked = true
           decision =
             (await this.deps.userAuthz.permissionForUser(userId, installation, owner, name, {
@@ -209,6 +227,21 @@ export class GithubSessionAccessService implements SessionAccessPlugin {
       }
     } catch (err) {
       decision = err instanceof UserAuthzDeniedError ? 'deny' : 'unknown'
+      if (decision === 'unknown') cause = degradedCause(err)
+    }
+    // An unverifiable check is not a denial. Re-serve an allow this viewer already earned rather than
+    // hiding the session behind a provider blip — nobody who was never allowed is admitted, and the
+    // price is that a revocation landing DURING the outage bites up to one extra lease later.
+    // A graced serve is deliberately not `degraded`: nothing is hidden, so the console has nothing to warn about.
+    if (decision === 'unknown') {
+      const graced = this.gracedAllows.has(key)
+      this.deps.log?.warn?.(
+        { provider: 'github', cause, graced },
+        graced
+          ? 'github access check degraded — re-serving an allow this viewer already earned'
+          : 'github access check degraded — affected sessions are hidden until access can be verified'
+      )
+      if (graced) return 'allow'
     }
     this.putCache(key, decision, identityBacked)
     return decision
@@ -302,5 +335,11 @@ export class GithubSessionAccessService implements SessionAccessPlugin {
     const allowTtl = identityBacked ? Math.min(this.recheckMs, UNLINK_RESIDUE_CAP_MS) : this.recheckMs
     const ttl = decision === 'allow' ? allowTtl : decision === 'deny' ? DENY_TTL_MS : UNKNOWN_TTL_MS
     this.cache.set(key, decision, { ttl })
+    // Only a decided `allow` arms the grace — for ONE more lease, so it inherits the identity cap above —
+    // and a graced serve never re-arms it, so a provider that stays unreachable expires the grant on
+    // schedule instead of renewing it for as long as it is down. A decided `deny` disarms it outright:
+    // once GitHub has answered "no", an outage after that may not resurrect what the answer took away.
+    if (decision === 'allow') this.gracedAllows.set(key, true, { ttl: allowTtl * 2 })
+    else if (decision === 'deny') this.gracedAllows.delete(key)
   }
 }

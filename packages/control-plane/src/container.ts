@@ -999,7 +999,8 @@ export function buildContainer(
     clock,
     ...sessionAccessTtls,
     identityTtlMs: config.SESSION_ACCESS_IDENTITY_TTL_SEC * 1000,
-    log: { debug: (o, m) => http.log.debug(o, m) }
+    // Lazy over `http.log` (assigned below; only ever called at resolve time).
+    log: { warn: (o, m) => http.log.warn(o, m), debug: (o, m) => http.log.debug(o, m) }
   })
   const feishuSessionAccess = new FeishuSessionAccessService({
     bots: repos.bot,
