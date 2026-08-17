@@ -4,7 +4,8 @@
  *
  * `record` latest-wins upserts the `(agentId, sessionId)` snapshot AND upserts the
  * session's cumulative tokens/cost plus its observed model into the timeline —
- * both idempotent, so re-sending or racing the same numbers is a no-op.
+ * both idempotent, so re-sending or racing the same numbers is a no-op. A LATE
+ * report still lands its own timeline checkpoint but cannot roll the snapshot back.
  * `aggregate` reports tokens/session-counts from the snapshot but derives every
  * range-scoped COST figure (total, per-agent/model, and the spend-over-time chart)
  * from the timeline by diffing consecutive cumulatives, so the cards and chart agree
@@ -48,7 +49,7 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
     const u = input.usage
     // Only-provided fields win; absent counts default to 0 (or null for the
     // context/cost snapshot), so a runtime that reports partial usage is fine.
-    const fields = {
+    const f = {
       platform: input.platform ?? null,
       channel: input.channel ?? null,
       totalTokens: u.totalTokens ?? 0,
@@ -60,42 +61,76 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
       contextUsed: u.contextUsed ?? null,
       contextSize: u.contextSize ?? null,
       costAmount: u.costAmount ?? 0,
-      costCurrency: u.costCurrency ?? null,
-      lastActivityAt: input.lastActivityAt
+      costCurrency: u.costCurrency ?? null
     }
-    const key = { agentId_sessionId: { agentId: input.agentId, sessionId: input.sessionId } }
-    // `startedAt` defaults to now() on first insert (the session's first-seen);
-    // never touched on update, so it stays the earliest report.
-    await this.db.sessionUsage.upsert({
-      where: key,
-      create: { agentId: input.agentId, sessionId: input.sessionId, ...fields },
-      update: fields
-    })
+    // Both writes select through `agent`, so an agent deleted between metering and
+    // reporting drops the report instead of raising a foreign-key error — one stale
+    // report can never poison a batch (its rows would cascade away anyway).
+    const owner = Prisma.sql`FROM "agent" a WHERE a."id" = ${input.agentId}::uuid`
+    const source = Prisma.sql`${input.source}::"UsageSource"`
+    // `startedAt` keeps its insert default (the session's first-seen) and is never
+    // touched on update. The trailing predicate is the anti-regression fence: a LATE
+    // report (an out-of-order delivery, or a slow retry overtaken by a newer one)
+    // must not roll the snapshot back, while re-sending the SAME cumulative is still
+    // an idempotent no-op write.
+    await this.db.$executeRaw(Prisma.sql`
+      INSERT INTO "session_usage" (
+        "agentId", "sessionId", "platform", "channel", "source",
+        "totalTokens", "inputTokens", "outputTokens", "thoughtTokens",
+        "cachedReadTokens", "cachedWriteTokens", "contextUsed", "contextSize",
+        "costAmount", "costCurrency", "lastActivityAt", "updatedAt"
+      )
+      SELECT ${input.agentId}::uuid, ${input.sessionId}::text, ${f.platform}::text, ${f.channel}::text, ${source},
+             ${f.totalTokens}::int, ${f.inputTokens}::int, ${f.outputTokens}::int, ${f.thoughtTokens}::int,
+             ${f.cachedReadTokens}::int, ${f.cachedWriteTokens}::int, ${f.contextUsed}::int, ${f.contextSize}::int,
+             ${f.costAmount}::double precision, ${f.costCurrency}::text, ${input.lastActivityAt}::timestamptz, NOW()
+      ${owner}
+      ON CONFLICT ("agentId", "sessionId") DO UPDATE SET
+        "platform" = EXCLUDED."platform",
+        "channel" = EXCLUDED."channel",
+        "source" = EXCLUDED."source",
+        "totalTokens" = EXCLUDED."totalTokens",
+        "inputTokens" = EXCLUDED."inputTokens",
+        "outputTokens" = EXCLUDED."outputTokens",
+        "thoughtTokens" = EXCLUDED."thoughtTokens",
+        "cachedReadTokens" = EXCLUDED."cachedReadTokens",
+        "cachedWriteTokens" = EXCLUDED."cachedWriteTokens",
+        "contextUsed" = EXCLUDED."contextUsed",
+        "contextSize" = EXCLUDED."contextSize",
+        "costAmount" = EXCLUDED."costAmount",
+        "costCurrency" = EXCLUDED."costCurrency",
+        "lastActivityAt" = EXCLUDED."lastActivityAt",
+        "updatedAt" = NOW()
+      WHERE "session_usage"."lastActivityAt" <= EXCLUDED."lastActivityAt"
+    `)
     // Usage timeline: each report carries cumulative counters plus the model for
     // the interval that just ended. Readers diff consecutive rows, so model
     // switches retain their own deltas while duplicate deliveries stay idempotent.
-    const sample = {
-      model: input.model ?? null,
-      cumulativeTotalTokens: fields.totalTokens,
-      cumulativeInputTokens: fields.inputTokens,
-      cumulativeOutputTokens: fields.outputTokens,
-      cumulativeThoughtTokens: fields.thoughtTokens,
-      cumulativeCachedReadTokens: fields.cachedReadTokens,
-      cumulativeCachedWriteTokens: fields.cachedWriteTokens,
-      cumulativeCost: fields.costAmount
-    }
-    await this.db.sessionSpend.upsert({
-      where: {
-        agentId_sessionId_at: { agentId: input.agentId, sessionId: input.sessionId, at: input.lastActivityAt }
-      },
-      create: {
-        agentId: input.agentId,
-        sessionId: input.sessionId,
-        at: input.lastActivityAt,
-        ...sample
-      },
-      update: sample
-    })
+    // A late report DOES write its own checkpoint — it belongs at its own `at`.
+    await this.db.$executeRaw(Prisma.sql`
+      INSERT INTO "session_spend" (
+        "agentId", "sessionId", "at", "model", "source",
+        "cumulativeTotalTokens", "cumulativeInputTokens", "cumulativeOutputTokens",
+        "cumulativeThoughtTokens", "cumulativeCachedReadTokens", "cumulativeCachedWriteTokens",
+        "cumulativeCost"
+      )
+      SELECT ${input.agentId}::uuid, ${input.sessionId}::text, ${input.lastActivityAt}::timestamptz,
+             ${input.model ?? null}::text, ${source},
+             ${f.totalTokens}::int, ${f.inputTokens}::int, ${f.outputTokens}::int,
+             ${f.thoughtTokens}::int, ${f.cachedReadTokens}::int, ${f.cachedWriteTokens}::int,
+             ${f.costAmount}::double precision
+      ${owner}
+      ON CONFLICT ("agentId", "sessionId", "at") DO UPDATE SET
+        "model" = EXCLUDED."model",
+        "source" = EXCLUDED."source",
+        "cumulativeTotalTokens" = EXCLUDED."cumulativeTotalTokens",
+        "cumulativeInputTokens" = EXCLUDED."cumulativeInputTokens",
+        "cumulativeOutputTokens" = EXCLUDED."cumulativeOutputTokens",
+        "cumulativeThoughtTokens" = EXCLUDED."cumulativeThoughtTokens",
+        "cumulativeCachedReadTokens" = EXCLUDED."cumulativeCachedReadTokens",
+        "cumulativeCachedWriteTokens" = EXCLUDED."cumulativeCachedWriteTokens",
+        "cumulativeCost" = EXCLUDED."cumulativeCost"
+    `)
   }
 
   async get(agentId: AgentId, sessionId: string): Promise<SessionUsageCounts | null> {

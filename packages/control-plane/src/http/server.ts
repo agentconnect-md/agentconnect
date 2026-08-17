@@ -55,6 +55,7 @@ import { cronRoutes } from './routes/crons.js'
 import { hookRoutes } from './routes/hooks.js'
 import { sessionRoutes } from './routes/sessions.js'
 import { usageRoutes } from './routes/usage.js'
+import { internalUsageRoutes } from './routes/internal-usage.js'
 import { streamRoutes } from './routes/stream.js'
 import { mcpRoutes } from './mcp/routes.js'
 import { oauthConsentRoutes } from './oauth/consent.js'
@@ -253,6 +254,10 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
       await api.register(meSocialIdentityRoutes(deps))
       await api.register(meKeyRoutes(deps))
       await api.register(waitlistRoutes(deps))
+      // Service-authenticated usage ingress — version root, OUTSIDE the org subtree
+      // and outside `humanAuth`: it carries its own deployment secret and its org
+      // comes from each report's agent, not the URL. Self-disables when unconfigured.
+      await api.register(internalUsageRoutes(deps))
       await api.register(orgInviteAcceptRoutes(deps))
       // OAuth consent BACKEND (agent-assistant.md §7.3) — version root, guarded
       // inside its plugin by interactive human auth for the console session.

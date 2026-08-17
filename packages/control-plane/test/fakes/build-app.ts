@@ -50,6 +50,7 @@ import { ConnectionRegistry } from '../../src/ws/registry.js'
 import { createDaemonWsServer } from '../../src/ws/gateway.js'
 import type { DaemonWsDeps } from '../../src/ws/deps.js'
 import { InMemorySessionEventSink } from '../../src/events/sink.js'
+import { SessionUsageWriter } from '../../src/usage/writer.js'
 import { systemClock } from '../../src/domain/clock.js'
 import { PlacementResolver } from '../../src/orchestrator/placementResolver.js'
 import { DaemonId, OrgId } from '../../src/domain/ids.js'
@@ -158,7 +159,7 @@ export function buildDaemonApp(prisma: PrismaClient): DaemonApp {
       placementResolver,
       session: repos.session,
       events: new InMemorySessionEventSink(),
-      sessionUsage: repos.sessionUsage,
+      usageWriter: new SessionUsageWriter(repos.sessionUsage),
       integration: repos.integration,
       integrationChannel: repos.integrationChannel,
       agentMutations: new AgentMutationGate(),

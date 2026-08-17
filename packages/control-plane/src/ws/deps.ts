@@ -11,7 +11,6 @@
  */
 import type { DaemonAuth, DaemonRegistry } from '../ports.js'
 import type {
-  SessionUsageRepo,
   SessionRepo,
   IntegrationRepo,
   IntegrationChannelRepo,
@@ -28,6 +27,7 @@ import type {
   DaemonLifecycleOpRepo,
   AgentRecord
 } from '../persistence/ports.js'
+import type { UsageWriter } from '../usage/writer.js'
 import type { SessionVisibilityPushService } from '../orchestrator/visibilityPush.js'
 import type { DutyAgentBundle, RelayRosterEntry } from '@agentconnect.md/protocol'
 import type { GithubService } from '../github/service.js'
@@ -63,8 +63,8 @@ export interface DaemonWsDeps {
   registry: DaemonRegistry
   orchestrator: ReconcileService
   connReg: ConnectionRegistry
-  /** Persists per-session token usage from the `usage/report` EVT (dashboard telemetry). */
-  sessionUsage: SessionUsageRepo
+  /** The shared usage report interface — this plane is its `daemon`-source adapter. */
+  usageWriter: UsageWriter
   /** Persists milestones from `event/session` EVT or acknowledged sync request. */
   session: SessionRepo
   /** Resolves a webchat conversation's owning user for session-visibility ingest

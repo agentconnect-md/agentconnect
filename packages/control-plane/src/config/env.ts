@@ -88,6 +88,12 @@ const CoreConfigShape = {
   // show the request_url to paste. Unset ⇒ the webchat mint 503s and HTTP-mode Slack
   // installs are unavailable.
   PUBLIC_RELAY_URL: z.string().url().optional(),
+  // ── Usage report interface — the non-daemon ingress ──
+  // Deployment-shared secret authenticating the batch usage endpoint, which records
+  // `gateway`-source reports for an upstream that meters sessions outside any daemon.
+  // Unset ⇒ that endpoint is NOT MOUNTED at all (the daemon EVT is the only ingress).
+  // ≥32 chars, and .optional() so a deployment without one never fail-fasts.
+  USAGE_INGEST_TOKEN: z.string().min(32).optional(),
   SECRETS_PROVIDER: z.enum(['memory', 'vault']).default('memory'),
   // ── At-rest secret encryption (docs/designs/secret-store-seams.md) — opt-in ──
   // Selects the SecretCipher every secret store seals/opens through. `none`

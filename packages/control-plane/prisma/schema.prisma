@@ -1357,36 +1357,46 @@ model WebchatMcpTransportReceipt {
 // SessionUsage — per-session token accounting for the console's usage dashboard.
 //
 // Unlike the message stream (daemon-local, never on the CP), token counts + cost
-// ARE dashboard telemetry: the daemon reports each session's CUMULATIVE usage via
-// the `usage/report` EVT and the CP upserts one row per (agentId, sessionId). This
-// is the ONLY historical usage store — the `/usage` aggregates sum over it by
-// time window. `sessionId` is the agent-assigned ACP id (a string, NOT a wire
-// UUID), so the PK is composite with agentId. Latest-wins upsert = idempotent.
+// ARE dashboard telemetry: an upstream reports each session's CUMULATIVE usage and
+// the CP upserts one row per (agentId, sessionId). This is the ONLY historical
+// usage store — the `/usage` aggregates sum over it by time window. `sessionId` is
+// the agent-assigned ACP id (a string, NOT a wire UUID), so the PK is composite
+// with agentId. Latest-wins upsert = idempotent.
 // ───────────────────────────────────────────────────────────────────────────
 model SessionUsage {
-  agentId           String   @db.Uuid
+  agentId           String      @db.Uuid
   sessionId         String // ACP session id (agent-assigned; NOT a wire UUID)
   platform          String? // denormalized sessionKey echo (free string, not the Platform enum)
   channel           String?
-  totalTokens       Int      @default(0)
-  inputTokens       Int      @default(0)
-  outputTokens      Int      @default(0)
-  thoughtTokens     Int      @default(0)
-  cachedReadTokens  Int      @default(0)
-  cachedWriteTokens Int      @default(0)
+  source            UsageSource @default(daemon)
+  totalTokens       Int         @default(0)
+  inputTokens       Int         @default(0)
+  outputTokens      Int         @default(0)
+  thoughtTokens     Int         @default(0)
+  cachedReadTokens  Int         @default(0)
+  cachedWriteTokens Int         @default(0)
   contextUsed       Int?
   contextSize       Int?
-  costAmount        Float    @default(0)
+  costAmount        Float       @default(0)
   costCurrency      String?
-  startedAt         DateTime @default(now()) @db.Timestamptz(6)
-  lastActivityAt    DateTime @db.Timestamptz(6)
-  updatedAt         DateTime @updatedAt @db.Timestamptz(6)
+  startedAt         DateTime    @default(now()) @db.Timestamptz(6)
+  lastActivityAt    DateTime    @db.Timestamptz(6)
+  updatedAt         DateTime    @updatedAt @db.Timestamptz(6)
 
   agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
 
   @@id([agentId, sessionId])
   @@index([agentId, lastActivityAt])
   @@map("session_usage")
+}
+
+// Which authenticated ingress metered a session. Stamped from the adapter that
+// accepted the report, NEVER self-reported by the payload: the daemon `usage/report`
+// EVT is always `daemon`, the service-authenticated batch endpoint always `gateway`.
+// A session stays on one source for life; pre-gateway rows read `daemon`.
+enum UsageSource {
+  daemon
+  gateway
 }
 
 // SessionSpend — cumulative usage timeline backing range-scoped spend and the
@@ -1400,16 +1410,17 @@ model SessionUsage {
 // this row's model. Storing cumulatives keeps writes idempotent on
 // (agentId, sessionId, at); null model is an observed or legacy unknown.
 model SessionSpend {
-  agentId                     String   @db.Uuid
+  agentId                     String      @db.Uuid
   sessionId                   String // ACP session id (echo of the snapshot row)
-  at                          DateTime @db.Timestamptz(6) // the report's lastActivityAt — the bucket time
+  at                          DateTime    @db.Timestamptz(6) // the report's lastActivityAt — the bucket time
   model                       String?
-  cumulativeTotalTokens       Int      @default(0)
-  cumulativeInputTokens       Int      @default(0)
-  cumulativeOutputTokens      Int      @default(0)
-  cumulativeThoughtTokens     Int      @default(0)
-  cumulativeCachedReadTokens  Int      @default(0)
-  cumulativeCachedWriteTokens Int      @default(0)
+  source                      UsageSource @default(daemon) // echo of the snapshot row's ingress, so a range query can filter by it
+  cumulativeTotalTokens       Int         @default(0)
+  cumulativeInputTokens       Int         @default(0)
+  cumulativeOutputTokens      Int         @default(0)
+  cumulativeThoughtTokens     Int         @default(0)
+  cumulativeCachedReadTokens  Int         @default(0)
+  cumulativeCachedWriteTokens Int         @default(0)
   cumulativeCost              Float // session's cumulative cost as of `at`; window spend = diff of consecutive cumulatives
 
   agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
