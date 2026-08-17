@@ -100,8 +100,17 @@ export default function EditAgentModal({
   onClose: () => void
 }) {
   const acpRegistry = useAcpRegistry()
-  const { updateAgent, moveAgent, saveSharing, saveAgentCallPolicy, daemons, agents, memberSets, orgSetIds } =
-    useConsoleData()
+  const {
+    updateAgent,
+    moveAgent,
+    saveSharing,
+    saveAgentCallPolicy,
+    daemons,
+    agents,
+    memberSets,
+    memberSetsLoading,
+    orgSetIds
+  } = useConsoleData()
   // Only owners may change organization entries, so only they get a link into
   // Organization settings from the read-only "From organization" group (§8.2);
   // other members see the group and its explanation alone.
@@ -192,8 +201,17 @@ export default function EditAgentModal({
 
   // Prefill from the raw spec (GET /agents/:id) — the UI `Agent` drops the exact
   // runtime configuration and placement fields this modal edits.
+  //
+  // Waits for the group list, because resolving a placement is the one thing this prefill cannot
+  // redo: it happens once and seeds BOTH the picker's value and the ref every later change is
+  // compared against. Telling a group from Cloud needs the org's own set ids, and without them
+  // `placementValueOf` answers Cloud by design — so resolving early would leave a group-placed
+  // agent reading as Cloud forever, and make a real group-to-Cloud move look like no change at
+  // all and submit nothing. The form is behind its spinner until `loaded`, so this costs nothing
+  // visible. `memberSetsLoading` is false in mock mode and after a failed fetch, where an empty
+  // list IS the right answer.
   useEffect(() => {
-    if (fetched.current) return
+    if (fetched.current || memberSetsLoading) return
     fetched.current = true
     fetchAgentDto(agent.id).then(
       (dto) => {
@@ -243,7 +261,9 @@ export default function EditAgentModal({
         setLoaded(true)
       }
     )
-  }, [agent.id])
+    // Re-runs only to pick up the moment the group list finishes loading; `fetched` latches it to
+    // one fetch, so this cannot double-fetch.
+  }, [agent.id, memberSetsLoading])
 
   // An unplaced agent defaults to Cloud, then the first placement-ready local daemon.
   const autofilledDaemon = useRef(false)
