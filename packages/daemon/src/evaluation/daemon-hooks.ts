@@ -14,7 +14,7 @@ import { ALL_TOOL_NAMES } from '../mcp/tools.js'
 import { stableTurnId, type NormalizedMessage } from '../messages/normalized.js'
 import { sessionKey } from '../store/local-store.js'
 import type { CallMeta } from '../daemon/turn-types.js'
-import type { WebchatSink, WebchatTurnContext } from '../daemon/webchat.js'
+import type { WebchatSink, WebchatTurnContext } from '../webchat/types.js'
 import type {
   DaemonEvaluationOptions,
   DaemonEvaluationTurnInput,
