@@ -107,7 +107,11 @@ export function Button({
   type = 'button',
   disabled = false,
   style,
-  className
+  className,
+  ariaLabel,
+  ariaExpanded,
+  ariaHasPopup,
+  ariaControls
 }: {
   variant?: ButtonVariant
   size?: ButtonSize
@@ -117,6 +121,10 @@ export function Button({
   disabled?: boolean
   style?: CSSProperties
   className?: string
+  ariaLabel?: string
+  ariaExpanded?: boolean
+  ariaHasPopup?: 'menu' | 'listbox' | 'tree' | 'grid' | 'dialog'
+  ariaControls?: string
 }) {
   const sizeCls = size === 'lg' ? ' lg' : size === 'sm' ? ' sm' : size === 'xs' ? ' xs' : ''
   return (
@@ -126,6 +134,10 @@ export function Button({
       className={`dsbtn${sizeCls} dsbtn-${variant}${className ? ` ${className}` : ''}`}
       onClick={onClick}
       style={style}
+      aria-label={ariaLabel}
+      aria-expanded={ariaExpanded}
+      aria-haspopup={ariaHasPopup}
+      aria-controls={ariaControls}
     >
       {children}
     </button>

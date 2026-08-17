@@ -31,6 +31,7 @@ import {
 import { consoleKeys } from '@/lib/swr-keys'
 import { ManagedSkillTile } from '@/components/console/ManagedSkillTile'
 import { InstallRegistrySkillModal } from '@/components/console/InstallRegistrySkillModal'
+import { AnchoredFlyout } from '@/components/ui/AnchoredFlyout'
 import { VisibilityField, VisibilityValue, sameSharing, type SharingValue } from '@/components/console/VisibilityField'
 import { SkillMark, SkillSourceLine, ToolTile, ToolTileGrid } from '@/components/console/ToolTile'
 import { GithubMark, LoadingState } from '@/components/marks'
@@ -48,7 +49,6 @@ export function SkillSourcesCard({ canWrite, canManage }: { canWrite: boolean; c
   const { skillSources, skillSourcesLoading } = useConsoleData()
   const { activeOrg } = useOrgs()
   const { mutate: mutateSWR } = useSWRConfig()
-  const [menuOpen, setMenuOpen] = useState(false)
   const [creating, setCreating] = useState(false)
   const [browsing, setBrowsing] = useState(false)
   const [editing, setEditing] = useState<SkillSourceDto | null>(null)
@@ -63,7 +63,6 @@ export function SkillSourcesCard({ canWrite, canManage }: { canWrite: boolean; c
   const managedRows = managedSkills.data ?? []
   const loading = skillSourcesLoading || managedSkills.isLoading
   const empty = skillSources.length === 0 && managedRows.length === 0
-
   const archiveManagedSkill = async (skill: ManagedSkillDto) => {
     setManagedActionError(null)
     try {
@@ -90,58 +89,69 @@ export function SkillSourcesCard({ canWrite, canManage }: { canWrite: boolean; c
             <Toggle checked={includeArchived} onChange={setIncludeArchived} />
           </label>
           {canWrite && (
-            <span className="relative">
-              <Button variant="secondary" size="xs" onClick={() => setMenuOpen((v) => !v)}>
-                <Icon name="plus" size={14} />
-                Add
-                <Icon name="chevron-down" size={13} color="var(--text-tertiary)" />
-              </Button>
-              {menuOpen && (
+            <AnchoredFlyout
+              ariaLabel="Add skill source"
+              estimatedHeight={154}
+              trigger={({ open, menuId, toggle }) => (
+                <Button
+                  variant="secondary"
+                  size="xs"
+                  onClick={toggle}
+                  ariaExpanded={open}
+                  ariaHasPopup="menu"
+                  ariaControls={open ? menuId : undefined}
+                >
+                  <Icon name="plus" size={14} />
+                  Add
+                  <Icon name="chevron-down" size={13} color="var(--text-tertiary)" />
+                </Button>
+              )}
+            >
+              {({ close }) => (
                 <>
-                  <span className="fixed inset-0 z-30" onClick={() => setMenuOpen(false)} />
-                  <div className="absolute right-0 top-[calc(100%+5px)] z-40 min-w-[280px] rounded-lg border border-(--border-default) bg-(--surface-card) p-[5px] shadow-(--shadow-lg)">
-                    <button
-                      onClick={() => {
-                        setMenuOpen(false)
-                        setBrowsing(true)
-                      }}
-                      className="flex w-full cursor-pointer items-start gap-[9px] rounded-[6px] border-0 bg-transparent p-[10px] text-left hover:bg-(--surface-hover)"
-                    >
-                      <span className="flex h-8 w-8 flex-none items-center justify-center rounded-[7px] bg-(--brand-soft)">
-                        <Icon name="search" size={16} color="var(--brand)" />
+                  <button
+                    role="menuitem"
+                    onClick={() => {
+                      close()
+                      setBrowsing(true)
+                    }}
+                    className="flex w-full cursor-pointer items-start gap-[9px] rounded-[6px] border-0 bg-transparent p-[10px] text-left hover:bg-(--surface-hover)"
+                  >
+                    <span className="flex h-8 w-8 flex-none items-center justify-center rounded-[7px] bg-(--brand-soft)">
+                      <Icon name="search" size={16} color="var(--brand)" />
+                    </span>
+                    <span className="flex min-w-0 flex-col">
+                      <span className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
+                        Search skills.sh
                       </span>
-                      <span className="flex min-w-0 flex-col">
-                        <span className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
-                          Search skills.sh
-                        </span>
-                        <span className="mt-[2px] font-sans text-[12px] font-normal leading-[1.45] text-(--text-tertiary)">
-                          Find a skill in the public registry by name
-                        </span>
+                      <span className="mt-[2px] font-sans text-[12px] font-normal leading-[1.45] text-(--text-tertiary)">
+                        Find a skill in the public registry by name
                       </span>
-                    </button>
-                    <button
-                      onClick={() => {
-                        setMenuOpen(false)
-                        setCreating(true)
-                      }}
-                      className="flex w-full cursor-pointer items-start gap-[9px] rounded-[6px] border-0 bg-transparent p-[10px] text-left hover:bg-(--surface-hover)"
-                    >
-                      <span className="flex h-8 w-8 flex-none items-center justify-center rounded-[7px] bg-(--brand-soft)">
-                        <GithubMark color="var(--brand)" />
+                    </span>
+                  </button>
+                  <button
+                    role="menuitem"
+                    onClick={() => {
+                      close()
+                      setCreating(true)
+                    }}
+                    className="flex w-full cursor-pointer items-start gap-[9px] rounded-[6px] border-0 bg-transparent p-[10px] text-left hover:bg-(--surface-hover)"
+                  >
+                    <span className="flex h-8 w-8 flex-none items-center justify-center rounded-[7px] bg-(--brand-soft)">
+                      <GithubMark color="var(--brand)" />
+                    </span>
+                    <span className="flex min-w-0 flex-col">
+                      <span className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
+                        Import from GitHub
                       </span>
-                      <span className="flex min-w-0 flex-col">
-                        <span className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
-                          Import from GitHub
-                        </span>
-                        <span className="mt-[2px] font-sans text-[12px] font-normal leading-[1.45] text-(--text-tertiary)">
-                          Register a repository you already know
-                        </span>
+                      <span className="mt-[2px] font-sans text-[12px] font-normal leading-[1.45] text-(--text-tertiary)">
+                        Register a repository you already know
                       </span>
-                    </button>
-                  </div>
+                    </span>
+                  </button>
                 </>
               )}
-            </span>
+            </AnchoredFlyout>
           )}
         </span>
       </div>

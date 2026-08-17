@@ -56,8 +56,8 @@ async function typeInto(element: HTMLInputElement, value: string): Promise<void>
 // `scope` matters once a dialog is open: the card's own header keeps rendering
 // behind the scrim, so "Install" is ambiguous unless the lookup is scoped.
 function buttonWithText(text: string, scope = ''): HTMLButtonElement {
-  const root = scope ? host.querySelector(scope) : host
-  const found = [...(root?.querySelectorAll('button') ?? [])].find((b) => b.textContent?.includes(text))
+  const searchRoot = scope === 'body' ? document.body : scope ? host.querySelector(scope) : host
+  const found = [...(searchRoot?.querySelectorAll('button') ?? [])].find((b) => b.textContent?.includes(text))
   if (!found) throw new Error(`no button labeled "${text}"${scope ? ` under ${scope}` : ''}`)
   return found
 }
@@ -96,6 +96,31 @@ afterEach(async () => {
 })
 
 describe('organization Skills library', () => {
+  it('portals the Add menu beyond the clipping card boundary', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () => new Response(JSON.stringify([]), { status: 200, headers: { 'content-type': 'application/json' } })
+      )
+    )
+
+    await act(async () => {
+      root.render(
+        <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+          <SkillSourcesCard canWrite={true} canManage={true} />
+        </SWRConfig>
+      )
+    })
+    await act(async () => buttonWithText('Add').click())
+
+    const card = host.querySelector('.card')
+    const searchAction = buttonWithText('Search skills.sh', 'body')
+    const importAction = buttonWithText('Import from GitHub', 'body')
+    expect(card?.classList.contains('overflow-hidden')).toBe(true)
+    expect(card?.contains(searchAction)).toBe(false)
+    expect(card?.contains(importAction)).toBe(false)
+  })
+
   it('renders Git sources and accepted managed skills as tiles in one card', async () => {
     const managed: ManagedSkillDto = {
       id: '66666666-6666-4666-8666-666666666666',
@@ -175,7 +200,7 @@ describe('organization Skills library', () => {
       )
     })
     await act(async () => buttonWithText('Add').click())
-    await act(async () => buttonWithText('Search skills.sh').click())
+    await act(async () => buttonWithText('Search skills.sh', 'body').click())
 
     await typeInto(host.querySelector<HTMLInputElement>('input.inp')!, 'pdf')
     await settleUntil(() => host.textContent?.includes('169.9K installs') === true, 40)
