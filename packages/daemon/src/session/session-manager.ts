@@ -8,7 +8,7 @@ import { initiatorLabel } from '../workspace/session-branch.js'
 import { memoryKindOf, type MemoryProvider, type MemoryScope } from '../memory/provider.js'
 import { agentChildEnv } from '../agents/agent-env.js'
 import { planConfigFiles } from '../shim/config-file-env.js'
-import { recalledMemoryBlock, recallQueryFromBlocks, sanitizeRecallRecords } from '../memory/recall.js'
+import { recallQueryFromBlocks } from '../memory/recall.js'
 import type { AcpHost } from '../acp/acp-host.js'
 import type { Agent } from '../agents/agent-schema.js'
 import type { LoadedAgent } from '../agents/load-agents.js'
@@ -24,36 +24,11 @@ import { DIRECT_AGENT_CALL_REMINDER, EXPLICIT_MENTION_REMINDER, NO_RESPONSE_REMI
 import { planReplay, renderReplayContext } from './turn/replay-plan.js'
 import { AGENT_META_OPENING, buildStandingContext } from './turn/standing-context.js'
 import { backfillThreadHistory } from './turn/thread-backfill.js'
+import { RecallObserver, runTurnRecall, type MemoryRecallLifecycleEvent } from './turn/memory-recall.js'
 
-/** Metadata-only semantic lifecycle for one provider-neutral recall attempt. Query
- * and recalled record bodies deliberately stay out of this observer contract. */
-export type MemoryRecallLifecycleEvent =
-  | {
-      kind: 'requested'
-      sessionId: string
-      turnId: string
-      provider: ReturnType<typeof memoryKindOf>
-      topK: number
-      maxBytes: number
-      timeoutMs: number
-    }
-  | {
-      kind: 'completed'
-      sessionId: string
-      turnId: string
-      provider: ReturnType<typeof memoryKindOf>
-      recordCount: number
-      injectedBytes: number
-    }
-  | {
-      kind: 'failed'
-      sessionId: string
-      turnId: string
-      provider: ReturnType<typeof memoryKindOf>
-      errorName: string
-      timedOut: boolean
-      aborted: boolean
-    }
+// The recall lifecycle contract lives with the collaborator that emits it; re-exported
+// here because SessionManagerDeps is the seam production wires its observer through.
+export type { MemoryRecallLifecycleEvent }
 
 // The wall-clock id minter lives with the warm-thread snapshot that owns it; re-exported
 // here because the daemon's final-fence checkpoint still imports it from this module.
@@ -960,87 +935,19 @@ export class SessionManager {
     const recallScope = { ...memScope, sessionId: rec.acpSessionId! }
     const recallPolicy = memoryEnabled ? this.deps.memory.recallPolicy(recallScope) : undefined
     if (captureInput && recallPolicy?.mode === 'auto') {
-      const recallAbort = new AbortController()
-      const recallReq = {
+      const reference = await runTurnRecall({
+        memory: this.deps.memory,
+        scope: recallScope,
+        policy: recallPolicy,
         turnId,
         query: captureInput,
-        topK: recallPolicy.topK,
-        maxBytes: recallPolicy.maxBytes,
-        timeoutMs: recallPolicy.timeoutMs,
-        signal: recallAbort.signal
-      }
-      let timer: NodeJS.Timeout | undefined
-      const abortRecall = (): void => recallAbort.abort(signal?.reason)
-      signal?.addEventListener('abort', abortRecall, { once: true })
-      try {
-        try {
-          this.deps.onMemoryRecallEvent?.(agentId, {
-            kind: 'requested',
-            sessionId: rec.acpSessionId!,
-            turnId,
-            provider: currentMemoryProvider,
-            topK: recallReq.topK,
-            maxBytes: recallReq.maxBytes,
-            timeoutMs: recallReq.timeoutMs
-          })
-        } catch {
-          // Observability must never change recall or prompt assembly.
-        }
-        const timeout = new Promise<never>((_, reject) => {
-          timer = setTimeout(() => {
-            const error = new Error('memory recall timed out')
-            recallAbort.abort(error)
-            reject(error)
-          }, recallReq.timeoutMs)
-          timer.unref?.()
-        })
-        const raw = await Promise.race([
-          abortable(() => this.deps.memory.recallForTurn(recallScope, recallReq), signal),
-          timeout
-        ])
-        const records = sanitizeRecallRecords(raw, recallScope, recallReq)
-        const reference = recalledMemoryBlock(records, recallReq.maxBytes)
-        const injectedBytes = reference?.type === 'text' ? Buffer.byteLength(reference.text) : 0
-        if (reference) {
-          if (reference.type === 'text') {
-            this.deps.onMemoryRecallInjected?.(agentId, injectedBytes)
-          }
-          blocks.push(reference)
-        }
-        try {
-          this.deps.onMemoryRecallEvent?.(agentId, {
-            kind: 'completed',
-            sessionId: rec.acpSessionId!,
-            turnId,
-            provider: currentMemoryProvider,
-            recordCount: records.length,
-            injectedBytes
-          })
-        } catch {
-          // Observability must never change recall or prompt assembly.
-        }
-      } catch (error) {
-        try {
-          this.deps.onMemoryRecallEvent?.(agentId, {
-            kind: 'failed',
-            sessionId: rec.acpSessionId!,
-            turnId,
-            provider: currentMemoryProvider,
-            errorName: error instanceof Error ? error.name : 'UnknownError',
-            timedOut: error instanceof Error && /timed out/i.test(error.message),
-            aborted: signal?.aborted === true
-          })
-        } catch {
-          // Observability must never change recall's fail-open policy.
-        }
-        if (signal?.aborted) throw interrupted(signal)
-        // Runtime recall is fail-open: answer without memory and emit only a
-        // metadata-safe diagnostic through the injected observer.
-        this.deps.onMemoryRecallError?.(agentId, error)
-      } finally {
-        if (timer) clearTimeout(timer)
-        signal?.removeEventListener('abort', abortRecall)
-      }
+        provider: currentMemoryProvider,
+        observer: new RecallObserver(agentId, this.deps),
+        ...(signal ? { signal } : {}),
+        abortable,
+        interrupted
+      })
+      if (reference) blocks.push(reference)
     }
 
     // System-side context for a newly-created session or the first real prompt after an
