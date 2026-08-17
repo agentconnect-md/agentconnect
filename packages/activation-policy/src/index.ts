@@ -1,77 +1,16 @@
 /**
- * `@agentconnect.md/activation-policy` — the PURE activation policy: "who does
- * this message activate", extracted from the daemon's platform ladder
- * (send-message-routing-rework.md §6/§2.3, PR #549) so every surface can
- * eventually consume ONE implementation instead of keeping copies in sync by
- * hand (the #549 → #904 → #906 incident; see
- * docs/designs/activation-parity.md).
+ * The PURE activation policy — "who does this message activate" — shared by every surface so
+ * the ladders cannot drift apart by hand. Design and the per-ladder divergences:
+ * docs/designs/activation-parity.md and send-message-routing-rework.md §6/§2.3.
  *
- * Everything here is a pure function over:
- *  - normalized MESSAGE FACTS ({@link ActivationMessageFacts} — a structural
- *    subset of the daemon's `NormalizedMessage` and the wire
- *    `NormalizedPlatformMessage`, so both satisfy it without adapters);
- *  - resolved ROUTING RULES ({@link ActivationRule} — the daemon's merged
- *    local ∪ CP rule set; structurally satisfied by the daemon's
- *    `RoutingRule`);
- *  - verified AUTHORSHIP facts (the author's agent id and stamped hop depth —
- *    verification itself stays with the caller, since it needs I/O);
- *  - narrow context PROVIDERS passed as plain values or callbacks
- *    (`threadOwner`, thread participants), never as live objects.
+ * Constraint: NO I/O, no daemon imports, no platform SDKs. Callers supply message facts, resolved
+ * rules, context as plain values/callbacks, and already-VERIFIED authorship (verification needs
+ * I/O, so it stays with the caller).
  *
- * NO I/O, no daemon imports, no platform SDKs. The daemon's
- * `router/routing-table.ts` re-exports the ladder and its call sites act as
- * thin adapters supplying the providers; behavior is byte-for-byte what the
- * daemon shipped before the extraction.
- *
- * ## The activation ask — the ONE interface every surface shares
- *
- * A surface asks "who does this message wake?" by supplying exactly four
- * things; everything else (verification, rendezvous, call policy, dispatch,
- * logging) stays surface-owned:
- *
- *  1. **Message facts** — {@link ActivationMessageFacts} (platform, channel,
- *     thread, text, isDm, mentions, sender bot-ness), extended per surface
- *     only where its ladder reads more ({@link SharedBotMessageFacts} adds the
- *     sender's provider id + group-DM bit; {@link WebchatPostAuthorFacts} is
- *     the committed-post author with its stamped depth).
- *  2. **Resolved rules** — {@link ActivationRule} (daemon merged local ∪ CP;
- *     `RoutingRule` satisfies it) or {@link SharedBotRoute} (the relay's
- *     already-attributed CP routes; wire `AttributedRoute` satisfies it). The
- *     webchat roster IS its rule set: membership is a standing mention.
- *  3. **Context providers** — plain values/callbacks, never live objects:
- *     `threadOwner` + thread participants (daemon), the affinity map +
- *     members/gates/`defaultAgentId` (relay, all declared on
- *     {@link SharedBotAssignmentFacts}), the conversation roster +
- *     mentions/targets (webchat).
- *  4. **Verified authorship** — the author's agent id (and, where the edge is
- *     depth-bounded, its stamped hop count). Verification itself stays with
- *     the caller, since it needs I/O.
- *
- * The package then owns every DECIDER, one per declared ladder:
- *
- *  - **Daemon platform ladder** — {@link routeRules} (arbitration primary) +
- *    {@link conversationPeers} (delivery set) + the §4.1 edge gates.
- *  - **Shared-bot relay ladder** — {@link arbitrateSharedBot}
- *    (shared-bot-relay.md §10): the same rules adapted for the multi-agent
- *    ambiguity, with its adaptations DECLARED as ladder structure (channel
- *    ownership first with scoped keyword over auto, no unscoped mention rung,
- *    addressed-gated slug + `defaultAgentId` fallback, membership/gate-checked
- *    continuity). Consumed by `packages/relay/src/bot-arbitration.ts`, which
- *    keeps the stateful remainder (affinity/participant bookkeeping, the
- *    peer fan-out's join recording).
- *  - **Webchat** — {@link selectTurnTargets} (human-turn roster targeting;
- *    standing-mention semantics, a DECLARED divergence in
- *    evals/parity/spec.ts) and {@link webchatContinuationDecision} (the §5.2a
- *    continuation edge: author exclusion absolute, fail-closed depth, the
- *    §4.1 hop transition).
- *
- * Divergences between ladders are declared here and in
- * docs/designs/activation-parity.md — never silent. One latent structural
- * divergence is pinned rather than harmonized: the daemon ladder admits
- * bot-sender mentions with a Slack literal while the relay ladder reads the
- * platform manifest's `botSenderRouting`; both are Slack-only today (the
- * manifest test pins it), so behavior is identical, but a future platform
- * admitting bot senders must revisit `routeRules` alongside the manifest.
+ * Pinned divergence, deliberately not harmonized: the daemon ladder admits bot-sender mentions via
+ * a Slack literal while the relay ladder reads the manifest's `botSenderRouting`. Both are
+ * Slack-only today, so behavior is identical — but a platform that admits bot senders must revisit
+ * {@link routeRules} alongside the manifest.
  */
 import { MAX_AGENT_CALL_HOPS, hasReachedAgentCallHopLimit, manifestFor } from '@agentconnect.md/protocol'
 
@@ -160,14 +99,9 @@ export type RouteVia = 'mention' | 'thread' | 'dm' | 'keyword' | 'auto'
 
 const pickRule = (r: ActivationRule, via: RouteVia) => ({ agentId: r.agentId, integrationId: r.integrationId, via })
 
-/**
- * Every agent this connection serves that the message's mentions actually NAME.
- *
- * `routeRules` returns one primary target because its callers need one; this returns the
- * whole named set, because a mention is a JOIN and a body can name several agents. Using
- * it removes the only place mention handling depended on which rule `find` saw first —
- * the shape that made a shared bot resolve the same event differently.
- */
+/** Every agent this connection serves that the message's mentions actually NAME. A mention is a
+ *  JOIN, and a body can name several agents — so this returns the whole set, and nothing depends
+ *  on which rule `find` saw first (the shape that made a shared bot resolve one event two ways). */
 export function mentionedAgents(msg: ActivationMessageFacts, rules: ActivationRule[], exclude?: string): string[] {
   if (msg.mentionedBots.length === 0) return []
   const named = new Set<string>()
@@ -208,22 +142,13 @@ export function automaticAgents(msg: ActivationMessageFacts, rules: ActivationRu
 
 /**
  * Arbitrate the merged (local ∪ CP) rule set for an inbound message (design §8.2/§8.3).
- * Ladder: (1) explicit @bot mention (cross-layer; overrides thread affinity) →
- * (2) thread affinity (highest after explicit @; bypasses the kind filter, gated on
- * reachable-bot count) → (3) CP per-sessionKey override → (4/5) kind precedence
- * mention > dm > keyword > auto within the chosen layer.
+ * Ladder: explicit @bot mention → thread affinity → CP per-sessionKey override → kind
+ * precedence mention > dm > keyword > auto.
  *
- * `explicitAgentId` short-circuits the whole ladder: a relay webchat turn names its
- * target agent in the `rd/msg` payload, so there is nothing to arbitrate — it routes
- * directly to that agent (integrationId '' because webchat ingress arrives over the
- * relay data plane rather than a platform integration). Null if that agentId isn't a
- * servable rule here.
- *
- * `verifiedAgentAuthor` opens the implicit rungs to an AgentConnect-authored message
- * (send-message-routing-rework.md §2.3): the message routes through THIS ladder exactly
- * as a human's would, with the author removed from the candidate set so it can never
- * wake itself. Set only after the caller has VERIFIED authorship — an unverified bot,
- * including a third-party one, still stops at the explicit-mention rung below.
+ * `explicitAgentId` short-circuits the ladder (webchat names its target). `verifiedAgentAuthor`
+ * opens the implicit rungs to an AgentConnect-authored message (§2.3) with the author removed so
+ * it can never wake itself — set it ONLY after authorship is verified; unverified bots, including
+ * third-party ones, still stop at the explicit-mention rung.
  */
 export function routeRules(
   msg: ActivationMessageFacts,
@@ -233,14 +158,11 @@ export function routeRules(
   verifiedAgentAuthor?: string
 ): { agentId: string; integrationId: string; via: RouteVia } | null {
   if (explicitAgentId !== undefined) {
-    // Direct address (webchat): the message names its agent, so bypass mention/thread/
-    // keyword/auto arbitration entirely. No Slack integration is involved.
+    // Webchat names its agent; integrationId '' because ingress is the relay data plane.
     return { agentId: explicitAgentId, integrationId: '', via: 'mention' }
   }
-  // Scope candidates are KIND-AGNOSTIC (used for reachability + thread continuity).
-  // A verified agent author is removed here, once, so EVERY rung below inherits the
-  // exclusion — an agent that could match its own rule would wake itself on its own
-  // reply, which is an unconditional self-loop rather than a conversation.
+  // Kind-agnostic (reachability + thread continuity). The author is removed HERE, once, so every
+  // rung below inherits it: an agent matching its own rule would self-loop on its own reply.
   const scopeCandidates = rules.filter(
     (r) => scopeMatches(r, msg) && (verifiedAgentAuthor === undefined || r.agentId !== verifiedAgentAuthor)
   )
@@ -249,35 +171,16 @@ export function routeRules(
 
   // 1. explicit @bot mention — across layers; overrides thread affinity (§8.3).
   const mention = kindCandidates.find((r) => r.match.kind === 'mention')
-  // A third-party Slack bot may explicitly address an agent. Bot-authored traffic
-  // never falls through to DM/thread/keyword/auto; AgentConnect-managed bot apps are
-  // removed by the daemon before this pure routing boundary.
-  //
-  // A mention JOINS an agent to this thread — it does not pick between agents. The
-  // difference matters on a bot serving several agent routes: `mentionedAgents`
-  // returns every rule the body actually named, so nothing depends on which one `find`
-  // happened to see first, and everyone already in the thread receives the message
-  // regardless (`threadParticipants`).
   if (mention && verifiedAgentAuthor === undefined && (!msg.sender.isBot || msg.platform === 'slack')) {
     return pickRule(mention, 'mention')
   }
-  // A VERIFIED AgentConnect author continues into the implicit rungs; every other bot
-  // still stops here. That difference is the whole of §2.3: we know exactly which agent
-  // wrote this and have already checked its policy, so it is treated as a participant
-  // rather than as anonymous bot traffic.
+  // Only a VERIFIED AgentConnect author continues into the implicit rungs (§2.3); every other bot
+  // stops here rather than falling through to dm/thread/keyword/auto.
   if (msg.sender.isBot && verifiedAgentAuthor === undefined) return null
-  // An unmatched mention in a channel belongs to another bot (or a human). Do not let
-  // local thread affinity claim it: dedicated Slack apps each see the channel event,
-  // and every daemon otherwise believes its own agent is the sole local thread owner.
-  // A one-to-one DM is already addressed to this bot, though, so mentioning the bot (or
-  // another participant) must not suppress its dm rule. Group DMs are channel-like and
-  // normalize with isDm=false, so they remain mention-gated here.
-  //
-  // A VERIFIED agent author is exempt: its peers are meant to see what it said and judge
-  // for themselves whether to answer, so a `<@…>` aimed at anyone — a human, another app,
-  // a peer whose token this directory cannot resolve — must not silence the conversation.
-  // Unverified traffic keeps the old rule, because for it an unresolved mention really is
-  // "addressed to someone else".
+  // An unmatched channel mention belongs to someone else, so thread affinity must not claim it —
+  // otherwise every daemon believes its own agent owns the thread. A 1:1 DM is already addressed
+  // to this bot (group DMs normalize isDm=false and stay mention-gated). A verified author is
+  // exempt: a `<@…>` aimed at anyone must not silence its peers.
   if (!msg.isDm && msg.mentionedBots.length > 0 && verifiedAgentAuthor === undefined) return null
 
   // 2. thread affinity (§8.2 step 2 — highest after explicit @; bypasses kind filter).

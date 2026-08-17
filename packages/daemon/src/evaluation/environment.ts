@@ -1,18 +1,10 @@
 /**
- * The Collaboration Arena's evaluation environment — the ONE authoritative
- * effective-integration registry (docs/designs/collaboration-arena.md §5) plus
- * the delivery-lifecycle contracts of §7.1 and the ingress payloads of §4.
+ * The Collaboration Arena's evaluation environment (docs/designs/collaboration-arena.md §4/§5/§7.1).
  *
- * Composition rule (§5): each {@link EffectiveIntegration} is materialized as
- * BOTH an entry in the agent's `integrations` (so MCP session construction,
- * tool gating, and `sendMessage` platform advertising see it) AND a virtual
- * connection in the daemon's per-integration connection maps (so reply
- * resolution, transport scope, and tenant classification see the same object).
- * One registry, two projections — they cannot diverge because both derive from
- * the same record. Authorization, coordinate-integrity, call-policy, hop-limit,
- * deduplication, and session-key code stay unchanged; the benchmark compiles
- * its topology into production collaboration policy and never branches on
- * `if (evaluation)` inside policy code.
+ * Invariant: each {@link EffectiveIntegration} is projected BOTH into the agent's `integrations`
+ * and into the daemon's connection maps, from the one record — so the two views cannot diverge.
+ * Policy code (authorization, call policy, hop limits, session keys) never branches on
+ * `if (evaluation)`; the topology compiles into ordinary production policy instead.
  */
 import type { AgentAuthorshipClaim, ChannelAgentsOk, CollabRoutesSnapshot } from '@agentconnect.md/protocol'
 import { IntegrationSchema, type BindRuleConfig, type Integration } from '../agents/agent-schema.js'
@@ -41,20 +33,10 @@ export interface EffectiveIntegration {
   connection: VirtualPlatformConnection
 }
 
-/** One game-owned structured action tool (collaboration-arena.md §6).
- *
- *  Contract:
- *  - the descriptor is APPENDED to the per-session tool set after the product
- *    tools, with name-collision rejection at daemon startup (an evaluation
- *    tool may never shadow a product tool);
- *  - the handler receives the trusted `SessionContext` captured at
- *    `session/new` — never tool-input-supplied identity;
- *  - role-aware authorization is the game's job, IN the handler: the daemon
- *    only guarantees authentic caller identity;
- *  - the handler is idempotent per (runId, phase, agentId, action) and reports
- *    `duplicate` rather than double-applying;
- *  - handler results are the game's world effects — the game records them in
- *    `world-events.jsonl` through the same monotonic ordering as §7.2. */
+/** One game-owned structured action tool (collaboration-arena.md §6). Contract the daemon does
+ *  NOT enforce and the game must uphold: the handler authorizes by role itself (the daemon only
+ *  guarantees the caller identity in `sessionContext`), and is idempotent per
+ *  (runId, phase, agentId, action), reporting `duplicate` rather than double-applying. */
 export interface EvaluationToolDefinition {
   descriptor: ToolDescriptor
   /** Which agents see and may call the tool (e.g. only living players). */
