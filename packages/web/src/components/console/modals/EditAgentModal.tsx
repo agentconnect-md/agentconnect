@@ -367,7 +367,8 @@ export default function EditAgentModal({
             // rollout, which is the whole reason this stopped being a member id.
             value: POOL_PLACEMENT,
             label: POOL_LABEL,
-            detail: poolServing ? 'Model usage included — no API key needed.' : 'Cloud is currently unavailable.',
+            ...(poolServing ? {} : { meta: 'unavailable' }),
+            title: poolServing ? 'Model usage included — no API key needed.' : 'Cloud is currently unavailable.',
             kind: 'pool' as const,
             disabled: initialDaemonId.current !== POOL_PLACEMENT && !poolServing
           }
@@ -378,7 +379,7 @@ export default function EditAgentModal({
           {
             value: daemonChoices.currentPoolChoice.daemonId,
             label: 'Current placement',
-            detail: 'Currently on an unavailable Cloud node — select Cloud above to recover.'
+            title: 'Currently on an unavailable Cloud node — select Cloud above to recover.'
           }
         ]
       : []),
@@ -391,8 +392,9 @@ export default function EditAgentModal({
       return {
         value: groupPlacementValue(group.setId),
         label: group.name,
-        detail: serving
-          ? 'Any daemon in the group.'
+        meta: `${group.memberDaemonIds.length} daemon${group.memberDaemonIds.length === 1 ? '' : 's'}`,
+        title: serving
+          ? 'Any daemon in the group can serve this agent.'
           : group.memberDaemonIds.length === 0
             ? 'No daemons in this group yet.'
             : 'No daemon in this group is serving right now.',
@@ -400,13 +402,13 @@ export default function EditAgentModal({
         disabled: !current && !serving
       }
     }),
-    ...(!initialDaemonId.current ? [{ value: '', label: 'No daemon', detail: 'Leave this agent inactive.' }] : []),
+    ...(!initialDaemonId.current ? [{ value: '', label: 'No daemon', title: 'Leave this agent inactive.' }] : []),
     ...(daemonId && !daemon && !selectedGroup && daemonId !== POOL_PLACEMENT
       ? [
           {
             value: daemonId,
             label: `Current daemon (${daemonId.slice(0, 8)})`,
-            detail: 'This daemon is no longer visible.'
+            title: 'This daemon is no longer visible.'
           }
         ]
       : []),
@@ -416,7 +418,12 @@ export default function EditAgentModal({
       return {
         value: candidate.daemonId,
         label: candidate.name,
-        detail:
+        ...(candidate.status !== 'online'
+          ? { meta: 'offline' }
+          : !candidate.caps.features.includes('agent-move-v1')
+            ? { meta: 'needs update' }
+            : {}),
+        title:
           candidate.status !== 'online'
             ? 'Offline — bring this machine online to use it.'
             : !candidate.caps.features.includes('agent-move-v1')

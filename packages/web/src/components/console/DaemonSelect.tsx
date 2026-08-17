@@ -9,7 +9,11 @@ export type PlacementOptionKind = 'pool' | 'group' | 'daemon'
 export interface DaemonSelectOption {
   value: string
   label: string
-  detail: string
+  /** Compact right-aligned meta ("2 daemons", "offline"). One line, no sentence: the design's
+   *  option row is a single 34px line, so anything longer belongs in `title`. */
+  meta?: string
+  /** The full reason, as a tooltip — where a disabled option explains itself without a second line. */
+  title?: string
   kind?: PlacementOptionKind
   disabled?: boolean
 }
@@ -18,9 +22,6 @@ export interface DaemonSelectOption {
 const isSet = (option: Pick<DaemonSelectOption, 'kind'>): boolean => option.kind === 'pool' || option.kind === 'group'
 const iconFor = (option: DaemonSelectOption): string =>
   option.kind === 'pool' ? 'cloud' : option.kind === 'group' ? 'layers' : option.value ? 'server' : 'server-off'
-// Cloud is a product and carries its name as a badge; a group carries its own name already, and the
-// design's group row has no badge — the layers mark is what says "a set, not a machine".
-const badgeFor = (option: DaemonSelectOption): string | null => (option.kind === 'pool' ? 'Cloud' : null)
 
 function enabledIndex(options: readonly DaemonSelectOption[], start: number, delta: 1 | -1): number {
   if (!options.length) return -1
@@ -138,24 +139,14 @@ export function DaemonSelect({
       >
         <span className={`inline-flex min-w-0 items-center gap-2 ${selected ? '' : 'text-(--text-tertiary)'}`}>
           {selected && (
-            <span
-              className={`flex h-6 w-6 flex-none items-center justify-center rounded-md ${
-                isSet(selected) ? 'bg-(--brand-soft)' : 'bg-(--surface-sunken)'
-              }`}
-            >
-              <Icon
-                name={iconFor(selected)}
-                size={14}
-                color={isSet(selected) ? 'var(--brand)' : 'var(--text-tertiary)'}
-              />
-            </span>
+            <Icon
+              name={iconFor(selected)}
+              size={15}
+              color={isSet(selected) ? 'var(--brand)' : 'var(--text-tertiary)'}
+              className="flex-none"
+            />
           )}
           <span className="truncate">{selected?.label ?? placeholder}</span>
-          {selected && badgeFor(selected) && (
-            <span className="flex-none rounded-full bg-(--brand-soft) px-[7px] py-[2px] font-sans text-[10.5px] font-semibold leading-normal text-(--brand-soft-text)">
-              {badgeFor(selected)}
-            </span>
-          )}
         </span>
         <Icon
           name="chevron-down"
@@ -174,7 +165,7 @@ export function DaemonSelect({
             tabIndex={-1}
             aria-label={ariaLabel}
             aria-activedescendant={activeIndex >= 0 ? `${listboxId}-option-${activeIndex}` : undefined}
-            className="fmenu right-0 left-0 z-40 max-h-[360px] min-w-0 rounded-lg p-2 shadow-(--shadow-xl) outline-none"
+            className="fmenu z-40 min-w-full outline-none"
             onKeyDown={onListKeyDown}
           >
             {options.map((option, index) => {
@@ -190,13 +181,14 @@ export function DaemonSelect({
                   aria-selected={isSelected}
                   aria-disabled={option.disabled || undefined}
                   disabled={option.disabled}
+                  title={option.title}
                   data-pool={option.kind === 'pool' || undefined}
                   data-group={option.kind === 'group' || undefined}
-                  className={`fopt min-h-[58px] gap-[10px] rounded-md px-2 py-[7px] text-[13px] ${
+                  className={`fopt ${
                     option.disabled
                       ? 'cursor-not-allowed text-(--text-disabled) opacity-65'
                       : isSelected
-                        ? 'bg-(--brand-soft) text-(--brand-soft-text) hover:bg-(--brand-soft)'
+                        ? 'on'
                         : isActive
                           ? 'bg-(--surface-hover)'
                           : ''
@@ -204,32 +196,18 @@ export function DaemonSelect({
                   onMouseEnter={() => !option.disabled && setActiveIndex(index)}
                   onClick={() => pick(option)}
                 >
+                  <Icon
+                    name={iconFor(option)}
+                    size={16}
+                    color={isSet(option) ? 'var(--brand)' : 'var(--text-tertiary)'}
+                    className="flex-none"
+                  />
+                  <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                  {option.meta && (
+                    <span className="mono flex-none text-[11.5px] text-(--text-tertiary)">{option.meta}</span>
+                  )}
                   <span className="flex w-4 flex-none items-center justify-center">
-                    {isSelected && <Icon name="check" size={16} color="var(--brand)" />}
-                  </span>
-                  <span
-                    className={`flex h-8 w-8 flex-none items-center justify-center rounded-md ${
-                      isSet(option) ? 'bg-(--brand-soft)' : 'bg-(--surface-sunken)'
-                    }`}
-                  >
-                    <Icon
-                      name={iconFor(option)}
-                      size={16}
-                      color={isSet(option) ? 'var(--brand)' : 'var(--text-tertiary)'}
-                    />
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="flex items-center gap-2 font-sans text-[13px] font-semibold leading-normal">
-                      <span className="truncate">{option.label}</span>
-                      {badgeFor(option) && (
-                        <span className="flex-none rounded-full bg-(--brand-soft) px-[7px] py-[2px] font-sans text-[10.5px] font-semibold leading-normal text-(--brand-soft-text)">
-                          {badgeFor(option)}
-                        </span>
-                      )}
-                    </span>
-                    <span className="mt-[3px] block truncate font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                      {option.detail}
-                    </span>
+                    {isSelected && <Icon name="check" size={15} color="var(--brand)" />}
                   </span>
                 </button>
               )
