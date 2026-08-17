@@ -30,6 +30,7 @@ import { randomUUID } from 'node:crypto'
 import { Prisma, type PrismaClient } from '../../generated/prisma/client.js'
 import type { AgentId, DaemonId } from '../../domain/ids.js'
 import type { MemberSetRecord, MemberSetRepo } from '../ports.js'
+import { settlePlacementChange } from './agent-placement.js'
 import {
   AgentSetPlacementDenied,
   DaemonPlacementInSet,
@@ -180,6 +181,10 @@ export class PgMemberSetRepo implements MemberSetRepo {
               "configRevision" = "configRevision" + 1
           WHERE id = ${agentId}::uuid
         `)
+        // The same settlement every other placement writer performs, in the same transaction:
+        // webchat MCP delegations are placement-bound grants and hook dispatches made before the
+        // change must read stale. This IS a real placement change — `daemon` to `set`.
+        await settlePlacementChange(tx, agentId)
       }
       // Anything still pinned here that the caller did not name would be unservable the moment the
       // row below lands, so the whole operation fails rather than create that state.

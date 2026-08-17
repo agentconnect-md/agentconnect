@@ -38,7 +38,7 @@ import { lockResourceWriteMemberships } from '../resource-membership-lock.js'
 import { lockSkillSourceNameScopes } from '../skill-source-lock.js'
 import { tryLockMemoryConnectionScopes } from '../memory-connection-lock.js'
 import { PgHookRepo } from './hook.repo.js'
-import { lockAgentPlacement, revokeActiveWebchatMcpDelegations } from './agent-placement.js'
+import { lockAgentPlacement, settlePlacementChange } from './agent-placement.js'
 import { assertAgentMayUseSet, assertDaemonNotInSet } from './member-set.repo.js'
 
 /** An agent may be created already placed. A `set` placement names a set rather than a machine, so
@@ -846,13 +846,7 @@ export class PgAgentRepo implements AgentRepo {
         }
       })
       if (target.kind !== 'unplaced') await settlePresetPlacement(tx, agentId)
-      if (!samePlacement(placementTargetOf(current), target)) {
-        await revokeActiveWebchatMcpDelegations(tx, agentId, new Date())
-        await tx.hookDef.updateMany({
-          where: { agentId },
-          data: { dispatchRevision: { increment: 1 } }
-        })
-      }
+      if (!samePlacement(placementTargetOf(current), target)) await settlePlacementChange(tx, agentId)
     })
   }
 
@@ -892,13 +886,7 @@ export class PgAgentRepo implements AgentRepo {
           include: withUsers
         })
         if (target.kind !== 'unplaced') await settlePresetPlacement(tx, agentId)
-        if (!samePlacement(expected, target)) {
-          await revokeActiveWebchatMcpDelegations(tx, agentId, new Date())
-          await tx.hookDef.updateMany({
-            where: { agentId },
-            data: { dispatchRevision: { increment: 1 } }
-          })
-        }
+        if (!samePlacement(expected, target)) await settlePlacementChange(tx, agentId)
         return toRecord(a)
       })
     } catch (err) {

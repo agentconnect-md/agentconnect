@@ -278,6 +278,11 @@ export class AgentMoveService {
           }
           this.deps.log?.warn({ err, agentId: agent.id, daemonId }, 'group enrolment: forced past an unacked detach')
         }
+        // Durable and hot session affinity, released exactly as a move releases it. Without this
+        // the assignment rows survive, the machine's next register replays them into the owner
+        // index, and affinity traffic keeps arriving at a daemon that may no longer hold the duty.
+        const released = await this.deps.assignments.releaseForAgent(agent.id, daemonId, new Date())
+        for (const key of released) this.deps.sessionOwners.releaseSession(key)
       }
       await this.deps.memberSetWrites?.enrollWithPlacedAgents(
         setId,

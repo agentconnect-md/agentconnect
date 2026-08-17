@@ -1,6 +1,6 @@
 // No 'use client' here: rendered only by ModalProvider (the client boundary).
 
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import type { DaemonRow, MemberSetRow } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { Button, Icon } from '@/components/ui'
@@ -26,10 +26,13 @@ export default function GroupModal({ group, onClose }: { group?: MemberSetRow; o
   const [members, setMembers] = useState<string[]>(group?.memberDaemonIds ?? [])
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState<string | null>(null)
-  // Set when a machine could not confirm it stopped its agents: the operator may assert it is
-  // permanently stopped, which is the move's own force contract and the only safety boundary a
-  // machine outside the ledger has (§3).
-  const [forceOffer, setForceOffer] = useState(false)
+  // The ONE machine that could not confirm it stopped its agents. The operator's assertion is
+  // about that machine, so it is carried per daemon: forcing A must never wave B through a failure
+  // nobody was shown. Null ⇒ nothing to force (§3).
+  const [forceDaemonId, setForceDaemonId] = useState<string | null>(null)
+  // A group created by a failed attempt. Names are not unique, so retrying without this would
+  // create a second one and leave the first empty.
+  const createdSetId = useRef<string | null>(null)
   const trimmed = name.trim()
 
   // A daemon the org owns is a candidate unless it is in a DIFFERENT group: a daemon is in at most
@@ -42,25 +45,33 @@ export default function GroupModal({ group, onClose }: { group?: MemberSetRow; o
       current.includes(daemonId) ? current.filter((id) => id !== daemonId) : [...current, daemonId]
     )
 
-  const save = async (force = false) => {
+  /** `forcing` is the ONE machine the operator has just asserted is stopped, never a mode. */
+  const save = async (forcing: string | null = null) => {
     if (saving || !trimmed) return
     setSaving(true)
     setErr(null)
-    if (force) setForceOffer(false)
+    setForceDaemonId(null)
+    let daemonId: string | undefined
     try {
-      const setId = group ? group.setId : (await createGroup(trimmed)).setId
+      // Reuse the group a previous attempt created: it exists, and a second one with the same name
+      // is indistinguishable from it.
+      const setId = group ? group.setId : (createdSetId.current ??= (await createGroup(trimmed)).setId)
       if (group && trimmed !== group.name) await renameGroup(setId, trimmed)
       const before = new Set(group?.memberDaemonIds ?? [])
       const after = new Set(members)
-      // Each membership write is its own request with its own precondition, so they are applied one
-      // at a time: a refusal names the machine that caused it instead of failing the whole dialog.
-      for (const daemonId of members.filter((id) => !before.has(id))) await enrollInGroup(setId, daemonId, { force })
-      for (const daemonId of [...before].filter((id) => !after.has(id))) await withdrawFromGroup(setId, daemonId)
+      // Each membership write is its own request with its own precondition, applied one at a time:
+      // a refusal names the machine that caused it, and every machine after it stays untouched
+      // rather than riding through on an assertion made about a different one.
+      for (daemonId of members.filter((id) => !before.has(id))) {
+        await enrollInGroup(setId, daemonId, daemonId === forcing ? { force: true } : {})
+      }
+      for (daemonId of [...before].filter((id) => !after.has(id))) await withdrawFromGroup(setId, daemonId)
       onClose()
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e)
       setErr(message)
-      setForceOffer(/permanently stopped/.test(message))
+      // Offer the assertion only for the machine that actually failed to confirm.
+      if (daemonId && /permanently stopped/.test(message)) setForceDaemonId(daemonId)
       setSaving(false)
     }
   }
@@ -155,13 +166,13 @@ export default function GroupModal({ group, onClose }: { group?: MemberSetRow; o
         <Button variant="ghost" onClick={onClose}>
           Cancel
         </Button>
-        {forceOffer && (
+        {forceDaemonId && (
           <Button
             variant="danger"
-            onClick={() => void save(true)}
+            onClick={() => void save(forceDaemonId)}
             className={saving ? 'cursor-default opacity-50' : undefined}
           >
-            It is stopped — join anyway
+            {daemons.find((d) => d.daemonId === forceDaemonId)?.name ?? 'It'} is stopped — join anyway
           </Button>
         )}
         <Button onClick={() => void save()} className={!saving && trimmed ? undefined : 'cursor-default opacity-50'}>

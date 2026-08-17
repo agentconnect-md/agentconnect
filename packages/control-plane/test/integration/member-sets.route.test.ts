@@ -131,6 +131,15 @@ describe('member sets — the enrolment transitions (real Postgres)', () => {
       expect(res.json().message).toMatch(/permanently stopped/)
       expect(await prisma.memberSetMember.count()).toBe(0)
 
+      // `force=false` is DECLINING to assert, not asserting: truthy string coercion here would
+      // turn the safety switch on for anyone who spelled it out.
+      const declined = await app.inject({
+        method: 'PUT',
+        url: `${ORG}/member-sets/${setId}/members/${DAEMON}?force=false`
+      })
+      expect(declined.statusCode).toBe(409)
+      expect(await prisma.memberSetMember.count()).toBe(0)
+
       // The operator asserts it is stopped: the agents move onto the set and the machine joins.
       const forced = await app.inject({
         method: 'PUT',
@@ -143,6 +152,28 @@ describe('member sets — the enrolment transitions (real Postgres)', () => {
         setId,
         daemonId: null
       })
+    } finally {
+      await close()
+    }
+  })
+
+  it('settles the moved agents\u2019 placement-bound state, as every other placement writer does', async () => {
+    const { app, close } = buildHttpApp(prisma)
+    try {
+      await seedDaemon(prisma, DAEMON)
+      await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+      const before = await prisma.hookDef.findMany({ where: { agentId: AGENT }, select: { dispatchRevision: true } })
+      const setId = await withSet(app)
+
+      await app.inject({ method: 'PUT', url: `${ORG}/member-sets/${setId}/members/${DAEMON}?force=true` })
+
+      // A hook dispatch prepared before the change must read stale: whoever holds the duty now is
+      // not the machine the dispatch was compiled against.
+      const after = await prisma.hookDef.findMany({ where: { agentId: AGENT }, select: { dispatchRevision: true } })
+      after.forEach((hook, i) => expect(hook.dispatchRevision).toBeGreaterThan(before[i]!.dispatchRevision))
+      // And the durable session affinity the machine owned is released rather than replayed on its
+      // next register into an owner index that no longer reflects who serves the agent.
+      expect(await prisma.assignment.count({ where: { agentId: AGENT, daemonId: DAEMON, state: 'active' } })).toBe(0)
     } finally {
       await close()
     }
