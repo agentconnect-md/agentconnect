@@ -48,7 +48,6 @@ describe('DaemonSelect', () => {
     const rows = [...container!.querySelectorAll<HTMLButtonElement>('[role="option"]')]
 
     expect(rows[0]?.dataset.pool).toBe('true')
-    expect(rows[0]?.textContent).toContain('AgentConnect Cloud')
     // The row is ONE line: the name, and a compact meta when there is one. The longer reason is a
     // tooltip, not a second line (the design's `.fopt`).
     expect(rows[0]?.textContent).toContain('AgentConnect Cloud')
@@ -56,6 +55,10 @@ describe('DaemonSelect', () => {
     expect(rows[0]?.getAttribute('title')).toBe('Model usage included — no API key needed.')
     expect(rows[2]?.textContent).toContain('offline')
     expect(rows).toHaveLength(3)
+    // The selected row carries the design's `.fopt.on`, which is where its background and weight
+    // come from — the component states the class, `globals.css` has to define it.
+    expect(rows[0]?.className).toMatch(/\bon\b/)
+    expect(rows[1]?.className).not.toMatch(/\bon\b/)
   })
 
   it('selects a local daemon and skips unavailable choices with the keyboard', async () => {
