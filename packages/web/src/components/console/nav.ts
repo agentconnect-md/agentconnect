@@ -23,7 +23,7 @@ export const NAV_GROUPS: NavItem[][] = [
     { href: '/integrations', label: 'Integrations', icon: 'plug' },
     { href: '/usage', label: 'Analytics', icon: 'circle-gauge' }
   ],
-  [{ href: '/daemons', label: 'Daemons', icon: 'server' }]
+  [{ href: '/daemons', label: 'Infra', icon: 'server' }]
 ]
 
 // Bottom tab bar (mobile only) — exactly the design's 5-slot bar: the 4 primary
@@ -45,7 +45,7 @@ export const MORE_ROWS: NavItem[] = [
   { href: '/tools', label: 'Tools & Skills', icon: 'blocks' },
   { href: '/knowledge', label: 'Knowledge', icon: 'book-open' },
   { href: '/integrations', label: 'Integrations', icon: 'plug' },
-  { href: '/daemons', label: 'Daemons', icon: 'server' },
+  { href: '/daemons', label: 'Infra', icon: 'server' },
   { href: '/settings', label: 'Settings', icon: 'settings' }
 ]
 
@@ -58,7 +58,7 @@ export const SECTIONS: { prefix: string; label: string }[] = [
   // Merged conversation pages live in the Sessions section (§5.3).
   { prefix: '/conversations', label: 'Sessions' },
   { prefix: '/crons', label: 'Schedules' },
-  { prefix: '/daemons', label: 'Daemons' },
+  { prefix: '/daemons', label: 'Infra' },
   { prefix: '/tools', label: 'Tools & Skills' },
   { prefix: '/knowledge', label: 'Knowledge' },
   { prefix: '/integrations', label: 'Integrations' },

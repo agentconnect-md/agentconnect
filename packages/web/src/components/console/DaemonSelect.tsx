@@ -17,9 +17,10 @@ export interface DaemonSelectOption {
 /** A set target is drawn as a target, never as the member that happens to answer for it. */
 const isSet = (option: Pick<DaemonSelectOption, 'kind'>): boolean => option.kind === 'pool' || option.kind === 'group'
 const iconFor = (option: DaemonSelectOption): string =>
-  option.kind === 'pool' ? 'cloud' : option.kind === 'group' ? 'boxes' : option.value ? 'server' : 'server-off'
-const badgeFor = (option: DaemonSelectOption): string | null =>
-  option.kind === 'pool' ? 'Cloud' : option.kind === 'group' ? 'Group' : null
+  option.kind === 'pool' ? 'cloud' : option.kind === 'group' ? 'layers' : option.value ? 'server' : 'server-off'
+// Cloud is a product and carries its name as a badge; a group carries its own name already, and the
+// design's group row has no badge — the layers mark is what says "a set, not a machine".
+const badgeFor = (option: DaemonSelectOption): string | null => (option.kind === 'pool' ? 'Cloud' : null)
 
 function enabledIndex(options: readonly DaemonSelectOption[], start: number, delta: 1 | -1): number {
   if (!options.length) return -1
