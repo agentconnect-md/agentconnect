@@ -6,7 +6,7 @@ import { ShimClient, type ShimTransport } from '../src/shim/client.js'
 import { ShimDialer, type ShimDialerDeps } from '../src/shim/dialer.js'
 import { ShimServer } from '../src/shim/server.js'
 import { ShimSession } from '../src/shim/session.js'
-import { noopClusterMetrics, type ClusterMetrics } from '../src/k8s/cluster-metrics.js'
+import { noopClusterMetrics, type ClusterMetrics } from '../src/metrics/cluster-metrics.js'
 import type { SpawnRecord } from '../src/shim/binding.js'
 import type { PodIdentityVerifier, ShimConnection } from '../src/shim/listener.js'
 import {

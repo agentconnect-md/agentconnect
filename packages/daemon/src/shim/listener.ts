@@ -1,7 +1,7 @@
 import { createServer, type Server } from 'node:http'
 import { isAbsolute, normalize } from 'node:path'
 import { MAX_FRAME_BYTES } from '@agentconnect.md/protocol'
-import { noopClusterMetrics, type ClusterMetrics } from '../k8s/cluster-metrics.js'
+import { noopClusterMetrics, type ClusterMetrics } from '../metrics/cluster-metrics.js'
 import { systemClock, type Clock } from '@agentconnect.md/connection'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { ShimBindingRegistry, type Binding, type SpawnRecord } from './binding.js'
