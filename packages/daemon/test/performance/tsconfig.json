@@ -1,0 +1,12 @@
+{
+  "extends": "../../../../tsconfig.base.json",
+  "compilerOptions": {
+    "customConditions": ["development"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "noEmit": true,
+    "rootDir": "../../../..",
+    "types": ["node", "vitest/globals"]
+  },
+  "include": ["./*.ts", "../../vitest.postgres-capacity.config.ts"]
+}
