@@ -1047,6 +1047,8 @@ export interface DaemonViewDto {
   /** An install-wide pool member — managed infrastructure shared by every org, one row
    *  per pool member Pod. Absent from an older CP ⇒ treat as a plain daemon. */
   cloud?: boolean
+  /** The member set this daemon is in, or null when it owns its agents outright. */
+  memberSetId?: string | null
   health: string
   capabilities: DaemonCapabilitiesDto
   runtimeProfiles: RuntimeProfileDto[]
@@ -1086,8 +1088,11 @@ export interface DaemonLifecycleOpDto {
 }
 
 export interface CreateAgentInput {
-  /** `pool` is the API sugar for the pool member set; the CP resolves it and stores `set`. */
-  placementKind?: 'pool'
+  /** The placement TARGET. `pool` is the API sugar for the install-wide member set; `set` names
+   *  one of the org's own groups through `setId`; omitting both pins the agent to `daemonId`. */
+  placementKind?: 'pool' | 'set'
+  /** The group a `set` placement names (daemon-groups.md §2). */
+  setId?: string
   name: string // slug — the CP rejects anything but ^[a-z0-9]+(-[a-z0-9]+)*$
   displayName?: string
   icon?: AgentIcon // absent ⇒ the CP assigns a random glyph+color
@@ -1813,6 +1818,9 @@ export function agentFromDto(d: AgentDto): Agent {
     // that a rollout invalidates.
     placementKind: d.placementKind ?? 'daemon',
     placementReady: d.placementReady ?? false,
+    // The set id rides along: `daemon` alone cannot tell the pool from one of the org's own groups,
+    // and only a caller holding the org's set list can (daemon-groups.md §2).
+    setId: d.setId ?? null,
     daemon: placementValueOf(d) ?? PLACEHOLDER,
     ...(d.daemonName ? { daemonName: d.daemonName } : {}),
     region: PLACEHOLDER,
@@ -2050,6 +2058,7 @@ export function daemonFromDto(d: DaemonViewDto): DaemonRow {
   return {
     daemonId: d.daemonId,
     pool,
+    memberSetId: d.memberSetId ?? null,
     // Display label: the daemon name (the CP seeds it from the hostname on first
     // register, so a connected daemon always has one), else a short id for a
     // provisioned-but-never-connected row. Never the raw hostname. A pool member's
@@ -3441,8 +3450,10 @@ export async function setAgentWorkspace(agentId: string, input: SetAgentWorkspac
 // acknowledged source fence/cancel and destination activation; `force` is the
 // explicit recovery path when the source cannot ACK. This stays separate from
 // the ordinary spec PATCH because placement changes have runtime side effects.
-/** A move target: one machine, or the pool member set as a whole (submitted as the `pool` sugar). */
-export type AgentPlacementTarget = { kind: 'daemon'; daemonId: string } | { kind: 'pool' }
+/** A move target: one machine, the pool as a whole (submitted as the `pool` sugar), or one of the
+ *  org's own groups. Both set kinds name the SET — whichever member holds the duty serves it. */
+export type AgentPlacementTarget =
+  { kind: 'daemon'; daemonId: string } | { kind: 'pool' } | { kind: 'set'; setId: string }
 
 export async function moveAgent(
   agentId: string,
@@ -3451,14 +3462,18 @@ export async function moveAgent(
 ): Promise<Agent> {
   const moved = agentFromDto(
     await apiPut<AgentDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/daemon`, {
-      ...(target.kind === 'pool' ? { placementKind: 'pool' } : { daemonId: target.daemonId }),
+      ...(target.kind === 'pool'
+        ? { placementKind: 'pool' }
+        : target.kind === 'set'
+          ? { placementKind: 'set', setId: target.setId }
+          : { daemonId: target.daemonId }),
       ...(options.force ? { force: true } : {})
     })
   )
   track('agent_moved', {
     org_id: apiOrgId,
     agent_id: moved.id,
-    to_daemon_id: target.kind === 'pool' ? 'pool' : target.daemonId,
+    to_daemon_id: target.kind === 'pool' ? 'pool' : target.kind === 'set' ? `set:${target.setId}` : target.daemonId,
     force: options.force === true
   })
   return moved
@@ -4379,6 +4394,51 @@ export interface SkillSourcePreviewDto {
   branches: string[]
   tags: string[]
   skills: Array<{ name: string; dirPath: string }>
+}
+
+// ── member sets (docs/designs/daemon-groups.md) ──────────────────────────────
+// A named set of the organization's own daemons within which an agent's duty may be claimed:
+// point an agent at the set instead of one machine and it survives losing any single member.
+// The install-wide pool is the ORG-LESS set and is never listed here — the console renders it as
+// AgentConnect Cloud from the daemon fleet, not from this endpoint.
+
+export interface MemberSetDto {
+  setId: string
+  name: string
+  /** Daemon ids currently enrolled. A daemon is in at most one set. */
+  memberDaemonIds: string[]
+  /** Agents placed on the set — the count shown beside Cloud's and a cluster's. */
+  agentCount: number
+}
+
+export async function fetchMemberSets(orgId?: string): Promise<MemberSetDto[]> {
+  return apiGet<MemberSetDto[]>(`${orgBase(orgId)}/member-sets`)
+}
+
+export async function createMemberSet(name: string): Promise<MemberSetDto> {
+  return apiPost<MemberSetDto>(`${orgBase()}/member-sets`, { name })
+}
+
+export async function renameMemberSet(setId: string, name: string): Promise<MemberSetDto> {
+  return apiPatch<MemberSetDto>(`${orgBase()}/member-sets/${encodeURIComponent(setId)}`, { name })
+}
+
+export async function deleteMemberSet(setId: string): Promise<void> {
+  await apiDelete<void>(`${orgBase()}/member-sets/${encodeURIComponent(setId)}`)
+}
+
+/** Enroll a daemon. 409 while agents are still pinned to it, or while it is in another set. */
+export async function enrollDaemonInMemberSet(setId: string, daemonId: string): Promise<MemberSetDto> {
+  return apiPut<MemberSetDto>(
+    `${orgBase()}/member-sets/${encodeURIComponent(setId)}/members/${encodeURIComponent(daemonId)}`
+  )
+}
+
+/** Withdraw a daemon. 409 while it still holds a live duty lease — drain it first. */
+export async function withdrawDaemonFromMemberSet(setId: string, daemonId: string): Promise<MemberSetDto> {
+  return apiDelete<MemberSetDto>(
+    `${orgBase()}/member-sets/${encodeURIComponent(setId)}/members/${encodeURIComponent(daemonId)}`
+  )
 }
 
 export async function fetchSkillSources(orgId?: string): Promise<SkillSourceDto[]> {

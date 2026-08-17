@@ -692,7 +692,7 @@ describe('PUT /agents/:id/daemon — the pool as a placement target', () => {
     })
 
     expect(res.statusCode).toBe(409)
-    expect(res.json().message).toContain('no cloud daemon member is ready')
+    expect(res.json().message).toContain('no daemon in the target member set is ready')
     expect(await prisma.agent.findUnique({ where: { id: agentId } })).toMatchObject({
       placementKind: 'daemon',
       daemonId: SOURCE

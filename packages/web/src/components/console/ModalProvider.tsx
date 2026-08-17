@@ -7,7 +7,7 @@
 // (add integration / delete / edit agent); the kind selects which the render casts it to.
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import type { Agent, DaemonRow, IntegrationRow } from '@/lib/data'
+import type { Agent, DaemonRow, IntegrationRow, MemberSetRow } from '@/lib/data'
 import type { CronDto, HookDto } from '@/lib/api'
 import AddAgentModal from './modals/AddAgentModal'
 import AddDaemonModal from './modals/AddDaemonModal'
@@ -29,6 +29,8 @@ import EditDescriptionModal from './modals/EditDescriptionModal'
 import EditProfileModal from './modals/EditProfileModal'
 import CreateOrgModal from './modals/CreateOrgModal'
 import EditOrgModal from './modals/EditOrgModal'
+import GroupModal from './modals/GroupModal'
+import DeleteGroupModal from './modals/DeleteGroupModal'
 
 export type ModalKind =
   | 'agent'
@@ -48,9 +50,11 @@ export type ModalKind =
   | 'editProfile'
   | 'createOrg'
   | 'editOrg'
+  | 'group'
+  | 'deleteGroup'
 
 // HookDto[] = the whole GitHub group (header unplug — disconnect every repo subscription).
-type ModalTarget = DaemonRow | Agent | CronDto | IntegrationRow | HookDto | HookDto[]
+type ModalTarget = DaemonRow | Agent | CronDto | IntegrationRow | HookDto | HookDto[] | MemberSetRow
 
 // Per-kind extras: `platform` preselects the Add-integration pane (the GitHub group
 // card's "Add repository" lands on GitHub, not the Slack default). `focusSection`
@@ -122,6 +126,11 @@ export function ModalProvider({ children }: { children: ReactNode }) {
                   : 'modal'
             }
           >
+            {/* `group` with no target creates; with one it renames — a group has one property. */}
+            {open.kind === 'group' && <GroupModal group={open.target as MemberSetRow | undefined} onClose={close} />}
+            {open.kind === 'deleteGroup' && open.target && (
+              <DeleteGroupModal group={open.target as MemberSetRow} onClose={close} />
+            )}
             {open.kind === 'agent' && <AddAgentModal onClose={close} />}
             {/* Opened from an unplaced agent's "Add daemon" chip: once the daemon
                 connects, Continue chains back into that agent's edit dialog, where

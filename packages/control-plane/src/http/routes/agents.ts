@@ -1400,7 +1400,7 @@ export function agentRoutes(deps: HttpDeps) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'member set not found' })
         }
         const setMembers = targetSetId ? await readySetMembers(deps, orgOf(req), targetSetId) : []
-        if (wantsSet && setMembers.length === 0) return conflict('no cloud daemon member is ready')
+        if (wantsSet && setMembers.length === 0) return conflict('no daemon in the target member set is ready')
         const placedDaemon = wantsSet
           ? (setMembers[0] ?? null)
           : req.body.daemonId !== undefined
@@ -2383,7 +2383,7 @@ export function agentRoutes(deps: HttpDeps) {
           if (!wantsSet) {
             return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'daemon not found' })
           }
-          return conflict('no cloud daemon member is ready')
+          return conflict('no daemon in the target member set is ready')
         }
 
         // Deferred exec config (preset-agents.md §3.2): placement is where a
