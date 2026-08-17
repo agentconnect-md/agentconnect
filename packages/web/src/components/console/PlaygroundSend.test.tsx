@@ -256,3 +256,97 @@ describe('agent-initiated post frames', () => {
     expect(posts[0]).toMatchObject({ kind: 'done', agentId: 'agent-2', text: 'hi from B' })
   })
 })
+
+describe('stream text delta batching', () => {
+  class CapturingDeltaSocket extends StubSocket {
+    static instances: CapturingDeltaSocket[] = []
+    onopen?: () => void
+    onmessage?: (e: { data: string }) => void
+    onerror?: (e: unknown) => void
+    onclose?: () => void
+    constructor() {
+      super()
+      CapturingDeltaSocket.instances.push(this)
+    }
+  }
+
+  async function openStream() {
+    CapturingDeltaSocket.instances = []
+    Reflect.set(globalThis, 'WebSocket', CapturingDeltaSocket)
+    const api = await import('@/lib/api')
+    vi.mocked(api.webchatWsUrl).mockResolvedValue('wss://relay.test/ws')
+    await act(async () => {
+      pgSend('s1', 'agent-1', 'hello', 'c1')
+    })
+    const socket = CapturingDeltaSocket.instances[0]!
+    await act(async () => {
+      socket.readyState = 1
+      socket.onopen?.()
+    })
+    const turn = JSON.parse(String(socket.send.mock.calls.at(-1)?.[0])) as { turnId: string }
+    return { socket, turnId: turn.turnId }
+  }
+
+  function captureAnimationFrames() {
+    let nextId = 1
+    const frames = new Map<number, FrameRequestCallback>()
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      const id = nextId++
+      frames.set(id, callback)
+      return id
+    })
+    vi.spyOn(window, 'cancelAnimationFrame').mockImplementation((id) => {
+      frames.delete(id)
+    })
+    return () => {
+      const callbacks = [...frames.values()]
+      frames.clear()
+      for (const callback of callbacks) callback(16)
+    }
+  }
+
+  it('commits several same-frame message deltas as one transcript update', async () => {
+    const runFrame = captureAnimationFrames()
+    const { socket, turnId } = await openStream()
+
+    act(() => {
+      for (const [index, text] of ['Hel', 'lo', '!'].entries()) {
+        socket.onmessage?.({
+          data: JSON.stringify({
+            type: 'output',
+            output: { turnId, agentId: 'agent-1', index, event: { kind: 'message', text } }
+          })
+        })
+      }
+    })
+    expect(getLiveSteps('s1').filter((step) => step.agentId === 'agent-1')).toEqual([])
+
+    act(runFrame)
+    expect(getLiveSteps('s1').filter((step) => step.agentId === 'agent-1')).toMatchObject([
+      { kind: 'done', text: 'Hello!' }
+    ])
+  })
+
+  it('flushes the final text before applying done', async () => {
+    const runFrame = captureAnimationFrames()
+    const { socket, turnId } = await openStream()
+
+    act(() => {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'output',
+          output: { turnId, agentId: 'agent-1', index: 0, event: { kind: 'thinking', text: 'complete' } }
+        })
+      })
+      socket.onmessage?.({
+        data: JSON.stringify({ type: 'done', done: { turnId, agentId: 'agent-1', lastIndex: 0 } })
+      })
+    })
+
+    expect(getLiveSteps('s1').filter((step) => step.agentId === 'agent-1')).toMatchObject([
+      { kind: 'plan', text: 'complete' }
+    ])
+    act(runFrame)
+    expect(getLiveSteps('s1').filter((step) => step.agentId === 'agent-1')).toHaveLength(1)
+  })
+})
