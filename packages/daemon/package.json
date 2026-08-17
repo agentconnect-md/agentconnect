@@ -30,6 +30,7 @@
     "clean": "rm -rf dist",
     "dev": "tsx watch src/index.ts run",
     "prepack": "pnpm run build",
+    "perf:postgres-capacity": "vitest run --config vitest.postgres-capacity.config.ts",
     "start": "node dist/index.js run",
     "test": "vitest run",
     "test:runtime-matrix": "vitest run test/acp-matrix/acp-matrix.test.ts",
