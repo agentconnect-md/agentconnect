@@ -9,6 +9,7 @@ import type { SpawnRecord } from '../shim/binding.js'
 import { isSandboxReady, type OperatingMode, type SandboxClaim, type SandboxApi } from './sandbox-api.js'
 import { SandboxLease } from './sandbox-lease.js'
 import { LaunchRegistry, type Launch, type LaunchGenerations } from './launch-registry.js'
+import { ChannelBinder } from './channel-binder.js'
 import { K8sApiError } from '@agentconnect.md/k8s-client'
 import {
   AC_LABEL_AGENT,
@@ -91,10 +92,8 @@ export class K8sDriver implements SpawnDriver {
   private readonly registry: LaunchRegistry
   /** Holds, mode serialization, and the idle-suspension gates — see `SandboxLease`. */
   private readonly lease: SandboxLease
-  /** Logical channels per agent, which survive the shim's credential renewals. */
-  private readonly sessions = new Map<string, ShimSession>()
-  /** Workspace mount per agent, as the bound pod's shim reported it. */
-  private readonly workspaceRoots = new Map<string, string>()
+  /** Sessions and workspace mounts per agent — see `ChannelBinder`. */
+  private readonly binder: ChannelBinder
   private readonly clock: Clock
 
   constructor(private readonly deps: K8sDriverDeps) {
@@ -106,6 +105,18 @@ export class K8sDriver implements SpawnDriver {
       warmPoolName: deps.warmPoolName,
       log: deps.log,
       metrics: this.metrics
+    })
+    this.binder = new ChannelBinder({
+      registry: this.registry,
+      lease: this.lease,
+      clock: this.clock,
+      log: deps.log,
+      metrics: this.metrics,
+      channelTimeoutMs: this.podUpTimeoutMs,
+      awaitReady: (sandboxName) => this.awaitReady(sandboxName),
+      connectChannel: deps.connectChannel,
+      ...(deps.revokeChannel ? { revokeChannel: deps.revokeChannel } : {}),
+      ...(deps.onChannelReady ? { onChannelReady: deps.onChannelReady } : {})
     })
   }
 
@@ -280,7 +291,7 @@ export class K8sDriver implements SpawnDriver {
     if (!launch) return 'absent'
     return await this.lease.suspendIfIdle(agentId, launch.sandboxName, () => {
       if (this.registry.currentLaunch(agentId) === launch) {
-        this.sessions.delete(agentId)
+        this.binder.dropSession(agentId)
         this.forgetLaunch(agentId)
       }
     })
@@ -320,9 +331,8 @@ export class K8sDriver implements SpawnDriver {
     this.registry.bumpRelease(agentId)
     const launch = this.registry.forgetLaunch(agentId)
     if (launch) this.lease.forgetSandbox(launch.sandboxName)
-    this.workspaceRoots.delete(agentId)
     // Otherwise `runsInSandbox` keeps answering true for a pod that is not this member's to use.
-    this.sessions.delete(agentId)
+    this.binder.forget(agentId)
     this.deps.revokeChannel?.(agentId)
   }
 
@@ -379,104 +389,19 @@ export class K8sDriver implements SpawnDriver {
     grants: ShimCapability[] = RUNTIME_GRANTS
   ): Promise<ShimConnection> {
     const launch = await this.ensureSandbox(agentId, timer)
-    this.lease.retain(launch.sandboxName)
-    try {
-      return await this.bindChannel(agentId, launch, timer, grants)
-    } finally {
-      this.lease.release(launch.sandboxName)
-    }
-  }
-
-  private async bindChannel(
-    agentId: string,
-    launch: Launch,
-    timer: LaunchTimer | undefined,
-    grants: ShimCapability[]
-  ): Promise<ShimConnection> {
-    const releasedAt = this.registry.releaseFence(agentId)
-    // Resume before waiting because suspension deleted the pod and readiness cannot arrive first.
-    const modeBeforeWake = await this.setMode(agentId, 'Running')
-    // A launch this daemon already has cached returns from ensureSandbox before any sandbox
-    // read, so this is where the ordinary `launch → suspend → launch` resume learns what it is.
-    // Without it that path — the COMMON one — reported `warm` and never entered resume p95.
-    if (modeBeforeWake) timer?.observedPath(modeBeforeWake === 'Suspended' ? 'resume' : 'warm')
-    timer?.mark('mode_running')
-    const pod = await this.awaitReady(launch.sandboxName)
-    timer?.mark('pod_ready')
-    const channelTimeoutMs = this.deps.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS
-    const waitingSince = this.clock.now()
-    const connection = await this.deps
-      .connectChannel(
-        {
-          agentId,
-          sandboxUid: launch.sandboxUid,
-          generation: launch.generation,
-          grants: [...grants],
-          podName: pod.podName
-        },
-        pod.podIp,
-        channelTimeoutMs
-      )
-      .catch((err: unknown) => {
-        // connectChannel is supplied by the host, so its error text is not ours to match on.
-        // Elapsed-versus-the-deadline-we-set is a fact we own, and it is what distinguishes a
-        // channel that never arrived from one that failed for another reason.
-        if (this.clock.now() - waitingSince >= channelTimeoutMs) {
-          throw new LaunchTimeoutError(`no shim channel bound for agent ${agentId} in time`)
-        }
-        throw err
-      })
-    timer?.mark('shim_handshake')
-    // Released mid-bind: the pod is another member's to serve now, so the channel is dropped.
-    if (!this.registry.stillServed(agentId, releasedAt)) {
-      this.deps.revokeChannel?.(agentId)
-      throw new Error(`agent ${agentId} left this member while its sandbox channel was being bound`)
-    }
-    this.recordWorkspaceRoot(agentId, connection)
-    // The session is created HERE rather than in `launch`, because a channel bound for workspace
-    // preparation needs one too — and a second session per agent would mean the runtime and the
-    // workspace seam disagreeing about whether the channel is alive.
-    const existing = this.sessions.get(agentId)
-    if (existing && existing.generation === connection.binding.generation) {
-      existing.attach(connection)
-    } else {
-      const session = new ShimSession(agentId, connection.binding.generation, {
-        setTimeout: (fn, ms) => this.clock.setTimeout(fn, ms),
-        clearTimeout: (handle) => this.clock.clearTimeout(handle as never)
-      })
-      session.attach(connection)
-      this.sessions.set(agentId, session)
-    }
-    // After the session exists and before the caller can use the channel. Reported rather than
-    // raised: a sandbox without its credential tunnel still runs, and refusing the launch would
-    // turn one degraded feature into no agent at all.
-    const ready = this.sessions.get(agentId)
-    if (ready && this.deps.onChannelReady) {
-      await this.deps.onChannelReady(agentId, ready).catch((err: unknown) => {
-        this.deps.log.warn(`cluster: agent ${agentId} channel prepared with errors: ${(err as Error).message}`)
-      })
-    }
-    return connection
+    return await this.binder.bindChannel(agentId, launch, timer, grants)
   }
 
   /** The bound session for an agent, so the workspace seam reaches the same channel the runtime
    *  does rather than opening a second one that can disagree about whether it is alive. */
   sessionFor(agentId: string): ShimSession | undefined {
-    return this.sessions.get(agentId)
+    return this.binder.sessionFor(agentId)
   }
 
   /** Where the agent's bound pod mounts its workspace, or undefined before a bind (or when a
    *  legacy shim reported nothing — callers fall back to the historical mount). */
   workspaceRootFor(agentId: string): string | undefined {
-    return this.workspaceRoots.get(agentId)
-  }
-
-  // Mirrors the CURRENT pod, absence included: a root kept from a previous incarnation (an image
-  // rollback to a shim that reports none) names a mount this pod may not have — the exact failure
-  // this seam exists to remove. Unset ⇒ callers fall back to the historical mount.
-  private recordWorkspaceRoot(agentId: string, connection: ShimConnection): void {
-    if (connection.workspaceRoot) this.workspaceRoots.set(agentId, connection.workspaceRoot)
-    else this.workspaceRoots.delete(agentId)
+    return this.binder.workspaceRootFor(agentId)
   }
 
   async launch(request: SpawnRequest): Promise<SpawnedRuntime> {
@@ -491,7 +416,7 @@ export class K8sDriver implements SpawnDriver {
       held = bound.sandboxName
       await this.ensureBoundChannel(agentId, timer)
       this.metrics.channel('bound')
-      const session = this.sessions.get(agentId)
+      const session = this.binder.sessionFor(agentId)
       if (!session) throw new Error(`no shim session for agent ${agentId} after binding its channel`)
       // The open is asynchronous, so the stage closes when the runtime reports — not when the
       // call returns. Marking it here measured the cost of constructing a stream pair and called
@@ -523,28 +448,13 @@ export class K8sDriver implements SpawnDriver {
 
   /** Re-attach a renewed or replacement connection to the launch it belongs to. */
   onChannelBound(connection: ShimConnection): void {
-    this.recordWorkspaceRoot(connection.binding.agentId, connection)
-    const session = this.sessions.get(connection.binding.agentId)
-    if (!session) return
-    // Counted apart from the first bind: a re-establishment rate is the signal that renewals or
-    // pod churn are happening more than they should, and pooling the two hides exactly that.
-    this.metrics.channel('reestablished')
-    session.attach(connection)
+    this.binder.onChannelBound(connection)
   }
 
   /** Report that an agent's channel is gone, so its runtime learns rather than hanging. */
+  // The session and the launch are dropped TOGETHER, and that orchestration stays here: a revived
+  // sandbox must never bind to a lost session, and the halves live in two different objects.
   onChannelLost(agentId: string, reason: string): void {
-    this.metrics.channel('dropped')
-    const session = this.sessions.get(agentId)
-    session?.lose(reason)
-    // A lost session is TERMINAL, so it must not survive to meet the replacement pod: `attach()`
-    // is a no-op once closed, and `bindChannel` re-attaches whenever the generations match — which
-    // they would, because a cached launch keeps its own. The resumed sandbox would then bind a
-    // channel whose session can never serve a request. Dropping both here is what makes the next
-    // turn re-claim at a FRESH generation, which is the fence the replacement pod is bound against.
-    if (session && this.sessions.get(agentId) === session) {
-      this.sessions.delete(agentId)
-      this.forgetLaunch(agentId)
-    }
+    if (this.binder.loseChannel(agentId, reason)) this.forgetLaunch(agentId)
   }
 }
