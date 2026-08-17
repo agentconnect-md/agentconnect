@@ -22,6 +22,7 @@ import type { Logger } from '../log.js'
 import type { SandboxMechanism } from '../acp/sandbox.js'
 import type { PreparedRuntimeLaunch } from '../launch/prepare.js'
 import { composeRuntimeLaunch } from '../launch/compose.js'
+import { PACKAGE_LAUNCHERS } from './probe.js'
 
 const PROCESS_ENV_KEYS = new Set(['PATH', 'PATHEXT', 'SystemRoot'])
 const CERTIFICATE_ENV_KEYS = new Set([
@@ -146,6 +147,9 @@ export interface ProbeOptions {
   log?: Logger
   /** Constructs the probe client per runtime — `defaultProbeHostFactory()` in production. */
   hostFactory: ProbeHostFactory
+  /** Called as each probe resolves, so a caller reports incrementally instead of
+   *  at the sweep barrier — one slow runtime then delays only itself. */
+  onResult?: (result: RuntimeProbeResult) => void
   /** Curated candidates require a disposable final managed launch plan. */
   curated?: boolean
   /** Full host environment used for allowlisted credential seeding and redaction. */
@@ -166,7 +170,17 @@ export interface ProbeOptions {
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000
+/** A package launcher builds its install tree on first use — measured at ~210s for a
+ *  harness that pulls 700 packages — so its deadline only reaps a genuinely stuck
+ *  child. Results are reported per probe (ProbeOptions.onResult), so a slow install no
+ *  longer holds back the runtimes that already answered. */
+const PACKAGE_LAUNCHER_TIMEOUT_MS = 6 * 60_000
 const DEFAULT_CONCURRENCY = 3
+
+/** Spawn + initialize + session/new budget for one runtime. */
+export function probeTimeoutMs(rt: RuntimeDef): number {
+  return PACKAGE_LAUNCHERS.has(rt.command) ? PACKAGE_LAUNCHER_TIMEOUT_MS : DEFAULT_TIMEOUT_MS
+}
 
 /** Probe temp roots are `ac-probe-<daemon-pid>-<random>` directly under the OS
  *  temp dir. The PID lets a sweeper distinguish a live concurrent daemon from
@@ -467,7 +481,8 @@ export function preparedProbeLaunch(
     sandboxMechanism: opts.sandboxMechanism,
     mcpSocketPath: opts.mcpSocketPath,
     stateSourceEnv: sourceEnv,
-    hostEnv: probeEnv
+    hostEnv: probeEnv,
+    hostPackageCache: true
   })
   if (id === 'hermes-agent' || id === 'hermes') sanitizeHermesProbeDotEnv(composed.launch)
   if (id === 'maki') removeMakiProbeMcpConfig(composed.launch)
@@ -490,7 +505,7 @@ export async function probeRuntime(
   cwd: string,
   opts: ProbeOptions
 ): Promise<RuntimeProbeResult> {
-  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS
+  const timeoutMs = opts.timeoutMs ?? probeTimeoutMs(rt)
   let host: AcpProbeClient | undefined
   let redactValues: string[] = []
 
@@ -583,7 +598,14 @@ export async function probeAllRuntimes(
       const runtimeDir = join(cwd, Buffer.from(id).toString('base64url'))
       const runtimeCwd = join(runtimeDir, 'workspace')
       mkdirSync(runtimeCwd, { recursive: true })
-      results.push(await probeRuntime(id, runtimes[id]!, runtimeCwd, opts))
+      const result = await probeRuntime(id, runtimes[id]!, runtimeCwd, opts)
+      results.push(result)
+      try {
+        opts.onResult?.(result)
+      } catch (err) {
+        // A reporting failure must never abort the remaining probes.
+        opts.log?.warn(`probe: reporting ${id} failed: ${(err as Error).message}`)
+      }
     }
   }
 

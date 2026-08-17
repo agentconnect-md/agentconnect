@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
-import { prepareRuntimeHome, runtimeHomeEnvironment } from '../src/runtimes/runtime-home.js'
+import { hostPackageCacheEnv, prepareRuntimeHome, runtimeHomeEnvironment } from '../src/runtimes/runtime-home.js'
 import { extractOmpCredentials } from '../src/runtimes/omp-credentials.js'
 
 function fixture(): { root: string; hostHome: string; scopeDir: string } {
@@ -363,5 +363,29 @@ describe('private runtime HOME', () => {
 
     expect(() => extractOmpCredentials(sourcePath, destinationPath)).toThrow(/symlink/i)
     expect(readFileSync(outsidePath, 'utf8')).toBe('outside')
+  })
+})
+
+describe('hostPackageCacheEnv', () => {
+  it('pins npx at the host npm cache so a fresh probe HOME does not rebuild the tree', () => {
+    expect(hostPackageCacheEnv('npx', { HOME: '/host' })).toEqual({ npm_config_cache: join('/host', '.npm') })
+  })
+
+  it('honors an ambient npm cache override', () => {
+    expect(hostPackageCacheEnv('npx', { HOME: '/host', NPM_CONFIG_CACHE: '/shared/npm' })).toEqual({
+      npm_config_cache: '/shared/npm'
+    })
+  })
+
+  it('pins uvx at the host uv cache, honoring XDG_CACHE_HOME', () => {
+    expect(hostPackageCacheEnv('uvx', { HOME: '/host' })).toEqual({ UV_CACHE_DIR: join('/host', '.cache', 'uv') })
+    expect(hostPackageCacheEnv('uvx', { HOME: '/host', XDG_CACHE_HOME: '/xdg' })).toEqual({
+      UV_CACHE_DIR: join('/xdg', 'uv')
+    })
+  })
+
+  it('pins nothing for a real binary distribution', () => {
+    expect(hostPackageCacheEnv('qodercli', { HOME: '/host' })).toEqual({})
+    expect(hostPackageCacheEnv(undefined, { HOME: '/host' })).toEqual({})
   })
 })

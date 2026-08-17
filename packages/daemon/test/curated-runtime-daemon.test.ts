@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Daemon } from '../src/daemon.js'
+import { CuratedRuntimeAdmission } from '../src/runtimes/curated-admission.js'
 import type { ResolvedRuntimeCatalog } from '../src/runtimes/registry.js'
 import { FakeClock } from './cp/fake-clock.js'
 
@@ -197,6 +198,107 @@ describe('daemon curated runtime admission', () => {
       expect(emitted[emitted.length - 1]!.find((p) => p.runtime === 'explicit')?.authRequired).toBeUndefined()
     } finally {
       await daemon.stop()
+    }
+  }, 15_000)
+
+  // The sweep used to apply every result at one barrier, so a curated runtime whose
+  // package launcher spends minutes building its install tree also held back the
+  // runtimes that answered in seconds — including their admission.
+  it('reports each probe as it lands instead of waiting for the slowest runtime', async () => {
+    let releaseCurated = (): void => {}
+    let gate: Promise<void> | undefined
+    const probe = vi.fn(
+      async (runtimes: Record<string, unknown>, options: { onResult?: (r: Record<string, unknown>) => void }) => {
+        const results: Array<Record<string, unknown>> = []
+        for (const runtime of Object.keys(runtimes)) {
+          if (runtime === 'hermes-agent' && gate) await gate
+          const result = { runtime, ok: true, models: [] }
+          options.onResult?.(result)
+          results.push(result)
+        }
+        return results
+      }
+    )
+    const daemon = new Daemon({
+      root: root(),
+      resolveCatalog: async () => catalog(),
+      installed: (runtimes) => runtimes,
+      probeRuntimes: probe as never,
+      hostFactory: () => ({}) as never
+    })
+
+    try {
+      await daemon.start()
+      await waitForProbe(daemon, probe)
+      const emitted: string[][] = []
+      ;(daemon as any).cpClient = {
+        emitDaemonRuntimes: (profiles: Array<{ runtime: string }>) => emitted.push(profiles.map((p) => p.runtime)),
+        stop: vi.fn(async () => {})
+      }
+      // Re-arm a full sweep whose curated probe blocks until released.
+      ;(daemon as any).lastProbeAtMs = 0
+      ;(daemon as any).curatedRuntimeAdmission = new CuratedRuntimeAdmission()
+      ;(daemon as any).refreshAdmittedRuntimes()
+      gate = new Promise<void>((resolve) => {
+        releaseCurated = resolve
+      })
+      const sweep = (daemon as any).probeRuntimesAndEmit(true)
+
+      // The fast runtime is reported while the curated probe is still in flight.
+      await vi.waitFor(() => expect(emitted.at(-1)).toContain('explicit'), WAIT)
+      expect((daemon as any).probing).toBe(true)
+      expect(emitted.at(-1)).not.toContain('hermes-agent')
+
+      releaseCurated()
+      await sweep
+      expect(emitted.at(-1)!.slice().sort()).toEqual(['explicit', 'hermes-agent'])
+    } finally {
+      await daemon.stop()
+    }
+  }, 15_000)
+
+  // Admission freshness has to survive a slow co-probe: the next sweep is scheduled from
+  // sweep completion, so a runtime stamped when it landed would go unlaunchable (and get
+  // pruned from the snapshot) for the rest of a long package-launcher install.
+  it('keeps a fast curated result admitted when a slow co-probe outlasts its TTL', async () => {
+    const clock = new FakeClock(100)
+    // 'hermes-agent' answers immediately; the sweep then burns more than the 5-minute
+    // admission TTL before returning, exactly like a cold npx install.
+    const probe = vi.fn(
+      async (
+        runtimes: Record<string, unknown>,
+        options: { onResult?: (r: Record<string, unknown>) => void }
+      ): Promise<Array<Record<string, unknown>>> => {
+        const results = Object.keys(runtimes).map((runtime) => ({ runtime, ok: true, models: [] }))
+        for (const result of results) options.onResult?.(result)
+        clock.advance(6 * 60_000)
+        return results
+      }
+    )
+    const daemon = new Daemon({ clock, probeRuntimes: probe as never, sandboxMechanism: null })
+
+    try {
+      ;(daemon as any).cfg = { security: { isolateAccountApps: true } }
+      ;(daemon as any).root = '/tmp/curated-admission-ttl-test'
+      ;(daemon as any).runtimeCatalog = catalog()
+      ;(daemon as any).refreshAdmittedRuntimes()
+      const emitted: string[][] = []
+      ;(daemon as any).cpClient = {
+        emitDaemonRuntimes: (profiles: Array<{ runtime: string }>) => emitted.push(profiles.map((p) => p.runtime)),
+        stop: vi.fn(async () => {})
+      }
+
+      await (daemon as any).probeRuntimesAndEmit(true)
+
+      expect(probe).toHaveBeenCalled()
+      expect(Object.keys((daemon as any).runtimes).sort()).toEqual(['explicit', 'hermes-agent'])
+      expect(() => (daemon as any).curatedRuntimeAdmission.assertLaunch('hermes-agent', 'curated')).not.toThrow()
+      // The restamp brought it back, so the CP sees it in the final snapshot too.
+      expect(emitted.at(-1)).toContain('hermes-agent')
+    } finally {
+      ;(daemon as any).draining = true
+      const timer = (daemon as any).runtimeProbeTimer
+      if (timer !== undefined) clock.clearTimeout(timer)
     }
   }, 15_000)
 

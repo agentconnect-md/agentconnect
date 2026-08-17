@@ -287,6 +287,33 @@ describe('prepareRuntimeLaunch', () => {
     )
   })
 
+  // A probe HOME is disposable, so npx would resolve and link its whole install tree
+  // every sweep (~210s for a large harness) unless the host package cache survives.
+  // Writable, because npm writes tarballs, its index and the _npx tree there.
+  it('pins the host package cache for a probe launch and carves it back writable', () => {
+    const { scopeDir, cwd, hostHome } = fixture()
+    const base = {
+      runtimeId: 'dsh-acp',
+      runtime: { command: 'npx', args: ['-y', '-p', 'pkg', 'bin'], env: [] } as RuntimeDef,
+      scopeDir,
+      cwd,
+      runInSandbox: true,
+      daemonRoot: dirname(scopeDir),
+      sandboxMechanism: 'bwrap' as const,
+      hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
+    }
+
+    const probe = prepareRuntimeLaunch({ ...base, hostPackageCache: true })
+    expect(probe.env.npm_config_cache).toBe(join(hostHome, '.npm'))
+    expect(coveredBy(probe.sandbox!.writable, realpathSync(join(hostHome, '.npm')))).toBe(true)
+
+    // An agent launch keeps the private cache: its model-driven tool use must not be
+    // able to write the install trees other runtimes launch from.
+    const agent = prepareRuntimeLaunch(base)
+    expect(agent.env.npm_config_cache).toBeUndefined()
+    expect(coveredBy(agent.sandbox!.writable, join(hostHome, '.npm'))).toBe(false)
+  })
+
   it('rejects root-level protected paths instead of generating an ineffective policy', () => {
     const { scopeDir, cwd, hostHome } = fixture()
     expect(() =>

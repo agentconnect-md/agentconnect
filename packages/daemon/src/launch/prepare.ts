@@ -5,7 +5,12 @@ import { sandboxBoundary, writeSandboxSettings, type SandboxMechanism } from '..
 import type { RuntimeDef } from '../config/config-schema.js'
 import { compactReadRoots } from '../runtimes/read-roots.js'
 import { prepareSharedRuntimeCredentials, sharedCredentialProfile } from '../runtimes/runtime-credentials.js'
-import { prepareRuntimeHome, runtimeHomeEnvironment, runtimeHomePath } from '../runtimes/runtime-home.js'
+import {
+  hostPackageCacheEnv,
+  prepareRuntimeHome,
+  runtimeHomeEnvironment,
+  runtimeHomePath
+} from '../runtimes/runtime-home.js'
 import { RUNTIME_STATE_LOCATIONS, runtimeStateLocations } from '../runtimes/probe.js'
 import {
   CLAUDE_PROFILE_ENV,
@@ -169,6 +174,10 @@ export function prepareRuntimeLaunch(opts: {
   /** Permit the runtime-native tool sandbox to reach a daemon-owned Unix
    * channel. An enabled outer sandbox remains the surrounding boundary. */
   allowModelToolUnixSockets?: boolean
+  /** Probe launches only: keep npx/uvx on the HOST package cache (see
+   * hostPackageCacheEnv). A probe never runs a model turn; an agent launch must not
+   * get this, so its confined tool use cannot write another runtime's install tree. */
+  hostPackageCache?: boolean
 }): PreparedRuntimeLaunch {
   const credentialProfile = sharedCredentialProfile(opts.runtimeId, opts.runtime)
   if (!opts.runInSandbox && !opts.isolateHome) {
@@ -286,8 +295,10 @@ export function prepareRuntimeLaunch(opts: {
     credentials?.seedExclusions
   )
   credentials?.preparePrivateHome(runtimeHome)
+  const packageCacheEnv = opts.hostPackageCache ? hostPackageCacheEnv(opts.runtime?.command, stateSourceEnv) : {}
   const env = {
     ...runtimeHomeEnvironment(opts.runtimeId, runtimeHome, opts.explicitEnv, opts.hostEnv),
+    ...packageCacheEnv,
     ...credentials?.env
   }
 
@@ -331,6 +342,17 @@ export function prepareRuntimeLaunch(opts: {
       if (broadened) {
         throw new Error(`shared credential write root "${trusted}" would reopen protected path "${broadened}"`)
       }
+      return trusted
+    })
+  )
+  // npm/uv must WRITE their cache (tarballs, index, the npx install tree), so the
+  // pinned host cache needs a write carve-back below the hidden host HOME. Same rule
+  // as a shared credential root: it may sit under a protected root, never contain one.
+  const packageCacheWriteRoots = compactReadRoots(
+    Object.values(packageCacheEnv).map((path) => {
+      const trusted = safeRoot(path, 'host package cache root')
+      const broadened = protectedRoots.find((denied) => inside(trusted, denied))
+      if (broadened) throw new Error(`host package cache root "${trusted}" would reopen protected path "${broadened}"`)
       return trusted
     })
   )
@@ -381,7 +403,7 @@ export function prepareRuntimeLaunch(opts: {
     runtimeHome,
     mcpSocketPath: opts.mcpSocketPath,
     trustedReadRoots: [...trustedRuntimeReadRoots, ...providerCredentialReadRoots],
-    trustedWriteRoots: [...credentialWritableRoots, ...trustedWorkspaceWriteRoots]
+    trustedWriteRoots: [...credentialWritableRoots, ...trustedWorkspaceWriteRoots, ...packageCacheWriteRoots]
   })
   // SRT write roots must exist before spawn.
   // This also initializes workspace/memory for a newly-created agent.

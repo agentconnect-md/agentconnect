@@ -11,7 +11,7 @@ import {
   writeFileSync
 } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
-import { runtimeStateLocations } from './probe.js'
+import { home as hostHomeDir, runtimeStateLocations } from './probe.js'
 import { extractOmpCredentials } from './omp-credentials.js'
 
 const MAX_SEED_FILE_BYTES = 2 * 1024 * 1024
@@ -252,6 +252,26 @@ function inheritedEnvironment(source: NodeJS.ProcessEnv): Record<string, string>
     out[name] = value
   }
   return out
+}
+
+/** Launcher caches a disposable probe HOME keeps on the HOST: npx/uvx otherwise rebuild
+ *  their whole install tree per sweep (~210s for a 700-package harness), and the bytes
+ *  are content-addressed packages, not user state. Probe launches only — see the
+ *  `hostPackageCache` option in prepareRuntimeLaunch for why an agent must not get it. */
+export function hostPackageCacheEnv(
+  command: string | undefined,
+  hostEnv: NodeJS.ProcessEnv = process.env
+): Record<string, string> {
+  if (command === 'npx') {
+    return {
+      npm_config_cache: hostEnv.npm_config_cache || hostEnv.NPM_CONFIG_CACHE || join(hostHomeDir(hostEnv), '.npm')
+    }
+  }
+  if (command === 'uvx') {
+    const cacheHome = hostEnv.XDG_CACHE_HOME || join(hostHomeDir(hostEnv), '.cache')
+    return { UV_CACHE_DIR: hostEnv.UV_CACHE_DIR || join(cacheHome, 'uv') }
+  }
+  return {}
 }
 
 type RuntimePrivateEnv = (home: string, hostEnv: NodeJS.ProcessEnv) => Record<string, string>
