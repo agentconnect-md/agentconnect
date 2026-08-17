@@ -4,6 +4,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { useConsoleData } from '@/lib/data-context'
+import { experimentEnabled } from '@/lib/experiments'
 import { useProfile } from '@/lib/profile'
 import { useOrgs } from '@/lib/org-context'
 import {
@@ -360,7 +361,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
       : []),
     // The org's own groups sit with Cloud, not with the machines: they are the same KIND of target
     // — the server picks which member serves, and the agent survives losing any one of them.
-    ...offeredGroups.map((group) => ({
+    ...(experimentEnabled('daemon-groups') ? offeredGroups : []).map((group) => ({
       value: groupPlacementValue(group.setId),
       label: group.name,
       meta: `${group.memberDaemonIds.length} daemon${group.memberDaemonIds.length === 1 ? '' : 's'}`,
