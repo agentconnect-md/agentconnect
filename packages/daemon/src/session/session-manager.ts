@@ -25,6 +25,7 @@ import { planReplay, renderReplayContext } from './turn/replay-plan.js'
 import { AGENT_META_OPENING, buildStandingContext } from './turn/standing-context.js'
 import { backfillThreadHistory } from './turn/thread-backfill.js'
 import { RecallObserver, runTurnRecall, type MemoryRecallLifecycleEvent } from './turn/memory-recall.js'
+import { openRuntimeSession } from './turn/runtime-session.js'
 
 // The recall lifecycle contract lives with the collaborator that emits it; re-exported
 // here because SessionManagerDeps is the seam production wires its observer through.
@@ -553,80 +554,6 @@ export class SessionManager {
     if (hostCold && this.deps.resolvePreparedWorkspace) {
       preparedCwd = await abortable(() => this.deps.resolvePreparedWorkspace!(agent), signal)
     }
-    // The sticky per-session effort override rides session `_meta` on new/load so the
-    // `ultracode` sentinel (rejected by the `thought_level` select) takes effect.
-    // Resolve chat authority immediately before each request, then fence the await:
-    // metadata-only settings cannot be reversed by a later live selector.
-    const sessionStartEffort = (): { value?: string; chatSelected: boolean } => {
-      const allowed = this.deps.agentById(agentId)?.allowRuntimeChangesInChat === true
-      if (!allowed) return { chatSelected: false }
-      const value = initialEffort ?? this.deps.store.getEffortOverride(key)
-      return { value, chatSelected: value !== undefined }
-    }
-    const runtimeWorkspaceDirectories = (cwd: string): string[] =>
-      this.workspaces.additionalWorkspaceDirectories(agent, cwd, {
-        sessionKey: key,
-        isolation: workspaceIsolation
-      })
-    let additionalMcpServersAttached = options.additionalMcpServers?.length ? true : undefined
-    const withAdditionalMcpFallback = async <T>(
-      primary: () => Promise<T>,
-      fallback: (() => Promise<T>) | undefined
-    ): Promise<T> => {
-      try {
-        return await primary()
-      } catch (error) {
-        if (signal?.aborted || !fallback) throw error
-        const result = await fallback()
-        additionalMcpServersAttached = false
-        return result
-      }
-    }
-    const newRuntimeSession = async (
-      cwd: string,
-      mcpServers: McpServer[],
-      systemAppend?: string,
-      fallbackMcpServers?: McpServer[]
-    ): Promise<string> => {
-      const additionalDirectories = runtimeWorkspaceDirectories(cwd)
-      while (true) {
-        const selected = sessionStartEffort()
-        const create = (servers: McpServer[]) =>
-          abortable(() => host.newSession(cwd, servers, selected.value, systemAppend, additionalDirectories), signal)
-        const sessionId = await withAdditionalMcpFallback(
-          () => create(mcpServers),
-          fallbackMcpServers ? () => create(fallbackMcpServers) : undefined
-        )
-        if (!selected.chatSelected || this.deps.agentById(agentId)?.allowRuntimeChangesInChat === true) return sessionId
-        host.discardSession(sessionId)
-      }
-    }
-    const loadRuntimeSession = async (
-      sessionId: string,
-      cwd: string,
-      mcpServers: McpServer[],
-      systemAppend?: string,
-      fallbackMcpServers?: McpServer[]
-    ): Promise<boolean> => {
-      const selected = sessionStartEffort()
-      const additionalDirectories = runtimeWorkspaceDirectories(cwd)
-      const load = (servers: McpServer[]) =>
-        abortable(
-          () => host.loadSession(sessionId, cwd, servers, selected.value, systemAppend, additionalDirectories),
-          signal
-        )
-      await withAdditionalMcpFallback(
-        () => load(mcpServers),
-        fallbackMcpServers ? () => load(fallbackMcpServers) : undefined
-      )
-      if (!selected.chatSelected || this.deps.agentById(agentId)?.allowRuntimeChangesInChat === true) return true
-      // The pinned Claude adapter treats a repeated load of the same session/cwd/MCP
-      // fingerprint as idempotent, so another load cannot replace metadata-only effort.
-      // Forget this local attachment and let the caller create a fresh safe session.
-      host.discardSession(sessionId)
-      return false
-    }
-
     // Agent memory INDEX (memory/provider.ts), read fresh. Applied only when THIS
     // call creates a fresh session (a resumed session already carries it from its first
     // turn). Every session may READ shared memory (#653): the index is injected whenever
@@ -672,88 +599,44 @@ export class SessionManager {
       usesMeta
     })
 
-    // Whether THIS call created a brand-new ACP session (vs. resuming/recreating one
-    // the CP already knows). Drives the daemon's one-shot `event/session` start emit.
-    let created = false
-    if (!rec || !rec.acpSessionId) {
-      // brand-new session; use the pre-host preparation when the host was cold, else
-      // prepare now (warm host — ordering vs spawn is moot).
-      const cwd =
-        options.preparedWorkspaceCwd ??
-        (workspaceIsolation === 'shared' ? preparedCwd : undefined) ??
-        (await abortable(
-          () =>
-            this.deps.prepareWorkspace?.(agent, expectedWarmHost, workspaceRequest) ??
-            this.workspaces.prepareWorkspace(agent),
-          signal
-        ))
-      const ordinaryMcpServers =
-        this.deps.mcpServersFor?.({
-          agent,
-          platform: msg.platform,
-          channel: msg.channel,
-          thread,
-          ...(integrationId !== undefined ? { integrationId } : {}),
-          ...(transportScope !== undefined ? { transportScope } : {}),
-          isDm: msg.isDm
-        }) ?? []
-      const mcpServers = [...ordinaryMcpServers, ...(options.additionalMcpServers ?? [])]
-      const acpSessionId = await newRuntimeSession(
-        cwd,
-        mcpServers,
-        metaContext,
-        options.additionalMcpServers?.length ? ordinaryMcpServers : undefined
-      )
-      created = true
-      rec = {
+    // Create or re-attach the runtime session (turn/runtime-session.ts). `created` drives the
+    // daemon's one-shot `event/session` start emit; the additional-MCP outcome is reported back
+    // rather than written into a shared mutable.
+    const opened = await openRuntimeSession({
+      host,
+      agent,
+      rec,
+      identity: {
         key,
         agentId,
         platform: msg.platform,
         channel: msg.channel,
         thread,
         transportScope: transportScope ?? null,
-        acpSessionId,
-        state: 'idle',
-        lastDeliveredTs: null,
-        updatedAt: Date.now(),
-        // The source that created the session (first-wins in the store; read back
-        // as `session/list`'s triggeredBy). Hook routing identity remains separate
-        // from the GitHub actor credited on the transcript row above.
         triggeredBy: msg.sessionTriggerId ?? msg.sender.id,
         ...(msg.threadUrl ? { threadUrl: msg.threadUrl } : {}),
         memoryProvider: currentMemoryProvider,
         workspaceIsolation,
-        // Durable parent link, set once at spawn (first-wins in the store).
         ...(effectiveOriginSessionId ? { originSessionId: effectiveOriginSessionId } : {}),
-        // Durable report-back obligation (sticky-true in the store).
-        ...(needsReplyToParent ? { needsParentReply: 1 } : {})
-      }
-      this.deps.store.upsertSession(rec)
-      if (isNewLogicalSession && msg.initialSessionTitle?.trim()) {
-        this.deps.store.setSessionTitle(key, msg.initialSessionTitle.trim())
-      }
-    } else if (host.hasSession?.(rec.acpSessionId) === false) {
-      const persistedSessionId = rec.acpSessionId
-      // Persisted, but unknown to THIS agent process (daemon restart / host eviction):
-      // prompting it would yield ACP "Session not found". Prefer native resume
-      // (session/load — the agent restores its own history, so the §8.5 gap replay
-      // below only re-feeds messages it missed). If the agent can't load it, recreate
-      // a fresh session and replay the whole thread as context (lastDeliveredTs=null).
-      // Resume: use the pre-host preparation when the host cold-started here (persisted
-      // session after restart/eviction — skills must precede spawn), else prepare now.
-      const cwd =
-        options.preparedWorkspaceCwd ??
-        (workspaceIsolation === 'shared' ? preparedCwd : undefined) ??
-        (await abortable(
-          () =>
-            this.deps.prepareWorkspace?.(agent, expectedWarmHost, workspaceRequest) ??
-            this.workspaces.prepareWorkspace(agent),
-          signal
-        ))
-      // Resolved once, shared by both paths: session/load must re-attach the same
-      // MCP servers a fresh session would get (the agent doesn't persist them
-      // across processes), and resolving twice would register two bridge tokens.
-      const ordinaryMcpServers =
+        ...(needsReplyToParent ? { needsParentReply: true } : {}),
+        ...(isNewLogicalSession && msg.initialSessionTitle?.trim()
+          ? { initialTitle: msg.initialSessionTitle.trim() }
+          : {})
+      },
+      store: this.deps.store,
+      ...(options.preparedWorkspaceCwd !== undefined ? { preparedWorkspaceCwd: options.preparedWorkspaceCwd } : {}),
+      ...(preparedCwd !== undefined ? { preparedCwd } : {}),
+      ...(expectedWarmHost !== undefined ? { expectedWarmHost } : {}),
+      prepareWorkspace: (a, warmHost) =>
+        Promise.resolve(
+          this.deps.prepareWorkspace?.(a, warmHost, workspaceRequest) ?? this.workspaces.prepareWorkspace(a)
+        ),
+      workspaceDirectories: (cwd) =>
+        this.workspaces.additionalWorkspaceDirectories(agent, cwd, {
+          sessionKey: key,
+          isolation: workspaceIsolation
+        }),
+      mcpServersFor: () =>
         this.deps.mcpServersFor?.({
           agent,
           platform: msg.platform,
@@ -762,37 +645,24 @@ export class SessionManager {
           ...(integrationId !== undefined ? { integrationId } : {}),
           ...(transportScope !== undefined ? { transportScope } : {}),
           isDm: msg.isDm
-        }) ?? []
-      const mcpServers = [...ordinaryMcpServers, ...(options.additionalMcpServers ?? [])]
-      const fallbackMcpServers = options.additionalMcpServers?.length ? ordinaryMcpServers : undefined
-      let resumed = false
-      if (host.loadSupported?.()) {
-        // §7.3 closed/evicted → resuming: mark the re-attach so a TTL-closed session
-        // isn't seen as `closed` mid-load, then fall through to `prompting` below.
-        this.deps.store.setSessionState(key, 'resuming', Date.now())
-        try {
-          resumed = await loadRuntimeSession(
-            persistedSessionId,
-            cwd,
-            mcpServers,
-            usesMeta ? resumeSystemContext : undefined,
-            fallbackMcpServers
-          )
-        } catch {
-          if (signal?.aborted) throw interrupted(signal)
-          // agent couldn't load it (GC'd / not durably persisted) — recreate below
-        }
-      }
-      if (!resumed) {
-        const acpSessionId = await newRuntimeSession(cwd, mcpServers, metaContext, fallbackMcpServers)
-        // A fresh ACP id the CP has never seen (the persisted one couldn't be resumed),
-        // so this counts as a create for `event/session`. A resumed session (loadSession
-        // above) keeps its id — the CP already knows it — so `created` stays false there.
-        created = true
-        rec = { ...rec, acpSessionId, state: 'idle', lastDeliveredTs: null, updatedAt: Date.now() }
-        this.deps.store.upsertSession(rec)
-      }
-    }
+        }) ?? [],
+      ...(options.additionalMcpServers !== undefined ? { additionalMcpServers: options.additionalMcpServers } : {}),
+      // The sticky per-session effort override rides session `_meta` on new/load so the
+      // `ultracode` sentinel (rejected by the `thought_level` select) takes effect. Chat
+      // authority is resolved immediately before each request, then the await is fenced:
+      // metadata-only settings cannot be reversed by a later live selector.
+      chatRuntimeChangesAllowed: () => this.deps.agentById(agentId)?.allowRuntimeChangesInChat === true,
+      effortOverride: () => initialEffort ?? this.deps.store.getEffortOverride(key),
+      ...(metaContext !== undefined ? { metaContext } : {}),
+      ...(resumeSystemContext !== undefined ? { resumeSystemContext } : {}),
+      usesMeta,
+      ...(signal ? { signal } : {}),
+      abortable,
+      interrupted
+    })
+    rec = opened.rec
+    const created = opened.created
+    const additionalMcpServersAttached = opened.additionalMcpAttached
 
     // A channel-root message posted by this same agent creates the thread's session cursor
     // without running the model. Keep lastDeliveredTs at null: the first real reply must replay
