@@ -29,7 +29,7 @@
  * least-privilege tokens) remains the real permission boundary.
  */
 import { chmodSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
-import type { FileSink } from '../shim/file-sink.js'
+import type { FileSink } from './file-sink.js'
 import { dirname, join, resolve } from 'node:path'
 
 export interface ConfigFileConvention {

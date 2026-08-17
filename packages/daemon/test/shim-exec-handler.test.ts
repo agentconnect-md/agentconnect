@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { MAX_FRAME_BYTES } from '@agentconnect.md/protocol'
 import { ALLOWED_GIT_SUBCOMMANDS, ExecRefusedError, createExecHandler } from '../src/shim/exec-handler.js'
-import { configFilesDir } from '../src/agents/config-file-env.js'
+import { configFilesDir } from '../src/shim/config-file-env.js'
 import type { GitExecResult } from '../src/shim/git-exec.js'
 
 /**

@@ -88,7 +88,7 @@ import {
   cleanupConfigFiles,
   clearConfigFiles,
   materializeConfigFiles
-} from './agents/config-file-env.js'
+} from './shim/config-file-env.js'
 import { writeGhShim } from './cp/gh-shim.js'
 import { GitCredServer, gitcredShimPath, gitcredSocketPath, writeGitcredShim } from './cp/gitcred-server.js'
 import {
@@ -237,7 +237,7 @@ import {
   type ScheduleDefinition
 } from './scheduler/scheduler.js'
 import { DreamScheduler } from './scheduler/dream-scheduler.js'
-import { planChannelIntros, buildIntroMessage } from './agents/channel-intro.js'
+import { planChannelIntros, buildIntroMessage } from './messages/channel-intro.js'
 import { buildHookMessage, githubOpensReviewGeneration, hookAnchorText } from './messages/hook-message.js'
 import { GithubFinalPoster, GithubReplyCollector, type GithubCommentAttribution } from './github/poster.js'
 import { finalizeGithubTurn, isGithubFinalChunk, onGithubUpdate } from './platforms/github/turn-output.js'
@@ -715,7 +715,7 @@ export class Daemon {
   // treated as idle-since-epoch (`agentLastActivityTs` is unset until the first turn
   // stamps it) and reclaimed the instant it comes up, racing its own first dispatch.
   private hostStartedAt = new Map<string, number>()
-  // agentId → config-file secret state for the current host (agents/config-file-env.ts).
+  // agentId → config-file secret state for the current host (shim/config-file-env.ts).
   // Recorded at spawn because the reconcile remove path drops the roster entry BEFORE
   // stopping the host — the agent dir can't be re-resolved there. `childEnv` is the
   // merged spawn env snapshot the materialization was planned from: the idle sweep
@@ -4083,7 +4083,7 @@ export class Daemon {
           : sessionGitPolicyEnv()
         : {})
     }
-    // Config-file secrets (agents/config-file-env.ts): materialize `*_DATA`
+    // Config-file secrets (shim/config-file-env.ts): materialize `*_DATA`
     // contents under the agent dir and point the tool-native env vars
     // (KUBECONFIG / DOCKER_CONFIG) at the result; the raw values are stripped
     // from the child env. Detection spans the runtime-def env too, so an
@@ -11950,7 +11950,7 @@ export class Daemon {
   }
 
   /** Queue user-visible warnings produced while (re)building an agent's host
-   *  (config-file secret conflicts / write failures — agents/config-file-env.ts).
+   *  (config-file secret conflicts / write failures — shim/config-file-env.ts).
    *  Deduplicated; flushed into the next dispatched session by flushSpawnNotices. */
   private queueSpawnNotices(agentId: string, notices: string[]): void {
     if (notices.length === 0) return

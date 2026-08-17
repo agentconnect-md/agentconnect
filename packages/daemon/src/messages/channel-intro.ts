@@ -1,4 +1,4 @@
-import type { NormalizedMessage } from '../messages/normalized.js'
+import type { NormalizedMessage } from './normalized.js'
 
 /**
  * Self-introduce-on-channel-join (issue #536).

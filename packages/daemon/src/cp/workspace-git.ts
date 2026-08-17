@@ -72,7 +72,7 @@ import {
   buildCommitMessagePrompt,
   sanitizeCommitMessage,
   type CommitMessageFile
-} from '../agents/commit-message.js'
+} from '../workspace/commit-message.js'
 import { LOG_FORMAT, numstatByPath, parseLogZ, parseNameStatusZ, parseNumstatZ } from './workspace-git-parse.js'
 import { REPLY_BUDGET, fitToBudget, utf8Boundary } from '../wire-slice.js'
 

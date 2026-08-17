@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { planChannelIntros, buildIntroMessage, introPrompt, INTRO_MAX_BURST } from '../src/agents/channel-intro.js'
+import { planChannelIntros, buildIntroMessage, introPrompt, INTRO_MAX_BURST } from '../src/messages/channel-intro.js'
 import { Daemon } from '../src/daemon.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
