@@ -66,6 +66,17 @@ export interface NormalizedMessage extends Omit<
   /** Trusted activation cause when known. In particular, `mention` means the router
    *  matched a raw platform token against this integration's own bound bot identity. */
   trigger?: 'mention' | 'dm' | 'keyword' | 'auto' | 'cron' | 'hook'
+  /**
+   * This delivery is a child session's REPORT into its parent (`sendMessage
+   * {sessionId}` — replyToSession's local branch, the relay's lineage-reply
+   * branch, and the #800 inferred reply). Set only by the daemon at those
+   * construction sites, never from ingress. A report resumes the parent
+   * SESSION-ONLY (#966): it is injected into the parent's transcript and
+   * turn, but is never committed as a live conversation post — the #926
+   * agent-wake inbound rendering skips it, so a webchat conversation's roster
+   * does not see private night/task reports as room posts.
+   */
+  parentReport?: boolean
 }
 
 /**

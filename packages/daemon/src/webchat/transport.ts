@@ -512,6 +512,8 @@ export class WebchatTransport {
    *  turn writes, so the browser drops the live step once the canonical row lands. */
   postAgentWakeInbound(webchat: WebchatTurnContext | undefined, msg: NormalizedMessage): void {
     if (webchat?.initiator !== 'agent' || !webchat.postSink) return
+    // #966: a child's report resumes its parent session only — never a room-visible post.
+    if (msg.parentReport === true) return
     if (!msg.transcriptPostId || !UUID_RE.test(msg.sender.id)) return
     msg.transcriptTs ??= monotonicTs() // every wake site sets it; keep row ts == post.at regardless
     webchat.postSink({

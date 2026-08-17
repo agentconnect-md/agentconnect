@@ -145,9 +145,10 @@ describe('webchat night collection (scripted)', () => {
         expect(outcome.mode, `${child} reply must reach the referee`).not.toBe('lost')
         expect(outcome.ownTurnStarts, `${child} reply must not double-wake the referee`).toBeLessThanOrEqual(1)
         expect(outcome.deliveredPromptSightings + outcome.contextRowSightings).toBeGreaterThanOrEqual(1)
-        // Current-main surface truth (#926): the child's "private" needsReply
-        // report is ALSO posted live into the conversation view for everyone.
-        expect(outcome.postedPublicly).toBe(true)
+        // #966 fixed (was the measured #926 surface): a needsReply report
+        // resumes the parent session-only — it is never committed as a
+        // conversation post, so the roster cannot read private reports.
+        expect(outcome.postedPublicly).toBe(false)
       }
 
       // The #800 mechanism-fix cell (formerly the #905 validation cell, whose
