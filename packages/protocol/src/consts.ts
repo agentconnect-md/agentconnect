@@ -232,6 +232,17 @@ export const CP_TOKEN_AUDIENCE = 'ac-control-plane'
  */
 export const CLOUD_DAEMON_SA_NAME = 'ac-cloud-daemon'
 
+/**
+ * ServiceAccount the usage-report collector runs as — the principal allowed to post
+ * `gateway`-source session usage to the control plane's batch ingress. A separate name
+ * from {@link CLOUD_DAEMON_SA_NAME} on purpose: both tokens carry
+ * {@link CP_TOKEN_AUDIENCE}, so the ServiceAccount is what keeps a daemon's token from
+ * writing usage and a collector's token from claiming a daemon identity. Like its two
+ * siblings, it lives here so the side that stamps it and the side that checks it cannot
+ * drift to two values.
+ */
+export const USAGE_COLLECTOR_SA_NAME = 'ac-usage-collector'
+
 /** Where the deployment projects that token into the daemon pod, and where the daemon reads it
  *  from. Not part of the verification, but the same two-sided agreement: the mounter and the
  *  reader are both in this repo, so one definition beats a comment asking them to match. */

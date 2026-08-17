@@ -58,7 +58,7 @@ import type { PullRequestViewService } from '../github/pull-request-view.service
 import type { GithubUserAuthzService } from '../github/user-authz.js'
 import type { LogtoIdentityService } from '../github/logto-identity.js'
 import type { HookService } from '../hooks/hook.service.js'
-import type { DaemonRegistry, DaemonAuth, ApiKeyAdmin, DaemonLiveness } from '../ports.js'
+import type { DaemonRegistry, DaemonAuth, ApiKeyAdmin, DaemonLiveness, ClusterWorkloadIdentity } from '../ports.js'
 import type { CpPlatformRegistry } from '../platforms/provider.js'
 import type { DaemonReleaseResolver } from '../registry/daemonRelease.js'
 import type { WebchatTokenService } from '../registry/webchatToken.js'
@@ -326,6 +326,9 @@ export interface HttpDeps {
   waitlist: WaitlistService
   /** The shared usage report interface — this plane is its `gateway`-source adapter. */
   usageWriter: UsageWriter
+  /** Reviews a projected ServiceAccount token for an in-cluster workload. Absent ⇒ this
+   *  deployment has no cluster to review against and only shared secrets authenticate. */
+  clusterWorkloadIdentity?: ClusterWorkloadIdentity
   events: SessionEventSink
   /** Per-credential sliding-window limits for MCP tool calls (agent-assistant.md
    *  §6.5). ONE instance per composition root — the MCP plugin is mounted twice

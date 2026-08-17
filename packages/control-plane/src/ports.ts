@@ -60,6 +60,19 @@ export interface ClusterDaemonIdentity {
   verify(token: string, claim?: { daemonId?: string }): Promise<VerifiedClusterDaemon | null>
 }
 
+/** A reviewed in-cluster workload. Deliberately carries no identity to ACT as —
+ *  only proof of which pod presented the token. */
+export interface VerifiedClusterWorkload {
+  podUid: string
+}
+
+/** Verifies a projected ServiceAccount token from a NON-daemon workload in the control
+ *  plane's own namespace. `serviceAccount` is the one principal the caller will accept,
+ *  since the audience alone cannot separate two workloads of the same install. */
+export interface ClusterWorkloadIdentity {
+  verify(token: string, serviceAccount: string): Promise<VerifiedClusterWorkload | null>
+}
+
 /** A freshly minted key — the one-time plaintext returned to the operator. */
 export interface MintedKeyView {
   apiKeyId: string
