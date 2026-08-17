@@ -8989,7 +8989,6 @@ export class Daemon {
       draining: () => this.draining,
       drainingAgents: () => this.drainingAgents,
       shutdownDutyDrain: () => this.shutdownDutyDrain,
-      settleLateGrants: (drain) => this.settleLateGrants(drain),
       cpAgents: () => this.cpAgents,
       cpIntegrations: () => this.cpIntegrations,
       cpCrons: () => this.cpCrons,
@@ -9004,7 +9003,13 @@ export class Daemon {
       agents: () => this.agents,
       reconcile: () => this.reconcile(),
       flushReconcile: () => this.flushReconcile(),
-      stopServingAgent: (agentId) => this.stopServingAgent(agentId),
+      reconcileRun: () => this.reconcileRun,
+      reconcilePending: () => this.reconcilePending,
+      interruptAgentTurns: (agentId, reason, disposition) => this.interruptAgentTurns(agentId, reason, disposition),
+      unregisterSchedule: (agentId) => this.scheduler.unregister(agentId),
+      unregisterDreamSchedule: (agentId) => this.dreamScheduler.unregister(agentId),
+      stopHost: (agentId) => this.stopHost(agentId),
+      releaseClusterSandbox: (agentId) => this.releaseClusterSandbox(agentId),
       adoptClusterSandbox: (agentId) => this.adoptClusterSandbox(agentId),
       reclaimInterruptedWork: (agentIds) => this.reclaimInterruptedWork(agentIds),
       syncAgentSchedules: (agent) => this.syncAgentSchedules(agent),
@@ -9012,7 +9017,13 @@ export class Daemon {
       catchUpMissedSchedules: (agentIds) => this.catchUpMissedSchedules(agentIds),
       drainSessionPurges: () => this.drainSessionPurges(),
       replayGainedSessionMetadata: (agentIds) => this.replayGainedSessionMetadata(agentIds),
-      pendingInboxReplayAgents: () => this.pendingInboxReplayAgents
+      pendingInboxReplayAgents: () => this.pendingInboxReplayAgents,
+      raceDeadline: (work, ms) => this.raceDeadline(work, ms),
+      sleepUntil: (at) => this.sleepUntil(at),
+      activeDispatchCount: (agentId) => this.activeDispatchesByAgent.get(agentId)?.size ?? 0,
+      pendingTurnAgentIds: () => [...this.pending.values()].map((p) => p.agentId),
+      activeGateAgentIds: () => [...this.activeGateEntries.values()].map((entry) => entry.agentId),
+      dreamInFlight: (agentId) => this.dreamRunnerInstance?.inFlight(agentId) === true
     }
   }
 
@@ -9187,72 +9198,21 @@ export class Daemon {
     }
   }
 
-  /** Stop serving one agent because its duty moved — the light teardown: no
-   *  workspace deletion, no removal tombstone, no CP-drop latch, so a re-grant
-   *  needs nothing from the CP to revive it. */
   private stopServingAgent(agentId: string): void {
-    void this.stopServingAgentSettled(agentId).catch((err) =>
-      this.log.warn(`duty: stopping host for ${agentId} failed: ${err}`)
-    )
+    this.dutyCoordinator.stopServingAgent(agentId)
   }
 
-  // Host teardown per agent, observable by every duty path: the fire-and-forget wrapper and the
-  // settled variant both register here, and a later caller chains behind whatever is pending — a
-  // stop that FAILED stays recorded, so no path can later read that agent as torn down.
-  private readonly dutyHostStops = new Map<string, Promise<void>>()
-
-  /** The same light teardown, resolving once the agent's host is actually down — what the shutdown
-   *  release awaits before it lets a successor bind the agent's sandbox. Rejects when the host stop
-   *  failed (now, or in a still-recorded earlier attempt): the child may still be alive, so "no
-   *  longer served here" cannot be claimed. Immediate when no host exists. */
   private stopServingAgentSettled(agentId: string): Promise<void> {
-    if (!this.dutyEnforced()) return Promise.resolve()
-    // A handoff, never a removal (#948): the turns stop here, but their admitted-but-unrun rows
-    // stay for whoever holds the duty next. Only a duty-governed member reaches this line, so a
-    // single daemon's terminal-purge semantics are untouched. `handover`, not `stop`: an outcome
-    // reported for a killed turn must not read as a user's verdict on the work.
-    this.interruptAgentTurns(agentId, 'handover', 'handoff')
-    this.scheduler.unregister(agentId)
-    this.dreamScheduler.unregister(agentId)
-    const prior = this.dutyHostStops.get(agentId) ?? Promise.resolve()
-    // Behind a FAILED earlier stop the host is still stopped (a later host must not leak), but the
-    // failure keeps propagating: that agent stays unconfirmed for the rest of this process.
-    const stop: Promise<void> = prior.then(
-      () => this.stopHost(agentId).finally(() => this.releaseClusterSandbox(agentId)),
-      (err: unknown) =>
-        this.stopHost(agentId)
-          .finally(() => this.releaseClusterSandbox(agentId))
-          .then(() => {
-            throw err
-          })
-    )
-    this.dutyHostStops.set(agentId, stop)
-    void stop.then(
-      () => {
-        if (this.dutyHostStops.get(agentId) === stop) this.dutyHostStops.delete(agentId)
-      },
-      () => undefined
-    )
-    return stop
+    return this.dutyCoordinator.stopServingAgentSettled(agentId)
   }
 
-  /** Prove a set of agents is no longer served here — hosts stopped, and the platform convergence
-   *  up to `target` run — within the deadline. Returns why not, or undefined when confirmed. */
-  private async confirmDutyTeardown(
-    agentIds: string[],
-    target: number,
-    deadlineAt: number
-  ): Promise<string | undefined> {
-    let stopsFailed: unknown
-    const stops = Promise.all(agentIds.map((agentId) => this.stopServingAgentSettled(agentId))).catch((err) => {
-      stopsFailed = err
-    })
-    if ((await this.raceDeadline(stops, deadlineAt - this.clock.now())) === 'timeout')
-      return 'host stop unfinished at the drain deadline'
-    if (stopsFailed !== undefined) return `host stop failed: ${stopsFailed}`
-    if (!(await this.awaitDutyConvergence(target, deadlineAt)))
-      return 'connection teardown unconfirmed at the drain deadline'
-    return undefined
+  /** The duty teardown still settling for this agent, if any. */
+  private dutyHostStop(agentId: string): Promise<void> | undefined {
+    return this.dutyCoordinator.dutyHostStop(agentId)
+  }
+
+  private confirmDutyTeardown(agentIds: string[], target: number, deadlineAt: number): Promise<string | undefined> {
+    return this.dutyCoordinator.confirmDutyTeardown(agentIds, target, deadlineAt)
   }
 
   private cpDegradedScopes(): string[] {
@@ -15548,7 +15508,7 @@ export class Daemon {
   private adoptClusterSandbox(agentId: string): void {
     const plane = this.k8sPlane
     if (!plane) return
-    const prior = this.dutyHostStops.get(agentId) ?? Promise.resolve()
+    const prior = this.dutyHostStop(agentId) ?? Promise.resolve()
     void prior
       .catch(() => undefined)
       .then(async () => {
@@ -15707,196 +15667,30 @@ export class Daemon {
     return { released }
   }
 
-  /** Hand every held duty back to the CP. Best-effort by contract — on failure
-   *  the leases simply lapse, which is the same outcome one T_reassign later. */
-  private async releaseAllDuties(): Promise<void> {
-    // Join first: a claim still awaiting the CP would otherwise land after the
-    // snapshot below and outlive the drain.
-    await this.joinInFlightDutyClaims()
-    // A grant EVT can still be mid-admission here — the claim join covers the rendezvous path only.
-    // Withdraw those too, so nothing installs itself back into service after `drain/done`.
-    const pending = this.withdrawDutyGroups(this.pendingDutyAdmissions())
-    if (pending.length > 0) this.log.info(`duty: dropped ${pending.length} group(s) still being admitted on drain`)
-    const groupIds = this.duties.releaseAll()
-    if (groupIds.length === 0) return
-    try {
-      await this.cpClient?.releaseDuties(groupIds)
-      this.log.info(`duty: released ${groupIds.length} group(s) on drain`)
-    } catch (err) {
-      this.log.warn(`duty: releasing ${groupIds.length} group(s) failed (leases will lapse): ${err}`)
-    }
+  // The shutdown drain/converge cluster lives in `cp/duty-coordinator.ts`; these are the thin
+  // same-name delegates the drain orchestrators (and the tests) still reach it through.
+  private releaseAllDuties(): Promise<void> {
+    return this.dutyCoordinator.releaseAllDuties()
   }
 
-  /** Does any agent of this group still own admitted work — an active dispatch lease, a pending
-   *  ACP turn, or a cold dispatch still initializing? The predicate the shutdown release waits on. */
   private dutyGroupBusy(groupId: string): boolean {
-    const held = this.duties.get(groupId)
-    if (!held) return false
-    for (const agentId of held.agentIds) {
-      if ((this.activeDispatchesByAgent.get(agentId)?.size ?? 0) > 0) return true
-      for (const p of this.pending.values()) if (p.agentId === agentId) return true
-      for (const entry of this.activeGateEntries.values()) if (entry.agentId === agentId) return true
-      // A dream in flight is an in-flight job: its host and staging are on the sandbox this member holds.
-      if (this.dreamRunnerInstance?.inFlight(agentId)) return true
-    }
-    return false
+    return this.dutyCoordinator.dutyGroupBusy(groupId)
   }
 
-  /**
-   * SIGTERM on a duty-holding member: hand every held group back with an ACKNOWLEDGED
-   * `duty/release`, one group at a time, as soon as that group is idle — never cancelling a turn
-   * to move faster. A group whose agents are all idle goes at once (its successor claims it on
-   * the next beat while this member is still waiting on a busier group); a busy group goes when
-   * its last turn settles, or when the drain deadline has cancelled it. A release is sent only
-   * after the group's physical service here is gone — hosts stopped, platform connections
-   * converged — so a successor never binds a sandbox or a socket this member still holds. Past
-   * `deadlineAt`, or if that teardown cannot be confirmed, the group is NOT released: it is left
-   * to lapse at T_reassign, the pre-existing takeover path and the honest answer when "no longer
-   * served here" cannot be proven.
-   */
-  private async releaseDutiesForShutdown(drain: ShutdownDutyDrain): Promise<void> {
-    if (!this.dutyEnforced()) return
-    const startedAt = this.clock.now()
-    const { deadlineAt, stats } = drain
-    // Join first: a claim still awaiting the CP would otherwise land after the last release.
-    await this.joinInFlightDutyClaims()
-    const pending = this.withdrawDutyGroups(this.pendingDutyAdmissions())
-    if (pending.length > 0) this.log.info(`duty: dropped ${pending.length} group(s) still being admitted on shutdown`)
-    for (;;) {
-      const remaining = this.duties.groupIds()
-      if (remaining.length === 0) break
-      const forced = this.clock.now() >= deadlineAt
-      const ready = forced ? remaining : remaining.filter((groupId) => !this.dutyGroupBusy(groupId))
-      for (const groupId of ready) {
-        // Withdraw locally first — the same teardown a revoke runs — and wait for it to be real.
-        const held = this.duties.get(groupId)
-        const result = this.duties.applyRevoke([{ groupId, reason: 'superseded' }])
-        stats.groups++
-        stats.agents += result.agentsLost.length
-        this.onDutyChanged()
-        const why = await this.confirmDutyTeardown(held?.agentIds ?? [], this.dutyConnectionsRequested, deadlineAt)
-        if (why !== undefined) {
-          stats.lapsing++
-          for (const agentId of held?.agentIds ?? []) drain.lapsedAgents.add(agentId)
-          this.log.warn(`duty: ${groupId} may still be served here — not released, its lease lapses (${why})`)
-          continue
-        }
-        if (await this.releaseDutyAcknowledged(groupId, deadlineAt)) stats.acked++
-        else stats.lapsing++
-      }
-      if (forced) break
-      if (ready.length === 0) {
-        this.log.info(
-          `duty: ${remaining.length} held group(s) still have turns in flight — releasing each as it settles`
-        )
-        await this.sleepUntil(Math.min(this.clock.now() + 1_000, deadlineAt))
-      }
-    }
-    drain.loopDone = true
-    await this.settleLateGrants(drain)
-    if (stats.groups === 0 && stats.late === 0) return
-    this.log.info(
-      `duty: shutdown drain released ${stats.groups} group(s) covering ${stats.agents} agent(s) ` +
-        `plus ${stats.late} late grant(s) in ${Math.round((this.clock.now() - startedAt) / 1000)}s — ` +
-        `${stats.acked} acknowledged, ${stats.lapsing} left to lapse`
-    )
+  private releaseDutiesForShutdown(drain: ShutdownDutyDrain): Promise<void> {
+    return this.dutyCoordinator.releaseDutiesForShutdown(drain)
   }
 
-  /** Grants that landed after the latch, settled once the release loop is done: every held group has
-   *  been withdrawn and torn down, or left to lapse, so nothing is served here any more. Each late
-   *  grant is released acknowledged unless it covers an agent of a lapsing group or one whose host
-   *  stop is still recorded as pending or failed — then it lapses too. Serialized, so a second call
-   *  (a grant landing between the loop and the socket close) waits for the first. */
-  private lateGrantSettling: Promise<void> = Promise.resolve()
   private settleLateGrants(drain: ShutdownDutyDrain): Promise<void> {
-    const run = this.lateGrantSettling.then(async () => {
-      const { deadlineAt, stats } = drain
-      if (drain.late.size === 0) return
-      // One global proof for the whole batch: the platform convergence every duty change so far
-      // requested has run — a group revoked or fenced just before the SIGTERM never entered the
-      // loop, and only this closes the socket that revoke opened the teardown for. Unconfirmed
-      // (deadline, or the reconcile gave up) ⇒ every late grant lapses.
-      const converged = await this.awaitDutyConvergence(this.dutyConnectionsRequested, deadlineAt)
-      while (drain.late.size > 0) {
-        const [groupId, grant] = drain.late.entries().next().value as [string, DutyGrantEntry]
-        drain.late.delete(groupId)
-        stats.late++
-        if (!converged) {
-          stats.lapsing++
-          this.log.warn(`duty: late grant ${groupId} — connection teardown unconfirmed, not released, its lease lapses`)
-          continue
-        }
-        const agentIds = grant.members.filter((m) => m.kind === 'agent').map((m) => m.refId)
-        // A stop still in flight is given until the deadline; a failed one stays recorded.
-        for (const agentId of agentIds) {
-          const stop = this.dutyHostStops.get(agentId)
-          if (stop)
-            await this.raceDeadline(
-              stop.catch(() => undefined),
-              deadlineAt - this.clock.now()
-            )
-        }
-        const blocked = agentIds.find((agentId) => drain.lapsedAgents.has(agentId) || this.dutyHostStops.has(agentId))
-        if (blocked !== undefined) {
-          stats.lapsing++
-          this.log.warn(
-            `duty: late grant ${groupId} covers agent ${blocked}, whose teardown is unconfirmed — not released, its lease lapses`
-          )
-          continue
-        }
-        if (await this.releaseDutyAcknowledged(groupId, deadlineAt)) stats.acked++
-        else stats.lapsing++
-      }
-    })
-    this.lateGrantSettling = run.catch(() => undefined)
-    return run
+    return this.dutyCoordinator.settleLateGrants(drain)
   }
 
-  /** Wait until the platform convergence a duty change requested has run — `dutyConnectionsConverged`
-   *  reaching `target` — or the deadline passes, or the reconcile carrying it gave up (a pass that
-   *  throws is not retried while draining). True only when convergence is confirmed. */
-  private async awaitDutyConvergence(target: number, deadlineAt: number): Promise<boolean> {
-    while (this.dutyConnectionsConverged < target) {
-      const remainingMs = deadlineAt - this.clock.now()
-      if (remainingMs <= 0) return false
-      const run = this.reconcileRun
-      if (run) {
-        if (
-          (await this.raceDeadline(
-            run.catch(() => undefined),
-            remainingMs
-          )) === 'timeout'
-        )
-          return false
-      } else if (this.reconcilePending) {
-        await this.sleepUntil(this.clock.now() + 20)
-      } else {
-        return false
-      }
-    }
-    return true
+  private awaitDutyConvergence(target: number, deadlineAt: number): Promise<boolean> {
+    return this.dutyCoordinator.awaitDutyConvergence(target, deadlineAt)
   }
 
-  /** One `duty/release`, retried with backoff until acknowledged or the drain deadline passes. */
-  private async releaseDutyAcknowledged(groupId: string, deadlineAt: number): Promise<boolean> {
-    let backoffMs = 1_000
-    for (;;) {
-      try {
-        const release = this.cpClient!.releaseDuties([groupId])
-        const outcome = await this.raceDeadline(release, deadlineAt - this.clock.now())
-        release.catch(() => undefined)
-        if (outcome === 'timeout') throw new Error('no acknowledgement before the drain deadline')
-        return true
-      } catch (err) {
-        if (this.clock.now() + backoffMs >= deadlineAt) {
-          this.log.warn(`duty: releasing ${groupId} was not acknowledged before the drain deadline: ${err}`)
-          return false
-        }
-        this.log.warn(`duty: releasing ${groupId} failed, retrying in ${backoffMs}ms: ${err}`)
-        await this.sleepUntil(this.clock.now() + backoffMs)
-        backoffMs = Math.min(backoffMs * 2, 5_000)
-      }
-    }
+  private releaseDutyAcknowledged(groupId: string, deadlineAt: number): Promise<boolean> {
+    return this.dutyCoordinator.releaseDutyAcknowledged(groupId, deadlineAt)
   }
 
   private sleepUntil(at: number): Promise<void> {
