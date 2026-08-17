@@ -5,7 +5,7 @@ import { loadConfig } from '../config/load-config.js'
 import { resolveRuntimeCatalog, type ResolvedRuntimeCatalog } from '../runtimes/registry.js'
 import { selectAgent } from '../agents/load-agents.js'
 import { agentChildEnv } from '../agents/agent-env.js'
-import { cleanupConfigFiles, materializeConfigFiles } from '../agents/config-file-env.js'
+import { cleanupConfigFiles, materializeConfigFiles } from '../shim/config-file-env.js'
 import { memoryKindOf, memoryProviderFor } from '../agents/memory-provider.js'
 import { WorkspaceManager } from '../workspace/workspace-manager.js'
 import { configureWorkspaceGitOrigins } from '../workspace/git-origin-policy.js'
@@ -110,7 +110,7 @@ export async function runChat(opts: RunChatOpts): Promise<void> {
   const agentEnv = agentChildEnv(agent)
   const runtimeEnv = Object.fromEntries(runtime.env.map((entry) => [entry.name, entry.value]))
   // Config-file secrets: same materialization the daemon performs at host spawn
-  // (agents/config-file-env.ts) — *_DATA content becomes a file, the pointer var
+  // (shim/config-file-env.ts) — *_DATA content becomes a file, the pointer var
   // replaces the raw value in the child env.
   const configFiles = materializeConfigFiles(agent.dir, { ...runtimeEnv, ...agentEnv })
   for (const name of configFiles.strip) {

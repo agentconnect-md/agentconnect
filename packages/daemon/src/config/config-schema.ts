@@ -220,7 +220,7 @@ export const ConfigSchema = z.object({
       // agentIdleTimeoutMs so a host lingers at most one interval past its window.
       idleSweepMs: z.number().int().default(60_000),
       // Quiet window before the sweep removes an agent's materialized config-file
-      // secrets (agents/config-file-env.ts) — much shorter than the host TTL: the
+      // secrets (shim/config-file-env.ts) — much shorter than the host TTL: the
       // files are re-written before the next turn is dispatched, so a warm host
       // stays fully usable and this only bounds how long the secret material
       // rests on disk while no turn or background task is running.

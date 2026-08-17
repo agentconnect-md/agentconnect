@@ -166,7 +166,7 @@ function buildAgentMeta(input: StandingContextInput): string {
                   `\`[secret:NAME]\`.`
               ]
             : []),
-          // Config-file secrets (agents/config-file-env.ts) never reach the child env: the
+          // Config-file secrets (shim/config-file-env.ts) never reach the child env: the
           // daemon materializes each `*_DATA` value to a private file at spawn and points the
           // tool-native env var (KUBECONFIG / DOCKER_CONFIG) at it. Describe those separately —
           // the agent must not look for the raw env var, and must treat the FILE contents as

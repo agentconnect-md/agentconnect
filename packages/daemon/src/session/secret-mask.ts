@@ -19,7 +19,7 @@
  * which env vars are secrets and not to reveal them — is the standing-context
  * notice in session/session-manager.ts.
  *
- * Config-file secrets (agents/config-file-env.ts) put STRUCTURED values in
+ * Config-file secrets (shim/config-file-env.ts) put STRUCTURED values in
  * play — a whole kubeconfig YAML or docker config.json — which the agent may
  * echo re-formatted (`cat`, pretty-print, a single grepped line) so a literal
  * whole-value match would miss. Each secret therefore expands into masking

@@ -7,7 +7,7 @@ import {
   configFilesDir,
   materializeConfigFiles,
   planConfigFiles
-} from '../src/agents/config-file-env.js'
+} from '../src/shim/config-file-env.js'
 
 const KUBE = 'apiVersion: v1\nkind: Config\nusers:\n- name: a\n  user:\n    token: tok-123456\n'
 const DOCKER = '{"auths":{"ghcr.io":{"auth":"YWxpY2U6czNjcjN0"}}}'
