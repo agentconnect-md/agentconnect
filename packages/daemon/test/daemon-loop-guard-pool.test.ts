@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { Daemon } from '../src/daemon.js'
 import { LocalStore } from '../src/store/local-store.js'
+import { SqliteAsyncDatabase } from '../src/store/sqlite-async-database.js'
 import { statePath } from '../src/paths.js'
 import { FakeClock } from './cp/fake-clock.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
@@ -81,21 +82,21 @@ async function bootPool() {
   const b = await boot(root, 'daemon-b', 'frame')
   const path = statePath(root)
   const locals: LocalStore[] = [a.inner.store, b.inner.store]
-  a.inner.store = new LocalStore({
-    database: new DatabaseSync(path),
+  a.inner.store = await LocalStore.open({
+    database: SqliteAsyncDatabase.adopt(new DatabaseSync(path)),
     shared: true,
     ownerId: 'daemon-a',
     orgForAgent: () => 'org-1'
   })
-  b.inner.store = new LocalStore({
-    database: new DatabaseSync(path),
+  b.inner.store = await LocalStore.open({
+    database: SqliteAsyncDatabase.adopt(new DatabaseSync(path)),
     shared: true,
     ownerId: 'daemon-b',
     orgForAgent: () => 'org-1'
   })
   const stop = async () => {
     await Promise.all([a.daemon.stop(), b.daemon.stop()])
-    for (const local of locals) local.close()
+    for (const local of locals) await local.close()
   }
   return { a, b, shared: a.inner.store as LocalStore, stop }
 }
@@ -123,8 +124,8 @@ function scopedMessage(agentId: string, ts: string) {
   }
 }
 
-function seedInbox(store: LocalStore, id: string, agentId: string, ts: string): void {
-  store.appendInbox({
+async function seedInbox(store: LocalStore, id: string, agentId: string, ts: string): Promise<void> {
+  await store.appendInbox({
     id,
     sessionKey: `slack:C1:T1:${agentId}`,
     agentId,
@@ -167,28 +168,31 @@ describe('loop guard on a daemon pool acts only on what the member serves (#1038
     const { a, b, shared, stop } = await bootPool()
     hold(a.inner, GROUP_A, AGENT_A)
     hold(b.inner, GROUP_B, AGENT_B)
-    seedInbox(shared, 'inbox-a', AGENT_A, '100.1')
-    seedInbox(shared, 'inbox-b', AGENT_B, '200.1')
+    await seedInbox(shared, 'inbox-a', AGENT_A, '100.1')
+    await seedInbox(shared, 'inbox-b', AGENT_B, '200.1')
     const turnA = liveTurn(a.inner, 'key-a', AGENT_A)
     const turnB = liveTurn(b.inner, 'key-b', AGENT_B)
 
-    shared.tripLoopGuard(SCOPE, 1_000, 'turn_rate_burst')
-    a.inner.onLoopGuardTripped(SCOPE, 'turn_rate_burst', { agentId: AGENT_A, msg: scopedMessage(AGENT_A, '100.1') })
+    await shared.tripLoopGuard(SCOPE, 1_000, 'turn_rate_burst')
+    await a.inner.onLoopGuardTripped(SCOPE, 'turn_rate_burst', {
+      agentId: AGENT_A,
+      msg: scopedMessage(AGENT_A, '100.1')
+    })
 
     // A's own backlog and turn are terminal; B's row is left for B, which is still running it.
-    expect(shared.listInboxBySessionKeyFifo().map((row: any) => row.id)).toEqual(['inbox-b'])
+    expect((await shared.listInboxBySessionKeyFifo()).map((row: any) => row.id)).toEqual(['inbox-b'])
     expect(turnA.cancelledReason).toBe('loop protection')
     expect(turnB.cancelledReason).toBeUndefined()
 
     // B enforces the latch on its own work the first time the open circuit refuses a turn.
-    b.inner.enforceLatchedLoopScope(SCOPE)
+    await b.inner.enforceLatchedLoopScope(SCOPE)
     expect(turnB.cancelledReason).toBe('loop protection')
-    expect(b.inner.purgeLoopScopeInbox(SCOPE)).toBe(1)
-    expect(shared.listInboxBySessionKeyFifo()).toEqual([])
+    expect(await b.inner.purgeLoopScopeInbox(SCOPE)).toBe(1)
+    expect(await shared.listInboxBySessionKeyFifo()).toEqual([])
 
     // The latch is enforced once per member, not on every subsequent refusal.
     const turnBAgain = liveTurn(b.inner, 'key-b2', AGENT_B)
-    b.inner.enforceLatchedLoopScope(SCOPE)
+    await b.inner.enforceLatchedLoopScope(SCOPE)
     expect(turnBAgain.cancelledReason).toBeUndefined()
     // These heads have no dispatch behind them, so release them before shutdown drains the gate.
     for (const member of [a, b]) member.inner.activeGateEntries.clear()
@@ -204,7 +208,7 @@ describe('loop guard on a daemon pool acts only on what the member serves (#1038
 
     // B latches the DM circuit first; A read it as closed a moment earlier, which is the
     // exact race the trip's CAS resolves — A's own trip returns trippedNow: false.
-    expect(shared.tripLoopGuard(dmScope, 2_000, 'malformed_platform_event').trippedNow).toBe(true)
+    expect((await shared.tripLoopGuard(dmScope, 2_000, 'malformed_platform_event')).trippedNow).toBe(true)
     a.inner.store.isLoopGuardOpen = () => false
     await a.inner.dispatch(AGENT_A, malformedDm('300.1'))
 
@@ -217,12 +221,12 @@ describe('loop guard on a daemon pool acts only on what the member serves (#1038
     const root = scaffold()
     const { daemon, inner } = await boot(root, 'daemon-solo', 'legacy')
     const store: LocalStore = inner.store
-    seedInbox(store, 'inbox-a', AGENT_A, '100.1')
-    seedInbox(store, 'inbox-b', AGENT_B, '200.1')
+    await seedInbox(store, 'inbox-a', AGENT_A, '100.1')
+    await seedInbox(store, 'inbox-b', AGENT_B, '200.1')
 
     // No duty enforcement: every agent is served here, so nothing is left behind.
-    expect(inner.purgeLoopScopeInbox(SCOPE)).toBe(2)
-    expect(store.listInboxBySessionKeyFifo()).toEqual([])
+    expect(await inner.purgeLoopScopeInbox(SCOPE)).toBe(2)
+    expect(await store.listInboxBySessionKeyFifo()).toEqual([])
     await daemon.stop()
   }, 15_000)
 })

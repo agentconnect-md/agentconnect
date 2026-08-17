@@ -47,10 +47,10 @@ function binder(
   })
 }
 
-function withLaunch() {
+async function withLaunch() {
   const clock = new FakeClock()
   const registry = new LaunchRegistry({ generations: fakeGenerations(), clock })
-  return { clock, registry, launch: registry.recordLaunch('agent-a', 'sb-1', 'sandbox-uid-1') }
+  return { clock, registry, launch: await registry.recordLaunch('agent-a', 'sb-1', 'sandbox-uid-1') }
 }
 
 describe('cluster channel binder', () => {
@@ -58,7 +58,7 @@ describe('cluster channel binder', () => {
     // The release fence only catches a release that lands DURING the bind. One that landed while
     // the caller was still awaiting its launch is already in the snapshot, so both fence checks
     // pass — and a departed member would wake and bind a pod that is no longer its to serve.
-    const { clock, registry, launch } = withLaunch()
+    const { clock, registry, launch } = await withLaunch()
     registry.bumpRelease('agent-a')
     registry.forgetLaunch('agent-a')
 
@@ -68,7 +68,7 @@ describe('cluster channel binder', () => {
   })
 
   it('reuses the session across a rebind at the same generation', async () => {
-    const { clock, registry, launch } = withLaunch()
+    const { clock, registry, launch } = await withLaunch()
     const subject = binder(registry, clock, async () => stubConnection(7))
 
     await subject.bindChannel('agent-a', launch, undefined, ['acp'])
@@ -81,7 +81,7 @@ describe('cluster channel binder', () => {
   it('starts a new session rather than reusing one bound at another generation', async () => {
     // A session is terminal per launch: reattaching a pod bound at a newer generation to the old
     // one would leave the runtime talking through a channel the shim has already fenced off.
-    const { clock, registry, launch } = withLaunch()
+    const { clock, registry, launch } = await withLaunch()
     let generation = 7
     const subject = binder(registry, clock, async () => stubConnection(generation))
 
@@ -97,7 +97,7 @@ describe('cluster channel binder', () => {
   })
 
   it('loses a session a renewed connection has outrun', async () => {
-    const { clock, registry, launch } = withLaunch()
+    const { clock, registry, launch } = await withLaunch()
     const subject = binder(registry, clock, async () => stubConnection(7))
     await subject.bindChannel('agent-a', launch, undefined, ['acp'])
     const session = subject.sessionFor('agent-a')
@@ -109,7 +109,7 @@ describe('cluster channel binder', () => {
   })
 
   it('drops both the session and the remembered mount when the agent leaves', async () => {
-    const { clock, registry, launch } = withLaunch()
+    const { clock, registry, launch } = await withLaunch()
     const subject = binder(registry, clock, async () => stubConnection(7, '/sandbox/workspace'))
 
     await subject.bindChannel('agent-a', launch, undefined, ['acp'])
@@ -122,7 +122,7 @@ describe('cluster channel binder', () => {
   })
 
   it('keeps the remembered mount when a suspend drops the session', async () => {
-    const { clock, registry, launch } = withLaunch()
+    const { clock, registry, launch } = await withLaunch()
     const subject = binder(registry, clock, async () => stubConnection(7, '/sandbox/workspace'))
     await subject.bindChannel('agent-a', launch, undefined, ['acp'])
 
@@ -135,7 +135,7 @@ describe('cluster channel binder', () => {
   it('forgets a mount the current pod no longer reports', async () => {
     // A root kept from a previous incarnation names a mount this pod may not have; unset means the
     // caller falls back to the historical mount instead of reaching for a stale one.
-    const { clock, registry, launch } = withLaunch()
+    const { clock, registry, launch } = await withLaunch()
     const subject = binder(registry, clock, async () => stubConnection(7, '/sandbox/workspace'))
     await subject.bindChannel('agent-a', launch, undefined, ['acp'])
 
@@ -145,7 +145,7 @@ describe('cluster channel binder', () => {
   })
 
   it('reports whether it was the call that dropped a lost session', async () => {
-    const { clock, registry, launch } = withLaunch()
+    const { clock, registry, launch } = await withLaunch()
     const subject = binder(registry, clock, async () => stubConnection(7))
     await subject.bindChannel('agent-a', launch, undefined, ['acp'])
 

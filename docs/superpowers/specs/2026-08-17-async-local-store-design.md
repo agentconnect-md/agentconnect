@@ -16,7 +16,7 @@ connection-parallelism win.
   Awaiting replaces blocking; the contract is identical from the caller's perspective.
 - **The SQL dialect.** `LocalStore` keeps writing SQLite-flavored SQL. The rewrite/bind layer
   currently inside the worker (SQLite→PG rewrites, `?`/`@name` binding, `PRAGMA
-  journal_mode`/`user_version` emulation, `sqlite_master` emulation, `INSERT OR IGNORE`
+journal_mode`/`user_version` emulation, `sqlite_master` emulation, `INSERT OR IGNORE`
   → `ON CONFLICT DO NOTHING`, canonical column-case restoration) moves verbatim to a
   main-thread module; it is not redesigned in this refactor.
 - **Transcript revision semantics.** On PG: `pg_advisory_xact_lock` + `_transcript_revision_seq`

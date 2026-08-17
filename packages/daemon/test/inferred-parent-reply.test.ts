@@ -75,7 +75,7 @@ async function boot(childReply: (text: string, chunk: (t: string) => void) => Pr
   seedCallPolicy(daemon, [CALLER, CHILD])
   // The caller's live session (mid-turn its acpSessionId is already minted) —
   // what messageAgent captures as the child's origin.
-  ;(daemon as any).store.upsertSession({
+  await (daemon as any).store.upsertSession({
     key: sessionKey('webchat', 'wc-parent-1', '100.1', CALLER),
     agentId: CALLER,
     platform: 'webchat',

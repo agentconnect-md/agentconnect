@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { MEMORY_PLUGIN_PROFILE, type MemoryConnectionSpec, type MemoryPluginManifest } from '@agentconnect.md/protocol'
 import { LocalStore, type MemoryCaptureOutboxRow } from '../src/store/local-store.js'
-import { openPostgresLocalStore, usingPostgresStore } from './store-postgres/backend.js'
+import { openTestStore, usingPostgresStore } from './store-support.js'
 import {
   MEMORY_CAPTURE_INPUT_MAX_BYTES,
   MEMORY_CAPTURE_OUTPUT_MAX_BYTES,
@@ -20,9 +20,8 @@ const connectionId = '11111111-1111-4111-8111-111111111111'
 /** True in the `store-postgres` project, where every store below is the real pool store. */
 const pg = usingPostgresStore()
 
-function store(path?: string): LocalStore {
-  if (pg) return openPostgresLocalStore()
-  return new LocalStore(path ?? join(mkdtempSync(join(tmpdir(), 'ac-memory-outbox-')), 'local.sqlite'))
+async function store(path?: string): Promise<LocalStore> {
+  return await openTestStore({ path: path ?? join(mkdtempSync(join(tmpdir(), 'ac-memory-outbox-')), 'local.sqlite') })
 }
 
 function manifest(idempotency: 'operation-id' | 'none', asyncCapture = false): MemoryPluginManifest {
@@ -108,14 +107,14 @@ describe('MemoryCaptureOutbox', () => {
     const status = vi.fn(async () => ({ state: 'completed' as const }))
     const client = fakeClient({ idempotency: 'none', asyncCapture: true, capture, status })
     const registry = registryFor(client)
-    const db = store()
+    const db = await store()
     const outbox = new MemoryCaptureOutbox(db, registry, { metrics, acceptedPollMs: 5 })
-    outbox.start()
-    const queued = outbox.enqueue({ ...input(), idempotency: 'none' })
+    await outbox.start()
+    const queued = await outbox.enqueue({ ...input(), idempotency: 'none' })
     expect(queued.status).toBe('inserted')
-    expect(db.getMemoryCapture(queued.operationId)?.state).toMatch(/pending|sending|accepted|completed/)
+    expect((await db.getMemoryCapture(queued.operationId))?.state).toMatch(/pending|sending|accepted|completed/)
 
-    await vi.waitFor(() => expect(db.getMemoryCapture(queued.operationId)?.state).toBe('completed'))
+    await vi.waitFor(async () => expect((await db.getMemoryCapture(queued.operationId))?.state).toBe('completed'))
     expect(capture).toHaveBeenCalledWith(
       expect.objectContaining({
         operationId: queued.operationId,
@@ -129,15 +128,15 @@ describe('MemoryCaptureOutbox', () => {
       'capture_status_unavailable',
       'health_unavailable'
     ])
-    expect(db.getMemoryCapture(queued.operationId)).toMatchObject({
+    expect(await db.getMemoryCapture(queued.operationId)).toMatchObject({
       config: '{}',
       input: '',
       output: '',
       payloadBytes: 0
     })
-    expect(outbox.enqueue({ ...input(), idempotency: 'none' }).status).toBe('duplicate')
+    expect((await outbox.enqueue({ ...input(), idempotency: 'none' })).status).toBe('duplicate')
     await outbox.stop()
-    db.close()
+    await db.close()
   })
 
   it('never retries a non-idempotent call once delivery becomes unknown', async () => {
@@ -146,16 +145,16 @@ describe('MemoryCaptureOutbox', () => {
     })
     const client = fakeClient({ idempotency: 'none', capture })
     const registry = registryFor(client)
-    const db = store()
+    const db = await store()
     const outbox = new MemoryCaptureOutbox(db, registry, { metrics, retryBaseMs: 5 })
-    outbox.start()
-    const queued = outbox.enqueue({ ...input(), idempotency: 'none' })
-    await vi.waitFor(() => expect(db.getMemoryCapture(queued.operationId)?.state).toBe('ambiguous'))
+    await outbox.start()
+    const queued = await outbox.enqueue({ ...input(), idempotency: 'none' })
+    await vi.waitFor(async () => expect((await db.getMemoryCapture(queued.operationId))?.state).toBe('ambiguous'))
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(capture).toHaveBeenCalledTimes(1)
     expect(registry.markDegraded).toHaveBeenCalledWith(connectionId, 'capture_unavailable')
     await outbox.stop()
-    db.close()
+    await db.close()
   })
 
   it('retries only an operation-id-capable plugin with the identical operation id', async () => {
@@ -164,24 +163,24 @@ describe('MemoryCaptureOutbox', () => {
       .mockRejectedValueOnce(new Error('temporary'))
       .mockResolvedValueOnce({ state: 'completed' as const })
     const client = fakeClient({ idempotency: 'operation-id', capture })
-    const db = store()
+    const db = await store()
     const outbox = new MemoryCaptureOutbox(db, registryFor(client), {
       metrics,
       retryBaseMs: 5,
       retryMaxMs: 5
     })
-    outbox.start()
-    const queued = outbox.enqueue({ ...input(), idempotency: 'operation-id' })
-    await vi.waitFor(() => expect(db.getMemoryCapture(queued.operationId)?.state).toBe('completed'))
+    await outbox.start()
+    const queued = await outbox.enqueue({ ...input(), idempotency: 'operation-id' })
+    await vi.waitFor(async () => expect((await db.getMemoryCapture(queued.operationId))?.state).toBe('completed'))
     expect(capture).toHaveBeenCalledTimes(2)
     expect(capture.mock.calls.map((call) => call[0].operationId)).toEqual([queued.operationId, queued.operationId])
     await outbox.stop()
-    db.close()
+    await db.close()
   })
 
   it('recovers a sending row across restart before the connection registry converges', async () => {
     const path = join(mkdtempSync(join(tmpdir(), 'ac-memory-restart-')), 'local.sqlite')
-    let db = store(path)
+    let db = await store(path)
     const base: MemoryCaptureOutboxRow = {
       operationId: 'op-idempotent',
       turnId: 'turn-a',
@@ -202,19 +201,19 @@ describe('MemoryCaptureOutbox', () => {
       createdAt: 1,
       updatedAt: 1
     }
-    expect(db.appendMemoryCapture(base)).toBe('inserted')
+    expect(await db.appendMemoryCapture(base)).toBe('inserted')
     expect(
-      db.appendMemoryCapture({
+      await db.appendMemoryCapture({
         ...base,
         operationId: 'op-none',
         turnId: 'turn-b',
         idempotency: 'none'
       })
     ).toBe('inserted')
-    expect(db.recoverMemoryCaptures(10, true)).toEqual({ retried: 0, ambiguous: 0 })
-    db.close()
+    expect(await db.recoverMemoryCaptures(10, true)).toEqual({ retried: 0, ambiguous: 0 })
+    await db.close()
 
-    db = store(path)
+    db = await store(path)
     const outbox = new MemoryCaptureOutbox(
       db,
       {
@@ -226,9 +225,9 @@ describe('MemoryCaptureOutbox', () => {
       },
       { metrics, now: () => 10 }
     )
-    outbox.start()
-    expect(db.getMemoryCapture('op-idempotent')?.state).toBe('pending')
-    expect(db.getMemoryCapture('op-none')).toMatchObject({
+    await outbox.start()
+    expect((await db.getMemoryCapture('op-idempotent'))?.state).toBe('pending')
+    expect(await db.getMemoryCapture('op-none')).toMatchObject({
       state: 'ambiguous',
       config: '{}',
       input: '',
@@ -236,12 +235,12 @@ describe('MemoryCaptureOutbox', () => {
       payloadBytes: 0
     })
     await outbox.stop()
-    db.close()
+    await db.close()
   })
 
   it('processes only connections owned by this daemon registry', async () => {
     const capture = vi.fn(async () => ({ state: 'completed' as const }))
-    const db = store()
+    const db = await store()
     const foreign: MemoryCaptureOutboxRow = {
       operationId: 'foreign-operation',
       turnId: 'foreign-turn',
@@ -262,32 +261,32 @@ describe('MemoryCaptureOutbox', () => {
       createdAt: 0,
       updatedAt: 0
     }
-    expect(db.appendMemoryCapture(foreign)).toBe('inserted')
+    expect(await db.appendMemoryCapture(foreign)).toBe('inserted')
     const outbox = new MemoryCaptureOutbox(db, registryFor(fakeClient({ idempotency: 'operation-id', capture })), {
       metrics
     })
     try {
-      outbox.start()
-      const queued = outbox.enqueue({ ...input(), idempotency: 'operation-id' })
-      await vi.waitFor(() => expect(db.getMemoryCapture(queued.operationId)?.state).toBe('completed'))
-      expect(db.getMemoryCapture(foreign.operationId)).toMatchObject({ state: 'pending', nextAttemptAt: 0 })
+      await outbox.start()
+      const queued = await outbox.enqueue({ ...input(), idempotency: 'operation-id' })
+      await vi.waitFor(async () => expect((await db.getMemoryCapture(queued.operationId))?.state).toBe('completed'))
+      expect(await db.getMemoryCapture(foreign.operationId)).toMatchObject({ state: 'pending', nextAttemptAt: 0 })
       expect(capture).toHaveBeenCalledTimes(1)
     } finally {
       await outbox.stop()
-      db.close()
+      await db.close()
     }
   })
 
   it('marks an explicit failed receipt degraded and redacts its persisted body', async () => {
     const capture = vi.fn(async () => ({ state: 'failed' as const }))
     const registry = registryFor(fakeClient({ idempotency: 'none', capture }))
-    const db = store()
+    const db = await store()
     const outbox = new MemoryCaptureOutbox(db, registry, { metrics })
-    outbox.start()
-    const queued = outbox.enqueue({ ...input(), idempotency: 'none' })
-    await vi.waitFor(() => expect(db.getMemoryCapture(queued.operationId)?.state).toBe('failed'))
+    await outbox.start()
+    const queued = await outbox.enqueue({ ...input(), idempotency: 'none' })
+    await vi.waitFor(async () => expect((await db.getMemoryCapture(queued.operationId))?.state).toBe('failed'))
     expect(registry.markDegraded).toHaveBeenCalledWith(connectionId, 'capture_failed')
-    expect(db.getMemoryCapture(queued.operationId)).toMatchObject({
+    expect(await db.getMemoryCapture(queued.operationId)).toMatchObject({
       reasonCode: 'plugin_failed',
       config: '{}',
       input: '',
@@ -295,12 +294,12 @@ describe('MemoryCaptureOutbox', () => {
       payloadBytes: 0
     })
     await outbox.stop()
-    db.close()
+    await db.close()
   })
 
-  it('deduplicates stable turns, rejects a full queue, and truncates valid UTF-8', () => {
+  it('deduplicates stable turns, rejects a full queue, and truncates valid UTF-8', async () => {
     const capture = vi.fn(async () => ({ state: 'completed' as const }))
-    const db = store()
+    const db = await store()
     const outbox = new MemoryCaptureOutbox(db, registryFor(fakeClient({ idempotency: 'none', capture })), {
       metrics,
       maxActiveItems: 1
@@ -311,33 +310,33 @@ describe('MemoryCaptureOutbox', () => {
       input: '€'.repeat(MEMORY_CAPTURE_INPUT_MAX_BYTES),
       output: '™'.repeat(MEMORY_CAPTURE_OUTPUT_MAX_BYTES)
     } as const
-    const first = outbox.enqueue(large)
+    const first = await outbox.enqueue(large)
     expect(first.status).toBe('inserted')
-    expect(outbox.enqueue(large).status).toBe('duplicate')
-    expect(outbox.enqueue({ ...input(), idempotency: 'none' }).status).toBe('conflict')
-    expect(outbox.enqueue({ ...input(), turnId: 'turn-2', idempotency: 'none' }).status).toBe('full')
-    const row = db.getMemoryCapture(first.operationId)!
+    expect((await outbox.enqueue(large)).status).toBe('duplicate')
+    expect((await outbox.enqueue({ ...input(), idempotency: 'none' })).status).toBe('conflict')
+    expect((await outbox.enqueue({ ...input(), turnId: 'turn-2', idempotency: 'none' })).status).toBe('full')
+    const row = (await db.getMemoryCapture(first.operationId))!
     expect(Buffer.byteLength(row.input)).toBeLessThanOrEqual(MEMORY_CAPTURE_INPUT_MAX_BYTES)
     expect(Buffer.byteLength(row.output)).toBeLessThanOrEqual(MEMORY_CAPTURE_OUTPUT_MAX_BYTES)
     expect(row.input).not.toContain('\uFFFD')
     expect(row.output).not.toContain('\uFFFD')
     expect(boundedCaptureText('abc', 3)).toBe('abc')
-    db.close()
+    await db.close()
   })
 
   it('fails closed when the verified manifest changes instead of retargeting an old row', async () => {
     const capture = vi.fn(async () => ({ state: 'completed' as const }))
     const client = fakeClient({ idempotency: 'none', capture })
     Object.defineProperty(client, 'manifestDigest', { value: 'sha256:' + 'b'.repeat(64) })
-    const db = store()
+    const db = await store()
     const outbox = new MemoryCaptureOutbox(db, registryFor(client), { metrics })
-    const queued = outbox.enqueue({ ...input(), idempotency: 'none' })
-    outbox.start()
-    await vi.waitFor(() => expect(db.getMemoryCapture(queued.operationId)?.state).toBe('failed'))
-    expect(db.getMemoryCapture(queued.operationId)?.reasonCode).toBe('manifest_mismatch')
+    const queued = await outbox.enqueue({ ...input(), idempotency: 'none' })
+    await outbox.start()
+    await vi.waitFor(async () => expect((await db.getMemoryCapture(queued.operationId))?.state).toBe('failed'))
+    expect((await db.getMemoryCapture(queued.operationId))?.reasonCode).toBe('manifest_mismatch')
     expect(capture).not.toHaveBeenCalled()
     await outbox.stop()
-    db.close()
+    await db.close()
   })
 
   it('fails closed when the connection definition revision changes instead of writing to a replacement backend', async () => {
@@ -345,19 +344,19 @@ describe('MemoryCaptureOutbox', () => {
     const client = fakeClient({ idempotency: 'none', capture })
     const registry = registryFor(client)
     registry.specFor = () => ({ ...spec(), revision: 2 })
-    const db = store()
+    const db = await store()
     const outbox = new MemoryCaptureOutbox(db, registry, { metrics })
-    const queued = outbox.enqueue({ ...input(), idempotency: 'none' })
-    outbox.start()
-    await vi.waitFor(() => expect(db.getMemoryCapture(queued.operationId)?.state).toBe('failed'))
-    expect(db.getMemoryCapture(queued.operationId)?.reasonCode).toBe('connection_revision_changed')
+    const queued = await outbox.enqueue({ ...input(), idempotency: 'none' })
+    await outbox.start()
+    await vi.waitFor(async () => expect((await db.getMemoryCapture(queued.operationId))?.state).toBe('failed'))
+    expect((await db.getMemoryCapture(queued.operationId))?.reasonCode).toBe('connection_revision_changed')
     expect(capture).not.toHaveBeenCalled()
     await outbox.stop()
-    db.close()
+    await db.close()
   })
 
   it('schedules age expiry even while the queue is otherwise quiet', async () => {
-    const db = store()
+    const db = await store()
     const unavailable: MemoryCaptureConnectionRegistry = {
       connectionIds: () => [connectionId],
       clientFor: () => undefined,
@@ -371,17 +370,20 @@ describe('MemoryCaptureOutbox', () => {
       unavailableRetryMs: 1_000
     })
     try {
-      const queued = outbox.enqueue({ ...input(), idempotency: 'none' })
-      outbox.start()
-      await vi.waitFor(() => expect(db.getMemoryCapture(queued.operationId)?.reasonCode).toBe('retention_expired'), {
-        timeout: 500,
-        interval: 5
-      })
+      const queued = await outbox.enqueue({ ...input(), idempotency: 'none' })
+      await outbox.start()
+      await vi.waitFor(
+        async () => expect((await db.getMemoryCapture(queued.operationId))?.reasonCode).toBe('retention_expired'),
+        {
+          timeout: 500,
+          interval: 5
+        }
+      )
       // The terminal row it leaves is the retention rule table's to drop, not this loop's.
-      expect(db.getMemoryCapture(queued.operationId)?.state).toBe('failed')
+      expect((await db.getMemoryCapture(queued.operationId))?.state).toBe('failed')
     } finally {
       await outbox.stop()
-      db.close()
+      await db.close()
     }
   })
 })

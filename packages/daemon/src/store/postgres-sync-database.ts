@@ -1,15 +1,27 @@
 import { MessageChannel, receiveMessageOnPort, Worker } from 'node:worker_threads'
 import type { DataPlaneConfig } from './postgres-config.js'
 import { POOL_STORE_SCHEMA } from './postgres-dialect.js'
-import type {
-  StoreBatchResult,
-  StoreBatchStatement,
-  StoreDatabase,
-  StoreRunResult,
-  StoreStatement
-} from './local-store.js'
+import type { StoreBatchResult, StoreBatchStatement } from './store-database.js'
 
 type WorkerReply = { id: number; ok: true; value?: unknown } | { id: number; ok: false; error: string }
+
+/** The synchronous store seam this bridge was written against, kept here while it lives on. */
+interface StoreRunResult {
+  changes: number | bigint
+}
+
+interface StoreStatement {
+  run(...params: unknown[]): StoreRunResult
+  get(...params: unknown[]): unknown
+  all(...params: unknown[]): unknown[]
+}
+
+interface StoreDatabase {
+  exec(sql: string): void
+  prepare(sql: string): StoreStatement
+  batch(statements: StoreBatchStatement[]): StoreBatchResult[]
+  close(): void
+}
 
 class PostgresStatement implements StoreStatement {
   constructor(

@@ -72,7 +72,7 @@ function daemon(opts: {
             : {
                 openDataPlane: async () =>
                   ({
-                    store: new LocalStore(':memory:'),
+                    store: await LocalStore.open(':memory:'),
                     transcripts: {
                       appendTranscript: () => {},
                       insertToolCall: () => {},

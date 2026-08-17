@@ -107,7 +107,7 @@ describe('webchat turn-final context refresh', () => {
 
     const events: RdChatEvent[] = []
     const posts: RdWebchatPost[] = []
-    const ack = (daemon as any).handleRelayMsg(
+    const ack = await (daemon as any).handleRelayMsg(
       rd({ op: 'turn', text: 'original request', user: 'owner', turnId: TURN, post: { postId: TURN, at: 1_000 } }),
       (event: RdChatEvent) => events.push(event),
       (post: RdWebchatPost) => posts.push(post)
@@ -117,7 +117,7 @@ describe('webchat turn-final context refresh', () => {
 
     // A peer participant's reply lands as a transcript-only context post while
     // this agent is still generating — it must invalidate the candidate.
-    const ctxAck = (daemon as any).handleRelayMsg(
+    const ctxAck = await (daemon as any).handleRelayMsg(
       rd({ op: 'context', post: peerPost(1, 2_000) }, { msgId: 'ctx-1' }),
       () => {}
     )
@@ -143,8 +143,9 @@ describe('webchat turn-final context refresh', () => {
     // carrying only the accepted generation.
     expect(posts).toHaveLength(1)
     expect(posts[0]!.post.text).toBe('fresh replacement')
-    const replies = (daemon as any).store
-      .transcriptSince(transcriptChannelKey(CONV, undefined), `webchat:${CONV}`, null)
+    const replies = (
+      await (daemon as any).store.transcriptSince(transcriptChannelKey(CONV, undefined), `webchat:${CONV}`, null)
+    )
       .filter((row: { sender: string }) => row.sender === AGENT_ID)
       .map((row: { text: string }) => row.text)
     expect(replies).toEqual(['fresh replacement'])
@@ -153,11 +154,11 @@ describe('webchat turn-final context refresh', () => {
     // text row persists the origin-minted postId — the trigger carries the
     // relay-minted one, the peer's context copy the peer's, and the reply row
     // the SAME id its rd/webchat-post fan-out announced.
-    const rows = (daemon as any).store.transcriptSince(
+    const rows = (await (daemon as any).store.transcriptSince(
       transcriptChannelKey(CONV, undefined),
       `webchat:${CONV}`,
       null
-    ) as { sender: string; text: string; postId?: string | null }[]
+    )) as { sender: string; text: string; postId?: string | null }[]
     expect(rows.find((r) => r.text === 'original request')?.postId).toBe(TURN)
     expect(rows.find((r) => r.text === 'peer answer 1')?.postId).toBe(peerPost(1, 0).postId)
     expect(rows.find((r) => r.text === 'fresh replacement')?.postId).toBe(posts[0]!.post.postId)
@@ -199,7 +200,7 @@ describe('webchat turn-final context refresh', () => {
     const first: RdChatEvent[] = []
     const second: RdChatEvent[] = []
     const posts: RdWebchatPost[] = []
-    ;(daemon as any).handleRelayMsg(
+    await (daemon as any).handleRelayMsg(
       rd({ op: 'turn', text: 'original request', user: 'owner', turnId: TURN, post: { postId: TURN, at: 1_000 } }),
       (event: RdChatEvent) => first.push(event),
       (post: RdWebchatPost) => posts.push(post)
@@ -209,7 +210,7 @@ describe('webchat turn-final context refresh', () => {
     // A follow-up targeted at the SAME busy agent (e.g. from another tab): it is
     // observed at admission, so the running generation can see and absorb it.
     const secondTurn = '66666666-6666-4666-8666-666666666666'
-    const ack2 = (daemon as any).handleRelayMsg(
+    const ack2 = await (daemon as any).handleRelayMsg(
       rd(
         {
           op: 'turn',
@@ -277,7 +278,7 @@ describe('webchat turn-final context refresh', () => {
     const first: RdChatEvent[] = []
     const second: RdChatEvent[] = []
     const posts: RdWebchatPost[] = []
-    ;(daemon as any).handleRelayMsg(
+    await (daemon as any).handleRelayMsg(
       rd({ op: 'turn', text: 'original request', user: 'owner', turnId: TURN, post: { postId: TURN, at: 1_000 } }),
       (event: RdChatEvent) => first.push(event),
       (post: RdWebchatPost) => posts.push(post)
@@ -288,7 +289,7 @@ describe('webchat turn-final context refresh', () => {
     // follow-up's canonical millisecond, so its admission row lands one slot
     // later. The bumped ts must ride the queued message — otherwise the queue
     // match misses and the follow-up runs again as a third prompt.
-    ;(daemon as any).store.appendTranscript({
+    await (daemon as any).store.appendTranscript({
       channel: transcriptChannelKey(CONV, undefined),
       thread: `webchat:${CONV}`,
       ts: '1500',
@@ -297,7 +298,7 @@ describe('webchat turn-final context refresh', () => {
       text: 'earlier self-authored row'
     })
     const secondTurn = '66666666-6666-4666-8666-666666666666'
-    ;(daemon as any).handleRelayMsg(
+    await (daemon as any).handleRelayMsg(
       rd(
         {
           op: 'turn',
@@ -330,8 +331,8 @@ describe('webchat turn-final context refresh', () => {
     let onUpdate!: (sid: string, u: unknown) => void
     let promptCount = 0
     const daemonHolder: { current?: Daemon } = {}
-    const injectContext = (n: number): void => {
-      ;(daemonHolder.current as any).handleRelayMsg(
+    const injectContext = async (n: number): Promise<void> => {
+      await (daemonHolder.current as any).handleRelayMsg(
         rd({ op: 'context', post: peerPost(n, 2_000 + n) }, { msgId: `ctx-${n}` }),
         () => {}
       )
@@ -348,7 +349,7 @@ describe('webchat turn-final context refresh', () => {
         })
         // A fresh peer post lands during EVERY generation, so the final refresh
         // never accepts and the retry budget (3 regenerations) runs dry.
-        injectContext(promptCount)
+        await injectContext(promptCount)
         return { stopReason: 'end_turn' }
       }),
       cancel: vi.fn(async () => {}),
@@ -367,7 +368,7 @@ describe('webchat turn-final context refresh', () => {
 
     const events: RdChatEvent[] = []
     const posts: RdWebchatPost[] = []
-    ;(daemon as any).handleRelayMsg(
+    await (daemon as any).handleRelayMsg(
       rd({ op: 'turn', text: 'original request', user: 'owner', turnId: TURN, post: { postId: TURN, at: 1_000 } }),
       (event: RdChatEvent) => events.push(event),
       (post: RdWebchatPost) => posts.push(post)
@@ -387,9 +388,9 @@ describe('webchat turn-final context refresh', () => {
     expect(warning).toBeGreaterThan(lastSuperseded)
     // The churned candidate is never committed: no canonical post, no reply row.
     expect(posts).toHaveLength(0)
-    const replies = (daemon as any).store
-      .transcriptSince(transcriptChannelKey(CONV, undefined), `webchat:${CONV}`, null)
-      .filter((row: { sender: string }) => row.sender === AGENT_ID)
+    const replies = (
+      await (daemon as any).store.transcriptSince(transcriptChannelKey(CONV, undefined), `webchat:${CONV}`, null)
+    ).filter((row: { sender: string }) => row.sender === AGENT_ID)
     expect(replies).toEqual([])
     await daemon.stop()
   }, 15_000)
@@ -414,21 +415,21 @@ describe('webchat turn-final context refresh', () => {
       at: 7_000
     })
     expect(
-      (daemon as any).handleRelayMsg(rd({ op: 'context', post: dup(1) }, { msgId: 'c-1' }), () => {})
+      await (daemon as any).handleRelayMsg(rd({ op: 'context', post: dup(1) }, { msgId: 'c-1' }), () => {})
     ).toMatchObject({ accepted: true })
     expect(
-      (daemon as any).handleRelayMsg(rd({ op: 'context', post: dup(2) }, { msgId: 'c-2' }), () => {})
+      await (daemon as any).handleRelayMsg(rd({ op: 'context', post: dup(2) }, { msgId: 'c-2' }), () => {})
     ).toMatchObject({ accepted: true })
     // An identical re-fan of post 1 dedups in place (no third row).
     expect(
-      (daemon as any).handleRelayMsg(rd({ op: 'context', post: dup(1) }, { msgId: 'c-3' }), () => {})
+      await (daemon as any).handleRelayMsg(rd({ op: 'context', post: dup(1) }, { msgId: 'c-3' }), () => {})
     ).toMatchObject({ accepted: true })
 
-    const rows = (daemon as any).store.transcriptSince(
+    const rows = (await (daemon as any).store.transcriptSince(
       transcriptChannelKey(CONV, undefined),
       `webchat:${CONV}`,
       null
-    ) as { ts: string; postId?: string | null }[]
+    )) as { ts: string; postId?: string | null }[]
     expect(rows.map((r) => [r.ts, r.postId])).toEqual([
       ['7000', dup(1).postId],
       ['7001', dup(2).postId]
@@ -463,23 +464,23 @@ describe('webchat turn-final context refresh', () => {
     const t1 = '11111111-aaaa-4aaa-8aaa-111111111111'
     const t2 = '22222222-bbbb-4bbb-8bbb-222222222222'
     expect(
-      (daemon as any).handleRelayMsg(
+      await (daemon as any).handleRelayMsg(
         rd({ op: 'turn', text: 'same words', user: 'owner', turnId: t1, post: turnPost(1) }),
         () => {}
       )
     ).toMatchObject({ accepted: true })
     expect(
-      (daemon as any).handleRelayMsg(
+      await (daemon as any).handleRelayMsg(
         rd({ op: 'turn', text: 'same words', user: 'owner', turnId: t2, post: turnPost(2) }, { msgId: 'm-2' }),
         () => {}
       )
     ).toMatchObject({ accepted: true })
 
-    const rows = (daemon as any).store.transcriptSince(
+    const rows = (await (daemon as any).store.transcriptSince(
       transcriptChannelKey(CONV, undefined),
       `webchat:${CONV}`,
       null
-    ) as { ts: string; postId?: string | null; text: string }[]
+    )) as { ts: string; postId?: string | null; text: string }[]
     expect(rows.filter((r) => r.text === 'same words').map((r) => [r.ts, r.postId])).toEqual([
       ['9000', turnPost(1).postId],
       ['9001', turnPost(2).postId]

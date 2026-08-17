@@ -88,7 +88,7 @@ async function boot(reply: (prompt: string) => string = () => 'done') {
     inflight: Set<string>
     handleRelayMsg(msg: RdMsgWebchat, chat: (e: RdChatEvent) => void): RdAck | Promise<RdAck>
   }
-  d.store.upsertSession({
+  await d.store.upsertSession({
     key: KEY,
     agentId: AGENT,
     platform: 'slack',
@@ -99,7 +99,7 @@ async function boot(reply: (prompt: string) => string = () => 'done') {
     lastDeliveredTs: null,
     updatedAt: Date.now()
   })
-  d.store.setSessionClassification(KEY, {
+  await d.store.setSessionClassification(KEY, {
     sourceBindingKind: 'external',
     externalProvider: 'slack',
     externalRealmKey: 'T1',
@@ -160,8 +160,8 @@ describe('webchat session-targeted continuation', () => {
     // The turn entered the TARGET session (same logical row, no webchat session).
     expect(prompts).toHaveLength(1)
     expect(prompts[0]!.text).toContain('hello from console')
-    expect(d.store.getSession(KEY)).toBeDefined()
-    expect(d.store.getSession(`webchat:${CONV}:webchat:${CONV}:${AGENT}`)).toBeUndefined()
+    expect(await d.store.getSession(KEY)).toBeDefined()
+    expect(await d.store.getSession(`webchat:${CONV}:webchat:${CONV}:${AGENT}`)).toBeUndefined()
     // The reply streamed to the browser sink.
     const outputs = events.filter((e) => e.kind === 'output')
     expect(outputs.length).toBeGreaterThan(0)
@@ -212,10 +212,13 @@ describe('webchat session-targeted continuation', () => {
     const stale = await d.handleRelayMsg(turn('x', { targetSessionId: 'acp-vanished' }), () => {})
     expect(stale).toMatchObject({ accepted: false, reason: 'not_found' })
 
-    const setModel = d.handleRelayMsg(turn('', { payload: { op: 'set_model', model: 'opus' } }), () => {}) as RdAck
+    const setModel = (await d.handleRelayMsg(
+      turn('', { payload: { op: 'set_model', model: 'opus' } }),
+      () => {}
+    )) as RdAck
     expect(setModel).toMatchObject({ accepted: false })
 
-    const context = d.handleRelayMsg(
+    const context = (await d.handleRelayMsg(
       turn('', {
         payload: {
           op: 'context',
@@ -229,7 +232,7 @@ describe('webchat session-targeted continuation', () => {
         }
       }),
       () => {}
-    ) as RdAck
+    )) as RdAck
     expect(context).toMatchObject({ accepted: true })
 
     expect(prompts).toHaveLength(0)

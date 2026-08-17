@@ -405,7 +405,7 @@ export interface ChannelAgentsRequest extends ChannelAgentsReq {
 export interface OpsDeps {
   /** Fail-closed turn gate checked before every daemon bridge tool. Used to make
    *  pause/cancel/loop interrupts terminal even while the runtime is still unwinding. */
-  canRun?: (ctx: SessionContext) => boolean
+  canRun?: (ctx: SessionContext) => boolean | Promise<boolean>
   /** Persist and fan out a model-authored user-facing session title. */
   setSessionTitle: (req: SetSessionTitleReq) => Promise<void> | void
   /** Resolve the live platform connection that owns this integration (may rotate). */
@@ -413,11 +413,11 @@ export interface OpsDeps {
   /** Conversation targets this agent has been triggered in on a platform, from local
    *  session history. Backs the `listChannels` fallback for platforms whose bot API
    *  can't enumerate chats (Telegram). Absent ⇒ no fallback (empty live list stands). */
-  observedChannels?: (agentId: string, platform: string) => { id: string; name?: string }[]
+  observedChannels?: (agentId: string, platform: string) => Promise<{ id: string; name?: string }[]>
   /** Users this agent has been triggered by on a platform, from local session history.
    *  Backs `listKnownUsers` so an agent can find a user id to DM where there is no
    *  user directory to search. */
-  observedUsers?: (agentId: string, platform: string) => { id: string; name?: string }[]
+  observedUsers?: (agentId: string, platform: string) => Promise<{ id: string; name?: string }[]>
   /** Ask the CP for the caller's callable peers (peer discovery). The daemon fills
    *  `requesterAgentId` from the trusted session context, never tool input. An absent
    *  `channel` asks for the ORG-WIDE directory; a present one narrows it to that
@@ -507,7 +507,7 @@ export interface OpsDeps {
      *  continuous conversation, so they fork nothing and the reader did receive the post. */
     targetThread: string
     targetIntegrationId?: string
-  }) => { kind: 'parent'; sessionId: string } | { kind: 'self' } | undefined
+  }) => Promise<{ kind: 'parent'; sessionId: string } | { kind: 'self' } | undefined>
   /** Read the progress of a session the caller started (backs `viewSessionStatus`). The daemon
    *  fills the trusted caller identity from the session context and authorizes `sessionId`
    *  against the caller's own children, fail-closed. Returns null when the id is unknown or is
@@ -544,7 +544,7 @@ export interface OpsDeps {
     originTransportScope?: string
     originChannel: string
     originThread: string
-  }) => boolean
+  }) => boolean | Promise<boolean>
   /** Start an orchestration (§3.4/§6.8): record-first, then deliver each subtask, then
    *  schedule the deadline. The daemon fills the trusted main identity + coords from the
    *  session context. Returns null when the caller is not allowed to orchestrate (never today). */
@@ -571,7 +571,7 @@ export interface OpsDeps {
    *  Dream selection are gated at their own boundaries. Checked at CALL time so a
    *  mid-session policy change takes effect immediately. Absent ⇒ allowed (e.g. in
    *  unit fixtures). */
-  memoryAccessAllowed?: (ctx: SessionContext, mode: 'read' | 'write') => boolean
+  memoryAccessAllowed?: (ctx: SessionContext, mode: 'read' | 'write') => boolean | Promise<boolean>
   /** Build the memory scope for a tool call — carries the per-channel folder key
    *  for a channel-scoped agent so tools read/write that channel's memory (#653).
    *  Absent ⇒ agent-level store (unit fixtures). */
@@ -593,7 +593,7 @@ export interface OpsDeps {
     text: string,
     ts: string,
     integrationId: string
-  ) => void
+  ) => Promise<void>
   /** Monotonic-ish clock for synthesizing a message id when the platform doesn't return one. */
   now: () => number
   /** Byte cap for `read*File` downloads (defaults to 8 MiB). */
@@ -690,7 +690,7 @@ export async function executeTool(
   args: Record<string, unknown>,
   deps: OpsDeps
 ): Promise<unknown> {
-  if (deps.canRun && !deps.canRun(ctx)) throw new Error('this agent turn has been stopped')
+  if (deps.canRun && !(await deps.canRun(ctx))) throw new Error('this agent turn has been stopped')
   // Collaboration Arena evaluation tools (collaboration-arena.md §6): game-owned
   // structured actions merged into the session tool set at composition time.
   // Name collisions with product tools are rejected at daemon startup, so this
@@ -726,7 +726,7 @@ export async function executeTool(
   // them before the platform-gateway gate so an agent with no platform integration works.
   if (name === 'readMemory' || name === 'writeMemory') {
     const mode = name === 'writeMemory' ? 'write' : 'read'
-    if (deps.memoryAccessAllowed?.(ctx, mode) === false) throw new Error(MEMORY_ACCESS_BLOCKED)
+    if ((await deps.memoryAccessAllowed?.(ctx, mode)) === false) throw new Error(MEMORY_ACCESS_BLOCKED)
     const scope = deps.memoryScope?.(ctx) ?? { agentId: ctx.agentId }
     try {
       if (name === 'readMemory') {
@@ -781,7 +781,7 @@ export async function executeTool(
   // capability change. The trusted agent scope is always ctx.agentId.
   if (['searchMemory', 'saveMemory', 'getMemory', 'updateMemory', 'deleteMemory'].includes(name)) {
     const mode = name === 'searchMemory' || name === 'getMemory' ? 'read' : 'write'
-    if (deps.memoryAccessAllowed?.(ctx, mode) === false) throw new Error(MEMORY_ACCESS_BLOCKED)
+    if ((await deps.memoryAccessAllowed?.(ctx, mode)) === false) throw new Error(MEMORY_ACCESS_BLOCKED)
     const surface = deps.memory.adminSurfaceForAgent?.(ctx.agentId) ?? deps.memory.adminSurface()
     if (!surface || surface.shape !== 'records') throw new Error('record memory is not available for this agent')
     const scope = deps.memoryScope?.(ctx) ?? { agentId: ctx.agentId }
@@ -1162,7 +1162,7 @@ export async function executeTool(
       // not the caller's own thread (the daemon's fallback, which for a cross-channel post keys a
       // row to coords that match no session at all). It is also what resolves a later reply to
       // this post back onto this thread, so it must be the same canonical key the session uses.
-      deps.recordOutbound(ctx, postChannel, postedThread ?? canonicalPostThread, body, ts, targetId)
+      await deps.recordOutbound(ctx, postChannel, postedThread ?? canonicalPostThread, body, ts, targetId)
       post = { platform: wantPlatform, integrationId: targetId, channel: postChannel, thread: null, ts }
       if (providerPostId !== undefined && mustMaterializeThread && postedThread === undefined) {
         throw new Error(
@@ -1175,7 +1175,7 @@ export async function executeTool(
       // caller-owned spawn. Also skip when the platform returned no real ts (synthesized
       // `local-*`), which leaves `postedThread` undefined and nothing to key a session on.
       if (toAgent === undefined && postedThread !== undefined && deps.spawnChannelRootSession) {
-        const seeded = deps.spawnChannelRootSession({
+        const seeded = await deps.spawnChannelRootSession({
           agentId: ctx.agentId,
           platform: wantPlatform,
           ...(targetId ? { integrationId: targetId } : {}),
@@ -1203,7 +1203,7 @@ export async function executeTool(
         // into sending twice. Discord guild posts have already materialized a native thread.
         const relation =
           seeded && postedThread !== undefined
-            ? deps.rootPostRelation?.({
+            ? await deps.rootPostRelation?.({
                 callerAgentId: ctx.agentId,
                 platform: ctx.platform,
                 ...(ctx.transportScope !== undefined ? { callerTransportScope: ctx.transportScope } : {}),
@@ -1422,7 +1422,7 @@ export async function executeTool(
     const platform = optionalString(args, 'platform') ?? ctx.platform
     if (integrationsOnPlatform(ctx, platform).length === 0) throw new Error(`this agent has no ${platform} integration`)
     if (integrationsOnPlatform(ctx, platform).length > 1) return { platform, users: [], note: MULTI_INTEGRATION_NOTE }
-    return { platform, users: deps.observedUsers?.(ctx.agentId, platform) ?? [] }
+    return { platform, users: (await deps.observedUsers?.(ctx.agentId, platform)) ?? [] }
   }
 
   if (name === 'listChannels' || name === 'listChannelMembers' || name === 'getUserProfile') {
@@ -1438,7 +1438,7 @@ export async function executeTool(
       // when the agent has multiple bots on this platform (see listKnownUsers note).
       if (integrationsOnPlatform(ctx, platform).length > 1)
         return { platform, channels: [], source: 'observed', note: MULTI_INTEGRATION_NOTE }
-      const observed = deps.observedChannels?.(ctx.agentId, platform) ?? []
+      const observed = (await deps.observedChannels?.(ctx.agentId, platform)) ?? []
       return { platform, channels: observed, source: observed.length > 0 ? 'observed' : 'live' }
     }
     if (name === 'listChannelMembers') {

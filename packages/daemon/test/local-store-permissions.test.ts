@@ -13,12 +13,12 @@ import { LocalStore } from '../src/store/local-store.js'
 const mode = (p: string) => statSync(p).mode & 0o777
 
 describe.skipIf(process.platform === 'win32')('local store file permissions', () => {
-  it('creates the state dir 0700 and the database (with its WAL siblings) 0600', () => {
+  it('creates the state dir 0700 and the database (with its WAL siblings) 0600', async () => {
     const root = mkdtempSync(join(tmpdir(), 'ac-store-perm-'))
     const dbPath = join(root, 'state', 'local.sqlite')
-    const store = new LocalStore(dbPath)
+    const store = await LocalStore.open(dbPath)
     // A write forces the WAL siblings into existence.
-    store.insertToolCall({
+    await store.insertToolCall({
       channel: 'C1',
       thread: 'T1',
       ts: '1',
@@ -34,10 +34,10 @@ describe.skipIf(process.platform === 'win32')('local store file permissions', ()
       // Present in WAL mode; they carry the same rows, so they must be narrowed too.
       expect(mode(sibling)).toBe(0o600)
     }
-    store.close()
+    await store.close()
   })
 
-  it('repairs a state dir that already exists group/other-readable', () => {
+  it('repairs a state dir that already exists group/other-readable', async () => {
     // The container-image / `StateDirectory=` case: the path is laid down before the
     // daemon runs, so `mkdirSync`'s mode never applies.
     const root = mkdtempSync(join(tmpdir(), 'ac-store-perm-'))
@@ -45,8 +45,8 @@ describe.skipIf(process.platform === 'win32')('local store file permissions', ()
     mkdirSync(dir, { recursive: true })
     chmodSync(dir, 0o755)
 
-    const store = new LocalStore(join(dir, 'local.sqlite'))
+    const store = await LocalStore.open(join(dir, 'local.sqlite'))
     expect(mode(dir)).toBe(0o700)
-    store.close()
+    await store.close()
   })
 })

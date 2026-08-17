@@ -255,7 +255,7 @@ describe('verified-target integration lookup follows the message (audit F19, sit
       calls.push({ agentId, integrationId })
       return 'acp-1'
     })
-    const outcome = (daemon as any).onInboundOutcome(agentMessage('slack'), ['int-bot-b-slack'])
+    const outcome = await (daemon as any).onInboundOutcome(agentMessage('slack'), ['int-bot-b-slack'])
     expect(outcome.kind).toBe('dispatched')
     expect(calls.map((c) => c.agentId)).toEqual(['bot-b'])
     await daemon.stop()

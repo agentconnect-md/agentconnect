@@ -372,7 +372,7 @@ describe('executeTool: sendMessage (channel post)', () => {
     }
 
     it('names the parent session to reply into when the post lands on the parent’s conversation', async () => {
-      const d = rootPostDeps({ rootPostRelation: () => parentRelation })
+      const d = rootPostDeps({ rootPostRelation: async () => parentRelation })
       const res = await send(d, { platform: 'telegram', channel: '-100123' }, dualCtx)
       // The claim is about what a ROOT post does — a separate context, not an answer. The seed
       // itself is dispatched fire-and-forget, so the notice never states a session as fact.
@@ -382,7 +382,7 @@ describe('executeTool: sendMessage (channel post)', () => {
     })
 
     it('points a post into its own conversation back at the turn’s ordinary reply', async () => {
-      const d = rootPostDeps({ rootPostRelation: () => ({ kind: 'self' }) })
+      const d = rootPostDeps({ rootPostRelation: async () => ({ kind: 'self' }) })
       const res = await send(d, { channel: 'C_CURRENT' })
       expect(res.notice).toContain('Your ordinary reply for this turn already reaches this conversation')
     })
@@ -390,7 +390,7 @@ describe('executeTool: sendMessage (channel post)', () => {
     it('passes the target coords the daemon needs to judge conversation identity', async () => {
       const seen: Record<string, unknown>[] = []
       const d = rootPostDeps({
-        rootPostRelation: (req) => {
+        rootPostRelation: async (req) => {
           seen.push(req)
           return undefined
         }
@@ -412,7 +412,7 @@ describe('executeTool: sendMessage (channel post)', () => {
     })
 
     it('stays quiet for an unrelated destination', async () => {
-      const unrelated = rootPostDeps({ rootPostRelation: () => undefined })
+      const unrelated = rootPostDeps({ rootPostRelation: async () => undefined })
       expect((await send(unrelated, { channel: 'C_OTHER' })).notice).toBeUndefined()
     })
 
@@ -420,21 +420,21 @@ describe('executeTool: sendMessage (channel post)', () => {
       // No daemon at all (chat CLI).
       const noSpawn = makeDeps({
         gatewayFor: () => fakeGateway(),
-        rootPostRelation: () => parentRelation,
+        rootPostRelation: async () => parentRelation,
         now: () => 1000
       })
       expect((await send(noSpawn, { platform: 'telegram', channel: '-100123' }, dualCtx)).notice).toBeUndefined()
       // A platform that returned no ts leaves nothing to key a session on, so nothing forked.
       const noTs = rootPostDeps({
         gatewayFor: () => fakeGateway({ postMessage: vi.fn(async () => undefined) }),
-        rootPostRelation: () => parentRelation
+        rootPostRelation: async () => parentRelation
       })
       expect((await send(noTs, { platform: 'telegram', channel: '-100123' }, dualCtx)).notice).toBeUndefined()
       // The daemon DECLINED the seed (agent-call hop limit): the post happened, but claiming a
       // session opened would be false.
       const declined = rootPostDeps({
         spawnChannelRootSession: () => false,
-        rootPostRelation: () => parentRelation
+        rootPostRelation: async () => parentRelation
       })
       expect((await send(declined, { platform: 'telegram', channel: '-100123' }, dualCtx)).notice).toBeUndefined()
     })
@@ -673,7 +673,7 @@ describe('executeTool: read tools', () => {
       { id: '-100', name: 'team chat' },
       { id: '55', name: '@bob' }
     ]
-    const d: OpsDeps = { ...base, observedChannels: () => observed }
+    const d: OpsDeps = { ...base, observedChannels: async () => observed }
     const dual = {
       ...ctx,
       platform: 'telegram',
@@ -687,7 +687,7 @@ describe('executeTool: read tools', () => {
 
   it('listKnownUsers returns observed users and needs no live gateway', async () => {
     const users = [{ id: '55', name: '@bob' }, { id: '77' }]
-    const d = makeDeps({ gatewayFor: () => undefined, now: () => 0, observedUsers: () => users })
+    const d = makeDeps({ gatewayFor: () => undefined, now: () => 0, observedUsers: async () => users })
     const dual = {
       ...ctx,
       platform: 'telegram',
@@ -709,8 +709,8 @@ describe('executeTool: read tools', () => {
       listChannels: vi.fn(async () => [{ id: 'CB' }]),
       getUserProfile: vi.fn(async (u) => ({ id: u, name: 'from-B' }))
     })
-    const observedChannels = vi.fn(() => [{ id: 'C_HIST' }])
-    const observedUsers = vi.fn(() => [{ id: 'U_HIST' }])
+    const observedChannels = vi.fn(async () => [{ id: 'C_HIST' }])
+    const observedUsers = vi.fn(async () => [{ id: 'U_HIST' }])
     const base = deps(gwA).deps
     const d: OpsDeps = { ...base, gatewayFor: (id) => (id === 'int-b' ? gwB : gwA), observedChannels, observedUsers }
     const twoBots = {

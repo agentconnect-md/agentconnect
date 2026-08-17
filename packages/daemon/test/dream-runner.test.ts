@@ -47,64 +47,64 @@ class FakeStore implements DreamStorePort {
   ]
   rows: { sender: string; text: string }[] = [{ sender: 'user-1', text: 'please use tabs' }]
 
-  insertDream(dream: DreamInfo): void {
+  async insertDream(dream: DreamInfo): Promise<void> {
     this.dreams.set(dream.dreamId, dream)
   }
-  updateDream(dream: DreamInfo): void {
+  async updateDream(dream: DreamInfo): Promise<void> {
     this.dreams.set(dream.dreamId, dream)
   }
-  failOpenDream(dream: DreamInfo): boolean {
+  async failOpenDream(dream: DreamInfo): Promise<boolean> {
     const current = this.dreams.get(dream.dreamId)
     if (current?.status !== 'pending' && current?.status !== 'running') return false
     this.dreams.set(dream.dreamId, dream)
     return true
   }
-  getDream(_agentId: string, dreamId: string): DreamInfo | undefined {
+  async getDream(_agentId: string, dreamId: string): Promise<DreamInfo | undefined> {
     return this.dreams.get(dreamId)
   }
-  listDreams(agentId: string, limit: number): DreamInfo[] {
+  async listDreams(agentId: string, limit: number): Promise<DreamInfo[]> {
     return [...this.dreams.values()].filter((d) => d.agentId === agentId).slice(0, limit)
   }
-  pendingSkillDreams(agentId: string, limit: number): DreamInfo[] {
+  async pendingSkillDreams(agentId: string, limit: number): Promise<DreamInfo[]> {
     return [...this.dreams.values()]
       .filter((dream) => dream.agentId === agentId && dream.skills?.some((skill) => skill.state === 'proposed'))
       .slice(0, limit)
   }
-  organizationSuggestionDreams(limit: number): DreamInfo[] {
+  async organizationSuggestionDreams(limit: number): Promise<DreamInfo[]> {
     return [...this.dreams.values()]
       .filter((dream) => dream.organizationSuggestions?.some((suggestion) => suggestion.state === 'proposed'))
       .slice(0, limit)
   }
   /** dreamIds this incarnation started. A shared store hands back nothing else at boot. */
   owned?: Set<string>
-  openDreams(): DreamInfo[] {
+  async openDreams(): Promise<DreamInfo[]> {
     return [...this.dreams.values()].filter(
       (d) => (d.status === 'pending' || d.status === 'running') && (!this.owned || this.owned.has(d.dreamId))
     )
   }
-  strandedDreams(agentIds: readonly string[]): DreamInfo[] {
+  async strandedDreams(agentIds: readonly string[]): Promise<DreamInfo[]> {
     return [...this.dreams.values()].filter(
       (d) => agentIds.includes(d.agentId) && (d.status === 'pending' || d.status === 'running')
     )
   }
-  completedDreams(agentId: string): DreamInfo[] {
+  async completedDreams(agentId: string): Promise<DreamInfo[]> {
     return [...this.dreams.values()].filter((d) => d.agentId === agentId && d.status === 'completed')
   }
-  supersededDreams(): DreamInfo[] {
+  async supersededDreams(): Promise<DreamInfo[]> {
     return [...this.dreams.values()].filter((d) => d.status === 'superseded')
   }
-  dreamSessionSources(): { sessionId: string; channel: string; thread: string; updatedAt: number }[] {
+  async dreamSessionSources(): Promise<{ sessionId: string; channel: string; thread: string; updatedAt: number }[]> {
     const now = Date.now()
     return this.sources.map((s) => ({ ...s, updatedAt: s.updatedAt ?? now }))
   }
   toolRows: { sender: string; text: string; kind?: string }[] = []
-  dreamTranscriptText(
+  async dreamTranscriptText(
     _c: string,
     _t: string,
     _a: string,
     _l: number,
     includeTools?: boolean
-  ): { sender: string; text: string; kind?: string }[] {
+  ): Promise<{ sender: string; text: string; kind?: string }[]> {
     return includeTools ? [...this.rows, ...this.toolRows] : this.rows
   }
 }
@@ -188,31 +188,31 @@ describe('DreamRunner pipeline', () => {
 
     // Never dreamed → the first scheduled run always proceeds (no baseline).
     store.sources = [{ sessionId: 'sess-1', channel: 'C1', thread: 'T1', updatedAt: cutoff - 1000 }]
-    expect(runner.hasNewSessionsSinceLastDream('a1')).toBe(true)
+    expect(await runner.hasNewSessionsSinceLastDream('a1')).toBe(true)
 
     // Last successful dream at `dreamAt`; the only session predates it → skip.
-    store.insertDream(dream('completed', ['sess-1'], 'd1'))
-    expect(runner.hasNewSessionsSinceLastDream('a1')).toBe(false)
+    await store.insertDream(dream('completed', ['sess-1'], 'd1'))
+    expect(await runner.hasNewSessionsSinceLastDream('a1')).toBe(false)
 
     // Millisecond boundary: a session whose updatedAt EQUALS the baseline (e.g.
     // written in the same ms as the dream's createdAt, after the source query)
     // counts as new. The comparison is inclusive (>=) so this is re-mined once
     // rather than dropped forever — "duplicates possible, gaps never".
     store.sources = [{ sessionId: 'sess-1', channel: 'C1', thread: 'T1', updatedAt: cutoff }]
-    expect(runner.hasNewSessionsSinceLastDream('a1')).toBe(true)
+    expect(await runner.hasNewSessionsSinceLastDream('a1')).toBe(true)
 
     // A session with activity AFTER the last dream → run.
     store.sources = [
       { sessionId: 'sess-2', channel: 'C2', thread: 'T2', updatedAt: cutoff + 1000 },
       { sessionId: 'sess-1', channel: 'C1', thread: 'T1', updatedAt: cutoff - 1000 }
     ]
-    expect(runner.hasNewSessionsSinceLastDream('a1')).toBe(true)
+    expect(await runner.hasNewSessionsSinceLastDream('a1')).toBe(true)
 
     // Only a FAILED dream exists → no successful baseline → mine everything (run).
     store.dreams.clear()
-    store.insertDream(dream('failed', ['sess-1', 'sess-2'], 'd2'))
+    await store.insertDream(dream('failed', ['sess-1', 'sess-2'], 'd2'))
     store.sources = [{ sessionId: 'sess-1', channel: 'C1', thread: 'T1', updatedAt: cutoff - 5000 }]
-    expect(runner.hasNewSessionsSinceLastDream('a1')).toBe(true)
+    expect(await runner.hasNewSessionsSinceLastDream('a1')).toBe(true)
   })
 
   it('stamps the dream baseline before selecting sources (no cutoff-race drop)', async () => {
@@ -432,8 +432,8 @@ describe('DreamRunner pipeline', () => {
       operationPolicy: 'test-only',
       store,
       extract: async () => ({ output: PROPOSAL }),
-      onStaged: (agentId, dreamId) => {
-        runner.cancel(agentId, dreamId) // cancel after staging, before completion
+      onStaged: async (agentId, dreamId) => {
+        await runner.cancel(agentId, dreamId) // cancel after staging, before completion
       },
       log: silent
     })
@@ -457,7 +457,7 @@ describe('DreamRunner pipeline', () => {
     const started = await runner.start('a1', { trigger: 'manual' })
     // allow the pending → running transition to land
     await new Promise((r) => setTimeout(r, 10))
-    const canceled = runner.cancel('a1', started.dreamId)
+    const canceled = await runner.cancel('a1', started.dreamId)
     expect(canceled.status).toBe('canceled')
     release(PROPOSAL)
     await new Promise((r) => setTimeout(r, 20))
@@ -484,7 +484,7 @@ describe('DreamRunner pipeline', () => {
     })
     const first = await runner.start('a1', { trigger: 'manual' })
     await firstExtractionReady
-    runner.cancel('a1', first.dreamId)
+    await runner.cancel('a1', first.dreamId)
     const done = await settle(store, first.dreamId)
     expect(done.status).toBe('canceled')
 
@@ -527,7 +527,7 @@ describe('DreamRunner pipeline', () => {
     })
     const first = await runner.start('a1', { trigger: 'manual' })
     await firstExtractionReady
-    runner.cancel('a1', first.dreamId)
+    await runner.cancel('a1', first.dreamId)
     const done = await settle(store, first.dreamId)
     expect(sawAbort).toBe(true)
     expect(done.status).toBe('canceled')
@@ -692,7 +692,7 @@ describe('DreamRunner adoption', () => {
     expect(done.error?.message).toContain('sandbox did not come up')
     await vi.waitFor(() => expect(runner.inFlight('a1')).toBe(false))
     // No stuck reservation or aborter: a new dream starts, and cancelling the dead one is a plain state answer.
-    expect(() => runner.cancel('a1', started.dreamId)).toThrow(DreamStateError)
+    await expect(runner.cancel('a1', started.dreamId)).rejects.toThrow(DreamStateError)
     const again = await runner.start('a1', { trigger: 'manual' })
     expect((await settle(store, again.dreamId)).status).toBe('completed')
   })
@@ -1126,7 +1126,7 @@ describe('DreamRunner adoption', () => {
 describe('DreamRunner crash recovery', () => {
   it('fails interrupted dreams at boot', async () => {
     const store = new FakeStore()
-    store.insertDream({
+    await store.insertDream({
       dreamId: 'drm-stale',
       agentId: 'a1',
       status: 'running',
@@ -1155,7 +1155,7 @@ describe('DreamRunner crash recovery', () => {
     // running dream becomes recoverable only once the CP hands over the agent.
     const store = new FakeStore()
     store.owned = new Set()
-    store.insertDream({
+    await store.insertDream({
       dreamId: 'drm-peer',
       agentId: 'a1',
       status: 'running',
@@ -1180,16 +1180,16 @@ describe('DreamRunner crash recovery', () => {
     await runner.initialize()
     expect(store.dreams.get('drm-peer')?.status).toBe('running')
 
-    runner.reclaimDreams(['a2'])
+    await runner.reclaimDreams(['a2'])
     expect(store.dreams.get('drm-peer')?.status).toBe('running')
 
-    runner.reclaimDreams(['a1'])
+    await runner.reclaimDreams(['a1'])
     expect(store.dreams.get('drm-peer')).toMatchObject({ status: 'failed', error: { type: 'daemon_restart' } })
     expect(failures).toEqual(['drm-peer'])
 
     // The CAS lost: a terminal row is neither rewritten nor re-announced.
     store.dreams.set('drm-peer', { ...store.dreams.get('drm-peer')!, status: 'completed' })
-    runner.reclaimDreams(['a1'])
+    await runner.reclaimDreams(['a1'])
     expect(store.dreams.get('drm-peer')?.status).toBe('completed')
     expect(failures).toEqual(['drm-peer'])
   })
@@ -1203,7 +1203,7 @@ describe('DreamRunner crash recovery', () => {
     await writeFile(join(base, 'output', 'MEMORY.md'), '# stale')
     await writeFile(join(base, 'skills', 'keep-me', 'SKILL.md'), '# keep')
     const store = new FakeStore()
-    store.insertDream({
+    await store.insertDream({
       dreamId: 'drm-superseded',
       agentId: 'a1',
       status: 'superseded',
@@ -1277,8 +1277,8 @@ describe('DreamRunner production security hold', () => {
       createdAt: '2026-07-24T00:00:00.000Z',
       endedAt: '2026-07-24T00:01:00.000Z'
     }
-    store.insertDream(held)
-    const before = JSON.stringify(store.getDream('a1', dreamId))
+    await store.insertDream(held)
+    const before = JSON.stringify(await store.getDream('a1', dreamId))
     const runner = new DreamRunner({
       agentDirByAgent: (agentId) => (agentId === 'a1' ? dir : undefined),
       memoryFsFor: (agentId) => (agentId === 'a1' ? local(dir) : undefined),
@@ -1325,7 +1325,7 @@ describe('DreamRunner production security hold', () => {
       await expect(operation()).rejects.toThrow(DREAM_UNBOUND_STAGED_CONTENT_REASON)
     }
 
-    expect(JSON.stringify(store.getDream('a1', dreamId))).toBe(before)
+    expect(JSON.stringify(await store.getDream('a1', dreamId))).toBe(before)
     expect(await readMemoryFile(local(dir), 'prefs.md')).toBe('- live value\n')
     expect(await readFile(join(base, 'output', 'MEMORY.md'), 'utf8')).toBe('# Held memory\n')
     expect(await readFile(join(base, 'output', 'prefs.md'), 'utf8')).toBe('- staged value\n')
@@ -1343,7 +1343,7 @@ describe('DreamRunner production security hold', () => {
     await mkdir(join(base, 'output'), { recursive: true })
     await writeFile(join(base, 'output', 'MEMORY.md'), '# retained\n')
     const store = new FakeStore()
-    store.insertDream({
+    await store.insertDream({
       dreamId: 'drm-superseded',
       agentId: 'a1',
       status: 'superseded',
@@ -1380,11 +1380,11 @@ describe('DreamRunner production security hold', () => {
 
     expect(supersededDreams).not.toHaveBeenCalled()
     expect(await readFile(join(base, 'output', 'MEMORY.md'), 'utf8')).toBe('# retained\n')
-    expect(runner.get('a1', 'drm-superseded').status).toBe('superseded')
-    expect(runner.list('a1', 10).map((dream) => dream.dreamId)).toContain('drm-superseded')
-    expect(runner.organizationSuggestionInventory()).toHaveLength(1)
+    expect((await runner.get('a1', 'drm-superseded')).status).toBe('superseded')
+    expect((await runner.list('a1', 10)).map((dream) => dream.dreamId)).toContain('drm-superseded')
+    expect(await runner.organizationSuggestionInventory()).toHaveLength(1)
 
-    store.insertDream({
+    await store.insertDream({
       dreamId: 'drm-running',
       agentId: 'a1',
       status: 'running',
@@ -1393,8 +1393,8 @@ describe('DreamRunner production security hold', () => {
       snapshotDigest: `sha256:${'e'.repeat(64)}`,
       createdAt: '2026-07-24T00:02:00.000Z'
     })
-    expect(runner.cancel('a1', 'drm-running').status).toBe('canceled')
-    expect(runner.get('a1', 'drm-running').status).toBe('canceled')
+    expect((await runner.cancel('a1', 'drm-running')).status).toBe('canceled')
+    expect((await runner.get('a1', 'drm-running')).status).toBe('canceled')
   })
 })
 
@@ -1403,7 +1403,7 @@ describe('DreamRunner store persistence', () => {
     // Regression: the runner wrote `snapshotWrites`, but if LocalStore's schema
     // and mappers omit it the value is dropped on insert and EVERY production
     // rebase silently fails closed — invisible to FakeStore-based tests.
-    const store = new LocalStore(join(await mkdtemp(join(tmpdir(), 'ac-dream-store-')), 'local.sqlite'))
+    const store = await LocalStore.open(join(await mkdtemp(join(tmpdir(), 'ac-dream-store-')), 'local.sqlite'))
     const dream: DreamInfo = {
       dreamId: 'drm-store-1',
       agentId: 'a1',
@@ -1425,8 +1425,8 @@ describe('DreamRunner store persistence', () => {
       },
       createdAt: '2026-07-24T00:00:00.000Z'
     }
-    store.insertDream(dream)
-    expect(store.getDream('a1', 'drm-store-1')).toMatchObject({
+    await store.insertDream(dream)
+    expect(await store.getDream('a1', 'drm-store-1')).toMatchObject({
       executionSessionId: 'dream-session-1',
       runtime: 'codex',
       model: 'gpt-5.6',
@@ -1436,17 +1436,17 @@ describe('DreamRunner store persistence', () => {
     })
 
     // …and survives the status updates the pipeline makes on the way to adoption.
-    store.updateDream({ ...dream, status: 'completed', endedAt: '2026-07-24T00:05:00.000Z' })
-    expect(store.getDream('a1', 'drm-store-1')?.snapshotWrites).toEqual({ total: 7, nonDistill: 3 })
-    expect(store.listDreams('a1', 10)[0]?.snapshotWrites).toEqual({ total: 7, nonDistill: 3 })
-    store.close()
+    await store.updateDream({ ...dream, status: 'completed', endedAt: '2026-07-24T00:05:00.000Z' })
+    expect((await store.getDream('a1', 'drm-store-1'))?.snapshotWrites).toEqual({ total: 7, nonDistill: 3 })
+    expect((await store.listDreams('a1', 10))[0]?.snapshotWrites).toEqual({ total: 7, nonDistill: 3 })
+    await store.close()
   })
 
   it('the real runner persists snapshotWrites end to end', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
     await ensureMemory(local(dir), 'bot')
     await writeMemoryFile(local(dir), 'prefs.md', '- uses tabs\n', undefined, 'tool')
-    const store = new LocalStore(join(await mkdtemp(join(tmpdir(), 'ac-dream-store-')), 'local.sqlite'))
+    const store = await LocalStore.open(join(await mkdtemp(join(tmpdir(), 'ac-dream-store-')), 'local.sqlite'))
     const runner = new DreamRunner({
       agentDirByAgent: () => dir,
       memoryFsFor: () => local(dir),
@@ -1457,18 +1457,18 @@ describe('DreamRunner store persistence', () => {
       log: silent
     })
     const started = await runner.start('a1', { trigger: 'manual' })
-    expect(store.getDream('a1', started.dreamId)?.snapshotWrites).toBeDefined()
+    expect((await store.getDream('a1', started.dreamId))?.snapshotWrites).toBeDefined()
     for (let i = 0; i < 200; i++) {
-      const status = store.getDream('a1', started.dreamId)?.status
+      const status = (await store.getDream('a1', started.dreamId))?.status
       if (status && status !== 'pending' && status !== 'running') break
       await new Promise((r) => setTimeout(r, 5))
     }
-    expect(store.getDream('a1', started.dreamId)?.snapshotWrites).toBeDefined()
-    store.close()
+    expect((await store.getDream('a1', started.dreamId))?.snapshotWrites).toBeDefined()
+    await store.close()
   })
 
-  it('does not let newer terminal rows crowd pending organization suggestions out of inventory', () => {
-    const store = new LocalStore(join(mkdtempSync(join(tmpdir(), 'ac-dream-store-')), 'local.sqlite'))
+  it('does not let newer terminal rows crowd pending organization suggestions out of inventory', async () => {
+    const store = await LocalStore.open(join(mkdtempSync(join(tmpdir(), 'ac-dream-store-')), 'local.sqlite'))
     const candidate = (state: 'proposed' | 'accepted', candidateId: string) => ({
       candidateId,
       kind: 'knowledge' as const,
@@ -1480,7 +1480,7 @@ describe('DreamRunner store persistence', () => {
       sessionIds: ['s1'],
       createdAt: '2026-07-24T00:00:00.000Z'
     })
-    store.insertDream({
+    await store.insertDream({
       dreamId: 'older-pending',
       agentId: 'a1',
       status: 'completed',
@@ -1491,7 +1491,7 @@ describe('DreamRunner store persistence', () => {
       createdAt: '2026-07-24T00:00:00.000Z'
     })
     for (let index = 0; index < 4; index += 1) {
-      store.insertDream({
+      await store.insertDream({
         dreamId: `newer-terminal-${index}`,
         agentId: 'a1',
         status: 'completed',
@@ -1503,8 +1503,8 @@ describe('DreamRunner store persistence', () => {
       })
     }
 
-    expect(store.organizationSuggestionDreams(1).map((dream) => dream.dreamId)).toEqual(['older-pending'])
-    store.close()
+    expect((await store.organizationSuggestionDreams(1)).map((dream) => dream.dreamId)).toEqual(['older-pending'])
+    await store.close()
   })
 })
 
@@ -1543,7 +1543,7 @@ describe('DreamRunner organization suggestions', () => {
       state: 'proposed',
       sessionIds: ['sess-1']
     })
-    expect(runner.organizationSuggestionInventory()).toMatchObject([
+    expect(await runner.organizationSuggestionInventory()).toMatchObject([
       { sourceAgentId: 'a1', dreamId: started.dreamId, candidateId: suggestion!.candidateId }
     ])
 
@@ -1574,7 +1574,7 @@ describe('DreamRunner organization suggestions', () => {
     // Discard governs only the memory proposal; the unresolved organization
     // review remains locally readable and present in reconnect inventory.
     await runner.discard('a1', started.dreamId)
-    expect(runner.organizationSuggestionInventory()).toHaveLength(1)
+    expect(await runner.organizationSuggestionInventory()).toHaveLength(1)
     expect(
       (
         await runner.organizationSuggestionRead({
@@ -1596,8 +1596,8 @@ describe('DreamRunner organization suggestions', () => {
         state: 'accepted'
       })
     ).resolves.toEqual({ ok: true })
-    expect(store.getDream('a1', started.dreamId)?.organizationSuggestions?.[0]?.state).toBe('accepted')
-    expect(runner.organizationSuggestionInventory()).toEqual([])
+    expect((await store.getDream('a1', started.dreamId))?.organizationSuggestions?.[0]?.state).toBe('accepted')
+    expect(await runner.organizationSuggestionInventory()).toEqual([])
     expect(
       (
         await runner.organizationSuggestionRead({
@@ -2056,10 +2056,10 @@ describe('dreamTranscriptText tool rows (real LocalStore)', () => {
   const TH = 'T1'
   const TS = '2026-07-26T00:00:00.000Z'
 
-  function storeWithPeerToolRow() {
-    const store = new LocalStore(join(mkdtempSync(join(tmpdir(), 'ac-tt-')), 'local.sqlite'))
+  async function storeWithPeerToolRow() {
+    const store = await LocalStore.open(join(mkdtempSync(join(tmpdir(), 'ac-tt-')), 'local.sqlite'))
     // A shared-thread message DELIVERED to our agent…
-    store.appendTranscript({
+    await store.appendTranscript({
       channel: CH,
       thread: TH,
       ts: TS,
@@ -2070,7 +2070,7 @@ describe('dreamTranscriptText tool rows (real LocalStore)', () => {
     })
     // …and a PEER's private tool row that happens to share the same ts. Internal
     // rows are not deduped by ts, so this collision is ordinary, not contrived.
-    store.insertToolCall({
+    await store.insertToolCall({
       channel: CH,
       thread: TH,
       ts: TS,
@@ -2080,7 +2080,7 @@ describe('dreamTranscriptText tool rows (real LocalStore)', () => {
       body: JSON.stringify({ rawInput: 'peer-secret-command --token hunter2', rawOutput: 'peer output' })
     })
     // Our own tool row.
-    store.insertToolCall({
+    await store.insertToolCall({
       channel: CH,
       thread: TH,
       ts: '2026-07-26T00:00:01.000Z',
@@ -2092,33 +2092,33 @@ describe('dreamTranscriptText tool rows (real LocalStore)', () => {
     return store
   }
 
-  it('never returns a peer-private tool row via the shared delivery table', () => {
-    const store = storeWithPeerToolRow()
-    const rows = store.dreamTranscriptText(CH, TH, 'me', 100, true)
+  it('never returns a peer-private tool row via the shared delivery table', async () => {
+    const store = await storeWithPeerToolRow()
+    const rows = await store.dreamTranscriptText(CH, TH, 'me', 100, true)
     const text = rows.map((r) => `${r.text} ${r.input ?? ''}`).join('\n')
     expect(text).not.toContain('peer-secret-command')
     expect(text).not.toContain('hunter2')
     // Our own rows are still there — the guard must not over-filter.
     expect(text).toContain('ship it')
     expect(text).toContain('npm run deploy --prod')
-    store.close()
+    await store.close()
   })
 
-  it('carries a bounded rawInput so a generic title still identifies the command', () => {
-    const store = storeWithPeerToolRow()
-    const mine = store.dreamTranscriptText(CH, TH, 'me', 100, true).find((r) => r.kind === 'tool')
+  it('carries a bounded rawInput so a generic title still identifies the command', async () => {
+    const store = await storeWithPeerToolRow()
+    const mine = (await store.dreamTranscriptText(CH, TH, 'me', 100, true)).find((r) => r.kind === 'tool')
     expect(mine?.text).toBe('Bash') // the title alone says nothing
     expect(mine?.input).toBe('npm run deploy --prod')
     // rawOutput is the bulk/secret-bearing half and never leaves the store.
     expect(JSON.stringify(mine)).not.toContain('build output')
-    store.close()
+    await store.close()
   })
 
-  it('omits tool rows entirely when mining is off', () => {
-    const store = storeWithPeerToolRow()
-    const rows = store.dreamTranscriptText(CH, TH, 'me', 100)
+  it('omits tool rows entirely when mining is off', async () => {
+    const store = await storeWithPeerToolRow()
+    const rows = await store.dreamTranscriptText(CH, TH, 'me', 100)
     expect(rows.every((r) => r.kind !== 'tool')).toBe(true)
     expect(rows.map((r) => r.text)).toContain('ship it')
-    store.close()
+    await store.close()
   })
 })

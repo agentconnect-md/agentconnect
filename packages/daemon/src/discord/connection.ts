@@ -95,7 +95,7 @@ export interface DiscordDeps {
     index: number
     sessionKey: string
     actor?: InteractionActor
-  }) => { text: string; components: DiscordComponents } | undefined
+  }) => Promise<{ text: string; components: DiscordComponents } | undefined>
   newTraceId: () => string
   log?: Logger
   /** Min spacing (ms) between outbound writes (serialized send-queue). Tests pass 0. */
@@ -224,7 +224,7 @@ export class DiscordConnection implements PlatformConnection {
 
     // Status-component taps: ack promptly (Discord requires an interaction response
     // within 3s), resolve the session key from the button's message, and forward.
-    client.on(Events.InteractionCreate, (interaction) => {
+    client.on(Events.InteractionCreate, async (interaction) => {
       // Native slash command (/status, /models, …) — reconstruct + route as a message.
       if (interaction.isChatInputCommand()) {
         this.onSlashCommand(interaction)
@@ -246,7 +246,7 @@ export class DiscordConnection implements PlatformConnection {
       // Select-card taps (model / effort / permission): apply + re-render the card in place.
       const sel = parseDiscordSelect(interaction.customId)
       if (sel && this.deps.onSelectAction) {
-        const rendered = this.deps.onSelectAction({ kind: sel.kind, index: sel.index, sessionKey, actor })
+        const rendered = await this.deps.onSelectAction({ kind: sel.kind, index: sel.index, sessionKey, actor })
         if (rendered)
           void this.updateMessage(channel, interaction.message.id, rendered.text, { keyboard: rendered.components })
       }

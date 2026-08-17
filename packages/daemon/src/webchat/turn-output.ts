@@ -104,7 +104,7 @@ export function emitWebchatUpdate(wc: WebchatTurnOutput, update: any): void {
  * ts actually used, which becomes the post's canonical `at` when the caller
  * is the origin.
  */
-export function appendWebchatTextRow(
+export async function appendWebchatTextRow(
   store: LocalStore,
   channel: string,
   thread: string,
@@ -118,10 +118,10 @@ export function appendWebchatTextRow(
     trustedAgentBot?: boolean
     attachments?: SessionImageAttachment[]
   }
-): string {
+): Promise<string> {
   let slot = BigInt(ts)
   for (let attempt = 0; attempt < 32; attempt++) {
-    const existing = store.transcriptTextAt(channel, thread, String(slot), entry)
+    const existing = await store.transcriptTextAt(channel, thread, String(slot), entry)
     // Canonical identity decides slot reuse (§6): two DISTINCT posts can share
     // sender, text, AND millisecond (`at` minting is connection-local, so two
     // tabs can collide) — only a matching postId proves the occupant IS this
@@ -133,14 +133,14 @@ export function appendWebchatTextRow(
         ? existing.postId === entry.postId
         : existing.sender === entry.sender && existing.text === entry.text)
     if (!existing || samePost) {
-      store.appendTranscript({ channel, thread, ts: String(slot), kind: 'text', ...entry })
+      await store.appendTranscript({ channel, thread, ts: String(slot), kind: 'text', ...entry })
       return String(slot)
     }
     slot += 1n
   }
   // Pathological pile-up — fall back to the process-monotonic clock (locally unique).
   const fallback = monotonicTs()
-  store.appendTranscript({ channel, thread, ts: fallback, kind: 'text', ...entry })
+  await store.appendTranscript({ channel, thread, ts: fallback, kind: 'text', ...entry })
   return fallback
 }
 

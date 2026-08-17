@@ -567,7 +567,7 @@ describe('Daemon session lifecycle (#118)', () => {
     await daemon.start()
     makeRoutable(daemon)
     await (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
-    expect((daemon as any).store.getSession(KEY)?.state).toBe('idle')
+    expect((await (daemon as any).store.getSession(KEY))?.state).toBe('idle')
     await daemon.stop()
   }, 15_000)
 
@@ -637,7 +637,7 @@ describe('Daemon session lifecycle (#118)', () => {
       agentAuthorId: 'bot-a'
     })
     const key = sessionKey('slack', 'C1', '100.100000', 'bot-a', TRANSPORT_SCOPE)
-    expect((daemon as any).store.getSession(key)?.lastDeliveredTs).toBe('100.100000')
+    expect((await (daemon as any).store.getSession(key))?.lastDeliveredTs).toBe('100.100000')
 
     await (daemon as any).dispatch(
       'bot-a',
@@ -692,7 +692,7 @@ describe('Daemon session lifecycle (#118)', () => {
     // threadKeyForPost: a Telegram reply chain resolves to `tg:<root>` — the anchor
     // session must mint the SAME key or follow-up replies open a different session.
     const key = sessionKey('telegram', '-100123', 'tg:777', 'bot-a', TRANSPORT_SCOPE)
-    expect((daemon as any).store.getSession(key)).toBeTruthy()
+    expect(await (daemon as any).store.getSession(key)).toBeTruthy()
     await daemon.stop()
   }, 15_000)
 
@@ -736,7 +736,7 @@ describe('Daemon session lifecycle (#118)', () => {
     // A Telegram DM is ONE continuous conversation keyed `dm` — the anchor must
     // join it, not open a `tg:<messageId>` session no inbound reply resolves to.
     const key = sessionKey('telegram', '42', 'dm', 'bot-a', TRANSPORT_SCOPE)
-    expect((daemon as any).store.getSession(key)).toBeTruthy()
+    expect(await (daemon as any).store.getSession(key)).toBeTruthy()
     await daemon.stop()
   }, 15_000)
 
@@ -780,10 +780,10 @@ describe('Daemon session lifecycle (#118)', () => {
 
     expect(getChannelInfo).toHaveBeenCalledWith('D-1')
     const key = sessionKey('discord', 'D-1', 'D-1', 'bot-a', TRANSPORT_SCOPE)
-    const rec = (daemon as any).store.getSession(key)
+    const rec = await (daemon as any).store.getSession(key)
     expect(rec?.conversationKind).toBe('dm')
     // The private-capture gate follows the same bit.
-    expect((daemon as any).store.isCaptureExcluded('bot-a', rec?.acpSessionId)).toBe(true)
+    expect(await (daemon as any).store.isCaptureExcluded('bot-a', rec?.acpSessionId)).toBe(true)
     await daemon.stop()
   }, 15_000)
 
@@ -827,7 +827,7 @@ describe('Daemon session lifecycle (#118)', () => {
 
     expect(createThread).toHaveBeenCalledWith('C-1', 'msg-1', '⏰ scheduled')
     const key = sessionKey('discord', 'C-1', 'msg-1', 'bot-a', TRANSPORT_SCOPE)
-    expect((daemon as any).store.getSession(key)).toBeTruthy()
+    expect(await (daemon as any).store.getSession(key)).toBeTruthy()
     await daemon.stop()
   }, 15_000)
 
@@ -869,7 +869,7 @@ describe('Daemon session lifecycle (#118)', () => {
 
     expect(result).toBeNull()
     expect(
-      (daemon as any).store.getSession(sessionKey('discord', 'C-1', 'msg-1', 'bot-a', TRANSPORT_SCOPE))
+      await (daemon as any).store.getSession(sessionKey('discord', 'C-1', 'msg-1', 'bot-a', TRANSPORT_SCOPE))
     ).toBeUndefined()
     expect(host.prompt).not.toHaveBeenCalled()
     await daemon.stop()
@@ -937,15 +937,15 @@ describe('Daemon session lifecycle (#118)', () => {
     const turn = (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
     await vi.waitFor(() => expect(pendingFor(daemon, 'acp-1')).toBeDefined(), WAIT)
 
-    ;(daemon as any).onInbound(dm('200', '!stop'))
+    await (daemon as any).onInboundOutcome(dm('200', '!stop'))
     expect(blocked.host.cancel).toHaveBeenCalledWith('acp-1')
-    expect((daemon as any).store.getSession(KEY)?.state).toBe('cancelling')
+    expect((await (daemon as any).store.getSession(KEY))?.state).toBe('cancelling')
 
     // agent ignores session/cancel → after cancelBackstopMs the host is force-stopped
     clock.advance(30_000)
     await vi.waitFor(() => expect(blocked.host.stop).toHaveBeenCalled(), WAIT)
     expect((daemon as any).hosts.has('bot-a')).toBe(false)
-    await vi.waitFor(() => expect((daemon as any).store.getSession(KEY)?.state).toBe('idle'), WAIT)
+    await vi.waitFor(async () => expect((await (daemon as any).store.getSession(KEY))?.state).toBe('idle'), WAIT)
 
     blocked.release()
     await turn.catch(() => {})
@@ -962,7 +962,7 @@ describe('Daemon session lifecycle (#118)', () => {
     const second = (daemon as any).dispatch('bot-a', dm('200', 'second', 'T2'))
     await vi.waitFor(() => expect((daemon as any).pending.size).toBe(2), WAIT)
     const queued = (daemon as any).dispatch('bot-a', dm('300', 'queued', 'T1'))
-    expect((daemon as any).serialQueue.get(KEY)).toHaveLength(1)
+    await vi.waitFor(() => expect((daemon as any).serialQueue.get(KEY)).toHaveLength(1), WAIT)
 
     writePause(root, true)
     await daemon.reconcile()
@@ -972,7 +972,7 @@ describe('Daemon session lifecycle (#118)', () => {
     expect(new Set(blocked.host.cancel.mock.calls.map(([id]) => id))).toEqual(new Set(['acp-1', 'acp-2']))
     await expect(queued).resolves.toBeNull()
     expect((daemon as any).serialQueue.size).toBe(0)
-    expect((daemon as any).store.listInboxBySessionKeyFifo()).toHaveLength(0)
+    expect(await (daemon as any).store.listInboxBySessionKeyFifo()).toHaveLength(0)
     expect(blocked.host.stop).not.toHaveBeenCalled()
 
     const promptCount = blocked.host.prompt.mock.calls.length
@@ -1049,7 +1049,7 @@ describe('Daemon session lifecycle (#118)', () => {
     await expect(turn).resolves.toBeNull()
     expect(cold.host.prompt).not.toHaveBeenCalled()
     expect(cold.host.cancel).not.toHaveBeenCalled()
-    expect((daemon as any).store.getSession(KEY)?.state).toBe('idle')
+    expect((await (daemon as any).store.getSession(KEY))?.state).toBe('idle')
 
     await vi.waitFor(() => expect((daemon as any).safetyDrainingAgents.has('bot-a')).toBe(false), WAIT)
     await expect((daemon as any).dispatch('bot-a', dm('200', 'fresh', 'T2'))).resolves.toBe('acp-cold')
@@ -1065,7 +1065,7 @@ describe('Daemon idle sweep (#111/#118)', () => {
     const host = quietHost()
     let onUpdate!: (sessionId: string, update: unknown) => void
     host.stop = vi.fn(async () => {
-      onUpdate('acp-1', { sessionUpdate: 'session_info_update', title: 'Final stopped title' })
+      await onUpdate('acp-1', { sessionUpdate: 'session_info_update', title: 'Final stopped title' })
     })
     const daemon = new Daemon({
       slackAppFactory: fakeSlackAppFactory(),
@@ -1081,15 +1081,15 @@ describe('Daemon idle sweep (#111/#118)', () => {
 
     await (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
     expect((daemon as any).hosts.has('bot-a')).toBe(true)
-    expect((daemon as any).store.getSession(KEY)?.state).toBe('idle')
+    expect((await (daemon as any).store.getSession(KEY))?.state).toBe('idle')
 
     // advance past the TTL so the next sweep reaps the host + closes the session
     clock.advance(1001)
     await vi.waitFor(() => expect((daemon as any).hosts.has('bot-a')).toBe(false), WAIT)
     expect(host.stop).toHaveBeenCalled()
-    expect((daemon as any).store.getSession(KEY)?.state).toBe('closed')
-    expect((daemon as any).store.getSession(KEY)?.title).toBe('Final stopped title')
-    expect(conn.setTitle).toHaveBeenCalledWith('C1', 'T1', 'Final stopped title')
+    expect((await (daemon as any).store.getSession(KEY))?.state).toBe('closed')
+    expect((await (daemon as any).store.getSession(KEY))?.title).toBe('Final stopped title')
+    await vi.waitFor(() => expect(conn.setTitle).toHaveBeenCalledWith('C1', 'T1', 'Final stopped title'), WAIT)
 
     await daemon.stop()
   }, 15_000)
@@ -1111,15 +1111,15 @@ describe('Daemon idle sweep (#111/#118)', () => {
     ;(daemon as any).activeDispatchDoneByKey.set(KEY, active)
     ;(daemon as any).activeDispatchesByAgent.set('bot-a', new Set([active]))
     clock.advance(1001)
-    ;(daemon as any).sweepIdle()
-    expect((daemon as any).store.getSession(KEY)?.state).toBe('idle')
+    await (daemon as any).sweepIdle()
+    expect((await (daemon as any).store.getSession(KEY))?.state).toBe('idle')
 
     ;(daemon as any).inflight.delete(KEY)
     ;(daemon as any).activeDispatchDoneByKey.delete(KEY)
     ;(daemon as any).activeDispatchesByAgent.delete('bot-a')
     releaseActive()
-    ;(daemon as any).sweepIdle()
-    expect((daemon as any).store.getSession(KEY)?.state).toBe('closed')
+    await (daemon as any).sweepIdle()
+    expect((await (daemon as any).store.getSession(KEY))?.state).toBe('closed')
 
     await daemon.stop()
   }, 15_000)
@@ -1178,7 +1178,7 @@ describe('Daemon idle sweep (#111/#118)', () => {
     // Quiet past configFilesIdleMs → the files go, the host and its bind-mounted
     // config root stay warm.
     clock.advance(1001)
-    ;(daemon as any).sweepIdle()
+    await (daemon as any).sweepIdle()
     expect(existsSync(kubeFile)).toBe(false)
     expect(statSync(configFilesDir(adir)).ino).toBe(configRootInode)
     expect((daemon as any).hosts.has('bot-a')).toBe(true)
@@ -1217,7 +1217,7 @@ describe('Daemon idle sweep (#111/#118)', () => {
 
     // Way past the quiet window, but the turn is still running → files must stay.
     clock.advance(5000)
-    ;(daemon as any).sweepIdle()
+    await (daemon as any).sweepIdle()
     expect(existsSync(kubeFile)).toBe(true)
 
     blocked.release()
@@ -1260,12 +1260,12 @@ describe('Daemon idle sweep (#111/#118)', () => {
 
     // A sweep BEFORE the TTL-from-start must NOT reclaim it (pre-fix: reclaimed).
     clock.advance(500)
-    ;(daemon as any).sweepIdle()
+    await (daemon as any).sweepIdle()
     expect((daemon as any).hosts.has('bot-a')).toBe(true)
 
     // Past the TTL measured from host start → now genuinely idle → reclaimed.
     clock.advance(600) // 1100ms since start > 1000ms TTL
-    ;(daemon as any).sweepIdle()
+    await (daemon as any).sweepIdle()
     await vi.waitFor(() => expect((daemon as any).hosts.has('bot-a')).toBe(false), WAIT)
     expect(host.stop).toHaveBeenCalled()
 
@@ -1300,32 +1300,32 @@ describe('Daemon idle sweep — background-task lease', () => {
     })
 
     // A run_in_background task starts — the lease is non-empty.
-    ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 't1' }))
+    await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 't1' }))
 
     // Past the idle TTL, but the lease defers reclaim AND spares the session from close.
     clock.advance(1001)
-    ;(daemon as any).sweepIdle()
+    await (daemon as any).sweepIdle()
     expect((daemon as any).hosts.has('bot-a')).toBe(true)
-    expect((daemon as any).store.getSession(KEY)?.state).toBe('idle')
+    expect((await (daemon as any).store.getSession(KEY))?.state).toBe('idle')
 
     // The task settles, but its completion wake is now armed — that still fences reclaim, or
     // the sweep would close the session out from under a delivery about to happen.
-    ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't1' }))
+    await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't1' }))
     clock.advance(1001) // past the TTL again, still inside the wake's grace window
-    ;(daemon as any).sweepIdle()
+    await (daemon as any).sweepIdle()
     expect((daemon as any).hosts.has('bot-a')).toBe(true)
-    expect((daemon as any).store.getSession(KEY)?.state).toBe('idle')
+    expect((await (daemon as any).store.getSession(KEY))?.state).toBe('idle')
 
     // Wake fires and is delivered; the fence is held until that turn SETTLES, not until it is
     // dispatched, so wait on the count rather than on the timer set.
     clock.advance(4000)
     await vi.waitFor(() => expect(wakeFenceHeld(daemon)).toBe(false), WAIT)
-    await vi.waitFor(() => expect((daemon as any).store.getSession(KEY)?.state).toBe('idle'), WAIT)
+    await vi.waitFor(async () => expect((await (daemon as any).store.getSession(KEY))?.state).toBe('idle'), WAIT)
     clock.advance(1001)
-    ;(daemon as any).sweepIdle()
+    await (daemon as any).sweepIdle()
     await vi.waitFor(() => expect((daemon as any).hosts.has('bot-a')).toBe(false), WAIT)
     expect(host.stop).toHaveBeenCalled()
-    expect((daemon as any).store.getSession(KEY)?.state).toBe('closed')
+    expect((await (daemon as any).store.getSession(KEY))?.state).toBe('closed')
 
     await daemon.stop()
   }, 15_000)
@@ -1340,14 +1340,14 @@ describe('Daemon idle sweep — background-task lease', () => {
 
     // end_turn fired, but Claude self-woke a followup turn to drain a completed task —
     // no `this.pending` entry, only the SDK cycle is running.
-    ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('session_state_changed', { state: 'running' }))
+    await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('session_state_changed', { state: 'running' }))
     clock.advance(1001)
-    ;(daemon as any).sweepIdle()
+    await (daemon as any).sweepIdle()
     expect((daemon as any).hosts.has('bot-a')).toBe(true)
 
-    ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('session_state_changed', { state: 'idle' }))
+    await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('session_state_changed', { state: 'idle' }))
     clock.advance(1001)
-    ;(daemon as any).sweepIdle()
+    await (daemon as any).sweepIdle()
     await vi.waitFor(() => expect((daemon as any).hosts.has('bot-a')).toBe(false), WAIT)
 
     await daemon.stop()
@@ -1362,22 +1362,22 @@ describe('Daemon idle sweep — background-task lease', () => {
     })
 
     // Two tasks start; both settle edges are LOST — only an empty snapshot arrives.
-    ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 't1' }))
-    ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 't2' }))
+    await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 't1' }))
+    await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 't2' }))
     clock.advance(1001)
-    ;(daemon as any).sweepIdle()
+    await (daemon as any).sweepIdle()
     expect((daemon as any).hosts.has('bot-a')).toBe(true) // still deferred
 
-    ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('background_tasks_changed', { tasks: [] }))
+    await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('background_tasks_changed', { tasks: [] }))
     // Both settled on that one edge, so both completion wakes are armed and still fence reclaim.
     clock.advance(1001)
-    ;(daemon as any).sweepIdle()
+    await (daemon as any).sweepIdle()
     expect((daemon as any).hosts.has('bot-a')).toBe(true)
 
     clock.advance(4000)
     await vi.waitFor(() => expect(wakeFenceHeld(daemon)).toBe(false), WAIT)
     clock.advance(1001)
-    ;(daemon as any).sweepIdle()
+    await (daemon as any).sweepIdle()
     await vi.waitFor(() => expect((daemon as any).hosts.has('bot-a')).toBe(false), WAIT)
 
     await daemon.stop()
@@ -1392,16 +1392,16 @@ describe('Daemon idle sweep — background-task lease', () => {
       idleSweepMs: 10_000_000
     })
 
-    ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 't1' }))
+    await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 't1' }))
 
     // Past the idle TTL but under the ceiling → deferred.
     clock.advance(1001)
-    ;(daemon as any).sweepIdle()
+    await (daemon as any).sweepIdle()
     expect((daemon as any).hosts.has('bot-a')).toBe(true)
 
     // Past the ceiling (from host start) → force reclaim despite the live task.
     clock.advance(1001)
-    ;(daemon as any).sweepIdle()
+    await (daemon as any).sweepIdle()
     await vi.waitFor(() => expect((daemon as any).hosts.has('bot-a')).toBe(false), WAIT)
     expect(host.stop).toHaveBeenCalled()
 
@@ -1411,15 +1411,15 @@ describe('Daemon idle sweep — background-task lease', () => {
   it('announces a completed background task to the thread when output mode ≥ medium', async () => {
     const clock = new FakeClock()
     const { daemon, conn } = await bootWithTurn(clock, { agentIdleTimeoutMs: 10_000_000, idleSweepMs: 10_000_000 })
-    ;(daemon as any).store.setOutputModeOverride(KEY, 'medium')
+    await (daemon as any).store.setOutputModeOverride(KEY, 'medium')
 
-    ;(daemon as any).onSdkLifecycle(
+    await (daemon as any).onSdkLifecycle(
       'bot-a',
       'acp-1',
       evt('task_started', { task_id: 't1', description: 'Sleep for 15 seconds' })
     )
     expect(conn.postMessage).not.toHaveBeenCalled() // nothing on start
-    ;(daemon as any).onSdkLifecycle(
+    await (daemon as any).onSdkLifecycle(
       'bot-a',
       'acp-1',
       evt('task_updated', { task_id: 't1', patch: { status: 'completed' } })
@@ -1433,7 +1433,7 @@ describe('Daemon idle sweep — background-task lease', () => {
     expect(text).toContain('completed')
 
     // The near-simultaneous task_notification for the same task must NOT double-post.
-    ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't1' }))
+    await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't1' }))
     expect(conn.postMessage).toHaveBeenCalledTimes(1)
     await daemon.stop()
   }, 15_000)
@@ -1441,14 +1441,14 @@ describe('Daemon idle sweep — background-task lease', () => {
   it('does not announce when output mode is below medium', async () => {
     const clock = new FakeClock()
     const { daemon, conn } = await bootWithTurn(clock, { agentIdleTimeoutMs: 10_000_000, idleSweepMs: 10_000_000 })
-    ;(daemon as any).store.setOutputModeOverride(KEY, 'low')
+    await (daemon as any).store.setOutputModeOverride(KEY, 'low')
 
-    ;(daemon as any).onSdkLifecycle(
+    await (daemon as any).onSdkLifecycle(
       'bot-a',
       'acp-1',
       evt('task_started', { task_id: 't1', description: 'Sleep for 15 seconds' })
     )
-    ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't1' }))
+    await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't1' }))
     expect(conn.postMessage).not.toHaveBeenCalled()
     await daemon.stop()
   }, 15_000)
@@ -1456,14 +1456,14 @@ describe('Daemon idle sweep — background-task lease', () => {
   it('does not announce an internal subagent task', async () => {
     const clock = new FakeClock()
     const { daemon, conn } = await bootWithTurn(clock, { agentIdleTimeoutMs: 10_000_000, idleSweepMs: 10_000_000 })
-    ;(daemon as any).store.setOutputModeOverride(KEY, 'high')
+    await (daemon as any).store.setOutputModeOverride(KEY, 'high')
 
-    ;(daemon as any).onSdkLifecycle(
+    await (daemon as any).onSdkLifecycle(
       'bot-a',
       'acp-1',
       evt('task_started', { task_id: 's1', subagent_type: 'general', description: 'a subagent' })
     )
-    ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 's1' }))
+    await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 's1' }))
     expect(conn.postMessage).not.toHaveBeenCalled() // subagents are internal — not announced
     await daemon.stop()
   }, 15_000)
@@ -1476,15 +1476,15 @@ describe('Daemon idle sweep — background-task lease', () => {
     it('wakes the idle session with a fresh turn once the grace period passes', async () => {
       const clock = new FakeClock()
       const { daemon, host } = await bootWithTurn(clock, { agentIdleTimeoutMs: 10_000_000, idleSweepMs: 10_000_000 })
-      ;(daemon as any).store.setOutputModeOverride(KEY, 'low') // a wake is NOT gated on output mode
+      await (daemon as any).store.setOutputModeOverride(KEY, 'low') // a wake is NOT gated on output mode
       expect(host.prompt).toHaveBeenCalledTimes(1) // just the human turn so far
 
-      ;(daemon as any).onSdkLifecycle(
+      await (daemon as any).onSdkLifecycle(
         'bot-a',
         'acp-1',
         evt('task_started', { task_id: 't1', description: 'Sleep 30s then print the time' })
       )
-      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't1' }))
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't1' }))
       expect(host.prompt).toHaveBeenCalledTimes(1) // deferred, not immediate
 
       clock.advance(4000)
@@ -1502,17 +1502,17 @@ describe('Daemon idle sweep — background-task lease', () => {
       const clock = new FakeClock()
       const { daemon, host } = await bootWithTurn(clock, { agentIdleTimeoutMs: 10_000_000, idleSweepMs: 10_000_000 })
 
-      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 't1' }))
-      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't1' }))
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 't1' }))
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't1' }))
       // Claude self-woke a followup cycle to drain it.
-      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('session_state_changed', { state: 'running' }))
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('session_state_changed', { state: 'running' }))
 
       clock.advance(4000) // re-armed, not abandoned
       await vi.waitFor(() => expect((daemon as any).bgWakeTimers.size).toBe(1), WAIT)
       expect((daemon as any).sdkLease.get(LEASE_KEY)?.armedWakes).toBe(1) // fence never dipped
       expect(host.prompt).toHaveBeenCalledTimes(1)
 
-      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('session_state_changed', { state: 'idle' }))
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('session_state_changed', { state: 'idle' }))
       clock.advance(4000)
       await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(2), WAIT)
       await daemon.stop()
@@ -1522,9 +1522,9 @@ describe('Daemon idle sweep — background-task lease', () => {
       const clock = new FakeClock()
       const { daemon, host } = await bootWithTurn(clock, { agentIdleTimeoutMs: 10_000_000, idleSweepMs: 10_000_000 })
 
-      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 't1' }))
-      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't1' }))
-      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('session_state_changed', { state: 'running' }))
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 't1' }))
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't1' }))
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('session_state_changed', { state: 'running' }))
 
       // 15 re-arms then nothing left armed — a wedged cycle must not be polled forever.
       for (let i = 0; i < 16; i++) {
@@ -1540,14 +1540,14 @@ describe('Daemon idle sweep — background-task lease', () => {
       const clock = new FakeClock()
       const { daemon, host } = await bootWithTurn(clock, { agentIdleTimeoutMs: 10_000_000, idleSweepMs: 10_000_000 })
 
-      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 't1' }))
-      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 't2' }))
-      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't1' }))
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 't1' }))
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 't2' }))
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't1' }))
       clock.advance(4000) // t2 is still live — t1's wake must stand down
       await new Promise((r) => setImmediate(r))
       expect(host.prompt).toHaveBeenCalledTimes(1)
 
-      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't2' }))
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't2' }))
       clock.advance(4000)
       await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(2), WAIT)
       await daemon.stop()
@@ -1560,8 +1560,8 @@ describe('Daemon idle sweep — background-task lease', () => {
       const clock = new FakeClock()
       const { daemon } = await bootWithTurn(clock, { agentIdleTimeoutMs: 10_000_000, idleSweepMs: 10_000_000 })
 
-      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 't1' }))
-      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't1' }))
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 't1' }))
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't1' }))
       expect((daemon as any).sdkLease.get(LEASE_KEY)?.tasks.size).toBe(0) // task already released
       expect((daemon as any).sdkLease.get(LEASE_KEY)?.armedWakes).toBe(1)
       expect((daemon as any).sessionSdkQuiescent('bot-a', 'acp-1')).toBe(false)
@@ -1595,16 +1595,16 @@ describe('Daemon idle sweep — background-task lease', () => {
         return realRecall(...args)
       }
 
-      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 't1' }))
-      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't1' }))
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 't1' }))
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't1' }))
       clock.advance(4000)
       await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(1), WAIT) // wake dispatched, stalled
 
       // Past the TTL, mid-initialization: the row is still `idle` and has no Pending, so only
       // the lease fence can keep the sweep off it.
       clock.advance(1001)
-      ;(daemon as any).sweepIdle()
-      expect((daemon as any).store.getSession(KEY)?.state).not.toBe('closed')
+      await (daemon as any).sweepIdle()
+      expect((await (daemon as any).store.getSession(KEY))?.state).not.toBe('closed')
       expect((daemon as any).hosts.has('bot-a')).toBe(true)
       expect(host.stop).not.toHaveBeenCalled()
 
@@ -1645,16 +1645,16 @@ describe('Daemon idle sweep — background-task lease', () => {
       await (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
 
       // Wake A → prompt #2, which blocks. Its dispatch stays pending.
-      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 'a' }))
-      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 'a' }))
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 'a' }))
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 'a' }))
       clock.advance(4000)
       await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(2), WAIT)
       // The model is done even though the turn is not — exactly what the SDK reports here.
-      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('session_state_changed', { state: 'idle' }))
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('session_state_changed', { state: 'idle' }))
 
       // Task B settles inside that window. It must be deferred, not folded into A.
-      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 'b' }))
-      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 'b' }))
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 'b' }))
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 'b' }))
       for (let i = 0; i < 3; i++) {
         clock.advance(4000)
         await new Promise((r) => setTimeout(r, 20))
@@ -1680,12 +1680,12 @@ describe('Daemon idle sweep — background-task lease', () => {
       const clock = new FakeClock()
       const { daemon, host } = await bootWithTurn(clock, { agentIdleTimeoutMs: 10_000_000, idleSweepMs: 10_000_000 })
 
-      ;(daemon as any).onSdkLifecycle(
+      await (daemon as any).onSdkLifecycle(
         'bot-a',
         'acp-1',
         evt('task_started', { task_id: 's1', subagent_type: 'general' })
       )
-      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 's1' }))
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 's1' }))
       clock.advance(4000)
       await new Promise((r) => setImmediate(r))
       expect(host.prompt).toHaveBeenCalledTimes(1)
@@ -1696,8 +1696,8 @@ describe('Daemon idle sweep — background-task lease', () => {
       const clock = new FakeClock()
       const { daemon, host } = await bootWithTurn(clock, { agentIdleTimeoutMs: 10_000_000, idleSweepMs: 10_000_000 })
 
-      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 't1' }))
-      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't1' }))
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 't1' }))
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't1' }))
       await (daemon as any).stopHost('bot-a') // drops the lease with the ACP session
 
       clock.advance(4000)
@@ -1712,8 +1712,8 @@ describe('Daemon idle sweep — background-task lease', () => {
       const clock = new FakeClock()
       const { daemon, host } = await bootWithTurn(clock, { agentIdleTimeoutMs: 10_000_000, idleSweepMs: 10_000_000 })
 
-      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 't1' }))
-      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't1' }))
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 't1' }))
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't1' }))
       clock.advance(4000)
       const lease = (daemon as any).sdkLease.get(LEASE_KEY)
       await vi.waitFor(() => expect(wakeFenceHeld(daemon)).toBe(false), WAIT)
@@ -1723,8 +1723,8 @@ describe('Daemon idle sweep — background-task lease', () => {
       // Pre-spend the rest rather than driving 19 more real turns: the property under test is
       // the refusal at the cap, not the arithmetic getting there.
       lease.bgWakes = 20
-      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 't2' }))
-      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't2' }))
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 't2' }))
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't2' }))
       clock.advance(4000)
       await vi.waitFor(() => expect(wakeFenceHeld(daemon)).toBe(false), WAIT) // fence released, no wake
       expect(host.prompt).toHaveBeenCalledTimes(2)
@@ -1740,13 +1740,21 @@ describe('Daemon idle sweep — background-task lease', () => {
     const clock = new FakeClock()
     const { daemon } = await bootWithTurn(clock, { agentIdleTimeoutMs: 10_000_000, idleSweepMs: 10_000_000 })
 
-    ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 't1', description: 'a-work' }))
-    ;(daemon as any).onSdkLifecycle('bot-b', 'acp-1', evt('task_started', { task_id: 't1', description: 'b-work' }))
+    await (daemon as any).onSdkLifecycle(
+      'bot-a',
+      'acp-1',
+      evt('task_started', { task_id: 't1', description: 'a-work' })
+    )
+    await (daemon as any).onSdkLifecycle(
+      'bot-b',
+      'acp-1',
+      evt('task_started', { task_id: 't1', description: 'b-work' })
+    )
     expect((daemon as any).sdkLease.size).toBe(2)
     expect((daemon as any).sdkLease.get(LEASE_KEY)?.tasks.get('t1')?.description).toBe('a-work')
 
     // Settling bot-b's identically-named task must not settle bot-a's.
-    ;(daemon as any).onSdkLifecycle('bot-b', 'acp-1', evt('task_notification', { task_id: 't1' }))
+    await (daemon as any).onSdkLifecycle('bot-b', 'acp-1', evt('task_notification', { task_id: 't1' }))
     expect((daemon as any).sdkLease.get(LEASE_KEY)?.tasks.size).toBe(1)
     expect((daemon as any).sessionSdkQuiescent('bot-a', 'acp-1')).toBe(false)
     await daemon.stop()
@@ -1763,17 +1771,21 @@ describe('Daemon idle sweep — background-task lease', () => {
       agentMaxLifetimeMs: 10_000_000,
       idleSweepMs: 10_000_000
     })
-    ;(daemon as any).store.setOutputModeOverride(KEY, 'medium')
+    await (daemon as any).store.setOutputModeOverride(KEY, 'medium')
     const lease = () => (daemon as any).sdkLease.get(LEASE_KEY)
     const announces = () =>
       (conn.postMessage as any).mock.calls.filter((call: any[]) => String(call[1]).includes('Sleep 15')).length
 
-    ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 't1', description: 'Sleep 15' }))
+    await (daemon as any).onSdkLifecycle(
+      'bot-a',
+      'acp-1',
+      evt('task_started', { task_id: 't1', description: 'Sleep 15' })
+    )
     expect((daemon as any).agentHasLiveSdkWork('bot-a')).toBe(true)
     expect((daemon as any).workspaceMutationBusy('bot-a')).toBe(true) // console edits refused while it runs
 
     // Settled: released from the liveness set, retained for the panel.
-    ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't1' }))
+    await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't1' }))
     expect(lease().tasks.size).toBe(0)
     expect(lease().settled.map((t: any) => t.id)).toEqual(['t1'])
     expect(announces()).toBe(1)
@@ -1785,7 +1797,7 @@ describe('Daemon idle sweep — background-task lease', () => {
 
     // The next authoritative snapshot no longer lists it. Re-settling a retained record is what
     // would re-announce, re-wake, and burn the 20-wake budget on EVERY subsequent snapshot.
-    ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('background_tasks_changed', { tasks: [] }))
+    await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('background_tasks_changed', { tasks: [] }))
     expect(lease().bgWakes).toBe(1)
     expect(wakeFenceHeld(daemon)).toBe(false)
     expect(announces()).toBe(1)
@@ -1795,12 +1807,12 @@ describe('Daemon idle sweep — background-task lease', () => {
     expect((daemon as any).sessionSdkQuiescent('bot-a', 'acp-1')).toBe(true)
     expect((daemon as any).agentHasLiveSdkWork('bot-a')).toBe(false)
     expect((daemon as any).workspaceMutationBusy('bot-a')).toBe(false)
-    await vi.waitFor(() => expect((daemon as any).store.getSession(KEY)?.state).toBe('idle'), WAIT)
+    await vi.waitFor(async () => expect((await (daemon as any).store.getSession(KEY))?.state).toBe('idle'), WAIT)
     clock.advance(1001)
-    ;(daemon as any).sweepIdle()
+    await (daemon as any).sweepIdle()
     await vi.waitFor(() => expect((daemon as any).hosts.has('bot-a')).toBe(false), WAIT)
     expect(host.stop).toHaveBeenCalled()
-    expect((daemon as any).store.getSession(KEY)?.state).toBe('closed')
+    expect((await (daemon as any).store.getSession(KEY))?.state).toBe('closed')
 
     await daemon.stop()
   }, 15_000)
@@ -1810,9 +1822,17 @@ describe('Daemon idle sweep — background-task lease', () => {
     const { daemon } = await bootWithTurn(clock, { agentIdleTimeoutMs: 10_000_000, idleSweepMs: 10_000_000 })
     const list = () => (daemon as any).listBackgroundTasks({ agentId: 'bot-a', sessionId: 'acp-1' })
 
-    ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 't1', description: 'Sleep 15' }))
+    await (daemon as any).onSdkLifecycle(
+      'bot-a',
+      'acp-1',
+      evt('task_started', { task_id: 't1', description: 'Sleep 15' })
+    )
     clock.advance(1000)
-    ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 't2', subagent_type: 'general' }))
+    await (daemon as any).onSdkLifecycle(
+      'bot-a',
+      'acp-1',
+      evt('task_started', { task_id: 't2', subagent_type: 'general' })
+    )
 
     // Live rows, newest start first. The internal subagent is CARRIED, not filtered at the source:
     // it fences reclaim exactly like a real task, so hiding it here would make the panel and the
@@ -1831,7 +1851,7 @@ describe('Daemon idle sweep — background-task lease', () => {
     // The snapshot settles both and carries NO status, which is the common case — so `done` means
     // "settled without a reported failure", and `detail` stays absent rather than claiming success.
     clock.advance(1000)
-    ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('background_tasks_changed', { tasks: [] }))
+    await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('background_tasks_changed', { tasks: [] }))
     expect(list().tasks.map((t: any) => [t.id, t.state, t.endedAt, t.detail])).toEqual([
       ['t1', 'done', new Date(2000).toISOString(), undefined],
       ['t2', 'done', new Date(2000).toISOString(), undefined]
@@ -1839,7 +1859,7 @@ describe('Daemon idle sweep — background-task lease', () => {
 
     // A later terminal edge DOES carry a status. Refining the retained row is the only way `failed`
     // is reachable at all, and it must stay display-only: no re-announce, no liveness change.
-    ;(daemon as any).onSdkLifecycle(
+    await (daemon as any).onSdkLifecycle(
       'bot-a',
       'acp-1',
       evt('task_updated', { task_id: 't1', patch: { status: 'failed' } })
@@ -1861,7 +1881,11 @@ describe('Daemon idle sweep — background-task lease', () => {
     const ids = Array.from({ length: MAX_TASK_LIST_TASKS + 1 }, (_unused, i) => `t${i}`)
     for (const id of ids) {
       clock.advance(1)
-      ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: id, subagent_type: 'general' }))
+      await (daemon as any).onSdkLifecycle(
+        'bot-a',
+        'acp-1',
+        evt('task_started', { task_id: id, subagent_type: 'general' })
+      )
     }
     expect((daemon as any).sdkLease.get(LEASE_KEY).tasks.size).toBe(MAX_TASK_LIST_TASKS + 1)
     expect(list().tasks).toHaveLength(MAX_TASK_LIST_TASKS)
@@ -1869,7 +1893,7 @@ describe('Daemon idle sweep — background-task lease', () => {
 
     // All settle on one snapshot. Retention keeps the newest MAX_SETTLED_TASKS_PER_SESSION (20) and
     // the liveness set empties completely — the cap evicts history, never a live task.
-    ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('background_tasks_changed', { tasks: [] }))
+    await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('background_tasks_changed', { tasks: [] }))
     expect((daemon as any).sdkLease.get(LEASE_KEY).tasks.size).toBe(0)
     expect(list().tasks).toHaveLength(20)
     expect(list().truncated).toBe(false)
@@ -1907,7 +1931,7 @@ describe('Daemon idle sweep — background-task lease', () => {
       agentMaxLifetimeMs: 10_000_000,
       idleSweepMs: 10_000_000
     })
-    ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 't1' }))
+    await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 't1' }))
     expect((daemon as any).sdkLease.size).toBe(1)
     await (daemon as any).stopHost('bot-a')
     expect((daemon as any).sdkLease.size).toBe(0)
@@ -1932,7 +1956,7 @@ describe('Daemon graceful shutdown drain (#109)', () => {
     let stopped = false
     const stopping = daemon.stop().then(() => (stopped = true))
     // new inbound is dropped while draining
-    ;(daemon as any).onInbound(dm('300', 'too late'))
+    await (daemon as any).onInboundOutcome(dm('300', 'too late'))
     await new Promise((r) => setTimeout(r, 20))
     expect(stopped).toBe(false) // still waiting on the in-flight turn
 
@@ -2045,8 +2069,8 @@ describe('Daemon CP drain (#109)', () => {
 })
 
 describe('Daemon session retention GC (#485)', () => {
-  const seedSession = (daemon: Daemon, key: string, state: 'idle' | 'prompting' | 'closed', updatedAt: number) =>
-    (daemon as any).store.upsertSession({
+  const seedSession = async (daemon: Daemon, key: string, state: 'idle' | 'prompting' | 'closed', updatedAt: number) =>
+    await (daemon as any).store.upsertSession({
       key,
       agentId: 'bot-a',
       platform: 'slack',
@@ -2068,20 +2092,20 @@ describe('Daemon session retention GC (#485)', () => {
     })
     await daemon.start()
 
-    seedSession(daemon, 'expired-closed', 'closed', 0)
-    seedSession(daemon, 'expired-idle', 'idle', 0)
-    seedSession(daemon, 'fresh-closed', 'closed', 2 * 24 * 3_600_000) // inside the window at sweep time
-    seedSession(daemon, 'expired-prompting', 'prompting', 0) // live turn — durable state guard
-    seedSession(daemon, 'expired-gated', 'closed', 0) // owned serial gate — in-memory guard
+    await seedSession(daemon, 'expired-closed', 'closed', 0)
+    await seedSession(daemon, 'expired-idle', 'idle', 0)
+    await seedSession(daemon, 'fresh-closed', 'closed', 2 * 24 * 3_600_000) // inside the window at sweep time
+    await seedSession(daemon, 'expired-prompting', 'prompting', 0) // live turn — durable state guard
+    await seedSession(daemon, 'expired-gated', 'closed', 0) // owned serial gate — in-memory guard
     ;(daemon as any).inflight.add('expired-gated')
 
     // Past the default 7d retention window; the hourly gate inside sweepIdle opens too.
     clock.advance(8 * 24 * 3_600_000)
-    await vi.waitFor(() => expect((daemon as any).store.getSession('expired-closed')).toBeUndefined(), WAIT)
-    expect((daemon as any).store.getSession('expired-idle')).toBeUndefined()
-    expect((daemon as any).store.getSession('fresh-closed')).toBeDefined()
-    expect((daemon as any).store.getSession('expired-prompting')).toBeDefined()
-    expect((daemon as any).store.getSession('expired-gated')).toBeDefined()
+    await vi.waitFor(async () => expect(await (daemon as any).store.getSession('expired-closed')).toBeUndefined(), WAIT)
+    expect(await (daemon as any).store.getSession('expired-idle')).toBeUndefined()
+    expect(await (daemon as any).store.getSession('fresh-closed')).toBeDefined()
+    expect(await (daemon as any).store.getSession('expired-prompting')).toBeDefined()
+    expect(await (daemon as any).store.getSession('expired-gated')).toBeDefined()
 
     await daemon.stop()
   }, 15_000)
@@ -2096,11 +2120,11 @@ describe('Daemon session retention GC (#485)', () => {
     })
     await daemon.start()
     ;(daemon as any).cfg.sessions.retention = 'never'
-    seedSession(daemon, 'expired-closed', 'closed', 0)
+    await seedSession(daemon, 'expired-closed', 'closed', 0)
 
     clock.advance(8 * 24 * 3_600_000)
     await (daemon as any).sweepSessionRetention()
-    expect((daemon as any).store.getSession('expired-closed')).toBeDefined()
+    expect(await (daemon as any).store.getSession('expired-closed')).toBeDefined()
 
     await daemon.stop()
   }, 15_000)
@@ -2117,8 +2141,8 @@ describe('Daemon session retention GC (#485)', () => {
     const emitSessionPurged = vi.fn(async () => 'acknowledged' as const)
     ;(daemon as any).cpClient = { emitSessionPurged, state: 'READY', stop: vi.fn(async () => {}) }
 
-    seedSession(daemon, 'expired-a', 'closed', 0)
-    seedSession(daemon, 'expired-b', 'idle', 0)
+    await seedSession(daemon, 'expired-a', 'closed', 0)
+    await seedSession(daemon, 'expired-b', 'idle', 0)
     clock.advance(8 * 24 * 3_600_000)
     await (daemon as any).sweepSessionRetention()
     await vi.waitFor(() => expect(emitSessionPurged).toHaveBeenCalledOnce(), WAIT)
@@ -2131,7 +2155,7 @@ describe('Daemon session retention GC (#485)', () => {
     })
     expect(emitSessionPurged.mock.calls[0]![0].sessionIds.sort()).toEqual(['acp-expired-a', 'acp-expired-b'])
     // ACKed ⇒ the durable receipts are released.
-    expect((daemon as any).store.listSessionPurges(10, 0)).toEqual([])
+    expect(await (daemon as any).store.listSessionPurges(10, 0)).toEqual([])
 
     await daemon.stop()
   }, 15_000)
@@ -2152,13 +2176,13 @@ describe('Daemon session retention GC (#485)', () => {
     // Two sweeps' worth of receipts plus a second agent: every frame states one
     // agent + reason + timestamp for all the sessions it carries, so a row may
     // never ride in a frame that would mislabel when (or by whom) it was purged.
-    store.deleteSession('x', { reason: 'retention', at: 1_000 }) // absent row — no receipt
-    seedSession(daemon, 'sweep-1a', 'closed', 0)
-    seedSession(daemon, 'sweep-1b', 'closed', 0)
-    store.deleteSession('sweep-1a', { reason: 'retention', at: 1_000 })
-    store.deleteSession('sweep-1b', { reason: 'retention', at: 1_000 })
-    seedSession(daemon, 'sweep-2', 'closed', 0)
-    store.deleteSession('sweep-2', { reason: 'retention', at: 2_000 })
+    await store.deleteSession('x', { reason: 'retention', at: 1_000 }) // absent row — no receipt
+    await seedSession(daemon, 'sweep-1a', 'closed', 0)
+    await seedSession(daemon, 'sweep-1b', 'closed', 0)
+    await store.deleteSession('sweep-1a', { reason: 'retention', at: 1_000 })
+    await store.deleteSession('sweep-1b', { reason: 'retention', at: 1_000 })
+    await seedSession(daemon, 'sweep-2', 'closed', 0)
+    await store.deleteSession('sweep-2', { reason: 'retention', at: 2_000 })
 
     await (daemon as any).drainSessionPurges()
 
@@ -2170,7 +2194,7 @@ describe('Daemon session retention GC (#485)', () => {
     expect(frames[0]!.ts).toBe(new Date(1_000).toISOString())
     expect(frames[1]!.sessionIds).toEqual(['acp-sweep-2'])
     expect(frames[1]!.ts).toBe(new Date(2_000).toISOString())
-    expect(store.listSessionPurges(10, 0)).toEqual([])
+    expect(await store.listSessionPurges(10, 0)).toEqual([])
 
     await daemon.stop()
   }, 15_000)
@@ -2187,14 +2211,14 @@ describe('Daemon session retention GC (#485)', () => {
     const emitSessionPurged = vi.fn()
     ;(daemon as any).cpClient = { emitSessionPurged, state: 'DEGRADED', stop: vi.fn(async () => {}) }
 
-    seedSession(daemon, 'expired-a', 'closed', 0)
+    await seedSession(daemon, 'expired-a', 'closed', 0)
     clock.advance(8 * 24 * 3_600_000)
     await (daemon as any).sweepSessionRetention()
 
     // Not even attempted: the receipt is durable and the reconnect drains it, so a
     // request here would only log a failure on every sweep of a local-only daemon.
     expect(emitSessionPurged).not.toHaveBeenCalled()
-    expect((daemon as any).store.listSessionPurges(10, 0)).toHaveLength(1)
+    expect(await (daemon as any).store.listSessionPurges(10, 0)).toHaveLength(1)
 
     await daemon.stop()
   }, 15_000)
@@ -2216,12 +2240,12 @@ describe('Daemon session retention GC (#485)', () => {
       stop: vi.fn()
     }
 
-    seedSession(daemon, 'expired-a', 'closed', 0)
+    await seedSession(daemon, 'expired-a', 'closed', 0)
     clock.advance(8 * 24 * 3_600_000)
     await (daemon as any).sweepSessionRetention()
     await (daemon as any).drainSessionPurges()
 
-    expect((daemon as any).store.listSessionPurges(10, 0)).toMatchObject([
+    expect(await (daemon as any).store.listSessionPurges(10, 0)).toMatchObject([
       { agentId: 'bot-a', sessionId: 'acp-expired-a', reason: 'retention' }
     ])
 
@@ -2234,7 +2258,7 @@ describe('Daemon session retention GC (#485)', () => {
       stop: vi.fn()
     }
     await (daemon as any).drainSessionPurges()
-    expect((daemon as any).store.listSessionPurges(10, 0)).toHaveLength(1)
+    expect(await (daemon as any).store.listSessionPurges(10, 0)).toHaveLength(1)
 
     await daemon.stop()
   }, 15_000)
@@ -2248,8 +2272,8 @@ describe('Daemon session retention GC (#485)', () => {
       clock
     })
     await daemon.start()
-    seedSession(daemon, 'expired-queued', 'closed', 0)
-    ;(daemon as any).store.appendInbox({
+    await seedSession(daemon, 'expired-queued', 'closed', 0)
+    await (daemon as any).store.appendInbox({
       id: 'm-queued',
       sessionKey: 'expired-queued',
       agentId: 'bot-a',
@@ -2259,7 +2283,7 @@ describe('Daemon session retention GC (#485)', () => {
 
     clock.advance(8 * 24 * 3_600_000)
     await (daemon as any).sweepSessionRetention()
-    expect((daemon as any).store.getSession('expired-queued')).toBeDefined()
+    expect(await (daemon as any).store.getSession('expired-queued')).toBeDefined()
 
     await daemon.stop()
   }, 15_000)

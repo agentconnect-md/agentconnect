@@ -276,14 +276,14 @@ export class SessionManager {
    * thread — that collapse exists to disambiguate a SINGLE target, and a conversation
    * does not have one: everyone in it sees what is said.
    */
-  threadParticipants(channel: string, thread: string, transportScope?: string | null): string[] {
-    const open = this.deps.store.openSessionAgents(channel, thread, transportScope)
-    const dormant = this.deps.store.closedSessionAgents(channel, thread, transportScope)
+  async threadParticipants(channel: string, thread: string, transportScope?: string | null): Promise<string[]> {
+    const open = await this.deps.store.openSessionAgents(channel, thread, transportScope)
+    const dormant = await this.deps.store.closedSessionAgents(channel, thread, transportScope)
     return [...new Set([...open, ...dormant])]
   }
 
-  threadOwner(channel: string, thread: string, transportScope?: string | null): string | null {
-    const owners = this.deps.store.openSessionAgents(channel, thread, transportScope)
+  async threadOwner(channel: string, thread: string, transportScope?: string | null): Promise<string | null> {
+    const owners = await this.deps.store.openSessionAgents(channel, thread, transportScope)
     // 2+ live owners actively share the thread → ambiguous, fall through to
     // mention-gating (§8.2). Exactly one → thread continuity.
     if (owners.length > 0) return owners.length === 1 ? owners[0]! : null
@@ -292,7 +292,7 @@ export class SessionManager {
     // the sole agent that previously owned this thread — SessionManager.handle then
     // recreates/resumes its ACP session. Still gated at exactly one, and the `!stop`
     // mute check downstream (onInbound) keeps a muted thread suppressed regardless.
-    const dormant = this.deps.store.closedSessionAgents(channel, thread, transportScope)
+    const dormant = await this.deps.store.closedSessionAgents(channel, thread, transportScope)
     return dormant.length === 1 ? dormant[0]! : null
   }
 
@@ -379,7 +379,7 @@ export class SessionManager {
     let ts = msg.platform === 'webchat' ? (msg.transcriptTs ?? monotonicTs()) : coordTs
     const transportScope = msg.transportScope
     const key = sessionKey(msg.platform, msg.channel, thread, agentId, transportScope)
-    let rec = this.deps.store.getSession(key)
+    let rec = await this.deps.store.getSession(key)
     const transcriptChannel = transcriptChannelKey(msg.channel, transportScope)
 
     // Hydrate the inbound image and record the triggering message (turn/transcript-ingest.ts);
@@ -413,7 +413,7 @@ export class SessionManager {
           lastDeliveredTs: null,
           updatedAt: Date.now()
         }
-        this.deps.store.upsertSession(rec)
+        await this.deps.store.upsertSession(rec)
       } else if (rec.memoryProvider == null || rec.transportScope == null || (!rec.threadUrl && msg.threadUrl)) {
         rec = {
           ...rec,
@@ -421,7 +421,7 @@ export class SessionManager {
           ...(transportScope !== undefined ? { transportScope } : {}),
           ...(!rec.threadUrl && msg.threadUrl ? { threadUrl: msg.threadUrl } : {})
         }
-        this.deps.store.upsertSession(rec)
+        await this.deps.store.upsertSession(rec)
       }
     }
     const requestedWorkspaceIsolation =
@@ -439,7 +439,7 @@ export class SessionManager {
           : {}),
         updatedAt: Date.now()
       }
-      this.deps.store.upsertSession(rec)
+      await this.deps.store.upsertSession(rec)
     }
     // Durable parent link (§5.3): prefer the origin persisted on the session (present on EVERY
     // turn of a spawned session) over this turn's wake origin (only the one agent-call turn that
@@ -478,7 +478,7 @@ export class SessionManager {
     const initiator = rec?.triggeredBy ?? msg.sessionTriggerId ?? msg.sender.id
     const initiatedBy = initiatorLabel(
       initiator,
-      this.deps.store.getDisplayNames([initiator]).get(initiator),
+      await (await this.deps.store.getDisplayNames([initiator])).get(initiator),
       msg.sender
     )
     const workspaceRequest = { sessionKey: key, isolation: workspaceIsolation, initiatedBy }
@@ -491,9 +491,9 @@ export class SessionManager {
     let preparedCwd =
       hostCold && !this.deps.resolvePreparedWorkspace
         ? await abortable(
-            () =>
+            async () =>
               this.deps.prepareWorkspace?.(agent, undefined, workspaceRequest) ??
-              this.workspaces.prepareWorkspace(agent),
+              (await this.workspaces.prepareWorkspace(agent)),
             signal
           )
         : undefined
@@ -520,7 +520,7 @@ export class SessionManager {
     // The channel's human display name, if the daemon has resolved one (Slack bulk refresh /
     // ChannelNameResolver, cached in `display_names`). Stored bare for a group/channel,
     // `@name` for a DM (same value the console labels with), surfaced as-is.
-    const channelName = this.deps.store.getDisplayNames([msg.channel]).get(msg.channel)
+    const channelName = await (await this.deps.store.getDisplayNames([msg.channel])).get(msg.channel)
     const secretNames = (agent.runtimeOverrides?.secrets ?? []).map((s) => s.name)
     // planConfigFiles over the same `{...runtimeEnv, ...agentEnv}` merge the spawn path uses
     // keeps the two in agreement: a pointer var set explicitly ANYWHERE (agent env or the
@@ -603,7 +603,7 @@ export class SessionManager {
       // authority is resolved immediately before each request, then the await is fenced:
       // metadata-only settings cannot be reversed by a later live selector.
       chatRuntimeChangesAllowed: () => this.deps.agentById(agentId)?.allowRuntimeChangesInChat === true,
-      effortOverride: () => initialEffort ?? this.deps.store.getEffortOverride(key),
+      effortOverride: async () => initialEffort ?? (await this.deps.store.getEffortOverride(key)),
       ...(metaContext !== undefined ? { metaContext } : {}),
       ...(resumeSystemContext !== undefined ? { resumeSystemContext } : {}),
       usesMeta,
@@ -622,7 +622,7 @@ export class SessionManager {
     if (options.initializeOnly) {
       rec.state = 'idle'
       rec.updatedAt = Date.now()
-      this.deps.store.upsertSession(rec)
+      await this.deps.store.upsertSession(rec)
       return {
         sessionId: rec.acpSessionId!,
         blocks: [],
@@ -675,12 +675,12 @@ export class SessionManager {
     // a sibling must never see another child's role/task delivery or report.
     const blocks: ContentBlock[] = []
     let contextEventTs: string[] = []
-    let contextRevision = this.deps.store.threadTranscriptRevision(transcriptChannel, thread, agentId)
+    let contextRevision = await this.deps.store.threadTranscriptRevision(transcriptChannel, thread, agentId)
     {
       const gap = (
         isSyntheticA2aChannel(transcriptChannel)
-          ? this.deps.store.transcriptSinceForAgent(transcriptChannel, thread, markerBefore, agentId)
-          : this.deps.store.transcriptSince(transcriptChannel, thread, markerBefore, agentId)
+          ? await this.deps.store.transcriptSinceForAgent(transcriptChannel, thread, markerBefore, agentId)
+          : await this.deps.store.transcriptSince(transcriptChannel, thread, markerBefore, agentId)
       ).filter((e) => withinSnapshot(e.ts))
       // The whole gap-replay decision lives in turn/replay-plan.ts; handle() only applies it.
       const plan = planReplay({
@@ -701,7 +701,7 @@ export class SessionManager {
         // A skipped activation still took on the obligation — persist it so the next real turn
         // (and any resume) carries the directive.
         if (needsReplyToParent) rec.needsParentReply = 1
-        this.deps.store.upsertSession(rec)
+        await this.deps.store.upsertSession(rec)
         return {
           sessionId: rec.acpSessionId!,
           blocks: [],
@@ -727,7 +727,7 @@ export class SessionManager {
         contextEventTs = [...context.map((entry) => entry.ts), ts]
       }
       rec.lastDeliveredTs = plan.deliveredThrough ?? ts
-      contextRevision = this.deps.store.threadTranscriptRevision(transcriptChannel, thread, agentId)
+      contextRevision = await this.deps.store.threadTranscriptRevision(transcriptChannel, thread, agentId)
     }
 
     // §9.2 attachments on the current message → image/resource/resource_link blocks.
@@ -793,7 +793,7 @@ export class SessionManager {
       // is not being recreated, so there is no system-prompt channel to update; state the
       // directive as a turn-scoped block naming the parent THIS turn may actually reply to.
       promptPrelude.push({ type: 'text', text: parentReplyAppend })
-    } else if (this.shouldRemind(key)) {
+    } else if (await this.shouldRemind(key)) {
       // Long-running (or just-compacted) session: re-assert the no-response
       // rule as a compact system reminder so it stays salient. A brand-new session already
       // carries the full rule (the `created` branch / Claude's system-prompt append), so this
@@ -825,7 +825,7 @@ export class SessionManager {
     // Sticky in the store, so this only ever adds the obligation — an ordinary turn on a session
     // that already has it passes 1 straight back through.
     if (needsReplyToParent) rec.needsParentReply = 1
-    this.deps.store.upsertSession(rec)
+    await this.deps.store.upsertSession(rec)
 
     return {
       sessionId: rec.acpSessionId!,
@@ -845,19 +845,19 @@ export class SessionManager {
    *  Fires every REMINDER_EVERY_TURNS turns, or as soon as a context compaction is detected —
    *  tokens-in-context fell below COMPACTION_DROP_RATIO of the previous turn's (ACP has no
    *  explicit compaction event, only the usage numbers we track via setUsageSnapshot). */
-  private shouldRemind(key: string): boolean {
+  private async shouldRemind(key: string): Promise<boolean> {
     // First turn observed by this daemon process for an already-existing session: reassert
     // immediately. Besides surviving runtime compaction, this migrates long-lived sessions
     // away from a response marker taught by an older daemon release.
     if (!this.turnsSinceReminder.has(key)) {
       this.turnsSinceReminder.set(key, 0)
-      const now = this.deps.store.getUsage(key).contextUsed
+      const now = await (await this.deps.store.getUsage(key)).contextUsed
       if (now !== undefined) this.lastContextUsed.set(key, now)
       return true
     }
     const turns = (this.turnsSinceReminder.get(key) ?? 0) + 1
     const prev = this.lastContextUsed.get(key)
-    const now = this.deps.store.getUsage(key).contextUsed
+    const now = await (await this.deps.store.getUsage(key)).contextUsed
     if (now !== undefined) this.lastContextUsed.set(key, now)
     const compacted = prev !== undefined && now !== undefined && now < prev * COMPACTION_DROP_RATIO
     const remind = turns >= REMINDER_EVERY_TURNS || compacted

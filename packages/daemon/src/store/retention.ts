@@ -172,8 +172,8 @@ export interface StoreRetentionCandidate {
 
 /** What the sweep needs from the store, and nothing more. */
 export interface RetentionStore {
-  listRetentionCandidates(rule: StoreRetentionRule, limit: number): StoreRetentionCandidate[]
-  deleteRetentionRow(rule: StoreRetentionRule, candidate: StoreRetentionCandidate): boolean
+  listRetentionCandidates(rule: StoreRetentionRule, limit: number): Promise<StoreRetentionCandidate[]>
+  deleteRetentionRow(rule: StoreRetentionRule, candidate: StoreRetentionCandidate): Promise<boolean>
 }
 
 export interface StoreRetentionSettings {
@@ -235,13 +235,13 @@ export class StoreRetentionSweeper {
   }
 
   /**
-   * One sweep, age only. Synchronous, because nothing here asks the control plane — which
-   * is what lets startup run it before the model-catalog cache is hydrated, where a stale
-   * catalog must already be gone before anything reads it.
+   * One sweep, age only. It asks the control plane nothing, which is what lets startup run it
+   * before the model-catalog cache is hydrated, where a stale catalog must already be gone
+   * before anything reads it.
    */
-  sweepAgeOnly(): StoreRetentionSummary | undefined {
+  async sweepAgeOnly(): Promise<StoreRetentionSummary | undefined> {
     try {
-      return this.collect(this.read(), undefined)
+      return await this.collect(await this.read(), undefined)
     } catch (err) {
       this.deps.log.warn(`store retention: sweep failed — ${(err as Error).message}`)
       return undefined
@@ -252,19 +252,19 @@ export class StoreRetentionSweeper {
    *  the CronJob turns that into a non-zero exit. */
   async sweep(): Promise<StoreRetentionSummary | undefined> {
     try {
-      const found = this.read()
-      return this.collect(found, await this.askLive(found))
+      const found = await this.read()
+      return await this.collect(found, await this.askLive(found))
     } catch (err) {
       this.deps.log.warn(`store retention: sweep failed — ${(err as Error).message}`)
       return undefined
     }
   }
 
-  private read(): { rule: StoreRetentionRule; rows: StoreRetentionCandidate[] }[] {
-    return this.rules.map((rule) => ({
-      rule,
-      rows: this.deps.store.listRetentionCandidates(rule, STORE_RETENTION_SCAN_LIMIT)
-    }))
+  private async read(): Promise<{ rule: StoreRetentionRule; rows: StoreRetentionCandidate[] }[]> {
+    const found: { rule: StoreRetentionRule; rows: StoreRetentionCandidate[] }[] = []
+    for (const rule of this.rules)
+      found.push({ rule, rows: await this.deps.store.listRetentionCandidates(rule, STORE_RETENTION_SCAN_LIMIT) })
+    return found
   }
 
   /** ONE existence read for the whole sweep, over every rule that names an agent. */
@@ -281,10 +281,10 @@ export class StoreRetentionSweeper {
     return this.deps.liveAgents && askable.length > 0 ? await this.deps.liveAgents(askable) : undefined
   }
 
-  private collect(
+  private async collect(
     found: { rule: StoreRetentionRule; rows: StoreRetentionCandidate[] }[],
     live: Set<string> | undefined
-  ): StoreRetentionSummary {
+  ): Promise<StoreRetentionSummary> {
     const { settings, log, store } = this.deps
     const now = this.clock.now()
     const summary = emptySummary(this.rules)
@@ -307,7 +307,7 @@ export class StoreRetentionSweeper {
           continue
         }
         try {
-          if (store.deleteRetentionRow(rule, row)) summary.deleted += 1
+          if (await store.deleteRetentionRow(rule, row)) summary.deleted += 1
           else log.info(`store retention: ${rule.id} ${describe(row)} was written since it was listed — left alone`)
         } catch (err) {
           summary.failed += 1

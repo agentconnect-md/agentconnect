@@ -487,10 +487,10 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     try {
       const startCpClient = vi.fn()
       ;(first as any).startCpClient = startCpClient
-      ;(first as any).replayInbox = () => {
+      ;(first as any).replayInbox = async () => {
         expect(startCpClient).not.toHaveBeenCalled()
         expect((first as any).cpClient).toBeUndefined()
-        ;(first as any).store.upsertSession({
+        await (first as any).store.upsertSession({
           key: ['slack', 'C1', '100.1', agentId].join('\0'),
           agentId,
           platform: 'slack',
@@ -540,7 +540,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
         platform: 'slack',
         channel: 'C1'
       })
-      expect((restored as any).store.hasPendingSessionMetadata()).toBe(false)
+      expect(await (restored as any).store.hasPendingSessionMetadata()).toBe(false)
     } finally {
       if (restored) await restored.stop().catch(() => undefined)
       if (!firstStopped) await first.stop().catch(() => undefined)
@@ -597,8 +597,14 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       syncEventSession,
       stop: vi.fn(async () => {})
     }
-    ;(daemon as any).store.saveSessionMetadataSnapshot(agentId, poison.sessionId, JSON.stringify(poison), true, 1)
-    ;(daemon as any).store.saveSessionMetadataSnapshot(agentId, healthy.sessionId, JSON.stringify(healthy), true, 2)
+    await (daemon as any).store.saveSessionMetadataSnapshot(agentId, poison.sessionId, JSON.stringify(poison), true, 1)
+    await (daemon as any).store.saveSessionMetadataSnapshot(
+      agentId,
+      healthy.sessionId,
+      JSON.stringify(healthy),
+      true,
+      2
+    )
 
     try {
       for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -613,11 +619,11 @@ describe('Daemon (no Slack, injected ACP host)', () => {
         'acp-poison',
         'acp-healthy'
       ])
-      expect((daemon as any).store.pendingSessionMetadataSnapshot(agentId, poison.sessionId)).toMatchObject({
+      expect(await (daemon as any).store.pendingSessionMetadataSnapshot(agentId, poison.sessionId)).toMatchObject({
         failedAttempts: 5,
         nextAttemptAt: 300_000
       })
-      expect((daemon as any).store.pendingSessionMetadataSnapshot(agentId, healthy.sessionId)).toBeUndefined()
+      expect(await (daemon as any).store.pendingSessionMetadataSnapshot(agentId, healthy.sessionId)).toBeUndefined()
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('snapshot deferred after 5 failures'))
     } finally {
       await daemon.stop()
@@ -833,7 +839,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       ['D1', '205.1', 'Fix session titles']
     ])
     expect(staleSetTitle).not.toHaveBeenCalled()
-    expect((daemon as any).store.getSessionByAcpId('acp-tool-title')?.title).toBe('Fix session titles')
+    expect((await (daemon as any).store.getSessionByAcpId('acp-tool-title'))?.title).toBe('Fix session titles')
     expect(
       emitEventSession.mock.calls.some(([event]) => event.phase === 'plan' && event.title === 'Fix session titles')
     ).toBe(true)
@@ -852,7 +858,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       prompt: vi.fn(async () => ({ stopReason: 'end_turn' })),
       cancel: vi.fn(),
       stop: vi.fn(async () => {
-        onUpdate('acp-title-late', { sessionUpdate: 'session_info_update', title: 'Fix session titles' })
+        await onUpdate('acp-title-late', { sessionUpdate: 'session_info_update', title: 'Fix session titles' })
       })
     }
     const daemon = new Daemon({
@@ -899,16 +905,16 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     // flushed while the host stops must still converge the durable title, CP
     // projection, and original Slack bot before its delivery binding is released.
     expect((daemon as any).pending.size).toBe(0)
-    ;(daemon as any).onAcpUpdate('another-agent', 'acp-title-late', {
+    await (daemon as any).onAcpUpdate('another-agent', 'acp-title-late', {
       sessionUpdate: 'session_info_update',
       title: 'Wrong agent title'
     })
-    expect((daemon as any).store.getSessionByAcpId('acp-title-late')?.title).toBeNull()
-    await (daemon as any).stopHost('bot-a')
+    expect((await (daemon as any).store.getSessionByAcpId('acp-title-late'))?.title).toBeNull()
+    await await (daemon as any).stopHost('bot-a')
 
     await vi.waitFor(() => expect(connB.setTitle).toHaveBeenCalledWith('D1', '210.1', 'Fix session titles'), WAIT)
     expect(connA.setTitle).not.toHaveBeenCalled()
-    expect((daemon as any).store.getSessionByAcpId('acp-title-late')?.title).toBe('Fix session titles')
+    expect((await (daemon as any).store.getSessionByAcpId('acp-title-late'))?.title).toBe('Fix session titles')
     expect(emitEventSession.mock.calls.at(-1)?.[0]).toMatchObject({
       sessionId: 'acp-title-late',
       phase: 'plan',
@@ -977,10 +983,14 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     const b = (daemon as any).dispatch('bot-b', message('bot-b'))
     await vi.waitFor(() => expect((daemon as any).pending.size).toBe(2), WAIT)
 
-    updates.get('bot-a')?.('shared-acp-id', { sessionUpdate: 'session_info_update', title: 'Agent A title' })
-    updates.get('bot-b')?.('shared-acp-id', { sessionUpdate: 'session_info_update', title: 'Agent B title' })
-    expect((daemon as any).store.getSessionByAcpIdForAgent('bot-a', 'shared-acp-id')?.title).toBe('Agent A title')
-    expect((daemon as any).store.getSessionByAcpIdForAgent('bot-b', 'shared-acp-id')?.title).toBe('Agent B title')
+    await updates.get('bot-a')?.('shared-acp-id', { sessionUpdate: 'session_info_update', title: 'Agent A title' })
+    await updates.get('bot-b')?.('shared-acp-id', { sessionUpdate: 'session_info_update', title: 'Agent B title' })
+    expect((await (daemon as any).store.getSessionByAcpIdForAgent('bot-a', 'shared-acp-id'))?.title).toBe(
+      'Agent A title'
+    )
+    expect((await (daemon as any).store.getSessionByAcpIdForAgent('bot-b', 'shared-acp-id'))?.title).toBe(
+      'Agent B title'
+    )
 
     releases.get('bot-a')?.()
     releases.get('bot-b')?.()
@@ -1212,9 +1222,9 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       isDm: false
     })
 
-    ;(daemon as any).store.setDisplayName('C1', 'deploys', Date.now())
-    ;(daemon as any).store.setDisplayName('U1', 'Dana Reyes', Date.now())
-    ;(daemon as any).sessionMetadataOutbox.emitSessionMetadataSnapshotsForDisplayName('C1')
+    await (daemon as any).store.setDisplayName('C1', 'deploys', Date.now())
+    await (daemon as any).store.setDisplayName('U1', 'Dana Reyes', Date.now())
+    await (daemon as any).sessionMetadataOutbox.emitSessionMetadataSnapshotsForDisplayName('C1')
 
     const refresh = emitEventSession.mock.calls.at(-1)![0]
     expect(refresh).toMatchObject({
@@ -1332,7 +1342,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     expect(posts.some((t) => t.includes('⚠️'))).toBe(false)
     expect(setStatus).toHaveBeenCalledWith('C1', '400.1', '') // "is thinking…" cleared
     // …and it landed in the transcript, so the console session view shows it.
-    const { rows } = (daemon as any).store.transcriptPage('C1', '400.1', null, 10)
+    const { rows } = await (daemon as any).store.transcriptPage('C1', '400.1', null, 10)
     const agentRows = rows.filter((r: any) => r.sender === 'bot-a' && r.kind === 'text')
     expect(agentRows).toHaveLength(1)
     expect(agentRows[0]!.text).toContain("You've hit your usage limit")
@@ -1393,7 +1403,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
 
     // Delivered verbatim exactly once, with no ⚠️ notice standing in for the lost body.
     expect(posts).toEqual([USAGE_LIMIT_MSG])
-    const { rows } = (daemon as any).store.transcriptPage('C1', '402.1', null, 10)
+    const { rows } = await (daemon as any).store.transcriptPage('C1', '402.1', null, 10)
     const agentRows = rows.filter((r: any) => r.sender === 'bot-a' && r.kind === 'text')
     expect(agentRows).toHaveLength(1)
     expect(agentRows[0]!.text).toBe(USAGE_LIMIT_MSG)
@@ -1442,7 +1452,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
 
     expect(posts).toHaveLength(1)
     expect(posts[0]).toBe(`⚠️ Agent failed to respond: ${USAGE_LIMIT_MSG}`)
-    const { rows } = (daemon as any).store.transcriptPage('C1', '401.1', null, 10)
+    const { rows } = await (daemon as any).store.transcriptPage('C1', '401.1', null, 10)
     const agentRows = rows.filter((r: any) => r.sender === 'bot-a' && r.kind === 'text')
     expect(agentRows).toHaveLength(1)
     expect(agentRows[0]!.text).toBe(`⚠️ Agent failed to respond: ${USAGE_LIMIT_MSG}`)
@@ -1474,7 +1484,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       isDm: false,
       trigger: 'mention' as const
     }
-    ;(daemon as any).onInbound(msg)
+    await (daemon as any).onInboundOutcome(msg)
     // merged rule set is empty (bot-a has no Slack integrations) → routeRules() returns null → 0 dispatches.
     // With the old bug, the message would have been dispatched once per integration in the group.
     // The key invariant: onInbound calls dispatch AT MOST ONCE per physical message event.
@@ -1518,7 +1528,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       isDm: false
     }
 
-    ;(daemon as any).onInbound(inbound)
+    await (daemon as any).onInboundOutcome(inbound)
 
     expect(dispatchSpy).toHaveBeenCalledOnce()
     expect(dispatchSpy.mock.calls[0]![0]).toBe('bot-a')

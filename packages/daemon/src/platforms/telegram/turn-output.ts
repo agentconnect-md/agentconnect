@@ -58,7 +58,7 @@ export interface TelegramTurn {
 export interface TelegramTurnHost<TTurn> {
   /** `minimal` mode records each reply segment WITHOUT sending it (the chat shows
    *  only the single `live-reply`). */
-  recordReplySegment(turn: TTurn, text: string): void
+  recordReplySegment(turn: TTurn, text: string): Promise<void>
   appendTranscript(row: {
     channel: string
     thread: string
@@ -66,7 +66,7 @@ export interface TelegramTurnHost<TTurn> {
     sender: string
     kind: 'text'
     text: string
-  }): void
+  }): Promise<void>
 }
 
 /** Apply one converger action against the turn's Telegram connection. */
@@ -79,7 +79,7 @@ export async function applyTelegramAction<TTurn extends TelegramTurn>(
   // minimal mode records each reply segment WITHOUT sending it — the chat shows only the
   // single `live-reply` (see the Slack applier / recordReplySegment).
   if (action.kind === 'post' && action.recordOnly) {
-    host.recordReplySegment(turn, action.text)
+    await host.recordReplySegment(turn, action.text)
     return
   }
   // Routed here only for the telegram platform (see the turn-output registry), so the
@@ -98,7 +98,7 @@ export async function applyTelegramAction<TTurn extends TelegramTurn>(
       const id = await conn.postMessage(turn.channel, sent, turn.thread, { replyTo: state.replyTo })
       // Remember the newest body message so a turn-end `continue-hint` can annotate it.
       if (id) state.lastBody = { id, text: sent }
-      host.appendTranscript({
+      await host.appendTranscript({
         channel: turn.transcriptChannel,
         thread: turn.statusThread,
         ts: id ?? `local-${Date.now()}`,

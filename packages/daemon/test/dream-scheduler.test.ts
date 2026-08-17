@@ -218,13 +218,13 @@ describe('scheduled dream lifecycle gates (daemon)', () => {
           sessionIds: []
         })
       ).rejects.toThrow('model_readable_credentials')
-      expect(inner.store.listDreams('bot-a', 10)).toEqual([])
+      expect(await inner.store.listDreams('bot-a', 10)).toEqual([])
       expect(existsSync(join(root, 'agents', 'bot-a', 'memory-dreams'))).toBe(false)
 
       const info = vi.spyOn(inner.log, 'info')
-      inner.onDreamScheduleFire('bot-a')
+      await inner.onDreamScheduleFire('bot-a')
       expect(info).toHaveBeenCalledWith(expect.stringContaining('model_readable_credentials'))
-      expect(inner.store.listDreams('bot-a', 10)).toEqual([])
+      expect(await inner.store.listDreams('bot-a', 10)).toEqual([])
       expect(hostFactory).not.toHaveBeenCalled()
     } finally {
       await daemon.stop()

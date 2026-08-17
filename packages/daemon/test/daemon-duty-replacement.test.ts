@@ -167,7 +167,7 @@ describe('a refused replacement still applies its removals', () => {
   it('is a revoke, not a removal — the dropped agent keeps workspace, registry entry, and sessions', async () => {
     const { daemon, root } = await boot(new Set([AGENT_B]))
     const store = (daemon as any).store
-    store.upsertSession({
+    await store.upsertSession({
       key: `slack:C1:T1:${AGENT_A}`,
       agentId: AGENT_A,
       platform: 'slack',
@@ -184,7 +184,7 @@ describe('a refused replacement still applies its removals', () => {
     expect((daemon as any).cpAgents.has(AGENT_A)).toBe(true)
     expect((daemon as any).agentRemovalPending(AGENT_A)).toBe(false)
     expect(existsSync(join(root, 'agents', NAMES[AGENT_A]))).toBe(true)
-    expect(store.listSessions(AGENT_A)).toHaveLength(1)
+    expect(await store.listSessions(AGENT_A)).toHaveLength(1)
     await daemon.stop()
   })
 

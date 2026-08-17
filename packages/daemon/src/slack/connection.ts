@@ -266,10 +266,10 @@ export interface SlackDeps {
    *  Configure controls modal on demand. Undefined for an unknown/closed session key. */
   onStatusInfo?: (
     sessionKey: string
-  ) => { info: StatusBarInfo; identity?: StatusModalIdentity; link?: string; cancellable: boolean } | undefined
-  /** Resolve the exact local session owned by the selected Slack conversation.
-   *  Runs synchronously so the one-shot shortcut trigger can open its modal promptly. */
-  onMessageShortcut?: (a: { channel: string; thread: string; userId: string }) => string | undefined
+  ) => Promise<{ info: StatusBarInfo; identity?: StatusModalIdentity; link?: string; cancellable: boolean } | undefined>
+  /** Resolve the exact local session owned by the selected Slack conversation, awaited
+   *  before the one-shot shortcut trigger opens its modal. */
+  onMessageShortcut?: (a: { channel: string; thread: string; userId: string }) => Promise<string | undefined>
   /** Fired when a user taps a button on an interactive permission card
    *  (render.buildPermissionCard). The decoded `requestId` ties the click back to the
    *  pending ACP `session/request_permission`; `optionId` is the chosen option. */
@@ -715,7 +715,7 @@ export class SlackConnection implements PlatformConnection {
       const thread = shortcut.message?.thread_ts ?? shortcut.message?.ts
       const userId = shortcut.user?.id
       const sessionKey =
-        channel && thread && userId ? this.deps.onMessageShortcut?.({ channel, thread, userId }) : undefined
+        channel && thread && userId ? await this.deps.onMessageShortcut?.({ channel, thread, userId }) : undefined
       await this.openStatusModal(triggerId, sessionKey)
     })
     // Status-bar interactivity (Block Kit block_actions over Socket Mode). Each handler
@@ -821,7 +821,7 @@ export class SlackConnection implements PlatformConnection {
    *  click over `rd/msg(slack_action)`. `privateMetadata` stays opaque to Slack and lets the
    *  relay route subsequent select/cancel interactions back to this daemon. */
   async openStatusModal(triggerId: string, sessionKey?: string, privateMetadata = sessionKey ?? ''): Promise<void> {
-    const data = sessionKey ? this.deps.onStatusInfo?.(sessionKey) : undefined
+    const data = sessionKey ? await this.deps.onStatusInfo?.(sessionKey) : undefined
     try {
       await this.app.client.views.open({
         trigger_id: triggerId,

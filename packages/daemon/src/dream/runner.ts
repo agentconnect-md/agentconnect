@@ -105,30 +105,32 @@ export const DREAM_UNBOUND_STAGED_CONTENT_REASON =
 export type DreamOperationPolicy = 'blocked' | 'test-only' | 'enabled'
 
 export interface DreamStorePort {
-  insertDream(dream: DreamInfo): void
-  updateDream(dream: DreamInfo): void
+  insertDream(dream: DreamInfo): Promise<void>
+  updateDream(dream: DreamInfo): Promise<void>
   /** Crash-recovery write, CAS'd on the open statuses so a peer's terminal outcome survives. */
-  failOpenDream(dream: DreamInfo): boolean
-  getDream(agentId: string, dreamId: string): DreamInfo | undefined
-  listDreams(agentId: string, limit: number): DreamInfo[]
+  failOpenDream(dream: DreamInfo): Promise<boolean>
+  getDream(agentId: string, dreamId: string): Promise<DreamInfo | undefined>
+  listDreams(agentId: string, limit: number): Promise<DreamInfo[]>
   /** Dreams still holding an unreviewed skill candidate, independent of the
    *  bounded history page — a proposal outlives the store lifecycle. */
-  pendingSkillDreams(agentId: string, limit: number): DreamInfo[]
+  pendingSkillDreams(agentId: string, limit: number): Promise<DreamInfo[]>
   /** Non-terminal dreams (pending|running) THIS process left behind — crash recovery at boot. */
-  openDreams(): DreamInfo[]
+  openDreams(): Promise<DreamInfo[]>
   /** Non-terminal dreams stranded by a former owner of these agents, once this process owns them. */
-  strandedDreams(agentIds: readonly string[]): DreamInfo[]
+  strandedDreams(agentIds: readonly string[]): Promise<DreamInfo[]>
   /** Every completed store proposal for one agent, without the public list cap. */
-  completedDreams(agentId: string): DreamInfo[]
+  completedDreams(agentId: string): Promise<DreamInfo[]>
   /** Proposals reconciled as superseded during a store upgrade. */
-  supersededDreams(): DreamInfo[]
+  supersededDreams(): Promise<DreamInfo[]>
   /** Dreams still carrying a proposed organization suggestion, newest first. */
-  organizationSuggestionDreams(limit: number): DreamInfo[]
+  organizationSuggestionDreams(limit: number): Promise<DreamInfo[]>
   /** Newest-first addressable sessions for the agent (transcript sources). */
   dreamSessionSources(
     agentId: string,
     limit: number
-  ): { sessionId: string; channel: string; thread: string; transportScope?: string | null; updatedAt: number }[]
+  ): Promise<
+    { sessionId: string; channel: string; thread: string; transportScope?: string | null; updatedAt: number }[]
+  >
   /** Chronological text rows of one session thread, scoped to the agent. */
   dreamTranscriptText(
     channel: string,
@@ -138,7 +140,7 @@ export interface DreamStorePort {
     /** Include tool TITLES too — the trajectory skill mining reads (never bodies). */
     includeTools?: boolean,
     transportScope?: string | null
-  ): { sender: string; text: string; kind?: string; input?: string }[]
+  ): Promise<{ sender: string; text: string; kind?: string; input?: string }[]>
 }
 
 export interface DreamExtractionResult {
@@ -296,13 +298,13 @@ export class DreamRunner {
     if (this.initialized) return
     this.initialized = true
     // Crash recovery: fail what THIS process left in flight (staging kept); a peer's dream waits for its duty grant.
-    this.failInterrupted(this.deps.store.openDreams())
+    await this.failInterrupted(await this.deps.store.openDreams())
     // The LocalStore migration marks proposals stranded by adoptions made on an
     // older daemon. Their metadata is already safe; sweep the corresponding
     // store staging now that the runner can resolve agent directories. Proposed
     // skills keep their independent review lifecycle.
     if (this.operationsAllowed()) {
-      for (const dream of this.deps.store.supersededDreams()) {
+      for (const dream of await this.deps.store.supersededDreams()) {
         if (!this.deps.agentDirByAgent(dream.agentId)) continue
         void this.removeStoreStaging(dream.agentId, dream).catch((err) => {
           // A cluster agent's tree is unreachable while its sandbox sleeps; the staging is a few
@@ -318,11 +320,11 @@ export class DreamRunner {
 
   /** Reclaim the dreams of agents this process has just been made responsible for: their
    *  former owner is no longer running them, so they can only be failed. */
-  reclaimDreams(agentIds: readonly string[]): void {
-    this.failInterrupted(this.deps.store.strandedDreams(agentIds))
+  async reclaimDreams(agentIds: readonly string[]): Promise<void> {
+    await this.failInterrupted(await this.deps.store.strandedDreams(agentIds))
   }
 
-  private failInterrupted(dreams: readonly DreamInfo[]): void {
+  private async failInterrupted(dreams: readonly DreamInfo[]): Promise<void> {
     for (const dream of dreams) {
       const failed: DreamInfo = {
         ...dream,
@@ -331,7 +333,8 @@ export class DreamRunner {
         endedAt: this.nowIso()
       }
       // The CAS makes reclaim safe: a row that reached its own terminal state keeps it, and announces nothing.
-      if (this.deps.store.failOpenDream(failed)) this.emitLifecycle({ type: 'memory.dream.failed', dream: failed })
+      if (await this.deps.store.failOpenDream(failed))
+        this.emitLifecycle({ type: 'memory.dream.failed', dream: failed })
     }
   }
 
@@ -386,8 +389,8 @@ export class DreamRunner {
     return join(DREAMS_DIRNAME, dreamId)
   }
 
-  private getDream(agentId: string, dreamId: string): DreamInfo {
-    const dream = this.deps.store.getDream(agentId, dreamId)
+  private async getDream(agentId: string, dreamId: string): Promise<DreamInfo> {
+    const dream = await this.deps.store.getDream(agentId, dreamId)
     if (!dream) throw new DreamViolationError(`unknown dream ${dreamId}`)
     return dream
   }
@@ -411,16 +414,16 @@ export class DreamRunner {
    * re-trigger (new messages bump `updatedAt`). This mirrors the automatic window
    * in {@link selectSessionSources}: true iff that selection is non-empty.
    */
-  hasNewSessionsSinceLastDream(agentId: string): boolean {
-    return this.selectSessionSources(agentId).length > 0
+  async hasNewSessionsSinceLastDream(agentId: string): Promise<boolean> {
+    return (await this.selectSessionSources(agentId)).length > 0
   }
 
   /** The most recent dream that successfully mined its sessions (completed or
    *  adopted) — the baseline the automatic window measures "new activity" from. */
-  private lastSuccessfulDream(agentId: string): DreamInfo | undefined {
-    return this.deps.store
-      .listDreams(agentId, LAST_SUCCESSFUL_DREAM_SCAN)
-      .find((d) => d.status === 'completed' || d.status === 'adopted')
+  private async lastSuccessfulDream(agentId: string): Promise<DreamInfo | undefined> {
+    return (await this.deps.store.listDreams(agentId, LAST_SUCCESSFUL_DREAM_SCAN)).find(
+      (d) => d.status === 'completed' || d.status === 'adopted'
+    )
   }
 
   /**
@@ -449,13 +452,15 @@ export class DreamRunner {
    * unbounded backlog in a single host/prompt is the worse failure. Scheduled
    * dreams run often enough that this bound is not normally reached.
    */
-  private selectSessionSources(
+  private async selectSessionSources(
     agentId: string,
     explicitWindow?: number
-  ): { sessionId: string; channel: string; thread: string; transportScope?: string | null; updatedAt: number }[] {
-    if (explicitWindow !== undefined) return this.deps.store.dreamSessionSources(agentId, explicitWindow)
-    const recent = this.deps.store.dreamSessionSources(agentId, MAX_AUTO_SESSION_WINDOW)
-    const lastSuccessful = this.lastSuccessfulDream(agentId)
+  ): Promise<
+    { sessionId: string; channel: string; thread: string; transportScope?: string | null; updatedAt: number }[]
+  > {
+    if (explicitWindow !== undefined) return await this.deps.store.dreamSessionSources(agentId, explicitWindow)
+    const recent = await this.deps.store.dreamSessionSources(agentId, MAX_AUTO_SESSION_WINDOW)
+    const lastSuccessful = await this.lastSuccessfulDream(agentId)
     if (!lastSuccessful) return recent
     const cutoff = Date.parse(lastSuccessful.createdAt)
     if (!Number.isFinite(cutoff)) return recent
@@ -522,7 +527,7 @@ export class DreamRunner {
     // now handled by the dream policy prompt: it must not surface a person's
     // private/personal conversation as shared organization knowledge
     // (session-visibility.md §5.1, #36 follow-up).
-    const sources = this.selectSessionSources(agentId, explicitWindow)
+    const sources = await this.selectSessionSources(agentId, explicitWindow)
 
     // Snapshot the live store — the digest is the adoption fence. Taken under
     // the shared memory-dir lock so it cannot tear against a concurrent
@@ -543,7 +548,7 @@ export class DreamRunner {
       ...(instructions ? { instructions } : {}),
       createdAt
     }
-    this.deps.store.insertDream(dream)
+    await this.deps.store.insertDream(dream)
     this.emitLifecycle({ type: 'memory.dream.started', dream })
     this.active.set(agentId, dream.dreamId)
     const aborter = new AbortController()
@@ -565,11 +570,11 @@ export class DreamRunner {
       }
       await this.maybeAutoAdopt(agentId, dream.dreamId)
     })
-      .catch((err: unknown) => {
+      .catch(async (err: unknown) => {
         // `run` settles its own failures; a rejection here is the home not coming up before the
         // callback ever ran (a wake that failed) — the dream must not stay pending forever.
-        if (this.deps.store.getDream(agentId, dream.dreamId)?.status === 'pending') {
-          this.finish(agentId, dream.dreamId, {
+        if ((await this.deps.store.getDream(agentId, dream.dreamId))?.status === 'pending') {
+          await this.finish(agentId, dream.dreamId, {
             status: 'failed',
             error: { type: 'pipeline_error', message: err instanceof Error ? err.message : 'unknown error' }
           })
@@ -604,17 +609,20 @@ export class DreamRunner {
       // which conversational text alone does not contain — a procedure the agent
       // repeated via tool calls is invisible without this (design §4).
       const mineSkills = this.deps.dreamingPolicyFor(agentId)?.mineSkills === true
-      const transcripts: DreamTranscriptSource[] = sources.map((source) => ({
-        sessionId: source.sessionId,
-        rows: this.deps.store.dreamTranscriptText(
-          source.channel,
-          source.thread,
-          agentId,
-          TRANSCRIPT_ROWS_PER_SESSION,
-          mineSkills,
-          source.transportScope
-        )
-      }))
+      const transcripts: DreamTranscriptSource[] = []
+      for (const source of sources) {
+        transcripts.push({
+          sessionId: source.sessionId,
+          rows: await this.deps.store.dreamTranscriptText(
+            source.channel,
+            source.thread,
+            agentId,
+            TRANSCRIPT_ROWS_PER_SESSION,
+            mineSkills,
+            source.transportScope
+          )
+        })
+      }
 
       // Materialize the dream inputs as FILES the model explores with its own
       // read-only tools (task #36): the memory snapshot at input/ root, each mined
@@ -646,13 +654,13 @@ export class DreamRunner {
       const prompt = buildDreamExplorationPrompt({
         sessionIds: materializedSessionIds,
         mineSkills,
-        ...(mineSkills ? { dismissedSkills: this.dismissedSkillNames(agentId) } : {}),
+        ...(mineSkills ? { dismissedSkills: await this.dismissedSkillNames(agentId) } : {}),
         ...(dream.instructions ? { instructions: dream.instructions } : {})
       })
-      this.transition(agentId, dreamId, 'pending', { status: 'running' })
+      await this.transition(agentId, dreamId, 'pending', { status: 'running' })
 
       // A cancel that landed before extraction wins: skip the expensive call.
-      if (this.deps.store.getDream(agentId, dreamId)?.status !== 'running') return
+      if ((await this.deps.store.getDream(agentId, dreamId))?.status !== 'running') return
 
       // The dream's cwd is its input dir in the coordinates of the filesystem that holds it: this
       // disk for a local agent, the pod's volume for a cluster agent — where its host runs.
@@ -661,7 +669,7 @@ export class DreamRunner {
       // A cancel that landed mid-extraction wins: drop the output unstaged. This
       // also covers the backstop firing (extraction ignored the cancel and never
       // settled within the grace window) — the reservation is released either way.
-      if (this.deps.store.getDream(agentId, dreamId)?.status !== 'running' || extracted.abandoned) return
+      if ((await this.deps.store.getDream(agentId, dreamId))?.status !== 'running' || extracted.abandoned) return
       const output = extracted.output
       const execution = {
         ...(extracted.sessionId ? { executionSessionId: extracted.sessionId } : {}),
@@ -681,7 +689,7 @@ export class DreamRunner {
         sources.map((s) => s.sessionId)
       )
       if (!proposal) {
-        this.finish(agentId, dreamId, {
+        await this.finish(agentId, dreamId, {
           status: 'failed',
           error: { type: 'unparseable_proposal', message: 'the dream reply carried no valid store proposal' },
           ...execution,
@@ -699,11 +707,11 @@ export class DreamRunner {
 
       // stage() is several awaited writes; a cancel can land while it runs.
       // Cancel-wins: honor it, drop the partial output, don't flip to completed.
-      if (this.deps.store.getDream(agentId, dreamId)?.status !== 'running') {
+      if ((await this.deps.store.getDream(agentId, dreamId))?.status !== 'running') {
         await fs.rm(join(base, 'output')).catch(() => {})
         return
       }
-      this.finish(agentId, dreamId, {
+      await this.finish(agentId, dreamId, {
         status: 'completed',
         ...execution,
         // Candidates start `proposed`; nothing installs them until a human
@@ -732,9 +740,9 @@ export class DreamRunner {
       // pending→running transition (e.g. the input-snapshot write) must not
       // leave the job stuck non-terminal forever. A cancel still wins (its
       // status is preserved, not overwritten).
-      const status = this.deps.store.getDream(agentId, dreamId)?.status
+      const status = (await this.deps.store.getDream(agentId, dreamId))?.status
       if (status === 'running' || status === 'pending') {
-        this.finish(agentId, dreamId, {
+        await this.finish(agentId, dreamId, {
           status: 'failed',
           error: { type: 'pipeline_error', message: err instanceof Error ? err.message : 'unknown error' }
         })
@@ -906,22 +914,27 @@ export class DreamRunner {
     }
   }
 
-  private transition(agentId: string, dreamId: string, from: DreamInfo['status'], patch: Partial<DreamInfo>): void {
-    const dream = this.getDream(agentId, dreamId)
+  private async transition(
+    agentId: string,
+    dreamId: string,
+    from: DreamInfo['status'],
+    patch: Partial<DreamInfo>
+  ): Promise<void> {
+    const dream = await this.getDream(agentId, dreamId)
     if (dream.status !== from) return
-    this.deps.store.updateDream({ ...dream, ...patch })
+    await this.deps.store.updateDream({ ...dream, ...patch })
   }
 
-  private finish(agentId: string, dreamId: string, patch: Partial<DreamInfo>): void {
-    const dream = this.getDream(agentId, dreamId)
+  private async finish(agentId: string, dreamId: string, patch: Partial<DreamInfo>): Promise<void> {
+    const dream = await this.getDream(agentId, dreamId)
     const next = { ...dream, ...patch, endedAt: this.nowIso() }
-    this.deps.store.updateDream(next)
+    await this.deps.store.updateDream(next)
     if (next.status === 'completed') this.emitLifecycle({ type: 'memory.dream.completed', dream: next })
     if (next.status === 'failed') this.emitLifecycle({ type: 'memory.dream.failed', dream: next })
   }
 
-  cancel(agentId: string, dreamId: string): DreamInfo {
-    const dream = this.getDream(agentId, dreamId)
+  async cancel(agentId: string, dreamId: string): Promise<DreamInfo> {
+    const dream = await this.getDream(agentId, dreamId)
     if (dream.status === 'canceled') return dream // idempotent no-op
     if (dream.status !== 'pending' && dream.status !== 'running') {
       throw new DreamStateError(`cannot cancel a ${dream.status} dream`)
@@ -932,27 +945,27 @@ export class DreamRunner {
     // reservation early would let a replacement dream overlap it. The run's
     // `finally` releases it once the promise actually settles.
     const canceled: DreamInfo = { ...dream, status: 'canceled', endedAt: this.nowIso() }
-    this.deps.store.updateDream(canceled)
+    await this.deps.store.updateDream(canceled)
     // Abort the in-flight extraction so daemon.ts drives the host session-cancel
     // path — otherwise a hung/long prompt would pin the reservation forever.
     this.aborters.get(dreamId)?.abort()
     return canceled
   }
 
-  get(agentId: string, dreamId: string): DreamInfo {
+  async get(agentId: string, dreamId: string): Promise<DreamInfo> {
     this.dirFor(agentId)
-    return this.getDream(agentId, dreamId)
+    return await this.getDream(agentId, dreamId)
   }
 
   /** Dreams whose skill candidates are still awaiting review. */
-  listPendingSkills(agentId: string, limit: number): DreamInfo[] {
+  async listPendingSkills(agentId: string, limit: number): Promise<DreamInfo[]> {
     this.dirFor(agentId)
-    return this.deps.store.pendingSkillDreams(agentId, limit)
+    return await this.deps.store.pendingSkillDreams(agentId, limit)
   }
 
-  list(agentId: string, limit: number): DreamInfo[] {
+  async list(agentId: string, limit: number): Promise<DreamInfo[]> {
     this.dirFor(agentId)
-    return this.deps.store.listDreams(agentId, limit)
+    return await this.deps.store.listDreams(agentId, limit)
   }
 
   /**
@@ -978,7 +991,7 @@ export class DreamRunner {
     this.assertStagedContentAllowed()
     const fs = this.fsFor(agentId)
     return this.withLock(agentId, async () => {
-      const dream = this.getDream(agentId, dreamId)
+      const dream = await this.getDream(agentId, dreamId)
       if (dream.status !== 'completed') throw new DreamStateError(`cannot adopt a ${dream.status} dream`)
       if (this.active.has(agentId)) throw new DreamStateError('a dream is in flight for this agent; wait or cancel it')
 
@@ -1122,8 +1135,12 @@ export class DreamRunner {
           }
 
           const adoptedAt = this.nowIso()
-          const adopted: DreamInfo = { ...this.getDream(agentId, dreamId), status: 'adopted', endedAt: adoptedAt }
-          this.deps.store.updateDream(adopted)
+          const adopted: DreamInfo = {
+            ...(await this.getDream(agentId, dreamId)),
+            status: 'adopted',
+            endedAt: adoptedAt
+          }
+          await this.deps.store.updateDream(adopted)
           this.emitLifecycle({ type: 'memory.dream.adopted', dream: adopted })
           const superseded = await this.supersedeCompletedDreams(agentId, dreamId, adoptedAt)
           this.deps.log.info(
@@ -1147,7 +1164,7 @@ export class DreamRunner {
    * still leaves the dream `completed` and awaiting review.
    */
   private async maybeAutoAdopt(agentId: string, dreamId: string): Promise<void> {
-    const dream = this.deps.store.getDream(agentId, dreamId)
+    const dream = await this.deps.store.getDream(agentId, dreamId)
     if (dream?.status !== 'completed') return
     const policy = this.deps.dreamingPolicyFor(agentId)
     if (!policy?.autoAdopt) return
@@ -1260,14 +1277,14 @@ export class DreamRunner {
     this.assertStagedContentAllowed()
     this.dirFor(agentId)
     return this.withLock(agentId, async () => {
-      const dream = this.getDream(agentId, dreamId)
+      const dream = await this.getDream(agentId, dreamId)
       if (dream.status === 'discarded') return dream // idempotent no-op
       if (dream.status !== 'completed' && dream.status !== 'failed' && dream.status !== 'canceled') {
         throw new DreamStateError(`cannot discard a ${dream.status} dream`)
       }
       await this.removeStoreStaging(agentId, dream)
       const discarded: DreamInfo = { ...dream, status: 'discarded', endedAt: this.nowIso() }
-      this.deps.store.updateDream(discarded)
+      await this.deps.store.updateDream(discarded)
       return discarded
     })
   }
@@ -1277,9 +1294,11 @@ export class DreamRunner {
    *  memory-store staging; proposed skills remain independently reviewable. */
   private async supersedeCompletedDreams(agentId: string, adoptedDreamId: string, adoptedAt: string): Promise<number> {
     this.assertStagedContentAllowed()
-    const candidates = this.deps.store.completedDreams(agentId).filter((dream) => dream.dreamId !== adoptedDreamId)
+    const candidates = (await this.deps.store.completedDreams(agentId)).filter(
+      (dream) => dream.dreamId !== adoptedDreamId
+    )
     for (const dream of candidates) {
-      this.deps.store.updateDream({ ...dream, status: 'superseded', endedAt: adoptedAt })
+      await this.deps.store.updateDream({ ...dream, status: 'superseded', endedAt: adoptedAt })
     }
     for (const dream of candidates) {
       await this.removeStoreStaging(agentId, dream).catch((err) => {
@@ -1314,7 +1333,7 @@ export class DreamRunner {
     this.assertStagedContentAllowed()
     const dir = this.dirFor(agentId)
     return this.withLock(agentId, async () => {
-      const { dream, skill } = this.skillCandidate(agentId, dreamId, name)
+      const { dream, skill } = await this.skillCandidate(agentId, dreamId, name)
       if (skill.state === 'accepted') return dream // idempotent
       if (skill.state === 'dismissed') throw new DreamStateError('this skill candidate was already dismissed')
 
@@ -1335,7 +1354,7 @@ export class DreamRunner {
       if (this.deps.withSkillAcceptance) await this.deps.withSkillAcceptance(agentId, publish)
       else await publish()
 
-      const next = this.setSkillState(agentId, dreamId, name, 'accepted')
+      const next = await this.setSkillState(agentId, dreamId, name, 'accepted')
       this.emitLifecycle({ type: 'memory.dream.skill_accepted', dream: next, skillName: name })
       await this.sweepReviewedStaging(agentId, next)
       this.deps.log.info(`dream ${dreamId}: accepted skill "${name}" for agent ${agentId}`)
@@ -1349,11 +1368,11 @@ export class DreamRunner {
     this.assertStagedContentAllowed()
     this.dirFor(agentId)
     return this.withLock(agentId, async () => {
-      const { dream, skill } = this.skillCandidate(agentId, dreamId, name)
+      const { dream, skill } = await this.skillCandidate(agentId, dreamId, name)
       if (skill.state === 'dismissed') return dream // idempotent
       if (skill.state === 'accepted') throw new DreamStateError('this skill candidate was already accepted')
       await this.fsFor(agentId).rm(join(this.dreamDir(agentId, dreamId), 'skills', name))
-      const next = this.setSkillState(agentId, dreamId, name, 'dismissed')
+      const next = await this.setSkillState(agentId, dreamId, name, 'dismissed')
       this.emitLifecycle({ type: 'memory.dream.skill_dismissed', dream: next, skillName: name })
       await this.sweepReviewedStaging(agentId, next)
       return next
@@ -1362,9 +1381,9 @@ export class DreamRunner {
 
   /** Names the user has already declined across this agent's past dreams, so the
    *  next mining prompt can be told not to re-propose them (design §7). */
-  private dismissedSkillNames(agentId: string): string[] {
+  private async dismissedSkillNames(agentId: string): Promise<string[]> {
     const names = new Set<string>()
-    for (const dream of this.deps.store.listDreams(agentId, 50)) {
+    for (const dream of await this.deps.store.listDreams(agentId, 50)) {
       for (const skill of dream.skills ?? []) {
         if (skill.state === 'dismissed') names.add(skill.name)
       }
@@ -1385,24 +1404,29 @@ export class DreamRunner {
       .catch(() => {})
   }
 
-  private skillCandidate(
+  private async skillCandidate(
     agentId: string,
     dreamId: string,
     name: string
-  ): { dream: DreamInfo; skill: NonNullable<DreamInfo['skills']>[number] } {
-    const dream = this.getDream(agentId, dreamId)
+  ): Promise<{ dream: DreamInfo; skill: NonNullable<DreamInfo['skills']>[number] }> {
+    const dream = await this.getDream(agentId, dreamId)
     const skill = dream.skills?.find((candidate) => candidate.name === name)
     if (!skill) throw new DreamViolationError(`unknown skill candidate ${name}`)
     return { dream, skill }
   }
 
-  private setSkillState(agentId: string, dreamId: string, name: string, state: 'accepted' | 'dismissed'): DreamInfo {
-    const dream = this.getDream(agentId, dreamId)
+  private async setSkillState(
+    agentId: string,
+    dreamId: string,
+    name: string,
+    state: 'accepted' | 'dismissed'
+  ): Promise<DreamInfo> {
+    const dream = await this.getDream(agentId, dreamId)
     const next: DreamInfo = {
       ...dream,
       skills: (dream.skills ?? []).map((skill) => (skill.name === name ? { ...skill, state } : skill))
     }
-    this.deps.store.updateDream(next)
+    await this.deps.store.updateDream(next)
     return next
   }
 
@@ -1416,7 +1440,7 @@ export class DreamRunner {
     scripts: { path: string; content: string }[]
   } | null> {
     this.assertStagedContentAllowed()
-    this.skillCandidate(agentId, dreamId, name)
+    await this.skillCandidate(agentId, dreamId, name)
     const fs = this.fsFor(agentId)
     const dir = join(this.dreamDir(agentId, dreamId), 'skills', name)
     const skill = (await fs.readFile(join(dir, 'SKILL.md')))?.content
@@ -1432,11 +1456,10 @@ export class DreamRunner {
   }
 
   /** Metadata inventory sent on Dream completion and every CP reconnect. */
-  organizationSuggestionInventory(): Array<
-    DreamOrganizationSuggestionInfo & { sourceAgentId: string; dreamId: string }
+  async organizationSuggestionInventory(): Promise<
+    Array<DreamOrganizationSuggestionInfo & { sourceAgentId: string; dreamId: string }>
   > {
-    return this.deps.store
-      .organizationSuggestionDreams(256)
+    return (await this.deps.store.organizationSuggestionDreams(256))
       .flatMap((dream) =>
         (dream.organizationSuggestions ?? [])
           .filter((suggestion) => suggestion.state === 'proposed')
@@ -1451,7 +1474,7 @@ export class DreamRunner {
 
   async organizationSuggestionRead(req: OrganizationSuggestionReadReq): Promise<OrganizationSuggestionChunk> {
     this.assertStagedContentAllowed()
-    const dream = this.getDream(req.sourceAgentId, req.dreamId)
+    const dream = await this.getDream(req.sourceAgentId, req.dreamId)
     const suggestion = dream.organizationSuggestions?.find((candidate) => candidate.candidateId === req.candidateId)
     const absent = {
       sourceAgentId: req.sourceAgentId,
@@ -1497,7 +1520,7 @@ export class DreamRunner {
 
   async organizationSuggestionReview(req: OrganizationSuggestionReviewReq): Promise<Ack> {
     this.assertStagedContentAllowed()
-    const dream = this.getDream(req.sourceAgentId, req.dreamId)
+    const dream = await this.getDream(req.sourceAgentId, req.dreamId)
     const suggestion = dream.organizationSuggestions?.find((candidate) => candidate.candidateId === req.candidateId)
     if (!suggestion) throw new DreamViolationError(`unknown organization suggestion ${req.candidateId}`)
     if (suggestion.state !== 'proposed' && suggestion.state !== req.state) {
@@ -1511,7 +1534,7 @@ export class DreamRunner {
           candidate.candidateId === req.candidateId ? { ...candidate, state: req.state } : candidate
         )
       }
-      this.deps.store.updateDream(reviewed)
+      await this.deps.store.updateDream(reviewed)
     }
     // Terminal metadata is retained for reconnect/history, but the unapproved
     // daemon-local body is no longer needed once the central decision commits.
@@ -1526,7 +1549,7 @@ export class DreamRunner {
   /** Staged output listing for the review screen. Missing staging is DATA. */
   async stagedFiles(agentId: string, dreamId: string): Promise<{ name: string; size: number; mtime: string }[] | null> {
     this.assertStagedContentAllowed()
-    this.getDream(agentId, dreamId)
+    await this.getDream(agentId, dreamId)
     const out = join(this.dreamDir(agentId, dreamId), 'output')
     // A staged store always carries its index, so no entries means no staging (absent is data).
     const staged = (await this.fsFor(agentId).readdir(out)).filter(
@@ -1548,7 +1571,7 @@ export class DreamRunner {
    *  the CP adapter's concern (cp/dream-reader.ts), mirroring memory-reader. */
   async stagedRead(agentId: string, dreamId: string, path: string): Promise<{ content: string; mtime: string } | null> {
     this.assertStagedContentAllowed()
-    this.getDream(agentId, dreamId)
+    await this.getDream(agentId, dreamId)
     if (!stagedPathOk(path)) throw new DreamViolationError('staged memory paths are plain kebab-case .md names')
     const file = await this.fsFor(agentId).readFile(join(this.dreamDir(agentId, dreamId), 'output', path))
     return file ? { content: file.content, mtime: file.mtime } : null
@@ -1560,7 +1583,7 @@ export class DreamRunner {
    *  Uses the same canonical `storeDigest` the adopt fence recomputes. */
   async stagedStoreReviewToken(agentId: string, dreamId: string): Promise<string | null> {
     this.assertStagedContentAllowed()
-    this.getDream(agentId, dreamId)
+    await this.getDream(agentId, dreamId)
     const fs = this.fsFor(agentId)
     const out = join(this.dreamDir(agentId, dreamId), 'output')
     const names = (await fs.readdir(out))
@@ -1580,7 +1603,7 @@ export class DreamRunner {
    *  bytes that would be published. `null` when the candidate has no staging. */
   async stagedSkillReviewToken(agentId: string, dreamId: string, name: string): Promise<string | null> {
     this.assertStagedContentAllowed()
-    this.skillCandidate(agentId, dreamId, name)
+    await this.skillCandidate(agentId, dreamId, name)
     const staged = await this.localStagedSkill(agentId, dreamId, name)
     try {
       return (await inspectLocalSkillSource(staged.path)).sha256

@@ -15,7 +15,7 @@ import type { NormalizedMessage } from '../../messages/normalized.js'
  *  replied-to message already belongs to. Basic groups carry no
  *  `message_thread_id`, so the transcript is the only way to place a reply. */
 export interface TelegramThreadingHost {
-  threadForMessage(transcriptChannel: string, messageId: string): string | undefined
+  threadForMessage(transcriptChannel: string, messageId: string): Promise<string | undefined>
 }
 
 /** The platform message id carried in the `<platform>:<chat>:<id>` msgId grammar. */
@@ -42,11 +42,11 @@ export function telegramMessageId(msg: NormalizedMessage): string {
  * them for a forum `message_thread_id` (see TelegramConnection.postMessage). No-op for
  * other platforms or when the thread is already set.
  */
-export function canonicalizeTelegramThread(
+export async function canonicalizeTelegramThread(
   host: TelegramThreadingHost,
   msg: NormalizedMessage,
   transcriptChannel: string
-): void {
+): Promise<void> {
   if (msg.platform !== 'telegram' || msg.thread !== undefined) return
   // §6.5 dual-shape reader: prefer the generic coordinates; the named per-platform
   // fields stop being emitted once the fleet reads the generic ones.
@@ -65,7 +65,7 @@ export function canonicalizeTelegramThread(
     return
   }
   if (msg.replyTo) {
-    msg.thread = host.threadForMessage(transcriptChannel, msg.replyTo) ?? `tg:${msg.replyTo}`
+    msg.thread = (await host.threadForMessage(transcriptChannel, msg.replyTo)) ?? `tg:${msg.replyTo}`
     return
   }
   msg.thread = `tg:${telegramMessageId(msg)}`

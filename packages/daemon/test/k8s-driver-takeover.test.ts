@@ -114,14 +114,14 @@ function member(api: SandboxApi, store: LocalStore, clock: FakeClock) {
   return { driver, dialed, revoked }
 }
 
-function sharedStore(): LocalStore {
-  return new LocalStore(join(mkdtempSync(join(tmpdir(), 'ac-takeover-')), 'state.db'))
+async function sharedStore(): Promise<LocalStore> {
+  return await LocalStore.open(join(mkdtempSync(join(tmpdir(), 'ac-takeover-')), 'state.db'))
 }
 
 describe('sandbox launches follow the duty', () => {
   it('an ex-holder forgets its launch and cannot suspend the pod its successor serves', async () => {
     const { api, state } = await cluster()
-    const store = sharedStore()
+    const store = await sharedStore()
     const clock = new FakeClock()
     const a = member(api, store, clock)
     const b = member(api, store, clock)
@@ -140,12 +140,12 @@ describe('sandbox launches follow the duty', () => {
     expect(await a.driver.suspendIfIdle(AGENT)).toBe('absent')
     expect(state.mode).toBe('Running')
     expect(state.modeWrites).toEqual([])
-    store.close()
+    await store.close()
   })
 
   it('the new holder re-derives the launch from the cluster and can suspend it when idle', async () => {
     const { api, state } = await cluster()
-    const store = sharedStore()
+    const store = await sharedStore()
     const clock = new FakeClock()
     const a = member(api, store, clock)
     const b = member(api, store, clock)
@@ -165,12 +165,12 @@ describe('sandbox launches follow the duty', () => {
     expect(await b.driver.suspendIfIdle(AGENT)).toBe('suspended')
     expect(state.mode).toBe('Suspended')
     expect(b.driver.launchedAgents()).toEqual([])
-    store.close()
+    await store.close()
   })
 
   it('takes over nothing for a suspended or unclaimed agent — the next turn claims as before', async () => {
     const { api, state } = await cluster()
-    const store = sharedStore()
+    const store = await sharedStore()
     const clock = new FakeClock()
     const b = member(api, store, clock)
     expect(await b.driver.adoptAgent(AGENT)).toBeUndefined()
@@ -186,24 +186,24 @@ describe('sandbox launches follow the duty', () => {
     await b.driver.ensureBoundChannel(AGENT)
     expect(state.mode).toBe('Running')
     expect(b.dialed).toHaveLength(1)
-    store.close()
+    await store.close()
   })
 
   it('an acquisition in flight when the agent leaves records nothing', async () => {
     const { api } = await cluster()
-    const store = sharedStore()
+    const store = await sharedStore()
     const clock = new FakeClock()
     const a = member(api, store, clock)
     const acquiring = a.driver.ensureSandbox(AGENT)
     a.driver.releaseAgent(AGENT)
     await expect(acquiring).rejects.toThrow(/left this member/)
     expect(a.driver.launchedAgents()).toEqual([])
-    store.close()
+    await store.close()
   })
 
   it('a concurrent turn waits for the takeover rather than racing it', async () => {
     const { api } = await cluster()
-    const store = sharedStore()
+    const store = await sharedStore()
     const clock = new FakeClock()
     const a = member(api, store, clock)
     await a.driver.ensureSandbox(AGENT)
@@ -212,12 +212,12 @@ describe('sandbox launches follow the duty', () => {
     const [adopted, acquired] = await Promise.all([b.driver.adoptAgent(AGENT), b.driver.ensureSandbox(AGENT)])
     expect(acquired).toBe(adopted)
     expect(b.driver.launchedAgents()).toHaveLength(1)
-    store.close()
+    await store.close()
   })
 
   it('a single member keeps its own launch across the same calls', async () => {
     const { api, state } = await cluster()
-    const store = sharedStore()
+    const store = await sharedStore()
     const clock = new FakeClock()
     const a = member(api, store, clock)
     const launch = await a.driver.ensureSandbox(AGENT)
@@ -225,6 +225,6 @@ describe('sandbox launches follow the duty', () => {
     expect(a.driver.launchedAgents()).toEqual([{ agentId: AGENT, since: launch.since }])
     expect(await a.driver.suspendIfIdle(AGENT)).toBe('suspended')
     expect(state.mode).toBe('Suspended')
-    store.close()
+    await store.close()
   })
 })

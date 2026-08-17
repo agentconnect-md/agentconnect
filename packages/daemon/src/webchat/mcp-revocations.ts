@@ -60,7 +60,7 @@ export class WebchatMcpRevocations {
     this.draining = true
     try {
       const store = this.host.store()
-      const due = store.listDueWebchatMcpRevocations(this.host.now())
+      const due = await store.listDueWebchatMcpRevocations(this.host.now())
       for (const row of due) {
         const reason = WebchatMcpGrantRevoke.shape.reason.safeParse(row.reason)
         try {
@@ -73,10 +73,10 @@ export class WebchatMcpRevocations {
             },
             this.host.cpAgents()?.orgForAgent(row.agentId)
           )
-          store.clearWebchatMcpGrant(row.conversationId, row.authorityId, row.authorityGeneration)
+          await store.clearWebchatMcpGrant(row.conversationId, row.authorityId, row.authorityGeneration)
         } catch (error) {
           const backoff = Math.min(10 * 60_000, 5_000 * 2 ** Math.min(row.attempts, 8))
-          store.retryWebchatMcpRevocation(
+          await store.retryWebchatMcpRevocation(
             row.conversationId,
             row.authorityId,
             row.authorityGeneration,

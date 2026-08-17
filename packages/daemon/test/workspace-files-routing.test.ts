@@ -57,7 +57,7 @@ describe('createWorkspaceReader routing', () => {
     const { daemonSide, podSide } = split()
     const reader = createWorkspaceReader(
       workspaces,
-      () => ({ root: daemonSide, scratch: true }),
+      async () => ({ root: daemonSide, scratch: true }),
       pass,
       () => filesAt(podSide)
     )
@@ -69,7 +69,7 @@ describe('createWorkspaceReader routing', () => {
     const { daemonSide, podSide } = split()
     const reader = createWorkspaceReader(
       workspaces,
-      () => ({ root: daemonSide, scratch: true }),
+      async () => ({ root: daemonSide, scratch: true }),
       pass,
       () => filesAt(podSide)
     )
@@ -89,7 +89,7 @@ describe('createWorkspaceReader routing', () => {
     const files = filesAt(podSide)
     const reader = createWorkspaceReader(
       workspaces,
-      () => ({ root: daemonSide, scratch: false }),
+      async () => ({ root: daemonSide, scratch: false }),
       pass,
       () => ({
         ...files,
@@ -109,7 +109,7 @@ describe('createWorkspaceReader routing', () => {
 
   it('falls back to this filesystem when no seam is registered, so self-hosting needs no wiring', async () => {
     const { daemonSide } = split()
-    const reader = createWorkspaceReader(workspaces, () => ({ root: daemonSide, scratch: true }), pass)
+    const reader = createWorkspaceReader(workspaces, async () => ({ root: daemonSide, scratch: true }), pass)
     const page = await reader.list({ agentId: AGENT, path: '', limit: 50 })
     expect(page.entries.map((entry) => entry.name)).toEqual(['STALE-DAEMON-COPY.txt'])
   })
@@ -135,7 +135,7 @@ describe('createLocalSkillsReader routing', () => {
     skill(daemonSide, 'ghost', 'ghost', 'must not appear')
     const reader = createLocalSkillsReader(
       workspaces,
-      () => podSide,
+      async () => podSide,
       join(daemonSide, 'skill-installs'),
       () => filesAt(podSide)
     )
@@ -150,7 +150,7 @@ describe('createLocalSkillsReader routing', () => {
     const missing = join(daemonSide, 'not-created-yet')
     const reader = createLocalSkillsReader(
       workspaces,
-      () => missing,
+      async () => missing,
       daemonSide,
       () => filesAt(missing)
     )
@@ -167,7 +167,7 @@ describe('createLocalSkillsReader routing', () => {
     skill(daemonSide, 'ghost', 'ghost', 'must not appear')
     const reader = createLocalSkillsReader(
       workspaces,
-      () => daemonSide,
+      async () => daemonSide,
       join(podSide, 'skill-installs'),
       () => undefined
     )
@@ -177,7 +177,7 @@ describe('createLocalSkillsReader routing', () => {
   it('still reads this daemon own workspace when no seam is registered', async () => {
     const { daemonSide } = split()
     skill(daemonSide, 'local-one', 'local-one', 'on this disk')
-    const reader = createLocalSkillsReader(workspaces, () => daemonSide, join(daemonSide, 'skill-installs'))
+    const reader = createLocalSkillsReader(workspaces, async () => daemonSide, join(daemonSide, 'skill-installs'))
     const answer = await reader.list({ agentId: AGENT })
     expect(answer.materialized).toBe(true)
     expect(answer.skills.map((entry) => entry.name)).toEqual(['local-one'])
@@ -198,7 +198,7 @@ describe('an unreachable sandbox workspace', () => {
     const { daemonSide } = split()
     workspaces.setSandboxMode(true)
     // No seam registered for this agent — exactly what the plane answers with no bound channel.
-    const reader = createWorkspaceReader(workspaces, () => ({ root: '/agent', scratch: true }), pass)
+    const reader = createWorkspaceReader(workspaces, async () => ({ root: '/agent', scratch: true }), pass)
     for (const read of [
       () => reader.list({ agentId: AGENT, path: '', limit: 50 }),
       () => reader.read({ agentId: AGENT, path: 'app.ts', offset: 0, limit: 65_536 })
@@ -220,7 +220,7 @@ describe('an unreachable sandbox workspace', () => {
     workspaces.setSandboxMode(true)
     const reader = createWorkspaceReader(
       workspaces,
-      () => ({ root: daemonSide, scratch: true }),
+      async () => ({ root: daemonSide, scratch: true }),
       pass,
       () => filesAt(podSide)
     )
@@ -255,7 +255,7 @@ describe('a channel that drops between resolutions', () => {
     const reader = createWorkspaceReader(
       workspaces,
       // A root in POD coordinates, as the real resolver returns: what a local fallback would create.
-      () => ({ root: join(daemonSide, 'agent-repo'), scratch: true }),
+      async () => ({ root: join(daemonSide, 'agent-repo'), scratch: true }),
       pass,
       detachAfterFirst(filesAt(podSide))
     )
@@ -270,7 +270,7 @@ describe('a channel that drops between resolutions', () => {
     workspaces.setSandboxMode(true)
     const reader = createWorkspaceReader(
       workspaces,
-      () => ({ root: daemonSide, scratch: true }),
+      async () => ({ root: daemonSide, scratch: true }),
       pass,
       detachAfterFirst(filesAt(podSide))
     )

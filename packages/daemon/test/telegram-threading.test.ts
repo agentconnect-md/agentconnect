@@ -100,7 +100,11 @@ function tg(id: number, over: Partial<NormalizedMessage> = {}): NormalizedMessag
   }
 }
 
-const owner = (daemon: Daemon) => (c: string, t: string) => (daemon as any).sessions.threadOwner(c, t)
+/** routeRules stays sync, so the owner is prefetched for the one candidate thread key. */
+const owner = async (daemon: Daemon, channel: string, thread: string) => {
+  const found = await (daemon as any).sessions.threadOwner(channel, thread)
+  return () => found
+}
 
 describe('Telegram conversation discovery', () => {
   it('reports a public DM as a configurable direct row', async () => {
@@ -111,7 +115,7 @@ describe('Telegram conversation discovery', () => {
     const emitIntegrationChannels = vi.fn()
     ;(daemon as any).cpClient = { emitIntegrationChannels, stop: vi.fn().mockResolvedValue(undefined) }
 
-    ;(daemon as any).onInbound(tg(91, { channel: '424242', isDm: true }), ['i-tg'])
+    await (daemon as any).onInboundOutcome(tg(91, { channel: '424242', isDm: true }), ['i-tg'])
 
     expect(emitIntegrationChannels).toHaveBeenCalledWith({
       integrationId: 'i-tg',
@@ -128,7 +132,7 @@ describe('Telegram conversation discovery', () => {
     const emitIntegrationChannels = vi.fn()
     ;(daemon as any).cpClient = { emitIntegrationChannels, stop: vi.fn().mockResolvedValue(undefined) }
 
-    ;(daemon as any).onInbound(tg(90, { mentionedBots: ['mybot'] }), ['i-tg'])
+    await (daemon as any).onInboundOutcome(tg(90, { mentionedBots: ['mybot'] }), ['i-tg'])
 
     const channels = [{ id: '-100', kind: 'channel' }]
     expect(emitIntegrationChannels).toHaveBeenCalledWith({
@@ -148,7 +152,7 @@ describe('Telegram conversation discovery', () => {
     const emitIntegrationChannels = vi.fn()
     ;(daemon as any).cpClient = { emitIntegrationChannels, stop: vi.fn().mockResolvedValue(undefined) }
 
-    ;(daemon as any).observedChannelsSync.observeTelegramChat(
+    await (daemon as any).observedChannelsSync.observeTelegramChat(
       { id: '-200', name: 'new private group', isPrivate: true },
       ['i-tg']
     )
@@ -195,8 +199,8 @@ describe('Telegram ingress attribution', () => {
     // Separate bot chats can produce the same normalized chat/message coordinates.
     // Each physical connection must route only through its own integration and must
     // not suppress the other bot's event as a duplicate.
-    ;(daemon as any).onInbound(tg(1, { channel: '424242', isDm: true }), ['wrong-tg'])
-    ;(daemon as any).onInbound(tg(1, { channel: '424242', isDm: true }), ['target-tg'])
+    await (daemon as any).onInboundOutcome(tg(1, { channel: '424242', isDm: true }), ['wrong-tg'])
+    await (daemon as any).onInboundOutcome(tg(1, { channel: '424242', isDm: true }), ['target-tg'])
 
     expect(dispatch.mock.calls.map(([agentId, , integrationId]) => [agentId, integrationId])).toEqual([
       ['bot-a', 'wrong-tg'],
@@ -237,7 +241,7 @@ describe('Telegram ingress attribution', () => {
     ]
     const scopeA = (daemon as any).transportScopeForIntegrationIds(['i-a'])
     const scopeB = (daemon as any).transportScopeForIntegrationIds(['i-b'])
-    ;(daemon as any).store.tripLoopGuard(`telegram:42:dm:${scopeA}`, 1, 'test_loop')
+    await (daemon as any).store.tripLoopGuard(`telegram:42:dm:${scopeA}`, 1, 'test_loop')
 
     await expect(
       (daemon as any).dispatch(
@@ -263,7 +267,7 @@ describe('canonicalizeTelegramThread', () => {
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
     await daemon.start()
     const m = tg(100, { mentionedBots: ['mybot'] })
-    ;(daemon as any).canonicalizeTelegramThread(m)
+    await (daemon as any).canonicalizeTelegramThread(m)
     expect(m.thread).toBe('tg:100')
   })
 
@@ -271,7 +275,7 @@ describe('canonicalizeTelegramThread', () => {
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
     await daemon.start()
     const m = tg(101, { topicId: '555', mentionedBots: ['mybot'] })
-    ;(daemon as any).canonicalizeTelegramThread(m)
+    await (daemon as any).canonicalizeTelegramThread(m)
     expect(m.thread).toBe('555')
   })
 
@@ -279,14 +283,14 @@ describe('canonicalizeTelegramThread', () => {
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
     await daemon.start()
     const topic = tg(103, { topicId: '555', mentionedBots: ['mybot'] })
-    ;(daemon as any).canonicalizeTelegramThread(topic)
+    await (daemon as any).canonicalizeTelegramThread(topic)
     expect(topic.thread).toBe('555')
     const reply = tg(104, { threadRoot: '6' })
-    ;(daemon as any).canonicalizeTelegramThread(reply)
+    await (daemon as any).canonicalizeTelegramThread(reply)
     expect(reply.thread).toBe('tg:6')
     // The generic field wins when both are present (dual-shape window).
     const both = tg(105, { topicId: '7' })
-    ;(daemon as any).canonicalizeTelegramThread(both)
+    await (daemon as any).canonicalizeTelegramThread(both)
     expect(both.thread).toBe('7')
   })
 
@@ -294,7 +298,7 @@ describe('canonicalizeTelegramThread', () => {
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
     await daemon.start()
     const m = tg(102, { channel: '42', isDm: true })
-    ;(daemon as any).canonicalizeTelegramThread(m)
+    await (daemon as any).canonicalizeTelegramThread(m)
     expect(m.thread).toBe('dm')
   })
 
@@ -303,13 +307,13 @@ describe('canonicalizeTelegramThread', () => {
     await daemon.start()
     // The opening @mention (message 6) is top-level: no topic, no root, no reply.
     const mention = tg(6, { mentionedBots: ['mybot'] })
-    ;(daemon as any).canonicalizeTelegramThread(mention)
+    await (daemon as any).canonicalizeTelegramThread(mention)
     expect(mention.thread).toBe('tg:6')
     // A later reply in that thread carries Telegram's native message_thread_id = 6
     // (the root) — even though it directly replies to the bot's message 7. It must key
     // to the SAME session as the mention (regression: was mis-keyed to the bare id).
     const reply = tg(8, { threadRoot: '6', replyTo: '7' })
-    ;(daemon as any).canonicalizeTelegramThread(reply)
+    await (daemon as any).canonicalizeTelegramThread(reply)
     expect(reply.thread).toBe('tg:6')
   })
 
@@ -319,10 +323,10 @@ describe('canonicalizeTelegramThread', () => {
     // Only a real forum topic yields the bare numeric thread (postable as
     // message_thread_id); a reply-thread root is prefixed so it never is.
     const forum = tg(9, { topicId: '6' })
-    ;(daemon as any).canonicalizeTelegramThread(forum)
+    await (daemon as any).canonicalizeTelegramThread(forum)
     expect(forum.thread).toBe('6')
     const replyThread = tg(10, { threadRoot: '6' })
-    ;(daemon as any).canonicalizeTelegramThread(replyThread)
+    await (daemon as any).canonicalizeTelegramThread(replyThread)
     expect(replyThread.thread).toBe('tg:6')
   })
 
@@ -330,7 +334,7 @@ describe('canonicalizeTelegramThread', () => {
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
     await daemon.start()
     // A prior bot reply (message 500) recorded under the session thread tg:100.
-    ;(daemon as any).store.appendTranscript({
+    await (daemon as any).store.appendTranscript({
       channel: '-100',
       thread: 'tg:100',
       ts: '500',
@@ -339,7 +343,7 @@ describe('canonicalizeTelegramThread', () => {
       text: 'answer'
     })
     const m = tg(600, { replyTo: '500' })
-    ;(daemon as any).canonicalizeTelegramThread(m)
+    await (daemon as any).canonicalizeTelegramThread(m)
     expect(m.thread).toBe('tg:100')
   })
 
@@ -349,7 +353,7 @@ describe('canonicalizeTelegramThread', () => {
     // No message_thread_id (basic group) and message 999 was never recorded (cold /
     // restarted): fall back to rooting the thread on the replied-to message.
     const m = tg(700, { replyTo: '999' })
-    ;(daemon as any).canonicalizeTelegramThread(m)
+    await (daemon as any).canonicalizeTelegramThread(m)
     expect(m.thread).toBe('tg:999')
   })
 
@@ -357,7 +361,7 @@ describe('canonicalizeTelegramThread', () => {
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
     await daemon.start()
     const m = { ...tg(1), platform: 'slack' as const, thread: undefined }
-    ;(daemon as any).canonicalizeTelegramThread(m)
+    await (daemon as any).canonicalizeTelegramThread(m)
     expect(m.thread).toBeUndefined()
   })
 })
@@ -369,7 +373,7 @@ describe('reply-based session continuity (routing)', () => {
     makeTelegramRoutable(daemon)
     // Simulate an established session for thread tg:100 + its bot reply (message 500).
     const now = Date.now()
-    ;(daemon as any).store.upsertSession({
+    await (daemon as any).store.upsertSession({
       key: sessionKey('telegram', '-100', 'tg:100', 'bot-a'),
       agentId: 'bot-a',
       platform: 'telegram',
@@ -380,7 +384,7 @@ describe('reply-based session continuity (routing)', () => {
       lastDeliveredTs: null,
       updatedAt: now
     })
-    ;(daemon as any).store.appendTranscript({
+    await (daemon as any).store.appendTranscript({
       channel: '-100',
       thread: 'tg:100',
       ts: '500',
@@ -391,8 +395,8 @@ describe('reply-based session continuity (routing)', () => {
 
     // A human reply to the bot's message (no @mention).
     const m = tg(600, { replyTo: '500' })
-    ;(daemon as any).canonicalizeTelegramThread(m)
-    const routed = routeRules(m, (daemon as any).mergedRules(), owner(daemon))
+    await (daemon as any).canonicalizeTelegramThread(m)
+    const routed = routeRules(m, (daemon as any).mergedRules(), await owner(daemon, m.channel, m.thread!))
     expect(routed).toMatchObject({ agentId: 'bot-a', via: 'thread' })
   })
 
@@ -400,12 +404,12 @@ describe('reply-based session continuity (routing)', () => {
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
     await daemon.start()
     makeScopedTelegramPair(daemon)
-    seedSession(daemon, '-100', 'tg:77', { agentId: 'bot-a', integrationId: 'i-a' })
-    seedSession(daemon, '-100', 'tg:77', { agentId: 'bot-b', integrationId: 'i-b' })
+    await seedSession(daemon, '-100', 'tg:77', { agentId: 'bot-a', integrationId: 'i-a' })
+    await seedSession(daemon, '-100', 'tg:77', { agentId: 'bot-b', integrationId: 'i-b' })
     const dispatch = vi.spyOn(daemon as any, 'dispatch').mockResolvedValue('acp')
 
-    ;(daemon as any).onInbound(tg(78, { threadRoot: '77', text: 'follow up A' }), ['i-a'])
-    ;(daemon as any).onInbound(tg(78, { threadRoot: '77', text: 'follow up B' }), ['i-b'])
+    await (daemon as any).onInboundOutcome(tg(78, { threadRoot: '77', text: 'follow up A' }), ['i-a'])
+    await (daemon as any).onInboundOutcome(tg(78, { threadRoot: '77', text: 'follow up B' }), ['i-b'])
 
     expect(dispatch.mock.calls.map(([agentId, , integrationId]) => [agentId, integrationId])).toEqual([
       ['bot-a', 'i-a'],
@@ -419,9 +423,9 @@ describe('reply-based session continuity (routing)', () => {
     await daemon.start()
     makeTelegramRoutable(daemon)
     const m = tg(800, { mentionedBots: ['mybot'] })
-    ;(daemon as any).canonicalizeTelegramThread(m)
+    await (daemon as any).canonicalizeTelegramThread(m)
     expect(m.thread).toBe('tg:800')
-    const routed = routeRules(m, (daemon as any).mergedRules(), owner(daemon))
+    const routed = routeRules(m, (daemon as any).mergedRules(), await owner(daemon, m.channel, m.thread!))
     expect(routed).toMatchObject({ agentId: 'bot-a', via: 'mention' })
   })
 })
@@ -432,7 +436,7 @@ describe('reply targeting', () => {
     await daemon.start()
     const conn = makeTelegramRoutable(daemon)
     // A DM `/status` with no live session → the "no session" note, replied to message 900.
-    ;(daemon as any).onInbound(tg(900, { channel: '42', isDm: true, text: '/status' }), ['i-tg'])
+    await (daemon as any).onInboundOutcome(tg(900, { channel: '42', isDm: true, text: '/status' }), ['i-tg'])
     expect(conn.postMessage).toHaveBeenCalledWith('42', expect.stringContaining('No active session'), 'dm', {
       replyTo: 900
     })
@@ -471,7 +475,7 @@ describe('reply targeting', () => {
 })
 
 /** Seed an addressable session in one physical Telegram bot scope. */
-function seedSession(
+async function seedSession(
   daemon: Daemon,
   channel: string,
   thread: string,
@@ -486,7 +490,7 @@ function seedSession(
   const integrationId = opts.integrationId ?? 'i-tg'
   const transportScope = (daemon as any).transportScopeForIntegrationIds([integrationId])
   const key = sessionKey('telegram', channel, thread, agentId, transportScope)
-  ;(daemon as any).store.upsertSession({
+  await (daemon as any).store.upsertSession({
     key,
     agentId,
     platform: 'telegram',
@@ -546,10 +550,10 @@ describe('group command routing (no mention entity)', () => {
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
     await daemon.start()
     const conn = makeTelegramRoutable(daemon)
-    seedSession(daemon, '-100', 'tg:100')
+    await seedSession(daemon, '-100', 'tg:100')
     // A group `/status@mybot`: no mention entity, no reply, not a DM — routeRules can't
     // place it, so it must fall back to the channel's latest session (not be dropped).
-    ;(daemon as any).onInbound(tg(200, { text: '/status@mybot' }), ['i-tg'])
+    await (daemon as any).onInboundOutcome(tg(200, { text: '/status@mybot' }), ['i-tg'])
     expect(conn.postChrome).toHaveBeenCalled()
     const [ch, , opts] = conn.postChrome.mock.calls.at(-1)!
     expect(ch).toBe('-100')
@@ -561,18 +565,18 @@ describe('group command routing (no mention entity)', () => {
     await daemon.start()
     const { connA, connB } = makeScopedTelegramPair(daemon)
     const now = Date.now()
-    seedSession(daemon, '-100', 'tg:a', {
+    await seedSession(daemon, '-100', 'tg:a', {
       agentId: 'bot-a',
       integrationId: 'i-a',
       updatedAt: now
     })
-    seedSession(daemon, '-100', 'tg:b', {
+    await seedSession(daemon, '-100', 'tg:b', {
       agentId: 'bot-b',
       integrationId: 'i-b',
       updatedAt: now - 1_000
     })
 
-    ;(daemon as any).onInbound(tg(201, { text: '/status@botb' }), ['i-b'])
+    await (daemon as any).onInboundOutcome(tg(201, { text: '/status@botb' }), ['i-b'])
 
     expect(connB.postChrome).toHaveBeenCalled()
     expect(connA.postChrome).not.toHaveBeenCalled()
@@ -603,9 +607,9 @@ describe('session-control cards (/models tappable buttons)', () => {
     ;(daemon as any).agents.get('bot-a').allowRuntimeChangesInChat = true
     const conn = makeTelegramRoutable(daemon)
     injectHost(daemon)
-    seedSession(daemon, '-100', 'tg:100')
+    await seedSession(daemon, '-100', 'tg:100')
 
-    ;(daemon as any).onInbound(tg(200, { text: '/models@mybot' }), ['i-tg'])
+    await (daemon as any).onInboundOutcome(tg(200, { text: '/models@mybot' }), ['i-tg'])
     expect(conn.postCard).toHaveBeenCalled()
     const [ch, , buttons] = conn.postCard.mock.calls.at(-1)!
     expect(ch).toBe('-100')
@@ -618,13 +622,13 @@ describe('session-control cards (/models tappable buttons)', () => {
     ;(daemon as any).agents.get('bot-a').allowRuntimeChangesInChat = true
     const conn = makeTelegramRoutable(daemon)
     injectHost(daemon)
-    const key = seedSession(daemon, '-100', 'tg:100')
+    const key = await seedSession(daemon, '-100', 'tg:100')
 
-    ;(daemon as any).commands.handleTelegramCallback(
+    await (daemon as any).commands.handleTelegramCallback(
       { id: 'cb1', data: 'm:1', channel: '-100', messageId: 55, userId: 'U1' },
       conn
     )
-    expect((daemon as any).store.getModelOverride(key)).toBe('sonnet')
+    expect(await (daemon as any).store.getModelOverride(key)).toBe('sonnet')
     expect(conn.answerCallback).toHaveBeenCalledWith('cb1', expect.stringContaining('sonnet'))
     expect(conn.editCard).toHaveBeenCalled()
   })
@@ -635,11 +639,11 @@ describe('session-control cards (/models tappable buttons)', () => {
     ;(daemon as any).agents.get('bot-a').allowRuntimeChangesInChat = true
     const conn = makeTelegramRoutable(daemon)
     injectHost(daemon)
-    seedSession(daemon, '-100', 'tg:100')
+    await seedSession(daemon, '-100', 'tg:100')
     const lines: string[] = []
     ;(daemon as any).log = { info: (m: string) => lines.push(m), warn: () => {}, error: () => {}, debug: () => {} }
 
-    ;(daemon as any).commands.handleTelegramCallback(
+    await (daemon as any).commands.handleTelegramCallback(
       { id: 'cb-a', data: 'm:1', channel: '-100', messageId: 55, userId: 'U-DANA' },
       conn
     )
@@ -650,7 +654,7 @@ describe('session-control cards (/models tappable buttons)', () => {
     // Withdraw chat authority: the next tap changes nothing, so it records nothing.
     ;(daemon as any).agents.get('bot-a').allowRuntimeChangesInChat = false
     lines.length = 0
-    ;(daemon as any).commands.handleTelegramCallback(
+    await (daemon as any).commands.handleTelegramCallback(
       { id: 'cb-b', data: 'm:0', channel: '-100', messageId: 55, userId: 'U-DANA' },
       conn
     )
@@ -677,24 +681,24 @@ describe('session-control cards (/models tappable buttons)', () => {
     ;(daemon as any).hosts.set('bot-a', host)
     ;(daemon as any).hosts.set('bot-b', host)
     const now = Date.now()
-    const keyA = seedSession(daemon, '-100', 'tg:a', {
+    const keyA = await seedSession(daemon, '-100', 'tg:a', {
       agentId: 'bot-a',
       integrationId: 'i-a',
       updatedAt: now
     })
-    const keyB = seedSession(daemon, '-100', 'tg:b', {
+    const keyB = await seedSession(daemon, '-100', 'tg:b', {
       agentId: 'bot-b',
       integrationId: 'i-b',
       updatedAt: now - 1_000
     })
 
-    ;(daemon as any).commands.handleTelegramCallback(
+    await (daemon as any).commands.handleTelegramCallback(
       { id: 'cb-scoped', data: 'm:1', channel: '-100', messageId: 55, userId: 'U1' },
       connB
     )
 
-    expect((daemon as any).store.getModelOverride(keyB)).toBe('sonnet')
-    expect((daemon as any).store.getModelOverride(keyA)).toBeUndefined()
+    expect(await (daemon as any).store.getModelOverride(keyB)).toBe('sonnet')
+    expect(await (daemon as any).store.getModelOverride(keyA)).toBeUndefined()
     expect(connB.answerCallback).toHaveBeenCalledWith('cb-scoped', expect.stringContaining('sonnet'))
     await daemon.stop()
   })
@@ -734,9 +738,9 @@ describe('continue-the-topic hint delivery', () => {
     expect(conn.postMessage.mock.calls[0]![1]).toBe('answer\n\n↩️ hint')
     // The recorded row keeps the agent's words AND the real message id — the reply chain
     // resolves through it (LocalStore.telegramThreadForMessage).
-    const rows = (daemon as any).store.threadTranscript('-100', 'tg:100')
+    const rows = await (daemon as any).store.threadTranscript('-100', 'tg:100')
     expect(rows.at(-1)).toMatchObject({ text: 'answer', ts: 'out-9' })
-    expect((daemon as any).store.telegramThreadForMessage('-100', 'out-9')).toBe('tg:100')
+    expect(await (daemon as any).store.telegramThreadForMessage('-100', 'out-9')).toBe('tg:100')
     expect(p.turnState).toMatchObject({ lastBody: { id: 'out-9', text: 'answer\n\n↩️ hint' } })
     await daemon.stop()
   })

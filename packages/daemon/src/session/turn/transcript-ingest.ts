@@ -26,14 +26,14 @@ export interface SlotClaim {
  *  walk forward to the first free-or-same slot instead of letting INSERT OR IGNORE silently
  *  drop this message. An identical row (the co-hosted-participant fan-out case) keeps the
  *  shared slot. Pure: the caller injects the probe. */
-export function probeWebchatSlot(
+export async function probeWebchatSlot(
   start: string,
   claim: SlotClaim,
-  probe: (ts: string) => SlotOccupant | undefined
-): string {
+  probe: (ts: string) => Promise<SlotOccupant | undefined>
+): Promise<string> {
   let slot = BigInt(start)
   for (let attempt = 0; attempt < 32; attempt++) {
-    const existing = probe(String(slot))
+    const existing = await probe(String(slot))
     // Mirror the daemon-side probe (§6): matching canonical postId is what proves the occupant
     // is this same post; (sender, text) only decides for legacy rows without an id on either side.
     const samePost =
@@ -87,18 +87,18 @@ export async function ingestInboundTranscript(input: TranscriptIngestInput): Pro
   const transcriptText = mention ? `${msg.text}\n${mention}`.trim() : msg.text
   const ts =
     msg.platform === 'webchat'
-      ? probeWebchatSlot(
+      ? await probeWebchatSlot(
           input.ts,
           {
             sender: msg.sender.id,
             text: transcriptText,
             ...(msg.transcriptPostId ? { postId: msg.transcriptPostId } : {})
           },
-          (slot) =>
-            store.transcriptTextAt(transcriptChannel, thread, slot, { sender: msg.sender.id, recipient: agentId })
+          async (slot) =>
+            await store.transcriptTextAt(transcriptChannel, thread, slot, { sender: msg.sender.id, recipient: agentId })
         )
       : input.ts
-  store.appendTranscript({
+  await store.appendTranscript({
     channel: transcriptChannel,
     thread,
     ts,

@@ -176,10 +176,10 @@ describe('built-in MCP approvals use one policy on both ACP paths', () => {
       's1',
       req({ title: 'Bash', rawInput: { command: 'pnpm test' } })
     )
-    expect((daemon as any).pendingEditorPermissions.size).toBe(1)
+    await vi.waitFor(() => expect((daemon as any).pendingEditorPermissions.size).toBe(1))
     const [permissionRequestId] = (daemon as any).pendingEditorPermissions.keys()
     expect(
-      (daemon as any).decideEditorPermission({
+      await (daemon as any).decideEditorPermission({
         agentId: 'agent-1',
         requestId: permissionRequestId,
         decision: 'deny'
@@ -190,10 +190,10 @@ describe('built-in MCP approvals use one policy on both ACP paths', () => {
     })
 
     const elicitationResult = (daemon as any).onAcpElicit('agent-1', 's1', elicitation('uncorrelated'))
-    expect((daemon as any).pendingEditorPermissions.size).toBe(1)
+    await vi.waitFor(() => expect((daemon as any).pendingEditorPermissions.size).toBe(1))
     const [elicitationRequestId] = (daemon as any).pendingEditorPermissions.keys()
     expect(
-      (daemon as any).decideEditorPermission({
+      await (daemon as any).decideEditorPermission({
         agentId: 'agent-1',
         requestId: elicitationRequestId,
         decision: 'deny'
@@ -234,10 +234,10 @@ describe('built-in MCP approvals use one policy on both ACP paths', () => {
       pending.approvalSurfaceSuppressed = false
 
       const result = (daemon as any).onAcpPermission('agent-1', 's1', req({ title: 'Bash' }))
-      expect((daemon as any).pendingEditorPermissions.size).toBe(1)
+      await vi.waitFor(() => expect((daemon as any).pendingEditorPermissions.size).toBe(1))
       const [requestId] = (daemon as any).pendingEditorPermissions.keys()
       expect(
-        (daemon as any).decideEditorPermission({
+        await (daemon as any).decideEditorPermission({
           agentId: 'agent-1',
           requestId,
           decision: 'deny'
@@ -274,8 +274,9 @@ describe('built-in MCP approvals use one policy on both ACP paths', () => {
 
     expect(pending.builtinSystemToolCallIds).not.toContain('other-server-call')
     const permissionResult = (daemon as any).onAcpPermission('agent-1', 's1', req({ toolCallId: 'other-server-call' }))
+    await vi.waitFor(() => expect((daemon as any).pendingEditorPermissions.size).toBe(1))
     const [permissionRequestId] = (daemon as any).pendingEditorPermissions.keys()
-    ;(daemon as any).decideEditorPermission({
+    await (daemon as any).decideEditorPermission({
       agentId: 'agent-1',
       requestId: permissionRequestId,
       decision: 'deny'
@@ -285,8 +286,9 @@ describe('built-in MCP approvals use one policy on both ACP paths', () => {
     })
 
     const elicitationResult = (daemon as any).onAcpElicit('agent-1', 's1', elicitation('uncorrelated'))
+    await vi.waitFor(() => expect((daemon as any).pendingEditorPermissions.size).toBe(1))
     const [elicitationRequestId] = (daemon as any).pendingEditorPermissions.keys()
-    ;(daemon as any).decideEditorPermission({
+    await (daemon as any).decideEditorPermission({
       agentId: 'agent-1',
       requestId: elicitationRequestId,
       decision: 'deny'

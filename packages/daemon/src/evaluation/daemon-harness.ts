@@ -60,20 +60,20 @@ export class DaemonEvaluationHarness {
   }
 
   /** §4.1 real-path platform injection — no preselected agent; routing decides. */
-  inject(event: EvaluationPlatformEvent): DeliveryHandle {
+  inject(event: EvaluationPlatformEvent): Promise<DeliveryHandle> {
     return this.daemon.injectPlatformEvent(event)
   }
 
   /** §4.2 trusted pre-addressed referee delivery. */
-  deliverReferee(event: RefereeEvent): DeliveryHandle {
+  deliverReferee(event: RefereeEvent): Promise<DeliveryHandle> {
     return this.daemon.deliverRefereeEvent(event)
   }
 
   /** Concurrent wave: every event passes admission (a synchronous claim inside
    *  the daemon) before any completion is awaited, so later deliveries cannot
    *  observe earlier turns' output (§7.1). */
-  injectConcurrent(events: EvaluationPlatformEvent[]): DeliveryHandle[] {
-    return events.map((event) => this.inject(event))
+  async injectConcurrent(events: EvaluationPlatformEvent[]): Promise<DeliveryHandle[]> {
+    return await Promise.all(events.map((event) => this.inject(event)))
   }
 
   /** Convenience barrier: dispatch queues drained + post-turn chains settled. */

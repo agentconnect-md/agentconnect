@@ -159,9 +159,9 @@ export interface ConfigApplyRuntimeHost {
 export interface ConfigApplyControlHost {
   applyDutyGrant(grants: DutyGrantEntry[]): void
   applyDutyRevoke(revocations: DutyRevoke['revocations']): void
-  decideEditorPermission(req: AgentPermissionDecision): Ack
+  decideEditorPermission(req: AgentPermissionDecision): Promise<Ack>
   leaveConversation(leave: IntegrationLeave): Promise<IntegrationLeaveOk>
-  retractChannels(integrationId: string, channelIds: readonly string[]): void
+  retractChannels(integrationId: string, channelIds: readonly string[]): Promise<void>
   runCronNow(cronId: string): Ack
   runDrain(drain: Drain, onProgress: (p: DrainProgress) => void): Promise<DrainDone>
   scheduleFleetExit(kind: 'restart' | 'upgrade', targetVersion?: string): DaemonControlAck
@@ -347,7 +347,7 @@ export function applyAgentUpsert(host: ConfigApplyHost, { agentId, spec }: Agent
       return { ok: false, reason: 'agent config revision already applied with different content' }
     }
     if (applied !== 'apply') return { ok: true }
-    if (takingOwnership) host.store().recoverPermissionRequests([agentId], host.clock().now())
+    if (takingOwnership) await host.store().recoverPermissionRequests([agentId], host.clock().now())
     if (replacingDroppedAuthority) {
       // A standalone upsert has no dependent bundle. Scrub every stale CP
       // integration/cron now; subsequent live frames may repopulate them.
@@ -558,7 +558,7 @@ export function applyAgentActivate(host: ConfigApplyHost, activate: AgentActivat
       if (activation === 'missing') {
         return { ok: false, reason: `agent/activate: unknown agent ${agentId}` }
       }
-      host.store().recoverPermissionRequests([agentId], host.clock().now())
+      await host.store().recoverPermissionRequests([agentId], host.clock().now())
       if (host.agentRemovalPending(agentId)) {
         return { ok: false, reason: 'agent/activate: superseded by a newer agent removal' }
       }
@@ -687,26 +687,23 @@ export function applyAgentActivate(host: ConfigApplyHost, activate: AgentActivat
   })
 }
 
-export function listAgentPermissionRequests(
+export async function listAgentPermissionRequests(
   host: ConfigApplyCoreHost,
   { agentId, limit }: AgentPermissionRequestList
-): AgentPermissionRequestPage {
+): Promise<AgentPermissionRequestPage> {
   return {
     agentId,
-    requests: host
-      .store()
-      .listPermissionRequests(agentId, limit)
-      .map((request) => ({
-        id: request.id,
-        agentId: request.agentId,
-        sessionId: request.sessionId,
-        createdAt: new Date(request.createdAt).toISOString(),
-        requesterId: request.requesterId,
-        requesterName: request.requesterName,
-        command: request.command,
-        status: request.status,
-        resolvedAt: request.resolvedAt === null ? null : new Date(request.resolvedAt).toISOString()
-      }))
+    requests: (await host.store().listPermissionRequests(agentId, limit)).map((request) => ({
+      id: request.id,
+      agentId: request.agentId,
+      sessionId: request.sessionId,
+      createdAt: new Date(request.createdAt).toISOString(),
+      requesterId: request.requesterId,
+      requesterName: request.requesterName,
+      command: request.command,
+      status: request.status,
+      resolvedAt: request.resolvedAt === null ? null : new Date(request.resolvedAt).toISOString()
+    }))
   }
 }
 
@@ -840,10 +837,13 @@ export function applyAgentStop(host: ConfigApplyGateHost & ConfigApplyRuntimeHos
 // settlements and cascades); the daemon only enforces the resulting
 // capture gate. Ordering is by the CP's durable revision, so retransmits
 // and out-of-order delivery are safe.
-export function applySessionVisibility(host: ConfigApplyCoreHost, p: SessionVisibilityPush): 'applied' | 'superseded' {
+export async function applySessionVisibility(
+  host: ConfigApplyCoreHost,
+  p: SessionVisibilityPush
+): Promise<'applied' | 'superseded'> {
   // A CP too old to name the agent leaves only the runtime-local ACP id: use the
   // sole local holder, and where there is none leave the gate closed (still ACKed).
-  const agentId = p.agentId ?? host.store().soleAgentForAcpSession(p.sessionId)
+  const agentId = p.agentId ?? (await host.store().soleAgentForAcpSession(p.sessionId))
   if (!agentId) return 'superseded'
   return host
     .store()
@@ -862,7 +862,7 @@ export function buildConfigApply(host: ConfigApplyHost): ConfigApply {
     applyAgentDetach: (detach: AgentDetach) => applyAgentDetach(host, detach),
     applyAgentActivate: (activate: AgentActivate) => applyAgentActivate(host, activate),
     listAgentPermissionRequests: (req: AgentPermissionRequestList) => listAgentPermissionRequests(host, req),
-    decideAgentPermission: (req: AgentPermissionDecision): Ack => host.decideEditorPermission(req),
+    decideAgentPermission: async (req: AgentPermissionDecision): Promise<Ack> => await host.decideEditorPermission(req),
     applyIntegrationUpsert: (spec) => applyIntegrationUpsert(host, spec),
     applyIntegrationRemove: (integrationId) => applyIntegrationRemove(host, integrationId),
     applyIntegrationLeave: (leave) => host.leaveConversation(leave),

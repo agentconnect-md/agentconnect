@@ -210,7 +210,7 @@ export interface WorkspaceGitTarget {
 
 export function createWorkspaceGit(
   workspaces: WorkspaceManager,
-  workspaceRootByAgent: (agentId: string, sessionId?: string) => string | undefined,
+  workspaceRootByAgent: (agentId: string, sessionId?: string) => Promise<string | undefined>,
   credentialEnvByAgent: (agentId: string) => Record<string, string> = () => ({}),
   workspaceTargetByAgent: (agentId: string) => WorkspaceGitTarget | undefined = () => undefined,
   /** The identity the CP registered on `register/ok`. Absent ⇒ a console commit is REFUSED as
@@ -220,8 +220,8 @@ export function createWorkspaceGit(
   /** The daemon's model pass. Absent ⇒ the wand answers `ok:false` as data instead of pretending. */
   commitMessagePass?: CommitMessagePass
 ): WorkspaceGit {
-  function rootFor(agentId: string, sessionId?: string): string {
-    const root = workspaceRootByAgent(agentId, sessionId)
+  async function rootFor(agentId: string, sessionId?: string): Promise<string> {
+    const root = await workspaceRootByAgent(agentId, sessionId)
     if (!root) throw new WorkspaceViolationError(`unknown agent "${agentId}"`, 'unknown-agent')
     return root
   }
@@ -301,7 +301,7 @@ export function createWorkspaceGit(
     sessionId?: string,
     bound?: { base: GitRunner; root: string }
   ): Promise<WorkspaceGitStatus> {
-    const root = bound?.root ?? rootFor(agentId, sessionId)
+    const root = bound?.root ?? (await rootFor(agentId, sessionId))
     // Resolved ONCE per request, and `runnerFor` refuses rather than falling back in sandbox mode:
     // re-resolving would let a channel that drops in between prove the sandbox checkout and then
     // mutate this daemon's own disk. Every runner below derives from this one.
@@ -358,7 +358,7 @@ export function createWorkspaceGit(
    *  both operations total: an unmatched pathspec would otherwise be a `git add` failure, and a no-op
    *  is data here. The fresh status is the whole answer either way. */
   async function writeIndex(kind: 'stage' | 'unstage', req: WorkspaceGitStageReq): Promise<WorkspaceGitStatus> {
-    const root = rootFor(req.agentId, req.sessionId)
+    const root = await rootFor(req.agentId, req.sessionId)
     // Resolved ONCE per request, and `runnerFor` refuses rather than falling back in sandbox mode:
     // re-resolving would let a channel that drops in between prove the sandbox checkout and then
     // mutate this daemon's own disk. Every runner below derives from this one.
@@ -417,7 +417,7 @@ export function createWorkspaceGit(
     },
 
     async diff(req) {
-      const root = rootFor(req.agentId, req.sessionId)
+      const root = await rootFor(req.agentId, req.sessionId)
       // Resolved ONCE per request, and `runnerFor` refuses rather than falling back in sandbox mode:
       // re-resolving would let a channel that drops in between prove the sandbox checkout and then
       // mutate this daemon's own disk. Every runner below derives from this one.
@@ -471,7 +471,7 @@ export function createWorkspaceGit(
     },
 
     async log(req) {
-      const root = rootFor(req.agentId, req.sessionId)
+      const root = await rootFor(req.agentId, req.sessionId)
       // Resolved ONCE per request, and `runnerFor` refuses rather than falling back in sandbox mode:
       // re-resolving would let a channel that drops in between prove the sandbox checkout and then
       // mutate this daemon's own disk. Every runner below derives from this one.
@@ -524,7 +524,7 @@ export function createWorkspaceGit(
     },
 
     async pull(agentId) {
-      const root = rootFor(agentId)
+      const root = await rootFor(agentId)
       // ff-only: an on-demand pull must never rewrite or clobber the agent's working tree — a
       // diverged branch / local edits surface as ok:false, not a forced reset. Bounded by a timeout
       // so an offline remote can't hang the REP, and the controller is built BEFORE the resolution
@@ -577,7 +577,7 @@ export function createWorkspaceGit(
 
     async commit(req) {
       const { agentId } = req
-      const root = rootFor(agentId, req.sessionId)
+      const root = await rootFor(agentId, req.sessionId)
       // Resolved ONCE per request, and `runnerFor` refuses rather than falling back in sandbox mode:
       // re-resolving would let a channel that drops in between prove the sandbox checkout and then
       // mutate this daemon's own disk. Every runner below derives from this one.
@@ -637,7 +637,7 @@ export function createWorkspaceGit(
 
     async push(req) {
       const { agentId } = req
-      const root = rootFor(agentId, req.sessionId)
+      const root = await rootFor(agentId, req.sessionId)
       let timer: ReturnType<typeof setTimeout> | undefined
       const abort = new AbortController()
       // Resolved ONCE per request, with the signal already attached, and `runnerFor` refuses rather
@@ -747,7 +747,7 @@ export function createWorkspaceGit(
 
     async message(req) {
       const { agentId } = req
-      const root = rootFor(agentId, req.sessionId)
+      const root = await rootFor(agentId, req.sessionId)
       // Resolved ONCE per request, and `runnerFor` refuses rather than falling back in sandbox mode:
       // re-resolving would let a channel that drops in between prove the sandbox checkout and then
       // mutate this daemon's own disk. Every runner below derives from this one.

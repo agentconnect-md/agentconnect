@@ -58,7 +58,7 @@ describe('the console git seam without a bound sandbox', () => {
   it('refuses with a machine-readable reason instead of reporting "not a git checkout"', async () => {
     workspaces.setSandboxMode(true)
     // No resolver registered for this agent — what the plane answers with no bound channel.
-    const git = createWorkspaceGit(workspaces, () => '/agent/repo')
+    const git = createWorkspaceGit(workspaces, async () => '/agent/repo')
     for (const read of [
       () => git.status(AGENT),
       () => git.log({ agentId: AGENT, limit: 20 }),
@@ -83,7 +83,7 @@ describe('the console git seam without a bound sandbox', () => {
     // answer comes from git on this filesystem — a real directory that simply is not a checkout.
     const plain = mkdtempSync(join(tmpdir(), 'ac-git-sandbox-'))
     try {
-      const status = await createWorkspaceGit(workspaces, () => plain).status(AGENT)
+      const status = await createWorkspaceGit(workspaces, async () => plain).status(AGENT)
       expect(status.isRepo).toBe(false)
     } finally {
       rmSync(plain, { recursive: true, force: true })
@@ -98,14 +98,14 @@ describe('the console git seam without a bound sandbox', () => {
     // and a write mutates this disk. The refusal rides on the resolution, which happens once.
     const seen: string[][] = []
     workspaces.setGitRunnerResolver(detachAfterFirst(answeringRunner(seen) as never))
-    const status = await createWorkspaceGit(workspaces, () => '/agent/repo').status(AGENT)
+    const status = await createWorkspaceGit(workspaces, async () => '/agent/repo').status(AGENT)
     expect(status.isRepo).toBe(true)
     expect(seen.some((args) => args.includes('--show-prefix'))).toBe(true)
   })
 
   it('still refuses an unknown agent as an unknown agent, ahead of reachability', async () => {
     workspaces.setSandboxMode(true)
-    await expect(createWorkspaceGit(workspaces, () => undefined).status('nope')).rejects.toMatchObject({
+    await expect(createWorkspaceGit(workspaces, async () => undefined).status('nope')).rejects.toMatchObject({
       reason: 'unknown-agent'
     })
   })
@@ -139,7 +139,7 @@ describe('a shim channel that goes away mid-request', () => {
     // The first `rev-parse` loses its channel; the second lands. The panel must never see the blip.
     const { runner, state } = losingRunner((n) => n === 1)
     workspaces.setGitRunnerResolver(() => runner)
-    const status = await createWorkspaceGit(workspaces, () => '/agent/repo').status(AGENT)
+    const status = await createWorkspaceGit(workspaces, async () => '/agent/repo').status(AGENT)
     expect(status.isRepo).toBe(true)
     expect(state.calls).toBeGreaterThan(1)
   })
@@ -148,7 +148,7 @@ describe('a shim channel that goes away mid-request', () => {
     workspaces.setSandboxMode(true)
     const { runner } = losingRunner(() => true)
     workspaces.setGitRunnerResolver(() => runner)
-    await expect(createWorkspaceGit(workspaces, () => '/agent/repo').status(AGENT)).rejects.toMatchObject({
+    await expect(createWorkspaceGit(workspaces, async () => '/agent/repo').status(AGENT)).rejects.toMatchObject({
       name: 'WorkspaceViolationError',
       reason: 'sandbox-unavailable'
     })
@@ -172,7 +172,7 @@ describe('a shim channel that goes away mid-request', () => {
     // first — is left out of the repeatable set for the same reason: it CAN write, and the cheapest
     // way never to get that wrong is to repeat nothing that can.
     await expect(
-      createWorkspaceGit(workspaces, () => '/agent/repo').stage({ agentId: AGENT, paths: ['a.ts'] })
+      createWorkspaceGit(workspaces, async () => '/agent/repo').stage({ agentId: AGENT, paths: ['a.ts'] })
     ).rejects.toMatchObject({ reason: 'sandbox-unavailable' })
     // Nothing that mutates was sent twice — nor, here, even once.
     const sent = seen.map((args) => args.join(' '))

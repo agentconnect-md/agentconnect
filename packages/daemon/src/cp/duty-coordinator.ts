@@ -78,18 +78,22 @@ export interface DutyConvergeHost {
   /** The reconcile pass in flight, and whether another is already queued behind it. */
   reconcileRun(): Promise<void> | undefined
   reconcilePending(): boolean
-  interruptAgentTurns(agentId: string, reason: TurnInterruptReason, disposition: TurnInterruptDisposition): void
+  interruptAgentTurns(
+    agentId: string,
+    reason: TurnInterruptReason,
+    disposition: TurnInterruptDisposition
+  ): Promise<void>
   unregisterSchedule(agentId: string): void
   unregisterDreamSchedule(agentId: string): void
   stopHost(agentId: string): Promise<void>
   releaseClusterSandbox(agentId: string): void
   adoptClusterSandbox(agentId: string): void
-  reclaimInterruptedWork(agentIds: readonly string[]): void
-  syncAgentSchedules(agent: LoadedAgent): void
-  syncOrchestrationDeadlines(): void
-  catchUpMissedSchedules(agentIds: string[]): void
+  reclaimInterruptedWork(agentIds: readonly string[]): Promise<void>
+  syncAgentSchedules(agent: LoadedAgent): Promise<void>
+  syncOrchestrationDeadlines(): Promise<void>
+  catchUpMissedSchedules(agentIds: string[]): Promise<void>
   drainSessionPurges(): Promise<void>
-  replayGainedSessionMetadata(agentIds: readonly string[]): void
+  replayGainedSessionMetadata(agentIds: readonly string[]): Promise<void>
   /** Inbox rows a newly-gained duty owes, replayed once convergence is idle. */
   pendingInboxReplayAgents(): Set<string>
 }
@@ -277,7 +281,7 @@ export class DutyCoordinator {
           `duty: granted ${result.added.length} + re-granted ${result.updated.length} group(s); ` +
             `holding ${this.duties.size()} covering ${this.duties.agents().size} agent(s)`
         )
-        this.settleDutyChange(result)
+        await this.settleDutyChange(result)
       }
       // Same fence, same absence of an await: a group a withdrawal took away is not shrunk either,
       // because it is not ours to write any more — it was revoked outright, or a newer admission
@@ -291,7 +295,7 @@ export class DutyCoordinator {
               `${result.agentsLost.length} agent(s) left service, ${result.updated.length} group(s) shrunk`
           )
         }
-        this.settleDutyChange(result)
+        await this.settleDutyChange(result)
       }
       if (withdrawn.size > 0) {
         this.log.info(`duty: ${withdrawn.size} group(s) were withdrawn while being admitted — not held`)
@@ -309,10 +313,10 @@ export class DutyCoordinator {
    *  through the revoke teardown (#948 — workspace, sessions and registry entry survive), and any
    *  change at all re-derives the physical half, since `transportAgents` gates sockets and direct
    *  ingress is never re-checked per message. */
-  settleDutyChange(result: DutyApplyResult): void {
+  async settleDutyChange(result: DutyApplyResult): Promise<void> {
     for (const agentId of result.agentsLost) this.stopServingAgent(agentId)
     for (const agentId of result.agentsGained) this.host.adoptClusterSandbox(agentId)
-    this.host.reclaimInterruptedWork(result.agentsGained)
+    await this.host.reclaimInterruptedWork(result.agentsGained)
     // A duty newly held here replays that agent's shared inbox backlog even when its replica was
     // already installed and the grant fetched nothing (#1034): a crashed holder's admitted rows
     // must run on the successor. Drained by the reconcile below, once its connections converge.
@@ -324,13 +328,13 @@ export class DutyCoordinator {
     // for the next tick leaves an agent this member is already serving unroutable for up to a
     // heartbeat. Outside the duty gate below on purpose: the CP acts on the digest either way.
     this.host.cpClient()?.reportDutiesNow()
-    this.onDutyChanged()
+    await this.onDutyChanged()
     // After the arm, so a catch-up runs against the schedules this member now actually holds.
-    this.host.catchUpMissedSchedules(result.agentsGained)
+    await this.host.catchUpMissedSchedules(result.agentsGained)
     // The purge-receipt drain is holder-scoped, so a receipt a prior holder left is owed by this member now.
     if (result.agentsGained.length) void this.host.drainSessionPurges()
     // Same for the session-metadata outbox: a snapshot the previous holder parked is this member's to emit.
-    this.host.replayGainedSessionMetadata(result.agentsGained)
+    await this.host.replayGainedSessionMetadata(result.agentsGained)
   }
 
   /**
@@ -500,7 +504,7 @@ export class DutyCoordinator {
   /** Apply a `duty/revoke` EVT. Losing a duty is NOT a removal: the agent's
    *  workspace, sessions, and registry entry all survive — only the platform
    *  connections and schedules this daemon was running for it stop. */
-  applyDutyRevoke(revocations: DutyRevoke['revocations']): void {
+  async applyDutyRevoke(revocations: DutyRevoke['revocations']): Promise<void> {
     // Same guard as the fence: a revoke landing while the group is still being admitted must stop
     // that admission, or the member starts serving a group the CP has already taken away.
     const pending = this.withdrawDutyGroups(revocations.map((revocation) => revocation.groupId))
@@ -511,7 +515,7 @@ export class DutyCoordinator {
         `${result.agentsLost.length} agent(s) left service`
     )
     for (const agentId of result.agentsLost) this.stopServingAgent(agentId)
-    this.onDutyChanged()
+    await this.onDutyChanged()
   }
 
   // The duty self-fence (`T_reassign > T_fence`): stop serving these groups before the CP can hand them to a
@@ -519,7 +523,7 @@ export class DutyCoordinator {
   // honoured keeps serving. Literally a local `duty/revoke`: same registry path, same teardown, so workspace,
   // sessions, and the registry entry all survive it (#948), and the omitted groups are what the CP's
   // missing-regrant path reissues on reconnect.
-  fenceDuties(groupIds: string[]): void {
+  async fenceDuties(groupIds: string[]): Promise<void> {
     // Not duty-governed (an org-scoped daemon) ⇒ a teardown would drop live traffic for no reason.
     if (!this.dutyEnforced()) return
     // BEFORE the held filter: a group still being admitted is not held yet, so there would be
@@ -534,7 +538,7 @@ export class DutyCoordinator {
         `${this.duties.size()} group(s) still held — no confirmed lease renewal before the CP's horizon`
     )
     for (const agentId of result.agentsLost) this.stopServingAgent(agentId)
-    this.onDutyChanged()
+    await this.onDutyChanged()
   }
 
   /** Claim one agent's duty because a trigger for it arrived here. A win is
@@ -624,12 +628,15 @@ export class DutyCoordinator {
    *  half is not optional: `transportAgents` gates which agents get sockets, and direct
    *  ingress has no per-message duty check, so a group this member stopped serving keeps
    *  receiving platform traffic until its connection is actually closed. */
-  onDutyChanged(): void {
+  async onDutyChanged(): Promise<void> {
     if (!this.dutyEnforced()) return
-    for (const agent of this.host.agents().values()) this.host.syncAgentSchedules(agent)
-    this.host.syncOrchestrationDeadlines()
+    // Register the convergence in the caller's own tick: the schedule syncs below await the
+    // store, and a drain that snapshots `connectionsRequested` in between would read this
+    // duty change as already converged.
     this.connectionsRequested++
     this.convergeDutyConnections()
+    for (const agent of this.host.agents().values()) await this.host.syncAgentSchedules(agent)
+    await this.host.syncOrchestrationDeadlines()
   }
 
   /** Reconcile until the duty-driven convergence has actually run. A pass that throws (a workspace
@@ -674,13 +681,13 @@ export class DutyCoordinator {
    *  release awaits before it lets a successor bind the agent's sandbox. Rejects when the host stop
    *  failed (now, or in a still-recorded earlier attempt): the child may still be alive, so "no
    *  longer served here" cannot be claimed. Immediate when no host exists. */
-  stopServingAgentSettled(agentId: string): Promise<void> {
+  async stopServingAgentSettled(agentId: string): Promise<void> {
     if (!this.dutyEnforced()) return Promise.resolve()
     // A handoff, never a removal (#948): the turns stop here, but their admitted-but-unrun rows
     // stay for whoever holds the duty next. Only a duty-governed member reaches this line, so a
     // single daemon's terminal-purge semantics are untouched. `handover`, not `stop`: an outcome
     // reported for a killed turn must not read as a user's verdict on the work.
-    this.host.interruptAgentTurns(agentId, 'handover', 'handoff')
+    await this.host.interruptAgentTurns(agentId, 'handover', 'handoff')
     this.host.unregisterSchedule(agentId)
     this.host.unregisterDreamSchedule(agentId)
     const prior = this.dutyHostStops.get(agentId) ?? Promise.resolve()
@@ -787,7 +794,7 @@ export class DutyCoordinator {
         const result = this.duties.applyRevoke([{ groupId, reason: 'superseded' }])
         stats.groups++
         stats.agents += result.agentsLost.length
-        this.onDutyChanged()
+        await this.onDutyChanged()
         const why = await this.confirmDutyTeardown(held?.agentIds ?? [], this.connectionsRequested, deadlineAt)
         if (why !== undefined) {
           stats.lapsing++

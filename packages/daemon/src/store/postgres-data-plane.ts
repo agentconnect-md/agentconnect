@@ -2,8 +2,8 @@ import { randomUUID } from 'node:crypto'
 import { Pool } from 'pg'
 import { LocalStore, type OrgForAgent } from './local-store.js'
 import { readDataPlaneConfig, type DataPlaneConfig } from './postgres-config.js'
+import { PostgresAsyncDatabase } from './postgres-async-database.js'
 import { migrateDataPlaneSchema } from './postgres-migrations.js'
-import { PostgresSyncDatabase } from './postgres-sync-database.js'
 
 /**
  * A pool member's durable state: one shared LocalStore over PostgreSQL, plus the pg pool
@@ -20,18 +20,9 @@ export class PostgresDataPlane {
 
   private constructor(
     private readonly pool: Pool,
-    config: DataPlaneConfig,
-    orgForAgent: OrgForAgent,
-    onFailure?: (error: Error) => void
+    store: LocalStore
   ) {
-    const database = new PostgresSyncDatabase(config, onFailure)
-    try {
-      this.store = new LocalStore({ database, shared: true, ownerId: randomUUID(), orgForAgent })
-      database.finishSchemaInitialization()
-    } catch (error) {
-      database.close()
-      throw error
-    }
+    this.store = store
   }
 
   static async open(
@@ -57,16 +48,20 @@ export class PostgresDataPlane {
       await pool.end().catch(() => undefined)
       throw error
     }
+    const database = await PostgresAsyncDatabase.open(config, onFailure)
     try {
-      return new PostgresDataPlane(pool, config, orgForAgent, onFailure)
+      const store = await LocalStore.open({ database, shared: true, ownerId: randomUUID(), orgForAgent })
+      await database.finishSchemaInitialization()
+      return new PostgresDataPlane(pool, store)
     } catch (error) {
+      await database.close()
       await pool.end().catch(() => undefined)
       throw error
     }
   }
 
   async close(): Promise<void> {
-    this.store.close()
+    await this.store.close()
     await this.pool.end()
   }
 }

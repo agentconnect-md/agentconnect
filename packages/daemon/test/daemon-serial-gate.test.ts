@@ -126,7 +126,7 @@ describe('P4 serial gate', () => {
     // The first claims ownership and starts its prompt; the second is queued behind it.
     await vi.waitFor(() => expect(g.started.length).toBe(1), WAIT)
     expect((daemon as any).inflight.has(key)).toBe(true)
-    expect((daemon as any).serialQueue.get(key)).toHaveLength(1)
+    await vi.waitFor(() => expect((daemon as any).serialQueue.get(key)).toHaveLength(1), WAIT)
     // Only ONE pending entry for the single live ACP session — no concurrent overwrite.
     expect((daemon as any).pending.size).toBe(1)
     expect(g.started[0]).toContain('first')
@@ -181,7 +181,7 @@ describe('P4 serial gate', () => {
     const active = (daemon as any).dispatch('bot-a', msg('100', 'active'), 'int-a')
     await vi.waitFor(() => expect(g.started).toHaveLength(1), WAIT)
     const queued = (daemon as any).dispatch('bot-a', msg('200', 'queued'), 'int-a')
-    expect((daemon as any).serialQueue.get(key)).toHaveLength(1)
+    await vi.waitFor(() => expect((daemon as any).serialQueue.get(key)).toHaveLength(1), WAIT)
 
     await seam(daemon).applyAgentUpsert({
       agentId: 'bot-a',
@@ -198,7 +198,7 @@ describe('P4 serial gate', () => {
 
     expect(g.host.cancel).not.toHaveBeenCalled()
     expect(g.host.stop).not.toHaveBeenCalled()
-    expect((daemon as any).serialQueue.get(key)).toHaveLength(1)
+    await vi.waitFor(() => expect((daemon as any).serialQueue.get(key)).toHaveLength(1), WAIT)
     expect(execFileSync('git', ['-C', workspace, 'remote', 'get-url', 'origin'], { encoding: 'utf8' }).trim()).toBe(
       'https://github.com/acme/new-name'
     )
@@ -310,7 +310,7 @@ describe('P4 serial gate', () => {
     await vi.waitFor(() => expect(g.started.length).toBe(1), WAIT)
     // Queue the head-of-line follow-up while the first turn runs.
     const p2 = (daemon as any).dispatch('bot-a', msg('200', 'queued-head'), 'int-a')
-    expect((daemon as any).serialQueue.get(key)).toHaveLength(1)
+    await vi.waitFor(() => expect((daemon as any).serialQueue.get(key)).toHaveLength(1), WAIT)
 
     // Now release the first turn. runLoop keeps ownership and picks up 'queued-head'
     // WITHOUT releasing inflight — a racing arrival can't jump ahead of it.
@@ -321,7 +321,7 @@ describe('P4 serial gate', () => {
     expect(g.started[1]).toContain('queued-head')
     const p3 = (daemon as any).dispatch('bot-a', msg('300', 'late-arrival'), 'int-a')
     // It is queued behind the running head (ownership was never released) — FIFO holds.
-    expect((daemon as any).serialQueue.get(key)).toHaveLength(1)
+    await vi.waitFor(() => expect((daemon as any).serialQueue.get(key)).toHaveLength(1), WAIT)
 
     g.releaseOne() // finish queued-head
     await p2
@@ -368,7 +368,7 @@ describe('P4 serial gate', () => {
     await vi.waitFor(() => expect(g.started.length).toBe(1), WAIT)
     const p2 = (daemon as any).dispatch('bot-a', msg('200', 'second'), 'int-a')
     const p3 = (daemon as any).dispatch('bot-a', msg('300', 'third'), 'int-a')
-    expect((daemon as any).serialQueue.get(key)).toHaveLength(2)
+    await vi.waitFor(() => expect((daemon as any).serialQueue.get(key)).toHaveLength(2), WAIT)
 
     // Release the head → its prompt throws. Fail-stop: the queue is NOT drained.
     g.releaseOne()
@@ -396,12 +396,12 @@ describe('P4 serial gate', () => {
     const queued: Promise<unknown>[] = []
     for (let i = 0; i < 10; i++)
       queued.push((daemon as any).dispatch('bot-a', msg(`${200 + i}`, `m${i}`), 'int-a').catch(() => 'rej'))
-    expect((daemon as any).serialQueue.get(key)).toHaveLength(10)
+    await vi.waitFor(() => expect((daemon as any).serialQueue.get(key)).toHaveLength(10), WAIT)
 
     const overflow = (daemon as any).dispatch('bot-a', msg('999', 'overflow'), 'int-a')
     await expect(overflow).rejects.toThrow(/queue_full|queue full/)
     // Still exactly 10 — the rejected message was never admitted.
-    expect((daemon as any).serialQueue.get(key)).toHaveLength(10)
+    await vi.waitFor(() => expect((daemon as any).serialQueue.get(key)).toHaveLength(10), WAIT)
 
     // Drain everything so the daemon can stop cleanly. Each queued turn only
     // creates its gate after the previous turn settles, so the retry loop
@@ -429,7 +429,7 @@ describe('P4 serial gate', () => {
     const p1 = (daemon as any).dispatch('bot-a', msg('100', 'first'), 'int-a')
     await vi.waitFor(() => expect(g.started.length).toBe(1), WAIT)
     const p2 = (daemon as any).dispatch('bot-a', msg('200', 'second'), 'int-a')
-    expect((daemon as any).serialQueue.get(key)).toHaveLength(1)
+    await vi.waitFor(() => expect((daemon as any).serialQueue.get(key)).toHaveLength(1), WAIT)
 
     // Shut down while the head is still blocked. The queued entry must SETTLE (be it a
     // gate-drop null once the head drains, or an explicit reject) rather than leave an
@@ -476,7 +476,7 @@ describe('P4 serial gate', () => {
       turnId,
       sink: cp.sink
     })
-    expect((daemon as any).serialQueue.get(key)).toHaveLength(1)
+    await vi.waitFor(() => expect((daemon as any).serialQueue.get(key)).toHaveLength(1), WAIT)
 
     // Pause the agent, then release the head. runLoop's pre-turn re-check gate-drops the
     // queued webchat entry (resolve(null)) — and must terminate its sink.
@@ -506,7 +506,7 @@ describe('P4 serial gate', () => {
       turnId,
       sink: cp.sink
     })
-    expect((daemon as any).serialQueue.get(key)).toHaveLength(1)
+    await vi.waitFor(() => expect((daemon as any).serialQueue.get(key)).toHaveLength(1), WAIT)
 
     // Drive settleQueuedForShutdown directly so the queued (never-run) webchat entry is
     // rejected — its sink must still get a terminal done frame carrying an error.

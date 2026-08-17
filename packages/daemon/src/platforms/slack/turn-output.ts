@@ -109,7 +109,7 @@ export interface SlackTurn {
  *  status-bar anchor (Slack owns the post-once/edit-in-place/drop-dead-ts policy;
  *  core owns the store the anchor survives in), and the logger. */
 export interface SlackTurnHost<TTurn> {
-  recordReplySegment(turn: TTurn, text: string): void
+  recordReplySegment(turn: TTurn, text: string): void | Promise<void>
   appendTranscript(row: {
     channel: string
     thread: string
@@ -117,12 +117,12 @@ export interface SlackTurnHost<TTurn> {
     sender: string
     kind: 'text'
     text: string
-  }): void
+  }): void | Promise<void | string>
   /** Persisted anchor for the session's one interactive status line. Survives the
    *  turn, so it cannot live in the per-turn state slot. */
-  getStatusBarTs(sessionKey: string): string | undefined
-  setStatusBarTs(sessionKey: string, ts: string): void
-  clearStatusBarTs(sessionKey: string): void
+  getStatusBarTs(sessionKey: string): Promise<string | undefined>
+  setStatusBarTs(sessionKey: string, ts: string): void | Promise<void>
+  clearStatusBarTs(sessionKey: string): void | Promise<void>
   /** Monotonic transcript timestamp — core owns ordering across surfaces. */
   monotonicTs(): string
   debug(message: string): void
@@ -386,7 +386,7 @@ export async function applySlackAction<TTurn extends SlackTurn>(
   action: SlackAction
 ): Promise<void> {
   if (action.kind === 'post' && action.recordOnly) {
-    host.recordReplySegment(p, action.text)
+    await host.recordReplySegment(p, action.text)
     return
   }
   // enqueueApply routes here only for non-telegram platforms, so p.conn is a Slack
@@ -397,7 +397,7 @@ export async function applySlackAction<TTurn extends SlackTurn>(
     // Headless fires have no platform-send boundary, but their agent reply should
     // still be readable in the session transcript.
     if (action.kind === 'post') {
-      host.appendTranscript({
+      await host.appendTranscript({
         channel: p.transcriptChannel,
         thread: p.statusThread,
         ts: host.monotonicTs(),
@@ -433,7 +433,7 @@ export async function applySlackAction<TTurn extends SlackTurn>(
       // disabled at the supported chat.postMessage boundary. Once that succeeds,
       // strip the footer from this turn's previous section and move the pointer.
       const ts = await postSlackReply(host, conn, p, state, action.text, trackReply)
-      host.appendTranscript({
+      await host.appendTranscript({
         channel: p.transcriptChannel,
         thread: p.statusThread,
         ts: ts ?? `local-${Date.now()}`,
@@ -559,7 +559,7 @@ export async function applySlackAction<TTurn extends SlackTurn>(
       return
     }
     case 'clear-status-bar': {
-      const ts = p.statusBarTs ?? host.getStatusBarTs(p.sessionKey)
+      const ts = p.statusBarTs ?? (await host.getStatusBarTs(p.sessionKey))
       if (!ts) return
       p.statusBarTs = ts
       const deleted = await conn.deleteMessage(p.channel, ts)
@@ -567,7 +567,7 @@ export async function applySlackAction<TTurn extends SlackTurn>(
       // means Slack rejected the cleanup and the persisted ts should be retried later.
       if (deleted !== false) {
         p.statusBarTs = undefined
-        host.clearStatusBarTs(p.sessionKey)
+        await host.clearStatusBarTs(p.sessionKey)
       }
       return
     }
@@ -575,12 +575,12 @@ export async function applySlackAction<TTurn extends SlackTurn>(
       // Session-scoped interactive status line: the first post's ts is stored on the
       // session, and every later turn updates that topmost line in place. Serialized by
       // applyChain; not recorded into the transcript (live chrome).
-      let ts = p.statusBarTs ?? host.getStatusBarTs(p.sessionKey)
+      let ts = p.statusBarTs ?? (await host.getStatusBarTs(p.sessionKey))
       if (!ts && !p.statusBarAttempted) {
         ts = await findExistingSlackStatusBarTs(conn, p)
         if (ts) {
           p.statusBarTs = ts
-          host.setStatusBarTs(p.sessionKey, ts)
+          await host.setStatusBarTs(p.sessionKey, ts)
         }
       }
       if (ts) {
@@ -595,7 +595,7 @@ export async function applySlackAction<TTurn extends SlackTurn>(
         // failure costs at most one duplicate bar; a foreign ts never heals.
         if (updated === false) {
           p.statusBarTs = undefined
-          host.clearStatusBarTs(p.sessionKey)
+          await host.clearStatusBarTs(p.sessionKey)
         }
       } else if (!p.statusBarAttempted) {
         p.statusBarAttempted = true
@@ -608,7 +608,7 @@ export async function applySlackAction<TTurn extends SlackTurn>(
         })
         if (posted) {
           p.statusBarTs = posted
-          host.setStatusBarTs(p.sessionKey, posted)
+          await host.setStatusBarTs(p.sessionKey, posted)
         }
       }
       return

@@ -91,7 +91,7 @@ export interface CollaborationGameWorld {
    *  the world can deliver peer fan-out the MOMENT an effect lands, while other
    *  turns are still open — production timing, which the daemon's turn-final
    *  context refresh depends on. */
-  attachLiveIngress?(inject: (event: EvaluationPlatformEvent) => DeliveryHandle): void
+  attachLiveIngress?(inject: (event: EvaluationPlatformEvent) => Promise<DeliveryHandle>): void
   /** Handles for live-injected deliveries since the last drain. */
   drainLiveHandles?(): DeliveryHandle[]
   /** §8.1 decision log: the wave's composition and each admission outcome. */
@@ -219,8 +219,8 @@ export class CollaborationGameRunner {
           break
         }
         // All events pass admission before any completion is awaited.
-        const handles = harness.injectConcurrent(wave.platformEvents)
-        const refereeHandles = wave.refereeEvents.map((event) => harness.deliverReferee(event))
+        const handles = await harness.injectConcurrent(wave.platformEvents)
+        const refereeHandles = await Promise.all(wave.refereeEvents.map((event) => harness.deliverReferee(event)))
         const all = [...handles, ...refereeHandles]
         const admissions = await beforeDeadline(deadlineMs, `wave ${steps} admission`, () =>
           Promise.all(all.map((handle) => handle.admission))

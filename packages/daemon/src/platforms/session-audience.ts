@@ -21,7 +21,7 @@ export interface ConversationAudienceHost {
   /** The live connection's workspace/team id, where the platform exposes one. */
   liveWorkspaceId(integrationId: string): string | undefined
   /** The integration's durable tenant scope (transport-identity strategy). */
-  tenantScope(integration: { id: string; platform: string }): string | undefined
+  tenantScope(integration: { id: string; platform: string }): Promise<string | undefined>
 }
 
 export interface ConversationAudience {
@@ -35,7 +35,7 @@ export interface ConversationAudience {
     host: ConversationAudienceHost,
     integrationId: string | undefined,
     integration: { id: string; platform: string } | undefined
-  ): string | undefined
+  ): Promise<string | undefined>
 }
 
 const AUDIENCES = new Map<string, ConversationAudience>([
@@ -44,7 +44,7 @@ const AUDIENCES = new Map<string, ConversationAudience>([
     {
       platform: 'slack',
       applies: (msg) => !msg.isDm,
-      realmKey: (host, integrationId) => (integrationId ? host.liveWorkspaceId(integrationId) : undefined)
+      realmKey: async (host, integrationId) => (integrationId ? host.liveWorkspaceId(integrationId) : undefined)
     }
   ],
   [
@@ -52,7 +52,8 @@ const AUDIENCES = new Map<string, ConversationAudience>([
     {
       platform: 'feishu',
       applies: () => true,
-      realmKey: (host, _integrationId, integration) => (integration ? host.tenantScope(integration) : undefined)
+      realmKey: async (host, _integrationId, integration) =>
+        integration ? await host.tenantScope(integration) : undefined
     }
   ]
 ])

@@ -128,9 +128,9 @@ describe('reconcile --once', () => {
       env: { [ORPHAN_DELETE_ENV]: 'true', [STORE_ORPHAN_DELETE_ENV]: 'true' },
       openStore: async () => ({
         store: {
-          listRetentionCandidates: (rule: StoreRetentionRule) =>
+          listRetentionCandidates: async (rule: StoreRetentionRule) =>
             rule.id === 'session-purge' ? [candidate(rule, GONE)] : [],
-          deleteRetentionRow: () => {
+          deleteRetentionRow: async () => {
             throw new Error('deadlock detected')
           }
         },
@@ -279,8 +279,9 @@ const candidate = (rule: StoreRetentionRule, agentId: string): StoreRetentionCan
 /** A store holding exactly the named rules' rows, recording what the sweep deleted. */
 function storeOf(rows: Record<string, string>, deleted: string[]) {
   return {
-    listRetentionCandidates: (rule: StoreRetentionRule) => (rows[rule.id] ? [candidate(rule, rows[rule.id]!)] : []),
-    deleteRetentionRow: (rule: StoreRetentionRule) => {
+    listRetentionCandidates: async (rule: StoreRetentionRule) =>
+      rows[rule.id] ? [candidate(rule, rows[rule.id]!)] : [],
+    deleteRetentionRow: async (rule: StoreRetentionRule) => {
       deleted.push(`row-${rule.id}`)
       return true
     }

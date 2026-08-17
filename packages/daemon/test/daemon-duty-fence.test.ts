@@ -197,7 +197,7 @@ describe('the duty self-fence', () => {
   it('is a revoke, not a removal — workspace, agent registry, and sessions survive', async () => {
     const { daemon, root } = await boot()
     const store = (daemon as any).store
-    store.upsertSession({
+    await store.upsertSession({
       key: `slack:C1:T1:${AGENT}`,
       agentId: AGENT,
       platform: 'slack',
@@ -216,8 +216,8 @@ describe('the duty self-fence', () => {
     expect((daemon as any).agentRemovalPending(AGENT)).toBe(false)
     expect(existsSync(join(root, 'agents', 'scout'))).toBe(true)
     // No session purge rides a fence: the duty moved, the history did not.
-    expect(store.listSessions(AGENT)).toHaveLength(1)
-    expect(store.getSession(`slack:C1:T1:${AGENT}`)).toBeDefined()
+    expect(await store.listSessions(AGENT)).toHaveLength(1)
+    expect(await store.getSession(`slack:C1:T1:${AGENT}`)).toBeDefined()
     await daemon.stop()
   })
 

@@ -55,7 +55,9 @@ export interface GithubCommentAttribution {
   iconUrl?: string
 }
 
-export type GithubCommentAttributionSource = GithubCommentAttribution | (() => GithubCommentAttribution | undefined)
+export type GithubCommentAttributionSource =
+  | GithubCommentAttribution
+  | (() => GithubCommentAttribution | undefined | Promise<GithubCommentAttribution | undefined>)
 
 const DEFAULT_FINALIZE_TIMEOUT_MS = 15_000
 /** GitHub caps comment bodies at 65536 chars — truncate with a marker well below. */
@@ -416,7 +418,7 @@ export class GithubFinalPoster {
   private async post(text: string, deadlineAt: number): Promise<GithubPublishedComment | undefined> {
     // Resolve dynamic attribution exactly once, immediately before the public write.
     // A session runtime may only expose its final model after the prompt completes.
-    const attribution = typeof this.attribution === 'function' ? this.attribution() : this.attribution
+    const attribution = typeof this.attribution === 'function' ? await this.attribution() : this.attribution
     const body = this.render(text, githubAttributionFooter(attribution))
     const doFetch = this.deps.fetchImpl ?? fetch
     const commentPath = this.reviewThreadRootCommentId

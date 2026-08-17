@@ -60,20 +60,20 @@ export function createDreamReader(runner: DreamRunner): DreamReader {
     },
 
     async cancel(req) {
-      return { dream: runner.cancel(req.agentId, req.dreamId) }
+      return { dream: await runner.cancel(req.agentId, req.dreamId) }
     },
 
     async list(req) {
       return {
         agentId: req.agentId,
         dreams: req.pendingSkills
-          ? runner.listPendingSkills(req.agentId, req.limit)
-          : runner.list(req.agentId, req.limit)
+          ? await runner.listPendingSkills(req.agentId, req.limit)
+          : await runner.list(req.agentId, req.limit)
       }
     },
 
     async get(req) {
-      return { dream: runner.get(req.agentId, req.dreamId) }
+      return { dream: await runner.get(req.agentId, req.dreamId) }
     },
 
     async adopt(req) {

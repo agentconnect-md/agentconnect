@@ -116,9 +116,9 @@ const ownerReq = (orchestrationId: string, over: Partial<OrchestrationOwnerReq> 
 })
 
 /** Simulate a worker reporting back into the main's session via the §3.3 hook. */
-function report(daemon: any, correlationId: string, callFrom: string, text = 'result text') {
+async function report(daemon: any, correlationId: string, callFrom: string, text = 'result text') {
   const key = sessionKey('slack', 'C1', 'T1', 'main')
-  ;(daemon as any).recordWorkerReport(key, { callFrom, correlationId, hopCount: 1, deliveryId: 'd' }, text)
+  await await (daemon as any).recordWorkerReport(key, { callFrom, correlationId, hopCount: 1, deliveryId: 'd' }, text)
 }
 
 describe('startOrchestration: record-first + per-subtask delivery', () => {
@@ -134,7 +134,7 @@ describe('startOrchestration: record-first + per-subtask delivery', () => {
       if (n++ === 0) {
         // the orchestrationId is embedded in the correlationId
         const oid = req.correlationId.slice(0, req.correlationId.lastIndexOf('.'))
-        sawRecordAtFirstDelivery = store(daemon).getSubtasks(oid)
+        sawRecordAtFirstDelivery = await store(daemon).getSubtasks(oid)
       }
       return orig(req)
     })
@@ -147,7 +147,7 @@ describe('startOrchestration: record-first + per-subtask delivery', () => {
     const statuses = sawRecordAtFirstDelivery!.map((s: any) => s.status).sort()
     expect(statuses).toEqual(['pending', 'sending'])
     // After the run: both delivered.
-    const subs = store(daemon).getSubtasks(res.orchestrationId)
+    const subs = await store(daemon).getSubtasks(res.orchestrationId)
     expect(subs.map((s: any) => s.status)).toEqual(['delivered', 'delivered'])
     await daemon.stop()
   })
@@ -159,7 +159,7 @@ describe('startOrchestration: record-first + per-subtask delivery', () => {
     expect(res.delivered).toEqual([`${res.orchestrationId}.0`])
     expect(res.failed).toHaveLength(1)
     expect(res.failed[0].correlationId).toBe(`${res.orchestrationId}.1`)
-    const subs = store(daemon).getSubtasks(res.orchestrationId)
+    const subs = await store(daemon).getSubtasks(res.orchestrationId)
     expect(subs[0].status).toBe('delivered')
     expect(subs[1].status).toBe('worker_error')
     await daemon.stop()
@@ -169,7 +169,7 @@ describe('startOrchestration: record-first + per-subtask delivery', () => {
     const root = scaffold(['main', 'wA', 'wB'])
     const { daemon } = await boot(root)
     const res = await (daemon as any).startOrchestration(startReq({ deadlineMs: 30_000 }))
-    const orch = store(daemon).getOrchestration(res.orchestrationId)
+    const orch = await store(daemon).getOrchestration(res.orchestrationId)
     expect(orch.deadline).toBeGreaterThan(Date.now())
     expect((daemon as any).orchestrationDeadlines.has(res.orchestrationId)).toBe(true)
     await daemon.stop()
@@ -180,7 +180,7 @@ describe('startOrchestration: record-first + per-subtask delivery', () => {
     const { daemon } = await boot(root)
     const res = await (daemon as any).startOrchestration(startReq({ deadlineMs: 30_000 }))
     expect(res.delivered).toHaveLength(0)
-    const orch = store(daemon).getOrchestration(res.orchestrationId)
+    const orch = await store(daemon).getOrchestration(res.orchestrationId)
     expect(orch.deadline).toBeNull()
     expect((daemon as any).orchestrationDeadlines.has(res.orchestrationId)).toBe(false)
     await daemon.stop()
@@ -192,8 +192,8 @@ describe('correlation safety (§3.3): worker reports', () => {
     const root = scaffold(['main', 'wA', 'wB'])
     const { daemon } = await boot(root)
     const res = await (daemon as any).startOrchestration(startReq())
-    report(daemon, `${res.orchestrationId}.0`, 'wA', 'A is done')
-    const subs = store(daemon).getSubtasks(res.orchestrationId)
+    await report(daemon, `${res.orchestrationId}.0`, 'wA', 'A is done')
+    const subs = await store(daemon).getSubtasks(res.orchestrationId)
     expect(subs[0].status).toBe('succeeded')
     expect(subs[0].result).toBe('A is done')
     expect(subs[1].status).toBe('delivered') // untouched
@@ -205,8 +205,8 @@ describe('correlation safety (§3.3): worker reports', () => {
     const { daemon } = await boot(root)
     const res = await (daemon as any).startOrchestration(startReq())
     // wB claims subtask .0 (tasked to wA) — dropped.
-    report(daemon, `${res.orchestrationId}.0`, 'wB', 'forged')
-    expect(store(daemon).getSubtasks(res.orchestrationId)[0].status).toBe('delivered')
+    await report(daemon, `${res.orchestrationId}.0`, 'wB', 'forged')
+    expect((await store(daemon).getSubtasks(res.orchestrationId))[0].status).toBe('delivered')
     await daemon.stop()
   })
 
@@ -215,8 +215,8 @@ describe('correlation safety (§3.3): worker reports', () => {
     const { daemon } = await boot(root)
     const res = await (daemon as any).startOrchestration(startReq())
     // Unknown orchestrationId prefix.
-    report(daemon, `00000000-0000-0000-0000-000000000000.0`, 'wA', 'x')
-    expect(store(daemon).getSubtasks(res.orchestrationId)[0].status).toBe('delivered')
+    await report(daemon, `00000000-0000-0000-0000-000000000000.0`, 'wA', 'x')
+    expect((await store(daemon).getSubtasks(res.orchestrationId))[0].status).toBe('delivered')
     await daemon.stop()
   })
 
@@ -226,12 +226,12 @@ describe('correlation safety (§3.3): worker reports', () => {
     const res = await (daemon as any).startOrchestration(startReq())
     // Report arrives keyed to a different thread → session mismatch → dropped.
     const otherKey = sessionKey('slack', 'C1', 'OTHER', 'main')
-    ;(daemon as any).recordWorkerReport(
+    await (daemon as any).recordWorkerReport(
       otherKey,
       { callFrom: 'wA', correlationId: `${res.orchestrationId}.0`, hopCount: 1, deliveryId: 'd' },
       'x'
     )
-    expect(store(daemon).getSubtasks(res.orchestrationId)[0].status).toBe('delivered')
+    expect((await store(daemon).getSubtasks(res.orchestrationId))[0].status).toBe('delivered')
     await daemon.stop()
   })
 
@@ -239,9 +239,9 @@ describe('correlation safety (§3.3): worker reports', () => {
     const root = scaffold(['main', 'wA', 'wB'])
     const { daemon } = await boot(root)
     const res = await (daemon as any).startOrchestration(startReq())
-    report(daemon, `${res.orchestrationId}.0`, 'wA', 'first')
-    report(daemon, `${res.orchestrationId}.0`, 'wA', 'second') // duplicate → no-op
-    const sub = store(daemon).getSubtasks(res.orchestrationId)[0]
+    await report(daemon, `${res.orchestrationId}.0`, 'wA', 'first')
+    await report(daemon, `${res.orchestrationId}.0`, 'wA', 'second') // duplicate → no-op
+    const sub = (await store(daemon).getSubtasks(res.orchestrationId))[0]
     expect(sub.status).toBe('succeeded')
     expect(sub.result).toBe('first')
     await daemon.stop()
@@ -253,9 +253,9 @@ describe('completion + timeout', () => {
     const root = scaffold(['main', 'wA', 'wB'])
     const { daemon } = await boot(root)
     const res = await (daemon as any).startOrchestration(startReq())
-    report(daemon, `${res.orchestrationId}.0`, 'wA')
-    report(daemon, `${res.orchestrationId}.1`, 'wB')
-    const subs = store(daemon).getSubtasks(res.orchestrationId)
+    await report(daemon, `${res.orchestrationId}.0`, 'wA')
+    await report(daemon, `${res.orchestrationId}.1`, 'wB')
+    const subs = await store(daemon).getSubtasks(res.orchestrationId)
     expect(subs.every((s: any) => s.status === 'succeeded')).toBe(true)
     await daemon.stop()
   })
@@ -264,7 +264,7 @@ describe('completion + timeout', () => {
     const root = scaffold(['main', 'wA']) // wB not local
     const { daemon } = await boot(root)
     const res = await (daemon as any).startOrchestration(startReq())
-    const subs = store(daemon).getSubtasks(res.orchestrationId)
+    const subs = await store(daemon).getSubtasks(res.orchestrationId)
     expect(subs[1].status).toBe('worker_error')
     expect(subs[1].deliveryReason).toBe('not_local')
     await daemon.stop()
@@ -274,10 +274,10 @@ describe('completion + timeout', () => {
     const root = scaffold(['main', 'wA', 'wB'])
     const { daemon, calls } = await boot(root)
     const res = await (daemon as any).startOrchestration(startReq({ deadlineMs: 30_000 }))
-    report(daemon, `${res.orchestrationId}.0`, 'wA') // only A reported
+    await report(daemon, `${res.orchestrationId}.0`, 'wA') // only A reported
     calls.length = 0
-    ;(daemon as any).fireOrchestrationDeadline(res.orchestrationId)
-    const subs = store(daemon).getSubtasks(res.orchestrationId)
+    await (daemon as any).fireOrchestrationDeadline(res.orchestrationId)
+    const subs = await store(daemon).getSubtasks(res.orchestrationId)
     expect(subs[0].status).toBe('succeeded') // reported ones untouched
     expect(subs[1].status).toBe('timed_out') // unreported → timed_out
     // The main's session was woken by a DIRECT dispatch (agent source), not a platform post.
@@ -293,9 +293,9 @@ describe('completion + timeout', () => {
     const root = scaffold(['main', 'wA', 'wB'])
     const { daemon } = await boot(root)
     const res = await (daemon as any).startOrchestration(startReq({ deadlineMs: 30_000 }))
-    ;(daemon as any).fireOrchestrationDeadline(res.orchestrationId)
-    report(daemon, `${res.orchestrationId}.1`, 'wB', 'late but done')
-    const sub = store(daemon).getSubtasks(res.orchestrationId)[1]
+    await (daemon as any).fireOrchestrationDeadline(res.orchestrationId)
+    await report(daemon, `${res.orchestrationId}.1`, 'wB', 'late but done')
+    const sub = (await store(daemon).getSubtasks(res.orchestrationId))[1]
     expect(sub.status).toBe('succeeded')
     expect(sub.result).toBe('late but done')
     await daemon.stop()
@@ -307,11 +307,15 @@ describe('getOrchestration / cancelOrchestration owner checks', () => {
     const root = scaffold(['main', 'wA', 'wB'])
     const { daemon } = await boot(root)
     const res = await (daemon as any).startOrchestration(startReq())
-    expect((daemon as any).getOrchestrationForOwner(ownerReq(res.orchestrationId))).not.toBeNull()
+    expect(await (daemon as any).getOrchestrationForOwner(ownerReq(res.orchestrationId))).not.toBeNull()
     // wrong agent
-    expect((daemon as any).getOrchestrationForOwner(ownerReq(res.orchestrationId, { mainAgentId: 'wA' }))).toBeNull()
+    expect(
+      await (daemon as any).getOrchestrationForOwner(ownerReq(res.orchestrationId, { mainAgentId: 'wA' }))
+    ).toBeNull()
     // wrong session (thread)
-    expect((daemon as any).getOrchestrationForOwner(ownerReq(res.orchestrationId, { thread: 'OTHER' }))).toBeNull()
+    expect(
+      await (daemon as any).getOrchestrationForOwner(ownerReq(res.orchestrationId, { thread: 'OTHER' }))
+    ).toBeNull()
     await daemon.stop()
   })
 
@@ -320,20 +324,20 @@ describe('getOrchestration / cancelOrchestration owner checks', () => {
     const { daemon } = await boot(root)
     const res = await (daemon as any).startOrchestration(startReq({ deadlineMs: 30_000 }))
     // non-owner cannot cancel
-    expect((daemon as any).cancelOrchestrationForOwner(ownerReq(res.orchestrationId, { mainAgentId: 'wA' }))).toBe(
-      false
-    )
+    expect(
+      await (daemon as any).cancelOrchestrationForOwner(ownerReq(res.orchestrationId, { mainAgentId: 'wA' }))
+    ).toBe(false)
     // owner cancels
-    expect((daemon as any).cancelOrchestrationForOwner(ownerReq(res.orchestrationId))).toBe(true)
-    const orch = store(daemon).getOrchestration(res.orchestrationId)
+    expect(await (daemon as any).cancelOrchestrationForOwner(ownerReq(res.orchestrationId))).toBe(true)
+    const orch = await store(daemon).getOrchestration(res.orchestrationId)
     expect(orch.status).toBe('cancelled') // tombstone, not deleted
     expect(orch.deadline).toBeNull()
     expect((daemon as any).orchestrationDeadlines.has(res.orchestrationId)).toBe(false)
     // idempotent second cancel
-    expect((daemon as any).cancelOrchestrationForOwner(ownerReq(res.orchestrationId))).toBe(true)
+    expect(await (daemon as any).cancelOrchestrationForOwner(ownerReq(res.orchestrationId))).toBe(true)
     // a late report after cancellation is ignored (orchestration not active)
-    report(daemon, `${res.orchestrationId}.0`, 'wA', 'too late')
-    expect(store(daemon).getSubtasks(res.orchestrationId)[0].status).toBe('delivered')
+    await report(daemon, `${res.orchestrationId}.0`, 'wA', 'too late')
+    expect((await store(daemon).getSubtasks(res.orchestrationId))[0].status).toBe('delivered')
     await daemon.stop()
   })
 })
@@ -373,10 +377,10 @@ describe('end-to-end: worker reply auto-closes the loop (§6.7 auto-inherit)', (
     // (3) main's turn processes the reply: dispatchOne's §3.3 hook fires recordWorkerReport
     // with the reply's callMeta. Drive that step exactly as dispatchOne does.
     const mainKey = sessionKey('slack', 'C1', 'T1', 'main')
-    ;(daemon as any).recordWorkerReport(mainKey, replyToMain.callMeta, replyToMain.msg.text)
+    await (daemon as any).recordWorkerReport(mainKey, replyToMain.callMeta, replyToMain.msg.text)
 
     // (4) getOrchestration shows the subtask SUCCEEDED — the loop closed without a timeout.
-    const subs = store(daemon).getSubtasks(res.orchestrationId)
+    const subs = await store(daemon).getSubtasks(res.orchestrationId)
     expect(subs[0].status).toBe('succeeded')
     expect(subs[0].result).toContain('A finished')
     await daemon.stop()
@@ -438,41 +442,39 @@ describe('pool duty gate on deadlines', () => {
 
   it('only the duty holder arms and fires; a stale timer on a non-holder is refused', async () => {
     const { a, b, stop } = await bootPool()
-    hold(a.daemon)
+    await hold(a.daemon)
     const res = await (a.daemon as any).startOrchestration(startReq({ deadlineMs: 30_000 }))
-    ;(b.daemon as any).syncOrchestrationDeadlines()
+    await (b.daemon as any).syncOrchestrationDeadlines()
     expect(armed(a.daemon, res.orchestrationId)).toBe(true)
     expect(armed(b.daemon, res.orchestrationId)).toBe(false)
     a.calls.length = 0
     b.calls.length = 0
     // The non-holder's timer fires first (the pool has no ordering) — the duty gate drops it.
-    ;(b.daemon as any).fireOrchestrationDeadline(res.orchestrationId)
+    await (b.daemon as any).fireOrchestrationDeadline(res.orchestrationId)
     expect(b.calls).toHaveLength(0)
-    expect(store(b.daemon).getOrchestration(res.orchestrationId).deadline).not.toBeNull()
-    ;(a.daemon as any).fireOrchestrationDeadline(res.orchestrationId)
+    expect((await store(b.daemon).getOrchestration(res.orchestrationId)).deadline).not.toBeNull()
+    await (a.daemon as any).fireOrchestrationDeadline(res.orchestrationId)
     expect(a.calls.map((c) => c.agentId)).toEqual(['main'])
-    expect(store(a.daemon).getOrchestration(res.orchestrationId).deadline).toBeNull()
-    expect(
-      store(a.daemon)
-        .getSubtasks(res.orchestrationId)
-        .every((s: any) => s.status === 'timed_out')
-    ).toBe(true)
+    expect((await store(a.daemon).getOrchestration(res.orchestrationId)).deadline).toBeNull()
+    expect((await store(a.daemon).getSubtasks(res.orchestrationId)).every((s: any) => s.status === 'timed_out')).toBe(
+      true
+    )
     await stop()
   })
 
   it('a deadline armed by one member fires on the member the duty moved to', async () => {
     const { a, b, stop } = await bootPool()
-    hold(a.daemon)
+    await hold(a.daemon)
     const res = await (a.daemon as any).startOrchestration(startReq({ deadlineMs: 30_000 }))
     expect(armed(a.daemon, res.orchestrationId)).toBe(true)
-    drop(a.daemon)
-    hold(b.daemon)
+    await drop(a.daemon)
+    await hold(b.daemon)
     expect(armed(a.daemon, res.orchestrationId)).toBe(false)
     expect(armed(b.daemon, res.orchestrationId)).toBe(true)
     a.calls.length = 0
     b.calls.length = 0
-    ;(a.daemon as any).fireOrchestrationDeadline(res.orchestrationId)
-    ;(b.daemon as any).fireOrchestrationDeadline(res.orchestrationId)
+    await (a.daemon as any).fireOrchestrationDeadline(res.orchestrationId)
+    await (b.daemon as any).fireOrchestrationDeadline(res.orchestrationId)
     expect(a.calls).toHaveLength(0)
     expect(b.calls.map((c) => c.agentId)).toEqual(['main'])
     await stop()
@@ -480,17 +482,17 @@ describe('pool duty gate on deadlines', () => {
 
   it('a fire during a handoff, when both members still hold the duty, wakes the main once', async () => {
     const { a, b, stop } = await bootPool()
-    hold(a.daemon)
-    hold(b.daemon)
+    await hold(a.daemon)
+    await hold(b.daemon)
     const res = await (a.daemon as any).startOrchestration(startReq({ deadlineMs: 30_000 }))
-    ;(b.daemon as any).syncOrchestrationDeadlines()
+    await (b.daemon as any).syncOrchestrationDeadlines()
     expect(armed(b.daemon, res.orchestrationId)).toBe(true)
     a.calls.length = 0
     b.calls.length = 0
-    ;(a.daemon as any).fireOrchestrationDeadline(res.orchestrationId)
-    ;(b.daemon as any).fireOrchestrationDeadline(res.orchestrationId)
+    await (a.daemon as any).fireOrchestrationDeadline(res.orchestrationId)
+    await (b.daemon as any).fireOrchestrationDeadline(res.orchestrationId)
     expect(a.calls.length + b.calls.length).toBe(1)
-    const orch = store(a.daemon).getOrchestration(res.orchestrationId)
+    const orch = await store(a.daemon).getOrchestration(res.orchestrationId)
     expect(orch.status).toBe('active')
     expect(orch.deadline).toBeNull()
     await stop()
@@ -502,7 +504,7 @@ describe('pool duty gate on deadlines', () => {
     ;(daemon as any).cpClient = { organizationScope: () => 'connection', stop: async () => {} }
     const res = await (daemon as any).startOrchestration(startReq({ deadlineMs: 30_000 }))
     calls.length = 0
-    ;(daemon as any).fireOrchestrationDeadline(res.orchestrationId)
+    await (daemon as any).fireOrchestrationDeadline(res.orchestrationId)
     expect(calls.map((c) => c.agentId)).toEqual(['main'])
     await daemon.stop()
   })

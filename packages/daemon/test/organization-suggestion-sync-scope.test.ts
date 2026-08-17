@@ -55,10 +55,10 @@ function hostFactory() {
   })
 }
 
-function seedSuggestion(daemon: Daemon, agentId: string, candidateId: string): void {
+async function seedSuggestion(daemon: Daemon, agentId: string, candidateId: string): Promise<void> {
   const dreamId = `drm-${agentId}`
   const body = `{"kind":"knowledge","content":"body for ${agentId}"}`
-  ;(daemon as any).store.insertDream({
+  await (daemon as any).store.insertDream({
     dreamId,
     agentId,
     status: 'superseded',
@@ -100,8 +100,8 @@ describe('organization suggestion sync scope', () => {
   it('sends one org-scoped frame per org on an install-wide connection', async () => {
     const daemon = new Daemon({ root: scaffold(), hostFactory: hostFactory() as never })
     await daemon.start()
-    seedSuggestion(daemon, AGENT_A, '11111111-1111-4111-8111-111111111111')
-    seedSuggestion(daemon, AGENT_B, '22222222-2222-4222-8222-222222222222')
+    await seedSuggestion(daemon, AGENT_A, '11111111-1111-4111-8111-111111111111')
+    await seedSuggestion(daemon, AGENT_B, '22222222-2222-4222-8222-222222222222')
     const orgs = new Map([
       [AGENT_A, ORG_A],
       [AGENT_B, ORG_B]
@@ -133,7 +133,7 @@ describe('organization suggestion sync scope', () => {
   it('sends nothing unscoped on an install-wide connection with no resolvable org', async () => {
     const daemon = new Daemon({ root: scaffold(), hostFactory: hostFactory() as never })
     await daemon.start()
-    seedSuggestion(daemon, AGENT_A, '11111111-1111-4111-8111-111111111111')
+    await seedSuggestion(daemon, AGENT_A, '11111111-1111-4111-8111-111111111111')
     ;(daemon as any).cpAgents = { orgForAgent: () => undefined, organizationIds: () => [] }
     const { sync, client } = fakeClient('frame')
     ;(daemon as any).cpClient = client
@@ -148,8 +148,8 @@ describe('organization suggestion sync scope', () => {
   it('keeps a single unscoped frame on a connection-scoped daemon', async () => {
     const daemon = new Daemon({ root: scaffold(), hostFactory: hostFactory() as never })
     await daemon.start()
-    seedSuggestion(daemon, AGENT_A, '11111111-1111-4111-8111-111111111111')
-    seedSuggestion(daemon, AGENT_B, '22222222-2222-4222-8222-222222222222')
+    await seedSuggestion(daemon, AGENT_A, '11111111-1111-4111-8111-111111111111')
+    await seedSuggestion(daemon, AGENT_B, '22222222-2222-4222-8222-222222222222')
     ;(daemon as any).cpAgents = { orgForAgent: () => undefined, organizationIds: () => [] }
     const { sync, client } = fakeClient('connection')
     ;(daemon as any).cpClient = client
@@ -166,8 +166,8 @@ describe('organization suggestion sync scope', () => {
   it('keeps every other org replaying when one org is refused', async () => {
     const daemon = new Daemon({ root: scaffold(), hostFactory: hostFactory() as never })
     await daemon.start()
-    seedSuggestion(daemon, AGENT_A, '11111111-1111-4111-8111-111111111111')
-    seedSuggestion(daemon, AGENT_B, '22222222-2222-4222-8222-222222222222')
+    await seedSuggestion(daemon, AGENT_A, '11111111-1111-4111-8111-111111111111')
+    await seedSuggestion(daemon, AGENT_B, '22222222-2222-4222-8222-222222222222')
     const orgs = new Map([
       [AGENT_A, ORG_A],
       [AGENT_B, ORG_B]

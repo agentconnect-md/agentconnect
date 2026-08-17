@@ -125,15 +125,17 @@ const channelMsg = (ts: string, text: string) => ({ ...dm(ts, text), isDm: false
 /** A daemon-originated Slack turn used by trusted A2A inheritance tests. */
 const agentMsg = (ts: string, text: string) => ({ ...channelMsg(ts, text), source: 'agent' as const })
 
-function transcript(daemon: Daemon): TranscriptEntry[] {
-  return (daemon as any).store.transcriptSince(TRANSCRIPT_CHANNEL, 'T1', null)
+async function transcript(daemon: Daemon): Promise<TranscriptEntry[]> {
+  return await (daemon as any).store.transcriptSince(TRANSCRIPT_CHANNEL, 'T1', null)
 }
 
 /** Full activity log (all kinds), insertion order — what the Web UI reads. */
-function activity(daemon: Daemon): { kind: string; sender: string; text: string }[] {
-  return (daemon as any).store
-    .threadTranscript(TRANSCRIPT_CHANNEL, 'T1')
-    .map((r: any) => ({ kind: r.kind, sender: r.sender, text: r.text }))
+async function activity(daemon: Daemon): Promise<{ kind: string; sender: string; text: string }[]> {
+  return (await (daemon as any).store.threadTranscript(TRANSCRIPT_CHANNEL, 'T1')).map((r: any) => ({
+    kind: r.kind,
+    sender: r.sender,
+    text: r.text
+  }))
 }
 
 function classicFooter(botName = 'bot-a', runtime = 'claude', model = 'default') {
@@ -171,7 +173,7 @@ describe('Daemon transcript records the agent reply', () => {
 
     await (daemon as any).dispatch('bot-a', dm('100', 'question?'), 'int-a')
 
-    const rows = transcript(daemon).map((r) => ({ ts: r.ts, sender: r.sender, kind: r.kind, text: r.text }))
+    const rows = (await transcript(daemon)).map((r) => ({ ts: r.ts, sender: r.sender, kind: r.kind, text: r.text }))
     // inbound user message + the agent's reply
     expect(rows).toEqual([
       { ts: '100', sender: 'U1', kind: 'text', text: 'question?' },
@@ -190,7 +192,7 @@ describe('Daemon transcript records the agent reply', () => {
     await daemon.start()
     const conn = makeRoutable(daemon)
     await (daemon as any).dispatch('bot-a', dm('100', 'private question'), 'int-a')
-    expect((daemon as any).store.applyCpCaptureGate('bot-a', 'acp-1', false, 1)).toBe('applied')
+    expect(await (daemon as any).store.applyCpCaptureGate('bot-a', 'acp-1', false, 1)).toBe('applied')
 
     let releaseDelivery!: () => void
     const deliveryBlocked = new Promise<void>((resolve) => (releaseDelivery = resolve))
@@ -241,7 +243,7 @@ describe('Daemon transcript records the agent reply', () => {
 
     await (daemon as any).dispatch('bot-a', channelMsg('100', 'question?'), 'int-a')
 
-    expect((daemon as any).store.isCaptureExcluded('bot-a', 'acp-1')).toBe(false)
+    expect(await (daemon as any).store.isCaptureExcluded('bot-a', 'acp-1')).toBe(false)
     await vi.waitFor(() => expect(recordTurn).toHaveBeenCalledOnce(), WAIT)
     await daemon.stop()
   }, 15_000)
@@ -321,7 +323,7 @@ describe('Daemon transcript records the agent reply', () => {
 
     await (daemon as any).dispatch('bot-a', dm('100', 'question?'), 'int-a')
 
-    expect((daemon as any).store.isCaptureExcluded('bot-a', 'acp-1')).toBe(true)
+    expect(await (daemon as any).store.isCaptureExcluded('bot-a', 'acp-1')).toBe(true)
     expect(recordTurn).not.toHaveBeenCalled()
     await daemon.stop()
   }, 15_000)
@@ -387,7 +389,7 @@ describe('Daemon transcript records the agent reply', () => {
     })
     expect(conn.updateBlocks.mock.calls.some((call) => call[1] === 'reply-1')).toBe(false)
     // Only the reply, never the footer chrome, is in the transcript.
-    const botRows = transcript(daemon).filter((r) => r.sender === 'bot-a')
+    const botRows = (await transcript(daemon)).filter((r) => r.sender === 'bot-a')
     expect(botRows.map((r) => r.text)).toEqual(['the answer'])
     await daemon.stop()
   }, 15_000)
@@ -562,7 +564,7 @@ describe('Daemon transcript records the agent reply', () => {
     )
     expect(conn.updateBlocks.mock.calls.some((call) => call[1] === `reply-${replyPosts.length}`)).toBe(false)
     expect(
-      transcript(daemon)
+      (await transcript(daemon))
         .filter((row) => row.sender === 'bot-a')
         .map((row) => row.text)
         .join('')
@@ -863,7 +865,7 @@ describe('Daemon transcript captures the full activity log (mode-independent)', 
 
       await (daemon as any).dispatch('bot-a', dm('100', 'go'), 'int-a')
 
-      expect(activity(daemon)).toEqual([
+      expect(await activity(daemon)).toEqual([
         { kind: 'text', sender: 'U1', text: 'go' },
         { kind: 'reasoning', sender: 'bot-a', text: 'let me think about this problem' },
         { kind: 'tool', sender: 'bot-a', text: 'Read file.ts' },
@@ -883,7 +885,7 @@ describe('Daemon transcript captures the full activity log (mode-independent)', 
 
     // A *different* agent replaying the thread sees conversational text only — never
     // bot-a's tool calls or reasoning fed back as "context you may have missed".
-    const gap = (daemon as any).store.transcriptSince(TRANSCRIPT_CHANNEL, 'T1', null)
+    const gap = await (daemon as any).store.transcriptSince(TRANSCRIPT_CHANNEL, 'T1', null)
     expect(gap.every((r: TranscriptEntry) => r.kind === 'text')).toBe(true)
     expect(gap.map((r: TranscriptEntry) => r.text)).toEqual(['go', 'here is the answer'])
     await daemon.stop()
@@ -892,7 +894,7 @@ describe('Daemon transcript captures the full activity log (mode-independent)', 
   it('masks write-only secret values out of every recorded and delivered surface', async () => {
     // The agent echoes the secret in its reply text, tool title, rawInput, and
     // rawOutput (the classic `env | grep` case) — none of them may reach the
-    // transcript (console "View detail") or the Slack post in plaintext.
+    // await transcript (console "View detail") or the Slack post in plaintext.
     const { factory } = streamingHost([
       {
         sessionUpdate: 'tool_call',
@@ -921,7 +923,7 @@ describe('Daemon transcript captures the full activity log (mode-independent)', 
 
     await (daemon as any).dispatch('bot-a', dm('100', 'is TestSA in the env?'), 'int-a')
 
-    const rows = (daemon as any).store.threadTranscript(TRANSCRIPT_CHANNEL, 'T1')
+    const rows = await (daemon as any).store.threadTranscript(TRANSCRIPT_CHANNEL, 'T1')
     expect(JSON.stringify(rows)).not.toContain('s3cret-value')
     const reply = rows.find((r: any) => r.kind === 'text' && r.sender === 'bot-a')
     expect(reply.text).toBe('yes, TestSA is set to [secret:TestSA]')
@@ -955,7 +957,7 @@ describe('Daemon transcript captures the full activity log (mode-independent)', 
 
     await (daemon as any).dispatch('bot-a', dm('100', 'go'), 'int-a')
 
-    const tools = activity(daemon).filter((r) => r.kind === 'tool')
+    const tools = (await activity(daemon)).filter((r) => r.kind === 'tool')
     expect(tools).toEqual([{ kind: 'tool', sender: 'bot-a', text: 'Edit file.ts' }])
     await daemon.stop()
   }, 15_000)

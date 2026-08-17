@@ -65,7 +65,7 @@ beforeEach(() => {
 describe('createWorkspaceGit.status', () => {
   it('reports isRepo:false / clean:true for a from-scratch (no .git) workspace', async () => {
     const dir = ws(false)
-    const git = createWorkspaceGit(workspaces, () => dir)
+    const git = createWorkspaceGit(workspaces, async () => dir)
     expect(await git.status('a')).toEqual({ agentId: 'a', isRepo: false, clean: true })
     expect(statusImpl).not.toHaveBeenCalled() // short-circuits before touching git
   })
@@ -80,7 +80,7 @@ describe('createWorkspaceGit.status', () => {
       files: [],
       isClean: () => true
     })
-    const git = createWorkspaceGit(workspaces, () => dir)
+    const git = createWorkspaceGit(workspaces, async () => dir)
     const s = await git.status('a')
     expect(s).toMatchObject({ agentId: 'a', isRepo: true, clean: true, branch: 'main', tracking: 'origin/main' })
     expect(s.files).toBeUndefined()
@@ -100,7 +100,7 @@ describe('createWorkspaceGit.status', () => {
       ],
       isClean: () => false
     })
-    const git = createWorkspaceGit(workspaces, () => dir)
+    const git = createWorkspaceGit(workspaces, async () => dir)
     const s = await git.status('a')
     expect(s.clean).toBe(false)
     expect(s.ahead).toBe(1)
@@ -116,7 +116,7 @@ describe('createWorkspaceGit.status', () => {
     const dir = ws(true)
     const files = Array.from({ length: 501 }, (_, i) => ({ path: `f${i}.ts`, index: 'M', working_dir: ' ' }))
     statusImpl = vi.fn().mockResolvedValue({ current: 'main', ahead: 0, behind: 0, files, isClean: () => false })
-    const git = createWorkspaceGit(workspaces, () => dir)
+    const git = createWorkspaceGit(workspaces, async () => dir)
     const s = await git.status('a')
     expect(s.files).toHaveLength(500)
     expect(s.truncated).toBe(true)
@@ -137,7 +137,7 @@ describe('createWorkspaceGit.status', () => {
       subject: 'Pin deploy image'
     }
     logImpl = vi.fn().mockResolvedValue({ all: [commit], latest: commit })
-    const git = createWorkspaceGit(workspaces, () => dir)
+    const git = createWorkspaceGit(workspaces, async () => dir)
     const s = await git.status('a')
     expect(s.lastCommit).toEqual({
       sha: 'a3f9c21deadbeef0000000000000000000000000',
@@ -152,7 +152,7 @@ describe('createWorkspaceGit.status', () => {
     const dir = ws(true)
     statusImpl = vi.fn().mockResolvedValue({ current: 'main', ahead: 0, behind: 0, files: [], isClean: () => true })
     // logImpl rejects by default (beforeEach)
-    const git = createWorkspaceGit(workspaces, () => dir)
+    const git = createWorkspaceGit(workspaces, async () => dir)
     const s = await git.status('a')
     expect(s.lastCommit).toBeUndefined()
   })
@@ -163,7 +163,7 @@ describe('createWorkspaceGit.status', () => {
   // read, and a case that cannot construct its own state is worse than no case.
 
   it('throws WorkspaceViolationError for an unknown agent', async () => {
-    const git = createWorkspaceGit(workspaces, () => undefined)
+    const git = createWorkspaceGit(workspaces, async () => undefined)
     await expect(git.status('nope')).rejects.toBeInstanceOf(WorkspaceViolationError)
     await expect(git.diff({ agentId: 'nope', path: 'a.ts', staged: false })).rejects.toBeInstanceOf(
       WorkspaceViolationError
@@ -173,7 +173,7 @@ describe('createWorkspaceGit.status', () => {
 
   it('short-circuits diff and log for a from-scratch workspace without touching git', async () => {
     const dir = ws(false)
-    const git = createWorkspaceGit(workspaces, () => dir)
+    const git = createWorkspaceGit(workspaces, async () => dir)
     expect(await git.diff({ agentId: 'a', path: 'a.ts', staged: false })).toEqual({
       agentId: 'a',
       path: 'a.ts',
@@ -193,7 +193,7 @@ describe('createWorkspaceGit.status', () => {
 describe('createWorkspaceGit.pull', () => {
   it('reports isRepo:false / ok:false for a from-scratch workspace (nothing to pull)', async () => {
     const dir = ws(false)
-    const git = createWorkspaceGit(workspaces, () => dir)
+    const git = createWorkspaceGit(workspaces, async () => dir)
     expect(await git.pull('a')).toEqual({
       agentId: 'a',
       isRepo: false,
@@ -208,7 +208,7 @@ describe('createWorkspaceGit.pull', () => {
     pullImpl = vi.fn().mockResolvedValue({ files: ['a.ts', 'b.ts'], summary: { insertions: 10, deletions: 3 } })
     const git = createWorkspaceGit(
       workspaces,
-      () => dir,
+      async () => dir,
       () => ({ AC_GITCRED_CAPABILITY: 'cap-a' }),
       githubTarget
     )
@@ -245,7 +245,7 @@ describe('createWorkspaceGit.pull', () => {
       await expect(
         createWorkspaceGit(
           workspaces,
-          () => dir,
+          async () => dir,
           () => ({}),
           githubTarget
         ).pull('a')
@@ -263,7 +263,7 @@ describe('createWorkspaceGit.pull', () => {
     pullImpl = vi.fn().mockResolvedValue({ files: [], summary: { insertions: 0, deletions: 0 } })
     const git = createWorkspaceGit(
       workspaces,
-      () => dir,
+      async () => dir,
       () => ({}),
       githubTarget
     )
@@ -277,7 +277,7 @@ describe('createWorkspaceGit.pull', () => {
     rawImpl = vi.fn().mockResolvedValue('https://legacy-user:super-secret@invalid.invalid/repo?token=query-secret\n')
     const git = createWorkspaceGit(
       workspaces,
-      () => dir,
+      async () => dir,
       () => ({}),
       githubTarget
     )
@@ -300,7 +300,7 @@ describe('createWorkspaceGit.pull', () => {
     rawImpl = vi.fn().mockResolvedValue('git@github.com:acme/repo.git\n')
     const git = createWorkspaceGit(
       workspaces,
-      () => dir,
+      async () => dir,
       () => ({}),
       () => ({ repo: 'https://github.com/acme/repo.git', branch: 'main', githubApp: true })
     )
@@ -315,7 +315,7 @@ describe('createWorkspaceGit.pull', () => {
 
   it('refuses to pull without the configured workspace target', async () => {
     const dir = ws(true)
-    const git = createWorkspaceGit(workspaces, () => dir)
+    const git = createWorkspaceGit(workspaces, async () => dir)
 
     expect(await git.pull('a')).toMatchObject({
       isRepo: true,
@@ -336,7 +336,7 @@ describe('createWorkspaceGit.pull', () => {
       )
     const git = createWorkspaceGit(
       workspaces,
-      () => dir,
+      async () => dir,
       () => ({}),
       githubTarget
     )
@@ -359,7 +359,7 @@ describe('createWorkspaceGit.pull', () => {
     pullImpl = vi.fn().mockResolvedValue({ files: [], summary: { insertions: 0, deletions: 0 } })
     const git = createWorkspaceGit(
       workspaces,
-      () => dir,
+      async () => dir,
       () => ({}),
       githubTarget
     )
@@ -376,7 +376,7 @@ describe('createWorkspaceGit.pull', () => {
     pullImpl = vi.fn().mockResolvedValue({ files: [], summary: { insertions: 0, deletions: 0 } })
     const git = createWorkspaceGit(
       workspaces,
-      () => dir,
+      async () => dir,
       () => ({}),
       () => ({ repo: 'https://github.com/acme/repo.git', branch: 'release/v2', githubApp: true })
     )
@@ -400,7 +400,7 @@ describe('createWorkspaceGit.pull', () => {
     pullImpl = vi.fn().mockRejectedValue(new Error(`cannot fast-forward in ${dir}/x`))
     const git = createWorkspaceGit(
       workspaces,
-      () => dir,
+      async () => dir,
       () => ({}),
       githubTarget
     )

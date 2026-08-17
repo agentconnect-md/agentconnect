@@ -24,7 +24,7 @@ export class DreamScheduler {
     private deps: {
       /** Fire one scheduled dream. Never rejects into the timer — the daemon's
        *  handler swallows the ordinary "already in flight"/"not enabled" cases. */
-      onFire: (agentId: string) => void
+      onFire: (agentId: string) => Promise<void>
       warn?: (msg: string) => void
     }
   ) {}

@@ -69,7 +69,7 @@ beforeAll(() => {
   git(repo, 'add', 'logo.png')
   writeFileSync(join(repo, 'untracked.txt'), 'brand new\n')
 
-  seam = createWorkspaceGit(workspaces, (agentId) =>
+  seam = createWorkspaceGit(workspaces, async (agentId) =>
     agentId === AGENT ? repo : agentId === 'scratch-agent' ? scratch : undefined
   )
 })
@@ -150,7 +150,7 @@ describe('createWorkspaceGit.diff against a real repo', () => {
     git(doomed, 'add', '-A')
     git(doomed, 'commit', '-m', 'add doomed.txt')
     rmSync(join(doomed, 'doomed.txt'))
-    const d = await createWorkspaceGit(workspaces, () => doomed).diff({
+    const d = await createWorkspaceGit(workspaces, async () => doomed).diff({
       agentId: AGENT,
       path: 'doomed.txt',
       staged: false
@@ -299,7 +299,7 @@ describe('createWorkspaceGit.log against a real repo', () => {
     const seamFor = (root: string) =>
       createWorkspaceGit(
         workspaces,
-        () => root,
+        async () => root,
         () => ({}),
         () => target
       )
@@ -342,7 +342,7 @@ describe('createWorkspaceGit.log against a real repo', () => {
     writeFileSync(join(orphan, 'a.txt'), 'a\n')
     git(orphan, 'add', '-A')
     git(orphan, 'commit', '-m', 'only commit')
-    const l = await createWorkspaceGit(workspaces, () => orphan).log({ agentId: AGENT, limit: 20 })
+    const l = await createWorkspaceGit(workspaces, async () => orphan).log({ agentId: AGENT, limit: 20 })
     expect(l.tracking).toBeUndefined()
     expect(l.commits).toHaveLength(1)
     expect(l.commits[0]!.pushed).toBe(false) // no upstream ⇒ not known to be on a remote
@@ -356,7 +356,7 @@ describe('createWorkspaceGit.log against a real repo', () => {
     git(fresh, 'init', '-b', 'main')
     writeFileSync(join(fresh, 'a.ts'), 'x\n')
     git(fresh, 'add', 'a.ts')
-    const s = await createWorkspaceGit(workspaces, () => fresh).status(AGENT)
+    const s = await createWorkspaceGit(workspaces, async () => fresh).status(AGENT)
     expect(s.isRepo).toBe(true)
     expect(s.files?.map((f) => f.path)).toEqual(['a.ts'])
     expect(s.files?.[0]).not.toHaveProperty('additions')
@@ -385,7 +385,7 @@ describe('createWorkspaceGit.log against a real repo', () => {
 
     workspaces.setGitRunnerResolver(() => answering as never)
     try {
-      const status = await createWorkspaceGit(workspaces, () => nowhere).status(AGENT)
+      const status = await createWorkspaceGit(workspaces, async () => nowhere).status(AGENT)
       expect(status.isRepo).toBe(true)
       expect(seen.some((args) => args.includes('--show-prefix'))).toBe(true)
     } finally {
@@ -408,7 +408,7 @@ describe('createWorkspaceGit.log against a real repo', () => {
     git(broken, 'commit', '-m', 'seed')
     rmSync(join(broken, '.git', 'objects'), { recursive: true, force: true })
 
-    expect(await createWorkspaceGit(workspaces, () => broken).log({ agentId: AGENT, limit: 20 })).toEqual({
+    expect(await createWorkspaceGit(workspaces, async () => broken).log({ agentId: AGENT, limit: 20 })).toEqual({
       agentId: AGENT,
       isRepo: false,
       commits: [],
@@ -420,7 +420,7 @@ describe('createWorkspaceGit.log against a real repo', () => {
     const empty = join(base, 'empty')
     mkdirSync(empty, { recursive: true })
     git(empty, 'init', '-b', 'main')
-    expect(await createWorkspaceGit(workspaces, () => empty).log({ agentId: AGENT, limit: 20 })).toEqual({
+    expect(await createWorkspaceGit(workspaces, async () => empty).log({ agentId: AGENT, limit: 20 })).toEqual({
       agentId: AGENT,
       isRepo: true,
       commits: [],
@@ -441,7 +441,7 @@ describe('createWorkspaceGit.log against a real repo', () => {
     writeFileSync(join(shouty, 'a.txt'), 'a\n')
     git(shouty, 'add', '-A')
     git(shouty, 'commit', '-m', 'x'.repeat(5_000))
-    const l = await createWorkspaceGit(workspaces, () => shouty).log({ agentId: AGENT, limit: 20 })
+    const l = await createWorkspaceGit(workspaces, async () => shouty).log({ agentId: AGENT, limit: 20 })
     expect(l.commits[0]!.subject).toHaveLength(200)
   })
 
@@ -462,7 +462,7 @@ describe('createWorkspaceGit against a workspace this daemon cannot see', () => 
     workspaces.setGitRunnerResolver(
       (_agentId, _cwd, abort) => new LocalGitRunner(gitFor(repo, abort), repo, (e) => gitFor(repo, abort).env(e))
     )
-    clusterSeam = createWorkspaceGit(workspaces, (agentId) => (agentId === AGENT ? POD_ROOT : undefined))
+    clusterSeam = createWorkspaceGit(workspaces, async (agentId) => (agentId === AGENT ? POD_ROOT : undefined))
   })
 
   afterAll(() => {

@@ -52,7 +52,7 @@ export interface FeishuTurn {
 /** The host capabilities this applier needs: the two every platform needs, plus
  *  the session deep link a streaming card renders in its header. */
 export interface FeishuTurnHost<TTurn> {
-  recordReplySegment(turn: TTurn, text: string): void
+  recordReplySegment(turn: TTurn, text: string): Promise<void>
   appendTranscript(row: {
     channel: string
     thread: string
@@ -60,7 +60,7 @@ export interface FeishuTurnHost<TTurn> {
     sender: string
     kind: 'text'
     text: string
-  }): void
+  }): Promise<void>
   /** The console URL for this turn's session — core owns link construction
    *  (deployment origin, per-platform `?source=` hint). */
   sessionUrl(turn: TTurn): string
@@ -74,7 +74,7 @@ export async function applyFeishuAction<TTurn extends FeishuTurn>(
   action: FeishuAction
 ): Promise<void> {
   if (action.kind === 'post' && action.recordOnly) {
-    host.recordReplySegment(turn, action.text)
+    await host.recordReplySegment(turn, action.text)
     return
   }
   // Routed here only for the feishu platform (see the turn-output registry), so the
@@ -116,7 +116,7 @@ export async function applyFeishuAction<TTurn extends FeishuTurn>(
       return
     case 'post': {
       const id = await conn.postMessage(turn.channel, action.text, turn.thread)
-      host.appendTranscript({
+      await host.appendTranscript({
         channel: turn.transcriptChannel,
         thread: turn.statusThread,
         ts: id ?? `local-${Date.now()}`,

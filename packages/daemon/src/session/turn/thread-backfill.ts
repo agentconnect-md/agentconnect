@@ -81,7 +81,7 @@ export async function backfillThreadHistory(input: ThreadBackfillInput): Promise
     // uses the real Slack ts, so the (channel,thread,ts) dedup index can't collapse them
     // (low/medium/high record at the send boundary WITH the Slack ts, so they dedup).
     if (h.sender === agentId) continue
-    store.appendTranscript({
+    await store.appendTranscript({
       channel: transcriptChannel,
       thread,
       ts: h.ts,
