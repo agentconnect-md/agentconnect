@@ -11,6 +11,7 @@ import {
 import { SESSION_TITLE_TOOL_TITLES } from '../mcp/session-title-tool.js'
 import type { ScheduleRun } from '../scheduler/scheduler.js'
 import type { StoreRetentionCandidate, StoreRetentionRule } from './retention.js'
+import type { StoreBatchResult, StoreBatchStatement } from './store-database.js'
 
 /** Per-tool-row rawInput budget in the mining prompt — enough for a command
  *  line or path, short enough that N tool rows can't crowd out the store. */
@@ -31,17 +32,7 @@ export interface StoreStatement {
   all(...params: unknown[]): unknown[]
 }
 
-/** One statement of a batch. `run` reports `changes`; `read` returns `rows`. */
-export interface StoreBatchStatement {
-  sql: string
-  params: unknown[]
-  kind: 'run' | 'read'
-}
-
-export interface StoreBatchResult {
-  changes: number
-  rows: unknown[]
-}
+export type { StoreBatchResult, StoreBatchStatement } from './store-database.js'
 
 export interface StoreDatabase {
   exec(sql: string): void
