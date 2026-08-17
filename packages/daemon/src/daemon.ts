@@ -209,14 +209,13 @@ import {
   type ScheduleDefinition
 } from './scheduler/scheduler.js'
 import { DreamScheduler } from './scheduler/dream-scheduler.js'
-import { buildHookMessage, githubOpensReviewGeneration, hookAnchorText } from './messages/hook-message.js'
 import { GithubFinalPoster, GithubReplyCollector, type GithubCommentAttribution } from './github/poster.js'
 import { finalizeGithubTurn, isGithubFinalChunk, onGithubUpdate } from './platforms/github/turn-output.js'
 import { GithubReviewClient, type GithubReviewEffect } from './github/review.js'
+import { GithubReviewOrchestrator, type GithubReviewHost } from './github/review-orchestrator.js'
 import { resolveRuntimeCatalog, type ResolvedRuntimeCatalog } from './runtimes/registry.js'
 import { installedRuntimeCatalog, installedRuntimes, resolveCommandPath } from './runtimes/probe.js'
 import { startK8sRuntimePlane, type K8sRuntimePlane } from './k8s/runtime-plane.js'
-import { initiatorLabel } from './workspace/session-branch.js'
 import { declaredRuntimeCatalog, loadK8sRuntimeTable, type K8sRuntimeAcpSnapshot } from './runtimes/k8s-runtimes.js'
 import { ensureNodeBinOnPath } from './runtimes/exec-path.js'
 import {
@@ -287,8 +286,6 @@ import {
   gitRepoLabel,
   hasReachedAgentCallHopLimit,
   RD_AGENTMSG_NOT_READY,
-  normalizeGitCloneUrl,
-  normalizeGithubRepoUrl,
   manifestFor,
   originKindOf,
   SessionPurgeReason,
@@ -446,7 +443,7 @@ import type {
   DutyRevoke,
   HeartbeatDuties
 } from '@agentconnect.md/protocol'
-import { formatErr, formatErrWithCauses } from './daemon/text.js'
+import { formatErr } from './daemon/text.js'
 import {
   elicitationApprovalSummary,
   isBuiltinSystemTool,
@@ -465,8 +462,6 @@ import {
   MAX_TOTAL_TURNS_PER_WINDOW
 } from './daemon/loop-guard-scope.js'
 import {
-  authorizedReviewTarget,
-  authorizedReviewTargetMatches,
   compareGithubPullRevisionRecency,
   foreignHookDispatch,
   githubDeletedHookEvent,
@@ -478,11 +473,7 @@ import {
   githubReviewResultForCompletion,
   githubThreadWorktreeCleanup,
   hookReportOwner,
-  hookSnapshot,
-  isGithubReviewCommentHook,
   renderGithubReviewBatchPrompt,
-  reviewPolicyAllows,
-  reviewResultForWire,
   GITHUB_REVIEW_BATCH_MAX_COMMENTS,
   GITHUB_REVIEW_BATCH_MAX_WAIT_MS,
   GITHUB_REVIEW_BATCH_QUIET_MS,
@@ -1049,7 +1040,7 @@ export class Daemon {
   /** Active GitHub effect authority is turn-local and keyed by logical session. */
   private readonly activeGithubTurnMeta = new Map<string, ActiveGithubTurnMeta>()
   private readonly activeGithubReplyBatchMeta = new Map<string, ActiveGithubReplyBatchMeta>()
-  private readonly githubReviewClient = new GithubReviewClient()
+  private readonly githubReviews: GithubReviewOrchestrator
   // ── lifecycle (§2.5/§5.3/§7.2/§7.3) ──
   private clock: Clock
   private requestExit: (code: number) => void
@@ -1271,6 +1262,7 @@ export class Daemon {
     this.webchatTransport = new WebchatTransport(this.webchatHost())
     this.webchatMcpRevocations = new WebchatMcpRevocations(this.webchatMcpRevocationHost())
     this.commands = new CommandHandlers(this.commandHost())
+    this.githubReviews = new GithubReviewOrchestrator(this.githubReviewHost())
     this.curatedRuntimeAdmission = new CuratedRuntimeAdmission({
       now: () => this.clock.now(),
       ttlMs: Daemon.PROBE_TTL_MS
@@ -8262,331 +8254,86 @@ export class Daemon {
     if (armed || disarmed) this.log.info(`orchestration: armed ${armed} and disarmed ${disarmed} deadline(s)`)
   }
 
-  /**
-   * Ack-verdict gate for one hook fire (`rd/msg` hook member) — the mirror of
-   * {@link dispatchWebchatTurn}'s synchronous gates: the relay's rc/run-report
-   * needs a REASONED rejection now, not a silently dropped fire-and-forget
-   * dispatch. Accepted is returned only after {@link onHookFire} has crossed
-   * the durable-inbox admission barrier; the model turn itself remains async.
-   */
-  private async dispatchRelayHook(msg: RdMsgHook): Promise<RdAck> {
-    const cleanup = githubThreadWorktreeCleanup(msg)
-    const maintenance = cleanup !== undefined || githubDeletedHookEvent(msg)
-    if (!this.agents.has(msg.agentId)) {
-      this.log.warn(`hook: no agent "${msg.agentId}" on this daemon — rejecting fire ${msg.msgId}`)
-      return { msgId: msg.msgId, accepted: false, reason: 'no_agent' }
-    }
-    if (!maintenance && this.paused(msg.agentId)) {
-      this.log.info(`hook: agent "${msg.agentId}" is paused — rejecting fire ${msg.msgId}`)
-      return { msgId: msg.msgId, accepted: false, reason: 'paused' }
-    }
-    const normalized = buildHookMessage(msg, 'safety-drain-probe')
-    const normalizedKey = sessionKey(
-      normalized.platform,
-      normalized.channel,
-      normalized.thread ?? normalized.msgId,
-      msg.agentId,
-      normalized.transportScope
-    )
-    const githubLane = githubPullRequestLane(
-      msg,
-      githubHookCoordinates(msg.agentId, normalized, msg.target?.integrationId)
-    )
-    if (
-      !maintenance &&
-      this.safetyDrainingAgents.has(msg.agentId) &&
-      !this.safetyDrainAllows(msg.agentId, normalizedKey, githubLane)
-    ) {
-      this.log.info(`hook: agent "${msg.agentId}" is stopping an interrupted turn — rejecting fire ${msg.msgId}`)
-      return { msgId: msg.msgId, accepted: false, reason: 'busy' }
-    }
-    if (this.draining || this.drainingAgents.has(msg.agentId)) {
-      this.log.info(`hook: agent "${msg.agentId}" is draining — rejecting fire ${msg.msgId}`)
-      return { msgId: msg.msgId, accepted: false, reason: 'draining' }
-    }
-    const admission = await this.onHookFire(msg)
+  /** The GitHub review client owned by {@link GithubReviewOrchestrator}. */
+  private get githubReviewClient(): GithubReviewClient {
+    return this.githubReviews.githubReviewClient
+  }
+
+  /** Everything the GitHub hook-dispatch and formal-review seam reaches back for. */
+  private githubReviewHost(): GithubReviewHost {
     return {
-      msgId: msg.msgId,
-      accepted: admission.accepted,
-      ...(admission.reason ? { reason: admission.reason } : {})
+      log: () => this.log,
+      now: () => this.clock.now(),
+      daemonId: () => this.cfg.daemonId,
+      agents: () => this.agents,
+      cpClient: () => this.cpClient,
+      orgForAgent: (agentId) => this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId),
+      hasInbox: (id) => this.store.hasInbox(id),
+      getSession: (key) => this.store.getSession(key),
+      displayNames: (ids) => this.store.getDisplayNames(ids),
+      getPostToken: (agentId, repo, hookId) => this.gitCreds.getPostToken(agentId, repo, hookId),
+      invalidatePost: (agentId, repo, presentedToken) => this.gitCreds.invalidatePost(agentId, repo, presentedToken),
+      paused: (agentId) => this.paused(agentId),
+      draining: (agentId) => this.draining || this.drainingAgents.has(agentId),
+      safetyDraining: (agentId) => this.safetyDrainingAgents.has(agentId),
+      safetyDrainAllows: (agentId, key, githubLane) => this.safetyDrainAllows(agentId, key, githubLane),
+      persistInbox: (entry, key, options) => this.persistInbox(entry, key, options),
+      persistHookState: (entry, posterPublishState, required) =>
+        this.persistHookState(entry, posterPublishState, required),
+      emitHookCompletion: (hook, status, extra, owner) => this.emitHookCompletion(hook, status, extra, owner),
+      activeDispatchDone: (key) => this.activeDispatchDoneByKey.get(key),
+      cleanupSessionWorktree: (rec) => this.cleanupSessionWorktree(rec),
+      prepareAgentWorkspace: (agent, expectedWarmHost, request) =>
+        this.prepareAgentWorkspace(agent, expectedWarmHost, request),
+      warmHostFor: (agentId) => (this.readyHosts.has(agentId) ? this.hosts.get(agentId) : undefined),
+      anchorTrigger: (agentId, msg, target, anchorText, label, safetyGithubLane) =>
+        this.anchorTrigger(agentId, msg, target, anchorText, label, safetyGithubLane),
+      dispatch: (agentId, msg, integrationId, webchat, callMeta, opts, githubReply, hookContext) =>
+        this.dispatch(agentId, msg, integrationId, webchat, callMeta, opts, githubReply, hookContext),
+      activeGithubTurn: (key) => this.activeGithubTurnMeta.get(key),
+      activeGithubReplyBatch: (key) => this.activeGithubReplyBatchMeta.get(key),
+      makeGithubReply: (agentId, ref, sessionId) => this.makeGithubReply(agentId, ref, sessionId),
+      agentLink: (agentId) => this.agentLink(agentId),
+      sessionLink: (acpSessionId, source) => this.sessionLink(acpSessionId, source),
+      runtimeNames: () => this.runtimeNames,
+      hostForStoredSession: (agentId, acpSessionId) => this.hostForStoredSession(agentId, acpSessionId)
     }
   }
 
-  /**
-   * A hook fired for `agentId` (explicit target — no routing;
-   * webhook-triggers-and-github-events.md). The relay already opened the HookRun
-   * row (`rc/run-report accepted`); when the turn ends this closes it with a
-   * completion `hook/report` EVT on the control WS (the cron/report pattern).
-   * Anchoring rides the shared {@link fireTrigger} path: with a target the
-   * trigger text lands in the channel and the session threads under it,
-   * without one the fire runs headless.
-   */
-  private async onHookFire(msg: RdMsgHook): Promise<{ accepted: boolean; reason?: string }> {
-    const cleanup = githubThreadWorktreeCleanup(msg)
-    const deleted = githubDeletedHookEvent(msg)
-    // A lifecycle cleanup always addresses the stable GitHub thread session,
-    // never an optional IM anchor configured for ordinary hook output.
-    const nmsg = buildHookMessage(cleanup || deleted ? { ...msg, target: undefined } : msg, randomUUID())
-    // The in-memory ACK cache closes same-process retransmits. This durable
-    // probe closes the restart window *before* anchorTrigger posts externally:
-    // a retained live row will replay, and a terminal row is already complete.
-    // In either case the original accepted admission owns this delivery.
-    if (this.store.hasInbox(nmsg.msgId)) {
-      this.log.debug(`hook: durable duplicate ${nmsg.msgId} — replaying accepted admission`)
-      return { accepted: true }
-    }
-    const snapshot = hookSnapshot(msg)
-    const hookContext: HookDispatchContext = {
-      hookId: msg.hookId,
-      agentId: msg.agentId,
-      deliveryKey: msg.deliveryKey,
-      firedAt: msg.firedAt,
-      ...(msg.event ? { event: msg.event } : {}),
-      ...(snapshot ? { snapshot } : {}),
-      ...(msg.github ? { github: msg.github } : {})
-    }
-    if (cleanup || deleted) {
-      const key = sessionKey(nmsg.platform, nmsg.channel, nmsg.thread ?? nmsg.msgId, msg.agentId, nmsg.transportScope)
-      const entry: QueueEntry = {
-        agentId: msg.agentId,
-        msg: nmsg,
-        initAbort: new AbortController(),
-        hookContext,
-        resolve: () => {},
-        reject: () => {}
-      }
-      // Keep the maintenance receipt outside the session's own inbox key so
-      // retention's active-session predicate does not mistake this cleanup
-      // obligation for a pending model turn.
-      const persistence = this.persistInbox(entry, `maintenance:${key}`, { required: true })
-      if (persistence !== 'existing') {
-        if (cleanup) void this.completeGithubThreadWorktreeCleanup(hookContext, key, cleanup, entry)
-        else this.emitHookCompletion(hookContext, 'success', { reason: 'deleted_event_ignored' }, entry)
-      }
-      return { accepted: true }
-    }
-    // P3 outbound: github fires on a NUMBERED thread publish their completed reply as
-    // one comment (always on — design; push fires have no thread and stay silent).
-    const c = msg.context
-    const trustedInlineTarget =
-      c?.source === 'github' &&
-      msg.github?.subjectKind === 'pull_request' &&
-      msg.github.pullNumber !== undefined &&
-      msg.github.reviewThreadRootCommentId !== undefined
-        ? {
-            hookId: msg.hookId,
-            repo: msg.github.repoFullName,
-            number: msg.github.pullNumber,
-            ...(msg.github.reviewCommentId ? { reviewCommentId: msg.github.reviewCommentId } : {}),
-            reviewThreadRootCommentId: msg.github.reviewThreadRootCommentId
-          }
-        : undefined
-    // Inline coordinates and their PR target are one body-free trusted unit.
-    // A mixed-version frame without that unit keeps the rolling-compatible
-    // ordinary issue/PR comment path derived from HookContext.
-    const githubReply =
-      trustedInlineTarget ??
-      (c?.source === 'github' && c.repo && c.number !== undefined
-        ? { hookId: msg.hookId, repo: c.repo, number: c.number }
-        : undefined)
-    if (githubReply) hookContext.githubReply = githubReply
-    const githubLane = githubPullRequestLane(
-      hookContext,
-      githubHookCoordinates(msg.agentId, nmsg, msg.target?.integrationId)
-    )
-    const anchored = await this.anchorTrigger(
-      msg.agentId,
-      nmsg,
-      msg.target,
-      hookAnchorText(msg),
-      `hook "${msg.hookId}"`,
-      githubLane
-    )
-    if (!anchored) return { accepted: false, reason: 'dropped' }
-    const batchReply =
-      githubReviewBatchStream(hookContext, githubHookCoordinates(msg.agentId, anchored, msg.target?.integrationId)) &&
-      githubReply &&
-      'reviewThreadRootCommentId' in githubReply &&
-      githubReply.reviewThreadRootCommentId
-        ? githubReply
-        : undefined
-    if (batchReply) {
-      const now = this.clock.now()
-      hookContext.githubReviewBatch = {
-        reviewId: hookContext.github!.pullRequestReviewId!,
-        openedAt: now,
-        updatedAt: now,
-        items: [
-          {
-            deliveryKey: hookContext.deliveryKey,
-            firedAt: hookContext.firedAt,
-            text: anchored.text,
-            reply: { ...batchReply, reviewThreadRootCommentId: batchReply.reviewThreadRootCommentId },
-            publishState: 'not_started'
-          }
-        ]
-      }
-    }
-    let admission: { accepted: boolean; reason?: string; duplicate?: boolean } | undefined
-    const turn = this.dispatch(
-      msg.agentId,
-      anchored,
-      msg.target?.integrationId,
-      undefined,
-      undefined,
-      {
-        requireDurable: true,
-        onAdmission: (result) => {
-          admission = result
-        }
-      },
-      githubReply,
-      hookContext
-    )
-    // dispatch() performs admission synchronously inside its Promise executor.
-    // Consume the full-turn promise now, but never make rd/ack wait for the model.
-    // Every accepted terminal path is owned by runLoop/dispatchOne and emits its
-    // durable receipt there; observing a null here as well used to double-report
-    // queued entries that were gate-dropped before their turn began.
-    void turn.catch((err) => this.log.error(`hook turn failed for agent "${msg.agentId}": ${formatErr(err)}`))
-    if (!admission) throw new Error('hook admission barrier did not settle synchronously')
-    if (!admission.accepted) {
-      return { accepted: false, reason: admission.reason ?? 'durability' }
-    }
-    return { accepted: true }
+  private dispatchRelayHook(msg: RdMsgHook): Promise<RdAck> {
+    return this.githubReviews.dispatchRelayHook(msg)
   }
 
-  private async completeGithubThreadWorktreeCleanup(
+  private onHookFire(msg: RdMsgHook): Promise<{ accepted: boolean; reason?: string }> {
+    return this.githubReviews.onHookFire(msg)
+  }
+
+  private completeGithubThreadWorktreeCleanup(
     hook: HookDispatchContext,
     key: string,
     cleanup: GithubThreadWorktreeCleanup,
     owner: HookCompletionOwner
   ): Promise<void> {
-    try {
-      // A merge/close can race the last review turn. Let that exact dispatch
-      // settle before applying the same safety checks used by retention.
-      await this.activeDispatchDoneByKey.get(key)?.catch(() => undefined)
-      const rec = this.store.getSession(key)
-      if (!rec) {
-        this.log.info(`github lifecycle: ${cleanup} has no session worktree for ${key}`)
-        this.emitHookCompletion(hook, 'success', { reason: 'worktree_cleanup_no_session' }, owner)
-        return
-      }
-      const result = await this.cleanupSessionWorktree(rec)
-      if (result.outcome === 'failed') {
-        this.log.warn(`github lifecycle: ${cleanup} worktree cleanup failed for ${key} (${result.error})`)
-        this.emitHookCompletion(hook, 'failed', { reason: 'worktree_cleanup_failed' }, owner)
-        return
-      }
-      if (result.outcome === 'retained') {
-        this.log.info(`github lifecycle: ${cleanup} retained worktree for ${key} (${result.reason})`)
-        this.emitHookCompletion(hook, 'success', { reason: `worktree_cleanup_retained_${result.reason}` }, owner)
-        return
-      }
-      if (result.outcome === 'active') {
-        this.log.info(`github lifecycle: ${cleanup} deferred worktree cleanup for active session ${key}`)
-        this.emitHookCompletion(hook, 'success', { reason: 'worktree_cleanup_deferred_active' }, owner)
-        return
-      }
-      this.log.info(`github lifecycle: ${cleanup} worktree cleanup ${result.outcome} for ${key}`)
-      this.emitHookCompletion(hook, 'success', undefined, owner)
-    } catch (err) {
-      this.log.warn(`github lifecycle: ${cleanup} worktree cleanup failed for ${key} (${formatErr(err)})`)
-      this.emitHookCompletion(hook, 'failed', { reason: 'worktree_cleanup_failed' }, owner)
-    }
+    return this.githubReviews.completeGithubThreadWorktreeCleanup(hook, key, cleanup, owner)
   }
 
   private githubFormalReviewEnabled(entry: QueueEntry): boolean {
-    const hook = entry.hookContext
-    const snapshot = hook?.snapshot
-    const github = hook?.github
-    return Boolean(
-      hook &&
-      snapshot &&
-      github?.subjectKind === 'pull_request' &&
-      github.pullNumber !== undefined &&
-      snapshot.reviewPolicy !== 'off' &&
-      snapshot.gateMode === 'informational' &&
-      snapshot.reportingMode !== 'status' &&
-      (!this.cfg.daemonId || snapshot.dispatchDaemonId === this.cfg.daemonId) &&
-      githubOpensReviewGeneration(hook.event, github, snapshot.reviewPolicy) &&
-      !isGithubReviewCommentHook(hook)
-    )
+    return this.githubReviews.githubFormalReviewEnabled(entry)
   }
 
-  /** Fill the trusted revision gap on issue_comment deliveries before either
-   * workspace preparation or hook/start. Formal reviews fail closed when the
-   * daemon cannot prove which base/head the model would review. */
-  private async ensureGithubPullRevision(
-    entry: QueueEntry,
-    required: boolean
-  ): Promise<GithubHookMetadata | undefined> {
-    const hook = entry.hookContext
-    const github = hook?.github
-    if (!hook || !github || github.subjectKind !== 'pull_request' || github.pullNumber === undefined) {
-      return github
-    }
-    if (github.headSha && github.baseSha) return github
-
-    try {
-      const postToken = await this.gitCreds.getPostToken(hook.agentId, github.repoFullName, hook.hookId)
-      const revision = await this.githubReviewClient.getPull(postToken.token, github.repoFullName, github.pullNumber)
-      hook.github = {
-        ...github,
-        headSha: revision.headSha,
-        baseSha: revision.baseSha,
-        reportSha: revision.headSha,
-        ...(revision.mergeCommitSha ? { mergeCommitSha: revision.mergeCommitSha } : {}),
-        isDraft: revision.draft
-      }
-      this.persistHookState(entry, undefined, true)
-      return hook.github
-    } catch (err) {
-      this.log.warn(`github review: unable to resolve PR revision (${formatErr(err)})`)
-      if (required) {
-        throw new Error('github review blocked: unable to resolve the authoritative PR base and head', {
-          cause: err
-        })
-      }
-      return undefined
-    }
+  private ensureGithubPullRevision(entry: QueueEntry, required: boolean): Promise<GithubHookMetadata | undefined> {
+    return this.githubReviews.ensureGithubPullRevision(entry, required)
   }
 
   private githubWorkspaceMatches(agent: Agent, github: GithubHookMetadata): boolean {
-    if (agent.workspace.mode !== 'git-repo' || !agent.workspace.gitRepo) return false
-    try {
-      const clone = normalizeGitCloneUrl(agent.workspace.gitRepo)
-      const cloneHost = new URL(clone).hostname.toLowerCase()
-      // App-backed workspace URLs are canonicalized to GitHub by the daemon.
-      // Anonymous repos must already name GitHub; never reinterpret another
-      // host's owner/repo path as the trusted hook repository.
-      if (agent.workspace.gitCredential !== 'github-app' && cloneHost !== 'github.com') return false
-      const workspaceRepo = normalizeGithubRepoUrl(agent.workspace.gitRepo)
-        .replace(/\.git$/i, '')
-        .toLowerCase()
-      const hookRepo = normalizeGithubRepoUrl(github.repoFullName)
-        .replace(/\.git$/i, '')
-        .toLowerCase()
-      return workspaceRepo === hookRepo
-    } catch {
-      return false
-    }
+    return this.githubReviews.githubWorkspaceMatches(agent, github)
   }
 
-  /** Display label of the user a session is opened by — it names the session
-   * worktree's branch (`dev/<user>/<words>`). Presentation only. */
   private sessionInitiatorLabel(msg: NormalizedMessage): string {
-    // The routing identity a session is keyed by, which for a GitHub hook is the hook —
-    // `initiatorLabel` then falls through to the actor who fired it.
-    const initiator = msg.sessionTriggerId ?? msg.sender?.id ?? ''
-    return initiatorLabel(initiator, this.store.getDisplayNames([initiator]).get(initiator), msg.sender)
+    return this.githubReviews.sessionInitiatorLabel(msg)
   }
 
-  /** Prepare an exact, isolated checkout before a formal review generation. A
-   * formal review may use GitHub read-only inspection when its configured local
-   * repo differs, but it must never silently fall back to a stale checkout.
-   * Ordinary PR conversations preserve their stable session worktree. */
-  private async prepareGithubReviewWorkspace(
+  private prepareGithubReviewWorkspace(
     entry: QueueEntry,
     key: string,
     agent: Agent
@@ -8595,410 +8342,32 @@ export class Daemon {
     forceWorkspaceIsolation?: true
     preparedWorkspaceCwd?: string
   }> {
-    if (!this.githubFormalReviewEnabled(entry)) return {}
-
-    const github = await this.ensureGithubPullRevision(entry, true)
-    if (!github?.headSha || !github.baseSha || github.pullNumber === undefined) {
-      throw new Error('github review blocked: authoritative PR base and head are unavailable')
-    }
-
-    const revisionLine = `Base SHA: ${github.baseSha}\nHead SHA: ${github.headSha}`
-    const warmHost = this.readyHosts.has(agent.id) ? this.hosts.get(agent.id) : undefined
-    const useRevisionOnlyWorkspace = async () => {
-      entry.msg.text +=
-        `\n\nTrusted review revision:\n${revisionLine}\n` +
-        'No trusted local pull-request checkout is available for this review. Do not trust local files or repository traces; inspect the exact base and head through GitHub read-only tools. Local execution may be skipped.'
-      try {
-        const preparedWorkspaceCwd = await this.prepareAgentWorkspace(agent, warmHost, {
-          sessionKey: key,
-          isolation: 'session',
-          initiatedBy: this.sessionInitiatorLabel(entry.msg),
-          githubReviewRevisionOnly: true
-        })
-        return { workspaceIsolation: 'session' as const, forceWorkspaceIsolation: true as const, preparedWorkspaceCwd }
-      } catch (fallbackErr) {
-        // A filesystem-level failure can still leave the ordinary workspace as
-        // the runtime cwd. The prompt above explicitly removes its evidentiary
-        // authority, so the review remains revision-addressed instead of dying
-        // solely because a clean local directory could not be materialized.
-        this.log.warn(
-          `github review: revision-only workspace unavailable; using the ordinary cwd as untrusted context (${formatErrWithCauses(fallbackErr)})`
-        )
-        return { workspaceIsolation: 'shared' as const, forceWorkspaceIsolation: true as const }
-      }
-    }
-    if (!this.githubWorkspaceMatches(agent, github)) {
-      return useRevisionOnlyWorkspace()
-    }
-
-    try {
-      const preparedWorkspaceCwd = await this.prepareAgentWorkspace(agent, warmHost, {
-        sessionKey: key,
-        isolation: 'session',
-        initiatedBy: this.sessionInitiatorLabel(entry.msg),
-        review: {
-          pullNumber: github.pullNumber,
-          baseSha: github.baseSha,
-          headSha: github.headSha,
-          ...(github.mergeCommitSha ? { mergeCommitSha: github.mergeCommitSha } : {})
-        }
-      })
-      entry.msg.text +=
-        `\n\nTrusted review workspace:\n${revisionLine}\n` +
-        'The daemon fetched and verified this isolated checkout at the exact head or a merge whose parents are exactly the base and head above. Before trusting local traces, verify `git rev-parse HEAD`; do not switch to or inspect another checkout.'
-      return { workspaceIsolation: 'session', forceWorkspaceIsolation: true, preparedWorkspaceCwd }
-    } catch (err) {
-      this.log.warn(
-        `github review: exact checkout unavailable; continuing with trusted revision only (${formatErrWithCauses(err)})`
-      )
-      return useRevisionOnlyWorkspace()
-    }
+    return this.githubReviews.prepareGithubReviewWorkspace(entry, key, agent)
   }
 
-  /** Resolve a PR revision if the webhook omitted it (notably
-   * issue_comment), cross the CP hook/start barrier, then return the active
-   * review authority. Failure only disables structured effects; the agent turn
-   * continues, while ordinary fallback remains governed by durable formal-
-   * attempt state. */
-  private async prepareGithubTurn(entry: QueueEntry, sessionId: string): Promise<ActiveGithubTurnMeta | undefined> {
-    const hook = entry.hookContext
-    const snapshot = hook?.snapshot
-    const github = hook?.github
-    if (
-      !hook ||
-      !snapshot ||
-      !github ||
-      github.subjectKind !== 'pull_request' ||
-      github.pullNumber === undefined ||
-      (snapshot.reviewPolicy === 'off' && snapshot.reportingMode === 'off') ||
-      snapshot.gateMode !== 'informational' ||
-      snapshot.reportingMode === 'status'
-    )
-      return undefined
-    if (this.cfg.daemonId && snapshot.dispatchDaemonId !== this.cfg.daemonId) {
-      this.log.warn(`github review: stale dispatch daemon for ${hook.hookId}:${hook.deliveryKey}`)
-      return undefined
-    }
-
-    if (!github.headSha || !github.baseSha) await this.ensureGithubPullRevision(entry, false)
-
-    const trusted = hook.github!
-    if (!trusted.headSha || !trusted.baseSha || trusted.pullNumber === undefined) return undefined
-    const client = this.cpClient
-    if (!client) return undefined
-    const payload = {
-      hookId: hook.hookId,
-      agentId: hook.agentId,
-      deliveryKey: hook.deliveryKey,
-      sessionId,
-      ...(hook.event ? { event: hook.event } : {}),
-      github: { ...trusted, reportSha: trusted.reportSha ?? trusted.headSha },
-      ...snapshot
-    }
-    let started = false
-    for (let attempt = 0; attempt < 3 && !started; attempt += 1) {
-      try {
-        await client.startHook(payload)
-        started = true
-      } catch (err) {
-        if (attempt === 2) {
-          this.log.warn(`github review: hook/start rejected (${formatErr(err)})`)
-          return undefined
-        }
-        // The daemon ACK and relay rc/run-report travel on different sockets;
-        // let the accepted row land before repeating this idempotent barrier.
-        await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)))
-      }
-    }
-    if (
-      snapshot.reviewPolicy === 'off' ||
-      isGithubReviewCommentHook(hook) ||
-      !githubOpensReviewGeneration(hook.event, trusted, snapshot.reviewPolicy)
-    )
-      return undefined
-    const recoverableAttempt =
-      hook.reviewAttemptId !== undefined &&
-      hook.reviewRequestedEvent !== undefined &&
-      hook.reviewRequestedVerdict !== undefined &&
-      (hook.reviewResult === undefined || hook.reviewResult.state === 'ambiguous')
-    const active: ActiveGithubTurnMeta = {
-      entry,
-      hook,
-      snapshot,
-      repoId: trusted.repoId,
-      repoFullName: trusted.repoFullName,
-      pullNumber: trusted.pullNumber,
-      expectedHeadSha: trusted.headSha,
-      expectedBaseSha: trusted.baseSha,
-      reportSha: trusted.reportSha ?? trusted.headSha,
-      sessionId,
-      reviewState: hook.reviewAttemptId === undefined || recoverableAttempt ? 'idle' : 'done'
-    }
-    if (recoverableAttempt) await this.reconcileGithubReviewAttempt(active)
-    return active
+  private prepareGithubTurn(entry: QueueEntry, sessionId: string): Promise<ActiveGithubTurnMeta | undefined> {
+    return this.githubReviews.prepareGithubTurn(entry, sessionId)
   }
 
-  /** Store the immediate and terminal-report copies together so they cannot
-   * drift across submit and restart-recovery paths. */
   private persistGithubReviewEffect(
     active: ActiveGithubTurnMeta,
     attemptId: string,
     effect: GithubReviewEffect,
     required = false
   ): HookReviewResult {
-    const result = reviewResultForWire(effect)
-    active.hook.reviewResult = result
-    active.hook.reviewReportAttemptId = attemptId
-    active.hook.reviewReportResult = result
-    this.persistHookState(active.entry, undefined, required)
-    return result
+    return this.githubReviews.persistGithubReviewEffect(active, attemptId, effect, required)
   }
 
-  /** A daemon restart may replay an attempt after an ambiguous POST/list race.
-   * Before prompting the model, perform a GET-only marker reconciliation. A
-   * still-missing marker remains blocked; only an explicit tool invocation can
-   * cross the full reauthorization + revision fence and retry the mutation. */
-  private async reconcileGithubReviewAttempt(active: ActiveGithubTurnMeta): Promise<void> {
-    const cp = this.cpClient
-    const attemptId = active.hook.reviewAttemptId
-    const requestedEvent = active.hook.reviewRequestedEvent
-    const requestedVerdict = active.hook.reviewRequestedVerdict
-    if (!cp || !attemptId || !requestedEvent || !requestedVerdict) return
-    try {
-      const authorization: Parameters<CpClient['authorizeGithubReview']>[0] = {
-        hookId: active.hook.hookId,
-        deliveryKey: active.hook.deliveryKey,
-        attemptId,
-        requestedEvent,
-        requestedVerdict,
-        snapshot: active.snapshot
-      }
-      const orgId = this.cpAgents?.orgForAgent(active.hook.agentId) ?? this.cpCollab.orgForAgent(active.hook.agentId)
-      const authorized = orgId
-        ? await cp.authorizeGithubReview(authorization, orgId)
-        : await cp.authorizeGithubReview(authorization)
-      if (!authorizedReviewTargetMatches(active, attemptId, authorized)) {
-        this.log.warn('github review: recovery authorization returned a mismatched target')
-        return
-      }
-      const effect = await this.githubReviewClient.reconcile(
-        authorizedReviewTarget(active, attemptId, authorized, true),
-        requestedEvent,
-        requestedVerdict
-      )
-      // Reconciliation never proves a no-effect result: a visible marker is
-      // submitted; a missing/unreadable marker remains ambiguous. Persist and
-      // report both so restart completion carries the current attempt outcome
-      // and the CP reservation converges to submitted or blocked.
-      if (effect.state === 'not_submitted') return
-      const result = this.persistGithubReviewEffect(active, attemptId, effect, true)
-      const report: Parameters<CpClient['reportGithubReviewResult']>[0] = {
-        hookId: active.hook.hookId,
-        deliveryKey: active.hook.deliveryKey,
-        attemptId,
-        snapshot: active.snapshot,
-        result
-      }
-      if (orgId) await cp.reportGithubReviewResult(report, orgId)
-      else await cp.reportGithubReviewResult(report)
-      // Ambiguous keeps the same durable attempt eligible for an explicit
-      // marker-first retry; submitted is terminal for this turn.
-      active.reviewState = effect.state === 'ambiguous' ? 'idle' : 'done'
-    } catch (err) {
-      this.log.warn(`github review: replay reconciliation deferred (${formatErr(err)})`)
-    }
+  private reconcileGithubReviewAttempt(active: ActiveGithubTurnMeta): Promise<void> {
+    return this.githubReviews.reconcileGithubReviewAttempt(active)
   }
 
-  private async submitGithubReview(req: SubmitGithubReviewReq): Promise<GithubReviewEffect> {
-    const key = sessionKey(req.platform, req.channel, req.thread, req.agentId, req.transportScope)
-    const active = this.activeGithubTurnMeta.get(key)
-    if (!active || active.hook.agentId !== req.agentId) {
-      throw new Error('formal GitHub review is only available during the active PR hook turn')
-    }
-    if (isGithubReviewCommentHook(active.hook)) {
-      throw new Error('formal GitHub review is unavailable for an inline review-comment reply turn')
-    }
-    if (!reviewPolicyAllows(active.snapshot.reviewPolicy, req.event)) {
-      throw new Error(`${req.event} exceeds this hook's ${active.snapshot.reviewPolicy} review policy`)
-    }
-    if (active.reviewState !== 'idle') {
-      throw new Error('this PR hook turn already has a formal review attempt')
-    }
-    // Synchronous turn-local CAS before the first await.
-    active.reviewState = 'submitting'
-    const previousReviewState = {
-      reviewAttemptId: active.hook.reviewAttemptId,
-      reviewRequestedEvent: active.hook.reviewRequestedEvent,
-      reviewRequestedVerdict: active.hook.reviewRequestedVerdict,
-      reviewResult: active.hook.reviewResult,
-      reviewReportAttemptId: active.hook.reviewReportAttemptId,
-      reviewReportResult: active.hook.reviewReportResult
-    }
-    const recovering = active.hook.reviewAttemptId !== undefined
-    if (recovering) {
-      if (
-        active.hook.reviewRequestedEvent === undefined ||
-        active.hook.reviewRequestedVerdict === undefined ||
-        active.hook.reviewRequestedEvent !== req.event ||
-        active.hook.reviewRequestedVerdict !== req.verdict
-      ) {
-        active.reviewState = 'idle'
-        throw new Error('a recovered formal-review attempt must keep its original event and verdict')
-      }
-    } else {
-      if (!githubFallbackAllowed(active.hook)) {
-        active.reviewState = 'done'
-        throw new Error('a fresh formal-review retry requires the prior attempt to be definitively not_submitted')
-      }
-      // A prior definite no-effect attempt may have been retained only for the
-      // terminal HookReport. A fresh retry supersedes it: clear every unversioned
-      // result before the record-first write so a crash cannot mistake the old
-      // `not_submitted` outcome for proof that this new attempt had no effect.
-      delete active.hook.reviewResult
-      delete active.hook.reviewReportAttemptId
-      delete active.hook.reviewReportResult
-      active.hook.reviewRequestedEvent = req.event
-      active.hook.reviewRequestedVerdict = req.verdict
-    }
-    const attemptId = active.hook.reviewAttemptId ?? randomUUID()
-    active.hook.reviewAttemptId = attemptId
-    const entry = active.entry
-    try {
-      // RECORD-FIRST: after this point a crash/replay knows it must reconcile
-      // the marker before any possible second POST.
-      this.persistHookState(entry, undefined, true)
-    } catch (err) {
-      if (!recovering) {
-        Object.assign(active.hook, previousReviewState)
-      }
-      active.reviewState = 'idle'
-      throw new Error(`formal review durability barrier failed: ${formatErr(err)}`)
-    }
-
-    const cp = this.cpClient
-    if (!cp) {
-      active.reviewState = 'done'
-      throw new Error('control plane is not connected; formal review denied')
-    }
-    let authorized: Awaited<ReturnType<CpClient['authorizeGithubReview']>>
-    try {
-      const authorization: Parameters<CpClient['authorizeGithubReview']>[0] = {
-        hookId: active.hook.hookId,
-        deliveryKey: active.hook.deliveryKey,
-        attemptId,
-        requestedEvent: req.event,
-        requestedVerdict: req.verdict,
-        snapshot: active.snapshot
-      }
-      const orgId = this.cpAgents?.orgForAgent(req.agentId) ?? this.cpCollab.orgForAgent(req.agentId)
-      authorized = orgId
-        ? await cp.authorizeGithubReview(authorization, orgId)
-        : await cp.authorizeGithubReview(authorization)
-    } catch (err) {
-      active.reviewState = 'done'
-      throw err
-    }
-    if (!authorizedReviewTargetMatches(active, attemptId, authorized)) {
-      active.reviewState = 'done'
-      throw new Error('control plane returned a mismatched formal-review target')
-    }
-
-    const effect = await this.githubReviewClient.submit(
-      authorizedReviewTarget(active, attemptId, authorized, recovering),
-      req,
-      this.agents.get(req.agentId)?.output.showFooter
-        ? this.githubCommentAttribution(req.agentId, active.sessionId)
-        : undefined
-    )
-    const result = this.persistGithubReviewEffect(active, attemptId, effect)
-    try {
-      const report: Parameters<CpClient['reportGithubReviewResult']>[0] = {
-        hookId: active.hook.hookId,
-        deliveryKey: active.hook.deliveryKey,
-        attemptId,
-        snapshot: active.snapshot,
-        result
-      }
-      const orgId = this.cpAgents?.orgForAgent(req.agentId) ?? this.cpCollab.orgForAgent(req.agentId)
-      if (orgId) await cp.reportGithubReviewResult(report, orgId)
-      else await cp.reportGithubReviewResult(report)
-      if (effect.state === 'not_submitted') {
-        // CP proved/released the no-effect reservation; this turn may correct
-        // its input and try again with a fresh attempt id.
-        delete active.hook.reviewAttemptId
-        delete active.hook.reviewRequestedEvent
-        delete active.hook.reviewRequestedVerdict
-        delete active.hook.reviewResult
-        active.reviewState = 'idle'
-        this.persistHookState(entry)
-      } else if (effect.state === 'ambiguous') {
-        // The reservation and semantic input stay fixed. A later tool call may
-        // only reconcile that same marker (and, after a complete no-marker
-        // read plus fresh fences, retry the same logical attempt).
-        active.reviewState = 'idle'
-      } else {
-        active.reviewState = 'done'
-      }
-    } catch (err) {
-      // Completion repeats the body-free result. Submitted/definite failures
-      // never retry; an ambiguous attempt remains eligible only for the
-      // marker-first recovery path above.
-      active.reviewState = effect.state === 'ambiguous' ? 'idle' : 'done'
-      this.log.warn(`github review: immediate result report failed (${formatErr(err)})`)
-    }
-    return effect
+  private submitGithubReview(req: SubmitGithubReviewReq): Promise<GithubReviewEffect> {
+    return this.githubReviews.submitGithubReview(req)
   }
 
-  private async replyGithubReviewThreads(req: ReplyGithubReviewThreadsReq): Promise<ReplyGithubReviewThreadsResult> {
-    const key = sessionKey(req.platform, req.channel, req.thread, req.agentId, req.transportScope)
-    const active = this.activeGithubReplyBatchMeta.get(key)
-    const batch = active?.entry.hookContext?.githubReviewBatch
-    if (!active || !batch?.sealed || batch.items.length < 2 || active.entry.agentId !== req.agentId) {
-      throw new Error('batched GitHub replies are only available during the active submitted-review comment turn')
-    }
-    if (active.called) throw new Error('this GitHub review-comment batch already used its reply tool')
-    const expected = new Set(batch.items.map((item) => item.reply.reviewThreadRootCommentId))
-    const supplied = new Map<string, string>()
-    for (const reply of req.replies) {
-      if (supplied.has(reply.threadRootCommentId)) {
-        throw new Error(`duplicate GitHub review thread root ${reply.threadRootCommentId}`)
-      }
-      supplied.set(reply.threadRootCommentId, reply.body)
-    }
-    if (supplied.size !== expected.size || [...supplied].some(([root]) => !expected.has(root))) {
-      throw new Error(`reply exactly once to every authorized GitHub review thread: ${[...expected].join(', ')}`)
-    }
-    active.called = true
-    const results: ReplyGithubReviewThreadsResult['replies'] = []
-    for (const item of batch.items) {
-      const root = item.reply.reviewThreadRootCommentId
-      if (item.publishState === 'in_flight') {
-        results.push({ threadRootCommentId: root, state: 'ambiguous' })
-        continue
-      }
-      if (item.publishState === 'settled') {
-        results.push({
-          threadRootCommentId: root,
-          state: 'settled',
-          ...(item.publishedComment ? { commentId: item.publishedComment.commentId } : {})
-        })
-        continue
-      }
-      item.publishState = 'in_flight'
-      this.persistHookState(active.entry, undefined, true)
-      const published = await this.makeGithubReply(req.agentId, item.reply, active.sessionId).poster.publish(
-        supplied.get(root)!
-      )
-      if (published) item.publishedComment = published
-      item.publishState = 'settled'
-      this.persistHookState(active.entry, undefined, true)
-      results.push({
-        threadRootCommentId: root,
-        state: published ? 'published' : 'settled',
-        ...(published ? { commentId: published.commentId } : {})
-      })
-    }
-    return { replies: results }
+  private replyGithubReviewThreads(req: ReplyGithubReviewThreadsReq): Promise<ReplyGithubReviewThreadsResult> {
+    return this.githubReviews.replyGithubReviewThreads(req)
   }
 
   /** The op-switch behind {@link handleRelayMsg} (dedup handled by the caller). */
@@ -18454,48 +17823,16 @@ export class Daemon {
     )
   }
 
-  /** Build the per-turn GitHub final-answer selector and poster, tokened
-   *  via the repo-targeted gitcred mint (issues/PR write, no contents — never
-   *  enters agent env). Attribution is resolved at publish time so the completed
-   *  comment carries the session's final runtime/model selection. */
   private makeGithubReply(
     agentId: string,
     ref: GithubReplyTarget,
     sessionId: string
   ): { poster: GithubFinalPoster; collector: GithubReplyCollector } {
-    return {
-      collector: new GithubReplyCollector(),
-      poster: new GithubFinalPoster(
-        {
-          token: async () => (await this.gitCreds.getPostToken(agentId, ref.repo, ref.hookId)).token,
-          invalidateToken: (token) => this.gitCreds.invalidatePost(agentId, ref.repo, token),
-          log: { warn: (m: string) => this.log.warn(m) }
-        },
-        ref.repo,
-        ref.number,
-        () =>
-          this.agents.get(agentId)?.output.showFooter ? this.githubCommentAttribution(agentId, sessionId) : undefined,
-        ref.reviewThreadRootCommentId
-      )
-    }
+    return this.githubReviews.makeGithubReply(agentId, ref, sessionId)
   }
 
   private githubCommentAttribution(agentId: string, sessionId: string): GithubCommentAttribution {
-    const agent = this.agents.get(agentId)
-    const runtime = agent?.runtime
-    return {
-      agentName: agent?.displayName?.trim() || agent?.name || agentId,
-      agentUrl: this.agentLink(agentId),
-      runtime: runtime ? (this.runtimeNames[runtime] ?? runtime) : 'unknown',
-      model:
-        this.hostForStoredSession(agentId, sessionId)?.modelOptions?.(sessionId)?.current ??
-        agent?.runtimeOverrides?.model ??
-        'default',
-      sessionUrl: this.sessionLink(sessionId, 'github'),
-      // Same CP-resolved public avatar Slack uses for icon_url; GitHub renders it
-      // inline ahead of the footer sentence.
-      ...(agent?.iconUrl ? { iconUrl: agent.iconUrl } : {})
-    }
+    return this.githubReviews.githubCommentAttribution(agentId, sessionId)
   }
 
   /**
