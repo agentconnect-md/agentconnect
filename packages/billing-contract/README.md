@@ -14,10 +14,21 @@ feature ships**.
 Amounts are integer microUSD (1 USD = 1_000_000). Formatting is the console's
 business; arithmetic on money is the service's.
 
-## Status
+## Publishing
 
-Not on npm yet. The console consumes it as a `workspace:*` dependency; the
-private service still carries its own copy of the schemas. Publishing it (and
-switching that service to the published version) is one dependency line plus a
-release lane — see `release.config.js`, which today publishes only `daemon`,
-`cli`, and `setup`.
+`release.config.js` gives this package its own release lane, alongside `daemon`,
+`cli`, and `setup`: `scripts/publish-billing-contract-if-changed.sh` runs on every
+semantic-release, skips when nothing in `packages/billing-contract` (or the root
+files that decide how it builds) changed since the last tag, and otherwise stamps
+the release version, builds `dist/`, and publishes with npm OIDC trusted
+publishing — no token to manage.
+
+It differs from the other three lanes in one way that matters: they are
+self-contained bundles whose manifests are stripped to zero runtime deps, while
+this is a real library, so its `zod` dependency stays declared.
+
+Version numbers therefore track the monorepo's release, and land sparsely — a
+release that does not touch the contract does not republish it.
+
+The console consumes the package as `workspace:*` regardless; only the
+out-of-repo service installs it from npm.
