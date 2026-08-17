@@ -4,11 +4,12 @@
  * Blocking the main thread made every multi-statement `LocalStore` method atomic against all
  * other daemon JavaScript; awaiting lets two turns interleave between a method's statements.
  * These cases drive that interleaving on purpose, one per treatment the design records: the
- * usage compare-and-set, the transcript mutex, and an explicit transaction site.
+ * usage compare-and-set, the transcript mutex, and an explicit transaction site. The last case
+ * covers the other half of that shift: a shutdown now has to await what it used to preempt.
  */
 import { describe, expect, it } from 'vitest'
 import { sessionKey, type LocalStore } from '../src/store/local-store.js'
-import { openTestStore } from './store-support.js'
+import { openTestStore, tempStorePath } from './store-support.js'
 
 const seedSession = async (s: LocalStore, key: string, agentId: string, acpSessionId: string | null) =>
   await s.upsertSession({
@@ -110,5 +111,55 @@ describe('LocalStore under interleaved turns', () => {
     const purged = await s.listSessionPurges(10, 1_500, 'daemon-a', ['bot-a'])
     expect(purged.map((row) => row.sessionId).sort()).toEqual(['acp-tx-3', 'acp-tx-4', 'acp-tx-5'])
     await s.close()
+  })
+
+  it('drains a buffered tool body and an in-flight write when a store closes mid-activity', async () => {
+    const rejections: unknown[] = []
+    const capture = (reason: unknown) => rejections.push(reason)
+    process.on('unhandledRejection', capture)
+    // One path, opened twice: the second open is what proves the shutdown wrote rather than dropped.
+    const path = tempStorePath()
+    const s = await openTestStore(path)
+    const channel = 'C1'
+    const thread = 'T-shutdown'
+    try {
+      await s.appendTranscript({ channel, thread, ts: '1.100', sender: 'U1', kind: 'text', text: 'ask' })
+      await s.insertToolCall({
+        channel,
+        thread,
+        ts: '1.200',
+        sender: 'bot-a',
+        toolCallId: 'tc-stop',
+        title: 'Bash',
+        body: '{"status":"pending"}'
+      })
+      // Buffered, never flushed: only `close()` can still make this body durable.
+      await s.updateToolCall(channel, thread, 'bot-a', 'tc-stop', {
+        title: 'Bash',
+        body: '{"status":"completed"}'
+      })
+      // The stop arrives while this append is still on the transcript mutex.
+      const inFlight = s.appendTranscript({
+        channel,
+        thread,
+        ts: '1.300',
+        sender: 'bot-a',
+        recipient: 'U1',
+        kind: 'text',
+        text: 'answer'
+      })
+      await Promise.all([inFlight, s.close()])
+
+      const reopened = await openTestStore(path)
+      const rows = await reopened.threadTranscript(channel, thread)
+      expect(rows.map((row) => row.ts)).toEqual(['1.100', '1.200', '1.300'])
+      expect(rows.find((row) => row.kind === 'tool')?.body).toBe('{"status":"completed"}')
+      await reopened.close()
+      // A drained shutdown leaves nothing to reject after the fact.
+      await new Promise((resolve) => setImmediate(resolve))
+      expect(rejections).toEqual([])
+    } finally {
+      process.off('unhandledRejection', capture)
+    }
   })
 })

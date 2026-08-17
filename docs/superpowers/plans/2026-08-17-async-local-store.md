@@ -90,3 +90,8 @@
 - [ ] Rerun `pnpm --filter @agentconnect.md/daemon perf:postgres-capacity` and diff against the pre-refactor report: capacity rung, p95 infrastructure latency, event-loop delay p99. Record both reports next to this plan.
 - [ ] Graceful-shutdown check: a daemon stopped mid-turn drains the tool buffer and ends the pool without unhandled rejections.
 - [ ] Inspect the final diff for accidental schema or dialect changes; confirm `SCHEMA_VERSION` untouched.
+
+The post-refactor run is `2026-08-17-async-local-store-post-report.json` next to this plan. No
+pre-refactor report was ever committed, so the before/after comparison is the report's own
+`traces.syncWorker` ladder — the frozen bridge the benchmark still measures — against
+`traces.asyncPool`.
