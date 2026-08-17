@@ -38,12 +38,7 @@ import {
 import { AcpHost, turnFailureCode, turnFailureReason, type AcpPermissionPolicyEvent } from './acp/acp-host.js'
 import { probeSandboxHost, SandboxError, type SandboxMechanism, type SandboxProbe } from './acp/sandbox.js'
 import { effectiveRunInSandbox, prepareRuntimeLaunch } from './launch/prepare.js'
-import {
-  permissionModeDisplayLabel,
-  permissionPresetSettings,
-  permissionPresetValues,
-  selectedPermissionPreset
-} from './acp/permission-modes.js'
+import { permissionPresetSettings, permissionPresetValues, selectedPermissionPreset } from './acp/permission-modes.js'
 import {
   SessionManager,
   transcriptCoords,
@@ -124,6 +119,14 @@ import {
   type RouteVia
 } from './router/routing-table.js'
 import { parseCommand, type AgentCommand } from './commands/commands.js'
+import {
+  applySelect,
+  selectCardText,
+  selectDisplay,
+  selectLabel,
+  selectOptions,
+  type SelectSetters
+} from './commands/select-projection.js'
 import {
   rulesFromAgent,
   resolveCpRule,
@@ -9162,16 +9165,17 @@ export class Daemon {
     const rec = this.store.getSession(a.sessionKey)
     if (!rec) return undefined
     const info = this.statusInfoFrom(rec.agentId, a.sessionKey, rec.acpSessionId ?? undefined)
-    const { options } = this.selectOptions(a.kind, info)
+    const { options } = selectOptions(a.kind, info)
     const value = options[a.index]
     if (value === undefined) return undefined
     // Recorded only once the choice actually applied — a refused or stale select
     // changes nothing and must not read as though someone had changed it. The card is
     // still re-rendered either way, as before.
-    if (this.applySelect(a.kind, a.sessionKey, value)) this.logSessionAction(`select:${a.kind}`, a.sessionKey, a.actor)
+    if (applySelect(a.kind, a.sessionKey, value, this.selectSetters))
+      this.logSessionAction(`select:${a.kind}`, a.sessionKey, a.actor)
     const components = buildDiscordSelectComponents(a.kind, value, options)
     if (!components) return undefined
-    return { text: this.selectCardText(a.kind, value), components }
+    return { text: selectCardText(a.kind, value), components }
   }
 
   /** Record an unrouted inbound message into the transcript iff a session is
@@ -10061,7 +10065,7 @@ export class Daemon {
       const renderCard =
         selectCard && conn
           ? (kind: SelectKind, current: string | undefined, options: string[]) =>
-              selectCard(conn, msg, chromeCtx, { kind, current, options, header: this.selectCardText(kind, current) })
+              selectCard(conn, msg, chromeCtx, { kind, current, options, header: selectCardText(kind, current) })
           : undefined
       this.handleSelectCommand(
         command.kind,
@@ -10110,35 +10114,11 @@ export class Daemon {
     return true
   }
 
-  private selectLabel(kind: SelectKind): string {
-    return kind === 'model' ? 'Model' : kind === 'effort' ? 'Reasoning effort' : 'Permission mode'
-  }
-
-  /** Current value + selectable options for a select kind, from a status snapshot. */
-  private selectOptions(kind: SelectKind, info: StatusBarInfo): { current?: string; options: string[] } {
-    if (kind === 'model') return { current: info.model, options: info.models ?? [] }
-    if (kind === 'effort') return { current: info.effort, options: info.efforts ?? [] }
-    return { current: info.permissionMode, options: info.permissionModes ?? [] }
-  }
-
-  /** Apply a resolved select value to a session key via the matching sticky-override setter. */
-  private applySelect(kind: SelectKind, key: string, value: string): boolean {
-    if (kind === 'model') return this.setModelByKey(key, value)
-    if (kind === 'effort') return this.setEffortByKey(key, value)
-    return this.setPermissionModeByKey(key, value)
-  }
-
-  /** Display alias for a select value: raw modes and AgentConnect's composite Auto
-   *  preset read as their Codex names; model/effort values render verbatim. */
-  private selectDisplay(kind: SelectKind, value: string): string {
-    return kind === 'permission' ? permissionModeDisplayLabel(value) : value
-  }
-
-  /** Header line for a select card (shared by the Telegram inline-keyboard card and the
-   *  Discord button card). */
-  private selectCardText(kind: SelectKind, current: string | undefined): string {
-    const cur = current ? this.selectDisplay(kind, current) : 'default'
-    return `${this.selectLabel(kind)} — tap to switch (current: ${cur}):`
+  /** Sticky-override setters handed to the pure select projections. */
+  private readonly selectSetters: SelectSetters = {
+    model: (key, value) => this.setModelByKey(key, value),
+    effort: (key, value) => this.setEffortByKey(key, value),
+    permission: (key, value) => this.setPermissionModeByKey(key, value)
   }
 
   /**
@@ -10158,12 +10138,12 @@ export class Daemon {
     reply: (text: string) => void,
     renderCard?: (kind: SelectKind, current: string | undefined, options: string[]) => boolean
   ): void {
-    const label = this.selectLabel(kind)
+    const label = selectLabel(kind)
     const info = this.statusInfoFrom(agentId, key, acpSessionId)
-    const { current, options } = this.selectOptions(kind, info)
+    const { current, options } = selectOptions(kind, info)
     const cmd = kind === 'model' ? 'models' : kind
 
-    const disp = (v: string) => this.selectDisplay(kind, v)
+    const disp = (v: string) => selectDisplay(kind, v)
 
     if (value === null) {
       if (options.length === 0) {
@@ -10203,7 +10183,7 @@ export class Daemon {
       )
       return
     }
-    if (!this.applySelect(kind, key, resolved)) {
+    if (!applySelect(kind, key, resolved, this.selectSetters)) {
       reply('Runtime settings can only be changed by an Agent editor from the Agent page.')
       return
     }
@@ -10243,21 +10223,21 @@ export class Daemon {
       return
     }
     const info = this.statusInfoFrom(session.agentId, session.key, session.acpSessionId)
-    const { options } = this.selectOptions(kind, info)
+    const { options } = selectOptions(kind, info)
     const value = options[idx]
     if (value === undefined) {
       void conn.answerCallback(cb.id, 'Options changed — reopen the menu.')
       return
     }
-    if (!this.applySelect(kind, session.key, value)) return
+    if (!applySelect(kind, session.key, value, this.selectSetters)) return
     // Telegram names the tapping user on the callback itself; record only the applied
     // change, matching the other funnels.
     this.logSessionAction(`select:${kind}`, session.key, { userId: cb.userId })
-    void conn.answerCallback(cb.id, `${this.selectLabel(kind)} → ${value}`)
+    void conn.answerCallback(cb.id, `${selectLabel(kind)} → ${value}`)
     void conn.editCard(
       cb.channel,
       cb.messageId,
-      this.selectCardText(kind, value),
+      selectCardText(kind, value),
       telegramSelectButtons(kind, value, options)
     )
   }
