@@ -253,6 +253,15 @@ export const MemberSetListDto = z.array(MemberSetDto)
 
 export const MemberSetBody = z.object({ name: z.string().trim().min(1).max(64) })
 
+/** The operator's "the source is permanently stopped" assertion, as a query switch. It is the
+ *  move's own force contract (daemon-groups.md §3): a directly placed machine is outside the
+ *  ledger, so it holds no lease and runs no self-fence — the assertion IS the safety boundary. */
+export const ForceQuery = z.object({
+  // `z.stringbool()`, NOT `z.coerce.boolean()` — the latter truthy-coerces the STRING "false",
+  // so `?force=false` would assert the very thing the operator was declining to assert.
+  force: z.stringbool().optional()
+})
+
 /** `…/member-sets/:id/members/:daemonId` — the enrolment target. */
 export const MemberSetMemberParams = z.object({ id: z.string(), daemonId: z.string() })
 

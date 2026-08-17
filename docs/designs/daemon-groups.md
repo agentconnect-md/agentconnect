@@ -221,9 +221,11 @@ same safety rule — never commit while the old authority might still be serving
 paid for it with **preconditions instead of choreography**, so no new wire frame, fence
 column, or transition generation exists yet:
 
-- _Join_ is refused (409) while the daemon has directly placed agents, rather than
-  running the move once per agent inside one fence. The operator re-places them first,
-  with the move machinery that already exists.
+- _Join_ **is** the transition, as above: the pinned agents are detached on the machine and
+  re-placed onto the set with the membership row in one transaction, and the machine claims
+  them back as a member. What it does not carry is the "entering" claim fence — a peer can
+  win a group between the commit and the machine's re-claim, costing one extra move rather
+  than correctness. `force` is the move's own contract for a machine that cannot ack.
 - _Leave_ is refused (409) while the daemon holds a **live** duty lease, rather than
   sending a correlated withdrawal and committing on the ack. Draining the daemon, or
   simply letting its leases lapse, is the "stop and confirm" step — a lapsed lease is
@@ -248,9 +250,9 @@ Membership is likewise re-read once the connection is registered, so a change co
 during a handshake either is seen by that read or finds the connection and closes it.
 
 That is strictly narrower than §3, never wider: every transition it performs is one §3
-also permits. What is owed is the operator ergonomics — the one-action enrol-with-agents
-and drain-and-leave — which is where the correlated request, the leaving fence, and the
-transition generation earn their keep.
+also permits. What is owed is the leaving half — the one-action drain-and-leave — which is where the
+correlated withdrawal request, the leaving fence, and the transition generation earn their
+keep, plus the entering fence that would save the extra move on join.
 
 ## 4. What does not change
 

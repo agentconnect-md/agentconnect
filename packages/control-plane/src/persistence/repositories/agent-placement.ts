@@ -53,6 +53,21 @@ export async function revokeActiveWebchatMcpDelegations(
  * Conditional by design: a row some other writer has since placed elsewhere is not this
  * removal's to null, so it is left alone and reported as unsettled.
  */
+/**
+ * What a real placement change settles besides the columns, in the SAME transaction that writes
+ * them: webchat MCP delegations are placement-bound grants, and each hook's `dispatchRevision`
+ * is what makes a pre-change dispatch stale.
+ *
+ * Extracted because it now has three callers — `setPlacement`, `movePlacement`, and group
+ * enrolment — and a placement writer that forgets it leaves grants and dispatches valid across a
+ * change of who serves the agent. Call it only when the placement actually moved; re-writing the
+ * same target is not a change and must not churn revisions.
+ */
+export async function settlePlacementChange(tx: Prisma.TransactionClient, agentId: string): Promise<void> {
+  await revokeActiveWebchatMcpDelegations(tx, agentId, new Date())
+  await tx.hookDef.updateMany({ where: { agentId }, data: { dispatchRevision: { increment: 1 } } })
+}
+
 export async function settleCascadedUnplacement(tx: Prisma.TransactionClient, agentId: string): Promise<boolean> {
   const current = await lockAgentPlacement(tx, agentId)
   // A `set` agent has no daemonId for the FK to have nulled, so it is not this removal's to

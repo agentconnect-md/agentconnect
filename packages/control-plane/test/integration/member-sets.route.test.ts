@@ -12,6 +12,7 @@ import { describe, it, expect } from 'vitest'
 import { prisma } from '../setup.db.js'
 import { buildHttpApp } from '../fakes/build-http.js'
 import { seedAgent, seedDaemon } from '../fixtures/seed.js'
+import type { HttpBotOrchestrator } from '../../src/orchestrator/httpBot.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import { poolSetId } from '../fakes/member-set.js'
 
@@ -117,7 +118,9 @@ describe('member sets — the enrolment transitions (real Postgres)', () => {
     }
   })
 
-  it('refuses a daemon that still has agents pinned to it — they would become unservable', async () => {
+  it('refuses an offline daemon that cannot confirm it stopped its agents, and forces past it', async () => {
+    // §3: pinned agents come WITH the join. What blocks it is the machine being unable to
+    // acknowledge that it stopped serving them — the same boundary a machine-to-machine move has.
     const { app, close } = buildHttpApp(prisma)
     try {
       await seedDaemon(prisma, DAEMON)
@@ -126,7 +129,96 @@ describe('member sets — the enrolment transitions (real Postgres)', () => {
 
       const res = await app.inject({ method: 'PUT', url: `${ORG}/member-sets/${setId}/members/${DAEMON}` })
       expect(res.statusCode).toBe(409)
+      expect(res.json().message).toMatch(/permanently stopped/)
       expect(await prisma.memberSetMember.count()).toBe(0)
+
+      // `force=false` is DECLINING to assert, not asserting: truthy string coercion here would
+      // turn the safety switch on for anyone who spelled it out.
+      const declined = await app.inject({
+        method: 'PUT',
+        url: `${ORG}/member-sets/${setId}/members/${DAEMON}?force=false`
+      })
+      expect(declined.statusCode).toBe(409)
+      expect(await prisma.memberSetMember.count()).toBe(0)
+
+      // The operator asserts it is stopped: the agents move onto the set and the machine joins.
+      const forced = await app.inject({
+        method: 'PUT',
+        url: `${ORG}/member-sets/${setId}/members/${DAEMON}?force=true`
+      })
+      expect(forced.statusCode).toBe(200)
+      expect((forced.json() as SetBody).memberDaemonIds).toEqual([DAEMON])
+      expect(await prisma.agent.findUniqueOrThrow({ where: { id: AGENT } })).toMatchObject({
+        placementKind: 'set',
+        setId,
+        daemonId: null
+      })
+    } finally {
+      await close()
+    }
+  })
+
+  it('settles the moved agents\u2019 placement-bound state, as every other placement writer does', async () => {
+    const { app, close } = buildHttpApp(prisma)
+    try {
+      await seedDaemon(prisma, DAEMON)
+      await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+      const before = await prisma.hookDef.findMany({ where: { agentId: AGENT }, select: { dispatchRevision: true } })
+      const setId = await withSet(app)
+
+      await app.inject({ method: 'PUT', url: `${ORG}/member-sets/${setId}/members/${DAEMON}?force=true` })
+
+      // A hook dispatch prepared before the change must read stale: whoever holds the duty now is
+      // not the machine the dispatch was compiled against.
+      const after = await prisma.hookDef.findMany({ where: { agentId: AGENT }, select: { dispatchRevision: true } })
+      after.forEach((hook, i) => expect(hook.dispatchRevision).toBeGreaterThan(before[i]!.dispatchRevision))
+      // And the durable session affinity the machine owned is released rather than replayed on its
+      // next register into an owner index that no longer reflects who serves the agent.
+      expect(await prisma.assignment.count({ where: { agentId: AGENT, daemonId: DAEMON, state: 'active' } })).toBe(0)
+    } finally {
+      await close()
+    }
+  })
+
+  it('rebuilds the HTTP bots’ assign tables, so public ingress stops naming the machine', async () => {
+    // The `rc/bot-assign` table is compiled, not resolved per callback: it names the daemon the
+    // relay forwards to. Enrolment takes the agent off that machine, so leaving the table alone
+    // would keep addressing it for the whole window before the ledger grants the duty back.
+    const synced: string[] = []
+    const { app, close } = buildHttpApp(prisma, undefined, undefined, undefined, {
+      httpBot: { syncBot: async (id: string) => void synced.push(id) } as unknown as HttpBotOrchestrator
+    })
+    try {
+      await seedDaemon(prisma, DAEMON)
+      await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+      const httpBot = randomUUID()
+      const classicBot = randomUUID()
+      await prisma.bot.createMany({
+        data: [
+          { id: httpBot, orgId: DEFAULT_ORG_ID, platform: 'slack', name: 'shared', shareable: true, transport: 'http' },
+          { id: classicBot, orgId: DEFAULT_ORG_ID, platform: 'slack', name: 'classic' }
+        ]
+      })
+      await prisma.integration.createMany({
+        data: [
+          { id: randomUUID(), orgId: DEFAULT_ORG_ID, agentId: AGENT, botId: httpBot, platform: 'slack', name: 'http' },
+          {
+            id: randomUUID(),
+            orgId: DEFAULT_ORG_ID,
+            agentId: AGENT,
+            botId: classicBot,
+            platform: 'slack',
+            name: 'classic'
+          }
+        ]
+      })
+      const setId = await withSet(app)
+
+      await app.inject({ method: 'PUT', url: `${ORG}/member-sets/${setId}/members/${DAEMON}?force=true` })
+
+      // Only the HTTP one: a classic bot's egress is the daemon's own socket, with no CP-side
+      // table naming it.
+      expect(synced).toEqual([httpBot])
     } finally {
       await close()
     }

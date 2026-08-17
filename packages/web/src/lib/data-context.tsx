@@ -173,8 +173,9 @@ interface ConsoleData {
   renameGroup: (setId: string, name: string) => Promise<void>
   /** Delete an EMPTY group (409 while it has members or placed agents), then re-pull. */
   deleteGroup: (setId: string) => Promise<void>
-  /** Enroll a daemon (409 while agents are pinned to it, or it is in another group). */
-  enrollInGroup: (setId: string, daemonId: string) => Promise<void>
+  /** Enroll a daemon — agents pinned to it move onto the group with it. 409 when the machine
+   *  cannot confirm it stopped them; `force` commits on the operator's assertion that it is. */
+  enrollInGroup: (setId: string, daemonId: string, options?: { force?: boolean }) => Promise<void>
   /** Withdraw a daemon (409 while it holds a live duty lease — drain it first). */
   withdrawFromGroup: (setId: string, daemonId: string) => Promise<void>
   /** Whether the open-connector integration is configured on the CP (gates the
@@ -1265,8 +1266,8 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
   )
 
   const enrollInGroup = useCallback(
-    async (setId: string, daemonId: string) => {
-      await enrollDaemonInMemberSet(setId, daemonId)
+    async (setId: string, daemonId: string, options: { force?: boolean } = {}) => {
+      await enrollDaemonInMemberSet(setId, daemonId, options)
       settleGroupWrite()
     },
     [settleGroupWrite]

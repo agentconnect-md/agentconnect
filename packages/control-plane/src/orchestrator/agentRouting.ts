@@ -40,6 +40,26 @@ export interface RoutingTarget {
   httpBotIds: readonly string[]
 }
 
+/** The repositories that answer "which `rc/bot-assign` tables name this agent's serving daemon". */
+export interface HttpBotLookupDeps {
+  integrations: Pick<IntegrationRepo, 'listForAgent'>
+  bots: { getUnscoped(botId: string): Promise<{ transport: string } | null> }
+}
+
+/**
+ * Resolve an agent's HTTP-transport bots — the `RoutingTarget.httpBotIds` for a caller that has no
+ * move bundle to read them off. Anything that changes who serves an agent needs this, so it lives
+ * beside the convergence rather than being re-derived per caller.
+ */
+export async function httpBotIdsForAgent(deps: HttpBotLookupDeps, agentId: AgentId): Promise<string[]> {
+  const httpBotIds = new Set<string>()
+  for (const integration of await deps.integrations.listForAgent(agentId)) {
+    const bot = await deps.bots.getUnscoped(integration.botId)
+    if (bot?.transport === 'http') httpBotIds.add(integration.botId)
+  }
+  return [...httpBotIds]
+}
+
 /**
  * Push all three projections for one agent. Each job is independently caught: they are pushes
  * over a live wire, every one of them has a reconnect/replay backstop, and a transient failure in
@@ -116,17 +136,8 @@ export class AgentRoutingConverger {
   async converge(agentIds: readonly string[]): Promise<void> {
     const agents = await this.deps.agents.listByIds(agentIds as AgentId[])
     for (const agent of agents) {
-      const integrations = await this.deps.integrations.listForAgent(agent.id)
-      const httpBotIds = new Set<string>()
-      for (const integration of integrations) {
-        const bot = await this.deps.bots.getUnscoped(integration.botId)
-        if (bot?.transport === 'http') httpBotIds.add(integration.botId)
-      }
-      await convergeAgentRouting(
-        this.deps,
-        { agentId: agent.id, orgId: agent.orgId, httpBotIds: [...httpBotIds] },
-        this.deps.log
-      )
+      const httpBotIds = await httpBotIdsForAgent(this.deps, agent.id)
+      await convergeAgentRouting(this.deps, { agentId: agent.id, orgId: agent.orgId, httpBotIds }, this.deps.log)
     }
   }
 }

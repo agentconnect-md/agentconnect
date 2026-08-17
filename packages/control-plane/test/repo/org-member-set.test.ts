@@ -373,3 +373,61 @@ describe('the membership fences (real Postgres)', () => {
     expect(await sets().setIdOf(DaemonId(MEMBER_G))).toBeNull()
   })
 })
+
+describe('enrolling a daemon that still has agents pinned to it (real Postgres)', () => {
+  it('re-places them onto the set and writes the membership row in ONE transaction', async () => {
+    // §3: a pinned agent does not BLOCK the join, it comes with it. Either half alone is a state
+    // the invariants forbid — a member with a pinned agent, or agents on a set with nothing in it.
+    await prisma.daemon.create({ data: { id: MEMBER_G, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready' } })
+    const setId = (await sets().createForOrg(DEFAULT_ORG_ID, 'group-g')).id
+    const a1 = AgentId(randomUUID())
+    const a2 = AgentId(randomUUID())
+    for (const [id, name] of [
+      [a1, 'pinned-1'],
+      [a2, 'pinned-2']
+    ] as const) {
+      await agents().create({ id, orgId: ORG_X, name, runtime: 'claude', daemonId: DaemonId(MEMBER_G) })
+    }
+
+    await sets().enrollWithPlacedAgents(setId, DaemonId(MEMBER_G), [a1, a2])
+
+    expect(await sets().setIdOf(DaemonId(MEMBER_G))).toBe(setId)
+    for (const id of [a1, a2]) {
+      expect(await prisma.agent.findUniqueOrThrow({ where: { id } })).toMatchObject({
+        placementKind: 'set',
+        setId,
+        daemonId: null
+      })
+    }
+    // And the machine can now hold their duty, which is the point of the whole transition.
+    const claim = await ledger().claimAgentHome(ORG_X, a1, DaemonId(MEMBER_G), T0, LEASE_MS)
+    expect(claim).toMatchObject({ granted: true, holder: MEMBER_G })
+  })
+
+  it('refuses when an agent was pinned mid-transition rather than leaving it unservable', async () => {
+    await prisma.daemon.create({ data: { id: MEMBER_G, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready' } })
+    const setId = (await sets().createForOrg(DEFAULT_ORG_ID, 'group-g')).id
+    const named = AgentId(randomUUID())
+    const unnamed = AgentId(randomUUID())
+    await agents().create({ id: named, orgId: ORG_X, name: 'named', runtime: 'claude', daemonId: DaemonId(MEMBER_G) })
+    await agents().create({ id: unnamed, orgId: ORG_X, name: 'late', runtime: 'claude', daemonId: DaemonId(MEMBER_G) })
+
+    // The caller only knew about one; the other would be placed and unservable the moment the
+    // membership row landed, so nothing commits.
+    await expect(sets().enrollWithPlacedAgents(setId, DaemonId(MEMBER_G), [named])).rejects.toBeInstanceOf(
+      DaemonHasPlacedAgents
+    )
+    expect(await sets().setIdOf(DaemonId(MEMBER_G))).toBeNull()
+    expect(await prisma.agent.findUniqueOrThrow({ where: { id: named } })).toMatchObject({ placementKind: 'daemon' })
+  })
+
+  it('is idempotent for a daemon already in the set, and refuses one in another', async () => {
+    await prisma.daemon.create({ data: { id: MEMBER_G, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready' } })
+    const g = (await sets().createForOrg(DEFAULT_ORG_ID, 'group-g')).id
+    const h = (await sets().createForOrg(DEFAULT_ORG_ID, 'group-h')).id
+    await sets().enrollWithPlacedAgents(g, DaemonId(MEMBER_G), [])
+    await sets().enrollWithPlacedAgents(g, DaemonId(MEMBER_G), [])
+    expect(await sets().memberIdsOf(g)).toEqual([MEMBER_G])
+    await expect(sets().enrollWithPlacedAgents(h, DaemonId(MEMBER_G), [])).rejects.toBeInstanceOf(DaemonAlreadyInSet)
+  })
+})

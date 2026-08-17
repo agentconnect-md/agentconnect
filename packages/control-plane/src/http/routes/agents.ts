@@ -86,7 +86,7 @@ import { makeSessionAccessResolver } from '../session-access.js'
 import { resolveShareSet } from '../sharing.js'
 import { resolveAgentIconUrl, type IconUrlBases } from '../../agents/agent-icon.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
-import { AgentMoveConflict, AgentMoveFailed, AgentMoveService } from '../../orchestrator/agentMove.js'
+import { AgentMoveConflict, AgentMoveFailed } from '../../orchestrator/agentMove.js'
 import { AgentWakeCoordinator } from '../../orchestrator/agentWake.js'
 import { convergeIntegrationGating } from '../../orchestrator/integrationPush.js'
 import { ProtocolError } from '../../domain/errors.js'
@@ -195,6 +195,7 @@ import {
 } from '../dto/index.js'
 import { provisionDaemonConnect } from '../onboarding.js'
 import { Tag } from '../plugins/openapi.js'
+import { buildAgentMoves } from '../agent-moves.js'
 import { GithubApiError } from '../../github/api.js'
 import { LogtoApiError } from '../../github/logto-identity.js'
 import { UserAuthzDeniedError } from '../../github/user-authz.js'
@@ -1342,28 +1343,7 @@ export function agentRoutes(deps: HttpDeps) {
       }
     }
 
-    const agentMoves = new AgentMoveService({
-      agents: deps.repos.agent,
-      assignments: deps.repos.assignment,
-      integrations: deps.repos.integration,
-      integrationChannels: deps.repos.integrationChannel,
-      bots: deps.repos.bot,
-      botSecrets: deps.repos.botSecret,
-      platforms: deps.platforms,
-      specs: deps.agentSpecs,
-      crons: deps.repos.cron,
-      control: deps.control,
-      hooks: deps.hooks,
-      httpBot: deps.httpBot,
-      collabRoutes: deps.collabRoutes,
-      mutations: deps.agentMutations,
-      sessionOwners: deps.sessionOwners,
-      placement: deps.placementResolver,
-      memberSets: deps.repos.memberSet,
-      liveness: deps.liveness,
-      ...(deps.recomputeDuties ? { recomputeDuties: deps.recomputeDuties } : {}),
-      log: app.log
-    })
+    const agentMoves = buildAgentMoves(deps, app.log)
     const refreshMutationAgent = (observed: AgentRecord) => refreshAgentUnderMutation(deps.repos.agent, observed)
 
     r.post(

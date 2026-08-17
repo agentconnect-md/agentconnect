@@ -51,7 +51,7 @@ import {
   type PlacementTarget
 } from '../domain/placement.js'
 import { PLACEMENT_ONLY, type PlacementResolver } from './placementResolver.js'
-import { convergeAgentRouting } from './agentRouting.js'
+import { convergeAgentRouting, httpBotIdsForAgent } from './agentRouting.js'
 import { cronToUpsert, integrationToSpec, isGatedAgent, httpIntegrationToSpec } from './placement.js'
 import {
   mcpDefsForAgents,
@@ -121,6 +121,9 @@ export interface AgentMoveDeps {
   /** Set membership, for deciding whether a detached source is still an eligible holder of the
    *  new placement. Absent ⇒ no source is ever unstaged, the pre-pool behavior. */
   memberSets?: Pick<MemberSetRepo, 'setIdOf' | 'memberIdsOf'>
+  /** The §3 enrolment commit — placements and the membership row in one transaction. Absent ⇒
+   *  a daemon with pinned agents cannot be enrolled, which is the pre-transition behavior. */
+  memberSetWrites?: Pick<MemberSetRepo, 'enrollWithPlacedAgents'>
   /** Live-connection reads for the set-commit unstage broadcast. Absent ⇒ no member is broadcast to. */
   liveness?: DaemonLiveness
   /** Resolves the members currently serving an agent — the sources a move must quiesce when
@@ -229,6 +232,86 @@ export class AgentMoveService {
     return this.withMoveGate(agent.id, async () =>
       this.moveLocked(await this.reloadAfterGate(agent), target, editor, 'best-effort')
     )
+  }
+
+  /**
+   * Enroll a daemon that still has agents pinned to it (daemon-groups.md §3).
+   *
+   * The operator sees one action; underneath it is the move convention applied once per pinned
+   * agent. A machine that enforces duties serves only what it holds a lease for, so a pinned agent
+   * would become unservable the instant the membership row lands — which is why this is a
+   * transition and not a validation. In order:
+   *
+   * 1. take each agent's move gate, so nothing else re-places it underneath;
+   * 2. DETACH it on the machine — the same confirmed step a machine-to-machine move uses, which is
+   *    what stops runtime authority before the placement changes hands;
+   * 3. commit placements + membership in ONE transaction (the repository's).
+   *
+   * Nothing is activated here. The machine is a member now, so it claims those groups back on its
+   * next beat and re-activates them from replicas it still has — install-on-grant as a refresh.
+   *
+   * `best-effort` is the move's own force contract, for a machine that cannot acknowledge: the
+   * operator asserts it is stopped, and that assertion IS the safety boundary — a directly placed
+   * machine is outside the ledger, so it holds no lease and runs no self-fence to wait out.
+   */
+  async enrollInSet(
+    daemonId: DaemonId,
+    setId: string,
+    orgId: string,
+    sourceDetachMode: SourceDetachMode = 'required'
+  ): Promise<void> {
+    const pinned = await this.deps.agents.listForDaemon(daemonId)
+    const releases: Array<() => void> = []
+    try {
+      for (const agent of pinned) {
+        const release = this.deps.mutations.tryBeginMove(agent.id)
+        if (!release) throw new AgentMoveConflict(`${agent.name} is already being modified or moved; retry`)
+        releases.push(release)
+      }
+      for (const agent of pinned) {
+        try {
+          requireAck('source cutover', await this.detach(daemonId, agent.id, agent.orgId, { discardActiveTurns: true }))
+        } catch (err) {
+          if (sourceDetachMode === 'required') {
+            if (err instanceof AgentMoveFailed) throw err
+            throw new AgentMoveFailed(`could not stop ${agent.name} on this daemon`, err)
+          }
+          this.deps.log?.warn({ err, agentId: agent.id, daemonId }, 'group enrolment: forced past an unacked detach')
+        }
+        // Durable and hot session affinity, released exactly as a move releases it. Without this
+        // the assignment rows survive, the machine's next register replays them into the owner
+        // index, and affinity traffic keeps arriving at a daemon that may no longer hold the duty.
+        const released = await this.deps.assignments.releaseForAgent(agent.id, daemonId, new Date())
+        for (const key of released) this.deps.sessionOwners.releaseSession(key)
+      }
+      await this.deps.memberSetWrites?.enrollWithPlacedAgents(
+        setId,
+        daemonId,
+        pinned.map((a) => a.id)
+      )
+    } finally {
+      for (const release of releases) release()
+    }
+    // The agents are `set`-placed now, so their duty groups are the org's to recompute and the
+    // ledger's to grant — nothing here activates them.
+    this.deps.recomputeDuties?.(orgId)
+    // Ingress follows the HOLDER, and these agents no longer have a placement that names one — the
+    // ledger's grant does. Re-converge so the projections stop addressing the machine directly.
+    // The HTTP bots are part of that: an `rc/bot-assign` names the daemon relay callbacks go to, so
+    // leaving it alone would keep public ingress arriving at the machine we just detached from.
+    const syncedBots = new Set<string>()
+    for (const agent of pinned) {
+      // One rebuild per bot, not per agent: an assign table covers every agent on that bot already.
+      const httpBotIds = (await httpBotIdsForAgent(this.deps, agent.id).catch(() => [])).filter(
+        (botId) => !syncedBots.has(botId)
+      )
+      for (const botId of httpBotIds) syncedBots.add(botId)
+      await convergeAgentRouting(
+        this.deps,
+        { agentId: agent.id, orgId: agent.orgId, httpBotIds },
+        { warn: (obj, msg) => this.deps.log?.warn(obj, msg) }
+      ).catch(() => {})
+    }
   }
 
   /** Cold-edit any workspace definition. The daemon reconciles mode/repo/branch
