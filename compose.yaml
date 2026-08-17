@@ -128,6 +128,8 @@ services:
       - DATABASE_URL=postgresql://agentconnect:${AGENTCONNECT_POSTGRES_PASSWORD:-agentconnect-local-only}@postgres:5432/agentconnect?schema=public
       - API_KEY_PEPPER=${AGENTCONNECT_API_KEY_PEPPER:-local-only-api-key-pepper-0000000000000000}
       - RELAY_TOKEN=${AGENTCONNECT_RELAY_TOKEN:-local-only-relay-token-0000000000000000}
+      # Opt-in batch usage ingress. Passed through unset, never defaulted: a stock default would expose an authenticated write endpoint on every stack.
+      - USAGE_INGEST_TOKEN
       # Bootstrap root for DB-backed deployment secrets. These values cannot be
       # stored beside the ciphertext they unlock and therefore remain startup env.
       - SECRET_CIPHER
