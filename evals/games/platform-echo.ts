@@ -32,6 +32,9 @@ export interface PlatformEchoOutcome {
   admitted: boolean
   reason?: string
   fromAlias: string
+  /** The room this echo travelled through — one loop-guard circuit per room, so
+   *  a member of two rooms is charged against two independent budgets. */
+  room: string
 }
 
 export interface PlatformEchoOptions {
@@ -149,7 +152,8 @@ export class PlatformEcho {
               ...(ingressEventTag !== undefined ? { ingressEventTag } : {}),
               admitted: admission.admitted,
               ...(admission.admitted ? {} : { reason: admission.reason }),
-              fromAlias
+              fromAlias,
+              room: this.room.alias
             })
           })
           .catch(() => {})

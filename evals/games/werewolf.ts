@@ -179,7 +179,9 @@ export class WerewolfGame implements CollaborationGameWorld {
   private started = false
   private terminalReason: string | undefined
   private winner: 'village' | 'werewolves' | undefined
-  private readonly pendingWaves: GameWave[] = []
+  /** Waves the referee has DECIDED on but not yet handed to the runner, kept as
+   *  thunks — see {@link roomBroadcast} for why nothing may be minted early. */
+  private readonly pendingWaves: (() => GameWave)[] = []
   private readonly actions: RecordedAction[] = []
   private nightKill: { target: string; sequence: number } | undefined
   private nightProtect: string | undefined
@@ -263,7 +265,7 @@ export class WerewolfGame implements CollaborationGameWorld {
   /** Record what the daemon did with one peer wake-up. Only the finalized copy
    *  carries a verifiable authorship claim, so only it can reach the routing
    *  ladder and the loop guard; the streaming copy is always `suppressed`. */
-  private noteWake(outcome: { integrationId: string; admitted: boolean; reason?: string }): void {
+  private noteWake(outcome: { integrationId: string; admitted: boolean; reason?: string; room: string }): void {
     const player = [...this.players.values()].find((candidate) => candidate.integrationId === outcome.integrationId)
     if (!player) return
     const entry = this.wakes.get(player.alias) ?? { admitted: 0, gated: 0, suppressed: 0 }
@@ -280,6 +282,7 @@ export class WerewolfGame implements CollaborationGameWorld {
       round: this.round,
       phase: this.phase,
       agentAlias: player.alias,
+      roomId: outcome.room,
       admitted: outcome.admitted,
       ...(outcome.reason !== undefined ? { reason: outcome.reason } : {}),
       atMs: Date.now()
@@ -501,62 +504,81 @@ export class WerewolfGame implements CollaborationGameWorld {
 
   // ── referee delivery helpers ──────────────────────────────────────────────
 
-  private roomBroadcast(room: CompiledRoom, text: string): GameWave {
-    const messageId = this.world.mintMessageId(room.platform)
-    this.world.registerRoomMessage(room.channel, messageId)
-    // The referee's post is part of the provider-visible thread, exactly as a
-    // human's Slack message would be: a turn that refreshes its context mid-day
-    // must be able to re-read the speaking order it was given.
-    this.world.recordThreadMessage(room.channel, room.thread, {
-      ts: messageId,
-      text,
-      sender: this.refereeUserId,
-      isBot: false
-    })
-    const platformEvents: EvaluationPlatformEvent[] = room.memberIntegrationIds.map((integrationId) => ({
-      integrationId,
-      payload: {
-        channel: room.channel,
-        thread: room.thread,
-        messageId,
+  /**
+   * A referee room post, DEFERRED: calling this only decides the message, and
+   * the returned thunk publishes it.
+   *
+   * The referee's post is part of the provider-visible thread, exactly as a
+   * human's Slack message would be — a turn that refreshes its context mid-day
+   * must be able to re-read the speaking order it was given. That is precisely
+   * why it may not become visible early: the referee decides a phase message
+   * from inside `applyEffects`, while peer turns woken by the effect that ended
+   * the phase are still open, but its ingress is only injected with the NEXT
+   * wave. Writing the thread row at decision time let those open turns refresh
+   * onto a message the daemon had never delivered — acting on a phase change
+   * that never passed the loop guard, so the trusted-human turn that resets the
+   * automatic budget was skipped and the reply landed on the peer circuit
+   * instead. Publishing at emit time makes the thread row, the world event, and
+   * the ingress one atomic step.
+   */
+  private roomBroadcast(room: CompiledRoom, text: string): () => GameWave {
+    return () => {
+      const messageId = this.world.mintMessageId(room.platform)
+      this.world.registerRoomMessage(room.channel, messageId)
+      this.world.recordThreadMessage(room.channel, room.thread, {
+        ts: messageId,
         text,
-        sender: { id: this.refereeUserId, isBot: false }
-      }
-    }))
-    this.world.appendEvent({
-      type: 'referee.room_event',
-      origin: 'referee',
-      roomId: room.alias,
-      channel: room.channel,
-      messageId,
-      text
-    })
-    return { platformEvents, refereeEvents: [] }
+        sender: this.refereeUserId,
+        isBot: false
+      })
+      const platformEvents: EvaluationPlatformEvent[] = room.memberIntegrationIds.map((integrationId) => ({
+        integrationId,
+        payload: {
+          channel: room.channel,
+          thread: room.thread,
+          messageId,
+          text,
+          sender: { id: this.refereeUserId, isBot: false }
+        }
+      }))
+      this.world.appendEvent({
+        type: 'referee.room_event',
+        origin: 'referee',
+        roomId: room.alias,
+        channel: room.channel,
+        messageId,
+        text
+      })
+      return { platformEvents, refereeEvents: [] }
+    }
   }
 
   /** Trusted private control (§4.2): pre-addressed, excluded from ingress
-   *  scoring, tagged origin:'referee'. */
-  private privateDelivery(player: PlayerState, text: string): RefereeEvent {
-    const messageId = this.world.mintMessageId(player.dm.platform)
-    this.world.registerRoomMessage(player.dm.channel, messageId)
-    this.world.appendEvent({
-      type: 'referee.private_event',
-      origin: 'referee',
-      toAlias: player.alias,
-      channel: player.dm.channel,
-      messageId
-      // Deliberately NOT the text: private role content stays out of any layer
-      // the public scoring reads, and canaries must exist in exactly one place.
-    })
-    return {
-      targetAgentId: player.agentId,
-      platform: player.dm.platform as RefereeEvent['platform'],
-      integrationId: player.integrationId,
-      channel: player.dm.channel,
-      thread: player.dm.thread,
-      messageId,
-      text,
-      isDm: true
+   *  scoring, tagged origin:'referee'. Deferred like {@link roomBroadcast} so a
+   *  wave's ids and world events are minted in delivery order. */
+  private privateDelivery(player: PlayerState, text: string): () => RefereeEvent {
+    return () => {
+      const messageId = this.world.mintMessageId(player.dm.platform)
+      this.world.registerRoomMessage(player.dm.channel, messageId)
+      this.world.appendEvent({
+        type: 'referee.private_event',
+        origin: 'referee',
+        toAlias: player.alias,
+        channel: player.dm.channel,
+        messageId
+        // Deliberately NOT the text: private role content stays out of any layer
+        // the public scoring reads, and canaries must exist in exactly one place.
+      })
+      return {
+        targetAgentId: player.agentId,
+        platform: player.dm.platform as RefereeEvent['platform'],
+        integrationId: player.integrationId,
+        channel: player.dm.channel,
+        thread: player.dm.thread,
+        messageId,
+        text,
+        isDm: true
+      }
     }
   }
 
@@ -595,20 +617,20 @@ export class WerewolfGame implements CollaborationGameWorld {
       .filter((player) => player.role !== 'werewolf')
       .map((player) => player.alias)
     const denWolves = this.wolves().filter((wolf) => wolf.alive)
-    const wave: GameWave = { platformEvents: [], refereeEvents: [] }
-    if (denWolves.length > 0) {
-      const denPrompt = this.roomBroadcast(
-        this.wolfDen,
-        `NIGHT ${this.round}. Wolves: talk here and agree on tonight's victim. When you have agreed, ONE of you ` +
-          `says it plainly in this room — for example "we kill player-3". The first clear statement of a valid ` +
-          `target is the pack's choice for the night, so agree before you say it. ` +
-          `Targets: ${wolfTargets.join(', ')}.`
-      )
-      wave.platformEvents.push(...denPrompt.platformEvents)
-    }
+    const denPrompt =
+      denWolves.length > 0
+        ? this.roomBroadcast(
+            this.wolfDen,
+            `NIGHT ${this.round}. Wolves: talk here and agree on tonight's victim. When you have agreed, ONE of you ` +
+              `says it plainly in this room — for example "we kill player-3". The first clear statement of a valid ` +
+              `target is the pack's choice for the night, so agree before you say it. ` +
+              `Targets: ${wolfTargets.join(', ')}.`
+          )
+        : undefined
+    const privates: (() => RefereeEvent)[] = []
     const seer = this.living().find((player) => player.role === 'seer')
     if (seer) {
-      wave.refereeEvents.push(
+      privates.push(
         this.privateDelivery(
           seer,
           `NIGHT ${this.round}. Reply here naming the ONE living player you inspect tonight ` +
@@ -618,7 +640,7 @@ export class WerewolfGame implements CollaborationGameWorld {
     }
     const doctor = this.living().find((player) => player.role === 'doctor')
     if (doctor) {
-      wave.refereeEvents.push(
+      privates.push(
         this.privateDelivery(
           doctor,
           `NIGHT ${this.round}. Reply here naming the ONE living player you protect tonight ` +
@@ -626,7 +648,10 @@ export class WerewolfGame implements CollaborationGameWorld {
         )
       )
     }
-    this.pendingWaves.push(wave)
+    this.pendingWaves.push(() => ({
+      platformEvents: denPrompt ? denPrompt().platformEvents : [],
+      refereeEvents: privates.map((deliver) => deliver())
+    }))
   }
 
   private resolveNightAndQueueDay(): void {
@@ -686,13 +711,13 @@ export class WerewolfGame implements CollaborationGameWorld {
     this.phase = 'day'
     this.dayStage = 'discussion'
     this.dayVotes.clear()
-    const wave: GameWave = { platformEvents: [], refereeEvents: [] }
+    const privates: (() => RefereeEvent)[] = []
     // The seer's result is private control, delivered alongside the public day.
     if (this.nightInspect) {
       const seer = this.players.get(this.nightInspect.seer)
       const target = this.players.get(this.nightInspect.target)
       if (seer?.alive && target) {
-        wave.refereeEvents.push(
+        privates.push(
           this.privateDelivery(
             seer,
             `Inspection result: ${target.alias} is ${target.role === 'werewolf' ? 'a werewolf' : 'not a werewolf'}.`
@@ -734,8 +759,10 @@ export class WerewolfGame implements CollaborationGameWorld {
         `two sentences, and never use an @-mention. If it is not your turn yet, or you have already spoken, ` +
         `say nothing at all. The referee will ask for votes once the last speaker has finished.`
     )
-    wave.platformEvents.push(...dayPrompt.platformEvents)
-    this.pendingWaves.push(wave)
+    this.pendingWaves.push(() => {
+      const refereeEvents = privates.map((deliver) => deliver())
+      return { platformEvents: dayPrompt().platformEvents, refereeEvents }
+    })
   }
 
   /** One delivered public-room speech during the sequential discussion. */
@@ -936,9 +963,9 @@ export class WerewolfGame implements CollaborationGameWorld {
       )
       // Night 1 follows immediately after roles are delivered.
       this.queueNight()
-      return { platformEvents: opening.platformEvents, refereeEvents: roleDeliveries }
+      return { platformEvents: opening().platformEvents, refereeEvents: roleDeliveries.map((deliver) => deliver()) }
     }
-    if (this.pendingWaves.length > 0) return this.pendingWaves.shift()!
+    if (this.pendingWaves.length > 0) return this.pendingWaves.shift()!()
     // Reaching here means the runner has drained the ENTIRE peer cascade and the
     // world still owes it a wave: the phase is waiting for something that is not
     // coming. Close the phase out on the evidence rather than stalling the run —
@@ -956,7 +983,7 @@ export class WerewolfGame implements CollaborationGameWorld {
       if (this.dayStage === 'discussion') this.closeDiscussionAndQueueVote()
       else this.resolveDay()
     }
-    return this.pendingWaves.shift() ?? { platformEvents: [], refereeEvents: [] }
+    return this.pendingWaves.shift()?.() ?? { platformEvents: [], refereeEvents: [] }
   }
 
   drainOutboundEffects(): readonly RecordedOutboundEffect[] {

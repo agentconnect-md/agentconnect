@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
+import { MAX_AUTOMATIC_TURNS_PER_WINDOW } from '../../packages/daemon/src/daemon/loop-guard-scope.js'
 import { runWerewolf, werewolfDmRoomAlias, werewolfManifest } from '../games/engine.js'
 import { compileTopology } from '../games/topology.js'
 import { WerewolfGame, assignWerewolfRoles } from '../games/werewolf.js'
@@ -441,17 +442,14 @@ describe('werewolf multi-round play — night → sequential day → vote → re
     expect(result.verdict.invariants.privateLeaks).toBe(0)
   }, 300_000)
 
-  it('SCRIPTED BOUNDARY: a seven-player game exhausts the budget inside one 60s window', async () => {
-    // Actions are messages now, so a day costs the room its discussion AND its
-    // votes — roughly double the traffic the tool path charged. A scripted game
-    // finishes in about two seconds, so every round lands inside ONE 60s
-    // loop-guard window and the budget never refreshes: circuits latch at
-    // exactly MAX_AUTOMATIC_TURNS_PER_WINDOW and the later rounds are empty.
-    //
-    // This is a property of scripted SPEED, not of the design: the same table
-    // with real models takes ~90s for round 1 alone, the window rolls, and the
-    // game completes with zero gated wakes (baseline §5.4). Pinned so a change
-    // in either direction is visible.
+  it('SCRIPTED BOUNDARY: a seven-seat order fits the automatic budget, so nothing ever latches', async () => {
+    // The complement of the twelve-seat test below, and the reason the boundary
+    // is about ORDER LENGTH rather than wall-clock speed: a phase charges each
+    // player one automatic turn per peer that speaks in it, and the referee's
+    // own phase post is a trusted human turn that resets the automatic counter.
+    // Seven seats therefore keep every phase under MAX_AUTOMATIC_TURNS_PER_WINDOW
+    // no matter how fast the run is, and the game plays to a rule with no gated
+    // wake at all. Pinned so a change in either direction is visible.
     const result = await runWerewolf({
       seed: 42,
       playerCount: 7,
@@ -460,22 +458,65 @@ describe('werewolf multi-round play — night → sequential day → vote → re
       timeoutMs: 300_000
     })
     expect(result.status).toBe('passed')
+    expect(result.verdict.terminalReason).toBe('completed')
     const wakes = result.verdict.outcome.peerWakes as Record<string, { admitted: number; gated: number }>
-    const latched = result.verdict.outcome.loopGuardLatched as string[]
-    expect(latched.length).toBeGreaterThan(0)
-    expect(result.verdict.metrics.peerWakesGated).toBeGreaterThan(0)
-    // Every latched non-wolf holds exactly one circuit and stops at the budget.
+    expect(result.verdict.outcome.loopGuardLatched).toEqual([])
+    expect(result.verdict.metrics.peerWakesGated).toBe(0)
+    for (const entry of Object.values(wakes)) expect(entry.gated).toBe(0)
+
+    const events = worldEvents(result.paths.worldEvents)
+    // Per ROOM — one loop-guard circuit each — no player is charged as many as
+    // MAX_AUTOMATIC_TURNS_PER_WINDOW automatic wakes between two referee posts.
+    // That headroom is the whole claim: it is why nothing above latches.
+    const sinceReferee = new Map<string, Map<string, number>>()
+    for (const event of events) {
+      const room = String(event.roomId)
+      if (event.type === 'referee.room_event') {
+        sinceReferee.get(room)?.clear()
+        continue
+      }
+      if (event.type !== 'peer.wake' || event.admitted !== true) continue
+      const charged = sinceReferee.get(room) ?? new Map<string, number>()
+      const alias = String(event.agentAlias)
+      const count = (charged.get(alias) ?? 0) + 1
+      charged.set(alias, count)
+      sinceReferee.set(room, charged)
+      expect(count, `${alias} took ${count} automatic wakes on one ${room} budget`).toBeLessThan(
+        MAX_AUTOMATIC_TURNS_PER_WINDOW
+      )
+    }
+
+    // The wolves hold TWO circuits — the public room and the den — so only they
+    // are charged in the den at all. That is the den echo being real ingress.
     const roles = result.verdict.outcome.roles as Record<string, string>
-    for (const alias of latched.filter((name) => roles[name] !== 'werewolf')) {
-      expect(wakes[alias]!.admitted).toBe(8)
-      expect(wakes[alias]!.gated).toBeGreaterThan(0)
+    const denWakes = new Set(
+      events
+        .filter((event) => event.type === 'peer.wake' && event.roomId === 'wolf-den')
+        .map((event) => String(event.agentAlias))
+    )
+    expect([...denWakes].sort()).toEqual(
+      Object.keys(roles)
+        .filter((alias) => roles[alias] === 'werewolf')
+        .sort()
+    )
+
+    // A phase reaches a player ONLY as delivered ingress: every speech follows a
+    // DAY post and every vote follows a VOTE post. A referee message that became
+    // visible to an open turn before the daemon delivered it would show up here
+    // as a vote cast while the room was still on the DAY prompt.
+    let lastPrompt = ''
+    for (const event of events) {
+      if (event.type === 'referee.room_event' && event.roomId === 'village-square') {
+        lastPrompt = String(event.text)
+        continue
+      }
+      if (event.type !== 'platform.echo' || event.roomId !== 'village-square') continue
+      if (event.deliveryState !== 'final') continue
+      const expected = /^I vote for /.test(String(event.text)) ? /^VOTE \d+\./ : /^DAY \d+\./
+      expect(lastPrompt, `"${String(event.text)}" answered "${lastPrompt.slice(0, 20)}"`).toMatch(expected)
     }
-    // The wolves hold TWO circuits — the public room and the den — so they
-    // absorb more before latching. That is the den echo being real ingress.
-    for (const alias of Object.keys(roles).filter((name) => roles[name] === 'werewolf')) {
-      expect(wakes[alias]!.admitted).toBeGreaterThan(8)
-    }
-    // And the game still ends on a rule, with no invariant touched.
+
+    // And the game ends on a rule, with no invariant touched.
     expect(result.verdict.invariants).toMatchObject({ privateLeaks: 0, attemptedUnauthorizedEffects: 0 })
   }, 300_000)
 })
@@ -488,17 +529,15 @@ describe('werewolf day phase — natural sequential discussion driven by peer me
     const days = result.verdict.outcome.dayDiscussions as DayRecord[]
     expect(days.length).toBeGreaterThanOrEqual(1)
 
-    // The FIRST day is the one with a full budget behind it: every speech lands
-    // on the announced order, exactly once each, in order. Later scripted days
-    // run on an exhausted window (see the SCRIPTED BOUNDARY test), so they are
-    // allowed to stall — but nothing may ever speak OUT of order.
-    expect(days[0]!.outcome).toBe('order_complete')
-    expect(days[0]!.spoke).toEqual(days[0]!.order)
-    expect(days[0]!.neverSpoke).toEqual([])
+    // This table's order is shorter than the automatic budget and every phase
+    // refreshes it (see the SCRIPTED BOUNDARY test), so EVERY day completes:
+    // each speech lands on the announced order, exactly once each, in order.
     for (const day of days) {
+      expect(day.outcome).toBe('order_complete')
+      expect(day.spoke).toEqual(day.order)
+      expect(day.neverSpoke).toEqual([])
       expect(day.outOfOrder).toEqual([])
       expect(day.reachedVote).toBe(true)
-      expect(day.spoke).toEqual(day.order.slice(0, day.spoke.length))
     }
 
     const events = worldEvents(result.paths.worldEvents)
