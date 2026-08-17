@@ -8,7 +8,7 @@ import { ShimServer } from '../src/shim/server.js'
 import { ShimSession } from '../src/shim/session.js'
 import { noopClusterMetrics, type ClusterMetrics } from '../src/metrics/cluster-metrics.js'
 import type { SpawnRecord } from '../src/shim/binding.js'
-import type { PodIdentityVerifier, ShimConnection } from '../src/shim/listener.js'
+import type { PodIdentityVerifier, ShimConnection } from '../src/shim/connection.js'
 import {
   SHIM_SUBPROTOCOL,
   SHIM_TOKEN_AUDIENCE,

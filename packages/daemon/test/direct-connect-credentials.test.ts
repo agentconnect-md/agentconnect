@@ -5,7 +5,7 @@ import { K8sDriver, RUNTIME_GRANTS } from '../src/k8s/driver.js'
 import { K8sApiError } from '@agentconnect.md/k8s-client'
 import type { Sandbox, SandboxClaim } from '../src/k8s/sandbox-api.js'
 import { fakeGenerations } from './fake-generations.js'
-import type { ShimConnection } from '../src/shim/listener.js'
+import type { ShimConnection } from '../src/shim/connection.js'
 
 /**
  * The direct-connect stage: the runtime reaches its provider itself, so provider credentials

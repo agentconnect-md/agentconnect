@@ -7,7 +7,8 @@ import { LocalFileSink, applyFileSinkPayload, resolveSinkPath, FileSinkPayloadSc
 import { ShimChannel, ShimFileSink } from '../src/shim/channels.js'
 import { SANDBOX_TUNNEL_PATHS, TunnelPayloadSchema } from '../src/shim/tunnel.js'
 import { ClientTransport } from '@agentconnect.md/connection'
-import { ShimListener, type ShimConnection } from '../src/shim/listener.js'
+import type { ShimConnection } from '../src/shim/connection.js'
+import { ShimListener } from '../src/shim/listener.js'
 import { ShimClient, type ShimTransport } from '../src/shim/client.js'
 import type { ShimCapability, ShimFrame } from '../src/shim/protocol.js'
 

@@ -1,5 +1,5 @@
 import { ShimChannel, type ShimRequestOptions } from './channels.js'
-import type { ShimConnection } from './listener.js'
+import type { ShimConnection } from './connection.js'
 import type { ShimCapability, ShimEvent } from './protocol.js'
 import { parseShimFrame } from './protocol.js'
 

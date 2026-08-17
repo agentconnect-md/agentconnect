@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import type { ShimConnection } from './listener.js'
+import type { ShimConnection } from './connection.js'
 import type { ShimCapability, ShimResponse } from './protocol.js'
 import { parseShimFrame } from './protocol.js'
 import type { FileSink } from './file-sink.js'

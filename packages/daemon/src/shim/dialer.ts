@@ -1,8 +1,13 @@
-import { isAbsolute, normalize } from 'node:path'
 import { Backoff, ClientTransport, systemClock, type BackoffOpts, type Clock } from '@agentconnect.md/connection'
 import { noopClusterMetrics, type ClusterMetrics } from '../metrics/cluster-metrics.js'
 import { ShimBindingRegistry, type Binding, type SpawnRecord } from './binding.js'
-import type { PodIdentityVerifier, ShimConnection } from './listener.js'
+import {
+  DEFAULT_CREDENTIAL_TTL_MS,
+  sanitizeWorkspaceRoot,
+  withoutToken,
+  type PodIdentityVerifier,
+  type ShimConnection
+} from './connection.js'
 import {
   SHIM_SUBPROTOCOL,
   SHIM_TOKEN_AUDIENCE,
@@ -43,18 +48,6 @@ interface SupervisedDial {
   ready: Promise<ShimConnection>
   resolveReady: (connection: ShimConnection) => void
   rejectReady: (error: Error) => void
-}
-
-const DEFAULT_CREDENTIAL_TTL_MS = 10 * 60_000
-
-function withoutToken(message: string, token: string): string {
-  return token.length > 0 ? message.split(token).join('[redacted]') : message
-}
-
-function sanitizeWorkspaceRoot(reported: string | undefined): string | undefined {
-  if (!reported || !isAbsolute(reported)) return undefined
-  const normalized = normalize(reported).replace(/\/+$/, '')
-  return normalized.length > 0 ? normalized : undefined
 }
 
 /** The daemon-side owner of outbound sandbox channels. */

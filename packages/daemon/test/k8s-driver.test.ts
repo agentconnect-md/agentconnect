@@ -10,7 +10,7 @@ import { GuardedResumeRejectedError, OperatingModeRejectedError } from '../src/k
 import { K8sApiError } from '@agentconnect.md/k8s-client'
 import type { Sandbox, SandboxClaim } from '../src/k8s/sandbox-api.js'
 import type { SpawnRecord } from '../src/shim/binding.js'
-import type { ShimConnection } from '../src/shim/listener.js'
+import type { ShimConnection } from '../src/shim/connection.js'
 
 /** A SandboxApi stand-in whose object state a test drives directly. */
 function fakeApi(options: { ready?: boolean; mode?: 'Running' | 'Suspended'; templateImage?: string } = {}) {
