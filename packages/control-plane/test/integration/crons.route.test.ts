@@ -392,13 +392,15 @@ describe('cron replication CP→daemon (REST → cron/upsert·remove)', () => {
     await app.app.inject({ method: 'PUT', url: `${ORG}/crons/${cronId}`, payload: body(agentId) })
     await app.app.inject({ method: 'DELETE', url: `${ORG}/crons/${cronId}` })
 
-    // The audit append is fire-and-forget off the request path — poll for it.
+    // Both appends are fire-and-forget: order is not guaranteed, and a prior test's row can outlive the sweep.
     await vi.waitFor(async () => {
-      const rows = await prisma.auditEvent.findMany({ where: { kind: 'cron_change' }, orderBy: { id: 'asc' } })
-      expect(rows).toHaveLength(2)
-      expect(rows.map((r) => r.frameType)).toEqual(['cron/upsert', 'cron/remove'])
-      expect((rows[0]!.details as { cronId: string }).cronId).toBe(cronId)
-      expect(rows[0]!.agentId).toBe(agentId)
+      const rows = await prisma.auditEvent.findMany({
+        where: { kind: 'cron_change', details: { path: ['cronId'], equals: cronId } }
+      })
+      expect(rows.sort((x, y) => (x.frameType ?? '').localeCompare(y.frameType ?? ''))).toMatchObject([
+        { frameType: 'cron/remove', agentId },
+        { frameType: 'cron/upsert', agentId }
+      ])
     })
   })
 })
