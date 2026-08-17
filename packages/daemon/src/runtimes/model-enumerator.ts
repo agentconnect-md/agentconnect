@@ -1,11 +1,16 @@
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { RuntimeDef } from '../config/config-schema.js'
 import type { Logger } from '../log.js'
 import type { SandboxMechanism } from '../acp/sandbox.js'
-import { AcpHost } from '../acp/acp-host.js'
-import { preparedProbeLaunch, probeCallbacks, type ProbeHostPolicy, type ProbeLaunchPlan } from './runtime-prober.js'
+import type { AcpProbeClient } from '../acp/probe-client.js'
+import {
+  preparedProbeLaunch,
+  probeCallbacks,
+  type ProbeHostFactory,
+  type ProbeHostPolicy,
+  type ProbeLaunchPlan
+} from './runtime-prober.js'
 import { capsFromConfigOptions } from './config-caps.js'
 import type { EnumerateFn } from './model-catalog.js'
 
@@ -23,13 +28,12 @@ import type { EnumerateFn } from './model-catalog.js'
  */
 export interface ModelEnumeratorDeps {
   log?: Logger
-  isolateAccountApps?: boolean
   sandboxMechanism?: SandboxMechanism
   daemonRoot?: string
   agentsRoot?: string
   mcpSocketPath?: string
-  /** Test seam — mirrors ProbeOptions.hostFactory. */
-  hostFactory?: (rt: RuntimeDef, id: string, cwd: string, policy: ProbeHostPolicy) => AcpHost
+  /** Constructs the probe client — `defaultProbeHostFactory()` in production. */
+  hostFactory: ProbeHostFactory
 }
 
 /** Kept short so restore-before-kill always fits inside the total budget. */
@@ -45,14 +49,14 @@ function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
 
 export function makeModelEnumerator(deps: ModelEnumeratorDeps): EnumerateFn {
   return async (runtimeId, rt, modelIds, budget) => {
-    if (!deps.sandboxMechanism && !deps.hostFactory) {
+    if (!deps.sandboxMechanism) {
       deps.log?.debug(`catalog: ${runtimeId} skipped because no supported OS sandbox is available`)
       return undefined
     }
     const scope = mkdtempSync(join(tmpdir(), 'ac-catalog-'))
     const cwd = join(scope, 'workspace')
     mkdirSync(cwd, { recursive: true })
-    let host: AcpHost | undefined
+    let host: AcpProbeClient | undefined
     try {
       let launch: ProbeLaunchPlan | undefined
       try {
@@ -79,15 +83,7 @@ export function makeModelEnumerator(deps: ModelEnumeratorDeps): EnumerateFn {
         ...(launch.sandbox ? { sandbox: launch.sandbox } : {})
       }
       const effectiveRuntime = launch.runtime ?? rt
-      host = deps.hostFactory
-        ? deps.hostFactory(effectiveRuntime, runtimeId, cwd, policy)
-        : new AcpHost(effectiveRuntime, {
-            onUpdate: () => {},
-            log: deps.log,
-            runtimeId,
-            isolateAccountApps: deps.isolateAccountApps,
-            ...policy
-          })
+      host = deps.hostFactory(effectiveRuntime, runtimeId, cwd, policy)
       const activeHost = host
 
       const deadline = Date.now() + budget.totalMs
@@ -95,6 +91,8 @@ export function makeModelEnumerator(deps: ModelEnumeratorDeps): EnumerateFn {
       const sid = await withTimeout(activeHost.newSession(cwd, []), budget.perModelMs, `${runtimeId} session/new`)
       const initial = activeHost.sessionConfigOptions?.(sid)
       if (!initial) return { models: [], aborted: 'runtime advertises no session config options' }
+      const setSessionModel = activeHost.setSessionModel?.bind(activeHost)
+      if (!setSessionModel) return { models: [], aborted: 'runtime cannot switch the session model' }
       const initialModel = capsFromConfigOptions(initial).currentModel
 
       const collected: Awaited<ReturnType<EnumerateFn>> & object = { models: [] }
@@ -105,7 +103,7 @@ export function makeModelEnumerator(deps: ModelEnumeratorDeps): EnumerateFn {
           break
         }
         try {
-          await withTimeout(activeHost.setSessionModel(sid, id), budget.perModelMs, `${runtimeId} set model ${id}`)
+          await withTimeout(setSessionModel(sid, id), budget.perModelMs, `${runtimeId} set model ${id}`)
         } catch (err) {
           deps.log?.debug(`catalog: ${runtimeId} model "${id}" skipped: ${(err as Error).message}`)
           continue
@@ -138,11 +136,9 @@ export function makeModelEnumerator(deps: ModelEnumeratorDeps): EnumerateFn {
         initialModel &&
         initialModel !== capsFromConfigOptions(activeHost.sessionConfigOptions?.(sid) ?? []).currentModel
       ) {
-        await withTimeout(
-          activeHost.setSessionModel(sid, initialModel),
-          RESTORE_GRACE_MS,
-          `${runtimeId} restore model`
-        ).catch((err) => deps.log?.debug(`catalog: ${runtimeId} restore selection failed: ${(err as Error).message}`))
+        await withTimeout(setSessionModel(sid, initialModel), RESTORE_GRACE_MS, `${runtimeId} restore model`).catch(
+          (err) => deps.log?.debug(`catalog: ${runtimeId} restore selection failed: ${(err as Error).message}`)
+        )
       }
       return collected
     } finally {
