@@ -228,6 +228,14 @@ export class PgMemberSetRepo implements MemberSetRepo {
       const live = Number(held?.n ?? 0n)
       if (live > 0) throw new DaemonHoldsDuty(daemonId, live)
       await tx.memberSetMember.deleteMany({ where: { daemonId } })
+      // Vacate what it still nominally holds, as §3's commit step says. Every one of these is
+      // already lapsed — the check above just proved it — so this takes nothing from anyone; what
+      // it removes is the ex-member's ability to REVIVE them, since renewal is holder-conditional
+      // and carries no expiry predicate. `term` is untouched: monotonicity is the whole token.
+      await tx.dutyGroup.updateMany({
+        where: { holder: daemonId },
+        data: { holder: null, expiresAt: null, confirmedTerm: null, confirmedHolder: null }
+      })
     })
   }
 }

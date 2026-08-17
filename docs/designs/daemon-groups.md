@@ -238,7 +238,10 @@ taken **inside the transaction that writes**, under a per-daemon advisory lock e
 of "is this daemon in a set" also takes — enrolment, withdrawal, the `daemon`-placement
 guard, and the ledger's two claim paths. Without it a placement reading "in no set" and an
 enrolment reading "nothing pinned here" both commit, or a claim lands a live lease on a
-member a withdrawal has just decided was idle. The set's own row carries the second fence:
+member a withdrawal has just decided was idle. Renewal is one of those writers and not
+obviously so: it carries no expiry predicate, so it REVIVES every group its holder still
+names — which is why the withdrawal also vacates what is left on commit, exactly as the
+transition above says. The set's own row carries the second fence:
 `FOR SHARE` on every path that adds a reference to it, `FOR UPDATE` on the delete, so a
 placement cannot slip past the delete's reference count and be silently `SET NULL`ed.
 Membership is likewise re-read once the connection is registered, so a change committing

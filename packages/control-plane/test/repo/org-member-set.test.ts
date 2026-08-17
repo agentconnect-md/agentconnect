@@ -308,6 +308,30 @@ describe('the membership fences (real Postgres)', () => {
     expect(await sets().setIdOf(DaemonId(MEMBER_G))).toBe(setId)
   })
 
+  it('a renewal cannot revive a lapsed lease across a withdrawal', async () => {
+    // Renewal carries no expiry predicate — it revives every row this holder still names — so it
+    // is a lease-CREATING write as far as withdrawal is concerned. Both take the daemon fence, and
+    // the commit vacates what is left, so a beat landing either side cannot resurrect the holding.
+    await prisma.daemon.create({ data: { id: MEMBER_G, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready' } })
+    const setId = (await sets().createForOrg(DEFAULT_ORG_ID, 'group-g')).id
+    await sets().enroll(setId, DaemonId(MEMBER_G))
+    const agentId = await setAgent(DEFAULT_ORG_ID, setId, 'lapsing')
+    await ledger().claimAgentHome(ORG_X, agentId, DaemonId(MEMBER_G), T0, LEASE_MS)
+
+    const afterLapse = new Date(T0.getTime() + LEASE_MS + 1)
+    const [withdrawal] = await Promise.allSettled([
+      sets().withdraw(DaemonId(MEMBER_G), afterLapse),
+      ledger().renewHeld(DaemonId(MEMBER_G), afterLapse, LEASE_MS)
+    ])
+    // Whichever order they took, the forbidden pair — a live lease held by a non-member — is out.
+    const stillMember = (await sets().setIdOf(DaemonId(MEMBER_G))) !== null
+    const stillLive = (await ledger().listHeldBy(DaemonId(MEMBER_G))).filter(
+      (g) => g.expiresAt !== null && g.expiresAt > afterLapse
+    )
+    expect(stillMember || stillLive.length === 0).toBe(true)
+    if (withdrawal.status === 'fulfilled') expect(stillLive).toEqual([])
+  })
+
   it('refuses withdrawal while a live lease is held, and takes it once the lease lapses', async () => {
     await prisma.daemon.create({ data: { id: MEMBER_G, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready' } })
     const setId = (await sets().createForOrg(DEFAULT_ORG_ID, 'group-g')).id
