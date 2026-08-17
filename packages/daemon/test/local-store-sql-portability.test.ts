@@ -7,8 +7,8 @@
  * Only constructs the pool worker does NOT rewrite are listed. `INSERT OR IGNORE`,
  * `BEGIN IMMEDIATE`, `INTEGER PRIMARY KEY AUTOINCREMENT`, `PRAGMA user_version`,
  * `sqlite_master`, `LIMIT -1 OFFSET` and `length(CAST(x AS BLOB))` are translated in
- * `postgres-store-worker.js#rewrite` and stay legal. Extend that list only by making a
- * construct portable in the SQL — never by teaching the worker another function name.
+ * `postgres-dialect.ts#rewrite` and stay legal. Extend that list only by making a
+ * construct portable in the SQL — never by teaching the dialect another function name.
  */
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
