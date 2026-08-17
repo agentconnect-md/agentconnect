@@ -134,7 +134,8 @@ export default function DaemonsView() {
 function GroupsSection({ groups, daemons }: { groups: MemberSetRow[]; daemons: DaemonRow[] }) {
   const { openModal } = useModal()
   // Experimental: the surface exists in every build and appears only where the deployment asked
-  // for it. The Control Plane's routes are absent there too, so this hides no working door.
+  // for it. The Control Plane serves member sets either way — this hides the console entry point,
+  // not the feature, which is what keeps one server to reason about.
   if (!experimentEnabled('daemon-groups')) return null
   if (!daemons.some((d) => !d.pool) && groups.length === 0) return null
 
