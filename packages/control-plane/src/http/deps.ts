@@ -72,6 +72,7 @@ import type { AgentSpecAssembler } from '../orchestrator/agentSpecAssembler.js'
 import type { RelayControlSender } from '../orchestrator/relayControl.js'
 import type { HttpBotOrchestrator } from '../orchestrator/httpBot.js'
 import type { CollabRoutesService } from '../orchestrator/collabRoutes.service.js'
+import type { ClusterUsageReporterIdentity } from '../cluster/index.js'
 import type { AgentMutationGate } from '../orchestrator/agentMutationGate.js'
 import type { SessionEventSink } from '../events/sink.js'
 import type { HumanAuthConfig } from './plugins/auth.js'
@@ -298,6 +299,9 @@ export interface HttpDeps {
   collabRoutes: CollabRoutesService
   /** Process-local exclusive move vs shared CRUD gate; valid with one active CP writer. */
   agentMutations: AgentMutationGate
+  /** Verifies an install-level usage reporter's projected identity. Absent ⇒ this deployment
+   *  runs no reporter and the usage-ingest route refuses everything. */
+  clusterUsageReporter?: ClusterUsageReporterIdentity
   /** Hot assignment-owner index paired with the durable AssignmentRepo. */
   sessionOwners: { releaseSession(key: SessionKey): void }
   /** Compiles hooks into relay rules and keeps the pool converged — hook CRUD

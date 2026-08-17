@@ -1764,7 +1764,7 @@ export interface UsageAggregate {
 
 export interface SessionUsageRepo {
   /** Upsert a session's cumulative usage (idempotent on `(agentId, sessionId)`). */
-  record(input: SessionUsageInput): Promise<void>
+  record(input: SessionUsageInput): Promise<'recorded' | 'unknown-agent'>
   /** Read one session's latest cumulative usage snapshot. */
   get(agentId: AgentId, sessionId: string): Promise<SessionUsageCounts | null>
   /** Aggregate usage for an org over sessions active at/after `since` (range window).

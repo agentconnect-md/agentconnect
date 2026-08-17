@@ -35,7 +35,11 @@ import { LogtoIdentityService, resolveLogtoMgmtConfig } from './github/logto-ide
 import { GithubUserAuthzService } from './github/user-authz.js'
 import { type Clock, systemClock } from './domain/clock.js'
 import { K8sHttp } from '@agentconnect.md/k8s-client'
-import { ClusterDaemonIdentityService, loadClusterAccess } from './cluster/index.js'
+import {
+  ClusterDaemonIdentityService,
+  ClusterUsageReporterIdentityService,
+  loadClusterAccess
+} from './cluster/index.js'
 
 import {
   PgDaemonRepo,
@@ -406,6 +410,12 @@ export function buildContainer(
   const clusterIdentity =
     clusterAccess && clusterHttp
       ? new ClusterDaemonIdentityService(clusterHttp, repos.daemon, clusterAccess.namespace)
+      : undefined
+  // The usage reporter's identity, when a deployment runs one. Same namespace as the pool: a
+  // reporter is an install-level component, not an org's. Undefined ⇒ nothing may report usage.
+  const clusterUsageReporter =
+    clusterAccess && clusterHttp
+      ? new ClusterUsageReporterIdentityService(clusterHttp, clusterAccess.namespace)
       : undefined
   const auth = new DaemonAuthService(
     codec,
@@ -1094,6 +1104,7 @@ export function buildContainer(
     httpBot,
     collabRoutes,
     agentMutations,
+    ...(clusterUsageReporter ? { clusterUsageReporter } : {}),
     sessionOwners: connReg,
     hooks: hookService,
     ...(githubRunReporter ? { kickGithubRunReporter: () => githubRunReporter.kick() } : {}),

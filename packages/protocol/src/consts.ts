@@ -232,6 +232,20 @@ export const CP_TOKEN_AUDIENCE = 'ac-control-plane'
  */
 export const CLOUD_DAEMON_SA_NAME = 'ac-cloud-daemon'
 
+/**
+ * ServiceAccount name of an install-level **usage reporter** — whatever a deployment runs to
+ * meter model traffic on its own and report it, when it runs one at all. Deliberately named for
+ * the role rather than any implementation: same neutrality as the key-server seam, which the
+ * same class of component sits behind.
+ *
+ * It authenticates the way a pool member does (kubelet-projected token, audience
+ * {@link CP_TOKEN_AUDIENCE}, verified by TokenReview) and the SA name is what tells them apart:
+ * a reporter is NOT a daemon. It never registers, holds no duty and receives no orchestration —
+ * it only reports usage, for every org, so nothing about it is per-connection tenant scoped.
+ * Shared for the same reason as the names above: one constant, or it eventually holds two values.
+ */
+export const USAGE_REPORTER_SA_NAME = 'ac-usage-reporter'
+
 /** Where the deployment projects that token into the daemon pod, and where the daemon reads it
  *  from. Not part of the verification, but the same two-sided agreement: the mounter and the
  *  reader are both in this repo, so one definition beats a comment asking them to match. */

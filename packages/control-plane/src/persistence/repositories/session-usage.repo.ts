@@ -44,7 +44,11 @@ function agentViewerSql(orgId: OrgId, viewer?: ViewCtx): Prisma.Sql {
 export class PgSessionUsageRepo implements SessionUsageRepo {
   constructor(private readonly db: PrismaLike) {}
 
-  async record(input: SessionUsageInput): Promise<void> {
+  /** `'unknown-agent'` when the agent is gone — a report can outlive the agent it measured
+   *  (deleted between the metering and the report), and losing one snapshot must not fail a
+   *  whole batch. Prisma's constraint is the authority here rather than a preceding read, so
+   *  there is no window between checking and writing. */
+  async record(input: SessionUsageInput): Promise<'recorded' | 'unknown-agent'> {
     const u = input.usage
     // Only-provided fields win; absent counts default to 0 (or null for the
     // context/cost snapshot), so a runtime that reports partial usage is fine.
@@ -64,38 +68,46 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
       lastActivityAt: input.lastActivityAt
     }
     const key = { agentId_sessionId: { agentId: input.agentId, sessionId: input.sessionId } }
-    // `startedAt` defaults to now() on first insert (the session's first-seen);
-    // never touched on update, so it stays the earliest report.
-    await this.db.sessionUsage.upsert({
-      where: key,
-      create: { agentId: input.agentId, sessionId: input.sessionId, ...fields },
-      update: fields
-    })
-    // Usage timeline: each report carries cumulative counters plus the model for
-    // the interval that just ended. Readers diff consecutive rows, so model
-    // switches retain their own deltas while duplicate deliveries stay idempotent.
-    const sample = {
-      model: input.model ?? null,
-      cumulativeTotalTokens: fields.totalTokens,
-      cumulativeInputTokens: fields.inputTokens,
-      cumulativeOutputTokens: fields.outputTokens,
-      cumulativeThoughtTokens: fields.thoughtTokens,
-      cumulativeCachedReadTokens: fields.cachedReadTokens,
-      cumulativeCachedWriteTokens: fields.cachedWriteTokens,
-      cumulativeCost: fields.costAmount
+    try {
+      // `startedAt` defaults to now() on first insert (the session's first-seen);
+      // never touched on update, so it stays the earliest report.
+      await this.db.sessionUsage.upsert({
+        where: key,
+        create: { agentId: input.agentId, sessionId: input.sessionId, ...fields },
+        update: fields
+      })
+      // Usage timeline: each report carries cumulative counters plus the model for
+      // the interval that just ended. Readers diff consecutive rows, so model
+      // switches retain their own deltas while duplicate deliveries stay idempotent.
+      const sample = {
+        model: input.model ?? null,
+        cumulativeTotalTokens: fields.totalTokens,
+        cumulativeInputTokens: fields.inputTokens,
+        cumulativeOutputTokens: fields.outputTokens,
+        cumulativeThoughtTokens: fields.thoughtTokens,
+        cumulativeCachedReadTokens: fields.cachedReadTokens,
+        cumulativeCachedWriteTokens: fields.cachedWriteTokens,
+        cumulativeCost: fields.costAmount
+      }
+      await this.db.sessionSpend.upsert({
+        where: {
+          agentId_sessionId_at: { agentId: input.agentId, sessionId: input.sessionId, at: input.lastActivityAt }
+        },
+        create: {
+          agentId: input.agentId,
+          sessionId: input.sessionId,
+          at: input.lastActivityAt,
+          ...sample
+        },
+        update: sample
+      })
+    } catch (err) {
+      // P2003 = foreign key violation, i.e. no such agent. Anything else is a real failure and
+      // must surface, so the caller retries rather than counting a lost report as handled.
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2003') return 'unknown-agent'
+      throw err
     }
-    await this.db.sessionSpend.upsert({
-      where: {
-        agentId_sessionId_at: { agentId: input.agentId, sessionId: input.sessionId, at: input.lastActivityAt }
-      },
-      create: {
-        agentId: input.agentId,
-        sessionId: input.sessionId,
-        at: input.lastActivityAt,
-        ...sample
-      },
-      update: sample
-    })
+    return 'recorded'
   }
 
   async get(agentId: AgentId, sessionId: string): Promise<SessionUsageCounts | null> {

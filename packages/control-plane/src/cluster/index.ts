@@ -5,3 +5,4 @@ export {
   parseServiceAccountSubject,
   reviewedPodUid
 } from './daemon-identity.js'
+export { ClusterUsageReporterIdentityService, type ClusterUsageReporterIdentity } from './usage-reporter-identity.js'

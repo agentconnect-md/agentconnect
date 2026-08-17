@@ -41,6 +41,32 @@ export function reviewedPodUid(extra: Record<string, string[]> | undefined): str
   return values?.length === 1 && values[0] ? values[0] : null
 }
 
+/** The reviewed subject of an `ac-*` projected token, or null when the API server refuses it.
+ *  Shared so every principal that authenticates this way runs the identical check — the
+ *  audience assertion below is the part a re-implementation would quietly drop. */
+export async function reviewProjectedToken(
+  http: K8sHttp,
+  token: string
+): Promise<{ namespace: string; serviceAccount: string; extra?: Record<string, string[]> } | null> {
+  const review = await http.json<TokenReviewResponse>({
+    method: 'POST',
+    path: '/apis/authentication.k8s.io/v1/tokenreviews',
+    body: {
+      apiVersion: 'authentication.k8s.io/v1',
+      kind: 'TokenReview',
+      spec: { token, audiences: [CP_TOKEN_AUDIENCE] }
+    }
+  })
+  const status = review.status ?? {}
+  if (status.authenticated !== true) return null
+  // Asserted rather than inferred from `authenticated`: the API server echoes the audiences the
+  // token is actually valid for, and only ours may authenticate here.
+  if (!status.audiences?.includes(CP_TOKEN_AUDIENCE)) return null
+  const subject = parseServiceAccountSubject(status.user?.username)
+  if (!subject) return null
+  return { ...subject, ...(status.user?.extra ? { extra: status.user.extra } : {}) }
+}
+
 export class ClusterDaemonIdentityService implements ClusterDaemonIdentity {
   constructor(
     private readonly http: K8sHttp,
@@ -51,24 +77,10 @@ export class ClusterDaemonIdentityService implements ClusterDaemonIdentity {
   ) {}
 
   async verify(token: string, claim?: { daemonId?: string }): Promise<VerifiedClusterDaemon | null> {
-    const review = await this.http.json<TokenReviewResponse>({
-      method: 'POST',
-      path: '/apis/authentication.k8s.io/v1/tokenreviews',
-      body: {
-        apiVersion: 'authentication.k8s.io/v1',
-        kind: 'TokenReview',
-        spec: { token, audiences: [CP_TOKEN_AUDIENCE] }
-      }
-    })
-    const status = review.status ?? {}
-    if (status.authenticated !== true) return null
-    // Asserted rather than inferred from `authenticated`: the API server echoes the
-    // audiences the token is actually valid for, and only ours may authenticate here.
-    if (!status.audiences?.includes(CP_TOKEN_AUDIENCE)) return null
-    const subject = parseServiceAccountSubject(status.user?.username)
+    const subject = await reviewProjectedToken(this.http, token)
     if (!subject) return null
     if (subject.serviceAccount !== CLOUD_DAEMON_SA_NAME || subject.namespace !== this.poolNamespace) return null
-    const podUid = reviewedPodUid(status.user?.extra)
+    const podUid = reviewedPodUid(subject.extra)
     if (!podUid) return null
     return this.bindPoolMember(subject.namespace, subject.serviceAccount, podUid, claim?.daemonId)
   }
