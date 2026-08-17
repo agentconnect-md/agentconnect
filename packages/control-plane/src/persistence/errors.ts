@@ -57,6 +57,40 @@ export class MemberSetInUse extends Error {
 }
 
 /**
+ * Thrown by `enrollOperator` when the daemon still has agents pinned directly to it. A set member
+ * serves only what it holds a lease for, so those agents would be placed and unservable the moment
+ * the membership row landed (docs/designs/daemon-groups.md §3) — they are re-placed onto the set
+ * first. Taken under the per-daemon fence, so it cannot race a concurrent placement.
+ */
+export class DaemonHasPlacedAgents extends Error {
+  readonly code = 'DAEMON_HAS_PLACED_AGENTS' as const
+  constructor(
+    readonly daemonId: string,
+    readonly placed: number
+  ) {
+    super(`daemon ${daemonId} still has ${placed} directly placed agent(s)`)
+    this.name = 'DaemonHasPlacedAgents'
+  }
+}
+
+/**
+ * Thrown by `withdraw` when the daemon still holds a live duty lease. Committing the withdrawal
+ * then would let a successor claim work the leaver may still be running — the split the ledger
+ * exists to prevent (§3). A lapsed lease is not this: it is strictly later than the member's own
+ * self-fence, so by then it has provably stopped serving.
+ */
+export class DaemonHoldsDuty extends Error {
+  readonly code = 'DAEMON_HOLDS_DUTY' as const
+  constructor(
+    readonly daemonId: string,
+    readonly held: number
+  ) {
+    super(`daemon ${daemonId} still holds ${held} live duty group(s)`)
+    this.name = 'DaemonHoldsDuty'
+  }
+}
+
+/**
  * Thrown by the placement writers when a `daemon` placement names a machine that is in a member
  * set (docs/designs/daemon-groups.md §3). A set member serves only what it holds a lease for, so
  * an agent pinned to one would be unservable — the agent belongs on the set instead.

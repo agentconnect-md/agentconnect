@@ -33,7 +33,12 @@ import type { ZodTypeProvider } from '../plugins/zod.js'
 import { Tag } from '../plugins/openapi.js'
 import type { HttpDeps } from '../deps.js'
 import { DaemonId, type OrgId } from '../../domain/ids.js'
-import { MemberSetInUse, MemberSetTenancyMismatch } from '../../persistence/errors.js'
+import {
+  DaemonHasPlacedAgents,
+  DaemonHoldsDuty,
+  MemberSetInUse,
+  MemberSetTenancyMismatch
+} from '../../persistence/errors.js'
 import { orgOf, denyViewerWrite } from '../rbac.js'
 import {
   MemberSetBody,
@@ -191,14 +196,14 @@ export function memberSetRoutes(deps: HttpDeps) {
         }
         if (daemon.memberSetId === set.id) return toDto(set)
         if (daemon.memberSetId) return conflict(reply, 'the daemon is already in another member set')
-        // A pinned agent on a machine that enforces duties is placed and unservable at once (§3).
-        const pinned = await deps.repos.agent.listForDaemon(daemonId)
-        if (pinned.length > 0) {
-          return conflict(reply, `move this daemon's ${pinned.length} placed agent(s) onto a member set first`)
-        }
+        // Every precondition is the repository's, taken with the row under the per-daemon fence —
+        // a check made out here could only be re-decided by a concurrent placement (§3).
         try {
-          await deps.repos.memberSet.enroll(set.id, daemonId)
+          await deps.repos.memberSet.enrollOperator(set.id, daemonId)
         } catch (err) {
+          if (err instanceof DaemonHasPlacedAgents) {
+            return conflict(reply, `move this daemon's ${err.placed} placed agent(s) onto a member set first`)
+          }
           // The set's tenancy invariant, surfaced rather than swallowed: the daemon is not this
           // org's. The org-fenced read above already refuses that, so this is a concurrent change.
           if (err instanceof MemberSetTenancyMismatch) return conflict(reply, 'the daemon is not in this organization')
@@ -234,14 +239,16 @@ export function memberSetRoutes(deps: HttpDeps) {
         }
         // Stop the old authority and CONFIRM it stopped, before committing the change (§3). A live
         // lease is exactly "it may still be serving"; a lapsed one is not, because the daemon's own
-        // self-fence fires strictly before the CP's reassignment horizon.
-        const now = new Date(deps.clock.now())
-        const held = await deps.repos.dutyGroup.listHeldBy(daemonId)
-        const live = held.filter((g) => g.expiresAt !== null && g.expiresAt > now)
-        if (live.length > 0) {
-          return conflict(reply, `drain this daemon first — it still holds ${live.length} duty group(s)`)
+        // self-fence fires strictly before the CP's reassignment horizon. The repository takes that
+        // check and the delete together under the per-daemon fence, so a claim cannot land between.
+        try {
+          await deps.repos.memberSet.withdraw(daemonId, new Date(deps.clock.now()))
+        } catch (err) {
+          if (err instanceof DaemonHoldsDuty) {
+            return conflict(reply, `drain this daemon first — it still holds ${err.held} duty group(s)`)
+          }
+          throw err
         }
-        await deps.repos.memberSet.withdraw(daemonId)
         deps.liveness.reconnectForMemberSet?.(daemonId)
         return toDto(set)
       }

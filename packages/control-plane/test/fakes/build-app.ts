@@ -149,6 +149,7 @@ export function buildDaemonApp(prisma: PrismaClient): DaemonApp {
     createDaemonWsServer(app, {
       log: { error: (o, m) => app.log.error(o, m) },
       auth,
+      memberSets,
       lifecycleOps: repos.daemonLifecycleOp,
       registry,
       orchestrator,

@@ -13,7 +13,12 @@ import { prisma } from '../setup.db.js'
 import { PgAgentRepo } from '../../src/persistence/repositories/agent.repo.js'
 import { PgDutyGroupRepo } from '../../src/persistence/repositories/duty-group.repo.js'
 import { PgMemberSetRepo } from '../../src/persistence/repositories/member-set.repo.js'
-import { DaemonPlacementInSet, MemberSetInUse } from '../../src/persistence/errors.js'
+import {
+  DaemonHasPlacedAgents,
+  DaemonHoldsDuty,
+  DaemonPlacementInSet,
+  MemberSetInUse
+} from '../../src/persistence/errors.js'
 import { onDaemon, onSet } from '../../src/domain/placement.js'
 import { AgentId, DaemonId, OrgId } from '../../src/domain/ids.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
@@ -196,7 +201,7 @@ describe('org set lifecycle (real Postgres)', () => {
     await repo.enroll(setId, DaemonId(MEMBER_G))
     await expect(repo.deleteForOrg(DEFAULT_ORG_ID, setId)).rejects.toBeInstanceOf(MemberSetInUse)
 
-    await repo.withdraw(DaemonId(MEMBER_G))
+    await repo.withdraw(DaemonId(MEMBER_G), T0)
     await setAgent(DEFAULT_ORG_ID, setId, 'still-placed')
     // `Agent.setId` is SetNull, so deleting here would silently unplace the agent instead.
     await expect(repo.deleteForOrg(DEFAULT_ORG_ID, setId)).rejects.toBeInstanceOf(MemberSetInUse)
@@ -220,5 +225,99 @@ describe('org set lifecycle (real Postgres)', () => {
 
     expect(await repo.memberIdsOf(setId)).toEqual([MEMBER_G])
     expect(await repo.sharedStoreMemberIdsOf(setId)).toEqual([])
+  })
+})
+
+describe('the membership fences (real Postgres)', () => {
+  it('serializes enrolment against a concurrent pin, so neither state can be half-committed', async () => {
+    // The finding: both writers used to check and commit in separate transactions, so a placement
+    // reading "in no set" and an enrolment reading "no pinned agents" could both win — leaving a
+    // set member with an agent pinned to it and no way to serve it.
+    await prisma.daemon.create({ data: { id: MEMBER_G, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready' } })
+    const setId = (await sets().createForOrg(DEFAULT_ORG_ID, 'group-g')).id
+    const agentId = AgentId(randomUUID())
+
+    const outcomes = await Promise.allSettled([
+      sets().enrollOperator(setId, DaemonId(MEMBER_G)),
+      agents().create({
+        id: agentId,
+        orgId: ORG_X,
+        name: 'racer',
+        runtime: 'claude',
+        daemonId: DaemonId(MEMBER_G)
+      })
+    ])
+    // Exactly one wins — and whichever it is, the forbidden pair never exists.
+    expect(outcomes.filter((o) => o.status === 'fulfilled')).toHaveLength(1)
+    const enrolled = (await sets().setIdOf(DaemonId(MEMBER_G))) !== null
+    const pinned = await prisma.agent.count({ where: { daemonId: MEMBER_G } })
+    expect(enrolled && pinned > 0).toBe(false)
+  })
+
+  it('refuses withdrawal for a lease claimed concurrently, never committing over a live holder', async () => {
+    await prisma.daemon.create({ data: { id: MEMBER_G, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready' } })
+    const setId = (await sets().createForOrg(DEFAULT_ORG_ID, 'group-g')).id
+    await sets().enroll(setId, DaemonId(MEMBER_G))
+    const agentId = await setAgent(DEFAULT_ORG_ID, setId, 'contended')
+
+    const [claim, withdrawal] = await Promise.allSettled([
+      ledger().claimAgentHome(ORG_X, agentId, DaemonId(MEMBER_G), T0, LEASE_MS),
+      sets().withdraw(DaemonId(MEMBER_G), T0)
+    ])
+    // Either the claim lost (no lease, withdrawal committed) or it won and the withdrawal was
+    // refused — never "granted a live lease AND no longer a member".
+    const granted = claim.status === 'fulfilled' && claim.value.granted
+    const stillMember = (await sets().setIdOf(DaemonId(MEMBER_G))) !== null
+    expect(granted && !stillMember).toBe(false)
+    if (granted) expect(withdrawal.status).toBe('rejected')
+  })
+
+  it('refuses to delete a set a placement is landing on, rather than silently unplacing it', async () => {
+    const setId = (await sets().createForOrg(DEFAULT_ORG_ID, 'group-g')).id
+    const agentId = AgentId(randomUUID())
+
+    const [placement, deletion] = await Promise.allSettled([
+      agents().create({ id: agentId, orgId: ORG_X, name: 'landing', runtime: 'claude', placementKind: 'set', setId }),
+      sets().deleteForOrg(DEFAULT_ORG_ID, setId)
+    ])
+    // `Agent.setId` is SetNull, so a delete that raced past the count would leave the agent
+    // unplaced with no trace. The set survives whenever the placement did.
+    const placed = placement.status === 'fulfilled'
+    const deleted = deletion.status === 'fulfilled' && deletion.value === true
+    expect(placed && deleted).toBe(false)
+    if (placed) {
+      expect(await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).toMatchObject({ setId })
+    }
+  })
+
+  it('refuses enrolment while agents are pinned, and takes it once they are re-placed', async () => {
+    await prisma.daemon.create({ data: { id: MEMBER_G, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready' } })
+    const setId = (await sets().createForOrg(DEFAULT_ORG_ID, 'group-g')).id
+    const agentId = AgentId(randomUUID())
+    await agents().create({
+      id: agentId,
+      orgId: ORG_X,
+      name: 'pinned',
+      runtime: 'claude',
+      daemonId: DaemonId(MEMBER_G)
+    })
+
+    await expect(sets().enrollOperator(setId, DaemonId(MEMBER_G))).rejects.toBeInstanceOf(DaemonHasPlacedAgents)
+    await agents().setPlacement(agentId, onSet(setId))
+    await sets().enrollOperator(setId, DaemonId(MEMBER_G))
+    expect(await sets().setIdOf(DaemonId(MEMBER_G))).toBe(setId)
+  })
+
+  it('refuses withdrawal while a live lease is held, and takes it once the lease lapses', async () => {
+    await prisma.daemon.create({ data: { id: MEMBER_G, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready' } })
+    const setId = (await sets().createForOrg(DEFAULT_ORG_ID, 'group-g')).id
+    await sets().enroll(setId, DaemonId(MEMBER_G))
+    const agentId = await setAgent(DEFAULT_ORG_ID, setId, 'held')
+    await ledger().claimAgentHome(ORG_X, agentId, DaemonId(MEMBER_G), T0, LEASE_MS)
+
+    await expect(sets().withdraw(DaemonId(MEMBER_G), T0)).rejects.toBeInstanceOf(DaemonHoldsDuty)
+    // A lapsed lease is strictly later than the member's own self-fence: it has stopped serving.
+    await sets().withdraw(DaemonId(MEMBER_G), new Date(T0.getTime() + LEASE_MS + 1))
+    expect(await sets().setIdOf(DaemonId(MEMBER_G))).toBeNull()
   })
 })

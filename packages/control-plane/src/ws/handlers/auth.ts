@@ -9,6 +9,7 @@
  * `auth/ok` REP (`corr` = the `auth` frame id) is sent.
  */
 import { CloseCode, isFrame } from '@agentconnect.md/protocol'
+import { DaemonId } from '../../domain/ids.js'
 import type { Handler } from './index.js'
 
 export const handleAuth: Handler = async (frame, conn, deps) => {
@@ -58,6 +59,18 @@ export const handleAuth: Handler = async (frame, conn, deps) => {
     orgByMcpServer: new Map(),
     orgByMemoryConnection: new Map()
   })
+
+  // Membership is re-read AFTER the connection is in the registry (daemon-groups.md §3). A change
+  // that commits before this read is seen here; one that commits after finds the connection and
+  // closes it. Reading only during `authenticate` left the window between: the change would close
+  // nothing, and this socket would carry the stale set for as long as it stayed up. Answering a
+  // mismatch by closing our own socket costs one reconnect in a race nobody will ever observe,
+  // and needs no extra state to detect.
+  const settledSetId = await deps.memberSets.setIdOf(DaemonId(verdict.daemonId)).catch(() => verdict.setId)
+  if (settledSetId !== verdict.setId) {
+    conn.close(1012, 'member set changed during the handshake — reconnect to re-register')
+    return
+  }
 
   let okFrame = verdict.okFrame
   if (req.bootstrapProtocolVersion === 1) {

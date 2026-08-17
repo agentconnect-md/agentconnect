@@ -233,6 +233,17 @@ column, or transition generation exists yet:
   the socket with `1012` and the reconnect's `auth/ok` carries the new membership. Both
   admitted transitions leave nothing running to disturb, so the reconnect costs nothing.
 
+A precondition is only a fence if the state it read cannot change under it, so each one is
+taken **inside the transaction that writes**, under a per-daemon advisory lock every writer
+of "is this daemon in a set" also takes — enrolment, withdrawal, the `daemon`-placement
+guard, and the ledger's two claim paths. Without it a placement reading "in no set" and an
+enrolment reading "nothing pinned here" both commit, or a claim lands a live lease on a
+member a withdrawal has just decided was idle. The set's own row carries the second fence:
+`FOR SHARE` on every path that adds a reference to it, `FOR UPDATE` on the delete, so a
+placement cannot slip past the delete's reference count and be silently `SET NULL`ed.
+Membership is likewise re-read once the connection is registered, so a change committing
+during a handshake either is seen by that read or finds the connection and closes it.
+
 That is strictly narrower than §3, never wider: every transition it performs is one §3
 also permits. What is owed is the operator ergonomics — the one-action enrol-with-agents
 and drain-and-leave — which is where the correlated request, the leaving fence, and the

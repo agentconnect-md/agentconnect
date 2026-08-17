@@ -15,6 +15,7 @@ import type {
 } from '../ports.js'
 import type { AgentId, DaemonId, OrgId } from '../../domain/ids.js'
 import { withTx } from '../prisma.js'
+import { lockDaemonMembership } from './member-set.repo.js'
 
 // Serializes the writers that CREATE or REWRITE rows for an org (applyReconcile
 // and claimAgentHome) — row locks cannot fence rows that do not exist yet.
@@ -331,6 +332,11 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
     // SKIP LOCKED keeps racing claimants from queueing on each other's rows —
     // they simply take disjoint vacancies.
     return withTx(this.prisma, async (tx) => {
+      // The membership fence, before the claim reads eligibility from `member_set_member`: a
+      // withdrawal holding it has already decided this member holds nothing live, and a grant
+      // committing after that decision would hand work to a machine that is about to stop being
+      // a member (daemon-groups.md §3).
+      await lockDaemonMembership(tx, holder)
       const granted = await tx.$queryRaw<Row[]>(Prisma.sql`
         WITH picked AS (
           SELECT id FROM "duty_group"
@@ -563,6 +569,9 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
       // Org scope fences row creation against applyReconcile; the FOR UPDATE row
       // lock below fences the lease against claimVacant/renewHeld/release.
       await lockOrgDutyScope(tx, orgId)
+      // The membership fence: eligibility is a `member_set_member` lookup, so a withdrawal that
+      // decided this member was idle must not have a lease appear under it afterwards.
+      await lockDaemonMembership(tx, holder)
       // The rendezvous is a claim path, so it takes the same eligibility gate — inside the
       // transaction, against the live row, because this path can MINT a group and a check made
       // before the lock would let a member reach through it for an agent it may not hold.

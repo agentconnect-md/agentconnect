@@ -5016,8 +5016,12 @@ export interface MemberSetRepo {
    *  org-less install-wide pool. An org set answers `[]`: its machines may keep private stores, so
    *  none of them can stand in for another's transcripts (domain/session-content.ts). */
   sharedStoreMemberIdsOf(setId: string): Promise<string[]>
-  /** Record a membership under the set's tenancy invariant; throws MemberSetTenancyMismatch. */
+  /** Record a membership under the set's tenancy invariant; throws MemberSetTenancyMismatch.
+   *  The automatic path (a pool Pod on auth) — no operator precondition. */
   enroll(setId: string, daemonId: DaemonId): Promise<void>
+  /** The operator path: the same row, plus §3's join precondition taken under the per-daemon
+   *  fence. Throws `DaemonHasPlacedAgents` when agents are still pinned to the machine. */
+  enrollOperator(setId: string, daemonId: DaemonId): Promise<void>
   /** One org's sets, by name. The org-less pool is never among them — it belongs to no org. */
   listForOrg(orgId: string): Promise<MemberSetRecord[]>
   /** Agents placed on each of these sets, in one query — the list read must not be N+1. Sets with
@@ -5030,8 +5034,10 @@ export interface MemberSetRepo {
   /** Drop one of an org's sets. Refused while anything still points at it: throws
    *  `MemberSetInUse` when it has members or `set`-placed agents. False ⇒ no such set. */
   deleteForOrg(orgId: string, setId: string): Promise<boolean>
-  /** Drop a membership row. Idempotent; the caller owns the transition's safety (§3). */
-  withdraw(daemonId: DaemonId): Promise<void>
+  /** Drop a membership row, refusing (`DaemonHoldsDuty`) while the daemon holds a live lease at
+   *  `now` — §3's stop-and-confirm, taken with the delete under the per-daemon fence so the
+   *  ledger cannot grant it one in between. */
+  withdraw(daemonId: DaemonId, now: Date): Promise<void>
 }
 
 // DutyGroupRepo (k8s daemons) — the CP-hosted duty ledger

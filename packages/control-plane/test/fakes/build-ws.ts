@@ -302,6 +302,7 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
   const deps: DaemonWsDeps = {
     log: { error: () => undefined },
     auth,
+    memberSets,
     lifecycleOps: repos.daemonLifecycleOp,
     registry,
     orchestrator,
