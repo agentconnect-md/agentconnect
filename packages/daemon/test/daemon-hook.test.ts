@@ -27,7 +27,9 @@ import {
 } from '../src/messages/hook-message.js'
 import { GithubReplyCollector } from '../src/github/poster.js'
 import { transcriptCoords } from '../src/session/session-manager.js'
-import { sessionKey } from '../src/store/local-store.js'
+import { DatabaseSync } from 'node:sqlite'
+import { LocalStore, sessionKey } from '../src/store/local-store.js'
+import { statePath } from '../src/paths.js'
 import { WorkspaceManager } from '../src/workspace/workspace-manager.js'
 import { FakeClock } from '@agentconnect.md/connection'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
@@ -1983,6 +1985,69 @@ describe('Daemon rd/msg hook fires', () => {
       expect.objectContaining({ id: message.msgId, hookContext: null, completedAt: expect.any(Number) })
     ])
     await restarted.stop()
+  }, 15_000)
+
+  it('sends that handover report on a pool’s shared outbox, where the claim is fenced by owner', async () => {
+    // Invisible on a single-daemon store, where every claim succeeds unfenced. Only a SHARED outbox
+    // fences a claim by owner — and stamping the DEPARTED dispatch daemon as the receipt's owner
+    // left this member unable to claim the row it had just written, so the report it made durable
+    // went nowhere until an unrelated reconnect. The writer owns what it wrote.
+    const root = scaffold()
+    const { factory, host } = streamingHost()
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: factory })
+    await daemon.start()
+    const ownDaemonId = (daemon as any).cfg.daemonId as string
+    const foreignDaemonId = '66666666-6666-4666-8666-666666666666'
+    const shared = new LocalStore({
+      database: new DatabaseSync(statePath(root)) as never,
+      shared: true,
+      ownerId: ownDaemonId,
+      orgForAgent: () => 'org-1'
+    })
+    ;(daemon as any).store = shared
+    const cp = fakeCpClient()
+    ;(daemon as never as { cpClient: unknown }).cpClient = cp
+
+    const message = buildHookMessage(fire(), 'trace-shared-outbox')
+    expect(
+      shared.appendInbox({
+        id: message.msgId,
+        sessionKey: `${message.platform}:${message.channel}:${message.thread}:${AGENT_ID}`,
+        agentId: AGENT_ID,
+        msg: JSON.stringify(message),
+        hookContext: JSON.stringify({
+          hookId: HOOK_ID,
+          agentId: AGENT_ID,
+          deliveryKey: 'd-1',
+          firedAt: new Date().toISOString(),
+          snapshot: {
+            configRevision: '1',
+            dispatchRevision: '1',
+            dispatchDaemonId: foreignDaemonId,
+            reviewPolicy: 'full',
+            reportingMode: 'check',
+            gateMode: 'informational'
+          }
+        }),
+        loopGuardCounted: 1,
+        enqueuedAt: '1'
+      })
+    ).toBe(true)
+
+    ;(daemon as any).replayInbox()
+
+    // The report actually leaves this member, and the ACK then releases the body it owns.
+    await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
+    expect(cp.hookReports[0]).toMatchObject({ deliveryKey: 'd-1', status: 'failed', reason: 'agent_handover' })
+    expect(host.prompt).not.toHaveBeenCalled()
+    await vi.waitFor(
+      () =>
+        expect(shared.listInboxBySessionKeyFifo()).toEqual([
+          expect.objectContaining({ id: message.msgId, terminalReport: null, completedAt: expect.any(Number) })
+        ]),
+      WAIT
+    )
+    await daemon.stop()
   }, 15_000)
 
   it('keeps only the newest relay-fired PR revision without reordering explicit GitHub turns', async () => {

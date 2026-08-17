@@ -54,12 +54,6 @@ export function reviewResultForWire(effect: GithubReviewEffect): HookReviewResul
 // would turn a long outage into a memory/socket fan-out spike.
 export const MAX_HOOK_REPORT_INFLIGHT = 100
 
-/** The daemon whose dispatch the CP accepts this report from — the outbox row's owner.
- *  On a pool's shared store that is the only member allowed to release its body. */
-export function hookReportOwner(report: HookReport, daemonId?: string): string | undefined {
-  return report.dispatchDaemonId ?? daemonId
-}
-
 /** True when the CP can only be answering about a peer's dispatch. Unproven ownership
  *  counts as foreign: keeping a report body is always recoverable, nulling it is not. */
 export function foreignHookDispatch(report: HookReport, daemonId?: string): boolean {

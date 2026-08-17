@@ -465,7 +465,6 @@ import {
   githubPullRequestLane,
   githubReviewResultForCompletion,
   githubThreadWorktreeCleanup,
-  hookReportOwner,
   MAX_HOOK_REPORT_INFLIGHT,
   type ActiveGithubReplyBatchMeta,
   type ActiveGithubTurnMeta,
@@ -8868,7 +8867,8 @@ export class Daemon {
         leaderHookContext: JSON.stringify(nextHook),
         followerId: follower.inboxId,
         followerTerminalReport: JSON.stringify(report),
-        followerOwnerId: hookReportOwner(report, this.cfg.daemonId),
+        // Same rule as emitHookCompletion: this member wrote the follower's receipt, so it owns it.
+        followerOwnerId: this.cfg.daemonId,
         completedAt: this.clock.now()
       })
       if (!committed) return false
@@ -9508,11 +9508,16 @@ export class Daemon {
     let reportInboxId: string | undefined
     if (owner?.inboxId) {
       try {
+        // The WRITER owns the receipt it just wrote, even when the dispatch it reports on was a
+        // peer's. On a shared outbox, stamping the dispatching daemon instead left this member
+        // unable to claim its own row — so the report it had just made durable went nowhere until
+        // an unrelated reconnect. Ownership moves to the dispatcher only where it means something:
+        // when the CP refuses us as the reporter (`releaseHookTerminalReport` below).
         const completed = this.store.completeHookInbox(
           owner.inboxId,
           JSON.stringify(report),
           this.clock.now(),
-          hookReportOwner(report, this.cfg.daemonId)
+          this.cfg.daemonId
         )
         if (completed === 'already-terminal') {
           owner.hookTerminalReceipt = true
