@@ -27,7 +27,7 @@ import {
   type ClaudeInnerSandboxSettings,
   type ClaudeProtectedSettings,
   ULTRACODE_EFFORT
-} from './claude-runtime.js'
+} from '../runtime-defs/claude-runtime.js'
 import { LocalDriver, type AcpSandboxLaunch, type SpawnDriver, type SpawnedRuntime } from './spawn-driver.js'
 import type { Logger } from '../log.js'
 import { accountAppIsolation } from './account-apps.js'

@@ -260,7 +260,7 @@ import {
 import { ModelCatalogService, catalogFingerprint } from './runtimes/model-catalog.js'
 import { makeModelEnumerator } from './runtimes/model-enumerator.js'
 import { capsFromConfigOptions, augmentEffortOptions } from './runtimes/config-caps.js'
-import { isClaudeRuntimeDef } from './acp/claude-runtime.js'
+import { isClaudeRuntimeDef } from './runtime-defs/claude-runtime.js'
 import { runtimeHomePath } from './runtimes/runtime-home.js'
 import {
   applyModelCredential,

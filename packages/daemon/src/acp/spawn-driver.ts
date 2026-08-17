@@ -3,7 +3,7 @@ import { existsSync, realpathSync } from 'node:fs'
 import { Readable, Writable } from 'node:stream'
 import { resolveCommandPath } from '../runtimes/probe.js'
 import { sandboxWrap, type SandboxMechanism } from './sandbox.js'
-import type { ClaudeProtectedSettings } from './claude-runtime.js'
+import type { ClaudeProtectedSettings } from '../runtime-defs/claude-runtime.js'
 import type { Logger } from '../log.js'
 
 export interface AcpSandboxLaunch {

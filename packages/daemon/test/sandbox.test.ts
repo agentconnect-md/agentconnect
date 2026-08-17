@@ -25,7 +25,7 @@ import {
   probeSandboxHost,
   writeSandboxSettings
 } from '../src/acp/sandbox.js'
-import { claudeInnerSandboxSettings } from '../src/acp/claude-runtime.js'
+import { claudeInnerSandboxSettings } from '../src/runtime-defs/claude-runtime.js'
 import { clearConfigFiles, configFilesDir, materializeConfigFiles } from '../src/agents/config-file-env.js'
 
 // Ordinary ACP hosts launch through one SRT provider process with an immutable,

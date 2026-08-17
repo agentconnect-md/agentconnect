@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { AcpHost } from '../src/acp/acp-host.js'
-import { augmentClaudeEfforts, isClaudeRuntimeDef, ULTRACODE_EFFORT } from '../src/acp/claude-runtime.js'
+import { augmentClaudeEfforts, isClaudeRuntimeDef, ULTRACODE_EFFORT } from '../src/runtime-defs/claude-runtime.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const fakeAgent = join(here, 'fixtures', 'fake-acp-agent.mjs')
