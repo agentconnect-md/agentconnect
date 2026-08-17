@@ -553,7 +553,9 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     const clock = new FakeClock()
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, clock, probeRuntimes: async () => [] })
     await daemon.start()
-    const drain = vi.spyOn(daemon as any, 'drainSessionMetadataSnapshots').mockResolvedValue(undefined)
+    const drain = vi
+      .spyOn((daemon as any).sessionMetadataOutbox, 'drainSessionMetadataSnapshots')
+      .mockResolvedValue(undefined)
 
     try {
       ;(daemon as any).scheduleSessionMetadataRetry(5 * 60_000)
