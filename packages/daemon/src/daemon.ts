@@ -322,6 +322,7 @@ import { createWorkspaceGit } from './cp/workspace-git.js'
 import { DAEMON_VERSION } from './version.js'
 import { CpCronRegistry } from './cp/cp-cron.js'
 import { DutyRegistry, type DutyApplyResult } from './cp/duty-registry.js'
+import { DutyCoordinator, type DutyHost } from './cp/duty-coordinator.js'
 import { CpAgentRegistry } from './cp/cp-agent-registry.js'
 import {
   agentRemovalTombstones,
@@ -837,36 +838,9 @@ export class Daemon {
   // only on an install-wide connection — empty on a single-org daemon, which is
   // what keeps the whole path dormant there.
   private readonly duties = new DutyRegistry()
-  // What an unbounded member reports as heartbeat headroom: the CP's own
-  // per-tick grant cap, so the wire carries a finite number without implying a
-  // ceiling. Never used for a local capacity decision.
-  private static readonly DUTY_UNBOUNDED_HEADROOM = 32
-  // Claims in flight to the CP. Each reserves one slot of headroom so concurrent
-  // rendezvous claims cannot read the same capacity and collectively overshoot,
-  // and a drain joins them so none can settle after `drain/done`.
-  private readonly inFlightDutyClaims = new Set<Promise<unknown>>()
-  // Installs in flight per granted agent. The EVT path fires one and the
-  // rendezvous claim awaits one for the SAME grant, so both must join a single
-  // fetch+apply rather than race two of them.
-  private readonly dutyInstalls = new Map<string, Promise<void>>()
-  // Admissions in flight: groupId → the admission that owns it. Deadline tracking and every
-  // withdrawal are synchronous while admission is deliberately not, so this mark is what lets a
-  // withdrawal landing mid-admission win — and what tells the fence that a group absent from the
-  // digest is still intended to be held.
-  private readonly dutyAdmissions = new Map<string, number>()
-  private dutyAdmissionSeq = 0
-  // When each agent's install last failed. A dropped group is regranted on the
-  // next beat, so without this a permanently failing agent would be re-fetched
-  // once per regrant AND once per inbound trigger that claims its group.
-  private readonly dutyInstallFailures = new Map<string, number>()
-  // Retry window for a failed duty install: the default heartbeat cadence, which
-  // is how fast the CP's missing-regrant path can offer the group back.
-  private static readonly DUTY_INSTALL_RETRY_MS = 15_000
-  // Backoff for retrying the platform convergence a duty change needs, when the reconcile that
-  // carries it throws. It doubles to a slow poll and never gives up: the state it exists to leave
-  // is a fenced agent whose sockets are still open.
-  private static readonly DUTY_CONVERGE_RETRY_BASE_MS = 1_000
-  private static readonly DUTY_CONVERGE_RETRY_CAP_MS = 30_000
+  // Grant admission, install, and the platform convergence a duty change needs — the timing-critical
+  // half of the lease path, with its own in-flight state (cp/duty-coordinator.ts).
+  private readonly dutyCoordinator = new DutyCoordinator(this.dutyHost())
   // Latched for the WHOLE drain handoff, including the window after `draining`
   // reopens and before the leases are surrendered — a claim landing there would
   // install a grant the release snapshot has already passed by.
@@ -2541,13 +2515,17 @@ export class Daemon {
    */
   private reconcileRun?: Promise<void>
   private reconcilePending = false
-  // A duty change moves no agent FILE, so the agent diff is empty and platform convergence would
-  // be skipped — while the serving gate it feeds (`transportAgents`) has just changed. Counters,
-  // not a flag: a pass claims the requested value and publishes it only once the sockets are
-  // actually converged, so neither a failed pass nor a duty change landing mid-pass is lost.
-  private dutyConnectionsRequested = 0
-  private dutyConnectionsConverged = 0
-  private dutyConvergeRetryTimer?: TimerHandle
+  // The duty-driven platform convergence counters live on the coordinator; the reconcile pass and
+  // the shutdown release read and publish them through these same-name accessors.
+  private get dutyConnectionsRequested(): number {
+    return this.dutyCoordinator.dutyConnectionsRequested
+  }
+  private get dutyConnectionsConverged(): number {
+    return this.dutyCoordinator.dutyConnectionsConverged
+  }
+  private set dutyConnectionsConverged(value: number) {
+    this.dutyCoordinator.dutyConnectionsConverged = value
+  }
   // Register snapshots publish agents before integrations. Carry newly-owned (installed or
   // duty-gained) inbox rows across coalesced passes and replay only after convergence is idle.
   private readonly pendingInboxReplayAgents = new Set<string>()
@@ -8996,487 +8974,127 @@ export class Daemon {
    * Slack integration. (CP agent specs are now written to disk and create a
    * runnable agent.json, so they no longer contribute a "no base" degraded scope.)
    */
-  /** The heartbeat's lease fields: what this daemon holds, and how many more
-   *  groups it will accept. Capacity is the daemon's own call (design D14). */
+  /** Exactly what the duty coordinator touches on the Daemon — the ledger, the gates, and the
+   *  physical convergence a duty change drives. */
+  private dutyHost(): DutyHost {
+    return {
+      cfg: () => this.cfg,
+      log: () => this.log,
+      clock: () => this.clock,
+      cpClient: () => this.cpClient,
+      duties: () => this.duties,
+      dutyClaimsSuspended: () => this.dutyClaimsSuspended,
+      shutdownDraining: () => this.shutdownDraining,
+      draining: () => this.draining,
+      drainingAgents: () => this.drainingAgents,
+      shutdownDutyDrain: () => this.shutdownDutyDrain,
+      settleLateGrants: (drain) => this.settleLateGrants(drain),
+      cpAgents: () => this.cpAgents,
+      cpIntegrations: () => this.cpIntegrations,
+      cpCrons: () => this.cpCrons,
+      cpMcpDefs: () => this.cpMcpDefs,
+      memoryConnections: () => this.memoryConnections,
+      onMcpDefsChanged: () => this.onMcpDefsChanged(),
+      exactCpDependents: (agentId, desired) => this.exactCpDependents(agentId, desired),
+      moveStagedAgents: () => this.moveStagedAgents,
+      agentRemovalPending: (agentId) => this.agentRemovalPending(agentId),
+      queueAgentLifecycle: <T>(agentId: string, work: () => Promise<T>): Promise<T> =>
+        this.queueAgentLifecycle(agentId, work),
+      agents: () => this.agents,
+      reconcile: () => this.reconcile(),
+      flushReconcile: () => this.flushReconcile(),
+      stopServingAgent: (agentId) => this.stopServingAgent(agentId),
+      adoptClusterSandbox: (agentId) => this.adoptClusterSandbox(agentId),
+      reclaimInterruptedWork: (agentIds) => this.reclaimInterruptedWork(agentIds),
+      syncAgentSchedules: (agent) => this.syncAgentSchedules(agent),
+      syncOrchestrationDeadlines: () => this.syncOrchestrationDeadlines(),
+      catchUpMissedSchedules: (agentIds) => this.catchUpMissedSchedules(agentIds),
+      drainSessionPurges: () => this.drainSessionPurges(),
+      replayGainedSessionMetadata: (agentIds) => this.replayGainedSessionMetadata(agentIds),
+      pendingInboxReplayAgents: () => this.pendingInboxReplayAgents
+    }
+  }
+
+  // Duty grant admission, install, and convergence live in `cp/duty-coordinator.ts`; these are the
+  // thin same-name delegates the daemon's own paths (and the tests) still reach them through.
   private dutyDigest(): HeartbeatDuties {
-    // A draining member — shutting down, or mid rebalance drain — asks for nothing; only the
-    // shutdown says so on the wire, because that bit is sticky for the registration at the CP.
-    const headroom = this.dutyClaimsSuspended || this.shutdownDraining ? 0 : this.dutyHeadroom()
-    return { held: this.duties.digest(), headroom, ...(this.shutdownDraining ? { draining: true } : {}) }
+    return this.dutyCoordinator.dutyDigest()
   }
 
-  /** How many more duty-covered agents this member will accept. `maxAgents: 0`
-   *  means unbounded, reported as the CP's own per-tick grant cap. */
   private dutyHeadroom(): number {
-    const max = this.cfg?.limits?.maxAgents ?? 0
-    // `maxAgents: 0` is unbounded, but the WIRE still needs a finite number —
-    // the CP caps a tick's grants at 32 anyway, so that is what an unbounded
-    // member advertises. This sentinel is a batching hint, never a capacity.
-    if (max <= 0) return Daemon.DUTY_UNBOUNDED_HEADROOM
-    return Math.max(0, max - this.duties.agents().size - this.inFlightDutyClaims.size)
+    return this.dutyCoordinator.dutyHeadroom()
   }
 
-  /** Slots left for a claim that is ITSELF in flight — its own reservation is
-   *  excluded, every other one still counts, and the result is deliberately not
-   *  clamped: a full member must come out negative and refuse, never at zero
-   *  with a slot to spare. Unbounded means unbounded here: a local fit decision
-   *  must not inherit the heartbeat's batching sentinel and reject a group of
-   *  33 agents from a member that was configured with no ceiling at all. */
   private dutyHeadroomForPendingClaim(): number {
-    const max = this.cfg?.limits?.maxAgents ?? 0
-    if (max <= 0) return Number.POSITIVE_INFINITY
-    return max - this.duties.agents().size - Math.max(0, this.inFlightDutyClaims.size - 1)
+    return this.dutyCoordinator.dutyHeadroomForPendingClaim()
   }
 
-  /** True when duty leases gate service: a membership question, not an option (daemon-groups.md
-   *  §3). A member of a member set — the install-wide pool or an organization's own — serves only
-   *  what it holds a lease for; a daemon in no set owns its agents outright and never participates
-   *  in the ledger. The set is what `auth/ok` announced, and nothing else stands in for it. */
   private dutyEnforced(): boolean {
-    // `cpClient` lands in start(); transportAgents can run before that in tests.
-    return this.cpClient?.memberSet?.() != null
+    return this.dutyCoordinator.dutyEnforced()
   }
 
-  /** `duty/grant` EVT: admit the grants off the frame-dispatch path, so a slow
-   *  CP cannot stall the socket. */
   private applyDutyGrant(grants: DutyGrantEntry[]): void {
-    // A grant that wins after the shutdown latch — an exchange that began before the SIGTERM can
-    // still commit one — is never installed, but the ledger records this exiting member as its
-    // holder. One global rule, no per-case proof: record it, and acknowledge its release only once
-    // the release loop is done with every held group — by then nothing is served here any more —
-    // unless it covers an agent left to lapse. A small, bounded delay for those groups.
-    const drain = this.shutdownDutyDrain
-    if (drain) {
-      this.log.info(
-        `duty: ${grants.length} grant(s) landed while shutting down — held unserved until the drain completes`
-      )
-      for (const grant of grants) drain.late.set(grant.groupId, grant)
-      // Landed after the loop finished: settle them now rather than at the socket close.
-      if (drain.loopDone) void this.settleLateGrants(drain)
-      return
-    }
-    // A CP-commanded rebalance drain accepts no grant either: it would install a group the release
-    // snapshot has already passed by. The CP re-issues on the next beat once the member reopens.
-    if (this.dutyClaimsSuspended) {
-      this.log.info(`duty: ignoring ${grants.length} grant(s) while draining`)
-      return
-    }
-    void this.admitDutyGrants(grants)
+    this.dutyCoordinator.applyDutyGrant(grants)
   }
 
-  /**
-   * Install first, open the serving gate second. Applying the grant is what
-   * makes this member routable for its agents — the CP and the relay resolve
-   * triggers to whoever holds the group — so a grant applied while its install
-   * is still in flight advertises service the daemon cannot yet give, and a
-   * trigger landing in that window is dropped without even being re-routable.
-   *
-   * A group whose install fails or comes back empty is therefore never applied
-   * at all. The digest omits it, the CP sees a lease this member does not
-   * report, and its existing missing-regrant path reissues it — that IS the
-   * retry, paced by the heartbeat rather than a private loop. Nothing needs the
-   * group present in the meantime: `renewHeld` renews by holder alone.
-   *
-   * Refusing a REPLACEMENT of a held group is not enough on its own: an addition is what failed,
-   * yet the entry also carries removals, and keeping the old composition keeps serving agents the
-   * CP has reassigned. So the removals are applied alone — the group shrinks to what both
-   * compositions share, at the OLD term, which is what makes the CP's stale-term branch reissue
-   * the whole replacement every beat until it installs.
-   *
-   * Returns the groupIds it refused — a failed install, or a withdrawal that landed while the
-   * install was in flight.
-   */
-  private async admitDutyGrants(entries: DutyGrantEntry[]): Promise<Set<string>> {
-    const admission = ++this.dutyAdmissionSeq
-    for (const entry of entries) this.dutyAdmissions.set(entry.groupId, admission)
-    try {
-      const failed = await this.installGrantedAgents(entries)
-      // The withdrawal fence, checked with NO await between it and `applyGrant`. Admission is
-      // deliberately async, so a fence, a revoke, or a drain release can land inside this window —
-      // and each of them means "this member must not serve that group". A withdrawal drops the
-      // group's admission mark, so the identity check below fails and the grant is never applied.
-      // A newer admission for the same group replaces the mark for the same reason.
-      const withdrawn = new Set(
-        entries.filter((entry) => this.dutyAdmissions.get(entry.groupId) !== admission).map((e) => e.groupId)
-      )
-      const refused = new Set([...withdrawn, ...failed])
-      const servable = entries.filter((entry) => !refused.has(entry.groupId))
-      if (servable.length > 0) {
-        const result = this.duties.applyGrant(servable)
-        this.log.info(
-          `duty: granted ${result.added.length} + re-granted ${result.updated.length} group(s); ` +
-            `holding ${this.duties.size()} covering ${this.duties.agents().size} agent(s)`
-        )
-        this.settleDutyChange(result)
-      }
-      // Same fence, same absence of an await: a group a withdrawal took away is not shrunk either,
-      // because it is not ours to write any more — it was revoked outright, or a newer admission
-      // owns it and will apply its own composition.
-      const shrinking = entries.filter((entry) => failed.has(entry.groupId) && !withdrawn.has(entry.groupId))
-      if (shrinking.length > 0) {
-        const result = this.duties.shrinkToGrant(shrinking)
-        if (result.updated.length > 0) {
-          this.log.warn(
-            `duty: refused ${shrinking.length} group(s) but applied their removals; ` +
-              `${result.agentsLost.length} agent(s) left service, ${result.updated.length} group(s) shrunk`
-          )
-        }
-        this.settleDutyChange(result)
-      }
-      if (withdrawn.size > 0) {
-        this.log.info(`duty: ${withdrawn.size} group(s) were withdrawn while being admitted — not held`)
-      }
-      return refused
-    } finally {
-      // Only ours to clear: a withdrawal already dropped it, and a newer admission owns it now.
-      for (const entry of entries) {
-        if (this.dutyAdmissions.get(entry.groupId) === admission) this.dutyAdmissions.delete(entry.groupId)
-      }
-    }
+  private admitDutyGrants(entries: DutyGrantEntry[]): Promise<Set<string>> {
+    return this.dutyCoordinator.admitDutyGrants(entries)
   }
 
-  /** Settle what a registry write changed: an agent that left every held group stops being served
-   *  through the revoke teardown (#948 — workspace, sessions and registry entry survive), and any
-   *  change at all re-derives the physical half, since `transportAgents` gates sockets and direct
-   *  ingress is never re-checked per message. */
   private settleDutyChange(result: DutyApplyResult): void {
-    for (const agentId of result.agentsLost) this.stopServingAgent(agentId)
-    for (const agentId of result.agentsGained) this.adoptClusterSandbox(agentId)
-    this.reclaimInterruptedWork(result.agentsGained)
-    // A duty newly held here replays that agent's shared inbox backlog even when its replica was
-    // already installed and the grant fetched nothing (#1034): a crashed holder's admitted rows
-    // must run on the successor. Drained by the reconcile below, once its connections converge.
-    for (const agentId of result.agentsGained) this.pendingInboxReplayAgents.add(agentId)
-    const changed = result.added.length + result.updated.length + result.agentsGained.length + result.agentsLost.length
-    if (changed === 0) return
-    // Report the new digest immediately. The CP publishes the projections that address this member
-    // only once it has SEEN the group held (the grant alone is not proof of an install), so waiting
-    // for the next tick leaves an agent this member is already serving unroutable for up to a
-    // heartbeat. Outside the duty gate below on purpose: the CP acts on the digest either way.
-    this.cpClient?.reportDutiesNow()
-    this.onDutyChanged()
-    // After the arm, so a catch-up runs against the schedules this member now actually holds.
-    this.catchUpMissedSchedules(result.agentsGained)
-    // The purge-receipt drain is holder-scoped, so a receipt a prior holder left is owed by this member now.
-    if (result.agentsGained.length) void this.drainSessionPurges()
-    // Same for the session-metadata outbox: a snapshot the previous holder parked is this member's to emit.
-    this.replayGainedSessionMetadata(result.agentsGained)
+    this.dutyCoordinator.settleDutyChange(result)
   }
 
-  /**
-   * Withdraw these groups from service — a fence, a `duty/revoke`, or a drain release. Every one of
-   * them means the same thing, so they share one guard: a withdrawal that lands while an admission
-   * is in flight WINS, and that admission refuses to apply when it completes. Without this the group
-   * sits in a gap between grant receipt and `applyGrant` — not yet held, so nothing to withdraw —
-   * and then starts serving after the withdrawal that was meant to stop it.
-   *
-   * Returns the groups that were pending, for the caller's log; the retry story is unchanged, since
-   * the CP still leases them, does not see them in our digest, and reissues through missing-regrant.
-   */
   private withdrawDutyGroups(groupIds: Iterable<string>): string[] {
-    const pending: string[] = []
-    for (const groupId of groupIds) if (this.dutyAdmissions.delete(groupId)) pending.push(groupId)
-    return pending
+    return this.dutyCoordinator.withdrawDutyGroups(groupIds)
   }
 
-  /** Groups whose admission is in flight: intended to be held, absent from the digest until applied. */
   private pendingDutyAdmissions(): string[] {
-    return [...this.dutyAdmissions.keys()]
+    return this.dutyCoordinator.pendingDutyAdmissions()
   }
 
-  /**
-   * Install every agent these grants cover that this daemon does not already have
-   * AT THE GRANTED REVISION. Grants are thin by design, so the member pulls
-   * exactly what it lacks or what has moved on (`duty/fetch`) and applies the
-   * bundle the way an activation would — minus the move token, the staging fence,
-   * and workspace preparation.
-   *
-   * Returns the granted groups it could NOT install. A group is served as a
-   * unit, so its bots wait on its agents too — that is the point, not a cost.
-   */
-  private async installGrantedAgents(entries: DutyGrantEntry[]): Promise<Set<string>> {
-    const wanted = new Map<string, { orgId: string; groupId: string }>()
-    for (const entry of entries) {
-      for (const member of entry.members) {
-        if (member.kind !== 'agent' || !this.dutyBundleIsStale(member)) continue
-        // A duty grant must never resurrect an agent a move or removal is tearing down.
-        if (this.moveStagedAgents.has(member.refId) || this.agentRemovalPending(member.refId)) continue
-        wanted.set(member.refId, { orgId: entry.orgId, groupId: entry.groupId })
-      }
-    }
-    const failed = new Set<string>()
-    // Registered synchronously, then joined: a concurrent caller for the same
-    // grant finds every in-flight install rather than starting a second one.
-    const installs = [...wanted].map(async ([agentId, { orgId, groupId }]) => {
-      try {
-        await this.installDutyAgent(agentId, orgId)
-      } catch (err) {
-        this.log.warn(`duty: installing granted agent ${agentId} failed: ${err}`)
-        // The whole group goes: an entry may cover several agents, and a member
-        // missing one of them cannot serve that group's work.
-        failed.add(groupId)
-      }
-    })
-    await Promise.all(installs)
-    return failed
+  private installGrantedAgents(entries: DutyGrantEntry[]): Promise<Set<string>> {
+    return this.dutyCoordinator.installGrantedAgents(entries)
   }
 
-  /**
-   * Does this granted agent need a (re)fetch? Presence is not freshness: an agent
-   * this member installed under a duty it later lost keeps its replica (#948 — a
-   * release is never a removal) while the CP goes on editing a spec this member is
-   * no longer a delivery target for. A regrant that skipped on presence alone
-   * would serve that frozen bundle forever. So the grant carries the CP's current
-   * `configRevision` and it is compared against the applied one — the same fence
-   * the install itself re-applies, never a second notion of freshness. Unstamped
-   * (an older CP, a bot member's group) falls back to presence.
-   */
   private dutyBundleIsStale(member: DutyMemberRef): boolean {
-    if (!this.cpAgents?.has(member.refId)) return true
-    if (member.configRevision === undefined) return false
-    const applied = this.cpAgents.appliedRevision(member.refId)
-    return applied === undefined || BigInt(member.configRevision) > applied
+    return this.dutyCoordinator.dutyBundleIsStale(member)
   }
 
-  /** Join the in-flight install for this agent, or start one. A failure is
-   *  remembered for one heartbeat cadence so a permanently broken agent cannot
-   *  make regrants spin faster than the beat that produces them. */
   private installDutyAgent(agentId: string, orgId: string): Promise<void> {
-    const inFlight = this.dutyInstalls.get(agentId)
-    if (inFlight) return inFlight
-    const failedAt = this.dutyInstallFailures.get(agentId)
-    if (failedAt !== undefined && this.clock.now() - failedAt < Daemon.DUTY_INSTALL_RETRY_MS) {
-      return Promise.reject(new Error('a previous install failed within the retry window'))
-    }
-    const run = this.runDutyAgentInstall(agentId, orgId)
-      .then(
-        () => void this.dutyInstallFailures.delete(agentId),
-        (err) => {
-          this.dutyInstallFailures.set(agentId, this.clock.now())
-          throw err
-        }
-      )
-      .finally(() => {
-        if (this.dutyInstalls.get(agentId) === run) this.dutyInstalls.delete(agentId)
-      })
-    this.dutyInstalls.set(agentId, run)
-    return run
+    return this.dutyCoordinator.installDutyAgent(agentId, orgId)
   }
 
-  /** Fetch and apply one granted agent's bundle inside its lifecycle lane, so it
-   *  serializes against upsert/remove/activate like every other lifecycle write. */
-  private async runDutyAgentInstall(agentId: string, orgId: string): Promise<void> {
-    const reply = await this.cpClient?.fetchDutyAgent(agentId, orgId)
-    const bundle = reply?.bundle
-    // An absent bundle is the CP saying "you do not hold this duty, or the agent
-    // is gone" — the strongest signal of all that our local state disagrees with
-    // the ledger. Refuse the group rather than hold one we cannot serve.
-    if (!bundle) throw new Error('the control plane returned no bundle for this agent')
-    await this.queueAgentLifecycle(agentId, async () => {
-      if (this.moveStagedAgents.has(agentId) || this.agentRemovalPending(agentId)) {
-        this.log.info(`duty: skipping install of ${agentId} — a move or removal owns it`)
-        return
-      }
-      if (!this.cpAgents) return
-      // Definitions BEFORE the spec that names them, same order as the reconnect
-      // snapshot: an AgentSpec carries MCP server names and a memory connection id,
-      // and static memory admission must never observe the agent before at least a
-      // probing (fail-closed) connection entry exists. Applied unconditionally of
-      // the revision fence below — they are separate registries with their own
-      // fences, and a skipped spec still leaves a replica referencing them.
-      this.applyDutyDefinitions(bundle)
-      // The revision fence is the target's own (organization-secrets-and-variables.md
-      // §7): a bundle older than what we already applied never overwrites it.
-      const applied = this.cpAgents.upsert(agentId, bundle.spec)
-      if (applied === 'stale' || applied === 'conflict') {
-        this.log.warn(`duty: install of ${agentId} skipped — spec revision is ${applied}`)
-        return
-      }
-      for (const integration of bundle.integrations) this.cpIntegrations?.upsert(integration)
-      for (const cron of bundle.crons) this.cpCrons?.upsert(cron)
-      this.exactCpDependents(agentId, {
-        integrationIds: bundle.integrations.map((integration) => integration.integrationId),
-        cronIds: bundle.crons.map((cron) => cron.cronId)
-      })
-      await this.flushReconcile()
-      this.log.info(
-        `duty: installed granted agent ${agentId} (${bundle.integrations.length} integration(s), ` +
-          `${(bundle.mcpServers ?? []).length} MCP def(s), ${(bundle.memoryConnections ?? []).length} memory connection(s))`
-      )
-    })
+  private runDutyAgentInstall(agentId: string, orgId: string): Promise<void> {
+    return this.dutyCoordinator.runDutyAgentInstall(agentId, orgId)
   }
 
-  /**
-   * Install the two definition kinds the granted agent's spec only NAMES. Additive
-   * (`upsert`, never `converge`): this member may already serve other agents whose
-   * definitions the bundle does not mention, and a duty install is never a
-   * full-replace of a tenant registry. An older CP omits both arrays.
-   *
-   * NEVER log the defs — an MCP proxy def's headers carry the bearer grant key and
-   * a memory def carries its grant plus secret leases.
-   */
   private applyDutyDefinitions(bundle: DutyAgentBundle): void {
-    for (const spec of bundle.memoryConnections ?? []) this.memoryConnections?.upsert(spec)
-    let mcpChanged = false
-    for (const { orgId, name, issuedAt, ...def } of bundle.mcpServers ?? []) {
-      if (!orgId || name === RESERVED_MCP_SERVER_NAME) continue
-      // Same monotonic fence as the live push: a bundle projected before a grant
-      // rotation must never overwrite the fresh key it raced.
-      if (this.cpMcpDefs?.upsert(orgId, name, def, issuedAt)) mcpChanged = true
-    }
-    if (mcpChanged) this.onMcpDefsChanged()
+    this.dutyCoordinator.applyDutyDefinitions(bundle)
   }
 
-  /** Apply a `duty/revoke` EVT. Losing a duty is NOT a removal: the agent's
-   *  workspace, sessions, and registry entry all survive — only the platform
-   *  connections and schedules this daemon was running for it stop. */
   private applyDutyRevoke(revocations: DutyRevoke['revocations']): void {
-    // Same guard as the fence: a revoke landing while the group is still being admitted must stop
-    // that admission, or the member starts serving a group the CP has already taken away.
-    const pending = this.withdrawDutyGroups(revocations.map((revocation) => revocation.groupId))
-    if (pending.length > 0) this.log.info(`duty: revoked ${pending.length} group(s) mid-admission`)
-    const result = this.duties.applyRevoke(revocations)
-    this.log.info(
-      `duty: revoked ${revocations.length} group(s) (${revocations.map((r) => r.reason).join(',')}); ` +
-        `${result.agentsLost.length} agent(s) left service`
-    )
-    for (const agentId of result.agentsLost) this.stopServingAgent(agentId)
-    this.onDutyChanged()
+    this.dutyCoordinator.applyDutyRevoke(revocations)
   }
 
-  // The duty self-fence (`T_reassign > T_fence`): stop serving these groups before the CP can hand them to a
-  // successor. Per group, because the CP expires each lease on its own schedule — a group whose lease is still
-  // honoured keeps serving. Literally a local `duty/revoke`: same registry path, same teardown, so workspace,
-  // sessions, and the registry entry all survive it (#948), and the omitted groups are what the CP's
-  // missing-regrant path reissues on reconnect.
   private fenceDuties(groupIds: string[]): void {
-    // Not duty-governed (an org-scoped daemon) ⇒ a teardown would drop live traffic for no reason.
-    if (!this.dutyEnforced()) return
-    // BEFORE the held filter: a group still being admitted is not held yet, so there would be
-    // nothing to shed — and it would start serving the moment its admission completed.
-    const pending = this.withdrawDutyGroups(groupIds)
-    if (pending.length > 0) this.log.warn(`duty: self-fenced ${pending.length} group(s) mid-admission`)
-    const held = groupIds.filter((groupId) => this.duties.get(groupId) !== undefined)
-    if (held.length === 0) return
-    const result = this.duties.applyRevoke(held.map((groupId) => ({ groupId, reason: 'superseded' as const })))
-    this.log.warn(
-      `duty: self-fenced ${held.length} group(s); ${result.agentsLost.length} agent(s) left service, ` +
-        `${this.duties.size()} group(s) still held — no confirmed lease renewal before the CP's horizon`
-    )
-    for (const agentId of result.agentsLost) this.stopServingAgent(agentId)
-    this.onDutyChanged()
+    this.dutyCoordinator.fenceDuties(groupIds)
   }
 
-  /** Claim one agent's duty because a trigger for it arrived here. A win is
-   *  installed exactly like a `duty/grant`, so the same converge path runs.
-   *  Refuses without asking the CP when this member must not take new work:
-   *  capacity is the member's own call (design D14), and a drain in progress
-   *  would either hand the fresh lease straight back or pin it to an agent whose
-   *  gate is about to drop the very turn that triggered the claim.
-   *
-   *  Both gates are checked AFTER the round trip, not instead of it. Refusing to
-   *  ask would suppress the very answer that makes a stale delivery routable —
-   *  the incumbent's identity — turning a re-routable trigger into a drop. So a
-   *  full or draining member still asks, and hands back anything it wins. */
-  private async claimDutyForTrigger(agentId: string): Promise<{ granted: boolean; holder?: string }> {
-    // A drain that has already begun is the one case worth short-circuiting: it
-    // cannot be resolved by learning a holder, because this member is leaving.
-    if (this.dutyClaimsSuspended || this.drainingAgents.has(agentId)) {
-      this.log.debug(`duty: not claiming ${agentId} while draining`)
-      return { granted: false }
-    }
-    // Reserve a slot for the duration of the round trip so concurrent claims
-    // cannot each read the same headroom and collectively overshoot, and so a
-    // drain can join this claim rather than finish while it is still in flight.
-    let markSettled!: () => void
-    const settled = new Promise<void>((resolve) => {
-      markSettled = resolve
-    })
-    this.inFlightDutyClaims.add(settled)
-    try {
-      const claim = await this.cpClient?.claimDuty(agentId)
-      if (!claim) return { granted: false }
-      if (!claim.granted || !claim.grant) {
-        return claim.holder ? { granted: false, holder: claim.holder } : { granted: false }
-      }
-      const grant = claim.grant
-      // The group we were actually given may cover several agents, so capacity
-      // is judged against it — never against the single agent we asked about.
-      const arriving = grant.members.filter((m) => m.kind === 'agent' && !this.duties.holdsAgent(m.refId)).length
-      const draining = this.dutyClaimsSuspended || this.draining || this.drainingAgents.has(agentId)
-      if (draining || arriving > this.dutyHeadroomForPendingClaim()) {
-        const why = draining ? 'a drain started while the claim was in flight' : 'it does not fit remaining capacity'
-        this.log.info(`duty: handing ${grant.groupId} straight back — ${why}`)
-        await this.cpClient
-          ?.releaseDuties([grant.groupId])
-          .catch((err) => this.log.warn(`duty: handing back ${grant.groupId} failed (it will lapse): ${err}`))
-        return { granted: false }
-      }
-      // Load-bearing await: the rendezvous claim exists BECAUSE a trigger arrived
-      // for an agent this member does not serve, and the turn is dispatched right
-      // after. Install, then hold, then answer — answering `granted` before the
-      // agent is there reproduces the "no agent on this daemon" drop the claim is
-      // meant to prevent.
-      const failed = await this.admitDutyGrants([grant])
-      // Never applied, so the answer and the local state agree — a member that
-      // says "not me" while still holding the lease is the split brain this whole
-      // mechanism exists to avoid.
-      if (failed.has(grant.groupId)) {
-        this.log.warn(`duty: claimed ${grant.groupId} but could not install ${agentId} — handing the trigger back`)
-        return { granted: false }
-      }
-      return { granted: true }
-    } catch (err) {
-      // A CP blip must not look like "someone else holds it" — answering with no
-      // holder makes the router account it as an unplaceable trigger rather than
-      // re-routing into the void.
-      this.log.warn(`duty: claiming ${agentId} for an inbound trigger failed: ${err}`)
-      return { granted: false }
-    } finally {
-      this.inFlightDutyClaims.delete(settled)
-      markSettled()
-    }
+  private claimDutyForTrigger(agentId: string): Promise<{ granted: boolean; holder?: string }> {
+    return this.dutyCoordinator.claimDutyForTrigger(agentId)
   }
 
-  /** Wait for every claim already awaiting the CP to settle. Called inside the
-   *  drain latch, so each one sees the latch and hands back what it won —
-   *  without this join a drain can finish and clear the latch while an older
-   *  response is still in flight, installing a grant after `drain/done`. */
-  private async joinInFlightDutyClaims(): Promise<void> {
-    while (this.inFlightDutyClaims.size > 0) {
-      await Promise.allSettled([...this.inFlightDutyClaims])
-    }
+  private joinInFlightDutyClaims(): Promise<void> {
+    return this.dutyCoordinator.joinInFlightDutyClaims()
   }
 
-  /** Re-derive platform connections and schedules from the new duty set. The physical
-   *  half is not optional: `transportAgents` gates which agents get sockets, and direct
-   *  ingress has no per-message duty check, so a group this member stopped serving keeps
-   *  receiving platform traffic until its connection is actually closed. */
   private onDutyChanged(): void {
-    if (!this.dutyEnforced()) return
-    for (const agent of this.agents.values()) this.syncAgentSchedules(agent)
-    this.syncOrchestrationDeadlines()
-    this.dutyConnectionsRequested++
-    this.convergeDutyConnections()
+    this.dutyCoordinator.onDutyChanged()
   }
 
-  /** Reconcile until the duty-driven convergence has actually run. A pass that throws (a workspace
-   *  authority conflict, a host teardown, a platform close) leaves the request outstanding, and a
-   *  fence still holding its sockets open is the one state this must never settle in — so it
-   *  retries, backing off to a slow poll rather than giving up. Any other reconcile trigger
-   *  satisfies the same outstanding request and stops the loop. */
-  private convergeDutyConnections(delayMs = Daemon.DUTY_CONVERGE_RETRY_BASE_MS): void {
-    void this.reconcile().catch((err) => {
-      this.log.warn(`duty: reconcile after a duty change failed: ${formatErr(err)}`)
-      if (this.draining || this.dutyConnectionsRequested === this.dutyConnectionsConverged) return
-      this.log.warn(`duty: retrying platform convergence in ${delayMs}ms — a fenced agent may still be served`)
-      if (this.dutyConvergeRetryTimer !== undefined) this.clock.clearTimeout(this.dutyConvergeRetryTimer)
-      this.dutyConvergeRetryTimer = this.clock.setTimeout(() => {
-        this.dutyConvergeRetryTimer = undefined
-        if (this.dutyConnectionsRequested === this.dutyConnectionsConverged) return
-        this.convergeDutyConnections(Math.min(delayMs * 2, Daemon.DUTY_CONVERGE_RETRY_CAP_MS))
-      }, delayMs)
-    })
+  private convergeDutyConnections(delayMs?: number): void {
+    this.dutyCoordinator.convergeDutyConnections(delayMs)
   }
 
   /** Arm this agent's cron + dream schedules, or disarm them when its duty lives
@@ -18314,10 +17932,7 @@ export class Daemon {
       this.clock.clearTimeout(this.runtimeProbeTimer)
       this.runtimeProbeTimer = undefined
     }
-    if (this.dutyConvergeRetryTimer !== undefined) {
-      this.clock.clearTimeout(this.dutyConvergeRetryTimer)
-      this.dutyConvergeRetryTimer = undefined
-    }
+    this.dutyCoordinator.dispose()
     for (const t of this.bgWakeTimers) this.clock.clearTimeout(t)
     this.bgWakeTimers.clear()
     // Cancel in-flight catalog discoveries and kill their child processes.
