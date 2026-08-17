@@ -15,6 +15,7 @@ import {
   curatedProbeEnvironment,
   probeRuntime,
   probeAllRuntimes,
+  probeTimeoutMs,
   sweepStaleProbeRoots,
   type ProbeHostPolicy
 } from '../src/runtimes/runtime-prober.js'
@@ -331,6 +332,60 @@ describe('probeAllRuntimes', () => {
 
   it('returns [] for no runtimes', async () => {
     expect(await probeAllRuntimes({}, { hostFactory: () => fakeHost({}) })).toEqual([])
+  })
+
+  // The sweep used to apply every result at one barrier, so a runtime whose package
+  // launcher spends minutes building its install tree also held back the runtimes that
+  // answered in seconds. Each result must surface as it lands.
+  it('reports each result as it resolves, before the slow ones finish', async () => {
+    let releaseSlow = (): void => {}
+    const slow = new Promise<string>((resolve) => {
+      releaseSlow = () => resolve('sess-slow')
+    })
+    const reported: string[] = []
+    const sweep = probeAllRuntimes(
+      { fast: rt, slow: rt },
+      {
+        concurrency: 2,
+        hostFactory: (_rt, id) => fakeHost(id === 'slow' ? { newSession: () => slow } : {}),
+        onResult: (result) => reported.push(result.runtime)
+      }
+    )
+    await vi.waitFor(() => expect(reported).toEqual(['fast']))
+    releaseSlow()
+    const results = await sweep
+    expect(reported).toEqual(['fast', 'slow'])
+    expect(results.every((r) => r.ok)).toBe(true)
+  })
+
+  it('keeps probing when a result callback throws', async () => {
+    const warn = vi.fn()
+    const results = await probeAllRuntimes(
+      { a: rt, b: rt },
+      {
+        concurrency: 1,
+        hostFactory: () => fakeHost({}),
+        log: { warn, info: vi.fn(), debug: vi.fn(), error: vi.fn() } as never,
+        onResult: () => {
+          throw new Error('cp write failed')
+        }
+      }
+    )
+    expect(results.map((r) => r.runtime).sort()).toEqual(['a', 'b'])
+    expect(warn).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('probeTimeoutMs', () => {
+  // A package launcher resolves and links its whole tree on first use (~210s measured
+  // for a 700-package harness), so 30s could never admit one: the deadline is a
+  // hang reaper for those, not a latency budget.
+  it.each(['npx', 'uvx'])('gives %s launchers a hang-reaper deadline', (command) => {
+    expect(probeTimeoutMs({ command, args: [], env: [] })).toBe(6 * 60_000)
+  })
+
+  it('keeps the tight 30s budget for a real binary distribution', () => {
+    expect(probeTimeoutMs({ command: 'qodercli', args: ['--acp'], env: [] })).toBe(30_000)
   })
 
   // Models the real leak: omp's own daemon escapes the adapter's process group, so it

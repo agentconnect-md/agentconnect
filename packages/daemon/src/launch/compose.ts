@@ -158,6 +158,8 @@ export function composeRuntimeLaunch(opts: {
   allowModelToolUnixSockets?: boolean
   /** True in --k8s: the runtime runs in a sandbox pod, so this daemon's env must not travel. */
   k8s?: boolean
+  /** Probe launches only — keep npx/uvx on the host package cache. */
+  hostPackageCache?: boolean
 }): ComposedRuntimeLaunch {
   const policyId = runtimeMemoryPolicyId(opts.runtime, opts.runtimeId)
   const capabilities = runtimeMemoryCapabilities(opts.runtime, opts.runtimeId)
@@ -189,7 +191,8 @@ export function composeRuntimeLaunch(opts: {
     trustedWorkspaceWriteRoots: opts.trustedWorkspaceWriteRoots,
     sandboxMechanism: opts.sandboxMechanism,
     mcpSocketPath: opts.mcpSocketPath,
-    allowModelToolUnixSockets: opts.allowModelToolUnixSockets
+    allowModelToolUnixSockets: opts.allowModelToolUnixSockets,
+    ...(opts.hostPackageCache ? { hostPackageCache: true as const } : {})
   })
   if (sandboxAccess?.claudeExecutable && !launch.env.CLAUDE_CODE_EXECUTABLE) {
     launch.env.CLAUDE_CODE_EXECUTABLE = sandboxAccess.claudeExecutable

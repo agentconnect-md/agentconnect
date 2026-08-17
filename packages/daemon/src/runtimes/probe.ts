@@ -118,7 +118,7 @@ export interface RuntimeStateLocation {
 
 // --- home / XDG path resolution (honors the standard env overrides) ----------
 
-function home(env: NodeJS.ProcessEnv): string {
+export function home(env: NodeJS.ProcessEnv): string {
   return (isWin ? env.USERPROFILE : env.HOME) || homedir()
 }
 function xdgConfigHome(env: NodeJS.ProcessEnv): string {
@@ -371,7 +371,7 @@ export const CUSTOM_PROBES: Record<string, RuntimeProbe> = Object.fromEntries(
  * one of these, the launcher being on `$PATH` says nothing about whether the
  * wrapped agent is installed, so such runtimes require a custom probe to count.
  */
-const PACKAGE_LAUNCHERS = new Set(['npx', 'uvx'])
+export const PACKAGE_LAUNCHERS = new Set(['npx', 'uvx'])
 const CURATED_RUNTIME_IDS = new Set([...Object.keys(CURATED_RUNTIME_CATALOG), 'hermes'])
 
 /** Is this runtime actually usable on this host? */

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Daemon } from '../src/daemon.js'
+import { CuratedRuntimeAdmission } from '../src/runtimes/curated-admission.js'
 import type { ResolvedRuntimeCatalog } from '../src/runtimes/registry.js'
 import { FakeClock } from './cp/fake-clock.js'
 
@@ -195,6 +196,62 @@ describe('daemon curated runtime admission', () => {
       ;(daemon as any).noteRuntimeAuthFromTurn('explicit', false)
       expect(emitted.length).toBe(beforeClear + 1)
       expect(emitted[emitted.length - 1]!.find((p) => p.runtime === 'explicit')?.authRequired).toBeUndefined()
+    } finally {
+      await daemon.stop()
+    }
+  }, 15_000)
+
+  // The sweep used to apply every result at one barrier, so a curated runtime whose
+  // package launcher spends minutes building its install tree also held back the
+  // runtimes that answered in seconds — including their admission.
+  it('reports each probe as it lands instead of waiting for the slowest runtime', async () => {
+    let releaseCurated = (): void => {}
+    let gate: Promise<void> | undefined
+    const probe = vi.fn(
+      async (runtimes: Record<string, unknown>, options: { onResult?: (r: Record<string, unknown>) => void }) => {
+        const results: Array<Record<string, unknown>> = []
+        for (const runtime of Object.keys(runtimes)) {
+          if (runtime === 'hermes-agent' && gate) await gate
+          const result = { runtime, ok: true, models: [] }
+          options.onResult?.(result)
+          results.push(result)
+        }
+        return results
+      }
+    )
+    const daemon = new Daemon({
+      root: root(),
+      resolveCatalog: async () => catalog(),
+      installed: (runtimes) => runtimes,
+      probeRuntimes: probe as never,
+      hostFactory: () => ({}) as never
+    })
+
+    try {
+      await daemon.start()
+      await waitForProbe(daemon, probe)
+      const emitted: string[][] = []
+      ;(daemon as any).cpClient = {
+        emitDaemonRuntimes: (profiles: Array<{ runtime: string }>) => emitted.push(profiles.map((p) => p.runtime)),
+        stop: vi.fn(async () => {})
+      }
+      // Re-arm a full sweep whose curated probe blocks until released.
+      ;(daemon as any).lastProbeAtMs = 0
+      ;(daemon as any).curatedRuntimeAdmission = new CuratedRuntimeAdmission()
+      ;(daemon as any).refreshAdmittedRuntimes()
+      gate = new Promise<void>((resolve) => {
+        releaseCurated = resolve
+      })
+      const sweep = (daemon as any).probeRuntimesAndEmit(true)
+
+      // The fast runtime is reported while the curated probe is still in flight.
+      await vi.waitFor(() => expect(emitted.at(-1)).toContain('explicit'), WAIT)
+      expect((daemon as any).probing).toBe(true)
+      expect(emitted.at(-1)).not.toContain('hermes-agent')
+
+      releaseCurated()
+      await sweep
+      expect(emitted.at(-1)!.slice().sort()).toEqual(['explicit', 'hermes-agent'])
     } finally {
       await daemon.stop()
     }
