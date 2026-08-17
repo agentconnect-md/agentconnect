@@ -1437,6 +1437,13 @@
   .fopt:hover {
     background: var(--surface-hover);
   }
+  /* The selected option. Part of the design's `.fopt` set; it was never ported because nothing
+     used it until the placement picker stopped hand-rolling its own selected state. */
+  .fopt.on {
+    background: var(--brand-soft);
+    color: var(--text-primary);
+    font-weight: 600;
+  }
   .fhdr {
     padding: 8px 8px 4px;
     font: 600 10.5px var(--font-mono);

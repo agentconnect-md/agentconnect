@@ -14,11 +14,11 @@ const options: DaemonSelectOption[] = [
   {
     value: 'pool-1',
     label: 'AgentConnect Cloud',
-    detail: 'Model usage included — no API key needed.',
+    title: 'Model usage included — no API key needed.',
     kind: 'pool' as const
   },
-  { value: 'edge-1', label: 'edge-1', detail: 'Uses the credentials on this machine.' },
-  { value: 'edge-2', label: 'edge-2', detail: 'Offline — bring this machine online to use it.', disabled: true }
+  { value: 'edge-1', label: 'edge-1', title: 'Uses the credentials on this machine.' },
+  { value: 'edge-2', label: 'edge-2', meta: 'offline', title: 'Offline — bring this machine online.', disabled: true }
 ]
 
 function Harness() {
@@ -48,9 +48,17 @@ describe('DaemonSelect', () => {
     const rows = [...container!.querySelectorAll<HTMLButtonElement>('[role="option"]')]
 
     expect(rows[0]?.dataset.pool).toBe('true')
+    // The row is ONE line: the name, and a compact meta when there is one. The longer reason is a
+    // tooltip, not a second line (the design's `.fopt`).
     expect(rows[0]?.textContent).toContain('AgentConnect Cloud')
-    expect(rows[0]?.textContent).toContain('Model usage included — no API key needed.')
+    expect(rows[0]?.textContent).not.toContain('Model usage included')
+    expect(rows[0]?.getAttribute('title')).toBe('Model usage included — no API key needed.')
+    expect(rows[2]?.textContent).toContain('offline')
     expect(rows).toHaveLength(3)
+    // The selected row carries the design's `.fopt.on`, which is where its background and weight
+    // come from — the component states the class, `globals.css` has to define it.
+    expect(rows[0]?.className).toMatch(/\bon\b/)
+    expect(rows[1]?.className).not.toMatch(/\bon\b/)
   })
 
   it('selects a local daemon and skips unavailable choices with the keyboard', async () => {

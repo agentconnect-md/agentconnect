@@ -353,7 +353,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
           {
             value: '',
             label: POOL_LABEL,
-            detail: 'Model usage included — no API key needed.',
+            title: 'Model usage included — no API key needed.',
             kind: 'pool' as const
           }
         ]
@@ -363,8 +363,9 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
     ...offeredGroups.map((group) => ({
       value: groupPlacementValue(group.setId),
       label: group.name,
-      detail: availableGroups.includes(group)
-        ? 'Any daemon in the group.'
+      meta: `${group.memberDaemonIds.length} daemon${group.memberDaemonIds.length === 1 ? '' : 's'}`,
+      title: availableGroups.includes(group)
+        ? 'Any daemon in the group can serve this agent.'
         : group.memberDaemonIds.length === 0
           ? 'No daemons in this group yet.'
           : 'No daemon in this group is serving right now.',
@@ -374,10 +375,11 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
     ...localDaemons.map((candidate) => ({
       value: candidate.daemonId,
       label: candidate.name,
-      detail:
+      ...(candidate.status === 'online' ? {} : { meta: candidate.status }),
+      title:
         candidate.status === 'online'
           ? 'Uses the credentials on this machine.'
-          : `${candidate.status[0]!.toUpperCase()}${candidate.status.slice(1)} — this machine is not currently serving.`
+          : 'This machine is not currently serving.'
     }))
   ]
   const sandboxRequired = daemon?.caps.features.includes('sandbox-required') ?? false
