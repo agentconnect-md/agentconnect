@@ -6,7 +6,6 @@ import { SLACK_RESPONSE_FINAL_EVENT_TAG } from '@agentconnect.md/message'
 import { WorkspaceManager } from '../workspace/workspace-manager.js'
 import { initiatorLabel } from '../workspace/session-branch.js'
 import { memoryKindOf, type MemoryProvider, type MemoryScope } from '../agents/memory-provider.js'
-import { MAX_INDEX_INJECT_BYTES } from '../agents/memory.js'
 import { agentChildEnv } from '../agents/agent-env.js'
 import { planConfigFiles } from '../agents/config-file-env.js'
 import { recalledMemoryBlock, recallQueryFromBlocks, sanitizeRecallRecords } from '../agents/memory-recall.js'
@@ -21,12 +20,8 @@ import {
   hydrateTranscriptImage,
   transcriptImageAttachments
 } from './attachment-block.js'
-import {
-  DIRECT_AGENT_CALL_REMINDER,
-  EXPLICIT_MENTION_REMINDER,
-  NO_RESPONSE_RULE,
-  NO_RESPONSE_REMINDER
-} from './no-response.js'
+import { DIRECT_AGENT_CALL_REMINDER, EXPLICIT_MENTION_REMINDER, NO_RESPONSE_REMINDER } from './no-response.js'
+import { AGENT_META_OPENING, buildStandingContext } from './turn/standing-context.js'
 
 /** Metadata-only semantic lifecycle for one provider-neutral recall attempt. Query
  * and recalled record bodies deliberately stay out of this observer contract. */
@@ -82,43 +77,6 @@ const REMINDER_EVERY_TURNS = 12
 // as a context compaction (ACP has no explicit compaction event — only usage numbers), which
 // also triggers an immediate reminder re-injection.
 const COMPACTION_DROP_RATIO = 0.5
-
-// Opening lines of the inlined agent-meta block (`# Agent\n- Name: …`). The standing
-// context that handle() inlines as a non-meta runtime's first prompt block always
-// starts with them; isStandingContextTitleEcho must recognize exactly what handle()
-// builds, so both sides share these literals.
-const AGENT_META_OPENING = ['# Agent', '- Name:'] as const
-
-const MEMORY_BOUNDARY_TRUNCATION_NOTICE = '\n\n[…memory index truncated — trim MEMORY.md]'
-
-/** Serialize untrusted persistent-memory text inside the prompt's XML-shaped
- * boundary. Escaping all XML markup characters makes it impossible for file
- * content to spell an opening or closing structural tag; decoding exactly one
- * entity layer reconstructs untruncated text byte-for-byte. The serialized body
- * retains the standing-context byte cap without splitting an entity or UTF-8
- * code point. */
-function encodeMemoryBoundaryBody(content: string): string {
-  const encode = (character: string): string => {
-    if (character === '&') return '&amp;'
-    if (character === '<') return '&lt;'
-    if (character === '>') return '&gt;'
-    return character
-  }
-  const fullyEncoded = content.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
-  if (Buffer.byteLength(fullyEncoded) <= MAX_INDEX_INJECT_BYTES) return fullyEncoded
-
-  const bodyBudget = MAX_INDEX_INJECT_BYTES - Buffer.byteLength(MEMORY_BOUNDARY_TRUNCATION_NOTICE)
-  let used = 0
-  let truncated = ''
-  for (const character of content) {
-    const encoded = encode(character)
-    const width = Buffer.byteLength(encoded)
-    if (used + width > bodyBudget) break
-    truncated += encoded
-    used += width
-  }
-  return truncated + MEMORY_BOUNDARY_TRUNCATION_NOTICE
-}
 
 /**
  * True when a runtime-pushed session title is actually an echo of the inlined
@@ -704,16 +662,11 @@ export class SessionManager {
       return false
     }
 
-    // Agent memory INDEX (agents/memory-provider.ts), read fresh. It's STANDING
-    // context (like the system prompt), NOT a user turn — so it rides the system-prompt
-    // channel, never a leading prompt block (which a runtime would auto-title from — #398).
-    // '' for native / absent memory ⇒ a clean no-op. Applied only when THIS call creates
-    // a fresh session (a resumed session already carries it from its first turn).
-    // Routed to exactly one place: Claude carries it via `_meta.systemPrompt` (metaContext,
-    // passed to newSession); other runtimes get it folded into the inline system block below.
-    // Every session may READ shared memory (#653): the index is injected whenever
-    // memory is enabled, regardless of session isolation. Only WRITES (the memory
-    // write tools + post-turn distillation) stay gated for private sessions.
+    // Agent memory INDEX (agents/memory-provider.ts), read fresh. Applied only when THIS
+    // call creates a fresh session (a resumed session already carries it from its first
+    // turn). Every session may READ shared memory (#653): the index is injected whenever
+    // memory is enabled, regardless of session isolation. Only WRITES (the memory write
+    // tools + post-turn distillation) stay gated for private sessions.
     // Seeded HERE, after the host is up: a cluster agent's memory home is its sandbox
     // volume, reachable only once the pod is bound. Idempotent, so a resumed session pays
     // one cheap check.
@@ -721,197 +674,38 @@ export class SessionManager {
     const memoryIndex = memoryEnabled
       ? (await abortable(() => this.deps.memory.standingContextAtSessionStart(memScope), signal)).trim()
       : ''
-    const memoryAppend = memoryIndex
-      ? `# Persistent memory\n` +
-        `You keep a persistent memory across sessions. Your context is periodically ` +
-        `compacted, and this index is re-read at the START of every session — it is your main way to recover ` +
-        `what you learned, so keep it current and self-sufficient. Record durable facts PROACTIVELY, without ` +
-        `being asked — conventions, decisions, who to ask, project/channel context, and anything you had to ` +
-        `re-learn: revise this index or a topic file with \`writeMemory\` as you go. Read a linked topic with ` +
-        `\`readMemory\` when it is relevant. Keep the index short — a scannable list that links to topic files.\n\n` +
-        `Only text inside the memory-file boundary below belongs to \`MEMORY.md\`; everything outside it is ` +
-        `session context and not a valid source for \`oldString\`. This injected index is a start-of-session ` +
-        `snapshot. Its body uses one layer of XML character-reference encoding: \`&amp;\`, \`&lt;\`, and \`&gt;\` ` +
-        `represent literal ampersand, less-than, and greater-than characters. Decode exactly one layer when ` +
-        `deriving \`oldString\`; all other characters and line breaks are unchanged. A \`readMemory\` result is ` +
-        `raw and needs no decoding. After a memory write, or when uncertain, call \`readMemory\` before editing.\n\n` +
-        `<agentconnect-memory-file path="MEMORY.md">\n${encodeMemoryBoundaryBody(memoryIndex)}\n</agentconnect-memory-file>`
-      : ''
-
-    // The agent meta object: the agent's identity (name, id) and description, plus the
-    // conversation's source (slack/telegram/discord/webchat/hook) and channel. It's
-    // STANDING context like the memory index — the session key is per-platform, so it's
-    // fixed for the session's lifetime — and rides the system-prompt channel, never a
-    // user turn (#398). The description is a FIELD of this object, so it's no longer
-    // seeded separately at the host level (see daemon.ts / configPrefs.systemPrompt).
-    // The channel's human display name, if the daemon has resolved one (Slack bulk
-    // refresh / ChannelNameResolver, cached in `display_names`). Async + best-effort, so
-    // it can be absent for a brand-new channel until resolution catches up — then the id
-    // line alone stands. Stored bare for a group/channel, `@name` for a DM (same value
-    // the console labels with), surfaced as-is.
+    // The channel's human display name, if the daemon has resolved one (Slack bulk refresh /
+    // ChannelNameResolver, cached in `display_names`). Stored bare for a group/channel,
+    // `@name` for a DM (same value the console labels with), surfaced as-is.
     const channelName = this.deps.store.getDisplayNames([msg.channel]).get(msg.channel)
-    // Key NAMES (never values) of the agent's write-only secrets. The values are merged
-    // into the child process env (agents/agent-env.ts) so the agent's commands can USE
-    // them; this notice is what distinguishes them from plain env vars in the agent's
-    // eyes. It lives inside the agent meta object so a Claude session resumed in a fresh
-    // process re-asserts it via loadSession. The daemon additionally masks the values
-    // out of every outbound surface (session/secret-mask.ts) — that backstop is not a
-    // substitute for the agent behaving correctly in the first place.
     const secretNames = (agent.runtimeOverrides?.secrets ?? []).map((s) => s.name)
-    // Config-file secrets (agents/config-file-env.ts) never reach the child env:
-    // the daemon materializes each `*_DATA` value to a private file at spawn and
-    // points the tool-native env var (KUBECONFIG / DOCKER_CONFIG) at it. Describe
-    // those separately — the agent must not look for the raw env var, and must
-    // treat the FILE contents as the secret. planConfigFiles over the same
-    // `{...runtimeEnv, ...agentEnv}` merge the spawn path uses keeps the two in
-    // agreement: a pointer var set explicitly ANYWHERE (agent env or the
+    // planConfigFiles over the same `{...runtimeEnv, ...agentEnv}` merge the spawn path uses
+    // keeps the two in agreement: a pointer var set explicitly ANYWHERE (agent env or the
     // runtime definition) wins there too, leaving the secret a plain env var.
     const fileSecrets = planConfigFiles({
       ...this.deps.runtimeEnvFor?.(agent.runtime),
       ...agentChildEnv(agent)
     }).materialize.filter((m) => secretNames.includes(m.sourceVar))
     const fileSecretNames = new Set(fileSecrets.map((m) => m.sourceVar))
-    const envSecretNames = secretNames.filter((n) => !fileSecretNames.has(n))
-    // The agent's own Slack mention token. A Slack mention is an opaque user id
-    // (`<@U…>`) that resembles neither the agent's name nor anything else in the
-    // prompt — without this standing line the model cannot recognize its own
-    // mention in a multi-mention message and may wrongly classify the activation
-    // as "not for me" (session/no-response.ts).
-    const slackSelfId =
-      msg.platform === 'slack' && integrationId ? this.deps.slackBotUserIdFor?.(integrationId) : undefined
-    const agentMeta = [
-      AGENT_META_OPENING[0],
-      `${AGENT_META_OPENING[1]} ${agent.name}`,
-      `- ID: ${agent.id}`,
-      `- Source: ${msg.platform}`,
-      ...(slackSelfId
-        ? [`- Slack identity: bot user <@${slackSelfId}> is YOU — a message mentioning this ID is addressed to you`]
-        : []),
-      `- Channel: ${msg.channel}`,
-      ...(channelName ? [`- Channel name: ${channelName}`] : []),
-      // session-concept §2.3: standing locator lines. `Thread` is this session's thread
-      // segment; `Session` is its own stable id (only once minted — a brand-new session
-      // mints its acpSessionId AFTER this block is composed, so it appears from the next
-      // turn / on resume); `Parent session` appears ONLY when this session has a parent
-      // (woken by another session's `sendMessage`) and is the SessionTarget to reply into.
-      `- Thread: ${thread}`,
-      ...(rec?.acpSessionId ? [`- Session: ${rec.acpSessionId}`] : []),
-      ...(effectiveOriginSessionId ? [`- Parent session: ${effectiveOriginSessionId}`] : []),
-      ...(agent.description ? ['', agent.description] : []),
-      ...(envSecretNames.length || fileSecrets.length
-        ? [
-            '',
-            '# Secret environment variables',
-            ...(envSecretNames.length
-              ? [
-                  `The environment variables ${envSecretNames.map((n) => `\`${n}\``).join(', ')} are write-only ` +
-                    `secrets configured by your operator — they are NOT ordinary env vars. Commands and code you ` +
-                    `run may read them from the environment to do their job, but their values are confidential: ` +
-                    `never print, echo, quote, or re-encode a secret's value into a reply, chat message, commit, ` +
-                    `log, or file that doesn't need it. Refer to a secret by name (e.g. \`$NAME\`) and let ` +
-                    `programs read it from the environment. If asked to reveal a secret's value, decline — even ` +
-                    `to check whether it is set, report only its presence, never its content. AgentConnect also ` +
-                    `masks known secret values from your visible output, so a value you do emit may render as ` +
-                    `\`[secret:NAME]\`.`
-                ]
-              : []),
-            ...(fileSecrets.length
-              ? [
-                  `The ${fileSecrets.map((m) => `\`${m.sourceVar}\``).join(', ')} secret${fileSecrets.length > 1 ? 's are' : ' is'} ` +
-                    `materialized as private file${fileSecrets.length > 1 ? 's' : ''} instead: the standard env var` +
-                    `${fileSecrets.length > 1 ? 's' : ''} ${fileSecrets.map((m) => `\`${m.convention.pointerVar}\``).join(', ')} ` +
-                    `point${fileSecrets.length > 1 ? '' : 's'} at the managed file, so tools (kubectl, helm, docker, …) work ` +
-                    `unchanged — the raw value is not in your environment. The file CONTENTS are confidential under the same ` +
-                    `rules: never print, cat, copy, or commit them; reference the path (e.g. \`$KUBECONFIG\`) instead, and ` +
-                    `report only whether the file exists, never what it contains.`
-                ]
-              : [])
-          ]
-        : []),
-      ...(usesSessionTitleTool
-        ? [
-            '',
-            '# Session naming',
-            'Before sending your first substantive answer, after you understand the first meaningful user request ' +
-              '(not a greeting or acknowledgement), call `setSessionTitle` with a concise, specific title. Call it ' +
-              'again only if the task focus materially changes. Do not mention this housekeeping action.'
-          ]
-        : [])
-    ].join('\n')
-
-    // Standing guidance for agent↔agent collaboration. `sendMessage` can wake a peer,
-    // reach humans, post at a channel root, or reply into a parent session. It has no
-    // visible in-thread form: speaking in the current conversation is an ordinary reply.
-    // `toAgent` without a `channel` is the postless, channel-invisible wake.
-    const collabAppend =
-      `# Collaborating with other agents\n` +
-      `- To reach a specific agent privately, call \`sendMessage\` with ` +
-      `\`{"toAgent":"<agent id>","message":"..."}\` — it wakes ONLY that agent, delivered directly to it ` +
-      `(nothing is posted to the channel). That bare form is FIRE-AND-FORGET: the peer answers inside its own ` +
-      `conversation and nothing comes back to you, not even a failure. Whenever you expect an answer — your ` +
-      `message asks a question or requests a result, or you were asked to relay that agent's answer to someone ` +
-      `— send \`{"toAgent":{"agentId":"<agent id>","needsReply":true},"message":"..."}\` instead, which obliges ` +
-      `it to report into YOUR session when it finishes or fails. Add a \`channel\` ` +
-      `(\`{"toAgent":"<agent id>","channel":"<channel id>","message":"..."}\`, channel-root form) ` +
-      `to ALSO post a visible message at that channel's root and anchor the agent's conversation to that post. ` +
-      `That channel-root form may target YOURSELF to open and activate one new conversation there: use your own ` +
-      `ID from the # Agent block (also included by \`listAgents\`), never your platform bot identity. A direct ` +
-      `\`toAgent\` call without \`channel\` may not target yourself. ` +
-      `To speak in the conversation you are already in — including to address a peer or human there — do NOT ` +
-      `call \`sendMessage\`: write your ordinary turn reply and @-mention them in it (use \`listAgents\` to get ` +
-      `a peer's exact \`mention\` token). To reach HUMAN users elsewhere, use the \`toUser\` mode — never put ` +
-      `an AgentConnect agent or your own bot identity in \`toUser\`: ` +
-      `\`{"toUser":"<Slack user id>","message":"..."}\` DMs that person, and adding \`channel\` posts an ` +
-      `@-mention at the channel root. In that channel form, pass ` +
-      `an array such as \`"toUser":["<user id 1>","<user id 2>"]\` to @-mention multiple people in the one ` +
-      `message; arrays are never DMs. If you were woken by another ` +
-      `session, reply with \`{"sessionId":"<Parent session>","message":"..."}\`. To leave a visible note others ` +
-      `catch up on later without waking anyone, use \`{"channel":"<channel id>","message":"..."}\`. Every ` +
-      `visible \`sendMessage\` lands at a channel root and opens a new conversation there.\n` +
-      `- Act only on what is asked of YOU. Do not relay a message onward or start your own broadcast to other ` +
-      `agents unless a human explicitly tells you to.\n` +
-      `- Be quiet about successful mechanics: don't narrate each step or post a message per action, and don't restate ` +
-      `successful tool results like "delivered: true". For a requested operation that fails or returns a structured ` +
-      `error, say what failed, include a safe provider error code when available, and give the next actionable step. ` +
-      `Treat an explicit error marker as failure even if a wrapper command exits 0. Never expose credentials, tokens, ` +
-      `or raw secret-bearing output. Take the action, add at most one short status line if needed, then end your turn.\n` +
-      `- When another agent introduces itself to you, record it in your memory (a peer roster — id, name, what it ` +
-      `does, how to reach it) so you know who to delegate to later. Then just acknowledge briefly; do NOT re-introduce ` +
-      `yourself back or broadcast to everyone.`
-
-    // The parent asked to be told how this session ends (`toAgent.needsReply`). Standing, not a
-    // user turn — the obligation outlives the waking turn, so it belongs beside the collaboration
-    // guidance rather than in the delivered text (which the model may summarize away). Deliberately
-    // scoped to a terminal report: nothing here asks for progress narration, which would turn every
-    // delegated task into channel chatter.
-    const parentReplyAppend = needsReplyToParent
-      ? `# Reporting back to your parent session\n` +
-        `Another session delegated this work to you and is waiting on the outcome. When you finish — or when you ` +
-        `cannot finish — reply to it with ` +
-        `\`sendMessage\` \`{"sessionId":"${effectiveOriginSessionId}","message":"..."}\`, saying whether you ` +
-        `succeeded or failed and what the result was (on failure, what went wrong). Send it exactly once, at the ` +
-        `end; do not report progress along the way, and do not skip it because the task was small or unsuccessful. ` +
-        `Your ordinary assistant response in this child session is not delivered to the parent. Do not write the ` +
-        `result before or after the tool call; after the tool reports successful delivery, end your turn immediately ` +
-        `without repeating the message.`
-      : ''
-
-    // Standing response-choice rule for EVERY agent session and delivery scenario. Direct
-    // messages and direct agent calls are explicitly described as addressed; shared
-    // conversations are where the silent branch is normally useful. Keeping one contract
-    // across runtimes prevents identity/route behavior from depending on the surface.
-
-    // Standing context on the system-prompt append: the agent meta object first, then the
-    // collaboration guidance, then the no-response rule. A fresh session additionally gets
-    // the memory index. Claude carries this via `_meta.systemPrompt`; session/load re-asserts
-    // the durable standing rules in a fresh runtime process without treating them as a user
-    // turn. Other runtimes inline the fresh-session form as the first block below.
-    const resumeSystemContext = [agentMeta, collabAppend, parentReplyAppend, NO_RESPONSE_RULE]
-      .filter(Boolean)
-      .join('\n\n')
-    const sessionContext = [resumeSystemContext, memoryAppend].filter(Boolean).join('\n\n')
     const usesMeta = host.usesMetaSystemPrompt?.() ?? false
-    const metaContext = usesMeta ? sessionContext || undefined : undefined
+    const { memoryAppend, sessionContext, resumeSystemContext, metaContext, parentReplyAppend } = buildStandingContext({
+      agentName: agent.name,
+      agentId: agent.id,
+      agentDescription: agent.description,
+      platform: msg.platform,
+      channel: msg.channel,
+      channelName,
+      slackSelfId: msg.platform === 'slack' && integrationId ? this.deps.slackBotUserIdFor?.(integrationId) : undefined,
+      thread,
+      acpSessionId: rec?.acpSessionId,
+      parentSessionId: effectiveOriginSessionId,
+      envSecretNames: secretNames.filter((n) => !fileSecretNames.has(n)),
+      fileSecrets: fileSecrets.map((m) => ({ sourceVar: m.sourceVar, pointerVar: m.convention.pointerVar })),
+      usesSessionTitleTool,
+      needsReplyToParent,
+      memoryIndex,
+      usesMeta
+    })
 
     // Whether THIS call created a brand-new ACP session (vs. resuming/recreating one
     // the CP already knows). Drives the daemon's one-shot `event/session` start emit.
