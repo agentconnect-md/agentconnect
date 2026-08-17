@@ -98,7 +98,7 @@ No latency or throughput number is a test assertion. Assertions cover structural
 ## Commands
 
 ```bash
-pnpm --filter @agentconnect.md/daemon exec vitest run test/performance/postgres-capacity-support.test.ts
+pnpm --filter @agentconnect.md/daemon exec vitest run --config vitest.postgres-capacity.config.ts test/performance/postgres-capacity-support.bench-test.ts
 pnpm --filter @agentconnect.md/daemon perf:postgres-capacity
 pnpm --filter @agentconnect.md/daemon exec tsc -p test/performance/tsconfig.json
 ```

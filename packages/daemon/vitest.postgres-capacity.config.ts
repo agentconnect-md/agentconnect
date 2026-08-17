@@ -4,7 +4,7 @@ export default defineConfig({
   test: {
     name: 'postgres-capacity',
     environment: 'node',
-    include: ['test/performance/postgres-capacity.bench.ts'],
+    include: ['test/performance/*.bench-test.ts', 'test/performance/postgres-capacity.bench.ts'],
     globalSetup: ['./test/performance/postgres-capacity-global-setup.ts'],
     maxWorkers: 1,
     fileParallelism: false,

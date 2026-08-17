@@ -14,7 +14,7 @@
 
 **Files:**
 
-- Create: `packages/daemon/test/performance/postgres-capacity-support.test.ts`
+- Create: `packages/daemon/test/performance/postgres-capacity-support.bench-test.ts`
 - Create: `packages/daemon/test/performance/postgres-capacity-support.ts`
 
 - [ ] Write failing tests for strict concurrency-list parsing, numeric settings (100-turn minimum), nearest-rank percentiles, 10 ms drift sampling, timer-race plus elapsed-time timeout classification, and the four saturation rules.
@@ -27,7 +27,7 @@
 **Files:**
 
 - Create: `packages/daemon/test/performance/postgres-trace.ts`
-- Create: `packages/daemon/test/performance/postgres-trace.test.ts`
+- Create: `packages/daemon/test/performance/postgres-trace.bench-test.ts`
 - Create: `packages/daemon/test/performance/postgres-trace-contract.bench.ts`
 
 - [ ] Write failing tests against fake executors proving the trace has exactly 17 hand-offs, yields after every hand-off in every mode, preserves batch boundaries, and generates unique turn identifiers.
@@ -42,7 +42,7 @@
 **Files:**
 
 - Create: `packages/daemon/test/performance/postgres-daemon-harness.ts`
-- Create: `packages/daemon/test/performance/postgres-daemon-harness.test.ts`
+- Create: `packages/daemon/test/performance/postgres-daemon-harness.bench-test.ts`
 
 - [ ] Write a failing lifecycle test with fake injected boundaries: generate N active agents, start one Kubernetes-mode daemon, run concurrent independent evaluation turns, and stop cleanly.
 - [ ] Implement a per-agent scripted ACP host with the exact emission order, 38 pauses including one after the final emission, unique session/tool IDs, and no shared update callback.
@@ -72,7 +72,7 @@
 
 ### Task 5: Verification
 
-- [ ] Run `pnpm --filter @agentconnect.md/daemon exec vitest run test/performance/postgres-capacity-support.test.ts test/performance/postgres-trace.test.ts test/performance/postgres-daemon-harness.test.ts`.
+- [ ] Run `pnpm --filter @agentconnect.md/daemon exec vitest run --config vitest.postgres-capacity.config.ts test/performance/*.bench-test.ts`.
 - [ ] Run the opt-in benchmark from a clean database.
 - [ ] Run `pnpm --filter @agentconnect.md/daemon exec tsc -p test/performance/tsconfig.json`.
 - [ ] Run `pnpm --filter @agentconnect.md/daemon exec vitest list | rg 'postgres-capacity\.bench'` and require no match.
