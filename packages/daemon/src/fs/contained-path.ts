@@ -17,7 +17,7 @@
  *   4. handing back a target built from the REAL parent, so the caller's write
  *      cannot be re-pointed by swapping a parent afterwards.
  *
- * This is the discipline `agents/memory.ts` has shipped; it lives here so the
+ * This is the discipline `memory/store.ts` has shipped; it lives here so the
  * skill materializer uses the same one rather than a second, subtly-different
  * copy. It narrows the TOCTOU window rather than closing it — an attacker who
  * wins a race between the final `lstat` and the caller's `open` is still

@@ -20,7 +20,7 @@
  * claim the stronger `none` or `native` semantics: those fail closed upstream.
  */
 import { join } from 'node:path'
-import type { RuntimeDef } from '../config/config-schema.js'
+import type { RuntimeDef } from '../../config/config-schema.js'
 
 export interface RuntimeMemoryCapabilities {
   managed: true

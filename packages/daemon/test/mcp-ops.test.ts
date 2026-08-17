@@ -8,7 +8,7 @@ import {
   type ReplyToSessionReq,
   type SessionStatusReq
 } from '../src/mcp/ops.js'
-import type { MemoryProvider } from '../src/agents/memory-provider.js'
+import type { MemoryProvider } from '../src/memory/provider.js'
 import { toolsForIntegrations } from '../src/mcp/tools.js'
 
 const ctx: SessionContext = {

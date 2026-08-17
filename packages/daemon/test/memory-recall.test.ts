@@ -5,7 +5,7 @@ import {
   recalledMemoryBlock,
   recallQueryFromBlocks,
   sanitizeRecallRecords
-} from '../src/agents/memory-recall.js'
+} from '../src/memory/recall.js'
 
 const req = { turnId: 'turn-1', query: 'q', topK: 5, maxBytes: 20, timeoutMs: 1_000 }
 const valid = (id: string, text: string) => ({

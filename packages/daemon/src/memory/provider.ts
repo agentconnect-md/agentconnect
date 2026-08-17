@@ -55,22 +55,22 @@ import {
   type MemoryFs,
   type MemoryWriteSource,
   type ManagedMemoryHistoryPage
-} from './memory.js'
+} from './store.js'
 import {
   nativeMemoryList,
   nativeMemoryRead,
   nativeMemoryWrite,
   nativeRuntimeEnv,
   isNativeRuntimeSupported
-} from './native-memory.js'
+} from './runtime/native.js'
 import {
   appendDistilledMemories,
   buildDistillationPrompt,
   parseDistilledMemories,
   type DistillationTurn
-} from './memory-distiller.js'
-import { describeRuntime, runtimeMemoryDisabledEnv } from './runtime-memory.js'
-import { canonicalAgentMemoryKey } from './memory-recall.js'
+} from './distill.js'
+import { describeRuntime, runtimeMemoryDisabledEnv } from './runtime/capabilities.js'
+import { canonicalAgentMemoryKey } from './recall.js'
 import type { MemoryCaptureConnectionRegistry, MemoryCaptureOutbox } from '../memory-plugin/outbox.js'
 import { defaultMemoryPluginMetrics, type MemoryPluginMetrics } from '../memory-plugin/metrics.js'
 import { MemoryPluginConflictError, MemoryPluginInputError, type MemoryPluginClient } from '../memory-plugin/client.js'
@@ -279,7 +279,7 @@ function disabledRuntimeMemoryEnv(
 
 /**
  * `managed` memory: our `<root>/memory/` directory. A thin facade over
- * `agents/memory.ts` — every method delegates to the existing primitive and lets
+ * `memory/store.ts` — every method delegates to the existing primitive and lets
  * its error classes (`MemoryPathError` / `MemoryTooLargeError` /
  * `MemoryConflictError`) propagate raw, so the MCP + CP error mappings are unchanged.
  * Where the tree IS (this disk, a sandbox volume) is the factory's answer: it hands

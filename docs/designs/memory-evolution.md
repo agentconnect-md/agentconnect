@@ -10,7 +10,7 @@
 ## 1. Background and Current State
 
 The daemon provides **directory-based, per-agent long-term memory**
-([`agents/memory.ts`](../../packages/daemon/src/agents/memory.ts)):
+([`memory/store.ts`](../../packages/daemon/src/memory/store.ts)):
 `<agent-root>/memory/`, outside the workspace, contains a `MEMORY.md` index and
 one or more `<topic>.md` files. The daemon injects only the index into each
 session, capped at 25 KB, and topics are read on demand. The agent maintains
@@ -18,7 +18,7 @@ memory **manually** through the `readMemory`/`writeMemory` MCP tools. The consol
 proxies reads and writes through CP
 `GET/PUT /agents/:id/memory[/file]`, while the CP does not persist content. A
 unified capability registry in
-[`runtime-memory.ts`](../../packages/daemon/src/agents/runtime-memory.ts)
+[`memory/runtime/capabilities.ts`](../../packages/daemon/src/memory/runtime/capabilities.ts)
 disables or redirects runtime-native memory to prevent duplicate memory stores.
 
 **Design goal:** the memory system must be **flexible
@@ -48,7 +48,7 @@ how to pass results safely to the model. It must not know a Mem0/Zep URL,
 authentication scheme, entity model, or asynchronous event semantics.
 
 The current implemented port is shown below; see
-[`memory-provider.ts`](../../packages/daemon/src/agents/memory-provider.ts).
+[`memory/provider.ts`](../../packages/daemon/src/memory/provider.ts).
 `injectAtSessionStart()` survives only as a deprecated migration alias.
 
 ```ts
@@ -189,7 +189,7 @@ native and managed memory. This is the default provider.
 #### 3.2.1 Where the managed tree lives (per placement)
 
 The managed store is a directory abstraction over a small file-system port
-(`agents/memory-fs.ts`, `MemoryFs`) with exactly two implementations,
+(`memory/fs.ts`, `MemoryFs`) with exactly two implementations,
 `LocalMemoryFs(rootDir)` and `ShimMemoryFs(channel, rootPath)`: `memory.ts`, the
 managed provider, the distiller, the dream runner, and the CP memory reader take
 the port and never touch `node:fs`, and one daemon factory (`resolveMemoryFs`)
@@ -730,7 +730,7 @@ type MemoryConfig =
 
 Disabling and redirecting runtime-native memory, as well as locating its files,
 are harness-specific capabilities registered centrally in
-[`runtime-memory.ts`](../../packages/daemon/src/agents/runtime-memory.ts). They
+[`memory/runtime/capabilities.ts`](../../packages/daemon/src/memory/runtime/capabilities.ts). They
 must not be scattered as provider-specific string checks. One runtime policy
 drives the off switch for `managed`/`none` and the redirect/read root for
 `native`, preventing two allowlists from drifting. Matching prefers registry ID,

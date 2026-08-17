@@ -15,7 +15,7 @@ import {
   type DreamStorePort
 } from '../src/dream/runner.js'
 import { LocalStore } from '../src/store/local-store.js'
-import { appendDistilledMemories } from '../src/agents/memory-distiller.js'
+import { appendDistilledMemories } from '../src/memory/distill.js'
 import {
   ensureMemory,
   readMemoryFile,
@@ -25,12 +25,12 @@ import {
   MAX_MEMORY_FILE_BYTES,
   memoryDir,
   type MemoryHistoryRecord
-} from '../src/agents/memory.js'
-import { LocalMemoryFs, MemorySandboxUnavailableError } from '../src/agents/memory-fs.js'
+} from '../src/memory/store.js'
+import { LocalMemoryFs, MemorySandboxUnavailableError } from '../src/memory/fs.js'
 import { acceptedDreamSkillSources } from '../src/skills/dream-skills.js'
 import { storeDigest } from '../src/dream/dreamer.js'
 import { inspectLocalSkillSource } from '../src/skills/skill-source-snapshot.js'
-import type { MemoryFs } from '../src/agents/memory-fs.js'
+import type { MemoryFs } from '../src/memory/fs.js'
 import { pod } from './fixtures/memory-fs-pod.js'
 
 const local = (dir: string) => new LocalMemoryFs(dir)

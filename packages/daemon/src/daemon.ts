@@ -59,7 +59,7 @@ import {
   type ThreadContextSnapshot
 } from './session/thread-context.js'
 import { defaultTurnOutputMetrics } from './session/turn-output-metrics.js'
-import { recallQueryFromBlocks } from './agents/memory-recall.js'
+import { recallQueryFromBlocks } from './memory/recall.js'
 import { maskableSecrets, maskSecretsDeep } from './session/secret-mask.js'
 import { monotonicTs } from './store/monotonic-ts.js'
 import { StoreRetentionSweeper, resolveStoreRetentionSettings } from './store/retention.js'
@@ -105,7 +105,7 @@ import { buildMcpServers } from './mcp/inject.js'
 import { resolveAgentMcpServers, RESERVED_MCP_SERVER_NAME } from './mcp/resolve-servers.js'
 import { toolsForIntegrations, MEMORY_TOOL_NAMES, GITHUB_REVIEW_TOOLS, KNOWLEDGE_TOOLS } from './mcp/tools.js'
 import { isSessionTitleToolCall } from './mcp/session-title-tool.js'
-import { MEMORY_DISTILLATION_SYSTEM_PROMPT, readOnlyExtractionMode } from './agents/memory-distiller.js'
+import { MEMORY_DISTILLATION_SYSTEM_PROMPT, readOnlyExtractionMode } from './memory/distill.js'
 import {
   DREAM_MODEL_READABLE_CREDENTIALS_REASON,
   DreamRunner,
@@ -336,9 +336,9 @@ import {
   type DispatchingMemoryProvider,
   type MemoryScope,
   type PreparedExternalMemoryCapture
-} from './agents/memory-provider.js'
-import { memoryChannelKey, MemorySandboxUnavailableError, type MemoryFs } from './agents/memory.js'
-import { resolveMemoryFs } from './agents/memory-fs.js'
+} from './memory/provider.js'
+import { memoryChannelKey, MemorySandboxUnavailableError, type MemoryFs } from './memory/store.js'
+import { resolveMemoryFs } from './memory/fs.js'
 import { createWorkspaceGit } from './cp/workspace-git.js'
 import { DAEMON_VERSION } from './version.js'
 import { CpCronRegistry } from './cp/cp-cron.js'
@@ -359,7 +359,7 @@ import { CpIntegrationRegistry } from './cp/cp-integration-registry.js'
 import { CpMcpDefs } from './mcp/cp-mcp-defs.js'
 import { CpMemoryConnectionRegistry, type MemoryPluginConnector } from './cp/memory-connection-registry.js'
 import { MemoryCaptureOutbox } from './memory-plugin/outbox.js'
-import { managedDistillCapture, withManagedDistill } from './agents/managed-distill-outbox.js'
+import { managedDistillCapture, withManagedDistill } from './memory/managed-distill-outbox.js'
 import { defaultMemoryPluginMetrics } from './memory-plugin/metrics.js'
 import { openMountedPostgresDataPlane, type PostgresDataPlane } from './store/postgres-data-plane.js'
 import type { EvaluationCapabilityProfile, EvaluationEventInput } from './evaluation/events.js'

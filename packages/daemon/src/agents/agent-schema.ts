@@ -196,7 +196,7 @@ export const AgentSchema = z.object({
   // `agentconnect-admin` when the CP supplies a webchat entitlement. Never set by
   // hand: the CP re-asserts it on every roster/upsert.
   builtin: z.boolean().default(false),
-  // Which memory backend this agent uses (see agents/memory-provider.ts). Absent ⇒
+  // Which memory backend this agent uses (see memory/provider.ts). Absent ⇒
   // managed (the default). External keeps only connection id + bounded policy on
   // disk; endpoint/grant/config live in the daemon-private CP registry.
   memory: AgentMemoryBinding.optional(),

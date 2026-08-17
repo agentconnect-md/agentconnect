@@ -11,7 +11,7 @@
  */
 import { constants, promises as fs } from 'node:fs'
 import { isAbsolute, relative, sep } from 'node:path'
-import { MemoryConflictError, MemoryPathError, memoryRelSegments, type MemoryFsEntry } from '../agents/memory-fs.js'
+import { MemoryConflictError, MemoryPathError, memoryRelSegments, type MemoryFsEntry } from '../memory/fs.js'
 import { fitToBudget, utf8Boundary } from '../wire-slice.js'
 import type { MemoryFsExecutor } from './memory-fs-channel.js'
 import { DirHandle, MissingPathError, withDescent } from './safe-descent.js'

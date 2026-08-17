@@ -25,10 +25,10 @@ import {
   MAX_HISTORY_VALUE_BYTES,
   MAX_HISTORY_VERSIONS_PER_FILE,
   type MemoryHistoryRecord
-} from '../src/agents/memory.js'
-import { LocalMemoryFs } from '../src/agents/memory-fs.js'
+} from '../src/memory/store.js'
+import { LocalMemoryFs } from '../src/memory/fs.js'
 import { createMemoryReader, MemoryViolationError } from '../src/cp/memory-reader.js'
-import { createManagedMemoryProvider } from '../src/agents/memory-provider.js'
+import { createManagedMemoryProvider } from '../src/memory/provider.js'
 import { MEMORY_TOOLS } from '../src/mcp/tools.js'
 import { executeTool, type OpsDeps, type SessionContext } from '../src/mcp/ops.js'
 
@@ -39,7 +39,7 @@ function newDir(): string {
 }
 const indexPath = (dir: string) => join(memoryDir(dir), MEMORY_INDEX)
 
-describe('agents/memory (directory model)', () => {
+describe('memory/store (directory model)', () => {
   it('ensureMemory seeds memory/MEMORY.md only when absent (idempotent)', async () => {
     const dir = newDir()
     await ensureMemory(local(dir), 'bot-a')
@@ -162,7 +162,7 @@ describe('agents/memory (directory model)', () => {
   })
 })
 
-describe('agents/memory (.history change log)', () => {
+describe('memory/store (.history change log)', () => {
   const readHistory = (dir: string): MemoryHistoryRecord[] => {
     const raw = readFileSync(join(memoryDir(dir), MEMORY_HISTORY_FILENAME), 'utf8')
     return raw
@@ -742,7 +742,7 @@ describe('memory MCP tools (executeTool)', () => {
   })
 })
 
-describe('agents/memory-provider (ManagedMemoryProvider)', () => {
+describe('memory/provider (ManagedMemoryProvider)', () => {
   const provider = (dir: string | undefined) =>
     createManagedMemoryProvider(() => (dir === undefined ? undefined : local(dir)))
   const scope = { agentId: 'bot-a' }

@@ -657,7 +657,7 @@ an incidental spawn detail:
   sufficient when that home also contains shared auth or unrelated state.
 
 The single source of truth is
-[`runtime-memory.ts`](../packages/daemon/src/agents/runtime-memory.ts). Match a known
+[`memory/runtime/capabilities.ts`](../packages/daemon/src/memory/runtime/capabilities.ts). Match a known
 registry id first and retain a command/args signature fallback for custom aliases and
 package launchers such as `npx`. A new harness added to the curated ACP matrix must also
 declare its expected `managed` / `none` / `native` capabilities in

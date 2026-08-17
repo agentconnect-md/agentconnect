@@ -10,7 +10,7 @@ import {
   managedDistillCapture,
   managedDistillConnectionId,
   withManagedDistill
-} from '../src/agents/managed-distill-outbox.js'
+} from '../src/memory/managed-distill-outbox.js'
 
 const metrics: MemoryPluginMetrics = {
   recall: vi.fn(),

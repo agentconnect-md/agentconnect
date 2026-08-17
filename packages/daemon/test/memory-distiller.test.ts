@@ -2,16 +2,16 @@ import { mkdtemp, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { ensureMemory, MEMORY_HISTORY_FILENAME, memoryDir, readMemoryFile } from '../src/agents/memory.js'
-import { LocalMemoryFs } from '../src/agents/memory-fs.js'
+import { ensureMemory, MEMORY_HISTORY_FILENAME, memoryDir, readMemoryFile } from '../src/memory/store.js'
+import { LocalMemoryFs } from '../src/memory/fs.js'
 import {
   appendDistilledMemories,
   buildDistillationPrompt,
   MEMORY_DISTILLATION_SYSTEM_PROMPT,
   parseDistilledMemories,
   readOnlyExtractionMode
-} from '../src/agents/memory-distiller.js'
-import { ManagedMemoryProvider } from '../src/agents/memory-provider.js'
+} from '../src/memory/distill.js'
+import { ManagedMemoryProvider } from '../src/memory/provider.js'
 
 const local = (dir: string) => new LocalMemoryFs(dir)
 

@@ -551,7 +551,7 @@ This aligns upstream section 6.6 `Agent` / `Integration` / `Workspace` / `CronJo
 Before a new or reloaded session, Session Manager calls `prepareWorkspace(agent)`:
 
 1. `git-repo`: validate `agentDir`; clone the configured repository and branch if no checkout exists, or run a best-effort `git pull --ff-only` with an approximately 4.5-second timeout when `pullOnNewSession` is enabled. A clone failure is fatal because no checkout exists; a pull failure is nonfatal so offline execution can continue from disk.
-2. `from-scratch`: ensure the workspace directory exists; agent memory is initialized separately under the agent root by `packages/daemon/src/agents/memory.ts`.
+2. `from-scratch`: ensure the workspace directory exists; agent memory is initialized separately under the agent root by `packages/daemon/src/memory/store.ts`.
 3. Return the absolute repository root, validated `agentDir`, or from-scratch directory as the `cwd` for section 7 `session/new` or `session/load`.
 
 Workspace preparation is implemented by `packages/daemon/src/workspace/workspace-manager.ts` and invoked from `packages/daemon/src/session/session-manager.ts`.

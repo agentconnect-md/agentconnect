@@ -18,8 +18,8 @@ import {
   runtimeMemoryCapabilities,
   runtimeMemoryDisabledEnv,
   runtimeMemoryPolicyId
-} from '../agents/runtime-memory.js'
-import { MemoryProviderUnavailableError, type MemoryProviderKind } from '../agents/memory-provider.js'
+} from '../memory/runtime/capabilities.js'
+import { MemoryProviderUnavailableError, type MemoryProviderKind } from '../memory/provider.js'
 import type { RuntimeDef } from '../config/config-schema.js'
 import { CLAUDE_PROFILE_ENV, isClaudeRuntimeDef } from '../runtime-defs/claude-runtime.js'
 import { resolveCommandPath } from './probe.js'

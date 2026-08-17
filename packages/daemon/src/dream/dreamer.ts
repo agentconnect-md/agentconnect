@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { posix } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import { MAX_ORGANIZATION_SUGGESTION_BODY_BYTES, type SkillBundleTextFile } from '@agentconnect.md/protocol'
-import { MEMORY_INDEX, MAX_INDEX_INJECT_BYTES, MAX_MEMORY_FILE_BYTES } from '../agents/memory.js'
+import { MEMORY_INDEX, MAX_INDEX_INJECT_BYTES, MAX_MEMORY_FILE_BYTES } from '../memory/store.js'
 
 /**
  * Pure dream-pipeline pieces (design: docs/designs/memory-dreaming.md §4–5):

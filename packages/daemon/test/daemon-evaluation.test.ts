@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { ORGANIZATION_SUGGESTION_REVIEW_FEATURE } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
-import { MEMORY_DISTILLATION_SYSTEM_PROMPT } from '../src/agents/memory-distiller.js'
+import { MEMORY_DISTILLATION_SYSTEM_PROMPT } from '../src/memory/distill.js'
 import { EvaluationEventCollector } from '../src/evaluation/index.js'
 
 // vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a

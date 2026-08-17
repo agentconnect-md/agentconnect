@@ -37,7 +37,7 @@ import {
   type MemoryFs,
   type MemoryHistoryRecord,
   withMemoryDirLock
-} from '../agents/memory.js'
+} from '../memory/store.js'
 import {
   buildDreamExplorationPrompt,
   dreamSessionFileName,

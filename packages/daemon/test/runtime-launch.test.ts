@@ -17,8 +17,8 @@ import { delimiter, dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import { prepareRuntimeLaunch } from '../src/acp/runtime-launch.js'
 import { composeRuntimeLaunch, runtimeSandboxReadRoots } from '../src/runtimes/launch-policy.js'
-import { runtimeMemoryCapabilities } from '../src/agents/runtime-memory.js'
-import { MemoryProviderUnavailableError } from '../src/agents/memory-provider.js'
+import { runtimeMemoryCapabilities } from '../src/memory/runtime/capabilities.js'
+import { MemoryProviderUnavailableError } from '../src/memory/provider.js'
 import type { RuntimeDef } from '../src/config/config-schema.js'
 
 function fixture(): { scopeDir: string; cwd: string; hostHome: string } {

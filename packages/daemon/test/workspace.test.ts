@@ -116,7 +116,7 @@ describe('prepareWorkspace', () => {
     expect(cwd).toBe(path)
     expect(existsSync(path)).toBe(true)
     // memory.md is NOT created in the workspace anymore — it moved to <agent-root>/memory.md
-    // (see agents/memory.ts `ensureMemory`), so it stays out of the workspace / git repo.
+    // (see memory/store.ts `ensureMemory`), so it stays out of the workspace / git repo.
     expect(existsSync(join(path, 'memory.md'))).toBe(false)
   })
 

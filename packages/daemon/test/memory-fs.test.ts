@@ -9,7 +9,7 @@ import {
   MemorySandboxUnavailableError,
   resolveMemoryFs,
   type MemoryFs
-} from '../src/agents/memory-fs.js'
+} from '../src/memory/fs.js'
 import {
   MEMORY_HISTORY_FILENAME,
   MEMORY_INDEX,
@@ -18,8 +18,8 @@ import {
   listMemoryHistory,
   readMemoryFile,
   writeMemoryFile
-} from '../src/agents/memory.js'
-import { ManagedMemoryProvider } from '../src/agents/memory-provider.js'
+} from '../src/memory/store.js'
+import { ManagedMemoryProvider } from '../src/memory/provider.js'
 import { createMemoryReader } from '../src/cp/memory-reader.js'
 import { MemoryFsPayloadSchema, ShimMemoryFs } from '../src/shim/memory-fs-channel.js'
 import { createFdMemoryFsExecutor } from '../src/shim/fd-memory-fs.js'

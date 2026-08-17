@@ -54,11 +54,11 @@ import {
   MemoryConflictError,
   MemorySandboxUnavailableError,
   type MemoryFs
-} from '../agents/memory.js'
-import type { MemoryAdminSurface, MemoryScope } from '../agents/memory-provider.js'
+} from '../memory/store.js'
+import type { MemoryAdminSurface, MemoryScope } from '../memory/provider.js'
 
 /** Unknown-agent violation → `BAD_PAYLOAD` on the wire (path escapes surface as
- *  MemoryPathError from agents/memory.ts, mapped the same way by the dispatcher). */
+ *  MemoryPathError from memory/store.ts, mapped the same way by the dispatcher). */
 export class MemoryViolationError extends Error {
   constructor(message: string) {
     super(message)

@@ -3,8 +3,8 @@ import {
   memoryProviderFor,
   MemoryProviderUnavailableError,
   type MemoryProviderKind
-} from '../../src/agents/memory-provider.js'
-import { runtimeMemoryCapabilities } from '../../src/agents/runtime-memory.js'
+} from '../../src/memory/provider.js'
+import { runtimeMemoryCapabilities } from '../../src/memory/runtime/capabilities.js'
 import { PROFILES } from './profiles.js'
 
 /**
