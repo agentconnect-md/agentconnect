@@ -3,6 +3,7 @@
  * network client lives in `client.ts`. Ported from the web's former
  * `lib/open-connector.ts` so the same catalog filter is now CP-owned.
  */
+import { createHash } from 'node:crypto'
 
 /** How the CP namespaces a connection as an open-connector profile, and the header
  *  that selects it when the relay calls open-connector's runtime API. */
@@ -10,9 +11,9 @@ export const CONNECTOR_ALIAS_HEADER = 'x-oomol-connector-alias'
 /** The open-connector `service` a connection is bound to, carried to the relay so its
  *  synthesized MCP proxy lists/calls that service's actions. Not a secret. */
 export const CONNECTOR_SERVICE_HEADER = 'x-oomol-connector-service'
-/** Chars of the org/user id used in the profile prefix — kept short so the composed
- *  `<org>--<user>--<name>` fits open-connector's 64-char connection-name limit. */
-export const PROFILE_ID_PREFIX_LEN = 8
+/** Base36 width of each hashed id in the profile prefix — 64 digest bits at fixed width,
+ *  so `<org>--<user>--<name>` peaks at 62 of open-connector's 64 connection-name chars. */
+export const PROFILE_HASH_LEN = 13
 
 // ── upstream shapes (subset we consume; mirrors open-connector web/src/model.ts) ──
 export interface OcAuthDefinition {
@@ -104,19 +105,31 @@ export function isValidConnectionName(name: string): boolean {
   return /^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/.test(name)
 }
 
+/** 64 sha256 bits as fixed-width base36 — `[0-9a-z]` only, so a composed profile stays
+ *  inside open-connector's charset and always starts alphanumeric. Domain-separated so an
+ *  id appearing in both roles doesn't hash to the same segment twice. */
+function hashIdSegment(domain: string, id: string): string {
+  const digest = createHash('sha256').update(`${domain}\0${id}`, 'utf8').digest()
+  return digest.readBigUInt64BE(0).toString(36).padStart(PROFILE_HASH_LEN, '0')
+}
+
 /**
  * The open-connector connection PROFILE name for an org+user+connection:
- * `<orgId[0..8]>--<userId[0..8]>--<connectionName>`. Truncated id prefixes keep it
- * within open-connector's 64-char limit.
+ * `<hash(orgId)>--<hash(userId)>--<connectionName>`.
  *
- * CAVEAT: `@@unique([orgId, name])` guarantees per-org provider-row uniqueness but does
- * NOT guarantee open-connector PROFILE uniqueness across orgs — two orgs whose 8-char id
- * prefixes AND user prefix AND connection name all coincide map to the same OC profile.
- * That's improbable (cuid prefixes are a `c` + truncated ms timestamp) and inert while OC
- * doesn't honor the alias at runtime; revisit with a hashed prefix if it ever bites.
+ * HASHED, not truncated: `@@unique([orgId, name])` gives per-org row uniqueness but not
+ * cross-org PROFILE uniqueness, and an 8-char cuid prefix (`c` + base36 ms) only resolved
+ * creation time to ~36ms buckets. Two orgs sharing a bucket, whose creating users also
+ * shared one, and using a common connection name ("gmail") composed the SAME profile — and
+ * a shared profile means one org's `saveConnection` overwrites the other's stored
+ * credential, after which its agents run actions as that other org. 64 digest bits per id
+ * make that collision negligible.
+ *
+ * Only the create route composes a profile. It is then persisted as the connection's
+ * `x-oomol-connector-alias` binding marker and read back from there by reconnect and by
+ * relay-binding replay, so connections provisioned under the older scheme keep resolving
+ * under their stored name — changing this function renames nothing that already exists.
  */
 export function composeProfileName(orgId: string, userId: string, connectionName: string): string {
-  const org = orgId.slice(0, PROFILE_ID_PREFIX_LEN)
-  const user = userId.slice(0, PROFILE_ID_PREFIX_LEN)
-  return `${org}--${user}--${connectionName}`
+  return `${hashIdSegment('org', orgId)}--${hashIdSegment('user', userId)}--${connectionName}`
 }

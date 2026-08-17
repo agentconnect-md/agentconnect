@@ -9,7 +9,13 @@ import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
-import { ConnectorsClient, composeProfileName } from '../../src/connectors/index.js'
+import {
+  ConnectorsClient,
+  composeProfileName,
+  CONNECTOR_ALIAS_HEADER,
+  CONNECTOR_SERVICE_HEADER
+} from '../../src/connectors/index.js'
+import { OrgId } from '../../src/domain/ids.js'
 import type { FetchLike } from '../../src/github/api.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
@@ -305,6 +311,36 @@ describe('connectors routes', () => {
     const reconnectSave = saves[1]?.body as { connectionName: string; values: { apiKey: string } }
     expect(reconnectSave.connectionName).toBe(composeProfileName(DEFAULT_ORG_ID, DEFAULT_OWNER_ID, 'prod'))
     expect(reconnectSave.values.apiKey).toBe('sk_rotated')
+  })
+
+  it('reconnects a connection provisioned under the older profile scheme, using its stored alias', async () => {
+    // Profiles are composed at CREATE and persisted as the alias binding marker; every
+    // later read goes to the row, never back through composeProfileName. That is what
+    // lets the composition change (truncated id prefixes → hashed ones) ship without
+    // renaming — or re-provisioning — connections that already exist upstream.
+    const { client, calls } = stubConnectors()
+    const app = appWith(client)
+    const created = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/connectors/connections`,
+      payload: { service: 'stripe', connectionName: 'legacy', authType: 'api_key', values: { apiKey: 'sk_x' } }
+    })
+    const id = created.json().id
+    const legacyProfile = `${DEFAULT_ORG_ID.slice(0, 8)}--${DEFAULT_OWNER_ID.slice(0, 8)}--legacy`
+    expect(legacyProfile).not.toBe(composeProfileName(DEFAULT_ORG_ID, DEFAULT_OWNER_ID, 'legacy'))
+    await app.deps.repos.mcpProviderSecret.put(OrgId(DEFAULT_ORG_ID), id, [
+      { name: CONNECTOR_ALIAS_HEADER, value: legacyProfile },
+      { name: CONNECTOR_SERVICE_HEADER, value: 'stripe' }
+    ])
+
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/connectors/connections/${id}/reconnect`,
+      payload: { authType: 'api_key', values: { apiKey: 'sk_rotated' } }
+    })
+    expect(res.statusCode).toBe(200)
+    const saves = calls.filter((c) => c.method === 'PUT' && c.url.includes('/api/connections/stripe'))
+    expect((saves.at(-1)?.body as { connectionName: string }).connectionName).toBe(legacyProfile)
   })
 
   it('404s reconnect of an unknown id', async () => {

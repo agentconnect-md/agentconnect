@@ -5,6 +5,7 @@ import {
   isValidConnectionName,
   parseBlocklist,
   parseWhitelist,
+  PROFILE_HASH_LEN,
   type OcOAuthConfig,
   type OcProvider
 } from './filter.js'
@@ -105,12 +106,44 @@ describe('parseBlocklist', () => {
 })
 
 describe('composeProfileName', () => {
-  it('prefixes the first 8 id chars and stays within open-connector 64-char limit', () => {
+  it('hashes each id to a fixed-width segment and keeps the connection name verbatim', () => {
     const name = composeProfileName('clorg1234567890abcdef', 'cluser1234567890abcdef', 'my-conn')
-    expect(name).toBe('clorg123--cluser12--my-conn')
-    // Worst case: 8 + 2 + 8 + 2 + 32 = 52 ≤ 64.
+    const [org, user, conn] = name.split('--')
+    expect(org).toHaveLength(PROFILE_HASH_LEN)
+    expect(user).toHaveLength(PROFILE_HASH_LEN)
+    expect(conn).toBe('my-conn')
+    expect(composeProfileName('clorg1234567890abcdef', 'cluser1234567890abcdef', 'my-conn')).toBe(name)
+  })
+
+  it('stays within open-connector 64-char limit at the longest legal connection name', () => {
+    // Worst case: 13 + 2 + 13 + 2 + 32 = 62 ≤ 64.
     const max = composeProfileName('x'.repeat(30), 'y'.repeat(30), 'z'.repeat(32))
+    expect(max.length).toBe(62)
     expect(max.length).toBeLessThanOrEqual(64)
+  })
+
+  it('composes a name open-connector accepts — its charset, alphanumeric-led, ≤64', () => {
+    // Fixed-width base36 is [0-9a-z], so no digest can start the profile with _ or -.
+    for (let i = 0; i < 200; i++) {
+      const profile = composeProfileName(`c${i}org`, `c${i}user`, 'prod_gmail-1')
+      expect(profile).toMatch(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/)
+    }
+  })
+
+  it('separates ids that shared a truncated cuid prefix (the collision this replaced)', () => {
+    // Two orgs created in the same ~36ms bucket, whose creating users also were, both
+    // naming a connection "gmail": identical under `<id[0..8]>`, so one org's saved
+    // credential overwrote the other's and its agents then ran actions as that org.
+    const truncated = (o: string, u: string, n: string) => `${o.slice(0, 8)}--${u.slice(0, 8)}--${n}`
+    const a = ['clzzzzzzAAAAAAA', 'clyyyyyyBBBBBBB', 'gmail'] as const
+    const b = ['clzzzzzzCCCCCCC', 'clyyyyyyDDDDDDD', 'gmail'] as const
+    expect(truncated(...a)).toBe(truncated(...b))
+    expect(composeProfileName(...a)).not.toBe(composeProfileName(...b))
+  })
+
+  it('domain-separates the org and user segments', () => {
+    const [org, user] = composeProfileName('same-id', 'same-id', 'c').split('--')
+    expect(org).not.toBe(user)
   })
 })
 
