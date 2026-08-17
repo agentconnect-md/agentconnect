@@ -11,6 +11,7 @@ import { unverifiedConversationNotice } from '@/lib/session-access-notifications
 import { useParams, usePathname, useRouter, useSearchParams } from 'next/navigation'
 import useSWR from 'swr'
 import {
+  agentDaemonLabel,
   agentLabel,
   agentPermissionDisplay,
   displayedEffort,
@@ -25,6 +26,7 @@ import {
   MOCK_PREFIX,
   permissionModeLabel,
   pgPrompts,
+  POOL_PLACEMENT,
   platName,
   preferredModelFor,
   rosterParticipantName,
@@ -1488,6 +1490,7 @@ export default function SessionDetailView() {
     sessionsLoading,
     crons,
     daemons,
+    memberSets,
     members,
     sessionActivityVersionById,
     sessionStreamGeneration,
@@ -3375,10 +3378,19 @@ export default function SessionDetailView() {
     focusedSession?.daemon && focusedSession.daemon !== '—' ? focusedSession.daemon : focusedAgent?.daemon
   const focusedDaemon =
     focusedDaemonId && focusedDaemonId !== '—' ? daemons.find((d) => d.daemonId === focusedDaemonId) : undefined
+  // What ran it, else where it is PLACED. `Agent.daemon` carries a placement sentinel for a set
+  // placement, not a member id (lib/data.ts POOL_PLACEMENT), so resolving it as a machine renders
+  // the literal "pool" — and renders it for Cloud and for every group alike, since only `setId`
+  // tells those apart. `agentDaemonLabel` is the one projection that knows the difference.
   const focusedDaemonName =
-    focusedDaemonId && focusedDaemonId !== '—'
-      ? (focusedDaemon?.name ?? (focusedDaemonId.length > 12 ? focusedDaemonId.slice(0, 8) : focusedDaemonId))
-      : ''
+    focusedDaemon?.name ??
+    (focusedAgent
+      ? agentDaemonLabel(focusedAgent, daemons, memberSets)
+      : focusedDaemonId && focusedDaemonId !== '—' && focusedDaemonId !== POOL_PLACEMENT
+        ? focusedDaemonId.length > 12
+          ? focusedDaemonId.slice(0, 8)
+          : focusedDaemonId
+        : '')
   // A cron-triggered session carries `user === "cron:<scheduleId>"`. When that's the
   // shown participant, render the chip as a link back to the owning schedule
   // (name-first once the crons list resolves it; the raw `cron:<id>` still links if
