@@ -4,6 +4,7 @@ import {
   MEMORY_RECALL_HARD_LIMITS,
   type CanonicalMemoryRecord as MemoryRecord
 } from '@agentconnect.md/protocol'
+import { canonicalAgentMemoryKey } from './keys.js'
 import type { MemoryScope, RecallRequest } from './types.js'
 
 /** Recall queries are generated from delivered user/peer text, never old memory/tool output. */
@@ -32,10 +33,6 @@ export function recallQueryFromBlocks(blocks: ContentBlock[]): string {
     .join('\n\n')
     .trim()
   return utf8Tail(text, MAX_MEMORY_RECALL_QUERY_BYTES)
-}
-
-export function canonicalAgentMemoryKey(agentId: string): string {
-  return `ac:agent:${agentId}`
 }
 
 /**
