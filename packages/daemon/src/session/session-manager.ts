@@ -21,6 +21,7 @@ import {
   transcriptImageAttachments
 } from './attachment-block.js'
 import { DIRECT_AGENT_CALL_REMINDER, EXPLICIT_MENTION_REMINDER, NO_RESPONSE_REMINDER } from './no-response.js'
+import { planReplay, renderReplayContext } from './turn/replay-plan.js'
 import { AGENT_META_OPENING, buildStandingContext } from './turn/standing-context.js'
 
 /** Metadata-only semantic lifecycle for one provider-neutral recall attempt. Query
@@ -52,10 +53,6 @@ export type MemoryRecallLifecycleEvent =
       timedOut: boolean
       aborted: boolean
     }
-
-// Cap on transcript entries replayed as catch-up context in one prompt (§8.5),
-// so a long-quiet thread / large backfilled history can't blow up the prompt.
-const MAX_REPLAY_ENTRIES = 50
 
 /** Mint a Slack message id for a wall-clock instant. This is NOT part of the
  * message-ordering strategy: its only callers are the warm-thread provider
@@ -927,99 +924,40 @@ export class SessionManager {
           ? this.deps.store.transcriptSinceForAgent(transcriptChannel, thread, markerBefore, agentId)
           : this.deps.store.transcriptSince(transcriptChannel, thread, markerBefore, agentId)
       ).filter((e) => withinSnapshot(e.ts))
-      // SQLite's text order puts UUID-like legacy coordinates after real platform
-      // ids. Keep those old rows as context, but before the real timeline — which
-      // only a platform whose ids carry a native order can express.
-      if (ordering !== undefined) gap.sort((a, b) => ordering.compare(a.ts, b.ts))
-      // A session initialized from this agent's own channel-root post has never run a model
-      // turn. Replay that one root exactly once, alongside the first real reply, so the new ACP
-      // session understands what the thread is about. Ordinary own-authored rows stay filtered:
-      // after this activation advances the cursor, the root cannot re-enter a later prompt.
-      const participantGap = gap.filter(
-        (e) => e.sender !== agentId || (firstPromptAfterOwnRootInitialization && e.ts === thread)
-      )
-      // The initialized root is the only own-authored row admitted above, and it is the
-      // founding context for a runtime session that has never seen a prompt. Keep it outside
-      // the ordinary bounded suffix so a busy thread cannot evict it before first activation.
-      const initializedRoot = firstPromptAfterOwnRootInitialization
-        ? participantGap.find((e) => e.sender === agentId && e.ts === thread)
-        : undefined
-      const boundedReplay = (entries: typeof participantGap) => {
-        const includesInitializedRoot =
-          initializedRoot !== undefined && entries.some((e) => e.ts === initializedRoot.ts)
-        const remainder = includesInitializedRoot ? entries.filter((e) => e.ts !== initializedRoot.ts) : entries
-        const suffix = remainder.slice(-MAX_REPLAY_ENTRIES)
+      // The whole gap-replay decision lives in turn/replay-plan.ts; handle() only applies it.
+      const plan = planReplay({
+        gap,
+        agentId,
+        thread,
+        triggerTs: ts,
+        markerBefore,
+        ordering,
+        firstPromptAfterOwnRootInitialization
+      })
+      const renderContext = (entries: readonly TranscriptEntry[]): string =>
+        renderReplayContext(entries, this.deps.quoteForContextEvent)
+      if (plan.shape === 'skip') {
+        rec.lastDeliveredTs = plan.deliveredThrough
+        rec.state = 'idle'
+        rec.updatedAt = Date.now()
+        // A skipped activation still took on the obligation — persist it so the next real turn
+        // (and any resume) carries the directive.
+        if (needsReplyToParent) rec.needsParentReply = 1
+        this.deps.store.upsertSession(rec)
         return {
-          context: includesInitializedRoot ? [initializedRoot, ...suffix] : suffix,
-          elided: remainder.length - suffix.length
+          sessionId: rec.acpSessionId!,
+          blocks: [],
+          created,
+          skipped: true,
+          ...(additionalMcpServersAttached !== undefined ? { additionalMcpServersAttached } : {})
         }
       }
-      const renderContext = (entries: typeof participantGap): string =>
-        entries
-          .flatMap((event) => {
-            const quote = this.deps.quoteForContextEvent?.(event, entries)
-            return [...(quote ? [quote] : []), `[${event.sender}] ${event.text}`]
-          })
-          .join('\n')
-      // Own authored rows are not repeated to the model, but they ARE first-class events
-      // in the shared log and therefore may advance this agent's read cursor once the
-      // surrounding stable window is consumed.
-      // With no native ordering there is no "newest row" to reason about, so the
-      // cursor advances to the trigger itself — the pre-seam non-Slack rule.
-      const deliveredThrough =
-        ordering !== undefined
-          ? ordering.coordinate(ts) !== null
-            ? (gap.filter((e) => ordering.coordinate(e.ts) !== null).at(-1)?.ts ?? markerBefore)
-            : (participantGap.at(-1)?.ts ?? markerBefore)
-          : ts
-      const triggerWasAlreadyDelivered =
-        markerBefore !== null && ordering !== undefined && ordering.compare(ts, markerBefore) <= 0
-
-      // A stale Socket Mode event may be the wake-up signal even though the snapshot
-      // contains newer instructions. In that case the old `context + current` shape is
-      // actively wrong: it puts the obsolete trigger last. Deliver one chronological
-      // unread batch so the newest human instruction is last and therefore salient.
-      // Only a natively ordered platform can tell "newer" from "older" at all; the
-      // rest keep the plain in-order shape below.
-      const hasMessageAfterTrigger =
-        ordering !== undefined && participantGap.some((e) => ordering.compare(e.ts, ts) > 0)
-      if (hasMessageAfterTrigger || triggerWasAlreadyDelivered) {
-        const { context, elided } = boundedReplay(participantGap)
-        if (context.length === 0) {
-          rec.lastDeliveredTs = deliveredThrough
-          rec.state = 'idle'
-          rec.updatedAt = Date.now()
-          // A skipped activation still took on the obligation — persist it so the next real turn
-          // (and any resume) carries the directive.
-          if (needsReplyToParent) rec.needsParentReply = 1
-          this.deps.store.upsertSession(rec)
-          return {
-            sessionId: rec.acpSessionId!,
-            blocks: [],
-            created,
-            skipped: true,
-            ...(additionalMcpServersAttached !== undefined ? { additionalMcpServersAttached } : {})
-          }
-        }
-        const head =
-          elided > 0
-            ? `(unread thread messages, oldest to newest — ${elided} earlier message(s) elided)`
-            : '(unread thread messages, oldest to newest)'
-        blocks.push({ type: 'text', text: `${head}\n${renderContext(context)}` })
+      const context = plan.context
+      if (plan.shape === 'batch') {
+        blocks.push({ type: 'text', text: `${plan.head}\n${renderContext(context)}` })
         contextEventTs = context.map((entry) => entry.ts)
       } else {
-        // Normal in-order activation: preserve the established context-prefix + current
-        // prompt shape, while never replaying this agent's own recorded messages.
-        const allContext = participantGap.filter((e) => e.ts !== ts)
-        const { context, elided } = boundedReplay(allContext)
-        if (context.length > 0) {
-          const head =
-            elided > 0
-              ? `(thread context you may have missed — ${elided} earlier message(s) elided)`
-              : '(thread context you may have missed)'
-          const ctxText = renderContext(context)
-          blocks.push({ type: 'text', text: `${head}\n${ctxText}` })
-        }
+        if (context.length > 0) blocks.push({ type: 'text', text: `${plan.head}\n${renderContext(context)}` })
         const quotedBlock = quotedSourceBlock(msg, { replayed: context })
         if (quotedBlock) blocks.push({ type: 'text', text: quotedBlock })
         // session-concept §2.1: inbound human input carries its sender (`from`), so deliver the
@@ -1030,7 +968,7 @@ export class SessionManager {
         blocks.push({ type: 'text', text: msg.source === 'user' ? `[${msg.sender.id}] ${msg.text}` : msg.text })
         contextEventTs = [...context.map((entry) => entry.ts), ts]
       }
-      rec.lastDeliveredTs = deliveredThrough ?? ts
+      rec.lastDeliveredTs = plan.deliveredThrough ?? ts
       contextRevision = this.deps.store.threadTranscriptRevision(transcriptChannel, thread, agentId)
     }
 
