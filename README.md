@@ -47,13 +47,17 @@
 </p>
 
 <p align="center">
-  <a href="#why-agentconnect">Why AgentConnect?</a> ·
+  <a href="#what-teams-do-with-agentconnect">Use cases</a> ·
   <a href="#get-started">Get started</a> ·
+  <a href="#community">Community</a> ·
+  <a href="#why-agentconnect">Why AgentConnect?</a> ·
   <a href="#build-your-stack">Build your stack</a> ·
   <a href="#architecture">Architecture</a> ·
   <a href="#development">Development</a> ·
   <a href="#explore">Explore</a>
 </p>
+
+**Use multiple AI agents for issue triage, customized code review, and support.**
 
 AgentConnect is an open-source platform where teams and AI agents work together
 across the tools they already use, including Slack, Telegram, Discord, and
@@ -71,6 +75,57 @@ and follow the work they are allowed to see.
 <p align="center">
   <img src="docs/assets/console-agents.gif" alt="AgentConnect console: touring the Agents, Sessions, Schedules, Tools & Skills, Knowledge, and Daemons views" width="880" />
 </p>
+
+## What teams do with AgentConnect
+
+- **Triage issues together.** People and agents investigate in one shared
+  thread, bring in the right specialists, and keep the fix and verification
+  visible from start to finish.
+- **Customized code review.** Run a general reviewer on every pull request, then
+  bring in architecture or security reviewers only when a change needs them.
+  Each reviewer can use its own model, instructions, repository access, tools,
+  and sandbox policy.
+- **Support across trusted workspaces.** Start a support conversation in
+  Telegram, involve engineering from a trusted Slack workspace, and return the
+  resolution where the conversation began.
+
+## Get started
+
+Pick the path that matches what you want to do.
+
+### Self-host locally
+
+Start the Web console, Control Plane, Relay, and PostgreSQL with Docker Compose:
+
+```bash
+git clone https://github.com/agentconnect-md/agentconnect.git
+cd agentconnect
+docker compose up -d --pull always
+```
+
+Open `http://localhost:3000`, add a daemon from the console, run its generated
+command, and create your first agent. The default stack listens only on
+`127.0.0.1` and uses local no-auth mode for evaluation.
+
+For authentication, public URLs, Linux sandbox requirements, provider apps,
+image pinning, secrets, and optional Mem0 configuration, follow the
+[AgentConnect OSS guide](https://docs.agentconnect.md/docs/oss-get-started).
+
+### AgentConnect Cloud
+
+AgentConnect Cloud provides a hosted management console while agents continue
+running in your environment.
+[Join the Cloud waitlist](https://app.agentconnect.md/waitlist).
+
+## Community
+
+If AgentConnect looks useful, consider giving the repository a ⭐. It helps more
+teams discover the project.
+
+Questions or ideas? [Join the Slack community](https://slack.agentconnect.md),
+[open a GitHub issue](https://github.com/agentconnect-md/agentconnect/issues), or
+follow project updates on [X](https://x.com/getAgentConnect) and
+[YouTube](https://www.youtube.com/@agentconnect-md).
 
 ## Why AgentConnect?
 
@@ -91,74 +146,6 @@ terminals. AgentConnect brings them into the team's shared workflows:
   repositories and tools it may use, and which other agents it may call.
 - **Stay in control.** Self-host the Apache-2.0 stack, run agents in your
   environment, and change runtimes without locking the team to one vendor.
-
-## Get started
-
-Pick the path that matches what you want to do.
-
-### Self-host locally
-
-Start the Web console, Control Plane, Relay, and PostgreSQL with Docker Compose:
-
-```bash
-git clone https://github.com/agentconnect-md/agentconnect.git
-cd agentconnect
-docker compose up -d --pull always
-```
-
-To build the images from the checkout instead of pulling the published ones,
-run `docker compose up -d --build`. Every service in `compose.yaml` carries a
-build definition, and the built images take the tags the stack already
-references.
-
-Open `http://localhost:3000`. The default stack listens only on `127.0.0.1`,
-uses local no-auth mode, and is intended for local evaluation.
-
-Use HTTPS when exposing the console beyond loopback; authentication and daemon
-traffic still rely on a secure deployment boundary. The Web console does not,
-however, require the secure-context-only `crypto.randomUUID()` API to mint its
-non-secret client request IDs, so browsers without that API can still use the
-local evaluation flow.
-
-The Compose stack does not run agent daemons. Add a daemon from the Web console,
-then run its generated command on each machine that should host agents,
-workspaces, and runtime credentials.
-
-A Linux daemon host also needs `bwrap`, `socat`, and `rg` (ripgrep) on the
-daemon's own `PATH`, plus unprivileged user namespaces. They back the kernel
-sandbox that confines agent runtimes and installs managed skills; without them
-agents run unconfined and managed skills are unavailable. The daemon probes for
-them at startup and logs `sandbox: unavailable — …` when the probe fails.
-
-Past the local stack — sign-in, public URLs, and provider apps — a guided path
-helps. Open Claude Code in the checkout and ask it to set up AgentConnect:
-[`.claude/skills/agentconnect-setup`](.claude/skills/agentconnect-setup/SKILL.md)
-runs those steps as an interactive tutorial and verifies each checkpoint before
-moving on. The rest of this section covers the same ground by hand.
-
-To evaluate local sign-in without configuring DNS or TLS, use the optional
-official Logto overlay and its browser-based Setup Server:
-
-```bash
-docker compose -f compose.yaml -f compose.logto.yaml up -d
-```
-
-Continue with the browser-based local-auth bootstrap in the
-[`@agentconnect.md/setup` walkthrough](packages/setup/README.md). The
-default no-auth Compose command above is unchanged.
-
-For image pinning, production networking, sign-in, secrets, GitHub App setup,
-and optional Mem0 configuration, see the
-[AgentConnect OSS guide](https://docs.agentconnect.md/docs/oss-get-started).
-For a single-IP LAN deployment using bundled Logto with path-prefixed Control
-Plane and Relay routes, see the
-[Caddy HTTPS guide](docs/self-host-caddy-https.md).
-
-### AgentConnect Cloud
-
-AgentConnect Cloud provides a hosted management console while agents continue
-running in your environment.
-[Join the Cloud waitlist](https://app.agentconnect.md/waitlist).
 
 ## Build your stack
 
