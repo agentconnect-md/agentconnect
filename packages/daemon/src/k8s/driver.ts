@@ -1,5 +1,5 @@
 import { LaunchTimer, noopClusterMetrics, type ClusterMetrics } from '../metrics/cluster-metrics.js'
-import { Backoff, systemClock, type Clock } from '@agentconnect.md/connection'
+import { systemClock, type Clock } from '@agentconnect.md/connection'
 import type { SpawnDriver, SpawnRequest, SpawnedRuntime } from '../acp/spawn-driver.js'
 import type { ShimCapability } from '../shim/protocol.js'
 import type { ShimConnection } from '../shim/connection.js'
@@ -10,29 +10,11 @@ import { isSandboxReady, type OperatingMode, type SandboxClaim, type SandboxApi 
 import { SandboxLease } from './sandbox-lease.js'
 import { LaunchRegistry, type Launch, type LaunchGenerations } from './launch-registry.js'
 import { ChannelBinder } from './channel-binder.js'
-import { K8sApiError } from '@agentconnect.md/k8s-client'
-import {
-  AC_LABEL_AGENT,
-  AC_LABEL_ORG,
-  LaunchTimeoutError,
-  RUNTIME_GRANTS,
-  resolvePodIp,
-  resolvePodName
-} from './sandbox-identity.js'
+import { awaitBoundSandbox, awaitReady, readIfPresent, type SandboxWaitDeps } from './sandbox-waits.js'
+import { AC_LABEL_AGENT, AC_LABEL_ORG, LaunchTimeoutError, RUNTIME_GRANTS, resolvePodIp } from './sandbox-identity.js'
 
-// Re-exported so existing importers keep reaching these through the driver module.
-export {
-  AC_LABEL_AGENT,
-  AC_LABEL_ORG,
-  LaunchTimeoutError,
-  PROBE_GRANTS,
-  RUNTIME_GRANTS,
-  SANDBOX_POD_NAME_ANNOTATION,
-  resolvePodIp,
-  resolvePodName
-} from './sandbox-identity.js'
-
-// Re-exported so existing importers keep reaching the launch types through the driver module.
+// Re-exported so existing importers keep reaching identity and launch types through this module.
+export * from './sandbox-identity.js'
 export type { Launch, LaunchGenerations } from './launch-registry.js'
 
 export interface K8sDriverDeps {
@@ -41,9 +23,7 @@ export interface K8sDriverDeps {
   orgForAgent: (agentId: string) => string | undefined
   /** Pool the claim references; v1beta1 requires one, and a cold pool is `replicas: 0`. */
   warmPoolName: string
-  /** Where a launch's generation comes from. Never a process-local counter: agents move between
-   *  pool members while their sandbox pod stays, and that pod refuses any generation below the
-   *  highest it has bound — so a successor must continue the sequence, not restart it. */
+  /** Where a launch's generation comes from — never a process-local counter, see `LaunchRegistry`. */
   generations: LaunchGenerations
   /** Optional claim metadata for host-owned synthetic agents such as runtime probes. */
   claimMetadataForAgent?: (
@@ -53,14 +33,7 @@ export interface K8sDriverDeps {
   connectChannel: (record: SpawnRecord, podIp: string, timeoutMs: number) => Promise<ShimConnection>
   /** Stops any outbound channel when a launch is forgotten or deliberately suspended. */
   revokeChannel?: (agentId: string) => void
-  /**
-   * Prepare a freshly bound channel before anything runs on it — today, opening the unix-socket
-   * tunnels the agent's runtime expects to find in its pod.
-   *
-   * Awaited inside the bind, deliberately: the workspace clone and the runtime both reach for
-   * those sockets, so a launch that returned first would race its own credential channel. A
-   * failure here does NOT fail the launch; the hook reports it and the affected feature degrades.
-   */
+  /** Prepares a freshly bound channel before anything runs on it; failures degrade, never fail the bind. */
   onChannelReady?: (agentId: string, session: ShimSession) => Promise<void>
   clock?: Clock
   log: { info: (m: string) => void; warn: (m: string) => void; debug?: (m: string) => void }
@@ -72,27 +45,17 @@ export interface K8sDriverDeps {
 
 const DEFAULT_READY_TIMEOUT_MS = 90_000
 
-/**
- * How to read a channel that has not arrived: `starting` means the pod is not up yet, so
- * nothing has been lost — a cold start pays PVC provisioning and an image pull before any
- * shim can dial. `absent` means there is no pod coming at all.
- */
+/** `starting` means the pod is not up yet, so nothing was lost; `absent` means none is coming. */
 export type SandboxReadiness = 'ready' | 'starting' | 'absent'
 
-/**
- * Runs an agent's ACP runtime in its own Sandbox pod.
- *
- * Lifecycle lives here rather than in the control plane on purpose: claim creation, sleep,
- * wake and teardown are all local decisions, so a control-plane outage cannot stop an
- * existing agent from starting or stopping its runtime.
- */
+// Runs an agent's ACP runtime in its own Sandbox pod: a facade over `LaunchRegistry` (launches,
+// release fence, takeover dedup), `SandboxLease` (holds, mode writes, the idle gate) and
+// `ChannelBinder` (sessions, mounts). What stays is the cluster I/O they are given plus the
+// orchestration spanning them — invariants whose halves live in two of those objects at once.
 export class K8sDriver implements SpawnDriver {
   private readonly metrics: ClusterMetrics
-  /** Launches, the release fence, and takeover dedup — see `LaunchRegistry`. */
   private readonly registry: LaunchRegistry
-  /** Holds, mode serialization, and the idle-suspension gates — see `SandboxLease`. */
   private readonly lease: SandboxLease
-  /** Sessions and workspace mounts per agent — see `ChannelBinder`. */
   private readonly binder: ChannelBinder
   private readonly clock: Clock
 
@@ -113,32 +76,33 @@ export class K8sDriver implements SpawnDriver {
       log: deps.log,
       metrics: this.metrics,
       channelTimeoutMs: this.podUpTimeoutMs,
-      awaitReady: (sandboxName) => this.awaitReady(sandboxName),
+      awaitReady: (sandboxName) => awaitReady(sandboxName, this.waits),
       connectChannel: deps.connectChannel,
       ...(deps.revokeChannel ? { revokeChannel: deps.revokeChannel } : {}),
       ...(deps.onChannelReady ? { onChannelReady: deps.onChannelReady } : {})
     })
   }
 
+  private get waits(): SandboxWaitDeps {
+    return { api: this.deps.api, clock: this.clock, timeoutMs: this.podUpTimeoutMs }
+  }
+
   claimName(agentId: string): string {
     return `agent-${agentId}`
   }
 
-  /**
-   * Ensure the agent has a claim and a bound Sandbox. Idempotent: the claim name is derived
-   * from the agent id, so a retry after a partial reconcile converges instead of failing.
-   *
-   * Nothing per-agent goes into the claim — a claim carrying `env` or `volumeClaimTemplates`
-   * bypasses warm-pool adoption, and pool pods are stamped before any user exists, so
-   * identity travels over the shim handshake instead.
-   */
+  // One definition, so the loss window and the launch path agree on what a cold start may cost.
+  get podUpTimeoutMs(): number {
+    return this.deps.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS
+  }
+
+  // Ensure the agent has a claim and a bound Sandbox; idempotent, the claim name derives from the id.
+  // The ordering is the point: wait out an in-flight idle suspension (its pod is being deleted) and
+  // then an in-flight takeover — the same answer from the cluster — before claiming against a fence
+  // snapshot. Nothing per-agent goes in the claim, or it would bypass warm-pool adoption.
   async ensureSandbox(agentId: string, timer?: LaunchTimer): Promise<Launch> {
-    // An idle suspension mid-write is the one state a cached launch must not be read through: its
-    // pod is being deleted. Waiting lets it finish and forget the launch, so the line below claims
-    // a new one — the same resume this call would have done a moment later anyway.
     const suspending = this.lease.suspensionOf(agentId)
     if (suspending) await suspending
-    // A takeover re-derivation is the same answer from the cluster; wait for it rather than race it.
     const adopting = this.registry.adoptInFlight(agentId)
     if (adopting) await adopting
     const existing = this.registry.currentLaunch(agentId)
@@ -159,17 +123,12 @@ export class K8sDriver implements SpawnDriver {
         additionalPodMetadata: { labels: { [AC_LABEL_ORG]: orgId, [AC_LABEL_AGENT]: agentId } }
       }
     })
-    // Resolve the bound Sandbox WITHOUT requiring readiness. A suspended claim still names
-    // its Sandbox and still has a uid, but suspension deleted the pod — so waiting for Ready
-    // here would block the only call that could bring it back. Resume is "patch Running,
-    // then wait", in that order.
-    const sandboxName = await this.awaitBoundSandbox(name)
+    // Bound, NOT ready: waiting for Ready here would block the only call that revives a suspended
+    // claim, whose Sandbox it still names. Resume is "patch Running, then wait", in that order.
+    const sandboxName = await awaitBoundSandbox(name, this.waits)
     timer?.mark('claim_bound')
     const sandbox = await this.deps.api.getSandbox(sandboxName)
-    // Cold is "the claim did not exist", which is the launch that pays PVC provisioning and an
-    // image pull. A claim that existed and a Sandbox already Running is warm; existing and
-    // Suspended is the resume path. Guessing from elapsed time instead would make the metric
-    // depend on the thing it is supposed to measure.
+    // Cold is "the claim did not exist"; elapsed time would make the metric depend on what it measures.
     timer?.observedPath(
       ensured.created ? 'cold' : (sandbox.spec?.operatingMode ?? 'Running') === 'Running' ? 'warm' : 'resume'
     )
@@ -184,16 +143,10 @@ export class K8sDriver implements SpawnDriver {
   // agent needs no launch until its next turn claims one.
   adoptAgent(agentId: string): Promise<Launch | undefined> {
     return this.registry.adopt(agentId, async (releasedAt) => {
-      const claim = await this.deps.api.getClaim(this.claimName(agentId)).catch((err: unknown) => {
-        if (err instanceof K8sApiError && err.isNotFound) return undefined
-        throw err
-      })
+      const claim = await readIfPresent(() => this.deps.api.getClaim(this.claimName(agentId)))
       const sandboxName = claim?.status?.sandbox?.name
       if (!sandboxName) return undefined
-      const sandbox = await this.deps.api.getSandbox(sandboxName).catch((err: unknown) => {
-        if (err instanceof K8sApiError && err.isNotFound) return undefined
-        throw err
-      })
+      const sandbox = await readIfPresent(() => this.deps.api.getSandbox(sandboxName))
       const sandboxUid = sandbox?.metadata?.uid
       if (!sandbox || !sandboxUid || (sandbox.spec?.operatingMode ?? 'Running') !== 'Running') return undefined
       // A turn that did not wait acquired it meanwhile, or the agent already left again.
@@ -205,63 +158,19 @@ export class K8sDriver implements SpawnDriver {
     })
   }
 
-  /** How long a pod may take to come up, as this driver itself waits for it. One definition, so
-   *  the loss window and the launch path cannot disagree about what a cold start may cost. */
-  get podUpTimeoutMs(): number {
-    return this.deps.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS
-  }
-
-  /**
-   * Whether the pod that should hold this agent's channel is up right now.
-   *
-   * The driver has just watched that pod, so it can tell an unbound channel apart from a lost
-   * one: while the Sandbox is not Ready its shim cannot dial at all, and a dial that times out
-   * against it is "not ready yet", not a channel that went away.
-   *
-   * The read takes the caller's `signal` because the answer is only useful before the caller's
-   * deadline: a stalled API server must abort this read, not extend the decision it feeds.
-   */
+  // Whether the pod that should hold this agent's channel is up — what tells an unbound channel apart
+  // from a lost one. It takes the caller's `signal`: a stalled API server must abort the read.
   async sandboxReadiness(agentId: string, opts: { signal?: AbortSignal } = {}): Promise<SandboxReadiness> {
     const launch = this.registry.currentLaunch(agentId)
     if (!launch) return 'absent'
-    const sandbox = await this.deps.api.getSandbox(launch.sandboxName, opts).catch((err: unknown) => {
-      if (err instanceof K8sApiError && err.isNotFound) return undefined
-      throw err
-    })
+    const sandbox = await readIfPresent(() => this.deps.api.getSandbox(launch.sandboxName, opts))
     if (!sandbox) return 'absent'
     // Suspended is a decision this daemon made: the pod is gone and none is coming up for it.
     if ((sandbox.spec?.operatingMode ?? 'Running') !== 'Running') return 'absent'
     return isSandboxReady(sandbox) && resolvePodIp(sandbox) ? 'ready' : 'starting'
   }
 
-  /** Wait for the Sandbox to report Ready, after something has asked it to run. */
-  // Pod identity and address are resolved only after readiness so a resumed launch cannot reuse
-  // the previous incarnation's annotation or IP.
-  private async awaitReady(sandboxName: string): Promise<{ podName: string; podIp: string }> {
-    const backoff = new Backoff({ baseMs: 250, capMs: 2_000, jitter: () => 0 })
-    const deadline = this.clock.now() + (this.deps.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS)
-    for (;;) {
-      const sandbox = await this.deps.api.getSandbox(sandboxName).catch(() => undefined)
-      const podName = sandbox ? resolvePodName(sandbox) : undefined
-      if (sandbox && isSandboxReady(sandbox)) {
-        const podIp = resolvePodIp(sandbox)
-        if (podName && podIp) return { podName, podIp }
-      }
-      if (this.clock.now() >= deadline) {
-        if (sandbox && isSandboxReady(sandbox) && !podName) {
-          throw new LaunchTimeoutError(`sandbox ${sandboxName} became ready but never named its pod`)
-        }
-        if (sandbox && isSandboxReady(sandbox) && !resolvePodIp(sandbox)) {
-          throw new LaunchTimeoutError(`sandbox ${sandboxName} became ready but never reported a pod IP`)
-        }
-        throw new LaunchTimeoutError(`sandbox ${sandboxName} did not become ready in time`)
-      }
-      await new Promise<void>((resolve) => this.clock.setTimeout(resolve, backoff.next()))
-    }
-  }
-
-  /** Wake a suspended Sandbox, or confirm it is already running. Reports the mode it found, which
-   *  is the only place a CACHED launch can learn whether it is resuming or already warm. */
+  /** Wake a suspended Sandbox, reporting the mode found — where a CACHED launch learns it resumed. */
   async wake(agentId: string): Promise<OperatingMode | undefined> {
     return await this.setMode(agentId, 'Running')
   }
@@ -271,21 +180,10 @@ export class K8sDriver implements SpawnDriver {
     await this.setMode(agentId, 'Suspended')
   }
 
-  /**
-   * Suspend the Sandbox of an agent that has gone quiet: the pod goes, the object and the
-   * workspace volume stay, and the next message resumes onto the same checkout.
-   *
-   * Declines rather than waits when work already holds the sandbox — the caller is a periodic
-   * sweep, so the next pass finds it quiet, whereas waiting here would hold a suspend decision
-   * open across a turn that has already made it stale.
-   *
-   * Work admitted AFTER that check is `SandboxLease`'s problem: it publishes the suspension gate
-   * before its first await, and acquisition waits that out (`ensureSandbox`) instead of racing it.
-   *
-   * The launch is forgotten on success, deliberately: the pod it names is being deleted, and the
-   * replacement must be bound at a new generation. Leaving it to the channel-loss path instead
-   * would make correctness depend on a timer whose whole job is unplanned loss.
-   */
+  // Suspend a quiet agent's Sandbox: the pod goes, object and volume stay, the next message resumes
+  // onto the same checkout. Session and launch drop TOGETHER once the write lands — the pod they name
+  // is being deleted, so its replacement binds at a fresh generation instead of waiting for the
+  // channel-loss timer. The re-read guards a launch replaced during the write.
   async suspendIfIdle(agentId: string): Promise<'suspended' | 'busy' | 'absent'> {
     const launch = this.registry.currentLaunch(agentId)
     if (!launch) return 'absent'
@@ -336,11 +234,7 @@ export class K8sDriver implements SpawnDriver {
     this.deps.revokeChannel?.(agentId)
   }
 
-  /**
-   * Treat a lost pod as an unplanned suspension rather than a new state: the channel drops,
-   * the Sandbox is not Ready, and the next turn re-runs the wake path. The generation fence
-   * keeps the departed incarnation from acting on the way out.
-   */
+  // A lost pod is an unplanned suspension, not a new state: the next turn re-runs the wake path.
   forgetLaunch(agentId: string): void {
     this.registry.forgetLaunch(agentId)
     this.deps.revokeChannel?.(agentId)
@@ -350,39 +244,8 @@ export class K8sDriver implements SpawnDriver {
     return this.registry.currentLaunch(agentId)
   }
 
-  private async awaitBoundSandbox(claimName: string): Promise<string> {
-    const backoff = new Backoff({ baseMs: 250, capMs: 2_000, jitter: () => 0 })
-    const deadline = this.clock.now() + (this.deps.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS)
-    for (;;) {
-      const claim = await this.deps.api.getClaim(claimName).catch((err: unknown) => {
-        if (err instanceof K8sApiError && err.isNotFound) return undefined
-        throw err
-      })
-      const name = claim?.status?.sandbox?.name
-      // Bound is enough here; readiness is a separate wait that follows the resume.
-      if (name) return name
-      if (this.clock.now() >= deadline) {
-        throw new LaunchTimeoutError(`claim ${claimName} did not bind a sandbox in time`)
-      }
-      await new Promise<void>((resolve) => this.clock.setTimeout(resolve, backoff.next()))
-    }
-  }
-
-  /**
-   * Start the runtime in the agent's Sandbox and hand `AcpHost` a stream pair.
-   *
-   * Command resolution is deliberately NOT done here: the request's command and hints are
-   * passed through unresolved, because the shim resolves them in the filesystem the runtime
-   * will actually read.
-   */
-  /**
-   * Bring the agent's Sandbox up and wait for its shim to bind, WITHOUT starting a runtime.
-   *
-   * Separate from `launch` because the workspace has to be prepared before the runtime starts,
-   * and for a cluster agent "prepared" means cloned onto the sandbox's own volume. A caller that
-   * prepared first and launched afterwards would clone on the daemon's disk and hand the runtime
-   * an empty workspace.
-   */
+  // Bring the Sandbox up and bind its shim WITHOUT starting a runtime: for a cluster agent a
+  // "prepared workspace" is cloned onto the sandbox's own volume, before the runtime starts.
   async ensureBoundChannel(
     agentId: string,
     timer?: LaunchTimer,
@@ -392,18 +255,18 @@ export class K8sDriver implements SpawnDriver {
     return await this.binder.bindChannel(agentId, launch, timer, grants)
   }
 
-  /** The bound session for an agent, so the workspace seam reaches the same channel the runtime
-   *  does rather than opening a second one that can disagree about whether it is alive. */
+  /** The bound session for an agent, so the workspace seam reaches the same channel the runtime does. */
   sessionFor(agentId: string): ShimSession | undefined {
     return this.binder.sessionFor(agentId)
   }
 
-  /** Where the agent's bound pod mounts its workspace, or undefined before a bind (or when a
-   *  legacy shim reported nothing — callers fall back to the historical mount). */
+  /** Where the bound pod mounts its workspace; unset before a bind, and callers then fall back. */
   workspaceRootFor(agentId: string): string | undefined {
     return this.binder.workspaceRootFor(agentId)
   }
 
+  // Start the runtime and hand `AcpHost` a stream pair. Command resolution is deliberately NOT done
+  // here: the shim resolves it in the filesystem the runtime will read.
   async launch(request: SpawnRequest): Promise<SpawnedRuntime> {
     const agentId = request.env.AC_AGENT_ID
     if (!agentId) throw new Error('cluster launch requires AC_AGENT_ID in the runtime environment')
@@ -418,18 +281,14 @@ export class K8sDriver implements SpawnDriver {
       this.metrics.channel('bound')
       const session = this.binder.sessionFor(agentId)
       if (!session) throw new Error(`no shim session for agent ${agentId} after binding its channel`)
-      // The open is asynchronous, so the stage closes when the runtime reports — not when the
-      // call returns. Marking it here measured the cost of constructing a stream pair and called
-      // a runtime that never started a success.
       const runtime = createRemoteRuntime({
         session,
         request,
         log: this.deps.log,
         metrics: this.metrics,
+        // The open is asynchronous, so the stage closes when the runtime reports — and only a
+        // successful one, or a rejection would sit in runtime-ready latency as a fast success.
         onRuntimeOpen: (outcome) => {
-          // Only a successful open crossed the "runtime is up" boundary. A rejected one recorded
-          // as a completed stage would sit in the runtime-ready latency distribution as a fast
-          // success, and the stage histogram carries no outcome to filter it back out.
           if (outcome === 'ok') timer.mark('runtime_ready')
           timer.finish(outcome)
         }
@@ -451,9 +310,8 @@ export class K8sDriver implements SpawnDriver {
     this.binder.onChannelBound(connection)
   }
 
-  /** Report that an agent's channel is gone, so its runtime learns rather than hanging. */
-  // The session and the launch are dropped TOGETHER, and that orchestration stays here: a revived
-  // sandbox must never bind to a lost session, and the halves live in two different objects.
+  // Report that an agent's channel is gone, so its runtime learns rather than hanging. Session and
+  // launch drop TOGETHER: a revived sandbox must never bind to a lost session.
   onChannelLost(agentId: string, reason: string): void {
     if (this.binder.loseChannel(agentId, reason)) this.forgetLaunch(agentId)
   }
