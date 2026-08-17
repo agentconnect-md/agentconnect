@@ -1,23 +1,11 @@
 /**
- * The "night collection" scenario — the live Werewolf night-1 failure shape,
- * reproduced webchat-shaped (see the runbook topology this mirrors):
+ * The "night collection" scenario — the live Werewolf night-1 failure shape, webchat-shaped:
+ * one conversation where the referee issues three concurrent `needsReply` postless calls while
+ * other players post public filler, plus the referee-mediated wolf relay as the end-to-end leg.
  *
- *  ONE multi-agent webchat conversation (referee + players + the human host).
- *  The host posts a night-start message; the REFEREE's conversation session
- *  issues THREE concurrent `needsReply` postless calls (wolf-A: propose;
- *  seer: inspect; doctor: protect) while other players post public filler
- *  ("Waiting.") into the conversation. Children that reply correctly
- *  (`sendMessage {sessionId}`) must wake the referee's session exactly once
- *  each, regardless of interleaved public posts; a child that answers in
- *  PROSE (headless, no tool call) is a LOST reply — the known headless-child
- *  prose-reply loss that stalled the live game (PR #905 is parked on exactly
- *  this eval coverage). The referee-mediated wolf relay (wolf-A's proposal
- *  forwarded to wolf-B, wolf-B's verdict back) is the end-to-end leg.
- *
- * The referee is a SCRIPTED subject agent acting through the REAL tool
- * surface (`sendMessage` over the daemon's MCP control socket) — never the
- * trusted referee control path. Scripted and real-model variants share this
- * module; only who plays the CHILDREN differs.
+ * The referee is SCRIPTED but acts through the REAL tool surface (`sendMessage` over the MCP
+ * control socket), never the trusted referee control path — that is what makes the measurements
+ * mean anything. Scripted and real-model variants share this module; only the CHILDREN differ.
  */
 import type { EvaluationEvent } from '../../packages/daemon/src/evaluation/index.js'
 import type { RdWebchatPost } from '../../packages/protocol/src/index.js'
@@ -180,23 +168,12 @@ function parseToolResult(result: unknown): Record<string, unknown> | undefined {
 export type ReplyMode = 'own-turn' | 'coalesced' | 'delivered-inferred' | 'lost'
 
 /**
- * Classification is grounded in the DAEMON'S OWN wake evidence
- * (`agentReplyWakeEvidence`), never in content visibility alone: under #926 a
- * child's report is also committed as a conversation post whose `context` copy
- * fans back to the referee, so the marker can surface in a LATER, unrelated
- * referee prompt even if the reply's own queued wake was dropped. Visibility
- * without an admitted reply wake therefore scores LOST.
- *
- * The two shapes an ADMITTED reply then takes inside a referee prompt:
- *
- *  - DELIVERED form — the reply body as the wake's own message (a raw line
- *    starting with the marker, or `From <agent>: MARKER …`) in the input of a
- *    turn that STARTED on an admitted reply wake;
- *  - CONTEXT-ROW form — `[<sender>] MARKER …`: how a reply whose admitted
- *    wake was COALESCED into an in-flight turn is represented (the regenerated
- *    turn input carries the row). Later catch-up context re-shows the same row
- *    shape, which is exactly why a `coalesced` verdict additionally requires an
- *    unconsumed coalesced reply wake in the evidence.
+ * Classification is grounded in the daemon's own wake evidence, NEVER in content visibility:
+ * a report is also committed as a conversation post whose context copy fans back to the referee,
+ * so the marker can surface in a later unrelated prompt even when the reply's own wake was
+ * dropped. Visibility without an admitted wake therefore scores LOST — do not "fix" this by
+ * matching on text. For the same reason a `coalesced` verdict additionally requires an unconsumed
+ * coalesced wake in the evidence, since catch-up context re-shows the same row shape.
  */
 export interface ReplyOutcome {
   child: string
