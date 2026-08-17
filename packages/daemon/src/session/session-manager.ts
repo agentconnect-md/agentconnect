@@ -2,7 +2,6 @@ import type { ContentBlock, McpServer } from '@agentclientprotocol/sdk'
 import { LocalStore, sessionKey, transcriptChannelKey, type TranscriptEntry } from '../store/local-store.js'
 import { isSyntheticA2aChannel } from '../cp/cp-collab-routes.js'
 import { monotonicTs } from '../store/monotonic-ts.js'
-import { SLACK_RESPONSE_FINAL_EVENT_TAG } from '@agentconnect.md/message'
 import { WorkspaceManager } from '../workspace/workspace-manager.js'
 import { initiatorLabel } from '../workspace/session-branch.js'
 import { memoryKindOf, type MemoryProvider, type MemoryScope } from '../memory/provider.js'
@@ -14,18 +13,14 @@ import type { Agent } from '../agents/agent-schema.js'
 import type { LoadedAgent } from '../agents/load-agents.js'
 import { stableTurnId, type Attachment, type NormalizedMessage } from '../messages/normalized.js'
 import { messageOrderingFor } from '../platforms/message-ordering.js'
-import {
-  buildAttachmentBlocks,
-  attachmentMention,
-  hydrateTranscriptImage,
-  transcriptImageAttachments
-} from './attachment-block.js'
+import { buildAttachmentBlocks } from './attachment-block.js'
 import { DIRECT_AGENT_CALL_REMINDER, EXPLICIT_MENTION_REMINDER, NO_RESPONSE_REMINDER } from './no-response.js'
 import { planReplay, renderReplayContext } from './turn/replay-plan.js'
 import { AGENT_META_OPENING, buildStandingContext } from './turn/standing-context.js'
 import { backfillThreadHistory } from './turn/thread-backfill.js'
 import { RecallObserver, runTurnRecall, type MemoryRecallLifecycleEvent } from './turn/memory-recall.js'
 import { openRuntimeSession } from './turn/runtime-session.js'
+import { ingestInboundTranscript } from './turn/transcript-ingest.js'
 
 // The recall lifecycle contract lives with the collaborator that emits it; re-exported
 // here because SessionManagerDeps is the seam production wires its observer through.
@@ -387,64 +382,20 @@ export class SessionManager {
     let rec = this.deps.store.getSession(key)
     const transcriptChannel = transcriptChannelKey(msg.channel, transportScope)
 
-    // record the triggering message in the transcript (with an attachment mention
-    // for prompt replay; a bounded inline image stays daemon-local for UI replay).
-    // A platform image is only an auth-gated URL, so fetch it here — the bytes are
-    // memoized on the attachment and reused by the prompt blocks below (one fetch).
-    await hydrateTranscriptImage(msg.attachments, {
-      download: (att) => this.deps.downloadAttachment?.(agentId, att) ?? Promise.resolve(null),
-      ...(this.deps.attachmentMaxBytes !== undefined ? { maxBytes: this.deps.attachmentMaxBytes } : {})
-    })
-    const mention = attachmentMention(msg.attachments)
-    const transcriptAttachments = transcriptImageAttachments(msg.attachments)
-    const transcriptText = mention ? `${msg.text}\n${mention}`.trim() : msg.text
-    // Webchat rows dedup on (channel, thread, ts) alone, and a carried canonical
-    // `at` can land on a millisecond a DIFFERENT post (a peer's context copy)
-    // already occupies on this daemon — probe the slot and bump instead of
-    // letting INSERT OR IGNORE silently drop this message. An identical row
-    // (the co-hosted-participant fan-out case) keeps the shared slot.
-    if (msg.platform === 'webchat') {
-      let slot = BigInt(ts)
-      for (let attempt = 0; attempt < 32; attempt++) {
-        const existing = this.deps.store.transcriptTextAt(transcriptChannel, thread, String(slot), {
-          sender: msg.sender.id,
-          recipient: agentId
-        })
-        // Mirror the daemon-side probe (§6): matching canonical postId is what
-        // proves the occupant is this same post; (sender, text) only decides
-        // for legacy rows without an id on either side.
-        const samePost =
-          existing !== undefined &&
-          (msg.transcriptPostId && existing.postId
-            ? existing.postId === msg.transcriptPostId
-            : existing.sender === msg.sender.id && existing.text === transcriptText)
-        if (!existing || samePost) break
-        slot += 1n
-      }
-      ts = String(slot)
-    }
-    this.deps.store.appendTranscript({
-      channel: transcriptChannel,
+    // Hydrate the inbound image and record the triggering message (turn/transcript-ingest.ts);
+    // it returns the ts the row actually landed on (webchat slot probe) and the hydrated
+    // attachments, whose bytes the prompt blocks below reuse.
+    const ingested = await ingestInboundTranscript({
+      store: this.deps.store,
+      agentId,
+      msg,
+      transcriptChannel,
       thread,
       ts,
-      sender: msg.sender.id,
-      // The canonical webchat post identity travels with the canonical ts —
-      // identical on every participant copy even when `ts` was bumped (§6).
-      ...(msg.transcriptPostId ? { postId: msg.transcriptPostId } : {}),
-      // Provider send time for platforms whose message ids are not
-      // chronological (Telegram/Feishu; Discord decodes its snowflake at
-      // normalization) — the merged conversation view orders on this axis.
-      ...(msg.platformTimeMs ? { eventTimeUs: msg.platformTimeMs * 1000 } : {}),
-      // This message was delivered TO this agent (handle() runs for `agentId`), so tag the
-      // recipient — the console session view scopes to what THIS agent received + produced.
-      recipient: agentId,
-      // A response finalization is the same Slack message as the post that opened it, so
-      // it lands on that row and refreshes it to the completed text.
-      ...(msg.ingressEventTag === SLACK_RESPONSE_FINAL_EVENT_TAG ? { authoritative: true } : {}),
-      kind: 'text',
-      text: transcriptText,
-      ...(transcriptAttachments.length ? { attachments: transcriptAttachments } : {})
+      download: (att) => this.deps.downloadAttachment?.(agentId, att) ?? Promise.resolve(null),
+      ...(this.deps.attachmentMaxBytes !== undefined ? { attachmentMaxBytes: this.deps.attachmentMaxBytes } : {})
     })
+    ts = ingested.ts
 
     const isNewLogicalSession = rec === undefined
     if (rec) {
@@ -780,10 +731,10 @@ export class SessionManager {
     }
 
     // §9.2 attachments on the current message → image/resource/resource_link blocks.
-    if (msg.attachments?.length) {
+    if (ingested.attachments?.length) {
       const attBlocks = await abortable(
         () =>
-          buildAttachmentBlocks(msg.attachments!, {
+          buildAttachmentBlocks(ingested.attachments!, {
             download: (att) => this.deps.downloadAttachment?.(agentId, att) ?? Promise.resolve(null),
             supports: (kind) => host.promptSupports?.(kind) ?? false,
             ...(this.deps.attachmentMaxBytes !== undefined ? { maxBytes: this.deps.attachmentMaxBytes } : {})
