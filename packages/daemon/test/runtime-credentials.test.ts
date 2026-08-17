@@ -11,7 +11,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { prepareRuntimeLaunch } from '../src/acp/runtime-launch.js'
+import { prepareRuntimeLaunch } from '../src/launch/prepare.js'
 import { CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV } from '../src/acp/codex-permission-profiles.js'
 
 const roots: string[] = []

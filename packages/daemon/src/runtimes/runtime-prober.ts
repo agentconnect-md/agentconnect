@@ -19,8 +19,8 @@ import { AcpHost, type ModelOptions } from '../acp/acp-host.js'
 import type { RuntimeDef } from '../config/config-schema.js'
 import type { Logger } from '../log.js'
 import type { SandboxMechanism } from '../acp/sandbox.js'
-import type { PreparedRuntimeLaunch } from '../acp/runtime-launch.js'
-import { composeRuntimeLaunch } from './launch-policy.js'
+import type { PreparedRuntimeLaunch } from '../launch/prepare.js'
+import { composeRuntimeLaunch } from '../launch/compose.js'
 
 const PROCESS_ENV_KEYS = new Set(['PATH', 'PATHEXT', 'SystemRoot'])
 const CERTIFICATE_ENV_KEYS = new Set([

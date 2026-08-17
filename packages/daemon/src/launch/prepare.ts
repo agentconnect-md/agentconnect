@@ -1,7 +1,7 @@
 import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
-import { sandboxBoundary, writeSandboxSettings, type SandboxMechanism } from './sandbox.js'
+import { sandboxBoundary, writeSandboxSettings, type SandboxMechanism } from '../acp/sandbox.js'
 import type { RuntimeDef } from '../config/config-schema.js'
 import { compactReadRoots } from '../runtimes/read-roots.js'
 import { prepareSharedRuntimeCredentials, sharedCredentialProfile } from '../runtimes/runtime-credentials.js'
@@ -19,7 +19,7 @@ import {
   codexConfigWithoutPermissionOverrides,
   codexPermissionProfileConfig,
   type CodexPermissionProfileOptions
-} from './codex-permission-profiles.js'
+} from '../acp/codex-permission-profiles.js'
 
 function applyCodexPermissionProfile(
   env: Record<string, string>,
