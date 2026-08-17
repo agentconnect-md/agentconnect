@@ -236,7 +236,10 @@ const AMBIENT_STATE_ENV = new Set([
   'QODER_CLI_HOME',
   'QODERCN_CONFIG_DIR',
   'QODERCN_CLI_HOME',
-  'GEMINI_CLI_HOME'
+  'GEMINI_CLI_HOME',
+  // DeepSeek Harness state root; $DSH_PATH (the harness install location) is not
+  // user state and stays inherited.
+  'DSH_HOME'
 ])
 
 function inheritedEnvironment(source: NodeJS.ProcessEnv): Record<string, string> {
@@ -287,6 +290,7 @@ const RUNTIME_PRIVATE_ENV: Record<string, RuntimePrivateEnv> = {
     }
     return env
   },
+  'dsh-acp': (home) => ({ DSH_HOME: join(home, '.dsh') }),
   kimi: (home, hostEnv) => {
     const env: Record<string, string> = {}
     if (hostEnv.KIMI_CODE_HOME) env.KIMI_CODE_HOME = join(home, '.kimi-code')

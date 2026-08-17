@@ -51,5 +51,13 @@ export const CURATED_RUNTIME_CATALOG: Readonly<Record<string, CuratedRuntimeEntr
   'qoder-cli-cn': {
     name: 'Qoder CN CLI',
     runtime: { command: 'qoderclicn', args: ['--acp'], env: [], skillsAgentId: 'qoder-cn' }
+  },
+  // DeepSeek Harness speaks ACP through @openma/deepseek-harness-acp, which
+  // bundles the harness itself and only reuses $DSH_HOME credentials — so it is
+  // fetched on demand rather than installed into the operator's dsh profile.
+  // `-p` is required: the package's single bin (`dsh-acp`) is not its name.
+  'dsh-acp': {
+    name: 'DeepSeek Harness',
+    runtime: { command: 'npx', args: ['-y', '-p', '@openma/deepseek-harness-acp@^0.4', 'dsh-acp'], env: [] }
   }
 })

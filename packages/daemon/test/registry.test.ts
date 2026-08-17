@@ -239,7 +239,7 @@ describe('resolveRuntimes', () => {
 })
 
 describe('curated native ACP runtimes', () => {
-  it('declares the eight reviewed native ACP commands', () => {
+  it('declares the nine reviewed native ACP commands', () => {
     expect(CURATED_RUNTIME_CATALOG).toEqual({
       'hermes-agent': {
         name: 'Hermes Agent',
@@ -272,6 +272,10 @@ describe('curated native ACP runtimes', () => {
       'qoder-cli-cn': {
         name: 'Qoder CN CLI',
         runtime: { command: 'qoderclicn', args: ['--acp'], env: [], skillsAgentId: 'qoder-cn' }
+      },
+      'dsh-acp': {
+        name: 'DeepSeek Harness',
+        runtime: { command: 'npx', args: ['-y', '-p', '@openma/deepseek-harness-acp@^0.4', 'dsh-acp'], env: [] }
       }
     })
   })

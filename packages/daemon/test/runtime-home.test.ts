@@ -114,6 +114,23 @@ describe('private runtime HOME', () => {
     expect(env.GEMINI_CLI_HOME).toBeUndefined()
   })
 
+  it('seeds DeepSeek Harness credentials and pins $DSH_HOME into the private home', () => {
+    const { hostHome, scopeDir } = fixture()
+    const dsh = join(hostHome, '.dsh')
+    mkdirSync(join(dsh, 'sessions'), { recursive: true })
+    writeFileSync(join(dsh, '.credentials.yaml'), 'deepseek: host-key')
+    writeFileSync(join(dsh, '.env'), 'DEEPSEEK_BASE_URL=https://host.example')
+    writeFileSync(join(dsh, 'sessions', 'old.jsonl'), 'do-not-copy')
+
+    const home = prepareRuntimeHome('dsh-acp', scopeDir, { HOME: hostHome })
+    expect(readFileSync(join(home, '.dsh', '.credentials.yaml'), 'utf8')).toContain('host-key')
+    expect(existsSync(join(home, '.dsh', '.env'))).toBe(true)
+    expect(existsSync(join(home, '.dsh', 'sessions'))).toBe(false)
+
+    const env = runtimeHomeEnvironment('dsh-acp', home, {}, { HOME: hostHome, DSH_HOME: '/host/leak' })
+    expect(env.DSH_HOME).toBe(join(home, '.dsh'))
+  })
+
   it('seeds Cline provider auth from its data directory without copying databases', () => {
     const { hostHome, scopeDir } = fixture()
     const clineDir = join(hostHome, '.cline')

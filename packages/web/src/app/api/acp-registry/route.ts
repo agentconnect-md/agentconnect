@@ -32,6 +32,10 @@ const CURATED_AGENTS: Record<string, { name: string; icon: string | null }> = {
   'qoder-cli-cn': {
     name: 'Qoder CN CLI',
     icon: 'https://cdn.jsdelivr.net/npm/@lobehub/icons-static-svg@latest/icons/qoder-color.svg'
+  },
+  'dsh-acp': {
+    name: 'DeepSeek Harness',
+    icon: 'https://cdn.jsdelivr.net/npm/@lobehub/icons-static-svg@latest/icons/deepseek-color.svg'
   }
 }
 
