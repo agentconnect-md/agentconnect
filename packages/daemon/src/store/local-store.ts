@@ -1522,7 +1522,7 @@ export class LocalStore {
       `INSERT INTO retracted_conversations (integrationId, channelId, retractedAt) VALUES (?, ?, ?)
        ON CONFLICT (integrationId, channelId) DO UPDATE SET retractedAt = excluded.retractedAt`
     )
-    for (const channelId of channelIds) stmt.run(integrationId, channelId, now)
+    for (const channelId of channelIds) await stmt.run(integrationId, channelId, now)
   }
 
   /** Integrations holding any suppression. The reconnect replay keys on this as well
