@@ -12,7 +12,8 @@
  * any provider), and (2) provision the connection PROFILE in open-connector
  * (`<orgHash>--<userHash>--<name>`). If step 2's api-key save fails, step 1 is rolled back.
  * The profile is composed HERE and only here — it is persisted as the connection's alias
- * binding marker, and reconnect/relay replay read it back rather than recomposing it.
+ * binding marker, and reconnect/relay replay read it back rather than recomposing it. It
+ * pins every runtime action: the relay translates to /v1/actions, never OC's own /mcp.
  */
 import type { FastifyInstance } from 'fastify'
 import type { ZodTypeProvider } from '../plugins/zod.js'
