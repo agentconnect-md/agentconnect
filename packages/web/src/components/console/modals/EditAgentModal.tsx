@@ -37,6 +37,7 @@ import {
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 import { fetchAgentDto, type AgentCallPolicyInput, type UpdateAgentInput } from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
+import { experimentEnabled } from '@/lib/experiments'
 import { useOrgs } from '@/lib/org-context'
 import { buildAgentReachabilityGraph } from '@/lib/agent-reachability'
 import { Spinner } from '@/components/marks'
@@ -385,7 +386,7 @@ export default function EditAgentModal({
     // The org's own groups sit with Cloud: same kind of target, same promise — lose any one member
     // and the duty re-grants to another (daemon-groups.md §2). A group with nothing serving stays
     // listed but disabled, unless it is where the agent already is.
-    ...memberSets.map((group) => {
+    ...(experimentEnabled('daemon-groups') ? memberSets : []).map((group) => {
       const serving = group.memberDaemonIds.some((id) => moveReady(daemons.find((d) => d.daemonId === id)))
       const current = groupPlacementValue(group.setId) === initialDaemonId.current
       return {

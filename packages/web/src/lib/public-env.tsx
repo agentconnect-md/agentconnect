@@ -46,7 +46,11 @@ const KEYS = [
   // project key (phc_…) — safe in the browser. Unset ⇒ analytics is a no-op
   // (lib/analytics never initializes). POSTHOG_HOST defaults to us.i.posthog.com.
   'POSTHOG_API_KEY',
-  'POSTHOG_HOST'
+  'POSTHOG_HOST',
+  // Experimental features this deployment turns on — a comma-separated list of ids
+  // (lib/experiments.ts). Unset ⇒ none: an experimental surface ships in every build and appears
+  // only where an environment asks for it, so one prebuilt image serves them all.
+  'EXPERIMENTS'
 ] as const
 
 interface RuntimeConfigResponse {
