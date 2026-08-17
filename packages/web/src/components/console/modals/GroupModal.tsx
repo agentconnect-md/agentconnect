@@ -1,7 +1,7 @@
 // No 'use client' here: rendered only by ModalProvider (the client boundary).
 
 import { useRef, useState } from 'react'
-import type { DaemonRow, MemberSetRow } from '@/lib/data'
+import type { MemberSetRow } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { Button, Icon } from '@/components/ui'
 
@@ -19,7 +19,7 @@ import { Button, Icon } from '@/components/ui'
  * own, so one refusal reports itself and leaves the rest of the edit intact.
  */
 export default function GroupModal({ group, onClose }: { group?: MemberSetRow; onClose: () => void }) {
-  const { createGroup, renameGroup, enrollInGroup, withdrawFromGroup, daemons, agents } = useConsoleData()
+  const { createGroup, renameGroup, enrollInGroup, withdrawFromGroup, daemons } = useConsoleData()
   const [name, setName] = useState(group?.name ?? '')
   // The membership this dialog is editing, seeded from the group and applied on save.
   const [members, setMembers] = useState<string[]>(group?.memberDaemonIds ?? [])
@@ -33,7 +33,6 @@ export default function GroupModal({ group, onClose }: { group?: MemberSetRow; o
   // A daemon the org owns is a candidate unless it is in a DIFFERENT group: a daemon is in at most
   // one, and moving it between groups is a two-phase transition, not a checkbox.
   const candidates = daemons.filter((d) => !d.pool && (!d.memberSetId || d.memberSetId === group?.setId))
-  const pinnedCount = (daemon: DaemonRow) => agents.filter((a) => a.daemon === daemon.daemonId).length
 
   const toggle = (daemonId: string) =>
     setMembers((current) =>
@@ -100,9 +99,6 @@ export default function GroupModal({ group, onClose }: { group?: MemberSetRow; o
             <div className="overflow-hidden rounded-lg border border-(--border-subtle)">
               {candidates.map((daemon) => {
                 const checked = members.includes(daemon.daemonId)
-                // Its own agents stay its own — worth saying where there are any, because a group
-                // reads like a pool and the question "do I lose these?" is the one being asked.
-                const pinned = pinnedCount(daemon)
                 return (
                   <button
                     key={daemon.daemonId}
@@ -125,11 +121,7 @@ export default function GroupModal({ group, onClose }: { group?: MemberSetRow; o
                         {daemon.name}
                       </span>
                       <span className="block truncate font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
-                        {pinned > 0
-                          ? `Keeps its ${pinned} own agent${pinned === 1 ? '' : 's'}`
-                          : daemon.status === 'online'
-                            ? 'Online'
-                            : 'Offline'}
+                        {daemon.status === 'online' ? 'Online' : 'Offline'}
                       </span>
                     </span>
                   </button>
