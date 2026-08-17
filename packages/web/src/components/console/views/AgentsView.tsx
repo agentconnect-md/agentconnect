@@ -58,7 +58,7 @@ function parseCompact(s: string): number {
 export default function AgentsView() {
   const acpRegistry = useAcpRegistry()
   const { orgPath } = useOrgs()
-  const { agents, daemons, integrations, members, getSessions, usage24h, agentsLoading, daemonsLoading } =
+  const { agents, daemons, integrations, members, getSessions, usage24h, agentsLoading, daemonsLoading, memberSets } =
     useConsoleData()
   const { me } = useProfile()
   const { openModal } = useModal()
@@ -73,7 +73,7 @@ export default function AgentsView() {
   const cols =
     'grid-cols-[minmax(148px,1.6fr)_92px_minmax(80px,.85fr)_72px_minmax(90px,1.2fr)_minmax(140px,.95fr)_108px_88px_80px_28px]'
   // Prefer the Agent projection because its daemon may be outside this viewer's fleet.
-  const daemonName = (agent: Agent) => agentDaemonLabel(agent, daemons)
+  const daemonName = (agent: Agent) => agentDaemonLabel(agent, daemons, memberSets)
   // Live 24h usage (GET /usage?range=d1) keyed by agent for the Tokens 24h column.
   const usageByAgent = new Map((usage24h?.agents ?? []).map((u) => [u.agentId, u]))
   // Per-agent "Sessions 24h": the live usage rollup when the CP reports one, else the

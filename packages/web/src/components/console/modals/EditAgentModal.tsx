@@ -997,6 +997,7 @@ export default function EditAgentModal({
                       effectivePeerIds={inboundEffectivePeerIds}
                       peers={peers}
                       daemons={daemons}
+                      groups={memberSets}
                       target={target}
                       editable={callVisibilityEditable}
                       busy={saving}
@@ -1013,6 +1014,7 @@ export default function EditAgentModal({
                       effectivePeerIds={outboundEffectivePeerIds}
                       peers={peers}
                       daemons={daemons}
+                      groups={memberSets}
                       target={target}
                       editable={callVisibilityEditable}
                       busy={saving}

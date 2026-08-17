@@ -111,11 +111,14 @@ export function placementValueOf(
   return dto.setId && orgSetIds?.has(dto.setId) ? groupPlacementValue(dto.setId) : POOL_PLACEMENT
 }
 
-/** Resolve placement display text without exposing an unresolved daemon id or a raw set id. */
+/** Resolve placement display text without exposing an unresolved daemon id or a raw set id.
+ *  `groups` is REQUIRED, and deliberately so: defaulting it to `[]` made every caller that had not
+ *  been updated silently label a group placement "AgentConnect Cloud" — a wrong answer that looks
+ *  like a right one. An empty array is still the correct argument while the list is loading. */
 export function agentDaemonLabel(
   agent: Pick<Agent, 'daemon' | 'daemonName' | 'placementKind' | 'setId'>,
   daemons: readonly Pick<DaemonRow, 'daemonId' | 'name'>[],
-  groups: readonly Pick<MemberSetRow, 'setId' | 'name'>[] = []
+  groups: readonly Pick<MemberSetRow, 'setId' | 'name'>[]
 ): string {
   if (isSetPlacementKind(agent.placementKind)) {
     const group = agent.setId ? groups.find((candidate) => candidate.setId === agent.setId) : undefined

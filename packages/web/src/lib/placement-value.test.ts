@@ -51,14 +51,18 @@ describe('placementValueOf', () => {
 describe('agentDaemonLabel', () => {
   it('uses the Agent projection outside the visible fleet and never falls back to a raw daemon id', () => {
     const daemonId = 'd8e6ea1f-c9bb-4d7b-8b75-e4db14e84999'
-    expect(agentDaemonLabel({ daemon: daemonId, daemonName: 'Daemon A', placementKind: 'daemon' }, [])).toBe('Daemon A')
+    expect(agentDaemonLabel({ daemon: daemonId, daemonName: 'Daemon A', placementKind: 'daemon' }, [], [])).toBe(
+      'Daemon A'
+    )
     expect(
-      agentDaemonLabel({ daemon: daemonId, daemonName: 'Old name', placementKind: 'daemon' }, [
-        { daemonId, name: 'Renamed daemon' }
-      ])
+      agentDaemonLabel(
+        { daemon: daemonId, daemonName: 'Old name', placementKind: 'daemon' },
+        [{ daemonId, name: 'Renamed daemon' }],
+        []
+      )
     ).toBe('Renamed daemon')
-    expect(agentDaemonLabel({ daemon: daemonId, placementKind: 'daemon' }, [])).toBe('—')
-    expect(agentDaemonLabel({ daemon: POOL_PLACEMENT, placementKind: 'set' }, [])).toBe(POOL_LABEL)
+    expect(agentDaemonLabel({ daemon: daemonId, placementKind: 'daemon' }, [], [])).toBe('—')
+    expect(agentDaemonLabel({ daemon: POOL_PLACEMENT, placementKind: 'set' }, [], [])).toBe(POOL_LABEL)
   })
 })
 
@@ -122,7 +126,9 @@ describe('placementValueOf with the org’s own groups', () => {
       POOL_LABEL
     )
     // A group whose name has not loaded yet still reads as a placement, never as a raw set id.
-    expect(agentDaemonLabel({ daemon: POOL_PLACEMENT, placementKind: 'set', setId: 'set-lab' }, [])).toBe(POOL_LABEL)
+    expect(agentDaemonLabel({ daemon: POOL_PLACEMENT, placementKind: 'set', setId: 'set-lab' }, [], [])).toBe(
+      POOL_LABEL
+    )
   })
 
   it('round-trips the value the picker submits', () => {

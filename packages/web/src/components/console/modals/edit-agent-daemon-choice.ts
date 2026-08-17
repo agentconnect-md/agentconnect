@@ -1,6 +1,6 @@
 import type { DaemonRow } from '@/lib/data'
 
-type DaemonChoiceRow = Pick<DaemonRow, 'pool' | 'daemonId' | 'status'> & {
+type DaemonChoiceRow = Pick<DaemonRow, 'pool' | 'daemonId' | 'status' | 'memberSetId'> & {
   caps: Pick<DaemonRow['caps'], 'features'>
 }
 
@@ -32,7 +32,13 @@ export function editAgentDaemonChoices<T extends DaemonChoiceRow>(
     (initial?.pool ? initial : undefined) ??
     poolMembers.find(moveReady) ??
     poolMembers[0]
-  const localChoices = daemons.filter((daemon) => !daemon.pool)
+  // A daemon in a group is served THROUGH the group (daemon-groups.md §3), so it is not a target
+  // of its own: submitting one is a `daemon` placement the control plane refuses. The agent's
+  // CURRENT machine stays listed regardless — an option that names where the agent already is can
+  // never be a placement the server has not already accepted.
+  const localChoices = daemons.filter(
+    (daemon) => !daemon.pool && (!daemon.memberSetId || daemon.daemonId === initialDaemonId)
+  )
   localChoices.sort((a, b) => Number(moveReady(b)) - Number(moveReady(a)))
   return {
     poolChoice,

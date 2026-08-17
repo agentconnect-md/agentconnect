@@ -1420,6 +1420,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                     selectedIds={allowedCallers}
                     peers={agents}
                     daemons={daemons}
+                    groups={memberSets}
                     target={callVisibilityTarget}
                     onChange={(nextMode, nextSelected) => {
                       setCallPolicy(nextMode)
@@ -1433,6 +1434,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                     selectedIds={allowedTargets}
                     peers={agents}
                     daemons={daemons}
+                    groups={memberSets}
                     target={callVisibilityTarget}
                     onChange={(nextMode, nextSelected) => {
                       setOutboundPolicy(nextMode)

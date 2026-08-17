@@ -136,8 +136,18 @@ export default function AgentDetailView() {
   // is `?tab=<id>`.
   const tab: DetailTab =
     rawTab === 'config' || rawTab === 'workspace' || rawTab === 'memory' || rawTab === 'tools' ? rawTab : 'integrations'
-  const { agents, getAgent, getSessions, daemons, daemonsLoading, integrations, agentsLoading, updateAgent, refresh } =
-    useConsoleData()
+  const {
+    agents,
+    getAgent,
+    getSessions,
+    daemons,
+    daemonsLoading,
+    integrations,
+    agentsLoading,
+    updateAgent,
+    refresh,
+    memberSets
+  } = useConsoleData()
   const { openPlayground } = usePlayground()
   const { openModal } = useModal()
   const {
@@ -466,7 +476,7 @@ export default function AgentDetailView() {
         refresh()
       }
     : undefined
-  const daemonLabel = agentDaemonLabel(da, daemons)
+  const daemonLabel = agentDaemonLabel(da, daemons, memberSets)
   // Append region only when the Agent projection has a real one.
   const daemonLine = da.region && da.region !== '—' ? `${daemonLabel} · ${da.region}` : daemonLabel
   // Only a daemon in the viewer's fleet has a working detail route.
@@ -1115,6 +1125,7 @@ export default function AgentDetailView() {
                     effectivePeerIds={inboundEffectiveIds}
                     peers={agentPeers}
                     daemons={daemons}
+                    groups={memberSets}
                     target={<span className="font-mono text-[12.5px]">{agentLabel(da)}</span>}
                     editable={false}
                     onChange={() => {}}
@@ -1127,6 +1138,7 @@ export default function AgentDetailView() {
                     effectivePeerIds={outboundEffectiveIds}
                     peers={agentPeers}
                     daemons={daemons}
+                    groups={memberSets}
                     target={<span className="font-mono text-[12.5px]">{agentLabel(da)}</span>}
                     editable={false}
                     onChange={() => {}}

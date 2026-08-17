@@ -1045,10 +1045,13 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
   const createAgent = useCallback(
     async (input: CreateAgentInput): Promise<string> => {
       const created = await apiCreateAgent(input)
-      settleInBackground(mutateAgents(), mutateDaemons())
+      // `memberSets` too: a group's `agentCount` is what the console shows beside Cloud's and
+      // what gates its delete, so every write that can move an agent onto or off a group has to
+      // re-pull it — otherwise the count is stale and the delete stays blocked on a number.
+      settleInBackground(mutateAgents(), mutateDaemons(), mutateMemberSets())
       return created.id // let the caller follow up with a /sharing write if restricted
     },
-    [mutateAgents, mutateDaemons]
+    [mutateAgents, mutateDaemons, mutateMemberSets]
   )
 
   // Set a resource's visibility + share set (PUT .../:id/sharing), then re-pull.
@@ -1086,9 +1089,9 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
   const deleteAgent = useCallback(
     async (agentId: string) => {
       await apiDeleteAgent(agentId)
-      settleInBackground(mutateAgents(), revalidateSessionLists(), mutateIntegrations())
+      settleInBackground(mutateAgents(), revalidateSessionLists(), mutateIntegrations(), mutateMemberSets())
     },
-    [mutateAgents, revalidateSessionLists, mutateIntegrations]
+    [mutateAgents, revalidateSessionLists, mutateIntegrations, mutateMemberSets]
   )
 
   // Edit an agent's spec (PATCH), then re-pull so the change shows.
@@ -1105,9 +1108,9 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
   const moveAgent = useCallback(
     async (agentId: string, target: AgentPlacementTarget, options?: { force?: boolean }) => {
       await apiMoveAgent(agentId, target, options)
-      settleInBackground(mutateAgents(), mutateDaemons(), revalidateSessionLists())
+      settleInBackground(mutateAgents(), mutateDaemons(), revalidateSessionLists(), mutateMemberSets())
     },
-    [mutateAgents, mutateDaemons, revalidateSessionLists]
+    [mutateAgents, mutateDaemons, revalidateSessionLists, mutateMemberSets]
   )
 
   // Install a platform integration (Slack / Telegram / Discord), then re-pull so it shows in the list.
