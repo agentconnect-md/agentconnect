@@ -28,7 +28,8 @@ describe('editAgentDaemonChoices', () => {
     const choices = editAgentDaemonChoices(
       [row('local-1'), row('pool-1', true), row('pool-2', true), row('pool-3', true), row('local-2')],
       'local-1',
-      'local-1'
+      'local-1',
+      true
     )
 
     expect(choices.poolChoice?.daemonId).toBe('pool-1')
@@ -40,7 +41,8 @@ describe('editAgentDaemonChoices', () => {
     const choices = editAgentDaemonChoices(
       [row('pool-offline', true, 'offline'), row('pool-serving', true), row('local-1')],
       'pool-serving',
-      'local-1'
+      'local-1',
+      true
     )
 
     expect(choices.poolChoice?.daemonId).toBe('pool-serving')
@@ -51,7 +53,8 @@ describe('editAgentDaemonChoices', () => {
     const choices = editAgentDaemonChoices(
       [row('pool-source', true, 'offline'), row('pool-serving', true), row('local-1')],
       'local-1',
-      'pool-source'
+      'pool-source',
+      true
     )
 
     expect(choices.poolChoice?.daemonId).toBe('pool-serving')
@@ -62,7 +65,8 @@ describe('editAgentDaemonChoices', () => {
     const choices = editAgentDaemonChoices(
       [row('pool-source', true, 'offline'), row('pool-serving', true), row('local-1')],
       'pool-source',
-      'pool-source'
+      'pool-source',
+      true
     )
 
     expect(choices.poolChoice?.daemonId).toBe('pool-serving')
@@ -73,17 +77,40 @@ describe('editAgentDaemonChoices', () => {
     const choices = editAgentDaemonChoices(
       [row('local-offline', false, 'offline'), row('local-old', false, 'online', false), row('local-ready')],
       'local-offline',
-      'local-offline'
+      'local-offline',
+      true
     )
 
     expect(choices.poolChoice).toBeUndefined()
     expect(choices.localChoices.map((choice) => choice.daemonId)).toEqual(['local-ready', 'local-offline', 'local-old'])
   })
 
+  it('lists Cloud only where the deployment offers the pool', () => {
+    const daemons = [row('pool-1', true), row('local-1')]
+
+    expect(editAgentDaemonChoices(daemons, 'local-1', 'local-1', true).offerPool).toBe(true)
+    expect(editAgentDaemonChoices(daemons, 'local-1', 'local-1', false).offerPool).toBe(false)
+  })
+
+  it('keeps Cloud listed for an agent already on it, so a rollback still tells the truth', () => {
+    // Both halves matter: the pool answers as itself even with every member gone, which is exactly
+    // when a placed agent would otherwise read as "No daemon".
+    expect(editAgentDaemonChoices([row('pool-1', true)], 'pool', 'pool', false).offerPool).toBe(true)
+    expect(editAgentDaemonChoices([row('local-1')], 'pool', 'pool', false).offerPool).toBe(true)
+  })
+
+  it('does not reopen the hidden pool for a group-placed agent', () => {
+    // A group placement is a `set` too. Classified by kind rather than by the resolved placement,
+    // every group-placed agent would be handed the Cloud target the deployment just hid.
+    const choices = editAgentDaemonChoices([row('pool-1', true), row('local-1')], 'set:g1', 'set:g1', false)
+
+    expect(choices.offerPool).toBe(false)
+  })
+
   it('offers a daemon that is in a group — membership does not disqualify it as a target', () => {
     // A `daemon` placement is eligible for exactly that machine either way, so it stays the only
     // holder whether or not it has joined one (daemon-groups.md §3).
-    const choices = editAgentDaemonChoices([row('grouped', false, 'online', true, 'set-1'), row('free')], '', '')
+    const choices = editAgentDaemonChoices([row('grouped', false, 'online', true, 'set-1'), row('free')], '', '', true)
 
     expect(choices.localChoices.map((d) => d.daemonId).sort()).toEqual(['free', 'grouped'])
   })

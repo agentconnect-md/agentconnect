@@ -14,6 +14,7 @@ import type { Agent, DaemonRow } from '@/lib/data'
 const mocks = vi.hoisted(() => ({
   daemons: [] as unknown[],
   agents: [] as unknown[],
+  memberSets: [] as unknown[],
   push: vi.fn()
 }))
 
@@ -26,7 +27,7 @@ vi.mock('@/lib/data-context', () => ({
     daemons: mocks.daemons,
     daemonsLoading: false,
     agents: mocks.agents,
-    memberSets: [],
+    memberSets: mocks.memberSets,
     refreshDaemons: vi.fn(async () => {}),
     renameDaemon: vi.fn()
   })
@@ -99,6 +100,7 @@ const setExperiments = (value: string) => {
 beforeEach(() => {
   mocks.daemons = []
   mocks.agents = []
+  mocks.memberSets = []
   mocks.push.mockClear()
   setExperiments('daemon-pool')
 })
@@ -187,6 +189,20 @@ describe('DaemonsView pool', () => {
     expect(html).not.toContain('AgentConnect Cloud')
     expect(html).not.toContain('agents on Cloud')
     expect(html).toContain('pc.dev')
+  })
+
+  it('keeps the groups an org already made when hiding the pool empties the fleet', () => {
+    // The two experiments are independent switches. Hiding Cloud must not take the group surface
+    // with it just because the pool rows were the only thing keeping the fleet non-empty.
+    setExperiments('daemon-groups')
+    mocks.daemons = [member('p1')]
+    mocks.memberSets = [{ setId: 'g1', name: 'edge-eu', memberDaemonIds: [], agentCount: 0 }]
+
+    const html = render()
+
+    expect(html).toContain('No daemons connected')
+    expect(html).toContain('Daemon groups')
+    expect(html).toContain('edge-eu')
   })
 
   it('reads as an empty fleet when the pool is all there is and it is hidden', () => {

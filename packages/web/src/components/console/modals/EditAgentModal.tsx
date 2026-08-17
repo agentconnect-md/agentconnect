@@ -28,7 +28,6 @@ import {
   groupPlacementValue,
   groupSetIdOf,
   type MemberSetRow,
-  isPoolPlacementKind,
   placementValueOf,
   type Agent,
   type AgentCallPolicy,
@@ -360,12 +359,17 @@ export default function EditAgentModal({
     ? selectedSandboxRequired || (daemon?.caps.features.includes('sandbox') ?? false)
     : sandboxSupported
   const effectiveRunInSandbox = selectedSandboxRequired || (selectedSandboxSupported && runInSandbox)
-  const daemonChoices = editAgentDaemonChoices(daemons, daemonId, initialDaemonId.current)
+  const daemonChoices = editAgentDaemonChoices(
+    daemons,
+    daemonId,
+    initialDaemonId.current,
+    experimentEnabled('daemon-pool')
+  )
   const poolServing = daemons.some((candidate) => candidate.pool && moveReady(candidate))
   const daemonOptions: DaemonSelectOption[] = [
     // With the experiment off the picker offers Cloud only to an agent already ON it — same rule
     // the groups below follow, and for the same reason: "No daemon" for a placed agent is untrue.
-    ...((experimentEnabled('daemon-pool') && daemonChoices.poolChoice) || isPoolPlacementKind(agent.placementKind)
+    ...(daemonChoices.offerPool
       ? [
           {
             // The POOL, named as itself. The server picks the member — and re-picks it after every
