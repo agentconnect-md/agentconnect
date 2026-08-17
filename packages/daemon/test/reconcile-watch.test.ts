@@ -1094,7 +1094,7 @@ describe('Daemon.leaveConversation', () => {
 
     // Session history holds the THREAD, which collapses onto the left channel C1.
     vi.spyOn((daemon as any).store, 'observedChannels').mockReturnValue([{ id: 'T-in-C1' }])
-    vi.spyOn(daemon as any, 'collapseObserved').mockReturnValue([{ id: 'C1', spaceId: 'G1' }])
+    vi.spyOn((daemon as any).observedChannelsSync, 'collapseObserved').mockReturnValue([{ id: 'C1', spaceId: 'G1' }])
     emit.mockClear()
     ;(daemon as any).refreshObservedChannels()
 

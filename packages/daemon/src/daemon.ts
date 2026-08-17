@@ -169,12 +169,8 @@ import { discordThreadPromotion } from './platforms/discord/thread-promotion.js'
 import { sessionLinkSourceFor } from './platforms/link-source.js'
 import { sessionThreadUrlFor } from './platforms/session-links.js'
 import { offersReadPort } from './platforms/read-ports.js'
-import {
-  observedChannelsFor,
-  observedMembershipPlatforms,
-  registerObservedChannels,
-  type ObservedChannelsHost
-} from './platforms/observed-channels.js'
+import { registerObservedChannels } from './platforms/observed-channels.js'
+import { ObservedChannelsSync, type ObservedChannelsSyncHost } from './platforms/observed-channels-sync.js'
 import { discordObservedChannels } from './platforms/discord/observed-channels.js'
 import { connectionIdentityFor, tenantScopeFor, type TenantScopeHost } from './platforms/transport-identity.js'
 import { conversationAudienceFor } from './platforms/session-audience.js'
@@ -1171,6 +1167,8 @@ export class Daemon {
   // The durable session-metadata outbox (store/session-metadata-outbox.ts); owns its
   // own drain promise and retry timer behind the delegates below.
   private readonly sessionMetadataOutbox: SessionMetadataOutbox
+  // Observed-channel discovery/retraction (platforms/observed-channels-sync.ts).
+  private readonly observedChannelsSync: ObservedChannelsSync
   private readonly webchatTransport: WebchatTransport
   private readonly webchatMcpRevocations: WebchatMcpRevocations
   // §7.3 force-cancel backstops, keyed by (agentId, acpSessionId); cleared at turn end.
@@ -1289,6 +1287,7 @@ export class Daemon {
         : undefined)
     this.evalHooks = new DaemonEvaluationHooks(this.evaluationHost(), opts.evaluation)
     this.sessionMetadataOutbox = new SessionMetadataOutbox(this.sessionMetadataHost())
+    this.observedChannelsSync = new ObservedChannelsSync(this.observedChannelsSyncHost())
     this.webchatTransport = new WebchatTransport(this.webchatHost())
     this.webchatMcpRevocations = new WebchatMcpRevocations(this.webchatMcpRevocationHost())
     this.curatedRuntimeAdmission = new CuratedRuntimeAdmission({
@@ -1330,6 +1329,24 @@ export class Daemon {
       servesAgent: (agentId) => this.servesAgent(agentId),
       sessionLink: (acpSessionId) => this.sessionLink(acpSessionId),
       sessionThreadUrl: (session) => this.sessionThreadUrl(session)
+    }
+  }
+
+  /** Store-backed host for the observed-channels sync engine and, through the
+   *  contract it extends, for the §7.4 per-platform strategies it consumes. */
+  private observedChannelsSyncHost(): ObservedChannelsSyncHost {
+    return {
+      channelScopes: (ids) => this.store.getChannelScopes(ids),
+      displayNames: (ids) => this.store.getDisplayNames(ids),
+      store: () => this.store,
+      debug: (message) => this.log.debug(message),
+      now: () => this.clock.now(),
+      cpClient: () => this.cpClient,
+      agents: () => this.agents,
+      channelSnapshots: () => this.channelSnapshots,
+      integrationConfigById: (integrationId) => this.integrationConfigById(integrationId),
+      transportScopeForIntegration: (integration) => this.transportScopeForIntegration(integration),
+      emitSessionMetadataSnapshotsForDisplayName: (id) => this.emitSessionMetadataSnapshotsForDisplayName(id)
     }
   }
 
@@ -3305,94 +3322,8 @@ export class Daemon {
     this.refreshObservedChannels()
   }
 
-  /**
-   * Observed-conversation discovery for every platform the §5 manifest marks
-   * `membershipEnumeration: 'observed'` — today Telegram, Discord and Feishu. These
-   * platforms do not give us an authoritative set of chats the bot is engaged in, so
-   * stored session history is merged with explicitly-addressed Off conversations already
-   * cached for the integration. Reports carry `authoritative:false`: the CP upserts
-   * what we know but never treats an absent row as a leave.
-   *
-   * Names fill in lazily through ChannelNameResolver. Re-merging the cached rows
-   * here is important for Off conversations: they have no session row, so without
-   * preserving and enriching the cached entry an async Telegram getChat result
-   * could never replace the console's raw numeric id.
-   *
-   * Legacy Discord rows are folded onto the channel they belong to first; current
-   * Discord sessions already persist that enclosing channel directly.
-   */
   private refreshObservedChannels(): void {
-    for (const agent of this.agents.values()) {
-      for (const platform of observedMembershipPlatforms()) {
-        const integrations = agent.integrations.filter((i) => i.platform === platform)
-        if (integrations.length === 0) continue
-        for (const integ of integrations) {
-          // A conversation the bot left is still all over session history, so the
-          // retracted set is subtracted from BOTH sources — the fresh observations and
-          // the cached rows carried forward — or the rebuild would resurrect it.
-          //
-          // Subtracted AFTER the compatibility collapse: a legacy Discord observation
-          // may still be a thread id, while the tombstone names its enclosing channel.
-          const retracted = this.store.retractedConversations(integ.id)
-          const observed = this.collapseObserved(
-            this.store.observedChannels(agent.id, platform, this.transportScopeForIntegration(integ)),
-            platform
-          ).filter((c) => !retracted.has(c.id))
-          const prior = (this.channelSnapshots.get(integ.id)?.channels ?? []).filter((c) => !retracted.has(c.id))
-          if (observed.length === 0 && prior.length === 0) continue
-          const priorById = new Map(prior.map((c) => [c.id, c]))
-          const observedIds = new Set(observed.map((c) => c.id))
-          const names = this.store.getDisplayNames([...new Set([...observedIds, ...prior.map((c) => c.id)])])
-          // The sessions table cannot distinguish DMs from groups, so the kind comes
-          // from the channel lookup's own verdict (`channel_scopes.isIm`), falling back
-          // to the kind explicit gated-conversation discovery established. Without it a
-          // DM surfaces as a configurable channel row named "@someone", which is not a
-          // channel anyone can invite the bot to or set a trigger on.
-          const kinds = this.store.getChannelScopes([...observedIds])
-          const fromSessions: IntegrationChannel[] = observed.map((c) => {
-            const previous = priorById.get(c.id)
-            const isIm = kinds.get(c.id)?.isIm
-            const kind = isIm === undefined ? previous?.kind : isIm ? ('im' as const) : ('channel' as const)
-            const name = c.name ?? names.get(c.id)
-            // The enclosing Discord server: the guild snowflake is the identity the
-            // console groups on (two servers may share a name), the label is display
-            // only. Keep the last known values when this pass can't resolve them (the
-            // guild name lands with the channel's name lookup), so the console never
-            // flickers back to a bare "#general".
-            const spaceId = c.spaceId ?? previous?.spaceId
-            const space = c.space ?? previous?.space
-            return {
-              id: c.id,
-              ...(name ? { name } : {}),
-              ...(spaceId ? { spaceId } : {}),
-              ...(space ? { space } : {}),
-              ...(previous?.isPrivate !== undefined ? { isPrivate: previous.isPrivate } : {}),
-              ...(kind ? { kind } : {})
-            }
-          })
-          const retained = prior
-            .filter((c) => !observedIds.has(c.id))
-            .map((c) => {
-              const name = names.get(c.id)
-              // A retained row has no session behind it (a gated Off channel), so its
-              // space is looked up directly rather than coming out of the collapse.
-              const found = this.spaceFor(platform, c.id)
-              const spaceId = found?.id ?? c.spaceId
-              const space = found?.name ?? c.space
-              const next = {
-                ...c,
-                ...(name ? { name } : {}),
-                ...(spaceId ? { spaceId } : {}),
-                ...(space ? { space } : {})
-              }
-              return next.name === c.name && next.spaceId === c.spaceId && next.space === c.space ? c : next
-            })
-          const channels = [...fromSessions, ...retained]
-          this.channelSnapshots.set(integ.id, { channels, authoritative: false })
-          this.cpClient?.emitIntegrationChannels({ integrationId: integ.id, channels, authoritative: false })
-        }
-      }
-    }
+    this.observedChannelsSync.refreshObservedChannels()
   }
 
   /**
@@ -3467,118 +3398,27 @@ export class Daemon {
     }
   }
 
-  /**
-   * A retracted conversation that is talking to us again has plainly been re-joined —
-   * a platform only delivers messages for a conversation the bot is actually in — so
-   * traffic lifts the suppression and the row comes back on the next refresh.
-   *
-   * Without this, "leave" would be permanent in the console even after someone
-   * re-invited the bot, and the operator would have no way to undo it from here.
-   */
   private clearRetractionOnTraffic(msg: NormalizedMessage, srcIntegrationIds?: string[]): void {
-    if (msg.source !== 'user' || !srcIntegrationIds?.length) return
-    for (const integrationId of srcIntegrationIds) {
-      const retracted = this.store.retractedConversations(integrationId)
-      if (retracted.size === 0) continue
-      if (retracted.has(msg.channel)) {
-        this.store.clearRetractedConversation(integrationId, msg.channel)
-        this.log.debug(`channels: ${msg.channel} is active again — retraction cleared for ${integrationId}`)
-      }
-    }
+    this.observedChannelsSync.clearRetractionOnTraffic(msg, srcIntegrationIds)
   }
 
-  /**
-   * Retract conversations from this integration's reported set — the counterpart to
-   * discovery, for platforms whose snapshots can only ever grow. Absence from a
-   * non-authoritative report means nothing, so the ids ride an explicit `removed`.
-   */
   private retractChannels(integrationId: string, channelIds: readonly string[]): void {
-    if (channelIds.length === 0) return
-    const gone = new Set(channelIds)
-    // Durably, before touching the snapshot. The observed set of a non-enumerating
-    // platform is rebuilt from SESSION HISTORY, which knows nothing about leaving, so
-    // without this marker the very next refresh restores the row and undoes the
-    // departure. `refreshObservedChannels` reads it back.
-    this.store.markRetractedConversations(integrationId, [...gone], this.clock.now())
-    const cached = this.channelSnapshots.get(integrationId)
-    const channels = (cached?.channels ?? []).filter((c) => !gone.has(c.id))
-    this.channelSnapshots.set(integrationId, { channels, authoritative: cached?.authoritative ?? false })
-    this.cpClient?.emitIntegrationChannels({
-      integrationId,
-      channels,
-      authoritative: false,
-      removed: [...gone]
-    })
+    this.observedChannelsSync.retractChannels(integrationId, channelIds)
   }
 
-  /**
-   * Telegram cannot enumerate a bot's chats. Its own `new_chat_members` service
-   * record therefore contributes one non-authoritative observed channel row, but
-   * never enters `onInbound` or creates an agent turn.
-   */
   private observeTelegramChat(chat: TelegramObservedChat, integrationIds: readonly string[]): void {
-    this.observePlatformChat('telegram', chat, integrationIds)
+    this.observedChannelsSync.observeTelegramChat(chat, integrationIds)
   }
 
-  /** Record one observed chat row for a platform that cannot enumerate its bot's
-   *  chats. The event's own platform filters the fan-out — a caller is already
-   *  platform-specific and names it as data, not a branch. */
-  private observePlatformChat(platform: string, chat: TelegramObservedChat, integrationIds: readonly string[]): void {
-    if (chat.name) {
-      this.store.setDisplayName(chat.id, chat.name, Date.now())
-      this.emitSessionMetadataSnapshotsForDisplayName(chat.id)
-    }
-    for (const integrationId of integrationIds) {
-      const integration = this.integrationConfigById(integrationId)
-      if (!integration || integration.platform !== platform) continue
-      const prior = this.channelSnapshots.get(integrationId)?.channels ?? []
-      const current = prior.find((channel) => channel.id === chat.id)
-      const observed: IntegrationChannel = {
-        ...current,
-        id: chat.id,
-        ...(chat.name ? { name: chat.name } : {}),
-        isPrivate: chat.isPrivate,
-        kind: 'channel'
-      }
-      if (
-        current?.name === observed.name &&
-        current?.isPrivate === observed.isPrivate &&
-        current?.kind === observed.kind
-      ) {
-        continue
-      }
-      const channels = current
-        ? prior.map((channel) => (channel.id === chat.id ? observed : channel))
-        : [...prior, observed]
-      this.channelSnapshots.set(integrationId, { channels, authoritative: false })
-      this.cpClient?.emitIntegrationChannels({ integrationId, channels, authoritative: false })
-    }
-  }
-
-  /** Store-backed host for the observed-channels strategies (§7.4): channel
-   *  scopes and display names are core bookkeeping the strategies read through. */
-  private readonly observedChannelsHost: ObservedChannelsHost = {
-    channelScopes: (ids) => this.store.getChannelScopes(ids),
-    displayNames: (ids) => this.store.getDisplayNames(ids)
-  }
-
-  /** The space a channel sits in, per its platform's strategy — the id that keeps
-   *  one bot's several same-named rows apart (Discord guilds). Undefined on
-   *  platforms without the notion, or until the lookup has recorded it. */
   private spaceFor(platform: string, channelId: string): { id: string; name?: string } | undefined {
-    return observedChannelsFor(platform)?.spaceFor(this.observedChannelsHost, channelId)
+    return this.observedChannelsSync.spaceFor(platform, channelId)
   }
 
-  /**
-   * Fold legacy observed conversations onto the channel set the console should offer
-   * and attach platform-specific space metadata. Current Discord rows already name the
-   * enclosing channel; older thread-as-channel rows still collapse through the strategy.
-   */
   private collapseObserved(
     observed: { id: string; name?: string }[],
     platform: string
   ): { id: string; name?: string; spaceId?: string; space?: string }[] {
-    return observedChannelsFor(platform)?.collapse(this.observedChannelsHost, observed) ?? observed
+    return this.observedChannelsSync.collapseObserved(observed, platform)
   }
 
   /**
