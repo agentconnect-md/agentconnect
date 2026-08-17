@@ -80,21 +80,11 @@ describe('editAgentDaemonChoices', () => {
     expect(choices.localChoices.map((choice) => choice.daemonId)).toEqual(['local-ready', 'local-offline', 'local-old'])
   })
 
-  it('drops a daemon that is in a group — it is served through the group, not on its own', () => {
-    // Submitting one would be a `daemon` placement the control plane refuses (daemon-groups.md §3).
+  it('offers a daemon that is in a group — membership does not disqualify it as a target', () => {
+    // A `daemon` placement is eligible for exactly that machine either way, so it stays the only
+    // holder whether or not it has joined one (daemon-groups.md §3).
     const choices = editAgentDaemonChoices([row('grouped', false, 'online', true, 'set-1'), row('free')], '', '')
 
-    expect(choices.localChoices.map((d) => d.daemonId)).toEqual(['free'])
-  })
-
-  it('keeps the agent’s CURRENT machine listed even if it has since joined a group', () => {
-    // An option naming where the agent already is cannot be a placement the server refused.
-    const choices = editAgentDaemonChoices(
-      [row('grouped', false, 'online', true, 'set-1'), row('free')],
-      'grouped',
-      'grouped'
-    )
-
-    expect(choices.localChoices.map((d) => d.daemonId)).toContain('grouped')
+    expect(choices.localChoices.map((d) => d.daemonId).sort()).toEqual(['free', 'grouped'])
   })
 })

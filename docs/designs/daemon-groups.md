@@ -185,30 +185,22 @@ set nothing may claim what it is giving up or taking on.
   stop, so the transition is one phase: write the row, send the scope update, the daemon
   starts reporting `duties` and claims on its next beat.
 
-**Enrolling a daemon that has directly placed agents.** A `daemon`-placed agent is
-outside the ledger; the moment its machine enforces duties it serves only what it holds
-a lease for, so every agent still pinned to it would become unservable. That state is
-not allowed to exist, and the transition that avoids it is **the existing agent move**,
-run once per pinned agent with the set as the target — not a new mechanism: (1) mark
-the daemon **entering** (a claim fence on those agents' groups, so no member can win them
-mid-transition); (2) for each pinned agent, the move's detach step stops runtime
-authority on the machine and confirms it, exactly as a machine-to-machine move does;
-(3) commit in one transaction — the agents become `set`-placed on that set, the
-membership row is written, the fence lifts — and the daemon receives its new scope; on
-its next beat it claims those groups back and re-activates them (it is a member and it
-still has the replicas installed, so install-on-grant is a refresh, not a fetch). The
-operator sees one action; underneath it is the move convention applied N times inside
-one fence. If the machine is unreachable, the same rule as the move applies:
-enrollment uses the move's existing force-reassign contract — the operator explicitly
-confirms the source is permanently stopped, and on that confirmation the agents become
-set-placed without the detach and are claimable immediately. There is nothing else to
-wait for: a directly placed machine is outside the ledger, so it holds no lease and
-runs no self-fence — the operator's assertion _is_ the safety boundary, exactly as it
-is for a forced machine-to-machine move today. (The lease/self-fence horizon governs
-the _removal_ path above, where the leaver was a set member and does hold leases; the
-two paths have different boundaries because the source is in the ledger in one and not
-in the other.) The converse is enforced statically: a `daemon` placement may not name a
-machine that is in a set (the console does not offer it; the route refuses it).
+**Enrolling a daemon that has directly placed agents.** Nothing happens to them. The
+first version of this section claimed the opposite — that a machine which enforces duties
+serves only what it holds a lease for, so its pinned agents would go dark the moment the
+membership row landed, and therefore the join had to be a per-agent move onto the set.
+The premise was wrong. Duty eligibility for a `daemon` placement is
+`agent.daemonId = holder`, with **no membership term**: joining a set does not widen who
+may hold a pinned agent, so its machine remains the only possible holder. It does enforce
+duties now, so it serves that agent through a lease instead of outright — but the lease is
+one no peer can take. The join is therefore a single membership row plus the scope update
+the daemon already gets, and the agents keep running where they are.
+
+The converse follows from the same predicate: an agent **may** be pinned to a machine
+that is in an organization's group. The one refusal that survives is the install-wide
+pool, and identity is why — a pool member is a Pod the reconciler retires without notice,
+so a pin to one names something that stops existing. That is a statement about
+replaceability, not about membership.
 
 Leaving a set does not move agents by itself: they stay `set`-placed and re-grant to
 the remaining members. An operator who wants them pinned back to the leaving machine
@@ -221,11 +213,9 @@ same safety rule — never commit while the old authority might still be serving
 paid for it with **preconditions instead of choreography**, so no new wire frame, fence
 column, or transition generation exists yet:
 
-- _Join_ **is** the transition, as above: the pinned agents are detached on the machine and
-  re-placed onto the set with the membership row in one transaction, and the machine claims
-  them back as a member. What it does not carry is the "entering" claim fence — a peer can
-  win a group between the commit and the machine's re-claim, costing one extra move rather
-  than correctness. `force` is the move's own contract for a machine that cannot ack.
+- _Join_ needs no transition at all, per the correction above: one membership row, and the
+  agents pinned there keep running. It briefly shipped as a per-agent move onto the set —
+  detach, re-place, one transaction — which stopped work it had no reason to stop.
 - _Leave_ is refused (409) while the daemon holds a **live** duty lease, rather than
   sending a correlated withdrawal and committing on the ack. Draining the daemon, or
   simply letting its leases lapse, is the "stop and confirm" step — a lapsed lease is
@@ -234,6 +224,14 @@ column, or transition generation exists yet:
 - Either way the daemon relearns its set the one way it ever learns it: the CP closes
   the socket with `1012` and the reconnect's `auth/ok` carries the new membership. Both
   admitted transitions leave nothing running to disturb, so the reconnect costs nothing.
+- **Membership is the ledger predicate on BOTH sides of the wire**, and it has to be the
+  same one. The daemon gates service on it (`dutyEnforced`) and must gate duty REPORTING
+  on it too: the heartbeat digest is what asks for a lease at all. That reporting was for
+  a while gated on `organizationMode === 'frame'` instead, which gave the same answer only
+  while the install-wide pool was the one set that existed — an org's own machines
+  authenticate in `connection` mode, so the moment an org could own a group its members
+  went duty-gated and silent, refusing to serve what they held no lease for while never
+  asking for one. Every agent on such a member goes dark until the two agree again.
 
 A precondition is only a fence if the state it read cannot change under it, so each one is
 taken **inside the transaction that writes**, under a per-daemon advisory lock every writer

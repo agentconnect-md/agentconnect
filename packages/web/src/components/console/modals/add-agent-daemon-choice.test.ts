@@ -101,9 +101,9 @@ describe('addAgentDaemonChoice', () => {
     ])
 
     expect(choice.availableGroups).toEqual([])
-    // A daemon in a group is served THROUGH the group: offering it alone would create an agent
-    // that machine may not serve (daemon-groups.md §3).
-    expect(choice.localDaemons.map((d) => d.daemonId)).toEqual(['local-1'])
+    // Its member is still offered on its own: pinning to a machine in a group is legal, and the
+    // group being unserved is exactly when naming the machine is the useful choice.
+    expect(choice.localDaemons.map((d) => d.daemonId).sort()).toEqual(['g-offline', 'local-1'])
     expect(choice.placement).toEqual({ kind: 'daemon', daemonId: 'local-1' })
   })
 

@@ -35,20 +35,16 @@ import type { HttpDeps } from '../deps.js'
 import { DaemonId, type OrgId } from '../../domain/ids.js'
 import {
   DaemonAlreadyInSet,
-  DaemonHasPlacedAgents,
   DaemonHoldsDuty,
   MemberSetInUse,
   MemberSetTenancyMismatch
 } from '../../persistence/errors.js'
-import { AgentMoveConflict, AgentMoveFailed } from '../../orchestrator/agentMove.js'
-import { buildAgentMoves } from '../agent-moves.js'
 import { orgOf, denyViewerWrite } from '../rbac.js'
 import {
   MemberSetBody,
   MemberSetDto,
   MemberSetListDto,
   MemberSetMemberParams,
-  ForceQuery,
   IdParam,
   ErrorDto
 } from '../dto/index.js'
@@ -93,8 +89,6 @@ export function memberSetRoutes(deps: HttpDeps) {
 
   return async function memberSetRoutesPlugin(app: FastifyInstance): Promise<void> {
     const r = app.withTypeProvider<ZodTypeProvider>()
-    /** Built per call, like the agents route's: the move graph is stateless and this is a rare op. */
-    const moves = (instance: FastifyInstance) => buildAgentMoves(deps, instance.log)
 
     r.get(
       '/member-sets',
@@ -184,10 +178,9 @@ export function memberSetRoutes(deps: HttpDeps) {
           tags: [Tag.MemberSets],
           summary: 'Enroll a daemon in a member set',
           description:
-            'Add one of the organization’s daemons to the set. Agents pinned to that machine come WITH it: each is stopped there and re-placed on the set in one step, and the daemon claims them back as a member. Refused (409) if the machine cannot confirm it stopped — retry with it online, or `force` to commit on the operator’s assertion that it is permanently stopped — or if it is already in another set.',
+            'Add one of the organization’s daemons to the set. Agents pinned to that machine stay pinned to it and keep running: a `daemon` placement is eligible for exactly that machine, so joining changes how it holds them (a duty lease) rather than who serves them. Refused (409) only if it is already in another set.',
           operationId: 'enrollDaemonInMemberSet',
           params: MemberSetMemberParams,
-          querystring: ForceQuery,
           response: { 200: MemberSetDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
         }
       },
@@ -203,32 +196,23 @@ export function memberSetRoutes(deps: HttpDeps) {
         }
         if (daemon.memberSetId === set.id) return toDto(set)
         if (daemon.memberSetId) return conflict(reply, 'the daemon is already in another member set')
-        // Agents pinned here do not block the join — they come WITH it (§3). The orchestrator
-        // stops each one on the machine, then places them on the set and writes the membership row
-        // in one transaction; `force` is the move's own contract for a machine that cannot ack.
+        // Agents pinned here neither block the join nor move: the ledger's eligibility predicate
+        // has no membership term for a `daemon` placement, so this machine stays their only
+        // possible holder (§3). Joining changes HOW it holds them, not who serves them.
         try {
-          await moves(app).enrollInSet(daemonId, set.id, orgId, req.query.force ? 'best-effort' : 'required')
+          await deps.repos.memberSet.enrollOperator(set.id, daemonId)
         } catch (err) {
-          if (err instanceof AgentMoveConflict) return conflict(reply, err.message)
-          if (err instanceof AgentMoveFailed) {
-            // The machine could not confirm it stopped. Committing anyway is the operator's call,
-            // exactly as it is for a machine-to-machine move.
-            return conflict(
-              reply,
-              `${err.message}. Retry with the daemon online, or confirm it is permanently stopped to force it.`
-            )
-          }
           if (err instanceof DaemonAlreadyInSet) {
             return conflict(reply, 'the daemon is already in another member set')
-          }
-          if (err instanceof DaemonHasPlacedAgents) {
-            return conflict(reply, `an agent was placed on this daemon mid-enrolment (${err.placed}); retry`)
           }
           // The set's tenancy invariant, surfaced rather than swallowed: the daemon is not this
           // org's. The org-fenced read above already refuses that, so this is a concurrent change.
           if (err instanceof MemberSetTenancyMismatch) return conflict(reply, 'the daemon is not in this organization')
           throw err
         }
+        // Duty is what it holds them by now, so the org's groups are re-derived before the machine
+        // comes back and claims — otherwise its first beat as a member finds nothing to take.
+        deps.recomputeDuties?.(orgId)
         deps.liveness.reconnectForMemberSet?.(daemonId)
         return toDto(set)
       }

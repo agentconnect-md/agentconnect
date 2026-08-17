@@ -843,8 +843,9 @@ function GroupCard({ daemon, pinnedAgents }: { daemon: DaemonRow; pinnedAgents: 
   if (daemon.pool || !experimentEnabled('daemon-groups')) return null
 
   const current = memberSets.find((group) => group.setId === daemon.memberSetId)
-  const blockedReason =
-    !current && pinnedAgents > 0 ? `${pinnedAgents} agent${pinnedAgents === 1 ? '' : 's'} placed here` : null
+  // Agents pinned here are not in the way of joining and do not move with it — they stay pinned to
+  // this machine, which remains their only eligible holder (daemon-groups.md §3).
+  const keeps = !current && pinnedAgents > 0 ? `${pinnedAgents} agent${pinnedAgents === 1 ? '' : 's'}` : null
 
   const run = async (fn: () => Promise<void>) => {
     setBusy(true)
@@ -893,7 +894,7 @@ function GroupCard({ daemon, pinnedAgents }: { daemon: DaemonRow; pinnedAgents: 
                 variant="secondary"
                 size="sm"
                 onClick={() => void run(() => enrollInGroup(group.setId, daemon.daemonId))}
-                className={busy || blockedReason ? 'cursor-default opacity-50' : undefined}
+                className={busy ? 'cursor-default opacity-50' : undefined}
               >
                 <Icon name="boxes" size={14} />
                 Join {group.name}
@@ -901,10 +902,10 @@ function GroupCard({ daemon, pinnedAgents }: { daemon: DaemonRow; pinnedAgents: 
             ))
           )}
         </div>
-        {blockedReason && memberSets.length > 0 && (
+        {keeps && memberSets.length > 0 && (
           <p className="mt-[10px] font-sans text-[12px] font-normal leading-[1.55] text-(--text-tertiary)">
-            Move the {blockedReason} onto a group first: a group member serves only the work it is granted, so an agent
-            pinned to this machine would have nowhere to run the moment it joins.
+            Joining keeps the {keeps} pinned here — a pinned agent names one machine, so this one stays the only place
+            it runs. Place an agent on the group itself to let any member serve it.
           </p>
         )}
         {err && (

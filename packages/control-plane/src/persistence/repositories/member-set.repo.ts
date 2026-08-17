@@ -15,10 +15,10 @@
  *
  * - **Per daemon** — {@link lockDaemonMembership}, an advisory transaction lock every writer of
  *   "is this daemon in a set" and every reader that acts on the answer takes: enrolment,
- *   withdrawal, the `daemon`-placement guard, and the ledger's two claim paths. Without it, a
- *   placement that read "in no set" and an enrolment that read "no pinned agents" both commit and
- *   leave a set member with a pinned, unservable agent; or a claim commits a live lease onto a
- *   member the withdrawal has just decided was idle.
+ *   withdrawal, the pool-placement guard, and the ledger's two claim paths. Without it, a
+ *   placement that read "not a pool Pod" and a pool enrolment both commit and leave an agent
+ *   pinned to a Pod the reconciler may retire; or a claim commits a live lease onto a member the
+ *   withdrawal has just decided was idle.
  * - **Per set** — the `member_set` row itself, read `FOR SHARE` by everything that adds a
  *   reference to it and `FOR UPDATE` by the delete. Counting references without that lets a
  *   placement land after the count and be silently `SET NULL`ed by the cascade.
@@ -28,15 +28,13 @@
  */
 import { randomUUID } from 'node:crypto'
 import { Prisma, type PrismaClient } from '../../generated/prisma/client.js'
-import type { AgentId, DaemonId } from '../../domain/ids.js'
+import type { DaemonId } from '../../domain/ids.js'
 import type { MemberSetRecord, MemberSetRepo } from '../ports.js'
-import { settlePlacementChange } from './agent-placement.js'
 import {
   AgentSetPlacementDenied,
   DaemonPlacementInSet,
   MemberSetInUse,
   MemberSetTenancyMismatch,
-  DaemonHasPlacedAgents,
   DaemonHoldsDuty,
   DaemonAlreadyInSet
 } from '../errors.js'
@@ -94,10 +92,8 @@ export async function assertAgentMayUseSet(
 }
 
 /**
- * The converse of that invariant, and the reason it can be enforced statically (§3): a `daemon`
- * placement may not name a machine that is in a set. Such a machine serves only what it holds a
- * lease for, so an agent pinned to it would be placed and unservable at once. Under the daemon
- * fence, so this cannot race an enrolment that is deciding the machine has nothing pinned to it.
+ * A `daemon` placement may not name a POOL member (§3). Under the daemon fence, so it cannot race
+ * the enrolment that is putting the machine there.
  */
 export async function assertDaemonNotInSet(
   tx: Prisma.TransactionClient,
@@ -105,9 +101,16 @@ export async function assertDaemonNotInSet(
   daemonId: string
 ): Promise<void> {
   await lockDaemonMembership(tx, daemonId)
-  const [row] = await tx.$queryRaw<{ one: number }[]>(
-    Prisma.sql`SELECT 1 AS one FROM "member_set_member" WHERE "daemonId" = ${daemonId}::uuid`
-  )
+  // Only the install-wide pool refuses a pin, and not because membership conflicts with one — a
+  // `daemon` placement is eligible for exactly that machine either way. It is that a pool member
+  // is a REPLACEABLE identity: the reconciler retires Pods without notice, so a pin to one is a
+  // pointer that outlives what it names. An org's own machines are stable, so pinning an agent to
+  // one is allowed whether or not it has joined a group.
+  const [row] = await tx.$queryRaw<{ one: number }[]>(Prisma.sql`
+    SELECT 1 AS one FROM "member_set_member" m
+    JOIN "member_set" s ON s.id = m."setId"
+    WHERE m."daemonId" = ${daemonId}::uuid AND s."orgId" IS NULL
+  `)
   if (row) throw new DaemonPlacementInSet(agentId, daemonId)
 }
 
@@ -154,55 +157,17 @@ export class PgMemberSetRepo implements MemberSetRepo {
     await this.prisma.$transaction((tx) => enrollDaemonInSet(tx, setId, daemonId))
   }
 
-  async enrollWithPlacedAgents(setId: string, daemonId: DaemonId, agentIds: readonly AgentId[]): Promise<void> {
-    await this.prisma.$transaction(async (tx) => {
-      // §3's commit step, as ONE transaction: the agents stop being pinned to the machine and the
-      // machine becomes a member together. Either order on its own is a state the invariants
-      // forbid — a member with a pinned agent, or agents on a set with nothing in it — and a crash
-      // between two statements would leave exactly that.
-      await lockDaemonMembership(tx, daemonId)
-      const [current] = await tx.$queryRaw<{ setId: string }[]>(
-        Prisma.sql`SELECT "setId" FROM "member_set_member" WHERE "daemonId" = ${daemonId}::uuid`
-      )
-      if (current) {
-        if (current.setId !== setId) throw new DaemonAlreadyInSet(daemonId, current.setId)
-      }
-      for (const agentId of agentIds) {
-        const [agent] = await tx.$queryRaw<{ orgId: string }[]>(
-          Prisma.sql`SELECT "orgId" FROM "agent" WHERE id = ${agentId}::uuid AND "daemonId" = ${daemonId}::uuid FOR UPDATE`
-        )
-        // Raced away or already re-placed since the caller read it: nothing to move, and the
-        // membership row below is what the whole operation is for.
-        if (!agent) continue
-        await assertAgentMayUseSet(tx, { id: agentId, orgId: agent.orgId }, setId)
-        await tx.$executeRaw(Prisma.sql`
-          UPDATE "agent"
-          SET "placementKind" = 'set', "setId" = ${setId}::uuid, "daemonId" = NULL,
-              "configRevision" = "configRevision" + 1
-          WHERE id = ${agentId}::uuid
-        `)
-        // The same settlement every other placement writer performs, in the same transaction:
-        // webchat MCP delegations are placement-bound grants and hook dispatches made before the
-        // change must read stale. This IS a real placement change — `daemon` to `set`.
-        await settlePlacementChange(tx, agentId)
-      }
-      // Anything still pinned here that the caller did not name would be unservable the moment the
-      // row below lands, so the whole operation fails rather than create that state.
-      const [left] = await tx.$queryRaw<{ n: bigint }[]>(
-        Prisma.sql`SELECT count(*) AS n FROM "agent" WHERE "daemonId" = ${daemonId}::uuid`
-      )
-      const stillPinned = Number(left?.n ?? 0n)
-      if (stillPinned > 0) throw new DaemonHasPlacedAgents(daemonId, stillPinned)
-      if (!current) await enrollDaemonInSet(tx, setId, daemonId)
-    })
-  }
-
+  /**
+   * Join, keeping whatever is pinned to the machine (daemon-groups.md §3).
+   *
+   * Pinning and membership are not in conflict, and the ledger is where that is decided: a
+   * `daemon` placement is eligible for exactly that machine — `agent."daemonId" = holder`, with no
+   * membership term in the predicate — so the machine remains the ONLY daemon that may hold those
+   * agents, member or not. It enforces duties now, so it serves them through a lease instead of
+   * outright; that lease is one nothing else can take. Nothing moves and nothing is stopped.
+   */
   async enrollOperator(setId: string, daemonId: DaemonId): Promise<void> {
     await this.prisma.$transaction(async (tx) => {
-      // The precondition and the row in ONE transaction under the daemon fence (§3): a machine
-      // that enforces duties serves only what it holds a lease for, so an agent still pinned to it
-      // would be placed and unservable the moment this row lands. `assertDaemonNotInSet` takes the
-      // same lock, so a placement racing this one either loses the machine or loses the pin.
       await lockDaemonMembership(tx, daemonId)
       // Re-read membership UNDER the lock. The insert is idempotent, so the losing half of two
       // concurrent enrolments into different sets would otherwise no-op and still answer success,
@@ -214,11 +179,6 @@ export class PgMemberSetRepo implements MemberSetRepo {
         if (current.setId !== setId) throw new DaemonAlreadyInSet(daemonId, current.setId)
         return
       }
-      const [pinned] = await tx.$queryRaw<{ n: bigint }[]>(
-        Prisma.sql`SELECT count(*) AS n FROM "agent" WHERE "daemonId" = ${daemonId}::uuid`
-      )
-      const placed = Number(pinned?.n ?? 0n)
-      if (placed > 0) throw new DaemonHasPlacedAgents(daemonId, placed)
       await enrollDaemonInSet(tx, setId, daemonId)
     })
   }

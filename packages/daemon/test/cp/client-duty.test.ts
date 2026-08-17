@@ -13,7 +13,15 @@ const AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1'
 const silent = { trace() {}, debug() {}, info() {}, warn() {}, error() {} }
 const tick = () => new Promise((r) => setImmediate(r))
 
-async function readyClient(over: Partial<CpClientDeps> = {}, organizationMode: 'connection' | 'frame' = 'frame') {
+/** The install-wide pool, as `auth/ok` announces it. Membership — not the org mode — is what puts
+ *  a connection in the duty ledger (daemon-groups.md §3), so it is what these tests vary. */
+const POOL_SET = { setId: '9f11e5e7-0000-4000-8000-000000000001', name: 'Cloud' }
+
+async function readyClient(
+  over: Partial<CpClientDeps> = {},
+  organizationMode: 'connection' | 'frame' = 'frame',
+  memberSet: { setId: string; name: string } | null = POOL_SET
+) {
   const t = new FakeTransport()
   const clock = new FakeClock()
   const configApply = {
@@ -93,7 +101,8 @@ async function readyClient(over: Partial<CpClientDeps> = {}, organizationMode: '
           sessionEpoch: 5,
           heartbeatSec: 15,
           serverTime: '2026-06-26T00:00:00.000Z',
-          organizationMode
+          organizationMode,
+          ...(memberSet ? { memberSet } : {})
         },
         { corr: auth.id }
       )
@@ -142,13 +151,25 @@ describe('daemon duty lease exchange', () => {
     expect(duties).toHaveBeenCalled()
   })
 
-  it('an org-scoped daemon never sends duties, even when the getter is present', async () => {
+  it('a daemon in NO member set never sends duties, even when the getter is present', async () => {
     const duties = vi.fn(() => ({ held: [], headroom: 4 }))
-    const { t, clock } = await readyClient({ duties }, 'connection')
+    const { t, clock } = await readyClient({ duties }, 'connection', null)
 
     const hb = await beat(t, clock)
     expect(hb?.payload).not.toHaveProperty('duties')
     expect(duties).not.toHaveBeenCalled()
+  })
+
+  it('an ORG-SCOPED member sends them all the same — the org mode is not the predicate', async () => {
+    // This is the regression: the gate used to read `organizationMode === 'frame'`, which agreed
+    // with membership only while the pool was the one set that existed. An org's own group member
+    // authenticates in `connection` mode, so it went duty-gated and silent — refusing to serve
+    // what it held no lease for while never asking the CP for one.
+    const duties = vi.fn(() => ({ held: [{ groupId: GROUP, term: '7' }], headroom: 1 }))
+    const { t, clock } = await readyClient({ duties }, 'connection', { setId: GROUP, name: 'edge' })
+
+    const hb = await beat(t, clock)
+    expect(hb?.payload).toMatchObject({ duties: { held: [{ groupId: GROUP, term: '7' }], headroom: 1 } })
   })
 
   it('a daemon with no duty getter sends a plain heartbeat (path dormant)', async () => {

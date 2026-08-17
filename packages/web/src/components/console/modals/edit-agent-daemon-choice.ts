@@ -32,13 +32,10 @@ export function editAgentDaemonChoices<T extends DaemonChoiceRow>(
     (initial?.pool ? initial : undefined) ??
     poolMembers.find(moveReady) ??
     poolMembers[0]
-  // A daemon in a group is served THROUGH the group (daemon-groups.md §3), so it is not a target
-  // of its own: submitting one is a `daemon` placement the control plane refuses. The agent's
-  // CURRENT machine stays listed regardless — an option that names where the agent already is can
-  // never be a placement the server has not already accepted.
-  const localChoices = daemons.filter(
-    (daemon) => !daemon.pool && (!daemon.memberSetId || daemon.daemonId === initialDaemonId)
-  )
+  // Group membership does not disqualify a machine as a target: a `daemon` placement is eligible
+  // for exactly that machine either way (daemon-groups.md §3). Only Cloud members are excluded,
+  // and above — a pool Pod is a replaceable identity to pin to.
+  const localChoices = daemons.filter((daemon) => !daemon.pool)
   localChoices.sort((a, b) => Number(moveReady(b)) - Number(moveReady(a)))
   return {
     poolChoice,

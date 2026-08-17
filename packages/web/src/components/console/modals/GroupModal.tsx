@@ -12,12 +12,11 @@ import { Button, Icon } from '@/components/ui'
  * filled where it is created is not a feature, and "which machines are in it" is the only thing
  * about a group worth editing besides its name.
  *
- * Agents pinned to a machine do not block it joining — they come WITH it (§3): the control plane
- * stops each on that machine and re-places it on the group in one step, and the machine claims them
- * back as a member. So the row says what will happen rather than refusing. Leaving is the asymmetric
- * one, refused while the machine still holds live work; that lives on the daemon's own page next to
- * the drain state. Each membership write is applied on its own, so one refusal reports itself and
- * leaves the rest of the edit intact.
+ * Agents pinned to a machine neither block the join nor move (§3): a pin narrows to exactly one
+ * machine, so joining changes how it holds them — a duty lease nothing else may take — not who
+ * serves them. Leaving is the asymmetric one, refused while the machine still holds live work; that
+ * lives on the daemon's own page next to the drain state. Each membership write is applied on its
+ * own, so one refusal reports itself and leaves the rest of the edit intact.
  */
 export default function GroupModal({ group, onClose }: { group?: MemberSetRow; onClose: () => void }) {
   const { createGroup, renameGroup, enrollInGroup, withdrawFromGroup, daemons, agents } = useConsoleData()
@@ -26,14 +25,6 @@ export default function GroupModal({ group, onClose }: { group?: MemberSetRow; o
   const [members, setMembers] = useState<string[]>(group?.memberDaemonIds ?? [])
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState<string | null>(null)
-  // The ONE machine that could not confirm it stopped its agents. The operator's assertion is
-  // about that machine, so it is carried per daemon: forcing A must never wave B through a failure
-  // nobody was shown. Null ⇒ nothing to force (§3).
-  const [forceDaemonId, setForceDaemonId] = useState<string | null>(null)
-  // The assertion itself, ticked separately from pressing the button (product-conventions.md, "Moving
-  // an agent from an unavailable daemon"): forcing is disaster recovery, and it is only safe because
-  // the operator states the machine can never come back.
-  const [forceConfirmed, setForceConfirmed] = useState(false)
   // A group created by a failed attempt. Names are not unique, so retrying without this would
   // create a second one and leave the first empty.
   const createdSetId = useRef<string | null>(null)
@@ -42,27 +33,17 @@ export default function GroupModal({ group, onClose }: { group?: MemberSetRow; o
   // A daemon the org owns is a candidate unless it is in a DIFFERENT group: a daemon is in at most
   // one, and moving it between groups is a two-phase transition, not a checkbox.
   const candidates = daemons.filter((d) => !d.pool && (!d.memberSetId || d.memberSetId === group?.setId))
-  const forcedDaemonName = daemons.find((d) => d.daemonId === forceDaemonId)?.name ?? 'the daemon'
   const pinnedCount = (daemon: DaemonRow) => agents.filter((a) => a.daemon === daemon.daemonId).length
 
-  const toggle = (daemonId: string) => {
-    // Editing the membership retracts a pending assertion: it was made about one machine in one
-    // plan, and this is a different plan.
-    setForceDaemonId(null)
-    setForceConfirmed(false)
+  const toggle = (daemonId: string) =>
     setMembers((current) =>
       current.includes(daemonId) ? current.filter((id) => id !== daemonId) : [...current, daemonId]
     )
-  }
 
-  /** `forcing` is the ONE machine the operator has just asserted is stopped, never a mode. */
-  const save = async (forcing: string | null = null) => {
+  const save = async () => {
     if (saving || !trimmed) return
-    if (forcing && !forceConfirmed) return
     setSaving(true)
     setErr(null)
-    setForceDaemonId(null)
-    setForceConfirmed(false)
     let daemonId: string | undefined
     try {
       // Reuse the group a previous attempt created: it exists, and a second one with the same name
@@ -71,19 +52,15 @@ export default function GroupModal({ group, onClose }: { group?: MemberSetRow; o
       if (group && trimmed !== group.name) await renameGroup(setId, trimmed)
       const before = new Set(group?.memberDaemonIds ?? [])
       const after = new Set(members)
-      // Each membership write is its own request with its own precondition, applied one at a time:
-      // a refusal names the machine that caused it, and every machine after it stays untouched
-      // rather than riding through on an assertion made about a different one.
-      for (daemonId of members.filter((id) => !before.has(id))) {
-        await enrollInGroup(setId, daemonId, daemonId === forcing ? { force: true } : {})
-      }
+      // Each membership write is its own request with its own precondition, applied one at a time,
+      // so a refusal names the machine that caused it and leaves the rest of the edit intact.
+      for (daemonId of members.filter((id) => !before.has(id))) await enrollInGroup(setId, daemonId)
       for (daemonId of [...before].filter((id) => !after.has(id))) await withdrawFromGroup(setId, daemonId)
       onClose()
     } catch (e) {
+      const name = daemons.find((d) => d.daemonId === daemonId)?.name
       const message = e instanceof Error ? e.message : String(e)
-      setErr(message)
-      // Offer the assertion only for the machine that actually failed to confirm.
-      if (daemonId && /permanently stopped/.test(message)) setForceDaemonId(daemonId)
+      setErr(name ? `${name}: ${message}` : message)
       setSaving(false)
     }
   }
@@ -123,10 +100,9 @@ export default function GroupModal({ group, onClose }: { group?: MemberSetRow; o
             <div className="overflow-hidden rounded-lg border border-(--border-subtle)">
               {candidates.map((daemon) => {
                 const checked = members.includes(daemon.daemonId)
-                const wasMember = group?.memberDaemonIds.includes(daemon.daemonId) ?? false
-                // What joining will DO to this machine's own agents — they move onto the group with
-                // it, which is the one consequence worth stating before the click.
-                const bringing = checked && !wasMember ? pinnedCount(daemon) : 0
+                // Its own agents stay its own — worth saying where there are any, because a group
+                // reads like a pool and the question "do I lose these?" is the one being asked.
+                const pinned = pinnedCount(daemon)
                 return (
                   <button
                     key={daemon.daemonId}
@@ -149,8 +125,8 @@ export default function GroupModal({ group, onClose }: { group?: MemberSetRow; o
                         {daemon.name}
                       </span>
                       <span className="block truncate font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
-                        {bringing > 0
-                          ? `Its ${bringing} agent${bringing === 1 ? '' : 's'} move onto the group with it`
+                        {pinned > 0
+                          ? `Keeps its ${pinned} own agent${pinned === 1 ? '' : 's'}`
                           : daemon.status === 'online'
                             ? 'Online'
                             : 'Offline'}
@@ -172,35 +148,12 @@ export default function GroupModal({ group, onClose }: { group?: MemberSetRow; o
             {err}
           </div>
         )}
-        {forceDaemonId && (
-          <label className="mt-[10px] flex cursor-pointer items-start gap-2.5 rounded-md border border-(--status-error) bg-(--status-error-soft) px-3 py-[10px]">
-            <input
-              type="checkbox"
-              className="mt-[2px] flex-none accent-(--brand)"
-              checked={forceConfirmed}
-              onChange={(e) => setForceConfirmed(e.target.checked)}
-            />
-            <span className="font-sans text-[12px] font-normal leading-[1.5] text-(--text-secondary)">
-              I confirm that <span className="font-semibold text-(--text-primary)">{forcedDaemonName}</span> is
-              permanently stopped and cannot reconnect. If it is still running, both copies may process messages.
-            </span>
-          </label>
-        )}
       </div>
       <div className="modalfoot">
         <div className="flex-1" />
         <Button variant="ghost" onClick={onClose}>
           Cancel
         </Button>
-        {forceDaemonId && (
-          <Button
-            variant="danger"
-            onClick={() => void save(forceDaemonId)}
-            className={!saving && forceConfirmed ? undefined : 'cursor-default opacity-50'}
-          >
-            Force join
-          </Button>
-        )}
         <Button onClick={() => void save()} className={!saving && trimmed ? undefined : 'cursor-default opacity-50'}>
           {saving ? 'Saving…' : group ? 'Save' : 'Create group'}
         </Button>
