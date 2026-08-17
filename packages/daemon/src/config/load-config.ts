@@ -74,10 +74,10 @@ export function loadConfig(
   if (o.apiUrl || o.apiKey) cfg.controlPlane.enabled = true
   if (o.noCp) cfg.controlPlane.enabled = false
 
-  // An envelope daemon has no config file and no key: the operator injects the control
-  // plane's own address (spec.controlPlane.url) as env, and the pod's projected token is
-  // the credential. Lowest precedence — an explicit flag or config entry still wins, and
-  // `--no-cp` still turns the connection off.
+  // An in-cluster daemon has no config file and no key: the deployment injects the control
+  // plane's address as env, and the pod's projected token is the credential. Lowest
+  // precedence — an explicit flag or config entry still wins, and `--no-cp` still turns
+  // the connection off.
   const envUrl = process.env[CP_URL_ENV]?.trim()
   if (envUrl && !cfg.controlPlane.url) {
     cfg.controlPlane.url = envUrl

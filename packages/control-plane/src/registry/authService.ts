@@ -86,7 +86,8 @@ export class DaemonAuthService implements DaemonAuth {
     if (req.daemonId && req.daemonId !== verified.daemonId) {
       return { ok: false, closeCode: 4401, reason: 'AUTH_FAILED' }
     }
-    return this.mintEpoch(req, verified.daemonId, verified.scope === 'org' ? verified.orgId : null)
+    // No org: a pool identity is install-wide, and the org rides each frame instead.
+    return this.mintEpoch(req, verified.daemonId, null)
   }
 
   private async authenticateApiKey(req: AuthReq): Promise<AuthResult> {

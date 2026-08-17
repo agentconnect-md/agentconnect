@@ -88,7 +88,7 @@ async function planeUnderTest(api: ReturnType<typeof fakeApi>): Promise<K8sRunti
   servers.push(server)
   serverByPort.set(port, server)
   const plane = await startK8sRuntimePlane({
-    orgId: 'org-1',
+    orgForAgent: () => 'org-1',
     warmPoolName: 'pool',
     generations: fakeGenerations(),
     sandboxNamespace: 'agent-sandboxes',
@@ -149,7 +149,7 @@ async function until(predicate: () => boolean, timeoutMs = 10_000): Promise<bool
 }
 
 describe('k8s plane settings', () => {
-  it('requires the shared sandbox namespace and member identity but permits no org', () => {
+  it('requires the shared sandbox namespace and member identity, and names no org at all', () => {
     // The pool is deployment-owned, while an install-wide daemon resolves the tenant per agent.
     expect(() => k8sPlaneSettings({})).toThrow(/AC_K8S_WARM_POOL/)
     expect(() => k8sPlaneSettings({ AC_K8S_WARM_POOL: 'pool' })).toThrow(/AC_K8S_SANDBOX_NAMESPACE/)
@@ -162,13 +162,6 @@ describe('k8s plane settings', () => {
       AC_K8S_MEMBER_ID: 'member-a'
     }
     expect(k8sPlaneSettings(base)).toEqual({
-      warmPoolName: 'pool',
-      sandboxNamespace: 'agent-sandboxes',
-      memberId: 'member-a',
-      shimPort: 8085
-    })
-    expect(k8sPlaneSettings({ ...base, AC_K8S_ORG_ID: 'org-1' })).toEqual({
-      orgId: 'org-1',
       warmPoolName: 'pool',
       sandboxNamespace: 'agent-sandboxes',
       memberId: 'member-a',

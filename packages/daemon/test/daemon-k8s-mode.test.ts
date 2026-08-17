@@ -7,7 +7,6 @@ import { Daemon } from '../src/daemon.js'
 import type { ResolvedRuntimeCatalog } from '../src/runtimes/registry.js'
 import { LocalStore } from '../src/store/local-store.js'
 import { statePath } from '../src/paths.js'
-import { K8S_ORG_ID_ENV } from '../src/k8s/runtime-plane.js'
 
 /** The behavior matrix for `--k8s`: each assertion here is one row of the mode
  *  contract, so k8s and self-hosted behavior cannot drift apart unnoticed. */
@@ -134,19 +133,6 @@ describe('daemon --k8s mode', () => {
       expect(existsSync(statePath(rootDir))).toBe(false)
     } finally {
       await instance.stop()
-    }
-  })
-
-  it('uses the mounted PostgreSQL store for a single-organization envelope', async () => {
-    vi.stubEnv(K8S_ORG_ID_ENV, 'org-envelope')
-    const rootDir = root()
-    const instance = daemon({ root: rootDir, k8s: true })
-    try {
-      await instance.start()
-      expect(existsSync(statePath(rootDir))).toBe(false)
-    } finally {
-      await instance.stop()
-      vi.unstubAllEnvs()
     }
   })
 

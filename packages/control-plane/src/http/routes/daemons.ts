@@ -341,8 +341,8 @@ export function daemonRoutes(deps: HttpDeps) {
             .send({ error: 'Conflict', statusCode: 409, message: 'daemon is online; take it offline before deleting' })
         }
         // Unplacement, relay revoke, collaboration push and hook re-converge —
-        // the whole sequence, shared with organization deletion (which retires
-        // the cluster envelope's own daemon) so the two cannot drift apart.
+        // the whole sequence, shared with the pool-member reaper so the two
+        // cannot drift apart.
         await detachDaemon(deps, orgOf(req), DaemonId(req.params.id), req.log)
         return reply.code(204).send(null)
       }

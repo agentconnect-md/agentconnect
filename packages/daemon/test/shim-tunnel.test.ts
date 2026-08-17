@@ -127,7 +127,7 @@ async function clusterWithTunnel(
   const shimPort = await shimServer.start(0, '127.0.0.1')
   shimServers.push(shimServer)
   const plane = await startK8sRuntimePlane({
-    orgId: 'org-1',
+    orgForAgent: () => 'org-1',
     warmPoolName: 'pool',
     generations: fakeGenerations(),
     sandboxNamespace: 'agent-sandboxes',

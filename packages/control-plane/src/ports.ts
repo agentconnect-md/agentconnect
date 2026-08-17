@@ -44,9 +44,10 @@ export interface DaemonAuth {
   authenticate(req: AuthReq, ctx: ClientCtx): Promise<AuthResult>
 }
 
-/** The daemon record a verified Kubernetes identity, including a pool member Pod UID, resolves to. */
-export type VerifiedClusterDaemon =
-  { daemonId: DaemonId; scope: 'org'; orgId: OrgId } | { daemonId: DaemonId; scope: 'install' }
+/** The daemon record a verified Kubernetes identity, including a pool member Pod UID, resolves to.
+ *  Only install-wide members present one: a pool identity names no org, which is what lets a
+ *  member serve every org on one connection. */
+export type VerifiedClusterDaemon = { daemonId: DaemonId; scope: 'install' }
 
 /**
  * Verifier for an in-cluster daemon's projected ServiceAccount token. Null ⇒ the token is
