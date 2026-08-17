@@ -183,9 +183,11 @@ export interface CallMeta {
   parentPrivate?: boolean
 }
 
-/** `handover` is the infrastructure class — this daemon stopped serving the agent (duty revoke,
- *  self-fence, drain) — and is deliberately NOT `stop`: a user stop is a verdict about the work,
- *  a handover says nothing about it, and outcome reporting has to tell them apart. */
+/** `handover` is the infrastructure class — this daemon stopped serving the agent, which is the
+ *  duty teardown alone (`stopServingAgentSettled`: revoke, self-fence, registry shrink, shutdown
+ *  release) and NOT the drain paths, which keep their own reasons. Deliberately not `stop`: a user
+ *  stop is a verdict about the work, a handover says nothing about it, and outcome reporting has
+ *  to tell them apart. */
 export type TurnInterruptReason =
   'pause' | 'loop protection' | 'stop' | 'cancel' | 'shutdown' | 'superseded' | 'handover'
 
