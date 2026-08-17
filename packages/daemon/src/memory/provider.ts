@@ -61,7 +61,7 @@ import {
 } from './runtime/native.js'
 import { appendDistilledMemories, buildDistillationPrompt, parseDistilledMemories } from './distill.js'
 import { describeRuntime, runtimeMemoryDisabledEnv } from './runtime/capabilities.js'
-import { canonicalAgentMemoryKey } from './recall.js'
+import { canonicalAgentMemoryKey } from './keys.js'
 import type { MemoryCaptureConnectionRegistry, MemoryCaptureOutbox } from '../memory-plugin/outbox.js'
 import { defaultMemoryPluginMetrics, type MemoryPluginMetrics } from '../memory-plugin/metrics.js'
 import { MemoryPluginConflictError, MemoryPluginInputError, type MemoryPluginClient } from '../memory-plugin/client.js'

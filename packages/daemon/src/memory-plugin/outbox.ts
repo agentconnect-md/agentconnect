@@ -6,7 +6,7 @@ import type {
   MemoryPluginManifest,
   MemoryPluginOperationStatusInput
 } from '@agentconnect.md/protocol'
-import { canonicalAgentMemoryKey } from '../memory/recall.js'
+import { canonicalAgentMemoryKey } from '../memory/keys.js'
 import type { LocalStore, MemoryCaptureOutboxRow } from '../store/local-store.js'
 import type { MemoryPluginClient } from './client.js'
 import { defaultMemoryPluginMetrics, type MemoryPluginMetrics } from './metrics.js'

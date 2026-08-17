@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
+import { canonicalAgentMemoryKey } from '../src/memory/keys.js'
 import {
   MAX_MEMORY_RECALL_QUERY_BYTES,
-  canonicalAgentMemoryKey,
   recalledMemoryBlock,
   recallQueryFromBlocks,
   sanitizeRecallRecords
