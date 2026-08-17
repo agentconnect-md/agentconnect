@@ -328,10 +328,7 @@ import {
   agentMoveStages,
   clearAgentRemoval,
   clearAgentRemovalForReadd,
-  clearAgentMoveStage,
-  commitAgentMove,
   markAgentRemoval,
-  stageAgentMove,
   type AgentMoveStageMetadata
 } from './agents/write-agent.js'
 import { CpIntegrationRegistry } from './cp/cp-integration-registry.js'
@@ -354,7 +351,8 @@ import type {
   EvaluationPlatformEvent,
   RefereeEvent
 } from './evaluation/environment.js'
-import { mergeConfigPush, type ConfigApply } from './cp/config-apply.js'
+import { type ConfigApply } from './cp/config-apply.js'
+import { buildConfigApply, type ConfigApplyHost } from './cp/config-apply-handlers.js'
 import { SystemMetrics } from './metrics/system-metrics.js'
 import { estimateOpenAiTurnCost } from './usage/openai-public-pricing.js'
 import type {
@@ -386,12 +384,8 @@ import {
 import { TurnOutputRegistry, type TurnOutputContext } from './platforms/turn-output.js'
 import type {
   RegisterReq,
-  RegisterOk,
   RelayRosterEntry,
   CronReport,
-  CronUpsert,
-  RouteAssign,
-  RouteUpdate,
   FactsRuntimeProfile,
   FactsMcpServer,
   McpTransportCapabilities,
@@ -406,17 +400,8 @@ import type {
   EventSession,
   SessionActivity,
   SessionListItem,
-  AgentLaunch,
-  AgentLaunched,
-  AgentStop,
-  AgentDetach,
-  AgentActivate,
-  AgentPermissionRequestList,
-  AgentPermissionRequestPage,
   AgentPermissionDecision,
   Ack,
-  DaemonRestart,
-  DaemonUpgrade,
   DaemonControlAck,
   WebchatAck,
   WebchatPost,
@@ -440,7 +425,6 @@ import type {
   MemoryDreamingPolicy,
   ChildSessionStatus,
   ChildSessionStatusProbe,
-  SessionVisibilityPush,
   WebchatRemoteMcpEntitlement,
   ExternalSessionAudience,
   ExternalSessionOrigin,
@@ -16950,640 +16934,86 @@ export class Daemon {
 
   // ── ConfigApply seam (CP changes config, never live routing) ──
   private cpConfigApply(): ConfigApply {
+    return buildConfigApply(this.configApplyHost())
+  }
+
+  /** Exactly what the CP apply handlers touch on the Daemon — reads plus single-point writes. */
+  private configApplyHost(): ConfigApplyHost {
     return {
-      applyConfigPush: (keys) => {
-        const { applied, ignored } = mergeConfigPush(this.cfg, keys)
-        if (applied.includes('logging.level')) this.log = makeLogger(this.cfg.logging.level)
-        if (applied.length) this.log.info(`cp: applied config keys: ${applied.join(', ')}`)
-        if (ignored.length) this.log.warn(`cp: ignored config keys: ${ignored.join(', ')}`)
+      cfg: () => this.cfg,
+      log: () => this.log,
+      setLog: (log) => {
+        this.log = log
       },
+      store: () => this.store,
+      clock: () => this.clock,
+      agentsDir: () => this.agentsDir,
+      singleAgentMode: () => Boolean(this.opts.agentName),
+      setGitCommitIdentity: (identity) => {
+        this.gitCommitIdentity = identity
+      },
+      flushReconcile: () => this.flushReconcile(),
+      cpAgents: () => this.cpAgents,
+      cpIntegrations: () => this.cpIntegrations,
+      cpCrons: () => this.cpCrons,
+      cpRouting: () => this.cpRouting,
+      cpCollab: () => this.cpCollab,
+      cpMcpDefs: () => this.cpMcpDefs,
+      memoryConnections: () => this.memoryConnections,
+      convergeRelays: (relays) => this.convergeRelays(relays),
+      onMcpDefsChanged: () => this.onMcpDefsChanged(),
+      exactCpDependents: (agentId, desired) => this.exactCpDependents(agentId, desired),
+      drainingAgents: () => this.drainingAgents,
+      cpDroppedAgents: () => this.cpDroppedAgents,
+      removedAgentTombstones: () => this.removedAgentTombstones,
+      moveStagedAgents: () => this.moveStagedAgents,
+      moveStageMetadata: () => this.moveStageMetadata,
+      activatingAgents: () => this.activatingAgents,
+      preparingWorkspaces: () => this.preparingWorkspaces,
+      pendingLaunchCorrelation: () => this.pendingLaunchCorrelation,
+      reserveAgentRemoval: (agentId) => this.reserveAgentRemoval(agentId),
+      reserveAgentDrain: (agentId) => this.reserveAgentDrain(agentId),
+      agentRemovalPending: (agentId) => this.agentRemovalPending(agentId),
+      agentDestructivePending: (agentId) => this.agentDestructivePending(agentId),
+      clearRemovalAfterDestruction: (agentId) => this.clearRemovalAfterDestruction(agentId),
+      clearRemovalForReadd: (agentId) => this.clearRemovalForReadd(agentId),
+      queueAgentLifecycle: <T>(
+        agentId: string,
+        work: () => Promise<T>,
+        opts?: { failureOwner?: string; onSettled?: () => void }
+      ): Promise<T> => this.queueAgentLifecycle(agentId, work, opts),
+      queueAgentMove: (kind, agentId, moveId, work) => this.queueAgentMove(kind, agentId, moveId, work),
+      agents: () => this.agents,
+      workspaces: () => this.workspaces,
+      runtimes: () => this.runtimes,
+      keyServer: () => this.keyServer,
+      gitCreds: () => this.gitCreds,
+      gitCredServer: () => this.gitCredServer,
+      quiesceAgentWorkspaceAuthority: (agentId) => this.quiesceAgentWorkspaceAuthority(agentId),
+      discardClusterSandbox: (agentId) => this.discardClusterSandbox(agentId),
+      revokeRemoteWebchatGrantsForAgent: (agentId, reason) => this.revokeRemoteWebchatGrantsForAgent(agentId, reason),
+      stopAgent: (agentId) => this.stopAgent(agentId),
+      stopHost: (agentId, deadlineMs) => this.stopHost(agentId, deadlineMs),
+      ensureHostAsync: (agentId, opts) => this.ensureHostAsync(agentId, opts),
+      prepareAgentWorkspace: (agent, expectedWarmHost, request, allowAgentDrain) =>
+        this.prepareAgentWorkspace(agent, expectedWarmHost, request, allowAgentDrain),
+      enqueueAgentWorkspacePreparation: <T>(
+        agent: Agent,
+        operation: () => Promise<T>,
+        expectedWarmHost?: AcpHost,
+        allowAgentDrain?: boolean
+      ): Promise<T> => this.enqueueAgentWorkspacePreparation(agent, operation, expectedWarmHost, allowAgentDrain),
+      activationCapabilityError: (agent) => this.activationCapabilityError(agent),
+      servesAgent: (agentId) => this.servesAgent(agentId),
+      closeUnusedPlatformConnections: () => this.closeUnusedPlatformConnections(),
       applyDutyGrant: (grants) => this.applyDutyGrant(grants),
       applyDutyRevoke: (revocations) => this.applyDutyRevoke(revocations),
-      applyReconcileSnapshot: async (snap: RegisterOk) => {
-        this.gitCommitIdentity = snap.gitCommitIdentity
-        // Console-set finished-session retention — the reconnect baseline for the
-        // `config/push` hot update. Absent (older CP) ⇒ keep the local config value.
-        if (snap.sessionRetention) this.cfg.sessions.retention = snap.sessionRetention
-        // Reserve every agent drop before ANY fallible snapshot convergence.
-        // Otherwise an unrelated integration/memory write could abort the frame
-        // while a CP-removed agent remains live with no gate or durable marker.
-        const droppedAgents = snap.drop.agents ?? []
-        if (droppedAgents.length > 0) {
-          await Promise.all(
-            droppedAgents.map(({ agentId, action }) => {
-              // Reserve every drop synchronously while building this array. No
-              // queued lifecycle body runs until the current call stack yields.
-              const removal = this.reserveAgentRemoval(agentId)
-              let completed = false
-              return this.queueAgentLifecycle(
-                agentId,
-                async () => {
-                  this.drainingAgents.add(agentId)
-                  this.cpDroppedAgents.add(agentId)
-                  await this.quiesceAgentWorkspaceAuthority(agentId)
-                  if (!this.cpAgents) throw new Error('agent registry is not ready')
-                  try {
-                    if (action === 'remove') {
-                      this.cpAgents.remove(agentId)
-                      await this.discardClusterSandbox(agentId)
-                      this.moveStageMetadata.delete(agentId)
-                      this.moveStagedAgents.delete(agentId)
-                    } else {
-                      // A missed move is a cold detach: preserve workspace/memory/local
-                      // files, but scrub platform credentials and stop serving immediately.
-                      this.cpAgents.detach(agentId)
-                    }
-                  } catch (cleanupError) {
-                    if (removal.markerError) {
-                      throw new AggregateError(
-                        [removal.markerError, cleanupError],
-                        `agent "${agentId}" removal marker and durable ${action} both failed`
-                      )
-                    }
-                    throw cleanupError
-                  }
-                  if (removal.markerError) {
-                    this.log.warn(
-                      `cp: agent "${agentId}" removal marker publication failed, but durable ${action} completed (${formatErr(removal.markerError)})`
-                    )
-                  }
-                  completed = true
-                },
-                {
-                  failureOwner: 'remove',
-                  onSettled: () => {
-                    const lastReservation = removal.release()
-                    if (completed && lastReservation && !removal.markerError) {
-                      this.clearRemovalAfterDestruction(agentId)
-                    }
-                  }
-                }
-              )
-            })
-          )
-        }
-
-        // Registry before agent re-add: an AgentSpec may reference one of these
-        // definitions, and static admission must never observe the new agent
-        // before at least a probing (fail-closed) connection entry exists.
-        this.memoryConnections?.converge(snap.memoryConnections ?? [])
-        // Apply only the ownership-aware, CP-authorized drop set. Roster absence
-        // by itself is not destructive because this daemon may also host purely
-        // local hand-authored agents/integrations.
-        for (const integrationId of snap.drop.integrations ?? []) this.cpIntegrations?.remove(integrationId)
-
-        // A staged move is a durable tombstone. A register snapshot racing after
-        // source detach (but before placement CAS) must not restore its archive or
-        // rehydrate credentials. Only the ACKed atomic activate bundle may do so.
-        const desiredAgents = (snap.agents ?? []).filter((agent) => !this.moveStagedAgents.has(agent.agentId))
-        // The reconnect snapshot is authoritative after every lifecycle frame
-        // already admitted on the old connection. Join those per-agent lanes
-        // before clearing a drop gate or republishing the whole desired set.
-        await Promise.all(desiredAgents.map(({ agentId }) => this.queueAgentLifecycle(agentId, async () => undefined)))
-        // Install the authoritative replicas in memory while any removal tombstone
-        // still excludes them from effectiveAgents. Only complete applications clear
-        // the durable latch and reopen their admission gate.
-        const revivableAgents = desiredAgents.filter(({ agentId }) => !this.agentRemovalPending(agentId))
-        // Only entries the revision fence actually applied may clear a tombstone
-        // below: a stale or refused roster entry (organization-secrets-and-
-        // variables.md §7) leaves the existing replica untouched, so it is not the
-        // complete authority replacement that re-add requires.
-        const rewrittenAgents = new Set(this.cpAgents?.converge(revivableAgents) ?? [])
-        const desiredIntegrations = (snap.integrations ?? []).filter(
-          (integration) => !this.moveStagedAgents.has(integration.agentId)
-        )
-        this.cpIntegrations?.converge(desiredIntegrations)
-        // Crons AFTER agents: the owning in-memory agent must exist first.
-        // drop.crons prunes stale CP entries.
-        for (const id of snap.drop.crons) this.cpCrons?.remove(id)
-        const desiredCrons = (snap.crons ?? []).filter((cron) => !this.moveStagedAgents.has(cron.agentId))
-        this.cpCrons?.converge(desiredCrons)
-        for (const { agentId } of revivableAgents) {
-          if (!rewrittenAgents.has(agentId)) continue
-          if (this.removedAgentTombstones.has(agentId) || this.cpDroppedAgents.has(agentId)) {
-            // A failed/interrupted removal can leave platform credentials in the
-            // old root. Re-add is a complete authority replacement: exact-prune
-            // every absent CP dependent and fsync the resulting bundle while the
-            // tombstone gate is still closed.
-            this.exactCpDependents(agentId, {
-              integrationIds: desiredIntegrations
-                .filter((integration) => integration.agentId === agentId)
-                .map((integration) => integration.integrationId),
-              cronIds: desiredCrons.filter((cron) => cron.agentId === agentId).map((cron) => cron.cronId)
-            })
-            this.clearRemovalForReadd(agentId)
-          }
-          if (!this.cpDroppedAgents.delete(agentId)) continue
-          if (!this.agentDestructivePending(agentId)) this.drainingAgents.delete(agentId)
-          this.gitCreds?.clearDenied(agentId)
-        }
-        // Reconnect full-replaces tenant-scoped CP definitions; daemon-local definitions remain unchanged.
-        this.cpMcpDefs?.converge(
-          (snap.mcpServers ?? [])
-            .filter((s) => s.name !== RESERVED_MCP_SERVER_NAME)
-            .flatMap(({ orgId, name, issuedAt, ...def }) => (orgId ? [[orgId, name, def, issuedAt] as const] : []))
-        )
-        this.cpCollab.replace(snap.collabRoutes) // baseline collaboration routing snapshot (P2 terminal-verify)
-        this.convergeRelays(snap.relays) // connect ingress only after its organization authority is installed
-        this.cpRouting?.converge({
-          routingEpoch: snap.routingEpoch,
-          assignments: snap.assignments,
-          drop: { assignments: snap.drop.assignments }
-        })
-        if (snap.leases.length) this.log.debug(`cp: ${snap.leases.length} lease(s) noted (secrets handled later)`)
-        if (snap.assignments.length) this.log.debug(`cp: converged ${snap.assignments.length} assignment(s)`)
-        if (snap.agents.length) this.log.debug(`cp: converged ${snap.agents.length} agent spec(s)`)
-        if (snap.integrations?.length) this.log.debug(`cp: converged ${snap.integrations.length} integration(s)`)
-        await this.flushReconcile()
-      },
-      applyAgentUpsert: ({ agentId, spec }): Promise<Ack> =>
-        this.queueAgentLifecycle(agentId, async () => {
-          if (this.moveStagedAgents.has(agentId)) return { ok: false, reason: 'agent is staged for a move' }
-          if (this.agentRemovalPending(agentId)) return { ok: false, reason: 'agent is pending removal' }
-          if (!this.cpAgents) return { ok: false, reason: 'agent registry is not ready' }
-          // Publish the in-memory spec first while a crash tombstone (if present)
-          // still keeps the root outside the effective roster. Clearing it is the
-          // authoritative re-add commit point.
-          const replacingDroppedAuthority =
-            this.removedAgentTombstones.has(agentId) || this.cpDroppedAgents.has(agentId)
-          const takingOwnership = !this.cpAgents.has(agentId)
-          const applied = this.cpAgents.upsert(agentId, spec)
-          // The revision fence applied nothing (organization-secrets-and-variables.md
-          // §7). A stale/idempotent snapshot is ACKed as a no-op — a newer revision
-          // already went through this same path and cleared any tombstone — while an
-          // equal revision carrying different content is a CP invariant violation and
-          // must be refused rather than silently resolved in either direction.
-          if (applied === 'conflict') {
-            return { ok: false, reason: 'agent config revision already applied with different content' }
-          }
-          if (applied !== 'apply') return { ok: true }
-          if (takingOwnership) this.store.recoverPermissionRequests([agentId], this.clock.now())
-          if (replacingDroppedAuthority) {
-            // A standalone upsert has no dependent bundle. Scrub every stale CP
-            // integration/cron now; subsequent live frames may repopulate them.
-            this.exactCpDependents(agentId, { integrationIds: [], cronIds: [] })
-          }
-          if (replacingDroppedAuthority) this.clearRemovalForReadd(agentId)
-          if (this.cpDroppedAgents.delete(agentId) && !this.agentDestructivePending(agentId)) {
-            this.drainingAgents.delete(agentId)
-          }
-          // A replicated spec change may re-enable gitcred for a previously denied agent.
-          this.gitCreds?.clearDenied(agentId)
-          await this.flushReconcile()
-          return { ok: true }
-        }),
-      applyAgentRemove: (agentId: string) => {
-        // Publish the gate and lifecycle-tail reservation synchronously. A later
-        // upsert is queued behind this removal and cannot clear the gate or write
-        // a new root while old workspace authority is still quiescing.
-        const removal = this.reserveAgentRemoval(agentId)
-        let completed = false
-        return this.queueAgentLifecycle(
-          agentId,
-          async () => {
-            this.drainingAgents.add(agentId)
-            this.cpDroppedAgents.add(agentId)
-            await this.quiesceAgentWorkspaceAuthority(agentId)
-            if (!this.cpAgents) throw new Error('agent registry is not ready')
-            try {
-              this.cpAgents.remove(agentId)
-            } catch (cleanupError) {
-              if (removal.markerError) {
-                throw new AggregateError(
-                  [removal.markerError, cleanupError],
-                  `agent "${agentId}" removal marker and durable delete both failed`
-                )
-              }
-              throw cleanupError
-            }
-            if (removal.markerError) {
-              this.log.warn(
-                `cp: agent "${agentId}" removal marker publication failed, but durable delete completed (${formatErr(removal.markerError)})`
-              )
-            }
-            await this.discardClusterSandbox(agentId)
-            await this.flushReconcile()
-            // Clear fail-closed gates only after destructive disk removal succeeds;
-            // otherwise an old active root could become servable again on failure.
-            this.moveStageMetadata.delete(agentId)
-            this.moveStagedAgents.delete(agentId)
-            completed = true
-          },
-          {
-            failureOwner: 'remove',
-            onSettled: () => {
-              const lastReservation = removal.release()
-              if (completed && lastReservation && !removal.markerError) {
-                this.clearRemovalAfterDestruction(agentId)
-              }
-            }
-          }
-        )
-      },
-      applyAgentDetach: (detach: AgentDetach): Promise<Ack> => {
-        const { agentId, moveId } = detach
-        return this.queueAgentMove('detach', agentId, moveId, async () => {
-          if (this.opts.agentName) {
-            return { ok: false, reason: 'agent move is unavailable in --agent single-agent mode' }
-          }
-          const previous = this.moveStageMetadata.get(agentId)
-          // A delayed duplicate detach after this same operation committed must
-          // not take the newly-live agent back down. Its original detach did finish.
-          if (previous?.moveId === moveId && previous.state === 'committed') return { ok: true }
-
-          // Seed the materialization marker while the current definition is
-          // still live. A later workspace activation uses it to distinguish a
-          // permission/subdirectory edit from a destructive mode/repo/branch
-          // replacement, including after an ACK-loss retry.
-          const currentWorkspace = this.agents.get(agentId)
-          if (currentWorkspace) this.workspaces.ensureWorkspaceMaterialization(currentWorkspace)
-
-          // This is also the destination staging gate. An absent agent is expected:
-          // ACK after arming the gate so the atomic activate bundle cannot serve early.
-          stageAgentMove(this.agentsDir, agentId, moveId, detach.requireEmptyWorkspace)
-          this.cpDroppedAgents.delete(agentId)
-          this.moveStageMetadata.set(agentId, {
-            moveId,
-            state: 'staging',
-            ...(detach.requireEmptyWorkspace ? { requireEmptyWorkspace: true } : {})
-          })
-          this.moveStagedAgents.add(agentId)
-          this.drainingAgents.add(agentId)
-          // A placement cutover does not preserve the old execution context.
-          // Start cancellation before any remote cleanup await, then wait only
-          // for runtime authority to stop. Workspace edits keep the graceful
-          // drain because they resume the same local agent after mutating files.
-          if (detach.discardActiveTurns) await this.quiesceAgentWorkspaceAuthority(agentId)
-          // Placement is revalidated by the CP for every remote-MCP request.
-          // Clearing the memory-only descriptors prevents local reuse while the
-          // durable revocation sweep converges.
-          await this.revokeRemoteWebchatGrantsForAgent(agentId, 'agent_detached')
-          if (!detach.discardActiveTurns) await this.stopAgent(agentId)
-          const fence = this.moveStageMetadata.get(agentId)
-          if (fence?.moveId !== moveId || fence.state !== 'staging') {
-            return { ok: false, reason: 'agent/detach: move was superseded' }
-          }
-          if (detach.requireEmptyWorkspace) {
-            const current = this.agents.get(agentId)
-            const reason = !current
-              ? `agent ${agentId} is not active on this daemon`
-              : current.workspace.mode !== 'from-scratch'
-                ? 'workspace is no longer scratch'
-                : !this.workspaces.isWorkspaceEmpty(current)
-                  ? 'scratch workspace is not empty; remove or move its files before converting'
-                  : undefined
-            if (reason) {
-              // The root was never archived, so roll the temporary lifecycle
-              // fence back and let the stopped host restart lazily on demand.
-              clearAgentMoveStage(this.agentsDir, agentId)
-              this.moveStageMetadata.delete(agentId)
-              this.moveStagedAgents.delete(agentId)
-              await this.flushReconcile()
-              return { ok: false, reason: `agent/detach: ${reason}` }
-            }
-          }
-          this.gitCreds?.remove(agentId)
-          this.gitCredServer?.revoke(agentId)
-          this.cpAgents?.detach(agentId)
-          await this.flushReconcile()
-          // Retry the strict close even when a previous detach pass already removed
-          // the agent but failed while stopping its final socket.
-          await this.closeUnusedPlatformConnections()
-          const finalFence = this.moveStageMetadata.get(agentId)
-          if (finalFence?.moveId !== moveId || finalFence.state !== 'staging') {
-            return { ok: false, reason: 'agent/detach: move was superseded' }
-          }
-          return { ok: true }
-        })
-      },
-      applyAgentActivate: (activate: AgentActivate): Promise<Ack> => {
-        const { agentId } = activate
-        return this.queueAgentMove('activate', agentId, activate.moveId ?? 'unstage', async () => {
-          if (this.opts.agentName) {
-            return { ok: false, reason: 'agent move is unavailable in --agent single-agent mode' }
-          }
-          const stage = this.moveStageMetadata.get(agentId)
-          // A token-less activate releases whatever stale staging fence remains (#1093); none ⇒ no-op.
-          if (activate.moveId === undefined && stage?.state !== 'staging') return { ok: true }
-          // Token-less ⇒ adopt the stored fence's token, so commit supersedes the stale move exactly.
-          const moveId = activate.moveId ?? stage!.moveId
-          if (stage?.moveId === moveId && stage.state === 'committed') return { ok: true }
-          if (
-            stage?.moveId !== moveId ||
-            stage.state !== 'staging' ||
-            !this.moveStagedAgents.has(agentId) ||
-            !this.drainingAgents.has(agentId)
-          ) {
-            return { ok: false, reason: 'agent/activate: staging fence is missing or superseded' }
-          }
-          const capacityUsed = this.agents.size + this.activatingAgents.size
-          if (this.cfg.limits.maxAgents > 0 && capacityUsed >= this.cfg.limits.maxAgents) {
-            return {
-              ok: false,
-              reason: `agent/activate: daemon capacity ${capacityUsed}/${this.cfg.limits.maxAgents} is full`
-            }
-          }
-          this.activatingAgents.add(agentId)
-          if (activate.prepareWorkspace || activate.reconcileWorkspace) this.preparingWorkspaces.add(agentId)
-          try {
-            if (activate.integrations.some((integration) => integration.agentId !== agentId)) {
-              return { ok: false, reason: 'agent/activate: integration bundle contains a different agentId' }
-            }
-            if (activate.crons.some((cron) => cron.agentId !== agentId)) {
-              return { ok: false, reason: 'agent/activate: cron bundle contains a different agentId' }
-            }
-            // Apply the complete authoritative bundle synchronously while the staged
-            // agent is still excluded from effectiveAgents. Every update either lands
-            // before the ACK or throws; retries remain safe behind the same gate.
-            this.gitCreds?.clearDenied(agentId)
-            // The target enforces the revision fence independently (organization-
-            // secrets-and-variables.md §7). A bundle whose resolved spec is older
-            // than (or contradicts) what this daemon already applied must NOT
-            // activate stale credentials — refuse so the CP re-resolves and replays.
-            const applied = this.cpAgents?.upsert(agentId, activate.spec) ?? 'apply'
-            if (applied === 'stale' || applied === 'conflict') {
-              return {
-                ok: false,
-                reason: `agent/activate: spec revision ${activate.spec.configRevision ?? '(none)'} is not newer than the applied configuration`
-              }
-            }
-            for (const integration of activate.integrations) this.cpIntegrations?.upsert(integration)
-            for (const cron of activate.crons) this.cpCrons?.upsert(cron)
-            this.exactCpDependents(agentId, {
-              integrationIds: activate.integrations.map((integration) => integration.integrationId),
-              cronIds: activate.crons.map((cron) => cron.cronId)
-            })
-            const activation =
-              this.cpAgents?.activate(agentId, {
-                integrationIds: activate.integrations.map((integration) => integration.integrationId),
-                cronIds: activate.crons.map((cron) => cron.cronId)
-              }) ?? 'missing'
-            if (activation === 'missing') {
-              return { ok: false, reason: `agent/activate: unknown agent ${agentId}` }
-            }
-            this.store.recoverPermissionRequests([agentId], this.clock.now())
-            if (this.agentRemovalPending(agentId)) {
-              return { ok: false, reason: 'agent/activate: superseded by a newer agent removal' }
-            }
-            // The staged gate stays closed, so a tokened activate may clear a crash tombstone here.
-            if (this.removedAgentTombstones.has(agentId) || this.cpDroppedAgents.has(agentId)) {
-              // A token-less unstage is not an authoritative re-add: never resurrect a removed agent.
-              if (activate.moveId === undefined) {
-                return { ok: false, reason: 'agent/activate: a removal tombstone owns this agent' }
-              }
-              this.clearRemovalForReadd(agentId)
-            }
-            // Dependents were pruned while the agent was still invisible. Publish the
-            // exact-set config now, but keep the dispatch gate until the host proves ready.
-            this.moveStagedAgents.delete(agentId)
-            try {
-              await this.flushReconcile()
-            } catch (err) {
-              this.moveStagedAgents.add(agentId)
-              await this.stopHost(agentId).catch(() => {})
-              await this.flushReconcile().catch(() => {})
-              throw err
-            }
-            const agent = this.agents.get(agentId)
-            if (!agent) {
-              this.moveStagedAgents.add(agentId)
-              await this.flushReconcile()
-              return { ok: false, reason: `agent/activate: agent ${agentId} did not reconcile` }
-            }
-            if (!this.runtimes[agent.runtime]) {
-              this.moveStagedAgents.add(agentId)
-              await this.flushReconcile()
-              return { ok: false, reason: `agent/activate: runtime "${agent.runtime}" is unavailable` }
-            }
-            const capabilityError = this.activationCapabilityError(agent)
-            if (capabilityError) {
-              this.moveStagedAgents.add(agentId)
-              await this.flushReconcile()
-              return { ok: false, reason: `agent/activate: ${capabilityError}` }
-            }
-            let rollbackPreparedWorkspace: (() => void) | undefined
-            if (activate.prepareWorkspace || activate.reconcileWorkspace) {
-              try {
-                // A prior incarnation of this agent id must relinquish every
-                // queued/running preparation before activation rewrites or
-                // reconciles the target workspace. Register activation's own
-                // mutation in the same tail so remove/shutdown cannot release
-                // its root before the rollback-capable operation settles.
-                rollbackPreparedWorkspace = await this.enqueueAgentWorkspacePreparation(
-                  agent,
-                  () =>
-                    this.workspaces.prepareWorkspaceForActivation(agent, {
-                      allowExistingCheckout: stage.requireEmptyWorkspace !== true,
-                      reconcileMaterialization: activate.reconcileWorkspace === true
-                    }),
-                  undefined,
-                  true
-                )
-              } catch (err) {
-                this.moveStagedAgents.add(agentId)
-                await this.stopHost(agentId).catch(() => {})
-                await this.flushReconcile().catch(() => {})
-                return { ok: false, reason: `agent/activate: workspace preparation failed: ${(err as Error).message}` }
-              }
-            }
-            // Prove ACP can initialize under the still-closed gate; the workspace reconciled first, so the
-            // spawned runtime and its sandbox bind the new directory rather than an unlinked old one.
-            // An unstage restores the replica, not serving authority: a non-holder must not bind the sandbox (#1093).
-            // Read HERE, never captured: a revoke landing during the awaits above already stopped this host.
-            // Tokened stays host-proving: its target is the placement, or a source whose duty the move never released.
-            if (activate.moveId !== undefined || this.servesAgent(agentId)) {
-              try {
-                // Key-server mode gives every session its own credential-scoped host, so there is no
-                // shared agent host to prove — reconciling the workspace is the whole of the proof.
-                if (this.keyServer) await this.prepareAgentWorkspace(agent, undefined, undefined, true)
-                else await this.ensureHostAsync(agentId, { allowAgentDrain: true })
-              } catch (err) {
-                this.moveStagedAgents.add(agentId)
-                await this.stopHost(agentId).catch(() => {})
-                try {
-                  await rollbackPreparedWorkspace?.()
-                } catch (rollbackErr) {
-                  this.log.error(
-                    `agent/activate: failed to roll workspace back for "${agentId}": ${formatErr(rollbackErr)}`
-                  )
-                }
-                await this.flushReconcile().catch(() => {})
-                return { ok: false, reason: `agent/activate: ${(err as Error).message}` }
-              }
-            }
-            if (this.agentDestructivePending(agentId)) {
-              this.moveStagedAgents.add(agentId)
-              await this.stopHost(agentId).catch(() => {})
-              try {
-                rollbackPreparedWorkspace?.()
-              } catch (rollbackErr) {
-                this.log.error(
-                  `agent/activate: failed to roll workspace back for "${agentId}": ${formatErr(rollbackErr)}`
-                )
-              }
-              await this.flushReconcile().catch(() => {})
-              return {
-                ok: false,
-                reason: this.agentRemovalPending(agentId)
-                  ? 'agent/activate: superseded by agent removal'
-                  : 'agent/activate: superseded by a newer agent drain'
-              }
-            }
-            try {
-              commitAgentMove(this.agentsDir, agentId, moveId)
-            } catch (err) {
-              await this.stopHost(agentId).catch(() => {})
-              try {
-                await rollbackPreparedWorkspace?.()
-              } catch (rollbackErr) {
-                this.log.error(
-                  `agent/activate: failed to roll workspace back for "${agentId}": ${formatErr(rollbackErr)}`
-                )
-              }
-              this.moveStagedAgents.add(agentId)
-              await this.flushReconcile().catch(() => {})
-              return { ok: false, reason: `agent/activate: failed to commit staging fence: ${(err as Error).message}` }
-            }
-            this.moveStageMetadata.set(agentId, { moveId, state: 'committed' })
-            if (!this.agentDestructivePending(agentId)) this.drainingAgents.delete(agentId)
-            return { ok: true }
-          } finally {
-            this.preparingWorkspaces.delete(agentId)
-            this.activatingAgents.delete(agentId)
-          }
-        })
-      },
-      listAgentPermissionRequests: ({ agentId, limit }: AgentPermissionRequestList): AgentPermissionRequestPage => ({
-        agentId,
-        requests: this.store.listPermissionRequests(agentId, limit).map((request) => ({
-          id: request.id,
-          agentId: request.agentId,
-          sessionId: request.sessionId,
-          createdAt: new Date(request.createdAt).toISOString(),
-          requesterId: request.requesterId,
-          requesterName: request.requesterName,
-          command: request.command,
-          status: request.status,
-          resolvedAt: request.resolvedAt === null ? null : new Date(request.resolvedAt).toISOString()
-        }))
-      }),
-      decideAgentPermission: (req: AgentPermissionDecision): Ack => this.decideEditorPermission(req),
-      applyIntegrationUpsert: (spec) => {
-        if (!this.moveStagedAgents.has(spec.agentId)) this.cpIntegrations?.upsert(spec)
-      },
-      applyIntegrationRemove: (integrationId) => this.cpIntegrations?.remove(integrationId),
-      applyIntegrationLeave: (leave) => this.leaveConversation(leave),
-      applyIntegrationForget: (forget) => this.retractChannels(forget.integrationId, forget.channels),
-      applyMcpServerUpsert: (spec) => {
-        if (spec.name === RESERVED_MCP_SERVER_NAME) {
-          this.log.warn(`mcp: ignoring CP push for reserved server name "${spec.name}"`)
-          return
-        }
-        // `issuedAt` is the ordering marker, not part of the definition the runtime
-        // spawns with — strip it out of `def` at every apply site.
-        const { orgId, name, issuedAt, ...def } = spec
-        if (!orgId) return
-        if (this.cpMcpDefs?.upsert(orgId, name, def, issuedAt)) {
-          this.onMcpDefsChanged()
-          // NEVER log def values — an http proxy def's headers carry the bearer grant key.
-          this.log.info(`mcp: applied CP server def "${name}" for organization ${orgId}`)
-        }
-      },
-      applyMcpServerRemove: ({ orgId, name }) => {
-        if (!orgId) return
-        if (this.cpMcpDefs?.remove(orgId, name)) {
-          this.onMcpDefsChanged()
-          this.log.info(`mcp: removed CP server def "${name}" for organization ${orgId}`)
-        }
-      },
-      applyMemoryConnectionUpsert: async (spec) => {
-        if (!this.memoryConnections) return { ok: false, reason: 'memory connection registry is unavailable' }
-        if (!this.memoryConnections.upsert(spec)) {
-          return { ok: false, reason: 'memory connection definition is stale or conflicts at the same revision' }
-        }
-        const reason = await this.memoryConnections.waitForAdmission(spec.connectionId)
-        return reason ? { ok: false, reason } : { ok: true }
-      },
-      applyMemoryConnectionRemove: (connectionId) => this.memoryConnections?.remove(connectionId),
-      upsertCron: (cron: CronUpsert) => {
-        if (!this.moveStagedAgents.has(cron.agentId)) this.cpCrons!.upsert(cron)
-      },
-      removeCron: (cronId: string) => this.cpCrons!.remove(cronId),
-      runCron: (cronId: string) => this.runCronNow(cronId),
-      applyRouteAssign: (a: RouteAssign) => this.cpRouting?.upsertAssign(a),
-      applyRouteUpdate: (u: RouteUpdate) => this.cpRouting?.applyUpdate(u),
-      applyRelayRoster: (relays: RelayRosterEntry[]) => this.convergeRelays(relays),
-      applyCollabRoutes: (snap) => this.cpCollab.replace(snap),
-      // ── lifecycle control (§5.3/§8) ──
-      applyAgentLaunch: (launch: AgentLaunch): Promise<AgentLaunched> =>
-        this.queueAgentLifecycle(launch.agentId, async () => {
-          if (this.moveStagedAgents.has(launch.agentId)) {
-            throw new Error(`agent/launch: agent ${launch.agentId} is staged for a daemon move`)
-          }
-          const agent = this.agents.get(launch.agentId)
-          if (!agent) throw new Error(`agent/launch: unknown agent ${launch.agentId}`)
-          if (this.agentDestructivePending(launch.agentId)) {
-            throw new Error(`agent/launch: superseded by a newer agent drain for ${launch.agentId}`)
-          }
-          // Revive a stopped agent only after every older lifecycle mutation has
-          // settled. The queue prevents launch from clearing a slow remove's gate.
-          this.drainingAgents.delete(launch.agentId)
-          // Park the CP's launch provenance for the next session this agent
-          // creates, so ingest can attribute it to the launching user (§4.4).
-          if (launch.launchCorrelationId) {
-            this.pendingLaunchCorrelation.set(launch.agentId, launch.launchCorrelationId)
-          }
-          if (this.keyServer) await this.prepareAgentWorkspace(agent, undefined, undefined, true)
-          else await this.ensureHostAsync(launch.agentId, { allowAgentDrain: true })
-          return {
-            agentId: launch.agentId,
-            launchId: randomUUID(),
-            startedAt: new Date(this.clock.now()).toISOString(),
-            runtime: agent.runtime
-          }
-        }),
-      applyAgentStop: (stop: AgentStop): Promise<Ack> => {
-        const releaseDrain = this.reserveAgentDrain(stop.agentId)
-        const run = this.queueAgentLifecycle(
-          stop.agentId,
-          async () => {
-            await this.stopAgent(stop.agentId)
-            return { ok: true }
-          },
-          { failureOwner: 'stop' }
-        )
-        return run.then(
-          (ack) => {
-            releaseDrain(true)
-            return ack
-          },
-          (error) => {
-            releaseDrain(true)
-            throw error
-          }
-        )
-      },
-      applyDaemonDrain: (drain: Drain, onProgress: (p: DrainProgress) => void): Promise<DrainDone> =>
-        this.runDrain(drain, onProgress),
-      applyDaemonRestart: (_req: DaemonRestart): DaemonControlAck => this.scheduleFleetExit('restart'),
-      applyDaemonUpgrade: (req: DaemonUpgrade): DaemonControlAck =>
-        this.scheduleFleetExit('upgrade', req.targetVersion),
-      // The CP is the authority on effective visibility (§4.3 changes, §4.5
-      // settlements and cascades); the daemon only enforces the resulting
-      // capture gate. Ordering is by the CP's durable revision, so retransmits
-      // and out-of-order delivery are safe.
-      applySessionVisibility: (p: SessionVisibilityPush): 'applied' | 'superseded' => {
-        // A CP too old to name the agent leaves only the runtime-local ACP id: use the
-        // sole local holder, and where there is none leave the gate closed (still ACKed).
-        const agentId = p.agentId ?? this.store.soleAgentForAcpSession(p.sessionId)
-        if (!agentId) return 'superseded'
-        return this.store.applyCpCaptureGate(
-          agentId,
-          p.sessionId,
-          p.sharedMemoryExcluded ?? p.visibility === 'private',
-          p.visibilityRev
-        )
-      }
+      decideEditorPermission: (req) => this.decideEditorPermission(req),
+      leaveConversation: (leave) => this.leaveConversation(leave),
+      retractChannels: (integrationId, channelIds) => this.retractChannels(integrationId, channelIds),
+      runCronNow: (cronId) => this.runCronNow(cronId),
+      runDrain: (drain, onProgress) => this.runDrain(drain, onProgress),
+      scheduleFleetExit: (kind, targetVersion) => this.scheduleFleetExit(kind, targetVersion)
     }
   }
 
