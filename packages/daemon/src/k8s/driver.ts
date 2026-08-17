@@ -16,45 +16,26 @@ import {
   type SandboxApi
 } from './sandbox-api.js'
 import { K8sApiError } from '@agentconnect.md/k8s-client'
+import {
+  AC_LABEL_AGENT,
+  AC_LABEL_ORG,
+  LaunchTimeoutError,
+  RUNTIME_GRANTS,
+  resolvePodIp,
+  resolvePodName
+} from './sandbox-identity.js'
 
-/** Label domain the claim controller must be configured to allow. */
-export const AC_LABEL_ORG = 'agentconnect.md/org'
-export const AC_LABEL_AGENT = 'agentconnect.md/agent'
-
-/**
- * Where agent-sandbox records the pod a Sandbox is currently backed by.
- *
- * This is the ONLY way the daemon can bind the dial target to the launch that started it: a
- * TokenReview yields a pod name and uid, `SandboxStatus` carries no pod reference at all
- * (v1beta1: serviceFQDN, service, conditions, selector, podIPs, nodeName), and reading the Pod
- * API is deliberately outside this daemon's Role. Upstream's `resolvePodName` is exactly this
- * annotation with the Sandbox's own name as the fallback, so mirroring it keeps the two in step.
- */
-export const SANDBOX_POD_NAME_ANNOTATION = 'agents.x-k8s.io/pod-name'
-
-/** The pod backing this Sandbox: the adopted warm-pool pod, or the Sandbox's own name. */
-export function resolvePodName(sandbox: Sandbox): string | undefined {
-  const adopted = sandbox.metadata?.annotations?.[SANDBOX_POD_NAME_ANNOTATION]
-  return adopted && adopted.length > 0 ? adopted : sandbox.metadata?.name
-}
-
-/** The first routable address reported for the pod backing this Sandbox. */
-export function resolvePodIp(sandbox: Sandbox): string | undefined {
-  for (const entry of sandbox.status?.podIPs ?? []) {
-    const ip = typeof entry === 'string' ? entry : entry.ip
-    if (ip?.trim()) return ip.trim()
-  }
-  return undefined
-}
-
-/** Capabilities a runtime launch receives. Narrow by construction: a launch gets exactly
- *  what the channels it uses require, so a future capability is an explicit decision. */
-export const RUNTIME_GRANTS: ShimCapability[] = ['acp', 'materialize', 'exec', 'read', 'tunnel']
-
-/** A probe sandbox runs no runtime and touches no workspace, so it gets the one channel it uses
- *  and nothing else. Granting `probe` to every launch instead would hand each agent's runtime an
- *  authority it never exercises — which the direct-connect grant test exists to catch. */
-export const PROBE_GRANTS: ShimCapability[] = ['probe']
+// Re-exported so existing importers keep reaching these through the driver module.
+export {
+  AC_LABEL_AGENT,
+  AC_LABEL_ORG,
+  LaunchTimeoutError,
+  PROBE_GRANTS,
+  RUNTIME_GRANTS,
+  SANDBOX_POD_NAME_ANNOTATION,
+  resolvePodIp,
+  resolvePodName
+} from './sandbox-identity.js'
 
 /** Allocator for the per-agent shim-binding generation; the daemon store is the durable one. */
 export interface LaunchGenerations {
@@ -94,15 +75,6 @@ export interface K8sDriverDeps {
   readyTimeoutMs?: number
   /** Staged latency and operability recorder; omit to record nothing. */
   metrics?: ClusterMetrics
-}
-
-/** A launch stage that ran out of time. Typed, because a missed target and a broken cluster are
- *  different operational stories and telling them apart by error text is a liability. */
-export class LaunchTimeoutError extends Error {
-  constructor(message: string) {
-    super(message)
-    this.name = 'LaunchTimeoutError'
-  }
 }
 
 const DEFAULT_READY_TIMEOUT_MS = 90_000
