@@ -12,6 +12,7 @@ import { describe, it, expect } from 'vitest'
 import { prisma } from '../setup.db.js'
 import { buildHttpApp } from '../fakes/build-http.js'
 import { seedAgent, seedDaemon } from '../fixtures/seed.js'
+import type { HttpBotOrchestrator } from '../../src/orchestrator/httpBot.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import { poolSetId } from '../fakes/member-set.js'
 
@@ -174,6 +175,50 @@ describe('member sets — the enrolment transitions (real Postgres)', () => {
       // And the durable session affinity the machine owned is released rather than replayed on its
       // next register into an owner index that no longer reflects who serves the agent.
       expect(await prisma.assignment.count({ where: { agentId: AGENT, daemonId: DAEMON, state: 'active' } })).toBe(0)
+    } finally {
+      await close()
+    }
+  })
+
+  it('rebuilds the HTTP bots’ assign tables, so public ingress stops naming the machine', async () => {
+    // The `rc/bot-assign` table is compiled, not resolved per callback: it names the daemon the
+    // relay forwards to. Enrolment takes the agent off that machine, so leaving the table alone
+    // would keep addressing it for the whole window before the ledger grants the duty back.
+    const synced: string[] = []
+    const { app, close } = buildHttpApp(prisma, undefined, undefined, undefined, {
+      httpBot: { syncBot: async (id: string) => void synced.push(id) } as unknown as HttpBotOrchestrator
+    })
+    try {
+      await seedDaemon(prisma, DAEMON)
+      await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+      const httpBot = randomUUID()
+      const classicBot = randomUUID()
+      await prisma.bot.createMany({
+        data: [
+          { id: httpBot, orgId: DEFAULT_ORG_ID, platform: 'slack', name: 'shared', shareable: true, transport: 'http' },
+          { id: classicBot, orgId: DEFAULT_ORG_ID, platform: 'slack', name: 'classic' }
+        ]
+      })
+      await prisma.integration.createMany({
+        data: [
+          { id: randomUUID(), orgId: DEFAULT_ORG_ID, agentId: AGENT, botId: httpBot, platform: 'slack', name: 'http' },
+          {
+            id: randomUUID(),
+            orgId: DEFAULT_ORG_ID,
+            agentId: AGENT,
+            botId: classicBot,
+            platform: 'slack',
+            name: 'classic'
+          }
+        ]
+      })
+      const setId = await withSet(app)
+
+      await app.inject({ method: 'PUT', url: `${ORG}/member-sets/${setId}/members/${DAEMON}?force=true` })
+
+      // Only the HTTP one: a classic bot's egress is the daemon's own socket, with no CP-side
+      // table naming it.
+      expect(synced).toEqual([httpBot])
     } finally {
       await close()
     }

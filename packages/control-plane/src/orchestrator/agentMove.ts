@@ -51,7 +51,7 @@ import {
   type PlacementTarget
 } from '../domain/placement.js'
 import { PLACEMENT_ONLY, type PlacementResolver } from './placementResolver.js'
-import { convergeAgentRouting } from './agentRouting.js'
+import { convergeAgentRouting, httpBotIdsForAgent } from './agentRouting.js'
 import { cronToUpsert, integrationToSpec, isGatedAgent, httpIntegrationToSpec } from './placement.js'
 import {
   mcpDefsForAgents,
@@ -297,10 +297,18 @@ export class AgentMoveService {
     this.deps.recomputeDuties?.(orgId)
     // Ingress follows the HOLDER, and these agents no longer have a placement that names one — the
     // ledger's grant does. Re-converge so the projections stop addressing the machine directly.
+    // The HTTP bots are part of that: an `rc/bot-assign` names the daemon relay callbacks go to, so
+    // leaving it alone would keep public ingress arriving at the machine we just detached from.
+    const syncedBots = new Set<string>()
     for (const agent of pinned) {
+      // One rebuild per bot, not per agent: an assign table covers every agent on that bot already.
+      const httpBotIds = (await httpBotIdsForAgent(this.deps, agent.id).catch(() => [])).filter(
+        (botId) => !syncedBots.has(botId)
+      )
+      for (const botId of httpBotIds) syncedBots.add(botId)
       await convergeAgentRouting(
         this.deps,
-        { agentId: agent.id, orgId: agent.orgId, httpBotIds: [] },
+        { agentId: agent.id, orgId: agent.orgId, httpBotIds },
         { warn: (obj, msg) => this.deps.log?.warn(obj, msg) }
       ).catch(() => {})
     }
