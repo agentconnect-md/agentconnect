@@ -66,6 +66,7 @@ async function boot(opts: { releaseDuties?: (groupIds: string[]) => Promise<void
   })
   ;(daemon as any).cpClient = {
     organizationScope: () => 'frame',
+    memberSet: () => ({ setId: '9f11e5e7-0000-4000-8000-000000000001', name: 'Cloud' }),
     stop,
     releaseDuties,
     reportDutiesNow,

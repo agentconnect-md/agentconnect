@@ -7,9 +7,9 @@ import type { Handler } from './index.js'
 
 export const handleDutyRelease: Handler = async (frame, conn, deps) => {
   if (!isFrame('duty/release')(frame)) return
-  // The duty ledger is install-wide: an org-scoped connection never holds duties.
-  if (conn.orgId !== null) {
-    conn.sendError(frame.id, 'SCOPE_DENIED', 'duty ledger requires an install-wide connection', false)
+  // The ledger's door (daemon-groups.md §3): membership in a member set, not install-wideness.
+  if (conn.setId === null) {
+    conn.sendError(frame.id, 'SCOPE_DENIED', 'duty ledger requires membership in a member set', false)
     return
   }
   await deps.dutyLease.release(DaemonId(conn.daemonId), frame.payload.groupIds)

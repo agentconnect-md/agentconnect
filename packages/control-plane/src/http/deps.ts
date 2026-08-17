@@ -27,6 +27,7 @@ import type {
   AgentConfigWriter,
   McpProviderRepo,
   MemberSetRepo,
+  DutyGroupRepo,
   McpProviderSecretStore,
   McpGrantRepo,
   SkillSourceRepo,
@@ -175,6 +176,9 @@ export interface HttpDeps {
     agentConfig: AgentConfigWriter
     /** The sets a duty may be claimed within — the console resolves a placement target to one. */
     memberSet: MemberSetRepo
+    /** The duty ledger, read-only here: a membership change must not take a live lease away from
+     *  a machine that could still be serving it (daemon-groups.md §3). */
+    dutyGroup: Pick<DutyGroupRepo, 'listHeldBy'>
     /** Org-level MCP provider metadata (never upstream header values / grant keys). */
     mcpProvider: McpProviderRepo
     /** The ONLY read/write path for upstream MCP auth headers (store-only, never DTO'd). */

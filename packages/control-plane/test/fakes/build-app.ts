@@ -104,13 +104,15 @@ export function buildDaemonApp(prisma: PrismaClient): DaemonApp {
 
   const codec = new ApiKeyCodec({ API_KEY_PEPPER: TEST_API_KEY_PEPPER })
   const epoch = new EpochService(repos.daemon, clock)
+  const memberSets = new PgMemberSetRepo(prisma)
   const auth = new DaemonAuthService(
     codec,
     repos.apiKey,
     epoch,
     clock,
     { HEARTBEAT_SEC: 15, DUTY_LEASE_MS: DUTY_LEASE_DEFAULTS.leaseMs },
-    new PgOrgRepo(prisma)
+    new PgOrgRepo(prisma),
+    memberSets
   )
   const registry = new DaemonRegistryService(repos.daemon, repos.runtimeProfile, repos.daemonLifecycleOp, clock)
   const orchestrator = new Placement(
@@ -127,7 +129,6 @@ export function buildDaemonApp(prisma: PrismaClient): DaemonApp {
     PLATFORMS
   )
   const connReg = new ConnectionRegistry()
-  const memberSets = new PgMemberSetRepo(prisma)
   const placementResolver = new PlacementResolver({
     duties: new PgDutyGroupRepo(prisma),
     liveMembers: async (setId) => {
@@ -148,6 +149,7 @@ export function buildDaemonApp(prisma: PrismaClient): DaemonApp {
     createDaemonWsServer(app, {
       log: { error: (o, m) => app.log.error(o, m) },
       auth,
+      memberSets,
       lifecycleOps: repos.daemonLifecycleOp,
       registry,
       orchestrator,

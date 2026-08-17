@@ -164,6 +164,7 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
   const dutyLeaseMs = opts.dutyLease?.leaseMs ?? 120_000
 
   const epoch = new EpochService(repos.daemon, clock)
+  const memberSets = new PgMemberSetRepo(prisma)
   // Fake in-cluster identity: token → install-wide daemon, no TokenReview.
   const poolTokens = new Map<string, string>()
   const auth = new DaemonAuthService(
@@ -173,6 +174,7 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
     clock,
     { HEARTBEAT_SEC: opts.heartbeatSec ?? 15, DUTY_LEASE_MS: dutyLeaseMs },
     new PgOrgRepo(prisma),
+    memberSets,
     {
       verify: async (token: string) => {
         const daemonId = poolTokens.get(token)
@@ -185,7 +187,6 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
   const sender = new ControlSender(connReg, repos.launch)
   const relays = opts.relays ?? []
   const dutyGroupRepo = new PgDutyGroupRepo(prisma)
-  const memberSets = new PgMemberSetRepo(prisma)
   const placementResolver = new PlacementResolver({
     duties: dutyGroupRepo,
     liveMembers: async (setId) => {
@@ -301,6 +302,7 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
   const deps: DaemonWsDeps = {
     log: { error: () => undefined },
     auth,
+    memberSets,
     lifecycleOps: repos.daemonLifecycleOp,
     registry,
     orchestrator,

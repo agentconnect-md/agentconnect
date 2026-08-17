@@ -15,6 +15,7 @@ import type {
 } from '../ports.js'
 import type { AgentId, DaemonId, OrgId } from '../../domain/ids.js'
 import { withTx } from '../prisma.js'
+import { lockDaemonMembership } from './member-set.repo.js'
 
 // Serializes the writers that CREATE or REWRITE rows for an org (applyReconcile
 // and claimAgentHome) — row locks cannot fence rows that do not exist yet.
@@ -331,6 +332,11 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
     // SKIP LOCKED keeps racing claimants from queueing on each other's rows —
     // they simply take disjoint vacancies.
     return withTx(this.prisma, async (tx) => {
+      // The membership fence, before the claim reads eligibility from `member_set_member`: a
+      // withdrawal holding it has already decided this member holds nothing live, and a grant
+      // committing after that decision would hand work to a machine that is about to stop being
+      // a member (daemon-groups.md §3).
+      await lockDaemonMembership(tx, holder)
       const granted = await tx.$queryRaw<Row[]>(Prisma.sql`
         WITH picked AS (
           SELECT id FROM "duty_group"
@@ -363,15 +369,23 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
 
   async renewHeld(holder: DaemonId, now: Date, leaseMs: number): Promise<string[]> {
     const expiresAt = new Date(now.getTime() + leaseMs)
-    // Holder-conditional and term-preserving: a lapsed-but-unclaimed lease
-    // renews (the CP "confirms the same terms"); a reassigned one matches zero
-    // rows and the digest diff surfaces the supersession.
-    const rows = await this.prisma.$queryRaw<{ id: string }[]>(Prisma.sql`
-      UPDATE "duty_group" SET "expiresAt" = ${expiresAt}, "updatedAt" = ${now}
-      WHERE "holder" = ${holder}::uuid
-      RETURNING id
-    `)
-    return rows.map((r) => r.id).sort()
+    return withTx(this.prisma, async (tx) => {
+      // Renewal REVIVES a lapsed lease — it carries no expiry predicate, by design ("the CP
+      // confirms the same terms"). So it is a lease-creating write as far as a withdrawal is
+      // concerned, and it takes the same membership fence the claim paths do: without it a beat
+      // landing just after a withdrawal read "nothing live" makes every lapsed group live again
+      // under a daemon that is no longer a member (daemon-groups.md §3).
+      await lockDaemonMembership(tx, holder)
+      // Holder-conditional and term-preserving: a lapsed-but-unclaimed lease
+      // renews; a reassigned one matches zero rows and the digest diff surfaces
+      // the supersession.
+      const rows = await tx.$queryRaw<{ id: string }[]>(Prisma.sql`
+        UPDATE "duty_group" SET "expiresAt" = ${expiresAt}, "updatedAt" = ${now}
+        WHERE "holder" = ${holder}::uuid
+        RETURNING id
+      `)
+      return rows.map((r) => r.id).sort()
+    })
   }
 
   async release(holder: DaemonId, groupIds: string[]): Promise<void> {
@@ -563,6 +577,9 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
       // Org scope fences row creation against applyReconcile; the FOR UPDATE row
       // lock below fences the lease against claimVacant/renewHeld/release.
       await lockOrgDutyScope(tx, orgId)
+      // The membership fence: eligibility is a `member_set_member` lookup, so a withdrawal that
+      // decided this member was idle must not have a lease appear under it afterwards.
+      await lockDaemonMembership(tx, holder)
       // The rendezvous is a claim path, so it takes the same eligibility gate — inside the
       // transaction, against the live row, because this path can MINT a group and a check made
       // before the lock would let a member reach through it for an agent it may not hold.

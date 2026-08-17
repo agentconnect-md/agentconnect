@@ -28,8 +28,14 @@ import { lockResourceWriteMemberships } from '../resource-membership-lock.js'
 
 // The daemon row plus its joined creator + last-modifier users — every read that
 // feeds `toRecord` carries both joins so the console never needs a second query.
-type DaemonWithUsers = Daemon & { createdBy: User | null; lastModifiedBy: User | null }
-const withUsers = { createdBy: true, lastModifiedBy: true } as const
+type DaemonWithUsers = Daemon & {
+  createdBy: User | null
+  lastModifiedBy: User | null
+  // Membership rides every read: the console shows the set on the daemon, and it is what makes
+  // "pinned here" versus "claimable within a set" legible at all (daemon-groups.md §2).
+  setMembership?: { setId: string } | null
+}
+const withUsers = { createdBy: true, lastModifiedBy: true, setMembership: { select: { setId: true } } } as const
 
 function toRecord(d: DaemonWithUsers): DaemonRecord {
   return {
@@ -61,7 +67,8 @@ function toRecord(d: DaemonWithUsers): DaemonRecord {
     lastModifiedAt: d.lastModifiedAt,
     lastModifiedBy: d.lastModifiedBy
       ? { userId: d.lastModifiedBy.id, displayName: d.lastModifiedBy.displayName, email: d.lastModifiedBy.email }
-      : null
+      : null,
+    memberSetId: d.setMembership?.setId ?? null
   }
 }
 

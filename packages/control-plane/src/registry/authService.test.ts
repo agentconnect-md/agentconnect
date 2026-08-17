@@ -47,6 +47,11 @@ function makeEpoch(bump: () => Promise<{ sessionEpoch: bigint }>): EpochService 
   return { bumpSessionEpoch: bump } as unknown as EpochService
 }
 
+/** The pool, as the ledger's one org-less set. `auth/ok` announces it, and it is the whole
+ *  reason the daemon on the other end enforces duty leases at all (daemon-groups.md §3). */
+const POOL_SET = { id: '9f11e5e7-0000-4000-8000-000000000001', orgId: null, name: 'Cloud' }
+const memberSets = { setOf: async () => POOL_SET }
+
 function svc(
   repo: ApiKeyRepo,
   epoch: EpochService,
@@ -59,7 +64,8 @@ function svc(
     epoch,
     clock,
     { HEARTBEAT_SEC: 15, DUTY_LEASE_MS: DUTY_LEASE_DEFAULTS.leaseMs, WEB_APP_URL: webAppUrl },
-    orgs
+    orgs,
+    memberSets
   )
 }
 
@@ -78,6 +84,55 @@ describe('DaemonAuthService.authenticate — close-code contract', () => {
     expect(r.okFrame.dutyLeaseMs).toBe(DUTY_LEASE_DEFAULTS.leaseMs)
     expect(r.okFrame.webAppUrl).toBeUndefined() // omitted when WEB_APP_URL is unset
     expect(repo.touchLastUsed).toHaveBeenCalledOnce()
+  })
+
+  it('announces the daemon’s member set — the daemon’s whole duty-enforcement predicate', async () => {
+    const { token } = codec.mint()
+    const r = await svc(makeRepo(), okEpoch).authenticate({ apiKey: token, agentVersion: '1' }, ctx)
+    if (!r.ok) throw new Error('expected ok')
+    expect(r.okFrame.memberSet).toEqual({ setId: POOL_SET.id, name: POOL_SET.name })
+    // The connection carries it too, so the duty handlers read a set instead of asking per frame.
+    expect(r.setId).toBe(POOL_SET.id)
+  })
+
+  it('announces no set for a daemon in none, and that daemon owns its agents outright', async () => {
+    const { token } = codec.mint()
+    const service = new DaemonAuthService(
+      codec,
+      makeRepo(),
+      okEpoch,
+      clock,
+      { HEARTBEAT_SEC: 15, DUTY_LEASE_MS: DUTY_LEASE_DEFAULTS.leaseMs },
+      { slugById: async () => null },
+      { setOf: async () => null }
+    )
+    const r = await service.authenticate({ apiKey: token, agentVersion: '1' }, ctx)
+    if (!r.ok) throw new Error('expected ok')
+    expect(r.okFrame.memberSet).toBeUndefined()
+    expect(r.setId).toBeNull()
+  })
+
+  it('fails the handshake 1011 when the membership cannot be read — never “in no set” by accident', async () => {
+    // Silently announcing no set would make a pool member serve its agents unfenced. A retry is
+    // the only safe answer to a blip here.
+    const { token } = codec.mint()
+    const service = new DaemonAuthService(
+      codec,
+      makeRepo(),
+      okEpoch,
+      clock,
+      { HEARTBEAT_SEC: 15, DUTY_LEASE_MS: DUTY_LEASE_DEFAULTS.leaseMs },
+      { slugById: async () => null },
+      {
+        setOf: async () => {
+          throw new Error('db down')
+        }
+      }
+    )
+    expect(await service.authenticate({ apiKey: token, agentVersion: '1' }, ctx)).toMatchObject({
+      ok: false,
+      closeCode: 1011
+    })
   })
 
   it('includes the configured Web App URL in auth/ok (for daemon session deep links)', async () => {
@@ -203,6 +258,7 @@ describe('DaemonAuthService.authenticate — the in-cluster token path', () => {
       clock,
       { HEARTBEAT_SEC: 15, DUTY_LEASE_MS: DUTY_LEASE_DEFAULTS.leaseMs },
       orgs,
+      memberSets,
       { verify }
     )
   }
@@ -251,6 +307,7 @@ describe('DaemonAuthService.authenticate — the in-cluster token path', () => {
       clock,
       { HEARTBEAT_SEC: 15, DUTY_LEASE_MS: DUTY_LEASE_DEFAULTS.leaseMs },
       orgs,
+      memberSets,
       {
         verify: async () => null
       }

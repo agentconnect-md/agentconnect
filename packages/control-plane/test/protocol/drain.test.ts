@@ -128,6 +128,7 @@ function build(): Built {
   const deps: DaemonWsDeps = {
     log: { error: vi.fn() },
     auth: {} as DaemonWsDeps['auth'],
+    memberSets: {} as DaemonWsDeps['memberSets'],
     lifecycleOps: {} as DaemonWsDeps['lifecycleOps'],
     registry: {} as DaemonWsDeps['registry'],
     orchestrator: {} as DaemonWsDeps['orchestrator'],

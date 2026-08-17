@@ -58,6 +58,7 @@ export const Tag = {
   Profile: 'Profile',
   Members: 'Members',
   Daemons: 'Daemons',
+  MemberSets: 'Member sets',
   DaemonKeys: 'Daemon keys',
   ApiKeys: 'API keys',
   Agents: 'Agents',
@@ -86,6 +87,10 @@ const TAG_DESCRIPTIONS: ReadonlyArray<{ name: string; description: string }> = [
   {
     name: Tag.Daemons,
     description: 'Edge daemons — the message + agent-execution units. Enrollment tokens and lifecycle.'
+  },
+  {
+    name: Tag.MemberSets,
+    description: 'Named sets of daemons an agent’s duty may be claimed within — the failover unit.'
   },
   { name: Tag.DaemonKeys, description: 'A daemon’s API keys (issue, list, revoke).' },
   { name: Tag.ApiKeys, description: 'Your personal API keys — create, list, revoke.' },

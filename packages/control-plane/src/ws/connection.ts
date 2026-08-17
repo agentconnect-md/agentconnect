@@ -36,6 +36,10 @@ export class DaemonConnection implements ConnChannel {
   daemonId = '' // set on auth/ok; "" until then (ConnChannel requires a string)
   /** Auth-scoped org; null for an install-wide pool member. */
   orgId: string | null = null
+  /** The member set this connection may claim duties within (daemon-groups.md §3), resolved at
+   *  auth; null ⇒ in no set, and the duty handlers refuse it. Tenancy is NOT re-checked from it:
+   *  the write-time invariants on membership already decide what being in this set means. */
+  setId: string | null = null
   /** Current fencing epoch for this daemon (set on auth/ok). */
   sessionEpoch = 0
   /** Per-agent fencing baseline (current launch + next-expected inbound seq). */

@@ -369,8 +369,12 @@ describe('daemon --k8s mode', () => {
     })
     try {
       await k8sDaemon.start()
-      // An install-wide member: the duty ledger decides which agents it serves.
-      ;(k8sDaemon as any).cpClient = { organizationScope: () => 'frame', stop: async () => {} }
+      // A member of the install-wide pool: the duty ledger decides which agents it serves.
+      ;(k8sDaemon as any).cpClient = {
+        organizationScope: () => 'frame',
+        memberSet: () => ({ setId: '9f11e5e7-0000-4000-8000-000000000001', name: 'Cloud' }),
+        stop: async () => {}
+      }
       ;(k8sDaemon as any).duties.applyGrant([
         {
           groupId: '11111111-1111-4111-8111-111111111111',
@@ -406,6 +410,7 @@ describe('daemon --k8s mode', () => {
       await k8sDaemon.start()
       ;(k8sDaemon as any).cpClient = {
         organizationScope: () => 'frame',
+        memberSet: () => ({ setId: '9f11e5e7-0000-4000-8000-000000000001', name: 'Cloud' }),
         stop: async () => {},
         releaseDuties: vi.fn(async () => {}),
         reportDutiesNow: vi.fn(() => {}),

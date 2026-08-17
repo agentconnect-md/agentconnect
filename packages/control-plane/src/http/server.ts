@@ -25,6 +25,7 @@ import { humanAuthPlugin } from './plugins/auth.js'
 import { healthRoutes } from './routes/health.js'
 import { runtimeConfigRoutes } from './routes/runtime-config.js'
 import { daemonRoutes } from './routes/daemons.js'
+import { memberSetRoutes } from './routes/member-sets.js'
 import { keyRoutes } from './routes/keys.js'
 import { agentRoutes } from './routes/agents.js'
 import { agentRepoRoutes } from './routes/agent-repos.js'
@@ -288,6 +289,7 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
           scope.addHook('preValidation', makeOrgScope(deps.repos.org))
           await scope.register(orgScopedRoutes(deps))
           await scope.register(daemonRoutes(deps))
+          await scope.register(memberSetRoutes(deps))
           await scope.register(keyRoutes(deps))
           await scope.register(agentRoutes(deps))
           await scope.register(agentRepoRoutes(deps))

@@ -13422,12 +13422,13 @@ export class Daemon {
     return max - this.duties.agents().size - Math.max(0, this.inFlightDutyClaims.size - 1)
   }
 
-  /** True when duty leases gate service: a tenancy question, not an option. An install-wide
-   *  (frame-scope) member serves only what it holds a lease for; an org-scoped daemon owns its
-   *  agents outright and never participates in the ledger. */
+  /** True when duty leases gate service: a membership question, not an option (daemon-groups.md
+   *  §3). A member of a member set — the install-wide pool or an organization's own — serves only
+   *  what it holds a lease for; a daemon in no set owns its agents outright and never participates
+   *  in the ledger. The set is what `auth/ok` announced, and nothing else stands in for it. */
   private dutyEnforced(): boolean {
     // `cpClient` lands in start(); transportAgents can run before that in tests.
-    return this.cpClient?.organizationScope?.() === 'frame'
+    return this.cpClient?.memberSet?.() != null
   }
 
   /** `duty/grant` EVT: admit the grants off the frame-dispatch path, so a slow

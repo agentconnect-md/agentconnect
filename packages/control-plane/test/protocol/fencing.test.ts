@@ -36,6 +36,7 @@ function fencingDeps(clock: FakeClock): DaemonWsDeps {
   return {
     log: { error: () => undefined },
     auth: {} as DaemonWsDeps['auth'],
+    memberSets: {} as DaemonWsDeps['memberSets'],
     lifecycleOps: {} as DaemonWsDeps['lifecycleOps'],
     registry: {} as DaemonWsDeps['registry'],
     orchestrator: {} as DaemonWsDeps['orchestrator'],

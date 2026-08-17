@@ -179,6 +179,8 @@ export interface DaemonRecord {
   sessionRetention: string
   lastModifiedAt: Date // last human edit (provision/rename); defaults to createdAt
   lastModifiedBy: AgentCreator | null // WebUI user who last edited it; null ⇒ never edited by a human
+  /** The member set this daemon is in (daemon-groups.md §2); null ⇒ it owns its agents outright. */
+  memberSetId: string | null
 }
 
 export interface DaemonRepo {
@@ -5006,14 +5008,36 @@ export interface MemberSetRepo {
   get(setId: string): Promise<MemberSetRecord | null>
   /** Which set this daemon is a member of — the claim scope of its connection (§3). */
   setIdOf(daemonId: DaemonId): Promise<string | null>
+  /** That set whole — what `auth/ok` announces, so the daemon is told a name and not just an id. */
+  setOf(daemonId: DaemonId): Promise<MemberSetRecord | null>
   /** The set's members, sorted. The read path for "who could serve a `set`-placed agent". */
   memberIdsOf(setId: string): Promise<string[]>
   /** The set's members, sorted, but ONLY for a set whose members share one content store — the
    *  org-less install-wide pool. An org set answers `[]`: its machines may keep private stores, so
    *  none of them can stand in for another's transcripts (domain/session-content.ts). */
   sharedStoreMemberIdsOf(setId: string): Promise<string[]>
-  /** Record a membership under the set's tenancy invariant; throws MemberSetTenancyMismatch. */
+  /** Record a membership under the set's tenancy invariant; throws MemberSetTenancyMismatch.
+   *  The automatic path (a pool Pod on auth) — no operator precondition. */
   enroll(setId: string, daemonId: DaemonId): Promise<void>
+  /** The operator path: the same row, plus §3's join precondition taken under the per-daemon
+   *  fence. Throws `DaemonHasPlacedAgents` when agents are still pinned to the machine. */
+  enrollOperator(setId: string, daemonId: DaemonId): Promise<void>
+  /** One org's sets, by name. The org-less pool is never among them — it belongs to no org. */
+  listForOrg(orgId: string): Promise<MemberSetRecord[]>
+  /** Agents placed on each of these sets, in one query — the list read must not be N+1. Sets with
+   *  no agents are absent from the map, not zero-valued. */
+  agentCountsOf(setIds: readonly string[]): Promise<Map<string, number>>
+  /** Create an org's set. The org-less pool is minted by migration and never through this. */
+  createForOrg(orgId: string, name: string): Promise<MemberSetRecord>
+  /** Rename one of an org's sets. Null ⇒ no such set in that org. */
+  renameForOrg(orgId: string, setId: string, name: string): Promise<MemberSetRecord | null>
+  /** Drop one of an org's sets. Refused while anything still points at it: throws
+   *  `MemberSetInUse` when it has members or `set`-placed agents. False ⇒ no such set. */
+  deleteForOrg(orgId: string, setId: string): Promise<boolean>
+  /** Drop a membership row, refusing (`DaemonHoldsDuty`) while the daemon holds a live lease at
+   *  `now` — §3's stop-and-confirm, taken with the delete under the per-daemon fence so the
+   *  ledger cannot grant it one in between. */
+  withdraw(daemonId: DaemonId, now: Date): Promise<void>
 }
 
 // DutyGroupRepo (k8s daemons) — the CP-hosted duty ledger

@@ -17,6 +17,7 @@ import type {
   IntegrationChannelRepo,
   CronRepo,
   HookRepo,
+  MemberSetRepo,
   AgentRepo,
   ExternalMemoryConnectionRepo,
   WebchatConversationRepo,
@@ -104,6 +105,9 @@ export interface DaemonWsDeps {
   collabRoutes: CollabRoutesService
   /** The duty lease exchange riding the heartbeat (k8s daemons). */
   dutyLease: DutyLeaseService
+  /** The set a connection may claim duties within (daemon-groups.md §3), re-read once the
+   *  connection is registered so a membership change cannot slip through the handshake. */
+  memberSets: Pick<MemberSetRepo, 'setIdOf'>
   /** Assembles one agent's complete installable definition for `duty/fetch` —
    *  the same bundle an `agent/activate` carries; absent ⇒ the fetch answers
    *  empty and the member installs nothing. */

@@ -283,6 +283,9 @@ export class CpClient {
   private fatal = false // 4401 — never auto-retry
   private serverFeatures = new Set<string>()
   private organizationMode: OrganizationMode = 'connection'
+  /** The member set the CP announced at `auth/ok` (daemon-groups.md §3); null ⇒ in none. Never
+   *  asserted from here — membership is the CP's to record and this connection's to be told. */
+  private memberSetRef: { setId: string; name: string } | null = null
   private attempt = 0
   private reconnectTimer?: TimerHandle
   private lastAuthedEpoch = 0 // for resume on reconnect (per-agent seq tail is out of scope)
@@ -459,15 +462,17 @@ export class CpClient {
       webAppUrl?: string
       orgSlug?: string
       organizationMode?: OrganizationMode
+      memberSet?: { setId: string; name: string }
       lifecycle?: BootstrapLifecycle
     }
     this.sessionEpoch = ok.sessionEpoch
     this.organizationMode = ok.organizationMode ?? 'connection'
+    this.memberSetRef = ok.memberSet ?? null
     this.dutyLeaseMs = ok.dutyLeaseMs
     // A CP that announces its horizon is a CP that confirms renewals — both landed together.
     this.dutyRenewalsConfirmed = ok.dutyLeaseMs !== undefined
     // Once per connection, and only where a lease can exist: a member fencing on a guess should say so.
-    if (!this.dutyRenewalsConfirmed && this.organizationMode === 'frame' && this.deps.duties) {
+    if (!this.dutyRenewalsConfirmed && this.memberSetRef && this.deps.duties) {
       this.deps.log.warn(
         `cp: no duty lease horizon in auth/ok — self-fencing on the built-in ${DUTY_LEASE_FALLBACK_MS}ms default, ` +
           'anchored on the heartbeats sent rather than on renewals confirmed'
@@ -933,6 +938,12 @@ export class CpClient {
    *  only on the latter. */
   organizationScope(): 'connection' | 'frame' {
     return this.organizationMode
+  }
+
+  /** The member set this connection belongs to, as `auth/ok` announced it; null ⇒ in none
+   *  (daemon-groups.md §3). This is the duty-enforcement predicate: membership, not tenancy. */
+  memberSet(): { setId: string; name: string } | null {
+    return this.memberSetRef
   }
 
   /** Additive CP feature negotiation for rolling daemon/CP upgrades. */

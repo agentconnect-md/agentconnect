@@ -89,6 +89,8 @@ async function boot(scope: 'frame' | 'connection' = 'frame') {
   const fetchDutyAgent = vi.fn(async () => ({ bundle: bundle() }))
   ;(daemon as any).cpClient = {
     organizationScope: () => scope,
+    // Membership, not tenancy, is what makes duties enforced (daemon-groups.md §3).
+    memberSet: () => (scope === 'frame' ? { setId: '9f11e5e7-0000-4000-8000-000000000001', name: 'Cloud' } : null),
     stop: async () => {},
     releaseDuties: vi.fn(async () => {}),
     // An admission reports its new digest immediately: the CP holds every projection that
@@ -116,6 +118,7 @@ async function bootMidAdmission() {
   })
   ;(daemon as any).cpClient = {
     organizationScope: () => 'frame',
+    memberSet: () => ({ setId: '9f11e5e7-0000-4000-8000-000000000001', name: 'Cloud' }),
     stop: async () => {},
     releaseDuties: vi.fn(async () => {}),
     // An admission reports its new digest immediately: the CP holds every projection that
