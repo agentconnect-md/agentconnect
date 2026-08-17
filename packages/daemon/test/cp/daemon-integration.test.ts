@@ -83,6 +83,7 @@ describe('Daemon ↔ CP integration', () => {
       },
       save: (s) => store2.setCpRouting(s.routingEpoch, JSON.stringify(s.assignments), JSON.stringify(s.globalRules))
     })
+    await layer.hydrate()
     // The local agent with id == CP agentId and a Slack integration makes the rule servable.
     const resolveCpAgent = (agentId: string) =>
       agentId === 'agentA' ? { integrationId: 'int1', botUserId: 'B1' } : null

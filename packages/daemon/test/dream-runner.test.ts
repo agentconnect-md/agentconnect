@@ -1135,7 +1135,7 @@ describe('DreamRunner crash recovery', () => {
       snapshotDigest: 'sha256:x',
       createdAt: new Date().toISOString()
     })
-    new DreamRunner({
+    await new DreamRunner({
       agentDirByAgent: () => undefined,
       memoryFsFor: () => undefined,
       dreamingPolicyFor: () => undefined,
@@ -1143,14 +1143,14 @@ describe('DreamRunner crash recovery', () => {
       store,
       extract: async () => '',
       log: silent
-    })
+    }).initialize()
     expect(store.dreams.get('drm-stale')).toMatchObject({
       status: 'failed',
       error: { type: 'daemon_restart' }
     })
   })
 
-  it("fails a peer's dream on the duty grant, never because this member started", () => {
+  it("fails a peer's dream on the duty grant, never because this member started", async () => {
     // On a pool the store is shared: boot sees only this incarnation's rows, and a peer's
     // running dream becomes recoverable only once the CP hands over the agent.
     const store = new FakeStore()
@@ -1177,6 +1177,7 @@ describe('DreamRunner crash recovery', () => {
       },
       log: silent
     })
+    await runner.initialize()
     expect(store.dreams.get('drm-peer')?.status).toBe('running')
 
     runner.reclaimDreams(['a2'])
@@ -1214,7 +1215,7 @@ describe('DreamRunner crash recovery', () => {
       endedAt: '2026-07-24T01:00:00.000Z'
     })
 
-    new DreamRunner({
+    await new DreamRunner({
       agentDirByAgent: (agentId) => (agentId === 'a1' ? dir : undefined),
       memoryFsFor: (agentId) => (agentId === 'a1' ? local(dir) : undefined),
       dreamingPolicyFor: () => undefined,
@@ -1222,7 +1223,7 @@ describe('DreamRunner crash recovery', () => {
       store,
       extract: async () => ({ output: '' }),
       log: silent
-    })
+    }).initialize()
     for (let i = 0; i < 20; i++) {
       if (!(await readdir(base)).includes('output')) break
       await new Promise((resolve) => setTimeout(resolve, 5))
@@ -1375,6 +1376,7 @@ describe('DreamRunner production security hold', () => {
       extract: async () => ({ output: PROPOSAL }),
       log: silent
     })
+    await runner.initialize()
 
     expect(supersededDreams).not.toHaveBeenCalled()
     expect(await readFile(join(base, 'output', 'MEMORY.md'), 'utf8')).toBe('# retained\n')

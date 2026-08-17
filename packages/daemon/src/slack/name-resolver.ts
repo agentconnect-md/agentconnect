@@ -25,11 +25,18 @@ export class SlackNameResolver {
   private nextAttemptAt = new Map<string, number>()
 
   constructor(
-    private save: (id: string, name: string) => void,
+    private save: (id: string, name: string) => void | Promise<void>,
     private log?: Logger,
     private now: () => number = Date.now,
-    private saveAvatar?: (conn: SlackConnection, id: string, avatarUrl: string) => void
+    private saveAvatar?: (conn: SlackConnection, id: string, avatarUrl: string) => void | Promise<void>
   ) {}
+
+  /** A cache sink may write asynchronously; a failed name cache write never fails a lookup. */
+  private persist(write: void | Promise<void>): void {
+    void Promise.resolve(write).catch((err: unknown) => {
+      this.log?.debug(`slack: name cache write failed: ${(err as Error).message}`)
+    })
+  }
 
   /** Kick off (cached) resolution for a message's channel, human sender, and any
    *  `<@U…>` user mentions in its body — so session read-back can render mentions
@@ -67,15 +74,15 @@ export class SlackNameResolver {
     try {
       const info = await conn.getChannelInfo(channel)
       if (info.name) {
-        this.save(channel, info.name)
+        this.persist(this.save(channel, info.name))
       } else if (info.isIm && info.user) {
         // A DM has no name of its own — label it by the human on the other side,
         // "@Name" so readers (and the console) can tell it apart from a "#channel"
         // name. Nameless profiles just cache the attempt (OK_TTL), saving nothing.
         const p = await conn.getUserProfile(info.user)
         const name = p.realName || p.name
-        if (name) this.save(channel, `@${name}`)
-        if (p.avatarUrl) this.saveAvatar?.(conn, info.user, p.avatarUrl)
+        if (name) this.persist(this.save(channel, `@${name}`))
+        if (p.avatarUrl) this.persist(this.saveAvatar?.(conn, info.user, p.avatarUrl))
       }
     } catch (err) {
       this.nextAttemptAt.set(channel, this.now() + FAIL_TTL_MS)
@@ -88,8 +95,8 @@ export class SlackNameResolver {
     try {
       const p = await conn.getUserProfile(user)
       const name = p.realName || p.name
-      if (name) this.save(user, name)
-      if (p.avatarUrl) this.saveAvatar?.(conn, user, p.avatarUrl)
+      if (name) this.persist(this.save(user, name))
+      if (p.avatarUrl) this.persist(this.saveAvatar?.(conn, user, p.avatarUrl))
     } catch (err) {
       this.nextAttemptAt.set(user, this.now() + FAIL_TTL_MS)
       this.log?.debug(`slack: name lookup failed for user ${user}: ${(err as Error).message}`)

@@ -285,7 +285,16 @@ export class DreamRunner {
     return result
   }
 
-  constructor(private readonly deps: DreamRunnerDeps) {
+  /** Guards {@link initialize} so a lazily-constructed runner recovers exactly once. */
+  private initialized = false
+
+  constructor(private readonly deps: DreamRunnerDeps) {}
+
+  /** Boot-time store work, out of the constructor so it can await a Promise-returning store.
+   *  Named apart from {@link start}, which starts one dream. */
+  async initialize(): Promise<void> {
+    if (this.initialized) return
+    this.initialized = true
     // Crash recovery: fail what THIS process left in flight (staging kept); a peer's dream waits for its duty grant.
     this.failInterrupted(this.deps.store.openDreams())
     // The LocalStore migration marks proposals stranded by adoptions made on an

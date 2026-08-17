@@ -189,7 +189,7 @@ describe('the coalescing buffer is invisible to a reader', () => {
     expect(toolRow(store).body).toBe(body(9))
   })
 
-  it('raises one mutation notice per flush, carrying the revision the flushed row landed on', () => {
+  it('raises one mutation notice per flush, carrying the revision the flushed row landed on', async () => {
     const { store } = seeded()
     const seen: { revision: number; agentIds: string[] }[] = []
     store.setTranscriptMutationListener((mutation) => seen.push(mutation))
@@ -198,9 +198,33 @@ describe('the coalescing buffer is invisible to a reader', () => {
     }
     expect(seen).toEqual([])
     store.flushToolCallWrites()
+    // The notice is dispatched post-commit, so it lands on the next microtask, not inline.
+    expect(seen).toEqual([])
+    await Promise.resolve()
     expect(seen).toHaveLength(1)
     expect(seen[0]!.agentIds).toEqual([AGENT])
     expect(seen[0]!.revision).toBe(store.currentTranscriptRevision())
+  })
+
+  it('never lets a listener observe a half-applied write: the notice fires after the row has landed', async () => {
+    const { store } = seeded()
+    const observed: { rows: number; body: string | null }[] = []
+    let notices = 0
+    store.setTranscriptMutationListener(() => {
+      notices++
+      const rows = store.threadTranscript(CHANNEL, THREAD)
+      observed.push({ rows: rows.length, body: toolRow(store).body ?? null })
+    })
+    store.appendTranscript({ channel: CHANNEL, thread: THREAD, ts: '9', sender: AGENT, kind: 'text', text: 'hi' })
+    store.updateToolCall(CHANNEL, THREAD, AGENT, 'tc-1', { title: 'Bash', body: body(11) })
+    store.flushToolCallWrites()
+    expect(notices).toBe(0)
+    await Promise.resolve()
+    // Both notices ran after their write committed: the reads see the appended row and the
+    // flushed body, never an intermediate state.
+    expect(notices).toBe(2)
+    expect(observed[0]!.rows).toBe(2)
+    expect(observed[1]!.body).toBe(body(11))
   })
 
   it('lands a buffered body on close, so a drain cannot lose it', () => {

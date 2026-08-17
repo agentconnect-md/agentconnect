@@ -3621,11 +3621,17 @@ export class LocalStore {
   ): void {
     const agentIds = [...new Set(candidates.filter((candidate): candidate is string => !!candidate))]
     if (agentIds.length === 0) return
-    try {
-      this.transcriptMutationListener?.({ channel, thread, agentIds, revision })
-    } catch {
-      // Live-view invalidation is best-effort and must never fail a durable write.
-    }
+    if (!this.transcriptMutationListener) return
+    // Post-commit dispatch: the listener reads the store, so it must never run mid-write and
+    // observe a half-applied batch (or re-enter an open transaction). Re-read at dispatch so a
+    // listener detached during shutdown does not fire from a queued notice.
+    queueMicrotask(() => {
+      try {
+        this.transcriptMutationListener?.({ channel, thread, agentIds, revision })
+      } catch {
+        // Live-view invalidation is best-effort and must never fail a durable write.
+      }
+    })
   }
 
   /** One agent's full stored ToolBody JSON, or undefined if unknown/not owned. */

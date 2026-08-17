@@ -446,11 +446,12 @@ export class CommandHandlers {
     explicitTarget?: { agentId: string; integrationId: string; via: RouteVia },
     srcIntegrationIds?: readonly string[]
   ): boolean {
-    let target =
-      explicitTarget ??
-      routeRules(msg, this.host.mergedRulesForSource(srcIntegrationIds), (c, t) =>
-        this.host.threadOwner(c, t, msg.transportScope)
-      )
+    let target: { agentId: string; integrationId: string; via: RouteVia } | null | undefined = explicitTarget
+    if (!target) {
+      // Prefetched for the ONE thread key `routeRules` can ask about — its own message's.
+      const threadOwner = msg.thread ? this.host.threadOwner(msg.channel, msg.thread, msg.transportScope) : null
+      target = routeRules(msg, this.host.mergedRulesForSource(srcIntegrationIds), () => threadOwner)
+    }
     if (!target) {
       // Routing found no agent — the common group case: a bare `/status@bot` carries no
       // mention entity, no reply, and its fresh thread has no session. Resolve the agent

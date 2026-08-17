@@ -1895,6 +1895,7 @@ export class Daemon {
       },
       save: (s) => this.store.setCpRouting(s.routingEpoch, JSON.stringify(s.assignments), JSON.stringify(s.globalRules))
     })
+    await this.cpRouting.hydrate()
     // CP agent specs stay in memory and are re-converged on every CP connection.
     // The registry removes a same-id agent.json and retains only a secret-free
     // data-root marker on disk; unrelated local agent.json files remain user-owned.
@@ -2335,6 +2336,10 @@ export class Daemon {
     void this.sweepSessionRetention().catch((err) =>
       this.log.warn(`retention: startup session GC failed (${formatErr(err)})`)
     )
+    // Dream crash recovery + the superseded-staging sweep, here rather than in the runner's
+    // constructor: it reads the store, and the sweep needs the loaded agents' directories. A
+    // deployment with dreams blocked still builds no runner at boot — it recovers on first use.
+    if (this.dreamOperationsAllowed()) await this.dreamRunner().initialize()
     // Curated admission belongs to local runtime resolution, not CP readiness.
     // Start it even when the control plane is disabled or still unreachable.
     void this.probeRuntimesAndEmit(false).finally(() => this.armRuntimeProbeRefresh())
@@ -4473,7 +4478,8 @@ export class Daemon {
   }
 
   private dreamRunner(): DreamRunner {
-    this.dreamRunnerInstance ??= new DreamRunner({
+    if (this.dreamRunnerInstance) return this.dreamRunnerInstance
+    const runner = new DreamRunner({
       agentDirByAgent: (id) => this.agents.get(id)?.dir,
       memoryFsFor: (id) => this.memoryFsFor(id),
       dreamingPolicyFor: (id) => dreamingPolicyOf(this.agents.get(id)),
@@ -4502,7 +4508,11 @@ export class Daemon {
       onEvent: (event) => this.recordDreamLifecycle(event),
       log: this.log
     })
-    return this.dreamRunnerInstance
+    this.dreamRunnerInstance = runner
+    // A runner built outside startup (a duty grant, a CP read) still recovers what this process
+    // left in flight, as the constructor used to.
+    void runner.initialize().catch((err) => this.log.warn(`dream: startup recovery failed (${formatErr(err)})`))
+    return runner
   }
 
   /** Whether Dream execution + staged-content operations are allowed on this
@@ -4745,13 +4755,8 @@ export class Daemon {
       return { kind: 'rejected', reason: 'unrouted' }
     }
     const rules = this.mergedRulesForSource(srcIntegrationIds)
-    const routed = routeRules(
-      msg,
-      rules,
-      (c, t) => this.sessions.threadOwner(c, t, msg.transportScope),
-      undefined,
-      verified.authorAgentId
-    )
+    const threadOwner = this.prefetchedThreadOwner(msg)
+    const routed = routeRules(msg, rules, () => threadOwner, undefined, verified.authorAgentId)
     // A primary rung is useful for ordinary single-target arbitration, but it is not a
     // precondition for conversation delivery. Two mention-only agents can both already
     // be in the room while `threadOwner` deliberately returns null; dropping here would
@@ -5071,7 +5076,8 @@ export class Daemon {
       return { kind: 'rejected', reason: 'suppressed' }
     }
 
-    const result = routeRules(msg, routingRules, (c, t) => this.sessions.threadOwner(c, t, msg.transportScope))
+    const threadOwner = this.prefetchedThreadOwner(msg)
+    const result = routeRules(msg, routingRules, () => threadOwner)
     // Participant delivery is independent of whether the single-target ladder found an
     // owner. In a real multi-agent thread `threadOwner` intentionally returns null; the
     // joined agents (and every newly mentioned or channel-auto agent) still hear the
@@ -5178,6 +5184,12 @@ export class Daemon {
     return { kind: 'dispatched', handle }
   }
 
+  /** Thread affinity for the ONE thread key `routeRules` can ask about — its own message's —
+   *  read before the (pure, synchronous) ladder runs rather than from inside its callback. */
+  private prefetchedThreadOwner(msg: NormalizedMessage): string | null {
+    return msg.thread ? this.sessions.threadOwner(msg.channel, msg.thread, msg.transportScope) : null
+  }
+
   /**
    * Deliver `msg` to every OTHER agent already in its thread (and to any further agent the
    * body named), beyond the one arbitration selected.
@@ -5199,6 +5211,8 @@ export class Daemon {
     }
   ): Array<{ kind: 'rejected'; reason: DeliveryRejectionReason } | { kind: 'dispatched'; handle: DeliveryHandle }> {
     const thread = msg.thread
+    // Read HERE, not hoisted next to the pre-`routeRules` owner prefetch: the primary's
+    // activation runs in between and can join the thread this set must reflect.
     const participants = thread ? this.sessions.threadParticipants(msg.channel, thread, msg.transportScope) : []
     // Pure selection (policy `conversationPeers`): participants ∪ explicit joins
     // (including the verified final's exact recipient joins) ∪ channel-auto,
