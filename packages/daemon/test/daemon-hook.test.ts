@@ -27,7 +27,9 @@ import {
 } from '../src/messages/hook-message.js'
 import { GithubReplyCollector } from '../src/github/poster.js'
 import { transcriptCoords } from '../src/session/session-manager.js'
-import { sessionKey } from '../src/store/local-store.js'
+import { DatabaseSync } from 'node:sqlite'
+import { LocalStore, sessionKey } from '../src/store/local-store.js'
+import { statePath } from '../src/paths.js'
 import { WorkspaceManager } from '../src/workspace/workspace-manager.js'
 import { FakeClock } from '@agentconnect.md/connection'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
@@ -1880,6 +1882,170 @@ describe('Daemon rd/msg hook fires', () => {
         ['d-1', 'failed', 'agent_handover'],
         ['d-2', 'failed', 'agent_handover']
       ])
+    )
+    await daemon.stop()
+  }, 15_000)
+
+  // A duty handoff keeps an agent's ordinary unrun rows for its successor (#1050), but a hook fire
+  // is fenced to the daemon the CP accepted as its dispatch target: nobody else can cross
+  // `hook/start` or expose a review for it. So the handoff reports the row instead of handing it
+  // over — even mid-drain, where the shutdown retention would otherwise win and leave a live row
+  // for a member that could only rerun it degraded.
+  it('reports an interrupted hook fire on a duty handoff instead of leaving its row behind', async () => {
+    let releasePrompt!: () => void
+    const promptBarrier = new Promise<void>((resolve) => (releasePrompt = resolve))
+    const host = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'acp-drained-handover'),
+      modelOptions: vi.fn(() => null),
+      hasSession: vi.fn(() => true),
+      prompt: vi.fn(async () => {
+        await promptBarrier
+        return { stopReason: 'end_turn' }
+      }),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn(async () => {})
+    }
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => host as never
+    })
+    await daemon.start()
+    const cp = fakeCpClient()
+    ;(daemon as never as { cpClient: unknown }).cpClient = cp
+
+    await expect((daemon as any).handleRelayMsg(fire(), () => {})).resolves.toMatchObject({ accepted: true })
+    await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledOnce(), WAIT)
+
+    // A pool member releases its duties while SIGTERM drains it, so both retentions meet on one row.
+    ;(daemon as any).draining = true
+    ;(daemon as any).interruptAgentTurns(AGENT_ID, 'handover', 'handoff')
+    releasePrompt()
+
+    await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
+    expect(cp.hookReports[0]).toMatchObject({ deliveryKey: 'd-1', status: 'failed', reason: 'agent_handover' })
+    // Redacted into a terminal receipt: no successor finds a model turn to replay.
+    expect((daemon as any).store.listInboxBySessionKeyFifo()).toEqual([
+      expect.objectContaining({ id: `${HOOK_ID}:d-1`, msg: '{}', hookContext: null })
+    ])
+    await daemon.stop()
+  }, 15_000)
+
+  it('reports a handover for a replayed hook row belonging to another daemon’s dispatch', async () => {
+    const root = scaffold()
+    const seed = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: streamingHost().factory })
+    await seed.start()
+    const foreignDaemonId = '55555555-5555-4555-8555-555555555555'
+    expect((seed as any).cfg.daemonId).not.toBe(foreignDaemonId)
+    const message = buildHookMessage(fire(), 'trace-foreign-dispatch')
+    expect(
+      (seed as any).store.appendInbox({
+        id: message.msgId,
+        sessionKey: `${message.platform}:${message.channel}:${message.thread}:${AGENT_ID}`,
+        agentId: AGENT_ID,
+        msg: JSON.stringify(message),
+        hookContext: JSON.stringify({
+          hookId: HOOK_ID,
+          agentId: AGENT_ID,
+          deliveryKey: 'd-1',
+          firedAt: new Date().toISOString(),
+          snapshot: {
+            configRevision: '1',
+            dispatchRevision: '1',
+            dispatchDaemonId: foreignDaemonId,
+            reviewPolicy: 'full',
+            reportingMode: 'check',
+            gateMode: 'informational'
+          }
+        }),
+        loopGuardCounted: 1,
+        enqueuedAt: '1'
+      })
+    ).toBe(true)
+    await seed.stop()
+
+    const { factory, host } = streamingHost()
+    const restarted = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: factory })
+    const cp = fakeCpClient()
+    ;(restarted as never as { cpClient: unknown }).cpClient = cp
+    await restarted.start()
+
+    await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
+    expect(cp.hookReports[0]).toMatchObject({
+      deliveryKey: 'd-1',
+      status: 'failed',
+      reason: 'agent_handover',
+      dispatchDaemonId: foreignDaemonId
+    })
+    // The maintainer's Check gets that outcome now instead of a degraded rerun this member could
+    // never expose a review from — and the row is terminal, so it cannot be replayed again.
+    expect(host.prompt).not.toHaveBeenCalled()
+    expect((restarted as any).store.listInboxBySessionKeyFifo()).toEqual([
+      expect.objectContaining({ id: message.msgId, hookContext: null, completedAt: expect.any(Number) })
+    ])
+    await restarted.stop()
+  }, 15_000)
+
+  it('sends that handover report on a pool’s shared outbox, where the claim is fenced by owner', async () => {
+    // Invisible on a single-daemon store, where every claim succeeds unfenced. Only a SHARED outbox
+    // fences a claim by owner — and stamping the DEPARTED dispatch daemon as the receipt's owner
+    // left this member unable to claim the row it had just written, so the report it made durable
+    // went nowhere until an unrelated reconnect. The writer owns what it wrote.
+    const root = scaffold()
+    const { factory, host } = streamingHost()
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: factory })
+    await daemon.start()
+    const ownDaemonId = (daemon as any).cfg.daemonId as string
+    const foreignDaemonId = '66666666-6666-4666-8666-666666666666'
+    const shared = new LocalStore({
+      database: new DatabaseSync(statePath(root)) as never,
+      shared: true,
+      ownerId: ownDaemonId,
+      orgForAgent: () => 'org-1'
+    })
+    ;(daemon as any).store = shared
+    const cp = fakeCpClient()
+    ;(daemon as never as { cpClient: unknown }).cpClient = cp
+
+    const message = buildHookMessage(fire(), 'trace-shared-outbox')
+    expect(
+      shared.appendInbox({
+        id: message.msgId,
+        sessionKey: `${message.platform}:${message.channel}:${message.thread}:${AGENT_ID}`,
+        agentId: AGENT_ID,
+        msg: JSON.stringify(message),
+        hookContext: JSON.stringify({
+          hookId: HOOK_ID,
+          agentId: AGENT_ID,
+          deliveryKey: 'd-1',
+          firedAt: new Date().toISOString(),
+          snapshot: {
+            configRevision: '1',
+            dispatchRevision: '1',
+            dispatchDaemonId: foreignDaemonId,
+            reviewPolicy: 'full',
+            reportingMode: 'check',
+            gateMode: 'informational'
+          }
+        }),
+        loopGuardCounted: 1,
+        enqueuedAt: '1'
+      })
+    ).toBe(true)
+
+    ;(daemon as any).replayInbox()
+
+    // The report actually leaves this member, and the ACK then releases the body it owns.
+    await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
+    expect(cp.hookReports[0]).toMatchObject({ deliveryKey: 'd-1', status: 'failed', reason: 'agent_handover' })
+    expect(host.prompt).not.toHaveBeenCalled()
+    await vi.waitFor(
+      () =>
+        expect(shared.listInboxBySessionKeyFifo()).toEqual([
+          expect.objectContaining({ id: message.msgId, terminalReport: null, completedAt: expect.any(Number) })
+        ]),
+      WAIT
     )
     await daemon.stop()
   }, 15_000)
