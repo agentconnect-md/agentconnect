@@ -1002,7 +1002,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
               {/* Daemon / Runtime / Model share one 3-up row inside the Basics grid. */}
               <div className="desktop:col-span-2 grid grid-cols-1 gap-[14px] desktop:grid-cols-3">
                 <div className="fld">
-                  <span className="fldlbl">Daemon</span>
+                  <span className="fldlbl">Runs on</span>
                   <DaemonSelect value={effectiveDaemonId} options={daemonOptions} onChange={setDaemonId} />
                 </div>
                 <div className="fld">

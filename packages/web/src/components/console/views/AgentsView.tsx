@@ -528,7 +528,7 @@ export default function AgentsView() {
         <div className={`row h ${cols}`}>
           {th('Agent', 'agent')}
           {th('Status', 'status')}
-          {th('Daemon', 'daemon')}
+          {th('Runs on', 'daemon')}
           {th('Creator', 'creator')}
           {th('Repo', 'repo')}
           <span>Integrations</span>

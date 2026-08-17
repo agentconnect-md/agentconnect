@@ -426,7 +426,7 @@ function ConfigureAgent({
 
       <div className="flex flex-col gap-[14px] rounded-[10px] border border-(--border-default) bg-(--surface-card) p-4 shadow-(--shadow-xs)">
         <div className="fld">
-          <span className="fldlbl">Daemon</span>
+          <span className="fldlbl">Runs on</span>
           <div className="inp cursor-not-allowed" title="Set to the daemon you just connected">
             <span className="truncate text-(--text-primary)">{daemon.name}</span>
             <span className="ml-auto flex-none font-sans text-[11.5px] leading-none text-(--text-tertiary)">

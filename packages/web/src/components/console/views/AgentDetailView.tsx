@@ -774,7 +774,7 @@ export default function AgentDetailView() {
                     className="box-border flex w-full cursor-pointer items-center justify-between gap-4 border-0 border-b border-(--border-subtle) bg-(--surface-card) px-4 py-3 text-left desktop:hidden"
                   >
                     <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary)">
-                      Daemon
+                      Runs on
                     </span>
                     <span className="inline-flex min-w-0 items-center gap-[6px]">
                       <span className="truncate font-mono text-[12px] font-medium leading-normal text-(--text-primary)">
@@ -786,7 +786,7 @@ export default function AgentDetailView() {
                 ) : (
                   <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3 desktop:hidden">
                     <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary)">
-                      Daemon
+                      Runs on
                     </span>
                     <span className="font-mono text-[12px] font-medium leading-normal text-(--text-primary)">
                       {daemonLine}
@@ -795,7 +795,7 @@ export default function AgentDetailView() {
                 )}
                 <div className="hidden items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3 desktop:flex">
                   <span className="font-sans text-[13px] font-normal leading-normal text-(--text-tertiary)">
-                    Daemon
+                    Runs on
                   </span>
                   {owningDaemon ? (
                     <Link className="lnk font-mono text-[12.5px] font-medium leading-normal" href={daemonHref}>

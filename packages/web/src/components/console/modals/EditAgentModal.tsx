@@ -714,7 +714,7 @@ export default function EditAgentModal({
                 </div>
                 <div className="fld desktop:col-span-2">
                   <div className="flex items-center justify-between gap-3">
-                    <span className="fldlbl">Daemon</span>
+                    <span className="fldlbl">Runs on</span>
                     {!!initialDaemonId.current && !daemonChanged && (
                       <button
                         type="button"

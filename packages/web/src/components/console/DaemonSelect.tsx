@@ -34,7 +34,7 @@ export function DaemonSelect({
   value,
   options,
   onChange,
-  ariaLabel = 'Daemon',
+  ariaLabel = 'Runs on',
   placeholder = 'No daemons connected'
 }: {
   value: string
