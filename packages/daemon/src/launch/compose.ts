@@ -11,7 +11,7 @@ import {
 import { randomUUID } from 'node:crypto'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
-import { prepareRuntimeLaunch, type PreparedRuntimeLaunch } from '../acp/runtime-launch.js'
+import { prepareRuntimeLaunch, type PreparedRuntimeLaunch } from './prepare.js'
 import type { SandboxMechanism } from '../acp/sandbox.js'
 import {
   describeRuntime,
@@ -22,8 +22,8 @@ import {
 import { MemoryProviderUnavailableError, type MemoryProviderKind } from '../memory/provider.js'
 import type { RuntimeDef } from '../config/config-schema.js'
 import { CLAUDE_PROFILE_ENV, isClaudeRuntimeDef } from '../runtime-defs/claude-runtime.js'
-import { resolveCommandPath } from './probe.js'
-import { resolveTrustedExecutable, trustedRuntimeReadRoots } from './read-roots.js'
+import { resolveCommandPath } from '../runtimes/probe.js'
+import { resolveTrustedExecutable, trustedRuntimeReadRoots } from '../runtimes/read-roots.js'
 
 export interface ComposedRuntimeLaunch {
   runtime: RuntimeDef

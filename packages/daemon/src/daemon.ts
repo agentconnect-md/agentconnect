@@ -37,7 +37,7 @@ import {
 } from './store/local-store.js'
 import { AcpHost, turnFailureCode, turnFailureReason, type AcpPermissionPolicyEvent } from './acp/acp-host.js'
 import { probeSandboxHost, SandboxError, type SandboxMechanism, type SandboxProbe } from './acp/sandbox.js'
-import { effectiveRunInSandbox, prepareRuntimeLaunch } from './acp/runtime-launch.js'
+import { effectiveRunInSandbox, prepareRuntimeLaunch } from './launch/prepare.js'
 import {
   permissionModeDisplayLabel,
   permissionPresetSettings,
@@ -270,7 +270,7 @@ import {
 } from './runtimes/model-provider-config.js'
 import { DEFAULT_MODEL_KEY_TTL_SECONDS, KeyServerClient, type KeyGrant } from './key-server/client.js'
 import { CuratedRuntimeAdmission } from './runtimes/curated-admission.js'
-import { composeRuntimeLaunch, runtimeSandboxReadRoots } from './runtimes/launch-policy.js'
+import { composeRuntimeLaunch, runtimeSandboxReadRoots } from './launch/compose.js'
 import { resolveTrustedExecutable, trustedRuntimeReadRoots } from './runtimes/read-roots.js'
 import { nodeExecArgvModuleEntries } from './runtimes/node-exec-argv.js'
 import { makeLogger, type Logger } from './log.js'

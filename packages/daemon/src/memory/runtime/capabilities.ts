@@ -81,14 +81,14 @@ const RUNTIME_MEMORY_POLICIES: RuntimeMemoryPolicy[] = [
   {
     // NousResearch/hermes-agent@30c7913617a63773c15a11900d24ac362b7609c8:
     // ACP does not forward skip_memory. The actual off-switch is a sanitized
-    // private config written by runtimes/launch-policy.ts.
+    // private config written by launch/compose.ts.
     id: 'hermes-agent',
     sig: /(?:^|[\\/])hermes(?:@[^\\/]*)?$/,
     disabledEnv: () => ({})
   },
   {
     // OpenInterpreter/open-interpreter@a5fddab44f8aa3a26865c990ecf04a644d2948e7:
-    // launch-policy appends the global `--disable memories` override.
+    // compose.ts appends the global `--disable memories` override.
     id: 'open-interpreter',
     sig: /(?:^|[\\/])interpreter(?:@[^\\/]*)?$/,
     disabledEnv: () => ({})
@@ -109,7 +109,7 @@ const RUNTIME_MEMORY_POLICIES: RuntimeMemoryPolicy[] = [
   },
   {
     // can1357/oh-my-pi@b0d04e517335ada4e00ef8dc93aad9f4d1be8d21:
-    // launch-policy appends a trusted memory.backend=off config overlay.
+    // compose.ts appends a trusted memory.backend=off config overlay.
     id: 'omp',
     sig: /(?:^|[\\/])omp(?:@[^\\/]*)?$/,
     disabledEnv: () => ({})
