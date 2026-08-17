@@ -16,6 +16,7 @@ import { resolveRoot } from '../paths.js'
 import { runtimeHomePath } from '../runtimes/runtime-home.js'
 import { installedRuntimeCatalog } from '../runtimes/probe.js'
 import { probeAllRuntimes, type ProbeOptions, type RuntimeProbeResult } from '../runtimes/runtime-prober.js'
+import { defaultProbeHostFactory } from '../acp/probe-host-factory.js'
 import { CuratedRuntimeAdmission } from '../runtimes/curated-admission.js'
 import { composeRuntimeLaunch } from '../launch/compose.js'
 import type { RuntimeDef } from '../config/config-schema.js'
@@ -88,7 +89,7 @@ export async function runChat(opts: RunChatOpts): Promise<void> {
       { [agent.runtime]: runtime },
       {
         curated: true,
-        isolateAccountApps: cfg.security.isolateAccountApps,
+        hostFactory: defaultProbeHostFactory({ isolateAccountApps: cfg.security.isolateAccountApps }),
         runInSandbox,
         daemonRoot: root,
         agentsRoot: cfg.agentsDir,

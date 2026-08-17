@@ -18,21 +18,22 @@ import {
   sweepStaleProbeRoots,
   type ProbeHostPolicy
 } from '../src/runtimes/runtime-prober.js'
-import { modelOptionsFrom, type AcpHost } from '../src/acp/acp-host.js'
+import { modelOptionsFrom } from '../src/acp/acp-host.js'
+import type { AcpProbeClient } from '../src/acp/probe-client.js'
 import type { RuntimeDef } from '../src/config/config-schema.js'
 
 const rt: RuntimeDef = { command: 'npx', args: ['-y', 'pkg'], env: [] }
 
-/** Minimal AcpHost stand-in — only the methods the prober calls. */
+/** Minimal probe client — only the methods the prober calls. */
 function fakeHost(behavior: {
   start?: () => Promise<void>
   newSession?: () => Promise<string>
-  models?: ReturnType<AcpHost['modelOptions']>
+  models?: ReturnType<AcpProbeClient['modelOptions']>
   acp?: number
-  mcp?: ReturnType<AcpHost['mcpCapabilities']>
+  mcp?: ReturnType<NonNullable<AcpProbeClient['mcpCapabilities']>>
   agentInfo?: { name: string; title?: string; version?: string }
   onStop?: () => void
-}): AcpHost {
+}): AcpProbeClient {
   return {
     start: behavior.start ?? (async () => {}),
     newSession: behavior.newSession ?? (async () => 'sess-1'),
@@ -43,7 +44,7 @@ function fakeHost(behavior: {
     stop: async () => {
       behavior.onStop?.()
     }
-  } as unknown as AcpHost
+  }
 }
 
 const successfulHost = (newSession = vi.fn(async () => 'sess-1')) => fakeHost({ newSession })
@@ -329,7 +330,7 @@ describe('probeAllRuntimes', () => {
   })
 
   it('returns [] for no runtimes', async () => {
-    expect(await probeAllRuntimes({})).toEqual([])
+    expect(await probeAllRuntimes({}, { hostFactory: () => fakeHost({}) })).toEqual([])
   })
 
   // Models the real leak: omp's own daemon escapes the adapter's process group, so it

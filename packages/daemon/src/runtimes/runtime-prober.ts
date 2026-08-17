@@ -15,7 +15,8 @@ import { dirname, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import type { McpTransportCapabilities } from '@agentconnect.md/protocol'
 import type { SessionConfigOption } from '@agentclientprotocol/sdk'
-import { AcpHost, type ModelOptions } from '../acp/acp-host.js'
+import type { ModelOptions } from '../acp/acp-host.js'
+import type { AcpProbeClient } from '../acp/probe-client.js'
 import type { RuntimeDef } from '../config/config-schema.js'
 import type { Logger } from '../log.js'
 import type { SandboxMechanism } from '../acp/sandbox.js'
@@ -69,6 +70,9 @@ export const probeCallbacks = {
 
 export type ProbeHostPolicy = typeof probeCallbacks &
   Partial<Pick<PreparedRuntimeLaunch, 'env' | 'inheritProcessEnv' | 'sandbox'>>
+
+/** Constructs the ACP client a probe drives — injected, so `runtimes/*` never names AcpHost. */
+export type ProbeHostFactory = (rt: RuntimeDef, id: string, cwd: string, policy: ProbeHostPolicy) => AcpProbeClient
 
 export interface ProbeLaunchPlan extends PreparedRuntimeLaunch {
   runtime?: RuntimeDef
@@ -140,10 +144,8 @@ export interface ProbeOptions {
   /** Max runtimes probed concurrently (each is a subprocess). Default 3. */
   concurrency?: number
   log?: Logger
-  /** Mirrors daemon security.isolateAccountApps for probe subprocesses. */
-  isolateAccountApps?: boolean
-  /** Seam for tests — construct a host for a runtime. Defaults to a real AcpHost. */
-  hostFactory?: (rt: RuntimeDef, id: string, cwd: string, policy: ProbeHostPolicy) => AcpHost
+  /** Constructs the probe client per runtime — `defaultProbeHostFactory()` in production. */
+  hostFactory: ProbeHostFactory
   /** Curated candidates require a disposable final managed launch plan. */
   curated?: boolean
   /** Full host environment used for allowlisted credential seeding and redaction. */
@@ -313,31 +315,6 @@ export function sweepStaleProbeRoots(opts: { log?: Logger; maxAgeMs?: number; tm
   return removed
 }
 
-function makeHost(
-  rt: RuntimeDef,
-  log?: Logger,
-  runtimeId?: string,
-  isolateAccountApps?: boolean,
-  launch?: ReturnType<NonNullable<ProbeOptions['launchFor']>>
-): AcpHost {
-  const prepared = launch
-    ? {
-        env: launch.env,
-        inheritProcessEnv: launch.inheritProcessEnv,
-        ...(launch.sandbox ? { sandbox: launch.sandbox } : {})
-      }
-    : {}
-  // A probe session produces no user-facing turns, so session/update is dropped.
-  return new AcpHost(rt, {
-    onUpdate: () => {},
-    log,
-    runtimeId,
-    isolateAccountApps,
-    ...probeCallbacks,
-    ...prepared
-  })
-}
-
 function sanitizeProbeDiagnostic(error: unknown, env: NodeJS.ProcessEnv, privateValues: string[] = []): string {
   let message = error instanceof Error ? error.message : String(error)
   const values = [...PROVIDER_ENV_KEYS].map((name) => env[name]).concat(privateValues)
@@ -469,7 +446,7 @@ export function preparedProbeLaunch(
   id: string,
   runtime: RuntimeDef,
   cwd: string,
-  opts: ProbeOptions
+  opts: Omit<ProbeOptions, 'hostFactory'>
 ): ProbeLaunchPlan | undefined {
   const scopeDir = dirname(cwd)
   const sourceEnv = opts.hostEnv ?? process.env
@@ -511,10 +488,10 @@ export async function probeRuntime(
   id: string,
   rt: RuntimeDef,
   cwd: string,
-  opts: ProbeOptions = {}
+  opts: ProbeOptions
 ): Promise<RuntimeProbeResult> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS
-  let host: AcpHost | undefined
+  let host: AcpProbeClient | undefined
   let redactValues: string[] = []
 
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -536,9 +513,7 @@ export async function probeRuntime(
           }
         : {})
     }
-    host = opts.hostFactory
-      ? opts.hostFactory(effectiveRuntime, id, cwd, hostPolicy)
-      : makeHost(effectiveRuntime, opts.log, id, opts.isolateAccountApps, launch)
+    host = opts.hostFactory(effectiveRuntime, id, cwd, hostPolicy)
     const activeHost = host
     let probeSessionId: string | undefined
     const run = async (): Promise<ModelOptions | null> => {
@@ -590,7 +565,7 @@ export async function probeRuntime(
  */
 export async function probeAllRuntimes(
   runtimes: Record<string, RuntimeDef>,
-  opts: ProbeOptions = {}
+  opts: ProbeOptions
 ): Promise<RuntimeProbeResult[]> {
   const ids = Object.keys(runtimes)
   if (ids.length === 0) return []

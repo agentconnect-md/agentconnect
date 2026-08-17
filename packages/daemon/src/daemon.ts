@@ -228,6 +228,7 @@ import {
 } from './runtimes/runtime-prober.js'
 import { ModelCatalogService, catalogFingerprint } from './runtimes/model-catalog.js'
 import { makeModelEnumerator } from './runtimes/model-enumerator.js'
+import { defaultProbeHostFactory } from './acp/probe-host-factory.js'
 import { capsFromConfigOptions, augmentEffortOptions } from './runtimes/config-caps.js'
 import { isClaudeRuntimeDef } from './runtime-defs/claude-runtime.js'
 import { runtimeHomePath } from './runtimes/runtime-home.js'
@@ -1931,12 +1932,15 @@ export class Daemon {
       store: this.store,
       log: this.log,
       now: () => this.clock.now(),
-      // No hostFactory seam here: daemon unit tests never reach the enumerator
-      // (the probe sweep early-returns under the fake-host guard, so noteProbe
-      // never fires); enumerator tests inject a fake EnumerateFn instead.
+      // Daemon unit tests never reach the enumerator (the probe sweep early-returns
+      // under the fake-host guard, so noteProbe never fires); enumerator tests inject
+      // a fake EnumerateFn instead.
       enumerate: makeModelEnumerator({
         log: this.log,
-        isolateAccountApps: this.cfg.security.isolateAccountApps,
+        hostFactory: defaultProbeHostFactory({
+          log: this.log,
+          isolateAccountApps: this.cfg.security.isolateAccountApps
+        }),
         sandboxMechanism: this.sandboxMechanism,
         daemonRoot: root,
         agentsRoot: this.cfg.agentsDir,
@@ -19347,12 +19351,16 @@ export class Daemon {
     this.log.info(`probe: sweeping ${probeCount} runtime(s): ${probeIds.join(', ') || '(none)'}`)
     try {
       const probe = this.opts.probeRuntimes ?? probeAllRuntimes
+      const probeHostFactory = defaultProbeHostFactory({
+        log: this.log,
+        isolateAccountApps: this.cfg.security.isolateAccountApps
+      })
       const batches: Array<Promise<RuntimeProbeResult[]>> = []
       if (Object.keys(ordinaryRuntimes).length > 0) {
         batches.push(
           probe(ordinaryRuntimes, {
             log: this.log,
-            isolateAccountApps: this.cfg.security.isolateAccountApps,
+            hostFactory: probeHostFactory,
             launchFor: (id, runtime, scopeDir, cwd) =>
               prepareRuntimeLaunch({
                 runtimeId: id,
@@ -19377,7 +19385,7 @@ export class Daemon {
           probe(curatedCandidates, {
             curated: true,
             log: this.log,
-            isolateAccountApps: this.cfg.security.isolateAccountApps,
+            hostFactory: probeHostFactory,
             runInSandbox: this.sandboxMechanism !== undefined,
             daemonRoot: this.root,
             agentsRoot: this.cfg.agentsDir,
