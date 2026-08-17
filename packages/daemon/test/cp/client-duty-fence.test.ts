@@ -81,6 +81,9 @@ interface Options {
   /** Omit the duty getter (or scope the connection to one org) — then no lease can exist. */
   duties?: boolean
   organizationMode?: 'connection' | 'frame'
+  /** The set the re-handshake announces. Membership — NOT the org mode — is what puts a connection
+   *  in the ledger, so an org-scoped member reports duties exactly as a pool member does. */
+  memberSet?: { setId: string; name: string }
   /** The groups the daemon holds; the digest projects these and a renewal refreshes exactly them. */
   held?: string[]
 }
@@ -134,7 +137,8 @@ async function ready(opts: Options = {}) {
   await tick()
   await handshake(link.current, 1, opts.noHorizon ? undefined : LEASE_MS)
   if (opts.organizationMode === 'connection') {
-    // Re-run the handshake as an org-scoped connection: the same client, no duty exchange.
+    // Re-run the handshake as an org-scoped connection: the same client, and a duty exchange only
+    // if this one announces a member set.
     link.current.simulateClose(1012, 'rescope')
     clock.advance(1000)
     await tick()
@@ -150,7 +154,8 @@ async function ready(opts: Options = {}) {
             heartbeatSec: BEAT_MS / 1000,
             dutyLeaseMs: LEASE_MS,
             serverTime: '2026-08-14T00:00:00.000Z',
-            organizationMode: 'connection'
+            organizationMode: 'connection',
+            ...(opts.memberSet ? { memberSet: opts.memberSet } : {})
           },
           { corr: auth.id }
         )
@@ -521,7 +526,7 @@ describe('the duty self-fence deadline', () => {
     expect(onDutyFence).not.toHaveBeenCalled()
   })
 
-  it('never arms on an org-scoped connection, where the ledger stays dormant', async () => {
+  it('never arms for a connection in NO member set, where the ledger stays dormant', async () => {
     const { link, clock, onDutyFence } = await ready({ organizationMode: 'connection' })
     await advance(clock, BEAT_MS)
     expect(beats(link.current).at(-1).payload).not.toHaveProperty('duties')
@@ -530,6 +535,17 @@ describe('the duty self-fence deadline', () => {
     link.current.simulateClose(1006, 'gone')
     await advance(clock, 10 * LEASE_MS)
     expect(onDutyFence).not.toHaveBeenCalled()
+  })
+
+  it('reports duties for an ORG-SCOPED member — membership decides, not the org mode', async () => {
+    // The regression this pins: duty reporting used to be gated on `organizationMode === 'frame'`,
+    // which was the same answer only while the install-wide pool was the one set that existed. An
+    // org's own group member authenticates in `connection` mode, so it went duty-gated and silent
+    // — it refused to serve what it held no lease for while never asking the CP for one.
+    const orgGroup = { setId: '9f11e5e7-0000-4000-8000-000000000002', name: 'edge' }
+    const { link, clock } = await ready({ organizationMode: 'connection', memberSet: orgGroup })
+    await advance(clock, BEAT_MS)
+    expect(beats(link.current).at(-1).payload).toHaveProperty('duties')
   })
 
   it('adopts each renewal horizon the CP announces', async () => {

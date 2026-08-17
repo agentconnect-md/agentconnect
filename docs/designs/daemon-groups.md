@@ -224,6 +224,14 @@ column, or transition generation exists yet:
 - Either way the daemon relearns its set the one way it ever learns it: the CP closes
   the socket with `1012` and the reconnect's `auth/ok` carries the new membership. Both
   admitted transitions leave nothing running to disturb, so the reconnect costs nothing.
+- **Membership is the ledger predicate on BOTH sides of the wire**, and it has to be the
+  same one. The daemon gates service on it (`dutyEnforced`) and must gate duty REPORTING
+  on it too: the heartbeat digest is what asks for a lease at all. That reporting was for
+  a while gated on `organizationMode === 'frame'` instead, which gave the same answer only
+  while the install-wide pool was the one set that existed — an org's own machines
+  authenticate in `connection` mode, so the moment an org could own a group its members
+  went duty-gated and silent, refusing to serve what they held no lease for while never
+  asking for one. Every agent on such a member goes dark until the two agree again.
 
 A precondition is only a fence if the state it read cannot change under it, so each one is
 taken **inside the transaction that writes**, under a per-daemon advisory lock every writer

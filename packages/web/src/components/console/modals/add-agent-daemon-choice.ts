@@ -34,9 +34,10 @@ export function addAgentDaemonChoice<T extends DaemonChoiceRow>(
   groups: readonly MemberSetRow[] = []
 ): AddAgentDaemonChoice<T> {
   const poolDaemons = daemons.filter((daemon) => daemon.pool && daemon.status === 'online')
-  // A daemon in a group is served THROUGH the group, so offering it as its own target would
-  // create an agent the machine may not serve (daemon-groups.md §3).
-  const localDaemons = onlineFirst(daemons.filter((daemon) => !daemon.pool && !daemon.memberSetId))
+  // Group membership does not disqualify a machine as a target: a `daemon` placement is eligible
+  // for exactly that machine either way, so it stays the agent's only holder (daemon-groups.md §3).
+  // Only Cloud members are excluded, and above — a pool Pod is a replaceable identity to pin to.
+  const localDaemons = onlineFirst(daemons.filter((daemon) => !daemon.pool))
   const liveMemberOf = (group: MemberSetRow): T | undefined =>
     daemons.find((daemon) => daemon.status === 'online' && group.memberDaemonIds.includes(daemon.daemonId))
   // Every group is OFFERED; only a serving one is selectable. Hiding an empty group answered the

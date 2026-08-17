@@ -946,6 +946,20 @@ export class CpClient {
     return this.memberSetRef
   }
 
+  /**
+   * Does this connection take part in the duty ledger? MEMBERSHIP decides, and it must be the same
+   * predicate the daemon gates service on (`dutyEnforced`), or the two disagree in the worst
+   * possible direction: it refuses to serve what it holds no lease for while never asking for one.
+   *
+   * This used to read `organizationMode === 'frame'`, which was the same answer only while the
+   * install-wide pool was the one set that existed — org-scoped daemons authenticate in
+   * `connection` mode, so once an org could own a group its members went duty-gated and silent,
+   * and the CP never granted them anything.
+   */
+  private reportsDuties(): boolean {
+    return this.memberSetRef !== null
+  }
+
   /** Additive CP feature negotiation for rolling daemon/CP upgrades. */
   supportsServerFeature(feature: string): boolean {
     return this.serverFeatures.has(feature)
@@ -1256,10 +1270,10 @@ export class CpClient {
    * for an agent that is already running, which is the gap a peer wake falls into.
    *
    * Coalesced onto one extra beat: an admission routinely settles several groups, and each one
-   * calls this. Dormant off a frame-mode connection, where there is no digest at all.
+   * calls this. Dormant off a non-member connection, where there is no digest at all.
    */
   reportDutiesNow(): void {
-    if (this.organizationMode !== 'frame' || this.state !== 'READY' || this.dutyReportTimer !== undefined) return
+    if (!this.reportsDuties() || this.state !== 'READY' || this.dutyReportTimer !== undefined) return
     this.dutyReportTimer = this.deps.clock.setTimeout(() => {
       this.dutyReportTimer = undefined
       if (this.state === 'READY') this.sendHeartbeat()
@@ -1267,9 +1281,9 @@ export class CpClient {
   }
 
   private sendHeartbeat(): void {
-    // The duty lease exchange rides this beat (frames/duty.ts). Absent on a
-    // single-org daemon, which keeps the whole CP-side path dormant.
-    const duties = this.organizationMode === 'frame' ? this.deps.duties?.() : undefined
+    // The duty lease exchange rides this beat (frames/duty.ts). Absent on a daemon in no member
+    // set, which keeps the whole CP-side path dormant.
+    const duties = this.reportsDuties() ? this.deps.duties?.() : undefined
     const live = this.transport
     live?.send(
       encode(
