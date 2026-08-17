@@ -23,6 +23,7 @@ import {
 import { DIRECT_AGENT_CALL_REMINDER, EXPLICIT_MENTION_REMINDER, NO_RESPONSE_REMINDER } from './no-response.js'
 import { planReplay, renderReplayContext } from './turn/replay-plan.js'
 import { AGENT_META_OPENING, buildStandingContext } from './turn/standing-context.js'
+import { backfillThreadHistory } from './turn/thread-backfill.js'
 
 /** Metadata-only semantic lifecycle for one provider-neutral recall attempt. Query
  * and recalled record bodies deliberately stay out of this observer contract. */
@@ -54,17 +55,9 @@ export type MemoryRecallLifecycleEvent =
       aborted: boolean
     }
 
-/** Mint a Slack message id for a wall-clock instant. This is NOT part of the
- * message-ordering strategy: its only callers are the warm-thread provider
- * snapshot's cutoff and the daemon's final-fence checkpoint, both of which are
- * `threadBackfill` — the Layer-1 read port — and both of which exist solely
- * because Slack is the only platform with a thread-history adapter today. It
- * moves into that port when the second adapter lands (audit row
- * session-manager.ts:951), not with `cursorOrdering`. */
-export function slackTsForWallClock(ms: number): string {
-  const whole = Math.floor(ms / 1_000)
-  return `${whole}.${String(Math.floor(ms % 1_000) * 1_000).padStart(6, '0')}`
-}
+// The wall-clock id minter lives with the warm-thread snapshot that owns it; re-exported
+// here because the daemon's final-fence checkpoint still imports it from this module.
+export { slackTsForWallClock } from './turn/thread-backfill.js'
 
 // Re-inject the compact response-choice reminder every this many turns, so the
 // rule stays salient on a long-running session (esp. non-Claude runtimes, where the full
@@ -855,56 +848,25 @@ export class SessionManager {
     const markerBefore =
       rec.lastDeliveredTs !== null && ordering?.coordinate(rec.lastDeliveredTs) === null ? null : rec.lastDeliveredTs
     const firstPromptAfterOwnRootInitialization = markerBefore === null && rec.triggeredBy === agentId
-    // §8.4/§8.5 authoritative warm-thread snapshot (#649): Socket Mode is the
-    // low-latency trigger, not an ordered/complete unread source. Slack may deliver a
-    // minutes-old event only after the current agent turn has ended, while newer plain
-    // replies and even @mentions already exist in conversations.replies. Snapshot every
-    // human mid-thread activation through a fixed wall-clock cutoff, then assemble the
-    // prompt from that stable window. Messages after the cutoff belong to the next turn.
-    // Agent-authored `messageAgent` rows are first-class thread events too: the direct
-    // delivery is only an attention signal, so its target snapshots/catches up exactly
-    // like a human-triggered turn.
-    const snapshotCutoffTs =
-      msg.platform === 'slack' && thread !== ts && this.deps.fetchThreadHistory
-        ? slackTsForWallClock(Date.now())
-        : undefined
-    // Is this id inside the turn's stable window? Provider history and locally
-    // recorded rows share one test: an id the platform issued must land at or
-    // before the wall-clock cutoff, while a synthetic / legacy coordinate — which
-    // cannot be compared with a wall-clock marker at all — is always kept, so it
-    // stays usable in tests and recovery. No cutoff (or no native ordering) means
-    // no window to fall outside of.
-    const withinSnapshot = (id: string): boolean =>
-      snapshotCutoffTs === undefined || ordering === undefined || ordering.withinCutoff(id, snapshotCutoffTs)
-    if (snapshotCutoffTs !== undefined) {
-      const history = await abortable(
-        () => this.deps.fetchThreadHistory!(agentId, msg.channel, thread, snapshotCutoffTs, markerBefore),
-        signal
-      )
-      for (const h of history) {
-        // Provider history carries canonical platform ids; anything the provider
-        // issued after the cutoff belongs to the next turn.
-        if (!withinSnapshot(h.ts)) continue
-        // Skip the agent's OWN messages: they're already recorded at the send boundary and
-        // are always self-filtered from the model (participantGap below). Re-recording them
-        // here is redundant — and in `minimal` mode it produces a DUPLICATE transcript row,
-        // because the send-boundary `recordReplySegment` stamps a monotonic ts while this
-        // path uses the real Slack ts, so the (channel,thread,ts) dedup index can't collapse
-        // them (low/medium/high record at the send boundary WITH the Slack ts, so they dedup).
-        if (h.sender === agentId) continue
-        this.deps.store.appendTranscript({
-          channel: transcriptChannel,
-          thread,
-          ts: h.ts,
-          sender: h.sender,
-          ...(h.trustedAgentBot ? { trustedAgentBot: true } : {}),
-          // Snapshotted thread history is context THIS agent's turn receives.
-          recipient: agentId,
-          kind: 'text',
-          text: h.text
-        })
-      }
-    }
+    // The warm-thread provider snapshot (§8.4/§8.5) lives in turn/thread-backfill.ts;
+    // handle() only supplies the coordinates and consumes the stable window it returns.
+    const fetchThreadHistory = this.deps.fetchThreadHistory
+    const { snapshotCutoffTs, withinSnapshot } = await backfillThreadHistory({
+      platform: msg.platform,
+      agentId,
+      transcriptChannel,
+      thread,
+      ts,
+      markerBefore,
+      ordering,
+      store: this.deps.store,
+      ...(fetchThreadHistory
+        ? {
+            fetchHistory: (cutoffTs: string, afterTs: string | null) =>
+              abortable(() => fetchThreadHistory(agentId, msg.channel, thread, cutoffTs, afterTs), signal)
+          }
+        : {})
+    })
 
     // §8.5 first-class thread catch-up: human and agent-authored messages share one
     // conversation log. `messageAgent` determines who wakes NOW, not who may see the row;
