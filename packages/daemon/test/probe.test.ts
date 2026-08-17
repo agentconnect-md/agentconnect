@@ -226,6 +226,22 @@ describe('isRuntimeAvailable / custom probes', () => {
     ).toBe(true)
   })
 
+  it('dsh-acp is fetched by npx, so ~/.dsh (or $DSH_HOME) is the only install signal', () => {
+    makeExecutable(binDir, 'npx')
+    const rt: RuntimeDef = {
+      command: 'npx',
+      args: ['-y', '-p', '@openma/deepseek-harness-acp@^0.4', 'dsh-acp'],
+      env: []
+    }
+    expect(isRuntimeAvailable('dsh-acp', rt, env())).toBe(false)
+
+    const dshHome = mkdtempSync(join(tmpdir(), 'ac-dsh-home-'))
+    expect(isRuntimeAvailable('dsh-acp', rt, env({ DSH_HOME: dshHome }))).toBe(true)
+
+    mkdirSync(join(home, '.dsh'))
+    expect(isRuntimeAvailable('dsh-acp', rt, env())).toBe(true)
+  })
+
   it('cursor needs the CLI-specific cli-config.json (dir alone is not enough)', () => {
     makeExecutable(binDir, 'cursor-agent')
     const rt: RuntimeDef = { command: 'cursor-agent', args: [], env: [] }

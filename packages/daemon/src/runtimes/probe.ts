@@ -170,6 +170,8 @@ const QODER_SEED = (brand: string): readonly string[] => [
   'a2a-oauth-tokens.json'
 ]
 const CLAUDE_MODEL_CACHE_KEYS = ['additionalModelOptionsCache'] as const
+/** DeepSeek Harness auth: the managed 0600 credential store plus its .env fallback. */
+const DSH_SEED = ['.credentials.yaml', '.env'] as const
 
 export const RUNTIME_STATE_LOCATIONS: Record<string, RuntimeStateLocator> = {
   // Anthropic Claude Code — seed only the rollout-model cache from ~/.claude.json.
@@ -336,6 +338,11 @@ export const RUNTIME_STATE_LOCATIONS: Record<string, RuntimeStateLocator> = {
 
   // Factory Droid — ~/.factory.
   'factory-droid': (env) => state(join(home(env), '.factory'), '.factory'),
+
+  // DeepSeek Harness (via the dsh-acp adapter) — $DSH_HOME, default ~/.dsh. Seed
+  // only the managed credential store and its .env fallback; sessions and logs
+  // in the same directory stay agent-private.
+  'dsh-acp': (env) => [...state(env.DSH_HOME, '.dsh', DSH_SEED), ...state(join(home(env), '.dsh'), '.dsh', DSH_SEED)],
 
   // Cognition Devin (for Terminal) — XDG config + data dirs.
   devin: (env) => [
