@@ -66,7 +66,17 @@ export const handleAuth: Handler = async (frame, conn, deps) => {
   // nothing, and this socket would carry the stale set for as long as it stayed up. Answering a
   // mismatch by closing our own socket costs one reconnect in a race nobody will ever observe,
   // and needs no extra state to detect.
-  const settledSetId = await deps.memberSets.setIdOf(DaemonId(verdict.daemonId)).catch(() => verdict.setId)
+  //
+  // Fails CLOSED, exactly like the lookup that built `auth/ok`: this read IS the window's only
+  // guard, so treating a blip as "the old value still holds" would re-open the hole it exists to
+  // close. 1011 is transient to the daemon — it retries.
+  let settledSetId: string | null
+  try {
+    settledSetId = await deps.memberSets.setIdOf(DaemonId(verdict.daemonId))
+  } catch {
+    conn.close(1011, 'SERVER_INTERNAL')
+    return
+  }
   if (settledSetId !== verdict.setId) {
     conn.close(1012, 'member set changed during the handshake — reconnect to re-register')
     return

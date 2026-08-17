@@ -20,6 +20,7 @@ import { PgDaemonRepo } from '../../src/persistence/repositories/daemon.repo.js'
 import { DaemonId, OrgId } from '../../src/domain/ids.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import { buildWsHarness } from '../fakes/build-ws.js'
+import { PgMemberSetRepo } from '../../src/persistence/repositories/member-set.repo.js'
 import { InMemoryDaemonStub } from '../fakes/daemon-stub.js'
 
 const DAEMON = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
@@ -92,6 +93,43 @@ describe('auth handler — valid key mints next epoch; invalid key closes 4401',
     // Crucially: the epoch did NOT bump (still 1).
     const row = await repo.getUnscoped(DaemonId(DAEMON))
     expect(row?.sessionEpoch).toBe(1n)
+  })
+
+  it('closes rather than admits when the settled membership cannot be read', async () => {
+    // This second read is the ONLY guard on the window between the membership lookup that built
+    // `auth/ok` and the connection reaching the registry (daemon-groups.md §3), so a blip must not
+    // be taken as "the old value still holds" — that is exactly the hole it exists to close.
+    const h = buildWsHarness(prisma)
+    h.deps.memberSets.setIdOf = async () => {
+      throw new Error('db down')
+    }
+    const apiKey = await h.mintToken(DAEMON)
+
+    const { stub } = h.connect()
+    stub.inject('auth', authPayload(apiKey), { id: AUTH_ID })
+
+    await vi.waitFor(() => {
+      if (!stub.closed) throw new Error('not closed yet')
+    })
+    expect(stub.closed?.code).toBe(1011)
+    expect(stub.lastSent('auth/ok')).toBeUndefined()
+  })
+
+  it('closes 1012 when the membership changed during the handshake, so the daemon reads it afresh', async () => {
+    const h = buildWsHarness(prisma)
+    const apiKey = await h.mintToken(DAEMON)
+    // The change lands after `authenticate` read "no set" and before the connection is indexed:
+    // the route's own close finds nothing, so this read is what catches it.
+    const setId = await new PgMemberSetRepo(prisma).createForOrg(DEFAULT_ORG_ID, 'lab')
+    h.deps.memberSets.setIdOf = async () => setId.id
+
+    const { stub } = h.connect()
+    stub.inject('auth', authPayload(apiKey), { id: AUTH_ID })
+
+    await vi.waitFor(() => {
+      if (!stub.closed) throw new Error('not closed yet')
+    })
+    expect(stub.closed?.code).toBe(1012)
   })
 
   it('a key bound to a different daemonId is rejected 4401 (no bump)', async () => {
