@@ -1884,6 +1884,107 @@ describe('Daemon rd/msg hook fires', () => {
     await daemon.stop()
   }, 15_000)
 
+  // A duty handoff keeps an agent's ordinary unrun rows for its successor (#1050), but a hook fire
+  // is fenced to the daemon the CP accepted as its dispatch target: nobody else can cross
+  // `hook/start` or expose a review for it. So the handoff reports the row instead of handing it
+  // over — even mid-drain, where the shutdown retention would otherwise win and leave a live row
+  // for a member that could only rerun it degraded.
+  it('reports an interrupted hook fire on a duty handoff instead of leaving its row behind', async () => {
+    let releasePrompt!: () => void
+    const promptBarrier = new Promise<void>((resolve) => (releasePrompt = resolve))
+    const host = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'acp-drained-handover'),
+      modelOptions: vi.fn(() => null),
+      hasSession: vi.fn(() => true),
+      prompt: vi.fn(async () => {
+        await promptBarrier
+        return { stopReason: 'end_turn' }
+      }),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn(async () => {})
+    }
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => host as never
+    })
+    await daemon.start()
+    const cp = fakeCpClient()
+    ;(daemon as never as { cpClient: unknown }).cpClient = cp
+
+    await expect((daemon as any).handleRelayMsg(fire(), () => {})).resolves.toMatchObject({ accepted: true })
+    await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledOnce(), WAIT)
+
+    // A pool member releases its duties while SIGTERM drains it, so both retentions meet on one row.
+    ;(daemon as any).draining = true
+    ;(daemon as any).interruptAgentTurns(AGENT_ID, 'handover', 'handoff')
+    releasePrompt()
+
+    await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
+    expect(cp.hookReports[0]).toMatchObject({ deliveryKey: 'd-1', status: 'failed', reason: 'agent_handover' })
+    // Redacted into a terminal receipt: no successor finds a model turn to replay.
+    expect((daemon as any).store.listInboxBySessionKeyFifo()).toEqual([
+      expect.objectContaining({ id: `${HOOK_ID}:d-1`, msg: '{}', hookContext: null })
+    ])
+    await daemon.stop()
+  }, 15_000)
+
+  it('reports a handover for a replayed hook row belonging to another daemon’s dispatch', async () => {
+    const root = scaffold()
+    const seed = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: streamingHost().factory })
+    await seed.start()
+    const foreignDaemonId = '55555555-5555-4555-8555-555555555555'
+    expect((seed as any).cfg.daemonId).not.toBe(foreignDaemonId)
+    const message = buildHookMessage(fire(), 'trace-foreign-dispatch')
+    expect(
+      (seed as any).store.appendInbox({
+        id: message.msgId,
+        sessionKey: `${message.platform}:${message.channel}:${message.thread}:${AGENT_ID}`,
+        agentId: AGENT_ID,
+        msg: JSON.stringify(message),
+        hookContext: JSON.stringify({
+          hookId: HOOK_ID,
+          agentId: AGENT_ID,
+          deliveryKey: 'd-1',
+          firedAt: new Date().toISOString(),
+          snapshot: {
+            configRevision: '1',
+            dispatchRevision: '1',
+            dispatchDaemonId: foreignDaemonId,
+            reviewPolicy: 'full',
+            reportingMode: 'check',
+            gateMode: 'informational'
+          }
+        }),
+        loopGuardCounted: 1,
+        enqueuedAt: '1'
+      })
+    ).toBe(true)
+    await seed.stop()
+
+    const { factory, host } = streamingHost()
+    const restarted = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: factory })
+    const cp = fakeCpClient()
+    ;(restarted as never as { cpClient: unknown }).cpClient = cp
+    await restarted.start()
+
+    await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
+    expect(cp.hookReports[0]).toMatchObject({
+      deliveryKey: 'd-1',
+      status: 'failed',
+      reason: 'agent_handover',
+      dispatchDaemonId: foreignDaemonId
+    })
+    // The maintainer's Check gets that outcome now instead of a degraded rerun this member could
+    // never expose a review from — and the row is terminal, so it cannot be replayed again.
+    expect(host.prompt).not.toHaveBeenCalled()
+    expect((restarted as any).store.listInboxBySessionKeyFifo()).toEqual([
+      expect.objectContaining({ id: message.msgId, hookContext: null, completedAt: expect.any(Number) })
+    ])
+    await restarted.stop()
+  }, 15_000)
+
   it('keeps only the newest relay-fired PR revision without reordering explicit GitHub turns', async () => {
     let onUpdate!: (sid: string, update: unknown) => void
     const releases: Array<(error?: Error) => void> = []

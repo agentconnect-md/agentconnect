@@ -831,7 +831,11 @@ it converged on is four rules, and they are the shape any new table has to take.
   hook replays the shared inbox backlog (#1049), re-derives the sandbox launch
   (#1045), compensates a swallowed schedule (#1053) and re-arms parked snapshots
   (#1068). A duty handoff is not a removal, so it keeps the agent's unrun inbox
-  instead of purging it (#1064).
+  instead of purging it (#1064) — except for a **hook** row, which is fenced to
+  the daemon the CP accepted as its dispatch target and is therefore reported,
+  not handed over. A member's id is its Pod's, so even its own restart is a
+  foreign dispatch; a replay that finds someone else's id reports the handover
+  instead of spending a turn that could never expose a review.
 - **Two members that can reach one row use a CAS or a relative write.** Never a
   read-modify-write: the loop guard's counters and its trip latch are single
   statements with `RETURNING` (#1069), session usage accumulates through a

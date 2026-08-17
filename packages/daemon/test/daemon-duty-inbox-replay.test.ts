@@ -238,7 +238,8 @@ describe('replaying the shared inbox on a duty gain', () => {
 // here, but on a pool's shared store the agent's admitted-but-unrun rows are the work the successor
 // holder has to replay — purging them makes a GRACEFUL revoke/fence/drain lose messages a crash
 // would have preserved. These pin that the retiring member keeps the rows and that removal, the
-// other caller of the same interrupt, still discards them.
+// other caller of the same interrupt, still discards them. HOOK rows are the exception — fenced to
+// their accepted dispatch daemon, so a handoff reports them instead (daemon-hook.test.ts).
 describe('a duty handoff leaves the agent’s unrun inbox to its successor', () => {
   const seedRow = (root: string, ts: string, text: string) => {
     const s = new LocalStore(statePath(root))

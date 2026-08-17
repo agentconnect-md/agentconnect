@@ -9478,6 +9478,19 @@ export class Daemon {
     }
   }
 
+  /**
+   * May this entry's hook fire report its outcome now, or is its durable row deliberately retained
+   * for a later replay? A graceful shutdown retains, because the SAME daemon restarts and re-runs
+   * the row with its accepted dispatch identity intact. A duty handoff cannot borrow that reasoning:
+   * the CP fences `hook/start` and every review action to `run.dispatchDaemonId`, so no other member
+   * can re-run this fire with authority. A handed-off row therefore reports even mid-drain, while
+   * the holder the CP still trusts is here to close the HookRun. `replayInbox` applies the same rule
+   * to a row whose holder never got that far.
+   */
+  private reportsHookOutcome(entry: QueueEntry): boolean {
+    return !this.draining || entry.inboxHandedOff === true
+  }
+
   private emitHookCompletion(
     hook: HookDispatchContext,
     status: 'success' | 'failed',
@@ -9619,7 +9632,9 @@ export class Daemon {
    *  for a non-persisted entry (webchat / never-admitted). NOT called on graceful-shutdown
    *  settle: those admitted-but-unrun rows are intentionally LEFT for startup replay.
    *  `handoff` is the same retention for one agent: drop only this process's live claim so a
-   *  successor holder — or a later re-grant here — replays the row (#1050). */
+   *  successor holder — or a later re-grant here — replays the row (#1050). Neither retention
+   *  extends to a HOOK row: it is fenced to its accepted dispatch daemon, so a handover REPORTS
+   *  it (`reportsHookOutcome`) and the redaction in emitHookCompletion is what ends it here. */
   private removeInbox(entry: QueueEntry, handoff = false): void {
     if (!entry.inboxId) return
     this.liveInboxIds.delete(entry.inboxId)
@@ -9627,9 +9642,8 @@ export class Daemon {
     // paths afterwards, and those must not delete the row the handoff just kept.
     if (handoff) entry.inboxHandedOff = true
     if (entry.inboxHandedOff) return
-    // Hook rows become redacted terminal receipts in emitHookCompletion. If
-    // that conversion failed (or shutdown deliberately skipped completion),
-    // retaining the live row is the only restart-safe choice.
+    // Hook rows become redacted terminal receipts in emitHookCompletion; retaining the live row is
+    // the only restart-safe choice when that failed or a no-handoff shutdown deliberately skipped it.
     if (entry.hookContext) return
     try {
       this.store.removeInbox(entry.inboxId)
@@ -10504,7 +10518,7 @@ export class Daemon {
     if (initialGate) {
       finishEvaluation('turn.cancelled', { reason: initialGate })
       this.terminateQueuedSink(entry)
-      if (hookContext && !this.draining) {
+      if (hookContext && this.reportsHookOutcome(entry)) {
         this.emitHookCompletion(hookContext, 'failed', { reason: initialGate }, entry)
       }
       this.log.info(`dispatch: skipped admitted turn ${msg.msgId} (${initialGate})`)
@@ -10762,14 +10776,14 @@ export class Daemon {
       }
       if (interrupted) {
         finishEvaluation('turn.cancelled', { reason: interrupted })
-        if (hookContext && !this.draining) {
+        if (hookContext && this.reportsHookOutcome(entry)) {
           this.emitHookCompletion(hookContext, 'failed', { reason: interrupted }, entry)
         }
         if (cleanupOutcome.blocked) throw new LifecycleCleanupBlockedError(key, cleanupOutcome.error)
         return null
       }
       failEvaluation(err)
-      if (hookContext && !this.draining) {
+      if (hookContext && this.reportsHookOutcome(entry)) {
         this.emitHookCompletion(hookContext, 'failed', { reason: 'session_start_failed' }, entry)
       }
       throw err
@@ -10819,7 +10833,7 @@ export class Daemon {
       this.showActivity(replyConn, msg.channel, statusThread, '')
       this.terminateQueuedSink(entry)
       releaseReplyConn()
-      if (hookContext && !this.draining) {
+      if (hookContext && this.reportsHookOutcome(entry)) {
         this.emitHookCompletion(hookContext, 'failed', { reason: initializedGate }, entry)
       }
       this.log.info(`dispatch: skipped initialized turn ${msg.msgId} (${initializedGate})`)
@@ -11073,7 +11087,7 @@ export class Daemon {
         this.showActivity(replyConn, msg.channel, statusThread, '')
         this.terminateQueuedSink(entry)
         if (readyGate === 'loop protection') finalPhase = 'problem'
-        if (hookContext && !this.draining) {
+        if (hookContext && this.reportsHookOutcome(entry)) {
           this.emitHookCompletion(hookContext, 'failed', { sessionId, reason: readyGate }, entry)
         }
         this.log.info(`dispatch: skipped ready turn ${msg.msgId} (${readyGate})`)
@@ -11199,7 +11213,7 @@ export class Daemon {
         if (p.outputSuppressed) {
           finishEvaluation('turn.cancelled', { reason: p.outputSuppressed })
           if (p.outputSuppressed === 'loop protection') finalPhase = 'problem'
-          if (hookContext && !this.draining) {
+          if (hookContext && this.reportsHookOutcome(entry)) {
             this.emitHookCompletion(hookContext, 'failed', { sessionId, reason: p.outputSuppressed }, entry)
           }
           return null
@@ -11255,7 +11269,7 @@ export class Daemon {
           this.discardStagedAttempt(p)
           finishEvaluation('turn.cancelled', { reason: p.outputSuppressed })
           if (p.outputSuppressed === 'loop protection') finalPhase = 'problem'
-          if (hookContext && !this.draining) {
+          if (hookContext && this.reportsHookOutcome(entry)) {
             this.emitHookCompletion(hookContext, 'failed', { sessionId, reason: p.outputSuppressed }, entry)
           }
           return null
@@ -11588,7 +11602,7 @@ export class Daemon {
       if (p.outputSuppressed) {
         finishEvaluation('turn.cancelled', { reason: p.outputSuppressed })
         if (p.outputSuppressed === 'loop protection') finalPhase = 'problem'
-        if (hookContext && !this.draining) {
+        if (hookContext && this.reportsHookOutcome(entry)) {
           this.emitHookCompletion(hookContext, 'failed', { sessionId, reason: p.outputSuppressed }, entry)
         }
         return null
@@ -11696,7 +11710,7 @@ export class Daemon {
           }
         }
       }
-      if (hookContext && !this.draining) {
+      if (hookContext && this.reportsHookOutcome(entry)) {
         this.emitHookCompletion(hookContext, 'failed', { sessionId, reason: turnFailureCode(err) }, entry)
       }
       throw err
@@ -16369,6 +16383,20 @@ export class Daemon {
         if (hookContext) {
           this.emitHookCompletion(hookContext, 'failed', { reason: 'loop protection' }, { inboxId: row.id })
         }
+        continue
+      }
+      // Only the daemon the CP accepted as this fire's dispatch target may run it — `hook/start` and
+      // every review action are fenced to `run.dispatchDaemonId` — so replaying it here would spend
+      // a whole turn that can never expose a review, and report it as if it had. A row reaches a
+      // foreign member when its holder was interrupted without reporting: a crash, or a pool member
+      // whose restart minted a new id. Report the handover instead; the Check gets a retry now.
+      if (
+        hookContext?.snapshot?.dispatchDaemonId &&
+        this.cfg.daemonId &&
+        hookContext.snapshot.dispatchDaemonId !== this.cfg.daemonId
+      ) {
+        this.log.warn(`durable inbox: hook row ${row.id} belongs to another daemon's dispatch — reporting a handover`)
+        this.emitHookCompletion(hookContext, 'failed', { reason: 'handover' }, { inboxId: row.id })
         continue
       }
       const posterPublishState =
