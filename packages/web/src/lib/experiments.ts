@@ -21,10 +21,14 @@ export type ExperimentId =
   'daemon-groups'
 
 function enabledIds(): ReadonlySet<string> {
+  // The server must read the SAME value `PublicEnvScript` injects, in the same precedence, or a
+  // runtime-only configuration renders the gate off on the server and on during hydration — which
+  // is a React markup mismatch, not just a flicker. `public-env` resolves plain `EXPERIMENTS`
+  // first and falls back to the build-time `NEXT_PUBLIC_` twin; so does this.
   const raw =
-    (typeof window === 'undefined' ? undefined : window.__AC_ENV?.EXPERIMENTS) ??
-    process.env.NEXT_PUBLIC_EXPERIMENTS ??
-    ''
+    (typeof window === 'undefined'
+      ? (process.env.EXPERIMENTS ?? process.env.NEXT_PUBLIC_EXPERIMENTS)
+      : window.__AC_ENV?.EXPERIMENTS) ?? ''
   return new Set(
     raw
       .split(',')

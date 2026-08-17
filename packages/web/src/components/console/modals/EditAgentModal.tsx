@@ -386,7 +386,13 @@ export default function EditAgentModal({
     // The org's own groups sit with Cloud: same kind of target, same promise — lose any one member
     // and the duty re-grants to another (daemon-groups.md §2). A group with nothing serving stays
     // listed but disabled, unless it is where the agent already is.
-    ...(experimentEnabled('daemon-groups') ? memberSets : []).map((group) => {
+    // With the experiment off the picker offers no group — EXCEPT the one this agent is already on.
+    // Dropping it would show "No daemon" for a placed agent, which is simply untrue, and a rollback
+    // is exactly when a truthful current placement matters most.
+    ...(experimentEnabled('daemon-groups')
+      ? memberSets
+      : memberSets.filter((group) => groupPlacementValue(group.setId) === initialDaemonId.current)
+    ).map((group) => {
       const serving = group.memberDaemonIds.some((id) => moveReady(daemons.find((d) => d.daemonId === id)))
       const current = groupPlacementValue(group.setId) === initialDaemonId.current
       return {

@@ -237,6 +237,9 @@ services:
       # targets; unset => all of them). The console owns this decision; the
       # control plane gates on whether the tenant has that connector.
       - SOCIAL_PROVIDERS
+      # Experimental console surfaces this deployment turns on (comma-separated ids;
+      # unset => none). Forwarded from the host so one image serves every deployment.
+      - EXPERIMENTS
     healthcheck:
       test:
         - CMD

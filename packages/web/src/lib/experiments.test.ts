@@ -29,4 +29,22 @@ describe('experimentEnabled', () => {
     setEnv('not-a-feature')
     expect(experimentEnabled('daemon-groups')).toBe(false)
   })
+
+  it('server and client read the same value, so the gate cannot differ across hydration', () => {
+    // `public-env` injects plain `EXPERIMENTS`; a server branch reading only the build-time twin
+    // would render the surface off and hydrate it on.
+    const original = (window as unknown as { __AC_ENV?: Record<string, string> }).__AC_ENV
+    delete (window as unknown as { __AC_ENV?: unknown }).__AC_ENV
+    process.env.EXPERIMENTS = 'daemon-groups'
+    try {
+      // The browser branch, with nothing injected: off, because there is nothing to read.
+      expect(experimentEnabled('daemon-groups')).toBe(false)
+      // And injected, it is the source both sides agree on.
+      ;(window as unknown as { __AC_ENV?: Record<string, string> }).__AC_ENV = { EXPERIMENTS: 'daemon-groups' }
+      expect(experimentEnabled('daemon-groups')).toBe(true)
+    } finally {
+      delete process.env.EXPERIMENTS
+      ;(window as unknown as { __AC_ENV?: unknown }).__AC_ENV = original
+    }
+  })
 })
