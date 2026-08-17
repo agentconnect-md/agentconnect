@@ -159,6 +159,89 @@ describe('FeishuSessionAccessService', () => {
     })
   })
 
+  describe('grace on an unverifiable check', () => {
+    /** A chat whose member list reads once, then stops answering — with a clock the test drives. */
+    function flakyChat(members: string[] = ['on_member']) {
+      let answering = true
+      let time = 1_000
+      const fetchImpl = vi.fn(async (url: string) => {
+        if (url.endsWith('/tenant_access_token/internal')) return json({ code: 0, tenant_access_token: 'tenant-token' })
+        if (!answering) return json({ code: 99991672, msg: 'missing scope' })
+        return json({ code: 0, data: { items: members.map((id) => ({ member_id: id })), has_more: false } })
+      })
+      return {
+        fetchImpl,
+        stop: () => (answering = false),
+        advance: (ms: number) => (time += ms),
+        now: () => time
+      }
+    }
+
+    it('re-serves an admission this viewer already earned, and does not call it degraded', async () => {
+      const chat = flakyChat()
+      const resolver = service(chat.fetchImpl, chat.now)
+
+      await resolver.resolve([scope()], viewer())
+      // Past the member-list lease, so the audience is re-read — and the app can no longer read it.
+      chat.advance(120_001)
+      chat.stop()
+
+      await expect(resolver.resolve([scope()], viewer())).resolves.toEqual({
+        allowedScopes: [{ id: scope().id, aclRevision: 2n }],
+        degraded: false,
+        accessIssues: []
+      })
+    })
+
+    it('admits nobody who was never admitted', async () => {
+      const chat = flakyChat()
+      chat.stop()
+
+      await expect(service(chat.fetchImpl, chat.now).resolve([scope()], viewer())).resolves.toEqual({
+        allowedScopes: [],
+        degraded: true,
+        accessIssues: [{ provider: 'feishu', region: 'lark', reason: 'unavailable' }]
+      })
+    })
+
+    it('lets a decided exclusion disarm the grace, so a later outage cannot resurrect the admission', async () => {
+      const chat = flakyChat()
+      const resolver = service(chat.fetchImpl, chat.now)
+
+      await resolver.resolve([scope()], viewer())
+      // The viewer leaves the chat, and the audience says so.
+      chat.advance(120_001)
+      chat.fetchImpl.mockImplementation(async (url: string) =>
+        url.endsWith('/tenant_access_token/internal')
+          ? json({ code: 0, tenant_access_token: 'tenant-token' })
+          : json({ code: 0, data: { items: [], has_more: false } })
+      )
+      expect((await resolver.resolve([scope()], viewer())).allowedScopes).toHaveLength(0)
+
+      chat.advance(120_001)
+      chat.fetchImpl.mockImplementation(async (url: string) =>
+        url.endsWith('/tenant_access_token/internal')
+          ? json({ code: 0, tenant_access_token: 'tenant-token' })
+          : json({ code: 99991672, msg: 'missing scope' })
+      )
+      expect((await resolver.resolve([scope()], viewer())).degraded).toBe(true)
+    })
+
+    it('expires one member-list lease past the admission rather than renewing while the app is down', async () => {
+      const chat = flakyChat()
+      const resolver = service(chat.fetchImpl, chat.now)
+
+      await resolver.resolve([scope()], viewer())
+      chat.stop()
+      chat.advance(239_999)
+      expect((await resolver.resolve([scope()], viewer())).allowedScopes).toHaveLength(1)
+
+      // A graced serve does not re-arm the grace, so the boundary stays anchored to the real admission.
+      chat.advance(2)
+      expect((await resolver.resolve([scope()], viewer())).degraded).toBe(true)
+    })
+  })
+
   it('classifies exhausted tenant quota and backs off other chats in the same organization', async () => {
     const fetchImpl = vi.fn(async (url: string) =>
       url.endsWith('/tenant_access_token/internal')

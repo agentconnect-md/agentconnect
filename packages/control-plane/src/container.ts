@@ -1007,7 +1007,9 @@ export function buildContainer(
     botSecrets: repos.botSecret,
     clock,
     ...(logtoIdentity ? { identity: logtoIdentity } : {}),
-    ...(opts.feishuFetch ? { fetchImpl: opts.feishuFetch } : {})
+    ...(opts.feishuFetch ? { fetchImpl: opts.feishuFetch } : {}),
+    // Lazy over `http.log` (assigned below; only ever called at resolve time).
+    log: { warn: (o, m) => http.log.warn(o, m) }
   })
 
   // Built once and shared between the route deps (the live paths) and the

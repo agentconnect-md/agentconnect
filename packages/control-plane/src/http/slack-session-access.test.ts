@@ -257,6 +257,80 @@ describe('SlackSessionAccessService', () => {
     })
   })
 
+  describe('grace on an unverifiable check', () => {
+    /** A public channel every workspace member reads, until `answering` starts refusing. */
+    function flakyPublicChannel() {
+      let answering = true
+      const fetchImpl = vi.fn(async (url: string) => {
+        if (!answering) return json({ ok: false, error: 'ratelimited' })
+        if (url.includes('conversations.info')) {
+          return json({ ok: true, channel: { is_private: false, is_im: false, is_mpim: false } })
+        }
+        return json({ ok: true, user: { team_id: 'T_INSTALL', deleted: false, is_restricted: false } })
+      })
+      return { fetchImpl, stop: () => (answering = false) }
+    }
+
+    it('re-serves an allow this principal already earned, and does not call it degraded', async () => {
+      const clock = new FakeClock(EPOCH)
+      const slack = flakyPublicChannel()
+      const resolver = service(slack.fetchImpl, undefined, { clock })
+
+      await resolver.resolve([scope()], viewer('slack:T_INSTALL:U_MEMBER'))
+      // Past the allow lease, so the verdict is re-decided — and Slack has stopped answering.
+      clock.advance(120_001)
+      slack.stop()
+
+      await expect(resolver.resolve([scope()], viewer('slack:T_INSTALL:U_MEMBER'))).resolves.toEqual({
+        allowedScopes: [{ id: scope().id, aclRevision: 2n }],
+        degraded: false,
+        accessIssues: []
+      })
+    })
+
+    it('admits nobody who was never allowed', async () => {
+      const resolver = service(async () => json({ ok: false, error: 'ratelimited' }), undefined, {})
+
+      await expect(resolver.resolve([scope()], viewer('slack:T_INSTALL:U_MEMBER'))).resolves.toEqual({
+        allowedScopes: [],
+        degraded: true,
+        accessIssues: [{ provider: 'slack', reason: 'unavailable' }]
+      })
+    })
+
+    it('expires one lease past the verdict rather than renewing while Slack is down', async () => {
+      const clock = new FakeClock(EPOCH)
+      const slack = flakyPublicChannel()
+      const resolver = service(slack.fetchImpl, undefined, { clock })
+
+      await resolver.resolve([scope()], viewer('slack:T_INSTALL:U_MEMBER'))
+      slack.stop()
+      clock.advance(239_999)
+      expect((await resolver.resolve([scope()], viewer('slack:T_INSTALL:U_MEMBER'))).allowedScopes).toHaveLength(1)
+
+      // A graced serve does not re-arm the grace, so the boundary stays anchored to the real allow.
+      clock.advance(2)
+      expect((await resolver.resolve([scope()], viewer('slack:T_INSTALL:U_MEMBER'))).degraded).toBe(true)
+    })
+
+    it('counts what the grace absorbed, so an app that stays down is still visible to an operator', async () => {
+      const warn = vi.fn()
+      const clock = new FakeClock(EPOCH)
+      const slack = flakyPublicChannel()
+      const resolver = service(slack.fetchImpl, { warn }, { clock })
+
+      await resolver.resolve([scope()], viewer('slack:T_INSTALL:U_MEMBER'))
+      clock.advance(120_001)
+      slack.stop()
+      await resolver.resolve([scope()], viewer('slack:T_INSTALL:U_MEMBER'))
+
+      expect(warn).toHaveBeenCalledTimes(1)
+      expect(warn.mock.calls[0]?.[0]).toEqual({ provider: 'slack', gracedScopes: 1, totalScopes: 1 })
+      // A scope key names a channel; the operator needs the rate, not the target.
+      expect(JSON.stringify(warn.mock.calls[0]?.[0])).not.toContain('C_')
+    })
+  })
+
   // Degradation is the ONLY trace a hidden session leaves: every failure above
   // collapses to `unknown`, the session is omitted, and the caller is told
   // "not visible". Without this line an operator cannot tell a Slack blip from
