@@ -199,7 +199,9 @@ services:
       - GITHUB_APP_WEBHOOK_SECRET
       # Egress for open_connector bindings — the relay calls its runtime action API.
       - OPEN_CONNECTOR_URL=http://open-connector:3000
-      - OPEN_CONNECTOR_RUNTIME_TOKEN
+      # One host variable drives both ends so runtime auth is never half-configured; the
+      # relay sends no bearer when it resolves empty, matching a gateway with auth off.
+      - OPEN_CONNECTOR_RUNTIME_TOKEN=${OOMOL_CONNECT_RUNTIME_TOKEN:-}
     healthcheck:
       test:
         - CMD
@@ -276,6 +278,8 @@ services:
       - OOMOL_CONNECT_ENCRYPTION_KEY
       # Browser-reachable origin the provider redirects to at <origin>/oauth/callback.
       - OOMOL_CONNECT_ORIGIN=${AGENTCONNECT_PUBLIC_OPEN_CONNECTOR_URL:-http://localhost:${AGENTCONNECT_OPEN_CONNECTOR_PORT:-3100}}
+      # Bare pass-through so an unset value stays unset here rather than arriving empty.
+      - OOMOL_CONNECT_RUNTIME_TOKEN
     init: true
     ports:
       - 127.0.0.1:${AGENTCONNECT_OPEN_CONNECTOR_PORT:-3100}:3000
