@@ -91,10 +91,16 @@ function render(): string {
   return html
 }
 
+/** The console shows the pool only where the deployment asked for it (lib/experiments.ts). */
+const setExperiments = (value: string) => {
+  ;(window as unknown as { __AC_ENV?: Record<string, string> }).__AC_ENV = { EXPERIMENTS: value }
+}
+
 beforeEach(() => {
   mocks.daemons = []
   mocks.agents = []
   mocks.push.mockClear()
+  setExperiments('daemon-pool')
 })
 
 describe('DaemonsView pool', () => {
@@ -166,6 +172,29 @@ describe('DaemonsView pool', () => {
   })
 
   it('still shows the empty state when there is no daemon of any kind', () => {
+    const html = render()
+
+    expect(html).toContain('No daemons connected')
+  })
+
+  it('names nothing about the pool where the deployment did not ask for it', () => {
+    setExperiments('')
+    mocks.daemons = [member('p1'), daemon({ daemonId: 'own', name: 'pc.dev' })]
+    mocks.agents = [onPool('a1', 'p1')]
+
+    const html = render()
+
+    expect(html).not.toContain('AgentConnect Cloud')
+    expect(html).not.toContain('agents on Cloud')
+    expect(html).toContain('pc.dev')
+  })
+
+  it('reads as an empty fleet when the pool is all there is and it is hidden', () => {
+    // Not "0 daemons of an unnamed kind": with the pool hidden the org connected nothing,
+    // so the page has to say so — a blank fleet with no empty state is a page that broke.
+    setExperiments('')
+    mocks.daemons = [member('p1'), member('p2')]
+
     const html = render()
 
     expect(html).toContain('No daemons connected')

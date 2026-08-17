@@ -35,7 +35,10 @@ export default function DaemonsView() {
   // The pool is ONE entry, not one card per Pod: its members are install-wide
   // infrastructure every org sees, replaced without notice, and nothing here is the
   // org's to rename or detach. Everything else is a machine someone connected.
-  const poolMembers = useMemo(() => daemons.filter((d) => d.pool), [daemons])
+  // Experimental: where the deployment did not ask for the pool, the page shows the
+  // machines only — the CP still serves it, this is whether the console names it.
+  const showPool = experimentEnabled('daemon-pool')
+  const poolMembers = useMemo(() => (showPool ? daemons.filter((d) => d.pool) : []), [daemons, showPool])
   const ownDaemons = useMemo(() => daemons.filter((d) => !d.pool), [daemons])
   const poolAgents = useMemo(() => {
     const memberIds = new Set(poolMembers.map((m) => m.daemonId))
@@ -68,7 +71,7 @@ export default function DaemonsView() {
       </div>
       {daemonsLoading && daemons.length === 0 ? (
         <LoadingState fill />
-      ) : daemons.length === 0 ? (
+      ) : poolMembers.length === 0 && ownDaemons.length === 0 ? (
         <div className="card flex flex-col items-center gap-3 px-6 py-[44px] text-center">
           <span className="flex h-[46px] w-[46px] items-center justify-center rounded-[11px] border border-(--border-subtle) bg-(--surface-sunken)">
             <Icon name="server" size={22} color="var(--text-tertiary)" />

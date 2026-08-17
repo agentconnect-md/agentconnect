@@ -271,7 +271,9 @@ export default function EditAgentModal({
   useEffect(() => {
     if (!loaded || autofilledDaemon.current || initialDaemonId.current || daemonId) return
     const ready = (d: (typeof daemons)[number]) => d.status === 'online' && d.caps.features.includes('agent-move-v1')
-    const target = daemons.find((d) => d.pool && ready(d)) ?? daemons.find(ready)
+    // With the pool hidden it is not a default either — an unplaced agent lands on a machine.
+    const offered = experimentEnabled('daemon-pool') ? daemons : daemons.filter((d) => !d.pool)
+    const target = offered.find((d) => d.pool && ready(d)) ?? offered.find(ready)
     if (target) {
       autofilledDaemon.current = true
       setDaemonId(target.daemonId)
@@ -361,7 +363,9 @@ export default function EditAgentModal({
   const daemonChoices = editAgentDaemonChoices(daemons, daemonId, initialDaemonId.current)
   const poolServing = daemons.some((candidate) => candidate.pool && moveReady(candidate))
   const daemonOptions: DaemonSelectOption[] = [
-    ...(daemonChoices.poolChoice || isPoolPlacementKind(agent.placementKind)
+    // With the experiment off the picker offers Cloud only to an agent already ON it — same rule
+    // the groups below follow, and for the same reason: "No daemon" for a placed agent is untrue.
+    ...((experimentEnabled('daemon-pool') && daemonChoices.poolChoice) || isPoolPlacementKind(agent.placementKind)
       ? [
           {
             // The POOL, named as itself. The server picks the member — and re-picks it after every
