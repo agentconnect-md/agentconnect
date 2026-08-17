@@ -134,24 +134,14 @@ import {
 } from './router/routing-rule.js'
 import { CpRoutingLayer } from './router/cp-routing-layer.js'
 import {
-  consolidate,
-  consolidateShared,
-  slackSocketKey,
-  slackSharedKey,
   SlackConnection,
   type InteractionActor,
   type SlackAppFactory,
   type SlackStatusOptions
 } from './slack/connection.js'
-import {
-  consolidateTelegram,
-  telegramConnKey,
-  TelegramConnection,
-  type TelegramCallback,
-  type TelegramObservedChat
-} from './telegram/connection.js'
-import { consolidateDiscord, discordConnKey, DiscordConnection } from './discord/connection.js'
-import { consolidateFeishu, feishuConnKey, FeishuConnection } from './feishu/connection.js'
+import { TelegramConnection, type TelegramCallback, type TelegramObservedChat } from './telegram/connection.js'
+import { DiscordConnection } from './discord/connection.js'
+import { FeishuConnection } from './feishu/connection.js'
 import { SlackNameResolver } from './slack/name-resolver.js'
 import { loopGuardScopesFor } from './platforms/loop-guard.js'
 import {
@@ -233,7 +223,6 @@ import {
   type ScheduleDefinition
 } from './scheduler/scheduler.js'
 import { DreamScheduler } from './scheduler/dream-scheduler.js'
-import { planChannelIntros, buildIntroMessage } from './messages/channel-intro.js'
 import { buildHookMessage, githubOpensReviewGeneration, hookAnchorText } from './messages/hook-message.js'
 import { GithubFinalPoster, GithubReplyCollector, type GithubCommentAttribution } from './github/poster.js'
 import { finalizeGithubTurn, isGithubFinalChunk, onGithubUpdate } from './platforms/github/turn-output.js'
@@ -383,7 +372,12 @@ import type {
 } from '@agentclientprotocol/sdk'
 import type { Agent, CronDef, Integration } from './agents/agent-schema.js'
 import { fromPlatformMessage, stableMessageId, stableTurnId, type NormalizedMessage } from './messages/normalized.js'
-import { ConnectionPool, type ConnectionKey } from './platforms/registry.js'
+import { ConnectionPool } from './platforms/registry.js'
+import {
+  ConnectionReconciler,
+  type ConnectionReconcilerHost,
+  type PlatformConnection
+} from './platforms/connection-reconciler.js'
 import {
   applyTelegramAction as applyTelegramActionExternal,
   type TelegramTurnState
@@ -449,7 +443,6 @@ import type {
   GithubHookMetadata,
   GitCommitIdentity,
   HookReviewResult,
-  FeishuRegion,
   MemoryDreamingPolicy,
   ChildSessionStatus,
   ChildSessionStatusProbe,
@@ -555,7 +548,6 @@ import {
   configuredControlPlane,
   dreamingPolicyOf,
   ignoreAgentWatchPath,
-  isAlreadyOutOfChat,
   mergeAgentWorkspaceAuthorities,
   slackTsFromMsgId,
   ACTIVATION_KEY_SEPARATOR,
@@ -772,19 +764,25 @@ export class Daemon {
    *  daemon drain cannot leave a timer behind. The callback re-validates everything it
    *  needs, so a lease dropped by stopHost simply makes the wake a no-op. */
   private bgWakeTimers = new Set<TimerHandle>()
-  // §7.5 connection pools — one per (platform, MODE), each keyed by the platform's
-  // own opaque identity function. The pool owns the live set AND the in-flight
-  // connect guard: a key is claimed BEFORE `await conn.start()` and released when
-  // it resolves or fails, because `find()` only sees a connection after it is
-  // added — without the claim, a reconcile overlapping a still-pending connect
-  // would open a SECOND connection for the same bot (duplicate inbound delivery).
-  // Slack runs two pools: sockets keyed by (appToken, botToken), and send-only
-  // shared clients keyed by botToken alone (a shared bot has no app token).
-  private readonly slackPool = new ConnectionPool<SlackConnection>('slack', slackSocketKey)
-  private readonly slackSharedPool = new ConnectionPool<SlackConnection>('slack/shared', slackSharedKey)
-  private readonly telegramPool = new ConnectionPool<TelegramConnection>('telegram', telegramConnKey)
-  private readonly discordPool = new ConnectionPool<DiscordConnection>('discord', discordConnKey)
-  private readonly feishuPool = new ConnectionPool<FeishuConnection>('feishu', feishuConnKey)
+  // §7.5 platform connection lifecycle — the pools, the openers, the prune pass and the
+  // Slack startup retries all live in the reconciler; the delegates below are what the
+  // rest of this class (and the tests) still reach it through.
+  private readonly connections: ConnectionReconciler
+  private get slackPool(): ConnectionPool<SlackConnection> {
+    return this.connections.slackPool
+  }
+  private get slackSharedPool(): ConnectionPool<SlackConnection> {
+    return this.connections.slackSharedPool
+  }
+  private get telegramPool(): ConnectionPool<TelegramConnection> {
+    return this.connections.telegramPool
+  }
+  private get discordPool(): ConnectionPool<DiscordConnection> {
+    return this.connections.discordPool
+  }
+  private get feishuPool(): ConnectionPool<FeishuConnection> {
+    return this.connections.feishuPool
+  }
   /**
    * §7.3 turn-output surfaces — the converger factory, the applier, and the
    * opaque per-turn state slot, as ONE trio per platform. The bodies still live
@@ -1177,9 +1175,6 @@ export class Daemon {
   // (host startup / session materialization). Keyed by logical session key and guarded
   // by the exact active-dispatch promise so an old timer cannot stop a newer turn.
   private coldCancelTimers = new Map<string, { timer: TimerHandle; active: Promise<void> }>()
-  // Pending background retry timers for Slack connections that failed to open
-  // at startup (keyed by appToken). Cleared on daemon stop.
-  private slackRetryTimers = new Map<string, TimerHandle>()
   // Durable hook/report outbox drain. A READY socket may survive a temporary
   // CP/DB failure, so retries cannot depend only on reconnect callbacks.
   private hookReportRetryTimer?: TimerHandle
@@ -1190,10 +1185,6 @@ export class Daemon {
   // Outbox rows this member proved it may not report — a peer owns the dispatch,
   // or the receipt is unreleasable here. Kept out of the drain for this process.
   private readonly hookReportForeign = new Set<string>()
-  // A timer callback may already be inside conn.start() when an agent detaches.
-  // Track those runs so detach can await them and prevent a stale socket from
-  // appearing after its strict close pass has ACKed.
-  private slackRetryRuns = new Map<string, { botToken: string; promise: Promise<void> }>()
 
   constructor(
     private opts: {
@@ -1288,6 +1279,7 @@ export class Daemon {
     this.evalHooks = new DaemonEvaluationHooks(this.evaluationHost(), opts.evaluation)
     this.sessionMetadataOutbox = new SessionMetadataOutbox(this.sessionMetadataHost())
     this.observedChannelsSync = new ObservedChannelsSync(this.observedChannelsSyncHost())
+    this.connections = new ConnectionReconciler(this.connectionReconcilerHost())
     this.webchatTransport = new WebchatTransport(this.webchatHost())
     this.webchatMcpRevocations = new WebchatMcpRevocations(this.webchatMcpRevocationHost())
     this.curatedRuntimeAdmission = new CuratedRuntimeAdmission({
@@ -1348,6 +1340,86 @@ export class Daemon {
       transportScopeForIntegration: (integration) => this.transportScopeForIntegration(integration),
       emitSessionMetadataSnapshotsForDisplayName: (id) => this.emitSessionMetadataSnapshotsForDisplayName(id)
     }
+  }
+
+  /** The narrow port the §7.5 connection lifecycle reaches the daemon through. The action
+   *  sink half is what the command handlers implement — connection construction is the only
+   *  place that wires them. */
+  private connectionReconcilerHost(): ConnectionReconcilerHost {
+    return {
+      log: () => this.log,
+      clock: () => this.clock,
+      draining: () => this.draining,
+      boltDebug: () => this.cfg.logging.level === 'debug' || this.cfg.logging.level === 'trace',
+      slackAppFactory: () => this.opts.slackAppFactory,
+      agents: () => this.agents,
+      transportAgents: (agents) => this.transportAgents(agents),
+      evaluationIntegrationIds: () => this.evaluationIntegrationIds,
+      store: () => this.store,
+      cpClient: () => this.cpClient,
+      channelSnapshots: () => this.channelSnapshots,
+      boundIntegrationIds: () => Object.keys(this.botUserIds),
+      bindings: () => ({
+        slack: this.connByIntegration,
+        telegram: this.tgConnByIntegration,
+        discord: this.dcConnByIntegration,
+        feishu: this.fsConnByIntegration
+      }),
+      bindSlack: (integrationId, conn, botUserId) => this.bind(this.connByIntegration, integrationId, conn, botUserId),
+      bindTelegram: (integrationId, conn, botUsername) =>
+        this.bind(this.tgConnByIntegration, integrationId, conn, botUsername),
+      bindDiscord: (integrationId, conn, botUserId) =>
+        this.bind(this.dcConnByIntegration, integrationId, conn, botUserId),
+      bindFeishu: (integrationId, conn, botOpenId) =>
+        this.bind(this.fsConnByIntegration, integrationId, conn, botOpenId),
+      unbindIntegration: (integrationId) => this.unbindIntegration(integrationId),
+      slackNameResolver: () => this.nameResolver,
+      channelNameResolver: () => this.channelNameResolver,
+      refreshChannels: (conn) => this.refreshChannels(conn),
+      onInbound: (msg, srcIntegrationIds) => this.onInbound(msg, srcIntegrationIds),
+      srcIntegrationIds: (conn) => this.srcIntegrationIds(conn),
+      waitForConnectionUses: (conn) => this.waitForConnectionUses(conn),
+      observeTelegramChat: (chat, integrationIds) => this.observeTelegramChat(chat, integrationIds),
+      refreshObservedChannels: () => this.refreshObservedChannels(),
+      retractChannels: (integrationId, channelIds) => this.retractChannels(integrationId, channelIds),
+      integrationConfigById: (integrationId) => this.integrationConfigById(integrationId),
+      integrationIdForTransportScope: (agentId, platform, transportScope) =>
+        this.integrationIdForTransportScope(agentId, platform, transportScope),
+      connForIntegration: (integrationId) => this.connForIntegration(integrationId),
+      emitSessionMetadataSnapshotsForDisplayName: (id) => this.emitSessionMetadataSnapshotsForDisplayName(id),
+      dispatch: (agentId, msg, integrationId, callMeta) =>
+        this.dispatch(agentId, msg, integrationId, undefined, callMeta),
+      handleStatusAction: (a) => this.handleStatusAction(a),
+      statusInfoForKey: (key) => this.statusInfoForKey(key),
+      handlePermissionChoice: (a) => this.handlePermissionChoice(a),
+      handleElicitChoice: (a) => this.handleElicitChoice(a),
+      handleDiscordSelect: (a) => this.handleDiscordSelect(a),
+      handleTelegramCallback: (cb, conn) => this.handleTelegramCallback(cb, conn),
+      slackShortcutSession: (shortcut, srcIntegrationIds) => this.slackShortcutSession(shortcut, srcIntegrationIds)
+    }
+  }
+
+  /** Point an integration at a live connection: one platform's binding map plus the bot
+   *  identity mention-routing matches. An integration is bound in exactly one map. */
+  private bind<C extends PlatformConnection>(
+    bindings: Map<string, C>,
+    integrationId: string,
+    conn: C,
+    botIdentity: string
+  ): void {
+    this.botUserIds[integrationId] = botIdentity
+    bindings.set(integrationId, conn)
+  }
+
+  /** Drop every index a removed or re-keyed integration leaves behind — its connection
+   *  binding, its bot identity, and its cached channel snapshot. */
+  private unbindIntegration(integrationId: string): void {
+    this.connByIntegration.delete(integrationId)
+    this.tgConnByIntegration.delete(integrationId)
+    this.dcConnByIntegration.delete(integrationId)
+    this.fsConnByIntegration.delete(integrationId)
+    delete this.botUserIds[integrationId]
+    this.channelSnapshots.delete(integrationId)
   }
 
   private webchatHost(): WebchatHost {
@@ -2279,7 +2351,6 @@ export class Daemon {
       warn: (m) => this.log.warn(m)
     })
 
-    const groups = consolidate(this.transportAgents(agents))
     this.botUserIds = {}
     // Install synthetic evaluation integrations before routing observes them; they never open sockets.
     this.installEvaluationEnvironment()
@@ -2296,57 +2367,7 @@ export class Daemon {
       )
     }
     // open consolidated Slack connections, resolve bot user ids (merged rules are per-message)
-    if (groups.size === 0) this.log.info('slack: no slack integrations configured')
-    else this.log.info(`slack: opening ${groups.size} socket connection(s)`)
-    for (const group of groups.values()) {
-      const conn: SlackConnection = new SlackConnection(
-        {
-          group,
-          newTraceId: () => randomUUID(),
-          onMessage: (msg) => {
-            this.nameResolver?.noteMessage(conn, msg)
-            this.onInbound(msg, this.srcIntegrationIds(conn))
-          },
-          onChannelsChanged: () => void this.refreshChannels(conn),
-          onMessageShortcut: (shortcut) => this.slackShortcutSession(shortcut, this.srcIntegrationIds(conn)),
-          onStatusAction: (a) => this.handleStatusAction(a),
-          onStatusInfo: (key) => this.statusInfoForKey(key),
-          onPermissionChoice: (a) => this.handlePermissionChoice(a),
-          onElicitChoice: (a) => this.handleElicitChoice(a),
-          log: this.log,
-          boltDebug: cfg.logging.level === 'debug' || cfg.logging.level === 'trace'
-        },
-        this.opts.slackAppFactory
-      )
-      this.log.info(
-        `slack: connecting (${group.integrations.length} integration(s): ${group.integrations.map((i) => i.agentId).join(', ')})…`
-      )
-      try {
-        await conn.start()
-        this.log.info(`slack: socket connected as bot user ${conn.botUserId}`)
-        for (const { integrationId } of group.integrations) {
-          this.botUserIds[integrationId] = conn.botUserId
-          this.connByIntegration.set(integrationId, conn)
-        }
-        this.slackPool.add(conn)
-        // Initial membership snapshot (fire-and-forget; cached + emitted when CP is up).
-        void this.refreshChannels(conn)
-      } catch (err) {
-        // Release any Bolt SocketModeClient / reconnect loop the half-open connection
-        // may have started before we discard it — otherwise a failure during app.start()
-        // would leak a live reconnecting client on every attempt of the loop below.
-        await conn.stop().catch(() => {})
-        this.log.warn(`slack: connection failed for appToken — retrying in 60s: ${formatErr(err)}`)
-        // Don't give up; retry in the background at a slow pace so a temporary
-        // network outage or Slack API blip self-heals without manual intervention.
-        const timer = this.clock.setTimeout(() => {
-          if (this.draining) return
-          this.startSlackRetry(group.appToken)
-        }, 60_000)
-        this.slackRetryTimers.set(group.appToken, timer)
-      }
-    }
-
+    await this.connections.openInitialSlackConnections(agents)
     // Open send-only Slack clients for HTTP bots (inbound lives on the relay).
     await this.openHttpSlackConnections(agents)
     // Long-poll / gateway / WS platform connects (Telegram/Discord/Feishu) must NOT gate
@@ -2772,630 +2793,42 @@ export class Daemon {
     )
   }
 
-  /**
-   * Close platform clients whose credential key has no reference in the FINAL
-   * active-agent roster, and evict every derived index that points at a removed
-   * or re-keyed integration. Consolidation maps are the reference counts: direct
-   * Slack is keyed by appToken; HTTP Slack, Telegram and Discord by botToken.
-   *
-   * A captured connection on a live turn is a temporary reference too. Detach
-   * drains its own dispatch leases before reaching this method; the guard also
-   * keeps ordinary concurrent reconcile safe for unrelated in-flight turns.
-   */
+  /** §7.5 platform lifecycle delegates — the bodies live in ConnectionReconciler; the
+   *  same-name methods stay here because callers (and tests) reach them through the class. */
   private async closeUnusedPlatformConnections(): Promise<void> {
-    // Evaluation-owned virtual integrations are invisible to physical reference
-    // counting AND immune to eviction (see the guards below): they were never
-    // opened from credentials, so credential comparison would always evict them.
-    const agents = this.transportAgents()
-    const direct = consolidate(agents)
-    const shared = consolidateShared(agents)
-    const telegram = consolidateTelegram(agents)
-    const discord = consolidateDiscord(agents)
-    const feishu = consolidateFeishu(agents)
-
-    const directByIntegration = new Map<string, { appToken: string; botToken: string }>()
-    for (const group of direct.values())
-      for (const { integrationId } of group.integrations)
-        directByIntegration.set(integrationId, { appToken: group.appToken, botToken: group.botToken })
-    const sharedByIntegration = new Map<string, string>()
-    for (const group of shared.values())
-      for (const { integrationId } of group.integrations) sharedByIntegration.set(integrationId, group.botToken)
-    const telegramByIntegration = new Map<string, string>()
-    for (const group of telegram.values())
-      for (const { integrationId } of group.integrations) telegramByIntegration.set(integrationId, group.botToken)
-    const discordByIntegration = new Map<string, string>()
-    for (const group of discord.values())
-      for (const { integrationId } of group.integrations) discordByIntegration.set(integrationId, group.botToken)
-    // Feishu keys on appId (one provider client per self-built app), not a bot token —
-    // plus region and mode, so either change produces a different desired connection.
-    const feishuByIntegration = new Map<string, string>()
-    for (const group of feishu.values())
-      for (const { integrationId } of group.integrations) feishuByIntegration.set(integrationId, feishuConnKey(group))
-
-    const allDesiredIds = new Set([
-      ...directByIntegration.keys(),
-      ...sharedByIntegration.keys(),
-      ...telegramByIntegration.keys(),
-      ...discordByIntegration.keys(),
-      ...feishuByIntegration.keys()
-    ])
-    const dropIdentity = (integrationId: string): void => {
-      delete this.botUserIds[integrationId]
-      this.channelSnapshots.delete(integrationId)
-    }
-    for (const integrationId of Object.keys(this.botUserIds))
-      if (!allDesiredIds.has(integrationId) && !this.evaluationIntegrationIds.has(integrationId))
-        dropIdentity(integrationId)
-    for (const integrationId of [...this.channelSnapshots.keys()])
-      if (!allDesiredIds.has(integrationId) && !this.evaluationIntegrationIds.has(integrationId))
-        this.channelSnapshots.delete(integrationId)
-
-    for (const [integrationId, conn] of this.connByIntegration) {
-      if (this.evaluationIntegrationIds.has(integrationId)) continue
-      const expectedDirect = directByIntegration.get(integrationId)
-      const expectedShared = sharedByIntegration.get(integrationId)
-      const matches = expectedDirect
-        ? conn.appToken === expectedDirect.appToken && conn.botToken === expectedDirect.botToken
-        : expectedShared !== undefined
-          ? conn.appToken === '' && conn.botToken === expectedShared
-          : false
-      if (!matches) {
-        this.connByIntegration.delete(integrationId)
-        dropIdentity(integrationId)
-      }
-    }
-    for (const [integrationId, conn] of this.tgConnByIntegration) {
-      if (this.evaluationIntegrationIds.has(integrationId)) continue
-      if (conn.botToken !== telegramByIntegration.get(integrationId)) {
-        this.tgConnByIntegration.delete(integrationId)
-        dropIdentity(integrationId)
-      }
-    }
-    for (const [integrationId, conn] of this.dcConnByIntegration) {
-      if (this.evaluationIntegrationIds.has(integrationId)) continue
-      if (conn.botToken !== discordByIntegration.get(integrationId)) {
-        this.dcConnByIntegration.delete(integrationId)
-        dropIdentity(integrationId)
-      }
-    }
-    for (const [integrationId, conn] of this.fsConnByIntegration) {
-      // Compare appId AND region: a region flip on the same appId must evict the stale
-      // mapping here (not only when a replacement start succeeds), so a failed replacement
-      // never leaves an integration routed at the stopped old-domain client.
-      if (feishuConnKey(conn) !== feishuByIntegration.get(integrationId)) {
-        this.fsConnByIntegration.delete(integrationId)
-        dropIdentity(integrationId)
-      }
-    }
-
-    // A startup retry captures only the stable appToken and re-reads the live
-    // group when it fires. Cancel timers for keys whose final reference vanished.
-    for (const [appToken, timer] of this.slackRetryTimers) {
-      if (direct.has(appToken)) continue
-      this.clock.clearTimeout(timer)
-      this.slackRetryTimers.delete(appToken)
-    }
-    // Join only attempts whose credential key vanished or changed. An unrelated
-    // slow appToken must not block this move; same-key/same-bot attempts re-read
-    // the final integration roster themselves before publishing their mapping.
-    const retryRuns = [...this.slackRetryRuns]
-      .filter(([appToken, run]) => direct.get(appToken)?.botToken !== run.botToken)
-      .map(([, run]) => run.promise)
-    if (retryRuns.length) await Promise.all(retryRuns)
-
-    // §7.5: every pool prunes by ONE rule — a live connection survives iff its
-    // opaque identity is still among the keys consolidation asked for. This
-    // replaced five bespoke credential comparisons (appToken+botToken, botToken
-    // alone, appId+region+mode, …); a platform now states its identity once, in
-    // its key function, and the lifecycle never asks what a key is made of. The
-    // Feishu case is the one that used to need spelling out — a region or
-    // transport flip must drop the old client so the open loop initializes the
-    // correct gateway — and it is now just another key that stopped matching.
-    await this.prunePool(this.slackPool, new Set([...direct.values()].map(slackSocketKey)))
-    await this.prunePool(this.slackSharedPool, new Set([...shared.values()].map(slackSharedKey)))
-    await this.prunePool(this.telegramPool, new Set([...telegram.values()].map(telegramConnKey)))
-    await this.prunePool(this.discordPool, new Set([...discord.values()].map(discordConnKey)))
-    await this.prunePool(this.feishuPool, new Set([...feishu.values()].map(feishuConnKey)))
+    await this.connections.closeUnusedPlatformConnections()
   }
 
-  /** Close every connection in `pool` whose opaque identity consolidation no
-   *  longer asks for, draining in-flight uses first. Evaluation-owned virtual
-   *  connections never enter a pool (they are injected straight into the binding
-   *  maps), so they are immune here by construction. */
-  private async prunePool<C extends SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection>(
-    pool: ConnectionPool<C>,
-    desired: Set<ConnectionKey>
-  ): Promise<void> {
-    for (const conn of pool.all()) {
-      if (desired.has(pool.keyOf(conn))) continue
-      await this.waitForConnectionUses(conn)
-      await conn.stop()
-      pool.remove(conn)
-    }
-  }
-
-  /**
-   * Reconcile the connection-derived Slack state (`botUserIds`, `connByIntegration`,
-   * open sockets) against the live `this.agents` set. Routing itself is rebuilt
-   * implicitly each message (mergedRules reads this.agents) — this only maintains the
-   * socket layer that is otherwise written only at startup.
-   *
-   * Safe-by-construction (per the recon report):
-   *  - NEW appToken  → construct + start an isolated socket, then fan botUserId/conn
-   *    out to every integrationId on that appToken. A failed start() is logged and
-   *    leaves all existing sockets untouched (never throws out of reconcile).
-   *  - NEW integration reusing an ALREADY-OPEN appToken → no socket churn; just
-   *    backfill botUserIds/connByIntegration from the existing conn (mention routing
-   *    for the new bot would otherwise silently never match).
-   *  - REMOVED/re-keyed appToken → closed by closeUnusedPlatformConnections first,
-   *    after checking the final roster and captured-turn connection leases.
-   */
   private async reconcileSlackConnections(): Promise<void> {
-    const groups = consolidate(this.transportAgents())
-    for (const group of groups.values()) {
-      const existing = this.slackPool.find(slackSocketKey(group))
-      if (existing) {
-        // Already-open appToken: bind any integrationId not yet pointing at this conn
-        // (tier 1). Covers both a brand-new integrationId AND one that was re-pointed
-        // from a different appToken onto this already-open one — without the
-        // `!== existing` check the latter would keep its stale mapping/botUserId.
-        let bound = false
-        for (const { integrationId } of group.integrations) {
-          if (this.connByIntegration.get(integrationId) !== existing) {
-            this.botUserIds[integrationId] = existing.botUserId
-            this.connByIntegration.set(integrationId, existing)
-            this.log.info(`slack: bound integration ${integrationId} onto existing socket (appToken reuse)`)
-            bound = true
-          }
-        }
-        // A newly-bound integration needs its channel snapshot reported too.
-        if (bound) void this.refreshChannels(existing)
-        continue
-      }
-      // New appToken: open an isolated socket (tier 2). Guard so a bad token logs
-      // and leaves existing sockets intact instead of throwing out of reconcile.
-      try {
-        const conn: SlackConnection = new SlackConnection(
-          {
-            group,
-            newTraceId: () => randomUUID(),
-            onMessage: (msg) => {
-              this.nameResolver?.noteMessage(conn, msg)
-              this.onInbound(msg, this.srcIntegrationIds(conn))
-            },
-            onChannelsChanged: () => void this.refreshChannels(conn),
-            onMessageShortcut: (shortcut) => this.slackShortcutSession(shortcut, this.srcIntegrationIds(conn)),
-            onStatusAction: (a) => this.handleStatusAction(a),
-            onStatusInfo: (key) => this.statusInfoForKey(key),
-            onPermissionChoice: (a) => this.handlePermissionChoice(a),
-            onElicitChoice: (a) => this.handleElicitChoice(a),
-            log: this.log,
-            boltDebug: this.cfg.logging.level === 'debug' || this.cfg.logging.level === 'trace'
-          },
-          this.opts.slackAppFactory
-        )
-        this.log.info(
-          `slack: opening new socket at runtime (${group.integrations.length} integration(s): ${group.integrations
-            .map((i) => i.agentId)
-            .join(', ')})…`
-        )
-        await conn.start()
-        this.log.info(`slack: runtime socket connected as bot user ${conn.botUserId}`)
-        for (const { integrationId } of group.integrations) {
-          this.botUserIds[integrationId] = conn.botUserId
-          this.connByIntegration.set(integrationId, conn)
-        }
-        this.slackPool.add(conn)
-        void this.refreshChannels(conn)
-        // This reconcile just brought the socket up; cancel any pending startup-retry
-        // timer for the same appToken so it doesn't fire and open a duplicate socket.
-        const pending = this.slackRetryTimers.get(group.appToken)
-        if (pending !== undefined) {
-          this.clock.clearTimeout(pending)
-          this.slackRetryTimers.delete(group.appToken)
-        }
-      } catch (err) {
-        this.log.error(
-          `slack: failed to open runtime socket for appToken — leaving existing sockets intact: ${formatErr(err)}`
-        )
-      }
-    }
-    // HTTP-bot send-only clients (wire mode `shared`) — reconciled alongside the sockets.
-    await this.openHttpSlackConnections([...this.agents.values()])
+    await this.connections.reconcileSlackConnections()
   }
 
-  /**
-   * Open (or reuse) a SEND-ONLY Slack Web-API client per HTTP bot token and bind
-   * it into `connByIntegration`, so replies / attachment fetches / MCP platform
-   * tools / cron anchors resolve a connection for a `mode:'shared'` integration
-   * (shared-bot-relay.md §11). No Socket Mode socket is opened — the bot's inbound
-   * arrives from the relay as `rd/msg(im)`. Idempotent: an already-open client for
-   * the same xoxb is reused; when a bot flips direct→HTTP transport its old direct socket
-   * (same botToken) is stopped so it stops competing with the relay for the single
-   * Socket Mode consumer.
-   */
   private async openHttpSlackConnections(agents: LoadedAgent[]): Promise<void> {
-    const groups = consolidateShared(this.transportAgents(agents))
-    for (const group of groups.values()) {
-      let conn = this.slackSharedPool.find(slackSharedKey(group))
-      let bound = false
-      if (!conn) {
-        conn = new SlackConnection(
-          {
-            group,
-            sendOnly: true,
-            newTraceId: () => randomUUID(),
-            onMessage: () => {}, // never called (relay owns inbound)
-            onStatusAction: (a) => this.handleStatusAction(a),
-            onStatusInfo: (key) => this.statusInfoForKey(key),
-            onPermissionChoice: (a) => this.handlePermissionChoice(a),
-            onElicitChoice: (a) => this.handleElicitChoice(a),
-            log: this.log
-          },
-          this.opts.slackAppFactory
-        )
-        try {
-          await conn.start()
-          this.slackSharedPool.add(conn)
-          this.log.info(`slack: send-only (HTTP) client ready as bot user ${conn.botUserId}`)
-        } catch (err) {
-          this.log.warn(`slack: HTTP send-only client failed — retry on next reconcile: ${formatErr(err)}`)
-          continue
-        }
-      }
-      for (const { integrationId } of group.integrations) {
-        if (this.connByIntegration.get(integrationId) !== conn) bound = true
-        this.botUserIds[integrationId] = conn.botUserId
-        this.connByIntegration.set(integrationId, conn)
-      }
-      // HTTP integrations still have the same xoxb Web API surface as direct
-      // sockets. Once a send-only client is bound, use it to seed the membership
-      // snapshot too; otherwise rows created by shared routing know only the raw
-      // channel id and the console can never render Slack's channel name.
-      if (bound) void this.refreshChannels(conn)
-    }
+    await this.connections.openHttpSlackConnections(agents)
   }
 
-  /**
-   * Reconcile the connection-derived Telegram state (`botUserIds`,
-   * `tgConnByIntegration`, open long-poll connections) against the live `agents`.
-   * Parallel to reconcileSlackConnections but simpler (Telegram has no app-level
-   * token; one connection per bot token):
-   *  - NEW bot token → construct + start a long-poll, then bind botUserIds
-   *    (the bot's @username, matching what normalize puts in `mentionedBots`) +
-   *    tgConnByIntegration for every integrationId on that token. A failed start
-   *    is logged and leaves existing connections intact (never throws out).
-   *  - integration reusing an ALREADY-OPEN token → bind it onto the live conn.
-   *  - REMOVED token → closed by closeUnusedPlatformConnections before this opener.
-   */
   private async reconcileTelegramConnections(): Promise<void> {
-    const groups = consolidateTelegram(this.transportAgents())
-    for (const group of groups.values()) {
-      const existing = this.telegramPool.find(telegramConnKey(group))
-      if (existing) {
-        for (const { integrationId } of group.integrations) {
-          if (this.tgConnByIntegration.get(integrationId) !== existing) {
-            this.botUserIds[integrationId] = existing.botUsername
-            this.tgConnByIntegration.set(integrationId, existing)
-            this.log.info(`telegram: bound integration ${integrationId} onto existing bot @${existing.botUsername}`)
-          }
-        }
-        continue
-      }
-      // Another connect for this token is already in flight (not yet pushed onto
-      // telegramConns, so `find()` above can't see it). Skip to avoid opening a duplicate;
-      // that connect binds this group's integrations when it resolves.
-      if (!this.telegramPool.beginConnect(telegramConnKey(group))) continue
-      const conn: TelegramConnection = new TelegramConnection({
-        group,
-        newTraceId: () => randomUUID(),
-        onMessage: (msg) => {
-          this.channelNameResolver?.noteMessage(conn, msg)
-          this.onInbound(msg, this.srcIntegrationIds(conn))
-        },
-        onBotAddedToChat: (chat) => {
-          const integrationIds = new Set(group.integrations.map(({ integrationId }) => integrationId))
-          for (const integrationId of this.srcIntegrationIds(conn)) integrationIds.add(integrationId)
-          this.observeTelegramChat(chat, [...integrationIds])
-        },
-        onCallback: (cb) => this.handleTelegramCallback(cb, conn),
-        log: this.log
-      })
-      try {
-        this.log.info(
-          `telegram: connecting (${group.integrations.length} integration(s): ${group.integrations
-            .map((i) => i.agentId)
-            .join(', ')})…`
-        )
-        await conn.start()
-        this.log.info(`telegram: long-poll connected as @${conn.botUsername} (id ${conn.botUserId})`)
-        for (const { integrationId } of group.integrations) {
-          // Mention-routing matches the bot's @username (normalize's mentionedBots are usernames).
-          this.botUserIds[integrationId] = conn.botUsername
-          this.tgConnByIntegration.set(integrationId, conn)
-        }
-        this.telegramPool.add(conn)
-      } catch (err) {
-        await conn.stop().catch(() => {})
-        this.log.error(`telegram: failed to open long-poll for a bot token — leaving others intact: ${formatErr(err)}`)
-      } finally {
-        this.telegramPool.endConnect(telegramConnKey(group))
-      }
-    }
-    // Label existing sessions' chats now that connections are up (per-message resolution
-    // otherwise only fires on fresh traffic — see backfillChannelNames).
-    this.backfillChannelNames()
+    await this.connections.reconcileTelegramConnections()
   }
 
-  /**
-   * Reconcile the connection-derived Discord state (`botUserIds`,
-   * `dcConnByIntegration`, open Gateway connections) against the live `agents`.
-   * Parallel to reconcileTelegramConnections (one Gateway per bot token), but
-   * mention-routing matches the bot's numeric user id (normalize's `mentionedBots`
-   * are Discord user ids). A failed start is logged and leaves other connections
-   * intact (never throws out); removed tokens are closed by the shared close phase.
-   */
   private async reconcileDiscordConnections(): Promise<void> {
-    const groups = consolidateDiscord(this.transportAgents())
-    for (const group of groups.values()) {
-      const existing = this.discordPool.find(discordConnKey(group))
-      if (existing) {
-        for (const { integrationId } of group.integrations) {
-          if (this.dcConnByIntegration.get(integrationId) !== existing) {
-            this.botUserIds[integrationId] = existing.botUserId
-            this.dcConnByIntegration.set(integrationId, existing)
-            this.log.info(`discord: bound integration ${integrationId} onto existing bot @${existing.botUsername}`)
-          }
-        }
-        continue
-      }
-      // Another connect for this token is already in flight (not yet pushed onto
-      // discordConns, so `find()` above can't see it). Skip to avoid opening a duplicate;
-      // that connect binds this group's integrations when it resolves.
-      if (!this.discordPool.beginConnect(discordConnKey(group))) continue
-      const conn: DiscordConnection = new DiscordConnection({
-        group,
-        newTraceId: () => randomUUID(),
-        onMessage: (msg) => {
-          // Unlike Telegram, Discord CAN resolve an arbitrary user id — collect the
-          // sender's (and mentioned users') display names so session read-back labels
-          // them by name the way Slack does.
-          this.channelNameResolver?.noteMessage(conn, { ...msg, mentionedUserIds: msg.mentionedBots })
-          this.onInbound(msg, this.srcIntegrationIds(conn))
-        },
-        onStatusAction: (a) => this.handleStatusAction(a),
-        onSelectAction: (a) => this.handleDiscordSelect(a),
-        log: this.log
-      })
-      try {
-        this.log.info(
-          `discord: connecting (${group.integrations.length} integration(s): ${group.integrations
-            .map((i) => i.agentId)
-            .join(', ')})…`
-        )
-        await conn.start()
-        this.log.info(`discord: gateway connected as @${conn.botUsername} (id ${conn.botUserId})`)
-        for (const { integrationId } of group.integrations) {
-          // Mention-routing matches the bot's numeric user id (normalize's mentionedBots are ids).
-          this.botUserIds[integrationId] = conn.botUserId
-          this.dcConnByIntegration.set(integrationId, conn)
-        }
-        this.discordPool.add(conn)
-      } catch (err) {
-        await conn.stop().catch(() => {})
-        this.log.error(`discord: failed to open Gateway for a bot token — leaving others intact: ${formatErr(err)}`)
-      } finally {
-        this.discordPool.endConnect(discordConnKey(group))
-      }
-    }
-    // Label existing sessions' channels now that connections are up (per-message
-    // resolution otherwise only fires on fresh traffic — see backfillChannelNames).
-    this.backfillChannelNames()
+    await this.connections.reconcileDiscordConnections()
   }
 
-  /** The live desired gateway region for a Feishu appId, or undefined if no agent
-   *  currently has a feishu integration on that appId. Lets an in-flight connect detect a
-   *  region change (or removal) that landed during its handshake and self-discard instead
-   *  of publishing an old-domain mapping. */
-  private desiredFeishuConfig(appId: string): { region: FeishuRegion; mode: 'direct' | 'shared' } | undefined {
-    for (const group of consolidateFeishu(this.transportAgents()).values())
-      if (group.appId === appId) return { region: group.region, mode: group.mode }
-    return undefined
-  }
-
-  /**
-   * Reconcile the connection-derived Feishu state (`botUserIds`, `fsConnByIntegration`,
-   * provider clients and direct WSClient long-connections) against the live `agents`.
-   * Parallel to reconcileDiscordConnections, but mention-routing matches
-   * the bot's own `open_id` (normalize's `mentionedBots` are Feishu open_ids). A failed
-   * start is logged and leaves other connections intact (never throws out); a removed
-   * appId is NOT torn down here (same deferred-close reasoning as Slack/Telegram/Discord).
-   */
   private async reconcileFeishuConnections(): Promise<void> {
-    const groups = consolidateFeishu(this.transportAgents())
-    for (const group of groups.values()) {
-      // Match on appId AND region: a region change on the same appId must NOT reuse the
-      // old-domain client (the prune pass drops it; this guards a same-pass race too).
-      const existing = this.feishuPool.find(feishuConnKey(group))
-      if (existing) {
-        for (const { integrationId } of group.integrations) {
-          if (this.fsConnByIntegration.get(integrationId) !== existing) {
-            this.botUserIds[integrationId] = existing.botOpenId
-            this.fsConnByIntegration.set(integrationId, existing)
-            this.log.info(`feishu: bound integration ${integrationId} onto existing app ${existing.appId}`)
-          }
-        }
-        continue
-      }
-      // A connect for this appId+region is already in flight (not yet pushed onto
-      // feishuConns, so `find()` above can't see it). Skip to avoid opening a duplicate;
-      // that connect binds this group's integrations when it resolves. Keyed on region
-      // too, so a NEW-region reconcile is NOT blocked by an in-flight OLD-region connect.
-      const connectKey = feishuConnKey(group)
-      if (!this.feishuPool.beginConnect(connectKey)) continue
-      const conn: FeishuConnection = new FeishuConnection({
-        group,
-        newTraceId: () => randomUUID(),
-        onMessage: (msg) => {
-          this.channelNameResolver?.noteMessage(conn, { ...msg, mentionedUserIds: msg.mentionedBots })
-          this.onInbound(msg, this.srcIntegrationIds(conn))
-        },
-        onStatusAction: (a) => this.handleStatusAction(a),
-        log: this.log
-      })
-      try {
-        this.log.info(
-          `feishu: connecting (${group.integrations.length} integration(s): ${group.integrations
-            .map((i) => i.agentId)
-            .join(', ')})…`
-        )
-        await conn.start()
-        // The handshake can take seconds; a region change for this appId may have landed
-        // meanwhile. Re-check the live desired region before publishing — otherwise this
-        // now-stale (old-domain) connect would bind its mapping over the newer region.
-        const desired = this.desiredFeishuConfig(group.appId)
-        if (!desired || desired.region !== group.region || desired.mode !== group.mode) {
-          await conn.stop().catch(() => {})
-          this.log.info(
-            `feishu: discarding connect for app ${conn.appId} (${group.region}) — desired region is now ` +
-              `${desired ? `${desired.region}/${desired.mode}` : 'none'} (superseded mid-handshake)`
-          )
-          continue
-        }
-        this.log.info(
-          `feishu: ${conn.mode === 'shared' ? 'send-only HTTP client ready' : 'WSClient connected'} for app ` +
-            `${conn.appId} (bot ${conn.botOpenId || '?'})`
-        )
-        for (const { integrationId } of group.integrations) {
-          // Mention-routing matches the bot's own open_id (normalize's mentionedBots are open_ids).
-          this.botUserIds[integrationId] = conn.botOpenId
-          this.fsConnByIntegration.set(integrationId, conn)
-        }
-        this.feishuPool.add(conn)
-      } catch (err) {
-        await conn.stop().catch(() => {})
-        this.log.error(`feishu: failed to initialize an appId — leaving others intact: ${formatErr(err)}`)
-      } finally {
-        this.feishuPool.endConnect(connectKey)
-      }
-    }
-    // Label existing sessions' channels now that connections are up (per-message
-    // resolution otherwise only fires on fresh traffic — see backfillChannelNames).
-    this.backfillChannelNames()
+    await this.connections.reconcileFeishuConnections()
   }
 
-  /**
-   * Resolve display names for the channels and triggering users of already-stored
-   * Discord/Telegram/Feishu sessions so the console labels them without waiting
-   * for a new inbound message (the per-message ChannelNameResolver only fires on
-   * fresh traffic). The Slack analog is refreshChannels' bulk membership snapshot;
-   * these platforms have no cheap channel enumeration, so we resolve each live
-   * session's channel individually via its bot connection. Best-effort +
-   * TTL-guarded by the resolver, so calling it on every reconcile is cheap.
-   */
   private backfillChannelNames(): void {
-    const resolver = this.channelNameResolver
-    if (!resolver) return
-    for (const row of this.store.listSessions()) {
-      // Only chat platforms without a bulk membership snapshot need per-session
-      // channel resolution; Slack's analog is refreshChannels' bulk snapshot.
-      if (originKindOf(row.platform) !== 'chat' || manifestFor(row.platform).membershipEnumeration !== 'observed')
-        continue
-      // Legacy unscoped sessions cannot be attributed to the current physical bot.
-      // In particular, never use a replacement bot to look up an old bot's chats.
-      if (!row.transportScope) continue
-      const integrationId = this.integrationIdForTransportScope(row.agentId, row.platform, row.transportScope)
-      if (!integrationId) continue
-      // The integration id already names its platform's binding — no need to pick
-      // a map by platform (§7.5 read side).
-      const conn = this.connForIntegration(integrationId)
-      if (!conn) continue
-      if (row.triggeredBy) {
-        resolver.noteMessage(conn, {
-          channel: row.channel,
-          sender: { id: row.triggeredBy, isBot: false }
-        })
-      } else {
-        resolver.noteChannel(conn, row.channel)
-      }
-    }
-    this.refreshObservedChannels()
+    this.connections.backfillChannelNames()
   }
 
   private refreshObservedChannels(): void {
     this.observedChannelsSync.refreshObservedChannels()
   }
 
-  /**
-   * Withdraw the bot from a conversation (or, on Discord, a whole server) at the
-   * PLATFORM, then reconcile the console's channel set.
-   *
-   * The platforms disagree about what can be left and about what they tell us
-   * afterwards, and both differences are load-bearing:
-   *
-   *  - **Slack** leaves one channel and then EMITS `channel_left`, which re-lists
-   *    membership authoritatively and retires the row on its own. Re-listing here
-   *    too only makes the console update immediately instead of on the event.
-   *  - **Telegram** leaves one chat and tells nobody — no self-event, and its bot
-   *    API cannot enumerate chats — so the row survives unless we retract it by id.
-   *  - **Discord** has no per-channel membership for a bot at all; leaving means
-   *    leaving the guild, which retires every row of that guild at once.
-   *
-   * Never throws: a platform refusal is the operator's answer, not a daemon fault.
-   */
   private async leaveConversation(leave: IntegrationLeave): Promise<IntegrationLeaveOk> {
-    const integration = this.integrationConfigById(leave.integrationId)
-    if (!integration) return { ok: false, error: 'integration not found on this daemon' }
-    const conn = this.connForIntegration(leave.integrationId)
-    if (!conn) return { ok: false, error: 'integration is not connected' }
-    const { target } = leave
-    try {
-      if (conn instanceof DiscordConnection) {
-        if (target.kind !== 'space') {
-          return { ok: false, error: 'Discord bots join servers, not channels — leave the server instead' }
-        }
-        await conn.leaveSpace(target.spaceId)
-        // Every channel of that guild went with it. The snapshot is the only record
-        // of which those were: Discord rows are observed, never enumerated.
-        const gone = (this.channelSnapshots.get(leave.integrationId)?.channels ?? [])
-          .filter((c) => c.spaceId === target.spaceId)
-          .map((c) => c.id)
-        this.retractChannels(leave.integrationId, gone)
-        return { ok: true }
-      }
-      if (target.kind !== 'conversation') {
-        return { ok: false, error: 'this platform has no server to leave — leave the channel instead' }
-      }
-      if (conn instanceof SlackConnection) {
-        await conn.leaveChannel(target.channel)
-        // Authoritative re-list; also arrives via channel_left, and both converge.
-        await this.refreshChannels(conn)
-        return { ok: true }
-      }
-      if (conn instanceof TelegramConnection) {
-        try {
-          await conn.leaveChannel(target.channel)
-        } catch (err) {
-          // Already out — someone removed the bot in Telegram and the row simply
-          // outlived it, which is the whole reason these rows accumulate. Leaving is
-          // the ONLY action offered on a Telegram row, so it has to finish the job in
-          // both states: refusing here would strand the operator with a row they can
-          // see, cannot leave, and have no other control over. Any other failure is
-          // still reported. Worst case of a mis-read error is the documented
-          // behaviour of a removed row — it returns on the conversation's next message.
-          if (!isAlreadyOutOfChat(err)) throw err
-          this.log.debug(`telegram: already out of ${target.channel} — retracting the row`)
-        }
-        this.retractChannels(leave.integrationId, [target.channel])
-        return { ok: true }
-      }
-      return { ok: false, error: 'leaving a conversation is not supported on this platform' }
-    } catch (err) {
-      // The platform's own words — a missing scope, `last_member`, a lost right.
-      const error = (err as Error).message
-      this.log.warn(`integration/leave failed (${integration.platform}): ${error}`)
-      return { ok: false, error }
-    }
+    return this.connections.leaveConversation(leave)
   }
 
   private clearRetractionOnTraffic(msg: NormalizedMessage, srcIntegrationIds?: string[]): void {
@@ -3421,188 +2854,12 @@ export class Daemon {
     return this.observedChannelsSync.collapseObserved(observed, platform)
   }
 
-  /**
-   * Re-list the channels this connection's bot is a member of and report the
-   * snapshot to the CP for every integration bound to the connection (one bot ⇒
-   * one membership set, fanned out per integrationId). Best-effort + never throws:
-   * a Slack API failure keeps the previous snapshot (listBotChannels returns null),
-   * and the emit is a no-op while the CP is down — the cached snapshot is re-emitted
-   * on the next CP (re)connect (see startCpClient's onReady).
-   */
   private async refreshChannels(conn: SlackConnection): Promise<void> {
-    try {
-      const channels = await conn.listBotChannels()
-      if (!channels) return
-      // The snapshot already carries names — cache them for session read-back too.
-      for (const c of channels) {
-        if (!c.name) continue
-        this.store.setDisplayName(c.id, c.name, Date.now())
-        this.emitSessionMetadataSnapshotsForDisplayName(c.id)
-      }
-      for (const [integrationId, c] of this.connByIntegration) {
-        if (c !== conn) continue
-        // Preserve observed direct rows: the membership listing carries channels
-        // only, while 1:1 and group DMs arrive incrementally. A refresh must not wipe
-        // them from the reconnect snapshot.
-        const direct = (this.channelSnapshots.get(integrationId)?.channels ?? []).filter(
-          (x) => x.kind === 'im' || x.kind === 'mpim'
-        )
-        const merged = [...channels, ...direct]
-        this.channelSnapshots.set(integrationId, { channels: merged, authoritative: true })
-        this.cpClient?.emitIntegrationChannels({ integrationId, channels: merged })
-        this.maybeIntroduceOnJoin('slack', integrationId, channels)
-      }
-      this.log.debug(`slack: channel snapshot for bot ${conn.botUserId}: ${channels.length} channel(s)`)
-    } catch (err) {
-      this.log.debug(`slack: channel snapshot refresh failed: ${formatErr(err)}`)
-    }
+    await this.connections.refreshChannels(conn)
   }
 
-  /**
-   * Self-introduce-on-join (issue #536). Given one integration's fresh channel
-   * snapshot, detect GENUINE new joins against durable state and, for an opted-in
-   * agent, dispatch a one-shot headless intro turn per newly-joined channel — the
-   * agent introduces itself to the peers already there via `messageAgent`.
-   *
-   * Storm-safe: the FIRST snapshot per integration (and any batch larger than
-   * `INTRO_MAX_BURST`) is adopted as the silent baseline, so a daemon restart /
-   * socket reconnect that re-lists every channel never fires intros. State is
-   * marked BEFORE dispatch, so a failed turn is simply skipped (never retried in a
-   * loop). Not opted in ⇒ no seeding either, so enabling it later baselines cleanly.
-   */
   private maybeIntroduceOnJoin(platform: string, integrationId: string, channels: { id: string }[]): void {
-    const agent = [...this.agents.values()].find((a) => a.integrations.some((i) => i.id === integrationId))
-    if (!agent?.introduceOnJoin) return
-    const plan = planChannelIntros(
-      {
-        seeded: this.store.isChannelIntroSeeded(integrationId),
-        introduced: this.store.channelIntroSet(agent.id, platform)
-      },
-      channels.map((c) => c.id)
-    )
-    const now = this.clock.now()
-    for (const ch of plan.adoptSilently) this.store.markChannelIntro(agent.id, platform, ch, null)
-    if (plan.markSeeded) this.store.markChannelIntroSeeded(integrationId, now)
-    for (const ch of plan.introduce) {
-      this.store.markChannelIntro(agent.id, platform, ch, now)
-      this.log.info(`intro: agent "${agent.id}" self-introducing in channel ${ch}`)
-      const traceId = randomUUID()
-      const msg = buildIntroMessage(agent.id, platform, ch, traceId)
-      // `deliverHeadless` marks THIS turn's fan-out: peers woken via messageAgent run
-      // headless and record the newcomer silently. No correlationId ⇒ no orchestration /
-      // worker-report side effect (recordWorkerReport only fires on a correlationId).
-      // No origin fields (§5.3): a self-introduce is root-like — the woken peer has no parent
-      // session to reply into, so it gets no `Parent session` line and no SessionTarget.
-      // `introChannel` is the CODE-level bound on the fan-out: discovery in this turn is
-      // pinned to the joined channel whatever the model passes to `listAgents` (the prompt
-      // asks for the same filter, but a prompt is not a bound — see CallMeta.introChannel).
-      const callMeta: CallMeta = {
-        callFrom: agent.id,
-        hopCount: 0,
-        deliveryId: traceId,
-        deliverHeadless: true,
-        introChannel: ch
-      }
-      void this.dispatch(agent.id, msg, integrationId, undefined, callMeta).catch((err) =>
-        this.log.warn(`intro: dispatch failed for agent "${agent.id}" in ${ch}: ${formatErr(err)}`)
-      )
-    }
-  }
-
-  /**
-   * Background retry loop for a Slack connection that failed at initial startup.
-   * Creates a fresh SlackConnection (the old one is in an unknown state) and, on
-   * success, wires it into `botUserIds` / `connByIntegration` / `connections` so
-   * the agent can begin processing messages. On failure, schedules another retry
-   * at a slow, fixed interval — never gives up, so a temporary network outage
-   * self-heals without manual daemon restart.
-   */
-  private startSlackRetry(appToken: string): void {
-    if (this.slackRetryRuns.has(appToken)) return
-    const group = consolidate(this.transportAgents()).get(appToken)
-    if (!group) return
-    const run = this.retrySlackConnection(appToken)
-      .catch((err) => this.log.error(`slack: retry loop error: ${formatErr(err)}`))
-      .finally(() => {
-        if (this.slackRetryRuns.get(appToken)?.promise === run) this.slackRetryRuns.delete(appToken)
-      })
-    this.slackRetryRuns.set(appToken, { botToken: group.botToken, promise: run })
-  }
-
-  private async retrySlackConnection(appToken: string): Promise<void> {
-    if (this.draining) return
-    // Never reuse a captured integration roster: an agent may have detached (or a
-    // token may have moved) during the 60s backoff. Resolve the current group now.
-    const group = consolidate(this.transportAgents()).get(appToken)
-    if (!group) {
-      this.slackRetryTimers.delete(appToken)
-      return
-    }
-    // A file-watch reconcile (reconcileSlackConnections) may have opened this
-    // appToken's socket while the retry timer was pending. Opening another here would
-    // leave two live Socket Mode connections for one app (a wasted per-app connection
-    // slot). The live socket is authoritative — drop the timer and bail.
-    if (this.slackPool.find(slackSocketKey(group)) !== undefined) {
-      this.slackRetryTimers.delete(group.appToken)
-      return
-    }
-    this.log.info(
-      `slack: background retry for appToken (${group.integrations.length} integration(s): ${group.integrations.map((i) => i.agentId).join(', ')})…`
-    )
-    const conn: SlackConnection = new SlackConnection(
-      {
-        group,
-        newTraceId: () => randomUUID(),
-        onMessage: (msg) => {
-          // The arrow captures the NEW `conn` ref so nameResolver/onInbound use the
-          // successfully-retried connection, not a stale one from an earlier attempt.
-          this.nameResolver?.noteMessage(conn, msg)
-          this.onInbound(msg, this.srcIntegrationIds(conn))
-        },
-        onChannelsChanged: () => void this.refreshChannels(conn),
-        onMessageShortcut: (shortcut) => this.slackShortcutSession(shortcut, this.srcIntegrationIds(conn)),
-        onStatusAction: (a) => this.handleStatusAction(a),
-        onStatusInfo: (key) => this.statusInfoForKey(key),
-        onPermissionChoice: (a) => this.handlePermissionChoice(a),
-        onElicitChoice: (a) => this.handleElicitChoice(a),
-        log: this.log,
-        boltDebug: this.cfg.logging.level === 'debug' || this.cfg.logging.level === 'trace'
-      },
-      this.opts.slackAppFactory
-    )
-    try {
-      await conn.start()
-      // The roster may have changed while start() was in flight. Never publish a
-      // socket or captured integration list from before a detach/token handoff.
-      const currentGroup = consolidate(this.transportAgents()).get(appToken)
-      if (this.draining || !currentGroup || currentGroup.botToken !== group.botToken) {
-        await conn.stop().catch(() => {})
-        this.slackRetryTimers.delete(appToken)
-        return
-      }
-      this.log.info(`slack: background retry succeeded — connected as bot user ${conn.botUserId}`)
-      this.slackRetryTimers.delete(group.appToken)
-      for (const { integrationId } of currentGroup.integrations) {
-        this.botUserIds[integrationId] = conn.botUserId
-        this.connByIntegration.set(integrationId, conn)
-      }
-      this.slackPool.add(conn)
-      void this.refreshChannels(conn)
-    } catch (err) {
-      // Release the half-open connection before discarding it so a failure during
-      // app.start() doesn't leak a live reconnecting Bolt client each iteration.
-      await conn.stop().catch(() => {})
-      if (this.draining || !consolidate(this.transportAgents()).has(appToken)) {
-        this.slackRetryTimers.delete(appToken)
-        return
-      }
-      this.log.warn(`slack: background retry failed — scheduling next attempt in 60s: ${formatErr(err)}`)
-      const timer = this.clock.setTimeout(() => {
-        if (this.draining) return
-        this.startSlackRetry(appToken)
-      }, 60_000)
-      this.slackRetryTimers.set(group.appToken, timer)
-    }
+    this.connections.maybeIntroduceOnJoin(platform, integrationId, channels)
   }
 
   /** Code/socket carve-backs below the denied host HOME/daemon root. Every input
@@ -20950,8 +20207,7 @@ export class Daemon {
     this.cancelTimers.clear()
     for (const { timer } of this.coldCancelTimers.values()) this.clock.clearTimeout(timer)
     this.coldCancelTimers.clear()
-    for (const t of this.slackRetryTimers.values()) this.clock.clearTimeout(t)
-    this.slackRetryTimers.clear()
+    this.connections.cancelRetryTimers()
     if (this.hookReportRetryTimer !== undefined) {
       this.clock.clearTimeout(this.hookReportRetryTimer)
       this.hookReportRetryTimer = undefined
@@ -21024,9 +20280,7 @@ export class Daemon {
     await Promise.resolve(this.memoryOutbox?.stop()).catch((e) => errors.push(e))
     await Promise.resolve(this.memoryConnections?.close()).catch((e) => errors.push(e))
     await Promise.resolve(this.relays?.stop()).catch((e) => errors.push(e))
-    for (const run of [...this.slackRetryRuns.values()]) await Promise.resolve(run.promise).catch((e) => errors.push(e))
-    for (const pool of [this.slackPool, this.slackSharedPool, this.telegramPool, this.discordPool, this.feishuPool])
-      for (const c of pool.all()) await Promise.resolve(c.stop()).catch((e) => errors.push(e))
+    errors.push(...(await this.connections.dispose()))
     // Capture startup promises before stopHost invalidates their cache entries. Every
     // teardown goes through the same generation fence/hostStopping path, and no async
     // starter is allowed to outlive the store/MCP boundary below.
