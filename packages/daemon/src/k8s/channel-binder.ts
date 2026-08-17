@@ -66,6 +66,12 @@ export class ChannelBinder {
     grants: ShimCapability[]
   ): Promise<ShimConnection> {
     const releasedAt = this.deps.registry.releaseFence(agentId)
+    // The fence only catches a release that lands DURING the bind; one that landed between
+    // `ensureSandbox` resolving and this continuation running is already in the snapshot, so the
+    // launch itself has to be re-read. Otherwise a departed member wakes a pod it no longer serves.
+    if (this.deps.registry.currentLaunch(agentId) !== launch) {
+      throw new Error(`agent ${agentId} left this member before its sandbox channel was bound`)
+    }
     // Resume before waiting because suspension deleted the pod and readiness cannot arrive first.
     const modeBeforeWake = await this.deps.lease.queueMode(launch.sandboxName, 'Running')
     // A launch this daemon already has cached returns from ensureSandbox before any sandbox
