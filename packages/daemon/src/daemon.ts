@@ -301,7 +301,6 @@ import {
   DAEMON_BOOTSTRAP_UPGRADE_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
   ORGANIZATION_SUGGESTION_REVIEW_FEATURE,
-  SESSION_METADATA_ACK_FEATURE,
   SESSION_VISIBILITY_FEATURE,
   SLACK_SESSION_AUDIENCE_FEATURE,
   MAX_TASK_DESCRIPTION,
@@ -324,8 +323,7 @@ import {
   manifestFor,
   originKindOf,
   SessionPurgeReason,
-  RD_ACK_NOT_HOLDER,
-  EventSession as EventSessionSchema
+  RD_ACK_NOT_HOLDER
 } from '@agentconnect.md/protocol'
 import { isNoResponseBody, isNoResponsePrefix } from './session/no-response.js'
 import { createSessionReader } from './cp/session-reader.js'
@@ -369,6 +367,11 @@ import { defaultMemoryPluginMetrics } from './memory-plugin/metrics.js'
 import { openMountedPostgresDataPlane, type PostgresDataPlane } from './store/postgres-data-plane.js'
 import type { EvaluationCapabilityProfile, EvaluationEventInput } from './evaluation/events.js'
 import { DaemonEvaluationHooks, type DaemonEvaluationHost } from './evaluation/daemon-hooks.js'
+import {
+  SessionMetadataOutbox,
+  type SessionMetadataHost,
+  type SessionMetadataSnapshotInput
+} from './store/session-metadata-outbox.js'
 import type {
   DeliveryHandle,
   DeliveryRejectionReason,
@@ -587,9 +590,6 @@ import {
   MAX_TURN_CONTEXT_REGENERATION_MS,
   MAX_TURN_CONTEXT_REGENERATIONS,
   PROBE_ROOT_SWEEP_INTERVAL_MS,
-  SESSION_METADATA_DEFER_MS,
-  SESSION_METADATA_FAILURES_BEFORE_DEFER,
-  SESSION_METADATA_PARK_MS,
   SESSION_METADATA_RETRY_MS,
   SESSION_RETENTION_SWEEP_INTERVAL_MS
 } from './daemon/constants.js'
@@ -1178,11 +1178,9 @@ export class Daemon {
   // can both trigger it, and each batch awaits a correlated ACK.
   private sessionPurgeDrainInFlight = false
   private sessionPurgeDrainRerun = false
-  // One-at-a-time durable session metadata sync. Sequential ACKs provide natural
-  // CP/DB backpressure after an outage; the promise is joined during shutdown.
-  private sessionMetadataDrain?: Promise<void>
-  private sessionMetadataRetryTimer?: TimerHandle
-  private sessionMetadataRetryAt?: number
+  // The durable session-metadata outbox (store/session-metadata-outbox.ts); owns its
+  // own drain promise and retry timer behind the delegates below.
+  private readonly sessionMetadataOutbox: SessionMetadataOutbox
   // §7.3 force-cancel backstops, keyed by (agentId, acpSessionId); cleared at turn end.
   private cancelTimers = new Map<string, TimerHandle>()
   // Backstop for an interrupt that lands before a Pending/ACP session id exists
@@ -1298,6 +1296,7 @@ export class Daemon {
         ? new KeyServerClient(keyServerAddress, { tokenPath: keyServerTokenPath, now: this.modelKeyNow })
         : undefined)
     this.evalHooks = new DaemonEvaluationHooks(this.evaluationHost(), opts.evaluation)
+    this.sessionMetadataOutbox = new SessionMetadataOutbox(this.sessionMetadataHost())
     this.curatedRuntimeAdmission = new CuratedRuntimeAdmission({
       now: () => this.clock.now(),
       ttlMs: Daemon.PROBE_TTL_MS
@@ -1323,6 +1322,23 @@ export class Daemon {
   }
 
   /** The narrow port the evaluation hooks reach the daemon through — nothing wider is exposed. */
+  private sessionMetadataHost(): SessionMetadataHost {
+    return {
+      store: () => this.store,
+      warn: (message) => this.log.warn(message),
+      debug: (message) => this.log.debug(message),
+      clock: () => this.clock,
+      daemonId: () => this.cfg.daemonId,
+      controlPlaneConfigured: () => configuredControlPlane(this.cfg.controlPlane, !!this.clusterIdentityToken),
+      draining: () => this.draining,
+      cpClient: () => this.cpClient,
+      agents: () => this.agents,
+      servesAgent: (agentId) => this.servesAgent(agentId),
+      sessionLink: (acpSessionId) => this.sessionLink(acpSessionId),
+      sessionThreadUrl: (session) => this.sessionThreadUrl(session)
+    }
+  }
+
   private evaluationHost(): DaemonEvaluationHost {
     return {
       info: (message) => this.log.info(message),
@@ -15483,386 +15499,47 @@ export class Daemon {
   }
 
   private sessionListProjection(sessionId: string, agentId: string): SessionListItem | undefined {
-    return createSessionReader(this.store, (session) => this.sessionThreadUrl(session))
-      .list({ agentId })
-      .sessions.find((s) => s.sessionId === sessionId)
+    return this.sessionMetadataOutbox.sessionListProjection(sessionId, agentId)
   }
 
-  /**
-   * Push the CP's DB-backed session-list metadata from the daemon's canonical
-   * local projection. This is still metadata-only: transcript rows and tool bodies
-   * remain daemon-local and are fetched via the on-demand session read-back frames.
-   */
-  private emitSessionMetadataSnapshot(input: {
-    sessionId: string
-    agentId: string
-    phase: EventSession['phase']
-    platform: SessionKey['platform']
-    channel: string
-    thread?: string
-    status?: string
-    runtime?: string
-    model?: string | null
-    permissionMode?: string
-  }): void {
-    const cpClient = this.cpClient
-    // Session work may begin during startup before startCpClient() runs. Persist
-    // that obligation whenever this daemon is configured to connect; only the
-    // live send still depends on a constructed client.
-    if (!cpClient && !configuredControlPlane(this.cfg.controlPlane, !!this.clusterIdentityToken)) return
-    const now = new Date(this.clock.now()).toISOString()
-    const row = this.sessionListProjection(input.sessionId, input.agentId)
-    const key = row?.sessionKey
-    const event: EventSession = {
-      sessionId: input.sessionId,
-      agentId: input.agentId,
-      phase: input.phase,
-      platform: key?.platform ?? input.platform,
-      channel: key?.channel ?? input.channel,
-      link: this.sessionLink(input.sessionId),
-      lastActivityAt: row?.lastActivityAt ?? now,
-      ts: now
-    }
-    if (row?.parentSessionId !== undefined) event.parentSessionId = row.parentSessionId
-    // Visibility-classification inputs (session-visibility.md §4.1), read from
-    // the session row so every re-emit carries them. Absent fields make the CP
-    // fail closed (no owner) rather than guess — never send a placeholder.
-    const classification = this.store.getSessionClassification(input.agentId, input.sessionId)
-    if (classification?.conversationKind !== undefined) {
-      event.conversationKind = classification.conversationKind as EventSession['conversationKind']
-    }
-    if (classification?.tenantScope !== undefined) event.transportScope = classification.tenantScope
-    if (classification?.launchCorrelationId !== undefined) {
-      event.launchCorrelationId = classification.launchCorrelationId
-    }
-    if (classification?.sourceBindingKind !== undefined) {
-      event.sourceBindingKind = classification.sourceBindingKind
-    }
-    // Only a direct trusted ingress reports a credential locator. A2A children
-    // persist the same source tuple for the local gate but let the CP inherit
-    // the already-validated parent scope instead of presenting the parent's bot
-    // integration as if it belonged to the child agent.
-    if (classification?.externalOrigin) event.externalOrigin = classification.externalOrigin
-    else if (
-      (classification?.externalProvider === 'slack' || classification?.externalProvider === 'feishu') &&
-      classification.externalResourceKey &&
-      classification.externalIntegrationId
-    ) {
-      // Rolling compatibility for a conversation row created before direct-origin
-      // proof was persisted as one object.
-      event.externalOrigin = {
-        provider: classification.externalProvider,
-        resourceKind: 'conversation',
-        resourceKey: classification.externalResourceKey,
-        ...(classification.externalRealmKey ? { realmKey: classification.externalRealmKey } : {}),
-        integrationId: classification.externalIntegrationId
-      }
-    }
-    const thread = key?.thread ?? input.thread
-    if (thread !== undefined) event.thread = thread
-    if (row?.title !== undefined) event.title = row.title
-    if (input.status !== undefined) event.status = input.status
-    else if (row?.status !== undefined) event.status = row.status
-    if (row?.triggeredBy !== undefined) event.triggeredBy = row.triggeredBy
-    if (row?.channelName !== undefined) event.channelName = row.channelName
-    if (row?.triggeredByName !== undefined) event.triggeredByName = row.triggeredByName
-    if (row?.threadUrl !== undefined) event.threadUrl = row.threadUrl
-    // Effective execution config: the session's sticky overrides (console/⚙-modal
-    // in-session switches) win over the agent's configured values; absent ⇒ the
-    // runtime's own default. Snapshotted here so the CP records what this session
-    // actually ran with — the agent's config can change later without rewriting history.
-    const agent = this.agents.get(input.agentId)
-    const allowRuntimeChangesInChat = agent?.allowRuntimeChangesInChat === true
-    if (input.runtime !== undefined) event.runtime = input.runtime
-    else if (agent?.runtime) event.runtime = agent.runtime
-    const sessionRecord = this.store.getSessionByAcpIdForAgent(input.agentId, input.sessionId)
-    if (sessionRecord?.workspaceIsolation) event.workspaceIsolation = sessionRecord.workspaceIsolation
-    const storeKey = sessionRecord?.key
-    const configuredModel =
-      (allowRuntimeChangesInChat && storeKey ? this.store.getModelOverride(storeKey) : undefined) ??
-      agent?.runtimeOverrides?.model
-    const observedModel =
-      input.model !== undefined ? input.model : storeKey ? this.store.getObservedModel(storeKey) : undefined
-    if (observedModel !== undefined) {
-      event.observedModel = observedModel
-      if (observedModel !== null) event.model = observedModel
-    } else if (configuredModel !== undefined) {
-      event.model = configuredModel
-    }
-    const effort =
-      (allowRuntimeChangesInChat && storeKey ? this.store.getEffortOverride(storeKey) : undefined) ??
-      agent?.reasoningEffort
-    if (effort !== undefined) event.effort = effort
-    const fastMode =
-      (allowRuntimeChangesInChat && storeKey ? this.store.getFastModeOverride(storeKey) : undefined) ?? agent?.fastMode
-    if (fastMode !== undefined) event.fastMode = fastMode
-    const permissionMode =
-      (allowRuntimeChangesInChat && storeKey ? this.store.getPermissionModeOverride(storeKey) : undefined) ??
-      (agent?.permissionMode
-        ? selectedPermissionPreset(agent.permissionMode, agent.approvalsReviewer ?? 'user')
-        : undefined)
-    if (input.permissionMode !== undefined) event.permissionMode = input.permissionMode
-    else if (permissionMode !== undefined) event.permissionMode = permissionMode
-    const outputMode = (storeKey ? this.store.getOutputModeOverride(storeKey) : undefined) ?? agent?.output?.mode
-    if (outputMode !== undefined) event.outputMode = outputMode
-
-    const snapshot = this.convergedPendingSessionMetadataSnapshot(event)
-    let pending = false
-    try {
-      // A lifecycle milestone creates the durable obligation. `plan` is title /
-      // display-name enrichment: it updates an already-pending snapshot but does
-      // not turn a historical session into upgrade-time replay work.
-      pending =
-        this.store.saveSessionMetadataSnapshot(
-          input.agentId,
-          input.sessionId,
-          JSON.stringify(snapshot),
-          input.phase !== 'plan',
-          this.clock.now(),
-          this.cfg.daemonId
-        ) !== undefined
-    } catch (err) {
-      // Preserve the pre-outbox behavior if the local write fails: a live CP may
-      // still accept the best-effort event, and the turn itself must not fail.
-      this.log.warn(`event/session outbox persist failed (session ${input.sessionId}): ${formatErr(err)}`)
-    }
-
-    if (!cpClient) return
-    if (pending && cpClient.supportsServerFeature?.(SESSION_METADATA_ACK_FEATURE)) {
-      void this.drainSessionMetadataSnapshots()
-      return
-    }
-    try {
-      cpClient.emitEventSession(event)
-    } catch (err) {
-      this.log.debug(`event/session emit failed (session ${input.sessionId}): ${(err as Error).message}`)
-    }
+  private emitSessionMetadataSnapshot(input: SessionMetadataSnapshotInput): void {
+    this.sessionMetadataOutbox.emitSessionMetadataSnapshot(input)
   }
 
-  /** Keep a terminal milestone in an unacknowledged latest-wins snapshot while
-   * title/name enrichment updates its remaining fields. Otherwise a post-turn
-   * `plan` update could erase the only durable copy of the missing `end`. */
   private convergedPendingSessionMetadataSnapshot(next: EventSession): EventSession {
-    if (next.phase !== 'plan') return next
-    const pending = this.store.pendingSessionMetadataSnapshot(next.agentId, next.sessionId)
-    if (!pending) return next
-    try {
-      const parsed = EventSessionSchema.safeParse(JSON.parse(pending.snapshot))
-      const previous = parsed.success ? parsed.data : undefined
-      if (
-        previous?.agentId === next.agentId &&
-        previous.sessionId === next.sessionId &&
-        (previous.phase === 'end' || previous.phase === 'problem')
-      ) {
-        return { ...next, phase: previous.phase, ts: previous.ts }
-      }
-    } catch {
-      // A newly generated valid snapshot replaces corrupt local state below.
-    }
-    return next
+    return this.sessionMetadataOutbox.convergedPendingSessionMetadataSnapshot(next)
   }
 
-  /** Start or join the sequential durable metadata drain. One correlated request
-   * at a time is intentional backpressure: reconnect cannot fan a backlog into
-   * the CP's database pool. */
   private drainSessionMetadataSnapshots(): Promise<void> {
-    if (this.sessionMetadataDrain) return this.sessionMetadataDrain
-    const cp = this.cpClient
-    if (
-      this.draining ||
-      !cp ||
-      (cp.state !== 'READY' && cp.state !== 'DRAINING') ||
-      !cp.supportsServerFeature?.(SESSION_METADATA_ACK_FEATURE)
-    ) {
-      return Promise.resolve()
-    }
-    const drain = this.runSessionMetadataDrain(cp).finally(() => {
-      if (this.sessionMetadataDrain === drain) this.sessionMetadataDrain = undefined
-      try {
-        // Close the empty-read/new-write race and re-arm the earliest deferred snapshot.
-        this.schedulePendingSessionMetadataDrain()
-      } catch (err) {
-        this.log.warn(`event/session outbox refill check failed (${formatErr(err)})`)
-      }
-    })
-    this.sessionMetadataDrain = drain
-    return drain
+    return this.sessionMetadataOutbox.drainSessionMetadataSnapshots()
   }
 
-  private async runSessionMetadataDrain(cp: CpClient): Promise<void> {
-    while (!this.draining && (cp.state === 'READY' || cp.state === 'DRAINING')) {
-      let row: SessionMetadataOutboxRow | undefined
-      try {
-        row = this.store.nextSessionMetadataSnapshot(this.clock.now(), this.cfg.daemonId, this.servedAgentIds())
-        if (!row) return
-        // Emit only under a live claim: on a pool this outbox is one shared table, so a
-        // row a peer holds is that member's to report, never ours to duplicate or drop.
-        if (
-          !this.store.claimSessionMetadataSnapshot(
-            row.agentId,
-            row.sessionId,
-            row.revision,
-            this.cfg.daemonId,
-            this.clock.now()
-          )
-        ) {
-          continue
-        }
-        // The frame is scoped by the agent's organization, and only a member serving the
-        // agent can resolve it — leave the row for that member instead of failing it here.
-        if (!this.servesAgent(row.agentId) && this.parkSessionMetadataRow(row, 'agent served elsewhere')) continue
-        const parsed = EventSessionSchema.safeParse(JSON.parse(row.snapshot))
-        if (!parsed.success || parsed.data.agentId !== row.agentId || parsed.data.sessionId !== row.sessionId) {
-          this.log.warn(`event/session outbox dropped an invalid snapshot for session ${row.sessionId}`)
-          this.store.acknowledgeSessionMetadataSnapshot(row.agentId, row.sessionId, row.revision, this.cfg.daemonId)
-          continue
-        }
-        const result = await cp.syncEventSession(parsed.data)
-        if (result === 'unsupported') return
-        // Revision fencing: an event produced while this request was in flight
-        // remains pending instead of being cleared by the older ACK.
-        this.store.acknowledgeSessionMetadataSnapshot(row.agentId, row.sessionId, row.revision, this.cfg.daemonId)
-      } catch (err) {
-        if (!row) {
-          this.log.warn(`event/session outbox read failed (${formatErr(err)})`)
-          this.scheduleSessionMetadataRetry()
-          return
-        }
-        // SCOPE_DENIED says this member cannot name the agent's organization, not that the
-        // snapshot is bad. Park it for the member that can rather than burning a failure.
-        if (
-          typeof err === 'object' &&
-          err !== null &&
-          'code' in err &&
-          err.code === 'SCOPE_DENIED' &&
-          this.parkSessionMetadataRow(row, 'organization unresolvable here')
-        ) {
-          continue
-        }
-        const nextFailure = row.failedAttempts + 1
-        const explicitlyPermanent =
-          typeof err === 'object' && err !== null && 'retryable' in err && err.retryable === false
-        const defer = explicitlyPermanent || nextFailure >= SESSION_METADATA_FAILURES_BEFORE_DEFER
-        let failure
-        try {
-          failure = this.store.recordSessionMetadataSnapshotFailure(
-            row.agentId,
-            row.sessionId,
-            row.revision,
-            defer ? this.clock.now() + SESSION_METADATA_DEFER_MS : null,
-            this.cfg.daemonId
-          )
-        } catch (storeErr) {
-          this.log.warn(`event/session outbox failure record failed (${formatErr(storeErr)})`)
-          this.scheduleSessionMetadataRetry()
-          return
-        }
-        // A newer revision replaced the failed request while it was in flight; drain that revision now.
-        if (!failure) continue
-        if (defer) {
-          this.log.warn(
-            `event/session snapshot deferred after ${failure.failedAttempts} failures for session ${row.sessionId} (${formatErr(err)})`
-          )
-          continue
-        }
-        const message = `event/session snapshot retained for retry (${formatErr(err)})`
-        if (failure.failedAttempts === 1) this.log.warn(message)
-        else this.log.debug(message)
-        this.scheduleSessionMetadataRetry()
-        return
-      }
-    }
-  }
-
-  /** Agents whose shared-outbox rows this member may work on: the ones it serves. */
   private servedAgentIds(): string[] {
-    return [...this.agents.keys()].filter((agentId) => this.servesAgent(agentId))
+    return this.sessionMetadataOutbox.servedAgentIds()
   }
 
-  /** Release a snapshot this member cannot scope, so the member serving the agent drains
-   *  it. The body and the failure count survive; the backoff only keeps it out of this
-   *  member's next pass. False on a local store, where there is no other member. */
   private parkSessionMetadataRow(row: SessionMetadataOutboxRow, why: string): boolean {
-    let parked = false
-    try {
-      parked = this.store.parkSessionMetadataSnapshot(
-        row.agentId,
-        row.sessionId,
-        row.revision,
-        this.clock.now() + SESSION_METADATA_PARK_MS
-      )
-    } catch (err) {
-      this.log.warn(`event/session outbox park failed (${formatErr(err)})`)
-      return false
-    }
-    if (parked) this.log.debug(`event/session snapshot parked for session ${row.sessionId} (${why})`)
-    return parked
+    return this.sessionMetadataOutbox.parkSessionMetadataRow(row, why)
   }
 
-  /** A duty newly held here owns that agent's snapshots: take the parked ones off their
-   *  backoff and the previous holder's claim off the rest — it released the duty, so it
-   *  will never emit them — then replay at once instead of waiting out the lease. */
   private replayGainedSessionMetadata(agentIds: readonly string[]): void {
-    if (!agentIds.length) return
-    try {
-      this.store.reclaimSessionMetadataSnapshots(agentIds, this.cfg.daemonId)
-    } catch (err) {
-      this.log.warn(`event/session outbox reclaim failed (${formatErr(err)})`)
-    }
-    void this.drainSessionMetadataSnapshots()
+    this.sessionMetadataOutbox.replayGainedSessionMetadata(agentIds)
   }
 
-  /** Shutdown counterpart: this member will not emit again, so every claim it still holds
-   *  goes back to the pool for its successor instead of blocking on the lease. */
   private releaseOwnedSessionMetadata(): void {
-    try {
-      const released = this.store.releaseOwnedSessionMetadataSnapshots(this.cfg.daemonId)
-      if (released) this.log.debug(`event/session outbox released ${released} claim(s) for the pool`)
-    } catch (err) {
-      this.log.warn(`event/session outbox release failed (${formatErr(err)})`)
-    }
+    this.sessionMetadataOutbox.releaseOwnedSessionMetadata()
   }
 
   private schedulePendingSessionMetadataDrain(): void {
-    if (this.draining || !this.cpClient?.supportsServerFeature?.(SESSION_METADATA_ACK_FEATURE)) return
-    const served = this.servedAgentIds()
-    if (!this.store.hasPendingSessionMetadata(this.cfg.daemonId, served)) return
-    const attemptAt = this.store.nextSessionMetadataAttemptAt(this.cfg.daemonId, served)
-    if (attemptAt !== undefined) this.scheduleSessionMetadataRetry(Math.max(0, attemptAt - this.clock.now()))
+    this.sessionMetadataOutbox.schedulePendingSessionMetadataDrain()
   }
 
   private scheduleSessionMetadataRetry(delayMs = SESSION_METADATA_RETRY_MS): void {
-    if (this.draining) return
-    const retryAt = this.clock.now() + Math.max(0, delayMs)
-    if (this.sessionMetadataRetryTimer !== undefined) {
-      if (this.sessionMetadataRetryAt !== undefined && this.sessionMetadataRetryAt <= retryAt) return
-      this.clock.clearTimeout(this.sessionMetadataRetryTimer)
-    }
-    this.sessionMetadataRetryAt = retryAt
-    this.sessionMetadataRetryTimer = this.clock.setTimeout(
-      () => {
-        this.sessionMetadataRetryTimer = undefined
-        this.sessionMetadataRetryAt = undefined
-        void this.drainSessionMetadataSnapshots()
-      },
-      Math.max(0, delayMs)
-    )
+    this.sessionMetadataOutbox.scheduleSessionMetadataRetry(delayMs)
   }
 
   private emitSessionMetadataSnapshotsForDisplayName(id: string): void {
-    if (!this.cpClient) return
-    for (const row of this.store.listSessions()) {
-      if (!row.acpSessionId) continue
-      if (row.channel !== id && row.triggeredBy !== id) continue
-      this.emitSessionMetadataSnapshot({
-        sessionId: row.acpSessionId,
-        agentId: row.agentId,
-        phase: 'plan',
-        platform: row.platform as SessionKey['platform'],
-        channel: row.channel,
-        thread: row.thread
-      })
-    }
+    this.sessionMetadataOutbox.emitSessionMetadataSnapshotsForDisplayName(id)
   }
 
   /** Assemble a status snapshot from the parts (agent config + host model selector +
@@ -22171,11 +21848,7 @@ export class Daemon {
       this.clock.clearTimeout(this.hookReportRetryTimer)
       this.hookReportRetryTimer = undefined
     }
-    if (this.sessionMetadataRetryTimer !== undefined) {
-      this.clock.clearTimeout(this.sessionMetadataRetryTimer)
-      this.sessionMetadataRetryTimer = undefined
-    }
-    this.sessionMetadataRetryAt = undefined
+    this.sessionMetadataOutbox.dispose()
     // Clear any live orchestration deadline timers so they don't hold the process open
     // (the durable `orchestration.deadline` epoch re-arms them on the next startup).
     for (const t of this.orchestrationDeadlines.values()) this.clock.clearTimeout(t)
@@ -22227,7 +21900,7 @@ export class Daemon {
     if (this.shutdownDutyDrain) await this.settleLateGrants(shutdownDrain)
     this.shutdownDutyDrain = undefined
     await Promise.resolve(this.cpClient?.stop()).catch((e) => errors.push(e))
-    await Promise.resolve(this.sessionMetadataDrain).catch((e) => errors.push(e))
+    await Promise.resolve(this.sessionMetadataOutbox.inFlightDrain()).catch((e) => errors.push(e))
     // Nothing here can emit after this point; hand any claim this member still holds back.
     this.releaseOwnedSessionMetadata()
     // The closed CP transport cannot admit another lifecycle frame. Drain every
