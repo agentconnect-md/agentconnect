@@ -1,6 +1,7 @@
 import {
   HOOK_DELIVERY_REASON_DAEMON_OFFLINE,
   HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED,
+  HOOK_REPORT_REASON_AGENT_HANDOVER,
   HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED,
   HOOK_REPORT_REASON_PROVIDER_QUOTA_EXHAUSTED
 } from '@agentconnect.md/protocol'
@@ -1109,6 +1110,62 @@ describe('GithubRunReporter', () => {
     expect(body.actions).toEqual([
       { label: 'Request review', description: 'Start AgentConnect review', identifier: 'request_review' }
     ])
+  })
+
+  it('offers a retry when a started review turn was killed by an infrastructure handover', async () => {
+    // The state the fence incidents produced: the turn crossed the start barrier, ran, and was
+    // interrupted with no verdict. It must not read like the runtime failed on the change.
+    const p = projection({
+      desiredState: 'skipped',
+      observedState: null,
+      checkRunId: '90071992547409934'
+    })
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes(`/commits/${p.headSha}/pulls?`)) return Response.json([associatedPull(p)])
+      return Response.json({
+        id: p.checkRunId,
+        external_id: p.externalId,
+        status: 'completed',
+        conclusion: 'skipped',
+        output: { summary: JSON.parse(String(init?.body)).output.summary }
+      })
+    })
+    const { reporter } = worker(
+      p,
+      fetchImpl,
+      {
+        getRunById: vi.fn(async () =>
+          run({
+            status: 'failed',
+            turnStartedAt: new Date(NOW),
+            completedAt: new Date(NOW + 90_000),
+            durationMs: 90_000,
+            reason: HOOK_REPORT_REASON_AGENT_HANDOVER
+          })
+        )
+      },
+      agent(),
+      'example-app'
+    )
+
+    await reporter.tick()
+
+    const body = JSON.parse(String(fetchImpl.mock.calls[1]![1]?.body)) as {
+      conclusion: string
+      actions: Array<{ identifier: string }>
+      output: { title: string; summary: string }
+    }
+    expect(body.conclusion).toBe('skipped')
+    expect(body.output.title).toBe('Comment @example-app to retry the interrupted review')
+    expect(body.output.summary).toContain('How to run this review again')
+    expect(body.output.summary).toContain('nothing in this pull request has been judged')
+    expect(body.output.summary).toContain('**Request review** button')
+    expect(body.actions).toEqual([
+      { label: 'Request review', description: 'Start AgentConnect review', identifier: 'request_review' }
+    ])
+    // The reason code and the topology behind it stay on the operational side.
+    expect(JSON.stringify(body)).not.toContain(HOOK_REPORT_REASON_AGENT_HANDOVER)
+    expect(JSON.stringify(body)).not.toMatch(/daemon|lease|duty/i)
   })
 
   it('publishes the Request review action on the create itself', async () => {

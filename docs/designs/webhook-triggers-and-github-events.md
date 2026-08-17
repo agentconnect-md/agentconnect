@@ -527,6 +527,7 @@ completed the turn.
 | All relays unavailable             | Caller receives an HTTP failure and must retry                                               | GitHub delivery reconciliation requests redelivery after recovery        |
 | Assigned daemon offline            | Delivery records `daemon_offline`                                                            | One durable automatic retry is scheduled after a short backoff           |
 | Dispatch acknowledgement ambiguous | Records terminal `dispatch_timeout`; no automatic replay                                     | Same, because the daemon may already have admitted the turn              |
+| Agent stops being served mid-turn  | Turn reports terminal `agent_handover`; no automatic replay                                  | Same; a GitHub hook additionally offers the maintainer Check retry       |
 | GitHub unavailable                 | No effect                                                                                    | Source reads, permission checks, posting, and projection may fail closed |
 
 `HookRedeliveryReconciler` compares recent GitHub App deliveries with stored
@@ -538,6 +539,20 @@ Reconciliation does not retry an ambiguous dispatch, an agent/business
 rejection, or any row that may already have produced an effect. Partial
 `review_request_required` fanout is retried only when every observed sibling
 proves that no agent or external review effect occurred.
+
+An admitted turn ended by a handover (`agent_handover`) is deliberately outside
+that set, and the reason is a stage question rather than a wording one. Retry
+eligibility is proof that the delivery never executed — the retryable predicate
+requires no start barrier at all — while a handover proves only that no external
+effect was reached. Redelivery could not act on it either way: it preserves the
+delivery GUID, and the daemon's own durable receipt for that GUID replays the
+recorded outcome instead of rerunning the model. Admitting this class would
+therefore mean separating "never executed" from "executed with no external
+effect" and giving the daemon a receipt it is allowed to discard — both of which
+weaken the exactly-once guarantee that predicate exists to provide. Until then
+the recovery for a handover is an explicit request: the Check's `Request review`
+action or a fresh mention, each of which is a new delivery under live
+maintainer authorization.
 
 Cron has a different availability boundary: a daemon-local schedule can fire
 without the relay, while a webhook always requires a public ingress process.

@@ -1830,6 +1830,60 @@ describe('Daemon rd/msg hook fires', () => {
     await daemon.stop()
   }, 15_000)
 
+  it('reports a turn the infrastructure killed as a handover, not as a stop', async () => {
+    // A duty handover (revoke, self-fence, drain) ends a turn that judged nothing. Reporting it
+    // with the same word a user's `!stop` produces is what left maintainers with a Check that says
+    // "Review could not be completed" and no way to tell an outage from a decision.
+    let releasePrompt!: () => void
+    const promptBarrier = new Promise<void>((resolve) => (releasePrompt = resolve))
+    let onUpdate!: (sid: string, update: unknown) => void
+    const host = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'acp-handover'),
+      modelOptions: vi.fn(() => null),
+      hasSession: vi.fn(() => true),
+      prompt: vi.fn(async (sid: string) => {
+        await promptBarrier
+        onUpdate(sid, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'done' } })
+        return { stopReason: 'end_turn' }
+      }),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn(async () => {})
+    }
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: (_agent, cb) => {
+        onUpdate = cb
+        return host as never
+      }
+    })
+    await daemon.start()
+    const cp = fakeCpClient()
+    ;(daemon as never as { cpClient: unknown }).cpClient = cp
+
+    const running = fire({ sessionKey: HOOK_ID })
+    const queued = fire({ sessionKey: HOOK_ID, msgId: `${HOOK_ID}:d-2`, deliveryKey: 'd-2' })
+    await expect((daemon as any).handleRelayMsg(running, () => {})).resolves.toMatchObject({ accepted: true })
+    await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledOnce(), WAIT)
+    await expect((daemon as any).handleRelayMsg(queued, () => {})).resolves.toMatchObject({ accepted: true })
+
+    // Exactly what the duty teardown does: stop running the work here, keep the durable rows.
+    ;(daemon as any).interruptAgentTurns(AGENT_ID, 'handover', 'handoff')
+    releasePrompt()
+
+    await vi.waitFor(() => expect(cp.hookReports).toHaveLength(2), WAIT)
+    // Both the in-flight turn and the fire still behind the gate carry the normalized code — the
+    // queued one would otherwise report a generic `dropped`.
+    expect(cp.hookReports.map((report) => [report.deliveryKey, report.status, report.reason])).toEqual(
+      expect.arrayContaining([
+        ['d-1', 'failed', 'agent_handover'],
+        ['d-2', 'failed', 'agent_handover']
+      ])
+    )
+    await daemon.stop()
+  }, 15_000)
+
   it('keeps only the newest relay-fired PR revision without reordering explicit GitHub turns', async () => {
     let onUpdate!: (sid: string, update: unknown) => void
     const releases: Array<(error?: Error) => void> = []

@@ -763,6 +763,14 @@ informational Check as non-blocking `skipped`; a runtime failure may still say
 authoritative (`REQUEST_CHANGES` stays `action_required`), and an ambiguous formal-review
 write remains a visible failure until it is reconciled.
 
+A review turn the platform itself ended — the Agent stopped being served where it was
+running — is a distinct outcome from a review that ran and could not conclude, and must not
+borrow the runtime-failure wording. Its Check states that the review was interrupted and
+names the entry point that starts it again, because nothing about the change was judged and
+the same review can simply be run once more. No automatic re-run is promised: the retry is
+the maintainer's `Request review` action or a new mention, under the same authorization as
+any other review request.
+
 GitHub's suite-level `Re-run all checks` action starts a new generation for every current
 AgentConnect informational review Check in that App suite, with the same live maintainer
 authorization and revision fences as a single-Check rerun. It does not depend on the

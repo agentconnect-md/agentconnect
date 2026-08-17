@@ -267,6 +267,7 @@ import {
   WEBCHAT_REMOTE_MCP_FEATURE,
   WEBCHAT_SESSION_CONTINUATION_FEATURE,
   encodeSharedSlackStatusTarget,
+  HOOK_REPORT_REASON_AGENT_HANDOVER,
   HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED,
   HookReport,
   CP_URL_ENV,
@@ -9590,8 +9591,9 @@ export class Daemon {
     if (!this.dutyEnforced()) return Promise.resolve()
     // A handoff, never a removal (#948): the turns stop here, but their admitted-but-unrun rows
     // stay for whoever holds the duty next. Only a duty-governed member reaches this line, so a
-    // single daemon's terminal-purge semantics are untouched.
-    this.interruptAgentTurns(agentId, 'stop', 'handoff')
+    // single daemon's terminal-purge semantics are untouched. `handover`, not `stop`: an outcome
+    // reported for a killed turn must not read as a user's verdict on the work.
+    this.interruptAgentTurns(agentId, 'handover', 'handoff')
     this.scheduler.unregister(agentId)
     this.dreamScheduler.unregister(agentId)
     const prior = this.dutyHostStops.get(agentId) ?? Promise.resolve()
@@ -9865,7 +9867,13 @@ export class Daemon {
     owner?: HookCompletionOwner
   ): void {
     if (owner?.hookTerminalReceipt) return
-    const report = this.buildHookReport(hook, status, extra)
+    // Interrupt reasons are local vocabulary, but the CP turns THIS one into maintainer-facing
+    // Check text, so it crosses as the shared normalized code rather than the internal word.
+    const report = this.buildHookReport(
+      hook,
+      status,
+      extra.reason === 'handover' ? { ...extra, reason: HOOK_REPORT_REASON_AGENT_HANDOVER } : extra
+    )
     let reportInboxId: string | undefined
     if (owner?.inboxId) {
       try {
@@ -12258,7 +12266,10 @@ export class Daemon {
       for (const e of queued) {
         this.terminateQueuedSink(e, opts.dropQueued ? undefined : reason)
         if (e.hookContext) {
-          this.emitHookCompletion(e.hookContext, 'failed', { reason: opts.dropQueued ? 'dropped' : 'cancelled' }, e)
+          // A handover outranks the gate disposition: this fire never ran at all, so reporting it
+          // as a plain drop would hide the one outcome a maintainer can act on.
+          const dropped = opts.dropQueued ? 'dropped' : 'cancelled'
+          this.emitHookCompletion(e.hookContext, 'failed', { reason: reason === 'handover' ? reason : dropped }, e)
         }
         this.removeInbox(e, opts.handoffInbox)
         if (opts.dropQueued) e.resolve(null)
