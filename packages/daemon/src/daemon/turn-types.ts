@@ -183,11 +183,17 @@ export interface CallMeta {
   parentPrivate?: boolean
 }
 
-export type TurnInterruptReason = 'pause' | 'loop protection' | 'stop' | 'cancel' | 'shutdown' | 'superseded'
+/** `handover` is the infrastructure class — this daemon stopped serving the agent, which is the
+ *  duty teardown alone (`stopServingAgentSettled`: revoke, self-fence, registry shrink, shutdown
+ *  release) and NOT the drain paths, which keep their own reasons. Deliberately not `stop`: a user
+ *  stop is a verdict about the work, a handover says nothing about it, and outcome reporting has
+ *  to tell them apart. */
+export type TurnInterruptReason =
+  'pause' | 'loop protection' | 'stop' | 'cancel' | 'shutdown' | 'superseded' | 'handover'
 
-/** What an interrupt means for the agent's admitted-but-unrun durable rows. `reason` cannot say
- *  it: removal and a duty handoff are both `stop`. `terminal` ends that work here (pause, removal,
- *  host respawn); `handoff` leaves the rows for the successor holder to replay (#1050). */
+/** What an interrupt means for the agent's admitted-but-unrun durable rows. `terminal` ends that
+ *  work here (pause, removal, host respawn); `handoff` leaves the rows for the successor holder to
+ *  replay (#1050). Orthogonal to `reason`: a removal and a host respawn are both terminal `stop`. */
 export type TurnInterruptDisposition = 'terminal' | 'handoff'
 
 /**

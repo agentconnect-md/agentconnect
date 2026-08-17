@@ -183,6 +183,11 @@ export const HOOK_REPORT_REASON_PROVIDER_QUOTA_EXHAUSTED = 'provider_quota_exhau
  */
 export const HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED = 'provider_auth_required' as const
 
+/** Normalized infrastructure interruption: the daemon stopped serving the agent mid-turn (a duty
+ * handover, or a self-fence on an unrenewed lease). Distinct from a user stop because nothing was
+ * judged and the same work can simply be run again. */
+export const HOOK_REPORT_REASON_AGENT_HANDOVER = 'agent_handover' as const
+
 /**
  * `hook/report` (D→C REQ → generic `ack`) — the dispatched turn ended; closes
  * the `HookRun` row the relay's `rc/run-report` opened. Same discipline as

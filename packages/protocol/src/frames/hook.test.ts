@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   GithubHookMetadata,
   GithubReviewAuthorize,
+  HOOK_REPORT_REASON_AGENT_HANDOVER,
   HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED,
   HOOK_REPORT_REASON_PROVIDER_QUOTA_EXHAUSTED,
   HookConfigSnapshot,
@@ -154,6 +155,21 @@ describe('R1/R2a hook control schemas', () => {
         deliveryKey: 'delivery-1',
         status: 'failed',
         reason: HOOK_REPORT_REASON_PROVIDER_QUOTA_EXHAUSTED
+      }).success
+    ).toBe(true)
+  })
+
+  it('accepts the normalized infrastructure-interruption reason', () => {
+    expect(HOOK_REPORT_REASON_AGENT_HANDOVER).toBe('agent_handover')
+    expect(
+      HookReport.safeParse({
+        hookId: HOOK_ID,
+        agentId: AGENT_ID,
+        deliveryKey: 'delivery-1',
+        status: 'failed',
+        sessionId: 'acp-1',
+        durationMs: 90_000,
+        reason: HOOK_REPORT_REASON_AGENT_HANDOVER
       }).success
     ).toBe(true)
   })

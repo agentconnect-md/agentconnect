@@ -182,6 +182,18 @@ describe('the duty self-fence', () => {
     await daemon.stop()
   })
 
+  it('interrupts the fenced agent turns as a handover, so their outcomes cannot read as a user stop', async () => {
+    // The reason is load-bearing downstream: a GitHub review turn killed here reports it to the CP,
+    // which turns it into the maintainer-facing Check. `stop` there is a lie about what happened.
+    const { daemon } = await boot()
+    const interrupt = vi.spyOn(daemon as any, 'interruptAgentTurns')
+
+    fence(daemon)
+
+    expect(interrupt).toHaveBeenCalledWith(AGENT, 'handover', 'handoff')
+    await daemon.stop()
+  })
+
   it('is a revoke, not a removal — workspace, agent registry, and sessions survive', async () => {
     const { daemon, root } = await boot()
     const store = (daemon as any).store
