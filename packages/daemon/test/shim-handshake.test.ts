@@ -3,7 +3,7 @@ import { Backoff, ClientTransport, FakeClock } from '@agentconnect.md/connection
 import { MAX_FRAME_BYTES } from '@agentconnect.md/protocol'
 import { WebSocket } from 'ws'
 import { ShimBindingRegistry, type SpawnRecord } from '../src/shim/binding.js'
-import { noopClusterMetrics, type ClusterMetrics } from '../src/k8s/cluster-metrics.js'
+import { noopClusterMetrics, type ClusterMetrics } from '../src/metrics/cluster-metrics.js'
 import { ShimListener, type PodIdentityVerifier } from '../src/shim/listener.js'
 import { ShimClient, type ShimTransport } from '../src/shim/client.js'
 import {

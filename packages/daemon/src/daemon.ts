@@ -1,13 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
+import { dirname, join } from 'node:path'
 import { hostname, tmpdir } from 'node:os'
-import type { Stats } from 'node:fs'
 import { mkdtemp } from 'node:fs/promises'
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar'
 import { loadConfig, persistDaemonId, persistRelays, type FlatOverrides } from './config/load-config.js'
 import { readCliEntry, runCliUpgrade } from './lifecycle/cli-upgrade.js'
 import { ReadinessGate, readinessSinksFromEnv, readinessState, type ReadinessState } from './readiness.js'
-import { sessionRetentionMs, type Config, type RuntimeDef } from './config/config-schema.js'
+import { sessionRetentionMs, type RuntimeDef } from './config/config-schema.js'
 import { discoverAgentsTolerant, type LoadedAgent } from './agents/load-agents.js'
 import { agentChildEnv } from './agents/agent-env.js'
 import { cpRuntimeEnv } from './agents/cp-overlay.js'
@@ -37,13 +36,7 @@ import {
   type StoredUsage
 } from './store/local-store.js'
 import { AcpHost, turnFailureCode, turnFailureReason, type AcpPermissionPolicyEvent } from './acp/acp-host.js'
-import {
-  probeSandboxHost,
-  sandboxBoundary,
-  SandboxError,
-  type SandboxMechanism,
-  type SandboxProbe
-} from './acp/sandbox.js'
+import { probeSandboxHost, SandboxError, type SandboxMechanism, type SandboxProbe } from './acp/sandbox.js'
 import { effectiveRunInSandbox, prepareRuntimeLaunch } from './acp/runtime-launch.js'
 import {
   permissionModeDisplayLabel,
@@ -110,13 +103,7 @@ import {
 import { configureWorkspaceGitOrigins } from './workspace/git-origin-policy.js'
 import { buildMcpServers } from './mcp/inject.js'
 import { resolveAgentMcpServers, RESERVED_MCP_SERVER_NAME } from './mcp/resolve-servers.js'
-import {
-  toolsForIntegrations,
-  MEMORY_TOOL_NAMES,
-  ALL_TOOL_NAMES,
-  GITHUB_REVIEW_TOOLS,
-  KNOWLEDGE_TOOLS
-} from './mcp/tools.js'
+import { toolsForIntegrations, MEMORY_TOOL_NAMES, GITHUB_REVIEW_TOOLS, KNOWLEDGE_TOOLS } from './mcp/tools.js'
 import { isSessionTitleToolCall } from './mcp/session-title-tool.js'
 import { MEMORY_DISTILLATION_SYSTEM_PROMPT, readOnlyExtractionMode } from './agents/memory-distiller.js'
 import {
@@ -219,11 +206,7 @@ import {
   type SlackTurnState
 } from './platforms/slack/turn-output.js'
 import { ChannelNameResolver } from './messages/channel-name-resolver.js'
-import {
-  WorkspaceManager,
-  type PrepareSessionWorkspaceRequest,
-  type SessionWorktreeRemoval
-} from './workspace/workspace-manager.js'
+import { WorkspaceManager, type PrepareSessionWorkspaceRequest } from './workspace/workspace-manager.js'
 import { ManagedSkillCache } from './skills/managed-skill-cache.js'
 import {
   OutputConverger,
@@ -259,19 +242,8 @@ import { DreamScheduler } from './scheduler/dream-scheduler.js'
 import { planChannelIntros, buildIntroMessage } from './agents/channel-intro.js'
 import { buildHookMessage, githubOpensReviewGeneration, hookAnchorText } from './messages/hook-message.js'
 import { GithubFinalPoster, GithubReplyCollector, type GithubCommentAttribution } from './github/poster.js'
-import {
-  finalizeGithubTurn,
-  isGithubFinalChunk,
-  onGithubUpdate,
-  type GithubTurnState
-} from './platforms/github/turn-output.js'
-import {
-  GithubReviewClient,
-  type GithubReviewEffect,
-  type GithubReviewEvent,
-  type GithubReviewTarget,
-  type GithubReviewVerdict
-} from './github/review.js'
+import { finalizeGithubTurn, isGithubFinalChunk, onGithubUpdate } from './platforms/github/turn-output.js'
+import { GithubReviewClient, type GithubReviewEffect } from './github/review.js'
 import { resolveRuntimeCatalog, type ResolvedRuntimeCatalog } from './runtimes/registry.js'
 import { installedRuntimeCatalog, installedRuntimes, resolveCommandPath } from './runtimes/probe.js'
 import { startK8sRuntimePlane, type K8sRuntimePlane } from './k8s/runtime-plane.js'
@@ -341,7 +313,6 @@ import {
   WORKSPACE_GIT_REVIEW_FEATURE,
   WORKSPACE_GIT_WRITE_FEATURE,
   WORKSPACE_SESSION_READ_FEATURE,
-  effectiveMemoryDreamingPolicy,
   effectiveManagedMemoryScope,
   RdSlackAction,
   WireFeishuCardActionEvent,
@@ -350,7 +321,6 @@ import {
   RD_AGENTMSG_NOT_READY,
   normalizeGitCloneUrl,
   normalizeGithubRepoUrl,
-  MAX_AGENT_CALL_HOPS,
   manifestFor,
   originKindOf,
   SessionPurgeReason,
@@ -397,23 +367,13 @@ import { MemoryCaptureOutbox } from './memory-plugin/outbox.js'
 import { managedDistillCapture, withManagedDistill } from './agents/managed-distill-outbox.js'
 import { defaultMemoryPluginMetrics } from './memory-plugin/metrics.js'
 import { openMountedPostgresDataPlane, type PostgresDataPlane } from './store/postgres-data-plane.js'
-import {
-  EvaluationCapabilityProfileSchema,
-  EvaluationEventEmitter,
-  type EvaluationCapabilityProfile,
-  type EvaluationEventInput,
-  type EvaluationObserver
-} from './evaluation/events.js'
-import {
-  compileEvaluationIntegration,
-  evaluationBotRoutingIdentity,
-  type DaemonEvaluationEnvironment,
-  type DeliveryAdmission,
-  type DeliveryCompletion,
-  type DeliveryHandle,
-  type DeliveryRejectionReason,
-  type EvaluationPlatformEvent,
-  type RefereeEvent
+import type { EvaluationCapabilityProfile, EvaluationEventInput } from './evaluation/events.js'
+import { DaemonEvaluationHooks, type DaemonEvaluationHost } from './evaluation/daemon-hooks.js'
+import type {
+  DeliveryHandle,
+  DeliveryRejectionReason,
+  EvaluationPlatformEvent,
+  RefereeEvent
 } from './evaluation/environment.js'
 import { mergeConfigPush, type ConfigApply } from './cp/config-apply.js'
 import { SystemMetrics } from './metrics/system-metrics.js'
@@ -476,8 +436,6 @@ import type {
   DaemonControlAck,
   WebchatAck,
   WebchatEvent,
-  WebchatOutput,
-  WebchatDone,
   WebchatPost,
   WebchatRuntimeConfig,
   RdWebchatPost,
@@ -493,11 +451,8 @@ import type {
   RdAgentMsgAck,
   RdAgentMsgDeliveryKind,
   RdChatEvent,
-  HookConfigSnapshot,
   GithubHookMetadata,
-  GithubPublishedComment,
   GitCommitIdentity,
-  GithubReviewAuthorized,
   HookReviewResult,
   FeishuRegion,
   MemoryDreamingPolicy,
@@ -516,1418 +471,150 @@ import type {
   DutyRevoke,
   HeartbeatDuties
 } from '@agentconnect.md/protocol'
-
-/** Format an error for logs, surfacing a JSON-RPC/ACP RequestError's `code` and
- *  `data` — for an agent-side `Internal error` the actionable detail (the adapter's
- *  underlying exception) lives in `data`, which a bare `.stack` discards. */
-/** Identity of a desired Feishu connection: appId + gateway region + ingress mode.
- *  A region or mode change on the same appId yields a different key, so it is
- *  treated as a distinct connection for reuse-matching, mapping-eviction, and
- *  the in-flight guard (`|` can't collide — an appId `cli_…` and the region/mode
- *  literals contain none). */
-function formatErr(err: unknown): string {
-  const e = err as { name?: string; message?: string; code?: number; data?: unknown; stack?: string }
-  if (e && typeof e.code === 'number') {
-    const data = e.data === undefined ? '' : ` data=${typeof e.data === 'string' ? e.data : JSON.stringify(e.data)}`
-    return `${e.name ?? 'Error'}: ${e.message ?? ''} (code=${e.code})${data}`
-  }
-  return e?.stack ?? String(err)
-}
-
-function formatErrWithCauses(err: unknown): string {
-  const parts: string[] = []
-  const seen = new Set<unknown>()
-  let current: unknown = err
-  while (current !== undefined && current !== null && parts.length < 6 && !seen.has(current)) {
-    seen.add(current)
-    parts.push(formatErr(current))
-    current = typeof current === 'object' ? (current as { cause?: unknown }).cause : undefined
-  }
-  return parts.join('\nCaused by: ')
-}
-
-function ignoreAgentWatchPath(agentsDir: string, path: string, stats?: Stats): boolean {
-  const segments = relative(agentsDir, path).split(sep)
-  if (segments.some((segment) => segment === 'node_modules' || segment.startsWith('.'))) return true
-  return stats !== undefined && !stats.isDirectory() && basename(path) !== 'agent.json'
-}
-
-/** Validate the same trusted workspace boundary that every real ACP spawn will
- * receive, before clone/skill preparation can mutate that path. Canonical
- * workspace-root aliases and overlaps are exclusive across local agent
- * principals. The separate durable ledger serializes and owns the exact
- * prepared ACP cwd; it is not the authority for this broader root check. */
-function assertExclusiveAgentWorkspaces(agents: readonly LoadedAgent[]): void {
-  const workspaces: Array<{ agentId: string; path: string }> = []
-  for (const agent of agents) {
-    const workspace = sandboxBoundary({
-      agentDir: agent.dir,
-      cwd: agent.workspace.path,
-      runtimeHome: runtimeHomePath(agent.dir)
-    }).gitSafeDirectories?.[0]
-    if (!workspace) throw new SandboxError(`sandbox workspace boundary is missing for agent "${agent.id}"`)
-    for (const existing of workspaces) {
-      if (existing.agentId === agent.id) continue
-      const fromExisting = relative(existing.path, workspace)
-      const fromWorkspace = relative(workspace, existing.path)
-      const overlaps =
-        fromExisting === '' ||
-        (!isAbsolute(fromExisting) && fromExisting !== '..' && !fromExisting.startsWith(`..${sep}`)) ||
-        (!isAbsolute(fromWorkspace) && fromWorkspace !== '..' && !fromWorkspace.startsWith(`..${sep}`))
-      if (overlaps) {
-        throw new SandboxError(
-          `agents "${existing.agentId}" and "${agent.id}" have overlapping writable workspaces ` +
-            `"${existing.path}" and "${workspace}"`
-        )
-      }
-    }
-    workspaces.push({ agentId: agent.id, path: workspace })
-  }
-}
-
-function mergeAgentWorkspaceAuthorities(...sets: readonly LoadedAgent[][]): LoadedAgent[] {
-  const byId = new Map<string, LoadedAgent>()
-  for (const agents of sets) {
-    for (const agent of agents) {
-      const existing = byId.get(agent.id)
-      if (existing && existing.dir !== agent.dir) {
-        throw new SandboxError(
-          `duplicate active agent id "${agent.id}" appears in "${existing.dir}" and "${agent.dir}"`
-        )
-      }
-      byId.set(agent.id, agent)
-    }
-  }
-  return [...byId.values()]
-}
-
-/**
- * Does this Telegram failure just mean the bot is ALREADY out of the chat?
- *
- * Telegram offers no "am I in this chat" query, so the only way to learn it is to try
- * to leave and read the refusal. These are the `description`s the Bot API returns from
- * `leaveChat` for a chat the bot cannot be in — removed, kicked, or the chat is gone.
- * Anything else is a genuine failure and must still reach the operator.
- *
- * Matching on message text is a heuristic, and deliberately a safe one: a mis-read
- * error only retires a row that is still live, which is the already-documented
- * behaviour of a removed row — it returns on that conversation's next message.
- */
-function isAlreadyOutOfChat(err: unknown): boolean {
-  const message = ((err as { message?: string })?.message ?? '').toLowerCase()
-  return message.includes('chat not found') || message.includes('bot was kicked') || message.includes('not a member')
-}
-
-// ACP runtime identities for THIS daemon's own MCP tools. ALL_TOOL_NAMES is the
-// registry of every tool the agentconnect MCP server can inject; both approval
-// transports below derive their trust policy from this same set.
-const BUILTIN_TOOL_NAMES = new Set(ALL_TOOL_NAMES)
-const BUILTIN_PERMISSION_TOOL_FQNS = new Set(ALL_TOOL_NAMES.map((name) => `mcp__${RESERVED_MCP_SERVER_NAME}__${name}`))
-const BUILTIN_TOOL_FQNS = new Set(
-  ALL_TOOL_NAMES.flatMap((name) => [
-    `mcp__${RESERVED_MCP_SERVER_NAME}__${name}`,
-    `mcp.${RESERVED_MCP_SERVER_NAME}.${name}`
-  ])
-)
-
-function containsBuiltinToolFqn(id: string): boolean {
-  if (BUILTIN_TOOL_FQNS.has(id)) return true
-  // Some ACP adapters suffix an opaque invocation id to the flattened MCP name.
-  for (const fqn of BUILTIN_PERMISSION_TOOL_FQNS) if (id.includes(fqn)) return true
-  return false
-}
-
-/** Identify a structured ACP tool event for one of this daemon's own MCP tools. */
-export function isBuiltinSystemToolCall(update: unknown): boolean {
-  if (!update || typeof update !== 'object') return false
-  const u = update as { sessionUpdate?: unknown; rawInput?: unknown; title?: unknown }
-  if (u.sessionUpdate !== 'tool_call' && u.sessionUpdate !== 'tool_call_update') return false
-  const rawInput =
-    u.rawInput && typeof u.rawInput === 'object' ? (u.rawInput as { server?: unknown; tool?: unknown }) : undefined
-  // When the adapter provides structured identity, it is authoritative. Do not let
-  // a friendly/misleading display title override a different MCP server identity.
-  if (rawInput && (rawInput.server !== undefined || rawInput.tool !== undefined)) {
-    return (
-      rawInput.server === RESERVED_MCP_SERVER_NAME &&
-      typeof rawInput.tool === 'string' &&
-      BUILTIN_TOOL_NAMES.has(rawInput.tool)
-    )
-  }
-  return typeof u.title === 'string' && BUILTIN_TOOL_FQNS.has(u.title)
-}
-
-/**
- * True when an ACP permission request is for one of the daemon's OWN built-in MCP tools.
- * Those are platform system tools the agent is always granted — a human should never have
- * to approve them per call (they carry no more authority than the agent already has). We
- * match the runtime-assigned `mcp__agentconnect__<name>` FQN against our registered tool
- * set across the request's identifying fields (`title`/`kind`/`toolCallId`). Deliberately
- * strict + fail-SAFE: an unrecognized/friendly title simply falls through to the normal
- * permission card, never a wrongful auto-allow. The runtime's own dangerous built-ins
- * (Bash/Edit/…) carry different names, are NOT in this set, and still prompt.
- */
-export function isBuiltinSystemTool(
-  params: RequestPermissionRequest,
-  correlatedToolCallIds?: ReadonlySet<string>
-): boolean {
-  const tc = params.toolCall
-  if (typeof tc?.toolCallId === 'string' && correlatedToolCallIds?.has(tc.toolCallId)) return true
-  const ids = [tc?.title, tc?.kind, tc?.toolCallId]
-  return ids.some((id) => typeof id === 'string' && containsBuiltinToolFqn(id))
-}
-
-/** Codex ACP carries MCP approval through form elicitation when the client supports it. */
-export function isBuiltinSystemToolElicitation(
-  params: CreateElicitationRequest,
-  correlatedToolCallIds: ReadonlySet<string>
-): boolean {
-  const toolCallId = 'toolCallId' in params ? params.toolCallId : undefined
-  return (
-    params.mode === 'form' &&
-    typeof toolCallId === 'string' &&
-    correlatedToolCallIds.has(toolCallId) &&
-    params._meta?.codex_approval_kind === 'mcp_tool_call'
-  )
-}
-
-function isMcpToolApprovalElicitation(params: CreateElicitationRequest): boolean {
-  return params.mode === 'form' && params._meta?.codex_approval_kind === 'mcp_tool_call'
-}
-
-function approvalSummary(value: unknown, fallback: string): string {
-  const text = typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : ''
-  return (text || fallback).slice(0, 240)
-}
-
-function approvalInputSummary(value: unknown): string {
-  if (typeof value === 'string') return value
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return ''
-  const input = value as Record<string, unknown>
-  for (const key of ['command', 'cmd', 'path', 'file_path', 'query', 'url']) {
-    if (typeof input[key] === 'string' && input[key].trim()) return input[key]
-  }
-  return ''
-}
-
-function permissionRequestSummary(params: RequestPermissionRequest): string {
-  const label = approvalSummary(params.toolCall?.title ?? params.toolCall?.kind, 'Tool permission request')
-  const input = approvalInputSummary(params.toolCall?.rawInput)
-  return approvalSummary(input ? `${label}: ${input}` : label, 'Tool permission request')
-}
-
-function elicitationApprovalSummary(params: CreateElicitationRequest): string {
-  return approvalSummary((params as { message?: unknown }).message, 'MCP tool permission request')
-}
-
-/**
- * True when `none` output mode removed THIS turn's interactive permission/elicitation
- * surface. Permission requests still enter the Agent-editor queue; this flag only prevents
- * a chat-side card from being rendered for the turn.
- *
- * Scoped narrowly to the surface `none` actually removes: an interactive card renders ONLY
- * on Slack (see `onAcpPermission`), and only for a live user turn. So this is true iff the
- * turn is `none` AND on Slack AND not webchat/headless. Telegram/Discord/Feishu have no card
- * surface, so `none` removes nothing there; webchat/headless are non-IM transports.
- * Computed once at dispatch (frozen for the turn) so a mid-turn mode flip can't desync it
- * from the connection it was derived from.
- */
-export function noneSuppressedApprovalSurface(
-  mode: string,
-  turn: { platform: string; webchat?: unknown; headless?: boolean }
-): boolean {
-  return mode === 'none' && turnChromeFor(turn.platform).chatInputCards === true && !turn.webchat && !turn.headless
-}
-
-function hookSnapshot(msg: RdMsgHook): HookConfigSnapshot | undefined {
-  if (
-    msg.configRevision === undefined ||
-    msg.dispatchRevision === undefined ||
-    msg.dispatchDaemonId === undefined ||
-    msg.reviewPolicy === undefined ||
-    msg.reportingMode === undefined ||
-    msg.gateMode === undefined
-  )
-    return undefined
-  return {
-    configRevision: msg.configRevision,
-    dispatchRevision: msg.dispatchRevision,
-    dispatchDaemonId: msg.dispatchDaemonId,
-    reviewPolicy: msg.reviewPolicy,
-    reportingMode: msg.reportingMode,
-    gateMode: msg.gateMode
-  }
-}
-
-function reviewPolicyAllows(policy: HookConfigSnapshot['reviewPolicy'], event: GithubReviewEvent): boolean {
-  if (policy === 'full') return true
-  if (policy === 'request_changes') return event === 'COMMENT' || event === 'REQUEST_CHANGES'
-  if (policy === 'comment') return event === 'COMMENT'
-  return false
-}
-
-function reviewResultForWire(effect: GithubReviewEffect): HookReviewResult {
-  if (effect.state === 'submitted') return effect
-  return { state: effect.state, code: effect.code }
-}
-
-// Cap per-session `!queue` depth so a hung turn or a user spamming `!queue` can't
-// grow `queued` without bound. Past the cap we reject with a clear message.
-/** An agent's effective dreaming policy. Managed memory defaults to a daily,
- *  review-first dream; an explicit disabled policy or non-managed provider is
- *  preserved by the shared resolver. */
-function dreamingPolicyOf(agent: { memory?: Agent['memory'] } | undefined): MemoryDreamingPolicy | undefined {
-  if (!agent) return undefined
-  return effectiveMemoryDreamingPolicy(agent.memory)
-}
-
-const MAX_QUEUED_PER_SESSION = 10
-const MAX_TURN_CONTEXT_REGENERATIONS = 3
-const MAX_TURN_CONTEXT_REGENERATION_MS = 120_000
-
-/** Bounded hard-stop for an isolated model pass (a dream extraction, a commit-message draft) whose
- *  runtime ignores `session/cancel`: how long after the abort the daemon stops awaiting
- *  `host.prompt` and discards the isolated ACP session, rather than wedging forever. The dream
- *  runner's own grace window (DreamRunnerDeps.cancelGraceMs) releases the reservation independently. */
-const CANCEL_FORCE_MS = 15_000
-
-/** How often the idle sweep also reclaims abandoned probe temp roots. One disposable
- *  probe can materialize gigabytes of package caches, so PID-tagged roots whose owner
- *  has finished or exited should not wait behind the slower maintenance cadences. */
-const PROBE_ROOT_SWEEP_INTERVAL_MS = 60_000
-
-/** How often the idle sweep also runs session-retention GC (#485). The retention
- *  window is measured in days, so an hourly pass is plenty — each pass walks the
- *  expired rows and may run several git commands per candidate. */
-const SESSION_RETENTION_SWEEP_INTERVAL_MS = 60 * 60_000
-
-/** Receipts per `event/session-purged` frame. Matches the protocol schema's cap,
- *  which sits far under the frame budget (a batch of ACP ids is tiny). */
-const MAX_SESSION_PURGE_BATCH = 200
-
-// Last-resort feedback-loop protection. The lower automatic threshold catches
-// agent/system/platform-echo chains; the higher all-turn threshold still stops a
-// platform bug that accidentally labels its own events as ordinary human messages.
-// The latch is durable and has no cooldown: only an explicit !resume resets it.
-const LOOP_GUARD_WINDOW_MS = 60_000
-const MAX_AUTOMATIC_TURNS_PER_WINDOW = 8
-const MAX_TOTAL_TURNS_PER_WINDOW = 60
-
-// Bound the correlated hook/report outbox drain. Each request may live through
-// several CP retries, so admitting an unbounded retained backlog at reconnect
-// would turn a long outage into a memory/socket fan-out spike.
-const MAX_HOOK_REPORT_INFLIGHT = 100
-
-/** The daemon whose dispatch the CP accepts this report from — the outbox row's owner.
- *  On a pool's shared store that is the only member allowed to release its body. */
-function hookReportOwner(report: HookReport, daemonId?: string): string | undefined {
-  return report.dispatchDaemonId ?? daemonId
-}
-
-/** True when the CP can only be answering about a peer's dispatch. Unproven ownership
- *  counts as foreign: keeping a report body is always recoverable, nulling it is not. */
-function foreignHookDispatch(report: HookReport, daemonId?: string): boolean {
-  return report.dispatchDaemonId !== undefined && report.dispatchDaemonId !== daemonId
-}
-
-/** Backoff after a session-metadata persistence failure while the socket remains READY. */
-const SESSION_METADATA_RETRY_MS = 5_000
-const SESSION_METADATA_FAILURES_BEFORE_DEFER = 5
-const SESSION_METADATA_DEFER_MS = 5 * 60_000
-// A snapshot this member cannot scope waits this long before it is offered again.
-const SESSION_METADATA_PARK_MS = 60_000
-
-/** Connectable when there is a URL and a credential: an API key, or — in-cluster — the
- *  projected ServiceAccount token this pod presents instead of one. */
-function configuredControlPlane(
-  controlPlane: Config['controlPlane'],
-  hasClusterIdentity = false
-): controlPlane is Config['controlPlane'] & { url: string } {
-  return controlPlane.enabled && !!controlPlane.url && (!!controlPlane.key || hasClusterIdentity)
-}
-
-/** Thrown to a `dispatch()` caller when the per-session admission queue is at its depth
- *  cap (§4.4 backpressure): the message is fast-failed, not buffered. Carries a stable
- *  `reason` so an agent-call source (P1/P2) can surface a typed `queue_full`. */
-export class QueueFullError extends Error {
-  readonly reason = 'queue_full' as const
-  constructor(sessionKey: string) {
-    super(`admission queue full for session ${sessionKey}`)
-    this.name = 'QueueFullError'
-  }
-}
-
-/** Thrown to the `dispatch()` callers of the messages still queued behind a turn that
- *  FAILED (§6.9 #378 fail-stop): the daemon does not auto-run buffered work onto a broken
- *  session, so each follow-up is rejected rather than silently dropped or force-run. */
-export class FailStopError extends Error {
-  readonly reason = 'fail_stop' as const
-  constructor(sessionKey: string) {
-    super(`turn failed for session ${sessionKey}; queued messages were not auto-run`)
-    this.name = 'FailStopError'
-  }
-}
-
-/** Internal fail-closed outcome for a turn whose process cleanup rejected. The raw
- * cleanup rejection is logged once at the lifecycle boundary; this stable sentinel
- * lets the serial gate fail-stop and release its dispatch lease without reporting the
- * same rejection again through transport fire-and-forget handlers. */
-class LifecycleCleanupBlockedError extends Error {
-  readonly reason = 'lifecycle_cleanup_blocked' as const
-  constructor(sessionKey: string, cause: unknown) {
-    super(`lifecycle cleanup blocked for session ${sessionKey}`, { cause })
-    this.name = 'LifecycleCleanupBlockedError'
-  }
-}
-
-/** The session-control selectors driven by `/models` `/effort` `/permission` + their
- *  tappable cards. Single-char codes keep the inline-button `callback_data` (≤64 bytes)
- *  compact — `<code>:<optionIndex>`. */
-// Budget for the inline text carried by one WebchatOutput payload. Well under
-// the 256 KiB JSON frame cap so the envelope overhead (conversationId/turnId/index/
-// kind + JSON escaping of control chars, up to a 6× blowup) can never push a chunk
-// over the wire limit. Long agent output is split across several chunks at this size.
-const WEBCHAT_CHUNK_BYTES = 32 * 1024
-// A reconnectable turn keeps a bounded in-memory output window on the daemon,
-// where the stream originates. This survives a browser moving between relay
-// instances without putting message bodies on the Control Plane or disk.
-const WEBCHAT_REPLAY_MAX_EVENTS = 256
-const WEBCHAT_REPLAY_MAX_BYTES = 1024 * 1024
-const WEBCHAT_REPLAY_MAX_STREAMS = 64
-const WEBCHAT_REPLAY_TTL_MS = 5 * 60_000
-/** A genuine webchat conversationId, as opposed to a synthetic `a2a:<agentId>` channel
- *  (see `webchatWakeContext`). */
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-
-/** Split `text` into pieces whose UTF-8 byte length each stays under WEBCHAT_CHUNK_BYTES
- *  so no single relay `rd/chat` payload exceeds the 256 KiB cap. Splits on byte budget
- *  by character (never mid-code-point); short text returns a single piece. */
-function chunkText(text: string): string[] {
-  if (Buffer.byteLength(text) <= WEBCHAT_CHUNK_BYTES) return [text]
-  const out: string[] = []
-  let buf = ''
-  let bytes = 0
-  for (const ch of text) {
-    const w = Buffer.byteLength(ch)
-    if (bytes + w > WEBCHAT_CHUNK_BYTES && buf) {
-      out.push(buf)
-      buf = ''
-      bytes = 0
-    }
-    buf += ch
-    bytes += w
-  }
-  if (buf) out.push(buf)
-  return out
-}
-
-// §9.1 text-buffer: flush buffered agent body after this much streaming idle.
-const IDLE_FLUSH_MS = 2000
-/** CardKit updates are cumulative and rate-limited. Sampling the converger at this
- * cadence streams visibly without queuing one HTTP request per model token. */
-const FEISHU_STREAM_FLUSH_MS = 350
-
-/** Local Web App console origin used for session deep links when neither a local
- *  `webAppUrl` config nor a CP-provided one is set. */
-const DEFAULT_WEB_APP_URL = 'http://localhost:3000'
-
-/** ACP session ids are scoped to one agent runtime, not globally unique. */
-function pendingTurnKey(agentId: string, acpSessionId: string): string {
-  return JSON.stringify([agentId, acpSessionId])
-}
-
-/** Background-task leases are per (agent, ACP session) for the same reason turns are: two
- *  agents can each expose an `acp-1`. Sharing one entry would let one agent's live task
- *  suppress the other's completion wake, or overwrite its task record under a colliding id. */
-function sdkLeaseKey(agentId: string, acpSessionId: string): string {
-  return pendingTurnKey(agentId, acpSessionId)
-}
-
-/** One LIVE background task — a member of the lease's liveness set. `startedAt` is when the
- *  `task_started` edge arrived, which is the only start time the feed offers. */
-interface LiveSdkTask {
-  description?: string
-  isSubagent: boolean
-  startedAt: number
-}
-
-/** One SETTLED background task, retained for the console's `task/list` read. Display history and
- *  nothing else: it lives in the lease's `settled` array, never in `tasks`, so no reclaim
- *  decision can see it. `status` is the terminal status a runtime edge reported, when any. */
-interface SettledSdkTask extends LiveSdkTask {
-  id: string
-  endedAt: number
-  status?: string
-}
-
-// Cap on agent→agent hop depth (design §2.4/§4.5) — reject a `messageAgent` whose
-// outgoing hopCount reaches this boundary, so an A↔B wake loop can't run away.
-// send-message-routing-rework.md §4.1 puts a platform `@mention` delivery on this SAME
-// budget, which is why the constant is shared with the relay rather than redeclared here.
-const AGENT_CALL_HOP_LIMIT_NOTICE = `Agent conversation stopped after reaching the ${MAX_AGENT_CALL_HOPS}-hop limit.`
-
-/**
- * How long a paired `toAgent + channel` rendezvous waits for its other half
- * (send-message-routing-rework.md §3.2/§8.6).
- *
- * It bounds the window in which a platform observation and its internal wake are treated
- * as one delivery. Generous, because the two halves may cross a relay, a slow platform
- * fan-out, or a target-daemon restart; on expiry the pairing becomes transcript-only and
- * raises a delivery failure rather than dispatching an envelope-less child.
- */
-const ACTIVATION_PAIRING_TTL_MS = 10 * 60 * 1000
-
-/** Composite-key separator for the activation rendezvous. NOT NUL: these keys and their
- *  transcript coordinates are stored, and the pool store is PostgreSQL, whose TEXT rejects 0x00. */
-const ACTIVATION_KEY_SEPARATOR = '\u001f'
-
-/**
- * The key that makes one logical delivery admissible exactly once
- * (send-message-routing-rework.md §3.2).
- *
- * Scoped by transport as well as platform because two bot connections can receive the
- * SAME `channel:ts`, and by TARGET because one visible post may address several agents —
- * each of which must be admitted once, independently of the others.
- */
-function activationKey(
-  platform: string,
-  transportScope: string | undefined,
-  platformMessageId: string,
-  targetAgentId: string
-): string {
-  return [platform, transportScope ?? '', platformMessageId, targetAgentId].join(ACTIVATION_KEY_SEPARATOR)
-}
-
-/** The platform `ts` inside a Slack `msgId` (`slack:<channel>:<ts>`). The ts — not the
- *  msgId — is the visible message's identity, which is what the activation key and the
- *  paired wake both name. A response finalization carries the ORIGINAL post's msgId and
- *  marks itself with `ingressEventTag`, so nothing has to be stripped here. */
-function slackTsFromMsgId(msgId: string): string {
-  return msgId.split(':')[2] ?? msgId
-}
-
-/** Poll interval for the deferred background-task wake (background-task-aware-reclaim.md
- *  §5.1). Claude re-enters a `running` cycle of its own to drain a settled task; the wake
- *  waits that cycle out rather than firing into it, because a turn injected mid-cycle would
- *  race the runtime's own work. It does NOT stand down for it — that cycle carries no
- *  `Pending`, so everything it emits is dropped at `onAcpUpdate` and the user sees nothing. */
-const BG_TASK_WAKE_GRACE_MS = 4_000
-
-/** How many times the wake may re-arm while the runtime's self-drain cycle is still
- *  `running` (≈1 minute at {@link BG_TASK_WAKE_GRACE_MS}). A cycle that never returns to
- *  `idle` is either a genuinely long piece of work — which will produce its own turn-end —
- *  or a wedged runtime; either way, stop re-arming instead of polling forever. */
-const MAX_BG_TASK_WAKE_REARMS = 15
-
-/** Per-session budget for background-task wakes. Unlike an agent call these carry no
- *  hopCount to bound, and a woken turn may spawn further background tasks, so the
- *  budget is the only backstop against a self-feeding wake loop. Counted over the
- *  lease's life (i.e. until the host is reclaimed), not per turn. */
-const MAX_BG_TASK_WAKES_PER_SESSION = 20
-
-/** How many SETTLED background tasks one lease retains for the console's `task/list` read. The
- *  daemon keeps no task history anywhere else, so without this a finished task is unshowable;
- *  with it, a `done`/`failed` row survives until the 21st task settles, the session TTL-closes
- *  or the host is reclaimed. 20 is a display depth, not a durability promise — the panel is a
- *  live view, and the retained records are strictly outside the liveness set (see `settled`). */
-const MAX_SETTLED_TASKS_PER_SESSION = 20
-
-/**
- * DAEMON-PRIVATE trusted metadata for an agent-originated delivery. Authoritative
- * (never derived from model output or platform text): the caller identity the target can
- * trust, the correlationId to bounce back, and the hop/origin chain for loop protection.
- * Most deliveries run a turn whose nested `messageAgent` reads this to auto-increment
- * hopCount (§2.4); a self-authored channel root instead carries `initializeOnly`.
- */
-interface CallMeta {
-  /** Trusted caller agentId (the agent that invoked `messageAgent`). */
-  callFrom: string
-  /** Opaque correlation id supplied by the caller (orchestration), if any. */
-  correlationId?: string
-  /** Depth of this agent-call chain; inbound platform/user turns are 0. */
-  hopCount: number
-  /** Stable id of the delivery that started this turn (== the msgId's ts segment). */
-  deliveryId: string
-  /**
-   * send-message-routing-rework.md §8.6: the activation rendezvous key this delivery was
-   * claimed under, when it has one.
-   *
-   * It rides on CallMeta specifically because CallMeta is PERSISTED with the durable inbox
-   * row and restored on replay. That is what closes the crash window: a turn that crashed
-   * after its inbox row landed is re-dispatched at startup carrying this key, so the
-   * SAME central admission below completes the rendezvous — no separate replay hook, and
-   * no dependence on the inbox row still existing by the time the sweep runs.
-   */
-  activationKey?: string
-  /**
-   * This delivery was OBSERVED on the platform, in the very conversation it targets — an
-   * agent's ordinary reply or channel-root mention — rather than being a postless
-   * `toAgent` call.
-   *
-   * It decides whether the woken turn may bind the conversation's external audience.
-   * A postless child must not: its coordinates are derived from the caller's session and
-   * the model influences the target, so binding one would let model input claim a shared
-   * conversation. A platform-observed delivery has the OPPOSITE property — its channel
-   * and thread come from the provider event itself, exactly like a human message in that
-   * thread — so it must bind, or it can never wake an agent that already holds an
-   * externally-bound session there, which is every agent already talking in the thread.
-   *
-   * Persisted with the inbox row alongside the rest of CallMeta, so a replayed turn makes
-   * the same classification it would have made live.
-   */
-  platformOrigin?: true
-  /**
-   * webchat-multi-agents.md §5.2a (#549 parity): this delivery is a conversation-roster
-   * CONTINUATION — a peer participant's committed post fanned to this agent — not a
-   * direct `sendMessage` call. It keeps the full trusted call chain (hop budget,
-   * exactly-once rendezvous, caller identity) but must NOT assert "this activation is
-   * addressed to you": the standing response-choice contract decides whether the woken
-   * agent answers, exactly as it does for the user-targeted roster fan-out. Persisted
-   * with the inbox row like the rest of CallMeta.
-   */
-  conversationContinuation?: true
-  /** A self-authored channel-root post initializes its new session but is not a model turn.
-   *  Persisted with the inbox row so crash replay cannot accidentally activate the model. */
-  initializeOnly?: boolean
-  /** session-concept §5.3: the WAKING (parent/origin) session's stable acpSessionId. This
-   *  is the value surfaced to the child as its `Parent session` (§2.3) and the SessionTarget
-   *  the child replies into via `sendMessage`. Absent on root turns (human-initiated) and the
-   *  self-introduce fan-out — those have no parent, so the child gets no `Parent session` line
-   *  and cannot address a SessionTarget. */
-  originSessionId?: string
-  /** session-concept §5.3: the origin session's landing coords. Used to route a SessionTarget
-   *  reply back when the origin session lives on ANOTHER daemon (the relay has no
-   *  sessionId→daemon registry, so a cross-daemon reply routes by these coords + `callFrom`).
-   *  Set alongside `originSessionId`. */
-  originCoords?: { platform: Exclude<NormalizedMessage['platform'], 'hook'>; channel: string; thread?: string }
-  /** Immutable external source inherited from the waking Session. This is
-   * daemon-authored metadata and never comes from model text. The credential
-   * locator stays at the direct ingress; descendants inherit only the stable
-   * provider/realm/resource tuple. */
-  externalOrigin?: ExternalSessionAudience
-  /** Daemon-internal (issue #536, never a tool input): when this turn calls
-   *  `messageAgent`, deliver the woken peer's turn HEADLESS so it records silently
-   *  with no channel output. Set only by the self-introduce-on-join fan-out; does
-   *  NOT cascade (the peer's own callMeta doesn't carry it). */
-  deliverHeadless?: boolean
-  /** Daemon-internal (issue #536, never a tool input): the channel this turn exists to
-   *  introduce the agent into. It HARD-BOUNDS peer discovery for the turn — the
-   *  `channelAgents` dep forces this channel as the directory filter even when the model
-   *  omits (or widens, or redirects) the tool's `channel` argument. Without a code-level
-   *  bound the org-wide default would fan one channel join out to every agent in the org;
-   *  `MAX_AGENT_CALL_HOPS` bounds depth and `INTRO_MAX_BURST` bounds channels per snapshot,
-   *  but neither bounds PEERS per intro. The prompt asks for the same filter (belt and
-   *  braces); this is what makes it true regardless of model compliance. Set only by the
-   *  self-introduce-on-join dispatch and, like `deliverHeadless`, does NOT cascade. */
-  introChannel?: string
-  /** session-concept §5.3: the waking parent asked this session to report back when it is done
-   *  or has failed (`sendMessage`'s `toAgent.needsReply`). Handed to prompt assembly, which turns
-   *  it into a standing directive on the child naming `originSessionId` as the reply target.
-   *  Like `deliverHeadless` it does NOT cascade — a grandchild is only obliged if its own parent
-   *  asks. Absent ⇒ an ordinary fire-and-forget wake. */
-  needsReply?: boolean
-  /** session-visibility.md §5.1: the WAKING session is private, so this child's
-   *  transcript holds prompt text copied out of it and must not feed shared agent
-   *  memory. Strictly ONE-DIRECTIONAL — it can only tighten. A `false`/absent
-   *  value never opens capture: an A2A child always starts excluded, and only a
-   *  CP-confirmed `org` state (which the CP derives from the post-cascade parent)
-   *  may open it. That is what makes a stale hint in flight during a §4.3
-   *  tightening harmless. */
-  parentPrivate?: boolean
-}
-
-type TurnInterruptReason = 'pause' | 'loop protection' | 'stop' | 'cancel' | 'shutdown' | 'superseded'
-
-/** What an interrupt means for the agent's admitted-but-unrun durable rows. `reason` cannot say
- *  it: removal and a duty handoff are both `stop`. `terminal` ends that work here (pause, removal,
- *  host respawn); `handoff` leaves the rows for the successor holder to replay (#1050). */
-type TurnInterruptDisposition = 'terminal' | 'handoff'
-
-/** One durable loop-guard scope shared by every agent on one physical bot.
- *  DMs are keyed at channel level because malformed platform wrappers may lose
- *  thread coordinates; threaded channel conversations retain their canonical
- *  thread. Platform coordinates can overlap across bot installations. */
-function loopGuardScopeFromCoords(
-  platform: string,
-  channel: string,
-  thread: string,
-  isDm: boolean,
-  transportScope?: string
-): string {
-  const base = `${platform}:${channel}:${isDm ? 'dm' : thread}`
-  return transportScope ? `${base}:${transportScope}` : base
-}
-
-function loopGuardScope(msg: NormalizedMessage): string {
-  // A platform whose top-level posts mint a fresh thread root per message needs
-  // those roots to share one channel-level circuit — otherwise two bots can
-  // alternate fresh roots forever and every message gets a virgin guard scope.
-  // Which platforms those are, and how a root is recognized, is theirs to say.
-  const { coarse, isRoot } = loopGuardScopesFor(msg)
-  if (coarse && isRoot) return coarse
-  return loopGuardScopeFromCoords(msg.platform, msg.channel, msg.thread ?? msg.msgId, msg.isDm, msg.transportScope)
-}
-
-function isTrustedHumanTurn(msg: NormalizedMessage): boolean {
-  return msg.source === 'user' && !msg.sender.isBot && msg.sender.id !== 'unknown'
-}
-
-/** The coarse rate circuit protects platform chat ingress. Agent calls have an exact
- *  trusted hop cap; cron/hooks are operator automation; webchat has a separate sync ACK
- *  contract and no in-band !resume surface. */
-function usesLoopGuard(msg: NormalizedMessage): boolean {
-  return msg.source === 'user' && msg.platform !== 'webchat'
-}
-
-interface GithubReplyTarget {
-  hookId: string
-  repo: string
-  number: number
-  /** The review-comment delivery that triggered this turn (diagnostic identity). */
-  reviewCommentId?: string
-  /** Stable root of the GitHub inline-review thread; replies must target this id. */
-  reviewThreadRootCommentId?: string
-}
-
-interface GithubReviewBatchItem {
-  deliveryKey: string
-  firedAt: string
-  text: string
-  reply: GithubReplyTarget & { reviewThreadRootCommentId: string }
-  publishState?: 'not_started' | 'in_flight' | 'settled'
-  publishedComment?: GithubPublishedComment
-}
-
-interface GithubReviewBatch {
-  reviewId: string
-  openedAt: number
-  updatedAt: number
-  sealed?: boolean
-  items: GithubReviewBatchItem[]
-}
-
-/** Durable daemon-private hook identity; coalesced prompt excerpts stay local and HookReport omits them. */
-interface HookDispatchContext {
-  hookId: string
-  agentId: string
-  deliveryKey: string
-  firedAt: string
-  event?: string
-  snapshot?: HookConfigSnapshot
-  github?: GithubHookMetadata
-  githubReply?: GithubReplyTarget
-  githubReviewBatch?: GithubReviewBatch
-  turnStartedAt?: string
-  reviewAttemptId?: string
-  reviewRequestedEvent?: GithubReviewEvent
-  reviewRequestedVerdict?: GithubReviewVerdict
-  reviewResult?: HookReviewResult
-  /** Latest body-free outcome retained for terminal hook/report even when a
-   * proved no-effect reservation is released to permit a corrected retry. */
-  reviewReportAttemptId?: string
-  reviewReportResult?: HookReviewResult
-  /** Exact body-free identity of the fallback comment published for this turn. */
-  publishedComment?: GithubPublishedComment
-}
-
-type GithubThreadWorktreeCleanup = 'pull_request_merged' | 'issue_closed' | 'issue_deleted'
-
-const GITHUB_DELETED_HOOK_EVENTS = new Set([
-  'issues:deleted',
-  'pull_request:deleted',
-  'issue_comment:deleted',
-  'pull_request_review_comment:deleted'
-])
-
-function githubDeletedHookEvent(hook: Pick<HookDispatchContext, 'event'> | undefined): boolean {
-  return hook?.event !== undefined && GITHUB_DELETED_HOOK_EVENTS.has(hook.event)
-}
-
-interface GithubHookCoordinates {
-  agentId: string
-  platform: string
-  channel: string
-  integrationId?: string
-}
-
-type GithubCoordinatedHook = Pick<HookDispatchContext, 'hookId' | 'agentId' | 'event' | 'github'>
-
-function githubHookCoordinates(
-  agentId: string,
-  msg: Pick<NormalizedMessage, 'platform' | 'channel'>,
-  integrationId?: string
-): GithubHookCoordinates {
-  return {
-    agentId,
-    platform: msg.platform,
-    channel: msg.channel,
-    ...(integrationId !== undefined ? { integrationId } : {})
-  }
-}
-
-function githubPullRequestLane(
-  hook: GithubCoordinatedHook | undefined,
-  coords: GithubHookCoordinates
-): string | undefined {
-  const github = hook?.github
-  if (hook?.agentId !== coords.agentId || github?.subjectKind !== 'pull_request' || github.pullNumber === undefined)
-    return undefined
-  return JSON.stringify([
-    hook.hookId,
-    hook.agentId,
-    github.repoId,
-    github.pullNumber,
-    coords.platform,
-    coords.channel,
-    coords.integrationId ?? null
-  ])
-}
-
-function githubPullRevisionStream(
-  hook: GithubCoordinatedHook | undefined,
-  coords: GithubHookCoordinates
-): string | undefined {
-  const lane = githubPullRequestLane(hook, coords)
-  if (!lane || hook?.event !== 'pull_request:synchronize' || !hook.github?.headSha) return undefined
-  return JSON.stringify(['revision', lane])
-}
-
-function githubReviewBatchStream(
-  hook: GithubCoordinatedHook | undefined,
-  coords: GithubHookCoordinates
-): string | undefined {
-  const github = hook?.github
-  const lane = githubPullRequestLane(hook, coords)
-  if (
-    !github ||
-    !lane ||
-    hook?.event !== 'pull_request_review_comment:created' ||
-    github.pullRequestReviewId === undefined ||
-    github.reviewCommentId === undefined ||
-    github.reviewThreadRootCommentId === undefined ||
-    github.reviewCommentId !== github.reviewThreadRootCommentId
-  ) {
-    return undefined
-  }
-  return JSON.stringify(['review', lane, github.pullRequestReviewId])
-}
-
-function renderGithubReviewBatchPrompt(batch: GithubReviewBatch): string {
-  const items = [...batch.items].sort(
-    (a, b) => a.firedAt.localeCompare(b.firedAt) || a.deliveryKey.localeCompare(b.deliveryKey)
-  )
-  return [
-    `GitHub submitted-review inline comment batch (review ${batch.reviewId})`,
-    `Authorized thread roots: ${items.map((item) => item.reply.reviewThreadRootCommentId).join(', ')}`,
-    '',
-    ...items.flatMap((item, index) => [
-      `===== REVIEW THREAD ${index + 1} · ROOT ${item.reply.reviewThreadRootCommentId} =====`,
-      item.text,
-      `===== END REVIEW THREAD ${index + 1} =====`,
-      ''
-    ]),
-    'Inspect shared PR context once, then call `replyGithubReviewThreads` exactly once with one complete answer for every authorized root above. Do not omit, combine, or add roots. The tool owns all public replies; keep the final answer transcript-only.'
-  ].join('\n')
-}
-
-function compareGithubPullRevisionRecency(a: HookDispatchContext, b: HookDispatchContext): number {
-  if (a.firedAt !== b.firedAt) return a.firedAt < b.firedAt ? -1 : 1
-  if (a.deliveryKey === b.deliveryKey) return 0
-  return a.deliveryKey < b.deliveryKey ? -1 : 1
-}
-
-/** Relay-authored lifecycle events that remove the isolated checkout without
- * opening a model turn. Pair the normalized event with trusted subject metadata
- * so an old or malformed frame cannot turn an ordinary hook into maintenance. */
-function githubThreadWorktreeCleanup(
-  hook: Pick<HookDispatchContext, 'event' | 'github'> | undefined
-): GithubThreadWorktreeCleanup | undefined {
-  if (hook?.event === 'pull_request:merged' && hook.github?.subjectKind === 'pull_request') {
-    return 'pull_request_merged'
-  }
-  if (hook?.event === 'issues:closed' && hook.github?.subjectKind === 'issue') return 'issue_closed'
-  if (hook?.event === 'issues:deleted' && hook.github?.subjectKind === 'issue') return 'issue_deleted'
-  return undefined
-}
-
-type SessionWorktreeCleanupResult = SessionWorktreeRemoval | { outcome: 'active' } | { outcome: 'not_applicable' }
-
-/** An ordinary comment is safe only when no formal attempt exists, or when the
- * latest/current attempt has a correlated, definite no-effect result. Any
- * unresolved or contradictory state fails closed because GitHub may already
- * own the public response. */
-function githubFallbackAllowed(hook: HookDispatchContext | undefined): boolean {
-  if (!hook) return true
-
-  const currentAttemptId = hook.reviewAttemptId
-  const reportAttemptId = hook.reviewReportAttemptId
-  const hasFormalState =
-    currentAttemptId !== undefined ||
-    reportAttemptId !== undefined ||
-    hook.reviewResult !== undefined ||
-    hook.reviewReportResult !== undefined
-  if (!hasFormalState) return true
-
-  if (currentAttemptId !== undefined) {
-    if (reportAttemptId !== undefined) {
-      return (
-        reportAttemptId === currentAttemptId &&
-        hook.reviewReportResult?.state === 'not_submitted' &&
-        (hook.reviewResult === undefined || hook.reviewResult.state === 'not_submitted')
-      )
-    }
-    return hook.reviewResult?.state === 'not_submitted'
-  }
-
-  return (
-    reportAttemptId !== undefined &&
-    hook.reviewReportResult?.state === 'not_submitted' &&
-    (hook.reviewResult === undefined || hook.reviewResult.state === 'not_submitted')
-  )
-}
-
-/** Select only an outcome that belongs to the current attempt, falling back to
- * the retained terminal outcome once no current reservation remains. */
-function githubReviewResultForCompletion(
-  hook: HookDispatchContext
-): { attemptId: string; result: HookReviewResult } | undefined {
-  if (hook.reviewAttemptId !== undefined) {
-    if (hook.reviewReportAttemptId === hook.reviewAttemptId && hook.reviewReportResult) {
-      return { attemptId: hook.reviewAttemptId, result: hook.reviewReportResult }
-    }
-    if (hook.reviewReportAttemptId === undefined && hook.reviewResult) {
-      return { attemptId: hook.reviewAttemptId, result: hook.reviewResult }
-    }
-    return undefined
-  }
-  if (hook.reviewReportAttemptId && hook.reviewReportResult) {
-    return { attemptId: hook.reviewReportAttemptId, result: hook.reviewReportResult }
-  }
-  return undefined
-}
-
-interface ActiveGithubTurnMeta {
-  entry: QueueEntry
-  hook: HookDispatchContext
-  snapshot: HookConfigSnapshot
-  repoId: string
-  repoFullName: string
-  pullNumber: number
-  expectedHeadSha: string
-  expectedBaseSha: string
-  reportSha: string
-  /** ACP session owning this turn, used only to build daemon-authored review attribution. */
-  sessionId: string
-  reviewState: 'idle' | 'submitting' | 'done'
-}
-
-interface ActiveGithubReplyBatchMeta {
-  entry: QueueEntry
-  sessionId: string
-  called: boolean
-}
-
-const GITHUB_REVIEW_BATCH_QUIET_MS = 5_000
-const GITHUB_REVIEW_BATCH_MAX_WAIT_MS = 30_000
-const GITHUB_REVIEW_BATCH_MAX_COMMENTS = 25
-
-/** Review-comment follow-ups already belong to one existing inline thread.
- * They may receive exactly one daemon-owned inline reply, but must never gain
- * authority to create a second, top-level formal PR review. */
-function isGithubReviewCommentHook(hook: HookDispatchContext): boolean {
-  return (
-    hook.event?.split(':', 1)[0] === 'pull_request_review_comment' ||
-    hook.github?.reviewThreadRootCommentId !== undefined
-  )
-}
-
-function authorizedReviewTargetMatches(
-  active: ActiveGithubTurnMeta,
-  attemptId: string,
-  authorized: GithubReviewAuthorized
-): boolean {
-  return (
-    authorized.attemptId === attemptId &&
-    authorized.repoId === active.repoId &&
-    authorized.repoFullName.toLowerCase() === active.repoFullName.toLowerCase() &&
-    authorized.pullNumber === active.pullNumber &&
-    authorized.expectedHeadSha === active.expectedHeadSha &&
-    authorized.expectedBaseSha === active.expectedBaseSha
-  )
-}
-
-function authorizedReviewTarget(
-  active: ActiveGithubTurnMeta,
-  attemptId: string,
-  authorized: GithubReviewAuthorized,
-  recovering = false
-): GithubReviewTarget {
-  return {
-    token: authorized.token,
-    repoFullName: authorized.repoFullName,
-    pullNumber: authorized.pullNumber,
-    expectedHeadSha: authorized.expectedHeadSha,
-    expectedBaseSha: authorized.expectedBaseSha,
-    hookId: active.hook.hookId,
-    deliveryKey: active.hook.deliveryKey,
-    attemptId,
-    ...(recovering ? { recovering: true } : {})
-  }
-}
-
-/**
- * One admitted message waiting in (or entering) the per-sessionKey serial gate (design
- * §4.3/§6.9). Carries the FULL DispatchContext so a queued turn dispatches identically to
- * one that ran immediately — same reply transport (`integrationId`), same webchat sink,
- * same trusted `callMeta` — and settles its OWN `dispatch()` promise (§6.9 #367). The gate
- * is keyed by the LOGICAL sessionKey (platform:channel:thread:agentId[:transportScope]), NOT the ACP
- * sessionId, so a cold session (no ACP id yet) is serialized too.
- */
-interface SelectedTurnHost {
-  host: AcpHost
-  /** Full lifecycle cleanup for the exact process selected for this turn. */
-  stop: (deadlineMs?: number) => Promise<void>
-  /** The exact stop operation once lifecycle cleanup has begun, or an already
-   * settled promise while the selected process has not been asked to stop. */
-  waitForCleanup: () => Promise<void>
-}
-
-interface ModelSessionHost {
-  agentId: string
-  sessionKey: string
-  target: ModelProviderTarget
-  grant: KeyGrant
-  host?: AcpHost
-  /** In-progress start, joined by release so a host born after teardown is still stopped. */
-  starting?: Promise<AcpHost>
-  stopping?: Promise<void>
-  released?: boolean
-}
-
-type TurnLifecycleCleanupOutcome = { blocked: false } | { blocked: true; error: unknown }
-
-interface QueueEntry {
-  agentId: string
-  msg: NormalizedMessage
-  /** Cancels the entire cold SessionManager initialization path after the bounded
-   *  host-stop backstop, including non-host awaits such as workspace/history I/O. */
-  initAbort: AbortController
-  integrationId?: string
-  webchat?: WebchatTurnContext
-  callMeta?: CallMeta
-  hookContext?: HookDispatchContext
-  /** Best-effort lifecycle notification after ACP session initialization but
-   *  before prompting. Used by trigger sources that expose a live deep-link. */
-  onSessionReady?: (sessionId: string) => void
-  /** True when this entry was buffered via the user `!queue` command (ACK wording only —
-   *  it is one and the same admission queue as ordinary inbound, per §6.9 #390). */
-  isQueueCmd?: boolean
-  /** Settles the `dispatch()` promise for THIS message: resolve with its ACP sessionId
-   *  (or null when a gate skipped it), reject with its own turn error. */
-  resolve: (sessionId: string | null) => void
-  reject: (err: unknown) => void
-  /** §6.9 #353 durable inbox: the stable id (deliveryId/msgId) of the row persisted for
-   *  this entry BEFORE its admission ACK, or undefined when nothing was persisted (webchat
-   *  turns, or a replayed entry re-admitted from an already-present row). Set once on
-   *  admission and used to delete the row on every terminal path. */
-  inboxId?: string
-  /** P3 outbound: publish the turn's completed reply on this GitHub thread. Hook
-   * deliveries duplicate this reference in their durable HookDispatchContext so
-   * restart replay can recreate the poster behind its publish-state fence. */
-  githubReply?: GithubReplyTarget
-  /** Selected before session/new|load so cancellation uses the exact host. */
-  selectedHost?: SelectedTurnHost
-  /** Session initialization must await cleanup before releasing ownership. */
-  lifecycleCleanup?: Promise<void>
-  /** Permanent fail-closed latch after lifecycle cleanup rejects. The serial
-   * dispatch lease may terminate, but admission must remain fenced until restart. */
-  lifecycleCleanupBlocked?: Promise<never>
-  /** Deduplicates cleanup-failure observability across error, backstop, and final
-   * cleanup observers of the same admitted turn. */
-  lifecycleCleanupFailureLogged?: boolean
-  /** Latched cancellation for an already-admitted head. Unlike reading the current
-   *  pause/loop state, this survives a quick pause→unpause or trip→!resume race while
-   *  a cold sessions.handle() call is still initializing. */
-  cancelledReason?: TurnInterruptReason
-  /** Cross-session GitHub coordination must settle before this durable entry can start. */
-  coordinationWait?: Promise<void>
-  /** An admitted continuation waits for its platform mirror; false skips only this entry. */
-  admissionWait?: Promise<boolean>
-  /** Record chat observation only after admissionWait succeeds. */
-  deferObservedInbound?: boolean
-  posterPublishState?: 'not_started' | 'in_flight' | 'settled'
-  /** The live inbox row was redacted into a durable terminal HookReport
-   * receipt; removeInbox must retain it for restart-safe redelivery dedup. */
-  hookTerminalReceipt?: boolean
-  /** A duty handoff released this row to the successor holder instead of ending it, so the
-   *  entry's later terminal settle must not delete it either (#1050). */
-  inboxHandedOff?: boolean
-}
-
-interface GithubQueueCandidate {
-  key: string
-  entry: QueueEntry
-  state: 'active' | 'queued' | 'incoming'
-}
-
-interface GithubRevisionAdmissionPlan {
-  winner: GithubQueueCandidate
-  superseded: GithubQueueCandidate[]
-}
-
-/** The narrow persistence ownership needed to terminalize a hook delivery.
- * A live QueueEntry implements this, while startup replay can use the retained
- * inbox id directly without fabricating an in-memory turn. */
-interface HookCompletionOwner {
-  inboxId?: string
-  hookTerminalReceipt?: boolean
-}
-
-interface MemoryExtractionCollector {
-  chunks: string[]
-  sessionKey?: string
-  runtimeCostReported?: boolean
-  /** Dream sessions expose the same original reasoning/tool activity as ordinary
-   *  sessions. Background distillation has no transcript and leaves this unset. */
-  transcript?: { channel: string; thread: string; recorder: TranscriptRecorder }
-}
-
-/** The union of every platform's renderer action, and of every platform's
- *  converger. Each surface narrows to its own arm; the unions exist because the
- *  turn record is still core-owned (they dissolve when the convergers move with
- *  their platforms). */
-type DaemonRenderAction = SlackAction | TelegramAction | DiscordAction | FeishuAction
-type DaemonConverger = OutputConverger | TelegramConverger | DiscordConverger | FeishuConverger
-
-/**
- * §7.3 per-turn platform state. Each shape is owned by exactly one turn-output
- * surface and reached only through {@link turnState} from that surface's
- * applier — core stores the slot and never looks inside. These used to be
- * platform-named fields on the turn record itself, which is precisely the
- * accretion the opaque slot exists to stop.
- */
-/** Read a turn's opaque platform state as the owning surface's shape. Only that
- *  surface's applier (and the platform-scoped timers it arms) calls this.
- *
- *  The slot materializes on first read: a turn whose surface seeded nothing — or
- *  whose record was built directly, as isolated applier tests do — simply starts
- *  with empty platform state, which is what "no state yet" means. Seeding is an
- *  optimization for platforms that HAVE an initial value (Telegram's reply
- *  anchor), never a precondition for reading. */
-function turnState<S extends object>(p: Pending): S {
-  return (p.turnState ??= {} as S) as S
-}
-
-/** Per-in-flight-turn rendering state, keyed by ACP sessionId in `this.pending`. */
-interface Pending {
-  /** Admitted-turn lifecycle owner. Backstops and finalization share its cleanup
-   * failure latch so one rejected stop cannot be logged or fenced twice. */
-  entry: QueueEntry
-  // Platform-tagged converger: OutputConverger emits SlackAction[] (slack/webchat),
-  // TelegramConverger emits TelegramAction[]. enqueueApply routes by `platform`.
-  conv: OutputConverger | TelegramConverger | DiscordConverger | FeishuConverger
-  /** Captures the full activity log (tool/reasoning) from the raw ACP stream,
-   *  independent of output mode. Text/result rows are recorded at send time. */
-  rec: TranscriptRecorder
-  /** Complete raw assistant text, used only as input to opt-in memory distillation. */
-  replyText: string
-  /** IM answer text is generation-local until the final context fence accepts it. */
-  attemptReplyText: string
-  /** Answer-bearing ACP updates withheld from the platform converger until commit. */
-  attemptAnswerUpdates: any[]
-  /** Interactive IM platforms use staged answer delivery; webchat/hooks keep their
-   * existing transport-specific contracts and remain outside the initial rollout. */
-  stageAnswer: boolean
-  /** Turn-final context refresh for webchat conversations (webchat-multi-agents.md
-   * §5.4): the browser stream stays LIVE (no answer staging) — only the canonical
-   * post commit (reply record + rd/webchat-post) is fenced. Invalidation comes
-   * from conversation posts other participants produced (relay `context` ops
-   * recorded into the shared transcript); a single-agent conversation receives
-   * none, so the check is inert there. */
-  webchatRefresh: boolean
-  /** Tool-call ids structurally identified as this daemon's own MCP tools. Approval
-   *  requests may carry only this opaque id, regardless of which ACP path is used. */
-  builtinSystemToolCallIds: Set<string>
-  /** Tool-call ids for the internal Codex title fallback. Its MCP call updates the
-   *  session metadata, but housekeeping must not appear in platform/webchat output
-   *  or the persisted user-visible activity log. */
-  hiddenSessionTitleToolCallIds: Set<string>
-  /** Agent that owns this turn — the sender stamped on its recorded reply rows. */
-  agentId: string
-  /** Human-readable AgentConnect agent name captured for this turn's Slack channel authorship. */
-  agentName: string
-  /** Trusted sender id for the message that started this turn. Approval audit rows use
-   *  this actor, not the session's historical first trigger. */
-  requesterId?: string
-  /** Exact integration that owns the reply path. HTTP Slack turns encode it into the
-   *  status controls so the relay can route each button to the right owner. */
-  integrationId?: string
-  /** Public avatar URL for this turn's Slack channel messages (icon_url), if the CP resolved one. */
-  iconUrl?: string
-  /** Source platform (for building the protocol SessionKey on drain release). */
-  platform: string
-  /** Whether the source conversation is a direct message. Slack thread titles are
-   *  valid only for Agents-feature app threads, which live in the app DM. */
-  isDm: boolean
-  /** Durable loop-breaker scope captured from the original event shape. */
-  loopGuardScope: string
-  /** Local session key (platform:channel:thread:agentId[:transportScope]) — for state writes. */
-  sessionKey: string
-  /** The live ACP session id for this turn (part of the `this.pending` map key) — surfaced
-   *  in the status bar so the console can deep-link to the session detail page. */
-  acpSessionId: string
-  /** The exact host selected for this turn, including its full cleanup boundary. */
-  selectedHost?: SelectedTurnHost
-  /** Once an operator pause or loop trip targets this turn, no subsequent ACP update
-   *  or queued renderer action may publish output, even if the gate is later reset. */
-  outputSuppressed?: TurnInterruptReason
-  channel: string
-  /** Internal transcript namespace for this physical bot connection. */
-  transcriptChannel: string
-  /** thread_ts for body posts (undefined for a top-level message). */
-  thread?: string
-  /** thread_ts for the assistant status bar (always set; falls back to msgId). */
-  statusThread: string
-  /** P3 outbound: the final-answer selector + completed comment on the triggering
-   *  GitHub issue/PR. Commentary stays transcript-local; final is awaited at turn end.
-   *  For a headless hook, explicit final chunks are withheld from OutputConverger and
-   *  persisted once from the collector so transport flushes cannot split one answer. */
-  github?: GithubTurnState
-  conn?: SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection
-  /** §7.3 OPAQUE per-turn platform state, seeded by this turn's output surface and
-   *  read only by that surface (see {@link turnState}). Core carries the slot and
-   *  never inspects it — the reason platform-shaped fields stopped accreting here. */
-  turnState?: unknown
-  /** True when `none` output mode removed this turn's interactive permission surface — see
-   *  {@link noneSuppressedApprovalSurface}. Snapshotted at dispatch ALONGSIDE `conn`; the
-   *  permission policy still queues the request for an Agent editor, but never exposes a
-   *  chat-side approval card. Frozen for the turn, so a mid-turn `none → low` change can't
-   *  desync it from the connection it was derived from. */
-  approvalSurfaceSuppressed: boolean
-  /** Union of explicit human-approval wait intervals for this turn. Regeneration
-   * budgets subtract these intervals while retaining runtime/tool work time. */
-  approvalWaitMs: number
-  approvalWaitDepth: number
-  approvalWaitStartedAt?: number
-  /** ts of the single in-place "main progress" message, once posted (medium/high). */
-  progressTs?: string
-  /** Whether the progress message's first post was attempted (so a failed initial
-   *  post does not spam a duplicate on the next progress action). */
-  progressAttempted?: boolean
-  /** ts of the single in-place plan-summary message, once posted (medium/high). */
-  planTs?: string
-  /** Whether the plan message's first post was attempted (see progressAttempted). */
-  planAttempted?: boolean
-  /** ts of the single in-place reasoning "context block" message, once posted (high). */
-  reasoningTs?: string
-  /** Whether the reasoning message's first post was attempted (see progressAttempted). */
-  reasoningAttempted?: boolean
-  /** Telegram: the id and exact sent text of the LAST body message posted this turn, so a
-   *  turn-end `continue-hint` action can append the continue-the-topic line to it in place
-   *  (the body may have been flushed long before the turn ended). */
-  /** ts of the single in-place agent reply message (minimal mode's `live-reply`), once posted. */
-  liveReplyTs?: string
-  /** Whether the live-reply's first post was attempted (see progressAttempted). */
-  liveReplyAttempted?: boolean
-  /** Text last written to the live-reply message — skip a chat.update when unchanged. */
-  liveReplyText?: string
-  /** Set after an interactive card that needs a human answer (permission / elicitation) is
-   *  posted: the current live reply is now ABOVE that card, so the NEXT live-reply action
-   *  starts a FRESH reply BELOW the card (leaving the old one frozen above) instead of
-   *  editing the one above in place. Consumed lazily by the next live-reply so an empty tail
-   *  keeps the old message (and its settled footer). */
-  liveReplyReanchor?: boolean
-  /** Linked footer prepared before the runtime starts streaming. Every reply section is
-   *  initially posted with these trailing blocks so Slack can suppress unfurls. */
-  attribution?: { blocks: unknown[]; key: string }
-  /** Current successfully-delivered agent reply message. `footerKey` records which footer
-   *  it owns; progress/tool/reasoning chrome never replaces this pointer. */
-  lastReply?: { ts: string; text: string; footerKey?: string }
-  /** send-message-routing-rework.md §5.1: the id of the ONE complete logical response
-   *  this turn produces. Every physical message of a long answer carries it, so a peer
-   *  deduplicates on (responseId, target agent) and activates exactly once even when the
-   *  answer was split across several Slack messages. Minted per turn, never per post. */
-  responseId: string
-  /** The LAST agent-authored conversational message posted this turn, with the exact
-   *  text it currently shows — the message turn finalization re-stamps as
-   *  `delivery_state: 'final'` (§5.5). The text is carried because chat.update REPLACES
-   *  content, so closing the response means re-sending what is already displayed.
-   *  Undefined when the turn posted no conversational body (chrome-only, `none` mode, or
-   *  a headless turn): there is then no response event to close. */
-  lastResponse?: { ts: string; text: string }
-  /** send-message-routing-rework.md §4.1: this turn's own trusted depth, stamped on every
-   *  body it posts so the NEXT routing edge advances from it. A human/root turn is 0. */
-  sourceHopCount: number
-  /** §5.3: compound shared-bot addresses this conversation can contain, which the
-   *  splitter must never cut in half. Empty off Slack, or with no collaboration snapshot. */
-  protectedAddresses: readonly string[]
-  /** ts of the session's interactive status-bar message, once known. Persisted in the
-   *  session row so later turns update the first line instead of posting duplicates. */
-  statusBarTs?: string
-  /** Agent-level Slack status-row preference, snapshotted for this turn alongside output
-   *  mode/footer settings so a hot config edit takes effect cleanly on the next turn. */
-  showStatusBar: boolean
-  /** Whether the status bar's first post was attempted (see progressAttempted). */
-  statusBarAttempted?: boolean
-  /** Dedup key for the last status snapshot + cancel availability emitted this turn, so
-   *  a `usage_update` that changes nothing observable skips a redundant edit. */
-  lastStatusBar?: string
-  /** Whether the Slack status controls may still interrupt this turn. Cleared as soon as
-   *  cancellation starts or terminal cleanup begins, then included in the dedup key so
-   *  the persisted status row drops its stale Cancel run option. */
-  statusCancellable: boolean
-  /** Whether this turn received an ACP-native cost. When true, it wins and the
-   *  public-pricing fallback must not add another amount for the same turn. */
-  runtimeCostReported: boolean
-  /** True once the normal turn-end usage/report has been emitted. */
-  usageReportSent: boolean
-  /** Stable semantic turn id used by evaluation events (never shown to the model). */
-  evaluationTurnId: string
-  /** Pending idle-flush timer (§9.1). */
-  idleTimer?: NodeJS.Timeout
-  /** Serializes applyAction so in-place edits don't race on progressTs/planTs/reasoningTs. */
-  applyChain: Promise<void>
-  /** Resolves when this turn leaves `pending` (success or failure) — drain awaits it. */
-  done: Promise<void>
-  /** Settles `done`; called once from dispatch's finally. */
-  resolveDone: () => void
-  /**
-   * DAEMON-PRIVATE trusted call metadata for an agent→agent turn (design §3.3a/§6.6/§6.7).
-   * Present iff this turn was started by `messageAgent`. Holds the AUTHORITATIVE caller
-   * identity, correlationId, hop/origin, and stable deliveryId — kept OUT of the
-   * model-visible prompt (that only ever sees `msg.text`); it is the trust basis for a
-   * future auto-hop/auto-correlation of a nested `messageAgent` (§2.4). Keyed here by the
-   * turn's Pending so a tool call within this turn can read it.
-   * TODO(P4): move into the unified sessionKey QueueEntry/DispatchContext (§6.9 #367).
-   */
-  callMeta?: CallMeta
-  /**
-   * Present iff this is a webchat turn received over relay `rd/*`. When set,
-   * onAcpUpdate maps each SessionUpdate to a WebchatEvent and streams it through
-   * the relay reply sink instead of driving the Slack renderer. `index` is the per-turn monotonic
-   * assembly counter incremented on each emitted WebchatOutput payload. `replyText`
-   * accumulates the agent's message chunks so the finished reply is recorded to the
-   * transcript once (webchat has no Slack post boundary where text is otherwise saved).
-   */
-  webchat?: WebchatTurnContext & { index: number; replyText: string; heldText: string; messageEmitted: boolean }
-}
-
-/** Visible Slack thread messages that establish a new chronological boundary. Any live
- * in-place chrome from the active turn must continue below one of these messages. */
-type LiveChromeBoundaryMessageType = 'human-input-card' | 'agent-message'
-
-const LIVE_CHROME_BOUNDARY_MESSAGE_TYPES = new Set<LiveChromeBoundaryMessageType>(['human-input-card', 'agent-message'])
-
-/** Exact platform delivery route retained after a turn leaves `pending`, so a
- *  late ACP title update can still rename the same Slack DM it came from. */
-interface SessionDeliveryBinding {
-  agentId: string
-  platform: string
-  integrationId?: string
-  isDm: boolean
-}
-
-/**
- * Where a webchat turn's reply stream goes — the transport-neutral sink the turn engine
- * writes to instead of a hardcoded client. The relay path streams each item as `rd/chat`
- * over the relay socket the turn arrived on (milestone A4: the only webchat transport).
- */
-export interface WebchatSink {
-  output(o: WebchatOutput): void
-  done(d: WebchatDone): void
-}
-
-interface BufferedWebchatEvent {
-  event: RdChatEvent
-  bytes: number
-}
-
-interface WebchatTurnContext {
-  conversationId: string
-  turnId: string
-  sink: WebchatSink
-  /** Sends the turn's completed reply as a canonical conversation post
-   * (`rd/webchat-post`) on the relay connection the turn arrived on, so the
-   * relay can fan it to the other participants' daemons as context
-   * (webchat-multi-agents.md §5.2). Absent on an older relay / synthetic turn. */
-  postSink?: (post: RdWebchatPost) => void
-  /** Set only for a post-only wake context built by {@link webchatWakeContext}: an
-   *  agent-initiated turn inside a webchat conversation, with no browser turn of its
-   *  own to stream to (#753). Carried onto the completed `RdWebchatPost` so the
-   *  browser knows this reply never streamed live and needs rendering from the post. */
-  initiator?: 'agent'
-  /** Session-targeted continuation (§5.2): the webchat stream is an ADDITIONAL sink —
-   *  turn output/status/failure still follow the origin platform's ordinary rules. */
-  continuation?: true
-  runtime?: WebchatRuntimeConfig
-  worktree?: boolean
-  /** Authority captured only from the relay's validated rd/msg envelope. It is
-   * consumed by the daemon host selector and never forwarded to ACP/model input. */
-  remoteMcp?: WebchatRemoteMcpEntitlement
-  doneSent?: boolean
-  /** This turn is driven by the local evaluation harness, not a browser. Its
-   *  webchat shape is synthetic, so the session-visibility capture gate does NOT
-   *  treat it as a private Playground conversation — measuring memory capture is
-   *  the harness's whole purpose (session-visibility.md §4.2 applies to real
-   *  user conversations). */
-  evaluation?: boolean
-}
-
-/** One daemon-owned turn stream. `sink` is stable for the turn engine; `transport`
- * is rebound when a browser resumes through any relay. The replay window is
- * ephemeral, bounded, and never written to disk. */
-interface WebchatTurnStream extends WebchatTurnContext {
-  agentId: string
-  transport: WebchatSink
-  resumeGeneration: number
-  replay: BufferedWebchatEvent[]
-  replayBytes: number
-  replayFloor: number
-  replayDisabled: boolean
-  lastOutputIndex: number
-  completedAt?: number
-}
-
-export interface DaemonEvaluationOptions {
-  /** Optional semantic-event tap. When absent, all instrumentation is a no-op. */
-  observer?: EvaluationObserver
-  /** Stable run identity shared by event, ATIF, and manifest artifacts. */
-  runId?: string
-  /** Add-on treatment (memory only). Production defaults to configured. Collaboration
-   *  has no toggle: evaluation always runs the production tool surface and delivery. */
-  capabilityProfile?: EvaluationCapabilityProfile
-  /** Collaboration Arena environment (collaboration-arena.md §5): the effective
-   *  integration registry projected into `agent.integrations` + the connection
-   *  maps, the synthetic collaboration topology, and the peer directory. */
-  environment?: DaemonEvaluationEnvironment
-  /** Evaluation health sink. It is contained with the observer and cannot fail a turn. */
-  onObserverError?: (error: unknown) => void
-}
-
-export interface DaemonEvaluationTurnInput {
-  agentId: string
-  conversationId: string
-  text: string
-  turnId?: string
-  user?: string
-}
-
-export interface DaemonEvaluationTurnResult {
-  turnId: string
-  sessionId: string | null
-  output: string
-  events: WebchatEvent[]
-  stopReason?: string
-  usage?: { used?: number }
-}
-
-/** Build the wire SessionKey (protocol §5) for a pending turn — what `drain/done`
- *  reports as released so the CP may reassign it. Uses the real `thread` (absent for
- *  a channel-root message), NOT `statusThread` (which falls back to msgId): the CP
- *  keys assignments by `thread ?? "-"`, so reporting the msgId would miss the match. */
-function pendingSessionKey(p: Pending): SessionKey {
-  const platform = p.platform as SessionKey['platform']
-  return p.thread !== undefined ? { platform, channel: p.channel, thread: p.thread } : { platform, channel: p.channel }
-}
+import { chunkText, formatErr, formatErrWithCauses } from './daemon/text.js'
+import {
+  elicitationApprovalSummary,
+  isBuiltinSystemTool,
+  isBuiltinSystemToolCall,
+  isBuiltinSystemToolElicitation,
+  isMcpToolApprovalElicitation,
+  noneSuppressedApprovalSurface,
+  permissionRequestSummary
+} from './daemon/tool-classification.js'
+import {
+  isTrustedHumanTurn,
+  loopGuardScope,
+  loopGuardScopeFromCoords,
+  usesLoopGuard,
+  LOOP_GUARD_WINDOW_MS,
+  MAX_AUTOMATIC_TURNS_PER_WINDOW,
+  MAX_TOTAL_TURNS_PER_WINDOW
+} from './daemon/loop-guard-scope.js'
+import {
+  authorizedReviewTarget,
+  authorizedReviewTargetMatches,
+  compareGithubPullRevisionRecency,
+  foreignHookDispatch,
+  githubDeletedHookEvent,
+  githubFallbackAllowed,
+  githubHookCoordinates,
+  githubPullRequestLane,
+  githubPullRevisionStream,
+  githubReviewBatchStream,
+  githubReviewResultForCompletion,
+  githubThreadWorktreeCleanup,
+  hookReportOwner,
+  hookSnapshot,
+  isGithubReviewCommentHook,
+  renderGithubReviewBatchPrompt,
+  reviewPolicyAllows,
+  reviewResultForWire,
+  GITHUB_REVIEW_BATCH_MAX_COMMENTS,
+  GITHUB_REVIEW_BATCH_MAX_WAIT_MS,
+  GITHUB_REVIEW_BATCH_QUIET_MS,
+  MAX_HOOK_REPORT_INFLIGHT,
+  type ActiveGithubReplyBatchMeta,
+  type ActiveGithubTurnMeta,
+  type GithubQueueCandidate,
+  type GithubReplyTarget,
+  type GithubRevisionAdmissionPlan,
+  type GithubReviewBatch,
+  type GithubThreadWorktreeCleanup,
+  type HookCompletionOwner,
+  type HookDispatchContext,
+  type SessionWorktreeCleanupResult
+} from './daemon/github-hook-coords.js'
+import {
+  FailStopError,
+  LifecycleCleanupBlockedError,
+  pendingSessionKey,
+  pendingTurnKey,
+  QueueFullError,
+  sdkLeaseKey,
+  turnState,
+  LIVE_CHROME_BOUNDARY_MESSAGE_TYPES,
+  type CallMeta,
+  type DaemonConverger,
+  type DaemonRenderAction,
+  type LiveChromeBoundaryMessageType,
+  type LiveSdkTask,
+  type MemoryExtractionCollector,
+  type ModelSessionHost,
+  type Pending,
+  type QueueEntry,
+  type SelectedTurnHost,
+  type SessionDeliveryBinding,
+  type SettledSdkTask,
+  type ShutdownDutyDrain,
+  type TurnInterruptDisposition,
+  type TurnInterruptReason,
+  type TurnLifecycleCleanupOutcome
+} from './daemon/turn-types.js'
+import {
+  UUID_RE,
+  WEBCHAT_REPLAY_MAX_BYTES,
+  WEBCHAT_REPLAY_MAX_EVENTS,
+  WEBCHAT_REPLAY_MAX_STREAMS,
+  WEBCHAT_REPLAY_TTL_MS,
+  type WebchatSink,
+  type WebchatTurnContext,
+  type WebchatTurnStream
+} from './daemon/webchat.js'
+import {
+  activationKey,
+  assertExclusiveAgentWorkspaces,
+  configuredControlPlane,
+  dreamingPolicyOf,
+  ignoreAgentWatchPath,
+  isAlreadyOutOfChat,
+  mergeAgentWorkspaceAuthorities,
+  slackTsFromMsgId,
+  ACTIVATION_KEY_SEPARATOR,
+  ACTIVATION_PAIRING_TTL_MS
+} from './daemon/helpers.js'
+import {
+  AGENT_CALL_HOP_LIMIT_NOTICE,
+  BG_TASK_WAKE_GRACE_MS,
+  CANCEL_FORCE_MS,
+  DEFAULT_WEB_APP_URL,
+  FEISHU_STREAM_FLUSH_MS,
+  IDLE_FLUSH_MS,
+  MAX_BG_TASK_WAKE_REARMS,
+  MAX_BG_TASK_WAKES_PER_SESSION,
+  MAX_QUEUED_PER_SESSION,
+  MAX_SESSION_PURGE_BATCH,
+  MAX_SETTLED_TASKS_PER_SESSION,
+  MAX_TURN_CONTEXT_REGENERATION_MS,
+  MAX_TURN_CONTEXT_REGENERATIONS,
+  PROBE_ROOT_SWEEP_INTERVAL_MS,
+  SESSION_METADATA_DEFER_MS,
+  SESSION_METADATA_FAILURES_BEFORE_DEFER,
+  SESSION_METADATA_PARK_MS,
+  SESSION_METADATA_RETRY_MS,
+  SESSION_RETENTION_SWEEP_INTERVAL_MS
+} from './daemon/constants.js'
+import type {
+  DaemonEvaluationOptions,
+  DaemonEvaluationTurnInput,
+  DaemonEvaluationTurnResult
+} from './daemon/evaluation-types.js'
+
+export {
+  isBuiltinSystemTool,
+  isBuiltinSystemToolCall,
+  isBuiltinSystemToolElicitation,
+  noneSuppressedApprovalSurface
+} from './daemon/tool-classification.js'
+export { FailStopError, QueueFullError } from './daemon/turn-types.js'
+export type { WebchatSink } from './daemon/webchat.js'
+export type {
+  DaemonEvaluationOptions,
+  DaemonEvaluationTurnInput,
+  DaemonEvaluationTurnResult
+} from './daemon/evaluation-types.js'
+
+/** Identity of a desired Feishu connection: appId + gateway region + ingress mode — a region or mode change on the same appId yields a distinct connection for reuse-matching, mapping-eviction, and the in-flight guard. */
+/** The session-control selectors driven by `/models` `/effort` `/permission` + their tappable cards — single-char codes keep the inline-button `callback_data` (≤64 bytes) compact as `<code>:<optionIndex>`. */
 
 // §7.4 thread promotion: Discord is the one platform that answers a top-level
 // channel @mention in a freshly opened thread. Registered at module scope so
@@ -1935,25 +622,20 @@ function pendingSessionKey(p: Pending): SessionKey {
 registerThreadPromotion(discordThreadPromotion)
 registerObservedChannels(discordObservedChannels)
 
-/** One shutdown duty drain: its bound, its counters, and the grants that landed after the latch. */
-interface ShutdownDutyDrain {
-  deadlineAt: number
-  stats: { groups: number; agents: number; late: number; acked: number; lapsing: number }
-  /** Grants that landed after the latch: never installed, never acknowledged before the loop is done. */
-  late: Map<string, DutyGrantEntry>
-  /** Agents of groups the loop left to lapse — a late grant covering any of them lapses too. */
-  lapsedAgents: Set<string>
-  /** Set once the main loop has finished with every held group. */
-  loopDone: boolean
-}
-
 export class Daemon {
   // This daemon's workspace execution plane. Owned per instance, so two daemons in one process
   // (the test suite, and a k8s daemon beside a local one) cannot inherit each other's git runner,
   // path clearer or sandbox mode — which is what a module-level plane silently did.
   readonly workspaces = new WorkspaceManager()
-  private readonly evaluation: EvaluationEventEmitter
-  private readonly evaluationProfile: EvaluationCapabilityProfile
+  // The evaluation-harness seam (collaboration-arena §4–§7); every product path reaches it through the delegates below.
+  private readonly evalHooks: DaemonEvaluationHooks
+  private get evaluationProfile(): EvaluationCapabilityProfile {
+    return this.evalHooks.profile
+  }
+  /** Integration ids owned by the evaluation environment — excluded from physical platform reconcile. */
+  private get evaluationIntegrationIds(): ReadonlySet<string> {
+    return this.evalHooks.integrationIds
+  }
   private store!: LocalStore
   private dataPlane?: PostgresDataPlane
   private mcp!: McpControlServer
@@ -2277,11 +959,6 @@ export class Daemon {
   // integrationId -> the FeishuConnection that owns it (for replies). Separate from
   // connByIntegration so Slack reconcile (which reads `.appToken`) never sees a Feishu conn.
   private fsConnByIntegration = new Map<string, FeishuConnection>()
-  /** Integration ids owned by the evaluation environment (collaboration-arena §5).
-   *  They live in `agent.integrations` and the connection maps like any other
-   *  integration, but are EXCLUDED from physical platform reconcile so the daemon
-   *  never opens (or evicts) a real connection for a virtual transport. */
-  private evaluationIntegrationIds = new Set<string>()
   // agentId → the in-flight (or resolved) host-startup promise. Resolves to the
   // STARTED host (startHostWithRetry may build several across retries — the last,
   // successful one wins). `.has()` doubles as "is this agent starting / started?".
@@ -2620,21 +1297,7 @@ export class Daemon {
       (keyServerAddress
         ? new KeyServerClient(keyServerAddress, { tokenPath: keyServerTokenPath, now: this.modelKeyNow })
         : undefined)
-    if (opts.evaluation?.capabilityProfile && !opts.evaluation.observer) {
-      throw new Error('evaluation capability profile requires an evaluation observer')
-    }
-    this.evaluationProfile = EvaluationCapabilityProfileSchema.parse(
-      opts.evaluation?.capabilityProfile ?? { memory: 'configured' }
-    )
-    this.evaluation = new EvaluationEventEmitter({
-      observer: opts.evaluation?.observer,
-      runId: opts.evaluation?.runId,
-      now: () => this.clock.now(),
-      onObserverError: (error) => {
-        this.log.warn(`evaluation observer failed: ${error instanceof Error ? error.name : 'unknown'}`)
-        opts.evaluation?.onObserverError?.(error)
-      }
-    })
+    this.evalHooks = new DaemonEvaluationHooks(this.evaluationHost(), opts.evaluation)
     this.curatedRuntimeAdmission = new CuratedRuntimeAdmission({
       now: () => this.clock.now(),
       ttlMs: Daemon.PROBE_TTL_MS
@@ -2656,7 +1319,39 @@ export class Daemon {
   }
 
   private emitEvaluation(input: EvaluationEventInput): void {
-    this.evaluation.emit(input)
+    this.evalHooks.emit(input)
+  }
+
+  /** The narrow port the evaluation hooks reach the daemon through — nothing wider is exposed. */
+  private evaluationHost(): DaemonEvaluationHost {
+    return {
+      info: (message) => this.log.info(message),
+      warn: (message) => this.log.warn(message),
+      now: () => this.clock.now(),
+      agents: () => this.agents,
+      botUserIds: () => this.botUserIds,
+      setVirtualConnection: (platform, integrationId, connection) => {
+        if (platform === 'slack') this.connByIntegration.set(integrationId, connection as unknown as SlackConnection)
+        else if (platform === 'telegram')
+          this.tgConnByIntegration.set(integrationId, connection as unknown as TelegramConnection)
+        else if (platform === 'discord')
+          this.dcConnByIntegration.set(integrationId, connection as unknown as DiscordConnection)
+      },
+      replaceCollaborationRoutes: (routes) => this.cpCollab.replace(routes),
+      memoryToolNames: (agentId) => this.memory.toolsForAgent(agentId).map((tool) => tool.name),
+      dispatch: (agentId, msg, integrationId, webchat, callMeta, opts) =>
+        this.dispatch(agentId, msg, integrationId, webchat, callMeta, opts),
+      integrationConfigById: (integrationId) => this.integrationConfigById(integrationId),
+      connForIntegration: (integrationId) => this.connForIntegration(integrationId),
+      srcIntegrationIds: (conn) => this.srcIntegrationIds(conn),
+      onInboundOutcome: (msg, srcIntegrationIds) => this.onInboundOutcome(msg, srcIntegrationIds),
+      inflightWork: () => ({
+        pending: this.inflight.size + this.activeDispatchesByAgent.size,
+        active: [...new Set([...this.activeDispatchesByAgent.values()].flatMap((runs) => [...runs]))]
+      }),
+      memoryPostTurnChain: (agentId) => this.memoryPostTurnChains.get(agentId),
+      memoryPostTurnChains: () => [...this.memoryPostTurnChains.values()]
+    }
   }
 
   private evaluationTurnIdFor(agentId: string, msg: NormalizedMessage): string {
@@ -2682,303 +1377,41 @@ export class Daemon {
     )
   }
 
-  /**
-   * Install the Collaboration Arena environment (collaboration-arena.md §5): one
-   * effective-integration registry, two projections. Every existing consumer —
-   * ordinary replies (`replyConnFor`), MCP ops (`gatewayFor`), transport-scope
-   * derivation, Slack realm classification, tool advertising — resolves through
-   * the SAME maps and `agent.integrations` entries it already consults, so no
-   * daemon call site changes. The synthetic collaboration topology loads into the
-   * existing `CpCollabRoutes` table a live CP would replace.
-   */
+  /** Install the Collaboration Arena environment (collaboration-arena §5) before routing observes it; it never opens sockets. */
   private installEvaluationEnvironment(): void {
-    const environment = this.opts.evaluation?.environment
-    if (!environment) return
-    if (!this.evaluation.enabled) throw new Error('daemon evaluation environment requires an evaluation observer')
-    for (const eff of environment.integrations) {
-      const agent = this.agents.get(eff.agentId)
-      if (!agent) throw new Error(`evaluation integration ${eff.integrationId} names unknown agent "${eff.agentId}"`)
-      if (agent.integrations.some((integration) => integration.id === eff.integrationId)) {
-        throw new Error(`evaluation integration ${eff.integrationId} collides with a configured integration`)
-      }
-      agent.integrations.push(compileEvaluationIntegration(eff))
-      this.evaluationIntegrationIds.add(eff.integrationId)
-      this.botUserIds[eff.integrationId] = evaluationBotRoutingIdentity(eff)
-      switch (eff.platform) {
-        case 'slack':
-          this.connByIntegration.set(eff.integrationId, eff.connection as unknown as SlackConnection)
-          break
-        case 'telegram':
-          this.tgConnByIntegration.set(eff.integrationId, eff.connection as unknown as TelegramConnection)
-          break
-        case 'discord':
-          this.dcConnByIntegration.set(eff.integrationId, eff.connection as unknown as DiscordConnection)
-          break
-      }
-    }
-    this.cpCollab.replace(environment.collaborationRoutes)
-    // §6 evaluation tool registry: name-collision rejection at startup — an
-    // evaluation tool may never shadow a product tool, and the registry itself
-    // may not carry duplicates.
-    const registryTools = environment.tools ?? []
-    if (registryTools.length > 0) {
-      // The COMPLETE stable product namespace, not just what this composition
-      // happens to request: `executeTool` dispatches evaluation tools BEFORE the
-      // product handlers, so a name it never composes (e.g. `setSessionTitle`,
-      // which `executeTool` handles directly) would still be shadowed. Only a
-      // full-registry check makes "never shadow a product tool" exact.
-      const productNames = new Set<string>(ALL_TOOL_NAMES)
-      for (const agent of this.agents.values()) {
-        // Memory PROVIDER tools are dynamic, so they are not in the static list.
-        try {
-          for (const tool of this.memory.toolsForAgent(agent.id)) productNames.add(tool.name)
-        } catch {
-          /* a memory provider that cannot enumerate pre-start never shadows */
-        }
-      }
-      const seen = new Set<string>()
-      for (const definition of registryTools) {
-        const name = definition.descriptor.name
-        if (productNames.has(name)) throw new Error(`evaluation tool "${name}" shadows a product tool`)
-        if (seen.has(name)) throw new Error(`duplicate evaluation tool "${name}"`)
-        seen.add(name)
-      }
-    }
-    this.log.info(
-      `evaluation: installed ${environment.integrations.length} virtual integration(s) and ${registryTools.length} evaluation tool(s) from the evaluation environment`
-    )
+    this.evalHooks.installEnvironment()
   }
 
-  /** Map dispatch's internal admission verdict onto the §7.1 taxonomy. */
-  private static deliveryRejectionReason(result: {
-    reason?: string
-    duplicate?: boolean
-  }): Exclude<DeliveryAdmission, { admitted: true }>['reason'] {
-    if (result.duplicate) return 'deduplicated'
-    if (result.reason === 'queue_full') return 'queue_full'
-    if (result.reason === 'durability') return 'error'
-    return 'gated'
-  }
-
-  /**
-   * Build the §7.1 DeliveryHandle around one dispatch: `admission` settles at the
-   * admission decision (synchronously for the claim/enqueue paths), `completion`
-   * when the resulting turn reaches a terminal state. Neither promise ever
-   * rejects — outcomes are typed values.
-   */
+  /** Build the §7.1 DeliveryHandle around one dispatch (collaboration-arena §7.1). */
   private evaluationDispatchHandle(
     agentId: string,
     msg: NormalizedMessage,
     integrationId?: string,
     webchat?: WebchatTurnContext,
-    /** Trusted call metadata for a delivery that IS an agent call — today, a verified
-     *  agent-authored platform mention, whose already-computed hop depth must reach the
-     *  admitted turn (§4.1). Absent for ordinary human ingress. */
     callMeta?: CallMeta,
-    /** Extra dispatch options for the caller's delivery contract (today: `requireDurable`
-     *  for a rendezvous-backed activation, whose record must not go terminal for a turn
-     *  that was never durably queued). */
-    dispatchOpts?: {
-      requireDurable?: boolean
-      /** Stable target-scoped inbox id for one physical event delivered to
-       * several local agents. The provider msgId remains transcript identity. */
-      deliveryId?: string
-    }
+    dispatchOpts?: { requireDurable?: boolean; deliveryId?: string }
   ): { handle: DeliveryHandle; turn: Promise<string | null> } {
-    const turnId = stableTurnId(agentId, msg)
-    let settleAdmission!: (admission: DeliveryAdmission) => void
-    const admission = new Promise<DeliveryAdmission>((resolve) => (settleAdmission = resolve))
-    const turn = this.dispatch(agentId, msg, integrationId, webchat, callMeta, {
-      ...dispatchOpts,
-      onAdmission: (result) => {
-        if (result.accepted && !result.duplicate) {
-          const key = sessionKey(msg.platform, msg.channel, msg.thread ?? msg.msgId, agentId, msg.transportScope)
-          settleAdmission({ admitted: true, agentId, sessionKey: key, turnId })
-        } else {
-          settleAdmission({ admitted: false, reason: Daemon.deliveryRejectionReason(result) })
-        }
-      }
-    })
-    const completion: Promise<DeliveryCompletion> = turn.then(
-      async (sessionId) => {
-        const decided = await admission
-        if (!decided.admitted || sessionId === null) return { status: 'not_admitted' }
-        return { status: 'completed', sessionId, turnId }
-      },
-      async (error: unknown) => {
-        // The dispatch itself rejected before admission could settle (e.g. a
-        // durability failure) — make sure the admission barrier still resolves.
-        settleAdmission({ admitted: false, reason: 'error' })
-        const decided = await admission
-        if (!decided.admitted) return { status: 'not_admitted' }
-        const message = error instanceof Error ? error.message : String(error)
-        const status: 'failed' | 'cancelled' | 'timeout' = /cancel/i.test(message)
-          ? 'cancelled'
-          : /time(?:d\s*)?out/i.test(message)
-            ? 'timeout'
-            : 'failed'
-        return { status, sessionId: null, turnId, error: message }
-      }
-    )
-    // The turn promise is also settled through `completion`; keep the raw
-    // rejection observed so unawaited handles never surface as unhandled.
-    turn.catch(() => {})
-    return { handle: { admission, completion }, turn }
+    return this.evalHooks.dispatchHandle(agentId, msg, integrationId, webchat, callMeta, dispatchOpts)
   }
 
-  /**
-   * §4.1: enter the SAME suppression → deduplication → thread-canonicalization →
-   * command → trigger-routing → gating → dispatch path as a live platform
-   * callback, from a platform-shaped payload on a virtual integration. No target
-   * agent is supplied; routing decides. Duplicate, reordered, and delayed
-   * injections are legitimate inputs handled by the production ingress logic.
-   */
+  /** §4.1: enter the production ingress path from a platform-shaped payload on a virtual integration. */
   injectPlatformEvent(event: EvaluationPlatformEvent): DeliveryHandle {
-    if (!this.evaluation.enabled) throw new Error('daemon evaluation observer is not enabled')
-    if (!this.evaluationIntegrationIds.has(event.integrationId)) {
-      throw new Error(`injectPlatformEvent requires an evaluation integration (got ${event.integrationId})`)
-    }
-    const integration = this.integrationConfigById(event.integrationId)
-    const conn = this.connForIntegration(event.integrationId)
-    if (!integration || !conn) throw new Error(`evaluation integration ${event.integrationId} is not installed`)
-    const payload = event.payload
-    const msg: NormalizedMessage = {
-      msgId: payload.messageId,
-      traceId: randomUUID(),
-      source: 'user',
-      platform: integration.platform,
-      channel: payload.channel,
-      ...(payload.thread !== undefined ? { thread: payload.thread } : {}),
-      sender: {
-        id: payload.sender.id,
-        isBot: payload.sender.isBot ?? false,
-        ...(payload.sender.appId !== undefined ? { appId: payload.sender.appId } : {})
-      },
-      text: payload.text,
-      mentionedBots: payload.mentions ?? [],
-      ...(payload.agentAuthorship !== undefined ? { agentAuthorship: payload.agentAuthorship } : {}),
-      ...(payload.ingressEventTag !== undefined ? { ingressEventTag: payload.ingressEventTag } : {}),
-      isDm: payload.isDm ?? false
-    }
-    // Same source resolution as a live connection callback: all integrations
-    // consolidated onto this physical (virtual) connection.
-    const outcome = this.onInboundOutcome(msg, this.srcIntegrationIds(conn))
-    if (outcome.kind === 'dispatched') return outcome.handle
-    const admission: DeliveryAdmission = { admitted: false, reason: outcome.reason }
-    return {
-      admission: Promise.resolve(admission),
-      completion: Promise.resolve({ status: 'not_admitted' })
-    }
+    return this.evalHooks.injectPlatformEvent(event)
   }
 
-  /**
-   * §4.2: trusted, pre-addressed game control. Skips trigger routing (the target
-   * is authoritative) but still traverses the dispatch admission queue,
-   * per-session FIFO, SessionManager, and ACP — referee traffic cannot corrupt
-   * session-state invariants. Referee deliveries are environment machinery and
-   * are excluded from ingress-invariant scoring by their producers.
-   */
+  /** §4.2: trusted, pre-addressed game control that still traverses the real dispatch path. */
   deliverRefereeEvent(event: RefereeEvent): DeliveryHandle {
-    if (!this.evaluation.enabled) throw new Error('daemon evaluation observer is not enabled')
-    if (!this.agents.has(event.targetAgentId)) throw new Error(`unknown evaluation agent ${event.targetAgentId}`)
-    const msg: NormalizedMessage = {
-      msgId: event.messageId,
-      traceId: randomUUID(),
-      source: 'user',
-      platform: event.platform,
-      channel: event.channel,
-      ...(event.thread !== undefined ? { thread: event.thread } : {}),
-      sender: { id: event.sender?.id ?? 'evaluation-referee', isBot: event.sender?.isBot ?? false },
-      text: event.text,
-      mentionedBots: [],
-      isDm: event.isDm,
-      ...(event.isDm ? { trigger: 'dm' as const } : {})
-    }
-    return this.evaluationDispatchHandle(event.targetAgentId, msg, event.integrationId).handle
+    return this.evalHooks.deliverRefereeEvent(event)
   }
 
-  /** Drive a real daemon turn through the same SessionManager, ACP host, memory,
-   * permission, MCP, serial-gate, and transcript path as relay webchat. This is the
-   * only product-specific surface the Promptfoo adapter needs. Retained as a
-   * compatibility wrapper over the referee-delivery path (collaboration-arena §4.2)
-   * with a synthetic webchat coordinate — the add-on suite's behavior is unchanged. */
+  /** Drive a real daemon turn through the same path as relay webchat (the Promptfoo adapter's only surface). */
   async runEvaluationTurn(input: DaemonEvaluationTurnInput): Promise<DaemonEvaluationTurnResult> {
-    if (!this.evaluation.enabled) throw new Error('daemon evaluation observer is not enabled')
-    if (!this.agents.has(input.agentId)) throw new Error(`unknown evaluation agent ${input.agentId}`)
-
-    const turnId = input.turnId?.trim() || randomUUID()
-    const events: WebchatEvent[] = []
-    let terminal: WebchatDone | undefined
-    const sink: WebchatSink = {
-      output: (output) => {
-        if (output.event) events.push(output.event)
-      },
-      done: (done) => {
-        terminal = done
-      }
-    }
-    const message: NormalizedMessage = {
-      msgId: `webchat:${input.conversationId}`,
-      traceId: turnId,
-      source: 'user',
-      platform: 'webchat',
-      channel: input.conversationId,
-      sender: { id: input.user?.trim() || 'evaluation-user', isBot: false },
-      text: input.text,
-      mentionedBots: [],
-      isDm: true,
-      trigger: 'dm'
-    }
-    const { turn } = this.evaluationDispatchHandle(input.agentId, message, undefined, {
-      conversationId: input.conversationId,
-      turnId,
-      sink,
-      evaluation: true
-    })
-    const sessionId = await turn
-    // Product turns intentionally enqueue post-turn memory work. Evaluation waits
-    // for this agent's chain so the returned artifact has a terminal capture event.
-    await (this.memoryPostTurnChains.get(input.agentId) ?? Promise.resolve())
-    return {
-      turnId,
-      sessionId,
-      output: events
-        .filter((event): event is Extract<WebchatEvent, { kind: 'message' }> => event.kind === 'message')
-        .map((event) => event.text)
-        .join(''),
-      events,
-      ...(terminal?.stopReason ? { stopReason: terminal.stopReason } : {}),
-      ...(terminal?.usage ? { usage: terminal.usage } : {})
-    }
+    return this.evalHooks.runTurn(input)
   }
 
-  /** Wait until turns spawned asynchronously by collaboration have left the real
-   * serial gate and all provider-neutral post-turn memory chains have settled. */
+  /** Wait until collaboration-spawned turns and all post-turn memory chains have settled. */
   async waitForEvaluationIdle(timeoutMs = 30_000): Promise<void> {
-    if (!this.evaluation.enabled) throw new Error('daemon evaluation observer is not enabled')
-    const deadline = Date.now() + Math.max(1, timeoutMs)
-    while (this.inflight.size > 0 || this.activeDispatchesByAgent.size > 0) {
-      if (Date.now() >= deadline) throw new Error(`evaluation daemon did not become idle within ${timeoutMs}ms`)
-      const active = [...new Set([...this.activeDispatchesByAgent.values()].flatMap((runs) => [...runs]))]
-      if (active.length > 0) {
-        const remaining = Math.max(1, deadline - Date.now())
-        let timer: NodeJS.Timeout | undefined
-        await Promise.race([
-          Promise.allSettled(active),
-          new Promise<never>((_, reject) => {
-            timer = setTimeout(
-              () => reject(new Error(`evaluation daemon did not become idle within ${timeoutMs}ms`)),
-              remaining
-            )
-          })
-        ]).finally(() => {
-          if (timer) clearTimeout(timer)
-        })
-      } else {
-        await new Promise<void>((resolve) => setImmediate(resolve))
-      }
-    }
-    await Promise.all([...this.memoryPostTurnChains.values()])
+    return this.evalHooks.waitForIdle(timeoutMs)
   }
 
   async start(): Promise<void> {
@@ -5715,7 +4148,7 @@ export class Daemon {
       ...(this.k8sPlane ? { driver: this.k8sPlane.driver } : {}),
       onUpdate,
       onPermission: (sid, params) => this.onAcpPermission(agentId, sid, params),
-      ...(this.evaluation.enabled
+      ...(this.evalHooks.enabled
         ? { onPermissionEvent: (sid, params, event) => this.onAcpPermissionEvent(agentId, sid, params, event) }
         : {}),
       onElicit: (sid, params) => this.onAcpElicit(agentId, sid, params),

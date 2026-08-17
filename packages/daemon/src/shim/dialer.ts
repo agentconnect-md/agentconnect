@@ -1,6 +1,6 @@
 import { isAbsolute, normalize } from 'node:path'
 import { Backoff, ClientTransport, systemClock, type Clock } from '@agentconnect.md/connection'
-import { noopClusterMetrics, type ClusterMetrics } from '../k8s/cluster-metrics.js'
+import { noopClusterMetrics, type ClusterMetrics } from '../metrics/cluster-metrics.js'
 import { ShimBindingRegistry, type Binding, type SpawnRecord } from './binding.js'
 import type { PodIdentityVerifier, ShimConnection } from './listener.js'
 import {
