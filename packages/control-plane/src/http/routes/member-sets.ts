@@ -40,12 +40,15 @@ import {
   MemberSetInUse,
   MemberSetTenancyMismatch
 } from '../../persistence/errors.js'
+import { AgentMoveConflict, AgentMoveFailed } from '../../orchestrator/agentMove.js'
+import { buildAgentMoves } from '../agent-moves.js'
 import { orgOf, denyViewerWrite } from '../rbac.js'
 import {
   MemberSetBody,
   MemberSetDto,
   MemberSetListDto,
   MemberSetMemberParams,
+  ForceQuery,
   IdParam,
   ErrorDto
 } from '../dto/index.js'
@@ -90,6 +93,8 @@ export function memberSetRoutes(deps: HttpDeps) {
 
   return async function memberSetRoutesPlugin(app: FastifyInstance): Promise<void> {
     const r = app.withTypeProvider<ZodTypeProvider>()
+    /** Built per call, like the agents route's: the move graph is stateless and this is a rare op. */
+    const moves = (instance: FastifyInstance) => buildAgentMoves(deps, instance.log)
 
     r.get(
       '/member-sets',
@@ -179,9 +184,10 @@ export function memberSetRoutes(deps: HttpDeps) {
           tags: [Tag.MemberSets],
           summary: 'Enroll a daemon in a member set',
           description:
-            'Add one of the organization’s daemons to the set. Refused (409) while the daemon still has agents pinned directly to it — a member serves only what it holds a duty lease for, so those agents must be placed on the set first — or while it is already in another set. A connected daemon reconnects to pick up its new set.',
+            'Add one of the organization’s daemons to the set. Agents pinned to that machine come WITH it: each is stopped there and re-placed on the set in one step, and the daemon claims them back as a member. Refused (409) if the machine cannot confirm it stopped — retry with it online, or `force` to commit on the operator’s assertion that it is permanently stopped — or if it is already in another set.',
           operationId: 'enrollDaemonInMemberSet',
           params: MemberSetMemberParams,
+          querystring: ForceQuery,
           response: { 200: MemberSetDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
         }
       },
@@ -197,16 +203,26 @@ export function memberSetRoutes(deps: HttpDeps) {
         }
         if (daemon.memberSetId === set.id) return toDto(set)
         if (daemon.memberSetId) return conflict(reply, 'the daemon is already in another member set')
-        // Every precondition is the repository's, taken with the row under the per-daemon fence —
-        // a check made out here could only be re-decided by a concurrent placement (§3).
+        // Agents pinned here do not block the join — they come WITH it (§3). The orchestrator
+        // stops each one on the machine, then places them on the set and writes the membership row
+        // in one transaction; `force` is the move's own contract for a machine that cannot ack.
         try {
-          await deps.repos.memberSet.enrollOperator(set.id, daemonId)
+          await moves(app).enrollInSet(daemonId, set.id, orgId, req.query.force ? 'best-effort' : 'required')
         } catch (err) {
+          if (err instanceof AgentMoveConflict) return conflict(reply, err.message)
+          if (err instanceof AgentMoveFailed) {
+            // The machine could not confirm it stopped. Committing anyway is the operator's call,
+            // exactly as it is for a machine-to-machine move.
+            return conflict(
+              reply,
+              `${err.message}. Retry with the daemon online, or confirm it is permanently stopped to force it.`
+            )
+          }
           if (err instanceof DaemonAlreadyInSet) {
             return conflict(reply, 'the daemon is already in another member set')
           }
           if (err instanceof DaemonHasPlacedAgents) {
-            return conflict(reply, `move this daemon's ${err.placed} placed agent(s) onto a member set first`)
+            return conflict(reply, `an agent was placed on this daemon mid-enrolment (${err.placed}); retry`)
           }
           // The set's tenancy invariant, surfaced rather than swallowed: the daemon is not this
           // org's. The org-fenced read above already refuses that, so this is a concurrent change.

@@ -28,7 +28,7 @@
  */
 import { randomUUID } from 'node:crypto'
 import { Prisma, type PrismaClient } from '../../generated/prisma/client.js'
-import type { DaemonId } from '../../domain/ids.js'
+import type { AgentId, DaemonId } from '../../domain/ids.js'
 import type { MemberSetRecord, MemberSetRepo } from '../ports.js'
 import {
   AgentSetPlacementDenied,
@@ -151,6 +151,45 @@ export class PgMemberSetRepo implements MemberSetRepo {
 
   async enroll(setId: string, daemonId: DaemonId): Promise<void> {
     await this.prisma.$transaction((tx) => enrollDaemonInSet(tx, setId, daemonId))
+  }
+
+  async enrollWithPlacedAgents(setId: string, daemonId: DaemonId, agentIds: readonly AgentId[]): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      // §3's commit step, as ONE transaction: the agents stop being pinned to the machine and the
+      // machine becomes a member together. Either order on its own is a state the invariants
+      // forbid — a member with a pinned agent, or agents on a set with nothing in it — and a crash
+      // between two statements would leave exactly that.
+      await lockDaemonMembership(tx, daemonId)
+      const [current] = await tx.$queryRaw<{ setId: string }[]>(
+        Prisma.sql`SELECT "setId" FROM "member_set_member" WHERE "daemonId" = ${daemonId}::uuid`
+      )
+      if (current) {
+        if (current.setId !== setId) throw new DaemonAlreadyInSet(daemonId, current.setId)
+      }
+      for (const agentId of agentIds) {
+        const [agent] = await tx.$queryRaw<{ orgId: string }[]>(
+          Prisma.sql`SELECT "orgId" FROM "agent" WHERE id = ${agentId}::uuid AND "daemonId" = ${daemonId}::uuid FOR UPDATE`
+        )
+        // Raced away or already re-placed since the caller read it: nothing to move, and the
+        // membership row below is what the whole operation is for.
+        if (!agent) continue
+        await assertAgentMayUseSet(tx, { id: agentId, orgId: agent.orgId }, setId)
+        await tx.$executeRaw(Prisma.sql`
+          UPDATE "agent"
+          SET "placementKind" = 'set', "setId" = ${setId}::uuid, "daemonId" = NULL,
+              "configRevision" = "configRevision" + 1
+          WHERE id = ${agentId}::uuid
+        `)
+      }
+      // Anything still pinned here that the caller did not name would be unservable the moment the
+      // row below lands, so the whole operation fails rather than create that state.
+      const [left] = await tx.$queryRaw<{ n: bigint }[]>(
+        Prisma.sql`SELECT count(*) AS n FROM "agent" WHERE "daemonId" = ${daemonId}::uuid`
+      )
+      const stillPinned = Number(left?.n ?? 0n)
+      if (stillPinned > 0) throw new DaemonHasPlacedAgents(daemonId, stillPinned)
+      if (!current) await enrollDaemonInSet(tx, setId, daemonId)
+    })
   }
 
   async enrollOperator(setId: string, daemonId: DaemonId): Promise<void> {

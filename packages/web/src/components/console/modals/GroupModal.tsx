@@ -12,11 +12,12 @@ import { Button, Icon } from '@/components/ui'
  * filled where it is created is not a feature, and "which machines are in it" is the only thing
  * about a group worth editing besides its name.
  *
- * The two directions are not symmetric, and the dialog says so before it lets you act (§3):
- * joining is refused while agents are still pinned to that machine — a member serves only what it
- * holds a lease for, so those agents would be placed and unservable at once — and leaving is
- * refused while it still holds live work. Each row is applied on its own, so one refusal reports
- * itself and leaves the rest of the edit intact.
+ * Agents pinned to a machine do not block it joining — they come WITH it (§3): the control plane
+ * stops each on that machine and re-places it on the group in one step, and the machine claims them
+ * back as a member. So the row says what will happen rather than refusing. Leaving is the asymmetric
+ * one, refused while the machine still holds live work; that lives on the daemon's own page next to
+ * the drain state. Each membership write is applied on its own, so one refusal reports itself and
+ * leaves the rest of the edit intact.
  */
 export default function GroupModal({ group, onClose }: { group?: MemberSetRow; onClose: () => void }) {
   const { createGroup, renameGroup, enrollInGroup, withdrawFromGroup, daemons, agents } = useConsoleData()
@@ -25,6 +26,10 @@ export default function GroupModal({ group, onClose }: { group?: MemberSetRow; o
   const [members, setMembers] = useState<string[]>(group?.memberDaemonIds ?? [])
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  // Set when a machine could not confirm it stopped its agents: the operator may assert it is
+  // permanently stopped, which is the move's own force contract and the only safety boundary a
+  // machine outside the ledger has (§3).
+  const [forceOffer, setForceOffer] = useState(false)
   const trimmed = name.trim()
 
   // A daemon the org owns is a candidate unless it is in a DIFFERENT group: a daemon is in at most
@@ -37,10 +42,11 @@ export default function GroupModal({ group, onClose }: { group?: MemberSetRow; o
       current.includes(daemonId) ? current.filter((id) => id !== daemonId) : [...current, daemonId]
     )
 
-  const save = async () => {
+  const save = async (force = false) => {
     if (saving || !trimmed) return
     setSaving(true)
     setErr(null)
+    if (force) setForceOffer(false)
     try {
       const setId = group ? group.setId : (await createGroup(trimmed)).setId
       if (group && trimmed !== group.name) await renameGroup(setId, trimmed)
@@ -48,11 +54,13 @@ export default function GroupModal({ group, onClose }: { group?: MemberSetRow; o
       const after = new Set(members)
       // Each membership write is its own request with its own precondition, so they are applied one
       // at a time: a refusal names the machine that caused it instead of failing the whole dialog.
-      for (const daemonId of members.filter((id) => !before.has(id))) await enrollInGroup(setId, daemonId)
+      for (const daemonId of members.filter((id) => !before.has(id))) await enrollInGroup(setId, daemonId, { force })
       for (const daemonId of [...before].filter((id) => !after.has(id))) await withdrawFromGroup(setId, daemonId)
       onClose()
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e))
+      const message = e instanceof Error ? e.message : String(e)
+      setErr(message)
+      setForceOffer(/permanently stopped/.test(message))
       setSaving(false)
     }
   }
@@ -92,17 +100,15 @@ export default function GroupModal({ group, onClose }: { group?: MemberSetRow; o
             <div className="overflow-hidden rounded-lg border border-(--border-subtle)">
               {candidates.map((daemon) => {
                 const checked = members.includes(daemon.daemonId)
-                const pinned = pinnedCount(daemon)
-                // Pinned agents block only a JOIN — a machine already in the group has none.
-                const blocked = !checked && !group?.memberDaemonIds.includes(daemon.daemonId) && pinned > 0
+                const wasMember = group?.memberDaemonIds.includes(daemon.daemonId) ?? false
+                // What joining will DO to this machine's own agents — they move onto the group with
+                // it, which is the one consequence worth stating before the click.
+                const bringing = checked && !wasMember ? pinnedCount(daemon) : 0
                 return (
                   <button
                     key={daemon.daemonId}
                     type="button"
-                    className={`flex w-full items-center gap-[10px] border-0 border-b border-(--border-subtle) bg-(--surface-card) px-3 py-[10px] text-left last:border-b-0 ${
-                      blocked ? 'cursor-not-allowed opacity-60' : 'cursor-pointer hover:bg-(--surface-hover)'
-                    }`}
-                    disabled={blocked}
+                    className="flex w-full cursor-pointer items-center gap-[10px] border-0 border-b border-(--border-subtle) bg-(--surface-card) px-3 py-[10px] text-left last:border-b-0 hover:bg-(--surface-hover)"
                     onClick={() => toggle(daemon.daemonId)}
                   >
                     <span
@@ -120,8 +126,8 @@ export default function GroupModal({ group, onClose }: { group?: MemberSetRow; o
                         {daemon.name}
                       </span>
                       <span className="block truncate font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
-                        {blocked
-                          ? `Move its ${pinned} placed agent${pinned === 1 ? '' : 's'} onto a group first`
+                        {bringing > 0
+                          ? `Its ${bringing} agent${bringing === 1 ? '' : 's'} move onto the group with it`
                           : daemon.status === 'online'
                             ? 'Online'
                             : 'Offline'}
@@ -149,6 +155,15 @@ export default function GroupModal({ group, onClose }: { group?: MemberSetRow; o
         <Button variant="ghost" onClick={onClose}>
           Cancel
         </Button>
+        {forceOffer && (
+          <Button
+            variant="danger"
+            onClick={() => void save(true)}
+            className={saving ? 'cursor-default opacity-50' : undefined}
+          >
+            It is stopped — join anyway
+          </Button>
+        )}
         <Button onClick={() => void save()} className={!saving && trimmed ? undefined : 'cursor-default opacity-50'}>
           {saving ? 'Saving…' : group ? 'Save' : 'Create group'}
         </Button>

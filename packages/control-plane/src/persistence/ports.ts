@@ -5022,6 +5022,11 @@ export interface MemberSetRepo {
   /** The operator path: the same row, plus §3's join precondition taken under the per-daemon
    *  fence. Throws `DaemonHasPlacedAgents` when agents are still pinned to the machine. */
   enrollOperator(setId: string, daemonId: DaemonId): Promise<void>
+  /** §3's commit step for a machine that HAS pinned agents: re-place the named agents onto the set
+   *  and write the membership row in ONE transaction. The caller must already have stopped runtime
+   *  authority for each — this only settles the durable state. Throws `DaemonHasPlacedAgents` when
+   *  something is still pinned that the caller did not name. */
+  enrollWithPlacedAgents(setId: string, daemonId: DaemonId, agentIds: readonly AgentId[]): Promise<void>
   /** One org's sets, by name. The org-less pool is never among them — it belongs to no org. */
   listForOrg(orgId: string): Promise<MemberSetRecord[]>
   /** Agents placed on each of these sets, in one query — the list read must not be N+1. Sets with

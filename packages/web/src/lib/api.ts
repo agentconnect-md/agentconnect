@@ -4427,10 +4427,18 @@ export async function deleteMemberSet(setId: string): Promise<void> {
   await apiDelete<void>(`${orgBase()}/member-sets/${encodeURIComponent(setId)}`)
 }
 
-/** Enroll a daemon. 409 while agents are still pinned to it, or while it is in another set. */
-export async function enrollDaemonInMemberSet(setId: string, daemonId: string): Promise<MemberSetDto> {
+/** Enroll a daemon. Agents pinned to it come WITH it — the CP stops each on that machine and
+ *  re-places it on the set in one step. 409 when the machine cannot confirm it stopped (retry
+ *  online, or `force` on the operator's assertion that it is permanently stopped), or when it is
+ *  already in another set. */
+export async function enrollDaemonInMemberSet(
+  setId: string,
+  daemonId: string,
+  options: { force?: boolean } = {}
+): Promise<MemberSetDto> {
+  const query = options.force ? '?force=true' : ''
   return apiPut<MemberSetDto>(
-    `${orgBase()}/member-sets/${encodeURIComponent(setId)}/members/${encodeURIComponent(daemonId)}`
+    `${orgBase()}/member-sets/${encodeURIComponent(setId)}/members/${encodeURIComponent(daemonId)}${query}`
   )
 }
 

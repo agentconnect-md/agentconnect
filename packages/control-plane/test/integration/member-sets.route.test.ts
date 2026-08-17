@@ -117,7 +117,9 @@ describe('member sets — the enrolment transitions (real Postgres)', () => {
     }
   })
 
-  it('refuses a daemon that still has agents pinned to it — they would become unservable', async () => {
+  it('refuses an offline daemon that cannot confirm it stopped its agents, and forces past it', async () => {
+    // §3: pinned agents come WITH the join. What blocks it is the machine being unable to
+    // acknowledge that it stopped serving them — the same boundary a machine-to-machine move has.
     const { app, close } = buildHttpApp(prisma)
     try {
       await seedDaemon(prisma, DAEMON)
@@ -126,7 +128,21 @@ describe('member sets — the enrolment transitions (real Postgres)', () => {
 
       const res = await app.inject({ method: 'PUT', url: `${ORG}/member-sets/${setId}/members/${DAEMON}` })
       expect(res.statusCode).toBe(409)
+      expect(res.json().message).toMatch(/permanently stopped/)
       expect(await prisma.memberSetMember.count()).toBe(0)
+
+      // The operator asserts it is stopped: the agents move onto the set and the machine joins.
+      const forced = await app.inject({
+        method: 'PUT',
+        url: `${ORG}/member-sets/${setId}/members/${DAEMON}?force=true`
+      })
+      expect(forced.statusCode).toBe(200)
+      expect((forced.json() as SetBody).memberDaemonIds).toEqual([DAEMON])
+      expect(await prisma.agent.findUniqueOrThrow({ where: { id: AGENT } })).toMatchObject({
+        placementKind: 'set',
+        setId,
+        daemonId: null
+      })
     } finally {
       await close()
     }
