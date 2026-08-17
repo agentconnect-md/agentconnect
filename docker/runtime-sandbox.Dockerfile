@@ -65,6 +65,7 @@ FROM node:24-bookworm-slim AS runtime-sandbox
 ARG CLAUDE_ACP_VERSION=0.66.0
 ARG CODEX_ACP_VERSION=1.1.14
 ARG OPENCODE_VERSION=1.18.16
+ARG DEEPSEEK_HARNESS_ACP_VERSION=0.4.9
 
 # git and ca-certificates are load-bearing — the workspace surface runs git IN here over the
 # shim's exec channel. openssh-client is for ssh remotes; tini is PID 1. Nothing else: every
@@ -83,6 +84,7 @@ RUN npm install --global --no-fund --no-audit \
   "@agentclientprotocol/claude-agent-acp@${CLAUDE_ACP_VERSION}" \
   "@agentclientprotocol/codex-acp@${CODEX_ACP_VERSION}" \
   "opencode-ai@${OPENCODE_VERSION}" \
+  "@openma/deepseek-harness-acp@${DEEPSEEK_HARNESS_ACP_VERSION}" \
   && opencode --version \
   && npm cache clean --force
 
@@ -143,9 +145,10 @@ RUN mkdir -p /opt/agentconnect/runtime \
   && chown -R root:root /opt/agentconnect/runtime \
   && chmod -R a-w /opt/agentconnect/runtime
 # Provider config accepted from the pod env (interim until the managed egress proxy): the shim
-# maps AC_CLAUDE_BASE_URL/AC_CLAUDE_API_KEY → ANTHROPIC_BASE_URL/ANTHROPIC_API_KEY and
-# AC_CODEX_BASE_URL/AC_CODEX_API_KEY → OPENAI_BASE_URL/OPENAI_API_KEY onto the matching runtime
-# only, and a value the daemon already sent for that runtime wins (src/shim/acp-runner.ts).
+# maps AC_CLAUDE_BASE_URL/AC_CLAUDE_API_KEY → ANTHROPIC_BASE_URL/ANTHROPIC_API_KEY,
+# AC_CODEX_BASE_URL/AC_CODEX_API_KEY → OPENAI_BASE_URL/OPENAI_API_KEY, and
+# AC_DEEPSEEK_BASE_URL/AC_DEEPSEEK_API_KEY → DEEPSEEK_BASE_URL/DEEPSEEK_API_KEY onto the matching
+# runtime only, and a value the daemon already sent for that runtime wins (src/shim/acp-runner.ts).
 ENV HOME=/agent \
   AC_SHIM_WORKSPACE_ROOT=/agent \
   AC_SHIM_PORT=8085 \

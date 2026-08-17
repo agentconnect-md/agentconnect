@@ -12,10 +12,14 @@ export type ResolveCommand = (command: string, env: Record<string, string>) => s
  *  variables. Interim until the managed egress proxy lands: the key stays deployment-owned
  *  (SandboxTemplate env) instead of traveling from the daemon, and only the runtime whose
  *  vendor the variable names ever sees it. */
-export const SANDBOX_PROVIDER_ENV: Readonly<Record<'claude' | 'codex', Readonly<Record<string, string>>>> = {
-  claude: { AC_CLAUDE_BASE_URL: 'ANTHROPIC_BASE_URL', AC_CLAUDE_API_KEY: 'ANTHROPIC_API_KEY' },
-  codex: { AC_CODEX_BASE_URL: 'OPENAI_BASE_URL', AC_CODEX_API_KEY: 'OPENAI_API_KEY' }
-}
+export const SANDBOX_PROVIDER_ENV: Readonly<Record<'claude' | 'codex' | 'deepseek', Readonly<Record<string, string>>>> =
+  {
+    claude: { AC_CLAUDE_BASE_URL: 'ANTHROPIC_BASE_URL', AC_CLAUDE_API_KEY: 'ANTHROPIC_API_KEY' },
+    codex: { AC_CODEX_BASE_URL: 'OPENAI_BASE_URL', AC_CODEX_API_KEY: 'OPENAI_API_KEY' },
+    // DeepSeek Harness reads the launching environment ahead of every stored credential layer, so
+    // these two are the whole of its configuration in a sandbox that seeds no $DSH_HOME.
+    deepseek: { AC_DEEPSEEK_BASE_URL: 'DEEPSEEK_BASE_URL', AC_DEEPSEEK_API_KEY: 'DEEPSEEK_API_KEY' }
+  }
 
 /** Filesystem and locale facts only the pod knows. HOME is the load-bearing one: the runtime
  *  writes its state there, and the daemon cannot name a path on a machine it is not on. */
@@ -36,7 +40,13 @@ export function sandboxProviderEnv(
   podEnv: Record<string, string | undefined>
 ): Record<string, string> {
   const base = command.split(/[\\/]/).pop() ?? ''
-  const profile = /^claude(?:$|[-.@])/i.test(base) ? 'claude' : /^codex(?:$|[-.@])/i.test(base) ? 'codex' : undefined
+  const profile = /^claude(?:$|[-.@])/i.test(base)
+    ? 'claude'
+    : /^codex(?:$|[-.@])/i.test(base)
+      ? 'codex'
+      : /^dsh(?:$|[-.@])/i.test(base)
+        ? 'deepseek'
+        : undefined
   if (!profile) return {}
   const env: Record<string, string> = {}
   for (const [source, target] of Object.entries(SANDBOX_PROVIDER_ENV[profile])) {

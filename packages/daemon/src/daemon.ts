@@ -17474,11 +17474,11 @@ export class Daemon {
     const declared = declaredRuntimeCatalog(resolved, table)
     if (declared.unresolved.length)
       this.log.warn(`runtimes: declared but unknown to the catalog: ${declared.unresolved.join(', ')}`)
-    // Curated admission needs a live probe, which --k8s does not run, so a declared
-    // curated id could never launch — drop it loudly instead of advertising it.
+    // Curated admission needs a live probe, which --k8s does not run — only the image's own
+    // build-time probe stands in for one, and these entries carry none of it.
     if (declared.rejectedCurated.length)
       this.log.warn(
-        `runtimes: declared curated runtimes cannot be admitted under --k8s: ${declared.rejectedCurated.join(', ')}`
+        `runtimes: declared curated runtimes carry no image probe and cannot be admitted under --k8s: ${declared.rejectedCurated.join(', ')}`
       )
     // A package launcher fetches its artifact at launch: not the image's build, not what
     // the version pin names, and impossible on a restricted egress. Dropped, not warned.

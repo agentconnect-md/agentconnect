@@ -6,7 +6,9 @@ const POD_ENV = {
   AC_CLAUDE_BASE_URL: 'https://claude-egress.internal',
   AC_CLAUDE_API_KEY: 'sk-claude-pod',
   AC_CODEX_BASE_URL: 'https://codex-egress.internal',
-  AC_CODEX_API_KEY: 'sk-codex-pod'
+  AC_CODEX_API_KEY: 'sk-codex-pod',
+  AC_DEEPSEEK_BASE_URL: 'https://deepseek-egress.internal',
+  AC_DEEPSEEK_API_KEY: 'sk-deepseek-pod'
 }
 
 describe('sandboxProviderEnv', () => {
@@ -21,6 +23,13 @@ describe('sandboxProviderEnv', () => {
     expect(sandboxProviderEnv('/usr/local/bin/codex-acp', POD_ENV)).toEqual({
       OPENAI_BASE_URL: 'https://codex-egress.internal',
       OPENAI_API_KEY: 'sk-codex-pod'
+    })
+  })
+
+  it('maps only the deepseek pod vars for the harness command the image installs', () => {
+    expect(sandboxProviderEnv('dsh-acp', POD_ENV)).toEqual({
+      DEEPSEEK_BASE_URL: 'https://deepseek-egress.internal',
+      DEEPSEEK_API_KEY: 'sk-deepseek-pod'
     })
   })
 
@@ -50,7 +59,7 @@ async function spawnAndReadEnv(command: string, requestEnv: Record<string, strin
     command,
     args: [
       '-e',
-      'process.stdout.write(JSON.stringify({A: process.env.ANTHROPIC_API_KEY ?? null, B: process.env.ANTHROPIC_BASE_URL ?? null, O: process.env.OPENAI_API_KEY ?? null}))'
+      'process.stdout.write(JSON.stringify({A: process.env.ANTHROPIC_API_KEY ?? null, B: process.env.ANTHROPIC_BASE_URL ?? null, O: process.env.OPENAI_API_KEY ?? null, D: process.env.DEEPSEEK_API_KEY ?? null}))'
     ],
     env: requestEnv
   })
@@ -61,7 +70,12 @@ async function spawnAndReadEnv(command: string, requestEnv: Record<string, strin
 describe('AcpRunner provider env fill-in', () => {
   it('fills pod provider vars into a claude spawn and keeps codex vars out', async () => {
     const seen = await spawnAndReadEnv('claude-agent-acp', { PATH: process.env.PATH ?? '' })
-    expect(seen).toEqual({ A: 'sk-claude-pod', B: 'https://claude-egress.internal', O: null })
+    expect(seen).toEqual({ A: 'sk-claude-pod', B: 'https://claude-egress.internal', O: null, D: null })
+  })
+
+  it('fills the deepseek pod vars into a dsh-acp spawn', async () => {
+    const seen = await spawnAndReadEnv('dsh-acp', { PATH: process.env.PATH ?? '' })
+    expect(seen).toEqual({ A: null, B: null, O: null, D: 'sk-deepseek-pod' })
   })
 
   it('lets a daemon-sent value win over the pod value', async () => {

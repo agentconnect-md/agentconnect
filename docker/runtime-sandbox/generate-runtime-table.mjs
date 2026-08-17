@@ -20,7 +20,10 @@ import { pathToFileURL } from 'node:url'
 const PROVIDED = [
   { id: 'claude-acp', bin: 'claude-agent-acp' },
   { id: 'codex-acp', bin: 'codex-acp' },
-  { id: 'opencode', bin: 'opencode', args: ['acp'] }
+  { id: 'opencode', bin: 'opencode', args: ['acp'] },
+  // The curated catalog launches this one through npx; here it is the image's own executable,
+  // which is what makes it admissible at all under --k8s (runtimes/k8s-runtimes.ts).
+  { id: 'dsh-acp', bin: 'dsh-acp' }
 ]
 
 const PROBE_TIMEOUT_MS = 60_000

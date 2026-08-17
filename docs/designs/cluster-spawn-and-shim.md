@@ -13,9 +13,11 @@ the sandbox, so this shape suits internal dogfooding and self-hosted
 bring-your-own-key. A cloud daemon accepts the runtime-neutral `MODEL_BASE_URL` and
 `MODEL_TOKEN` pair and translates it for Claude, Codex, or OpenCode at spawn; a configured
 key server replaces the static token with a session-scoped pair. The runtime image still
-accepts the legacy deployment-owned `AC_CLAUDE_BASE_URL`/`AC_CLAUDE_API_KEY` and
-`AC_CODEX_BASE_URL`/`AC_CODEX_API_KEY` pod variables as fill-ins, but a daemon-sent value
-wins. See [key-server.md](key-server.md) for precedence and lifecycle.
+accepts the legacy deployment-owned `AC_CLAUDE_BASE_URL`/`AC_CLAUDE_API_KEY`,
+`AC_CODEX_BASE_URL`/`AC_CODEX_API_KEY` and `AC_DEEPSEEK_BASE_URL`/`AC_DEEPSEEK_API_KEY` pod
+variables as fill-ins, but a daemon-sent value wins. DeepSeek Harness has no neutral-pair
+translation yet — the pod variables are its whole configuration, since a sandbox seeds no
+`$DSH_HOME` credential store. See [key-server.md](key-server.md) for precedence and lifecycle.
 
 ## 1. Why a seam at all
 

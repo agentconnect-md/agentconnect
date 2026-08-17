@@ -25,13 +25,15 @@ function catalog(): ResolvedRuntimeCatalog {
   const claude = { command: 'claude-code-acp', args: [], env: [] }
   const codex = { command: 'npx', args: ['-y', '@agentconnect.md/codex-acp'], env: [] }
   const hermes = { command: 'hermes', args: ['acp'], env: [] }
+  const dsh = { command: 'npx', args: ['-y', '-p', '@openma/deepseek-harness-acp@^0.4', 'dsh-acp'], env: [] }
   return {
     entries: {
       claude: { runtime: claude, source: 'registry', name: 'Claude Code', version: '1.2.3', skillsAgentId: 'claude' },
       'codex-acp': { runtime: codex, source: 'managed', name: 'Codex', version: '', skillsAgentId: null },
-      'hermes-agent': { runtime: hermes, source: 'curated', name: 'Hermes Agent', version: '', skillsAgentId: null }
+      'hermes-agent': { runtime: hermes, source: 'curated', name: 'Hermes Agent', version: '', skillsAgentId: null },
+      'dsh-acp': { runtime: dsh, source: 'curated', name: 'DeepSeek Harness', version: '', skillsAgentId: null }
     },
-    runtimes: { claude, 'codex-acp': codex, 'hermes-agent': hermes }
+    runtimes: { claude, 'codex-acp': codex, 'hermes-agent': hermes, 'dsh-acp': dsh }
   }
 }
 
@@ -165,6 +167,36 @@ describe('declaredRuntimeCatalog', () => {
   it('drops curated runtimes, which cannot be admitted without a probe', () => {
     const result = declaredRuntimeCatalog(catalog(), { runtimes: [{ id: 'hermes-agent' }] })
     expect(result.rejectedCurated).toEqual(['hermes-agent'])
+    expect(result.catalog.entries).toEqual({})
+  })
+
+  it('admits a curated runtime the image installed and probed, re-sourced away from curated', () => {
+    // The evidence curated admission asks for, taken in the image the runtime runs in — and the
+    // source must change, or the host-side admission gate would keep it out awaiting a probe
+    // `--k8s` never makes.
+    const result = declaredRuntimeCatalog(catalog(), {
+      runtimes: [
+        {
+          id: 'dsh-acp',
+          version: '0.4.9',
+          command: 'dsh-acp',
+          acp: { protocolVersion: 1, agentName: 'dsh-acp', sessionProbe: 'auth-required' }
+        }
+      ]
+    })
+    expect(result.rejectedCurated).toEqual([])
+    expect(result.rejectedPackageLaunchers).toEqual([])
+    expect(result.catalog.entries['dsh-acp']?.source).toBe('image')
+    expect(result.catalog.entries['dsh-acp']?.version).toBe('0.4.9')
+    expect(result.catalog.runtimes['dsh-acp']).toEqual({ command: 'dsh-acp', args: [], env: [] })
+    expect(result.acp['dsh-acp']?.sessionProbe).toBe('auth-required')
+  })
+
+  it('still drops a curated runtime the image names but never probed', () => {
+    // A command with no `initialize` snapshot is a claim, not evidence: nothing says the image
+    // can actually open an ACP session with it.
+    const result = declaredRuntimeCatalog(catalog(), { runtimes: [{ id: 'dsh-acp', command: 'dsh-acp' }] })
+    expect(result.rejectedCurated).toEqual(['dsh-acp'])
     expect(result.catalog.entries).toEqual({})
   })
 
