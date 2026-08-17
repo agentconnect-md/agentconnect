@@ -635,6 +635,33 @@ describe('cluster spawn driver', () => {
     expect(instance.workspaceRootFor('agent-a')).toBeUndefined()
   })
 
+  it('keeps the last reported workspace root across a channel loss and an idle suspension', async () => {
+    // Pinned as it stands, not as it ought to be: neither path clears the root, because the next
+    // bind overwrites it (or deletes it when the replacement shim reports none). Callers read it
+    // only after a bind, so the staleness is unobservable — but it is deliberate, not incidental.
+    const { api } = fakeApi()
+    let root: string | undefined = '/agent'
+    let generation = 0
+    const { instance } = driver(api, {
+      connectChannel: async () => stubConnection(++generation, root)
+    })
+    await instance.ensureBoundChannel('agent-a')
+    expect(instance.workspaceRootFor('agent-a')).toBe('/agent')
+
+    instance.onChannelLost('agent-a', 'pod deleted')
+    expect(instance.sessionFor('agent-a')).toBeUndefined()
+    expect(instance.workspaceRootFor('agent-a')).toBe('/agent')
+
+    await instance.ensureBoundChannel('agent-a')
+    expect(await instance.suspendIfIdle('agent-a')).toBe('suspended')
+    expect(instance.workspaceRootFor('agent-a')).toBe('/agent')
+
+    // Only the next bind moves it, and a shim reporting none takes it away.
+    root = undefined
+    await instance.ensureBoundChannel('agent-a')
+    expect(instance.workspaceRootFor('agent-a')).toBeUndefined()
+  })
+
   it('keeps no workspace root from a legacy shim that reports none', async () => {
     const { api } = fakeApi()
     const { instance } = driver(api)
