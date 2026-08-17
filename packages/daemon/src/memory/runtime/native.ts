@@ -26,7 +26,7 @@ import { promises as fsp } from 'node:fs'
 import { join, resolve, isAbsolute, sep, relative } from 'node:path'
 import type { RuntimeDef } from '../../config/config-schema.js'
 import type { MemoryEntry } from '@agentconnect.md/protocol'
-import type { MemoryReadResult, MemoryWriteResult } from '../provider.js'
+import type { MemoryReadResult, MemoryWriteResult } from '../types.js'
 import {
   atomicWriteContainedMemoryFile,
   readContainedMemoryFile,
