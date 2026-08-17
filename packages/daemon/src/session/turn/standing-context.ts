@@ -1,4 +1,4 @@
-import { MAX_INDEX_INJECT_BYTES } from '../../agents/memory.js'
+import { MAX_INDEX_INJECT_BYTES } from '../../memory/store.js'
 import { NO_RESPONSE_RULE } from '../no-response.js'
 
 // Opening lines of the inlined agent-meta block (`# Agent\n- Name: …`). The standing
@@ -85,7 +85,7 @@ export type StandingContext = {
   metaContext: string | undefined
 }
 
-// Agent memory INDEX (agents/memory-provider.ts), read fresh. It's STANDING context
+// Agent memory INDEX (memory/provider.ts), read fresh. It's STANDING context
 // (like the system prompt), NOT a user turn — so it rides the system-prompt channel,
 // never a leading prompt block (which a runtime would auto-title from — #398).
 // '' for native / absent memory ⇒ a clean no-op.

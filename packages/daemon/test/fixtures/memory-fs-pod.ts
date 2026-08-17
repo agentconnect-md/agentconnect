@@ -2,7 +2,7 @@ import { expect } from 'vitest'
 import { constants, promises as fsp, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { MemoryConflictError } from '../../src/agents/memory-fs.js'
+import { MemoryConflictError } from '../../src/memory/fs.js'
 import {
   ShimMemoryFs,
   applyMemoryFsPayload,

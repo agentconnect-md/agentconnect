@@ -4,7 +4,7 @@ import {
   MEMORY_RECALL_HARD_LIMITS,
   type CanonicalMemoryRecord as MemoryRecord
 } from '@agentconnect.md/protocol'
-import type { MemoryScope, RecallRequest } from './memory-provider.js'
+import type { MemoryScope, RecallRequest } from './provider.js'
 
 /** Recall queries are generated from delivered user/peer text, never old memory/tool output. */
 export const MAX_MEMORY_RECALL_QUERY_BYTES = 16 * 1024

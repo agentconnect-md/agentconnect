@@ -13,7 +13,7 @@
 // runtime-memory contract test compares it to the production policy registry, so a
 // new harness cannot land without an explicit managed/none/native decision.
 import type { RuntimeDef } from '../../src/config/config-schema.js'
-import type { RuntimeMemoryCapabilities } from '../../src/agents/runtime-memory.js'
+import type { RuntimeMemoryCapabilities } from '../../src/memory/runtime/capabilities.js'
 
 /** ACP `configOptions` select entry (see acp-host.ts modelOptionsFrom / permissionModeOptionsFrom). */
 export interface SelectOption {

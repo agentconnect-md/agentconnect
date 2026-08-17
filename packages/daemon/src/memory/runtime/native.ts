@@ -1,7 +1,7 @@
 /**
  * Native-memory runtime levers + file surfacing.
  *
- * The `native` MemoryProvider (agents/memory-provider.ts) redirects the runtime's
+ * The `native` MemoryProvider (memory/provider.ts) redirects the runtime's
  * OWN memory under the agent root — so each agent's native memory is isolated
  * instead of sharing the host's `~/.claude` / `~/.codex`. Two responsibilities:
  *
@@ -24,17 +24,17 @@
  */
 import { promises as fsp } from 'node:fs'
 import { join, resolve, isAbsolute, sep, relative } from 'node:path'
-import type { RuntimeDef } from '../config/config-schema.js'
+import type { RuntimeDef } from '../../config/config-schema.js'
 import type { MemoryEntry } from '@agentconnect.md/protocol'
-import type { MemoryReadResult, MemoryWriteResult } from './memory-provider.js'
+import type { MemoryReadResult, MemoryWriteResult } from '../provider.js'
 import {
   atomicWriteContainedMemoryFile,
   readContainedMemoryFile,
   MemoryPathError,
   MemoryTooLargeError,
   MAX_MEMORY_FILE_BYTES
-} from './memory.js'
-import { nativeRuntimeMemorySpecFor } from './runtime-memory.js'
+} from '../store.js'
+import { nativeRuntimeMemorySpecFor } from './capabilities.js'
 
 /** Whether native memory is supported (env levers registered) for this runtime. */
 export function isNativeRuntimeSupported(runtime: RuntimeDef, runtimeId?: string): boolean {

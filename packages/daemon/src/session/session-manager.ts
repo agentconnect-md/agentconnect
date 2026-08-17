@@ -5,10 +5,10 @@ import { monotonicTs } from '../store/monotonic-ts.js'
 import { SLACK_RESPONSE_FINAL_EVENT_TAG } from '@agentconnect.md/message'
 import { WorkspaceManager } from '../workspace/workspace-manager.js'
 import { initiatorLabel } from '../workspace/session-branch.js'
-import { memoryKindOf, type MemoryProvider, type MemoryScope } from '../agents/memory-provider.js'
+import { memoryKindOf, type MemoryProvider, type MemoryScope } from '../memory/provider.js'
 import { agentChildEnv } from '../agents/agent-env.js'
 import { planConfigFiles } from '../shim/config-file-env.js'
-import { recalledMemoryBlock, recallQueryFromBlocks, sanitizeRecallRecords } from '../agents/memory-recall.js'
+import { recalledMemoryBlock, recallQueryFromBlocks, sanitizeRecallRecords } from '../memory/recall.js'
 import type { AcpHost } from '../acp/acp-host.js'
 import type { Agent } from '../agents/agent-schema.js'
 import type { LoadedAgent } from '../agents/load-agents.js'
@@ -659,7 +659,7 @@ export class SessionManager {
       return false
     }
 
-    // Agent memory INDEX (agents/memory-provider.ts), read fresh. Applied only when THIS
+    // Agent memory INDEX (memory/provider.ts), read fresh. Applied only when THIS
     // call creates a fresh session (a resumed session already carries it from its first
     // turn). Every session may READ shared memory (#653): the index is injected whenever
     // memory is enabled, regardless of session isolation. Only WRITES (the memory write

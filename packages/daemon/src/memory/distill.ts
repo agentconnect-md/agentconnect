@@ -6,7 +6,7 @@ import {
   withMemoryDirLock,
   writeMemoryFileHoldingLock,
   type MemoryFs
-} from './memory.js'
+} from './store.js'
 
 export interface DistilledMemory {
   topic: string

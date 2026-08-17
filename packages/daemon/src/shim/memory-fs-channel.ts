@@ -25,7 +25,7 @@ import {
   type MemoryFsFile,
   type MemoryFsFileStat,
   type MemoryFsWriteOptions
-} from '../agents/memory-fs.js'
+} from '../memory/fs.js'
 import { createFdMemoryFsExecutor } from './fd-memory-fs.js'
 import type { ShimRequester } from './channels.js'
 

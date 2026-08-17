@@ -6,7 +6,7 @@ import { resolveRuntimeCatalog, type ResolvedRuntimeCatalog } from '../runtimes/
 import { selectAgent } from '../agents/load-agents.js'
 import { agentChildEnv } from '../agents/agent-env.js'
 import { cleanupConfigFiles, materializeConfigFiles } from '../shim/config-file-env.js'
-import { memoryKindOf, memoryProviderFor } from '../agents/memory-provider.js'
+import { memoryKindOf, memoryProviderFor } from '../memory/provider.js'
 import { WorkspaceManager } from '../workspace/workspace-manager.js'
 import { configureWorkspaceGitOrigins } from '../workspace/git-origin-policy.js'
 import { AcpHost } from '../acp/acp-host.js'

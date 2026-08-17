@@ -1,7 +1,7 @@
 /**
  * Agent memory — a DIRECTORY at the agent's memory ROOT (`<root>/memory/`), OUTSIDE
  * the workspace so it survives a workspace reset / re-clone and is never committed
- * into a github-workspace repo. The root is a `MemoryFs` (agents/memory-fs.ts): the
+ * into a github-workspace repo. The root is a `MemoryFs` (memory/fs.ts): the
  * agent dir on this disk for a local agent, one root on the sandbox volume reached
  * through the shim for a cluster agent — every function here takes the port and
  * never touches `node:fs` itself.
@@ -31,7 +31,7 @@ import {
   MemoryTooLargeError,
   type MemoryFs,
   type MemoryFsFileStat
-} from './memory-fs.js'
+} from './fs.js'
 
 export {
   MemoryConflictError,
@@ -42,7 +42,7 @@ export {
   readContainedMemoryFile,
   LocalMemoryFs,
   type MemoryFs
-} from './memory-fs.js'
+} from './fs.js'
 
 export const MEMORY_DIRNAME = 'memory'
 export { MEMORY_INDEX }

@@ -1,7 +1,7 @@
 /**
  * `MemoryFs` — the file-system port an agent's managed memory tree is kept behind.
  *
- * Every managed-memory writer and reader (`agents/memory.ts`, the memory provider, the dream
+ * Every managed-memory writer and reader (`memory/store.ts`, the memory provider, the dream
  * runner, the CP memory reader) is a DIRECTORY abstraction over this port, so where the tree lives
  * is a placement decision, not a policy one: a local agent's home is `<agent.dir>` on this daemon's
  * disk (`LocalMemoryFs`), a cluster agent's is one root on its sandbox volume reached through the

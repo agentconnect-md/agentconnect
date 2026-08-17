@@ -4,7 +4,7 @@
 
 Agent memory is isolated per agent, lives outside the workspace, and is
 selected through a provider-neutral lifecycle. The implementation authority is
-`packages/daemon/src/agents/memory-provider.ts`; see
+`packages/daemon/src/memory/provider.ts`; see
 [memory-evolution.md](memory-evolution.md) for the external-plugin contract and
 provider lifecycle.
 

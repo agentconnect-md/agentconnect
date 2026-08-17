@@ -8,7 +8,7 @@ import { describe, it, expect } from 'vitest'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createManagedMemoryProvider } from '../src/agents/memory-provider.js'
+import { createManagedMemoryProvider } from '../src/memory/provider.js'
 import { createMemoryReader } from '../src/cp/memory-reader.js'
 import {
   memoryChannelKey,
@@ -16,8 +16,8 @@ import {
   listChannelMemoryKeys,
   readChannelMemoryMeta,
   MemoryPathError
-} from '../src/agents/memory.js'
-import { LocalMemoryFs } from '../src/agents/memory-fs.js'
+} from '../src/memory/store.js'
+import { LocalMemoryFs } from '../src/memory/fs.js'
 
 const local = (dir: string) => new LocalMemoryFs(dir)
 

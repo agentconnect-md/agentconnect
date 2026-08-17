@@ -1,5 +1,5 @@
 import type { ToolDescriptor } from './tools.js'
-import type { MemoryProvider, MemoryScope } from '../agents/memory-provider.js'
+import type { MemoryProvider, MemoryScope } from '../memory/provider.js'
 import {
   rootPostNeedsThreadMaterialization,
   rootPostThreadName,
@@ -21,7 +21,7 @@ import type {
   Platform
 } from '@agentconnect.md/protocol'
 import { randomUUID } from 'node:crypto'
-import { MemoryPathError, MemoryTooLargeError } from '../agents/memory.js'
+import { MemoryPathError, MemoryTooLargeError } from '../memory/store.js'
 import type {
   GithubInlineReviewComment,
   GithubReviewEffect,

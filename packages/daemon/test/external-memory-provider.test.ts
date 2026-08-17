@@ -5,18 +5,14 @@ import {
   type MemoryConnectionSpec,
   type MemoryPluginManifest
 } from '@agentconnect.md/protocol'
-import {
-  ExternalMemoryProvider,
-  createMemoryProvider,
-  type ExternalMemoryRuntimeDeps
-} from '../src/agents/memory-provider.js'
+import { ExternalMemoryProvider, createMemoryProvider, type ExternalMemoryRuntimeDeps } from '../src/memory/provider.js'
 import {
   MemoryPluginConflictError,
   MemoryPluginInputError,
   type MemoryPluginClient
 } from '../src/memory-plugin/client.js'
-import { MemoryConflictError, MemoryTooLargeError } from '../src/agents/memory.js'
-import { LocalMemoryFs } from '../src/agents/memory-fs.js'
+import { MemoryConflictError, MemoryTooLargeError } from '../src/memory/store.js'
+import { LocalMemoryFs } from '../src/memory/fs.js'
 
 const connectionA = '11111111-1111-4111-8111-111111111111'
 const connectionB = '22222222-2222-4222-8222-222222222222'

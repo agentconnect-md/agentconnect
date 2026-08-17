@@ -400,7 +400,7 @@ export class WorkspaceManager {
 
     if (agent.workspace.mode === 'from-scratch') {
       // The agent's memory file lives at the agent ROOT (outside the workspace) and
-      // is seeded separately (see agents/memory.ts `ensureMemory`), so from-scratch
+      // is seeded separately (see memory/store.ts `ensureMemory`), so from-scratch
       // just needs the (empty) workspace dir to exist.
       return this.withSkills(agent, cwd, opts)
     }

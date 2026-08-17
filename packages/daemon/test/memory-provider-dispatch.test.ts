@@ -9,10 +9,10 @@ import {
   memoryKindOf,
   MemoryProviderUnavailableError,
   type MemoryProviderKind
-} from '../src/agents/memory-provider.js'
-import { MEMORY_INDEX, MemoryConflictError, MemoryPathError } from '../src/agents/memory.js'
-import { LocalMemoryFs } from '../src/agents/memory-fs.js'
-import { isNativeRuntimeSupported, nativeRuntimeEnv } from '../src/agents/native-memory.js'
+} from '../src/memory/provider.js'
+import { MEMORY_INDEX, MemoryConflictError, MemoryPathError } from '../src/memory/store.js'
+import { LocalMemoryFs } from '../src/memory/fs.js'
+import { isNativeRuntimeSupported, nativeRuntimeEnv } from '../src/memory/runtime/native.js'
 
 function newDir(): string {
   return mkdtempSync(join(tmpdir(), 'ac-m2-'))
