@@ -1,8 +1,13 @@
 {
   "name": "@agentconnect.md/billing-contract",
-  "version": "0.1.0-dev",
+  "version": "0.1.0",
   "description": "AgentConnect billing wire contract — zod schemas and types, no implementation",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/agentconnect-md/agentconnect.git",
+    "directory": "packages/billing-contract"
+  },
   "type": "module",
   "exports": {
     ".": {

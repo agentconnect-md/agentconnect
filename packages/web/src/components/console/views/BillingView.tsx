@@ -115,12 +115,29 @@ export default function BillingView() {
             <div className="cardhead">
               <span className="cardtitle">Transactions</span>
             </div>
-            {transactions.data?.items.length === 0 ? (
+            {/* The two requests fail independently, so this card carries its own
+                error: a reachable account with an unreachable history would
+                otherwise render as "no transactions", which is a lie. */}
+            {transactions.error ? (
+              <div className="flex items-center gap-3 px-4 py-3">
+                <Icon name="triangle-alert" size={18} color="var(--status-error)" />
+                <span className="flex-1 font-sans text-[13px] font-normal leading-[1.55]">
+                  Could not load transactions: {(transactions.error as Error).message}
+                </span>
+                <Button size="sm" variant="secondary" onClick={() => void transactions.mutate()}>
+                  Retry
+                </Button>
+              </div>
+            ) : !transactions.data ? (
+              <div className="px-4 py-8 text-center font-sans text-[13px] font-normal leading-[1.55] text-(--text-tertiary)">
+                Loading…
+              </div>
+            ) : transactions.data.items.length === 0 ? (
               <div className="px-4 py-8 text-center font-sans text-[13px] font-normal leading-[1.55] text-(--text-secondary)">
                 No transactions yet.
               </div>
             ) : (
-              (transactions.data?.items ?? []).map((t) => (
+              transactions.data.items.map((t) => (
                 <div key={t.id} className={`row ${TX_GRID}`}>
                   <span className="min-w-0">
                     <span className="block truncate font-sans text-[13px] font-medium leading-normal">
