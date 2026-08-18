@@ -63,7 +63,7 @@ export type StandingContextInput = {
   envSecretNames: readonly string[]
   /** Secrets materialized to a private file instead of reaching the child env. */
   fileSecrets: readonly StandingContextFileSecret[]
-  /** Secondary workspace roots this session is handed as additional directories. */
+  /** The workspace roots this session is handed as additional directories, beside its own cwd. */
   workspaceRoots?: readonly { path: string; repoFullName: string; branch: string }[]
   usesSessionTitleTool: boolean
   needsReplyToParent: boolean
@@ -200,17 +200,18 @@ function buildAgentMeta(input: StandingContextInput): string {
   ].join('\n')
 }
 
-// The session's secondary workspace roots (multi-repository-workspaces.md decision 10). Standing
+// The session's additional workspace roots (multi-repository-workspaces.md decision 10). Standing
 // like the meta block: the set is fixed for the session, and the model must not mistake a root's
-// default branch for anything the current task is pinned to.
+// default branch for anything the current task is pinned to — the cwd may be a reviewed secondary
+// root, which puts the PRIMARY on this list instead.
 export function buildWorkspaceRootsAppend(
   roots: readonly { path: string; repoFullName: string; branch: string }[] | undefined
 ): string {
   if (!roots?.length) return ''
   return [
     '# Additional repositories',
-    'Additional repositories checked out for this session (each at its default branch; the working ' +
-      'directory stays the primary workspace):',
+    'Additional repositories checked out for this session (each at its default branch, for reference ' +
+      'only; the working directory is none of them):',
     ...roots.map((root) => `- ${root.path} — ${root.repoFullName} (${root.branch})`)
   ].join('\n')
 }

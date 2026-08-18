@@ -694,6 +694,159 @@ describe('Daemon rd/msg hook fires', () => {
     )
     expect(entry.msg.text).toContain('Trusted review workspace')
     expect(entry.msg.text).toContain('verify `git rev-parse HEAD`')
+    // A session with no other root has no reference directories to speak of.
+    expect(entry.msg.text).not.toContain('Additional repositories are available')
+    await daemon.stop()
+  })
+
+  it('reviews an authorized additional repository against that root, with the others as references', async () => {
+    const root = scaffold({
+      workspace: {
+        mode: 'git-repo',
+        path: join(tmpdir(), 'agentconnect-secondary-review-workspace'),
+        gitRepo: 'https://github.com/acme/primary-service',
+        gitBranch: 'main',
+        gitCredential: 'github-app',
+        pullOnNewSession: true,
+        additionalRepos: [{ repoFullName: 'acme/infra', repoId: '123' }]
+      }
+    })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: streamingHost().factory })
+    await daemon.start()
+    const dispatchDaemonId = (daemon as any).cfg.daemonId as string
+    const prepare = vi
+      .spyOn(daemon as any, 'prepareAgentWorkspace')
+      .mockResolvedValue('/agent/repos/acme/infra/worktrees/review')
+    // What preparation would have handed this session beside the reviewed root's own worktree.
+    vi.spyOn((daemon as any).workspaces, 'sessionAdditionalRoots').mockReturnValue([
+      { path: '/agent/worktrees/review', repoFullName: 'acme/primary-service', branch: 'main' }
+    ])
+    const headSha = 'a'.repeat(40)
+    const baseSha = 'b'.repeat(40)
+    const entry = {
+      msg: { text: 'Review this pull request.' },
+      hookContext: {
+        hookId: HOOK_ID,
+        agentId: AGENT_ID,
+        deliveryKey: 'secondary-review',
+        firedAt: new Date().toISOString(),
+        event: 'pull_request:synchronize',
+        snapshot: {
+          configRevision: '1',
+          dispatchRevision: '1',
+          dispatchDaemonId,
+          reviewPolicy: 'full',
+          reportingMode: 'check',
+          gateMode: 'informational'
+        },
+        github: {
+          repoId: '123',
+          repoFullName: 'acme/infra',
+          sourceInstallationId: '456',
+          subjectKind: 'pull_request',
+          pullNumber: 461,
+          headSha,
+          baseSha,
+          reportSha: headSha
+        }
+      }
+    }
+
+    await expect(
+      (daemon as any).githubReviews.prepareGithubReviewWorkspace(
+        entry,
+        'hook:acme/infra#461',
+        (daemon as any).agents.get(AGENT_ID)
+      )
+    ).resolves.toEqual({
+      workspaceIsolation: 'session',
+      forceWorkspaceIsolation: true,
+      preparedWorkspaceCwd: '/agent/repos/acme/infra/worktrees/review'
+    })
+    expect(prepare).toHaveBeenCalledWith(
+      expect.objectContaining({ id: AGENT_ID }),
+      undefined,
+      expect.objectContaining({
+        sessionKey: 'hook:acme/infra#461',
+        isolation: 'session',
+        reviewRepoFullName: 'acme/infra',
+        review: { pullNumber: 461, baseSha, headSha }
+      })
+    )
+    expect(entry.msg.text).toContain('Trusted review workspace')
+    expect(entry.msg.text).toContain(
+      'Additional repositories are available as separate directories at their default branches for reference only; the reviewed revision is the working directory.'
+    )
+    await daemon.stop()
+  })
+
+  it('falls back to revision-only inspection for a repository that is no root of this agent', async () => {
+    const root = scaffold({
+      workspace: {
+        mode: 'git-repo',
+        path: join(tmpdir(), 'agentconnect-unauthorized-review-workspace'),
+        gitRepo: 'https://github.com/acme/primary-service',
+        gitBranch: 'main',
+        gitCredential: 'github-app',
+        pullOnNewSession: true,
+        additionalRepos: [{ repoFullName: 'acme/infra', repoId: '123' }]
+      }
+    })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: streamingHost().factory })
+    await daemon.start()
+    const dispatchDaemonId = (daemon as any).cfg.daemonId as string
+    const prepare = vi.spyOn(daemon as any, 'prepareAgentWorkspace').mockResolvedValue('/agent/worktrees/revision-only')
+    const headSha = 'a'.repeat(40)
+    const baseSha = 'b'.repeat(40)
+    const entry = {
+      msg: { text: 'Review this pull request.' },
+      hookContext: {
+        hookId: HOOK_ID,
+        agentId: AGENT_ID,
+        deliveryKey: 'unauthorized-review',
+        firedAt: new Date().toISOString(),
+        event: 'pull_request:synchronize',
+        snapshot: {
+          configRevision: '1',
+          dispatchRevision: '1',
+          dispatchDaemonId,
+          reviewPolicy: 'full',
+          reportingMode: 'check',
+          gateMode: 'informational'
+        },
+        github: {
+          repoId: '999',
+          repoFullName: 'example-co/elsewhere',
+          sourceInstallationId: '456',
+          subjectKind: 'pull_request',
+          pullNumber: 461,
+          headSha,
+          baseSha,
+          reportSha: headSha
+        }
+      }
+    }
+
+    await expect(
+      (daemon as any).githubReviews.prepareGithubReviewWorkspace(
+        entry,
+        'hook:example-co/elsewhere#461',
+        (daemon as any).agents.get(AGENT_ID)
+      )
+    ).resolves.toEqual({
+      workspaceIsolation: 'session',
+      forceWorkspaceIsolation: true,
+      preparedWorkspaceCwd: '/agent/worktrees/revision-only'
+    })
+    // No exact checkout is attempted at all: the only preparation is the empty revision-only cwd.
+    expect(prepare).toHaveBeenCalledTimes(1)
+    expect(prepare).toHaveBeenCalledWith(
+      expect.objectContaining({ id: AGENT_ID }),
+      undefined,
+      expect.objectContaining({ githubReviewRevisionOnly: true })
+    )
+    expect(entry.msg.text).toContain('Trusted review revision')
+    expect(entry.msg.text).toContain('No trusted local pull-request checkout is available')
     await daemon.stop()
   })
 

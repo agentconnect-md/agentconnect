@@ -13,6 +13,7 @@ import {
 } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
 import {
+  gitRepoLabel,
   normalizeGitCloneUrl,
   normalizeGithubRepoUrl,
   normalizeGitUrl,
@@ -120,8 +121,21 @@ export type RetiredRootRemoval =
   | { outcome: 'retained'; reason: 'worktrees' | 'dirty' | 'unique-commits' }
   | { outcome: 'failed'; error: string }
 
-/** How one session addresses the agent's roots: the isolation, plus the key that names its worktrees. */
-export type SessionRootScope = Pick<PrepareSessionWorkspaceRequest, 'isolation'> & { sessionKey?: string }
+/** How one session addresses the agent's roots: the isolation, the key that names its worktrees, and
+ *  the secondary root a review made the working directory. */
+export type SessionRootScope = Pick<PrepareSessionWorkspaceRequest, 'isolation' | 'reviewRepoFullName'> & {
+  sessionKey?: string
+}
+
+/** The roots one prepared session stands in and rides with, as its later hand-outs read them. */
+interface SessionRootRecord {
+  /** The reviewed secondary root that took the working directory. */
+  repoFullName: string
+  /** That root's own session checkout — where the runtime was told to stand. */
+  cwd: string
+  /** Every other root the session was handed, in hand-out order. */
+  additional: ReadyWorkspaceRoot[]
+}
 
 /** What a secondary root's `.materialization.json` records about the checkout beside it. */
 interface SecondaryMaterialization {
@@ -137,6 +151,10 @@ export interface PrepareSessionWorkspaceRequest {
    * worktree's branch. Presentation only; never an identity or auth input. */
   initiatedBy?: string
   review?: GithubReviewWorkspaceRevision
+  /** `owner/repo` the review is about — only meaningful with `review`. When it names a secondary
+   * root, that root's exact worktree is this session's cwd and every other root rides along at its
+   * default branch (decisions 5 and 6). Absent, or the primary, is the ordinary review. */
+  reviewRepoFullName?: string
   /** Use an empty daemon-owned cwd when an exact local review checkout is
    * unavailable. The model must inspect the trusted revision through GitHub. */
   githubReviewRevisionOnly?: true
@@ -170,6 +188,11 @@ export class WorkspaceManager {
   private readonly secondaryInFlight = new Map<string, Promise<SecondaryWorkspaceRoot | undefined>>()
   /** Secondary roots prepared for an agent's current sessions — what the synchronous hand-out reads. */
   private readonly readyRoots = new Map<string, SecondaryWorkspaceRoot[]>()
+  // What one session's roots resolved to, recorded only when a review made a SECONDARY root its cwd
+  // (decision 5). Written where the cwd is decided and read by the synchronous hand-outs that follow,
+  // so the additional directories and the standing context cannot disagree with the directories the
+  // runtime was actually given — including for a caller whose own isolation says otherwise.
+  private readonly sessionRoots = new Map<string, SessionRootRecord>()
   private gitRunnerResolver: WorkspaceGitRunnerResolver | undefined
   private pathClearer: WorkspacePathClearer | undefined
   private workspacesLiveInSandboxes = false
@@ -304,6 +327,34 @@ export class WorkspaceManager {
     return roots.sort((a, b) => (a.repoFullName < b.repoFullName ? -1 : a.repoFullName > b.repoFullName ? 1 : 0))
   }
 
+  /** The primary clone's `owner/repo`, when it names github.com — an App-backed URL is canonicalized
+   *  there by the daemon, an anonymous one must already say so. */
+  private primaryRepoFullName(agent: Agent): string | undefined {
+    if (agent.workspace.mode !== 'git-repo' || !agent.workspace.gitRepo) return undefined
+    if (!this.usesGithubApp(agent) && !this.isTrustedGithubOrigin(agent.workspace.gitRepo)) return undefined
+    const label = gitRepoLabel(agent.workspace.gitRepo)
+    return label.split('/').length === 2 ? label : undefined
+  }
+
+  /**
+   * The secondary root a review names, or undefined when it names the primary (or names nothing) and
+   * the session is the ordinary one.
+   *
+   * A name that matches no root at all THROWS: the caller asked for an exact checkout of a repository
+   * this agent has no root for, which is precisely the case the review orchestrator degrades to
+   * revision-only inspection.
+   */
+  reviewedSecondaryRoot(agent: Agent, scope: SessionRootScope): SecondaryWorkspaceRoot | undefined {
+    const name = scope.reviewRepoFullName
+    if (name === undefined) return undefined
+    const wanted = repoKey(name)
+    const root = this.secondaryRoots(agent).find((entry) => repoKey(entry.repoFullName) === wanted)
+    if (root) return root
+    const primary = this.primaryRepoFullName(agent)
+    if (primary !== undefined && repoKey(primary) === wanted) return undefined
+    throw new Error(`github review repository "${name}" is not a workspace root of agent "${agent.id}"`)
+  }
+
   /**
    * The prepared secondary roots one session is handed — the single answer the additional
    * directories and the standing context are both derived from, so the prompt cannot name a
@@ -316,7 +367,8 @@ export class WorkspaceManager {
    */
   readySecondaryRoots(agent: Agent, request?: SessionRootScope): readonly ReadyWorkspaceRoot[] {
     if (this.sandboxMode) return []
-    const ready = this.readyRoots.get(agent.id) ?? []
+    // The root a review made the cwd is not an additional directory of its own session.
+    const ready = this.sessionSecondaryRoots(agent, this.sessionCwdRepoFullName(agent, request))
     const id =
       request?.isolation === 'session' && request.sessionKey !== undefined
         ? this.sessionWorktreeId(request.sessionKey)
@@ -334,6 +386,70 @@ export class WorkspaceManager {
       roots.push({ path: realpathSync(cwd), repoFullName: root.repoFullName, branch: root.branch })
     }
     return roots
+  }
+
+  /**
+   * Every root one session is handed as an additional directory — the secondaries above, plus the
+   * PRIMARY when it is not this session's working directory (decision 5).
+   *
+   * The primary only ever rides along when a review made a secondary root the cwd; an ordinary
+   * session stands in the primary itself, where {@link additionalWorkspaceDirectories} widens an
+   * `agentDir` cwd back to it instead.
+   */
+  sessionAdditionalRoots(agent: Agent, request?: SessionRootScope): readonly ReadyWorkspaceRoot[] {
+    const recorded = this.sessionRootRecord(agent, request)
+    if (recorded) return recorded.additional
+    const primary = this.primaryReferenceRoot(agent, request)
+    const secondaries = this.readySecondaryRoots(agent, request)
+    return primary ? [primary, ...secondaries] : secondaries
+  }
+
+  /** The primary's own session directory, as a reference root beside a reviewed secondary's cwd. */
+  private primaryReferenceRoot(agent: Agent, request?: SessionRootScope): ReadyWorkspaceRoot | undefined {
+    if (this.sandboxMode || agent.workspace.mode !== 'git-repo' || !agent.workspace.gitRepo) return undefined
+    if (this.sessionCwdRepoFullName(agent, request) === undefined) return undefined
+    const path = this.sessionRootPath(agent.workspace.path, this.worktreesPathFor(agent), request)
+    // Same proof the secondaries answer to: a checkout the session did not get is not named here.
+    if (!existsSync(join(path, '.git'))) return undefined
+    return {
+      path: realpathSync(path),
+      repoFullName: gitRepoLabel(agent.workspace.gitRepo),
+      branch: agent.workspace.gitBranch
+    }
+  }
+
+  /** One root's directory for a session: its per-session worktree under `session`, the checkout itself under `shared`. */
+  private sessionRootPath(checkout: string, worktreesPath: string, request?: SessionRootScope): string {
+    return request?.isolation === 'session' && request.sessionKey !== undefined
+      ? join(worktreesPath, this.sessionWorktreeId(request.sessionKey))
+      : checkout
+  }
+
+  /** The prepared secondary roots minus one, named case-insensitively. */
+  private sessionSecondaryRoots(agent: Agent, excluded?: string): SecondaryWorkspaceRoot[] {
+    const skip = excluded === undefined ? undefined : repoKey(excluded)
+    return (this.readyRoots.get(agent.id) ?? []).filter((root) => repoKey(root.repoFullName) !== skip)
+  }
+
+  /** The secondary root holding this session's cwd: named by the request, else the one preparation
+   *  recorded for that session key. */
+  private sessionCwdRepoFullName(agent: Agent, request?: SessionRootScope): string | undefined {
+    if (request?.reviewRepoFullName !== undefined) return request.reviewRepoFullName
+    return this.sessionRootRecord(agent, request)?.repoFullName
+  }
+
+  /** What preparation resolved for this session — absent unless a review made a secondary root the
+   *  cwd, and skipped whenever the caller names the reviewed root itself (which resolves live). */
+  private sessionRootRecord(agent: Agent, request?: SessionRootScope): SessionRootRecord | undefined {
+    if (request?.reviewRepoFullName !== undefined || request?.sessionKey === undefined) return undefined
+    return this.sessionRoots.get(sessionScopeKey(agent.id, request.sessionKey))
+  }
+
+  /** Record (or forget) the roots one session resolved to. */
+  private recordSessionRoots(agentId: string, sessionKey: string, record?: SessionRootRecord): void {
+    const key = sessionScopeKey(agentId, sessionKey)
+    if (record === undefined) this.sessionRoots.delete(key)
+    else this.sessionRoots.set(key, record)
   }
 
   /**
@@ -870,6 +986,8 @@ export class WorkspaceManager {
    */
   async removeSessionWorktree(agent: Agent, sessionKey: string): Promise<SessionWorktreeRemoval> {
     const roots = this.sessionWorktreeRoots(agent)
+    // Nothing outlives the session's worktrees, the record of which roots it stood in included.
+    this.recordSessionRoots(agent.id, sessionKey)
     if (roots.length === 0) return { outcome: 'failed', error: 'agent workspace is not a Git repository' }
     const id = this.sessionWorktreeId(sessionKey)
     let retained: SessionWorktreeRemoval | undefined
@@ -1180,10 +1298,19 @@ export class WorkspaceManager {
       if (agent.workspace.mode !== 'git-repo' || request.isolation !== 'session' || request.review) {
         throw new Error('github revision-only workspace requires an isolated git-repo review session')
       }
+      this.recordSessionRoots(agent.id, request.sessionKey)
       return this.prepareGithubRevisionOnlyWorkspace(agent, this.sessionWorktreeId(request.sessionKey))
     }
+    // Resolved before anything is materialized: a review naming a repository this agent has no root
+    // for must leave no worktree behind for the caller's revision-only fallback to step around.
+    const reviewRoot = this.reviewedSecondaryRoot(agent, request)
     const primary = await this.prepareWorkspace(agent, opts)
-    if (request.isolation === 'shared') return primary
+    if (request.isolation === 'shared') {
+      this.recordSessionRoots(agent.id, request.sessionKey)
+      return primary
+    }
+    if (reviewRoot) return await this.prepareReviewedRootWorkspace(agent, reviewRoot, request, opts)
+    this.recordSessionRoots(agent.id, request.sessionKey)
 
     // A from-scratch primary keeps its scratch directory as the cwd — isolation has no clone to
     // branch it off — but its secondaries still get per-session worktrees (decisions 4 and 5).
@@ -1191,34 +1318,90 @@ export class WorkspaceManager {
       agent.workspace.mode === 'git-repo'
         ? await this.prepareRootSessionWorktree(agent, this.primaryRoot(agent), request)
         : undefined
-    await this.prepareSecondarySessionWorktrees(agent, request)
+    await this.prepareReferenceSessionWorktrees(agent, this.referenceRootsOf(agent), request)
     if (cwd === undefined) return primary
     const agentDir = normalizeRepoSubdir(agent.workspace.agentDir)
     return this.withSkills(agent, this.resolveAcpCwd(cwd, agentDir), opts)
   }
 
   /**
-   * Every prepared secondary root's worktree for this session, at the SAME id as the primary's.
+   * A review whose subject is a secondary root: that root's exact worktree is the session's cwd, and
+   * the primary plus the remaining secondaries ride along at their default branches (decisions 5/6).
+   *
+   * The root is materialized HERE even when it is a submodule of another one (decision 11): such a
+   * root is withheld from ordinary sessions as an additional directory, but a review of its own pull
+   * request still gets the exact checkout every authorized repository is promised.
+   */
+  private async prepareReviewedRootWorkspace(
+    agent: Agent,
+    root: SecondaryWorkspaceRoot,
+    request: PrepareSessionWorkspaceRequest,
+    opts: PrepareWorkspaceOptions
+  ): Promise<string> {
+    // Preparation already materialized every root it hands out; only a root it WITHHELD — a submodule
+    // root, or one it skipped — is materialized here, so an ordinary session's converge/pull is not
+    // repeated and decision 11 still owes this repository an exact checkout of its own pull request.
+    const prepared =
+      this.sessionSecondaryRoots(agent).find((entry) => repoKey(entry.repoFullName) === repoKey(root.repoFullName)) ??
+      (await this.prepareSecondaryRoot(agent, root))
+    if (!prepared) {
+      throw new Error(`github review checkout of ${root.repoFullName} is unavailable to agent "${agent.id}"`)
+    }
+    const cwd = this.resolveAcpCwd(await this.prepareRootSessionWorktree(agent, prepared, request), undefined)
+    await this.prepareReferenceSessionWorktrees(agent, this.referenceRootsOf(agent, prepared.repoFullName), request)
+    // Recorded once the whole session exists, so every later hand-out names these exact directories
+    // however the caller describes the session's isolation.
+    const scope: SessionRootScope = {
+      isolation: 'session',
+      sessionKey: request.sessionKey,
+      reviewRepoFullName: prepared.repoFullName
+    }
+    this.recordSessionRoots(agent.id, request.sessionKey, {
+      repoFullName: prepared.repoFullName,
+      cwd,
+      additional: [...this.sessionAdditionalRoots(agent, scope)]
+    })
+    // The same post-steps the primary cwd gets, deliberately: skills install into the working
+    // directory, and the reviewed root is the one the model stands in. `agentDir` is the primary's.
+    return this.withSkills(agent, cwd, opts)
+  }
+
+  /** The roots that ride along this session, with the label their per-root failure is reported under. */
+  private referenceRootsOf(agent: Agent, cwdRepoFullName?: string): { root: WorkspaceRoot; label: string }[] {
+    return [
+      ...(cwdRepoFullName !== undefined && agent.workspace.mode === 'git-repo'
+        ? [{ root: this.primaryRoot(agent), label: 'the workspace repository' }]
+        : []),
+      ...this.sessionSecondaryRoots(agent, cwdRepoFullName).map((root) => ({
+        root,
+        label: `additional repository ${root.repoFullName}`
+      }))
+    ]
+  }
+
+  /**
+   * Every reference root's worktree for this session, at the SAME id as the working directory's.
    *
    * Never a review checkout: the reviewed revision belongs to the one root the session is about,
    * and the others ride along at their default branch as references (decision 5). Per-root failure
    * is local like a clone failure (decision 7) — that root is absent from this session and nothing
    * else about it changes.
    */
-  private async prepareSecondarySessionWorktrees(agent: Agent, request: PrepareSessionWorkspaceRequest): Promise<void> {
+  private async prepareReferenceSessionWorktrees(
+    agent: Agent,
+    roots: readonly { root: WorkspaceRoot; label: string }[],
+    request: PrepareSessionWorkspaceRequest
+  ): Promise<void> {
     const rootRequest: PrepareSessionWorkspaceRequest = {
       sessionKey: request.sessionKey,
       isolation: 'session',
       ...(request.initiatedBy !== undefined ? { initiatedBy: request.initiatedBy } : {})
     }
-    for (const root of this.readyRoots.get(agent.id) ?? []) {
+    for (const { root, label } of roots) {
       try {
         await this.prepareRootSessionWorktree(agent, root, rootRequest)
       } catch (err) {
-        workspaceLog.warn(
-          `workspace: additional repository ${root.repoFullName} has no session worktree for agent ` +
-            `"${agent.id}" (${formatErr(err)})`
-        )
+        workspaceLog.warn(`workspace: ${label} has no session worktree for agent "${agent.id}" (${formatErr(err)})`)
       }
     }
   }
@@ -1485,7 +1668,7 @@ export class WorkspaceManager {
   additionalWorkspaceDirectories(
     agent: Agent,
     cwd: string,
-    request?: Pick<PrepareSessionWorkspaceRequest, 'sessionKey' | 'isolation'>
+    request?: Pick<PrepareSessionWorkspaceRequest, 'sessionKey' | 'isolation' | 'reviewRepoFullName'>
   ): string[] {
     if (this.sandboxMode) {
       if (agent.workspace.mode !== 'git-repo') return []
@@ -1496,20 +1679,40 @@ export class WorkspaceManager {
       if (agentDir === undefined) return []
       return [agentDir.split('/').reduce((path) => dirname(path), cwd)]
     }
-    // Widening an `agentDir` cwd back to its checkout root — the primary's, and only a git-repo has one.
+    // Containment is proven against the root this session actually stands in — the primary, or the
+    // secondary a review made the working directory (decision 5). Widening an `agentDir` cwd back to
+    // its checkout root is the primary's alone; a reviewed root has no `agentDir`.
     const widened: string[] = []
-    if (agent.workspace.mode === 'git-repo') {
-      const expectedRoot =
-        request?.isolation === 'session' ? this.sessionWorktreePath(agent, request.sessionKey) : agent.workspace.path
-      const root = realpathSync(expectedRoot)
+    const cwdRoot = this.sessionCwdRootPath(agent, request)
+    if (cwdRoot !== undefined) {
+      const root = realpathSync(cwdRoot)
       const canonicalCwd = realpathSync(cwd)
       const rel = relative(root, canonicalCwd)
       if (isAbsolute(rel) || rel === '..' || rel.startsWith(`..${sep}`)) {
         throw new Error(`prepared workspace cwd "${cwd}" resolves outside its checkout root`)
       }
-      if (root !== canonicalCwd) widened.push(root)
+      if (root !== canonicalCwd && this.sessionCwdRepoFullName(agent, request) === undefined) widened.push(root)
     }
-    return [...widened, ...this.readySecondaryRoots(agent, request).map((root) => root.path)]
+    return [...widened, ...this.sessionAdditionalRoots(agent, request).map((root) => root.path)]
+  }
+
+  /** The directory this session's cwd must sit under: the reviewed secondary root's, else the
+   *  primary's. Undefined when the agent has no primary checkout and no review named a root. */
+  private sessionCwdRootPath(agent: Agent, request?: SessionRootScope): string | undefined {
+    // A recorded session names its own working directory, so its containment never depends on what
+    // the caller believes this session's isolation to be.
+    const recorded = this.sessionRootRecord(agent, request)
+    if (recorded) return recorded.cwd
+    const reviewed = request?.reviewRepoFullName
+    if (reviewed !== undefined) {
+      const key = repoKey(reviewed)
+      const root = this.secondaryRoots(agent).find((entry) => repoKey(entry.repoFullName) === key)
+      // A root the rows no longer name cannot vouch for the cwd; fall through to the primary, which
+      // the cwd is not under either, so the containment check refuses it.
+      if (root) return this.sessionRootPath(root.path, root.worktreesPath, request)
+    }
+    if (agent.workspace.mode !== 'git-repo') return undefined
+    return this.sessionRootPath(agent.workspace.path, this.worktreesPathFor(agent), request)
   }
 
   resolveAcpCwd(workspaceRoot: string, agentDir: string | undefined): string {
@@ -1753,6 +1956,19 @@ export class WorkspaceManager {
     this.cloneInFlight.set(key, p)
     return p
   }
+}
+
+/** The identity two `owner/repo` names are compared by: case-insensitive and blind to a `.git` suffix. */
+function repoKey(repoFullName: string): string {
+  return repoFullName
+    .trim()
+    .replace(/\.git$/i, '')
+    .toLowerCase()
+}
+
+/** One agent's session, as the per-session root snapshot keys it. */
+function sessionScopeKey(agentId: string, sessionKey: string): string {
+  return `${agentId}\u0000${sessionKey}`
 }
 
 /** `ref: refs/heads/<name>\tHEAD` from `ls-remote --symref`; undefined when HEAD names no branch. */

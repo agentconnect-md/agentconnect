@@ -596,6 +596,215 @@ describe('sandbox write roots', () => {
   })
 })
 
+describe('review of a secondary root (decisions 5, 6 and 11)', () => {
+  /** The local bare repository standing in for one root's authorized clone URL. */
+  function remoteOf(repoFullName: string): string {
+    return remotes.get(`https://github.com/${repoFullName}`)!
+  }
+
+  /** The refs GitHub publishes for one pull request, seeded into a fixture remote. */
+  function seedPullRequest(
+    bare: string,
+    branch: string,
+    pullNumber: number,
+    options: { merge?: boolean } = {}
+  ): { base: string; head: string; merge?: string } {
+    const home = tempRoot('ac-secondary-pull-')
+    const seed = join(home, 'seed')
+    git(home, ['clone', '-q', bare, 'seed'])
+    const base = git(seed, ['rev-parse', 'HEAD']).trim()
+    git(seed, ['checkout', '-q', '-b', `pull-${pullNumber}`])
+    writeFileSync(join(seed, `feature-${pullNumber}.txt`), 'proposed change\n')
+    git(seed, ['add', '-A'])
+    git(seed, ['commit', '-q', '-m', `feature ${pullNumber}`])
+    const head = git(seed, ['rev-parse', 'HEAD']).trim()
+    const refs = [`${head}:refs/pull/${pullNumber}/head`]
+    let merge: string | undefined
+    if (options.merge !== false) {
+      git(seed, ['checkout', '-q', branch])
+      git(seed, ['merge', '-q', '--no-ff', '-m', `merge ${pullNumber}`, head])
+      merge = git(seed, ['rev-parse', 'HEAD']).trim()
+      refs.push(`${merge}:refs/pull/${pullNumber}/merge`)
+    }
+    // The branch itself stays where it was: a pull request is its refs, not a pushed base.
+    git(seed, ['push', '-q', 'origin', ...refs])
+    // The daemon fetches the base BY SHA, which a fixture remote has to allow the way GitHub does.
+    git(bare, ['config', 'uploadpack.allowAnySHA1InWant', 'true'])
+    return { base, head, ...(merge !== undefined ? { merge } : {}) }
+  }
+
+  function reviewRequest(
+    sessionKey: string,
+    repoFullName: string,
+    pullNumber: number,
+    pull: { base: string; head: string; merge?: string }
+  ) {
+    return {
+      sessionKey,
+      isolation: 'session' as const,
+      reviewRepoFullName: repoFullName,
+      review: {
+        pullNumber,
+        baseSha: pull.base,
+        headSha: pull.head,
+        ...(pull.merge !== undefined ? { mergeCommitSha: pull.merge } : {})
+      }
+    }
+  }
+
+  const worktreeOf = (agent: Agent, repoFullName: string, sessionKey: string) =>
+    join(
+      workspaces.agentRootFor(agent),
+      'repos',
+      ...repoFullName.split('/'),
+      'worktrees',
+      workspaces.sessionWorktreeId(sessionKey)
+    )
+
+  it('makes the reviewed root the cwd at the exact merge, with every other root a default-branch reference', async () => {
+    const agent = agentFixture([
+      { repoFullName: 'acme/infra', repoId: '42' },
+      { repoFullName: 'example-co/shared-library', repoId: '815' }
+    ])
+    serveAll(agent, { 'acme/infra': 'trunk', 'example-co/shared-library': 'main' })
+    const pull = seedPullRequest(remoteOf('acme/infra'), 'trunk', 7)
+    const request = reviewRequest('session-review', 'acme/infra', 7, pull)
+
+    const cwd = await workspaces.prepareSessionWorkspace(agent, request)
+
+    expect(cwd).toBe(realpathSync(worktreeOf(agent, 'acme/infra', 'session-review')))
+    expect(git(cwd, ['rev-parse', 'HEAD']).trim()).toBe(pull.merge)
+    // The primary and the other secondary ride along, each at its own default branch.
+    const primaryWorktree = realpathSync(workspaces.sessionWorktreePath(agent, 'session-review'))
+    const shared = realpathSync(worktreeOf(agent, 'example-co/shared-library', 'session-review'))
+    expect(workspaces.additionalWorkspaceDirectories(agent, cwd, request)).toEqual([primaryWorktree, shared])
+    // And the same answer without the request naming the review, which is how a session's later
+    // hand-outs ask: preparation remembered which root took the cwd.
+    expect(
+      workspaces.additionalWorkspaceDirectories(agent, cwd, { sessionKey: 'session-review', isolation: 'session' })
+    ).toEqual([primaryWorktree, shared])
+    expect(
+      workspaces
+        .sessionAdditionalRoots(agent, { sessionKey: 'session-review', isolation: 'session' })
+        .map((root) => [root.repoFullName, root.branch])
+    ).toEqual([
+      ['acme/primary-service', 'main'],
+      ['example-co/shared-library', 'main']
+    ])
+    // The reviewed root is the working directory, so it is nobody's additional directory.
+    expect(workspaces.readySecondaryRoots(agent, request).map((root) => root.repoFullName)).toEqual([
+      'example-co/shared-library'
+    ])
+    expect(git(primaryWorktree, ['rev-parse', 'HEAD']).trim()).toBe(
+      git(agent.workspace.path, ['rev-parse', 'refs/remotes/origin/main']).trim()
+    )
+  })
+
+  it('checks the reviewed root out at the exact head when the pull request has no merge ref', async () => {
+    const agent = agentFixture([{ repoFullName: 'acme/infra', repoId: '42' }])
+    serveAll(agent, { 'acme/infra': 'trunk' })
+    const pull = seedPullRequest(remoteOf('acme/infra'), 'trunk', 11, { merge: false })
+
+    const cwd = await workspaces.prepareSessionWorkspace(agent, reviewRequest('session-head', 'acme/infra', 11, pull))
+
+    expect(cwd).toBe(realpathSync(worktreeOf(agent, 'acme/infra', 'session-head')))
+    expect(git(cwd, ['rev-parse', 'HEAD']).trim()).toBe(pull.head)
+  })
+
+  it('materializes a submodule root for its own review, which ordinary sessions still never see', async () => {
+    const agent = agentFixture([{ repoFullName: 'acme/infra', repoId: '42' }])
+    serveAll(agent, { 'acme/infra': 'trunk' }, { primary: gitmodulesFor('acme/infra') })
+    const ordinary = { sessionKey: 'session-plain', isolation: 'session' as const }
+    const ordinaryCwd = await workspaces.prepareSessionWorkspace(agent, ordinary)
+    expect(workspaces.additionalWorkspaceDirectories(agent, ordinaryCwd, ordinary)).toEqual([])
+    restoreAuthorizedOrigins(agent)
+    const pull = seedPullRequest(remoteOf('acme/infra'), 'trunk', 4)
+
+    const cwd = await workspaces.prepareSessionWorkspace(agent, reviewRequest('session-sub', 'acme/infra', 4, pull))
+
+    expect(cwd).toBe(realpathSync(worktreeOf(agent, 'acme/infra', 'session-sub')))
+    expect(git(cwd, ['rev-parse', 'HEAD']).trim()).toBe(pull.merge)
+    // Its own review gets the exact checkout; an ordinary session still reaches it only through the
+    // parent's submodule path, so it is handed to nobody as an additional directory.
+    expect(workspaces.readySecondaryRoots(agent)).toEqual([])
+    expect(workspaces.additionalWorkspaceDirectories(agent, ordinaryCwd, ordinary)).toEqual([])
+  })
+
+  it('refuses a review of a repository this agent has no root for, leaving nothing behind', async () => {
+    const agent = agentFixture([{ repoFullName: 'acme/infra', repoId: '42' }])
+    serveAll(agent, { 'acme/infra': 'trunk' })
+    const pull = { base: 'a'.repeat(40), head: 'b'.repeat(40) }
+
+    await expect(
+      workspaces.prepareSessionWorkspace(agent, reviewRequest('session-unknown', 'example-co/elsewhere', 9, pull))
+    ).rejects.toThrow('is not a workspace root')
+
+    // Nothing was materialized for it, and no worktree was left for the caller's fallback to remove.
+    expect(existsSync(join(workspaces.agentRootFor(agent), 'repos', 'example-co'))).toBe(false)
+    expect(existsSync(workspaces.sessionWorktreePath(agent, 'session-unknown'))).toBe(false)
+  })
+
+  it('keeps the primary the working directory when the review names it', async () => {
+    const agent = agentFixture([{ repoFullName: 'acme/infra', repoId: '42' }])
+    serveAll(agent, { 'acme/infra': 'trunk' })
+    const pull = seedPullRequest(remoteOf('acme/primary-service'), 'main', 12)
+
+    const cwd = await workspaces.prepareSessionWorkspace(
+      agent,
+      reviewRequest('session-primary', 'acme/primary-service.git', 12, pull)
+    )
+
+    expect(cwd).toBe(realpathSync(workspaces.sessionWorktreePath(agent, 'session-primary')))
+    expect(git(cwd, ['rev-parse', 'HEAD']).trim()).toBe(pull.merge)
+    expect(
+      workspaces.additionalWorkspaceDirectories(agent, cwd, { sessionKey: 'session-primary', isolation: 'session' })
+    ).toEqual([realpathSync(worktreeOf(agent, 'acme/infra', 'session-primary'))])
+  })
+
+  it('hands a reviewed session the directories it was prepared with, whatever isolation a later read names', async () => {
+    const agent = agentFixture(
+      [
+        { repoFullName: 'acme/infra', repoId: '42' },
+        { repoFullName: 'example-co/shared-library', repoId: '815' }
+      ],
+      { mode: 'from-scratch' }
+    )
+    serveAll(agent, { 'acme/infra': 'trunk', 'example-co/shared-library': 'main' })
+    const pull = seedPullRequest(remoteOf('acme/infra'), 'trunk', 31)
+
+    const cwd = await workspaces.prepareSessionWorkspace(
+      agent,
+      reviewRequest('session-scratch', 'acme/infra', 31, pull)
+    )
+
+    expect(cwd).toBe(realpathSync(worktreeOf(agent, 'acme/infra', 'session-scratch')))
+    // A scratch workspace reports `shared` isolation of its own, having no clone to branch: the
+    // reviewed session's directories are still the ones preparation resolved.
+    expect(
+      workspaces.additionalWorkspaceDirectories(agent, cwd, { sessionKey: 'session-scratch', isolation: 'shared' })
+    ).toEqual([realpathSync(worktreeOf(agent, 'example-co/shared-library', 'session-scratch'))])
+  })
+
+  it('sweeps the reviewed root’s worktree and its review refs with the rest of the session', async () => {
+    const agent = agentFixture([{ repoFullName: 'acme/infra', repoId: '42' }])
+    serveAll(agent, { 'acme/infra': 'trunk' })
+    const pull = seedPullRequest(remoteOf('acme/infra'), 'trunk', 21)
+    const cwd = await workspaces.prepareSessionWorkspace(agent, reviewRequest('session-gc', 'acme/infra', 21, pull))
+    const checkout = join(workspaces.agentRootFor(agent), 'repos', 'acme', 'infra', 'checkout')
+    const id = workspaces.sessionWorktreeId('session-gc')
+    expect(git(checkout, ['for-each-ref', '--format=%(refname)', `refs/agentconnect/reviews/${id}`]).trim()).not.toBe(
+      ''
+    )
+
+    expect(await workspaces.removeSessionWorktree(agent, 'session-gc')).toEqual({ outcome: 'removed' })
+
+    expect(existsSync(cwd)).toBe(false)
+    expect(existsSync(workspaces.sessionWorktreePath(agent, 'session-gc'))).toBe(false)
+    // The daemon-owned review refs are per root, and they go with that root's worktree.
+    expect(git(checkout, ['for-each-ref', '--format=%(refname)', `refs/agentconnect/reviews/${id}`]).trim()).toBe('')
+  })
+})
+
 describe('removeSessionWorktree across every root (decision 4)', () => {
   it('removes the primary and every secondary worktree of one session', async () => {
     const agent = agentFixture([
