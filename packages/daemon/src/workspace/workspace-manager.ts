@@ -66,6 +66,20 @@ export interface GithubReviewWorkspaceRevision {
   mergeCommitSha?: string
 }
 
+/** One checkout the daemon manages for an agent — the primary workspace today, secondary roots later. */
+export interface WorkspaceRoot {
+  /** Authorized, normalized clone URL (what `gitRepoOf` returns for the primary). */
+  cloneUrl: string
+  /** Branch the clone tracks. */
+  branch: string
+  /** The clone itself. */
+  path: string
+  /** Where this root's per-session worktrees live. */
+  worktreesPath: string
+  /** Credentials ride the github-app helper (vs anonymous). */
+  githubApp: boolean
+}
+
 export interface PrepareSessionWorkspaceRequest {
   sessionKey: string
   isolation: 'shared' | 'session'
@@ -175,6 +189,17 @@ export class WorkspaceManager {
     )
   }
 
+  /** The agent's primary checkout as a root. Throws like `gitRepoOf` when the workspace is not a repository. */
+  primaryRoot(agent: Agent): WorkspaceRoot {
+    return {
+      cloneUrl: this.gitRepoOf(agent),
+      branch: agent.workspace.gitBranch,
+      path: agent.workspace.path,
+      worktreesPath: this.worktreesPathFor(agent),
+      githubApp: this.usesGithubApp(agent)
+    }
+  }
+
   isTrustedGithubOrigin(input: string): boolean {
     const raw = input.trim()
     if (raw.includes('\\')) return false
@@ -248,16 +273,20 @@ export class WorkspaceManager {
   }
 
   async convergeOriginInPlace(agent: Agent, cwd: string): Promise<void> {
-    const expected = this.gitRepoOf(agent)
-    const git = this.runnerFor(agent.id, cwd).withEnv(workspaceGitLocalEnv())
+    await this.convergeOriginInPlaceFor(agent.id, this.primaryRoot(agent), cwd)
+  }
+
+  async convergeOriginInPlaceFor(agentId: string, root: WorkspaceRoot, cwd: string): Promise<void> {
+    const expected = root.cloneUrl
+    const git = this.runnerFor(agentId, cwd).withEnv(workspaceGitLocalEnv())
     let current: string
     try {
       current = (await git.raw(['remote', 'get-url', 'origin'])).trim()
     } catch (cause) {
-      if (this.usesGithubApp(agent)) throw new UntrustedGithubWorkspaceOriginError({ cause })
+      if (root.githubApp) throw new UntrustedGithubWorkspaceOriginError({ cause })
       return
     }
-    if (this.usesGithubApp(agent) && !this.isTrustedGithubOrigin(current)) {
+    if (root.githubApp && !this.isTrustedGithubOrigin(current)) {
       throw new UntrustedGithubWorkspaceOriginError()
     }
     const normalizedCurrent = normalizeGitUrl(current)
@@ -269,7 +298,7 @@ export class WorkspaceManager {
       unsafeCurrent = true
     }
     const mismatched = normalizedCurrent.toLowerCase() !== expected.toLowerCase()
-    if ((!mismatched && !unsafeCurrent) || (!unsafeCurrent && !this.usesGithubApp(agent))) return
+    if ((!mismatched && !unsafeCurrent) || (!unsafeCurrent && !root.githubApp)) return
     // App-backed mismatches and unsafe anonymous origins must converge before
     // daemon-managed Git can proceed. A failed rewrite is fail-closed.
     await git.raw(['remote', 'set-url', 'origin', expected])
@@ -391,17 +420,39 @@ export class WorkspaceManager {
     writeFileSync(file, JSON.stringify({ version: 1, key }, null, 2) + '\n')
   }
 
+  /** Best-effort ff-only pull of one root's checkout; never block/throw on offline (design §4.3). */
+  async pullRoot(agentId: string, root: WorkspaceRoot, cwd: string): Promise<void> {
+    // github-app: warm the credential cache OUTSIDE the pull budget — a cold cache costs a CP round trip.
+    if (root.githubApp) await preWarmGitCred(agentId, 'pull').catch(() => undefined)
+    // Abort-driven budget: the signal KILLS the git child at the deadline, so a wedged pull cannot hold .git/index.lock.
+    const abort = new AbortController()
+    const timer = setTimeout(() => abort.abort(), PULL_TIMEOUT_MS)
+    try {
+      await assertSafeWorkspaceGitConfig(this.runnerFor(agentId, cwd))
+      const pullTarget = workspaceGitPullTarget(root.cloneUrl)
+      const git = this.runnerFor(agentId, cwd, abort.signal).withEnv({
+        ...workspaceGitLocalEnv(),
+        ...pullTarget.env,
+        ...(root.githubApp ? gitCredentialEnv(agentId) : {}),
+        GIT_TERMINAL_PROMPT: '0'
+      })
+      await pullWorkspaceRef(git, pullTarget.remote, root.branch)
+    } catch {
+      // offline / timed out / non-fast-forward: proceed with the on-disk checkout
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
   async prepareWorkspace(agent: Agent, opts: PrepareWorkspaceOptions = {}): Promise<string> {
     const cwd = agent.workspace.path
     // Fail unsafe config before using either a fresh or existing checkout.
     const agentDir = agent.workspace.mode === 'git-repo' ? normalizeRepoSubdir(agent.workspace.agentDir) : undefined
-    if (agent.workspace.mode === 'git-repo') this.gitRepoOf(agent)
+    const root = agent.workspace.mode === 'git-repo' ? this.primaryRoot(agent) : undefined
     mkdirSync(cwd, { recursive: true })
 
-    if (agent.workspace.mode === 'from-scratch') {
-      // The agent's memory file lives at the agent ROOT (outside the workspace) and
-      // is seeded separately (see memory/store.ts `ensureMemory`), so from-scratch
-      // just needs the (empty) workspace dir to exist.
+    if (root === undefined) {
+      // Memory lives at the agent ROOT and is seeded separately, so from-scratch just needs an empty workspace dir.
       return this.withSkills(agent, cwd, opts)
     }
 
@@ -409,7 +460,7 @@ export class WorkspaceManager {
     // on-disk fallback, so on failure we THROW (the session creation fails + the error
     // surfaces) rather than silently proceeding with an empty dir (design §4.3).
     if (!existsSync(join(cwd, '.git'))) {
-      await this.cloneRepo(agent)
+      await this.cloneRootAt(agent.id, root, root.path)
       return this.withSkills(agent, this.resolveAcpCwd(cwd, agentDir), opts)
     }
 
@@ -418,7 +469,7 @@ export class WorkspaceManager {
     // the surviving checkout) — re-pin so agent-run git presents a live identity
     // even where the env channel doesn't reach. Best-effort: a locked .git/config
     // must not block the session; the session-env channel still covers this run.
-    if (this.usesGithubApp(agent)) {
+    if (root.githubApp) {
       // The CP follows repository renames by numeric repo id. Repoint the existing
       // checkout instead of treating that canonical URL refresh as a new workspace.
       await this.convergeWorkspaceOrigin(agent, cwd)
@@ -429,49 +480,28 @@ export class WorkspaceManager {
       await this.convergeWorkspaceOrigin(agent, cwd)
     }
 
-    // Best-effort ff-only pull; never block/throw on offline (design §4.3) —
-    // proceed with the on-disk checkout.
-    if (agent.workspace.pullOnNewSession) {
-      // github-app: warm the credential cache OUTSIDE the pull budget — a cold
-      // cache means a CP round trip that would otherwise eat the whole 4.5s.
-      if (this.usesGithubApp(agent)) await preWarmGitCred(agent.id, 'pull').catch(() => undefined)
-      // Abort-driven budget: the signal makes simple-git KILL the git child at
-      // the deadline. A bare Promise.race would abandon it still running — a
-      // wedged pull (network black hole) then holds .git/index.lock into the
-      // next session's pull.
-      const abort = new AbortController()
-      const timer = setTimeout(() => abort.abort(), PULL_TIMEOUT_MS)
-      try {
-        const repository = this.gitRepoOf(agent)
-        await assertSafeWorkspaceGitConfig(this.runnerFor(agent.id, cwd))
-        const pullTarget = workspaceGitPullTarget(repository)
-        const git = this.runnerFor(agent.id, cwd, abort.signal).withEnv({
-          ...workspaceGitLocalEnv(),
-          ...pullTarget.env,
-          ...(this.usesGithubApp(agent) ? gitCredentialEnv(agent.id) : {}),
-          GIT_TERMINAL_PROMPT: '0'
-        })
-        await pullWorkspaceRef(git, pullTarget.remote, agent.workspace.gitBranch)
-      } catch {
-        // offline / timed out / non-fast-forward: proceed with the on-disk checkout
-      } finally {
-        clearTimeout(timer)
-      }
-    }
+    if (agent.workspace.pullOnNewSession) await this.pullRoot(agent.id, root, cwd)
     return this.withSkills(agent, this.resolveAcpCwd(cwd, agentDir), opts)
   }
 
-  sessionWorktreeRoot(agent: Agent): string {
+  /** The agent's worktrees parent. Total by construction — a from-scratch workspace has one too. */
+  worktreesPathFor(agent: Agent): string {
     const agentRoot = (agent as { dir?: string }).dir ?? dirname(agent.workspace.path)
     return join(agentRoot, 'worktrees')
   }
 
-  validateSessionWorktreeRoot(agent: Agent, root: string): string {
-    if (lstatSync(root).isSymbolicLink()) {
+  /** The primary root's worktrees parent, under the name the daemon and CLI already address it by. */
+  sessionWorktreeRoot(agent: Agent): string {
+    return this.worktreesPathFor(agent)
+  }
+
+  // Containment is per AGENT, not per root: every root's worktrees parent must resolve inside the agent directory.
+  validateWorktreesRoot(agent: Agent, worktreesPath: string): string {
+    if (lstatSync(worktreesPath).isSymbolicLink()) {
       throw new Error('session worktree root must not be a symlink')
     }
     const agentRoot = realpathSync((agent as { dir?: string }).dir ?? dirname(agent.workspace.path))
-    const canonicalRoot = realpathSync(root)
+    const canonicalRoot = realpathSync(worktreesPath)
     const rel = relative(agentRoot, canonicalRoot)
     if (isAbsolute(rel) || rel === '..' || rel.startsWith(`..${sep}`)) {
       throw new Error('session worktree root resolves outside the agent directory')
@@ -480,12 +510,15 @@ export class WorkspaceManager {
   }
 
   prepareSessionWorktreeRoot(agent: Agent): string {
-    const root = this.sessionWorktreeRoot(agent)
-    if (existsSync(root) && lstatSync(root).isSymbolicLink()) {
+    return this.prepareWorktreesRoot(agent, this.worktreesPathFor(agent))
+  }
+
+  prepareWorktreesRoot(agent: Agent, worktreesPath: string): string {
+    if (existsSync(worktreesPath) && lstatSync(worktreesPath).isSymbolicLink()) {
       throw new Error('session worktree root must not be a symlink')
     }
-    mkdirSync(root, { recursive: true, mode: 0o700 })
-    return this.validateSessionWorktreeRoot(agent, root)
+    mkdirSync(worktreesPath, { recursive: true, mode: 0o700 })
+    return this.validateWorktreesRoot(agent, worktreesPath)
   }
 
   clearSessionWorktrees(agent: Agent): void {
@@ -501,21 +534,32 @@ export class WorkspaceManager {
   }
 
   async removeSessionWorktree(agent: Agent, sessionKey: string): Promise<SessionWorktreeRemoval> {
-    const id = this.sessionWorktreeId(sessionKey)
-    const primaryGit = () => this.runnerFor(agent.id, agent.workspace.path).withEnv(workspaceGitLocalEnv())
+    if (agent.workspace.mode !== 'git-repo') {
+      return { outcome: 'failed', error: 'agent workspace is not a Git repository' }
+    }
+    const root = { path: agent.workspace.path, worktreesPath: this.worktreesPathFor(agent) }
+    return await this.removeRootSessionWorktree(agent, root, this.sessionWorktreeId(sessionKey))
+  }
+
+  // Takes only the root's on-disk halves: the GC has no network target, so it must not need an authorized clone URL.
+  async removeRootSessionWorktree(
+    agent: Agent,
+    root: Pick<WorkspaceRoot, 'path' | 'worktreesPath'>,
+    id: string
+  ): Promise<SessionWorktreeRemoval> {
+    const rootGit = () => this.runnerFor(agent.id, root.path).withEnv(workspaceGitLocalEnv())
     // Drop the stale Git registration and this worktree's daemon-owned review refs.
     // Ref deletion is best-effort: most worktrees never had review refs.
     const cleanupRegistrations = async () => {
-      await primaryGit().raw(['worktree', 'prune'])
+      await rootGit().raw(['worktree', 'prune'])
       for (const name of ['base', 'head', 'merge']) {
-        await primaryGit()
+        await rootGit()
           .raw(['update-ref', '-d', `refs/agentconnect/reviews/${id}/${name}`])
           .catch(() => undefined)
       }
     }
     try {
-      if (agent.workspace.mode !== 'git-repo') throw new Error('agent workspace is not a Git repository')
-      const rootPath = this.sessionWorktreeRoot(agent)
+      const rootPath = root.worktreesPath
       if (!existsSync(rootPath)) {
         // No root ⇒ no worktree directory can exist; Git may still hold a stale
         // registration/review refs for it.
@@ -525,7 +569,7 @@ export class WorkspaceManager {
       // Re-derive cwd from the CANONICAL root: a symlinked root (or symlinked
       // ancestor) must never redirect the destructive branches below outside the
       // agent directory.
-      const cwd = join(this.validateSessionWorktreeRoot(agent, rootPath), id)
+      const cwd = join(this.validateWorktreesRoot(agent, rootPath), id)
       if (existsSync(cwd) && lstatSync(cwd).isSymbolicLink()) throw new Error('session worktree path is a symlink')
       if (!existsSync(cwd)) {
         await cleanupRegistrations()
@@ -564,14 +608,14 @@ export class WorkspaceManager {
       if (unique !== '0') return { outcome: 'retained', reason: 'unique-commits' }
       // No --force: if the tree went dirty between the check and here, Git refuses
       // and the failure keeps the session.
-      await primaryGit().raw(['worktree', 'remove', cwd])
+      await rootGit().raw(['worktree', 'remove', cwd])
       await cleanupRegistrations()
       // Only a branch this daemon generated for a session worktree, and only after
       // the check above proved every commit on it is reachable from a remote — so
       // the forced delete can drop no work. Best-effort: a surviving ref is clutter,
       // not a reason to report a removed worktree as retained.
       if (isSessionBranch(branch)) {
-        await primaryGit()
+        await rootGit()
           .raw(['branch', '-D', branch])
           .catch(() => undefined)
       }
@@ -594,8 +638,9 @@ export class WorkspaceManager {
     ).trim()
   }
 
-  async fetchReviewRevision(
-    agent: Agent,
+  async fetchReviewRevisionIn(
+    agentId: string,
+    root: WorkspaceRoot,
     worktreeId: string,
     review: GithubReviewWorkspaceRevision
   ): Promise<{ base: string; head: string; checkout: string }> {
@@ -604,20 +649,19 @@ export class WorkspaceManager {
     if (!Number.isSafeInteger(review.pullNumber) || review.pullNumber <= 0) {
       throw new Error('github review pull number is invalid')
     }
-    const root = `refs/agentconnect/reviews/${worktreeId}`
-    const baseRef = `${root}/base`
-    const headRef = `${root}/head`
-    const mergeRef = `${root}/merge`
-    const repository = this.gitRepoOf(agent)
-    await assertSafeWorkspaceGitConfig(this.runnerFor(agent.id, agent.workspace.path))
-    if (this.usesGithubApp(agent)) await preWarmGitCred(agent.id, 'pull')
-    const pullTarget = workspaceGitPullTarget(repository)
+    const refRoot = `refs/agentconnect/reviews/${worktreeId}`
+    const baseRef = `${refRoot}/base`
+    const headRef = `${refRoot}/head`
+    const mergeRef = `${refRoot}/merge`
+    await assertSafeWorkspaceGitConfig(this.runnerFor(agentId, root.path))
+    if (root.githubApp) await preWarmGitCred(agentId, 'pull')
+    const pullTarget = workspaceGitPullTarget(root.cloneUrl)
     const abort = new AbortController()
     const timer = setTimeout(() => abort.abort(), REVIEW_FETCH_TIMEOUT_MS)
     try {
-      const git = this.runnerFor(agent.id, agent.workspace.path, abort.signal).withEnv({
+      const git = this.runnerFor(agentId, root.path, abort.signal).withEnv({
         ...pullTarget.env,
-        ...(this.usesGithubApp(agent) ? gitCredentialEnv(agent.id) : {}),
+        ...(root.githubApp ? gitCredentialEnv(agentId) : {}),
         GIT_TERMINAL_PROMPT: '0'
       })
       await git.raw([
@@ -629,10 +673,10 @@ export class WorkspaceManager {
         `+${base}:${baseRef}`,
         `+refs/pull/${review.pullNumber}/head:${headRef}`
       ])
-      if ((await this.revParse(agent.id, agent.workspace.path, baseRef)).toLowerCase() !== base) {
+      if ((await this.revParse(agentId, root.path, baseRef)).toLowerCase() !== base) {
         throw new Error('github review base ref did not resolve to the requested SHA')
       }
-      if ((await this.revParse(agent.id, agent.workspace.path, headRef)).toLowerCase() !== head) {
+      if ((await this.revParse(agentId, root.path, headRef)).toLowerCase() !== head) {
         throw new Error('github review head ref did not resolve to the requested SHA')
       }
 
@@ -649,10 +693,10 @@ export class WorkspaceManager {
           pullTarget.remote,
           `+refs/pull/${review.pullNumber}/merge:${mergeRef}`
         ])
-        const merge = (await this.revParse(agent.id, agent.workspace.path, mergeRef)).toLowerCase()
+        const merge = (await this.revParse(agentId, root.path, mergeRef)).toLowerCase()
         const expectedMerge = review.mergeCommitSha ? this.exactObjectId(review.mergeCommitSha, 'merge SHA') : undefined
         const parents = (
-          await this.runnerFor(agent.id, agent.workspace.path)
+          await this.runnerFor(agentId, root.path)
             .withEnv(workspaceGitLocalEnv())
             .raw(['rev-list', '--parents', '-n', '1', mergeRef])
         )
@@ -694,8 +738,14 @@ export class WorkspaceManager {
     return realpathSync(cwd)
   }
 
-  async addSessionWorktree(agent: Agent, cwd: string, target: string, initiatedBy?: string): Promise<void> {
-    const git = () => this.runnerFor(agent.id, agent.workspace.path).withEnv(workspaceGitLocalEnv())
+  async addRootSessionWorktree(
+    agentId: string,
+    root: WorkspaceRoot,
+    cwd: string,
+    target: string,
+    initiatedBy?: string
+  ): Promise<void> {
+    const git = () => this.runnerFor(agentId, root.path).withEnv(workspaceGitLocalEnv())
     let branch = ''
     for (let attempt = 0; ; attempt++) {
       branch = sessionBranchName(initiatedBy, attempt >= SESSION_BRANCH_DRAWS)
@@ -727,14 +777,25 @@ export class WorkspaceManager {
     const primary = await this.prepareWorkspace(agent, opts)
     if (agent.workspace.mode !== 'git-repo' || request.isolation === 'shared') return primary
 
+    const cwd = await this.prepareRootSessionWorktree(agent, this.primaryRoot(agent), request)
+    const agentDir = normalizeRepoSubdir(agent.workspace.agentDir)
+    return this.withSkills(agent, this.resolveAcpCwd(cwd, agentDir), opts)
+  }
+
+  /** The stable per-session worktree of one root, checked out at the reviewed revision when there is one. */
+  async prepareRootSessionWorktree(
+    agent: Agent,
+    root: WorkspaceRoot,
+    request: PrepareSessionWorkspaceRequest
+  ): Promise<string> {
     const id = this.sessionWorktreeId(request.sessionKey)
-    const root = this.prepareSessionWorktreeRoot(agent)
-    const cwd = join(root, id)
+    const worktreesRoot = this.prepareWorktreesRoot(agent, root.worktreesPath)
+    const cwd = join(worktreesRoot, id)
     if (existsSync(cwd) && lstatSync(cwd).isSymbolicLink()) {
       throw new Error('session worktree path must not be a symlink')
     }
-    const review = request.review ? await this.fetchReviewRevision(agent, id, request.review) : undefined
-    const target = review?.checkout ?? `refs/remotes/origin/${agent.workspace.gitBranch}`
+    const review = request.review ? await this.fetchReviewRevisionIn(agent.id, root, id, request.review) : undefined
+    const target = review?.checkout ?? `refs/remotes/origin/${root.branch}`
     let attached = existsSync(join(cwd, '.git'))
     if (attached) {
       try {
@@ -746,16 +807,16 @@ export class WorkspaceManager {
     }
     if (!attached) {
       rmSync(cwd, { recursive: true, force: true })
-      await this.runnerFor(agent.id, agent.workspace.path).withEnv(workspaceGitLocalEnv()).raw(['worktree', 'prune'])
+      await this.runnerFor(agent.id, root.path).withEnv(workspaceGitLocalEnv()).raw(['worktree', 'prune'])
       // prepareWorkspace's pull is best-effort (and may be disabled), but this
       // checkout runs in the daemon process. Unsafe executable config must gate
       // the worktree operation itself instead of being swallowed as a pull error.
-      await assertSafeWorkspaceGitConfig(this.runnerFor(agent.id, agent.workspace.path))
-      await this.addSessionWorktree(agent, cwd, target, request.initiatedBy)
+      await assertSafeWorkspaceGitConfig(this.runnerFor(agent.id, root.path))
+      await this.addRootSessionWorktree(agent.id, root, cwd, target, request.initiatedBy)
     } else if (review) {
       // Re-audit at the checkout boundary rather than relying on the earlier
       // network fetch audit; repository config may have changed while fetching.
-      await assertSafeWorkspaceGitConfig(this.runnerFor(agent.id, agent.workspace.path))
+      await assertSafeWorkspaceGitConfig(this.runnerFor(agent.id, root.path))
       const worktreeGit = this.runnerFor(agent.id, cwd).withEnv(workspaceGitLocalEnv())
       await worktreeGit.raw(['reset', '--hard', target])
       await worktreeGit.raw(['clean', '-ffdx'])
@@ -763,8 +824,7 @@ export class WorkspaceManager {
     if (review && (await this.revParse(agent.id, cwd, 'HEAD')).toLowerCase() !== review.checkout) {
       throw new Error('github review worktree HEAD does not match the verified revision')
     }
-    const agentDir = normalizeRepoSubdir(agent.workspace.agentDir)
-    return this.withSkills(agent, this.resolveAcpCwd(cwd, agentDir), opts)
+    return cwd
   }
 
   clusterWorkspaceCwd(
@@ -1197,40 +1257,38 @@ export class WorkspaceManager {
 
   async prefetchWorkspace(agent: Agent): Promise<void> {
     if (agent.workspace.mode !== 'git-repo') return
-    const cwd = agent.workspace.path
-    this.gitRepoOf(agent)
-    if (existsSync(join(cwd, '.git'))) {
-      await this.convergeWorkspaceOrigin(agent, cwd)
+    // Validate at the execution boundary: building the root is what re-authorizes the clone URL.
+    const root = this.primaryRoot(agent)
+    if (existsSync(join(root.path, '.git'))) {
+      await this.convergeWorkspaceOrigin(agent, root.path)
       return
     }
-    mkdirSync(cwd, { recursive: true })
-    await this.cloneRepo(agent)
-  }
-
-  async cloneRepo(agent: Agent): Promise<void> {
-    return this.cloneRepoAt(agent, agent.workspace.path)
+    mkdirSync(root.path, { recursive: true })
+    await this.cloneRootAt(agent.id, root, root.path)
   }
 
   async cloneRepoAt(agent: Agent, cwd: string): Promise<void> {
-    const key = this.cloneKey(agent.id, cwd)
+    // Validate again at the execution boundary: a hand-edited/legacy agent.json
+    // must not turn daemon-managed git into a local-path or remote-helper launcher.
+    return this.cloneRootAt(agent.id, this.primaryRoot(agent), cwd)
+  }
+
+  async cloneRootAt(agentId: string, root: WorkspaceRoot, cwd: string): Promise<void> {
+    const key = this.cloneKey(agentId, cwd)
     const inflight = this.cloneInFlight.get(key)
     if (inflight) return inflight
 
-    // Validate again at the execution boundary: a hand-edited/legacy agent.json
-    // must not turn daemon-managed git into a local-path or remote-helper launcher.
-    const gitRepo = this.gitRepoOf(agent)
-    const branch = agent.workspace.gitBranch
-    const githubApp = this.usesGithubApp(agent)
+    const { cloneUrl, branch, githubApp } = root
 
     const p = (async () => {
       // github-app: credentials ride the env-injected helper (no repo config exists
       // yet). SPREAD over process.env — withEnv REPLACES the child env, as .env() did.
-      if (githubApp) await preWarmGitCred(agent.id, 'clone')
+      if (githubApp) await preWarmGitCred(agentId, 'clone')
       const git = githubApp
-        ? this.runnerFor(agent.id).withEnv({ ...workspaceGitEnvBase(gitRepo), ...cloneGitEnv(agent.id, gitRepo) })
-        : this.runnerFor(agent.id).withEnv({ ...workspaceGitEnvBase(gitRepo), GIT_TERMINAL_PROMPT: '0' })
+        ? this.runnerFor(agentId).withEnv({ ...workspaceGitEnvBase(cloneUrl), ...cloneGitEnv(agentId, cloneUrl) })
+        : this.runnerFor(agentId).withEnv({ ...workspaceGitEnvBase(cloneUrl), GIT_TERMINAL_PROMPT: '0' })
       try {
-        await git.clone(gitRepo, cwd, ['--branch', branch, '--single-branch'])
+        await git.clone(cloneUrl, cwd, ['--branch', branch, '--single-branch'])
       } catch (e) {
         // A failed clone leaves a half-written dir whose stray `.git` would make
         // every later attempt think the checkout exists — clean before rethrowing.
@@ -1240,7 +1298,7 @@ export class WorkspaceManager {
       // Pin the repo-local helper so AGENT-run git in this checkout authenticates
       // through the daemon too — the "no credentials on the machine, but the agent
       // can still push" half of the design.
-      if (githubApp) await writeRepoHelperConfig(this.runnerFor(agent.id, cwd), agent.id)
+      if (githubApp) await writeRepoHelperConfig(this.runnerFor(agentId, cwd), agentId)
     })().finally(() => {
       this.cloneInFlight.delete(key)
     })
