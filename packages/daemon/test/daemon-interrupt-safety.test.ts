@@ -712,7 +712,7 @@ describe('Daemon interrupt safety gates', () => {
       ]
       const conn = { postMessage: vi.fn(async () => {}), setStatus: vi.fn(async () => {}) }
       ;(daemon as any).connByIntegration.set('int-a', conn)
-      ;(daemon as any).handleCommand(
+      ;(daemon as any).commands.handleCommand(
         { kind: 'resume' },
         {
           ...ninth.msg,

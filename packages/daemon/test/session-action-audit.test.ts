@@ -67,7 +67,7 @@ describe('chat-side session action audit', () => {
     // which is exactly the "nothing to cancel" case under test.
     ;(daemon as never as { store: unknown }).store = { getSession: () => undefined }
 
-    ;(daemon as never as { handleStatusAction: (a: unknown) => void }).handleStatusAction({
+    ;(daemon as never as { commands: { handleStatusAction: (a: unknown) => void } }).commands.handleStatusAction({
       kind: 'cancel',
       sessionKey: 'slack:C1:T1:agent-1', // nothing in flight for this key
       actor: { userId: 'U-ALICE' }
