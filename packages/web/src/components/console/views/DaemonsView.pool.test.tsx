@@ -116,8 +116,9 @@ describe('DaemonsView pool', () => {
     const html = render()
 
     expect(html.match(/AgentConnect Cloud/g)).toHaveLength(1)
-    // Serving nodes only: a row left behind by a replaced Pod must not inflate the count.
-    expect(html).toContain('2 nodes')
+    // Cloud topology stays internal: no node count, no version on the managed card.
+    expect(html).not.toContain('nodes')
+    expect(html).not.toContain('1.41.0')
     // Pod identity is cluster churn — never a name this page puts in front of anyone.
     expect(html).not.toContain('pool-member-p1')
   })
@@ -137,8 +138,7 @@ describe('DaemonsView pool', () => {
 
     const html = render()
 
-    expect(html).toContain('no nodes serving')
-    expect(html).not.toContain('nodes ·')
+    expect(html).toContain('not serving')
   })
 
   it('keeps the org’s own machines as their own cards under a labelled section', () => {

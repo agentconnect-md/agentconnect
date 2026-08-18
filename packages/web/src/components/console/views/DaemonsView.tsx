@@ -293,11 +293,8 @@ function PoolFleetCard({ members, hosted }: { members: DaemonRow[]; hosted: numb
   const s = status(poolFleetStatus(members))
   const serving = members.filter((m) => m.status === 'online')
   const online = serving.length > 0
-  // The serving members share a release (they roll together); an idle pool has no version
-  // worth quoting, so the strip drops it rather than naming a Pod that is gone.
-  const meta = online
-    ? `Managed by AgentConnect · ${serving.length} node${serving.length === 1 ? '' : 's'} · ${serving[0]!.version}`
-    : 'Managed by AgentConnect · no nodes serving'
+  // Node count and version stay internal — the cloud pool doesn't expose its topology.
+  const meta = online ? 'Managed by AgentConnect' : 'Managed by AgentConnect · not serving'
   // Opens one member's detail for the runtimes, models and MCP servers the pool offers —
   // a serving one, since a member that stopped answering can no longer describe itself.
   const target = serving[0] ?? members[members.length - 1]!
