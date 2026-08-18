@@ -1,8 +1,8 @@
 /**
  * The webchat turn-output surface: the ACP-update → `WebchatEvent` mapping the turn
  * engine streams through a turn's sink, plus the two transcript helpers that share it.
- * Pure functions over the turn's webchat state (and, where a row is written, the store) —
- * the Daemon keeps thin same-name delegates.
+ * Pure functions over the turn's webchat state (and, where a row is written, the store),
+ * called directly by the turn engine.
  */
 import type { SessionImageAttachment, WebchatEvent } from '@agentconnect.md/protocol'
 import type { LocalStore } from '../store/local-store.js'
