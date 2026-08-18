@@ -545,6 +545,9 @@ export class SessionManager {
       parentSessionId: effectiveOriginSessionId,
       envSecretNames: secretNames.filter((n) => !fileSecretNames.has(n)),
       fileSecrets: fileSecrets.map((m) => ({ sourceVar: m.sourceVar, pointerVar: m.convention.pointerVar })),
+      // The same list `additionalWorkspaceDirectories` hands the runtime, so the prompt names exactly
+      // the directories the session got.
+      workspaceRoots: this.workspaces.readySecondaryRoots(agent, { isolation: workspaceIsolation }),
       usesSessionTitleTool,
       needsReplyToParent,
       memoryIndex,
