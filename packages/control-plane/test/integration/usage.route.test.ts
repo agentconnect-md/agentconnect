@@ -438,23 +438,26 @@ describe('GET /usage — aggregates the persisted usage store by agent over a ra
 
   it('d1 keeps only sessions active in the last 24h', async () => {
     await seedAgent(prisma, AGENT_A)
+    const repo = new PgSessionUsageRepo(prisma)
     const now = new Date()
-    await Promise.all([
-      seedVisibleSession(AGENT_A, 'fresh', new Date(now.getTime() - 60_000)),
-      seedVisibleSession(AGENT_A, 'stale', new Date(now.getTime() - 25 * 60 * 60_000))
-    ])
-    await prisma.sessionUsage.createMany({
-      data: [
-        { agentId: AGENT_A, sessionId: 'fresh', totalTokens: 700, lastActivityAt: new Date(now.getTime() - 60_000) },
-        // 25h old — inside d7, outside d1.
-        {
-          agentId: AGENT_A,
-          sessionId: 'stale',
-          totalTokens: 4000,
-          lastActivityAt: new Date(now.getTime() - 25 * 60 * 60_000)
-        }
-      ]
-    })
+    const fresh = new Date(now.getTime() - 60_000)
+    const stale = new Date(now.getTime() - 25 * 60 * 60_000) // inside d7, outside d1
+    await Promise.all([seedVisibleSession(AGENT_A, 'fresh', fresh), seedVisibleSession(AGENT_A, 'stale', stale)])
+    // Reported the way a daemon reports, so both the snapshot and the checkpoint exist:
+    // every figure is derived from the timeline, so a snapshot written on its own has
+    // nothing to contribute to any window.
+    for (const [sessionId, at, totalTokens] of [
+      ['fresh', fresh, 700],
+      ['stale', stale, 4000]
+    ] as const) {
+      await repo.record({
+        agentId: AgentId(AGENT_A),
+        sessionId,
+        source: 'daemon',
+        lastActivityAt: at,
+        usage: { totalTokens }
+      })
+    }
 
     const { app, close } = buildHttpApp(prisma)
     try {
@@ -759,6 +762,8 @@ describe('GET /usage — aggregates the persisted usage store by agent over a ra
       expect(body.totals.costAmount).toBe('7')
       expect(sum(body.series.points)).toBe('7')
       expect(body.totals.sessions).toBe(1)
+      // Tokens are the window's too: 100 inside it, not the 400 the session has now.
+      expect(body.totals.totalTokens).toBe(100)
       expect(body.agents.map((a) => [a.agentId, a.costAmount])).toEqual([[AGENT_A, '7']])
       expect(body.sources.map((s) => [s.source, s.costAmount])).toEqual([['gateway', '7']])
       expect(sumAmounts(body.sources.map((s) => s.costAmount))).toBe(body.totals.costAmount)
@@ -768,6 +773,49 @@ describe('GET /usage — aggregates the persisted usage store by agent over a ra
     } finally {
       await close()
     }
+  })
+
+  it('answers a closed window the same way after more reports arrive', async () => {
+    await seedAgent(prisma, AGENT_A)
+    const repo = new PgSessionUsageRepo(prisma)
+    const to = new Date(Math.floor((Date.now() - 5 * DAY_MS) / DAY_MS) * DAY_MS)
+    const from = new Date(to.getTime() - 3 * DAY_MS)
+    await seedVisibleSession(AGENT_A, 'closed', new Date())
+    const w = (at: Date, costAmount: string, totalTokens: number, model: string) =>
+      repo.record({
+        agentId: AgentId(AGENT_A),
+        sessionId: 'closed',
+        source: 'gateway',
+        model,
+        lastActivityAt: at,
+        usage: { totalTokens, costAmount, costCurrency: 'USD' }
+      })
+    const read = async () => {
+      const { app, close } = buildHttpApp(prisma)
+      try {
+        const query = new URLSearchParams({ from: from.toISOString(), to: to.toISOString() })
+        const res = await app.inject({ method: 'GET', url: `${ORG}/usage?${query.toString()}` })
+        return res.json() as {
+          totals: { sessions: number; totalTokens: number; costAmount: string }
+          models: { model: string | null; totalTokens: number; costAmount: string }[]
+        }
+      } finally {
+        await close()
+      }
+    }
+
+    await w(new Date(from.getTime() + DAY_MS), '7', 100, 'model-in')
+    const before = await read()
+    // The same session keeps working AFTER the window closes, on another model.
+    await w(new Date(), '20', 400, 'model-after')
+    const after = await read()
+
+    // A period is a statement about what happened during it. It must not move.
+    expect(after).toEqual(before)
+    expect(after.totals.totalTokens).toBe(100)
+    expect(after.totals.costAmount).toBe('7')
+    // And a model first used after the window never appears inside it.
+    expect(after.models.map((m) => m.model)).toEqual(['model-in'])
   })
 
   it('refuses a window too wide to answer in one response', async () => {
