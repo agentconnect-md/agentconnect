@@ -502,7 +502,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
           updatedAt: Date.now()
         })
         for (const phase of ['start', 'problem', 'end'] as const) {
-          ;(first as any).emitSessionMetadataSnapshot({
+          ;(first as any).sessionMetadataOutbox.emitSessionMetadataSnapshot({
             sessionId,
             agentId,
             phase,
@@ -530,7 +530,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
         stop: vi.fn()
       }
 
-      await (restored as any).drainSessionMetadataSnapshots()
+      await (restored as any).sessionMetadataOutbox.drainSessionMetadataSnapshots()
 
       expect(replayed).toHaveBeenCalledTimes(1)
       expect(replayed.mock.calls[0]![0]).toMatchObject({
@@ -558,8 +558,8 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       .mockResolvedValue(undefined)
 
     try {
-      ;(daemon as any).scheduleSessionMetadataRetry(5 * 60_000)
-      ;(daemon as any).scheduleSessionMetadataRetry(0)
+      ;(daemon as any).sessionMetadataOutbox.scheduleSessionMetadataRetry(5 * 60_000)
+      ;(daemon as any).sessionMetadataOutbox.scheduleSessionMetadataRetry(0)
       clock.advance(0)
 
       expect(drain).toHaveBeenCalledTimes(1)
@@ -602,7 +602,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
 
     try {
       for (let attempt = 0; attempt < 5; attempt += 1) {
-        await (daemon as any).drainSessionMetadataSnapshots()
+        await (daemon as any).sessionMetadataOutbox.drainSessionMetadataSnapshots()
       }
 
       expect(syncEventSession.mock.calls.map(([event]) => event.sessionId)).toEqual([
@@ -1214,7 +1214,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
 
     ;(daemon as any).store.setDisplayName('C1', 'deploys', Date.now())
     ;(daemon as any).store.setDisplayName('U1', 'Dana Reyes', Date.now())
-    ;(daemon as any).emitSessionMetadataSnapshotsForDisplayName('C1')
+    ;(daemon as any).sessionMetadataOutbox.emitSessionMetadataSnapshotsForDisplayName('C1')
 
     const refresh = emitEventSession.mock.calls.at(-1)![0]
     expect(refresh).toMatchObject({

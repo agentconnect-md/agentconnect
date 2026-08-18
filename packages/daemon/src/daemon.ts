@@ -26,7 +26,6 @@ import {
   transcriptQuoted,
   type InboxRow,
   type OrchestrationRow,
-  type SessionMetadataOutboxRow,
   type SessionPurgeRow,
   type SessionRecord,
   type SubtaskRow,
@@ -334,13 +333,9 @@ import { MemoryCaptureOutbox } from './memory-plugin/outbox.js'
 import { managedDistillCapture, withManagedDistill } from './memory/managed-distill-outbox.js'
 import { defaultMemoryPluginMetrics } from './memory-plugin/metrics.js'
 import { openMountedPostgresDataPlane, type PostgresDataPlane } from './store/postgres-data-plane.js'
-import type { EvaluationCapabilityProfile, EvaluationEventInput } from './evaluation/events.js'
+import type { EvaluationCapabilityProfile } from './evaluation/events.js'
 import { DaemonEvaluationHooks, type DaemonEvaluationHost } from './evaluation/daemon-hooks.js'
-import {
-  SessionMetadataOutbox,
-  type SessionMetadataHost,
-  type SessionMetadataSnapshotInput
-} from './store/session-metadata-outbox.js'
+import { SessionMetadataOutbox, type SessionMetadataHost } from './store/session-metadata-outbox.js'
 import type {
   DeliveryHandle,
   DeliveryRejectionReason,
@@ -392,7 +387,6 @@ import type {
   SessionKey,
   EventSession,
   SessionActivity,
-  SessionListItem,
   AgentPermissionDecision,
   Ack,
   DaemonControlAck,
@@ -508,7 +502,6 @@ import {
   MAX_TURN_CONTEXT_REGENERATION_MS,
   MAX_TURN_CONTEXT_REGENERATIONS,
   PROBE_ROOT_SWEEP_INTERVAL_MS,
-  SESSION_METADATA_RETRY_MS,
   SESSION_RETENTION_SWEEP_INTERVAL_MS
 } from './daemon/constants.js'
 import type {
@@ -545,7 +538,7 @@ export class Daemon {
   // (the test suite, and a k8s daemon beside a local one) cannot inherit each other's git runner,
   // path clearer or sandbox mode — which is what a module-level plane silently did.
   readonly workspaces = new WorkspaceManager()
-  // The evaluation-harness seam (collaboration-arena §4–§7); every product path reaches it through the delegates below.
+  // The evaluation-harness seam (collaboration-arena §4–§7); every product path reaches it through this field.
   private readonly evalHooks: DaemonEvaluationHooks
   private get evaluationProfile(): EvaluationCapabilityProfile {
     return this.evalHooks.profile
@@ -1202,10 +1195,6 @@ export class Daemon {
     )
   }
 
-  private emitEvaluation(input: EvaluationEventInput): void {
-    this.evalHooks.emit(input)
-  }
-
   /** The narrow port the evaluation hooks reach the daemon through — nothing wider is exposed. */
   private sessionMetadataHost(): SessionMetadataHost {
     return {
@@ -1238,7 +1227,8 @@ export class Daemon {
       channelSnapshots: () => this.channelSnapshots,
       integrationConfigById: (integrationId) => this.integrationConfigById(integrationId),
       transportScopeForIntegration: (integration) => this.transportScopeForIntegration(integration),
-      emitSessionMetadataSnapshotsForDisplayName: (id) => this.emitSessionMetadataSnapshotsForDisplayName(id)
+      emitSessionMetadataSnapshotsForDisplayName: (id) =>
+        this.sessionMetadataOutbox.emitSessionMetadataSnapshotsForDisplayName(id)
     }
   }
 
@@ -1322,7 +1312,8 @@ export class Daemon {
       integrationIdForTransportScope: (agentId, platform, transportScope) =>
         this.integrationIdForTransportScope(agentId, platform, transportScope),
       connForIntegration: (integrationId) => this.connForIntegration(integrationId),
-      emitSessionMetadataSnapshotsForDisplayName: (id) => this.emitSessionMetadataSnapshotsForDisplayName(id),
+      emitSessionMetadataSnapshotsForDisplayName: (id) =>
+        this.sessionMetadataOutbox.emitSessionMetadataSnapshotsForDisplayName(id),
       dispatch: (agentId, msg, integrationId, callMeta) =>
         this.dispatch(agentId, msg, integrationId, undefined, callMeta),
       handleStatusAction: (a) => this.commands.handleStatusAction(a),
@@ -1454,23 +1445,6 @@ export class Daemon {
         ? { ...agent, integrations: agent.integrations.filter((i) => !this.evaluationIntegrationIds.has(i.id)) }
         : agent
     )
-  }
-
-  /** Install the Collaboration Arena environment (collaboration-arena §5) before routing observes it; it never opens sockets. */
-  private installEvaluationEnvironment(): void {
-    this.evalHooks.installEnvironment()
-  }
-
-  /** Build the §7.1 DeliveryHandle around one dispatch (collaboration-arena §7.1). */
-  private evaluationDispatchHandle(
-    agentId: string,
-    msg: NormalizedMessage,
-    integrationId?: string,
-    webchat?: WebchatTurnContext,
-    callMeta?: CallMeta,
-    dispatchOpts?: { requireDurable?: boolean; deliveryId?: string }
-  ): { handle: DeliveryHandle; turn: Promise<string | null> } {
-    return this.evalHooks.dispatchHandle(agentId, msg, integrationId, webchat, callMeta, dispatchOpts)
   }
 
   /** §4.1: enter the production ingress path from a platform-shaped payload on a virtual integration. */
@@ -1875,7 +1849,7 @@ export class Daemon {
     this.nameResolver = new SlackNameResolver(
       (id, name) => {
         this.store.setDisplayName(id, name, Date.now())
-        this.emitSessionMetadataSnapshotsForDisplayName(id)
+        this.sessionMetadataOutbox.emitSessionMetadataSnapshotsForDisplayName(id)
       },
       this.log,
       Date.now,
@@ -1888,7 +1862,7 @@ export class Daemon {
     this.channelNameResolver = new ChannelNameResolver(
       (id, name) => {
         this.store.setDisplayName(id, name, Date.now())
-        this.emitSessionMetadataSnapshotsForDisplayName(id)
+        this.sessionMetadataOutbox.emitSessionMetadataSnapshotsForDisplayName(id)
         // A freshly-resolved Telegram/Discord/Feishu channel name should also refresh that
         // integration's observed-channel snapshot (approach-A discovery) so the console
         // shows the human name rather than the raw chat/channel id.
@@ -2174,7 +2148,7 @@ export class Daemon {
         ),
       onMemoryRecallInjected: (_agentId, bytes) => defaultMemoryPluginMetrics.recallInjected(bytes),
       onMemoryRecallEvent: (agentId, event) =>
-        this.emitEvaluation({
+        this.evalHooks.emit({
           type: `memory.recall.${event.kind}`,
           agentId,
           sessionId: event.sessionId,
@@ -2295,7 +2269,7 @@ export class Daemon {
 
     this.botUserIds = {}
     // Install synthetic evaluation integrations before routing observes them; they never open sockets.
-    this.installEvaluationEnvironment()
+    this.evalHooks.installEnvironment()
     const startControlPlane = this.opts.startControlPlane ?? ((cpRoot: string) => this.startCpClient(cpRoot))
     const poolCpReady = this.k8s ? startControlPlane(root) : undefined
     if (this.k8s && !poolCpReady)
@@ -3635,7 +3609,7 @@ export class Daemon {
     const observableCapture = provider === 'managed' || provider === 'external'
     const record = async () => {
       if (observableCapture) {
-        this.emitEvaluation({
+        this.evalHooks.emit({
           type: 'memory.capture.requested',
           agentId,
           sessionId,
@@ -3651,7 +3625,7 @@ export class Daemon {
           captureTarget
         )
         if (observableCapture) {
-          this.emitEvaluation({
+          this.evalHooks.emit({
             type: 'memory.capture.completed',
             agentId,
             sessionId,
@@ -3662,7 +3636,7 @@ export class Daemon {
       } catch (error) {
         // A deferred managed capture (sandbox asleep) is not a failure: it completes from the outbox.
         if (observableCapture && !(error instanceof MemorySandboxUnavailableError)) {
-          this.emitEvaluation({
+          this.evalHooks.emit({
             type: 'memory.capture.failed',
             agentId,
             sessionId,
@@ -4220,7 +4194,7 @@ export class Daemon {
       kind: 'text',
       text: 'Memory dream started.'
     })
-    this.emitSessionMetadataSnapshot({
+    this.sessionMetadataOutbox.emitSessionMetadataSnapshot({
       sessionId,
       agentId,
       phase: 'start',
@@ -4352,7 +4326,7 @@ export class Daemon {
           : 'Model extraction stopped before producing a result.'
       })
       this.store.setSessionState(executionKey, 'idle', this.clock.now())
-      this.emitSessionMetadataSnapshot({
+      this.sessionMetadataOutbox.emitSessionMetadataSnapshot({
         sessionId,
         agentId,
         phase: promptCompleted ? 'end' : 'problem',
@@ -4404,7 +4378,7 @@ export class Daemon {
    *  events, platform delivery, or logs. */
   private recordDreamLifecycle(event: DreamLifecycleEvent): void {
     const { dream } = event
-    this.emitEvaluation({
+    this.evalHooks.emit({
       type: event.type,
       agentId: dream.agentId,
       ...(dream.executionSessionId ? { sessionId: dream.executionSessionId } : {}),
@@ -4443,7 +4417,7 @@ export class Daemon {
       })
     }
     this.store.setSessionState(rec.key, 'idle', this.clock.now())
-    this.emitSessionMetadataSnapshot({
+    this.sessionMetadataOutbox.emitSessionMetadataSnapshot({
       sessionId: dream.executionSessionId,
       agentId: dream.agentId,
       phase: event.type === 'memory.dream.failed' ? 'problem' : 'end',
@@ -4985,7 +4959,7 @@ export class Daemon {
       // §8.6: persisted with the row, so a replayed turn completes this rendezvous itself.
       activationKey: key
     }
-    const { handle, turn } = this.evaluationDispatchHandle(targetAgentId, msg, integrationId, undefined, callMeta, {
+    const { handle, turn } = this.evalHooks.dispatchHandle(targetAgentId, msg, integrationId, undefined, callMeta, {
       // `accepted` must IMPLY a replayable row: without this a failed inbox append still
       // admits, and the activation goes terminal for a turn that can never be replayed.
       requireDurable: true
@@ -5192,7 +5166,7 @@ export class Daemon {
         }
       }
     }
-    const { handle, turn } = this.evaluationDispatchHandle(
+    const { handle, turn } = this.evalHooks.dispatchHandle(
       result.agentId,
       targetMsg,
       result.integrationId,
@@ -5279,7 +5253,7 @@ export class Daemon {
         this.commands.setSessionMuted(muteKey, false)
         this.log.info(`routing: agent "${agentId}" un-muted in ch=${msg.channel} (explicit @mention)`)
       }
-      const { handle, turn } = this.evaluationDispatchHandle(
+      const { handle, turn } = this.evalHooks.dispatchHandle(
         agentId,
         targetMsg,
         rule.integrationId,
@@ -6429,7 +6403,7 @@ export class Daemon {
       const pending = caller?.acpSessionId
         ? this.pending.get(pendingTurnKey(req.callerAgentId, caller.acpSessionId))
         : undefined
-      this.emitEvaluation({
+      this.evalHooks.emit({
         type,
         agentId: req.callerAgentId,
         ...(caller?.acpSessionId ? { sessionId: caller.acpSessionId } : {}),
@@ -7604,7 +7578,7 @@ export class Daemon {
 
     // (a) RECORD-FIRST: must fully persist before we deliver anything.
     this.store.createOrchestration(orch, subtaskRows)
-    this.emitEvaluation({
+    this.evalHooks.emit({
       type: 'orchestration.state',
       agentId: req.mainAgentId,
       sessionId: this.store.getSession(mainSessionKey)?.acpSessionId ?? undefined,
@@ -7668,7 +7642,7 @@ export class Daemon {
       `orchestration ${orchestrationId}: ${delivered.length} delivered, ${failed.length} failed` +
         (deadline !== null && delivered.length > 0 ? `, deadline in ${deadline - now}ms` : '')
     )
-    this.emitEvaluation({
+    this.evalHooks.emit({
       type: 'orchestration.state',
       agentId: req.mainAgentId,
       sessionId: this.store.getSession(mainSessionKey)?.acpSessionId ?? undefined,
@@ -7726,7 +7700,7 @@ export class Daemon {
         monotonicTs()
       )
     }
-    this.emitEvaluation({
+    this.evalHooks.emit({
       type: 'orchestration.state',
       agentId: orch.mainAgentId,
       sessionId: this.store.getSession(orch.mainSessionKey)?.acpSessionId ?? undefined,
@@ -7807,7 +7781,7 @@ export class Daemon {
     )
     if (ok) {
       this.log.info(`orchestration ${orchestrationId}: recorded result for ${correlationId} from ${callMeta.callFrom}`)
-      this.emitEvaluation({
+      this.evalHooks.emit({
         type: 'orchestration.state',
         agentId: orch.mainAgentId,
         sessionId: this.store.getSession(orch.mainSessionKey)?.acpSessionId ?? undefined,
@@ -7852,7 +7826,7 @@ export class Daemon {
     }
     this.store.setOrchestrationDeadline(orch.orchestrationId, null, this.clock.now())
     this.store.setOrchestrationStatus(orch.orchestrationId, 'cancelled', this.clock.now())
-    this.emitEvaluation({
+    this.evalHooks.emit({
       type: 'orchestration.state',
       agentId: orch.mainAgentId,
       sessionId: this.store.getSession(orch.mainSessionKey)?.acpSessionId ?? undefined,
@@ -8351,7 +8325,7 @@ export class Daemon {
       })
       this.removeInbox(entry)
       entry.resolve(sessionId)
-      this.emitEvaluation({
+      this.evalHooks.emit({
         type: 'turn.cancelled',
         agentId: entry.agentId,
         sessionId,
@@ -8392,7 +8366,7 @@ export class Daemon {
       if (entry.hookContext) this.emitHookCompletion(entry.hookContext, 'failed', { reason: 'superseded' }, entry)
       this.removeInbox(entry)
       entry.resolve(null)
-      this.emitEvaluation({
+      this.evalHooks.emit({
         type: 'turn.cancelled',
         agentId: entry.agentId,
         turnId: this.evaluationTurnIdFor(entry.agentId, entry.msg),
@@ -8602,7 +8576,7 @@ export class Daemon {
       syncOrchestrationDeadlines: () => this.syncOrchestrationDeadlines(),
       catchUpMissedSchedules: (agentIds) => this.catchUpMissedSchedules(agentIds),
       drainSessionPurges: () => this.drainSessionPurges(),
-      replayGainedSessionMetadata: (agentIds) => this.replayGainedSessionMetadata(agentIds),
+      replayGainedSessionMetadata: (agentIds) => this.sessionMetadataOutbox.replayGainedSessionMetadata(agentIds),
       pendingInboxReplayAgents: () => this.pendingInboxReplayAgents,
       raceDeadline: (work, ms) => this.raceDeadline(work, ms),
       sleepUntil: (at) => this.sleepUntil(at),
@@ -9339,7 +9313,7 @@ export class Daemon {
         if (admissionSettled) return
         admissionSettled = true
         if (result.accepted && !result.duplicate && callMeta?.initializeOnly !== true) {
-          this.emitEvaluation({
+          this.evalHooks.emit({
             type: 'turn.accepted',
             agentId,
             turnId: this.evaluationTurnIdFor(agentId, msg),
@@ -9946,7 +9920,7 @@ export class Daemon {
       if (initializeOnly) return
       if (evaluationTerminal) return
       evaluationTerminal = true
-      this.emitEvaluation({
+      this.evalHooks.emit({
         type,
         agentId,
         ...(evaluationSessionId ? { sessionId: evaluationSessionId } : {}),
@@ -10336,7 +10310,7 @@ export class Daemon {
     // snapshot fires after cleanup resets the row to `idle`, so without this a warm
     // turn never reads as in flight (the work panel could not follow it live).
     // recordMilestone upserts, so a repeated 'start' phase is safe on the CP.
-    this.emitSessionMetadataSnapshot({
+    this.sessionMetadataOutbox.emitSessionMetadataSnapshot({
       sessionId,
       agentId,
       phase: 'start',
@@ -10630,7 +10604,7 @@ export class Daemon {
         providerCheckpoint = initialRefresh.providerCheckpoint ?? providerCheckpoint
       }
 
-      this.emitEvaluation({
+      this.evalHooks.emit({
         type: 'turn.started',
         agentId,
         sessionId,
@@ -10764,7 +10738,7 @@ export class Daemon {
           p.webchat.messageEmitted = false
           p.replyText = ''
         }
-        this.emitEvaluation({
+        this.evalHooks.emit({
           type: 'turn.context_changed',
           agentId,
           sessionId,
@@ -10861,7 +10835,7 @@ export class Daemon {
           regenerationApprovalWaitBaseline = p.approvalWaitMs
         }
         defaultTurnOutputMetrics.regeneration(p.platform, 'started')
-        this.emitEvaluation({
+        this.evalHooks.emit({
           type: 'turn.regeneration_started',
           agentId,
           sessionId,
@@ -11277,7 +11251,7 @@ export class Daemon {
         // a finished child from a broken one. `problem` is the same phase the CP snapshot below
         // reports, so the two never disagree.
         this.store.setSessionTurnOutcome(key, finalPhase === 'problem' ? 'failed' : 'done', this.clock.now())
-        this.emitSessionMetadataSnapshot({
+        this.sessionMetadataOutbox.emitSessionMetadataSnapshot({
           sessionId,
           agentId,
           phase: finalPhase,
@@ -11779,50 +11753,6 @@ export class Daemon {
       session.transportScope
     )
     return sessionThreadUrlFor(session, integrationId ? this.connForIntegration(integrationId) : undefined)
-  }
-
-  private sessionListProjection(sessionId: string, agentId: string): SessionListItem | undefined {
-    return this.sessionMetadataOutbox.sessionListProjection(sessionId, agentId)
-  }
-
-  private emitSessionMetadataSnapshot(input: SessionMetadataSnapshotInput): void {
-    this.sessionMetadataOutbox.emitSessionMetadataSnapshot(input)
-  }
-
-  private convergedPendingSessionMetadataSnapshot(next: EventSession): EventSession {
-    return this.sessionMetadataOutbox.convergedPendingSessionMetadataSnapshot(next)
-  }
-
-  private drainSessionMetadataSnapshots(): Promise<void> {
-    return this.sessionMetadataOutbox.drainSessionMetadataSnapshots()
-  }
-
-  private servedAgentIds(): string[] {
-    return this.sessionMetadataOutbox.servedAgentIds()
-  }
-
-  private parkSessionMetadataRow(row: SessionMetadataOutboxRow, why: string): boolean {
-    return this.sessionMetadataOutbox.parkSessionMetadataRow(row, why)
-  }
-
-  private replayGainedSessionMetadata(agentIds: readonly string[]): void {
-    this.sessionMetadataOutbox.replayGainedSessionMetadata(agentIds)
-  }
-
-  private releaseOwnedSessionMetadata(): void {
-    this.sessionMetadataOutbox.releaseOwnedSessionMetadata()
-  }
-
-  private schedulePendingSessionMetadataDrain(): void {
-    this.sessionMetadataOutbox.schedulePendingSessionMetadataDrain()
-  }
-
-  private scheduleSessionMetadataRetry(delayMs = SESSION_METADATA_RETRY_MS): void {
-    this.sessionMetadataOutbox.scheduleSessionMetadataRetry(delayMs)
-  }
-
-  private emitSessionMetadataSnapshotsForDisplayName(id: string): void {
-    this.sessionMetadataOutbox.emitSessionMetadataSnapshotsForDisplayName(id)
   }
 
   /** Assemble a status snapshot from the parts (agent config + host model selector +
@@ -12633,7 +12563,7 @@ export class Daemon {
     }
     const toolCallId = typeof params.toolCall?.toolCallId === 'string' ? params.toolCall.toolCallId : undefined
     if (event.kind === 'requested') {
-      this.emitEvaluation({
+      this.evalHooks.emit({
         type: 'permission.requested',
         ...context,
         data: { ...(toolCallId ? { toolCallId } : {}), optionCount: params.options.length }
@@ -12659,9 +12589,9 @@ export class Daemon {
       outcome.outcome === 'selected' &&
       (selectedOption?.kind === 'allow_once' || selectedOption?.kind === 'allow_always')
     ) {
-      this.emitEvaluation({ type: 'permission.auto_allowed', ...context, data: resultData })
+      this.evalHooks.emit({ type: 'permission.auto_allowed', ...context, data: resultData })
     }
-    this.emitEvaluation({
+    this.evalHooks.emit({
       type: outcome.outcome === 'cancelled' ? 'permission.cancelled' : 'permission.resolved',
       ...context,
       data: resultData
@@ -12707,7 +12637,7 @@ export class Daemon {
       const allow = params.options.find((o) => o.kind === 'allow_always' || o.kind === 'allow_once')
       if (allow) {
         this.permissionEvaluationDetails.set(evaluationParams, { reason: 'agentconnect_system_tool' })
-        this.emitEvaluation({
+        this.evalHooks.emit({
           type: 'permission.auto_allowed',
           agentId,
           sessionId,
@@ -12967,7 +12897,7 @@ export class Daemon {
   private persistSessionTitle(rec: SessionRecord, title: string | null): void {
     this.store.setSessionTitle(rec.key, title)
     if (!rec.acpSessionId) return
-    this.emitSessionMetadataSnapshot({
+    this.sessionMetadataOutbox.emitSessionMetadataSnapshot({
       sessionId: rec.acpSessionId,
       agentId: rec.agentId,
       phase: 'plan',
@@ -13097,7 +13027,7 @@ export class Daemon {
       return
     }
     const p = this.pending.get(pendingTurnKey(agentId, sessionId))
-    this.emitEvaluation({
+    this.evalHooks.emit({
       type: 'acp.update',
       agentId,
       sessionId,
@@ -14901,7 +14831,7 @@ export class Daemon {
       }
       if (!row.acpSessionId) continue
       this.sdkLease.delete(sdkLeaseKey(row.agentId, row.acpSessionId)) // the session is gone — drop its lease
-      this.emitSessionMetadataSnapshot({
+      this.sessionMetadataOutbox.emitSessionMetadataSnapshot({
         sessionId: row.acpSessionId,
         agentId: row.agentId,
         phase: 'end',
@@ -16444,7 +16374,7 @@ export class Daemon {
         this.replayChannelSnapshots()
         // Only snapshots written to the durable outbox by this build are
         // replayed. Historical session rows are never scanned or backfilled.
-        void this.drainSessionMetadataSnapshots()
+        void this.sessionMetadataOutbox.drainSessionMetadataSnapshots()
         // Replay remote MCP revocations that could not reach the CP (revokes
         // queued while disconnected or left over from a previous process).
         void this.webchatMcpRevocations.drainWebchatMcpRevocations()
@@ -17294,7 +17224,7 @@ export class Daemon {
     await Promise.resolve(this.cpClient?.stop()).catch((e) => errors.push(e))
     await Promise.resolve(this.sessionMetadataOutbox.inFlightDrain()).catch((e) => errors.push(e))
     // Nothing here can emit after this point; hand any claim this member still holds back.
-    this.releaseOwnedSessionMetadata()
+    this.sessionMetadataOutbox.releaseOwnedSessionMetadata()
     // The closed CP transport cannot admit another lifecycle frame. Drain every
     // remove/upsert/move already published into its per-agent queue before any
     // store or registry it may still touch is closed.

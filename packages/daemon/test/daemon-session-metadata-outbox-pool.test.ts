@@ -159,13 +159,13 @@ describe('session-metadata outbox ownership on a daemon pool (#1023)', () => {
     seedSnapshot(shared, AGENT_A, 'acp-a-1', 1, 'daemon-a')
     seedSnapshot(shared, AGENT_B, 'acp-b-1', 2, 'daemon-b')
 
-    await b.inner.drainSessionMetadataSnapshots()
+    await b.inner.sessionMetadataOutbox.drainSessionMetadataSnapshots()
     expect(b.synced).toEqual([{ orgId: ORG, agentId: AGENT_B, sessionId: 'acp-b-1' }])
     // A's row is untouched: still pending, still unfailed, still A's to report.
     expect(shared.pendingSessionMetadataSnapshot(AGENT_A, 'acp-a-1')).toMatchObject({ revision: 1, failedAttempts: 0 })
     expect(deferred(b)).toEqual([])
 
-    await a.inner.drainSessionMetadataSnapshots()
+    await a.inner.sessionMetadataOutbox.drainSessionMetadataSnapshots()
     expect(a.synced).toEqual([{ orgId: ORG, agentId: AGENT_A, sessionId: 'acp-a-1' }])
     expect(shared.hasPendingSessionMetadata()).toBe(false)
     await stop()
@@ -177,7 +177,7 @@ describe('session-metadata outbox ownership on a daemon pool (#1023)', () => {
     hold(b.inner, GROUP_B, AGENT_B)
     seedSnapshot(shared, AGENT_A, 'acp-moved', 1, 'daemon-a')
 
-    await a.inner.drainSessionMetadataSnapshots()
+    await a.inner.sessionMetadataOutbox.drainSessionMetadataSnapshots()
     expect(a.syncEventSession).not.toHaveBeenCalled()
     // Claim released, body and failure count intact, backoff only keeps it out of this pass.
     expect(shared.pendingSessionMetadataSnapshot(AGENT_A, 'acp-moved')).toMatchObject({
@@ -187,7 +187,7 @@ describe('session-metadata outbox ownership on a daemon pool (#1023)', () => {
     })
     expect(deferred(a)).toEqual([])
     // The peer does not serve AGENT_A either, so it leaves the parked row alone.
-    await b.inner.drainSessionMetadataSnapshots()
+    await b.inner.sessionMetadataOutbox.drainSessionMetadataSnapshots()
     expect(b.syncEventSession).not.toHaveBeenCalled()
     expect(shared.pendingSessionMetadataSnapshot(AGENT_A, 'acp-moved')).toBeDefined()
     await stop()
@@ -196,7 +196,7 @@ describe('session-metadata outbox ownership on a daemon pool (#1023)', () => {
   it('gaining the duty replays the parked row exactly once, scoped to the agent org', async () => {
     const { a, b, shared, stop } = await bootPool()
     seedSnapshot(shared, AGENT_A, 'acp-moved', 1, 'daemon-a')
-    await a.inner.drainSessionMetadataSnapshots()
+    await a.inner.sessionMetadataOutbox.drainSessionMetadataSnapshots()
     expect(shared.pendingSessionMetadataSnapshot(AGENT_A, 'acp-moved')?.nextAttemptAt).toBe(PARK_MS)
 
     // The grant lands on B well before the parked backoff would have expired.
@@ -204,7 +204,7 @@ describe('session-metadata outbox ownership on a daemon pool (#1023)', () => {
     await vi.waitFor(() => expect(b.syncEventSession).toHaveBeenCalledOnce())
     expect(b.synced).toEqual([{ orgId: ORG, agentId: AGENT_A, sessionId: 'acp-moved' }])
     expect(shared.hasPendingSessionMetadata()).toBe(false)
-    await b.inner.drainSessionMetadataSnapshots()
+    await b.inner.sessionMetadataOutbox.drainSessionMetadataSnapshots()
     expect(b.syncEventSession).toHaveBeenCalledOnce()
     await stop()
   }, 15_000)
@@ -215,7 +215,7 @@ describe('session-metadata outbox ownership on a daemon pool (#1023)', () => {
     a.scopeBlind.add(AGENT_A)
     seedSnapshot(shared, AGENT_A, 'acp-cold', 1, 'daemon-a')
 
-    await a.inner.drainSessionMetadataSnapshots()
+    await a.inner.sessionMetadataOutbox.drainSessionMetadataSnapshots()
     expect(a.syncEventSession).toHaveBeenCalledOnce()
     // A local SCOPE_DENIED is not a rejection of the snapshot: no failure, no defer warning.
     expect(shared.pendingSessionMetadataSnapshot(AGENT_A, 'acp-cold')).toMatchObject({
@@ -226,7 +226,7 @@ describe('session-metadata outbox ownership on a daemon pool (#1023)', () => {
 
     a.scopeBlind.clear()
     a.clock.advance(PARK_MS + 1)
-    await a.inner.drainSessionMetadataSnapshots()
+    await a.inner.sessionMetadataOutbox.drainSessionMetadataSnapshots()
     expect(a.synced).toEqual([{ orgId: ORG, agentId: AGENT_A, sessionId: 'acp-cold' }])
     expect(shared.hasPendingSessionMetadata()).toBe(false)
     await stop()
@@ -254,7 +254,7 @@ describe('session-metadata outbox ownership on a daemon pool (#1023)', () => {
     hold(b.inner, GROUP_A, AGENT_A)
     seedSnapshot(a.inner.store, AGENT_A, 'acp-lease', 1, 'daemon-a')
 
-    await b.inner.drainSessionMetadataSnapshots()
+    await b.inner.sessionMetadataOutbox.drainSessionMetadataSnapshots()
     expect(b.syncEventSession).not.toHaveBeenCalled()
     expect(b.clock.pending()).toContain(1 + LEASE_MS)
 
@@ -272,11 +272,11 @@ describe('session-metadata outbox ownership on a daemon pool (#1023)', () => {
     const survivor: LocalStore = b.inner.store
     seedSnapshot(survivor, AGENT_A, 'acp-exit', 1, 'daemon-a')
 
-    await b.inner.drainSessionMetadataSnapshots()
+    await b.inner.sessionMetadataOutbox.drainSessionMetadataSnapshots()
     expect(b.syncEventSession).not.toHaveBeenCalled()
 
     await a.daemon.stop()
-    await b.inner.drainSessionMetadataSnapshots()
+    await b.inner.sessionMetadataOutbox.drainSessionMetadataSnapshots()
     expect(b.synced).toEqual([{ orgId: ORG, agentId: AGENT_A, sessionId: 'acp-exit' }])
     expect(survivor.hasPendingSessionMetadata()).toBe(false)
     await stop()
@@ -289,7 +289,7 @@ describe('session-metadata outbox ownership on a daemon pool (#1023)', () => {
     seedSnapshot(store, AGENT_A, 'acp-1', 1, 'daemon-solo')
     seedSnapshot(store, AGENT_B, 'acp-2', 2, 'daemon-solo')
 
-    await solo.inner.drainSessionMetadataSnapshots()
+    await solo.inner.sessionMetadataOutbox.drainSessionMetadataSnapshots()
     expect(solo.synced.map((entry) => entry.sessionId)).toEqual(['acp-1', 'acp-2'])
     expect(store.hasPendingSessionMetadata()).toBe(false)
     await solo.daemon.stop()
