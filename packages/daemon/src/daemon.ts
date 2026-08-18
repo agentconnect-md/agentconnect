@@ -9684,68 +9684,80 @@ export class Daemon {
           const next = this.serialQueue.get(key) ?? []
           next.push(entry)
           this.serialQueue.set(key, next)
-          if (revisionPlan && !(await this.applyGithubRevisionAdmissionPlan(revisionPlan, entry))) {
-            this.removeQueuedEntry(key, entry)
+          try {
+            if (revisionPlan && !(await this.applyGithubRevisionAdmissionPlan(revisionPlan, entry))) {
+              this.removeQueuedEntry(key, entry)
+              await settleAdmission({ accepted: true })
+              return
+            }
             await settleAdmission({ accepted: true })
-            return
+          } catch (error) {
+            // Rejecting the caller while its entry stays runnable would run a turn nobody owns.
+            this.removeQueuedEntry(key, entry)
+            throw error
           }
-          await settleAdmission({ accepted: true })
           this.log.debug(
             `dispatch: queued behind in-flight turn for session ${key} (depth ${this.serialQueue.get(key)?.length ?? 0})`
           )
           return
         }
         // Claim ownership of the key in the SAME tick as the check, before any await — every
-        // path that then fails to reach runLoop gives the claim back.
+        // path that then fails to reach runLoop gives the claim back, an unexpected rejection
+        // included: a key claimed with no runner would queue later dispatches forever.
         this.inflight.add(key)
-        if (!opts?.replay && !(await this.admitLoopGuardTurn(agentId, msg, integrationId, opts?.inboxReplayId))) {
-          this.inflight.delete(key)
-          await settleAdmission({ accepted: false, reason: 'loop_protection' })
-          resolve(null)
-          return
-        }
-        // Genuinely admitted (claims the key, runs immediately) → persist BEFORE handing the
-        // turn to runLoop, so a hard kill mid-turn leaves a replayable row (§6.9 #353).
-        let persistence: Awaited<ReturnType<Daemon['persistInbox']>>
         try {
-          persistence = await this.persistInbox(entry, key, {
-            required: opts?.requireDurable,
-            adoptExisting: opts?.adoptExistingInbox,
-            existingId: opts?.inboxReplayId ?? opts?.deliveryId
-          })
-        } catch (err) {
-          this.inflight.delete(key)
-          await settleAdmission({ accepted: false, reason: 'durability' })
-          reject(err)
-          return
-        }
-        if (persistence === 'existing') {
-          this.inflight.delete(key)
-          await settleAdmission({ accepted: true, duplicate: true })
-          resolve(null)
-          return
-        }
-        // Admission settles only once the entry is placed (or coalesced away), exactly as in
-        // the queued branch: the accepted ACK must not outrun the batch this delivery joins.
-        if (batchLeader && (await this.coalesceGithubReviewBatch(batchLeader, entry))) {
-          this.inflight.delete(key)
+          if (!opts?.replay && !(await this.admitLoopGuardTurn(agentId, msg, integrationId, opts?.inboxReplayId))) {
+            this.inflight.delete(key)
+            await settleAdmission({ accepted: false, reason: 'loop_protection' })
+            resolve(null)
+            return
+          }
+          // Genuinely admitted (claims the key, runs immediately) → persist BEFORE handing the
+          // turn to runLoop, so a hard kill mid-turn leaves a replayable row (§6.9 #353).
+          let persistence: Awaited<ReturnType<Daemon['persistInbox']>>
+          try {
+            persistence = await this.persistInbox(entry, key, {
+              required: opts?.requireDurable,
+              adoptExisting: opts?.adoptExistingInbox,
+              existingId: opts?.inboxReplayId ?? opts?.deliveryId
+            })
+          } catch (err) {
+            this.inflight.delete(key)
+            await settleAdmission({ accepted: false, reason: 'durability' })
+            reject(err)
+            return
+          }
+          if (persistence === 'existing') {
+            this.inflight.delete(key)
+            await settleAdmission({ accepted: true, duplicate: true })
+            resolve(null)
+            return
+          }
+          // Admission settles only once the entry is placed (or coalesced away), exactly as in
+          // the queued branch: the accepted ACK must not outrun the batch this delivery joins.
+          if (batchLeader && (await this.coalesceGithubReviewBatch(batchLeader, entry))) {
+            this.inflight.delete(key)
+            await settleAdmission({ accepted: true })
+            entry.resolve(null)
+            return
+          }
+          if (revisionPlan && !(await this.applyGithubRevisionAdmissionPlan(revisionPlan, entry))) {
+            this.inflight.delete(key)
+            await settleAdmission({ accepted: true })
+            return
+          }
+          // Same late-admission check as the queued branch: the gate may have been released
+          // between the fence that absorbed this message and this dispatch reaching the claim.
+          if (await this.coalesceLateAdmission(key, entry)) {
+            this.inflight.delete(key)
+            await settleAdmission({ accepted: true })
+            return
+          }
           await settleAdmission({ accepted: true })
-          entry.resolve(null)
-          return
-        }
-        if (revisionPlan && !(await this.applyGithubRevisionAdmissionPlan(revisionPlan, entry))) {
+        } catch (error) {
           this.inflight.delete(key)
-          await settleAdmission({ accepted: true })
-          return
+          throw error
         }
-        // Same late-admission check as the queued branch: the gate may have been released
-        // between the fence that absorbed this message and this dispatch reaching the claim.
-        if (await this.coalesceLateAdmission(key, entry)) {
-          this.inflight.delete(key)
-          await settleAdmission({ accepted: true })
-          return
-        }
-        await settleAdmission({ accepted: true })
         void this.runLoop(key, entry)
       })().catch(reject)
     })
@@ -10266,7 +10278,7 @@ export class Daemon {
       turnId?: string
       initializedOnly?: boolean
       contextRevision?: number
-      contextEventTs?: string[]
+      contextEvents?: { ts: string; text?: string }[]
       providerCheckpoint?: string
       additionalMcpServersAttached?: boolean
     }
@@ -10772,7 +10784,7 @@ export class Daemon {
             : initialRefresh.events
         ).filter((event) => !this.absorbedContext(key, event))
         const representedEventTs = new Map<string, string | undefined>([
-          ...(handled.contextEventTs ?? []).map((ts) => [ts, undefined] as const),
+          ...(handled.contextEvents ?? []).map((event) => [event.ts, event.text] as const),
           ...initialEvents.map((event) => [event.ts, event.text] as const)
         ])
         const deltaBlocks: import('@agentclientprotocol/sdk').ContentBlock[] = []

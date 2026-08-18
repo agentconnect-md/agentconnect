@@ -867,12 +867,12 @@ describe('LocalStore session/transcript read-back (session/list, session/history
         triggeredBy,
         updatedAt
       })
-    sess('k1', 'telegram', '-100', 'U1', 1)
-    sess('k2', 'telegram', '55', 'U1', 3) // same user, newer; distinct channel
-    sess('k3', 'telegram', '-100', 'U2', 2) // same channel as k1, newer than k1
-    sess('k4', 'slack', 'C9', 'U9', 5) // different platform — excluded
-    sess('k5', 'telegram', '-999', 'U9', 9, 'bot-scope-b') // different physical bot — excluded
-    sess('k6', 'telegram', '-legacy', 'U8', 8, null) // legacy unknown bot — excluded
+    await sess('k1', 'telegram', '-100', 'U1', 1)
+    await sess('k2', 'telegram', '55', 'U1', 3) // same user, newer; distinct channel
+    await sess('k3', 'telegram', '-100', 'U2', 2) // same channel as k1, newer than k1
+    await sess('k4', 'slack', 'C9', 'U9', 5) // different platform — excluded
+    await sess('k5', 'telegram', '-999', 'U9', 9, 'bot-scope-b') // different physical bot — excluded
+    await sess('k6', 'telegram', '-legacy', 'U8', 8, null) // legacy unknown bot — excluded
     await s.setDisplayName('-100', 'team chat', 1)
     await s.setDisplayName('55', '@bob', 1)
 
@@ -1201,9 +1201,9 @@ describe('LocalStore session lifecycle (§7.3/#111/#118)', () => {
         updatedAt: 100
       })
     // Two agents once active in thread T1; plus a live session in T2 (scoping check).
-    put('bot-a', 'T1', 'idle')
-    put('bot-b', 'T1', 'idle')
-    put('bot-a', 'T2', 'idle')
+    await put('bot-a', 'T1', 'idle')
+    await put('bot-b', 'T1', 'idle')
+    await put('bot-a', 'T2', 'idle')
     expect((await s.openSessionAgents('C1', 'T1')).sort()).toEqual(['bot-a', 'bot-b'])
     expect(await s.closedSessionAgents('C1', 'T1')).toEqual([])
 
@@ -1346,8 +1346,8 @@ describe('LocalStore session retention GC (#485)', () => {
         lastDeliveredTs: null,
         updatedAt: 100
       })
-    put('a', 'bot-a')
-    put('b', 'bot-b')
+    await put('a', 'bot-a')
+    await put('b', 'bot-b')
     await s.setLocalCaptureGate('bot-a', 'acp-shared', false) // capture open (not excluded)
     await s.setLocalCaptureGate('bot-b', 'acp-shared', false)
 

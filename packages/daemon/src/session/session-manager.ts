@@ -347,9 +347,10 @@ export class SessionManager {
     /** Daemon-local observation fence captured with the conversation rows assembled
      * into the first prompt, before attachment and memory I/O may yield again. */
     contextRevision?: number
-    /** Stable provider coordinates actually represented in the first prompt. Used by
-     * the daemon's start fence to coalesce only matching queued activations. */
-    contextEventTs?: string[]
+    /** Rows actually represented in the first prompt — coordinates AND the text as
+     * prompted, so the fences suppress only an unchanged row (a later authoritative
+     * edit at the same coordinates is new context). */
+    contextEvents?: { ts: string; text?: string }[]
     /** Incremental provider read checkpoint associated with the assembled snapshot. */
     providerCheckpoint?: string
     /** False when session creation/loading rejected the trusted additional MCP
@@ -674,7 +675,7 @@ export class SessionManager {
     // delivery, so the catch-up there reads only rows THIS agent sent or received —
     // a sibling must never see another child's role/task delivery or report.
     const blocks: ContentBlock[] = []
-    let contextEventTs: string[] = []
+    let contextEvents: { ts: string; text?: string }[] = []
     let contextRevision = await this.deps.store.threadTranscriptRevision(transcriptChannel, thread, agentId)
     {
       const gap = (
@@ -713,7 +714,7 @@ export class SessionManager {
       const context = plan.context
       if (plan.shape === 'batch') {
         blocks.push({ type: 'text', text: `${plan.head}\n${renderContext(context)}` })
-        contextEventTs = context.map((entry) => entry.ts)
+        contextEvents = context.map((entry) => ({ ts: entry.ts, text: entry.text }))
       } else {
         if (context.length > 0) blocks.push({ type: 'text', text: `${plan.head}\n${renderContext(context)}` })
         const quotedBlock = quotedSourceBlock(msg, { replayed: context })
@@ -724,7 +725,7 @@ export class SessionManager {
         // (cron/hook) triggers stay bare, and an agent delivery already names its caller in the
         // forwarded text (`From <caller>: …` from prepareAgentDelivery).
         blocks.push({ type: 'text', text: msg.source === 'user' ? `[${msg.sender.id}] ${msg.text}` : msg.text })
-        contextEventTs = [...context.map((entry) => entry.ts), ts]
+        contextEvents = [...context.map((entry) => ({ ts: entry.ts, text: entry.text })), { ts, text: msg.text }]
       }
       rec.lastDeliveredTs = plan.deliveredThrough ?? ts
       contextRevision = await this.deps.store.threadTranscriptRevision(transcriptChannel, thread, agentId)
@@ -834,7 +835,7 @@ export class SessionManager {
       captureInput,
       turnId,
       contextRevision,
-      contextEventTs,
+      contextEvents,
       ...(additionalMcpServersAttached !== undefined ? { additionalMcpServersAttached } : {}),
       ...(snapshotCutoffTs ? { providerCheckpoint: snapshotCutoffTs } : {})
     }
