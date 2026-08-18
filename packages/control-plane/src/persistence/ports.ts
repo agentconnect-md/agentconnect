@@ -1775,6 +1775,13 @@ export interface UsageWindow {
   to: Date
 }
 
+/** How wide a usage window may be. The series allocates one bucket per day (or per hour
+ *  under two days), so an unbounded span is an unbounded allocation driven by a query
+ *  string — year 0 to year 9999 is ~3.65M buckets. 400 days covers a calendar year with
+ *  slack, which is what a billing period or a dashboard actually asks for; anything
+ *  larger is a paging concern, not a single response. */
+export const MAX_USAGE_WINDOW_DAYS = 400
+
 /** Org-wide usage aggregate for a window: workspace totals + agent/model/source
  *  breakdowns.
  *  Every amount is an exact decimal string — the aggregate is what billing reads,

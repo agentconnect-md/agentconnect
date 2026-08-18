@@ -25,6 +25,7 @@
 import { withAmbientTx, type PrismaLike } from '../prisma.js'
 import { Prisma } from '../../generated/prisma/client.js'
 import { type DecimalAmount, scaleAmount, unscaleAmount } from '@agentconnect.md/protocol'
+import { MAX_USAGE_WINDOW_DAYS } from '../ports.js'
 import type {
   SessionUsageRepo,
   SessionUsageInput,
@@ -39,7 +40,6 @@ import type {
   ViewCtx,
   SessionFilterQuery
 } from '../ports.js'
-import { visibilityWhere } from '../../authorization/policy.js'
 import { countCheckpointRegression } from '../../observability/usage-ingest.js'
 import type { AgentId, OrgId } from '../../domain/ids.js'
 import { sessionViewerSql } from './session-access-sql.js'
@@ -265,76 +265,80 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
   ): Promise<UsageAggregate> {
     const { from, to } = window
     // Derived visibility: usage rows inherit their agent's visibility, so scope
-    // through the `agent` relation. A restricted agent the caller cannot see
-    // drops out of BOTH the per-agent breakdown and the totals. Organization
-    // roles never widen that resource-level visibility.
-    const agentScope = { orgId, ...visibilityWhere(viewer) }
+    // through the `agent` relation (`agentViewerSql`). A restricted agent the caller
+    // cannot see drops out of BOTH the per-agent breakdown and the totals.
+    // Organization roles never widen that resource-level visibility.
     // One ingress or both. Scoping the WHOLE answer (totals, breakdowns, series) is
     // what lets billing ask for gateway spend alone through the console's own route
     // instead of a private one.
     const sourceScope = (alias: string) =>
       source ? Prisma.sql`AND ${Prisma.raw(`${alias}."source"`)} = ${source}::"UsageSource"` : Prisma.empty
-    const sourceWhere = source ? { source } : {}
-    // Tokens + session counts come from the lifetime snapshot (tokens aren't
-    // time-attributed). Cost is deliberately NOT summed here — every range-scoped
-    // cost figure (the total, each agent's spend, and the chart) is derived from
-    // the spend timeline below, so the cards and the chart can never disagree.
     const sessionScope = sessionViewerSql(sessionViewer)
-    const grouped = sessionScope
-      ? await this.db.$queryRaw<
-          Array<{
-            agentId: string
-            sessions: bigint
-            totalTokens: bigint
-            inputTokens: bigint
-            outputTokens: bigint
-            thoughtTokens: bigint
-            cachedReadTokens: bigint
-            cachedWriteTokens: bigint
-          }>
-        >(Prisma.sql`
-          SELECT u."agentId",
+    // WHICH SESSIONS the window contains — one definition, used by every snapshot
+    // rollup, so a response cannot contradict itself.
+    //
+    // A checkpoint inside the window is the primary test, NOT where the session's
+    // latest report happens to sit: a session that spent inside a closed window and
+    // reported again afterwards belongs to that window, and its in-window delta reaches
+    // the total regardless — so excluding it from the rollups produced a non-zero total
+    // over empty breakdowns.
+    //
+    // The snapshot's own instant is kept as a second test for a row with no checkpoint
+    // at all. `record` writes both in one transaction, so that pair is only reachable
+    // for a row written outside it (a fixture, an import); counting it keeps such a row
+    // visible in the token rollups instead of silently vanishing. The union stays
+    // coherent because cost is only ever attributed from in-window CHECKPOINTS: every
+    // session that contributes cost is in this set, and one that does not contributes 0.
+    const inWindow = Prisma.sql`(
+          EXISTS (
+            SELECT 1 FROM "session_spend" w
+            WHERE w."agentId" = u."agentId" AND w."sessionId" = u."sessionId"
+              AND w."at" >= ${from} AND w."at" < ${to}
+              ${sourceScope('w')}
+          )
+          OR (u."lastActivityAt" >= ${from} AND u."lastActivityAt" < ${to})
+        )`
+    // The snapshot rollups differ only in what they group by, so they share their
+    // columns and their eligibility instead of restating both three times.
+    const tokenColumns = Prisma.sql`
                  COUNT(*)::bigint AS sessions,
                  COALESCE(SUM(u."totalTokens"), 0)::bigint AS "totalTokens",
                  COALESCE(SUM(u."inputTokens"), 0)::bigint AS "inputTokens",
                  COALESCE(SUM(u."outputTokens"), 0)::bigint AS "outputTokens",
                  COALESCE(SUM(u."thoughtTokens"), 0)::bigint AS "thoughtTokens",
                  COALESCE(SUM(u."cachedReadTokens"), 0)::bigint AS "cachedReadTokens",
-                 COALESCE(SUM(u."cachedWriteTokens"), 0)::bigint AS "cachedWriteTokens"
+                 COALESCE(SUM(u."cachedWriteTokens"), 0)::bigint AS "cachedWriteTokens"`
+    // `session_meta` is LEFT joined so a usage row with no meta row still counts when no
+    // session predicate applies; with one, the predicate rejects the NULL side, which is
+    // the same answer the scoped path gave when it inner-joined.
+    const snapshotScope = Prisma.sql`
           FROM "session_usage" u
           JOIN "agent" a ON a."id" = u."agentId"
-          JOIN "session_meta" s ON s."id" = u."sessionId" AND s."agentId" = u."agentId"
+          LEFT JOIN "session_meta" s ON s."id" = u."sessionId" AND s."agentId" = u."agentId"
           WHERE ${agentViewerSql(orgId, viewer)}
-            AND u."lastActivityAt" >= ${from}
-            AND u."lastActivityAt" < ${to}
+            AND ${inWindow}
             ${sourceScope('u')}
-            AND ${sessionScope}
+            AND ${sessionScope ?? Prisma.sql`TRUE`}`
+    // Tokens + session counts come from the lifetime snapshot (tokens aren't
+    // time-attributed). Cost is deliberately NOT summed here — every range-scoped
+    // cost figure (the total, each agent's spend, and the chart) is derived from
+    // the spend timeline below, so the cards and the chart can never disagree.
+    const grouped = await this.db.$queryRaw<
+      Array<{
+        agentId: string
+        sessions: bigint
+        totalTokens: bigint
+        inputTokens: bigint
+        outputTokens: bigint
+        thoughtTokens: bigint
+        cachedReadTokens: bigint
+        cachedWriteTokens: bigint
+      }>
+    >(Prisma.sql`
+          SELECT u."agentId", ${tokenColumns}
+          ${snapshotScope}
           GROUP BY u."agentId"
         `)
-      : (
-          await this.db.sessionUsage.groupBy({
-            by: ['agentId'],
-            where: { agent: agentScope, lastActivityAt: { gte: from, lt: to }, ...sourceWhere },
-            _sum: {
-              totalTokens: true,
-              inputTokens: true,
-              outputTokens: true,
-              thoughtTokens: true,
-              cachedReadTokens: true,
-              cachedWriteTokens: true
-            },
-            _count: { _all: true }
-          })
-        ).map((row) => ({
-          agentId: row.agentId,
-          sessions: BigInt(row._count._all),
-          totalTokens: BigInt(row._sum.totalTokens ?? 0),
-          inputTokens: BigInt(row._sum.inputTokens ?? 0),
-          outputTokens: BigInt(row._sum.outputTokens ?? 0),
-          thoughtTokens: BigInt(row._sum.thoughtTokens ?? 0),
-          cachedReadTokens: BigInt(row._sum.cachedReadTokens ?? 0),
-          cachedWriteTokens: BigInt(row._sum.cachedWriteTokens ?? 0)
-        }))
 
     // Attribute lifetime token deltas to the model observed on each report. The
     // outer session_usage filter preserves the dashboard's established semantics:
@@ -371,8 +375,7 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
         JOIN "agent" a ON a."id" = sp."agentId"
         LEFT JOIN "session_meta" s ON s."id" = sp."sessionId" AND s."agentId" = sp."agentId"
         WHERE ${agentViewerSql(orgId, viewer)}
-          AND u."lastActivityAt" >= ${from}
-          AND u."lastActivityAt" < ${to}
+          AND ${inWindow}
           ${sourceScope('sp')}
           AND ${sessionScope ?? Prisma.sql`TRUE`}
         WINDOW sample_order AS (PARTITION BY sp."agentId", sp."sessionId" ORDER BY sp."at")
@@ -405,6 +408,13 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
     const stepMs = bucket === 'hour' ? HOUR_MS : 24 * HOUR_MS
     // Floor `from` to the start of its local bucket, expressed as a UTC instant.
     const floorSince = Math.floor((from.getTime() - offMs) / stepMs) * stepMs + offMs
+    // The route refuses an over-wide window, so this is a guard for a direct caller
+    // rather than a reachable path: `n` sizes an eager allocation, so it must never be
+    // whatever arithmetic on two caller-supplied instants happens to produce. Throwing
+    // beats clamping — a silently truncated series is a wrong answer that looks right.
+    if (spanMs > MAX_USAGE_WINDOW_DAYS * 24 * HOUR_MS) {
+      throw new Error(`usage window may span at most ${MAX_USAGE_WINDOW_DAYS} days`)
+    }
     const n = Math.max(1, Math.ceil((to.getTime() - floorSince) / stepMs))
     // Buckets accumulate as scaled integers and are serialized once, at the end.
     const points: ScaledBucket[] = Array.from({ length: n }, (_, i) => ({
@@ -499,61 +509,22 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
 
     // Per-ingress tokens/sessions, from the same snapshot rows the agent rollup uses,
     // so `sources` and `agents` add up to the same totals.
-    const sourceGrouped = sessionScope
-      ? await this.db.$queryRaw<
-          Array<{
-            source: UsageSource
-            sessions: bigint
-            totalTokens: bigint
-            inputTokens: bigint
-            outputTokens: bigint
-            thoughtTokens: bigint
-            cachedReadTokens: bigint
-            cachedWriteTokens: bigint
-          }>
-        >(Prisma.sql`
-          SELECT u."source",
-                 COUNT(*)::bigint AS sessions,
-                 COALESCE(SUM(u."totalTokens"), 0)::bigint AS "totalTokens",
-                 COALESCE(SUM(u."inputTokens"), 0)::bigint AS "inputTokens",
-                 COALESCE(SUM(u."outputTokens"), 0)::bigint AS "outputTokens",
-                 COALESCE(SUM(u."thoughtTokens"), 0)::bigint AS "thoughtTokens",
-                 COALESCE(SUM(u."cachedReadTokens"), 0)::bigint AS "cachedReadTokens",
-                 COALESCE(SUM(u."cachedWriteTokens"), 0)::bigint AS "cachedWriteTokens"
-          FROM "session_usage" u
-          JOIN "agent" a ON a."id" = u."agentId"
-          JOIN "session_meta" s ON s."id" = u."sessionId" AND s."agentId" = u."agentId"
-          WHERE ${agentViewerSql(orgId, viewer)}
-            AND u."lastActivityAt" >= ${from}
-            AND u."lastActivityAt" < ${to}
-            ${sourceScope('u')}
-            AND ${sessionScope}
+    const sourceGrouped = await this.db.$queryRaw<
+      Array<{
+        source: UsageSource
+        sessions: bigint
+        totalTokens: bigint
+        inputTokens: bigint
+        outputTokens: bigint
+        thoughtTokens: bigint
+        cachedReadTokens: bigint
+        cachedWriteTokens: bigint
+      }>
+    >(Prisma.sql`
+          SELECT u."source", ${tokenColumns}
+          ${snapshotScope}
           GROUP BY u."source"
         `)
-      : (
-          await this.db.sessionUsage.groupBy({
-            by: ['source'],
-            where: { agent: agentScope, lastActivityAt: { gte: from, lt: to }, ...sourceWhere },
-            _sum: {
-              totalTokens: true,
-              inputTokens: true,
-              outputTokens: true,
-              thoughtTokens: true,
-              cachedReadTokens: true,
-              cachedWriteTokens: true
-            },
-            _count: { _all: true }
-          })
-        ).map((row) => ({
-          source: row.source,
-          sessions: BigInt(row._count._all),
-          totalTokens: BigInt(row._sum.totalTokens ?? 0),
-          inputTokens: BigInt(row._sum.inputTokens ?? 0),
-          outputTokens: BigInt(row._sum.outputTokens ?? 0),
-          thoughtTokens: BigInt(row._sum.thoughtTokens ?? 0),
-          cachedReadTokens: BigInt(row._sum.cachedReadTokens ?? 0),
-          cachedWriteTokens: BigInt(row._sum.cachedWriteTokens ?? 0)
-        }))
 
     const agents: AgentUsageAggregate[] = grouped.map((g) => ({
       agentId: g.agentId,
@@ -606,29 +577,11 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
     // Cost currency for the range: the single distinct currency reported. `null`
     // when none or mixed — amounts are summed as-is, so a mixed-currency workspace
     // surfaces an unlabeled total (a known limitation until per-currency rollups).
-    const currencies = sessionScope
-      ? await this.db.$queryRaw<Array<{ costCurrency: string }>>(Prisma.sql`
+    const currencies = await this.db.$queryRaw<Array<{ costCurrency: string }>>(Prisma.sql`
           SELECT DISTINCT u."costCurrency"
-          FROM "session_usage" u
-          JOIN "agent" a ON a."id" = u."agentId"
-          JOIN "session_meta" s ON s."id" = u."sessionId" AND s."agentId" = u."agentId"
-          WHERE ${agentViewerSql(orgId, viewer)}
-            AND u."lastActivityAt" >= ${from}
-            AND u."lastActivityAt" < ${to}
-            ${sourceScope('u')}
+          ${snapshotScope}
             AND u."costCurrency" IS NOT NULL
-            AND ${sessionScope}
         `)
-      : await this.db.sessionUsage.findMany({
-          where: {
-            agent: agentScope,
-            lastActivityAt: { gte: from, lt: to },
-            costCurrency: { not: null },
-            ...sourceWhere
-          },
-          distinct: ['costCurrency'],
-          select: { costCurrency: true }
-        })
     const costCurrency = currencies.length === 1 ? currencies[0]!.costCurrency : null
 
     const series: SpendBucket[] = points.map((pt) => ({

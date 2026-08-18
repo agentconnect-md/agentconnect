@@ -725,6 +725,76 @@ describe('GET /usage — aggregates the persisted usage store by agent over a ra
     }
   })
 
+  it('keeps a session that spent in the window but reported again after it', async () => {
+    await seedAgent(prisma, AGENT_A)
+    const repo = new PgSessionUsageRepo(prisma)
+    const to = new Date(Math.floor((Date.now() - 5 * DAY_MS) / DAY_MS) * DAY_MS)
+    const from = new Date(to.getTime() - 3 * DAY_MS)
+    // The snapshot's `lastActivityAt` sits AFTER the window; its checkpoint sits inside.
+    await seedVisibleSession(AGENT_A, 'cont', new Date())
+    const w = (at: Date, costAmount: string, totalTokens: number) =>
+      repo.record({
+        agentId: AgentId(AGENT_A),
+        sessionId: 'cont',
+        source: 'gateway',
+        lastActivityAt: at,
+        usage: { totalTokens, costAmount, costCurrency: 'USD' }
+      })
+    await w(new Date(from.getTime() + DAY_MS), '7', 100)
+    await w(new Date(), '20', 400)
+
+    const { app, close } = buildHttpApp(prisma)
+    try {
+      const query = new URLSearchParams({ from: from.toISOString(), to: to.toISOString() })
+      const res = await app.inject({ method: 'GET', url: `${ORG}/usage?${query.toString()}` })
+      const body = res.json() as {
+        totals: { sessions: number; totalTokens: number; costAmount: string; costCurrency: string | null }
+        agents: { agentId: string; costAmount: string }[]
+        models: { costAmount: string }[]
+        sources: { source: string; costAmount: string }[]
+        series: { points: { costAmount: string }[] }
+      }
+      // The regression: the in-window delta reached the total and the series while the
+      // session was missing from every breakdown — a response contradicting itself.
+      expect(body.totals.costAmount).toBe('7')
+      expect(sum(body.series.points)).toBe('7')
+      expect(body.totals.sessions).toBe(1)
+      expect(body.agents.map((a) => [a.agentId, a.costAmount])).toEqual([[AGENT_A, '7']])
+      expect(body.sources.map((s) => [s.source, s.costAmount])).toEqual([['gateway', '7']])
+      expect(sumAmounts(body.sources.map((s) => s.costAmount))).toBe(body.totals.costAmount)
+      expect(sumAmounts(body.agents.map((a) => a.costAmount))).toBe(body.totals.costAmount)
+      // A currency is reported because the session IS in the answer.
+      expect(body.totals.costCurrency).toBe('USD')
+    } finally {
+      await close()
+    }
+  })
+
+  it('refuses a window too wide to answer in one response', async () => {
+    const { app, close } = buildHttpApp(prisma)
+    try {
+      // The series allocates a bucket per day, so span is an allocation the caller
+      // picks. Year 0 to year 9999 would be ~3.65M buckets.
+      const wide = new URLSearchParams({ from: '0000-01-01T00:00:00.000Z', to: '9999-12-31T00:00:00.000Z' })
+      const res = await app.inject({ method: 'GET', url: `${ORG}/usage?${wide.toString()}` })
+      expect(res.statusCode).toBe(400)
+
+      const to = new Date()
+      const ok = new URLSearchParams({
+        from: new Date(to.getTime() - 400 * DAY_MS).toISOString(),
+        to: to.toISOString()
+      })
+      expect((await app.inject({ method: 'GET', url: `${ORG}/usage?${ok.toString()}` })).statusCode).toBe(200)
+      const over = new URLSearchParams({
+        from: new Date(to.getTime() - 401 * DAY_MS).toISOString(),
+        to: to.toISOString()
+      })
+      expect((await app.inject({ method: 'GET', url: `${ORG}/usage?${over.toString()}` })).statusCode).toBe(400)
+    } finally {
+      await close()
+    }
+  })
+
   it('returns empty aggregates when nothing is recorded in the window', async () => {
     const { app, close } = buildHttpApp(prisma)
     try {

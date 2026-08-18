@@ -39,6 +39,7 @@ import {
 } from '@agentconnect.md/protocol'
 import { HEX_COLOR_RE, AGENT_ICON_GLYPHS } from '../../agents/agent-icon.js'
 import { CP_PLATFORM_IDS } from '../../platforms/ids.js'
+import { MAX_USAGE_WINDOW_DAYS } from '../../persistence/ports.js'
 
 // ── per-resource visibility / sharing (docs/designs/resource-visibility.md) ──
 /** 'org' = visible to every org member (default); 'restricted' = the complete
@@ -3301,6 +3302,12 @@ export const UsageQueryDto = z
   .refine((q) => Date.parse(q.from) < Date.parse(q.to), {
     message: '`from` must be strictly before `to`',
     path: ['from']
+  })
+  // The series is one bucket per day (per hour under two days), so the window's width
+  // bounds an allocation. Refuse an over-wide span instead of building it.
+  .refine((q) => Date.parse(q.to) - Date.parse(q.from) <= MAX_USAGE_WINDOW_DAYS * 24 * 60 * 60 * 1000, {
+    message: `the window may span at most ${MAX_USAGE_WINDOW_DAYS} days`,
+    path: ['to']
   })
 
 /** An amount in an aggregate RESPONSE. A plain string, not `DecimalAmount`: these are
