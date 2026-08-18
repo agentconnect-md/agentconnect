@@ -8433,6 +8433,24 @@ export class Daemon {
     return planGithubRevisionAdmission(key, incoming, this.githubQueueCandidates())
   }
 
+  /** Run one session key's queued-branch admission after every earlier arrival for that key
+   *  has placed (or withdrawn). Registered synchronously by the caller, so the chain order is
+   *  arrival order — what the pre-async path got for free by never yielding before the push. */
+  private async admitInArrivalOrder(key: string, work: () => Promise<void>): Promise<void> {
+    const previous = this.dispatchAdmissionChains.get(key) ?? Promise.resolve()
+    let release!: () => void
+    const held = new Promise<void>((settle) => (release = settle))
+    const link = previous.then(() => held)
+    this.dispatchAdmissionChains.set(key, link)
+    await previous
+    try {
+      await work()
+    } finally {
+      release()
+      if (this.dispatchAdmissionChains.get(key) === link) this.dispatchAdmissionChains.delete(key)
+    }
+  }
+
   /** Take one entry back off a session's queue — the placement above is undone if the
    *  revision plan then refuses it. */
   private removeQueuedEntry(key: string, entry: QueueEntry): void {
@@ -8612,6 +8630,8 @@ export class Daemon {
   // different ACK (see handleCommand's queue branch).
   private inflight = new Set<string>()
   private serialQueue = new Map<string, QueueEntry[]>()
+  /** Per-key tail of the queued-branch admission chain — see {@link admitInArrivalOrder}. */
+  private readonly dispatchAdmissionChains = new Map<string, Promise<void>>()
   /** Per-ACP-session tail of the update chain — see {@link enqueueAcpUpdate}. */
   private readonly acpUpdateChains = new Map<string, Promise<void>>()
   /** Current head for every owned serial gate, including the cold pre-Pending phase.
@@ -9637,110 +9657,122 @@ export class Daemon {
           resolve,
           reject
         }
-        const batchLeader = this.githubReviewBatchLeader(entry)
-        const revisionPlan = this.githubRevisionAdmissionPlan(key, entry)
+        let batchLeader = this.githubReviewBatchLeader(entry)
+        let revisionPlan = this.githubRevisionAdmissionPlan(key, entry)
         // ── atomic claim-or-enqueue (single synchronous tick, no await before add) ──
         if (this.inflight.has(key)) {
-          const q = this.serialQueue.get(key) ?? []
-          const supersededQueued =
-            revisionPlan?.superseded.filter((candidate) => candidate.state === 'queued' && candidate.key === key)
-              .length ?? 0
-          const queueIncoming = revisionPlan === undefined || revisionPlan.winner.entry === entry
-          const projectedDepth = batchLeader ? q.length : q.length - supersededQueued + (queueIncoming ? 1 : 0)
-          // §4.4 backpressure: per-session queue-depth cap → queue_full fast-fail. The
-          // rejected entry settles its OWN promise; nothing is admitted or persisted.
-          if (projectedDepth > MAX_QUEUED_PER_SESSION) {
-            this.log.warn(`dispatch: queue full for session ${key} (${q.length}) — rejecting (queue_full)`)
-            await settleAdmission({ accepted: false, reason: 'queue_full' })
-            reject(new QueueFullError(key))
-            return
-          }
-          // Replay is recovery of an admission already counted before shutdown, not a
-          // fresh turn signal. Counting it again would let repeated restarts trip the
-          // breaker on a valid backlog. Structurally malformed rows are still caught by
-          // the unconditional poison check above.
-          if (!opts?.replay && !(await this.admitLoopGuardTurn(agentId, msg, integrationId, opts?.inboxReplayId))) {
-            await settleAdmission({ accepted: false, reason: 'loop_protection' })
-            resolve(null)
-            return
-          }
-          // Genuinely admitted (queued behind an in-flight turn) → persist BEFORE returning,
-          // so the caller's delivered:true ACK is backed by a durable row (§6.9 #353).
-          let persistence: Awaited<ReturnType<Daemon['persistInbox']>>
-          try {
-            persistence = await this.persistInbox(entry, key, {
-              required: opts?.requireDurable,
-              adoptExisting: opts?.adoptExistingInbox,
-              existingId: opts?.inboxReplayId ?? opts?.deliveryId
-            })
-          } catch (err) {
-            await settleAdmission({ accepted: false, reason: 'durability' })
-            reject(err)
-            return
-          }
-          if (persistence === 'existing') {
-            // The same stable delivery survived a restart and is already being
-            // replayed (or awaits replay). Its original accepted ACK remains valid;
-            // never create a second in-memory QueueEntry.
-            await settleAdmission({ accepted: true, duplicate: true })
-            resolve(null)
-            return
-          }
-          // Admission settles only once the entry is on the queue (or coalesced away): the
-          // caller's accepted ACK has always meant "this delivery is placed", and awaiting a
-          // Promise-returning store must not let the ACK outrun the placement.
-          if (batchLeader && (await this.coalesceGithubReviewBatch(batchLeader, entry))) {
-            await settleAdmission({ accepted: true })
-            entry.resolve(null)
-            return
-          }
-          // A fence that ran while this delivery was still travelling here already folded its
-          // message into the live prompt — the placement it would have coalesced never existed
-          // yet, so settle it as coalesced now instead of prompting the same message twice.
-          if (await this.coalesceLateAdmission(key, entry)) {
-            await settleAdmission({ accepted: true })
-            return
-          }
-          // Place the entry BEFORE the revision plan's interrupts: those await, and a gate that
-          // drains meanwhile would otherwise run past this delivery instead of behind it. `q`
-          // predates this method's awaits, so re-read the queue a peer dispatch may have set.
-          const next = this.serialQueue.get(key) ?? []
-          // The hold keeps the runner from starting this entry while its admission is still
-          // settling: a placed entry the awaits below then withdraw must never already be
-          // running when its caller is rejected.
-          let settleHold!: (verdict: 'run' | 'drop') => void
-          entry.admissionHold = new Promise((res) => (settleHold = res))
-          next.push(entry)
-          this.serialQueue.set(key, next)
-          // The claim this entry queued behind may have been given back during the awaits above
-          // (the owner drained, saw an empty queue, released). Reclaim it in the SAME tick as
-          // the push — a placement under no claim holder is a turn nobody ever starts.
-          const reclaimedGate = !this.inflight.has(key)
-          if (reclaimedGate) this.inflight.add(key)
-          try {
-            if (revisionPlan && !(await this.applyGithubRevisionAdmissionPlan(revisionPlan, entry))) {
-              settleHold('drop')
-              this.removeQueuedEntry(key, entry)
-              if (reclaimedGate) await this.releaseDispatchClaim(key)
+          // Arrival-order FIFO (§4.1-4.3): the loop guard, the durable write and coalescing all
+          // await, and the old synchronous path could not yield between this branch and the
+          // enqueue. Followers for one key therefore admit in the order they arrived — the link
+          // is registered synchronously here, so a later delivery can never place itself first
+          // nor go missing from the depth the cap is measured against.
+          await this.admitInArrivalOrder(key, async () => {
+            // This link may have waited on a peer's placement, so read the queue it actually
+            // admits into rather than the one this delivery arrived at.
+            batchLeader = this.githubReviewBatchLeader(entry)
+            revisionPlan = this.githubRevisionAdmissionPlan(key, entry)
+            const q = this.serialQueue.get(key) ?? []
+            const supersededQueued =
+              revisionPlan?.superseded.filter((candidate) => candidate.state === 'queued' && candidate.key === key)
+                .length ?? 0
+            const queueIncoming = revisionPlan === undefined || revisionPlan.winner.entry === entry
+            const projectedDepth = batchLeader ? q.length : q.length - supersededQueued + (queueIncoming ? 1 : 0)
+            // §4.4 backpressure: per-session queue-depth cap → queue_full fast-fail. The
+            // rejected entry settles its OWN promise; nothing is admitted or persisted.
+            if (projectedDepth > MAX_QUEUED_PER_SESSION) {
+              this.log.warn(`dispatch: queue full for session ${key} (${q.length}) — rejecting (queue_full)`)
+              await settleAdmission({ accepted: false, reason: 'queue_full' })
+              reject(new QueueFullError(key))
+              return
+            }
+            // Replay is recovery of an admission already counted before shutdown, not a
+            // fresh turn signal. Counting it again would let repeated restarts trip the
+            // breaker on a valid backlog. Structurally malformed rows are still caught by
+            // the unconditional poison check above.
+            if (!opts?.replay && !(await this.admitLoopGuardTurn(agentId, msg, integrationId, opts?.inboxReplayId))) {
+              await settleAdmission({ accepted: false, reason: 'loop_protection' })
+              resolve(null)
+              return
+            }
+            // Genuinely admitted (queued behind an in-flight turn) → persist BEFORE returning,
+            // so the caller's delivered:true ACK is backed by a durable row (§6.9 #353).
+            let persistence: Awaited<ReturnType<Daemon['persistInbox']>>
+            try {
+              persistence = await this.persistInbox(entry, key, {
+                required: opts?.requireDurable,
+                adoptExisting: opts?.adoptExistingInbox,
+                existingId: opts?.inboxReplayId ?? opts?.deliveryId
+              })
+            } catch (err) {
+              await settleAdmission({ accepted: false, reason: 'durability' })
+              reject(err)
+              return
+            }
+            if (persistence === 'existing') {
+              // The same stable delivery survived a restart and is already being
+              // replayed (or awaits replay). Its original accepted ACK remains valid;
+              // never create a second in-memory QueueEntry.
+              await settleAdmission({ accepted: true, duplicate: true })
+              resolve(null)
+              return
+            }
+            // Admission settles only once the entry is on the queue (or coalesced away): the
+            // caller's accepted ACK has always meant "this delivery is placed", and awaiting a
+            // Promise-returning store must not let the ACK outrun the placement.
+            if (batchLeader && (await this.coalesceGithubReviewBatch(batchLeader, entry))) {
+              await settleAdmission({ accepted: true })
+              entry.resolve(null)
+              return
+            }
+            // A fence that ran while this delivery was still travelling here already folded its
+            // message into the live prompt — the placement it would have coalesced never existed
+            // yet, so settle it as coalesced now instead of prompting the same message twice.
+            if (await this.coalesceLateAdmission(key, entry)) {
               await settleAdmission({ accepted: true })
               return
             }
-            await settleAdmission({ accepted: true })
-            settleHold('run')
-          } catch (error) {
-            // Rejecting the caller while its entry stays runnable would run a turn nobody owns.
-            settleHold('drop')
-            this.removeQueuedEntry(key, entry)
-            if (!this.draining) await this.removeInbox(entry).catch(() => undefined)
-            if (reclaimedGate) await this.releaseDispatchClaim(key)
-            throw error
-          }
-          // Hand the reclaimed gate to the queue head — this entry, or a peer stranded ahead
-          // of it by the same window. Never awaited: the turn outlives this dispatch call.
-          if (reclaimedGate) void this.releaseDispatchClaim(key)
-          this.log.debug(
-            `dispatch: queued behind in-flight turn for session ${key} (depth ${this.serialQueue.get(key)?.length ?? 0})`
-          )
+            // Place the entry BEFORE the revision plan's interrupts: those await, and a gate that
+            // drains meanwhile would otherwise run past this delivery instead of behind it. `q`
+            // predates this method's awaits, so re-read the queue a peer dispatch may have set.
+            const next = this.serialQueue.get(key) ?? []
+            // The hold keeps the runner from starting this entry while its admission is still
+            // settling: a placed entry the awaits below then withdraw must never already be
+            // running when its caller is rejected.
+            let settleHold!: (verdict: 'run' | 'drop') => void
+            entry.admissionHold = new Promise((res) => (settleHold = res))
+            next.push(entry)
+            this.serialQueue.set(key, next)
+            // The claim this entry queued behind may have been given back during the awaits above
+            // (the owner drained, saw an empty queue, released). Reclaim it in the SAME tick as
+            // the push — a placement under no claim holder is a turn nobody ever starts.
+            const reclaimedGate = !this.inflight.has(key)
+            if (reclaimedGate) this.inflight.add(key)
+            try {
+              if (revisionPlan && !(await this.applyGithubRevisionAdmissionPlan(revisionPlan, entry))) {
+                settleHold('drop')
+                this.removeQueuedEntry(key, entry)
+                if (reclaimedGate) await this.releaseDispatchClaim(key)
+                await settleAdmission({ accepted: true })
+                return
+              }
+              await settleAdmission({ accepted: true })
+              settleHold('run')
+            } catch (error) {
+              // Rejecting the caller while its entry stays runnable would run a turn nobody owns.
+              settleHold('drop')
+              this.removeQueuedEntry(key, entry)
+              if (!this.draining) await this.removeInbox(entry).catch(() => undefined)
+              if (reclaimedGate) await this.releaseDispatchClaim(key)
+              throw error
+            }
+            // Hand the reclaimed gate to the queue head — this entry, or a peer stranded ahead
+            // of it by the same window. Never awaited: the turn outlives this dispatch call.
+            if (reclaimedGate) void this.releaseDispatchClaim(key)
+            this.log.debug(
+              `dispatch: queued behind in-flight turn for session ${key} (depth ${this.serialQueue.get(key)?.length ?? 0})`
+            )
+            return
+          })
           return
         }
         // Claim ownership of the key in the SAME tick as the check, before any await — every
