@@ -73,7 +73,7 @@ export class QuotaCountingGame implements CollaborationGameWorld {
   private started = false
   private terminalReason: string | undefined
   private readonly pendingWaves: GameWave[] = []
-  private liveIngress?: (event: EvaluationPlatformEvent) => DeliveryHandle
+  private liveIngress?: (event: EvaluationPlatformEvent) => DeliveryHandle | Promise<DeliveryHandle>
   private readonly liveHandles: DeliveryHandle[] = []
   /** Propagation: the production platform echo (§2.3/§5/§6). */
   private readonly echo: PlatformEcho
@@ -127,14 +127,14 @@ export class QuotaCountingGame implements CollaborationGameWorld {
     return { platformEvents, refereeEvents: [] }
   }
 
-  attachLiveIngress(inject: (event: EvaluationPlatformEvent) => DeliveryHandle): void {
+  attachLiveIngress(inject: (event: EvaluationPlatformEvent) => DeliveryHandle | Promise<DeliveryHandle>): void {
     this.liveIngress = inject
     // The platform echo IS the propagation mechanism — whether an echoed post
     // activates anyone is the DAEMON's routing decision, never ours.
     this.echo.attach(inject)
   }
 
-  drainLiveHandles(): DeliveryHandle[] {
+  drainLiveHandles(): Promise<DeliveryHandle>[] {
     return this.echo.drainHandles()
   }
 

@@ -105,8 +105,8 @@ export class CountingGame implements CollaborationGameWorld {
   private started = false
   private terminalReason: string | undefined
   private readonly pendingWaves: GameWave[] = []
-  private liveIngress?: (event: EvaluationPlatformEvent) => DeliveryHandle
-  private readonly liveHandles: DeliveryHandle[] = []
+  private liveIngress?: (event: EvaluationPlatformEvent) => DeliveryHandle | Promise<DeliveryHandle>
+  private readonly liveHandles: Promise<DeliveryHandle>[] = []
   /** Peer-driven propagation: the production platform echo (§2.3/§5/§6). */
   private readonly echo?: PlatformEcho
 
@@ -160,7 +160,7 @@ export class CountingGame implements CollaborationGameWorld {
 
   /** §8: the runner supplies live ingress so relays enter the daemon the moment
    *  a post lands, not at the wave barrier. */
-  attachLiveIngress(inject: (event: EvaluationPlatformEvent) => DeliveryHandle): void {
+  attachLiveIngress(inject: (event: EvaluationPlatformEvent) => DeliveryHandle | Promise<DeliveryHandle>): void {
     this.liveIngress = inject
     // Peer-driven: the platform echo IS the propagation mechanism — whether an
     // echoed post activates anyone is the DAEMON's routing decision, never ours.
@@ -168,7 +168,7 @@ export class CountingGame implements CollaborationGameWorld {
   }
 
   /** Handles for echoes injected mid-wave; the runner awaits and drains them. */
-  drainLiveHandles(): DeliveryHandle[] {
+  drainLiveHandles(): Promise<DeliveryHandle>[] {
     if (this.echo) return this.echo.drainHandles()
     const handles = [...this.liveHandles]
     this.liveHandles.length = 0

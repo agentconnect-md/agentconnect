@@ -93,7 +93,7 @@ export interface CollaborationGameWorld {
    *  context refresh depends on. */
   attachLiveIngress?(inject: (event: EvaluationPlatformEvent) => Promise<DeliveryHandle>): void
   /** Handles for live-injected deliveries since the last drain. */
-  drainLiveHandles?(): DeliveryHandle[]
+  drainLiveHandles?(): Promise<DeliveryHandle>[]
   /** §8.1 decision log: the wave's composition and each admission outcome. */
   noteWave(record: GameWaveRecord): void
   terminate(reason: string): void
@@ -244,7 +244,7 @@ export class CollaborationGameRunner {
         while (cascade.length > 0 && generations < maxSteps) {
           generations += 1
           await beforeDeadline(deadlineMs, `wave ${steps} cascade ${generations}`, () =>
-            Promise.all(cascade.map((handle) => handle.completion))
+            Promise.all(cascade.map(async (handle) => (await handle).completion))
           )
           world.applyEffects(world.drainOutboundEffects())
           cascade = world.drainLiveHandles?.() ?? []

@@ -308,7 +308,7 @@ export class WebchatArena {
     this.posts.push(post)
     for (const seat of this.options.seats) {
       if (seat.agentId === post.agentId) continue
-      ;(this.daemon as any).handleRelayMsg(
+      void (this.daemon as any).handleRelayMsg(
         this.rd({ op: 'context', post: post.post }, { agentId: seat.agentId, msgId: `ctx-${this.ctxSeq++}` }),
         () => {}
       )
@@ -333,7 +333,7 @@ export class WebchatArena {
    * a pre-addressed `turn` frame per target, a transcript-only user `context`
    * copy to every other roster member. `mentions` narrows by seat alias.
    */
-  postHost(text: string, options: { mentions?: string[] } = {}): { postId: string } {
+  async postHost(text: string, options: { mentions?: string[] } = {}): Promise<{ postId: string }> {
     const postId = randomUUID()
     const at = Date.now()
     const seq = ++this.turnSeq
@@ -342,7 +342,7 @@ export class WebchatArena {
     const chosen = selectTurnTargets(roster, mentionIds ? { mentions: mentionIds } : {})
     if (chosen.invalid.length > 0) throw new Error(`postHost: invalid mention targets ${chosen.invalid.join(', ')}`)
     for (const [index, agentId] of chosen.valid.entries()) {
-      const result = (this.daemon as any).handleRelayMsg(
+      const result = await (this.daemon as any).handleRelayMsg(
         this.rd(
           {
             op: 'turn',
@@ -369,7 +369,7 @@ export class WebchatArena {
       at
     }
     for (const [index, agentId] of roster.filter((id) => !chosen.valid.includes(id)).entries()) {
-      ;(this.daemon as any).handleRelayMsg(
+      await (this.daemon as any).handleRelayMsg(
         this.rd({ op: 'context', post: userPost }, { agentId, msgId: `turn-${seq}-c${index}` }),
         () => {}
       )
@@ -394,12 +394,12 @@ export class WebchatArena {
   }
 
   /** Shared-conversation transcript rows (what a peer's context refresh reads). */
-  transcriptRows(): { sender: string; text: string }[] {
+  transcriptRows(): Promise<{ sender: string; text: string }[]> {
     return (this.daemon as any).store.transcriptSince(
       transcriptChannelKey(this.conversationId, undefined),
       `webchat:${this.conversationId}`,
       null
-    ) as { sender: string; text: string }[]
+    ) as Promise<{ sender: string; text: string }[]>
   }
 
   /**

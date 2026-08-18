@@ -127,7 +127,7 @@ describe('webchat night collection (scripted)', () => {
   it('three concurrent needsReply calls: correct replies wake the referee exactly once each; the prose reply is LOST; the wolf relay round-trips', async () => {
     const run = await startNightRun()
     try {
-      run.arena.postHost(NIGHT_START_TEXT)
+      await run.arena.postHost(NIGHT_START_TEXT)
       await run.arena.settle({ quietMs: 900, timeoutMs: 90_000 })
 
       // The referee issued exactly four needsReply calls (three night calls +
@@ -207,7 +207,7 @@ describe('webchat night collection (scripted)', () => {
       return result
     }) as typeof run.log.push
     try {
-      run.arena.postHost(NIGHT_START_TEXT)
+      await run.arena.postHost(NIGHT_START_TEXT)
       await run.arena.settle({ quietMs: 900, timeoutMs: 90_000 })
       const score = run.score()
       const doctor = score.replies.find((reply) => reply.child === 'doctor')!
