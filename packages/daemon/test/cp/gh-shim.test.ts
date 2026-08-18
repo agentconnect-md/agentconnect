@@ -12,10 +12,12 @@ describe('gh wrapper shim', () => {
     if (root) rmSync(root, { recursive: true, force: true })
   })
 
-  it('routes a gh repo positional argument after value flags to that repository token', () => {
+  // The wrapper no longer parses argv: it hands the whole thing to the CLI, which resolves
+  // the target with cp/gh-target.ts. `process.argv` here is [node, cli, gh-token, agentId, --, …].
+  const setup = () => {
     root = mkdtempSync(join(tmpdir(), 'gh-shim-'))
     const realBin = join(root, 'real-bin')
-    const repoCapture = join(root, 'repo.txt')
+    const argvCapture = join(root, 'argv.json')
     const capabilityCapture = join(root, 'capability.txt')
     const tokenCapture = join(root, 'token.txt')
     const cliEntry = join(root, 'fake-cli.mjs')
@@ -24,9 +26,9 @@ describe('gh wrapper shim', () => {
     writeFileSync(
       cliEntry,
       `import { writeFileSync } from 'node:fs'\n` +
-        `writeFileSync(process.env.REPO_CAPTURE, process.argv[4] ?? '')\n` +
+        `writeFileSync(process.env.ARGV_CAPTURE, JSON.stringify(process.argv.slice(4)))\n` +
         `writeFileSync(process.env.CAPABILITY_CAPTURE, process.env.AC_GITCRED_CAPABILITY ?? '')\n` +
-        `process.stdout.write('token-for-' + (process.argv[4] ?? 'workspace'))\n`
+        `process.stdout.write('token-for-' + process.argv[3])\n`
     )
     const realGh = join(realBin, 'gh')
     writeFileSync(realGh, '#!/bin/sh\nprintf %s "$GH_TOKEN" > "$TOKEN_CAPTURE"\n')
@@ -34,20 +36,39 @@ describe('gh wrapper shim', () => {
 
     const shimDir = ghShimDir(root)
     const shim = join(writeGhShim(root, cliEntry), 'gh')
-    execFileSync(shim, ['repo', 'view', '--json', 'nameWithOwner', 'acme/infra'], {
-      env: {
-        ...process.env,
-        PATH: `${shimDir}:${realBin}`,
-        AC_AGENT_ID: 'agent-1',
-        AC_GITCRED_CAPABILITY: 'cap-agent-1',
-        REPO_CAPTURE: repoCapture,
-        CAPABILITY_CAPTURE: capabilityCapture,
-        TOKEN_CAPTURE: tokenCapture
-      }
+    const run = (args: string[]) =>
+      execFileSync(shim, args, {
+        env: {
+          ...process.env,
+          PATH: `${shimDir}:${realBin}`,
+          AC_AGENT_ID: 'agent-1',
+          AC_GITCRED_CAPABILITY: 'cap-agent-1',
+          ARGV_CAPTURE: argvCapture,
+          CAPABILITY_CAPTURE: capabilityCapture,
+          TOKEN_CAPTURE: tokenCapture
+        }
+      })
+    const captured = () => ({
+      argv: JSON.parse(readFileSync(argvCapture, 'utf8')) as string[],
+      capability: readFileSync(capabilityCapture, 'utf8'),
+      token: readFileSync(tokenCapture, 'utf8')
     })
+    return { run, captured }
+  }
 
-    expect(readFileSync(repoCapture, 'utf8')).toBe('acme/infra')
-    expect(readFileSync(capabilityCapture, 'utf8')).toBe('cap-agent-1')
-    expect(readFileSync(tokenCapture, 'utf8')).toBe('token-for-acme/infra')
+  it('forwards the whole gh argv after `--` and exports the returned token', () => {
+    const { run, captured } = setup()
+    run(['repo', 'view', '--json', 'nameWithOwner', 'acme/infra'])
+
+    expect(captured().argv).toEqual(['--', 'repo', 'view', '--json', 'nameWithOwner', 'acme/infra'])
+    expect(captured().capability).toBe('cap-agent-1')
+    expect(captured().token).toBe('token-for-agent-1')
+  })
+
+  it("passes gh's own flags through verbatim rather than eating them", () => {
+    const { run, captured } = setup()
+    run(['api', '-X', 'GET', 'repos/acme/infra/pulls/64', '--jq', '.title'])
+
+    expect(captured().argv).toEqual(['--', 'api', '-X', 'GET', 'repos/acme/infra/pulls/64', '--jq', '.title'])
   })
 })
