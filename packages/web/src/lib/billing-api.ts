@@ -10,21 +10,22 @@
 //
 // ── The wire contract is DUPLICATED, on purpose ──────────────────────────────
 // The types below are a copy. The authority is the billing service's own zod
-// schemas, which validate every response on the way out; this is the consuming
-// half, hand-kept in step.
+// schemas, which it serializes every response through; this is the consuming
+// half, kept in step by hand.
 //
-// A shared npm package would make that mechanical, and it was tried: it costs a
-// published package, a release lane, a version to agree on, and a cross-repo
-// release ordering — for two object shapes on a read-only surface. Copying is
-// the smaller mistake, and it is honest about where the authority lives.
+// A shared npm package would make that mechanical, and it was tried: for two
+// object shapes on a read-only surface it cost a published package, a release
+// lane, a manual first publish, a version for two repositories to agree on, and
+// an ordering constraint between their releases.
 //
-// What that buys, and what it demands:
-//   - the service rejects its own malformed responses, so drift shows up here as
-//     a field that is simply absent — never as silently wrong money
-//   - therefore: when the service's response shape changes, this file changes in
-//     the same change set. There is no compiler to remind you.
-//   - keep the surface small enough that copying stays cheap. If it grows past
-//     what a reviewer can diff by eye, that is the signal to revisit the package.
+// Be exact about what that costs, because the honest version is uncomfortable:
+// there is NO compile-time and NO cross-repository check. Keeping the two sides
+// in step is review discipline, not a guarantee. What the code can do — and does,
+// below — is refuse to render a response that does not match this file, so a
+// mismatch surfaces as the page's error state instead of `$NaN` in a balance.
+//
+// Keep this surface small enough that a reviewer can diff both sides by eye. If
+// it outgrows that, revisit the shared package rather than let the copy rot.
 
 import { getIdTokenRaw, getToken, getUser } from '@/lib/auth'
 
@@ -66,6 +67,43 @@ export class BillingError extends Error {
   }
 }
 
+/** Thrown when a response does not match the shapes above — the copy has drifted
+ *  from the service, or something other than billing answered. Carries status 0
+ *  like the other client-side failures; the page shows its error card. */
+export class BillingShapeError extends BillingError {
+  constructor(what: string) {
+    super(`billing sent an unexpected ${what} — the console may be out of date with the service`, 0)
+    this.name = 'BillingShapeError'
+  }
+}
+
+function isFiniteNumber(v: unknown): boolean {
+  return typeof v === 'number' && Number.isFinite(v)
+}
+
+// Hand-rolled rather than zod: this is the whole surface, and pulling a schema
+// library into the bundle to check two shapes is a cost the shared-package
+// decision already rejected. Exported for the boundary test.
+export function assertAccount(body: unknown): asserts body is BillingAccount {
+  const b = body as Partial<BillingAccount> | null
+  if (!b || typeof b.orgId !== 'string' || !isFiniteNumber(b.balanceMicro)) throw new BillingShapeError('account')
+}
+
+export function assertTransactionsPage(body: unknown): asserts body is BillingTransactionsPage {
+  const b = body as Partial<BillingTransactionsPage> | null
+  if (!b || !Array.isArray(b.items)) throw new BillingShapeError('transaction page')
+  if (!(b.nextCursor === null || typeof b.nextCursor === 'string')) throw new BillingShapeError('transaction page')
+  for (const t of b.items) {
+    // `kind` is checked as a string, not against the known set: a ledger kind
+    // this build has not heard of renders with its raw value as the label, and
+    // refusing the whole page over one unknown label would be the worse failure.
+    if (!t || typeof t.id !== 'string' || typeof t.at !== 'string' || !isFiniteNumber(t.amountMicro)) {
+      throw new BillingShapeError('transaction')
+    }
+    if (typeof t.kind !== 'string') throw new BillingShapeError('transaction')
+  }
+}
+
 async function request<T>(path: string): Promise<T> {
   const base = billingBase()
   if (!base) throw new BillingError('billing is not configured for this deployment', 0)
@@ -88,17 +126,19 @@ async function request<T>(path: string): Promise<T> {
 
 const orgPath = (orgId: string) => `/orgs/${encodeURIComponent(orgId)}/billing`
 
-export function fetchBillingAccount(orgId: string): Promise<BillingAccount> {
-  return request<BillingAccount>(`${orgPath(orgId)}/account`)
+export async function fetchBillingAccount(orgId: string): Promise<BillingAccount> {
+  const body = await request<unknown>(`${orgPath(orgId)}/account`)
+  assertAccount(body)
+  return body
 }
 
-export function fetchBillingTransactions(orgId: string, cursor?: string): Promise<BillingTransactionsPage> {
+export async function fetchBillingTransactions(orgId: string, cursor?: string): Promise<BillingTransactionsPage> {
   const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''
-  return request<BillingTransactionsPage>(`${orgPath(orgId)}/transactions${query}`)
+  const body = await request<unknown>(`${orgPath(orgId)}/transactions${query}`)
+  assertTransactionsPage(body)
+  return body
 }
 
-// The contract's own constant would be a value import (⇒ zod in the bundle), and
-// this is the only place the console divides by it.
 const MICRO_PER_USD = 1_000_000
 
 /** Render microUSD as dollars. Display only — never a step in a calculation. */
