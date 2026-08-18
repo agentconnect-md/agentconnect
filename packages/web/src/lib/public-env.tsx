@@ -47,10 +47,10 @@ const KEYS = [
   // (lib/analytics never initializes). POSTHOG_HOST defaults to us.i.posthog.com.
   'POSTHOG_API_KEY',
   'POSTHOG_HOST',
-  // Experimental features this deployment turns on — a comma-separated list of ids
-  // (lib/experiments.ts). Unset ⇒ none: an experimental surface ships in every build and appears
+  // Console feature flags this deployment turns on — a comma-separated list of ids
+  // (lib/feature-flags.ts). Unset ⇒ none: a flagged surface ships in every build and appears
   // only where an environment asks for it, so one prebuilt image serves them all.
-  'EXPERIMENTS'
+  'FEATURE_FLAGS'
 ] as const
 
 interface RuntimeConfigResponse {

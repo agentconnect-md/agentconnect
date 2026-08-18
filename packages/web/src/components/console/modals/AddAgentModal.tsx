@@ -4,7 +4,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { useConsoleData } from '@/lib/data-context'
-import { experimentEnabled } from '@/lib/experiments'
+import { featureFlagEnabled } from '@/lib/feature-flags'
 import { useProfile } from '@/lib/profile'
 import { useOrgs } from '@/lib/org-context'
 import {
@@ -338,9 +338,9 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
   }, [])
 
   // Cloud is one UI choice AND one server-side placement: the pool, named as itself.
-  // Experimental: with the pool hidden the choice is computed WITHOUT its members, so an
+  // Flagged: with the pool hidden the choice is computed WITHOUT its members, so an
   // untouched form defaults to the first machine rather than submitting a pool placement.
-  const placementDaemons = experimentEnabled('daemon-pool') ? daemons : daemons.filter((d) => !d.pool)
+  const placementDaemons = featureFlagEnabled('daemon-pool') ? daemons : daemons.filter((d) => !d.pool)
   const daemonChoice = addAgentDaemonChoice(placementDaemons, daemonId, memberSets)
   const {
     poolAvailable,
@@ -364,7 +364,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
       : []),
     // The org's own groups sit with Cloud, not with the machines: they are the same KIND of target
     // — the server picks which member serves, and the agent survives losing any one of them.
-    ...(experimentEnabled('daemon-groups') ? offeredGroups : []).map((group) => ({
+    ...(featureFlagEnabled('daemon-groups') ? offeredGroups : []).map((group) => ({
       value: groupPlacementValue(group.setId),
       label: group.name,
       meta: `${group.memberDaemonIds.length} daemon${group.memberDaemonIds.length === 1 ? '' : 's'}`,

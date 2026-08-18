@@ -12,7 +12,7 @@ import {
   type MemberSetRow
 } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
-import { experimentEnabled } from '@/lib/experiments'
+import { featureFlagEnabled } from '@/lib/feature-flags'
 import { useModal } from '@/components/console/ModalProvider'
 import { RestrictedLock } from '@/components/console/VisibilityField'
 import { DaemonUpgradeBadge } from '@/components/console/DaemonUpgradeBadge'
@@ -35,9 +35,9 @@ export default function DaemonsView() {
   // The pool is ONE entry, not one card per Pod: its members are install-wide
   // infrastructure every org sees, replaced without notice, and nothing here is the
   // org's to rename or detach. Everything else is a machine someone connected.
-  // Experimental: where the deployment did not ask for the pool, the page shows the
+  // Flagged: where the deployment did not ask for the pool, the page shows the
   // machines only — the CP still serves it, this is whether the console names it.
-  const showPool = experimentEnabled('daemon-pool')
+  const showPool = featureFlagEnabled('daemon-pool')
   const poolMembers = useMemo(() => (showPool ? daemons.filter((d) => d.pool) : []), [daemons, showPool])
   const ownDaemons = useMemo(() => daemons.filter((d) => !d.pool), [daemons])
   const poolAgents = useMemo(() => {
@@ -142,10 +142,10 @@ export default function DaemonsView() {
  */
 function GroupsSection({ groups, daemons }: { groups: MemberSetRow[]; daemons: DaemonRow[] }) {
   const { openModal } = useModal()
-  // Experimental: the surface exists in every build and appears only where the deployment asked
+  // Flagged: the surface exists in every build and appears only where the deployment asked
   // for it. The Control Plane serves member sets either way — this hides the console entry point,
   // not the feature, which is what keeps one server to reason about.
-  if (!experimentEnabled('daemon-groups')) return null
+  if (!featureFlagEnabled('daemon-groups')) return null
   if (!daemons.some((d) => !d.pool) && groups.length === 0) return null
 
   return (

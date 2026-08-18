@@ -21,7 +21,7 @@ import {
 } from '@/lib/data'
 import { creatorLabel } from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
-import { experimentEnabled } from '@/lib/experiments'
+import { featureFlagEnabled } from '@/lib/feature-flags'
 import { useProfile } from '@/lib/profile'
 import { useModal } from '@/components/console/ModalProvider'
 import { VisibilityValue } from '@/components/console/VisibilityField'
@@ -840,7 +840,7 @@ function GroupCard({ daemon, pinnedAgents }: { daemon: DaemonRow; pinnedAgents: 
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   // The pool is managed infrastructure — its membership is the CP's, never an operator's.
-  if (daemon.pool || !experimentEnabled('daemon-groups')) return null
+  if (daemon.pool || !featureFlagEnabled('daemon-groups')) return null
 
   const current = memberSets.find((group) => group.setId === daemon.memberSetId)
   // Agents pinned here are not in the way of joining and do not move with it — they stay pinned to

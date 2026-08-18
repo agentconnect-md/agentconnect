@@ -36,7 +36,7 @@ import {
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 import { fetchAgentDto, type AgentCallPolicyInput, type UpdateAgentInput } from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
-import { experimentEnabled } from '@/lib/experiments'
+import { featureFlagEnabled } from '@/lib/feature-flags'
 import { useOrgs } from '@/lib/org-context'
 import { buildAgentReachabilityGraph } from '@/lib/agent-reachability'
 import { Spinner } from '@/components/marks'
@@ -271,7 +271,7 @@ export default function EditAgentModal({
     if (!loaded || autofilledDaemon.current || initialDaemonId.current || daemonId) return
     const ready = (d: (typeof daemons)[number]) => d.status === 'online' && d.caps.features.includes('agent-move-v1')
     // With the pool hidden it is not a default either — an unplaced agent lands on a machine.
-    const offered = experimentEnabled('daemon-pool') ? daemons : daemons.filter((d) => !d.pool)
+    const offered = featureFlagEnabled('daemon-pool') ? daemons : daemons.filter((d) => !d.pool)
     const target = offered.find((d) => d.pool && ready(d)) ?? offered.find(ready)
     if (target) {
       autofilledDaemon.current = true
@@ -363,11 +363,11 @@ export default function EditAgentModal({
     daemons,
     daemonId,
     initialDaemonId.current,
-    experimentEnabled('daemon-pool')
+    featureFlagEnabled('daemon-pool')
   )
   const poolServing = daemons.some((candidate) => candidate.pool && moveReady(candidate))
   const daemonOptions: DaemonSelectOption[] = [
-    // With the experiment off the picker offers Cloud only to an agent already ON it — same rule
+    // With the flag off the picker offers Cloud only to an agent already ON it — same rule
     // the groups below follow, and for the same reason: "No daemon" for a placed agent is untrue.
     ...(daemonChoices.offerPool
       ? [
@@ -395,10 +395,10 @@ export default function EditAgentModal({
     // The org's own groups sit with Cloud: same kind of target, same promise — lose any one member
     // and the duty re-grants to another (daemon-groups.md §2). A group with nothing serving stays
     // listed but disabled, unless it is where the agent already is.
-    // With the experiment off the picker offers no group — EXCEPT the one this agent is already on.
+    // With the flag off the picker offers no group — EXCEPT the one this agent is already on.
     // Dropping it would show "No daemon" for a placed agent, which is simply untrue, and a rollback
     // is exactly when a truthful current placement matters most.
-    ...(experimentEnabled('daemon-groups')
+    ...(featureFlagEnabled('daemon-groups')
       ? memberSets
       : memberSets.filter((group) => groupPlacementValue(group.setId) === initialDaemonId.current)
     ).map((group) => {
