@@ -9660,7 +9660,10 @@ export class Daemon {
         let batchLeader = this.githubReviewBatchLeader(entry)
         let revisionPlan = this.githubRevisionAdmissionPlan(key, entry)
         // ── atomic claim-or-enqueue (single synchronous tick, no await before add) ──
-        if (this.inflight.has(key)) {
+        // An outstanding chain link IS a reservation: the owner may have released the gate
+        // while an earlier arrival was still persisting, and a direct claim here would start
+        // ahead of it. Queue behind the chain instead — the link reclaims the idle gate.
+        if (this.inflight.has(key) || this.dispatchAdmissionChains.has(key)) {
           // Arrival-order FIFO (§4.1-4.3): the loop guard, the durable write and coalescing all
           // await, and the old synchronous path could not yield between this branch and the
           // enqueue. Followers for one key therefore admit in the order they arrived — the link

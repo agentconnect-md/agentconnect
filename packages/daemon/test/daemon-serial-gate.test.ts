@@ -419,6 +419,51 @@ describe('P4 serial gate', () => {
     await daemon.stop()
   }, 15_000)
 
+  it('a fresh arrival cannot claim an idle gate ahead of an admission still in flight', async () => {
+    const g = gatedHost()
+    const daemon = await boot(g.host)
+    const key = 'slack:C1:T1:bot-a'
+
+    const persistInbox = (daemon as any).persistInbox.bind(daemon)
+    let resumeWrite!: () => void
+    const writeGate = new Promise<void>((r) => (resumeWrite = r))
+    let writes = 0
+    ;(daemon as any).persistInbox = async (...args: any[]) => {
+      if (++writes === 2) await writeGate
+      return persistInbox(...args)
+    }
+
+    const p1 = (daemon as any).dispatch('bot-a', msg('100', 'first'), 'int-a')
+    await vi.waitFor(() => expect(g.started.length).toBe(1), WAIT)
+    const p2 = (daemon as any).dispatch('bot-a', msg('200', 'second'), 'int-a')
+    await vi.waitFor(() => expect(writes).toBe(2), WAIT)
+
+    // The owner drains and gives the gate back while 'second' is still persisting.
+    g.releaseOne()
+    await p1
+    await vi.waitFor(() => expect((daemon as any).inflight.has(key)).toBe(false), WAIT)
+
+    // 'third' now finds the gate idle. It must NOT take the direct claim: an older arrival
+    // still holds an admission reservation, and starting here would overtake it.
+    const p3 = (daemon as any).dispatch('bot-a', msg('300', 'third'), 'int-a')
+    await new Promise((r) => setTimeout(r, 30))
+    expect(g.started.length).toBe(1)
+
+    resumeWrite()
+    await vi.waitFor(() => expect(g.started.length).toBe(2), WAIT)
+    expect(g.started[1]).toContain('second')
+    g.releaseOne()
+    await p2
+    await vi.waitFor(() => expect(g.started.length).toBe(3), WAIT)
+    expect(g.started[2]).toContain('third')
+    g.releaseOne()
+    await p3
+    expect((daemon as any).inflight.has(key)).toBe(false)
+    expect((daemon as any).dispatchAdmissionChains.has(key)).toBe(false)
+
+    await daemon.stop()
+  }, 15_000)
+
   it("a queued message's own dispatch() promise resolves with its sessionId / rejects with its own error (contract preserved)", async () => {
     const g = gatedHost()
     const daemon = await boot(g.host)
