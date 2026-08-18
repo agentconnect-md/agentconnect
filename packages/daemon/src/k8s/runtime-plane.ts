@@ -5,15 +5,15 @@ import { PROBE_CLAIM_EXPIRES_ANNOTATION, PROBE_CLAIM_LABEL, PROBE_CLAIM_TTL_MS, 
 import { clusterMetrics } from '../metrics/cluster-metrics.js'
 import { ShimDialer } from '../shim/dialer.js'
 import { ShimGitRunner } from '../shim/git-exec.js'
-import { TunnelProxy } from '../shim/tunnel-proxy.js'
 import { ShimFileSink } from '../shim/channels.js'
+import { ChannelLossWatcher } from './channel-loss-watcher.js'
+import { TunnelBinder } from './tunnel-binder.js'
 import { ShimWorkspaceFiles } from '../shim/workspace-files-channel.js'
 import { ShimMemoryFs } from '../shim/memory-fs-channel.js'
 import type { WorkspaceFiles } from '../workspace/workspace-files.js'
 import type { MemoryFs } from '../memory/fs.js'
 import { DEFAULT_SHIM_LISTEN_PORT, DEFAULT_SHIM_WORKSPACE_ROOT } from '../shim/protocol.js'
 import type { TunnelName } from '../shim/tunnel.js'
-import type { ShimSession } from '../shim/session.js'
 import { K8sRuntimeTableSchema, type K8sRuntimeTable } from '../runtimes/k8s-runtimes.js'
 import type { GitRunner } from '../workspace/git-runner.js'
 
@@ -21,19 +21,6 @@ const SILENT = { info: () => {}, warn: () => {} }
 
 /** A probe drives every runtime through `initialize` plus a session, on a possibly cold pod. */
 const PROBE_TIMEOUT_MS = 180_000
-
-/** How long a pod that is UP may go without a shim channel before the launch counts as lost. */
-const DEFAULT_REBIND_GRACE_MS = 20_000
-
-/** One agent's pending loss decision: why the channel dropped, and how long the pod may take. */
-interface LossWatch {
-  reason: string
-  timer?: NodeJS.Timeout
-  /** Set once the pod has been observed coming up, so its arrival restarts the grace window. */
-  podWasStarting: boolean
-  /** When an unbound channel becomes a loss whatever the pod is doing. */
-  ceiling: number
-}
 
 /**
  * Assembles the k8s execution plane: the shim dialer, the driver, and the seams that make an
@@ -186,13 +173,29 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
       return new SandboxApi(new K8sHttp(config), settings.sandboxNamespace)
     })()
 
+  // Built before the dialer and the driver because both wire into them; their deps read the driver
+  // lazily, which is what lets the three refer to each other without an ordering problem.
+  const lossWatcher = new ChannelLossWatcher({
+    sandboxReadiness: (agentId, opts) => driver.sandboxReadiness(agentId, opts),
+    connectionsFor: (agentId) => dialer.connectionsFor(agentId),
+    podUpTimeoutMs: () => driver.podUpTimeoutMs,
+    onChannelLost: (agentId, reason) => driver.onChannelLost(agentId, reason),
+    ...(options.rebindGraceMs === undefined ? {} : { rebindGraceMs: options.rebindGraceMs }),
+    log: options.log ?? SILENT
+  })
+  const tunnels = new TunnelBinder({
+    ...(options.tunnelsFor === undefined ? {} : { tunnelsFor: options.tunnelsFor }),
+    ...(options.tunnelSocketPath === undefined ? {} : { tunnelSocketPath: options.tunnelSocketPath }),
+    log: options.log ?? SILENT
+  })
+
   const dialer = new ShimDialer({
     verifier: { reviewToken: (token, audiences) => api.reviewToken(token, audiences) },
     now: () => Date.now(),
     metrics: clusterMetrics,
     onConnection: (connection) => {
       // A rebind cancels any pending loss check: this IS the replacement it was waiting for.
-      cancelLossCheck(connection.binding.agentId)
+      lossWatcher.cancel(connection.binding.agentId)
       driver.onChannelBound(connection)
       options.onSandboxBound?.(connection.binding.agentId)
     },
@@ -200,45 +203,13 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     // `ShimSession.lose()` is terminal — reporting loss here killed the runtime on every
     // routine renewal, which is the exact failure ShimSession exists to prevent. Loss is reported
     // only if no replacement binds for the same launch within the grace window.
-    onConnectionLost: (agentId, reason) => scheduleLossCheck(agentId, reason),
+    onConnectionLost: (agentId, reason) => lossWatcher.schedule(agentId, reason),
     ...(options.credentialTtlMs === undefined ? {} : { credentialTtlMs: options.credentialTtlMs }),
     log: options.log ?? SILENT
   })
   // The one condition that means "this agent's work happens in a pod". Defined once because two
   // callers must agree on it: the git runner, and the credential pointers that git will read.
   const runsInSandbox = (agentId: string): boolean => driver.sessionFor(agentId)?.isAttached() === true
-
-  // One proxy per agent, replaced when a NEW launch binds: its streams belong to a pod, and a
-  // proxy kept across incarnations would answer connections for a sandbox that no longer exists.
-  const proxies = new Map<string, { generation: number; proxy: TunnelProxy }>()
-
-  async function ensureTunnels(agentId: string, session: ShimSession): Promise<void> {
-    const wanted = options.tunnelsFor?.(agentId) ?? []
-    const socketPathFor = options.tunnelSocketPath
-    if (wanted.length === 0 || !socketPathFor) return
-    const existing = proxies.get(agentId)
-    // Stopped counts as gone: a proxy whose session was lost can never serve again, and reusing
-    // one would leave the sandbox with a socket whose daemon end refuses every connection.
-    if (existing && (existing.generation !== session.generation || existing.proxy.isStopped())) {
-      existing.proxy.stop(`superseded by generation ${session.generation}`)
-      proxies.delete(agentId)
-    }
-    let entry = proxies.get(agentId)
-    if (!entry) {
-      entry = {
-        generation: session.generation,
-        proxy: new TunnelProxy({ session, socketPathFor, log: options.log ?? SILENT })
-      }
-      proxies.set(agentId, entry)
-    }
-    // Sequential rather than concurrent: this is on the launch path, the list has two members at
-    // most, and one failing tunnel must not lose the report of the other.
-    for (const tunnel of wanted) {
-      await entry.proxy.ensure(tunnel).catch((err: unknown) => {
-        options.log?.warn(`k8s: agent ${agentId} has no ${tunnel} tunnel — ${(err as Error).message}`)
-      })
-    }
-  }
 
   const runtimeProbeAgentId = probeAgentId(settings.memberId)
   const driver = new K8sDriver({
@@ -256,7 +227,7 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
             }
           }
         : undefined,
-    onChannelReady: ensureTunnels,
+    onChannelReady: (agentId, session) => tunnels.ensure(agentId, session),
     connectChannel: (record, podIp, timeoutMs) =>
       dialer.connect(shimEndpoint(podIp, settings.shimPort), record, timeoutMs),
     revokeChannel: (agentId) => dialer.revokeAgent(agentId),
@@ -265,93 +236,7 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     log: options.log ?? SILENT
   })
 
-  // A renewal reconnects immediately, so a
-  // replacement that has not arrived well inside the request deadline is a pod that is gone.
-  const REBIND_GRACE_MS = options.rebindGraceMs ?? DEFAULT_REBIND_GRACE_MS
-  // How often to re-read a pod that is still coming up. Deliberately well under the grace: this
-  // is a wait for an event, not a window being spent, and the pod's arrival restarts the window.
-  const POD_UP_POLL_MS = Math.max(1, Math.min(2_000, Math.floor(REBIND_GRACE_MS / 4)))
-  const lossWatches = new Map<string, LossWatch>()
   let probeInFlight: Promise<K8sRuntimeTable> | undefined
-
-  /**
-   * Start the grace window for a channel that dropped, measured from the right event.
-   *
-   * The window is for a pod that IS up and whose shim has not come back. While the pod is still
-   * coming up nothing can dial it at all — a cold start pays PVC provisioning and an image pull —
-   * so that time is waited out rather than counted, and the window restarts once the pod is
-   * Ready. `driver.podUpTimeoutMs` is the ceiling: a pod that never arrives still reports loss.
-   */
-  function scheduleLossCheck(agentId: string, reason: string): void {
-    cancelLossCheck(agentId)
-    const watch: LossWatch = {
-      reason,
-      podWasStarting: false,
-      ceiling: Date.now() + driver.podUpTimeoutMs + REBIND_GRACE_MS
-    }
-    lossWatches.set(agentId, watch)
-    armLossCheck(agentId, watch, REBIND_GRACE_MS)
-  }
-
-  function armLossCheck(agentId: string, watch: LossWatch, delayMs: number): void {
-    watch.timer = setTimeout(() => void runLossCheck(agentId, watch), delayMs)
-    watch.timer.unref?.()
-  }
-
-  function cancelLossCheck(agentId: string): void {
-    const watch = lossWatches.get(agentId)
-    if (!watch) return
-    clearTimeout(watch.timer)
-    lossWatches.delete(agentId)
-  }
-
-  /** True while this watch is still the current one and nothing has rebound underneath it. */
-  function lossWatchStillOpen(agentId: string, watch: LossWatch): boolean {
-    if (lossWatches.get(agentId) !== watch) return false
-    if (dialer.connectionsFor(agentId).length === 0) return true
-    cancelLossCheck(agentId)
-    return false
-  }
-
-  async function runLossCheck(agentId: string, watch: LossWatch): Promise<void> {
-    if (!lossWatchStillOpen(agentId, watch)) return
-    // The read itself is bounded by what is LEFT of the ceiling, and by nothing else. The API
-    // server has no request deadline of its own, so a read that is accepted and never answered
-    // would hold this decision open forever — the launch stuck, its host dead, and nothing to
-    // rebuild it: the outcome this whole window exists to remove.
-    const remainingMs = watch.ceiling - Date.now()
-    const readiness =
-      remainingMs <= 0
-        ? ('absent' as const)
-        : await driver.sandboxReadiness(agentId, { signal: AbortSignal.timeout(remainingMs) }).catch((err: unknown) => {
-            // An unreadable Sandbox proves nothing about the pod, so it counts as still coming
-            // up — and the ceiling below, which the abort cannot outlive, decides in the end.
-            options.log?.warn(`k8s: could not read the sandbox for agent ${agentId} — ${(err as Error).message}`)
-            return 'starting' as const
-          })
-    // Re-checked after the round trip: a replacement may have bound, or the agent gone away.
-    if (!lossWatchStillOpen(agentId, watch)) return
-    if (Date.now() < watch.ceiling) {
-      if (readiness === 'starting') {
-        watch.podWasStarting = true
-        options.log?.debug?.(`k8s: agent ${agentId} has no shim channel yet — its sandbox pod is still coming up`)
-        armLossCheck(agentId, watch, POD_UP_POLL_MS)
-        return
-      }
-      // The pod has just come up, so its shim gets the whole grace window to dial in — the clock
-      // starts here rather than at a socket that dropped while there was no pod to dial at all.
-      if (readiness === 'ready' && watch.podWasStarting) {
-        watch.podWasStarting = false
-        armLossCheck(agentId, watch, REBIND_GRACE_MS)
-        return
-      }
-    }
-    lossWatches.delete(agentId)
-    options.log?.warn(
-      `k8s: no shim channel for agent ${agentId} after ${REBIND_GRACE_MS}ms with its pod ${readiness} — reporting loss`
-    )
-    driver.onChannelLost(agentId, watch.reason)
-  }
 
   function probeRuntimes(): Promise<K8sRuntimeTable> {
     if (probeInFlight) return probeInFlight
@@ -383,9 +268,8 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     // Close the pod's channel first: it may otherwise keep using a binding this member no longer honours.
     dialer.revokeAgent(agentId)
     // After the revoke, whose close schedules one: nobody here waits on a loss for an agent not served here.
-    cancelLossCheck(agentId)
-    proxies.get(agentId)?.proxy.stop(reason)
-    proxies.delete(agentId)
+    lossWatcher.cancel(agentId)
+    tunnels.release(agentId, reason)
     driver.releaseAgent(agentId)
   }
 
@@ -430,9 +314,8 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
       await driver.removeAgent(agentId)
     },
     stop: async () => {
-      for (const agentId of [...lossWatches.keys()]) cancelLossCheck(agentId)
-      for (const { proxy } of proxies.values()) proxy.stop('daemon is shutting down')
-      proxies.clear()
+      lossWatcher.cancelAll()
+      tunnels.releaseAll('daemon is shutting down')
       dialer.stop()
     }
   }
