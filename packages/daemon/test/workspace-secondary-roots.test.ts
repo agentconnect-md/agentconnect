@@ -726,6 +726,52 @@ describe('review of a secondary root (decisions 5, 6 and 11)', () => {
     ])
   })
 
+  it('keeps a resumed scratch-workspace session in the reviewed root, whose isolation reads shared', async () => {
+    const agent = agentFixture([{ repoFullName: 'acme/infra', repoId: '42' }], { mode: 'from-scratch' })
+    serveAll(agent, { 'acme/infra': 'trunk' })
+    const pull = seedPullRequest(remoteOf('acme/infra'), 'trunk', 19)
+    const cwd = await workspaces.prepareSessionWorkspace(
+      agent,
+      reviewRequest('session-scratch-resume', 'acme/infra', 19, pull)
+    )
+    restoreAuthorizedOrigins(agent)
+
+    // A scratch workspace has no clone to branch, so its sessions report `shared` isolation — which
+    // must not send this one back to the scratch directory it never worked in.
+    const restarted = new WorkspaceManager()
+    restarted.setGitRunnerResolver((_agentId, dir, abort) => new SeamRunner(dir, abort))
+
+    const resumedCwd = await restarted.prepareSessionWorkspace(agent, {
+      sessionKey: 'session-scratch-resume',
+      isolation: 'shared'
+    })
+
+    expect(resumedCwd).toBe(cwd)
+    expect(git(resumedCwd, ['rev-parse', 'HEAD']).trim()).toBe(pull.merge)
+  })
+
+  it('drops the attestation when the session degrades to a revision-only workspace', async () => {
+    const agent = agentFixture([{ repoFullName: 'acme/infra', repoId: '42' }])
+    serveAll(agent, { 'acme/infra': 'trunk' })
+    const pull = seedPullRequest(remoteOf('acme/infra'), 'trunk', 20)
+    await workspaces.prepareSessionWorkspace(agent, reviewRequest('session-degraded', 'acme/infra', 20, pull))
+
+    // A later delivery whose exact checkout is unavailable takes the empty daemon-owned cwd instead.
+    const revisionOnly = {
+      sessionKey: 'session-degraded',
+      isolation: 'session' as const,
+      githubReviewRevisionOnly: true as const
+    }
+    const cwd = await workspaces.prepareSessionWorkspace(agent, revisionOnly)
+
+    expect(cwd).toBe(realpathSync(workspaces.sessionWorktreePath(agent, 'session-degraded')))
+    // No root still claims the working directory, so the fallback cwd is accepted rather than
+    // measured against a checkout the session no longer stands in.
+    expect(() =>
+      workspaces.additionalWorkspaceDirectories(agent, cwd, { sessionKey: 'session-degraded', isolation: 'session' })
+    ).not.toThrow()
+  })
+
   it('lets a swept session fall back to the primary, so a stale attestation captures nothing', async () => {
     const agent = agentFixture([{ repoFullName: 'acme/infra', repoId: '42' }])
     serveAll(agent, { 'acme/infra': 'trunk' })

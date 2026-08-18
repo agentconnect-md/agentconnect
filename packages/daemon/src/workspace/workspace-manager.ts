@@ -1313,18 +1313,23 @@ export class WorkspaceManager {
       if (agent.workspace.mode !== 'git-repo' || request.isolation !== 'session' || request.review) {
         throw new Error('github revision-only workspace requires an isolated git-repo review session')
       }
-      return this.prepareGithubRevisionOnlyWorkspace(agent, this.sessionWorktreeId(request.sessionKey))
+      const id = this.sessionWorktreeId(request.sessionKey)
+      // The cwd becomes the primary's own empty directory, so no root may go on attesting that this
+      // session stands in it — a surviving attestation would refuse the very fallback prepared here.
+      this.forgetSessionCwdRoots(agent, id)
+      return this.prepareGithubRevisionOnlyWorkspace(agent, id)
     }
     // Resolved before anything is materialized: a review naming a repository this agent has no root
     // for must leave no worktree behind for the caller's revision-only fallback to step around.
     const reviewRoot = this.reviewedSecondaryRoot(agent, request)
     const primary = await this.prepareWorkspace(agent, opts)
-    if (request.isolation === 'shared') return primary
     // A session that already stands in a reviewed root keeps standing there. The request that
-    // re-prepares it after a host eviction or a daemon restart carries no review at all, so the
-    // attestation on disk — not this process's memory — is what holds the working directory still.
+    // re-prepares it after a host eviction or a daemon restart carries no review at all — and, for a
+    // scratch workspace, reports `shared` isolation — so this is resolved BEFORE either shortcut: the
+    // attestation on disk, not this process's memory, is what holds the working directory still.
     const cwdRoot = reviewRoot ?? this.resumedReviewedRoot(agent, request)
     if (cwdRoot) return await this.prepareReviewedRootWorkspace(agent, cwdRoot, request, opts)
+    if (request.isolation === 'shared') return primary
 
     // A from-scratch primary keeps its scratch directory as the cwd — isolation has no clone to
     // branch it off — but its secondaries still get per-session worktrees (decisions 4 and 5).
@@ -1362,13 +1367,23 @@ export class WorkspaceManager {
       throw new Error(`github review checkout of ${root.repoFullName} is unavailable to agent "${agent.id}"`)
     }
     const cwd = await this.prepareRootSessionWorktree(agent, prepared, request)
-    // Attested once that worktree exists, so a later preparation of the same session — including one
-    // in a fresh process, carrying no review — resolves the same working directory.
-    this.recordSessionCwdRoot(dirname(prepared.path), this.sessionWorktreeId(request.sessionKey), prepared.repoFullName)
     await this.prepareReferenceSessionWorktrees(agent, this.referenceRootsOf(agent, prepared.repoFullName), request)
     // The same post-steps the primary cwd gets, deliberately: skills install into the working
     // directory, and the reviewed root is the one the model stands in. `agentDir` is the primary's.
-    return this.withSkills(agent, this.resolveAcpCwd(cwd, undefined), opts)
+    const acpCwd = await this.withSkills(agent, this.resolveAcpCwd(cwd, undefined), opts)
+    // Attested LAST, because the attestation says a session was placed here: a preparation that
+    // failed a post-step must leave the caller's revision-only fallback a primary cwd it can use,
+    // while a later preparation of a placed session — in a fresh process, carrying no review —
+    // resolves this same working directory.
+    this.recordSessionCwdRoot(dirname(prepared.path), this.sessionWorktreeId(request.sessionKey), prepared.repoFullName)
+    return acpCwd
+  }
+
+  /** Drop every root's attestation that it holds one session's working directory. */
+  private forgetSessionCwdRoots(agent: Agent, sessionWorktreeId: string): void {
+    for (const entry of secondarySubtreesIn(this.agentRootFor(agent))) {
+      this.recordSessionCwdRoot(entry.subtree, sessionWorktreeId)
+    }
   }
 
   /** The root a session already stands in, as a root this preparation can drive — nothing when the
