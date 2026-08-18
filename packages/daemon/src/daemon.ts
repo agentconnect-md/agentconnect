@@ -150,7 +150,11 @@ import {
   type SlackTurnState
 } from './platforms/slack/turn-output.js'
 import { ChannelNameResolver } from './messages/channel-name-resolver.js'
-import { WorkspaceManager, type PrepareSessionWorkspaceRequest } from './workspace/workspace-manager.js'
+import {
+  WorkspaceManager,
+  type PrepareSessionWorkspaceRequest,
+  type RetiredRootRemoval
+} from './workspace/workspace-manager.js'
 import { ManagedSkillCache } from './skills/managed-skill-cache.js'
 import {
   OutputConverger,
@@ -3065,10 +3069,7 @@ export class Daemon {
         runtimeReadRoots: runInSandbox
           ? (launchEnv) => this.sandboxRuntimeReadRoots(agent, runtime, launchEnv, githubAppCredentials)
           : undefined,
-        trustedWorkspaceWriteRoots:
-          runInSandbox && agent.workspace.mode === 'git-repo'
-            ? [this.workspaces.sessionWorktreeRoot(agent)]
-            : undefined,
+        trustedWorkspaceWriteRoots: runInSandbox ? this.workspaces.trustedWorkspaceWriteRoots(agent) : undefined,
         sandboxMechanism: this.sandboxMechanism,
         mcpSocketPath: mcpSocketPath(this.root),
         allowModelToolUnixSockets: githubAppCredentials,
@@ -12456,7 +12457,9 @@ export class Daemon {
   private async cleanupSessionWorktree(rec: SessionRecord): Promise<SessionWorktreeCleanupResult> {
     if (await this.sessionRetentionActive(rec)) return { outcome: 'active' }
     const agent = this.agents.get(rec.agentId)
-    if (!agent || agent.workspace.mode !== 'git-repo' || rec.workspaceIsolation === 'shared') {
+    // A scratch agent has no primary worktree but may still own one per secondary root, so the
+    // gate is "any root that can hold one" rather than "the primary is a repository".
+    if (!agent || rec.workspaceIsolation === 'shared' || !this.workspaces.hasSessionWorktreeRoots(agent)) {
       return { outcome: 'not_applicable' }
     }
     return this.withWorkspaceAdmissionFence(rec.agentId, async () => {
@@ -12464,11 +12467,18 @@ export class Daemon {
       // queued mutation boundary. In that case it owns the worktree, so defer.
       if (await this.sessionRetentionActive(rec)) return { outcome: 'active' }
       const currentAgent = this.agents.get(rec.agentId)
-      if (!currentAgent || currentAgent.workspace.mode !== 'git-repo' || rec.workspaceIsolation === 'shared') {
+      if (
+        !currentAgent ||
+        rec.workspaceIsolation === 'shared' ||
+        !this.workspaces.hasSessionWorktreeRoots(currentAgent)
+      ) {
         return { outcome: 'not_applicable' }
       }
       const result = await this.workspaces.removeSessionWorktree(currentAgent, rec.key)
-      if ((result.outcome === 'removed' || result.outcome === 'absent') && rec.acpSessionId) {
+      // `partial` too: a kept aggregate can still have removed another root's worktree, and a warm
+      // attachment naming a directory that is gone would skip preparation on its next turn.
+      const changed = result.outcome === 'removed' || result.outcome === 'absent' || result.partial === true
+      if (changed && rec.acpSessionId) {
         // The session row intentionally survives lifecycle cleanup. Evict only
         // this stale warm binding so the next reopened/comment turn recreates
         // the worktree and runs session/load/new before prompting in its cwd.
@@ -12482,76 +12492,149 @@ export class Daemon {
   }
 
   private async sweepSessionRetention(): Promise<void> {
-    const windowMs = sessionRetentionMs(this.cfg.sessions.retention)
-    if (windowMs === null) return
     if (this.sessionRetentionSweepInFlight) return
     this.sessionRetentionSweepInFlight = true
     try {
-      // Holder-only on a pool: the active-turn exclusions are member-local, so only the holder can judge a row.
-      const expired = (await this.store.listExpiredSessions(this.clock.now() - windowMs)).filter((rec) =>
-        this.servesAgent(rec.agentId)
-      )
-      if (!expired.length) return
-      // ONE stamp for the whole pass, not one per session: it is the sweep that
-      // deleted them, and a shared value lets the drain report a pass as a single
-      // frame while still carrying each row's true purge time (a per-session
-      // millisecond would force either one frame per session or a batch stamp
-      // that backdates every row to the oldest in the backlog).
-      const purgedAt = this.clock.now()
-      let removed = 0
-      let retained = 0
-      let active = 0
-      let failed = 0
-      for (const rec of expired) {
-        if (this.draining) return
-        const res = await this.cleanupSessionWorktree(rec)
-        if (res.outcome === 'active') {
-          active += 1
-          continue
-        }
-        if (res.outcome === 'retained') {
-          retained += 1
-          this.log.info(
-            `retention: keeping session ${rec.key} — worktree has ${
-              res.reason === 'dirty' ? 'uncommitted/untracked changes' : 'commits not on any remote'
-            } (delete or push them to release it)`
-          )
-          continue
-        }
-        if (res.outcome === 'failed') {
-          failed += 1
-          this.log.warn(`retention: keeping session ${rec.key} — worktree cleanup failed (${res.error})`)
-          continue
-        }
-        // Re-check synchronously after the git awaits: a message admitted mid-cleanup
-        // owns the serial gate now, and deleting the row underneath its turn would
-        // orphan the state the turn is about to write. The worktree (if any) is
-        // already gone, but prepareSessionWorkspace recreates it on that same turn.
-        if (await this.sessionRetentionActive(rec)) {
-          active += 1
-          continue
-        }
-        // The purge receipt is written in deleteSession's transaction: the CP holds
-        // the only surviving record of this session, and it must be told that the
-        // content behind it is gone (drained below, durably, on ACK).
-        if (
-          await this.store.deleteSession(rec.key, { reason: 'retention', at: purgedAt, ownerId: this.cfg.daemonId })
-        ) {
-          removed += 1
-          if (rec.acpSessionId) this.sdkLease.delete(sdkLeaseKey(rec.agentId, rec.acpSessionId))
-          await this.releaseModelSessionHost(rec.key)
-        }
-      }
-      this.log.info(
-        `retention: session GC removed ${removed}/${expired.length} expired session(s)` +
-          (retained ? `, ${retained} retained (dirty/unique commits)` : '') +
-          (active ? `, ${active} still active` : '') +
-          (failed ? `, ${failed} failed` : '')
-      )
-      if (removed) void this.drainSessionPurges()
+      await this.sweepExpiredSessions()
+      // Decision 12's removal step rides the same sweep, but not the retention window: a retired
+      // root is not an expired session, and an install that keeps sessions forever still retires.
+      await this.sweepRetiredWorkspaceRoots()
     } finally {
       this.sessionRetentionSweepInFlight = false
     }
+  }
+
+  private async sweepExpiredSessions(): Promise<void> {
+    const windowMs = sessionRetentionMs(this.cfg.sessions.retention)
+    if (windowMs === null) return
+    // Holder-only on a pool: the active-turn exclusions are member-local, so only the holder can judge a row.
+    const expired = (await this.store.listExpiredSessions(this.clock.now() - windowMs)).filter((rec) =>
+      this.servesAgent(rec.agentId)
+    )
+    if (!expired.length) return
+    // ONE stamp for the whole pass, not one per session: it is the sweep that
+    // deleted them, and a shared value lets the drain report a pass as a single
+    // frame while still carrying each row's true purge time (a per-session
+    // millisecond would force either one frame per session or a batch stamp
+    // that backdates every row to the oldest in the backlog).
+    const purgedAt = this.clock.now()
+    let removed = 0
+    let retained = 0
+    let active = 0
+    let failed = 0
+    for (const rec of expired) {
+      if (this.draining) return
+      const res = await this.cleanupSessionWorktree(rec)
+      if (res.outcome === 'active') {
+        active += 1
+        continue
+      }
+      if (res.outcome === 'retained') {
+        retained += 1
+        this.log.info(
+          `retention: keeping session ${rec.key} — worktree has ${
+            res.reason === 'dirty' ? 'uncommitted/untracked changes' : 'commits not on any remote'
+          } (delete or push them to release it)`
+        )
+        continue
+      }
+      if (res.outcome === 'failed') {
+        failed += 1
+        this.log.warn(`retention: keeping session ${rec.key} — worktree cleanup failed (${res.error})`)
+        continue
+      }
+      // Re-check synchronously after the git awaits: a message admitted mid-cleanup
+      // owns the serial gate now, and deleting the row underneath its turn would
+      // orphan the state the turn is about to write. The worktree (if any) is
+      // already gone, but prepareSessionWorkspace recreates it on that same turn.
+      if (await this.sessionRetentionActive(rec)) {
+        active += 1
+        continue
+      }
+      // The purge receipt is written in deleteSession's transaction: the CP holds
+      // the only surviving record of this session, and it must be told that the
+      // content behind it is gone (drained below, durably, on ACK).
+      if (await this.store.deleteSession(rec.key, { reason: 'retention', at: purgedAt, ownerId: this.cfg.daemonId })) {
+        removed += 1
+        if (rec.acpSessionId) this.sdkLease.delete(sdkLeaseKey(rec.agentId, rec.acpSessionId))
+        await this.releaseModelSessionHost(rec.key)
+      }
+    }
+    this.log.info(
+      `retention: session GC removed ${removed}/${expired.length} expired session(s)` +
+        (retained ? `, ${retained} retained (dirty/unique commits)` : '') +
+        (active ? `, ${active} still active` : '') +
+        (failed ? `, ${failed} failed` : '')
+    )
+    if (removed) void this.drainSessionPurges()
+  }
+
+  /** Whether an agent still holds live work of ANY kind — the per-agent form of the retention
+   *  sweep's session exclusion, for a decision about a ROOT (which every session shares) rather
+   *  than about one session. `workspaceMutationBusy` is the same "the agent could be writing"
+   *  rule the console's workspace writes refuse on; the rest is the durable and gate-owned work
+   *  that carries no active dispatch yet. */
+  private async agentWorkspaceActive(agentId: string): Promise<boolean> {
+    if (!this.servesAgent(agentId) || this.workspaceMutationBusy(agentId)) return true
+    for (const entry of this.activeGateEntries.values()) if (entry.agentId === agentId) return true
+    for (const turn of this.pending.values()) if (turn.agentId === agentId) return true
+    return await this.store.agentHasPendingInboxRows(agentId)
+  }
+
+  /**
+   * Decision 12's removal step: a retired secondary root leaves disk only from this sweep, only
+   * while its agent holds nothing at all, and only through the dirty/unique-commit rules a session
+   * worktree gets. Everything else is retained and reported.
+   *
+   * The idle check is re-taken INSIDE the admission fence, which is what makes it a decision rather
+   * than a guess: the fence blocks turn admission synchronously, so a session admitted during the
+   * awaited Git operations cannot have started against a root this pass is about to remove.
+   */
+  private async sweepRetiredWorkspaceRoots(): Promise<void> {
+    // Cluster daemons keep one checkout on a pod volume; there is no `repos/` subtree on this disk.
+    if (this.workspaces.sandboxMode) return
+    let removed = 0
+    let active = 0
+    const retained: string[] = []
+    const failures: string[] = []
+    for (const agent of [...this.agents.values()]) {
+      if (this.draining) break
+      if (!this.servesAgent(agent.id)) continue
+      const pending = this.workspaces.retiredSecondaryRoots(agent)
+      if (pending.length === 0) continue
+      if (await this.agentWorkspaceActive(agent.id)) {
+        active += pending.length
+        continue
+      }
+      const outcomes = await this.withWorkspaceAdmissionFence(agent.id, async () => {
+        if (await this.agentWorkspaceActive(agent.id)) return undefined
+        const current = this.agents.get(agent.id)
+        if (!current) return undefined
+        // Re-listed inside the fence: the spec may have re-authorized a repository while this pass
+        // waited for the queue, which un-retires its root in place.
+        const results: RetiredRootRemoval[] = []
+        for (const root of this.workspaces.retiredSecondaryRoots(current)) {
+          results.push(await this.workspaces.removeRetiredSecondaryRoot(current, root))
+        }
+        return results
+      })
+      if (outcomes === undefined) {
+        active += pending.length
+        continue
+      }
+      for (const outcome of outcomes) {
+        if (outcome.outcome === 'removed') removed += 1
+        else if (outcome.outcome === 'retained') retained.push(outcome.reason)
+        else failures.push(outcome.error)
+      }
+    }
+    if (removed === 0 && active === 0 && retained.length === 0 && failures.length === 0) return
+    this.log.info(
+      `retention: retired roots: removed ${removed}, retained ${retained.length}` +
+        (retained.length ? ` (${[...new Set(retained)].join(', ')})` : '') +
+        `, active ${active}` +
+        (failures.length ? `, ${failures.length} failed (${[...new Set(failures)].join('; ')})` : '')
+    )
   }
 
   /**

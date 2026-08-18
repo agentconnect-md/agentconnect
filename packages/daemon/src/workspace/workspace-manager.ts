@@ -38,6 +38,13 @@ import {
 } from './git-injection.js'
 import { LocalGitRunner, type GitRunner } from './git-runner.js'
 import { gitmoduleRepos } from './gitmodules.js'
+import {
+  isRepoSegment,
+  secondaryRootsDirIn,
+  secondarySubtreesIn,
+  SECONDARY_MATERIALIZATION_FILE,
+  type SecondarySubtree
+} from './secondary-layout.js'
 import { authorizeWorkspaceGitUrl } from './git-origin-policy.js'
 import { isSessionBranch, sessionBranchName } from './session-branch.js'
 import { DEFAULT_SHIM_WORKSPACE_ROOT } from '../shim/protocol.js'
@@ -93,11 +100,28 @@ export interface SecondaryWorkspaceRoot extends WorkspaceRoot {
 
 /** A prepared secondary root, as sessions and the standing context see it. */
 export interface ReadyWorkspaceRoot {
-  /** The canonical checkout path handed out as an additional directory. */
+  /** The canonical directory handed out as an additional directory — the checkout under `shared`
+   *  isolation, this session's own worktree of it under `session` (decision 4). */
   path: string
   repoFullName: string
   branch: string
 }
+
+/** A secondary subtree the agent's rows no longer name — retired, never deleted on sight (decision 12). */
+export interface RetiredWorkspaceRoot extends SecondarySubtree {
+  /** The repository id its `.materialization.json` attests, for the sweep's log line. */
+  repoId: string
+}
+
+/** What a retired root's removal did, in the vocabulary the worktree GC already reports. */
+export type RetiredRootRemoval =
+  | { outcome: 'removed' }
+  /** The subtree holds work (or a live session's worktree) the daemon must not discard. */
+  | { outcome: 'retained'; reason: 'worktrees' | 'dirty' | 'unique-commits' }
+  | { outcome: 'failed'; error: string }
+
+/** How one session addresses the agent's roots: the isolation, plus the key that names its worktrees. */
+export type SessionRootScope = Pick<PrepareSessionWorkspaceRequest, 'isolation'> & { sessionKey?: string }
 
 /** What a secondary root's `.materialization.json` records about the checkout beside it. */
 interface SecondaryMaterialization {
@@ -122,13 +146,8 @@ const PULL_TIMEOUT_MS = 4500
 const REVIEW_FETCH_TIMEOUT_MS = 15_000
 const LS_REMOTE_TIMEOUT_MS = 10_000
 const MATERIALIZATION_FILE = 'workspace-materialization.json'
-/** Secondary roots live under one agent-owned parent, one subtree per authorized repository. */
-const SECONDARY_ROOTS_DIR = 'repos'
-const SECONDARY_MATERIALIZATION_FILE = '.materialization.json'
 /** A `.gitmodules` past this is not a submodule declaration anyone wrote; refuse to read it. */
 const MAX_GITMODULES_BYTES = 256 * 1024
-/** GitHub's own owner/repository charset, which is also a plain path segment. */
-const REPO_SEGMENT = /^[A-Za-z0-9._-]+$/
 const CONVERSION_FILE = 'workspace-conversion.json'
 /** Word-pair branch names to try before falling back to a random suffix. */
 const SESSION_BRANCH_DRAWS = 5
@@ -148,9 +167,9 @@ export class WorkspaceManager {
   // Same single-flight, one level up: a secondary root's preparation is a clone OR a converge+pull,
   // and two sessions starting together must share one of them. A separate map because the clone it
   // performs keys `cloneInFlight` by the very same path.
-  private readonly secondaryInFlight = new Map<string, Promise<ReadyWorkspaceRoot | undefined>>()
+  private readonly secondaryInFlight = new Map<string, Promise<SecondaryWorkspaceRoot | undefined>>()
   /** Secondary roots prepared for an agent's current sessions — what the synchronous hand-out reads. */
-  private readonly readyRoots = new Map<string, ReadyWorkspaceRoot[]>()
+  private readonly readyRoots = new Map<string, SecondaryWorkspaceRoot[]>()
   private gitRunnerResolver: WorkspaceGitRunnerResolver | undefined
   private pathClearer: WorkspacePathClearer | undefined
   private workspacesLiveInSandboxes = false
@@ -245,6 +264,11 @@ export class WorkspaceManager {
     return (agent as { dir?: string }).dir ?? dirname(agent.workspace.path)
   }
 
+  /** `<agentRoot>/repos` — the parent every secondary root's subtree hangs off. */
+  secondaryRootsDir(agent: Agent): string {
+    return secondaryRootsDirIn(this.agentRootFor(agent))
+  }
+
   /** The agent's authorized additional repositories as roots, sorted by name (design decision 1/8). */
   secondaryRoots(agent: Agent): SecondaryWorkspaceRoot[] {
     const roots: SecondaryWorkspaceRoot[] = []
@@ -258,7 +282,7 @@ export class WorkspaceManager {
         continue
       }
       const repoFullName = `${owner}/${repo}`
-      const base = join(this.agentRootFor(agent), SECONDARY_ROOTS_DIR, owner, repo)
+      const base = join(this.secondaryRootsDir(agent), owner, repo)
       try {
         roots.push({
           repoFullName,
@@ -285,15 +309,31 @@ export class WorkspaceManager {
    * directories and the standing context are both derived from, so the prompt cannot name a
    * directory the runtime did not get.
    *
-   * Empty under `session` isolation: those sessions get a per-session worktree of every root, which
-   * this phase has not built, and a shared checkout would defeat the isolation they asked for.
+   * WHICH roots is preparation's answer (the snapshot below); which PATH each one contributes is
+   * the session's, because isolation applies to every root uniformly (decision 4): `shared` hands
+   * out the checkout, `session` the worktree keyed by that session. A root whose worktree could not
+   * be created contributes nothing to that session and is simply absent here.
    */
-  readySecondaryRoots(
-    agent: Agent,
-    request?: Pick<PrepareSessionWorkspaceRequest, 'isolation'>
-  ): readonly ReadyWorkspaceRoot[] {
-    if (this.sandboxMode || request?.isolation === 'session') return []
-    return this.readyRoots.get(agent.id) ?? []
+  readySecondaryRoots(agent: Agent, request?: SessionRootScope): readonly ReadyWorkspaceRoot[] {
+    if (this.sandboxMode) return []
+    const ready = this.readyRoots.get(agent.id) ?? []
+    const id =
+      request?.isolation === 'session' && request.sessionKey !== undefined
+        ? this.sessionWorktreeId(request.sessionKey)
+        : undefined
+    const roots: ReadyWorkspaceRoot[] = []
+    for (const root of ready) {
+      if (id === undefined) {
+        roots.push({ path: root.path, repoFullName: root.repoFullName, branch: root.branch })
+        continue
+      }
+      const cwd = join(root.worktreesPath, id)
+      // The `.git` marker is what `worktree add` writes, so its presence is the proof that this
+      // root's per-session checkout exists rather than a directory a failed attempt left behind.
+      if (!existsSync(join(cwd, '.git'))) continue
+      roots.push({ path: realpathSync(cwd), repoFullName: root.repoFullName, branch: root.branch })
+    }
+    return roots
   }
 
   /**
@@ -304,7 +344,7 @@ export class WorkspaceManager {
    * is already a submodule of an earlier one is neither prepared nor listed, so the model never sees
    * the same repository twice at two different revisions.
    */
-  async prepareSecondaryRoots(agent: Agent): Promise<ReadyWorkspaceRoot[]> {
+  async prepareSecondaryRoots(agent: Agent): Promise<SecondaryWorkspaceRoot[]> {
     // Cluster daemons materialize one checkout through the shim tunnel; secondary roots there are a
     // non-goal of this phase, and every path below would clone onto the DAEMON's disk instead.
     if (this.sandboxMode) return []
@@ -315,7 +355,7 @@ export class WorkspaceManager {
     }
     const submodules =
       agent.workspace.mode === 'git-repo' ? this.submoduleReposOf(agent.workspace.path) : new Set<string>()
-    const ready: ReadyWorkspaceRoot[] = []
+    const ready: SecondaryWorkspaceRoot[] = []
     for (const root of roots) {
       if (submodules.has(root.repoFullName.toLowerCase())) {
         workspaceLog.info(
@@ -346,7 +386,7 @@ export class WorkspaceManager {
   }
 
   /** One secondary root's clone-or-converge, single-flighted per root like the primary's clone. */
-  async prepareSecondaryRoot(agent: Agent, root: SecondaryWorkspaceRoot): Promise<ReadyWorkspaceRoot | undefined> {
+  async prepareSecondaryRoot(agent: Agent, root: SecondaryWorkspaceRoot): Promise<SecondaryWorkspaceRoot | undefined> {
     const key = this.cloneKey(agent.id, root.path)
     const inflight = this.secondaryInFlight.get(key)
     if (inflight) return await inflight
@@ -360,7 +400,7 @@ export class WorkspaceManager {
   private async materializeSecondaryRoot(
     agent: Agent,
     root: SecondaryWorkspaceRoot
-  ): Promise<ReadyWorkspaceRoot | undefined> {
+  ): Promise<SecondaryWorkspaceRoot | undefined> {
     const subtree = dirname(root.path)
     const marker = join(subtree, SECONDARY_MATERIALIZATION_FILE)
     try {
@@ -381,7 +421,7 @@ export class WorkspaceManager {
           rmSync(staged, { recursive: true, force: true })
           throw err
         }
-        return { path: realpathSync(root.path), repoFullName: root.repoFullName, branch }
+        return { ...root, path: realpathSync(root.path), branch }
       }
       // Identity is the numeric repo id, so a retired root whose owner/repo was later reused by a
       // DIFFERENT repository is refused rather than adopted — and nothing on disk is touched
@@ -399,7 +439,7 @@ export class WorkspaceManager {
       await this.convergeOriginInPlaceFor(agent.id, resolved, root.path)
       await writeRepoHelperConfig(this.runnerFor(agent.id, root.path), agent.id).catch(() => undefined)
       if (agent.workspace.pullOnNewSession) await this.pullRoot(agent.id, resolved, root.path)
-      return { path: realpathSync(root.path), repoFullName: root.repoFullName, branch: recorded.branch }
+      return { ...resolved, path: realpathSync(root.path) }
     } catch (err) {
       // Degradation stays local to the root (decision 7): the session starts without it and the next
       // one retries. Never throw out of session start over an additional repository.
@@ -744,6 +784,21 @@ export class WorkspaceManager {
     return this.worktreesPathFor(agent)
   }
 
+  /**
+   * The daemon-owned parents a sandboxed runtime must be able to write, given that
+   * `sandboxBoundary` denies read on the agent directory and carves back only what it is told.
+   *
+   * The secondary parent is granted to EVERY sandboxed agent, scratch included: a host is
+   * long-lived per agent, so a root materialized under a running one has to already be inside the
+   * boundary or it stays invisible until the next spawn.
+   */
+  trustedWorkspaceWriteRoots(agent: Agent): string[] {
+    return [
+      ...(agent.workspace.mode === 'git-repo' ? [this.sessionWorktreeRoot(agent)] : []),
+      this.secondaryRootsDir(agent)
+    ]
+  }
+
   // Containment is per AGENT, not per root: every root's worktrees parent must resolve inside the agent directory.
   validateWorktreesRoot(agent: Agent, worktreesPath: string): string {
     if (lstatSync(worktreesPath).isSymbolicLink()) {
@@ -782,12 +837,116 @@ export class WorkspaceManager {
     return join(this.sessionWorktreeRoot(agent), this.sessionWorktreeId(sessionKey))
   }
 
+  /** Every root that can hold a per-session worktree: the primary when there is one, plus every
+   *  MATERIALIZED secondary subtree on disk — a retired root's worktrees are this session's too
+   *  (decision 12), while a subtree a failed clone left behind owns none and has no checkout for
+   *  Git to run in, which would fail the whole session's cleanup forever. */
+  sessionWorktreeRoots(agent: Agent): Pick<WorkspaceRoot, 'path' | 'worktreesPath'>[] {
+    return [
+      ...(agent.workspace.mode === 'git-repo'
+        ? [{ path: agent.workspace.path, worktreesPath: this.worktreesPathFor(agent) }]
+        : []),
+      ...secondarySubtreesIn(this.agentRootFor(agent))
+        .filter((entry) => existsSync(join(entry.path, '.git')))
+        .map(({ path, worktreesPath }) => ({ path, worktreesPath }))
+    ]
+  }
+
+  /** Whether the agent has any root a session worktree could live under — a scratch workspace with
+   *  secondary roots does, which is what makes it a candidate for the retention GC. */
+  hasSessionWorktreeRoots(agent: Agent): boolean {
+    return this.sessionWorktreeRoots(agent).length > 0
+  }
+
+  /**
+   * Remove one logical session's worktree from EVERY root that has one, since isolation applies to
+   * all of them uniformly (decision 4) and they share the session's id.
+   *
+   * Aggregated conservatively: one retained root keeps the session (its work is still there), a
+   * failure is reported as a failure, and `absent` means no root had anything to remove. Removal is
+   * per root and cannot be made atomic — Git refuses a worktree that went dirty since it was judged
+   * — so a kept aggregate that nonetheless removed something is flagged `partial`, which is what
+   * tells the caller its warm attachment is stale even though the session survives.
+   */
   async removeSessionWorktree(agent: Agent, sessionKey: string): Promise<SessionWorktreeRemoval> {
-    if (agent.workspace.mode !== 'git-repo') {
-      return { outcome: 'failed', error: 'agent workspace is not a Git repository' }
+    const roots = this.sessionWorktreeRoots(agent)
+    if (roots.length === 0) return { outcome: 'failed', error: 'agent workspace is not a Git repository' }
+    const id = this.sessionWorktreeId(sessionKey)
+    let retained: SessionWorktreeRemoval | undefined
+    let failed: SessionWorktreeRemoval | undefined
+    let removed = false
+    for (const root of roots) {
+      const result = await this.removeRootSessionWorktree(agent, root, id)
+      if (result.outcome === 'retained') retained ??= result
+      else if (result.outcome === 'failed') failed ??= result
+      else if (result.outcome === 'removed') removed = true
     }
-    const root = { path: agent.workspace.path, worktreesPath: this.worktreesPathFor(agent) }
-    return await this.removeRootSessionWorktree(agent, root, this.sessionWorktreeId(sessionKey))
+    const kept = retained ?? failed
+    if (kept) return removed ? { ...kept, partial: true } : kept
+    return removed ? { outcome: 'removed' } : { outcome: 'absent' }
+  }
+
+  /** The agent's secondary subtrees whose `.materialization.json` no longer matches a current row —
+   *  by repository id, and by the directory a rename moved the repository out of (decision 12). */
+  retiredSecondaryRoots(agent: Agent): RetiredWorkspaceRoot[] {
+    const authorized = new Map(this.secondaryRoots(agent).map((root) => [root.repoId, root.repoFullName]))
+    const retired: RetiredWorkspaceRoot[] = []
+    for (const entry of secondarySubtreesIn(this.agentRootFor(agent))) {
+      const recorded = readSecondaryMaterialization(join(entry.subtree, SECONDARY_MATERIALIZATION_FILE))
+      // No attestation ⇒ not ours to judge, let alone remove: materialization already refuses to
+      // adopt such a subtree, and removing one would be exactly the deletion decision 12 forbids.
+      if (recorded === undefined) continue
+      if (authorized.get(recorded.repoId) === entry.repoFullName) continue
+      retired.push({ ...entry, repoId: recorded.repoId })
+    }
+    return retired
+  }
+
+  /**
+   * Remove one retired secondary subtree — the only path that deletes a root, and only from the
+   * caller that has already proven the agent idle under its admission fence.
+   *
+   * The checkout gets exactly the rules a session worktree gets: clean tree, no commit unreachable
+   * from a remote. A live (or retained) worktree under it keeps the whole subtree, because its
+   * clone is the object store that worktree reads.
+   */
+  async removeRetiredSecondaryRoot(agent: Agent, root: RetiredWorkspaceRoot): Promise<RetiredRootRemoval> {
+    try {
+      const subtree = this.validateSecondarySubtree(agent, root.subtree)
+      if (existsSync(root.worktreesPath) && readdirSync(root.worktreesPath).length > 0) {
+        return { outcome: 'retained', reason: 'worktrees' }
+      }
+      if (existsSync(join(root.path, '.git'))) {
+        const git = this.runnerFor(agent.id, root.path).withEnv(workspaceGitLocalEnv())
+        if ((await git.raw(['status', '--porcelain'])).trim() !== '') return { outcome: 'retained', reason: 'dirty' }
+        // EVERY local ref, not just HEAD: this removes the object store itself, so a side branch, a
+        // local tag or a stash entry is work the checked-out branch cannot speak for. Only this
+        // daemon's own review refs are disposable — they were fetched verbatim from the remote.
+        const unique = await git.raw(['rev-list', '--count', '--all', '--not', '--remotes', '--glob=refs/agentconnect'])
+        if (unique.trim() !== '0') return { outcome: 'retained', reason: 'unique-commits' }
+      } else if (existsSync(root.path) && readdirSync(root.path).length > 0) {
+        // No `.git` to interrogate, but a nonempty directory may be exactly the untracked work this
+        // GC promises never to auto-delete — the same rule the worktree GC applies to a bare leftover.
+        return { outcome: 'retained', reason: 'dirty' }
+      }
+      rmSync(subtree, { recursive: true, force: true })
+      return { outcome: 'removed' }
+    } catch (err) {
+      return { outcome: 'failed', error: (err as Error).message }
+    }
+  }
+
+  /** Canonicalize a secondary subtree and prove it still resolves inside the agent directory, the
+   *  same way every destructive worktree path goes through {@link validateWorktreesRoot}. */
+  private validateSecondarySubtree(agent: Agent, subtree: string): string {
+    if (lstatSync(subtree).isSymbolicLink()) throw new Error('secondary root subtree must not be a symlink')
+    const agentRoot = realpathSync(this.agentRootFor(agent))
+    const canonical = realpathSync(subtree)
+    const rel = relative(agentRoot, canonical)
+    if (isAbsolute(rel) || rel === '..' || rel.startsWith(`..${sep}`)) {
+      throw new Error('secondary root subtree resolves outside the agent directory')
+    }
+    return canonical
   }
 
   // Takes only the root's on-disk halves: the GC has no network target, so it must not need an authorized clone URL.
@@ -1024,11 +1183,44 @@ export class WorkspaceManager {
       return this.prepareGithubRevisionOnlyWorkspace(agent, this.sessionWorktreeId(request.sessionKey))
     }
     const primary = await this.prepareWorkspace(agent, opts)
-    if (agent.workspace.mode !== 'git-repo' || request.isolation === 'shared') return primary
+    if (request.isolation === 'shared') return primary
 
-    const cwd = await this.prepareRootSessionWorktree(agent, this.primaryRoot(agent), request)
+    // A from-scratch primary keeps its scratch directory as the cwd — isolation has no clone to
+    // branch it off — but its secondaries still get per-session worktrees (decisions 4 and 5).
+    const cwd =
+      agent.workspace.mode === 'git-repo'
+        ? await this.prepareRootSessionWorktree(agent, this.primaryRoot(agent), request)
+        : undefined
+    await this.prepareSecondarySessionWorktrees(agent, request)
+    if (cwd === undefined) return primary
     const agentDir = normalizeRepoSubdir(agent.workspace.agentDir)
     return this.withSkills(agent, this.resolveAcpCwd(cwd, agentDir), opts)
+  }
+
+  /**
+   * Every prepared secondary root's worktree for this session, at the SAME id as the primary's.
+   *
+   * Never a review checkout: the reviewed revision belongs to the one root the session is about,
+   * and the others ride along at their default branch as references (decision 5). Per-root failure
+   * is local like a clone failure (decision 7) — that root is absent from this session and nothing
+   * else about it changes.
+   */
+  private async prepareSecondarySessionWorktrees(agent: Agent, request: PrepareSessionWorkspaceRequest): Promise<void> {
+    const rootRequest: PrepareSessionWorkspaceRequest = {
+      sessionKey: request.sessionKey,
+      isolation: 'session',
+      ...(request.initiatedBy !== undefined ? { initiatedBy: request.initiatedBy } : {})
+    }
+    for (const root of this.readyRoots.get(agent.id) ?? []) {
+      try {
+        await this.prepareRootSessionWorktree(agent, root, rootRequest)
+      } catch (err) {
+        workspaceLog.warn(
+          `workspace: additional repository ${root.repoFullName} has no session worktree for agent ` +
+            `"${agent.id}" (${formatErr(err)})`
+        )
+      }
+    }
   }
 
   /** The stable per-session worktree of one root, checked out at the reviewed revision when there is one. */
@@ -1563,11 +1755,6 @@ export class WorkspaceManager {
   }
 }
 
-/** A plain path segment that is also a legal GitHub owner or repository name. */
-function isRepoSegment(value: string | undefined): value is string {
-  return value !== undefined && value !== '.' && value !== '..' && REPO_SEGMENT.test(value)
-}
-
 /** `ref: refs/heads/<name>\tHEAD` from `ls-remote --symref`; undefined when HEAD names no branch. */
 export function parseSymrefDefaultBranch(out: string): string | undefined {
   for (const line of out.split('\n')) {
@@ -1741,12 +1928,17 @@ export type WorkspacePathClearer = (agentId: string, root: string) => Promise<st
  * never stored — the id is a hex hash, so the path always sits under the agent's
  * worktrees root. */
 
-export type SessionWorktreeRemoval =
+export type SessionWorktreeRemoval = (
   | { outcome: 'removed' }
   | { outcome: 'absent' }
   /** The worktree holds work the daemon must not discard — the caller keeps the session. */
   | { outcome: 'retained'; reason: 'dirty' | 'unique-commits' }
   | { outcome: 'failed'; error: string }
+) & {
+  /** Another root's worktree DID go even though the aggregate keeps the session, so a warm runtime
+   *  attachment now names directories that are gone and the caller must evict it anyway. */
+  partial?: true
+}
 
 /** Retention GC (#485): remove one logical session's worktree, but only when it
  * is provably safe — no dirty/untracked files and no commit unreachable from

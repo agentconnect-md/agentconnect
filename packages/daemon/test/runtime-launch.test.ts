@@ -17,6 +17,7 @@ import { delimiter, dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import { prepareRuntimeLaunch } from '../src/launch/prepare.js'
 import { composeRuntimeLaunch, runtimeSandboxReadRoots } from '../src/launch/compose.js'
+import { CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV } from '../src/acp/codex-permission-profiles.js'
 import { runtimeMemoryCapabilities } from '../src/memory/runtime/capabilities.js'
 import { MemoryProviderUnavailableError } from '../src/memory/provider.js'
 import type { RuntimeDef } from '../src/config/config-schema.js'
@@ -312,6 +313,40 @@ describe('prepareRuntimeLaunch', () => {
     const agent = prepareRuntimeLaunch(base)
     expect(agent.env.npm_config_cache).toBeUndefined()
     expect(coveredBy(agent.sandbox!.writable, join(hostHome, '.npm'))).toBe(false)
+  })
+
+  // multi-repository-workspaces.md decision 8: the secondary roots live under the agent dir, which
+  // the boundary denies wholesale — without this carve-back a sandboxed runtime cannot see them.
+  it('carves back the secondary-roots parent and every existing secondary .git for Codex', () => {
+    const { scopeDir, cwd, hostHome } = fixture()
+    const worktrees = join(scopeDir, 'worktrees')
+    const repos = join(scopeDir, 'repos')
+    const secondaryGit = join(repos, 'acme', 'infra', 'checkout', '.git')
+    mkdirSync(secondaryGit, { recursive: true })
+    mkdirSync(join(cwd, '.git'), { recursive: true })
+
+    const launch = prepareRuntimeLaunch({
+      runtimeId: 'codex-acp',
+      runtime: { command: 'npx', args: ['codex-acp'], env: [] },
+      scopeDir,
+      cwd,
+      runInSandbox: true,
+      daemonRoot: dirname(scopeDir),
+      sandboxMechanism: 'bwrap',
+      credentialPlatform: 'linux',
+      trustedWorkspaceWriteRoots: [worktrees, repos],
+      hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
+    })
+
+    const policy = JSON.parse(readFileSync(launch.sandbox!.settingsPath, 'utf8'))
+    expect(coveredBy(policy.filesystem.allowWrite, realpathSync(repos))).toBe(true)
+    expect(coveredBy(policy.filesystem.allowRead, realpathSync(secondaryGit))).toBe(true)
+    // Codex's :workspace profile protects `.git`; both the primary's and each secondary's are
+    // reopened, and only because they sit inside a writable root.
+    const profile = JSON.parse(launch.env[CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV]!) as { configOverrides: string[] }
+    const writes = profile.configOverrides.filter((value) => value.includes('filesystem='))
+    expect(writes.some((value) => value.includes(`"${realpathSync(secondaryGit)}" = "write"`))).toBe(true)
+    expect(writes.some((value) => value.includes(`"${realpathSync(join(cwd, '.git'))}" = "write"`))).toBe(true)
   })
 
   it('rejects root-level protected paths instead of generating an ineffective policy', () => {

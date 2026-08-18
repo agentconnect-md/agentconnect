@@ -12,6 +12,7 @@ import {
   runtimeHomePath
 } from '../runtimes/runtime-home.js'
 import { RUNTIME_STATE_LOCATIONS, runtimeStateLocations } from '../runtimes/probe.js'
+import { secondaryCheckoutsIn } from '../workspace/secondary-layout.js'
 import {
   CLAUDE_PROFILE_ENV,
   claudeProtectedSettings,
@@ -436,7 +437,9 @@ export function prepareRuntimeLaunch(opts: {
     // Codex's :workspace profile protects `.git`. Re-open only the canonical
     // metadata directory already covered by the outer sandbox's writable root;
     // session worktree indexes and refs live below this main checkout directory.
-    const writableGitMetadataRoots = boundary.gitSafeDirectories.flatMap((workspaceRoot) => {
+    // A secondary root materialized after this spawn is reopened on the next one.
+    const gitMetadataOwners = [...boundary.gitSafeDirectories, ...secondaryCheckoutsIn(agentRoot)]
+    const writableGitMetadataRoots = gitMetadataOwners.flatMap((workspaceRoot) => {
       const gitDir = join(workspaceRoot, '.git')
       if (!existsSync(gitDir) || !lstatSync(gitDir).isDirectory()) return []
       const canonical = realpathSync(gitDir)

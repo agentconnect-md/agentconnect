@@ -118,6 +118,13 @@ export async function runChat(opts: RunChatOpts): Promise<void> {
   // The standalone chat CLI runs one agent locally, so it owns a plane with nothing registered
   // on it: git runs here and no path lives in a sandbox.
   const workspaces = new WorkspaceManager()
+  // Before the launch policy, not after: the sandbox boundary is computed from what is ON DISK, so
+  // a first run that assembled first would confine the runtime out of the checkouts it just cloned.
+  // The daemon's cold-host gate prepares in this order too (startHostWithRetry).
+  const cwd = await workspaces.prepareWorkspace(agent, {
+    skillsStateDir: join(root, 'skill-installs'),
+    skillsAgentId: entry?.skillsAgentId ?? null
+  })
   const assembled = assembleRuntimeLaunch({
     runtimeId: agent.runtime,
     runtime,
@@ -130,10 +137,9 @@ export async function runChat(opts: RunChatOpts): Promise<void> {
     runtimeEnv,
     agentEnv,
     configFileDir: agent.dir,
-    // Same sandbox write carve-back the daemon grants: without it a sandboxed chat run against a
-    // git-repo agent cannot write its own session worktrees.
-    trustedWorkspaceWriteRoots:
-      runInSandbox && agent.workspace.mode === 'git-repo' ? [workspaces.sessionWorktreeRoot(agent)] : undefined,
+    // Same sandbox write carve-back the daemon grants: without it a sandboxed chat run cannot write
+    // its own session worktrees, nor read the secondary roots beside them.
+    trustedWorkspaceWriteRoots: runInSandbox ? workspaces.trustedWorkspaceWriteRoots(agent) : undefined,
     // No daemon here, so there is no MCP bridge socket, gh wrapper, or git-credential shim to carve
     // back: mcpSocketPath / allowModelToolUnixSockets / runtimeReadRoots stay genuinely unused.
     sandboxMechanism
@@ -170,12 +176,8 @@ export async function runChat(opts: RunChatOpts): Promise<void> {
   }
   process.once('SIGINT', onSigint)
   try {
-    const cwd = await workspaces.prepareWorkspace(agent, {
-      skillsStateDir: join(root, 'skill-installs'),
-      skillsAgentId: entry?.skillsAgentId ?? null
-    })
-    // Runtime adapters may discover skills only during initialization. Finish the
-    // complete clone/pull + unified-skill reconciliation before the child starts.
+    // Runtime adapters may discover skills only during initialization, and the clone/pull +
+    // unified-skill reconciliation above is complete before the child starts.
     await host.start()
     const sessionId = await host.newSession(
       cwd,

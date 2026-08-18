@@ -97,11 +97,14 @@ describe('runChat', () => {
     expect(out.text()).toContain('echo:hi')
   }, 20_000)
 
-  it('finishes workspace preparation before starting the runtime host', async () => {
+  // Before the LAUNCH, not just before start(): a sandboxed run computes its boundary from what is
+  // on disk, so a workspace materialized afterwards would be outside the policy the child gets.
+  it('finishes workspace preparation before assembling the launch or starting the host', async () => {
     const files = scaffold()
     const workspace = join(files.agentsDir, 'ws')
     const runtime = { command: process.execPath, args: [], env: [] }
     const host = quietHost()
+    let preparedBeforeLaunch = false
     host.start = vi.fn(async () => {
       expect(existsSync(workspace)).toBe(true)
     })
@@ -121,9 +124,14 @@ describe('runChat', () => {
         runtimes: { fake: runtime }
       }),
       installed: (runtimes) => runtimes,
-      hostFactory: () => host
+      // Called strictly after the launch is assembled, so this pins the earlier ordering.
+      hostFactory: () => {
+        preparedBeforeLaunch = existsSync(workspace)
+        return host
+      }
     })
 
+    expect(preparedBeforeLaunch).toBe(true)
     expect(host.start).toHaveBeenCalledOnce()
     expect(host.newSession).toHaveBeenCalledOnce()
   })
