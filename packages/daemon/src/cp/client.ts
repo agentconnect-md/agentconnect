@@ -273,7 +273,7 @@ export interface CpClientDeps {
   /** Called once the daemon reaches READY on each (re)connect, after the initial
    *  runtime profiles are emitted. The daemon uses this to kick off background
    *  runtime probing and push the refreshed snapshot via `emitDaemonRuntimes`. */
-  onReady?: () => void
+  onReady?: () => void | Promise<void>
 }
 
 export class CpClient {
@@ -584,7 +584,11 @@ export class CpClient {
     // Let the daemon kick off background runtime probing; the probed models
     // arrive later as another `facts/daemon-runtimes` snapshot that replaces
     // the one just sent.
-    this.deps.onReady?.()
+    // The replay is async now; a failed channel/cron store read must be logged here rather
+    // than becoming a floating rejection that abandons the rest of this reconnect's replay.
+    void Promise.resolve(this.deps.onReady?.()).catch((err) =>
+      this.deps.log.error(`cp: ready replay failed: ${(err as Error).message}`)
+    )
   }
 
   private async reportBootstrapResult(

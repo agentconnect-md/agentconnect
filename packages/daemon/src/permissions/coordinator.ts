@@ -66,6 +66,9 @@ export interface PermissionHost extends PermissionCoreHost, PermissionSurfaceHos
 
 export class PermissionCoordinator {
   // ── Permission requests (ACP session/request_permission) ─────────────────────
+  /** Durable rows still being written. Admission publishes its resolver first, so anything that
+   *  settles a request must wait for the row it settles to exist. */
+  private readonly recordedWrites = new Map<string, Promise<void>>()
   private pendingEditorPermissions = new Map<
     string,
     | {
@@ -174,6 +177,9 @@ export class PermissionCoordinator {
     status: 'allowed' | 'denied' | 'expired'
   ): Promise<boolean> {
     try {
+      // The row may still be in flight — a decision or sweep in that window settles nothing
+      // unless it waits for the write it is settling.
+      await this.recordedWrites.get(requestId)?.catch(() => undefined)
       return await this.host.store().resolvePermissionRequest(agentId, requestId, status, this.host.clock().now())
     } catch (err) {
       this.host.log().error(`permission request "${requestId}" could not be resolved locally: ${formatErr(err)}`)
@@ -209,7 +215,8 @@ export class PermissionCoordinator {
     const id = randomUUID()
     let resolveResult!: (res: RequestPermissionResponse) => void
     const result = new Promise<RequestPermissionResponse>((resolve) => (resolveResult = resolve))
-    await this.noteEditorPermissionRequest(id, agentId, sessionId, permissionRequestSummary(params), p)
+    // Publish BEFORE the store write: the write awaits, and a cancellation sweep landing in
+    // that window must find this entry or the agent waits on a resolver nobody can reach.
     this.pendingEditorPermissions.set(id, {
       kind: 'permission',
       agentId,
@@ -218,7 +225,22 @@ export class PermissionCoordinator {
       evaluationParams,
       resolve: resolveResult
     })
-    return this.trackHumanApprovalWait(p, result)
+    // The human wait starts when the request becomes answerable, not when its row lands — the
+    // write used to be synchronous, and billing it to the turn's retry budget would shrink it.
+    const wait = this.trackHumanApprovalWait(p, result)
+    const recorded = this.noteEditorPermissionRequest(id, agentId, sessionId, permissionRequestSummary(params), p)
+    this.recordedWrites.set(id, recorded)
+    try {
+      await recorded
+    } catch (err) {
+      this.pendingEditorPermissions.delete(id)
+      this.recordedWrites.delete(id)
+      resolveResult({ outcome: { outcome: 'cancelled' } })
+      await wait
+      throw err
+    }
+    this.recordedWrites.delete(id)
+    return wait
   }
 
   private async awaitEditorElicitation(
@@ -230,14 +252,26 @@ export class PermissionCoordinator {
     const id = randomUUID()
     let resolveResult!: (res: CreateElicitationResponse) => void
     const result = new Promise<CreateElicitationResponse>((resolve) => (resolveResult = resolve))
-    await this.noteEditorPermissionRequest(id, agentId, sessionId, elicitationApprovalSummary(params), p)
     this.pendingEditorPermissions.set(id, {
       kind: 'elicitation',
       agentId,
       sessionId,
       resolve: resolveResult
     })
-    return this.trackHumanApprovalWait(p, result)
+    const wait = this.trackHumanApprovalWait(p, result)
+    const recorded = this.noteEditorPermissionRequest(id, agentId, sessionId, elicitationApprovalSummary(params), p)
+    this.recordedWrites.set(id, recorded)
+    try {
+      await recorded
+    } catch (err) {
+      this.pendingEditorPermissions.delete(id)
+      this.recordedWrites.delete(id)
+      resolveResult({ action: 'cancel' })
+      await wait
+      throw err
+    }
+    this.recordedWrites.delete(id)
+    return wait
   }
 
   private async awaitChatPermission(
@@ -251,7 +285,6 @@ export class PermissionCoordinator {
     const conn = p.conn as SlackConnection
     let resolveResult!: (res: RequestPermissionResponse) => void
     const result = new Promise<RequestPermissionResponse>((resolve) => (resolveResult = resolve))
-    await this.noteEditorPermissionRequest(requestId, agentId, sessionId, permissionRequestSummary(params), p, false)
     this.pendingChatPermissions.set(requestId, {
       agentId,
       sessionId,
@@ -261,6 +294,25 @@ export class PermissionCoordinator {
       channel: p.channel,
       resolve: resolveResult
     })
+    const recorded = this.noteEditorPermissionRequest(
+      requestId,
+      agentId,
+      sessionId,
+      permissionRequestSummary(params),
+      p,
+      false
+    )
+    this.recordedWrites.set(requestId, recorded)
+    try {
+      await recorded
+    } catch (err) {
+      this.pendingChatPermissions.delete(requestId)
+      this.recordedWrites.delete(requestId)
+      throw err
+    }
+    this.recordedWrites.delete(requestId)
+    // Settled while the row was being written: never post a card for a request already resolved.
+    if (!this.pendingChatPermissions.has(requestId)) return await result
     const blocks = buildPermissionCard(requestId, params, this.host.httpSlackSessionTarget(p))
     const fallback = `Permission requested: ${params.toolCall?.title ?? 'a tool call'}`
     const ts = await this.host.postCardSerialized(p, (slack) =>
@@ -682,16 +734,6 @@ export class PermissionCoordinator {
     const fallback = (params as { message?: string }).message ?? 'The agent needs your input'
     let resolveResult!: (res: CreateElicitationResponse) => void
     const result = new Promise<CreateElicitationResponse>((resolve) => (resolveResult = resolve))
-    if (isApproval) {
-      await this.noteEditorPermissionRequest(
-        requestId,
-        agentId,
-        sessionId,
-        elicitationApprovalSummary(params),
-        p,
-        false
-      )
-    }
     this.pendingElicits.set(requestId, {
       agentId,
       sessionId,
@@ -703,6 +745,26 @@ export class PermissionCoordinator {
       channel: p.channel,
       resolve: resolveResult
     })
+    if (isApproval) {
+      const recorded = this.noteEditorPermissionRequest(
+        requestId,
+        agentId,
+        sessionId,
+        elicitationApprovalSummary(params),
+        p,
+        false
+      )
+      this.recordedWrites.set(requestId, recorded)
+      try {
+        await recorded
+      } catch (err) {
+        this.pendingElicits.delete(requestId)
+        this.recordedWrites.delete(requestId)
+        throw err
+      }
+      this.recordedWrites.delete(requestId)
+      if (!this.pendingElicits.has(requestId)) return await result
+    }
     const ts = await this.host.postCardSerialized(p, (sc) =>
       sc.postBlocks(p.channel, blocks, fallback, p.statusThread, {
         ...(slackPostOptions(p) ?? {}),

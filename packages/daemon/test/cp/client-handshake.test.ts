@@ -451,6 +451,48 @@ describe('CpClient handshake', () => {
     expect(readySnapshotsAtCall).toBe(1)
   })
 
+  it('logs a rejected async onReady instead of leaving a floating rejection', async () => {
+    const t = new FakeTransport()
+    const errors: string[] = []
+    const client: CpClient = new CpClient(
+      makeDeps(t, {
+        log: { ...silent, error: (m: string) => errors.push(m) },
+        // The daemon's ready replay reads the store now, so it can reject.
+        onReady: async () => {
+          throw new Error('channel snapshot read failed')
+        }
+      })
+    )
+
+    client.start()
+    await tick()
+    const auth = t.lastSent()
+    t.pushInbound(
+      JSON.stringify(
+        buildEnvelope(
+          'auth/ok',
+          { daemonId: DAEMON_ID, sessionEpoch: 1, heartbeatSec: 20, serverTime: '2026-06-26T00:00:00.000Z' },
+          { corr: auth.id }
+        )
+      )
+    )
+    await tick()
+    const reg = t.lastSent()
+    t.pushInbound(
+      JSON.stringify(
+        buildEnvelope(
+          'register/ok',
+          { routingEpoch: 1, assignments: [], crons: [], leases: [], drop: { assignments: [], crons: [] } },
+          { corr: reg.id }
+        )
+      )
+    )
+    await tick()
+    // The connection still reaches READY, and the failure is reported rather than swallowed.
+    expect(client.state).toBe('READY')
+    expect(errors.some((m) => m.includes('channel snapshot read failed'))).toBe(true)
+  })
+
   it('emitDaemonRuntimes pushes the full snapshot only when READY', async () => {
     const t = new FakeTransport()
     const client = new CpClient(makeDeps(t))
